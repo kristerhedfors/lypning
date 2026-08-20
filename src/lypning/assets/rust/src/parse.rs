@@ -15,6 +15,10 @@ pub struct Parser {
     i: usize,
     /// How deep the grammar currently is, against [`MAX_PARSE_DEPTH`].
     depth: u32,
+    /// Binary operators chained so far, against [`MAX_CHAIN_OPS`]. Counted for
+    /// the whole parse rather than per chain: chains compose, and it is the
+    /// longest PATH through the tree that the evaluator and the drop both walk.
+    chain_ops: u32,
 }
 
 /// The nesting a program is allowed, and it is a measurement rather than a
@@ -36,11 +40,28 @@ pub struct Parser {
 /// only whether it arrives as an error or as a signal.
 pub const MAX_PARSE_DEPTH: u32 = 64;
 
+/// How many binary operators one program may chain together, in total.
+///
+/// A separate limit from the one above because a chain is not nesting:
+/// `1+1+1+…` is parsed by an iterative loop (`bin_level`) into a LEFT-LEANING
+/// tree, so a flat chain of a hundred thousand terms parses without recursing
+/// at all — and then two things walk that spine one frame per node. The
+/// evaluator does (`eval::MAX_EXPR_DEPTH` catches that), and so does the AST's
+/// own derived `Drop`, which nothing can catch: the tree is dropped after the
+/// refusal, so bounding only the evaluator still segfaulted the host on a 1 MB
+/// thread.
+///
+/// So the tree is never built that deep. A one-liner with a thousand binary
+/// operators in it is not a program anyone typed, and a program that has one
+/// gets its answer from CPython.
+pub const MAX_CHAIN_OPS: u32 = 1000;
+
 pub fn parse(src: &str) -> R<Vec<Stmt>> {
     let mut p = Parser {
         t: tokenize(src)?,
         i: 0,
         depth: 0,
+        chain_ops: 0,
     };
     let mut body = Vec::new();
     while !p.at_eof() {
@@ -874,6 +895,13 @@ impl Parser {
         'outer: loop {
             for (s, op) in ops {
                 if self.is_op(s) {
+                    self.chain_ops += 1;
+                    if self.chain_ops > MAX_CHAIN_OPS {
+                        return Err(unsupported(
+                            "recursion",
+                            &format!("more than {MAX_CHAIN_OPS} chained operators"),
+                        ));
+                    }
                     self.bump();
                     let rhs = next(self)?;
                     lhs = Expr::Bin(*op, Box::new(lhs), Box::new(rhs));
@@ -1392,6 +1420,7 @@ fn parse_fstring(raw: &str, raw_prefix: bool) -> R<Vec<FPart>> {
                     t: tokenize(expr_src.trim())?,
                     i: 0,
                     depth: 0,
+                    chain_ops: 0,
                 };
                 let e = p.expr_list()?;
                 if !matches!(p.peek(), Tok::Newline | Tok::Eof) {

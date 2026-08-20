@@ -33,6 +33,20 @@ from lypning import engines  # noqa: E402  (after the path insert, on purpose)
 #: would silently change which binary every test measured.
 _ENGINE_OVERRIDES = ("LYPNING_BIN", "LYPNING_MP_BIN", "LYPNING_CPYTHON", "LYPNING_LIB")
 
+#: Where the C ABI library is, resolved AT IMPORT — before the autouse fixture
+#: moves ``$LYPNING_HOME`` to a temp dir and hides ``~/.lypning/lib`` from
+#: discovery. The engine binaries do not need this because a checkout has them
+#: in a cargo target dir that discovery still reaches; the library is the one
+#: artefact a `pip` user has only under their real state dir, and a suite that
+#: skipped every ABI test for them would report "not built" about a library
+#: they built and installed.
+try:
+    from lypning import embed as _embed  # noqa: E402
+
+    _INSTALLED_LIBRARY = _embed.find_library()
+except Exception:  # a bad $LYPNING_LIB in the developer's shell, or no module
+    _INSTALLED_LIBRARY = None
+
 
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path, monkeypatch):
@@ -79,7 +93,7 @@ def lypning_lib():
     would be reporting the developer's stale build as a broken runtime.
     """
     from lypning import embed
-    path = embed.find_library()
+    path = _INSTALLED_LIBRARY
     if path is None:
         pytest.skip("the C ABI is not built (`lypning build --lib`)")
     try:

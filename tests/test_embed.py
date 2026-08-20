@@ -18,12 +18,21 @@ Three questions, and they are not the same question:
 from __future__ import annotations
 
 import subprocess
-import sys
 import threading
+from pathlib import Path
 
 import pytest
 
+from typing import List
+
 from lypning import embed, engines, paths
+from conftest import _INSTALLED_LIBRARY
+
+
+def _INSTALLED_LIBRARY_OR_SKIP() -> embed.Library:
+    if _INSTALLED_LIBRARY is None:
+        pytest.skip("the C ABI is not built (`lypning build --lib`)")
+    return embed.Library(_INSTALLED_LIBRARY)
 
 
 # --- the contract ------------------------------------------------------------
@@ -221,11 +230,31 @@ def test_an_output_limit_refuses_rather_than_filling_the_host(lypning_lib):
 # --- what used to take the process down --------------------------------------
 
 
+_DEEP = "x = []\ny = []\nfor i in range(20000):\n    x = [x]\n    y = [y]\n"
+
+
 @pytest.mark.parametrize("program,kind", [
     ("x = " + "(" * 5000 + "1" + ")" * 5000, "recursion"),
     ("x = [1]\nfor i in range(2000): x = [x]\nprint(repr(x))", "recursion"),
     ("k = (1,)\nfor i in range(2000): k = (k,)\nd = {k: 1}", "recursion"),
     ('import json; json.loads("[" * 5000 + "]" * 5000)', "recursion"),
+    # Every descent a program can drive, not only the three that were guarded
+    # first: comparison reaches `in`, `sorted` and dict/set equality too.
+    (_DEEP + "print(x == y)", "recursion"),
+    (_DEEP + "print(sorted([x, y]) == [x, y])", "recursion"),
+    (_DEEP + "print(x in [y])", "recursion"),
+    ("import json\n" + _DEEP + "print(len(json.dumps(x)))", "recursion"),
+    # A flat chain does not NEST — it is one node per term down a left-leaning
+    # spine, which both the evaluator and the AST's own drop walk one frame at
+    # a time.
+    ("print(" + "+".join(["1"] * 100000) + ")", "recursion"),
+    # An allocation Rust cannot fail: its handler aborts, which is not an
+    # unwind and cannot be caught at the boundary.
+    ("x = 'a' * (10 ** 14)\nprint(len(x))", "alloc"),
+    ("x = [0] * (10 ** 12)\nprint(len(x))", "alloc"),
+    # The lexer reads a zero byte as end-of-input, so this ran half a program
+    # and reported success — the wrong-answer failure the contract exists for.
+    ("print(1)\0print(2)", "source"),
 ])
 def test_unbounded_recursion_refuses_instead_of_segfaulting(lypning_lib, program, kind):
     """Each of these overflowed the stack and killed the process. A stack
@@ -248,12 +277,78 @@ def test_tearing_down_a_deep_structure_does_not_recurse(lypning_lib):
     assert lypning_lib.run("print(1 + 1)").stdout == b"2\n"
 
 
-def test_an_interpreter_panic_is_survivable(lypning_lib):
-    """Whatever else is true of a bug in the runtime, it must not be the host's
-    problem. `catch_unwind` at the boundary is what the `release-lib` profile
-    exists to make possible."""
-    out = lypning_lib.run("print(sum(range(10)))")
-    assert out.status == embed.OK  # the guard is exercised by every call above
+def test_deep_programs_stay_refusals_on_a_small_host_stack():
+    """The limits are sized for a HOST thread, not for a main one.
+
+    A pthread default under musl, and a Node worker, hand the runtime a fraction
+    of the 8 MB the main thread gets. A guard tuned on the main thread's stack
+    is a guard that holds only where nobody embeds.
+    """
+    lib = _INSTALLED_LIBRARY_OR_SKIP()
+    results: List[str] = []
+
+    def work() -> None:
+        for program, _kind in (
+            ("print(" + "+".join(["1"] * 100000) + ")", "recursion"),
+            (_DEEP + "print(x == y)", "recursion"),
+            ("def f(n):\n    return 0 if n == 0 else 1 + f(n - 1)\nprint(f(179))", ""),
+        ):
+            results.append(lib.run(program).status_name)
+
+    previous = threading.stack_size(1 << 20)
+    try:
+        t = threading.Thread(target=work)
+        t.start()
+        t.join()
+    finally:
+        threading.stack_size(previous)
+    # The last one is a legal recursion at the depth `MAX_DEPTH` allows: the
+    # bound must be tight enough for a 1 MB stack and loose enough to keep it.
+    assert results == ["unsupported", "unsupported", "ok"]
+
+
+def test_a_format_spec_too_wide_is_a_value_error_not_an_abort(lypning_lib):
+    """`.parse().unwrap()` on a width field aborted the binary outright — exit
+    134 for a program CPython answers with an ordinary exception."""
+    out = lypning_lib.run("print(format(1, '9' * 30))")
+    assert out.status == embed.ERROR
+    assert b"ValueError" in out.stderr
+
+
+def test_a_directory_made_is_a_commit(lypning_lib, tmp_path, monkeypatch):
+    """`os.mkdir` cannot be staged — there is no content to hold back — so the
+    run stops being reversible there. Reported as committed, or the host re-runs
+    it on CPython and the second mkdir raises for a program that works."""
+    monkeypatch.chdir(tmp_path)
+    out = lypning_lib.run("import os\nos.mkdir('d')\nimport subprocess")
+    assert (tmp_path / "d").is_dir()
+    assert out.committed is True
+    assert out.fall_onward is False
+
+
+def test_a_refusal_in_finally_is_not_swallowed_by_a_break(lypning_lib):
+    """A `break` in `finally` discards an in-flight EXCEPTION — CPython's rule,
+    kept. It must not discard a refusal: that is a wrong answer at exit 0."""
+    out = lypning_lib.run(
+        "for i in range(1):\n"
+        "    try:\n"
+        "        import subprocess\n"
+        "    finally:\n"
+        "        break\n"
+        "print('reached')")
+    assert out.status == embed.UNSUPPORTED
+    assert out.stdout == b""
+
+
+def test_busy_and_a_clean_panic_are_routable(lypning_lib):
+    """Three statuses mean "lypning did not answer": a refusal, a Busy that
+    executed nothing, and a Panic that reached no commit. A host that only
+    routed the first would report the other two to a user as the program's
+    own failure."""
+    out = lypning_lib.run("import subprocess")
+    assert out.fall_onward is True
+    assert lypning_lib.run("print(1)").fall_onward is False
+    assert lypning_lib.run("raise ValueError('x')").fall_onward is False
 
 
 # --- threading ---------------------------------------------------------------
@@ -336,11 +431,37 @@ def test_every_exported_symbol_is_in_the_header(lypning_lib):
 # --- discovery ---------------------------------------------------------------
 
 
-def test_missing_library_is_a_clear_error_not_a_crash(monkeypatch, tmp_path):
+def test_a_named_library_that_is_missing_is_a_bad_override_not_an_absence(monkeypatch, tmp_path):
+    """"Not built" would send the caller to run a build they already ran, and
+    it would be wrong every time — the same rule the engine overrides hold."""
     monkeypatch.setenv("LYPNING_LIB", str(tmp_path / "nope.so"))
-    assert embed.find_library() is None
+    with pytest.raises(embed.LibraryError) as e:
+        embed.find_library()
+    assert "$LYPNING_LIB" in str(e.value)
     with pytest.raises(embed.LibraryError):
         embed.Library()
+
+
+def test_a_truncated_library_is_reported_not_dlopened(monkeypatch, tmp_path, lypning_lib):
+    """A link killed halfway through leaves one of these in a build tree, and
+    `dlopen` maps it: the first call then reads a page past the end of the file
+    and takes SIGBUS, which no `except` can see."""
+    half = tmp_path / "liblypning.so"
+    half.write_bytes(lypning_lib.path.read_bytes()[:200_000])
+    monkeypatch.setenv("LYPNING_LIB", str(half))
+    usable, why = engines.library_ready()
+    assert usable is False
+    assert "truncated" in why
+
+
+def test_a_foreign_library_is_named_as_such(monkeypatch, tmp_path):
+    other = Path("/lib/x86_64-linux-gnu/libm.so.6")
+    if not other.is_file():
+        pytest.skip("no other shared library to point at")
+    monkeypatch.setenv("LYPNING_LIB", str(other))
+    usable, why = engines.library_ready()
+    assert usable is False
+    assert "lypning" in why
 
 
 def test_engines_reports_an_unusable_library_rather_than_failing_runs(monkeypatch, tmp_path):

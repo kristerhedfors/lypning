@@ -39,10 +39,16 @@ observably a no-op. Output is staged in memory and thrown away, file writes are
 staged per path and never reach the disk, stdin is replayable because the host
 supplied it as bytes. That is the commit barrier (`assets/rust/src/io.rs`), and
 `lypning_result_committed()` says whether a run passed the point where its
-effects stop being reversible — false for every refusal the barrier produces,
-and true for anything that finished, whether or not it wrote a file. `should_fall_onward()`
-already accounts for it, which is why it is the call to branch on rather than
-the status.
+effects stop being reversible — true for anything that finished, whether or not
+it wrote a file, and for the one effect the barrier cannot stage: a directory
+created with `os.mkdir`, which has no content to hold back. (`os.makedirs(...,
+exist_ok=True)` is idempotent, so it stays routable — a retry makes the same
+directory and carries on.)
+
+`should_fall_onward()` folds that in, which is why it is the call to branch on
+rather than the status. It is true for three outcomes, not one: a refusal, a
+`BUSY` that executed nothing, and a `PANIC` that reached no commit. All three
+mean the same thing — lypning did not answer, and the program still needs one.
 
 ## 2. What you get, and what it costs
 
@@ -65,6 +71,16 @@ the empty program `pass` — min of 200 calls / 20 spawns
   binary        88.7 ms      0.043x cpython
   cpython     2079.8 ms      1.000x
 ```
+
+A second run of the same script on the same box, an hour later, put `pass` at
+0.0072 ms through the library and 0.2576 ms spawned — and CPython at 16.6 ms
+rather than 11.1, which moved every ratio with it (0.007x and 0.029x on the
+corpus arm). **The two library numbers agree to a tenth of a percent and the
+CPython baseline moved by half.** That is the whole reason this section names
+its method and its date instead of quoting a ratio: the in-process cost is
+stable because there is nothing in it but a function call, and everything it is
+being compared against is a process, which is what the machine's load actually
+moves.
 
 Read it as one claim only: **linking removes the process, and the process was
 the cost.** It says nothing about programs lypning refuses — those still cost a
@@ -94,7 +110,7 @@ refuses to compile under `abort` rather than trusting a comment.
 `-fno-exceptions`, you take that guard away again — the strategy is chosen by
 the final link, not by our crate. The shared object is the supported artefact.
 
-## 4. The four bindings
+## 4. Five hosts, one ABI
 
 | host | where | how it binds |
 |---|---|---|
@@ -113,8 +129,11 @@ quietly disagree.
 * **A run belongs to one thread.** Two threads may run two programs at once —
   the state is thread_local. One thread may not run two at once, and gets
   `LYPNING_BUSY` rather than two interleaved answers.
-* **The library never touches your stdio.** Program output is captured, always.
-  Stdin is bytes you supply; unset means an empty stream, never your fd 0.
+* **Program output never touches your stdio.** It is captured, always. Stdin is
+  bytes you supply; unset means an empty stream, never your fd 0. One exception,
+  and it is not the program's: an interpreter bug prints Rust's own panic
+  message to fd 2 before the unwind is caught. Silencing that means installing a
+  process-global panic hook, which is not a library's to install over yours.
 * **Handles are opaque and freed by their own `_free`.** Returned pointers die
   with their handle. Program output is bytes with a length, because a program's
   stdout is whatever it printed.
@@ -153,15 +172,26 @@ text, was measured crashing the process, and is now a refusal:
 
 | what | now |
 |---|---|
-| deeply nested expressions (`((((…`) | `unsupported: recursion`, past 64 levels — the deepest program in the corpus nests 18 |
-| `repr` of a deeply nested container | `unsupported: recursion`, past 500 |
-| a deeply nested tuple used as a dict key | the same |
-| deeply nested JSON | the same |
+| deeply *nested* expressions (`((((…`) | `unsupported: recursion`, past 64 levels |
+| a long *flat* chain (`1+1+1+…`) | `unsupported: recursion`, past 1,000 operators — not the same limit, because a chain does not nest: it is one node per term down a left-leaning spine, which the evaluator and the AST's own destructor each walk one stack frame at a time |
+| `repr`, `==`, `<`, `in`, `sorted`, a tuple dict key, `json.loads`, `json.dumps` over a deeply nested value | `unsupported: recursion`, past 500 |
+| an allocation nothing can satisfy (`"a" * 10**14`) | `unsupported: alloc` — Rust's allocator failure handler *aborts*, which is not an unwind, so the size is ceilinged before it is asked for |
+| a NUL byte in the source | `unsupported: source` — the lexer reads zero as end-of-input, so this silently ran half a program and reported success |
 | tearing down what a program built | taken apart iteratively; a million-level list is fine |
 | a bug in the interpreter | `LYPNING_PANIC`, caught at the boundary |
 
+The 64 is a measurement, not a taste: the deepest program in the corpus (842
+loaded, 2026-08-20) nests **18**, the 99th percentile nests 11 and the median
+nests 2, counting `(`, `[` and `{` alike, which is what the parser's own guard
+counts. Every limit above is sized for a **host thread**, not a main one — a
+Node worker or a pthread default hands the runtime a fraction of the 8 MB the
+main thread gets, and a guard tuned on the main thread's stack is a guard that
+holds only where nobody embeds. `tests/test_embed.py` runs the deep cases on a
+1 MB thread on purpose.
+
 The last row is worth stating plainly: `LYPNING_PANIC` means the runtime failed,
-not your program. Report it, then run the program on CPython.
+not your program. Report it — and route it onward, which
+`should_fall_onward()` will already be telling you to do.
 
 ## 8. Holding it honest
 
@@ -179,6 +209,9 @@ that has only ever broken silently. So:
   the `lypning` arm program for program.
 * `tests/test_embed.py` pins what only a library can get wrong: state leaking
   from one run into the next, a latched commit flag turning the second run's
-  refusal into an error, and every crash in §7.
+  refusal into an error, and every program in §7 — the deep ones twice, once on
+  the main thread and once on a 1 MB one. The last row of that table is the
+  exception and is honest about it: no program is known that panics the
+  interpreter, so what the suite pins there is the routing, not a crash.
 
 `lypning doctor` reports the first of those on whatever library is installed.

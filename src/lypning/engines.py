@@ -271,7 +271,12 @@ _CHDIR_LOCK = threading.Lock()
 
 
 def find_library() -> Path | None:
-    """The C ABI library, or ``None``. See :func:`lypning.embed.find_library`."""
+    """The C ABI library, or ``None``. See :func:`lypning.embed.find_library`.
+
+    Raises :class:`lypning.embed.LibraryError` for a ``$LYPNING_LIB`` that names
+    nothing, exactly as :func:`_override` does for the engine binaries: a caller
+    who named a path must be told it is wrong, not told to build what they have.
+    """
     from . import embed
     return embed.find_library()
 
@@ -304,6 +309,7 @@ def run_library(
     cwd: Path | str | None = None,
     library: Path | None = None,
     step_limit: int = 0,
+    env: dict[str, str] | None = None,
 ) -> Result:
     """Run ``program`` through the C ABI, in this process, and score it like a spawn.
 
@@ -331,28 +337,61 @@ def run_library(
         return Result(LIBRARY, "", 127, "", "lypning: %s\n" % e, 0)
 
     data = (stdin or "").encode("utf-8")
+    saved_env = {k: os.environ.get(k) for k in (env or {})}
     with _CHDIR_LOCK:
         previous = os.getcwd()
-        if cwd:
-            os.chdir(str(cwd))
-        t0 = time.perf_counter_ns()
         try:
-            out = lib.run(program, args=list(argv_tail), stdin=data, step_limit=step_limit)
+            if cwd:
+                os.chdir(str(cwd))
+            # The spawned arms are handed an environment (`conformance._env_for`);
+            # this one shares the caller's, because the program runs HERE. So the
+            # same variables are set around the call and put back after — without
+            # it, `os.environ['PYTHONHASHSEED']` answers differently in this arm
+            # than in the CPython reference it is being compared against, which
+            # is a MISMATCH reported against the runtime for a difference the
+            # battery itself created.
+            if env:
+                os.environ.update(env)
+            t0 = time.perf_counter_ns()
+            try:
+                out = lib.run(program, args=list(argv_tail), stdin=data, step_limit=step_limit)
+            finally:
+                wall = time.perf_counter_ns() - t0
+        except OSError as e:
+            # A cwd that cannot be entered is `run`'s 127, not an exception: a
+            # battery that raised here would abandon the run with the repository
+            # still holding a corpus program's writes.
+            return Result(LIBRARY, str(path), 127, "", "lypning: %s\n" % e, 0)
         finally:
-            wall = time.perf_counter_ns() - t0
             try:
                 os.chdir(previous)
             except OSError:
                 pass
+            for k, v in saved_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
     # `errors="replace"`, matching `run` above and for the same reason: the two
     # sides of a comparison must decode by identical rules or two different
-    # non-ASCII outputs compare equal.
+    # non-ASCII outputs compare equal. `_as_text` adds the other half of that
+    # agreement — `subprocess` translates newlines and a raw `decode` does not.
     return Result(
         LIBRARY, str(path), out.exit_code,
-        out.stdout.decode("utf-8", "replace"),
-        out.stderr.decode("utf-8", "replace"),
-        wall,
+        _as_text(out.stdout), _as_text(out.stderr), wall,
     )
+
+
+def _as_text(raw: bytes) -> str:
+    """Decode exactly as ``subprocess.run(..., text=True)`` would.
+
+    Two rules, and both must match or a comparison lies. ``errors="replace"``
+    is the first. UNIVERSAL NEWLINES is the second and is the one that bites: a
+    spawned arm's ``\r\n`` arrives as ``\n``, so a program printing a carriage
+    return matched CPython through a subprocess and MISMATCHed through the
+    library — a disagreement the battery invented rather than found.
+    """
+    return raw.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _argv_for(engine: str, binary: Path, program: str, script: Path | None) -> list[str]:

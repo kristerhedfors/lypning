@@ -27,9 +27,11 @@
  *
  * What makes that safe is the commit barrier: a refused run has written no
  * output, touched no file, and consumed no input, so running the program again
- * elsewhere cannot repeat a side effect. lypning_result_committed() reports the
- * one case where that does not hold (a program that produced megabytes before
- * refusing), and should_fall_onward() already accounts for it.
+ * elsewhere cannot repeat a side effect. lypning_result_committed() says whether
+ * a run passed the point where that stops being true — a directory it created,
+ * say, which cannot be staged the way a file write can — and
+ * should_fall_onward() already folds that in, which is why it is the call to
+ * branch on rather than the status.
  *
  * ---------------------------------------------------------------------------
  * Rules of the surface
@@ -45,8 +47,17 @@
  *     interpreter comes back as LYPNING_PANIC, not as your process dying.
  *   * A run is confined to one thread. Two threads may run two programs at
  *     once; one thread may not run two at once and gets LYPNING_BUSY.
- *   * The library never reads your stdin and never writes your stdout or
- *     stderr. Program output is captured, always.
+ *   * The library never reads your stdin, and PROGRAM output never reaches your
+ *     stdout or stderr — it is captured, always. One exception, and it is not
+ *     the program's: an interpreter bug prints Rust's own panic message to fd 2
+ *     before the unwind is caught. Silencing it means a process-global panic
+ *     hook, which is not a library's to install over yours; set your own if the
+ *     noise matters.
+ *   * An allocation this runtime cannot satisfy aborts the process, because
+ *     Rust's allocator failure handler does. Program-driven sizes are ceilinged
+ *     and refused long before that (`x = "a" * 10**14` is a refusal, not an
+ *     abort), so what remains is a bug — but it is not something a guard at
+ *     this boundary can catch, and saying otherwise would be a promise.
  *
  * Link with -llypning (see `lypning lib --cflags --libs`).
  *
@@ -85,8 +96,9 @@ enum {
     LYPNING_UNSUPPORTED = 2,
     /* This thread is already running a program. Nothing was executed. */
     LYPNING_BUSY = 3,
-    /* The interpreter itself failed. Please report it; then run the program on
-     * CPython. */
+    /* The interpreter itself failed. Please report it — and then run the
+     * program on CPython, which lypning_result_should_fall_onward() will
+     * already be telling you to do. */
     LYPNING_PANIC = 4
 };
 
@@ -191,8 +203,16 @@ const char *lypning_result_detail(const lypning_result *r);
  * what makes the program safe to hand to CPython. Branch on
  * lypning_result_should_fall_onward(), which already folds this in. */
 int lypning_result_committed(const lypning_result *r);
-/* Should you run this program on CPython now? True exactly when lypning refused
- * and left nothing behind. This is the call to branch on. */
+/* Should you run this program on CPython now?
+ *
+ * True for every outcome that is not the program's own answer and left nothing
+ * behind: a refusal, a LYPNING_BUSY that executed nothing, and a LYPNING_PANIC
+ * that reached no commit. All three mean the same thing to you — lypning did
+ * not answer, and the program still needs one.
+ *
+ * Never true for LYPNING_OK or LYPNING_ERROR: those ARE the answer, and an
+ * uncaught exception is as much of an answer as a printed line. This is the
+ * call to branch on. */
 int lypning_result_should_fall_onward(const lypning_result *r);
 void lypning_result_free(lypning_result *r);
 

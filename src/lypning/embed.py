@@ -76,7 +76,15 @@ def find_library() -> Optional[Path]:
     env = os.environ.get("LYPNING_LIB", "").strip()
     if env:
         p = Path(env).expanduser()
-        return p if p.is_file() else None
+        if not p.is_file():
+            # The same rule :func:`lypning.engines._override` holds for the
+            # binaries: an override that silently falls back to discovery — or
+            # here, to "not built" — sends the caller to build something that
+            # already exists, forever, because the answer never changes.
+            raise LibraryError(
+                "$LYPNING_LIB points at %s, which does not exist — unset it or "
+                "point it at a `lypning build --lib` library" % p)
+        return p
     candidates = [
         lib_dir() / LIB_NAME,
         paths.build_dir() / "rust" / "target" / "release-lib" / LIB_NAME,
@@ -95,6 +103,39 @@ def lib_dir() -> Path:
 def include_dir() -> Path:
     """Where the same command installs ``lypning.h`` and ``lypning.hpp``."""
     return paths.state_dir() / "include"
+
+
+def _looks_like_a_library(path: Path) -> str:
+    """``""`` if the file can be handed to ``dlopen``, else the reason it cannot.
+
+    Deliberately shallow: the ELF magic and the size the file's own headers
+    imply. It cannot prove a library is loadable — only the loader can — but it
+    catches the case that would otherwise be fatal rather than reportable, a
+    file truncated mid-write.
+    """
+    try:
+        size = path.stat().st_size
+        with open(path, "rb") as fh:
+            head = fh.read(64)
+    except OSError as e:
+        return str(e)
+    if head[:4] != b"\x7fELF":
+        return "not an ELF file"
+    if len(head) < 64:
+        return "the ELF header is truncated (%d bytes)" % len(head)
+    if head[4] != 2:
+        return "not a 64-bit ELF file"
+    little = head[5] == 1
+    order = "little" if little else "big"
+    # e_shoff (8 bytes at 0x28) plus e_shentsize * e_shnum: the end of the
+    # section table, which is the last thing a complete object file contains.
+    shoff = int.from_bytes(head[0x28:0x30], order)
+    shentsize = int.from_bytes(head[0x3A:0x3C], order)
+    shnum = int.from_bytes(head[0x3C:0x3E], order)
+    end = shoff + shentsize * shnum
+    if end > size:
+        return "truncated — its headers describe %d bytes and the file is %d" % (end, size)
+    return ""
 
 
 # --- results -----------------------------------------------------------------
@@ -161,6 +202,14 @@ class Library:
         if not Path(resolved).is_file():
             raise LibraryError("%s does not exist" % resolved)
         self.path = Path(resolved).resolve()
+        why = _looks_like_a_library(self.path)
+        if why:
+            # Checked BEFORE `dlopen`, because `dlopen` is where a truncated
+            # file stops being recoverable: the loader maps it, and the first
+            # call reads a page past the end of the file and takes SIGBUS —
+            # which no `except` can see. A link killed halfway through leaves
+            # exactly such a file in a build tree.
+            raise LibraryError("%s is not a usable shared library: %s" % (self.path, why))
         try:
             self._lib = ctypes.CDLL(str(self.path))
         except OSError as e:
@@ -298,11 +347,19 @@ def _s(p: Optional[bytes]) -> str:
 
 
 def _b(fn, handle) -> bytes:
+    """Copy a result buffer out, in one memcpy.
+
+    ``bytes(bytearray(p[:n]))`` is the obvious spelling and is forty times
+    slower: slicing a ``POINTER(c_ubyte)`` builds a Python list with one int
+    object per byte before any bytes object exists — 17 ms for a megabyte,
+    inside the window :func:`lypning.engines.run_library` reports as the run's
+    cost. ``string_at`` is a single memcpy and is NUL-safe: it takes the length.
+    """
     n = ctypes.c_size_t(0)
     p = fn(handle, ctypes.byref(n))
     if not p or n.value == 0:
         return b""
-    return bytes(bytearray(p[:n.value]))
+    return ctypes.string_at(p, n.value)
 
 
 # --- the pinned contract -----------------------------------------------------

@@ -50,15 +50,16 @@ impl Interp {
             }
             (Mul, Value::Str(s), n) | (Mul, n, Value::Str(s)) => {
                 let n = crate::eval::int_val(n)?.max(0) as usize;
-                Value::Str(s.repeat(n).into())
+                Value::Str(s.repeat(check_alloc(s.len(), n, MAX_ALLOC_BYTES, "bytes")?).into())
             }
             (Mul, Value::Bytes(s), n) | (Mul, n, Value::Bytes(s)) => {
                 let n = crate::eval::int_val(n)?.max(0) as usize;
-                Value::Bytes(Rc::new(s.repeat(n)))
+                Value::Bytes(Rc::new(s.repeat(check_alloc(s.len(), n, MAX_ALLOC_BYTES, "bytes")?)))
             }
             (Mul, Value::List(l), n) | (Mul, n, Value::List(l)) => {
                 let n = crate::eval::int_val(n)?.max(0) as usize;
                 let src = l.borrow();
+                let n = check_alloc(src.len(), n, MAX_ALLOC_ITEMS, "items")?;
                 let mut v = Vec::with_capacity(src.len() * n);
                 for _ in 0..n {
                     v.extend(src.iter().cloned());
@@ -67,6 +68,7 @@ impl Interp {
             }
             (Mul, Value::Tuple(t), n) | (Mul, n, Value::Tuple(t)) => {
                 let n = crate::eval::int_val(n)?.max(0) as usize;
+                let n = check_alloc(t.len(), n, MAX_ALLOC_ITEMS, "items")?;
                 let mut v = Vec::with_capacity(t.len() * n);
                 for _ in 0..n {
                     v.extend(t.iter().cloned());
@@ -649,6 +651,10 @@ fn is_nan(v: &Value) -> bool {
 /// some arbitrary total order. Reproducing that exactly is what keeps `sorted`
 /// on a mixed list from silently succeeding here and failing there.
 pub fn order(a: &Value, b: &Value) -> R<Ordering> {
+    // Same descent, same guard as `value::eq`: `sorted([x, y])` over two deep
+    // lists is a stack overflow without it, and a stack overflow embedded is
+    // the host's SIGSEGV rather than a refusal it can route onward.
+    let _nest = crate::err::Nest::enter("comparison")?;
     if let (Some(x), Some(y)) = (as_num(a), as_num(b)) {
         let (x, y) = (fl(x), fl(y));
         if let (Num::I(i), Num::I(j)) = (as_num(a).unwrap(), as_num(b).unwrap()) {
@@ -963,4 +969,39 @@ fn percent_one(v: &Value, spec: &str) -> R<String> {
         return fmt::format_value(&Value::Str(s.into()), spec);
     }
     fmt::format_value(v, spec)
+}
+
+// ---- the allocation ceiling ------------------------------------------------
+//
+// `"a" * (10**14)` asks Rust's global allocator for 100 TB. There is no
+// fallible path: the allocator's failure handler ABORTS, which is not an
+// unwind, so `catch_unwind` at the C ABI boundary cannot see it and a host
+// application dies with no status and no message. CPython answers the same
+// program with `MemoryError` or `OverflowError`, so the honest thing for a
+// subset runtime is the honest thing everywhere else here — refuse, and let
+// the program be answered by an interpreter that can raise.
+//
+// The two ceilings are deliberately far above anything a one-liner does and far
+// below anything that threatens a host: a quarter of a gigabyte of bytes, and
+// sixteen million elements (a `Value` is several words, so that is the same
+// order of memory).
+
+const MAX_ALLOC_BYTES: usize = 256 << 20;
+const MAX_ALLOC_ITEMS: usize = 16 << 20;
+
+/// `n`, if `unit * n` stays under `limit`. A refusal otherwise.
+///
+/// Checked rather than computed: `unit * n` itself overflows `usize` for a
+/// large enough `n`, and with `overflow-checks` off in release that wraps to a
+/// small number and allocates the WRONG size, which is worse than either
+/// failure it is standing in for.
+fn check_alloc(unit: usize, n: usize, limit: usize, what: &str) -> R<usize> {
+    let total = unit.checked_mul(n).unwrap_or(usize::MAX);
+    if total > limit {
+        return Err(unsupported(
+            "alloc",
+            &format!("a sequence of {total} {what} — over this runtime's {limit} ceiling"),
+        ));
+    }
+    Ok(n)
 }

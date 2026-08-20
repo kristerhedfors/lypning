@@ -390,7 +390,7 @@ Interpreter mode is decided before argument parsing, so anything that calls
 | `lypning fuzz [--iterations N] [--seed S]` | generate programs from the subset and diff them against CPython |
 | `lypning bench [--startup] [--corpus]` | time the four arms, interleaved, min of repeats |
 | `lypning corpus-time [--engine E] [--baseline F] [--record F]` | time the corpus on ONE binary, and diff two runs of it |
-| `lypning lib [--cflags\|--libs\|--path\|--include]` | where the embeddable C ABI is, and the line to compile against it |
+| `lypning lib [--cflags\|--libs\|--path\|--static\|--include] [--json]` | where the embeddable C ABI is, and the line to compile against it |
 | `lypning gate [BIN] [--compare]` | static? how many bytes? how many file opens? |
 | `lypning harvest [--export]` | captured invocations → sightings → corpus |
 | `lypning corpus [--stats] [--list]` | inspect the harvested programs |
@@ -424,6 +424,7 @@ Environment:
 | `LYPNING_HOME` | state dir (default `~/.lypning`) — binaries, log, build trees |
 | `LYPNING_LOG` | capture log path (default `$LYPNING_HOME/invocations.jsonl`) |
 | `LYPNING_BIN`, `LYPNING_MP_BIN` | override the engine binary that gets used |
+| `LYPNING_LIB` | override the embeddable C ABI library (`lypning lib`, `lypning.embed`) |
 | `LYPNING_CPYTHON` | override the reference CPython |
 | `LYPNING_CAPTURE=0` | disable the whole capture harness |
 | `LYPNING_HARVEST=0` | keep capturing, stop the Stop hook publishing |

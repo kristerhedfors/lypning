@@ -150,12 +150,23 @@ impl Outcome {
 
     /// Should the host hand this program to the next interpreter?
     ///
-    /// True only for a refusal that left nothing behind. A `Panic` is
-    /// deliberately NOT retryable by this predicate when anything committed:
-    /// re-running a program that already wrote half its output would be the
-    /// mixture's one unforgivable failure.
+    /// True for every outcome that is NOT the program's own answer and left
+    /// nothing behind — a refusal, a `Busy` that executed nothing, and a
+    /// `Panic` that reached no commit. All three mean one thing to a caller:
+    /// lypning did not answer, and the program still needs an answer.
+    ///
+    /// `committed` is what makes it safe rather than merely convenient:
+    /// re-running a program that already wrote half its output would repeat the
+    /// half, which is the mixture's one unforgivable failure.
+    ///
+    /// `Ok` and `Error` are never true. Those ARE the program's answer, and an
+    /// uncaught exception is as much of an answer as a printed line.
     pub fn should_fall_onward(&self) -> bool {
-        self.status == Status::Unsupported && !self.committed
+        !self.committed
+            && matches!(
+                self.status,
+                Status::Unsupported | Status::Busy | Status::Panic
+            )
     }
 }
 
@@ -178,7 +189,28 @@ pub fn run(req: &Request) -> Outcome {
     out
 }
 
+/// The lexer reads end-of-input as a zero byte, so a literal NUL in the source
+/// ends the program there — and the ABI takes a pointer and a LENGTH, which is
+/// the one way a NUL can arrive. Silently running the first half of a program
+/// and reporting success is the wrong-answer failure this whole runtime is
+/// built to avoid, so it is refused instead: CPython runs the whole thing.
+///
+/// The CLI cannot reach this (a command line and a file are both NUL-free by
+/// construction), which is exactly why it went unnoticed until there was an API.
+fn nul_in_source(src: &str) -> Option<usize> {
+    src.bytes().position(|b| b == 0)
+}
+
 fn run_guarded(req: &Request) -> Outcome {
+    if let Some(at) = nul_in_source(&req.source) {
+        return Outcome {
+            stderr: format!("lypning: unsupported: source: NUL byte at offset {at}\n")
+                .into_bytes(),
+            kind: "source".into(),
+            detail: format!("NUL byte at offset {at}"),
+            ..Outcome::empty(Status::Unsupported, UNSUPPORTED_EXIT)
+        };
+    }
     // Reset on the way IN. A previous run that panicked cannot be trusted to
     // have tidied up, and the caller who pays for that is the next one.
     io::reset();

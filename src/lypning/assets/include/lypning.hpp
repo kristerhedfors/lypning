@@ -26,7 +26,9 @@
  * `lypning::error`, which derives from `std::logic_error` to say exactly that.
  * Nothing the Python program does ever throws: a traceback is an answer, a
  * refusal is a routing signal, and `Status::Busy` and `Status::Panic` both mean
- * "run it on CPython", not "abort".
+ * "run it on CPython", not "abort" — which is exactly what
+ * `should_fall_onward()` reports for all three, so the branch below covers them
+ * without a second test.
  *
  *     lypning::Result r = lypning::Request(src).run();
  *     if (r.should_fall_onward())
@@ -283,7 +285,8 @@ public:
     const std::string &kind() const noexcept { return kind_; }
     const std::string &detail() const noexcept { return detail_; }
 
-    /// Did anything reach the disk? A refusal with `false` here is observably a
+    /// Did the run pass the point where its effects stop being reversible?
+    /// True for any run that finished, whether or not it touched a file. A refusal with `false` here is observably a
     /// no-op, which is the entire basis of the retry.
     bool committed() const noexcept { return committed_; }
 

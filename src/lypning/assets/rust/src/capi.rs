@@ -375,6 +375,10 @@ pub unsafe extern "C" fn lypning_result_stderr(
     bytes(r.as_ref().map(|r| &r.out.stderr), len)
 }
 
+/// One readable NUL, so the pointer returned for an empty buffer is a real
+/// address and C code that treats output as a string finds it terminated.
+static EMPTY: [u8; 1] = [0];
+
 unsafe fn bytes(b: Option<&Vec<u8>>, len: *mut usize) -> *const u8 {
     match b {
         Some(b) => {
@@ -383,8 +387,13 @@ unsafe fn bytes(b: Option<&Vec<u8>>, len: *mut usize) -> *const u8 {
             }
             // Never NULL for an empty buffer: a host that checks the pointer
             // before the length would read "no result" from "printed nothing".
+            // A zero-length slice's pointer is the type's ALIGNMENT — literally
+            // `0x1` — which is non-NULL as promised but not an address anything
+            // may read. A host that memcpy's length 0 from it is fine and one
+            // that peeks a byte is not, so the empty case points at a real byte
+            // instead.
             if b.is_empty() {
-                b"".as_ptr()
+                EMPTY.as_ptr()
             } else {
                 b.as_ptr()
             }

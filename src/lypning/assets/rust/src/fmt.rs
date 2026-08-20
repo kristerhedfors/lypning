@@ -386,7 +386,16 @@ pub fn parse_spec(s: &str) -> R<Spec> {
         i += 1;
     }
     if i > ws {
-        sp.width = Some(c[ws..i].iter().collect::<String>().parse().unwrap());
+        // Not `.unwrap()`: a numeric field wider than `usize` is a program
+        // CPython answers with an error, and panicking on it aborts the binary
+        // (exit 134) and reaches a host as an unexplained failure.
+        sp.width = Some(
+            c[ws..i]
+                .iter()
+                .collect::<String>()
+                .parse()
+                .map_err(|_| value_err("Format specifier width is too large"))?,
+        );
     }
     if i < c.len() && (c[i] == ',' || c[i] == '_') {
         sp.grouping = Some(c[i]);
@@ -401,7 +410,13 @@ pub fn parse_spec(s: &str) -> R<Spec> {
         if i == ps {
             return Err(value_err("Format specifier missing precision"));
         }
-        sp.precision = Some(c[ps..i].iter().collect::<String>().parse().unwrap());
+        sp.precision = Some(
+            c[ps..i]
+                .iter()
+                .collect::<String>()
+                .parse()
+                .map_err(|_| value_err("Format specifier precision is too large"))?,
+        );
     }
     if i < c.len() {
         let t = c[i];

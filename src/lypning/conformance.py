@@ -378,6 +378,11 @@ class Report:
     routes: Dict[str, eng.Route] = field(default_factory=dict)
     damage: List[str] = field(default_factory=list)
     unbuilt: List[str] = field(default_factory=list)
+    #: ``arm -> why``, for an arm that is absent for a reason worth reading.
+    #: "Not built" is the usual one and needs no entry; "built, but this binding
+    #: cannot speak to it" is a different fact, and reporting it as absence
+    #: sends the reader to rebuild something that is already there.
+    unbuilt_why: Dict[str, str] = field(default_factory=dict)
     reference: str = ""
     total: int = 0
 
@@ -878,7 +883,7 @@ def _run_entry(
             # while the spawned arms do not.
             with _Sandbox("lib") as cwd:
                 got = eng.run_library(program, argv_tail=argv_tail, stdin=stdin, cwd=cwd,
-                                      step_limit=LIBRARY_STEP_LIMIT)
+                                      step_limit=LIBRARY_STEP_LIMIT, env=_env_for(cwd))
             out.verdicts[arm] = classify(ref, got, LIBRARY, entry)
             continue
         with _Sandbox(arm) as cwd:
@@ -917,6 +922,7 @@ def run(
     pool: List[Any] = []
     arms: List[str] = []
     unbuilt: List[str] = []
+    unbuilt_why: Dict[str, str] = {}
     ref_bin: Optional[Path] = None
     reports: Dict[str, EngineReport] = {}
     routing_errors: List[RoutingError] = []
@@ -946,7 +952,13 @@ def run(
                 if usable:
                     arms.append(a)
                 else:
-                    unbuilt.append("%s (%s)" % (a, why))
+                    # The reason, not the arm name: `render` appends "is not
+                    # built" to whatever it is given, and a name carrying its own
+                    # reason came out as "library (not built — run `lypning build
+                    # --lib`) is not built". Worse, an ABI-incompatible library
+                    # was reported as absent, which is the one thing it is not.
+                    unbuilt.append(a)
+                    unbuilt_why[a] = why
             elif a in (MIXTURE, CPYTHON) or binaries.get(a) is not None:
                 arms.append(a)
             else:
@@ -1002,6 +1014,7 @@ def run(
         routes=routes,
         damage=damage,
         unbuilt=unbuilt,
+        unbuilt_why=unbuilt_why,
         reference=str(ref_bin or ""),
         total=len(pool),
     )
@@ -1119,7 +1132,9 @@ def render(report: Report, plan: bool = False) -> str:
                % (n, report.seconds, report.reference or "none"))
     out.append("")
     for name in report.unbuilt:
-        out.append("note: %s is not built — that arm was not measured" % name)
+        why = report.unbuilt_why.get(name)
+        out.append("note: %s was not measured — %s" % (name, why) if why
+                   else "note: %s is not built — that arm was not measured" % name)
     if report.unbuilt:
         out.append("")
     out.append("engine       MATCH  UNSUPPORTED  MISMATCH   coverage")

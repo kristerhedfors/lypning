@@ -64,6 +64,19 @@ thread_local! {
         RefCell::new(std::collections::HashSet::new());
 }
 
+/// Record that something irreversible happened outside the staging area.
+///
+/// The barrier stages file WRITES and deletes, but a directory is created and
+/// removed immediately — there is nothing to stage, since `os.mkdir` has no
+/// content to hold back. So the run stops being reversible at that moment and
+/// must say so: without this, a program that made a directory and then hit an
+/// unsupported construct reported `committed = false`, the caller re-ran it on
+/// CPython, and the second `os.mkdir` raised `FileExistsError` for a program
+/// that works.
+pub fn mark_committed() {
+    COMMITTED.with(|c| *c.borrow_mut() = true);
+}
+
 pub fn is_committed() -> bool {
     COMMITTED.with(|c| *c.borrow())
 }

@@ -14,9 +14,11 @@ The runtime is now buildable as a C ABI (`lypning build --lib` →
 program **in its own process**: no fork, no exec, no pipe, no serialisation. On
 the programs lypning accepts that removes the process, and the process was 96%
 of what a one-liner cost. Measured here on 2026-08-20, `pass` costs 0.0071 ms
-through the library against 0.2547 ms spawned and 11.12 ms under CPython; the
-method and the caveats are in `docs/EMBEDDING.md` §2, and the number is not
-comparable to `lypning bench`'s because it is not the same instrument.
+through the library against 0.2547 ms spawned and 11.12 ms under CPython — and a
+second run an hour later reproduced the first two to a tenth of a percent while
+CPython's own number moved to 16.6 ms. The method and the caveats are in
+`docs/EMBEDDING.md` §2, and none of it is comparable to `lypning bench`'s
+numbers, because it is not the same instrument.
 
 The crate is now lib + bin. `main.rs` is one consumer and `capi.rs` is another,
 both running programs through the same `embed::run`, because a second
@@ -51,7 +53,7 @@ implementation of the refusal contract is how a MISMATCH reaches a release.
   reporting `ok`, `lypning doctor` re-asserts it on the installed library, and
   `lypning lib` prints the compile line.
 
-### Fixed — five ways a program could kill the process, four of them since forever
+### Fixed — nine ways a program could kill the process, most of them since forever
 
 Embedding found these, because embedding is what made them matter: in a binary a
 segfault is a crashed one-liner, and in a host it is an application dying with
@@ -61,12 +63,38 @@ pinned in `tests/test_embed.py`.
 
 - **Nested parentheses past ~1,000 levels segfaulted**, in the binary too. Now
   `unsupported: recursion` past 64 — three and a half times the deepest program
-  in the corpus (842 loaded, deepest nests 18, p99 nests 11). CPython refuses
-  these as well, so routing one onward gets an error either way rather than a
-  signal.
-- **`repr` of a deeply nested container, a deeply nested tuple used as a dict
-  key, and deeply nested JSON** each did the same. Now bounded at 500 by one
-  shared guard, released on drop so an error path cannot leak a level.
+  in the corpus (842 loaded 2026-08-20; deepest nests 18, p99 nests 11, median
+  nests 2, counting `(`, `[` and `{` alike, which is what the guard counts).
+  CPython refuses these as well, so routing one onward gets an error either way
+  rather than a signal.
+- **A long FLAT chain — `1+1+1+…` — was a different bug with the same ending.**
+  It does not nest: it is parsed iteratively into a left-leaning spine, one node
+  per term, which both the evaluator and the AST's own destructor then walk one
+  stack frame at a time. Bounding the evaluator alone still crashed, because the
+  tree is dropped after the refusal; the parser now refuses past 1,000 chained
+  operators, so the tree is never built that deep.
+- **`repr`, `==`, `<`, `in`, `sorted`, a deeply nested tuple used as a dict key,
+  `json.loads` and `json.dumps`** each recursed once per level of a value the
+  program chose the depth of. All bounded at 500 now by one shared guard,
+  released on drop so an error path cannot leak a level.
+- **`"a" * (10**14)` aborted the process**, because Rust's allocator failure
+  handler aborts and an abort is not an unwind. Program-driven sizes are
+  ceilinged and refused before they are asked for.
+- **A NUL byte in the source silently ran half the program and reported
+  success.** The lexer reads zero as end-of-input, and the ABI takes a pointer
+  and a length, which is the one way a NUL can arrive — so the CLI could never
+  reach it. Refused now.
+- **`format(1, '9'*30)` aborted the binary** on a `.parse().unwrap()`, for a
+  program CPython answers with `ValueError`. It answers with one too.
+- **A `break` in a `finally` swallowed a refusal.** CPython's rule is that
+  `break` there discards an in-flight exception, and that is kept — but a
+  refusal is not the program's exception, it is the runtime declining to run it,
+  and discarding one turned a routable program into a wrong answer at exit 0.
+- **`os.mkdir` reported a run as reversible when it was not.** A directory
+  cannot be staged, so a refusal after one was routed onward and the retry
+  raised `FileExistsError` for a program that works. It ends the run's
+  reversibility now — except for `os.makedirs(..., exist_ok=True)`, which is
+  idempotent and stays routable.
 - **Tearing down what a program built recursed once per level.** The binary
   never noticed — it exits, and the kernel reclaims. A library hands the thread
   back, so it now takes values apart with a worklist: a million-level list is

@@ -314,6 +314,11 @@ pub fn str_val(s: impl Into<Rc<str>>) -> Value {
 
 /// Structural equality with Python's numeric-tower rules (`1 == 1.0 == True`).
 pub fn eq(a: &Value, b: &Value) -> R<bool> {
+    // Comparison descends a structure the PROGRAM chose the depth of, exactly
+    // as `repr` and `hkey` do, and `x == y` over two deep lists overflowed the
+    // stack where `print(x)` was already refusing. Guarding here also covers
+    // `in`, `sorted`, and dict/set comparison, which all bottom out in this.
+    let _nest = crate::err::Nest::enter("comparison")?;
     Ok(match (a, b) {
         (Value::None, Value::None) => true,
         (Value::Str(x), Value::Str(y)) => x == y,

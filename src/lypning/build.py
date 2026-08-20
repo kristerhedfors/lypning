@@ -871,7 +871,7 @@ def _c_probe() -> tuple[int, str]:
 def build_all(rust: bool = True, micropython: bool = True, target: str = "musl",
               jobs: int | None = None, verbose: bool = False,
               dry_run: bool = False, stock: bool = False,
-              lib: bool = False) -> list[BuildResult]:
+              lib: bool = False, lib_target: str = "") -> list[BuildResult]:
     """Build what was asked for, in tier order, and never stop on a failure.
 
     The tiers are independent — a missing 32-bit toolchain says nothing about
@@ -885,11 +885,15 @@ def build_all(rust: bool = True, micropython: bool = True, target: str = "musl",
     if rust:
         results.append(build_rust(target=target, jobs=jobs, verbose=verbose, dry_run=dry_run))
     if lib:
-        # The host target on purpose, whatever the binary asked for: a shared
-        # object has to match the libc of the process that loads it, and the
-        # musl default that is right for a spawned binary would produce one no
-        # glibc host could dlopen.
-        results.append(build_lib(jobs=jobs, verbose=verbose, dry_run=dry_run))
+        # The HOST target unless the caller named one, whatever the binary is
+        # building for: a shared object has to match the libc of the process
+        # that loads it, and the musl default that is right for a spawned
+        # binary would produce one no glibc host could dlopen. A caller who
+        # asks for `--target musl` on a musl host gets it — the default is a
+        # default, not a restriction, and a docstring that said otherwise while
+        # the flag was silently dropped was worse than either.
+        results.append(build_lib(target=lib_target or "host", jobs=jobs,
+                                 verbose=verbose, dry_run=dry_run))
     if micropython:
         results.append(build_micropython(verbose=verbose, dry_run=dry_run))
     if stock:
@@ -1055,7 +1059,13 @@ def verify(results: Iterable[BuildResult] | None = None, *, limit: int | None = 
         if engines.find_cpython() is None:
             out.notes.append("no reference CPython: the battery was not run")
         else:
-            out.conformance = conformance.run(limit=limit, timeout=timeout)
+            # The library arm is added when a library was built, and only then:
+            # pinning $LYPNING_LIB for a battery that never runs that arm was a
+            # verification of nothing, reported as ok.
+            arms = list(conformance.DEFAULT_ARMS)
+            if "LYPNING_LIB" in pins:
+                arms.append(conformance.LIBRARY)
+            out.conformance = conformance.run(engines=arms, limit=limit, timeout=timeout)
     finally:
         for k, v in saved.items():
             if v is None:

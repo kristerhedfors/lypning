@@ -255,7 +255,27 @@ pub fn call_module_method(
                 std::fs::create_dir(&p)
             };
             match r {
-                Ok(()) => Value::None,
+                Ok(()) => {
+                    // A directory cannot be staged — there is no content to
+                    // hold back — so making one is a real effect the barrier
+                    // cannot take back. Whether that ends the run's
+                    // reversibility depends on whether DOING IT TWICE differs
+                    // from doing it once:
+                    //
+                    //   * `exist_ok=True` is idempotent. A retry on CPython
+                    //     makes the same directory and carries on, so the run
+                    //     is still routable and must stay that way — the whole
+                    //     `os.makedirs(..., exist_ok=True)` / `os.listdir()`
+                    //     shape in the corpus depends on falling onward from
+                    //     the listdir refusal that comes after it.
+                    //   * without it, the retry raises FileExistsError for a
+                    //     program that works, so the run has to stop claiming
+                    //     it can be re-run.
+                    if !exist_ok {
+                        mio::mark_committed();
+                    }
+                    Value::None
+                }
                 Err(e) if exist_ok && e.kind() == std::io::ErrorKind::AlreadyExists => Value::None,
                 Err(e) => return Err(mio::os_error(&p, &e)),
             }
@@ -274,6 +294,9 @@ pub fn call_module_method(
         ("os", "rmdir") => {
             let p = s(0)?;
             std::fs::remove_dir(&p).map_err(|e| mio::os_error(&p, &e))?;
+            // Removing a directory is not staged either, and it is the less
+            // recoverable half: the retry would find it already gone.
+            mio::mark_committed();
             Value::None
         }
         ("os", "rename" | "replace") => {

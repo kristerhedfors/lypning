@@ -343,6 +343,11 @@ struct Opts {
 }
 
 fn write_value(out: &mut String, v: &Value, o: &Opts, depth: usize) -> R<()> {
+    // `depth` here is indentation, not a limit — it is only ever read by
+    // `newline_indent`. The bound is the shared one, so that `json.dumps(x)`
+    // over a structure a loop built refuses exactly where `repr(x)` refuses
+    // instead of overflowing the stack under it.
+    let _nest = crate::err::Nest::enter("json object")?;
     match v {
         Value::None => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),

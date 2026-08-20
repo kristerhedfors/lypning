@@ -253,7 +253,12 @@ def cmd_build(ns: argparse.Namespace) -> int:
         lib = True
     results = build.build_all(rust=rust, micropython=mp, target=ns.target,
                               jobs=ns.jobs, verbose=ns.verbose, dry_run=ns.dry_run,
-                              stock=ns.stock, lib=lib)
+                              stock=ns.stock, lib=lib,
+                              # Only when the caller named one. `--target` defaults
+                              # to musl for the binary, which is the one thing a
+                              # loadable shared object must not be on a glibc host.
+                              lib_target=ns.target if "--target" in sys.argv else "")
+
     if ns.json:
         _json({"results": [_plain(r) for r in results],
                "dry_run": bool(ns.dry_run),
@@ -346,8 +351,19 @@ def _lib_obj() -> Dict[str, Any]:
     remembered from this side would hide.
     """
     embed = _mod("embed")
-    lib = embed.find_library()
+    try:
+        lib = embed.find_library()
+    except embed.LibraryError as e:
+        # A $LYPNING_LIB that names nothing is a mistake in the caller's
+        # environment, not an absent artifact, and telling them to build
+        # something they already built would never stop being wrong.
+        lib = None
+        return {"built": False, "path": None, "bytes": None, "static": None,
+                "static_bytes": None, "include": None, "abi": None,
+                "cli_abi": embed.ABI_VERSION, "runtime": None, "error": str(e),
+                "cflags": None, "libs": None, "gcc": None}
     inc = _header_dir(embed, lib)
+    header = (inc / "lypning.h").is_file() if inc else False
     obj: Dict[str, Any] = {
         "built": lib is not None,
         "path": str(lib) if lib else None,
@@ -358,6 +374,10 @@ def _lib_obj() -> Dict[str, Any]:
         "static": None,
         "static_bytes": None,
         "include": str(inc),
+        # Whether the directory above actually holds the contract. A header
+        # and a library from different installs is the one way to get a segfault
+        # out of a frozen ABI, and an absent header is the cheap half of that.
+        "header": header,
         "abi": None,
         "cli_abi": embed.ABI_VERSION,
         "runtime": None,
@@ -425,10 +445,21 @@ def cmd_lib(ns: argparse.Namespace) -> int:
         # Exit 2 and not one byte on stdout, for the same reason a missing core
         # is: `gcc $(lypning lib --cflags) …` must fail loudly rather than
         # compile against whatever header the include path already had.
-        raise Usage(_LIB_NOT_BUILT)
+        #
+        # The reason matters when there is one. "Not built" tells a caller whose
+        # $LYPNING_LIB names a file that does not exist to run a build they have
+        # already run, and it will be wrong every time they try it.
+        raise Usage(info.get("error") or _LIB_NOT_BUILT)
     asked = [key for key, on in (("cflags", ns.cflags), ("libs", ns.libs),
                                  ("path", ns.path), ("static", ns.static),
                                  ("include", ns.include)) if on]
+    if asked and set(asked) & {"cflags", "include"} and not info.get("header"):
+        # An `-I` at a directory with no `lypning.h` in it compiles to
+        # "No such file or directory" one step later, with a message about the
+        # user's own source file rather than about the install. Refuse here,
+        # where the reason is still known.
+        raise Usage("no lypning.h in %s — reinstall with `lypning build --lib`"
+                    % (info.get("include") or "any include dir"))
     if asked:
         # The flag path is the one that gets substituted into a compiler, so it
         # is answered in full BEFORE a byte reaches stdout. Half a flag list is
@@ -724,8 +755,17 @@ def _doctor_checks() -> List[Tuple[str, str, str]]:
         checks.append((WARN, "embed module", str(e)))
         embed = None
     if embed is not None:
-        lib = embed.find_library()
-        if lib is None:
+        bad_override = ""
+        try:
+            lib = embed.find_library()
+        except embed.LibraryError as e:
+            # A named path that is not there is the CALLER's mistake, and it is
+            # a FAIL rather than a NOTE: "optional and absent" is fine, "you
+            # told me where it is and you were wrong" is not.
+            lib, bad_override = None, str(e)
+        if bad_override:
+            checks.append((FAIL, "library refusal", bad_override))
+        elif lib is None:
             checks.append((NOTE, "library refusal",
                            "liblypning is not built — `lypning build --lib`; the C ABI is "
                            "optional and nothing routes through it until a host links it"))
@@ -733,7 +773,7 @@ def _doctor_checks() -> List[Tuple[str, str, str]]:
             ok, why = embed.check_refusal_contract(lib)
             checks.append((OK if ok else FAIL, "library refusal",
                            "%s — unsupported status, clean stdout, one line, falls onward" % lib
-                           if ok else "%s: %s" % (lib, why)))
+                           if ok else why if str(lib) in why else "%s: %s" % (lib, why)))
 
     # 4. the collision
     checks.append(_check_cli_collision())
