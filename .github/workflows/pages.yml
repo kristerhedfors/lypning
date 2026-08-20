@@ -45,6 +45,13 @@ jobs:
       - run: pip install --upgrade pip && pip install -e ".[docs]"
       - run: python3 site/build.py --out _site --check
       - uses: actions/configure-pages@v5
+        with:
+          # Switch Pages on for the repository if it is not already, instead of
+          # failing with "Get Pages site failed … Not Found" and requiring
+          # someone to find the setting by hand. The first run of this workflow
+          # did exactly that: the site built and link-checked, then died here.
+          # Idempotent — a no-op once Pages is enabled.
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
