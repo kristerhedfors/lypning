@@ -1,0 +1,60 @@
+# Publish the documentation site to GitHub Pages.
+#
+# The site is a RENDERING of the markdown in this repository — site/build.py
+# forks no prose — so a claim cannot drift onto the website and stay there
+# unnoticed. The one authored-for-the-web page is site/index.md.
+#
+# `--check` makes a dead intra-site link fail the build rather than 404 in a
+# visitor's browser: every relative href must resolve to a file the build
+# actually wrote, which is how a renamed doc gets caught here.
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "docs/**"
+      - "README.md"
+      - "CHANGELOG.md"
+      - "CLAUDE.md"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; a queued run supersedes a waiting one but never
+# cancels one mid-publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # markdown and pygments are BUILD-time only and live in the `docs` extra.
+      # The installed package keeps zero runtime dependencies (CLAUDE.md §6).
+      - run: pip install --upgrade pip && pip install -e ".[docs]"
+      - run: python3 site/build.py --out _site --check
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

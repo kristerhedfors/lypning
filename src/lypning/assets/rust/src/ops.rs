@@ -1,0 +1,966 @@
+//! Operators, indexing, slicing and attribute access.
+//!
+//! Two families of Python rule are easy to get wrong by writing the Rust that
+//! looks equivalent, and both are implemented explicitly here:
+//!
+//!   * **Floor division and modulo round toward negative infinity**, and `%`
+//!     takes the sign of the divisor. Rust's `/` truncates and `%` takes the
+//!     sign of the dividend, so `-7 // 2` is `-4` in Python and `-3` in Rust.
+//!   * **Integers do not wrap.** Every int op is checked; an overflow is
+//!     `unsupported: bigint`, because Python's answer would be a bignum and any
+//!     64-bit answer we produced would simply be wrong.
+
+use crate::ast::{BinOp, CmpOp};
+use crate::err::*;
+use crate::eval::Interp;
+use crate::fmt;
+use crate::value::*;
+use std::cell::RefCell;
+use std::cmp::Ordering;
+use std::rc::Rc;
+
+impl Interp {
+    pub fn binop(&mut self, op: BinOp, a: &Value, b: &Value) -> R<Value> {
+        use BinOp::*;
+        // Numeric fast path, then the per-type cases.
+        if let (Some(x), Some(y)) = (as_num(a), as_num(b)) {
+            if !matches!(op, Add | Sub | Mul | Div | FloorDiv | Mod | Pow)
+                || matches!((x, y), (Num::I(_), Num::I(_)))
+                || matches!(op, Add | Sub | Mul | Div | FloorDiv | Mod | Pow)
+            {
+                return num_binop(op, x, y);
+            }
+        }
+        Ok(match (op, a, b) {
+            (Add, Value::Str(x), Value::Str(y)) => Value::Str(format!("{x}{y}").into()),
+            (Add, Value::Bytes(x), Value::Bytes(y)) => {
+                let mut v = (**x).clone();
+                v.extend_from_slice(y);
+                Value::Bytes(Rc::new(v))
+            }
+            (Add, Value::List(x), Value::List(y)) => {
+                let mut v = x.borrow().clone();
+                v.extend(y.borrow().iter().cloned());
+                list(v)
+            }
+            (Add, Value::Tuple(x), Value::Tuple(y)) => {
+                let mut v = (**x).clone();
+                v.extend(y.iter().cloned());
+                Value::Tuple(Rc::new(v))
+            }
+            (Mul, Value::Str(s), n) | (Mul, n, Value::Str(s)) => {
+                let n = crate::eval::int_val(n)?.max(0) as usize;
+                Value::Str(s.repeat(n).into())
+            }
+            (Mul, Value::Bytes(s), n) | (Mul, n, Value::Bytes(s)) => {
+                let n = crate::eval::int_val(n)?.max(0) as usize;
+                Value::Bytes(Rc::new(s.repeat(n)))
+            }
+            (Mul, Value::List(l), n) | (Mul, n, Value::List(l)) => {
+                let n = crate::eval::int_val(n)?.max(0) as usize;
+                let src = l.borrow();
+                let mut v = Vec::with_capacity(src.len() * n);
+                for _ in 0..n {
+                    v.extend(src.iter().cloned());
+                }
+                list(v)
+            }
+            (Mul, Value::Tuple(t), n) | (Mul, n, Value::Tuple(t)) => {
+                let n = crate::eval::int_val(n)?.max(0) as usize;
+                let mut v = Vec::with_capacity(t.len() * n);
+                for _ in 0..n {
+                    v.extend(t.iter().cloned());
+                }
+                Value::Tuple(Rc::new(v))
+            }
+            // `'%s' % x` — printf-style formatting, still common in one-liners.
+            (Mod, Value::Str(f), arg) => Value::Str(percent_format(f, arg)?.into()),
+            (BitOr, Value::Set(x), Value::Set(y)) => set_op(x, y, SetOp::Union)?,
+            (BitAnd, Value::Set(x), Value::Set(y)) => set_op(x, y, SetOp::Inter)?,
+            (Sub, Value::Set(x), Value::Set(y)) => set_op(x, y, SetOp::Diff)?,
+            (BitXor, Value::Set(x), Value::Set(y)) => set_op(x, y, SetOp::Sym)?,
+            (BitOr, Value::Dict(x), Value::Dict(y)) => {
+                let mut d = Dict::new();
+                for (k, v) in x.borrow().iter() {
+                    d.insert(k.clone(), v.clone())?;
+                }
+                for (k, v) in y.borrow().iter() {
+                    d.insert(k.clone(), v.clone())?;
+                }
+                Value::Dict(Rc::new(RefCell::new(d)))
+            }
+            _ => {
+                return Err(type_err(format!(
+                    "unsupported operand type(s) for {}: '{}' and '{}'",
+                    op_sym(op),
+                    type_name(a),
+                    type_name(b)
+                )))
+            }
+        })
+    }
+
+    pub fn compare(&mut self, op: CmpOp, a: &Value, b: &Value) -> R<bool> {
+        Ok(match op {
+            CmpOp::Eq => eq(a, b)?,
+            CmpOp::Ne => !eq(a, b)?,
+            CmpOp::Is => is_same(a, b),
+            CmpOp::IsNot => !is_same(a, b),
+            CmpOp::In => self.contains(b, a)?,
+            CmpOp::NotIn => !self.contains(b, a)?,
+            _ => {
+                // Sets compare by subset, not by order.
+                if let (Value::Set(x), Value::Set(y)) = (a, b) {
+                    let (xs, ys) = (x.borrow(), y.borrow());
+                    let sub = |p: &Set, q: &Set| -> R<bool> {
+                        for it in p.items.iter() {
+                            if !q.contains(it)? {
+                                return Ok(false);
+                            }
+                        }
+                        Ok(true)
+                    };
+                    return Ok(match op {
+                        CmpOp::Le => sub(&xs, &ys)?,
+                        CmpOp::Lt => xs.len() < ys.len() && sub(&xs, &ys)?,
+                        CmpOp::Ge => sub(&ys, &xs)?,
+                        CmpOp::Gt => xs.len() > ys.len() && sub(&ys, &xs)?,
+                        _ => unreachable!(),
+                    });
+                }
+                // NaN IS UNORDERED, AND THAT IS AN ANSWER, NOT AN ERROR.
+                //
+                // Every ordering comparison involving a NaN is False in Python
+                // — `nan > 99.0`, `nan < 99.0` and `nan >= nan` alike — because
+                // IEEE 754 says the relation does not hold, not because the
+                // operands cannot be compared. lypning raised TypeError("cannot
+                // order NaN") instead, turning a value CPython computes into an
+                // exception. Found by scripts/lypning-fuzz.mjs.
+                //
+                // Equality already behaves correctly through eq() above, where
+                // `nan == nan` is False for the same reason.
+                if is_nan(a) || is_nan(b) {
+                    return Ok(false);
+                }
+                let o = order(a, b)?;
+                match op {
+                    CmpOp::Lt => o == Ordering::Less,
+                    CmpOp::Le => o != Ordering::Greater,
+                    CmpOp::Gt => o == Ordering::Greater,
+                    CmpOp::Ge => o != Ordering::Less,
+                    _ => unreachable!(),
+                }
+            }
+        })
+    }
+
+    pub fn contains(&mut self, container: &Value, needle: &Value) -> R<bool> {
+        Ok(match container {
+            Value::Str(s) => match needle {
+                Value::Str(n) => s.contains(n.as_ref()),
+                other => {
+                    return Err(type_err(format!(
+                        "'in <string>' requires string as left operand, not {}",
+                        type_name(other)
+                    )))
+                }
+            },
+            Value::Bytes(b) => match needle {
+                Value::Bytes(n) => b.windows(n.len().max(1)).any(|w| w == n.as_slice()) || n.is_empty(),
+                Value::Int(i) => b.contains(&(*i as u8)),
+                _ => return Err(type_err("a bytes-like object is required")),
+            },
+            Value::List(l) => {
+                let items = l.borrow().clone();
+                for x in items.iter() {
+                    if eq(x, needle)? {
+                        return Ok(true);
+                    }
+                }
+                false
+            }
+            Value::Tuple(t) => {
+                for x in t.iter() {
+                    if eq(x, needle)? {
+                        return Ok(true);
+                    }
+                }
+                false
+            }
+            Value::Dict(d) => d.borrow().contains(needle)?,
+            Value::Set(s) => s.borrow().contains(needle)?,
+            Value::Range(a, b, st) => match needle {
+                Value::Int(i) => {
+                    let inrange = if *st > 0 { *i >= *a && *i < *b } else { *i <= *a && *i > *b };
+                    inrange && (*i - *a).rem_euclid(*st) == 0
+                }
+                _ => false,
+            },
+            Value::Gen(_) => {
+                let mut it = self.make_iter(container.clone())?;
+                while let Some(x) = self.iter_next(&mut it)? {
+                    if eq(&x, needle)? {
+                        return Ok(true);
+                    }
+                }
+                false
+            }
+            other => {
+                return Err(type_err(format!(
+                    "argument of type '{}' is not iterable",
+                    type_name(other)
+                )))
+            }
+        })
+    }
+
+    pub fn index(&mut self, base: &Value, idx: &Value) -> R<Value> {
+        Ok(match base {
+            Value::Dict(d) => match d.borrow().get(idx)? {
+                Some(v) => v,
+                None => return Err(key_err(fmt::repr(idx)?)),
+            },
+            Value::List(l) => {
+                let b = l.borrow();
+                let i = norm_index(crate::eval::int_val(idx)?, b.len(), "list")?;
+                b[i].clone()
+            }
+            Value::Tuple(t) => {
+                let i = norm_index(crate::eval::int_val(idx)?, t.len(), "tuple")?;
+                t[i].clone()
+            }
+            Value::Str(s) => {
+                let chars: Vec<char> = s.chars().collect();
+                let i = norm_index(crate::eval::int_val(idx)?, chars.len(), "string")?;
+                Value::Str(chars[i].to_string().into())
+            }
+            Value::Bytes(b) => {
+                let i = norm_index(crate::eval::int_val(idx)?, b.len(), "bytearray")?;
+                Value::Int(b[i] as i64)
+            }
+            Value::Range(a, bb, st) => {
+                let n = range_len(*a, *bb, *st);
+                let i = norm_index(crate::eval::int_val(idx)?, n as usize, "range")?;
+                Value::Int(a + (i as i64) * st)
+            }
+            other => {
+                return Err(type_err(format!(
+                    "'{}' object is not subscriptable",
+                    type_name(other)
+                )))
+            }
+        })
+    }
+
+    pub fn set_item(&mut self, base: &Value, idx: Value, v: Value) -> R<()> {
+        match base {
+            Value::Dict(d) => d.borrow_mut().insert(idx, v)?,
+            Value::List(l) => {
+                let n = l.borrow().len();
+                let i = norm_index(crate::eval::int_val(&idx)?, n, "list")?;
+                l.borrow_mut()[i] = v;
+            }
+            other => {
+                return Err(type_err(format!(
+                    "'{}' object does not support item assignment",
+                    type_name(other)
+                )))
+            }
+        }
+        Ok(())
+    }
+
+    pub fn del_item(&mut self, base: &Value, idx: &Value) -> R<()> {
+        match base {
+            Value::Dict(d) => {
+                if d.borrow_mut().remove(idx)?.is_none() {
+                    return Err(key_err(fmt::repr(idx)?));
+                }
+            }
+            Value::List(l) => {
+                let n = l.borrow().len();
+                let i = norm_index(crate::eval::int_val(idx)?, n, "list")?;
+                l.borrow_mut().remove(i);
+            }
+            other => {
+                return Err(type_err(format!(
+                    "'{}' object doesn't support item deletion",
+                    type_name(other)
+                )))
+            }
+        }
+        Ok(())
+    }
+
+    pub fn slice(
+        &mut self,
+        base: &Value,
+        lo: Option<Value>,
+        hi: Option<Value>,
+        step: Option<Value>,
+    ) -> R<Value> {
+        let step = match &step {
+            None | Some(Value::None) => 1i64,
+            Some(v) => {
+                let s = crate::eval::int_val(v)?;
+                if s == 0 {
+                    return Err(value_err("slice step cannot be zero"));
+                }
+                s
+            }
+        };
+        let opt = |v: &Option<Value>| -> R<Option<i64>> {
+            Ok(match v {
+                None | Some(Value::None) => None,
+                Some(x) => Some(crate::eval::int_val(x)?),
+            })
+        };
+        let (lo, hi) = (opt(&lo)?, opt(&hi)?);
+        Ok(match base {
+            Value::Str(s) => {
+                let chars: Vec<char> = s.chars().collect();
+                let picked = slice_indices(chars.len(), lo, hi, step);
+                Value::Str(picked.into_iter().map(|i| chars[i]).collect::<String>().into())
+            }
+            Value::Bytes(b) => {
+                let picked = slice_indices(b.len(), lo, hi, step);
+                Value::Bytes(Rc::new(picked.into_iter().map(|i| b[i]).collect()))
+            }
+            Value::List(l) => {
+                let b = l.borrow();
+                let picked = slice_indices(b.len(), lo, hi, step);
+                list(picked.into_iter().map(|i| b[i].clone()).collect())
+            }
+            Value::Tuple(t) => {
+                let picked = slice_indices(t.len(), lo, hi, step);
+                Value::Tuple(Rc::new(picked.into_iter().map(|i| t[i].clone()).collect()))
+            }
+            other => {
+                return Err(type_err(format!(
+                    "'{}' object is not subscriptable",
+                    type_name(other)
+                )))
+            }
+        })
+    }
+
+    pub fn get_attr(&mut self, base: &Value, name: &str) -> R<Value> {
+        if let Value::Module(_) = base {
+            return crate::modules::get_attr(base, name);
+        }
+        if let Some(m) = crate::methods::method_name(base, name) {
+            return Ok(Value::Bound(Rc::new(base.clone()), m));
+        }
+        // `str.upper` — the UNBOUND method, which `map(str.upper, xs)` uses.
+        // Represented as a bound method on the type object; `call_method` then
+        // takes the receiver from the first argument.
+        if let Value::Builtin(t) = base {
+            let probe = match *t {
+                "str" => Some(Value::Str("".into())),
+                "list" => Some(crate::value::list(Vec::new())),
+                "dict" => Some(Value::Dict(Rc::new(RefCell::new(Dict::new())))),
+                "set" => Some(Value::Set(Rc::new(RefCell::new(Set::new())))),
+                "bytes" => Some(Value::Bytes(Rc::new(Vec::new()))),
+                _ => None,
+            };
+            if let Some(p) = probe {
+                if let Some(m) = crate::methods::method_name(&p, name) {
+                    return Ok(Value::Bound(Rc::new(base.clone()), m));
+                }
+                if crate::methods::missing_method(&p, name) {
+                    return Err(missing_method_err(&p, name));
+                }
+            }
+        }
+        if let Value::Exc(_, msg) = base {
+            match name {
+                "args" => return Ok(Value::Tuple(Rc::new(vec![Value::Str(msg.clone())]))),
+                // OSError-family exceptions carry `.errno`/`.strerror`/
+                // `.filename`, and the message we build always has the shape
+                // `[Errno N] text: 'path'`, so read them back from it.
+                "errno" | "strerror" | "filename" => {
+                    if let Some(rest) = msg.strip_prefix("[Errno ") {
+                        if let Some(close) = rest.find(']') {
+                            let n: i64 = rest[..close].parse().unwrap_or(0);
+                            let tail = rest[close + 1..].trim_start();
+                            let (text, file) = match tail.rfind(": '") {
+                                Some(i) => (&tail[..i], tail[i + 3..].trim_end_matches('\'')),
+                                None => (tail, ""),
+                            };
+                            return Ok(match name {
+                                "errno" => Value::Int(n),
+                                "strerror" => Value::Str(text.into()),
+                                _ => Value::Str(file.into()),
+                            });
+                        }
+                    }
+                    return Ok(Value::None);
+                }
+                _ => {}
+            }
+        }
+        if crate::methods::missing_method(base, name) {
+            return Err(missing_method_err(base, name));
+        }
+        Err(attr_err(format!(
+            "'{}' object has no attribute '{name}'",
+            type_name(base)
+        )))
+    }
+}
+
+/// A method CPython has and lypning does not: exit 90, never `AttributeError`.
+///
+/// `AttributeError` at exit 1 is the program's own failure and the dispatcher
+/// returns it unchanged, so it is the one answer the caller cannot recover
+/// from. See `methods::missing_method`.
+fn missing_method_err(recv: &Value, name: &str) -> LypningError {
+    let ty = type_name(recv);
+    unsupported(&format!("{ty}-method"), &format!("{ty}.{name}()"))
+}
+
+// ---- numbers --------------------------------------------------------------
+
+fn num_binop(op: BinOp, a: Num, b: Num) -> R<Value> {
+    use BinOp::*;
+    // Bit operations are integer-only in Python.
+    if matches!(op, BitAnd | BitOr | BitXor | LShift | RShift) {
+        let (Num::I(x), Num::I(y)) = (a, b) else {
+            return Err(type_err(format!(
+                "unsupported operand type(s) for {}: 'float' and 'float'",
+                op_sym(op)
+            )));
+        };
+        return Ok(Value::Int(match op {
+            BitAnd => x & y,
+            BitOr => x | y,
+            BitXor => x ^ y,
+            LShift => {
+                if !(0..64).contains(&y) {
+                    return Err(if y < 0 {
+                        value_err("negative shift count")
+                    } else {
+                        unsupported("bigint", "left shift beyond 64-bit range")
+                    });
+                }
+                x.checked_shl(y as u32)
+                    .filter(|r| r >> y == x)
+                    .ok_or_else(|| unsupported("bigint", "left shift overflow"))?
+            }
+            RShift => {
+                if y < 0 {
+                    return Err(value_err("negative shift count"));
+                }
+                if y >= 64 {
+                    if x < 0 {
+                        -1
+                    } else {
+                        0
+                    }
+                } else {
+                    x >> y
+                }
+            }
+            _ => unreachable!(),
+        }));
+    }
+    if let (Num::I(x), Num::I(y)) = (a, b) {
+        return Ok(match op {
+            Add => Value::Int(x.checked_add(y).ok_or_else(ovf)?),
+            Sub => Value::Int(x.checked_sub(y).ok_or_else(ovf)?),
+            Mul => Value::Int(x.checked_mul(y).ok_or_else(ovf)?),
+            // `/` is ALWAYS float in Python 3, even for two ints.
+            Div => {
+                if y == 0 {
+                    return Err(zero_div("division by zero"));
+                }
+                Value::Float(x as f64 / y as f64)
+            }
+            FloorDiv => {
+                if y == 0 {
+                    return Err(zero_div("integer division or modulo by zero"));
+                }
+                Value::Int(x.checked_div_euclid(y).ok_or_else(ovf).map(|q| {
+                    // div_euclid rounds toward -inf only for positive divisors.
+                    if y < 0 && x.rem_euclid(y) != 0 {
+                        q - 1
+                    } else {
+                        q
+                    }
+                })?)
+            }
+            Mod => {
+                if y == 0 {
+                    return Err(zero_div("integer division or modulo by zero"));
+                }
+                // Python's % has the SIGN OF THE DIVISOR; Rust's has the sign
+                // of the dividend.
+                let r = x.checked_rem(y).ok_or_else(ovf)?;
+                Value::Int(if r != 0 && (r < 0) != (y < 0) { r + y } else { r })
+            }
+            Pow => {
+                if y < 0 {
+                    Value::Float((x as f64).powf(y as f64))
+                } else {
+                    let mut acc: i64 = 1;
+                    let mut base = x;
+                    let mut e = y as u64;
+                    while e > 0 {
+                        if e & 1 == 1 {
+                            acc = acc.checked_mul(base).ok_or_else(ovf)?;
+                        }
+                        e >>= 1;
+                        if e > 0 {
+                            base = base.checked_mul(base).ok_or_else(ovf)?;
+                        }
+                    }
+                    Value::Int(acc)
+                }
+            }
+            _ => unreachable!(),
+        });
+    }
+    let (x, y) = (fl(a), fl(b));
+    Ok(match op {
+        Add => Value::Float(x + y),
+        Sub => Value::Float(x - y),
+        Mul => Value::Float(x * y),
+        Div => {
+            if y == 0.0 {
+                return Err(zero_div("float division by zero"));
+            }
+            Value::Float(x / y)
+        }
+        FloorDiv => {
+            if y == 0.0 {
+                return Err(zero_div("float floor division by zero"));
+            }
+            // inf // 2.5 is nan in CPython, not inf: the floor of an infinite
+            // quotient has no value, and math.floor(inf) is an error. Rust's
+            // (inf/2.5).floor() is inf, so this needed saying.
+            let q = x / y;
+            if !q.is_finite() {
+                // inf // 2.5 is nan in CPython, not inf: the floor of an
+                // infinite quotient has no value. Rust's (inf/2.5).floor() is
+                // inf, so this needed saying.
+                Value::Float(f64::NAN)
+            } else {
+                // CPython computes fmod first and derives the quotient from it,
+                // which is exact where flooring the rounded quotient is not:
+                // 1e16 // -3.0 is -3333333333333335.0, and (1e16 / -3.0).floor()
+                // gives -3333333333333334.0 because the division rounded up
+                // before the floor could see it.
+                let mod_ = x % y;
+                let mut div = (x - mod_) / y;
+                if mod_ != 0.0 && (mod_ < 0.0) != (y < 0.0) {
+                    div -= 1.0;
+                }
+                // A ZERO QUOTIENT KEEPS THE SIGN THE DIVISION WOULD HAVE
+                // GIVEN IT. -0.0 // 1.0 is -0.0 in CPython, and deriving div
+                // from (x - mod_) loses that because the subtraction produces a
+                // positive zero. repr() shows the sign, so it is observable.
+                if div == 0.0 {
+                    Value::Float(if x.is_sign_negative() != y.is_sign_negative() { -0.0 } else { 0.0 })
+                } else {
+                    Value::Float(div.floor())
+                }
+            }
+        }
+        Mod => {
+            if y == 0.0 {
+                return Err(zero_div("float modulo"));
+            }
+            let r = x % y;
+            let mut m = if r != 0.0 && (r < 0.0) != (y < 0.0) { r + y } else { r };
+            // A ZERO REMAINDER TAKES THE DIVISOR'S SIGN. Rust's % keeps the
+            // DIVIDEND's, so -516.0 % 1.0 was -0.0 where CPython gives 0.0, and
+            // 99.0 % -3.0 was 0.0 where CPython gives -0.0. repr() shows the
+            // sign of zero, so this is visible in output rather than academic.
+            if m == 0.0 {
+                m = if y.is_sign_negative() { -0.0 } else { 0.0 };
+            }
+            Value::Float(m)
+        }
+        Pow => {
+            // Three cases Rust's powf answers and Python does not.
+            if x == 0.0 && y < 0.0 {
+                return Err(zero_div("0.0 cannot be raised to a negative power"));
+            }
+            if x < 0.0 && y != y.trunc() {
+                // CPython returns a COMPLEX number here. lypning has no complex
+                // type, so this is a refusal, not a nan: (-2.0) ** 0.5 answered
+                // nan at exit 0 where CPython answers 1.4142135623730951j.
+                return Err(unsupported(
+                    "complex",
+                    "a negative float raised to a fractional power (Python returns a complex number)",
+                ));
+            }
+            let r = x.powf(y);
+            if r.is_infinite() && x.is_finite() && y.is_finite() {
+                return Err(overflow_err("(34, 'Numerical result out of range')"));
+            }
+            Value::Float(r)
+        }
+        _ => unreachable!(),
+    })
+}
+
+fn ovf() -> LypningError {
+    unsupported(
+        "bigint",
+        "integer result beyond 64-bit range (Python would use a bignum)",
+    )
+}
+
+fn fl(n: Num) -> f64 {
+    match n {
+        Num::I(i) => i as f64,
+        Num::F(f) => f,
+    }
+}
+
+pub fn op_sym(op: BinOp) -> &'static str {
+    use BinOp::*;
+    match op {
+        Add => "+",
+        Sub => "-",
+        Mul => "*",
+        Div => "/",
+        FloorDiv => "//",
+        Mod => "%",
+        Pow => "**",
+        BitAnd => "&",
+        BitOr => "|",
+        BitXor => "^",
+        LShift => "<<",
+        RShift => ">>",
+    }
+}
+
+/// Is this value a float NaN? Only a float can be one — an int never is, and a
+/// bool never is — so this deliberately does not go through as_num().
+fn is_nan(v: &Value) -> bool {
+    matches!(v, Value::Float(f) if f.is_nan())
+}
+
+// ---- ordering -------------------------------------------------------------
+
+/// Python's `<` on values of different types is a TypeError, not a fallback to
+/// some arbitrary total order. Reproducing that exactly is what keeps `sorted`
+/// on a mixed list from silently succeeding here and failing there.
+pub fn order(a: &Value, b: &Value) -> R<Ordering> {
+    if let (Some(x), Some(y)) = (as_num(a), as_num(b)) {
+        let (x, y) = (fl(x), fl(y));
+        if let (Num::I(i), Num::I(j)) = (as_num(a).unwrap(), as_num(b).unwrap()) {
+            return Ok(i.cmp(&j));
+        }
+        return x
+            .partial_cmp(&y)
+            .ok_or_else(|| type_err("cannot order NaN"));
+    }
+    Ok(match (a, b) {
+        (Value::Str(x), Value::Str(y)) => x.as_bytes().cmp(y.as_bytes()),
+        (Value::Bytes(x), Value::Bytes(y)) => x.cmp(y),
+        (Value::List(x), Value::List(y)) => {
+            let (x, y) = (x.borrow(), y.borrow());
+            seq_order(&x, &y)?
+        }
+        (Value::Tuple(x), Value::Tuple(y)) => seq_order(x, y)?,
+        _ => {
+            return Err(type_err(format!(
+                "'<' not supported between instances of '{}' and '{}'",
+                type_name(a),
+                type_name(b)
+            )))
+        }
+    })
+}
+
+fn seq_order(x: &[Value], y: &[Value]) -> R<Ordering> {
+    for (a, b) in x.iter().zip(y.iter()) {
+        if !eq(a, b)? {
+            return order(a, b);
+        }
+    }
+    Ok(x.len().cmp(&y.len()))
+}
+
+/// Stable merge sort using Python's ordering rules, so a comparison TypeError
+/// propagates instead of being swallowed by a `sort_by` that must return an
+/// `Ordering`.
+pub fn sort_values(items: &mut Vec<Value>, keys: &mut Vec<Value>, reverse: bool) -> R<()> {
+    let n = items.len();
+    let mut idx: Vec<usize> = (0..n).collect();
+    let mut buf = vec![0usize; n];
+    let mut width = 1;
+    while width < n {
+        let mut i = 0;
+        while i < n {
+            let mid = (i + width).min(n);
+            let end = (i + 2 * width).min(n);
+            let (mut l, mut r, mut k) = (i, mid, i);
+            while l < mid && r < end {
+                // `<=` on the left keeps the sort stable.
+                let o = order(&keys[idx[r]], &keys[idx[l]])?;
+                if o == Ordering::Less {
+                    buf[k] = idx[r];
+                    r += 1;
+                } else {
+                    buf[k] = idx[l];
+                    l += 1;
+                }
+                k += 1;
+            }
+            while l < mid {
+                buf[k] = idx[l];
+                l += 1;
+                k += 1;
+            }
+            while r < end {
+                buf[k] = idx[r];
+                r += 1;
+                k += 1;
+            }
+            i += 2 * width;
+        }
+        std::mem::swap(&mut idx, &mut buf);
+        width *= 2;
+    }
+    if reverse {
+        idx.reverse();
+    }
+    let src = std::mem::take(items);
+    let mut taken: Vec<Option<Value>> = src.into_iter().map(Some).collect();
+    *items = idx.iter().map(|i| taken[*i].take().unwrap()).collect();
+    keys.clear();
+    Ok(())
+}
+
+// ---- indexing helpers -----------------------------------------------------
+
+pub fn norm_index(i: i64, n: usize, what: &str) -> R<usize> {
+    let n = n as i64;
+    let j = if i < 0 { n + i } else { i };
+    if j < 0 || j >= n {
+        return Err(index_err(format!("{what} index out of range")));
+    }
+    Ok(j as usize)
+}
+
+pub fn slice_indices(n: usize, lo: Option<i64>, hi: Option<i64>, step: i64) -> Vec<usize> {
+    let n = n as i64;
+    let clamp = |v: i64, lodef: i64, hidef: i64| -> i64 {
+        let v = if v < 0 { n + v } else { v };
+        v.clamp(lodef, hidef)
+    };
+    let mut out = Vec::new();
+    if step > 0 {
+        let start = lo.map_or(0, |v| clamp(v, 0, n));
+        let stop = hi.map_or(n, |v| clamp(v, 0, n));
+        let mut i = start;
+        while i < stop {
+            out.push(i as usize);
+            i += step;
+        }
+    } else {
+        let start = lo.map_or(n - 1, |v| clamp(v, -1, n - 1));
+        let stop = hi.map_or(-1, |v| clamp(v, -1, n - 1));
+        let mut i = start;
+        while i > stop {
+            if i >= 0 {
+                out.push(i as usize);
+            }
+            i += step;
+        }
+    }
+    out
+}
+
+// ---- set algebra ----------------------------------------------------------
+
+pub enum SetOp {
+    Union,
+    Inter,
+    Diff,
+    Sym,
+}
+
+pub fn set_op(x: &Rc<RefCell<Set>>, y: &Rc<RefCell<Set>>, op: SetOp) -> R<Value> {
+    let mut out = Set::new();
+    let (xs, ys) = (x.borrow(), y.borrow());
+    match op {
+        SetOp::Union => {
+            for v in xs.items.iter().chain(ys.items.iter()) {
+                out.add(v.clone())?;
+            }
+        }
+        SetOp::Inter => {
+            for v in xs.items.iter() {
+                if ys.contains(v)? {
+                    out.add(v.clone())?;
+                }
+            }
+        }
+        SetOp::Diff => {
+            for v in xs.items.iter() {
+                if !ys.contains(v)? {
+                    out.add(v.clone())?;
+                }
+            }
+        }
+        SetOp::Sym => {
+            for v in xs.items.iter() {
+                if !ys.contains(v)? {
+                    out.add(v.clone())?;
+                }
+            }
+            for v in ys.items.iter() {
+                if !xs.contains(v)? {
+                    out.add(v.clone())?;
+                }
+            }
+        }
+    }
+    Ok(Value::Set(Rc::new(RefCell::new(out))))
+}
+
+// ---- printf-style % formatting -------------------------------------------
+
+fn percent_format(f: &str, arg: &Value) -> R<String> {
+    let args: Vec<Value> = match arg {
+        Value::Tuple(t) => (**t).clone(),
+        other => vec![other.clone()],
+    };
+    let b: Vec<char> = f.chars().collect();
+    let mut out = String::new();
+    let mut ai = 0;
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] != '%' {
+            out.push(b[i]);
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if i < b.len() && b[i] == '%' {
+            out.push('%');
+            i += 1;
+            continue;
+        }
+        // Mapping key `%(name)s` — used with a dict on the right.
+        if i < b.len() && b[i] == '(' {
+            let mut j = i + 1;
+            while j < b.len() && b[j] != ')' {
+                j += 1;
+            }
+            let key: String = b[i + 1..j].iter().collect();
+            let Value::Dict(d) = arg else {
+                return Err(type_err("format requires a mapping"));
+            };
+            let v = d
+                .borrow()
+                .get(&Value::Str(key.clone().into()))?
+                .ok_or_else(|| key_err(format!("'{key}'")))?;
+            i = j + 1;
+            let (spec, ni) = read_spec(&b, i)?;
+            i = ni;
+            out.push_str(&fmt::format_value(&v, &spec)?);
+            continue;
+        }
+        let (spec, ni) = read_spec(&b, i)?;
+        i = ni;
+        let v = args
+            .get(ai)
+            .ok_or_else(|| type_err("not enough arguments for format string"))?;
+        ai += 1;
+        out.push_str(&percent_one(v, &spec)?);
+    }
+    if ai < args.len() && !matches!(arg, Value::Dict(_)) {
+        return Err(type_err(
+            "not all arguments converted during string formatting",
+        ));
+    }
+    Ok(out)
+}
+
+/// Read one printf conversion and translate it into a `format()` spec.
+fn read_spec(b: &[char], mut i: usize) -> R<(String, usize)> {
+    let mut flags = String::new();
+    while i < b.len() && matches!(b[i], '-' | '+' | ' ' | '#' | '0') {
+        flags.push(b[i]);
+        i += 1;
+    }
+    let mut width = String::new();
+    while i < b.len() && b[i].is_ascii_digit() {
+        width.push(b[i]);
+        i += 1;
+    }
+    let mut prec = String::new();
+    if i < b.len() && b[i] == '.' {
+        i += 1;
+        prec.push('.');
+        while i < b.len() && b[i].is_ascii_digit() {
+            prec.push(b[i]);
+            i += 1;
+        }
+        if prec == "." {
+            prec.push('0');
+        }
+    }
+    while i < b.len() && matches!(b[i], 'l' | 'h' | 'L') {
+        i += 1;
+    }
+    if i >= b.len() {
+        return Err(value_err("incomplete format"));
+    }
+    let conv = b[i];
+    i += 1;
+    let ty = match conv {
+        'd' | 'i' | 'u' => "d",
+        's' => "s",
+        'r' => "r",
+        'f' | 'F' => "f",
+        'e' => "e",
+        'E' => "E",
+        'g' => "g",
+        'G' => "G",
+        'x' => "x",
+        'X' => "X",
+        'o' => "o",
+        'c' => "c",
+        other => {
+            return Err(unsupported(
+                "percent-format",
+                &format!("%{other} conversion"),
+            ))
+        }
+    };
+    let align = if flags.contains('-') {
+        "<"
+    } else if flags.contains('0') && ty != "s" && ty != "r" {
+        "0"
+    } else {
+        ""
+    };
+    let sign = if flags.contains('+') {
+        "+"
+    } else if flags.contains(' ') {
+        " "
+    } else {
+        ""
+    };
+    let alt = if flags.contains('#') { "#" } else { "" };
+    Ok((format!("{align}{sign}{alt}{width}{prec}{ty}"), i))
+}
+
+fn percent_one(v: &Value, spec: &str) -> R<String> {
+    if let Some(rest) = spec.strip_suffix('r') {
+        let s = fmt::repr(v)?;
+        return fmt::format_value(&Value::Str(s.into()), &format!("{rest}s"));
+    }
+    if spec.ends_with('s') {
+        let s = fmt::to_str(v)?;
+        return fmt::format_value(&Value::Str(s.into()), spec);
+    }
+    fmt::format_value(v, spec)
+}

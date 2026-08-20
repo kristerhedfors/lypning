@@ -1,0 +1,373 @@
+# Changelog
+
+All notable changes to this project are documented here.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Fixed — six interpreter bugs, all found by `lypning fuzz`
+
+The differential fuzzer generates programs from the subset lypning *claims* to
+implement and diffs them against CPython. It found the class the corpus
+structurally cannot: the corpus is a sample of what agents happened to type, so
+it only ever covers ground someone already walked.
+
+Every one of these was a **silent** failure — a wrong answer at exit 0, or a
+traceback at exit 1 for a program CPython runs. Exit 1 is the program's own, so
+the dispatcher returns it unchanged and there is no retry on CPython. Pinned in
+`tests/test_fuzz_findings.py`, each asserted against live CPython rather than a
+remembered string.
+
+- **`repr(float)` broke ties the wrong way.** `(1/-143.0) * 1e17` is exactly
+  -699300699300699.25; one ulp is 0.125, so both `…699.2` and `…699.3` are 17
+  digits and both round-trip. CPython resolves the tie to even; Rust's `{:e}`
+  rounded away. `shortest_digits` now takes only the digit *count* from `{:e}`
+  and the digits from `{:.*e}`, which rounds half-to-even. Verified against
+  CPython over 4,000 doubles — 18 hand-picked plus 3,982 random bit patterns —
+  with zero divergences.
+- **`bytes.find(False)` raised `TypeError` at exit 1** where CPython searches
+  for byte 0 and answers `-1`. `bool` is a subclass of `int` in Python; every
+  other site (indexing, `range`, arithmetic, `*`) already went through numeric
+  coercion, but this arm matched `Value::Int` directly.
+- **`b"abc".count(b"a")` was a traceback at exit 1.** `route.rs` asks only
+  whether a name is a method of *any* type it knows, and `count` is a `str`
+  method, so it routed to lypning — which has no `bytes.count`. Methods CPython
+  has and lypning does not now leave by the refusal contract.
+- **`"日本".islower()` answered `True`.** The test was `is_alphabetic`, but 日 is
+  alphabetic and has no case at all. Cased is now the predicate, and a titlecase
+  letter is handled by asking for a case *mapping* rather than trusting the two
+  predicates.
+- **`format(inf, "+")` was `inf`, and `format(-inf, "010")` was `000000-inf`.**
+  An infinity gets a sign slot like any other number, and zero fill goes between
+  the sign and the digits.
+- **`format(1e17, "_")` was `1e_+17`.** A body already in exponent form has no
+  integer part to group; the separator landed inside the exponent.
+- **`round(-0.5)` lost the sign of its zero.** The half-even correction lands on
+  `+0.0` in IEEE where CPython keeps `-0.0`.
+
+### Fixed — tooling
+
+- **A cross-target build installed itself as the host engine.** `lypning build
+  --target i686` copied the 32-bit sandbox binary over `~/.lypning/bin/lypning`,
+  which is what `engines.find_lypning()` resolves to, so every dispatch,
+  conformance run and benchmark afterwards silently measured the wrong artifact
+  — and on a host without multilib it would not have run at all. Cross-target
+  builds now install under a suffixed name (`lypning-i686`).
+- **The gate judged `lypning-i686` against lypning-mp's 700 KB budget** and
+  failed a sound build, because it identified the engine by exact binary name.
+
+### Added
+
+- `lypning fuzz`, `lypning corpus-time`, `lypning build --stock`,
+  `lypning build --verify`, `lypning bench --micropython`.
+- Routing safety in the conformance report: IDEAL / WASTED / LATE / UNSAFE.
+- The ported upstream suites: `test_shims.py` (differential against live
+  CPython, with restricted MicroPython stand-ins), `test_cookbook.py` (executes
+  every recipe in `docs/COOKBOOK.md`), `test_syntax_scan.py`, `test_routing.py`.
+  659 tests, up from 195.
+- GitHub Actions CI over Python 3.9–3.13.
+
+### Note — upstream's shim suite was partly vacuous
+
+Porting `test_shims.py` surfaced a defect in the *upstream* harness, not in the
+shims: it shadowed modules with `sys.path.insert(0, LIB)` alone, which does not
+work on CPython 3.11 — `os` and `posixpath` are deep-frozen and `FrozenImporter`
+runs ahead of `PathFinder`. Nine `os`/`os.path` cases were comparing CPython
+with itself and passing vacuously. The port installs a `sys.meta_path` finder
+instead; six modules failed immediately once it did, and now pass for real.
+
+
+### Added
+
+- **`lypning fuzz` — a differential fuzzer over the subset's own grammar.**
+  `conformance` grades the programs agents happened to type, so the corpus is a
+  sample and not a specification; this generates programs from lypning's own
+  `BUILTINS` and method tables, runs each under CPython and under the engine,
+  and reports any disagreement. Exit `90` is a refusal and never a finding.
+  Every counterexample is shrunk to a minimal program, and the seed that
+  reproduces the run is printed whether or not anything failed. `--iterations`,
+  `--seed`, `--engine`, `--json`; exit 1 on any counterexample.
+
+- **`tests/test_docs.py` — the documentation claims that a machine can check.**
+  This repository has shipped a dangling documentation reference three times
+  (`tests/test_shims.py`, `tests/test_cookbook.py`, `tests/test_syntax_scan.py`
+  were each promised before they existed) and `README.md` §4's command reference
+  silently lost `corpus-time` when that command was added. Neither failure is
+  visible to any other gate: a stale sentence compiles, links, conforms and
+  benches identically. So four things are now asserted — every `cli.COMMANDS`
+  entry appears in §4 and every §4 row still exists; `--json` is offered exactly
+  where §4 says it is; every relative markdown link and every `tests/test_*.py`
+  a document names resolves; and every `docs/X.md §N` cross-reference lands on a
+  heading that is there. Prose is deliberately out of scope — the rule enforced
+  is only that **a document may not name something that is not there.**
+
+### Fixed
+
+- **`lypning corpus-time --record` fails before the run, not after it, and
+  never with a traceback.** An unwritable destination surfaced as
+  `lypning: FileNotFoundError: [Errno 2] …` *after* the whole corpus had been
+  timed, which threw the expensive half of the command away and reported a
+  caller mistake as if it were our bug. The target is now checked up front, for
+  the same reason `--baseline` already was, and the write itself reports one
+  line naming the fix. A corrupt, missing or wrong-schema `--baseline` also now
+  names the command that writes a good one rather than only saying what is
+  wrong with the bad one.
+- **`README.md` §4 documents `lypning corpus-time`**, which has existed as a
+  subcommand and been absent from the only table a reader scans to find out
+  what exists. §6 now says what separates it from `bench` — arms against each
+  other versus runs of one binary against each other — and the shipped skill
+  names both it and `lypning fuzz` among the gates.
+- **The stale numbers in `README.md` §1 and §2.** The Rust core has been rebuilt
+  since those tables were written, so the byte count quoted against
+  lypning-mp's was 1,036,984 B where `lypning status` prints 1,045,176 B, and
+  the four-arm table's absolute milliseconds were a different run's. Both are
+  re-measured, dated, and the ratios — which are what reproduce — are what the
+  prose now argues from. `CLAUDE.md`'s own invariant 3 was quoting a remembered
+  corpus size (839) in the sentence forbidding it; the tree loads 842 today.
+- **`docs/LYPNING.md` linked to `LYPNING-MP.md`**, a file the rename left
+  behind, and named the crate as `rust/` throughout where every other document
+  says `assets/rust/`. Its 2026-08-16 conformance table was headed "Current",
+  which it has not been since the extraction. `docs/MICROPYTHON.md` and
+  `docs/SUBSET.md` pointed the seed corpus at `tests/corpus/`, which is where it
+  lived upstream; it is `assets/corpus/` here.
+- **Upstream-only citations are labelled as such.** `docs/SUBSET.md`'s evidence
+  table, `docs/RESEARCH.md`'s sources and the MicroPython asset README's
+  acceptance metric all cite files in the `deepresearch.se` repository this
+  package was extracted from. They are now marked, so a reader stops looking for
+  `docs/TESTING.md` and `scripts/build-sandbox-image.sh` in this tree.
+- **`assets/micropython/README.md` gave a build command that could not run.**
+  `make -C lypning-mp verify` names a directory that does not exist, and
+  `bash scripts/build-micropython.sh` is wrong from the directory the file sits
+  in. It now leads with `lypning build --micropython` and states which directory
+  the lower-level commands are typed from.
+
+- **`str.partition("")` and `str.rpartition("")` raise `ValueError` again.**
+  Both answered `('', '', '')` at exit 0 where CPython raises `ValueError:
+  empty separator`. `split()`/`rsplit()` had the check since the beginning and
+  these two never did. Found by `lypning fuzz`.
+- **`round(-0.5, 0)` keeps the sign of its zero.** It answered `0.0` where
+  CPython answers `-0.0`: the half-to-even correction is `r - f.signum()`,
+  which for `-0.5` is `-1.0 - -1.0` and therefore `+0.0` in IEEE.
+- **An infinity and a NaN get a sign slot.** `format(inf, "+")` was `inf` and
+  not `+inf`, `format(nan, " ")` was `nan` and not ` nan`, and
+  `format(-inf, "010")` was `000000-inf` and not `-000000inf` — the non-finite
+  path returned before the sign logic and carried its own minus inside the
+  body, where zero fill then landed in front of it.
+- **A number with no presentation type right-aligns.** `format(7, "10")` and
+  `f"{1.5:10}"` padded on the right, like a string, where CPython pads on the
+  left — so every column of a `f"{name:20}{n:6}"` table was wrong on the
+  numbers. `pad()` took a `numeric` flag and ignored it, and the default
+  alignment was inferred from a non-empty sign slot instead: exactly the thing
+  a non-negative number does not have.
+- **Grouping no longer reaches into an exponent.** `format(1e17, "_")` answered
+  `1e_+17`; a body already in exponent form has no integer part to group. Found
+  by `lypning fuzz`.
+- **`islower()` and `isupper()` test CASED characters, not alphabetic ones.**
+  `"日本".islower()` and `"日本".isupper()` both answered `True` where CPython
+  answers `False`: 日 is alphabetic and has no case at all, so the string has no
+  cased character and neither predicate can hold. Found by `lypning fuzz`.
+- **A method CPython has and lypning does not refuses instead of raising
+  `AttributeError`.** `route.rs` asks only whether a name is a method of ANY
+  type it knows, so `b"abc".count(b"a")` — `count` is in the str table —
+  routed to the Rust core, which has no `bytes.count`, and the caller got an
+  `AttributeError` traceback at exit 1 where CPython prints `1`. Exit 1 is the
+  program's own and the dispatcher returns it unchanged, so there was no second
+  tier and no second chance: a wrong answer through `lypning run`, not a
+  refusal. 44 names were reachable this way (28 on `bytes`, 10 on `str`, 5 on
+  `set`, 1 on `dict`); each now exits 90 as `<type>-method`, and an attribute
+  NEITHER has still keeps CPython's `AttributeError` at exit 1.
+- **`lypning bench --micropython` no longer reports stock's crashes as
+  coverage.** The coverage block compared the two arms on "did not exit 90",
+  and the control has no exit 90 — so every program lypning-mp refused counted
+  as one only stock could run, under a line saying anything but 0 there is a
+  capability we lost. On this corpus that read 49 where the true number is 2
+  (`os.system`, removed on purpose in `mpconfigvariant.h`); stock crashed on
+  the other 47. The comparison is now on completion, and a `failed` column
+  carries each arm's own non-zero exits — 531 of stock's 763 runs here.
+- **`docs/BENCH-LEDGER.md` says what writes to it.** Its header said neither
+  shipped measurement appends to the file, which stopped being true when
+  `lypning bench --micropython --record` gained the marker insert.
+- **`lypning` no longer execs into its own console script.** `find_lypning()`
+  accepted any executable named `lypning` on `$PATH`, and after
+  `pip install lypning` that is this package's entry point. With the Rust core
+  not built, `lypning -c PROG` and `lypning route` therefore exec'd into
+  themselves and hung forever with no output, and `lypning status` reported a
+  291-byte shell script as the engine. Engine discovery now takes only compiled
+  binaries — a `#!` header disqualifies a candidate — so an unbuilt tree reports
+  `not built` and routes to CPython, which is what `README.md` §2 always said it
+  did.
+- **`$LYPNING_BIN`, `$LYPNING_MP_BIN` and `$LYPNING_CPYTHON` are no longer
+  ignored when they point at nothing.** A bad override fell through to ordinary
+  discovery, so the run measured a binary the caller did not name and reported
+  the number as if it had. Each now fails with one line naming the variable and
+  the fix, exit 2.
+- **`lypning build --micropython` produces a binary again.** The build stage
+  handed `build-micropython.sh` its engine tree under the name `lypning-mp`,
+  which the script never looks for — it derives `$REPO_ROOT/micropython` from
+  its own location — so every build died at `no patches in
+  micropython/variant/patches` before the toolchain or the network was
+  exercised.
+- **A corpus file that is not JSON is no longer silent.** `corpus.load()`
+  skipped undecodable lines without saying so, so a corrupted `corpus.jsonl`
+  loaded as zero programs and `status`, `doctor`, `bench` and `conformance` all
+  reported a count that was quietly wrong. Unreadable files and undecodable
+  lines are now named; `lypning doctor` FAILs on them.
+- **A capture log that exists but cannot be used is reported.** A log path that
+  is a directory, or is unreadable, read as `not created yet` in `status` and
+  `OK` in `doctor` — the same output as a fresh install, for a state where
+  capture can never write.
+- **`lypning bench --startup` shows a row for every arm.** Arms that are not
+  built vanished from the startup table entirely, against `bench --help`'s own
+  rule that a missing arm is a hole and never a zero. `bench.render` had it
+  right for the corpus half; the startup-only renderer did not.
+- **`lypning install --dry-run` no longer counts warnings as "already in
+  place".** A PATH warning, an unparseable `settings.json`, a missing skill
+  source — all skips, all summarised as though the install were already done.
+  They are now counted and labelled as warnings.
+- **`lypning build --dry-run` prints the commands**, as `README.md` §2 and
+  `--help` both said it did; they were only shown under `-v`.
+- **`lypning doctor` reports a `settings.json` that does not parse**, which is
+  why the hooks are not wired and is a different fix from running `lypning
+  install`.
+- **`lypning install` says when the project root came from the current
+  directory** rather than from a git work tree, and `--project`'s help now
+  mentions that fallback.
+- **`lypning build` names the target it installed.** `--target host` (the
+  dynamically linked control) and `--target i686` land under the same name as
+  the default musl build, so a control built once was silently the engine every
+  route used afterwards.
+- **`lypning build --help` no longer advertises a `--clean` flag** that does not
+  exist.
+
+### Changed
+
+- **`docs/` and the shipped skill now describe this package's commands.** The
+  extraction left behind `npm run lypning:*`, `node lypning …`, `bash
+  scripts/build-rust.sh`, `lypning shim install --status`, `lypning harvest
+  --no-sightings`, a `LYPNING_CORPUS` variable nothing reads, and paths under
+  `tests/corpus/` and `~/.local/bin` — none of which work here. Commands that
+  belong to the upstream project and did not come across (the Playwright
+  sandbox battery, the VM harness, the variant-vs-stock micro-benchmark) are now
+  marked as upstream-only rather than presented as things to run.
+- **The `lypning` skill's frontmatter describes when to load it.** It described
+  a repository layout that does not exist in a project the skill is installed
+  into, so it would not have triggered where it is useful.
+
+### Known gaps
+
+- **The Rust core's `float ** float` is one ULP off CPython's on some
+  arguments.** `1.7976931348623157e308 ** 0.5` answers
+  `1.3407807929942597e+154` where CPython answers `…596e+154`; a sweep of 400
+  random `a ** b` disagreed on 2. Both call their libm's `pow`, and the core is
+  static musl while CPython here is glibc — glibc's `pow` is correctly rounded
+  on these and musl's is not. Closing it means a correctly-rounded `pow` in the
+  core or refusing float `**`, and both are decisions rather than fixes.
+  `lypning fuzz` reproduces it: seed 1817614320.
+- **`repr(float)` breaks an exact shortest-repr tie the other way.**
+  `print(2250000000000000.0 + 0.3333333333333333)` prints
+  `2250000000000000.3` where CPython prints `…0.2`. Both hold the same double
+  (`…0.25` exactly); when the shortest round-tripping decimal is an exact tie,
+  CPython's dtoa rounds the last digit to even and Rust's rounds up. It needs a
+  tie to happen at all — 0 of 2996 random doubles differ, 2 of 10 hand-picked
+  ties do.
+- **`lypning conformance` reports 1 UNSAFE route**, and it is the commit-barrier
+  defect above seen from the other side: `hashlib` is in `route.rs`'s table, so
+  `py-b2a043f241f1` routes to lypning-mp, which prints 147 bytes and then
+  refuses. The classifier is not wrong about the import; the tier is wrong
+  about the barrier. Narrowing the table to dodge it would cost every other
+  `hashlib` program a tier and hide the defect, so the number stays.
+  `tests/test_routing.py` pins it as the only shape an UNSAFE route takes here.
+
+## [0.1.0] — 2026-08-20
+
+First release. Extracted from
+[github.com/kristerhedfors/deepresearch.se](https://github.com/kristerhedfors/deepresearch.se),
+where the two runtimes were built to make Python affordable inside that
+project's in-browser CheerpX sandbox, and where they were entangled with its
+npm scripts, its `tests/corpus/`, its `.claude/` wiring and its shell scripts.
+This release is that work as a standalone, installable Python package.
+
+### Added
+
+- **The three tiers, and the router between them.** The Rust core (a
+  from-scratch Python subset, zero crates), the MicroPython variant with its
+  frozen shim stdlib, and the real CPython — with a classifier that asks the
+  Rust core's own parser which tier can take a program, and a dispatcher that
+  falls onward on exit `90` and on nothing else.
+- **`lypning` as an interpreter.** `lypning -c PROG`, `lypning FILE` and
+  `lypning -` `exec` straight into the Rust core, decided before argument
+  parsing, so anything that calls `python3` can call this instead.
+- **A CLI around it**: `run`, `route`, `build`, `status`, `doctor`, `install`,
+  `uninstall`, `shim`, `hook`, `conformance`, `bench`, `gate`, `harvest`,
+  `corpus`. Every one takes `--json`.
+- **`lypning build`** — replaces the upstream `scripts/build-*.sh` invocations.
+  Builds each tier independently, never stopping on the other's failure, and
+  refuses to call a build `ok` until the refusal contract (exit 90, one line on
+  stderr, clean stdout) holds on the binary it just produced.
+- **`lypning install`** — replaces hand-editing `.claude/settings.json`. Merges
+  three hook entries rather than overwriting, backs the file up once, ships the
+  skill and the hook scripts, installs the `python`/`python3` capture shim, and
+  prints the whole plan plus a unified diff under `--dry-run`.
+  `lypning uninstall` is its exact inverse and never deletes the capture log.
+- **The corpus**, 839 harvested and seeded programs, moved from the upstream
+  repository's `tests/corpus/` into package assets, with `lypning corpus
+  --stats` to describe it and `lypning harvest` to grow it.
+- **The measurement tooling**: `conformance` (MATCH / UNSUPPORTED / MISMATCH,
+  plus `--plan`), `bench` (four arms, interleaved, min of repeats, both the
+  shared-subset and whole-corpus totals), and `gate` (static? bytes? file
+  opens?).
+- **Documentation**: `README.md`, this changelog, `CLAUDE.md` (the working
+  agreement for an agent working *on* this repository), a `Makefile` of thin
+  CLI wrappers, and the eight design documents under `docs/`.
+
+### Changed
+
+- **Renamed throughout.** The Rust subset and the MicroPython variant are now
+  `lypning` and `lypning-mp`; environment variables are `LYPNING_*`; the state
+  directory is `~/.lypning` (`$LYPNING_HOME`). The former names survive only in
+  the credit paragraph of `README.md` and inside the historical corpus JSONL,
+  whose captured programs are left verbatim.
+- **Ported from Node to Python.** The upstream `npm run` entry points became
+  subcommands of one CLI with no third-party runtime dependencies at all — this
+  package installs alongside whatever the agent is working on, and a dependency
+  of ours would be a version conflict in someone else's project.
+- **Split assets from state.** Package assets (crate source, MicroPython
+  variant, corpus, skill, hooks, shim) are read-only inside the wheel; built
+  binaries, the capture log and build trees live in `~/.lypning`, so nothing
+  needs write access to `site-packages`.
+
+### Known gaps
+
+- **The measured tables in `docs/` predate the extraction.** They were taken on
+  the upstream container (2026-08-16, 472 programs) and are quoted as the
+  argument for the project, not as a claim about your machine. Re-running
+  `lypning bench` here on 2026-08-20 over 763 measured programs, with all three
+  engines built, moved every absolute number **and reversed the ordering of the
+  two subset engines**: lypning-mp came in ahead of lypning on the shared
+  subset and started faster too, where upstream had lypning ahead at 0.102x
+  against 0.143x. The mixture result held — 763/763 answered, and roughly a
+  two-thirds saving against CPython. So upstream's "the subset engine is
+  fastest on the work it accepts" is a result about that corpus on that
+  machine, not a property of the design. Re-measure; do not cite, and do not
+  carry a remembered ordering either. The numbers are deliberately not restated
+  here: `README.md` §1 carries the current run with its date and corpus size,
+  and `docs/BENCH-LEDGER.md` is the append-only history. A ratio pinned in a
+  changelog is a ratio nobody re-derives.
+- **`lypning-mp` breaks the refusal contract on 2 of 763 corpus programs**
+  (measured 2026-08-20 on a binary from `lypning build --micropython` here): it
+  refuses with exit 90 *after* 54 and 147 bytes have already reached stdout,
+  where the contract is exit 90, one line on stderr and **nothing at all on
+  stdout**. Under `README.md` §5 that is a MISMATCH and therefore a bug, tracked
+  rather than waived: lypning-mp has no commit barrier, so a program that prints
+  several lines before hitting an unsupported construct has already written
+  them. The mixture still answers 763/763, because the dispatcher treats exit 90
+  as a refusal — but a caller reading only stdout sees a truncated answer, which
+  is exactly the silent-disagreement failure the contract exists to prevent.
+  `lypning conformance` names the two programs on every run.
+- **Not published to PyPI yet.** `pip install lypning` is the intended install
+  and does not resolve today; install from a checkout meanwhile.
+
+[Unreleased]: https://github.com/kristerhedfors/lypning/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/kristerhedfors/lypning/releases/tag/v0.1.0

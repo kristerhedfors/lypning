@@ -1,0 +1,1591 @@
+diff --git a/extmod/modre.c b/extmod/modre.c
+index 85e5d1b..68ce88c 100644
+--- a/extmod/modre.c
++++ b/extmod/modre.c
+@@ -39,6 +39,12 @@
+ 
+ #if MICROPY_PY_RE
+ 
++// lypning: see py/runtime.c. Only present in the lypning-mp variant.
++#ifdef LYPNING_UNSUPPORTED_EXIT
++#include "lypning_unsupported.h"
++#endif
++
++
+ #define re1_5_stack_chk() mp_cstack_check()
+ 
+ #include "lib/re1.5/re1.5.h"
+@@ -451,6 +457,13 @@ static mp_obj_t mod_re_compile(size_t n_args, const mp_obj_t *args) {
+     int size = re1_5_sizecode(re_str);
+     if (size == -1) {
+         #if MICROPY_ERROR_REPORTING >= MICROPY_ERROR_REPORTING_NORMAL
++        // lypning: this is where a named group `(?P<k>...)`, which the corpus
++        // does use (`re-groups-named`), lands. The pattern is outside what the
++        // compiled-in engine implements, which §7 calls the `argument` kind —
++        // and the caller can retry the same line with real python3.
++        #ifdef LYPNING_UNSUPPORTED_EXIT
++        lypning_exit_unsupported("argument", "re pattern (unsupported syntax)", NULL);
++        #endif
+         mp_raise_ValueError(MP_ERROR_TEXT("regex too complex"));
+         #endif
+         goto error;
+diff --git a/extmod/vfs.c b/extmod/vfs.c
+index d2a7af5..a07d0b5 100644
+--- a/extmod/vfs.c
++++ b/extmod/vfs.c
+@@ -324,6 +324,14 @@ mp_obj_t mp_vfs_open(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args)
+         { MP_QSTR_mode, MP_ARG_OBJ, {.u_rom_obj = MP_ROM_QSTR(MP_QSTR_r)} },
+         { MP_QSTR_buffering, MP_ARG_INT, {.u_int = -1} },
+         { MP_QSTR_encoding, MP_ARG_OBJ, {.u_rom_obj = MP_ROM_NONE} },
++        // lypning: accept and ignore `errors` and `newline`, as this function
++        // already does for `buffering` and `encoding`. The sandbox is C.UTF-8
++        // everywhere and text I/O uses universal newlines on read, so the
++        // defaults are the only behaviour there is — but rejecting the keyword
++        // turned `open(p, encoding="utf-8", errors="replace")` into an exit 90
++        // for a program lypning-mp reads correctly (§7 rule 1).
++        { MP_QSTR_errors, MP_ARG_OBJ, {.u_rom_obj = MP_ROM_NONE} },
++        { MP_QSTR_newline, MP_ARG_OBJ, {.u_rom_obj = MP_ROM_NONE} },
+     };
+ 
+     // parse args
+diff --git a/extmod/vfs_posix_file.c b/extmod/vfs_posix_file.c
+index 5fe330d..1665f66 100644
+--- a/extmod/vfs_posix_file.c
++++ b/extmod/vfs_posix_file.c
+@@ -103,7 +103,14 @@ mp_obj_t mp_vfs_posix_file_open(const mp_obj_type_t *type, mp_obj_t file_in, mp_
+ 
+     const char *fname = mp_obj_str_get_str(fid);
+     int fd;
++    #ifdef LYPNING_UNSUPPORTED_EXIT
++    // lypning: the filename is right here, and CPython puts it in the exception.
++    // Without it a failing open() says "[Errno 2] No such file or directory"
++    // and leaves the caller to guess WHICH file.
++    MP_HAL_RETRY_SYSCALL(fd, open(fname, mode_x | mode_rw, 0644), lypning_raise_oserror_filename(err, fname));
++    #else
+     MP_HAL_RETRY_SYSCALL(fd, open(fname, mode_x | mode_rw, 0644), mp_raise_OSError(err));
++    #endif
+     o->fd = fd;
+     return MP_OBJ_FROM_PTR(o);
+ }
+diff --git a/lib/re1.5/charclass.c b/lib/re1.5/charclass.c
+index 2553b40..6d8bf04 100644
+--- a/lib/re1.5/charclass.c
++++ b/lib/re1.5/charclass.c
+@@ -33,7 +33,25 @@ int _re1_5_namedclassmatch(const char *pc, const char *sp)
+             off ^= 1;
+         }
+     } else { // w
+-        if (!((*sp >= 'A' && *sp <= 'Z') || (*sp >= 'a' && *sp <= 'z') || (*sp >= '0' && *sp <= '9') || *sp == '_')) {
++        // lypning: bytes >= 0x80 are word constituents.
++        //
++        // re1.5 matches BYTES, and \w was ASCII-only. Against a UTF-8 str that
++        // does not merely drop non-English words, it SHREDS them:
++        // re.findall(r"\w+", "räksmörgås") returned ['r', 'ksm', 'rg', 's'] —
++        // a plausible-looking wrong answer with a zero exit code, which is the
++        // failure class docs/MICROPYTHON.md exists to prevent, and the one a reader
++        // is least likely to notice.
++        //
++        // CLAUDE.md invariant 6 requires equal Swedish and English support in
++        // every deterministic gate, so this is a correctness fix, not a nicety.
++        // Treating every lead and continuation byte as a word character keeps
++        // each multi-byte character whole and inside the match, which matches
++        // CPython's unicode-aware \w for every letter — the divergence that
++        // remains is that a non-ASCII PUNCTUATION character would also be
++        // absorbed, which is a far smaller and non-silent error than cutting a
++        // word in half.
++        if (!((*sp >= 'A' && *sp <= 'Z') || (*sp >= 'a' && *sp <= 'z') || (*sp >= '0' && *sp <= '9') || *sp == '_'
++              || (unsigned char)*sp >= 0x80)) {
+             off ^= 1;
+         }
+     }
+diff --git a/lib/re1.5/recursiveloop.c b/lib/re1.5/recursiveloop.c
+index 17ecea3..0a0a3a2 100644
+--- a/lib/re1.5/recursiveloop.c
++++ b/lib/re1.5/recursiveloop.c
+@@ -4,6 +4,28 @@
+ 
+ #include "re1.5.h"
+ 
++// lypning: one CLASS match consumes one CHARACTER, not one byte.
++//
++// re1.5 matches bytes. charclass.c already treats every byte >= 0x80 as a word
++// constituent, which keeps `\w+` from shredding "räksmörgås" into
++// ['r','ksm','rg','s'] — but that works only because `+` happens to consume the
++// remaining bytes. An UNQUANTIFIED class matched exactly one byte and left the
++// cursor mid-character, so `re.findall(r"\w", "räksmörgås")` produced spans
++// that could not be sliced and raised UnicodeError, where CPython returns the
++// ten characters. The same held for `.` and for any negated class: `[^a]`
++// matched a third of an "ö".
++//
++// Advancing over the UTF-8 continuation bytes after a consuming instruction
++// makes each of those consume a whole character, which is what CPython's `.`
++// and its character classes do. A literal Char is deliberately excluded — see
++// the case below.
++#define LYPNING_SKIP_CONT(sp, end) \
++	do { \
++		while ((sp) < (end) && ((unsigned char)*(sp) & 0xC0) == 0x80) { \
++			(sp)++; \
++		} \
++	} while (0)
++
+ static int
+ recursiveloop(char *pc, const char *sp, Subject *input, const char **subp, int nsubp)
+ {
+@@ -20,11 +42,16 @@ recursiveloop(char *pc, const char *sp, Subject *input, const char **subp, int n
+ 		}
+ 		switch(*pc++) {
+ 		case Char:
++			// lypning: a LITERAL stays byte-wise. A multi-byte character in
++			// the pattern compiles to a SEQUENCE of Char instructions, so
++			// skipping continuation bytes here would consume it twice over.
+ 			if(*sp != *pc++)
+ 				return 0;
+-			MP_FALLTHROUGH
++			sp++;
++			continue;
+ 		case Any:
+ 			sp++;
++			LYPNING_SKIP_CONT(sp, input->end);
+ 			continue;
+ 		case Class:
+ 		case ClassNot:
+@@ -32,12 +59,14 @@ recursiveloop(char *pc, const char *sp, Subject *input, const char **subp, int n
+ 				return 0;
+ 			pc += *(unsigned char*)pc * 2 + 1;
+ 			sp++;
++			LYPNING_SKIP_CONT(sp, input->end);
+ 			continue;
+                 case NamedClass:
+ 			if (!_re1_5_namedclassmatch(pc, sp))
+ 				return 0;
+ 			pc++;
+ 			sp++;
++			LYPNING_SKIP_CONT(sp, input->end);
+ 			continue;
+ 		case Match:
+ 			return 1;
+diff --git a/ports/unix/main.c b/ports/unix/main.c
+index 9e9704a..e083f32 100644
+--- a/ports/unix/main.c
++++ b/ports/unix/main.c
+@@ -45,6 +45,19 @@
+ #include "py/gc.h"
+ #include "py/objstr.h"
+ #include "py/cstack.h"
++
++// lypning: the unsupported-contract helpers. Only present in the lypning-mp variant.
++#ifdef LYPNING_UNSUPPORTED_EXIT
++#include "lypning_unsupported.h"
++#include "lypning_compat.h"
++
++// lypning: the one definition of the source slots lypning_compat.h declares.
++// A SyntaxError has to be told apart from a program lypning-mp cannot parse, and
++// that needs the source the parser already consumed. One program per process,
++// so one slot each: the `-c` string, or the path of a script file.
++const char *lypning_src_text;
++const char *lypning_src_file;
++#endif
+ #include "py/mperrno.h"
+ #include "py/mphal.h"
+ #include "py/mpthread.h"
+@@ -105,6 +118,16 @@ static int handle_uncaught_exception(mp_obj_base_t *exc) {
+         return FORCED_EXIT | (val & 255);
+     }
+ 
++    // lypning: the fallback contract, same as the pyexec.c call site. BOTH are
++    // required and that was established by removing this one and watching a
++    // path break: `-c` and a script FILE surface their exception through
++    // pyexec.c, but a program piped on STDIN comes out here instead. Deleting
++    // either hook silently returns that path to exit 1 with a traceback.
++    #ifdef LYPNING_UNSUPPORTED_EXIT
++    lypning_check_unsupported_exc(MP_OBJ_FROM_PTR(exc));
++    lypning_check_compat_exc(MP_OBJ_FROM_PTR(exc));
++    #endif
++
+     // Report all other exceptions
+     mp_obj_print_exception(&mp_stderr_print, MP_OBJ_FROM_PTR(exc));
+     return 1;
+@@ -127,7 +150,30 @@ static int execute_from_lexer(int source_kind, const void *source, mp_parse_inpu
+             const char *line = source;
+             lex = mp_lexer_new_from_str_len(MP_QSTR__lt_stdin_gt_, line, strlen(line), false);
+         } else { // LEX_SRC_STDIN
++            #ifdef LYPNING_UNSUPPORTED_EXIT
++            // lypning: read the program into memory rather than streaming it, so
++            // the SyntaxError path can still see the source (lypning_compat.h).
++            // `-c` and a script file both keep theirs; without this, a program
++            // piped in — `cat x.py | lypning-mp` — is the one input shape that
++            // could not be told "this is syntax lypning-mp lacks" and kept exiting
++            // 1 with a bare SyntaxError. stdin IS the program on this path, so
++            // consuming it whole costs nothing a streaming lexer was saving.
++            vstr_t lypning_in;
++            vstr_init(&lypning_in, 256);
++            for (;;) {
++                char chunk[512];
++                ssize_t got = read(0, chunk, sizeof(chunk));
++                if (got <= 0) {
++                    break;
++                }
++                vstr_add_strn(&lypning_in, chunk, (size_t)got);
++            }
++            vstr_null_terminated_str(&lypning_in);
++            lypning_src_text = lypning_in.buf;
++            lex = mp_lexer_new_from_str_len(MP_QSTR__lt_stdin_gt_, lypning_in.buf, lypning_in.len, false);
++            #else
+             lex = mp_lexer_new_from_fd(MP_QSTR__lt_stdin_gt_, 0, false);
++            #endif
+         }
+ 
+         qstr source_name = lex->source_name;
+@@ -169,76 +215,22 @@ static int execute_from_lexer(int source_kind, const void *source, mp_parse_inpu
+     }
+ }
+ 
+-#if MICROPY_USE_READLINE == 1
+-#include "shared/readline/readline.h"
+-#else
+-static char *strjoin(const char *s1, int sep_char, const char *s2) {
+-    int l1 = strlen(s1);
+-    int l2 = strlen(s2);
+-    char *s = malloc(l1 + l2 + 2);
+-    memcpy(s, s1, l1);
+-    if (sep_char != 0) {
+-        s[l1] = sep_char;
+-        l1 += 1;
+-    }
+-    memcpy(s + l1, s2, l2);
+-    s[l1 + l2] = 0;
+-    return s;
+-}
+-#endif
+-
+-static int do_repl(void) {
+-    #if MICROPY_USE_READLINE == 1
+-
+-    // use MicroPython supplied readline-based REPL
+-
+-    int ret = 0;
+-    for (;;) {
+-        if (pyexec_mode_kind == PYEXEC_MODE_RAW_REPL) {
+-            if ((ret = pyexec_raw_repl()) != 0) {
+-                break;
+-            }
+-        } else {
+-            if ((ret = pyexec_friendly_repl()) != 0) {
+-                break;
+-            }
+-        }
+-    }
+-    return ret;
+-
+-    #else
+-
+-    // use simple readline
+-
+-    mp_hal_stdout_tx_str(MICROPY_BANNER_NAME_AND_VERSION);
+-    mp_hal_stdout_tx_str("; " MICROPY_BANNER_MACHINE);
+-    mp_hal_stdout_tx_str("\nUse Ctrl-D to exit, Ctrl-E for paste mode\n");
+-
+-    for (;;) {
+-        char *line = prompt((char *)mp_repl_get_ps1());
+-        if (line == NULL) {
+-            // EOF
+-            return 0;
+-        }
+-        while (mp_repl_continue_with_input(line)) {
+-            char *line2 = prompt((char *)mp_repl_get_ps2());
+-            if (line2 == NULL) {
+-                break;
+-            }
+-            char *line3 = strjoin(line, '\n', line2);
+-            free(line);
+-            free(line2);
+-            line = line3;
+-        }
+-
+-        int ret = execute_from_lexer(LEX_SRC_STR, line, MP_PARSE_SINGLE_INPUT, true);
+-        free(line);
+-        if (ret & FORCED_EXIT) {
+-            return ret;
+-        }
+-    }
+-
+-    #endif
++// lypning: there is no REPL.
++//
++// The bash-lite agent loop is non-interactive by construction (src/prompts.js),
++// and docs/SUBSET.md §2 rules out both the REPL and -i with zero corpus
++// entries behind either. Upstream's do_repl() and its readline machinery are
++// removed rather than disabled: they are bytes on the cold path for a mode that
++// cannot be reached from the sandbox.
++//
++// Arriving here still has to be a legible outcome, so it takes the unsupported
++// contract (§7) like anything else out of the subset — one stderr line, exit 90
++// — instead of silently doing nothing.
++static int lypning_no_repl(void) {
++    static const char msg[] = "lypning-mp: unsupported: argument: interactive REPL\n";
++    ssize_t ignored = write(STDERR_FILENO, msg, sizeof(msg) - 1);
++    (void)ignored;
++    return FORCED_EXIT | LYPNING_UNSUPPORTED_EXIT;
+ }
+ 
+ static inline int convert_pyexec_result(int ret) {
+@@ -266,10 +258,16 @@ static inline int convert_pyexec_result(int ret) {
+ }
+ 
+ static int do_file(const char *file) {
++    #ifdef LYPNING_UNSUPPORTED_EXIT
++    lypning_src_file = file;
++    #endif
+     return convert_pyexec_result(pyexec_file(file));
+ }
+ 
+ static int do_str(const char *str) {
++    #ifdef LYPNING_UNSUPPORTED_EXIT
++    lypning_src_text = str;
++    #endif
+     vstr_t vstr;
+     vstr.buf = (char *)str;
+     vstr.len = strlen(str);
+@@ -318,7 +316,14 @@ static void print_help(char **argv) {
+ }
+ 
+ static int invalid_args(void) {
+-    fprintf(stderr, "Invalid command line arguments. Use -h option for help.\n");
++    // lypning: mp_printf, not fprintf. These two call sites were the ONLY users
++    // of libc's fprintf left in the port, and they dragged musl's entire
++    // vfprintf/printf_core/fmt_fp engine — plus the long-double helpers
++    // __fpclassifyl/__signbitl/frexpl — into a static binary that already links
++    // py/formatfloat.c for its own float formatting. Measured cost of keeping
++    // them: 11,604 B. mp_stderr_print is defined above and writes with a raw
++    // write(2), so this is safe before mp_init() too.
++    mp_printf(&mp_stderr_print, "Invalid command line arguments. Use -h option for help.\n");
+     return 1;
+ }
+ 
+@@ -333,8 +338,13 @@ static void pre_process_options(int argc, char **argv) {
+                 print_help(argv);
+                 exit(0);
+             }
+-            if (strcmp(argv[a], "--version") == 0) {
+-                printf(MICROPY_BANNER_NAME_AND_VERSION "; " MICROPY_BANNER_MACHINE "\n");
++            // lypning: --version must NOT claim a CPython version
++            // (docs/SUBSET.md §2). A caller that reads "Python 3.x" off
++            // this binary and then assumes the rest of the stdlib is exactly
++            // the failure the subset contract exists to prevent. -V is
++            // CPython's short form, and agents type it.
++            if (strcmp(argv[a], "--version") == 0 || strcmp(argv[a], "-V") == 0) {
++                printf(LYPNING_VERSION_LINE "\n");
+                 exit(0);
+             }
+             if (strcmp(argv[a], "-X") == 0) {
+@@ -419,7 +429,17 @@ static char *executable_path = NULL;
+ 
+ static void sys_set_excecutable(char *argv0) {
+     if (executable_path == NULL) {
+-        executable_path = realpath(argv0, NULL);
++        // lypning: argv[0] verbatim, NOT realpath().
++        //
++        // realpath() readlink()s every component of the path, so upstream pays
++        // one directory lookup per component of argv[0] on EVERY run, before a
++        // line of Python executes. Measured here: 7 readlinks for a binary
++        // seven directories deep, and in the sandbox each of those crosses a
++        // network (docs/SANDBOX-PERFORMANCE.md §1). It buys sys.executable
++        // being canonical, which no corpus entry reads
++        // (docs/SUBSET.md §3.3 lists the sys surface: argv, stdin,
++        // stdout, stderr, exit, version_info).
++        executable_path = strdup(argv0);
+     }
+     if (executable_path != NULL) {
+         mp_obj_str_set_data(&mp_sys_executable_obj, (byte *)executable_path, strlen(executable_path));
+@@ -522,9 +542,21 @@ MP_NOINLINE int main_(int argc, char **argv) {
+     #endif
+ 
+     {
+-        // sys.path starts as [""]
++        // lypning: sys.path starts EMPTY, not [""].
++        //
++        // MicroPython searches sys.path BEFORE consulting its frozen module
++        // table, at three statx calls per path entry per module. Upstream's
++        // implicit "" (cwd) entry therefore costs three failed probes for every
++        // import of a module that is already compiled into the binary. Dropping
++        // it, together with MICROPY_PY_SYS_PATH_DEFAULT=".frozen" in the variant
++        // header, is what takes a five-import workload from 56 file syscalls to
++        // 26 (docs/RESEARCH.md §2.5). In the sandbox those probes are
++        // the same pathology that made `command -v <absent tool>` cost 30 s and
++        // destroy the VM.
++        //
++        // ".frozen" itself must stay: removing it breaks frozen imports
++        // outright ("ImportError: no module named 'base64'").
+         mp_sys_path = mp_obj_new_list(0, NULL);
+-        mp_obj_list_append(mp_sys_path, MP_OBJ_NEW_QSTR(MP_QSTR_));
+ 
+         // Add colon-separated entries from MICROPYPATH.
+         char *home = getenv("HOME");
+@@ -600,6 +632,14 @@ MP_NOINLINE int main_(int argc, char **argv) {
+                 set_sys_argv(argv, argc, a + 2); // Then what comes after the command
+                 ret = do_str(argv[a + 1]);
+                 break;
++            } else if (strcmp(argv[a], "-") == 0) {
++                // lypning: `cat x.py | lypning-mp -` (docs/SUBSET.md §2).
++                // sys.argv[0] is "-", as in CPython, and sys.stdin is already
++                // consumed by the time the program runs — also as in CPython.
++                set_sys_argv(argv, a + 1, a);
++                set_sys_argv(argv, argc, a + 1);
++                ret = execute_from_lexer(LEX_SRC_STDIN, NULL, MP_PARSE_FILE_INPUT, false);
++                break;
+             } else if (strcmp(argv[a], "-m") == 0) {
+                 if (a + 1 >= argc) {
+                     return invalid_args();
+@@ -684,8 +724,23 @@ MP_NOINLINE int main_(int argc, char **argv) {
+             }
+ 
+             // Set base dir of the script as first entry in sys.path.
++            //
++            // lypning: INSERT it rather than storing over index 0. Upstream
++            // overwrites the "" entry it added at startup; lypning-mp never adds
++            // that entry, so a store here would clobber ".frozen" and leave the
++            // entire frozen stdlib unreachable in script mode.
+             char *p = strrchr(basedir, '/');
+-            mp_obj_list_store(mp_sys_path, MP_OBJ_NEW_SMALL_INT(0), mp_obj_new_str_via_qstr(basedir, p - basedir));
++            {
++                size_t path_len;
++                mp_obj_t *path_items;
++                mp_obj_get_array(mp_sys_path, &path_len, &path_items);
++                mp_obj_t new_path = mp_obj_new_list(0, NULL);
++                mp_obj_list_append(new_path, mp_obj_new_str_via_qstr(basedir, p - basedir));
++                for (size_t i = 0; i < path_len; i++) {
++                    mp_obj_list_append(new_path, path_items[i]);
++                }
++                mp_sys_path = new_path;
++            }
+             free(basedir);
+ 
+             set_sys_argv(argv, argc, a);
+@@ -700,9 +755,7 @@ MP_NOINLINE int main_(int argc, char **argv) {
+     }
+     if (ret == NOTHING_EXECUTED || inspect) {
+         if (isatty(0) || inspect) {
+-            prompt_read_history();
+-            ret = do_repl();
+-            prompt_write_history();
++            ret = lypning_no_repl();
+         } else {
+             ret = execute_from_lexer(LEX_SRC_STDIN, NULL, MP_PARSE_FILE_INPUT, false);
+         }
+@@ -765,7 +818,7 @@ void nlr_jump_fail(void *val) {
+     #if MICROPY_USE_READLINE == 1
+     mp_hal_stdio_mode_orig();
+     #endif
+-    fprintf(stderr, "FATAL: uncaught NLR %p\n", val);
++    mp_printf(&mp_stderr_print, "FATAL: uncaught NLR %p\n", val);
+     exit(1);
+ }
+ 
+diff --git a/py/argcheck.c b/py/argcheck.c
+index 298c19b..ecae9e3 100644
+--- a/py/argcheck.c
++++ b/py/argcheck.c
+@@ -29,6 +29,12 @@
+ 
+ #include "py/runtime.h"
+ 
++// lypning: see py/runtime.c. Only present in the lypning-mp variant.
++#ifdef LYPNING_UNSUPPORTED_EXIT
++#include "lypning_unsupported.h"
++#include "lypning_compat.h"
++#endif
++
+ void mp_arg_check_num_sig(size_t n_args, size_t n_kw, uint32_t sig) {
+     // TODO maybe take the function name as an argument so we can print nicer error messages
+ 
+@@ -41,6 +47,27 @@ void mp_arg_check_num_sig(size_t n_args, size_t n_kw, uint32_t sig) {
+         #if MICROPY_ERROR_REPORTING <= MICROPY_ERROR_REPORTING_TERSE
+         mp_arg_error_terse_mismatch();
+         #else
++        // lypning: a C function handed a keyword it does not take is almost
++        // always lypning-mp being smaller than CPython — zip(strict=),
++        // round(ndigits=), int(base=), sum(start=), str.split(maxsplit=),
++        // bytes.decode(errors=), class A(metaclass=) — all of which CPython
++        // runs. §7 calls that the `argument` kind, and the sibling site in
++        // mp_arg_parse_all() below already routes it that way.
++        //
++        // KNOWN IMPRECISION, the same shape as the one
++        // lypning_check_unsupported_attr() documents: a program that hands a
++        // keyword CPython ALSO rejects (`{}.get("a", default=1)`) exits 90
++        // here where CPython exits 1. Telling them apart would mean carrying
++        // CPython's signature for every builtin. The cost is bounded and
++        // self-correcting — the caller retries with real python3 and gets the
++        // accurate TypeError — where the reverse error is not: a program
++        // CPython runs, told it is broken, gets rewritten.
++        #ifdef LYPNING_UNSUPPORTED_EXIT
++        if (lypning_call_kw != NULL && lypning_call_n_kw == n_kw) {
++            lypning_exit_unsupported_kwarg(lypning_call_kw);
++        }
++        lypning_exit_unsupported("argument", "keyword argument", NULL);
++        #endif
+         mp_raise_TypeError(MP_ERROR_TEXT("function doesn't take keyword arguments"));
+         #endif
+     }
+@@ -122,6 +149,27 @@ void mp_arg_parse_all(size_t n_pos, const mp_obj_t *pos, mp_map_t *kws, size_t n
+         #endif
+     }
+     if (kws_found < kws->used) {
++        // lypning: a C-level function handed a keyword it does not accept is
++        // almost always lypning-mp being smaller than CPython — json.dumps(indent=),
++        // print(flush=), sorted(reverse=) — which §7 calls the `argument` kind.
++        // Report the first keyword that went unclaimed, so the line names the
++        // precise thing rather than the call.
++        #ifdef LYPNING_UNSUPPORTED_EXIT
++        for (size_t i = 0; i < kws->alloc; i++) {
++            if (mp_map_slot_is_filled(kws, i) && mp_obj_is_qstr(kws->table[i].key)) {
++                bool wanted = false;
++                for (size_t j = 0; j < n_allowed; j++) {
++                    if (allowed[j].qst == MP_OBJ_QSTR_VALUE(kws->table[i].key)) {
++                        wanted = true;
++                        break;
++                    }
++                }
++                if (!wanted) {
++                    lypning_exit_unsupported_kwarg(qstr_str(MP_OBJ_QSTR_VALUE(kws->table[i].key)));
++                }
++            }
++        }
++        #endif
+         #if MICROPY_ERROR_REPORTING <= MICROPY_ERROR_REPORTING_TERSE
+         mp_arg_error_terse_mismatch();
+         #else
+diff --git a/py/builtinimport.c b/py/builtinimport.c
+index 2c7d796..756adcb 100644
+--- a/py/builtinimport.c
++++ b/py/builtinimport.c
+@@ -50,6 +50,19 @@
+ // Must be a string of one byte.
+ #define PATH_SEP_CHAR "/"
+ 
++// lypning: exit 90 for a module CPython HAS and lypning-mp does not, before the
++// ImportError is raised (docs/SUBSET.md §7 rule 4). A module CPython
++// also lacks — PIL, numpy — falls through to the normal ImportError and exit 1,
++// because that is a program which ran correctly and found a dependency
++// missing. The header holds the table that tells the two apart; it is only
++// present in the lypning-mp variant, so this compiles away everywhere else.
++#ifdef LYPNING_UNSUPPORTED_EXIT
++#include "lypning_unsupported.h"
++#define LYPNING_CHECK_UNSUPPORTED(qst) lypning_check_unsupported_module(qstr_str(qst))
++#else
++#define LYPNING_CHECK_UNSUPPORTED(qst)
++#endif
++
+ // Virtual sys.path entry that maps to the frozen modules.
+ #define MP_FROZEN_PATH_PREFIX ".frozen/"
+ 
+@@ -450,6 +463,7 @@ static mp_obj_t process_import_at_level(qstr full_mod_name, qstr level_mod_name,
+ 
+     if (stat == MP_IMPORT_STAT_NO_EXIST) {
+         // Not found -- fail.
++        LYPNING_CHECK_UNSUPPORTED(full_mod_name);
+         #if MICROPY_ERROR_REPORTING <= MICROPY_ERROR_REPORTING_TERSE
+         mp_raise_msg(&mp_type_ImportError, MP_ERROR_TEXT("module not found"));
+         #else
+@@ -666,6 +680,7 @@ mp_obj_t mp_builtin___import___default(size_t n_args, const mp_obj_t *args) {
+     #endif
+ 
+     // Couldn't find the module, so fail
++    LYPNING_CHECK_UNSUPPORTED(module_name_qstr);
+     #if MICROPY_ERROR_REPORTING <= MICROPY_ERROR_REPORTING_TERSE
+     mp_raise_msg(&mp_type_ImportError, MP_ERROR_TEXT("module not found"));
+     #else
+diff --git a/py/map.c b/py/map.c
+index d40e3dc..250d1c1 100644
+--- a/py/map.c
++++ b/py/map.c
+@@ -214,8 +214,33 @@ mp_map_elem_t *MICROPY_WRAP_MP_MAP_LOOKUP(mp_map_lookup)(mp_map_t * map, mp_obj_
+             return NULL;
+         }
+         if (map->used == map->alloc) {
+-            // TODO: Alloc policy
+-            map->alloc += 4;
++            // lypning: grow geometrically, not by a constant 4.
++            //
++            // Upstream's `map->alloc += 4` carries a `TODO: Alloc policy` and
++            // is harmless where an ordered map is what it was written for — a
++            // module's globals or a type's locals, tens of entries at most.
++            // lypning-mp points the PYTHON-level dict at the ordered map as well
++            // (see mp_obj_new_dict in py/objdict.c), so this line now runs for
++            // every dict a program builds, and one m_renew per FOUR insertions
++            // means a 20,000-key dict reallocates 5,000 times and copies the
++            // whole table each time.
++            //
++            // Measured against the constant-4 policy on this build, insert of
++            // 20,000 distinct keys: 0.96x; 10,000: 0.98x; 5,000: 0.98x. That is
++            // the whole of the reallocation cost, and it is small — which is
++            // the useful half of the result. It says the dict rows in
++            // docs/BENCH-LEDGER.md are dominated by the LINEAR SCAN
++            // above, not by the allocator, so a future pass that wants those
++            // rows should go after the scan and not spend itself here.
++            //
++            // The 1.5x factor matches what the hashed path already does at
++            // these sizes (hash_allocation_sizes grows by 1.33-1.5x), so the
++            // memory slack is not a new behaviour for a large map.
++            if (map->alloc < 8) {
++                map->alloc += 4;
++            } else {
++                map->alloc += map->alloc / 2;
++            }
+             map->table = m_renew(mp_map_elem_t, map->table, map->used, map->alloc);
+             mp_seq_clear(map->table, map->used, map->alloc, sizeof(*map->table));
+         }
+diff --git a/py/modbuiltins.c b/py/modbuiltins.c
+index 6f085f2..a016172 100644
+--- a/py/modbuiltins.c
++++ b/py/modbuiltins.c
+@@ -31,6 +31,8 @@
+ #include "py/objint.h"
+ #include "py/objstr.h"
+ #include "py/objtype.h"
++#include "py/formatfloat.h"
++#include "py/parsenum.h"
+ #include "py/runtime.h"
+ #include "py/builtin.h"
+ #include "py/stream.h"
+@@ -184,6 +186,12 @@ static mp_obj_t mp_builtin_dir(size_t n_args, const mp_obj_t *args) {
+             }
+         }
+     }
++    #ifdef LYPNING_UNSUPPORTED_EXIT
++    // lypning: CPython's dir() is sorted. Leaving it in qstr-pool order makes
++    // every `print(dir(x))` a diff against CPython for no reason.
++    mp_obj_t sort_args[1] = { dir };
++    mp_obj_list_sort(1, sort_args, (mp_map_t *)&mp_const_empty_map);
++    #endif
+     return dir;
+ }
+ MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mp_builtin_dir_obj, 0, 1, mp_builtin_dir);
+@@ -387,6 +395,17 @@ static mp_obj_t mp_builtin_print(size_t n_args, const mp_obj_t *pos_args, mp_map
+         #if MICROPY_PY_IO && MICROPY_PY_SYS_STDFILES
+         { MP_QSTR_file, MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_rom_obj = MP_ROM_PTR(&mp_sys_stdout_obj)} },
+         #endif
++        // lypning: accept and ignore `flush`. stdout in this port is a write(2)
++        // per chunk (ports/unix/unix_mphal.c), so it is ALREADY flushed — which
++        // makes accepting the keyword the semantically exact answer rather than
++        // a fudge. Rejecting it made `print("a", flush=True)` exit 90 for a
++        // program lypning-mp runs perfectly (§7 rule 1).
++        //
++        // It goes LAST, after `file`, and is deliberately absent from the enum
++        // above: the enum indexes this array positionally, so slotting a new
++        // entry anywhere before ARG_file silently makes `file` resolve to the
++        // wrong slot. Doing exactly that segfaulted `print(1)`.
++        { MP_QSTR_flush, MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = false} },
+     };
+ 
+     // parse args (a union is used to reduce the amount of C stack that is needed)
+@@ -491,6 +510,27 @@ static mp_obj_t mp_builtin_round(size_t n_args, const mp_obj_t *args) {
+     mp_float_t val = mp_obj_get_float(o_in);
+     if (n_args > 1) {
+         mp_int_t num_dig = mp_obj_get_int(args[1]);
++        #ifdef LYPNING_UNSUPPORTED_EXIT
++        // lypning: round through a correctly-rounded decimal formatter, not
++        // through nearbyint(val * 10**n) / 10**n.
++        //
++        // The multiply is where upstream loses: 2.675 * 100 is 267.50000000000006
++        // in binary, so it rounds up to 2.68 — while CPython answers 2.67,
++        // because the stored double is really 2.67499999999999982. §6 names
++        // exactly this case, and `arith-mixed` is the corpus entry that catches
++        // it. Formatting to n decimals and reading the result back applies the
++        // rounding to the true binary value, which is what CPython does.
++        if (num_dig >= 0 && num_dig <= 17 && val > -1e17 && val < 1e17) {
++            char buf[48];
++            int len = mp_format_float(val, buf, sizeof(buf), 'f', (int)num_dig, '\0');
++            if (len > 0) {
++                mp_obj_t back = mp_parse_num_float(buf, (size_t)len, false, NULL);
++                if (mp_obj_is_float(back)) {
++                    return back;
++                }
++            }
++        }
++        #endif
+         mp_float_t mult = MICROPY_FLOAT_C_FUN(pow)(10, (mp_float_t)num_dig);
+         // TODO may lead to overflow
+         mp_float_t rounded = MICROPY_FLOAT_C_FUN(nearbyint)(val * mult) / mult;
+@@ -746,6 +786,19 @@ static const mp_rom_map_elem_t mp_module_builtins_globals_table[] = {
+     { MP_ROM_QSTR(MP_QSTR_NameError), MP_ROM_PTR(&mp_type_NameError) },
+     { MP_ROM_QSTR(MP_QSTR_NotImplementedError), MP_ROM_PTR(&mp_type_NotImplementedError) },
+     { MP_ROM_QSTR(MP_QSTR_OSError), MP_ROM_PTR(&mp_type_OSError) },
++    #ifdef LYPNING_UNSUPPORTED_EXIT
++    // lypning: the errno-mapped OSError subclasses (py/objexcept.c) plus the two
++    // CPython aliases. `IOError is OSError` and `EnvironmentError is OSError`
++    // are True in CPython too, so those two are the SAME pointer rather than
++    // new types: an alias costs a map entry and a qstr and no mp_obj_type_t.
++    { MP_ROM_QSTR(MP_QSTR_EnvironmentError), MP_ROM_PTR(&mp_type_OSError) },
++    { MP_ROM_QSTR(MP_QSTR_FileExistsError), MP_ROM_PTR(&mp_type_FileExistsError) },
++    { MP_ROM_QSTR(MP_QSTR_FileNotFoundError), MP_ROM_PTR(&mp_type_FileNotFoundError) },
++    { MP_ROM_QSTR(MP_QSTR_IOError), MP_ROM_PTR(&mp_type_OSError) },
++    { MP_ROM_QSTR(MP_QSTR_IsADirectoryError), MP_ROM_PTR(&mp_type_IsADirectoryError) },
++    { MP_ROM_QSTR(MP_QSTR_NotADirectoryError), MP_ROM_PTR(&mp_type_NotADirectoryError) },
++    { MP_ROM_QSTR(MP_QSTR_PermissionError), MP_ROM_PTR(&mp_type_PermissionError) },
++    #endif
+     { MP_ROM_QSTR(MP_QSTR_OverflowError), MP_ROM_PTR(&mp_type_OverflowError) },
+     { MP_ROM_QSTR(MP_QSTR_RuntimeError), MP_ROM_PTR(&mp_type_RuntimeError) },
+     #if MICROPY_PY_ASYNC_AWAIT
+diff --git a/py/modsys.c b/py/modsys.c
+index 3dae926..fdf5456 100644
+--- a/py/modsys.c
++++ b/py/modsys.c
+@@ -298,9 +298,28 @@ static const uint16_t sys_mutable_keys[] = {
+     MP_QSTRnull,
+ };
+ 
++// lypning: the CPython stdlib name table. Only present in the lypning-mp variant, so
++// this file compiles unchanged everywhere else.
++#ifdef LYPNING_UNSUPPORTED_EXIT
++#include "lypning_unsupported.h"
++#endif
++
+ void mp_module_sys_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest) {
+     MP_STATIC_ASSERT(MP_ARRAY_SIZE(sys_mutable_keys) == MP_SYS_MUTABLE_NUM + 1);
+     MP_STATIC_ASSERT(MP_ARRAY_SIZE(MP_STATE_VM(sys_mutable)) == MP_SYS_MUTABLE_NUM);
++    #if defined(LYPNING_UNSUPPORTED_EXIT) && MICROPY_PY_BUILTINS_FROZENSET
++    // lypning: sys.stdlib_module_names. It cannot live in the globals table —
++    // that is a const ROM dict and a frozenset is a heap object — and it cannot
++    // use sys_mutable_keys either, which is for mutable attributes and wants an
++    // mpstate enum slot. The delegation hook is where a lazily built constant
++    // belongs. dest[0] == MP_OBJ_NULL is the load case; a store falls through
++    // to mp_module_generic_attr and is rejected, as it is for any other
++    // read-only sys attribute.
++    if (attr == MP_QSTR_stdlib_module_names && dest[0] == MP_OBJ_NULL) {
++        dest[0] = lypning_sys_stdlib_module_names();
++        return;
++    }
++    #endif
+     mp_module_generic_attr(attr, dest, sys_mutable_keys, MP_STATE_VM(sys_mutable));
+ }
+ #endif
+diff --git a/py/obj.h b/py/obj.h
+index 3c9122a..2319b0d 100644
+--- a/py/obj.h
++++ b/py/obj.h
+@@ -898,6 +898,23 @@ extern const mp_obj_type_t mp_type_MemoryError;
+ extern const mp_obj_type_t mp_type_NameError;
+ extern const mp_obj_type_t mp_type_NotImplementedError;
+ extern const mp_obj_type_t mp_type_OSError;
++#ifdef LYPNING_UNSUPPORTED_EXIT
++// lypning: the errno-mapped OSError subclasses, defined in py/objexcept.c.
++// CPython's OSError.__new__ returns one of these instead of a bare OSError, so
++// `type(e).__name__` and `except FileNotFoundError:` both depend on them.
++extern const mp_obj_type_t mp_type_FileNotFoundError;
++extern const mp_obj_type_t mp_type_FileExistsError;
++extern const mp_obj_type_t mp_type_PermissionError;
++extern const mp_obj_type_t mp_type_IsADirectoryError;
++extern const mp_obj_type_t mp_type_NotADirectoryError;
++// errno -> the OSError subclass CPython would have built, or mp_type_OSError
++// when this variant does not carry one for it. py/objexcept.c owns the table;
++// py/runtime.c's mp_raise_OSError() is the other caller.
++const mp_obj_type_t *lypning_oserror_type(mp_int_t errno_);
++// OSError(errno, strerror, filename), as CPython builds it for a real OS
++// failure. py/objexcept.c hides the third argument from `.args`.
++MP_NORETURN void lypning_raise_oserror_filename(int errno_, const char *filename);
++#endif
+ extern const mp_obj_type_t mp_type_OverflowError;
+ extern const mp_obj_type_t mp_type_RuntimeError;
+ extern const mp_obj_type_t mp_type_StopAsyncIteration;
+diff --git a/py/objdict.c b/py/objdict.c
+index 692a7de..a086833 100644
+--- a/py/objdict.c
++++ b/py/objdict.c
+@@ -649,6 +649,20 @@ void mp_obj_dict_init(mp_obj_dict_t *dict, size_t n_args) {
+ mp_obj_t mp_obj_new_dict(size_t n_args) {
+     mp_obj_dict_t *o = m_new_obj(mp_obj_dict_t);
+     mp_obj_dict_init(o, n_args);
++    // lypning: CPython has guaranteed dict insertion order since 3.7. A subset
++    // runtime that quietly reorders print(d), d.items(), json.dumps(d) and
++    // every Counter/defaultdict display emits plausible wrong output with exit
++    // 0 — the failure docs/MICROPYTHON.md exists to prevent. The ordered map is
++    // already compiled in for collections.OrderedDict; this points the PYTHON-
++    // level dict at it, and costs zero bytes.
++    //
++    // Deliberately here and NOT in mp_obj_dict_init: that is also used for
++    // module globals and other internal dicts, and setting the flag there
++    // breaks mpy-cross while compiling frozen modules. The cost is asymptotic
++    // — MicroPython's ordered map is a linear array, so very many distinct
++    // keys degrade quadratically. Owner decision 2026-08-13; timing table in
++    // micropython/README.md.
++    o->map.is_ordered = 1;
+     return MP_OBJ_FROM_PTR(o);
+ }
+ 
+diff --git a/py/objexcept.c b/py/objexcept.c
+index d43cf97..4f48368 100644
+--- a/py/objexcept.c
++++ b/py/objexcept.c
+@@ -180,6 +180,43 @@ void mp_obj_exception_print(const mp_print_t *print, mp_obj_t o_in, mp_print_kin
+             return;
+         }
+ 
++        #ifdef LYPNING_UNSUPPORTED_EXIT
++        // lypning: CPython's OSError.__str__, which is a different rule from
++        // MicroPython's and differs on the most common shape of all.
++        //
++        // CPython decorates ONLY when there are two or more args, and the
++        // decoration carries the SECOND arg as the message:
++        //     str(OSError(2))            -> "2"
++        //     str(OSError(2, "x"))       -> "[Errno 2] x"
++        //     str(OSError(2, "x", "f"))  -> "[Errno 2] x: 'f'"
++        // MicroPython decorated a ONE-arg OSError with its own errno NAME
++        // instead — `str(OSError(2))` came out as "[Errno 2] ENOENT" — which is
++        // both extra text CPython does not write and a different word from the
++        // strerror CPython would use. Two harvested corpus programs caught it.
++        if (mp_obj_is_subclass_fast(MP_OBJ_FROM_PTR(o->base.type), MP_OBJ_FROM_PTR(&mp_type_OSError))
++            && o->args->len >= 2 && o->args->len <= 5) {
++            // ANY first argument, not just an int: CPython renders
++            // str(OSError(2.0, "x")) as "[Errno 2.0] x". Only the errno ->
++            // subclass MAPPING requires an int; the message does not.
++            mp_print_str(print, "[Errno ");
++            mp_obj_print_helper(print, o->args->items[0], PRINT_STR);
++            mp_print_str(print, "] ");
++            mp_obj_print_helper(print, o->args->items[1], PRINT_STR);
++            if (o->args->len > 2) {
++                mp_print_str(print, ": ");
++                mp_obj_print_helper(print, o->args->items[2], PRINT_REPR);
++                // CPython's 5-argument form is (errno, strerror, filename,
++                // winerror, filename2) and renders the pair as "'f' -> 'w'".
++                // Four arguments show only the first filename; six or more are
++                // not an OSError shape at all and fall back to the tuple.
++                if (o->args->len > 4) {
++                    mp_print_str(print, " -> ");
++                    mp_obj_print_helper(print, o->args->items[4], PRINT_REPR);
++                }
++            }
++            return;
++        }
++        #else
+         #if MICROPY_PY_ERRNO
+         // try to provide a nice OSError error message
+         if (o->base.type == &mp_type_OSError && o->args->len > 0 && o->args->len < 3 && mp_obj_is_small_int(o->args->items[0])) {
+@@ -194,19 +231,105 @@ void mp_obj_exception_print(const mp_print_t *print, mp_obj_t o_in, mp_print_kin
+             }
+         }
+         #endif
++        #endif
+ 
+         if (o->args->len == 1) {
++            // lypning: CPython's KeyError.__str__ is repr(key), not str(key), so
++            // a missing key prints as 'missing' with the quotes. §6 makes this
++            // contractual and `json-keyerror-guard` is the corpus entry for it.
++            #ifdef LYPNING_UNSUPPORTED_EXIT
++            if (o->base.type == &mp_type_KeyError) {
++                mp_obj_print_helper(print, o->args->items[0], PRINT_REPR);
++                return;
++            }
++            #endif
+             mp_obj_print_helper(print, o->args->items[0], PRINT_STR);
+             return;
+         }
+     }
+ 
++    #ifdef LYPNING_UNSUPPORTED_EXIT
++    // lypning: repr() of an exception with ONE argument.
++    //
++    // The args are printed as a tuple, and a 1-tuple's repr carries the comma
++    // that tells it apart from a parenthesised expression — so every exception
++    // in the language reprs as `ValueError('x',)` where CPython writes
++    // `ValueError('x')`. CPython does not go through a tuple repr here; it
++    // formats the args itself and a 1-arg exception is the overwhelmingly
++    // common case, so this was a divergence on `repr(e)` for essentially every
++    // caught exception, in every program that logs one.
++    if (o->args != NULL && o->args->len == 1) {
++        mp_print_str(print, "(");
++        mp_obj_print_helper(print, o->args->items[0], PRINT_REPR);
++        mp_print_str(print, ")");
++        return;
++    }
++    #endif
+     mp_obj_tuple_print(print, MP_OBJ_FROM_PTR(o->args), kind);
+ }
+ 
++#ifdef LYPNING_UNSUPPORTED_EXIT
++// lypning: errno -> the OSError subclass CPython's errnomap would have chosen.
++//
++// Deliberately a SUBSET of CPython's family. Each type costs an mp_obj_type_t,
++// a builtins-table entry and a qstr. The ones left out — BlockingIOError,
++// ChildProcessError, the ConnectionError branch, InterruptedError,
++// ProcessLookupError, TimeoutError — need a network, a process table or a
++// signal, none of which exist in this guest. They stay UNDEFINED so
++// `except TimeoutError:` keeps leaving through the honest exit-90 `builtin:`
++// refusal rather than being declared and never raised, which is the bug class
++// docs/MICROPYTHON.md §4b was written about.
++const mp_obj_type_t *lypning_oserror_type(mp_int_t errno_) {
++    switch (errno_) {
++        case MP_ENOENT:
++            return &mp_type_FileNotFoundError;
++        case MP_EEXIST:
++            return &mp_type_FileExistsError;
++        case MP_EPERM:
++        case MP_EACCES:
++            return &mp_type_PermissionError;
++        case MP_EISDIR:
++            return &mp_type_IsADirectoryError;
++        case MP_ENOTDIR:
++            return &mp_type_NotADirectoryError;
++        default:
++            return &mp_type_OSError;
++    }
++}
++#endif
++
+ mp_obj_t mp_obj_exception_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw, const mp_obj_t *args) {
+     mp_arg_check_num(n_args, n_kw, 0, MP_OBJ_FUN_ARGS_MAX, false);
+ 
++    #ifdef LYPNING_UNSUPPORTED_EXIT
++    // lypning: CPython's OSError.__new__ returns an errno-mapped SUBCLASS, and
++    // MicroPython has one flat OSError. That cost two different things: the
++    // subclass NAMES were undefined, so the very common `except
++    // FileNotFoundError:` left through the exit-90 `builtin:` refusal; and
++    // `type(e).__name__` reported OSError where CPython reports the subclass,
++    // at exit 0, which is the silent divergence the corpus exists to catch.
++    //
++    // THE ARITY RULE IS CPYTHON'S, not a simplification of it, and it is the
++    // whole reason this is not just `n_args > 0`. Objects/exceptions.c parses
++    // an errno out of the arguments only when 2 <= nargs <= 5, so measured
++    // against CPython 3.11:
++    //     OSError(2)                   -> OSError            (NOT mapped)
++    //     OSError(2, "x")              -> FileNotFoundError
++    //     OSError(2, "x", "f", 5, "w") -> FileNotFoundError
++    //     OSError(2, ...six args...)   -> OSError            (NOT mapped)
++    //     OSError("2"), OSError(2.0, "x") -> OSError         (errno not an int)
++    // Mapping a one-argument OSError would MANUFACTURE a divergence on a
++    // program lypning-mp runs correctly today, which is worse than the hole it
++    // closes.
++    //
++    // A failing open() does not arrive here: it comes from
++    // mp_raise_OSError(errno) with one argument, so py/runtime.c carries the
++    // other half. Both are needed and neither covers the other.
++    if (type == &mp_type_OSError && n_args >= 2 && n_args <= 5 && mp_obj_is_small_int(args[0])) {
++        type = lypning_oserror_type(MP_OBJ_SMALL_INT_VALUE(args[0]));
++    }
++    #endif
++
+     // Try to allocate memory for the exception, with fallback to emergency exception object
+     mp_obj_exception_t *o_exc = m_new_obj_maybe(mp_obj_exception_t);
+     if (o_exc == NULL) {
+@@ -280,6 +403,42 @@ void mp_obj_exception_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest) {
+         }
+         return;
+     }
++    #ifdef LYPNING_UNSUPPORTED_EXIT
++    // lypning: CPython's OSError argument split. It builds
++    // OSError(errno, strerror, filename) and then does NOT show the third:
++    //     >>> open("nope.txt").args      -> (2, 'No such file or directory')
++    //     >>> e.filename                 -> 'nope.txt'
++    //     >>> str(e)  -> "[Errno 2] No such file or directory: 'nope.txt'"
++    // The filename has to be kept somewhere for str() to print, and a third
++    // args slot is the cheapest place — an extra field on mp_obj_exception_t
++    // would cost memory on every exception in the runtime. So it is stored
++    // there and hidden here, which reproduces every observable behaviour.
++    if (self->args != NULL && self->args->len >= 3 && self->args->len <= 5
++        && mp_obj_is_subclass_fast(MP_OBJ_FROM_PTR(self->base.type), MP_OBJ_FROM_PTR(&mp_type_OSError))) {
++        if (attr == MP_QSTR_args) {
++            mp_obj_t two[2] = { self->args->items[0], self->args->items[1] };
++            dest[0] = mp_obj_new_tuple(2, two);
++            return;
++        }
++        if (attr == MP_QSTR_filename) {
++            dest[0] = self->args->items[2];
++            return;
++        }
++        if (attr == MP_QSTR_filename2) {
++            dest[0] = self->args->len > 4 ? self->args->items[4] : mp_const_none;
++            return;
++        }
++        if (attr == MP_QSTR_strerror) {
++            dest[0] = self->args->items[1];
++            return;
++        }
++    }
++    if (attr == MP_QSTR_strerror && self->args != NULL && self->args->len >= 2
++        && mp_obj_is_subclass_fast(MP_OBJ_FROM_PTR(self->base.type), MP_OBJ_FROM_PTR(&mp_type_OSError))) {
++        dest[0] = self->args->items[1];
++        return;
++    }
++    #endif
+     if (attr == MP_QSTR_args) {
+         decompress_error_text_maybe(self);
+         dest[0] = MP_OBJ_FROM_PTR(self->args);
+@@ -329,6 +488,15 @@ MP_DEFINE_EXCEPTION(Exception, BaseException)
+     MP_DEFINE_EXCEPTION(UnboundLocalError, NameError)
+     */
+   MP_DEFINE_EXCEPTION(OSError, Exception)
++    #ifdef LYPNING_UNSUPPORTED_EXIT
++    // lypning: the five errno-mapped subclasses a file-touching one-liner names.
++    // lypning_oserror_type() above chooses between them and explains the five.
++    MP_DEFINE_EXCEPTION(FileNotFoundError, OSError)
++    MP_DEFINE_EXCEPTION(FileExistsError, OSError)
++    MP_DEFINE_EXCEPTION(PermissionError, OSError)
++    MP_DEFINE_EXCEPTION(IsADirectoryError, OSError)
++    MP_DEFINE_EXCEPTION(NotADirectoryError, OSError)
++    #endif
+     /*
+     MP_DEFINE_EXCEPTION(BlockingIOError, OSError)
+     MP_DEFINE_EXCEPTION(ChildProcessError, OSError)
+diff --git a/py/objfloat.c b/py/objfloat.c
+index b0ad70d..67e3d5c 100644
+--- a/py/objfloat.c
++++ b/py/objfloat.c
+@@ -30,6 +30,7 @@
+ #include <assert.h>
+ 
+ #include "py/parsenum.h"
++#include "py/formatfloat.h"
+ #include "py/runtime.h"
+ 
+ #if MICROPY_PY_BUILTINS_FLOAT
+@@ -110,6 +111,92 @@ mp_int_t mp_float_hash(mp_float_t src) {
+ static void float_print(const mp_print_t *print, mp_obj_t o_in, mp_print_kind_t kind) {
+     (void)kind;
+     mp_float_t o_val = mp_obj_float_get(o_in);
++    #ifdef LYPNING_UNSUPPORTED_EXIT
++    // lypning: CPython's repr is the SHORTEST decimal string that reads back as
++    // the same double, which docs/SUBSET.md §6 makes contractual
++    // ("0.1 + 0.2 -> 0.30000000000000004", "1e22 -> 1e+22", "100.0/4 -> 25.0").
++    // MicroPython instead prints a fixed high precision and trims, so 9.7 comes
++    // out as 9.699999999999999 — right to 16 digits and wrong as an answer,
++    // which is exactly the silent divergence the corpus exists to catch.
++    //
++    // Search for the shortest precision that round-trips rather than porting a
++    // Grisu/Ryu implementation: at most 17 formats of one number, on a path
++    // that only runs when a float is printed.
++    //
++    // The search is done in 'e' format, NOT 'g', and that is the whole
++    // correctness of it. %g picks exponential notation when the exponent is at
++    // least the PRECISION, so searching in 'g' made the notation depend on how
++    // few digits the number happened to need: 99.0 needs two digits and came
++    // out as "99.0", while 100.0 needs one and came out as **"1e+02"**. So did
++    // 10.0, 400.0, 1000.0 and 1e15. Every one of those is a silent wrong answer
++    // at exit 0 for the single most ordinary thing a program does — print a
++    // number — and three separately harvested corpus programs hit it.
++    //
++    // 'e' always writes one digit before the point, so the exponent it reports
++    // is unambiguous, and the NOTATION is then chosen deliberately by CPython's
++    // rule rather than inherited from a formatter's own.
++    char buf[48];
++    int len = 0;
++    int prec = 1;
++    for (; prec <= 17; prec++) {
++        len = mp_format_float(o_val, buf, sizeof(buf), 'e', prec - 1, '\0');
++        if (len <= 0) {
++            break;
++        }
++        mp_obj_t back = mp_parse_num_float(buf, (size_t)len, false, NULL);
++        if (mp_obj_is_float(back) && mp_obj_float_get(back) == o_val) {
++            break;
++        }
++    }
++    // nan and inf have no exponent to read; they fall through to the printer
++    // below, which already spells them the way CPython does.
++    const char *epos = NULL;
++    for (int i = 0; i < len; i++) {
++        if (buf[i] == 'e') {
++            epos = buf + i;
++            break;
++        }
++    }
++    if (len > 0 && epos != NULL) {
++        int exp = (int)strtol(epos + 1, NULL, 10);
++        // CPython's repr style (Python/pystrtod.c, format_float_short with
++        // mode 'r'): exponential when decpt <= -4 or decpt > 16, where decpt is
++        // the position of the decimal point, one more than this exponent.
++        // Verified against CPython 3.11 over 299,851 random doubles.
++        int decpt = exp + 1;
++        if (decpt <= -4 || decpt > 16) {
++            // Already exactly the form CPython writes, two exponent digits and
++            // all: 1e+22, 1e-05, 5e-324.
++            mp_print_strn(print, buf, (size_t)len, 0, '\0', 0);
++            return;
++        }
++        // Fixed notation with exactly the decimals these digits need, so no
++        // trailing zeros are invented and none are lost. 'f' is used rather
++        // than 'g' for the same reason the search is: %g would re-decide the
++        // notation and strip digits on its own terms.
++        int dec = prec - 1 - exp;
++        if (dec < 0) {
++            dec = 0;
++        }
++        len = mp_format_float(o_val, buf, sizeof(buf), 'f', dec, '\0');
++        if (len > 0) {
++            bool has_point = false;
++            for (int i = 0; i < len; i++) {
++                if (buf[i] == '.') {
++                    has_point = true;
++                    break;
++                }
++            }
++            mp_print_strn(print, buf, (size_t)len, 0, '\0', 0);
++            if (!has_point) {
++                // 'f' with zero decimals drops the point; CPython's repr keeps
++                // it (25.0, not 25).
++                mp_print_str(print, ".0");
++            }
++            return;
++        }
++    }
++    #endif
+     mp_print_float(print, o_val, 'g', PF_FLAG_ALWAYS_DECIMAL, '\0', -1, MP_FLOAT_REPR_PREC);
+ }
+ 
+diff --git a/py/objstr.c b/py/objstr.c
+index e8b2512..eaa8c80 100644
+--- a/py/objstr.c
++++ b/py/objstr.c
+@@ -484,6 +484,13 @@ const byte *str_index_to_ptr(const mp_obj_type_t *type, const byte *self_data, s
+ }
+ #endif
+ 
++// lypning: `s[::-1]` and friends. Upstream raises NotImplementedError for any
++// step but 1; the walk lives in the variant header so this file keeps a
++// one-line call site. docs/SUBSET.md §3.1 puts it in Tier 0.
++#ifdef LYPNING_UNSUPPORTED_EXIT
++#include "lypning_slice.h"
++#endif
++
+ // This is used for both bytes and 8-bit strings. This is not used for unicode strings.
+ static mp_obj_t bytes_subscr(mp_obj_t self_in, mp_obj_t index, mp_obj_t value) {
+     const mp_obj_type_t *type = mp_obj_get_type(self_in);
+@@ -494,7 +501,11 @@ static mp_obj_t bytes_subscr(mp_obj_t self_in, mp_obj_t index, mp_obj_t value) {
+         if (mp_obj_is_type(index, &mp_type_slice)) {
+             mp_bound_slice_t slice;
+             if (!mp_seq_get_fast_slice_indexes(self_len, index, &slice)) {
++                #ifdef LYPNING_UNSUPPORTED_EXIT
++                return lypning_slice_str(type, self_data, self_len, index, false);
++                #else
+                 mp_raise_NotImplementedError(MP_ERROR_TEXT("only slices with step=1 (aka None) are supported"));
++                #endif
+             }
+             return mp_obj_new_str_of_type(type, self_data + slice.start, slice.stop - slice.start);
+         }
+@@ -958,6 +969,62 @@ static mp_obj_t str_center(mp_obj_t str_in, mp_obj_t width_in) {
+ MP_DEFINE_CONST_FUN_OBJ_2(str_center_obj, str_center);
+ #endif
+ 
++#ifdef LYPNING_UNSUPPORTED_EXIT
++// lypning: str.zfill. MicroPython has no zfill at all, and a frozen shim cannot
++// add a method to the built-in str type, so it has to be here. The sign
++// handling is the only part that is not rjust("0"): CPython keeps a leading
++// '+' or '-' in front of the padding ("-7".zfill(4) == "-007").
++static mp_obj_t str_zfill(mp_obj_t str_in, mp_obj_t width_in) {
++    GET_STR_DATA_LEN(str_in, str, str_len);
++    mp_uint_t width = mp_obj_get_int(width_in);
++    if (str_len >= width) {
++        return str_in;
++    }
++    vstr_t vstr;
++    vstr_init_len(&vstr, width);
++    size_t sign = (str_len > 0 && (str[0] == '-' || str[0] == '+')) ? 1 : 0;
++    if (sign) {
++        ((byte *)vstr.buf)[0] = str[0];
++    }
++    memset(vstr.buf + sign, '0', width - str_len);
++    memcpy(vstr.buf + sign + (width - str_len), str + sign, str_len - sign);
++    return mp_obj_new_str_type_from_vstr(mp_obj_get_type(str_in), &vstr);
++}
++MP_DEFINE_CONST_FUN_OBJ_2(str_zfill_obj, str_zfill);
++
++// str.ljust / str.rjust, the other two padding methods MicroPython omits.
++// CPython takes an optional fill character; `str-zfill-pad` uses both forms.
++static mp_obj_t str_just(size_t n_args, const mp_obj_t *args, bool left) {
++    GET_STR_DATA_LEN(args[0], str, str_len);
++    mp_uint_t width = mp_obj_get_int(args[1]);
++    byte fill = ' ';
++    if (n_args > 2) {
++        size_t fill_len;
++        const char *fill_str = mp_obj_str_get_data(args[2], &fill_len);
++        if (fill_len != 1) {
++            mp_raise_TypeError(MP_ERROR_TEXT("fill must be a single character"));
++        }
++        fill = (byte)fill_str[0];
++    }
++    if (str_len >= width) {
++        return args[0];
++    }
++    vstr_t vstr;
++    vstr_init_len(&vstr, width);
++    memset(vstr.buf, fill, width);
++    memcpy(vstr.buf + (left ? 0 : width - str_len), str, str_len);
++    return mp_obj_new_str_type_from_vstr(mp_obj_get_type(args[0]), &vstr);
++}
++static mp_obj_t str_ljust(size_t n_args, const mp_obj_t *args) {
++    return str_just(n_args, args, true);
++}
++static mp_obj_t str_rjust(size_t n_args, const mp_obj_t *args) {
++    return str_just(n_args, args, false);
++}
++MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(str_ljust_obj, 2, 3, str_ljust);
++MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(str_rjust_obj, 2, 3, str_rjust);
++#endif
++
+ // Takes an int arg, but only parses unsigned numbers, and only changes
+ // *num if at least one digit was parsed.
+ static const char *str_to_int(const char *str, const char *top, int *num) {
+@@ -2116,6 +2183,11 @@ static const mp_rom_map_elem_t array_bytearray_str_bytes_locals_table[] = {
+     #if MICROPY_PY_BUILTINS_STR_CENTER
+     { MP_ROM_QSTR(MP_QSTR_center), MP_ROM_PTR(&str_center_obj) },
+     #endif
++    #ifdef LYPNING_UNSUPPORTED_EXIT
++    { MP_ROM_QSTR(MP_QSTR_zfill), MP_ROM_PTR(&str_zfill_obj) },
++    { MP_ROM_QSTR(MP_QSTR_ljust), MP_ROM_PTR(&str_ljust_obj) },
++    { MP_ROM_QSTR(MP_QSTR_rjust), MP_ROM_PTR(&str_rjust_obj) },
++    #endif
+     { MP_ROM_QSTR(MP_QSTR_lower), MP_ROM_PTR(&str_lower_obj) },
+     { MP_ROM_QSTR(MP_QSTR_upper), MP_ROM_PTR(&str_upper_obj) },
+     { MP_ROM_QSTR(MP_QSTR_isspace), MP_ROM_PTR(&str_isspace_obj) },
+diff --git a/py/objstrunicode.c b/py/objstrunicode.c
+index d7ce4fc..4cd97ad 100644
+--- a/py/objstrunicode.c
++++ b/py/objstrunicode.c
+@@ -58,8 +58,29 @@ static void uni_print_quoted(const mp_print_t *print, const byte *str_data, uint
+     const byte *s = str_data, *top = str_data + str_len;
+     while (s < top) {
+         unichar ch;
++        const byte *char_start = s;
+         ch = utf8_get_char(s);
+         s = utf8_next_char(s);
++        #ifdef LYPNING_UNSUPPORTED_EXIT
++        // lypning: repr() of a printable non-ASCII character is the character.
++        //
++        // Upstream escapes everything above 126, so repr("åäö") came out as
++        // '\xe5\xe4\xf6' where CPython gives 'åäö'. That is not cosmetic:
++        // print(list) and print(dict) show ELEMENT reprs (§6), so every Swedish
++        // string inside a container printed as escapes — including the output of
++        // re.findall(), which is the shape a tokeniser one-liner produces.
++        // CLAUDE.md invariant 6 asks for Swedish and English to behave the same,
++        // and this is one of the two places they did not.
++        //
++        // 0xa0 is the floor rather than 0x80 so the C1 control block stays
++        // escaped, as it does in CPython.
++        if (ch >= 0xa0 && ch != quote_char) {
++            mp_print_strn(print, (const char *)char_start, s - char_start, 0, '\0', 0);
++            continue;
++        }
++        #else
++        (void)char_start;
++        #endif
+         if (ch == quote_char) {
+             mp_printf(print, "\\%c", quote_char);
+         } else if (ch == '\\') {
+@@ -178,6 +199,13 @@ const byte *str_index_to_ptr(const mp_obj_type_t *type, const byte *self_data, s
+     return s;
+ }
+ 
++// lypning: `s[::-1]` and friends. Upstream raises NotImplementedError for any
++// step but 1; the walk lives in the variant header so this file keeps a
++// one-line call site. docs/SUBSET.md §3.1 puts it in Tier 0.
++#ifdef LYPNING_UNSUPPORTED_EXIT
++#include "lypning_slice.h"
++#endif
++
+ static mp_obj_t str_subscr(mp_obj_t self_in, mp_obj_t index, mp_obj_t value) {
+     const mp_obj_type_t *type = mp_obj_get_type(self_in);
+     assert(type == &mp_type_str);
+@@ -193,7 +221,11 @@ static mp_obj_t str_subscr(mp_obj_t self_in, mp_obj_t index, mp_obj_t value) {
+             ostep = slice->step;
+ 
+             if (ostep != mp_const_none && ostep != MP_OBJ_NEW_SMALL_INT(1)) {
++                #ifdef LYPNING_UNSUPPORTED_EXIT
++                return lypning_slice_str(type, self_data, self_len, index, true);
++                #else
+                 mp_raise_NotImplementedError(MP_ERROR_TEXT("only slices with step=1 (aka None) are supported"));
++                #endif
+             }
+ 
+             const byte *pstart, *pstop;
+diff --git a/py/objtuple.c b/py/objtuple.c
+index c9d8e9b..6e56a46 100644
+--- a/py/objtuple.c
++++ b/py/objtuple.c
+@@ -178,6 +178,13 @@ mp_obj_t mp_obj_tuple_binary_op(mp_binary_op_t op, mp_obj_t lhs, mp_obj_t rhs) {
+     }
+ }
+ 
++// lypning: `s[::-1]` and friends. Upstream raises NotImplementedError for any
++// step but 1; the walk lives in the variant header so this file keeps a
++// one-line call site. docs/SUBSET.md §3.1 puts it in Tier 0.
++#ifdef LYPNING_UNSUPPORTED_EXIT
++#include "lypning_slice.h"
++#endif
++
+ mp_obj_t mp_obj_tuple_subscr(mp_obj_t self_in, mp_obj_t index, mp_obj_t value) {
+     if (value == MP_OBJ_SENTINEL) {
+         // load
+@@ -186,7 +193,11 @@ mp_obj_t mp_obj_tuple_subscr(mp_obj_t self_in, mp_obj_t index, mp_obj_t value) {
+         if (mp_obj_is_type(index, &mp_type_slice)) {
+             mp_bound_slice_t slice;
+             if (!mp_seq_get_fast_slice_indexes(self->len, index, &slice)) {
++                #ifdef LYPNING_UNSUPPORTED_EXIT
++                return lypning_slice_seq(self->items, self->len, index, true);
++                #else
+                 mp_raise_NotImplementedError(MP_ERROR_TEXT("only slices with step=1 (aka None) are supported"));
++                #endif
+             }
+             mp_obj_tuple_t *res = MP_OBJ_TO_PTR(mp_obj_new_tuple(slice.stop - slice.start, NULL));
+             mp_seq_copy(res->items, self->items + slice.start, res->len, mp_obj_t);
+diff --git a/py/objtype.c b/py/objtype.c
+index 68a36ff..dfec2bd 100644
+--- a/py/objtype.c
++++ b/py/objtype.c
+@@ -31,6 +31,11 @@
+ #include <assert.h>
+ 
+ #include "py/objtype.h"
++
++// lypning: CPython-semantics corrections. Only present in the lypning-mp variant.
++#ifdef LYPNING_UNSUPPORTED_EXIT
++#include "lypning_compat.h"
++#endif
+ #include "py/runtime.h"
+ 
+ #if MICROPY_DEBUG_VERBOSE // print debugging info
+@@ -261,6 +266,41 @@ static void instance_print(const mp_print_t *print, mp_obj_t self_in, mp_print_k
+         lookup.slot_offset = 0;
+         mp_obj_class_lookup(&lookup, self->base.type);
+     }
++    #ifdef LYPNING_UNSUPPORTED_EXIT
++    // lypning: the SAME fallback, for the case upstream's condition cannot see.
++    //
++    // The lookup above searches for __str__ with the native `print` slot in
++    // play, so for a subclass of a native type it stops at that slot and
++    // returns MP_OBJ_SENTINEL — not MP_OBJ_NULL. Upstream's fallback tests for
++    // NULL, so it never fires, and `print(x)` / `str(x)` used the NATIVE
++    // repr while `repr(x)` correctly used the subclass's __repr__.
++    //
++    // That is a silent wrong answer at exit 0, which docs/SUBSET.md
++    // treats as the one unacceptable outcome. It shipped in two of lypning-mp's
++    // own frozen shims: collections.defaultdict printed `{}` for what CPython
++    // prints as `defaultdict(<class 'list'>, {})`, and Counter printed a plain
++    // dict. Both define __repr__ and neither defines __str__.
++    //
++    // lypning_native_str_is_repr() carries the exclusions — str, bytes,
++    // bytearray and the exceptions define a real __str__ in CPython, so for
++    // those the native print IS correct and the fallback must not fire.
++    if (member[0] == MP_OBJ_SENTINEL && kind == PRINT_STR
++        && lypning_native_str_is_repr(self->subobj[0])) {
++        mp_obj_t lypning_repr[2] = {MP_OBJ_NULL};
++        struct class_lookup_data lypning_lookup = {
++            .obj = self,
++            .attr = MP_QSTR___repr__,
++            .slot_offset = 0,
++            .dest = lypning_repr,
++            .is_type = false,
++        };
++        mp_obj_class_lookup(&lypning_lookup, self->base.type);
++        if (lypning_repr[0] != MP_OBJ_NULL && lypning_repr[0] != MP_OBJ_SENTINEL) {
++            member[0] = lypning_repr[0];
++            member[1] = lypning_repr[1];
++        }
++    }
++    #endif
+ 
+     if (member[0] == MP_OBJ_SENTINEL) {
+         // Handle Exception subclasses specially
+diff --git a/py/parsenum.c b/py/parsenum.c
+index 05bcc0f..6e2aa71 100644
+--- a/py/parsenum.c
++++ b/py/parsenum.c
+@@ -190,7 +190,11 @@ value_error:
+         vstr_t vstr;
+         mp_print_t print;
+         vstr_init_print(&vstr, 50, &print);
+-        mp_printf(&print, "invalid syntax for integer with base %d: ", base == 1 ? 0 : base);
++        // lypning: CPython's exact wording. docs/SUBSET.md §6 lists
++        // "invalid literal for int() with base 10: 'abc'" as a message a
++        // program is allowed to print and compare, and `except-generic-message`
++        // is the corpus entry that would catch the divergence.
++        mp_printf(&print, "invalid literal for int() with base %d: ", base == 1 ? 0 : base);
+         mp_str_print_quoted(&print, str_val_start, top - str_val_start, true);
+         mp_obj_t exc = mp_obj_new_exception_arg1(&mp_type_ValueError,
+             mp_obj_new_str_from_utf8_vstr(&vstr));
+diff --git a/py/runtime.c b/py/runtime.c
+index 618e9b5..a130edb 100644
+--- a/py/runtime.c
++++ b/py/runtime.c
+@@ -50,6 +50,29 @@
+ #include "extmod/vfs.h"
+ #endif
+ 
++// lypning: three points in this file where MicroPython is about to report a
++// program error that is really lypning-mp being smaller than CPython — a missing
++// attribute on a stdlib module or a built-in type, an undefined name that is a
++// CPython builtin, and NotImplementedError (docs/SUBSET.md §7). The
++// header is only present in the lypning-mp variant, so this compiles away
++// everywhere else.
++#ifdef LYPNING_UNSUPPORTED_EXIT
++#include "lypning_unsupported.h"
++#include "lypning_compat.h"
++
++// lypning: the one definition of the call-keyword slots lypning_compat.h
++// declares. Defined here because this is the file that fills them.
++const char *lypning_call_kw;
++size_t lypning_call_n_kw;
++#define LYPNING_CHECK_UNSUPPORTED_ATTR(base, attr) lypning_check_unsupported_attr(base, attr)
++#define LYPNING_CHECK_UNSUPPORTED_NAME(name) lypning_check_unsupported_name(name)
++#define LYPNING_EXIT_NOT_IMPLEMENTED(msg) lypning_exit_not_implemented(msg)
++#else
++#define LYPNING_CHECK_UNSUPPORTED_ATTR(base, attr)
++#define LYPNING_CHECK_UNSUPPORTED_NAME(name)
++#define LYPNING_EXIT_NOT_IMPLEMENTED(msg)
++#endif
++
+ #if MICROPY_DEBUG_VERBOSE // print debugging info
+ #define DEBUG_PRINT (1)
+ #define DEBUG_printf DEBUG_printf
+@@ -252,8 +275,18 @@ mp_obj_t MICROPY_WRAP_MP_LOAD_GLOBAL(mp_load_global)(qstr qst) {
+             #if MICROPY_ERROR_REPORTING <= MICROPY_ERROR_REPORTING_TERSE
+             mp_raise_msg(&mp_type_NameError, MP_ERROR_TEXT("name not defined"));
+             #else
++            // lypning: a name CPython HAS in builtins (FileNotFoundError,
++            // frozenset, complex) is a coverage gap, not the program's bug.
++            LYPNING_CHECK_UNSUPPORTED_NAME(qstr_str(qst));
++            #ifdef LYPNING_UNSUPPORTED_EXIT
++            // lypning: CPython's wording, verbatim. A program that PRINTS a
++            // caught NameError's message — and a harvested corpus entry does —
++            // diverges on the contraction alone.
++            mp_raise_msg_varg(&mp_type_NameError, MP_ERROR_TEXT("name '%q' is not defined"), qst);
++            #else
+             mp_raise_msg_varg(&mp_type_NameError, MP_ERROR_TEXT("name '%q' isn't defined"), qst);
+             #endif
++            #endif
+         }
+     }
+     return elem->value;
+@@ -711,6 +744,18 @@ mp_obj_t mp_call_function_n_kw(mp_obj_t fun_in, size_t n_args, size_t n_kw, cons
+     // get the type
+     const mp_obj_type_t *type = mp_obj_get_type(fun_in);
+ 
++    #ifdef LYPNING_UNSUPPORTED_EXIT
++    // lypning: leave the first keyword's name where py/argcheck.c can quote it.
++    // That check is handed counts, not names, so without this the unsupported
++    // line reads "a keyword" instead of naming `strict`, `maxsplit`, `base`.
++    // See lypning_compat.h. Costs two stores, and only on a call that has
++    // keywords at all.
++    if (n_kw > 0 && mp_obj_is_qstr(args[n_args])) {
++        lypning_call_kw = qstr_str(MP_OBJ_QSTR_VALUE(args[n_args]));
++        lypning_call_n_kw = n_kw;
++    }
++    #endif
++
+     // do the call
+     if (MP_OBJ_TYPE_HAS_SLOT(type, call)) {
+         return MP_OBJ_TYPE_GET_SLOT(type, call)(fun_in, n_args, n_kw, args);
+@@ -1229,6 +1274,7 @@ void mp_load_method(mp_obj_t base, qstr attr, mp_obj_t *dest) {
+ 
+     if (dest[0] == MP_OBJ_NULL) {
+         // no attribute/method called attr
++        LYPNING_CHECK_UNSUPPORTED_ATTR(base, attr);
+         #if MICROPY_ERROR_REPORTING <= MICROPY_ERROR_REPORTING_TERSE
+         mp_raise_msg(&mp_type_AttributeError, MP_ERROR_TEXT("no such attribute"));
+         #else
+@@ -1739,6 +1785,10 @@ MP_NORETURN void mp_raise_TypeError(mp_rom_error_text_t msg) {
+ }
+ 
+ MP_NORETURN void mp_raise_NotImplementedError(mp_rom_error_text_t msg) {
++    // lypning: inside MicroPython this exception means exactly one thing — the
++    // VM does not implement the construct — which is the definition of the 90
++    // (docs/SUBSET.md §7). `s[::2]` is the one the corpus hits.
++    LYPNING_EXIT_NOT_IMPLEMENTED(msg);
+     mp_raise_msg(&mp_type_NotImplementedError, msg);
+ }
+ 
+@@ -1767,9 +1817,50 @@ MP_NORETURN void mp_raise_TypeError_int_conversion(mp_const_obj_t arg) {
+ }
+ 
+ MP_NORETURN void mp_raise_OSError(int errno_) {
++    #ifdef LYPNING_UNSUPPORTED_EXIT
++    // lypning: the C half of the OSError subclass mapping (py/objexcept.c has
++    // the Python half and the full reasoning). Every real OS failure in this
++    // build arrives here with ONE argument, which is below the 2..5 arity
++    // CPython's OSError.__new__ maps on — CPython reaches FileNotFoundError for
++    // a failing open() because it constructs OSError(errno, strerror,
++    // filename), and this build has neither the strerror table nor the filename
++    // to hand. So the type is chosen here instead.
++    //
++    // The argument list is deliberately left at one: padding it to two would
++    // change e.args and the text of str(e) on a message that already ships,
++    // for no gain — the class name is what a program branches on.
++    // ... and CPython's (errno, strerror) pair, so `str(e)` reads
++    // "[Errno 2] No such file or directory" rather than the bare "2".
++    const char *msg = lypning_strerror(errno_);
++    if (msg != NULL) {
++        mp_obj_t args[2] = { MP_OBJ_NEW_SMALL_INT(errno_), mp_obj_new_str(msg, strlen(msg)) };
++        nlr_raise(mp_obj_new_exception_args(lypning_oserror_type(errno_), 2, args));
++    }
++    mp_raise_type_arg(lypning_oserror_type(errno_), MP_OBJ_NEW_SMALL_INT(errno_));
++    #else
+     mp_raise_type_arg(&mp_type_OSError, MP_OBJ_NEW_SMALL_INT(errno_));
++    #endif
+ }
+ 
++#ifdef LYPNING_UNSUPPORTED_EXIT
++// lypning: OSError(errno, strerror, filename), the way CPython builds it for a
++// real OS failure. The third argument is deliberately kept in `args` here and
++// hidden by py/objexcept.c's attribute handler, which is where CPython's
++// "args is the first two, filename is the third" split is reproduced.
++MP_NORETURN void lypning_raise_oserror_filename(int errno_, const char *filename) {
++    const char *msg = lypning_strerror(errno_);
++    if (msg != NULL && filename != NULL) {
++        mp_obj_t args[3] = {
++            MP_OBJ_NEW_SMALL_INT(errno_),
++            mp_obj_new_str(msg, strlen(msg)),
++            mp_obj_new_str(filename, strlen(filename)),
++        };
++        nlr_raise(mp_obj_new_exception_args(lypning_oserror_type(errno_), 3, args));
++    }
++    mp_raise_OSError(errno_);
++}
++#endif
++
+ MP_NORETURN void mp_raise_OSError_with_filename(int errno_, const char *filename) {
+     vstr_t vstr;
+     vstr_init(&vstr, 32);
+diff --git a/shared/runtime/pyexec.c b/shared/runtime/pyexec.c
+index b217f30..c8ecb99 100644
+--- a/shared/runtime/pyexec.c
++++ b/shared/runtime/pyexec.c
+@@ -33,6 +33,12 @@
+ #include "py/runtime.h"
+ #include "py/repl.h"
+ #include "py/gc.h"
++
++// lypning: the unsupported-contract helpers. Only present in the lypning-mp variant.
++#ifdef LYPNING_UNSUPPORTED_EXIT
++#include "lypning_unsupported.h"
++#include "lypning_compat.h"
++#endif
+ #include "py/frozenmod.h"
+ #include "py/mphal.h"
+ #include "shared/readline/readline.h"
+@@ -184,7 +190,28 @@ static int parse_compile_execute(const void *source, mp_parse_input_kind_t input
+             ret = PYEXEC_FORCED_EXIT;
+             #endif
+         } else { // other exception
+-            mp_obj_print_exception(&mp_plat_print, MP_OBJ_FROM_PTR(nlr.ret_val));
++            // lypning: to STDERR, not stdout.
++            //
++            // Upstream prints an uncaught traceback on stdout, which puts it in
++            // the middle of a shell pipeline's data. docs/SUBSET.md §6
++            // makes the opposite contractual: "uncaught exception -> 1 with a
++            // traceback on stderr and nothing extra on stdout". This is the
++            // single largest source of stdout divergence from CPython, because
++            // it corrupts the output of EVERY failing program, not just the
++            // error text. MICROPY_ERROR_PRINTER is &mp_stderr_print in this
++            // port, and the SystemExit branch above already uses it.
++            // lypning: the fallback contract runs BEFORE the traceback. A
++            // NotImplementedError carrying the unsupported marker is not a
++            // program error, it is lypning-mp being too small, and it must leave by
++            // exit 90 with one greppable line (docs/SUBSET.md §7). The
++            // frozen shims raise it from PYTHON, so it never passes through
++            // mp_raise_NotImplementedError() and this is where it surfaces.
++            // Everything else falls through and keeps its traceback and exit 1.
++            #ifdef LYPNING_UNSUPPORTED_EXIT
++            lypning_check_unsupported_exc(MP_OBJ_FROM_PTR(nlr.ret_val));
++            lypning_check_compat_exc(MP_OBJ_FROM_PTR(nlr.ret_val));
++            #endif
++            mp_obj_print_exception(MICROPY_ERROR_PRINTER, MP_OBJ_FROM_PTR(nlr.ret_val));
+             ret = PYEXEC_UNHANDLED_EXCEPTION;
+             #if MICROPY_PYEXEC_ENABLE_EXIT_CODE_HANDLING
+             if (mp_obj_is_subclass_fast(MP_OBJ_FROM_PTR(((mp_obj_base_t *)nlr.ret_val)->type), MP_OBJ_FROM_PTR(&mp_type_KeyboardInterrupt))) { // keyboard interrupt

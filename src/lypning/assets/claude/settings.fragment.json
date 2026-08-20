@@ -1,0 +1,43 @@
+{
+  "$comment": [
+    "The .claude/settings.json wiring for lypning, as a standalone fragment.",
+    "`lypning install` merges exactly these three entries into an existing settings.json — appending, never rewriting, and only when no entry with the same command is already there. This file is for the other case: a user who would rather paste it in themselves, and a reviewer who wants to see what the merge intends before running it.",
+    "MERGE, DO NOT REPLACE. If the file already has a \"hooks\" object, add these entries to it; dropping this object over the top of it costs the user every hook they already had.",
+    "The commands are two-part on purpose: `sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/<name>.sh\"` for a project install, `sh \"$HOME/.claude/hooks/<name>.sh\"` for a user-scope one. A wheel that ships without the shell scripts is a supported shape — wire the CLI entry points instead (`lypning hook pre-tool-use`, `lypning hook stop`, `lypning shim install`), which do the same work one exec later and cost the shell screen that makes the PreToolUse hook affordable.",
+    "Every one of these prints {\"continue\":true,\"suppressOutput\":true} and exits 0 on every path, including its own failures. There is deliberately no permissionDecision field anywhere here: answering \"allow\" from a PreToolUse hook would bypass the permission prompt for every Bash command in the session, which is a far bigger change than a capture harness is allowed to make.",
+    "Off switches, no edit required: LYPNING_CAPTURE=0 disables the whole harness, LYPNING_HARVEST=0 keeps capturing but stops the Stop hook publishing."
+  ],
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/lypning-session-start.sh\""
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/lypning-capture.sh\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/lypning-harvest.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}

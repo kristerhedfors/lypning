@@ -1,0 +1,18 @@
+# Rust
+src/lypning/assets/rust/target/
+# MicroPython build
+src/lypning/assets/micropython/build/
+src/lypning/assets/micropython/.build/
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.venv/
+venv/
+# Local engine cache
+.lypning/
+# Pages build output
+_site/

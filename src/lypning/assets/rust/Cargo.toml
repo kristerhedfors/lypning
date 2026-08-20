@@ -1,0 +1,25 @@
+[package]
+name = "lypning"
+version = "0.1.0"
+edition = "2021"
+description = "Mixture of Pythons — a from-scratch Rust runtime for the bottom slice of agent-typed Python one-liners"
+license = "MIT"
+
+# ZERO runtime dependencies, on purpose. CLAUDE.md invariant 5 governs src/;
+# the same discipline applies here for a second reason: every crate linked in
+# is bytes in a binary whose cold cost in the CheerpX VM tracks bytes and file
+# opens (the lypning-mp skill §1). std only.
+[dependencies]
+
+[[bin]]
+name = "lypning"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "s"   # size, not speed: 96% of an invocation is the OS spawning
+                  # the process (docs/MICROPYTHON.md §8c), so codegen quality cannot
+                  # buy what a smaller image can.
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

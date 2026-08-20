@@ -1,0 +1,97 @@
+# setuptools>=77 is the floor because of PEP 639 below — `license = "MIT"` as an
+# SPDX string is a hard error on older setuptools, not a warning. Build
+# isolation fetches it; a `--no-build-isolation` build needs it in the
+# environment already (`pip install -U setuptools` first). `wheel` is not
+# listed: setuptools has built wheels without it since 70.1, and naming it only
+# pins a dependency nothing imports.
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lypning"
+version = "0.1.0"
+description = "A tiny Python subset in Rust, a frozen-stdlib MicroPython, and the router that picks between them — for the one-liners coding agents actually type."
+readme = "README.md"
+requires-python = ">=3.9"
+# PEP 639, not the deprecated `{ file = "LICENSE" }` table — that form inlines
+# the whole MIT text into the METADATA `License:` field and setuptools removes
+# it on 2027-Feb-18. The SPDX expression plus license-files says the same thing
+# in two machine-readable lines, and PyPI has rendered Metadata-Version 2.4
+# since 2025.
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Krister Hedfors", email = "krister.hedfors@gmail.com" }]
+keywords = ["python-subset", "interpreter", "micropython", "rust", "claude-code", "coding-agent", "sandbox", "benchmark"]
+# No "License :: OSI Approved" classifier: PEP 639 replaced it with the
+# expression above, and setuptools errors on both together. The version
+# classifiers are a claim, so CI runs pytest on every one of them — 3.9 is the
+# floor and it is enforced by executing it, not by asserting it here.
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Rust",
+  "Topic :: Software Development :: Interpreters",
+  "Topic :: Software Development :: Testing",
+]
+# ZERO runtime dependencies, on purpose. This package installs into the same
+# environment as whatever the agent is working on; a dependency of ours is a
+# version conflict in someone else's project.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+# Build-time only, for site/build.py. NOT runtime dependencies — the installed
+# package has none, on purpose: it lands in the same environment as whatever the
+# agent is working on, so a dependency of ours is a version conflict in someone
+# else's project.
+docs = ["markdown>=3.4", "pygments>=2.14"]
+
+[project.urls]
+Homepage = "https://github.com/kristerhedfors/lypning"
+Source = "https://github.com/kristerhedfors/lypning"
+Documentation = "https://github.com/kristerhedfors/lypning/tree/main/docs"
+Changelog = "https://github.com/kristerhedfors/lypning/blob/main/CHANGELOG.md"
+Issues = "https://github.com/kristerhedfors/lypning/issues"
+
+[project.scripts]
+lypning = "lypning.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+lypning = [
+  "assets/rust/Cargo.toml",
+  "assets/rust/Cargo.lock",
+  "assets/rust/src/*.rs",
+  "assets/micropython/Makefile",
+  "assets/micropython/README.md",
+  "assets/micropython/variant/*",
+  "assets/micropython/variant/patches/*",
+  "assets/micropython/lib/*.py",
+  "assets/micropython/lib/*/*.py",
+  "assets/micropython/lib/README.md",
+  "assets/scripts/*.sh",
+  "assets/shim/python-shim",
+  "assets/corpus/*.jsonl",
+  "assets/claude/skills/lypning/*.md",
+  "assets/claude/hooks/*.sh",
+  "assets/claude/*.json",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

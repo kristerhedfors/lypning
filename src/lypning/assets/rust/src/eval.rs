@@ -1,0 +1,1146 @@
+//! The tree-walking evaluator.
+//!
+//! Scoping is real, not approximated: a function carries the scope chain it was
+//! defined in, and the set of names it assigns anywhere in its body. That
+//! second piece is what makes `UnboundLocalError` come out right instead of
+//! silently finding a global of the same name — the exact shape of "plausible
+//! wrong answer" this runtime exists to avoid.
+
+use crate::ast::*;
+use crate::err::*;
+use crate::fmt;
+use crate::modules;
+use crate::value::*;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+
+pub type Scope = Rc<RefCell<HashMap<Rc<str>, Value>>>;
+
+pub fn new_scope() -> Scope {
+    Rc::new(RefCell::new(HashMap::new()))
+}
+
+pub enum Flow {
+    Normal,
+    Break,
+    Continue,
+    Return(Value),
+}
+
+/// Recursion guard. CPython's default limit is 1000 frames; ours is lower
+/// because a Rust stack frame for `eval` is fat, and a stack overflow in a
+/// runtime with `panic = "abort"` is an unrecoverable crash rather than a
+/// RecursionError. Hitting it is `unsupported`, so the program is retried on an
+/// interpreter with a real limit instead of dying here.
+const MAX_DEPTH: usize = 180;
+
+pub struct Interp {
+    pub globals: Scope,
+    /// Innermost-last scope chain for the function currently executing.
+    pub chain: Vec<Scope>,
+    /// Names declared `global` in the function currently executing.
+    global_decls: Vec<HashSet<Rc<str>>>,
+    /// Names assigned somewhere in the current function body.
+    assigned: Vec<Rc<HashSet<Rc<str>>>>,
+    pub modules: HashMap<Rc<str>, Value>,
+    depth: usize,
+}
+
+impl Interp {
+    pub fn new() -> Self {
+        Interp {
+            globals: new_scope(),
+            chain: Vec::new(),
+            global_decls: Vec::new(),
+            assigned: Vec::new(),
+            modules: HashMap::new(),
+            depth: 0,
+        }
+    }
+
+    // ---- names ------------------------------------------------------------
+
+    pub fn lookup(&self, name: &str) -> R<Value> {
+        for s in self.chain.iter().rev() {
+            if let Some(v) = s.borrow().get(name) {
+                return Ok(v.clone());
+            }
+        }
+        if let Some(f) = self.assigned.last() {
+            // Assigned somewhere in this function but not bound yet.
+            if f.contains(name) && !self.global_decls.last().is_some_and(|g| g.contains(name)) {
+                return Err(LypningError::exc(
+                    "UnboundLocalError",
+                    format!("cannot access local variable '{name}' where it is not associated with a value"),
+                ));
+            }
+        }
+        if let Some(v) = self.globals.borrow().get(name) {
+            return Ok(v.clone());
+        }
+        if let Some(v) = crate::builtins::builtin(name) {
+            return Ok(v);
+        }
+        Err(name_err(name))
+    }
+
+    pub fn bind(&mut self, name: &Rc<str>, v: Value) {
+        if self
+            .global_decls
+            .last()
+            .is_some_and(|g| g.contains(name.as_ref()))
+        {
+            self.globals.borrow_mut().insert(name.clone(), v);
+            return;
+        }
+        match self.chain.last() {
+            Some(s) => {
+                s.borrow_mut().insert(name.clone(), v);
+            }
+            None => {
+                self.globals.borrow_mut().insert(name.clone(), v);
+            }
+        }
+    }
+
+    // ---- statements -------------------------------------------------------
+
+    pub fn run(&mut self, body: &[Stmt]) -> R<()> {
+        match self.exec_block(body)? {
+            Flow::Normal => Ok(()),
+            _ => Err(LypningError::syntax(0, "'return'/'break' outside a block")),
+        }
+    }
+
+    pub fn exec_block(&mut self, body: &[Stmt]) -> R<Flow> {
+        for s in body {
+            match self.exec(s)? {
+                Flow::Normal => {}
+                other => return Ok(other),
+            }
+        }
+        Ok(Flow::Normal)
+    }
+
+    fn exec(&mut self, s: &Stmt) -> R<Flow> {
+        match s {
+            Stmt::Pass => {}
+            Stmt::Expr(e) => {
+                self.eval(e)?;
+            }
+            Stmt::Assign { targets, value } => {
+                let v = self.eval(value)?;
+                for t in targets {
+                    self.assign(t, v.clone())?;
+                }
+            }
+            Stmt::AugAssign { target, op, value } => {
+                let rhs = self.eval(value)?;
+                let cur = self.read_target(target)?;
+                // `list += iterable` mutates in place, and the difference is
+                // observable through any other name bound to the same list.
+                if let (BinOp::Add, Value::List(l)) = (op, &cur) {
+                    let extra = self.iter_collect(rhs)?;
+                    l.borrow_mut().extend(extra);
+                    return Ok(Flow::Normal);
+                }
+                let nv = self.binop(*op, &cur, &rhs)?;
+                self.assign(target, nv)?;
+            }
+            Stmt::If { arms, els } => {
+                for (c, body) in arms {
+                    let cv = self.eval(c)?;
+                    if truthy(&cv)? {
+                        return self.exec_block(body);
+                    }
+                }
+                return self.exec_block(els);
+            }
+            Stmt::While { cond, body, els } => {
+                loop {
+                    let cv = self.eval(cond)?;
+                    if !truthy(&cv)? {
+                        break;
+                    }
+                    match self.exec_block(body)? {
+                        Flow::Break => return Ok(Flow::Normal),
+                        Flow::Return(v) => return Ok(Flow::Return(v)),
+                        _ => {}
+                    }
+                }
+                return self.exec_block(els);
+            }
+            Stmt::For {
+                target,
+                iter,
+                body,
+                els,
+            } => {
+                let it = self.eval(iter)?;
+                let mut it = self.make_iter(it)?;
+                loop {
+                    let Some(v) = self.iter_next(&mut it)? else {
+                        break;
+                    };
+                    self.assign(target, v)?;
+                    match self.exec_block(body)? {
+                        Flow::Break => return Ok(Flow::Normal),
+                        Flow::Return(v) => return Ok(Flow::Return(v)),
+                        _ => {}
+                    }
+                }
+                return self.exec_block(els);
+            }
+            Stmt::Break => return Ok(Flow::Break),
+            Stmt::Continue => return Ok(Flow::Continue),
+            Stmt::Return(e) => {
+                let v = match e {
+                    Some(e) => self.eval(e)?,
+                    None => Value::None,
+                };
+                return Ok(Flow::Return(v));
+            }
+            Stmt::Assert { test, msg } => {
+                let t = self.eval(test)?;
+                if !truthy(&t)? {
+                    let m = match msg {
+                        Some(m) => fmt::to_str(&self.eval(m)?)?,
+                        None => String::new(),
+                    };
+                    return Err(LypningError::exc("AssertionError", m));
+                }
+            }
+            Stmt::Raise { exc } => {
+                let e = match exc {
+                    None => return Err(LypningError::exc("RuntimeError", "No active exception to reraise")),
+                    Some(e) => self.eval(e)?,
+                };
+                return Err(match e {
+                    Value::Exc(k, m) => LypningError::Exc(Exc {
+                        kind: k,
+                        msg: m.to_string(),
+                    }),
+                    Value::Builtin(name) if crate::builtins::is_exception_name(name) => {
+                        LypningError::Exc(Exc {
+                            kind: crate::builtins::exception_static(name),
+                            msg: String::new(),
+                        })
+                    }
+                    other => {
+                        return Err(type_err(format!(
+                            "exceptions must derive from BaseException, not {}",
+                            type_name(&other)
+                        )))
+                    }
+                });
+            }
+            Stmt::Def { name, params, body } => {
+                let mut defaults = Vec::with_capacity(params.defaults.len());
+                for d in &params.defaults {
+                    defaults.push(match d {
+                        Some(e) => Some(self.eval(e)?),
+                        None => None,
+                    });
+                }
+                let f = Value::Func(Rc::new(FuncObj {
+                    name: name.clone(),
+                    params: params.clone(),
+                    body: body.clone(),
+                    defaults,
+                    lambda: None,
+                    env: self.chain.clone(),
+                    assigned: Rc::new(assigned_names(body, params)),
+                }));
+                self.bind(name, f);
+            }
+            Stmt::Global(names) => {
+                if let Some(g) = self.global_decls.last_mut() {
+                    for n in names {
+                        g.insert(n.clone());
+                    }
+                }
+            }
+            Stmt::Del(targets) => {
+                for t in targets {
+                    match t {
+                        Target::Name(n) => {
+                            let removed = match self.chain.last() {
+                                Some(s) => s.borrow_mut().remove(n.as_ref()).is_some(),
+                                None => self.globals.borrow_mut().remove(n.as_ref()).is_some(),
+                            };
+                            if !removed {
+                                return Err(name_err(n));
+                            }
+                        }
+                        Target::Index(base, idx) => {
+                            let b = self.eval(base)?;
+                            let i = self.eval(idx)?;
+                            self.del_item(&b, &i)?;
+                        }
+                        _ => return Err(unsupported("del", "del of this target form")),
+                    }
+                }
+            }
+            Stmt::Try {
+                body,
+                handlers,
+                els,
+                finally,
+            } => {
+                let r = self.exec_block(body);
+                let out = match r {
+                    Ok(flow) => {
+                        let e = self.exec_block(els);
+                        match e {
+                            Ok(Flow::Normal) => Ok(flow),
+                            other => other,
+                        }
+                    }
+                    Err(err) => {
+                        // `unsupported` is a runtime capability gap, not a
+                        // Python exception: catching it with `except Exception`
+                        // would turn a routing signal into a wrong answer.
+                        if err.is_unsupported() || matches!(err, LypningError::Exit(_)) {
+                            Err(err)
+                        } else {
+                            let kind = err_kind(&err);
+                            let mut handled = None;
+                            for h in handlers {
+                                if h.kinds.is_empty()
+                                    || h.kinds.iter().any(|k| exc_matches(k, kind))
+                                {
+                                    if let Some(n) = &h.name {
+                                        let v = Value::Exc(kind, err_msg(&err).into());
+                                        self.bind(n, v);
+                                    }
+                                    handled = Some(self.exec_block(&h.body));
+                                    break;
+                                }
+                            }
+                            match handled {
+                                Some(r) => r,
+                                None => Err(err),
+                            }
+                        }
+                    }
+                };
+                if !finally.is_empty() {
+                    match self.exec_block(finally)? {
+                        Flow::Normal => {}
+                        other => return Ok(other),
+                    }
+                }
+                return out;
+            }
+            Stmt::With { items, body } => {
+                let mut opened = Vec::new();
+                for (ctx, alias) in items {
+                    let v = self.eval(ctx)?;
+                    match &v {
+                        Value::File(_) => {}
+                        other => {
+                            return Err(unsupported(
+                                "with",
+                                &format!("context manager of type {}", type_name(other)),
+                            ))
+                        }
+                    }
+                    if let Some(t) = alias {
+                        self.assign(t, v.clone())?;
+                    }
+                    opened.push(v);
+                }
+                let r = self.exec_block(body);
+                for v in opened {
+                    if let Value::File(f) = v {
+                        f.borrow_mut().closed = true;
+                    }
+                }
+                return r;
+            }
+            Stmt::Import { names } => {
+                for (path, bind) in names {
+                    let m = modules::import(path)?;
+                    // `import os.path` binds `os`, but `os.path` must resolve.
+                    if path.contains('.') && bind.as_ref() == path.split('.').next().unwrap() {
+                        modules::import(path.split('.').next().unwrap())?;
+                        let root = modules::import(path.split('.').next().unwrap())?;
+                        self.bind(bind, root);
+                    } else {
+                        self.bind(bind, m);
+                    }
+                }
+            }
+            Stmt::FromImport { module, names } => {
+                let m = modules::import(module)?;
+                for (n, bind) in names {
+                    let v = modules::get_attr(&m, n)?;
+                    self.bind(bind, v);
+                }
+            }
+        }
+        Ok(Flow::Normal)
+    }
+
+    // ---- assignment -------------------------------------------------------
+
+    fn read_target(&mut self, t: &Target) -> R<Value> {
+        Ok(match t {
+            Target::Name(n) => self.lookup(n)?,
+            Target::Attr(b, n) => {
+                let bv = self.eval(b)?;
+                self.get_attr(&bv, n)?
+            }
+            Target::Index(b, i) => {
+                let bv = self.eval(b)?;
+                let iv = self.eval(i)?;
+                self.index(&bv, &iv)?
+            }
+            _ => return Err(unsupported("augassign", "augmented assignment to a slice")),
+        })
+    }
+
+    pub fn assign(&mut self, t: &Target, v: Value) -> R<()> {
+        match t {
+            Target::Name(n) => self.bind(n, v),
+            Target::Tuple(parts) => {
+                let star_at = parts.iter().position(|p| matches!(p, Target::Star(_)));
+                let items = self.iter_collect(v)?;
+                match star_at {
+                    None => {
+                        if items.len() != parts.len() {
+                            return Err(value_err(if items.len() < parts.len() {
+                                format!(
+                                    "not enough values to unpack (expected {}, got {})",
+                                    parts.len(),
+                                    items.len()
+                                )
+                            } else {
+                                format!("too many values to unpack (expected {})", parts.len())
+                            }));
+                        }
+                        for (p, x) in parts.iter().zip(items) {
+                            self.assign(p, x)?;
+                        }
+                    }
+                    Some(k) => {
+                        let after = parts.len() - k - 1;
+                        if items.len() < parts.len() - 1 {
+                            return Err(value_err(format!(
+                                "not enough values to unpack (expected at least {}, got {})",
+                                parts.len() - 1,
+                                items.len()
+                            )));
+                        }
+                        for (i, p) in parts[..k].iter().enumerate() {
+                            self.assign(p, items[i].clone())?;
+                        }
+                        let mid = items[k..items.len() - after].to_vec();
+                        if let Target::Star(inner) = &parts[k] {
+                            self.assign(inner, list(mid))?;
+                        }
+                        for (i, p) in parts[k + 1..].iter().enumerate() {
+                            self.assign(p, items[items.len() - after + i].clone())?;
+                        }
+                    }
+                }
+            }
+            Target::Index(b, i) => {
+                let bv = self.eval(b)?;
+                let iv = self.eval(i)?;
+                self.set_item(&bv, iv, v)?;
+            }
+            Target::Attr(b, n) => {
+                let bv = self.eval(b)?;
+                return Err(unsupported(
+                    "setattr",
+                    &format!("assignment to .{n} on a {}", type_name(&bv)),
+                ));
+            }
+            Target::Slice { base, lo, hi } => {
+                let bv = self.eval(base)?;
+                let Value::List(l) = &bv else {
+                    return Err(type_err(format!(
+                        "'{}' object does not support slice assignment",
+                        type_name(&bv)
+                    )));
+                };
+                let n = l.borrow().len() as i64;
+                let lo = match lo {
+                    Some(e) => {
+                        let x = self.eval(e)?;
+                        clamp_index(int_val(&x)?, n)
+                    }
+                    None => 0,
+                };
+                let hi = match hi {
+                    Some(e) => {
+                        let x = self.eval(e)?;
+                        clamp_index(int_val(&x)?, n)
+                    }
+                    None => n,
+                };
+                let repl = self.iter_collect(v)?;
+                let (lo, hi) = (lo as usize, hi.max(lo) as usize);
+                l.borrow_mut().splice(lo..hi, repl);
+            }
+            Target::Star(_) => {
+                return Err(LypningError::syntax(0, "starred assignment target must be in a list or tuple"))
+            }
+        }
+        Ok(())
+    }
+
+    // ---- expressions ------------------------------------------------------
+
+    pub fn eval(&mut self, e: &Expr) -> R<Value> {
+        Ok(match e {
+            Expr::None => Value::None,
+            Expr::True => Value::Bool(true),
+            Expr::False => Value::Bool(false),
+            Expr::Int(i) => Value::Int(*i),
+            Expr::Float(f) => Value::Float(*f),
+            Expr::Str(s) => Value::Str(s.clone()),
+            Expr::Bytes(b) => Value::Bytes(b.clone()),
+            Expr::Name(n) => self.lookup(n)?,
+            // A bare `*x` in an expression position has no value; the parser
+            // only produces it where a target list is possible.
+            Expr::Starred(_) => {
+                return Err(LypningError::syntax(
+                    0,
+                    "can't use starred expression here",
+                ))
+            }
+            Expr::Tuple(items) => {
+                let mut v = Vec::with_capacity(items.len());
+                for x in items {
+                    v.push(self.eval(x)?);
+                }
+                Value::Tuple(Rc::new(v))
+            }
+            Expr::List(items) => {
+                let mut v = Vec::with_capacity(items.len());
+                for x in items {
+                    v.push(self.eval(x)?);
+                }
+                list(v)
+            }
+            Expr::Set(items) => {
+                let mut s = Set::new();
+                for x in items {
+                    let v = self.eval(x)?;
+                    s.add(v)?;
+                }
+                Value::Set(Rc::new(RefCell::new(s)))
+            }
+            Expr::Dict(pairs) => {
+                let mut d = Dict::new();
+                for (k, v) in pairs {
+                    let kv = self.eval(k)?;
+                    let vv = self.eval(v)?;
+                    d.insert(kv, vv)?;
+                }
+                Value::Dict(Rc::new(RefCell::new(d)))
+            }
+            Expr::DictUnpack(items) => {
+                let mut d = Dict::new();
+                for it in items {
+                    match it {
+                        DictItem::Pair(k, v) => {
+                            let kv = self.eval(k)?;
+                            let vv = self.eval(v)?;
+                            d.insert(kv, vv)?;
+                        }
+                        DictItem::Unpack(e) => {
+                            let v = self.eval(e)?;
+                            let Value::Dict(src) = &v else {
+                                return Err(type_err(format!(
+                                    "argument of type '{}' is not a mapping",
+                                    type_name(&v)
+                                )));
+                            };
+                            let pairs: Vec<(Value, Value)> = src
+                                .borrow()
+                                .iter()
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect();
+                            for (k, v) in pairs {
+                                d.insert(k, v)?;
+                            }
+                        }
+                    }
+                }
+                Value::Dict(Rc::new(RefCell::new(d)))
+            }
+            Expr::Bin(op, a, b) => {
+                let av = self.eval(a)?;
+                let bv = self.eval(b)?;
+                self.binop(*op, &av, &bv)?
+            }
+            Expr::Un(op, a) => {
+                let v = self.eval(a)?;
+                match op {
+                    UnOp::Not => Value::Bool(!truthy(&v)?),
+                    UnOp::Neg => match v {
+                        Value::Int(i) => Value::Int(
+                            i.checked_neg()
+                                .ok_or_else(|| unsupported("bigint", "integer negation overflow"))?,
+                        ),
+                        Value::Bool(b) => Value::Int(-(b as i64)),
+                        Value::Float(f) => Value::Float(-f),
+                        other => {
+                            return Err(type_err(format!(
+                                "bad operand type for unary -: '{}'",
+                                type_name(&other)
+                            )))
+                        }
+                    },
+                    UnOp::Pos => match v {
+                        Value::Bool(b) => Value::Int(b as i64),
+                        v @ (Value::Int(_) | Value::Float(_)) => v,
+                        other => {
+                            return Err(type_err(format!(
+                                "bad operand type for unary +: '{}'",
+                                type_name(&other)
+                            )))
+                        }
+                    },
+                    UnOp::Invert => match v {
+                        Value::Int(i) => Value::Int(!i),
+                        Value::Bool(b) => Value::Int(!(b as i64)),
+                        other => {
+                            return Err(type_err(format!(
+                                "bad operand type for unary ~: '{}'",
+                                type_name(&other)
+                            )))
+                        }
+                    },
+                }
+            }
+            Expr::Compare { first, rest } => {
+                // Each operand is evaluated at most once, and the chain
+                // short-circuits — both are guaranteed by Python.
+                let mut left = self.eval(first)?;
+                for (op, rhs) in rest {
+                    let right = self.eval(rhs)?;
+                    if !self.compare(*op, &left, &right)? {
+                        return Ok(Value::Bool(false));
+                    }
+                    left = right;
+                }
+                Value::Bool(true)
+            }
+            Expr::BoolAnd(items) => {
+                let mut last = Value::Bool(true);
+                for x in items {
+                    last = self.eval(x)?;
+                    if !truthy(&last)? {
+                        return Ok(last);
+                    }
+                }
+                last
+            }
+            Expr::BoolOr(items) => {
+                let mut last = Value::Bool(false);
+                for x in items {
+                    last = self.eval(x)?;
+                    if truthy(&last)? {
+                        return Ok(last);
+                    }
+                }
+                last
+            }
+            Expr::Cond { cond, then, els } => {
+                let c = self.eval(cond)?;
+                if truthy(&c)? {
+                    self.eval(then)?
+                } else {
+                    self.eval(els)?
+                }
+            }
+            Expr::Attr(b, n) => {
+                let bv = self.eval(b)?;
+                self.get_attr(&bv, n)?
+            }
+            Expr::Index(b, i) => {
+                let bv = self.eval(b)?;
+                let iv = self.eval(i)?;
+                self.index(&bv, &iv)?
+            }
+            Expr::Slice {
+                base,
+                lo,
+                hi,
+                step,
+            } => {
+                let bv = self.eval(base)?;
+                let lo = match lo {
+                    Some(e) => Some(self.eval(e)?),
+                    None => None,
+                };
+                let hi = match hi {
+                    Some(e) => Some(self.eval(e)?),
+                    None => None,
+                };
+                let st = match step {
+                    Some(e) => Some(self.eval(e)?),
+                    None => None,
+                };
+                self.slice(&bv, lo, hi, st)?
+            }
+            Expr::FString(parts) => {
+                let mut out = String::new();
+                for p in parts {
+                    match p {
+                        FPart::Lit(s) => out.push_str(s),
+                        FPart::Expr { expr, conv, spec } => {
+                            let v = self.eval(expr)?;
+                            let spec_s = match spec {
+                                Some(s) => fmt::to_str(&self.eval(s)?)?,
+                                None => String::new(),
+                            };
+                            let s = match conv {
+                                Some('r') => fmt::repr(&v)?,
+                                Some('s') => fmt::to_str(&v)?,
+                                Some('a') => {
+                                    return Err(unsupported("fstring", "!a conversion"))
+                                }
+                                Some(c) => {
+                                    return Err(value_err(format!(
+                                        "Invalid conversion character '{c}'"
+                                    )))
+                                }
+                                None => {
+                                    return {
+                                        out.push_str(&fmt::format_value(&v, &spec_s)?);
+                                        continue;
+                                    }
+                                }
+                            };
+                            out.push_str(&fmt::format_value(&Value::Str(s.into()), &spec_s)?);
+                        }
+                    }
+                }
+                Value::Str(out.into())
+            }
+            Expr::Lambda { params, body } => {
+                let mut defaults = Vec::with_capacity(params.defaults.len());
+                for d in &params.defaults {
+                    defaults.push(match d {
+                        Some(e) => Some(self.eval(e)?),
+                        None => None,
+                    });
+                }
+                Value::Func(Rc::new(FuncObj {
+                    name: "<lambda>".into(),
+                    params: params.clone(),
+                    body: Rc::new(Vec::new()),
+                    defaults,
+                    lambda: Some(Rc::new((**body).clone())),
+                    env: self.chain.clone(),
+                    assigned: Rc::new(HashSet::new()),
+                }))
+            }
+            Expr::Comp {
+                kind,
+                elt,
+                val,
+                clauses,
+            } => match kind {
+                CompKind::Gen => Value::Gen(Rc::new(RefCell::new(crate::iter::GenState::new(
+                    clauses.clone(),
+                    (**elt).clone(),
+                    self.chain.clone(),
+                )))),
+                _ => self.eval_comp(*kind, elt, val.as_deref(), clauses)?,
+            },
+            Expr::Call {
+                func,
+                args,
+                star,
+                kwargs,
+                dstar,
+            } => {
+                let f = self.eval(func)?;
+                let mut a = Vec::with_capacity(args.len());
+                for (i, x) in args.iter().enumerate() {
+                    let v = self.eval(x)?;
+                    if star.contains(&i) {
+                        a.extend(self.iter_collect(v)?);
+                    } else {
+                        a.push(v);
+                    }
+                }
+                let mut kw: Vec<(Rc<str>, Value)> = Vec::with_capacity(kwargs.len());
+                for (n, x) in kwargs {
+                    kw.push((n.clone(), self.eval(x)?));
+                }
+                for d in dstar {
+                    let v = self.eval(d)?;
+                    let Value::Dict(m) = &v else {
+                        return Err(type_err("argument after ** must be a mapping"));
+                    };
+                    let pairs: Vec<(Value, Value)> =
+                        m.borrow().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                    for (k, v) in pairs {
+                        let Value::Str(ks) = k else {
+                            return Err(type_err("keywords must be strings"));
+                        };
+                        kw.push((ks, v));
+                    }
+                }
+                self.call(&f, a, kw)?
+            }
+        })
+    }
+
+    fn eval_comp(
+        &mut self,
+        kind: CompKind,
+        elt: &Expr,
+        val: Option<&Expr>,
+        clauses: &[CompClause],
+    ) -> R<Value> {
+        // Python gives a comprehension its own scope, so the loop variable does
+        // not leak. Push one, and pop it on every exit path.
+        self.chain.push(new_scope());
+        let r = self.comp_loop(kind, elt, val, clauses, 0);
+        self.chain.pop();
+        r
+    }
+
+    fn comp_loop(
+        &mut self,
+        kind: CompKind,
+        elt: &Expr,
+        val: Option<&Expr>,
+        clauses: &[CompClause],
+        _d: usize,
+    ) -> R<Value> {
+        let mut items: Vec<Value> = Vec::new();
+        let mut dict = Dict::new();
+        let mut set = Set::new();
+        let mut stack: Vec<IterState> = Vec::new();
+        let it0 = self.eval(&clauses[0].iter)?;
+        stack.push(IterState {
+            it: self.make_iter(it0)?,
+        });
+        'outer: while !stack.is_empty() {
+            let level = stack.len() - 1;
+            let mut st = stack.pop().unwrap();
+            let next = self.iter_next(&mut st.it)?;
+            let Some(v) = next else {
+                continue;
+            };
+            stack.push(st);
+            self.assign(&clauses[level].target, v)?;
+            let mut ok = true;
+            for cond in &clauses[level].ifs {
+                let c = self.eval(cond)?;
+                if !truthy(&c)? {
+                    ok = false;
+                    break;
+                }
+            }
+            if !ok {
+                continue 'outer;
+            }
+            if level + 1 < clauses.len() {
+                let iv = self.eval(&clauses[level + 1].iter)?;
+                let it = self.make_iter(iv)?;
+                stack.push(IterState { it });
+                continue;
+            }
+            match kind {
+                CompKind::List => items.push(self.eval(elt)?),
+                CompKind::Set => {
+                    let v = self.eval(elt)?;
+                    set.add(v)?;
+                }
+                CompKind::Dict => {
+                    let k = self.eval(elt)?;
+                    let v = self.eval(val.unwrap())?;
+                    dict.insert(k, v)?;
+                }
+                CompKind::Gen => unreachable!(),
+            }
+        }
+        Ok(match kind {
+            CompKind::List => list(items),
+            CompKind::Set => Value::Set(Rc::new(RefCell::new(set))),
+            CompKind::Dict => Value::Dict(Rc::new(RefCell::new(dict))),
+            CompKind::Gen => unreachable!(),
+        })
+    }
+
+    // ---- calls ------------------------------------------------------------
+
+    pub fn call(&mut self, f: &Value, args: Vec<Value>, kw: Vec<(Rc<str>, Value)>) -> R<Value> {
+        match f {
+            Value::Builtin(name) => crate::builtins::call_builtin(self, name, args, kw),
+            Value::Bound(recv, name) => crate::methods::call_method(self, recv, name, args, kw),
+            Value::Func(func) => self.call_func(func.clone(), args, kw),
+            other => Err(type_err(format!(
+                "'{}' object is not callable",
+                type_name(other)
+            ))),
+        }
+    }
+
+    fn call_func(&mut self, f: Rc<FuncObj>, args: Vec<Value>, kw: Vec<(Rc<str>, Value)>) -> R<Value> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            self.depth -= 1;
+            return Err(unsupported(
+                "recursion",
+                &format!("call depth beyond {MAX_DEPTH}"),
+            ));
+        }
+        let r = self.call_func_inner(f, args, kw);
+        self.depth -= 1;
+        r
+    }
+
+    fn call_func_inner(
+        &mut self,
+        f: Rc<FuncObj>,
+        args: Vec<Value>,
+        kw: Vec<(Rc<str>, Value)>,
+    ) -> R<Value> {
+        let p = &f.params;
+        let scope = new_scope();
+        let npos = p.names.len()
+            - p.star.map_or(0, |_| 1)
+            - p.dstar.map_or(0, |_| 1);
+        {
+            let mut s = scope.borrow_mut();
+            let mut used = vec![false; p.names.len()];
+            let mut extra = Vec::new();
+            for (i, a) in args.into_iter().enumerate() {
+                if i < npos {
+                    s.insert(p.names[i].clone(), a);
+                    used[i] = true;
+                } else if p.star.is_some() {
+                    extra.push(a);
+                } else {
+                    return Err(type_err(format!(
+                        "{}() takes {} positional arguments but {} were given",
+                        f.name,
+                        npos,
+                        i + 1
+                    )));
+                }
+            }
+            if let Some(si) = p.star {
+                s.insert(p.names[si].clone(), Value::Tuple(Rc::new(extra)));
+                used[si] = true;
+            }
+            let mut leftover = Dict::new();
+            for (k, v) in kw {
+                match p.names[..npos].iter().position(|n| *n == k) {
+                    Some(i) => {
+                        s.insert(p.names[i].clone(), v);
+                        used[i] = true;
+                    }
+                    None => {
+                        if p.dstar.is_some() {
+                            leftover.insert(Value::Str(k), v)?;
+                        } else {
+                            return Err(type_err(format!(
+                                "{}() got an unexpected keyword argument '{k}'",
+                                f.name
+                            )));
+                        }
+                    }
+                }
+            }
+            if let Some(di) = p.dstar {
+                s.insert(
+                    p.names[di].clone(),
+                    Value::Dict(Rc::new(RefCell::new(leftover))),
+                );
+                used[di] = true;
+            }
+            for i in 0..npos {
+                if !used[i] {
+                    match &f.defaults[i] {
+                        Some(d) => {
+                            s.insert(p.names[i].clone(), d.clone());
+                        }
+                        None => {
+                            return Err(type_err(format!(
+                                "{}() missing 1 required positional argument: '{}'",
+                                f.name, p.names[i]
+                            )))
+                        }
+                    }
+                }
+            }
+        }
+        let saved_chain = std::mem::replace(&mut self.chain, {
+            let mut c = f.env.clone();
+            c.push(scope);
+            c
+        });
+        self.global_decls.push(HashSet::new());
+        self.assigned.push(f.assigned.clone());
+        let r = match &f.lambda {
+            Some(body) => self.eval(body),
+            None => match self.exec_block(&f.body) {
+                Ok(Flow::Return(v)) => Ok(v),
+                Ok(_) => Ok(Value::None),
+                Err(e) => Err(e),
+            },
+        };
+        self.assigned.pop();
+        self.global_decls.pop();
+        self.chain = saved_chain;
+        r
+    }
+}
+
+pub struct IterState {
+    pub it: crate::iter::Iter,
+}
+
+/// Every name assigned anywhere in a function body, including its parameters.
+/// Used to make an early read raise `UnboundLocalError` rather than silently
+/// finding a global of the same name.
+fn assigned_names(body: &[Stmt], params: &Params) -> HashSet<Rc<str>> {
+    let mut out = HashSet::new();
+    for n in &params.names {
+        out.insert(n.clone());
+    }
+    collect_assigned(body, &mut out);
+    out
+}
+
+fn collect_assigned(body: &[Stmt], out: &mut HashSet<Rc<str>>) {
+    fn tgt(t: &Target, out: &mut HashSet<Rc<str>>) {
+        match t {
+            Target::Name(n) => {
+                out.insert(n.clone());
+            }
+            Target::Tuple(v) => v.iter().for_each(|x| tgt(x, out)),
+            Target::Star(b) => tgt(b, out),
+            _ => {}
+        }
+    }
+    for s in body {
+        match s {
+            Stmt::Assign { targets, .. } => targets.iter().for_each(|t| tgt(t, out)),
+            Stmt::AugAssign { target, .. } => tgt(target, out),
+            Stmt::For {
+                target, body, els, ..
+            } => {
+                tgt(target, out);
+                collect_assigned(body, out);
+                collect_assigned(els, out);
+            }
+            Stmt::While { body, els, .. } => {
+                collect_assigned(body, out);
+                collect_assigned(els, out);
+            }
+            Stmt::If { arms, els } => {
+                for (_, b) in arms {
+                    collect_assigned(b, out);
+                }
+                collect_assigned(els, out);
+            }
+            Stmt::Try {
+                body,
+                handlers,
+                els,
+                finally,
+            } => {
+                collect_assigned(body, out);
+                for h in handlers {
+                    if let Some(n) = &h.name {
+                        out.insert(n.clone());
+                    }
+                    collect_assigned(&h.body, out);
+                }
+                collect_assigned(els, out);
+                collect_assigned(finally, out);
+            }
+            Stmt::With { items, body } => {
+                for (_, a) in items {
+                    if let Some(t) = a {
+                        tgt(t, out);
+                    }
+                }
+                collect_assigned(body, out);
+            }
+            Stmt::Def { name, .. } => {
+                out.insert(name.clone());
+            }
+            Stmt::Import { names } => {
+                for (_, b) in names {
+                    out.insert(b.clone());
+                }
+            }
+            Stmt::FromImport { names, .. } => {
+                for (_, b) in names {
+                    out.insert(b.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+pub fn err_kind(e: &LypningError) -> &'static str {
+    match e {
+        LypningError::Exc(x) => x.kind,
+        _ => "RuntimeError",
+    }
+}
+pub fn err_msg(e: &LypningError) -> String {
+    match e {
+        LypningError::Exc(x) => x.msg.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// Does an `except NAME` clause catch an exception of this kind?
+/// Only the hierarchy edges that actually occur are encoded; an unrecognised
+/// name is `unsupported` at analysis time, so this never guesses.
+pub fn exc_matches(clause: &str, kind: &str) -> bool {
+    let clause = clause.rsplit('.').next().unwrap_or(clause);
+    if clause == kind {
+        return true;
+    }
+    match clause {
+        "BaseException" => true,
+        "Exception" => kind != "SystemExit" && kind != "KeyboardInterrupt",
+        "ArithmeticError" => matches!(kind, "ZeroDivisionError" | "OverflowError" | "FloatingPointError"),
+        "LookupError" => matches!(kind, "IndexError" | "KeyError"),
+        "OSError" | "IOError" | "EnvironmentError" => matches!(
+            kind,
+            "OSError" | "FileNotFoundError" | "PermissionError" | "FileExistsError" | "IsADirectoryError" | "NotADirectoryError"
+        ),
+        "ValueError" => kind == "UnicodeDecodeError" || kind == "JSONDecodeError",
+        "NameError" => kind == "UnboundLocalError",
+        _ => false,
+    }
+}
+
+pub fn int_val(v: &Value) -> R<i64> {
+    match v {
+        Value::Int(i) => Ok(*i),
+        Value::Bool(b) => Ok(*b as i64),
+        other => Err(type_err(format!(
+            "'{}' object cannot be interpreted as an integer",
+            type_name(other)
+        ))),
+    }
+}
+
+pub fn clamp_index(i: i64, n: i64) -> i64 {
+    if i < 0 {
+        (n + i).max(0)
+    } else {
+        i.min(n)
+    }
+}
