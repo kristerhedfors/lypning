@@ -7,6 +7,22 @@
 # `--check` makes a dead intra-site link fail the build rather than 404 in a
 # visitor's browser: every relative href must resolve to a file the build
 # actually wrote, which is how a renamed doc gets caught here.
+#
+# ONE-TIME SETUP, and this workflow cannot do it for you. Pages has to be
+# enabled for the repository with its source set to GitHub Actions:
+#
+#     Settings -> Pages -> Build and deployment -> Source: GitHub Actions
+#
+# Until that is done every run fails here with "Create Pages site failed:
+# Resource not accessible by integration". `enablement: true` below asks the
+# action to switch it on, but a workflow's GITHUB_TOKEN can DEPLOY to a Pages
+# site and cannot CREATE one — that needs repository-admin rights the token does
+# not have, whatever `permissions:` says. The failure is left loud rather than
+# swallowed, because a green run here would otherwise mean "published" when
+# nothing is published.
+#
+# The site uses relative URLs throughout, so it needs no base-path
+# configuration and works unchanged at a project subpath.
 name: pages
 
 on:

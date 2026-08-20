@@ -111,6 +111,14 @@ is the append-only history including the runs where the subset lost.
 
 ---
 
+> **Docs site.** The reference documentation is published from this repository's
+> own markdown to
+> [kristerhedfors.github.io/lypning](https://kristerhedfors.github.io/lypning/).
+> It requires Pages to be enabled once, under **Settings → Pages → Source:
+> GitHub Actions** — a workflow token can deploy to a Pages site but cannot
+> create one, so the `pages` workflow fails until that is set rather than
+> pretending to have published.
+
 ## 2. Install
 
 ```bash
