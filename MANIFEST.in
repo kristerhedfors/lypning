@@ -30,5 +30,11 @@ recursive-include tests/corpus *.jsonl
 # files. Nothing above names them today; these lines are what stops a future
 # `graft src` from shipping a gigabyte to everyone who types `pip install`.
 prune src/lypning/assets/rust/target
+# The same defence for the three build trees the C ABI's hosts create: a cargo
+# `target/` under an example or under the Node addon is the same gigabyte by
+# another name, and `pip install` must not carry it.
+prune src/lypning/assets/examples/rust/target
+prune src/lypning/assets/node/target
+prune src/lypning/assets/node/node_modules
 prune src/lypning/assets/micropython/build
 prune src/lypning/assets/micropython/.build

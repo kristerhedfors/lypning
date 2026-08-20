@@ -37,6 +37,13 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
         // `['f.py', 'a', 'b']`. Reproducing that exactly matters — every
         // `sys.argv[1:]` one-liner depends on it.
         ("sys", "argv") => {
+            // Embedded there is no process argv to reconstruct this from: the
+            // host hands over the list the program must see, already in
+            // CPython's shape, because only the host knows whether it is
+            // running a `-c` string or a named file.
+            if let Some(given) = crate::host::argv_override() {
+                return Ok(list(given.into_iter().map(|a| Value::Str(a.into())).collect()));
+            }
             let mut raw: Vec<String> = std::env::args().skip(1).collect();
             // Under `lypning run -c PROG a b` the dispatcher's own subcommand is
             // in the process argv but must never be in `sys.argv`.
@@ -136,6 +143,23 @@ fn interned(name: &str) -> R<&'static str> {
         .ok_or_else(|| unsupported("module-attr", name))
 }
 
+/// Does this module call reach the disk?
+///
+/// Conservative by construction: everything under `os` and `os.path` counts
+/// EXCEPT the handful that are pure string arithmetic over a path that need
+/// never exist. Getting this list wrong in the safe direction costs a refusal
+/// the host can route onward; getting it wrong the other way would let a
+/// denied program read a file, so a new `os` function is denied until someone
+/// adds it here on purpose.
+fn touches_disk(m: &str, name: &str) -> bool {
+    match (m, name) {
+        ("os.path", "join" | "basename" | "dirname" | "splitext" | "split" | "normpath") => false,
+        ("os", "getenv") => false,
+        ("os", _) | ("os.path", _) => true,
+        _ => false,
+    }
+}
+
 pub fn call_module_method(
     it: &mut Interp,
     m: &str,
@@ -143,6 +167,12 @@ pub fn call_module_method(
     args: Vec<Value>,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
+    if !crate::host::filesystem_allowed() && touches_disk(m, name) {
+        return Err(unsupported(
+            "sandbox",
+            &format!("{m}.{name}() with the filesystem denied"),
+        ));
+    }
     let s = |i: usize| -> R<String> {
         match args.get(i) {
             Some(v) => fmt::to_str(v),
@@ -376,7 +406,18 @@ pub fn call_module_method(
             let text = crate::methods::call_method(it, &f, "read", Vec::new(), Vec::new())?;
             json::parse(&fmt::to_str(&text)?)?
         }
-        ("json", "dumps") => Value::Str(json::dumps(&args[0], &kw)?.into()),
+        // `args.first()`, not `args[0]`: `json.dumps()` with no argument is a
+        // TypeError in CPython and was an index-out-of-bounds PANIC here — an
+        // abort in the binary and, embedded, an unexplained failure in somebody
+        // else's process. Every neighbour in this table already gets it right.
+        ("json", "dumps") => Value::Str(
+            json::dumps(
+                args.first()
+                    .ok_or_else(|| type_err("dumps() missing 1 required positional argument"))?,
+                &kw,
+            )?
+            .into(),
+        ),
         ("json", "dump") => {
             let text = json::dumps(
                 args.first()

@@ -13,12 +13,34 @@ use std::rc::Rc;
 pub struct Parser {
     t: Vec<Token>,
     i: usize,
+    /// How deep the grammar currently is, against [`MAX_PARSE_DEPTH`].
+    depth: u32,
 }
+
+/// The nesting a program is allowed, and it is a measurement rather than a
+/// taste.
+///
+/// One level of `(` costs roughly 8 KB of stack here — the precedence chain is
+/// a dozen frames deep before it reaches `atom` — and a source file with 1,200
+/// of them segfaulted an 8 MB stack. Embedded that segfault belongs to the
+/// HOST, and a stack overflow is not an unwind, so no guard at the ABI boundary
+/// can catch it: it has to be refused before it is reached.
+///
+/// 64 is where the two ends meet. The deepest program in the harvested corpus
+/// (842 entries, loaded 2026-08-20) nests 18, the 99th percentile nests 11, and
+/// the median nests 2 — so 64 is three and a half times the deepest thing an
+/// agent has ever actually typed, while costing at most half a megabyte of
+/// stack, which is safe on a host thread rather than only on a main one.
+/// CPython refuses these too (`SyntaxError: too many nested parentheses`), so
+/// routing one onward gets the caller an error either way — the difference is
+/// only whether it arrives as an error or as a signal.
+pub const MAX_PARSE_DEPTH: u32 = 64;
 
 pub fn parse(src: &str) -> R<Vec<Stmt>> {
     let mut p = Parser {
         t: tokenize(src)?,
         i: 0,
+        depth: 0,
     };
     let mut body = Vec::new();
     while !p.at_eof() {
@@ -159,6 +181,10 @@ impl Parser {
     }
 
     fn block(&mut self) -> R<Vec<Stmt>> {
+        self.nested("block", |p| p.block_inner())
+    }
+
+    fn block_inner(&mut self) -> R<Vec<Stmt>> {
         self.expect_op(":")?;
         if self.eat_newline() {
             if !matches!(self.peek(), Tok::Indent) {
@@ -1053,7 +1079,31 @@ impl Parser {
         Ok(clauses)
     }
 
+    /// One level deeper, and back out again however this returns.
+    ///
+    /// Written as a wrapper rather than an increment inside each body because
+    /// both callees are threaded with `?`: a hand-balanced counter would leak a
+    /// level on every syntax error, and a long-lived host would watch its own
+    /// nesting limit tighten with each bad program it was handed.
+    fn nested<T>(&mut self, what: &str, f: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
+        self.depth += 1;
+        if self.depth > MAX_PARSE_DEPTH {
+            self.depth -= 1;
+            return Err(unsupported(
+                "recursion",
+                &format!("{what} nested deeper than {MAX_PARSE_DEPTH}"),
+            ));
+        }
+        let r = f(self);
+        self.depth -= 1;
+        r
+    }
+
     fn atom(&mut self) -> R<Expr> {
+        self.nested("expression", |p| p.atom_inner())
+    }
+
+    fn atom_inner(&mut self) -> R<Expr> {
         match self.peek().clone() {
             Tok::Int(v) => {
                 self.bump();
@@ -1341,6 +1391,7 @@ fn parse_fstring(raw: &str, raw_prefix: bool) -> R<Vec<FPart>> {
                 let mut p = Parser {
                     t: tokenize(expr_src.trim())?,
                     i: 0,
+                    depth: 0,
                 };
                 let e = p.expr_list()?;
                 if !matches!(p.peek(), Tok::Newline | Tok::Eof) {

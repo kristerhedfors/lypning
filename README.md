@@ -332,6 +332,42 @@ have the same symptom — an empty log — and only one of them looks fixed.
 
 ---
 
+## 3b. Embed it — link the runtime into your harness
+
+A shim on `$PATH` is one way in. The other is to **link the runtime** and skip
+the process entirely: `liblypning` runs a program in your own thread, with its
+output captured and its stdin handed to it, and there is no fork, no exec and no
+pipe. On the programs lypning accepts, the process was 96% of the cost.
+
+```bash
+lypning build --lib                       # the C ABI, into ~/.lypning/lib
+gcc $(lypning lib --cflags) h.c $(lypning lib --libs)
+```
+
+```c
+lypning_result *r = lypning_run(q);
+if (lypning_result_should_fall_onward(r)) run_on_python3(src);  /* your path */
+else                                      use(lypning_result_stdout(r, &n));
+```
+
+That branch is the whole integration, and getting it right is the whole
+contract: **a refusal is not an error.** It means the program is outside the
+subset, that lypning ran none of it, and that CPython should answer now. A
+harness that reports it as a failure has turned a speedup into a bug — silently,
+because the program was fine.
+
+Five hosts, one ABI: C and C++ headers in `assets/include/`, a Node addon with
+no npm dependencies in `assets/node/`, the Rust crate directly, and
+`lypning.embed` for Python via `ctypes`. Runnable examples for each live in
+`assets/examples/`.
+
+Because there is no process to kill, an embedded run takes a **step limit**
+instead of a timeout, and a refusal is how it reports one. `docs/EMBEDDING.md`
+is the whole story — including §7, which lists what used to be able to take a
+host process down and what each of those does now.
+
+---
+
 ## 4. Command reference
 
 Interpreter mode is decided before argument parsing, so anything that calls
@@ -343,7 +379,7 @@ Interpreter mode is decided before argument parsing, so anything that calls
 | `lypning FILE [args…]`, `lypning -` | same, from a file or stdin |
 | `lypning run -c PROG` | route, execute, and fall through to the next tier on exit 90 only |
 | `lypning route -c PROG` | print `<engine>\t<kind>: <detail>` — the tier, and the construct that stopped the cheaper one |
-| `lypning build [--rust\|--micropython\|--all]` | build the engines into `~/.lypning/bin` |
+| `lypning build [--rust\|--micropython\|--lib\|--all]` | build the engines into `~/.lypning/bin`, and `--lib` the C ABI into `~/.lypning/lib` |
 | `lypning status [--json]` | what is built, wired and captured |
 | `lypning doctor [--json]` | the same with an opinion; non-zero on any FAIL |
 | `lypning install [--dry-run] [--user] [--force]` | wire the skill, hooks and shim into a project |
@@ -354,6 +390,7 @@ Interpreter mode is decided before argument parsing, so anything that calls
 | `lypning fuzz [--iterations N] [--seed S]` | generate programs from the subset and diff them against CPython |
 | `lypning bench [--startup] [--corpus]` | time the four arms, interleaved, min of repeats |
 | `lypning corpus-time [--engine E] [--baseline F] [--record F]` | time the corpus on ONE binary, and diff two runs of it |
+| `lypning lib [--cflags\|--libs\|--path\|--include]` | where the embeddable C ABI is, and the line to compile against it |
 | `lypning gate [BIN] [--compare]` | static? how many bytes? how many file opens? |
 | `lypning harvest [--export]` | captured invocations → sightings → corpus |
 | `lypning corpus [--stats] [--list]` | inspect the harvested programs |
@@ -642,6 +679,7 @@ Makefile               thin wrappers: build test check conformance fuzz bench ga
 | `docs/RESEARCH.md` | what the second tier should have been built from, and why MicroPython won |
 | `docs/CAPTURE.md` | the two capture feeds, the harvest, and the privacy rules |
 | `docs/COOKBOOK.md` | unsupported Python, rewritten — what to type when a tier refuses |
+| `docs/EMBEDDING.md` | linking the runtime into a harness: the C ABI, the four bindings, and what a refusal means when there is no exit code |
 | `docs/BENCH-LEDGER.md` | append-only measurement history, including the losses |
 
 Working on this repository? Read `CLAUDE.md` first.

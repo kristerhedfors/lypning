@@ -27,6 +27,10 @@ pub fn to_str(v: &Value) -> R<String> {
 }
 
 pub fn repr(v: &Value) -> R<String> {
+    // A list that contains itself at 50,000 levels is not a program anyone
+    // typed, but it is a program a loop can build in one line — and without
+    // this the answer to printing it is SIGSEGV. See `err::Nest`.
+    let _nest = crate::err::Nest::enter("repr")?;
     Ok(match v {
         Value::None => "None".into(),
         Value::Bool(b) => if *b { "True" } else { "False" }.into(),

@@ -31,7 +31,7 @@ from lypning import engines  # noqa: E402  (after the path insert, on purpose)
 
 #: Cleared rather than preserved: an engine override in the developer's shell
 #: would silently change which binary every test measured.
-_ENGINE_OVERRIDES = ("LYPNING_BIN", "LYPNING_MP_BIN", "LYPNING_CPYTHON")
+_ENGINE_OVERRIDES = ("LYPNING_BIN", "LYPNING_MP_BIN", "LYPNING_CPYTHON", "LYPNING_LIB")
 
 
 @pytest.fixture(autouse=True)
@@ -67,6 +67,25 @@ def lypning_bin():
     if b is None:
         pytest.skip("the Rust core is not built (`lypning build --rust`)")
     return b
+
+
+@pytest.fixture
+def lypning_lib():
+    """The C ABI library, or skip. Optional exactly like the MicroPython tier.
+
+    Loaded, not merely located: a library built before a symbol was added is
+    found by :func:`lypning.embed.find_library` and then fails on the first
+    call, and a suite that reported that as thirty failures instead of one skip
+    would be reporting the developer's stale build as a broken runtime.
+    """
+    from lypning import embed
+    path = embed.find_library()
+    if path is None:
+        pytest.skip("the C ABI is not built (`lypning build --lib`)")
+    try:
+        return embed.Library(path)
+    except embed.LibraryError as e:
+        pytest.skip("the C ABI at %s is not usable: %s" % (path, e))
 
 
 @pytest.fixture

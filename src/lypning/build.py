@@ -99,6 +99,11 @@ class BuildResult:
     """
 
     engine: str
+    #: What was built FOR that engine. ``""`` is the engine binary itself;
+    #: ``"lib"`` is the C ABI library, which is an artefact of the same engine
+    #: rather than a fourth one — the engine strings are exactly three, and
+    #: inventing a fourth here would put it in every table that reads them.
+    artifact: str = ""
     ok: bool = False
     binary: Path | None = None
     size_bytes: int = 0
@@ -109,6 +114,10 @@ class BuildResult:
     # A dry run is neither built nor broken, and reporting it as FAILED is how a
     # first `lypning build --all --dry-run` reads as a broken install.
     dry_run: bool = False
+
+    @property
+    def label(self) -> str:
+        return "%s %s" % (self.engine, self.artifact) if self.artifact else self.engine
 
     @property
     def cheerpx_blocks(self) -> int:
@@ -363,7 +372,12 @@ def build_rust(target: str = "musl", jobs: int | None = None,
     # for. Building for the host after asking for musl is exactly that.
     fallback = note if (requested and not triple) else ""
 
-    cmd = [tc["cargo"], "build", "--manifest-path", str(workdir / "Cargo.toml"), "--release"]
+    # `--bin lypning` and not a bare `cargo build`: the crate also has a `[lib]`
+    # target now, and a bare build would compile the cdylib and the 25 MB static
+    # archive on every `lypning build --rust` — minutes of cargo for an artefact
+    # this command was not asked for and does not install.
+    cmd = [tc["cargo"], "build", "--manifest-path", str(workdir / "Cargo.toml"),
+           "--release", "--bin", engines.LYPNING]
     if triple:
         cmd += ["--target", triple]
     if jobs:
@@ -416,6 +430,200 @@ def build_rust(target: str = "musl", jobs: int | None = None,
         log=_join(*notes, _tail(out, verbose), *shape),
         skipped_reason=fallback if ok else "the unsupported contract is broken: " + why,
     )
+
+
+# --- the C ABI library -------------------------------------------------------
+
+#: What ``--lib`` produces, and the two rules that shape the list. The shared
+#: object is what a harness dlopens or links; the static archive is for a host
+#: that would rather ship one file; the headers are the contract both compile
+#: against, so they are installed BESIDE the library and never left in the
+#: package tree, which a wheel makes read-only.
+LIB_SHARED = "liblypning.so"
+LIB_STATIC = "liblypning.a"
+LIB_HEADERS = ("lypning.h", "lypning.hpp")
+
+#: The cargo profile the library must be built with. Not `--release`: that
+#: profile sets ``panic = "abort"``, which is right for a process with nothing
+#: to save and catastrophic for a library, where an abort takes down an
+#: application that only asked to run a one-liner. ``capi.rs`` refuses to
+#: compile under it rather than trusting this comment.
+LIB_PROFILE = "release-lib"
+
+
+def build_lib(target: str = "host", jobs: int | None = None,
+              verbose: bool = False, dry_run: bool = False) -> BuildResult:
+    """Build the embeddable C ABI, then assert the refusal contract THROUGH it.
+
+    Two things differ from :func:`build_rust`, and both are consequences of the
+    artefact being linked rather than executed.
+
+    **The default target is the host, not musl.** A static-musl binary is the
+    right shipping choice for something the OS spawns; a shared object has to
+    match the libc of the process that loads it, so a musl build of this would
+    be unloadable by every glibc host. ``--target musl`` is still available, for
+    a host that is itself musl.
+
+    **The contract check has no exit code to look at.** A library cannot exit
+    90, so the three pinned properties are re-asserted in library terms by
+    :func:`lypning.embed.check_refusal_contract` — status, an empty stdout, and
+    the one line — plus a fourth that only embedding needs: the refusal must ask
+    to be routed onward, because in-process it is the HOST that owns the retry.
+    A build that cannot demonstrate all four is not ``ok``, for exactly the
+    reason the binary's check exists: this is the part that breaks silently.
+    """
+    t0 = time.perf_counter()
+    triple = resolve_target(target)
+    if triple is None:
+        return BuildResult(engines.LYPNING, artifact="lib", target=str(target),
+                           seconds=time.perf_counter() - t0,
+                           skipped_reason="unknown target %r (host, musl, x86_64, i686)" % target)
+
+    tc = toolchain()
+    if tc["cargo"] is None:
+        return BuildResult(engines.LYPNING, artifact="lib", target=triple or "host",
+                           seconds=time.perf_counter() - t0,
+                           skipped_reason="cargo not found — install Rust: https://rustup.rs")
+    if not (paths.RUST_DIR / "Cargo.toml").is_file():
+        return BuildResult(engines.LYPNING, artifact="lib", target=triple or "host",
+                           seconds=time.perf_counter() - t0,
+                           skipped_reason="no crate source at %s" % paths.RUST_DIR)
+
+    notes: list[str] = []
+    workdir, note = _rust_workdir()
+    if note:
+        notes.append(note)
+    if triple:
+        triple, note = _ensure_rust_target(triple, verbose)
+        if note:
+            notes.append(note)
+
+    cmd = [tc["cargo"], "build", "--manifest-path", str(workdir / "Cargo.toml"),
+           "--lib", "--features", "capi", "--profile", LIB_PROFILE]
+    if triple:
+        cmd += ["--target", triple]
+    if jobs:
+        cmd += ["--jobs", str(int(jobs))]
+    if verbose:
+        cmd.append("--verbose")
+
+    out_dir = workdir / "target" / triple / LIB_PROFILE if triple else workdir / "target" / LIB_PROFILE
+    shared = out_dir / LIB_SHARED
+
+    if dry_run:
+        return BuildResult(
+            engines.LYPNING, artifact="lib", target=triple or "host", binary=None,
+            seconds=time.perf_counter() - t0,
+            log=_join(*notes, " ".join(cmd), "would produce: %s" % shared,
+                      "would install: %s and %s" % (_lib_dir(), _include_dir())),
+            skipped_reason="dry run: nothing was built", dry_run=True,
+        )
+
+    rc, out = _run(cmd, cwd=workdir, timeout=_CARGO_TIMEOUT)
+    if rc != 0:
+        return BuildResult(engines.LYPNING, artifact="lib", target=triple or "host",
+                           seconds=time.perf_counter() - t0,
+                           log=_join(*notes, _tail(out, verbose)),
+                           skipped_reason="cargo build failed (exit %d)%s (`-v` for the full log)"
+                                          % (rc, _why(out)))
+    if not shared.is_file():
+        return BuildResult(engines.LYPNING, artifact="lib", target=triple or "host",
+                           seconds=time.perf_counter() - t0,
+                           log=_join(*notes, _tail(out, verbose)),
+                           skipped_reason="cargo reported success but %s does not exist" % shared)
+
+    size = _size(shared)
+    shape = ["%s — %d bytes" % (shared, size)]
+    static = out_dir / LIB_STATIC
+    if static.is_file():
+        shape.append("%s — %d bytes" % (static, _size(static)))
+    shape.append("exported symbols: %d" % _lib_symbols(shared))
+
+    from . import embed as lib_embed
+    ok, why = lib_embed.check_refusal_contract(shared)
+    shape.append("unsupported contract (in-process): %s" % ("held" if ok else "BROKEN — " + why))
+
+    return BuildResult(
+        engines.LYPNING, artifact="lib",
+        ok=ok,
+        binary=shared,
+        size_bytes=size,
+        seconds=time.perf_counter() - t0,
+        target=triple or "host",
+        log=_join(*notes, _tail(out, verbose), *shape),
+        skipped_reason="" if ok else "the unsupported contract is broken: " + why,
+    )
+
+
+def _lib_symbols(shared: Path) -> int:
+    """How many ``lypning_*`` symbols the library exports.
+
+    Reported rather than asserted: the number is a build's fingerprint, and a
+    build that suddenly exports two of them is a linker script gone wrong long
+    before anyone's host fails to find a symbol. ``nm`` is not required to be
+    present, and 0 means "could not tell", never "none".
+    """
+    nm = shutil.which("nm")
+    if not nm:
+        return 0
+    rc, out = _run([nm, "-D", "--defined-only", str(shared)], timeout=60.0)
+    if rc != 0:
+        return 0
+    return sum(1 for line in out.splitlines() if " lypning_" in line)
+
+
+def _lib_dir() -> Path:
+    from . import embed as lib_embed
+    return lib_embed.lib_dir()
+
+
+def _include_dir() -> Path:
+    from . import embed as lib_embed
+    return lib_embed.include_dir()
+
+
+def install_library(result: BuildResult) -> list[Path]:
+    """Put the library and its headers where a host compiler can find them.
+
+    ``~/.lypning/lib`` and ``~/.lypning/include``, beside the engine bin dir and
+    for the same reason: the package tree is read-only in a wheel, and a header
+    a caller cannot ``-I`` is not a contract they can compile against. The
+    headers come from the asset tree rather than from the build, because they
+    are source, not output — and they are copied on every install so a header
+    and a library in the same directory always describe each other.
+    """
+    if not result.ok or result.binary is None or result.artifact != "lib":
+        return []
+    installed: list[Path] = []
+    lib_dest = paths.ensure_dir(_lib_dir())
+    inc_dest = paths.ensure_dir(_include_dir())
+    built = Path(result.binary)
+    for src in (built, built.with_name(LIB_STATIC)):
+        if not src.is_file():
+            continue
+        dest = lib_dest / src.name
+        tmp = dest.with_name(dest.name + ".new")
+        try:
+            shutil.copy2(src, tmp)
+            os.chmod(tmp, 0o755)
+            os.replace(tmp, dest)
+        except OSError:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            continue
+        installed.append(dest)
+    for name in LIB_HEADERS:
+        src = paths.INCLUDE_DIR / name
+        if not src.is_file():
+            continue
+        try:
+            shutil.copy2(src, inc_dest / name)
+        except OSError:
+            continue
+        installed.append(inc_dest / name)
+    return installed
 
 
 # --- micropython -------------------------------------------------------------
@@ -662,7 +870,8 @@ def _c_probe() -> tuple[int, str]:
 
 def build_all(rust: bool = True, micropython: bool = True, target: str = "musl",
               jobs: int | None = None, verbose: bool = False,
-              dry_run: bool = False, stock: bool = False) -> list[BuildResult]:
+              dry_run: bool = False, stock: bool = False,
+              lib: bool = False) -> list[BuildResult]:
     """Build what was asked for, in tier order, and never stop on a failure.
 
     The tiers are independent — a missing 32-bit toolchain says nothing about
@@ -675,6 +884,12 @@ def build_all(rust: bool = True, micropython: bool = True, target: str = "musl",
     results: list[BuildResult] = []
     if rust:
         results.append(build_rust(target=target, jobs=jobs, verbose=verbose, dry_run=dry_run))
+    if lib:
+        # The host target on purpose, whatever the binary asked for: a shared
+        # object has to match the libc of the process that loads it, and the
+        # musl default that is right for a spawned binary would produce one no
+        # glibc host could dlopen.
+        results.append(build_lib(jobs=jobs, verbose=verbose, dry_run=dry_run))
     if micropython:
         results.append(build_micropython(verbose=verbose, dry_run=dry_run))
     if stock:
@@ -714,6 +929,12 @@ def install_binaries(results: Iterable[BuildResult]) -> list[Path]:
     installed: list[Path] = []
     for r in results:
         if not r.ok or r.binary is None:
+            continue
+        if r.artifact:
+            # Not an engine. The C ABI library goes to `lib/` and its headers to
+            # `include/` (:func:`install_library`); dropping a `.so` into the
+            # directory the engine finders read would make `find_lypning` offer
+            # a shared object to `os.execv`.
             continue
         if r.engine == STOCK_BINARY:
             # The control stays in the build tree. This directory is where the
@@ -810,6 +1031,15 @@ def verify(results: Iterable[BuildResult] | None = None, *, limit: int | None = 
             continue
         if not r.ok or r.binary is None:
             continue
+        if r.artifact == "lib":
+            # A shared object is not a binary. Gating it would ask `gate` how
+            # many files it opens on `-c 'pass'`, which means exec'ing it — and
+            # pinning it as $LYPNING_BIN would hand every later dispatch, route
+            # and battery run an artefact the kernel cannot start. It is pinned
+            # as the LIBRARY instead, so the battery's `library` arm measures
+            # the one that was just built rather than the one already installed.
+            pins["LYPNING_LIB"] = str(r.binary)
+            continue
         subjects.append(Path(r.binary))
         var = {engines.LYPNING: "LYPNING_BIN", engines.MICROPYTHON: "LYPNING_MP_BIN"}.get(r.engine)
         if var:
@@ -817,7 +1047,7 @@ def verify(results: Iterable[BuildResult] | None = None, *, limit: int | None = 
     if results is None:
         subjects = [p for p in (engines.find_lypning(), engines.find_micropython()) if p]
 
-    saved = {k: os.environ.get(k) for k in ("LYPNING_BIN", "LYPNING_MP_BIN")}
+    saved = {k: os.environ.get(k) for k in ("LYPNING_BIN", "LYPNING_MP_BIN", "LYPNING_LIB")}
     try:
         os.environ.update(pins)
         for b in subjects:
@@ -854,7 +1084,7 @@ def report(results: Iterable[BuildResult] | BuildResult, verbose: bool = False) 
         else:
             status = "FAILED: " + (r.skipped_reason or "unknown")
         rows.append((
-            r.engine,
+            r.label,
             r.target or "-",
             str(r.size_bytes) if r.size_bytes else "-",
             str(r.cheerpx_blocks) if r.size_bytes else "-",
@@ -871,6 +1101,6 @@ def report(results: Iterable[BuildResult] | BuildResult, verbose: bool = False) 
         # would leave `--dry-run` saying nothing a plain `--help` does not.
         if (verbose or r.dry_run) and r.log:
             lines.append("")
-            lines.append("--- %s ---" % r.engine)
+            lines.append("--- %s ---" % r.label)
             lines.append(r.log)
     return "\n".join(lines)

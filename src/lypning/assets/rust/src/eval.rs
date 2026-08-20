@@ -45,6 +45,12 @@ pub struct Interp {
     assigned: Vec<Rc<HashSet<Rc<str>>>>,
     pub modules: HashMap<Rc<str>, Value>,
     depth: usize,
+    /// Statements executed and loop iterations taken, against the host's
+    /// budget. Two plain fields rather than a thread_local read per statement:
+    /// this is the hottest branch in the interpreter, and it must cost a
+    /// register compare or it is not affordable at all.
+    steps: u64,
+    step_limit: u64,
 }
 
 impl Interp {
@@ -56,6 +62,11 @@ impl Interp {
             assigned: Vec::new(),
             modules: HashMap::new(),
             depth: 0,
+            steps: 0,
+            // Read once, here, rather than per statement. Zero — the CLI's
+            // value, since a process can simply be killed — compiles the check
+            // down to a comparison that is never true.
+            step_limit: crate::host::step_limit(),
         }
     }
 
@@ -123,7 +134,30 @@ impl Interp {
         Ok(Flow::Normal)
     }
 
+    /// One unit of progress against the host's budget.
+    ///
+    /// Called from the two places an unbounded program must pass through: every
+    /// statement, and every advance of every iterator. The second is not
+    /// redundant — `sum(range(10**18))` is ONE statement, and a bound that only
+    /// counted statements would let it run forever inside a host that asked for
+    /// a bound.
+    #[inline(always)]
+    pub(crate) fn tick(&mut self) -> R<()> {
+        if self.step_limit == 0 {
+            return Ok(());
+        }
+        self.steps += 1;
+        if self.steps > self.step_limit {
+            return Err(unsupported(
+                "steps",
+                &format!("still running after {} steps", self.step_limit),
+            ));
+        }
+        Ok(())
+    }
+
     fn exec(&mut self, s: &Stmt) -> R<Flow> {
+        self.tick()?;
         match s {
             Stmt::Pass => {}
             Stmt::Expr(e) => {
@@ -1142,5 +1176,32 @@ pub fn clamp_index(i: i64, n: i64) -> i64 {
         (n + i).max(0)
     } else {
         i.min(n)
+    }
+}
+
+
+/// Take an interpreter apart without recursing on the values it holds.
+///
+/// The counterpart of [`crate::value::dismantle`] for everything one run
+/// accumulated: its globals, the scopes of any function still referenced, and
+/// the module table. Called by [`crate::embed::run`] on the way out — the
+/// binary does not need it, because a process that is about to exit does not
+/// have to survive dropping what it built.
+pub fn dismantle_interp(it: Interp) {
+    let Interp {
+        globals,
+        chain,
+        modules,
+        ..
+    } = it;
+    for scope in std::iter::once(globals).chain(chain) {
+        if let Ok(cell) = Rc::try_unwrap(scope) {
+            for (_, v) in cell.into_inner() {
+                crate::value::dismantle(v);
+            }
+        }
+    }
+    for (_, v) in modules {
+        crate::value::dismantle(v);
     }
 }

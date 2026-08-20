@@ -139,6 +139,7 @@ impl Interp {
     }
 
     pub fn iter_next(&mut self, it: &mut Iter) -> R<Option<Value>> {
+        self.tick()?;
         Ok(match it {
             Iter::List(l, i) => {
                 let b = l.borrow();

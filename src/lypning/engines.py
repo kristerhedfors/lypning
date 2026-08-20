@@ -25,6 +25,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -38,6 +39,14 @@ SHIM_MARKER = "LYPNING_SHIM_MARKER"
 LYPNING = "lypning"
 MICROPYTHON = "lypning-mp"
 CPYTHON = "cpython"
+
+#: Not a fourth engine — the same lypning, reached through the C ABI instead of
+#: through a process, the way an embedding host reaches it. It is spelled
+#: separately because it is a separate ARM to measure: the interpreter is
+#: identical, the plumbing around it (`embed.rs`, `capi.rs`) is not, and a
+#: conformance battery that never exercised the plumbing would prove nothing
+#: about the artefact a harness actually links.
+LIBRARY = "library"
 
 ENGINE_ORDER = (LYPNING, MICROPYTHON, CPYTHON)
 
@@ -242,6 +251,108 @@ class Result:
             kind, _, detail = rest.partition(": ")
             return (kind.strip(), detail.strip())
         return ("", self.stderr.strip())
+
+
+# --- the library arm ---------------------------------------------------------
+
+#: One loaded library per path. Loading a shared object costs a `dlopen` and a
+#: relocation pass, which is small but is not zero — and the whole argument for
+#: the library is that a run costs a function call, so paying a load per run
+#: would measure the wrong thing.
+_LIBRARIES: dict[str, object] = {}
+
+#: The library runs IN THIS PROCESS, so the cwd it sees is the process's own —
+#: and `os.chdir` is process-wide, not per thread. The conformance battery gives
+#: every run its own temp cwd and runs the arms in a thread pool, which those two
+#: facts together make unsafe: two threads chdir-ing for two entries would each
+#: run in the other's directory. The lock serialises the library arm alone; the
+#: spawned arms pass `cwd=` to the child and are unaffected.
+_CHDIR_LOCK = threading.Lock()
+
+
+def find_library() -> Path | None:
+    """The C ABI library, or ``None``. See :func:`lypning.embed.find_library`."""
+    from . import embed
+    return embed.find_library()
+
+
+def library_ready() -> tuple[bool, str]:
+    """``(usable, why_not)`` for the C ABI, without running a program.
+
+    Asked before a battery starts, because "the library is stale" and "the
+    library disagrees with CPython" are different facts and only one of them is
+    a bug in the runtime. A library built before a symbol was added loads fine
+    and then fails at the first call — reporting that as 800 MISMATCHes would
+    bury the one line that says to rebuild it.
+    """
+    from . import embed
+    try:
+        path = embed.find_library()
+        if path is None:
+            return False, "not built — run `lypning build --lib`"
+        embed.Library(path)
+        return True, ""
+    except embed.LibraryError as e:
+        return False, str(e)
+
+
+def run_library(
+    program: str = "",
+    *,
+    argv_tail: Sequence[str] = (),
+    stdin: str | None = None,
+    cwd: Path | str | None = None,
+    library: Path | None = None,
+    step_limit: int = 0,
+) -> Result:
+    """Run ``program`` through the C ABI, in this process, and score it like a spawn.
+
+    Returns the same :class:`Result` the spawned arms return, so every consumer —
+    :func:`lypning.conformance.classify` above all — compares the library against
+    CPython by exactly the rules it uses for a binary. That is the point: the
+    library is only worth shipping if it is held to the same MISMATCH-is-a-bug
+    standard as the tier it embeds.
+
+    ``wall_ns`` here is the function call, not a spawn, which is why it is not
+    comparable to the other arms' wall times without saying so out loud.
+    """
+    from . import embed
+    try:
+        path = Path(library) if library else embed.find_library()
+        if path is None:
+            return Result(LIBRARY, "", 127, "", "lypning: the C ABI is not built — run "
+                                                "`lypning build --lib`\n", 0)
+        key = str(path)
+        lib = _LIBRARIES.get(key)
+        if lib is None:
+            lib = embed.Library(path)
+            _LIBRARIES[key] = lib
+    except embed.LibraryError as e:
+        return Result(LIBRARY, "", 127, "", "lypning: %s\n" % e, 0)
+
+    data = (stdin or "").encode("utf-8")
+    with _CHDIR_LOCK:
+        previous = os.getcwd()
+        if cwd:
+            os.chdir(str(cwd))
+        t0 = time.perf_counter_ns()
+        try:
+            out = lib.run(program, args=list(argv_tail), stdin=data, step_limit=step_limit)
+        finally:
+            wall = time.perf_counter_ns() - t0
+            try:
+                os.chdir(previous)
+            except OSError:
+                pass
+    # `errors="replace"`, matching `run` above and for the same reason: the two
+    # sides of a comparison must decode by identical rules or two different
+    # non-ASCII outputs compare equal.
+    return Result(
+        LIBRARY, str(path), out.exit_code,
+        out.stdout.decode("utf-8", "replace"),
+        out.stderr.decode("utf-8", "replace"),
+        wall,
+    )
 
 
 def _argv_for(engine: str, binary: Path, program: str, script: Path | None) -> list[str]:

@@ -54,6 +54,7 @@ impl<'a> P<'a> {
         }
     }
     fn value(&mut self) -> R<Value> {
+        let _nest = crate::err::Nest::enter("json value")?;
         if self.i >= self.b.len() {
             return Err(decode_err("Expecting value", self.src, self.i));
         }

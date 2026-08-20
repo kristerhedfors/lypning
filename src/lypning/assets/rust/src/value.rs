@@ -86,6 +86,7 @@ pub enum HKey {
 }
 
 pub fn hkey(v: &Value) -> R<HKey> {
+    let _nest = crate::err::Nest::enter("tuple key")?;
     Ok(match v {
         Value::None => HKey::None,
         Value::Bool(b) => HKey::Int(*b as i64),
@@ -432,5 +433,63 @@ pub fn is_same(a: &Value, b: &Value) -> bool {
         // Small-int caching is an implementation detail agents should not rely
         // on and we will not reproduce; refusing beats guessing either way.
         _ => false,
+    }
+}
+
+// ---- taking a deep structure apart without recursing on it ------------------
+
+/// Drop a value iteratively, so a deeply nested one cannot overflow the stack.
+///
+/// Rust's derived drop is recursive: dropping a list that contains a list that
+/// contains a list unwinds one stack frame per level, and a program can build
+/// a hundred thousand levels with a two-line loop. The `lypning` BINARY never
+/// noticed, because the structures it builds are alive when the process exits
+/// and the kernel reclaims them. A library has no such exit: it hands the host
+/// back its thread, so it must actually take the value apart — and doing that
+/// the obvious way is a SIGSEGV in somebody else's process, which no
+/// `catch_unwind` can intercept because a stack overflow is not an unwind.
+///
+/// So the children are pushed onto a heap worklist instead of being dropped in
+/// place. Nothing here ever nests deeper than one frame, whatever the value's
+/// shape. `Rc::try_unwrap` is what makes it correct as well as safe: a shared
+/// child is not ours to dismantle, and dropping our handle to it merely
+/// decrements, which does not recurse either.
+pub fn dismantle(root: Value) {
+    let mut work = vec![root];
+    while let Some(v) = work.pop() {
+        match v {
+            Value::List(rc) => {
+                if let Ok(cell) = Rc::try_unwrap(rc) {
+                    work.extend(cell.into_inner());
+                }
+            }
+            Value::Tuple(rc) => {
+                if let Ok(items) = Rc::try_unwrap(rc) {
+                    work.extend(items);
+                }
+            }
+            Value::Dict(rc) => {
+                if let Ok(cell) = Rc::try_unwrap(rc) {
+                    for (k, val) in cell.into_inner().entries {
+                        work.push(k);
+                        work.push(val);
+                    }
+                }
+            }
+            Value::Set(rc) => {
+                if let Ok(cell) = Rc::try_unwrap(rc) {
+                    work.extend(cell.into_inner().items);
+                }
+            }
+            Value::Bound(rc, _) => {
+                if let Ok(inner) = Rc::try_unwrap(rc) {
+                    work.push(inner);
+                }
+            }
+            // Everything else is either a scalar or an `Rc` to something whose
+            // own depth is bounded by the parser (`parse::MAX_PARSE_DEPTH`), so
+            // its recursive drop is bounded too.
+            _ => {}
+        }
     }
 }

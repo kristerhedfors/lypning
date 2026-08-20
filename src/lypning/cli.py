@@ -43,7 +43,7 @@ PROG = "lypning"
 #: Everything argparse owns. ``argv[1]`` in here is a subcommand; anything else
 #: that could plausibly be a program is the interpreter's.
 COMMANDS = (
-    "run", "route", "build", "status", "doctor", "install", "uninstall",
+    "run", "route", "build", "lib", "status", "doctor", "install", "uninstall",
     "shim", "hook", "conformance", "fuzz", "bench", "corpus-time", "gate",
     "harvest", "corpus",
 )
@@ -242,14 +242,18 @@ def cmd_route(ns: argparse.Namespace) -> int:
 
 def cmd_build(ns: argparse.Namespace) -> int:
     build = _mod("build")
-    rust, mp = ns.rust, ns.micropython
+    rust, mp, lib = ns.rust, ns.micropython, ns.lib
     # `--stock` alone builds only the control: it is the benchmark's control,
     # not a tier, and asking for it must not silently rebuild the two engines.
-    if ns.all or not (rust or mp or ns.stock):
+    # `--lib` is the same shape of thing — an artefact of the Rust core rather
+    # than a tier — so asking for it alone must not rebuild the engines either.
+    if ns.all or not (rust or mp or ns.stock or lib):
         rust = mp = True
+    if ns.all:
+        lib = True
     results = build.build_all(rust=rust, micropython=mp, target=ns.target,
                               jobs=ns.jobs, verbose=ns.verbose, dry_run=ns.dry_run,
-                              stock=ns.stock)
+                              stock=ns.stock, lib=lib)
     if ns.json:
         _json({"results": [_plain(r) for r in results],
                "dry_run": bool(ns.dry_run),
@@ -259,7 +263,14 @@ def cmd_build(ns: argparse.Namespace) -> int:
     if ns.dry_run:
         return 0
     installed = build.install_binaries(results)
-    by_engine = {r.engine: r for r in results}
+    for r in results:
+        # The library and its headers go to `lib/` and `include/`, not to the
+        # directory the engine finders read — `find_lypning` offering a shared
+        # object to `os.execv` is a hang with no output.
+        if r.artifact == "lib":
+            for p in build.install_library(r):
+                _out("installed %s" % p)
+    by_engine = {r.engine: r for r in results if not r.artifact}
     for p in installed:
         # Name the target. `--target host` is the dynamically linked control and
         # `--target i686` is the sandbox build, and both land under the same
@@ -302,6 +313,158 @@ def _render_verify(v: Any) -> bool:
     return bool(v.ok)
 
 
+# --- lib ---------------------------------------------------------------------
+
+_LIB_NOT_BUILT = ("the C ABI library is not built — run `lypning build --lib` "
+                  "(or point $LYPNING_LIB at a built library)")
+
+
+def _header_dir(embed: Any, lib: Optional[Path]) -> Path:
+    """The include dir that describes THIS library, not merely one that exists.
+
+    A header from one build and a library from another is the one way to get a
+    segfault out of a frozen ABI, so the installed headers are offered only for
+    the installed library — `lypning build --lib` copies the two out together,
+    which is what makes them describe each other. A library still sitting in a
+    cargo target dir is described by the asset tree it was compiled from,
+    whatever an older install left behind in the state dir.
+    """
+    installed = embed.include_dir()
+    if lib is not None and lib.parent == embed.lib_dir() and (installed / "lypning.h").is_file():
+        return installed
+    if (paths.INCLUDE_DIR / "lypning.h").is_file():
+        return paths.INCLUDE_DIR
+    return installed
+
+
+def _lib_obj() -> Dict[str, Any]:
+    """Everything `lib`, `status` and `doctor` need to say about the C ABI.
+
+    The ABI number and the runtime version are the library's own answers, read
+    by loading it: a build tree that grew a second library, or an install that
+    is one build behind the headers beside it, is exactly what a constant
+    remembered from this side would hide.
+    """
+    embed = _mod("embed")
+    lib = embed.find_library()
+    inc = _header_dir(embed, lib)
+    obj: Dict[str, Any] = {
+        "built": lib is not None,
+        "path": str(lib) if lib else None,
+        # A hole, not a zero. These rows are read by things that compile against
+        # the library, and `0 B` reads as an empty library rather than an absent
+        # one — the same reason an unbuilt arm is a hole in the bench table.
+        "bytes": _size_of(lib) if lib else None,
+        "static": None,
+        "static_bytes": None,
+        "include": str(inc),
+        "abi": None,
+        "cli_abi": embed.ABI_VERSION,
+        "runtime": None,
+        "error": None,
+        "cflags": "-I%s" % inc,
+        "libs": None,
+        "gcc": None,
+    }
+    if lib is None:
+        return obj
+    static = lib.with_suffix(".a")
+    if static.is_file():
+        obj["static"] = str(static)
+        obj["static_bytes"] = _size_of(static)
+    d = lib.parent
+    # -rpath, which pkg-config would not have emitted: nothing runs ldconfig
+    # over ~/.lypning/lib, so a harness linked without it compiles and links
+    # cleanly and then dies at exec with "cannot open shared object file".
+    obj["libs"] = "-L%s -llypning -Wl,-rpath,%s" % (d, d)
+    obj["gcc"] = "gcc %s prog.c -o prog %s" % (obj["cflags"], obj["libs"])
+    try:
+        loaded = embed.Library(lib)
+    except embed.LibraryError as e:
+        obj["error"] = str(e)
+        return obj
+    # The number the LIBRARY answered with, not the one this side remembers.
+    # `Library` refuses to bind a library whose `lypning_abi_version()`
+    # disagrees, so the two are equal whenever this line is reached — but a
+    # field named `abi` that was never read out of the shared object is a fact
+    # about our own source, and reporting it beside `cli_abi` would look like a
+    # comparison that had been made.
+    obj["abi"] = loaded.abi
+    obj["runtime"] = loaded.version
+    return obj
+
+
+def _render_lib(info: Dict[str, Any]) -> str:
+    """The summary. Every line is something a host has to type somewhere."""
+    def row(name: str, value: str) -> str:
+        return "  %-9s %s" % (name, value)
+
+    # The title carries the verdict, because every row under it is a path and a
+    # path is right whether or not the file at the end of it will load.
+    lines = ["lypning C ABI — %s" % ("built" if not info["error"]
+                                     else "present, but it does not load"), ""]
+    lines.append(row("shared", "%s  (%s B)" % (info["path"], format(info["bytes"], ","))))
+    lines.append(row("static", "%s  (%s B)" % (info["static"], format(info["static_bytes"] or 0, ","))
+                     if info["static"] else "not built — it installs beside the shared object"))
+    lines.append(row("headers", info["include"]))
+    if info["error"]:
+        lines.append(row("abi", "UNREADABLE: %s" % info["error"]))
+    else:
+        lines.append(row("abi", "%s  (this CLI speaks %s)" % (info["abi"], info["cli_abi"])))
+        lines.append(row("runtime", info["runtime"]))
+    lines += ["", "compile against it:", "  " + info["gcc"], "",
+              "LYPNING_UNSUPPORTED is not an error: the run executed none of the program,",
+              "so hand it to CPython. lypning_result_should_fall_onward() in %s"
+              % (Path(info["include"]) / "lypning.h"), "already answers that question."]
+    return "\n".join(lines)
+
+
+def cmd_lib(ns: argparse.Namespace) -> int:
+    info = _lib_obj()
+    if not info["built"]:
+        # Exit 2 and not one byte on stdout, for the same reason a missing core
+        # is: `gcc $(lypning lib --cflags) …` must fail loudly rather than
+        # compile against whatever header the include path already had.
+        raise Usage(_LIB_NOT_BUILT)
+    asked = [key for key, on in (("cflags", ns.cflags), ("libs", ns.libs),
+                                 ("path", ns.path), ("static", ns.static),
+                                 ("include", ns.include)) if on]
+    if asked:
+        # The flag path is the one that gets substituted into a compiler, so it
+        # is answered in full BEFORE a byte reaches stdout. Half a flag list is
+        # worse than none: `gcc $(lypning lib --cflags --static)` that printed
+        # the -I and then failed would compile — against the right header and
+        # without the archive it was told to use — and only the exit code
+        # nobody in a `$(…)` looked at would say so.
+        if info["error"]:
+            # A library the CLI could not load is one whose -L and -llypning
+            # would link a host against an ABI nothing checked. The summary can
+            # report that and still print the paths, because a person reads it;
+            # these are consumed by a compiler, so here it is a refusal.
+            raise Failure("lib: %s" % info["error"])
+        values = []
+        for key in asked:
+            if info[key] is None:
+                raise Usage("no %s: %s is not beside %s — `lypning build --lib` "
+                            "installs both" % (key, Path(info["path"]).with_suffix(".a").name,
+                                               Path(info["path"]).parent))
+            values.append(str(info[key]))
+        # One line each, in a fixed order rather than the order they were typed
+        # — argparse does not keep that — so `$(lypning lib --cflags --libs)`
+        # word-splits to the same thing every time.
+        for value in values:
+            _out(value)
+        return 0
+    if ns.json:
+        _json(info)
+    else:
+        _out(_render_lib(info))
+    # A library that is there and will not load is this command's own failure:
+    # the paths above are still right, but an ABI it could not read is a number
+    # it must not print.
+    return 1 if info["error"] else 0
+
+
 # --- status ------------------------------------------------------------------
 
 
@@ -322,6 +485,18 @@ def _status_obj() -> Dict[str, Any]:
             # that is what a cold start actually costs (docs/LYPNING.md §8).
             "blocks": (size + 131071) // 131072 if size else 0,
         }
+    # Listed apart from the engines, not as a fourth one: it is an artefact of
+    # the same core, and anything walking `engines` hands its paths to execv.
+    try:
+        st["library"] = _lib_obj()
+    except Failure as e:
+        # The same keys :func:`_lib_obj` would have returned, so one absent
+        # library has one shape in `status --json` whether the library is
+        # missing or the module that reads it is.
+        st["library"] = {"built": False, "path": None, "bytes": None,
+                         "static": None, "static_bytes": None, "include": None,
+                         "abi": None, "cli_abi": None, "runtime": None,
+                         "error": str(e), "cflags": None, "libs": None, "gcc": None}
     try:
         problems: List[str] = []
         entries = corpus.load_default(problems)
@@ -351,6 +526,17 @@ def _render_status(st: Dict[str, Any]) -> str:
         size = e.get("bytes") or 0
         detail = "  (%s B, %d blocks)" % (format(size, ","), e.get("blocks") or 0) if size else ""
         lines.append("  %-11s %s%s" % (name + ":", e["path"], detail))
+
+    lib = st.get("library") or {}
+    lines += ["", "library"]
+    if not lib.get("built"):
+        lines.append("  %-11s not built  — `lypning build --lib`" % "liblypning:")
+    else:
+        abi = ("ABI %s" % lib["abi"] if lib.get("abi") is not None
+               else "UNREADABLE: %s" % lib.get("error", ""))
+        lines.append("  %-11s %s  (%s B, %s)"
+                     % ("liblypning:", lib["path"], format(lib.get("bytes") or 0, ","), abi))
+    lines.append("  %-11s %s" % ("headers:", lib.get("include") or "not installed"))
 
     c = st.get("corpus") or {}
     n = c.get("entries")
@@ -404,7 +590,11 @@ def cmd_status(ns: argparse.Namespace) -> int:
 
 # --- doctor ------------------------------------------------------------------
 
-OK, WARN, FAIL = "OK", "WARN", "FAIL"
+#: NOTE is the fourth level and it is neither good news nor bad: an optional
+#: part that is absent. A WARN there would train a reader to ignore WARNs, and
+#: the parts that are optional here — the MicroPython tier, the C ABI — are
+#: absent on most machines by design, not by neglect.
+OK, WARN, FAIL, NOTE = "OK", "WARN", "FAIL", "NOTE"
 
 
 def _pip_scripts_dirs() -> List[Path]:
@@ -520,6 +710,30 @@ def _doctor_checks() -> List[Tuple[str, str, str]]:
         checks.append((OK if ok else FAIL, "lypning-mp refusal",
                        "exit 90, clean stdout" if ok else
                        "exit %d, stdout %r" % (res.returncode, res.stdout[:80])))
+
+    # 3b. the same contract, through the ABI instead of through a process. A
+    #     shared object has no exit code, so the three pinned properties are
+    #     re-asserted in library terms — plus the fourth only embedding needs:
+    #     the refusal must ask to be routed onward, because in-process it is the
+    #     HOST that owns the retry, and a refusal nobody acts on is a program
+    #     that never ran. FAIL when it is broken: that is the silent kind of
+    #     wrong answer, arriving inside somebody else's process.
+    try:
+        embed = _mod("embed")
+    except Failure as e:
+        checks.append((WARN, "embed module", str(e)))
+        embed = None
+    if embed is not None:
+        lib = embed.find_library()
+        if lib is None:
+            checks.append((NOTE, "library refusal",
+                           "liblypning is not built — `lypning build --lib`; the C ABI is "
+                           "optional and nothing routes through it until a host links it"))
+        else:
+            ok, why = embed.check_refusal_contract(lib)
+            checks.append((OK if ok else FAIL, "library refusal",
+                           "%s — unsupported status, clean stdout, one line, falls onward" % lib
+                           if ok else "%s: %s" % (lib, why)))
 
     # 4. the collision
     checks.append(_check_cli_collision())
@@ -1126,7 +1340,9 @@ must not cost you its result.
 A build is not `ok` until the refusal contract holds on the binary it just
 produced — exit 90, one exact line on stderr, nothing at all on stdout. Only
 `ok` binaries are installed into the bin dir; a broken one is left in the build
-tree with its reason printed.
+tree with its reason printed. `--lib` is held to the same contract through the
+ABI instead of through a process: the refusal must arrive as a status, with an
+empty stdout, the same one line, and a request to be routed onward.
 
 The MicroPython tier downloads a musl toolchain and needs a network and
 gcc-multilib. Without them this reports precisely which one is missing and
@@ -1134,6 +1350,7 @@ moves on.
 """, """
 examples:
   lypning build                       both tiers
+  lypning build --lib                 the embeddable C ABI, for a harness
   lypning build --rust --target host  the dynamically linked glibc control
   lypning build --micropython --jobs 4
   lypning build --stock               the benchmark control, on its own
@@ -1142,7 +1359,13 @@ examples:
 """)
     s.add_argument("--rust", action="store_true", help="build the Rust core")
     s.add_argument("--micropython", action="store_true", help="build the MicroPython tier")
-    s.add_argument("--all", action="store_true", help="both (the default when neither is named)")
+    s.add_argument("--all", action="store_true",
+                   help="both tiers and the library (the default when none is named is both tiers)")
+    s.add_argument("--lib", action="store_true",
+                   help="build the embeddable C ABI (liblypning.so, liblypning.a and the "
+                        "headers) into ~/.lypning/lib and ~/.lypning/include — for C, C++, "
+                        "Rust and Node hosts that run programs in-process instead of "
+                        "spawning them")
     s.add_argument("--stock", action="store_true",
                    help="build the benchmark CONTROL: upstream MicroPython, unpatched, no "
                         "frozen stdlib, same pinned commit and toolchain. Not an engine and "
@@ -1161,11 +1384,56 @@ examples:
     s.add_argument("-v", "--verbose", action="store_true", help="append each build's log")
     s.set_defaults(func=cmd_build)
 
+    # lib
+    s = _sub(subs, "lib", "the flags a C or C++ host needs to link liblypning", """
+What pkg-config would tell you, if this project shipped a .pc file. It does
+not: a .pc file is a dependency on pkg-config, and a package that installs
+itself next to whatever an agent is working on does not get to add one.
+
+One line per flag, so it substitutes — `gcc $(lypning lib --cflags) prog.c
+$(lypning lib --libs)`. --libs carries -Wl,-rpath on purpose, which pkg-config
+would not have: nothing runs ldconfig over ~/.lypning/lib, so a host linked
+without it compiles and links cleanly and then dies at exec with "cannot open
+shared object file".
+
+With no flag it prints the summary — where the shared object, the archive and
+the headers are, how big they are, the ABI the library itself answers with, the
+runtime version, and the gcc line to paste. With no library at all it is exit 2
+and one line on stderr and nothing on stdout, because an empty -I is a compile
+against whatever header was already on the include path. A flag this build
+cannot answer — no archive beside the shared object, or a library that will not
+load — is the same: one line on stderr, nothing on stdout, and never a partial
+flag list. The summary and --json still describe it, because a person reads
+those and a compiler does not.
+
+The one rule of the surface those flags open: a run whose status is
+LYPNING_UNSUPPORTED executed NOTHING, so run the program on CPython. That is a
+route, never an error, and it is what lets the subset stay small.
+""", """
+examples:
+  lypning lib
+  gcc $(lypning lib --cflags) prog.c -o prog $(lypning lib --libs)
+  g++ -std=c++17 $(lypning lib --cflags) host.cpp -o host $(lypning lib --libs)
+  cc -I$(lypning lib --include) -c prog.c
+  lypning lib --json | jq -r .gcc
+""")
+    s.add_argument("--cflags", action="store_true", help="-I<include dir>")
+    s.add_argument("--libs", action="store_true",
+                   help="-L<lib dir> -llypning -Wl,-rpath,<lib dir>")
+    s.add_argument("--path", action="store_true", help="the shared object itself")
+    s.add_argument("--static", action="store_true",
+                   help="the archive, for a host that will not ship a .so beside its binary")
+    s.add_argument("--include", action="store_true",
+                   help="the directory holding lypning.h and lypning.hpp")
+    s.add_argument("--json", action="store_true", help="machine-readable")
+    s.set_defaults(func=cmd_lib)
+
     # status
     s = _sub(subs, "status", "what is built, wired and captured", """
 The command to run when something is not behaving. It answers, in one screen:
 which engines are built and where, how big they are in bytes and in 128 KiB
-device blocks, how many programs the corpus holds, whether the shim is
+device blocks, whether the embeddable C ABI is built and which ABI it answers
+with, how many programs the corpus holds, whether the shim is
 installed and whether its directory is on PATH ahead of the real python,
 whether this project has the capture hooks wired, and where the log is.
 
@@ -1298,10 +1566,15 @@ milliseconds, and neither gates anything.
 examples:
   lypning conformance --limit 50
   lypning conformance --engine lypning --plan
+  lypning conformance --engine library          the embedded tier, against CPython
   lypning conformance --json > conformance.json
 """)
     s.add_argument("--engine", action="append", metavar="E",
-                   help="arm to measure: lypning, lypning-mp, mixture (repeatable)")
+                   help="arm to measure: lypning, lypning-mp, mixture, library "
+                        "(repeatable). `library` is the same lypning reached through "
+                        "the C ABI in this process — it shares the interpreter with the "
+                        "`lypning` arm but not the exit path, so the two disagreeing is "
+                        "the thing it is there to catch")
     s.add_argument("--plan", action="store_true",
                    help="print the build order implied by the refusals INSTEAD of the table")
     s.add_argument("--limit", type=int, metavar="N", help="only the first N corpus programs")

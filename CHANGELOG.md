@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — lypning as a library, for harnesses that would rather link than spawn
+
+The runtime is now buildable as a C ABI (`lypning build --lib` →
+`liblypning.so`, `liblypning.a`, and the headers), so a coding harness can run a
+program **in its own process**: no fork, no exec, no pipe, no serialisation. On
+the programs lypning accepts that removes the process, and the process was 96%
+of what a one-liner cost. Measured here on 2026-08-20, `pass` costs 0.0071 ms
+through the library against 0.2547 ms spawned and 11.12 ms under CPython; the
+method and the caveats are in `docs/EMBEDDING.md` §2, and the number is not
+comparable to `lypning bench`'s because it is not the same instrument.
+
+The crate is now lib + bin. `main.rs` is one consumer and `capi.rs` is another,
+both running programs through the same `embed::run`, because a second
+implementation of the refusal contract is how a MISMATCH reaches a release.
+
+- **The exit-90 contract, translated.** A library has no exit code and must not
+  touch the host's stderr, so each of the three parts is carried by a value:
+  `LYPNING_UNSUPPORTED`, an empty `stdout` by the commit barrier, and `stderr`
+  holding exactly the one line the binary would have printed.
+  `lypning_result_should_fall_onward()` is the call a host branches on, and it
+  is the same predicate the dispatcher uses.
+- **Five bindings over one ABI.** C and C++ headers in `assets/include/`, a
+  Node-API addon with no npm dependencies in `assets/node/`, the Rust crate
+  directly, and `lypning.embed` for Python over `ctypes` — with runnable
+  examples in `assets/examples/`. Zero dependencies everywhere, as everywhere
+  else in this project.
+- **A step limit, because there is no process to kill.** `while True: pass` in
+  a host's own thread is a hang with no signal and no way back, and every
+  program a coding harness runs was written by a model. The counter ticks on
+  every statement *and* every iterator advance — `sum(range(10**12))` is one
+  statement — and passing it is a refusal, so the program still gets its answer
+  from CPython. Output has the same shape of bound.
+- **A filesystem denial that refuses instead of lying.** `set_filesystem(q, 0)`
+  makes every file operation an `unsupported: sandbox` refusal. Telling the
+  program the file is missing would be a wrong answer at exit 0, which is the
+  outcome the whole contract exists to prevent; the host is told instead, and
+  decides for itself whether CPython gets the program.
+- **`lypning conformance --engine library`** runs the corpus through the ABI
+  in-process and scores it against CPython by the rules the spawned arms are
+  scored by. On the run that shipped this it matched the `lypning` arm program
+  for program. `lypning build --lib` asserts the contract through the ABI before
+  reporting `ok`, `lypning doctor` re-asserts it on the installed library, and
+  `lypning lib` prints the compile line.
+
+### Fixed — five ways a program could kill the process, four of them since forever
+
+Embedding found these, because embedding is what made them matter: in a binary a
+segfault is a crashed one-liner, and in a host it is an application dying with
+nothing to catch. A stack overflow is not an unwind, so the ABI's guard cannot
+intercept one — the depth has to be bounded before the stack is. All five are
+pinned in `tests/test_embed.py`.
+
+- **Nested parentheses past ~1,000 levels segfaulted**, in the binary too. Now
+  `unsupported: recursion` past 64 — three and a half times the deepest program
+  in the corpus (842 loaded, deepest nests 18, p99 nests 11). CPython refuses
+  these as well, so routing one onward gets an error either way rather than a
+  signal.
+- **`repr` of a deeply nested container, a deeply nested tuple used as a dict
+  key, and deeply nested JSON** each did the same. Now bounded at 500 by one
+  shared guard, released on drop so an error path cannot leak a level.
+- **Tearing down what a program built recursed once per level.** The binary
+  never noticed — it exits, and the kernel reclaims. A library hands the thread
+  back, so it now takes values apart with a worklist: a million-level list is
+  fine.
+- **`json.dumps()` with no argument was an index panic**, i.e. an abort in the
+  binary. It is a `TypeError`, as CPython says.
+
 ### Fixed — six interpreter bugs, all found by `lypning fuzz`
 
 The differential fuzzer generates programs from the subset lypning *claims* to

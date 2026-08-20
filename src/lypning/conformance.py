@@ -56,7 +56,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from . import corpus
 from . import engines as eng
 from . import paths
-from .engines import CPYTHON, LYPNING, MICROPYTHON
+from .engines import CPYTHON, LIBRARY, LYPNING, MICROPYTHON
 
 MATCH = "MATCH"
 UNSUPPORTED = "UNSUPPORTED"
@@ -66,6 +66,17 @@ MISMATCH = "MISMATCH"
 #: a tier — it *uses* the tiers — but it is the arm a caller of ``lypning run``
 #: actually experiences, so it is the arm CI gates on.
 MIXTURE = "mixture"
+
+#: The same lypning, reached through the C ABI in this process instead of
+#: through a spawn. It is measured as its own arm for one reason: the
+#: interpreter is shared with the ``lypning`` arm but the plumbing around it —
+#: the in-process exit path, the captured streams, the injected stdin and argv —
+#: is a SECOND implementation of the refusal contract, and invariant 2 says that
+#: contract has only ever broken silently. If this arm and the ``lypning`` arm
+#: ever disagree, one of the two is wrong and the corpus is what says so.
+#:
+#: Not in :data:`DEFAULT_ARMS`, exactly like the MicroPython tier is not: the
+#: library is optional, and an absent one is a missing arm, never a failure.
 
 VERDICTS = (MATCH, UNSUPPORTED, MISMATCH)
 
@@ -656,6 +667,15 @@ def _clip(s: str) -> str:
 _UNSUPPORTED_RE = re.compile(r"^([\w.-]+): unsupported: ([\w-]+): (.+)$", re.M)
 
 
+#: An in-process run cannot be killed, so the library arm's stand-in for the
+#: battery's timeout is a step budget: a program that will not stop refuses
+#: instead of hanging the run. Far above anything a one-liner does — the whole
+#: corpus runs in milliseconds per entry — and it is a refusal rather than a
+#: verdict, so an entry that somehow reached it is scored as coverage, never as
+#: a disagreement with CPython.
+LIBRARY_STEP_LIMIT = 100_000_000
+
+
 def _refusal(engine: str, stderr: str) -> Optional[Tuple[str, str]]:
     """``(kind, detail)`` from the shared refusal line, or None.
 
@@ -665,7 +685,11 @@ def _refusal(engine: str, stderr: str) -> Optional[Tuple[str, str]]:
     """
     for m in _UNSUPPORTED_RE.finditer(stderr or ""):
         who = m.group(1)
-        if who == engine or (engine == MIXTURE and who in eng.ENGINE_ORDER):
+        # The library writes lypning's own line, because it IS lypning — the
+        # arm name is ours, for the report, and never reaches the runtime.
+        if (who == engine
+                or (engine == MIXTURE and who in eng.ENGINE_ORDER)
+                or (engine == LIBRARY and who == LYPNING)):
             return m.group(2), m.group(3)
     return None
 
@@ -848,6 +872,15 @@ def _run_entry(
                 d.route.engine, d.route.kind, d.route.detail)
             out.verdicts[arm] = classify(ref, got, MIXTURE, entry)
             continue
+        if arm == LIBRARY:
+            # In-process, so there is no child to give a cwd to: `run_library`
+            # chdirs under a lock instead, which is why this arm serialises
+            # while the spawned arms do not.
+            with _Sandbox("lib") as cwd:
+                got = eng.run_library(program, argv_tail=argv_tail, stdin=stdin, cwd=cwd,
+                                      step_limit=LIBRARY_STEP_LIMIT)
+            out.verdicts[arm] = classify(ref, got, LIBRARY, entry)
+            continue
         with _Sandbox(arm) as cwd:
             got = eng.run(arm, program, binary=binaries.get(arm), argv_tail=argv_tail,
                           stdin=stdin, cwd=cwd, timeout=timeout, env=_env_for(cwd))
@@ -903,7 +936,18 @@ def run(
 
         wanted = list(engines) if engines is not None else list(DEFAULT_ARMS)
         for a in wanted:
-            if a in (MIXTURE, CPYTHON) or binaries.get(a) is not None:
+            if a == LIBRARY:
+                # "Not built" is a missing arm, not a failed one — the same rule
+                # the engine binaries get, applied to the artefact a host links.
+                # Loadability is checked here rather than per entry: a stale
+                # library fails identically 800 times, and 800 MISMATCHes would
+                # bury the one line that says to rebuild it.
+                usable, why = eng.library_ready()
+                if usable:
+                    arms.append(a)
+                else:
+                    unbuilt.append("%s (%s)" % (a, why))
+            elif a in (MIXTURE, CPYTHON) or binaries.get(a) is not None:
                 arms.append(a)
             else:
                 unbuilt.append(a)

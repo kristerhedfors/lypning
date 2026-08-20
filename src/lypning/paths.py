@@ -29,6 +29,13 @@ RUST_DIR = ASSETS / "rust"
 MICROPYTHON_DIR = ASSETS / "micropython"
 MICROPYTHON_LIB = MICROPYTHON_DIR / "lib"
 CORPUS_DIR = ASSETS / "corpus"
+#: The C ABI's headers — source, not build output, and the contract every
+#: binding compiles against. Copied out to a writable include dir on install,
+#: because a wheel's asset tree is read-only and a header a caller cannot
+#: ``-I`` is not a contract they can compile against.
+INCLUDE_DIR = ASSETS / "include"
+EXAMPLES_DIR = ASSETS / "examples"
+NODE_DIR = ASSETS / "node"
 SCRIPTS_DIR = ASSETS / "scripts"
 SHIM_SRC = ASSETS / "shim" / "python-shim"
 CLAUDE_ASSETS = ASSETS / "claude"

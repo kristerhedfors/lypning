@@ -21,6 +21,7 @@
 //! assumed away.
 
 use crate::err::{unsupported, LypningError, R};
+use crate::host;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -77,13 +78,46 @@ pub fn write_err(b: &[u8]) -> R<()> {
     maybe_commit()
 }
 
-fn buffered_len() -> usize {
-    OUT.with(|o| o.borrow().len())
-        + ERRBUF.with(|o| o.borrow().len())
-        + PENDING.with(|p| p.borrow().files.values().map(|(b, _)| b.len()).sum::<usize>())
+fn stream_len() -> usize {
+    OUT.with(|o| o.borrow().len()) + ERRBUF.with(|o| o.borrow().len())
 }
 
+fn staged_len() -> usize {
+    PENDING.with(|p| p.borrow().files.values().map(|(b, _)| b.len()).sum::<usize>())
+}
+
+fn buffered_len() -> usize {
+    stream_len() + staged_len()
+}
+
+/// The ceiling, and it means something different in each of the two shapes.
+///
+/// **In the CLI** the buffer's only exit is fd 1, so the choice past
+/// `COMMIT_THRESHOLD` is between flushing early — losing the ability to fall
+/// onward — and growing without bound. It flushes, and says so by committing.
+///
+/// **Embedded** the output has not left anything yet: the host is handed the
+/// bytes when the run returns, so a refusal here costs the caller nothing and
+/// stays routable, which is strictly better than filling their address space.
+/// So the two halves separate. Captured streams refuse at the host's limit;
+/// staged FILE writes — the one thing that is a real side effect either way —
+/// keep the original early-commit behaviour, because a host that let the
+/// program open files asked for those bytes to reach the disk.
 fn maybe_commit() -> R<()> {
+    if host::embedded() {
+        let limit = host::output_limit();
+        if limit > 0 && stream_len() > limit {
+            return Err(unsupported(
+                "output",
+                &format!("captured output passed the host's limit of {limit} bytes"),
+            ));
+        }
+        if !is_committed() && staged_len() > COMMIT_THRESHOLD {
+            commit()?;
+            COMMITTED.with(|c| *c.borrow_mut() = true);
+        }
+        return Ok(());
+    }
     if !is_committed() && buffered_len() > COMMIT_THRESHOLD {
         commit()?;
         COMMITTED.with(|c| *c.borrow_mut() = true);
@@ -122,6 +156,13 @@ pub fn commit() -> R<()> {
         }
         Ok(())
     })?;
+    if host::embedded() {
+        // The host's two buffers ARE the destination. Draining them into the
+        // process's stdout would write a library caller's program output onto
+        // whatever fd 1 happens to be — the single worst thing an embedded
+        // runtime can do to an application.
+        return Ok(());
+    }
     OUT.with(|o| {
         let mut o = o.borrow_mut();
         if !o.is_empty() {
@@ -238,6 +279,16 @@ pub fn path_exists(path: &str) -> bool {
 }
 
 pub fn open_file(path: &str, mode: &str, binary: bool) -> R<FileObj> {
+    if !host::filesystem_allowed() {
+        // A denial, not a lie. Reporting "no such file" would hand the program
+        // a WRONG ANSWER at exit 0, which is the one outcome the whole refusal
+        // contract exists to prevent; refusing leaves the host free to run the
+        // program somewhere it is allowed to open files.
+        return Err(unsupported(
+            "sandbox",
+            &format!("open('{path}') with the filesystem denied"),
+        ));
+    }
     let m = match mode {
         "r" => Mode::Read,
         "w" => Mode::Write,
@@ -357,4 +408,44 @@ pub fn stdin_line() -> R<Option<Vec<u8>>> {
     };
     STDIN_POS.with(|p| *p.borrow_mut() = end);
     Ok(Some(all[pos..end].to_vec()))
+}
+
+// ---- the embedded seam -----------------------------------------------------
+//
+// Everything above is written for a process that runs one program and exits,
+// which is why the state is thread_local and nothing ever resets it. A library
+// runs a second program in the same thread, so the same state has to be
+// returnable to its starting position — and a leftover byte from the previous
+// run would surface as output the current program never printed.
+
+/// Take the captured stdout, leaving the buffer empty.
+pub fn take_out() -> Vec<u8> {
+    OUT.with(|o| std::mem::take(&mut *o.borrow_mut()))
+}
+
+/// Take the captured stderr, leaving the buffer empty.
+pub fn take_err() -> Vec<u8> {
+    ERRBUF.with(|o| std::mem::take(&mut *o.borrow_mut()))
+}
+
+/// Hand the program its stdin, so `stdin_all` never reaches the host's fd 0.
+///
+/// `None` means an empty stream, and that is the default an embedded run gets
+/// rather than the process's: a library call that blocked reading a terminal
+/// the host never wrote to would be indistinguishable from a hang.
+pub fn set_stdin(bytes: Option<Vec<u8>>) {
+    STDIN.with(|s| *s.borrow_mut() = Some(bytes.unwrap_or_default()));
+    STDIN_POS.with(|p| *p.borrow_mut() = 0);
+}
+
+/// Return every thread_local in this module to the state a fresh process has.
+///
+/// Called on the way IN to an embedded run, not on the way out: a run that
+/// ended in a panic cannot be trusted to have cleaned up after itself, and the
+/// next caller is the one who would pay for it.
+pub fn reset() {
+    discard();
+    COMMITTED.with(|c| *c.borrow_mut() = false);
+    STDIN.with(|s| *s.borrow_mut() = None);
+    STDIN_POS.with(|p| *p.borrow_mut() = 0);
 }
