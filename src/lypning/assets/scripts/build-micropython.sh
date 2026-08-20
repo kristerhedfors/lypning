@@ -352,7 +352,7 @@ rather than duplicating the flags here."
     [ "$sfail" = 0 ] || die "stock shape checks failed"
 
     say "Built $STOCK_OUT — $(stat -c %s "$STOCK_OUT") bytes"
-    echo "    benchmark against lypning:  npm run lypning:bench"
+    echo "    benchmark against lypning:  lypning bench"
 }
 
 if [ "$DO_STOCK" = 1 ]; then
@@ -484,7 +484,7 @@ check "sys.path is pinned to ['.frozen']" \
 check "unsupported module exits 90" \
     "$("$OUT" -c 'import subprocess' >/dev/null 2>&1; echo $?)" "90"
 check "unsupported module: one stderr line" \
-    "$("$OUT" -c 'import subprocess' 2>&1 >/dev/null)" "lypning: unsupported: module: subprocess"
+    "$("$OUT" -c 'import subprocess' 2>&1 >/dev/null)" "lypning-mp: unsupported: module: subprocess"
 check "unsupported module: stdout untouched" \
     "$("$OUT" -c 'import subprocess' 2>/dev/null | wc -c | tr -d ' ')" "0"
 check "a module CPython lacks too still exits 1" \
@@ -509,7 +509,7 @@ check "shim unsupported exits 90 (-c)" \
     "$("$OUT" -c 'import re; re.findall(r"\d+", "a1", re.LOCALE)' >/dev/null 2>&1; echo $?)" "90"
 check "shim unsupported: one stderr line" \
     "$("$OUT" -c 'import re; re.findall(r"\d+", "a1", re.LOCALE)' 2>&1 >/dev/null)" \
-    "lypning: unsupported: argument: re(LOCALE)"
+    "lypning-mp: unsupported: argument: re(LOCALE)"
 check "shim unsupported: stdout untouched" \
     "$("$OUT" -c 'import re; re.findall(r"\d+", "a1", re.LOCALE)' 2>/dev/null | wc -c | tr -d ' ')" "0"
 check "shim unsupported exits 90 (file)" \
@@ -533,7 +533,7 @@ check "missing syntax exits 90 (-c)" \
     case 1: pass' >/dev/null 2>&1; echo $?)" "90"
 check "missing syntax: one stderr line" \
     "$("$OUT" -c 'print({**a, "b": 1})' 2>&1 >/dev/null)" \
-    "lypning: unsupported: syntax: dict unpacking in a literal ({**d})"
+    "lypning-mp: unsupported: syntax: dict unpacking in a literal ({**d})"
 check "missing syntax exits 90 (file)" \
     "$(printf 'x = 1\nmatch x:\n    case 1: pass\n' > "$WORK/s.py"; "$OUT" "$WORK/s.py" >/dev/null 2>&1; echo $?)" "90"
 check "missing syntax exits 90 (stdin)" \
@@ -551,7 +551,7 @@ check "heap exhaustion exits 90" \
 # A C function handed a keyword it does not take, named rather than generic.
 check "builtin keyword exits 90, naming it" \
     "$("$OUT" -c 'print(list(zip([1], [2], strict=True)))' 2>&1 >/dev/null)" \
-    "lypning: unsupported: argument: keyword strict"
+    "lypning-mp: unsupported: argument: keyword strict"
 
 # str() on a subclass of a native type must reach the subclass's __repr__, the
 # way CPython's object.__str__ does. It did not, and print(defaultdict) and

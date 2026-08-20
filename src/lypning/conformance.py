@@ -23,8 +23,11 @@ from real agent sessions, so it is full of programs that rewrite ``src/`` and
 its own :func:`tempfile.mkdtemp` cwd (and a *separate* one per engine, so the
 second engine cannot read back what the first wrote), every program naming an
 absolute path is skipped rather than run, and the whole battery is bracketed by
-a ``git status`` snapshot that restores and reports anything that changed
-anyway. That last one is a net, not a sandbox: it cannot undo a write outside
+a snapshot of the work tree — git's status *and* a digest and a copy of every
+file already dirty — that restores and reports anything that changed anyway.
+Digests rather than the set of dirty paths, because the set cannot see a second
+change to a file that was already modified, which is the state every developer
+runs this in. That last one is a net, not a sandbox: it cannot undo a write outside
 the repository, it only makes the next occurrence loud. It is here because the
 first measurement runs on the upstream project rewrote 34 tracked files and the
 escape route was never pinned down — which is precisely the argument for a net.
@@ -37,6 +40,7 @@ engine that printed the wrong thing.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -382,7 +386,7 @@ def _git(root: Path, *args: str, timeout: float = 60.0) -> Optional[str]:
     try:
         p = subprocess.run(
             ["git", "-C", str(root)] + list(args),
-            capture_output=True, text=True, errors="replace",
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=timeout, check=False,
         )
     except (OSError, subprocess.SubprocessError):
@@ -416,29 +420,223 @@ def dirty_paths(root: Path) -> Optional[Dict[str, str]]:
     return seen
 
 
-def _restore(root: Path, collateral: Dict[str, str]) -> List[str]:
-    """Undo what the corpus wrote. Returns the paths that could not be undone."""
-    failed: List[str] = []
-    tracked = sorted(p for p, s in collateral.items() if s != "??")
-    if tracked:
-        if _git(root, "checkout", "--", *tracked) is None:
-            failed.extend(tracked)
-    for p in sorted(p for p, s in collateral.items() if s == "??"):
-        target = (root / p).resolve()
-        # Never delete outside the tree we snapshotted, whatever git said.
+# The snapshot keeps the BYTES of everything already dirty, so a file the
+# developer was midway through editing can be put back exactly as it was. 64 MiB
+# is the budget; past it the net keeps the digest and reports the change as
+# unrestorable, which is still louder than not noticing it at all.
+_SNAPSHOT_BUDGET = 64 * 1024 * 1024
+
+
+def _expand(root: Path, rel: str) -> List[str]:
+    """One git-status entry as the files it actually stands for.
+
+    git collapses an untracked DIRECTORY into a single ``?? dir/`` entry, so
+    every file the corpus creates inside one leaves the status line unchanged.
+    That is not an exotic case — ``tests/`` is an untracked directory in a fresh
+    checkout of this very repository. Expanded with git rather than with
+    ``rglob`` so the ignore rules still decide what counts.
+    """
+    if not rel.endswith("/"):
+        return [rel]
+    out = _git(root, "ls-files", "--others", "--exclude-standard", "-z", "--", rel)
+    if out is None:
+        return [rel.rstrip("/")]
+    return [f for f in out.split("\0") if f]
+
+
+def _digest(p: Path) -> str:
+    """Content identity, or ``""`` when the path is absent. Never raises."""
+    h = hashlib.sha256()
+    try:
+        with p.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 16), b""):
+                h.update(chunk)
+    except OSError:
+        return ""
+    return h.hexdigest()
+
+
+@dataclass
+class _TreeState:
+    """The work tree as it was before the corpus ran: git's view, and the bytes."""
+
+    status: Dict[str, str] = field(default_factory=dict)
+    digests: Dict[str, str] = field(default_factory=dict)
+    saved: Dict[str, Path] = field(default_factory=dict)
+    store: Optional[Path] = None
+
+    def discard(self) -> None:
+        if self.store is not None:
+            shutil.rmtree(self.store, ignore_errors=True)
+            self.store = None
+
+
+def _fingerprint(root: Path, status: Dict[str, str]) -> Dict[str, str]:
+    """``{path: digest}`` over every file the status entries stand for."""
+    out: Dict[str, str] = {}
+    for rel in sorted(status):
+        for f in _expand(root, rel):
+            out[f] = _digest(root / f)
+    return out
+
+
+def _snapshot(root: Path) -> Optional[_TreeState]:
+    """What the tree looked like, in enough detail to detect a SECOND change.
+
+    Comparing the SET of dirty paths — which is all this did until a probe
+    caught it — cannot see the case that matters: a file that was already
+    modified when the battery started stays `` M`` no matter what the corpus
+    appends to it, so the one state a developer ever runs this in, mid-edit, was
+    the one state where the net was blind. Digests close that. The saved bytes
+    are what makes "restored" true afterwards: the pre-run content of an
+    already-dirty file was never committed, so ``git checkout`` would replace
+    the corpus' damage with the tool's own.
+    """
+    status = dirty_paths(root)
+    if status is None:
+        return None
+    state = _TreeState(status=status, digests=_fingerprint(root, status))
+    spent = 0
+    for f in sorted(state.digests):
+        src = root / f
         try:
-            target.relative_to(root.resolve())
-        except ValueError:
+            size = src.stat().st_size
+        except OSError:
+            continue
+        if spent + size > _SNAPSHOT_BUDGET:
+            continue
+        if state.store is None:
+            state.store = Path(tempfile.mkdtemp(prefix="lypning-conf-snap-"))
+        dest = state.store / ("%d.blob" % len(state.saved))
+        try:
+            shutil.copyfile(src, dest)
+        except OSError:
+            continue
+        state.saved[f] = dest
+        spent += size
+    return state
+
+
+def _collateral(root: Path, before: _TreeState) -> Dict[str, str]:
+    """``{path: digest_now}`` for every path whose bytes are not what they were.
+
+    The union of what git calls dirty now and what it called dirty before: a
+    corpus program that "helpfully" reverts an edited file to its committed
+    content takes it *off* the status list, and that is a change like any other.
+    """
+    status = dirty_paths(root) or {}
+    now = _fingerprint(root, status)
+    for f in before.digests:
+        if f not in now:
+            now[f] = _digest(root / f)
+    return {f: d for f, d in now.items() if before.digests.get(f, "") != d}
+
+
+def _is_tracked(root: Path, rel: str) -> bool:
+    return _git(root, "ls-files", "--error-unmatch", "--", rel) is not None
+
+
+def _remove(target: Path) -> None:
+    if target.is_dir() and not target.is_symlink():
+        shutil.rmtree(target, ignore_errors=True)
+    else:
+        target.unlink()
+
+
+def _restore(root: Path, collateral: Dict[str, str], before: _TreeState) -> List[str]:
+    """Undo what the corpus wrote. Returns the paths that could not be undone.
+
+    A path that was ALREADY dirty is put back from the snapshot, never with
+    ``git checkout``: its pre-run content is not in any commit, so checking it
+    out would delete the developer's own uncommitted work in the name of
+    protecting it. Only a path that was clean before goes back through git.
+    """
+    failed: List[str] = []
+    fresh: List[str] = []
+    for p in sorted(collateral):
+        target = root / p
+        # Never touch anything outside the tree that was snapshotted, whatever
+        # git said — a symlink out of the tree is a path out of the tree.
+        try:
+            target.resolve().relative_to(root.resolve())
+        except (ValueError, OSError):
+            failed.append(p)
+            continue
+        if p not in before.digests:
+            fresh.append(p)
+            continue
+        saved = before.saved.get(p)
+        if saved is None and before.digests[p]:
+            # Too large for the budget: say so rather than pretend.
             failed.append(p)
             continue
         try:
-            if target.is_dir() and not target.is_symlink():
-                shutil.rmtree(target, ignore_errors=True)
+            if not before.digests[p]:
+                _remove(target)
             else:
-                target.unlink()
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(saved, target)
+        except OSError:
+            failed.append(p)
+
+    tracked = [p for p in fresh if _is_tracked(root, p)]
+    if tracked:
+        if _git(root, "checkout", "--", *tracked) is None:
+            failed.extend(tracked)
+    for p in fresh:
+        if p in tracked:
+            continue
+        try:
+            _remove(root / p)
         except OSError:
             failed.append(p)
     return failed
+
+
+def close_net(root: Path, before: Optional[_TreeState]) -> List[str]:
+    """Diff the bracket, put back what the corpus wrote, and free the snapshot.
+
+    Split out of :func:`run` so it can be called from a ``finally``. A battery
+    that leaves by raising — one malformed entry, a ``KeyboardInterrupt`` on a
+    long run — has run every entry before it, so it is the path where the tree
+    is MOST likely to be dirty and was the one path with no restore at all. The
+    exception still propagates; it just no longer takes the repository with it.
+
+    Never raises on its own account: an exception from the net would replace the
+    one the caller is already handling, and lose it.
+    """
+    if before is None:
+        return []
+    try:
+        collateral = _collateral(root, before)
+        if not collateral:
+            return []
+        failed = _restore(root, collateral, before)
+        return sorted("%s%s" % (_damage_line(root, before, p, d),
+                                "  [NOT RESTORED]" if p in failed else "")
+                      for p, d in collateral.items())
+    except Exception as e:  # noqa: BLE001 - see the docstring
+        return ["the repository could not be checked or restored: %s: %s"
+                % (type(e).__name__, e)]
+    finally:
+        before.discard()
+
+
+def _damage_line(root: Path, before: _TreeState, path: str, digest: str) -> str:
+    """How the path changed, in the vocabulary a reader can act on.
+
+    A path absent from the snapshot was clean, not absent: git only lists what
+    is dirty. Whether it existed is therefore a question for ``ls-files``, not
+    for the snapshot.
+    """
+    known = path in before.digests
+    if not digest:
+        return "deleted  %s" % path
+    if not known:
+        return "%s %s" % ("modified" if _is_tracked(root, path) else "created ", path)
+    if not before.digests[path]:
+        return "created  %s" % path
+    return "modified %s (it was ALREADY dirty before the run)" % path
 
 
 # --- running one entry -------------------------------------------------------
@@ -496,11 +694,29 @@ def classify(ref: eng.Result, got: eng.Result, engine: str, entry: Any) -> Verdi
     refusal = _refusal(engine, got.stderr)
     if got.returncode == eng.UNSUPPORTED_EXIT:
         if refusal:
+            if got.stdout:
+                # A refusal is only interchangeable with the next tier's answer
+                # because it leaves nothing behind. Output that already reached
+                # stdout is the one thing the next tier cannot take back: the
+                # caller gets the refusing tier's lines AND the answering tier's,
+                # so a `… | wc -l` reads high while the exit code still looks
+                # right — which is exactly how lypning-mp's tracebacks-to-stdout
+                # went unnoticed (engines.py, build.check_refusal_contract).
+                # Counting this as coverage would leave the battery blind to the
+                # only failure mode the three-tier design cannot survive.
+                return v(MISMATCH, "contract",
+                         "refused after %d byte(s) had already reached stdout"
+                         % len(got.stdout), evidence=True)
             return v(UNSUPPORTED, refusal[0], refusal[1])
-        # Exit 90 without the contract line is itself a contract violation; the
-        # alternative is silently counting a crash as coverage.
-        return v(MISMATCH, "contract", "exit 90 with no `%s: unsupported: …` line" % engine,
-                 evidence=True)
+        if ref.returncode != eng.UNSUPPORTED_EXIT:
+            # Exit 90 without the contract line is itself a contract violation;
+            # the alternative is silently counting a crash as coverage.
+            return v(MISMATCH, "contract", "exit 90 with no `%s: unsupported: …` line" % engine,
+                     evidence=True)
+        # ...unless CPython exited 90 too, in which case 90 is the PROGRAM's own
+        # exit code (`sys.exit(90)`) and the engine reproduced it. Scoring that
+        # as a broken contract accuses an engine of a bug for agreeing with the
+        # reference. Fall through and compare it like any other exit code.
 
     skip_stdout = is_nondeterministic(entry)
     if not skip_stdout and got.stdout != ref.stdout and not only_set_order_differs(ref.stdout, got.stdout):
@@ -577,6 +793,16 @@ def _run_entry(
     argv_tail = list(getattr(entry, "argv_tail", ()) or ())
     stdin = getattr(entry, "stdin_sample", None) or ""
 
+    if "\0" in program or any("\0" in a for a in argv_tail):
+        # An argv element cannot carry a NUL — the kernel's argv is NUL
+        # terminated — so no interpreter on earth can be handed this entry, and
+        # neither side of the comparison ever starts. It is a skip, not a
+        # verdict: scoring "both failed to spawn" as MATCH would report agreement
+        # between two runs that did not happen. The shim captures argv verbatim,
+        # which is where such a record comes from.
+        out.skip = Skip(out.entry_id, "NUL byte in the program or its argv: unspawnable")
+        return out
+
     outside = absolute_paths(program)
     for a in argv_tail:
         # The shim captures a shell redirect as an argv element (`>`, `/tmp/f`),
@@ -646,71 +872,73 @@ def run(
     """
     started = time.perf_counter()
     root = paths.project_dir()
-    before = dirty_paths(root)
+    before = _snapshot(root)
 
-    pool = list(entries) if entries is not None else corpus.load_default()
-    if limit is not None and limit >= 0:
-        pool = pool[:limit]
-
-    binaries: Dict[str, Optional[Path]] = {e: eng.find(e) for e in eng.ENGINE_ORDER}
-    ref_bin = binaries.get(CPYTHON)
-
-    wanted = list(engines) if engines is not None else list(DEFAULT_ARMS)
+    pool: List[Any] = []
     arms: List[str] = []
     unbuilt: List[str] = []
-    for a in wanted:
-        if a in (MIXTURE, CPYTHON) or binaries.get(a) is not None:
-            arms.append(a)
-        else:
-            unbuilt.append(a)
-
-    n_workers = workers if workers else min(8, os.cpu_count() or 1)
-    results: List[_EntryResult] = []
-    done = 0
-    lock = threading.Lock()
-
-    def tick(r: _EntryResult) -> _EntryResult:
-        nonlocal done
-        with lock:
-            done += 1
-            if progress is not None:
-                progress(done, len(pool))
-        return r
-
-    if pool:
-        with ThreadPoolExecutor(max_workers=max(1, n_workers)) as ex:
-            futures = [ex.submit(_run_entry, e, arms, binaries, ref_bin, timeout) for e in pool]
-            for f in futures:
-                results.append(tick(f.result()))
-
-    skipped = [r.skip for r in results if r.skip is not None]
-    scored = [r for r in results if r.skip is None]
-
+    ref_bin: Optional[Path] = None
     reports: Dict[str, EngineReport] = {}
-    for arm in arms:
-        vs = [r.verdicts[arm] for r in scored if arm in r.verdicts]
-        counts = {v: 0 for v in VERDICTS}
-        for v in vs:
-            counts[v.verdict] = counts.get(v.verdict, 0) + 1
-        total = len(vs)
-        reports[arm] = EngineReport(
-            engine=arm,
-            match=counts[MATCH], unsupported=counts[UNSUPPORTED], mismatch=counts[MISMATCH],
-            total=total,
-            coverage=(100.0 * counts[MATCH] / total) if total else 0.0,
-            verdicts=vs,
-        )
+    routing_errors: List[RoutingError] = []
+    skipped: List[Skip] = []
+    # The net closes on EVERY path out of here, the ones that leave by raising
+    # included: by then every entry before the failure has already run, so that
+    # is the path where the tree is most likely to be holding a corpus program's
+    # writes. Nothing between here and the finally may return early.
+    try:
+        pool = list(entries) if entries is not None else corpus.load_default()
+        if limit is not None and limit >= 0:
+            pool = pool[:limit]
 
-    routing_errors = _routing_errors(scored, arms)
+        binaries: Dict[str, Optional[Path]] = {e: eng.find(e) for e in eng.ENGINE_ORDER}
+        ref_bin = binaries.get(CPYTHON)
 
-    damage: List[str] = []
-    if before is not None:
-        after = dirty_paths(root) or {}
-        collateral = {p: s for p, s in after.items() if p not in before}
-        if collateral:
-            failed = _restore(root, collateral)
-            damage = sorted("%s %s%s" % (s, p, "  [NOT RESTORED]" if p in failed else "")
-                            for p, s in collateral.items())
+        wanted = list(engines) if engines is not None else list(DEFAULT_ARMS)
+        for a in wanted:
+            if a in (MIXTURE, CPYTHON) or binaries.get(a) is not None:
+                arms.append(a)
+            else:
+                unbuilt.append(a)
+
+        n_workers = workers if workers else min(8, os.cpu_count() or 1)
+        results: List[_EntryResult] = []
+        done = 0
+        lock = threading.Lock()
+
+        def tick(r: _EntryResult) -> _EntryResult:
+            nonlocal done
+            with lock:
+                done += 1
+                if progress is not None:
+                    progress(done, len(pool))
+            return r
+
+        if pool:
+            with ThreadPoolExecutor(max_workers=max(1, n_workers)) as ex:
+                futures = [ex.submit(_run_entry, e, arms, binaries, ref_bin, timeout) for e in pool]
+                for f in futures:
+                    results.append(tick(f.result()))
+
+        skipped = [r.skip for r in results if r.skip is not None]
+        scored = [r for r in results if r.skip is None]
+
+        for arm in arms:
+            vs = [r.verdicts[arm] for r in scored if arm in r.verdicts]
+            counts = {v: 0 for v in VERDICTS}
+            for v in vs:
+                counts[v.verdict] = counts.get(v.verdict, 0) + 1
+            total = len(vs)
+            reports[arm] = EngineReport(
+                engine=arm,
+                match=counts[MATCH], unsupported=counts[UNSUPPORTED], mismatch=counts[MISMATCH],
+                total=total,
+                coverage=(100.0 * counts[MATCH] / total) if total else 0.0,
+                verdicts=vs,
+            )
+
+        routing_errors = _routing_errors(scored, arms)
+    finally:
+        damage = close_net(root, before)
 
     return Report(
         engines=reports,
@@ -815,6 +1043,11 @@ def render(report: Report, plan: bool = False) -> str:
         for feature, blocks, ids in rows[:40]:
             out.append("%s  %s  e.g. %s" % (str(blocks).rjust(4), _pad(feature, 46),
                                             ", ".join(ids[:3])))
+        if len(rows) > 40:
+            # The tail is one or two programs each, but a list that stops
+            # without saying so reads as the whole list.
+            out.append("  … %d more blockers, %d programs between them"
+                       % (len(rows) - 40, sum(b for _f, b, _i in rows[40:])))
         by_kind: Dict[str, int] = {}
         for feature, blocks, _ids in rows:
             kind = feature.split(":", 1)[0]
@@ -870,8 +1103,10 @@ def render(report: Report, plan: bool = False) -> str:
 
     if report.damage:
         out.append("")
-        out.append("!! %d repository files were changed by corpus programs and have been"
-                   " restored:" % len(report.damage))
+        n = len(report.damage)
+        out.append("!! %d repository file%s changed by corpus programs and %s been"
+                   " restored:" % (n, "" if n == 1 else "s",
+                                   "has" if n == 1 else "have"))
         for d in report.damage[:20]:
             out.append("   %s" % d)
         if len(report.damage) > 20:

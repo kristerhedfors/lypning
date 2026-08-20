@@ -48,7 +48,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import conformance
 from . import corpus
@@ -213,6 +213,12 @@ def time_one(
             input=stdin if stdin is not None else "",
             capture_output=True,
             text=True,
+            # Named, not inherited from the caller's locale: the children run
+            # under `LC_ALL=C.UTF-8` (`_child_env`), so the parent must decode
+            # what they actually wrote. `text=True` alone decodes with
+            # `locale.getpreferredencoding()`, which under `LC_ALL=C` turns
+            # every non-ASCII byte into U+FFFD.
+            encoding="utf-8",
             errors="replace",
             cwd=str(cwd) if cwd else None,
             timeout=timeout,
@@ -301,24 +307,37 @@ class Damage:
         return bool(self.paths)
 
 
-def _report_damage(before: Optional[Dict[str, str]], root: Path, *, restore: bool = True) -> Damage:
-    """Diff the bracket and undo what the corpus wrote."""
+def _report_damage(before: Optional[Any], root: Path, *, restore: bool = True) -> Damage:
+    """Diff the bracket and undo what the corpus wrote.
+
+    The bracket is conformance's snapshot, not a second implementation of one:
+    this compared git's two-letter status codes, which cannot change when a file
+    that was already `` M`` is modified again — so the bench's net was blind in
+    exactly the state a bench is run in.
+    """
     d = Damage()
-    after = conformance.dirty_paths(root)
-    if before is None or after is None:
+    if before is None:
         return d
-    collateral = {p: s for p, s in after.items() if before.get(p) != s}
-    if not collateral:
+    try:
+        collateral = conformance._collateral(root, before)
+        if not collateral:
+            return d
+        d.paths = sorted(collateral)
+        if restore:
+            d.failed = list(conformance._restore(root, collateral, before))
+            d.restored = [p for p in d.paths if p not in set(d.failed)]
         return d
-    d.paths = sorted(collateral)
-    if restore:
-        undo = getattr(conformance, "_restore", None)
-        if callable(undo):
-            d.failed = list(undo(root, collateral))
-        else:
-            d.failed = d.paths
-        d.restored = [p for p in d.paths if p not in set(d.failed)]
-    return d
+    except Exception as e:  # noqa: BLE001
+        # Called from a `finally`, so an exception raised here would REPLACE the
+        # one the caller is already unwinding with — and lose it.
+        d.failed = ["the repository could not be checked or restored: %s: %s"
+                    % (type(e).__name__, e)]
+        d.paths = d.paths or list(d.failed)
+        return d
+    finally:
+        # The snapshot holds a copy of every file that was already dirty; it is
+        # a temp directory, and every early return above is a leak without this.
+        before.discard()
 
 
 # --- the absolute-path skip --------------------------------------------------
@@ -337,6 +356,10 @@ def skip_reason(entry: corpus.Entry) -> str:
     both counts are rendered: a subset silently smaller than the file on disk is
     the other way this table misleads.
     """
+    if "\0" in entry.program or any("\0" in a for a in entry.argv_tail):
+        # No argv can carry a NUL, so nothing can be spawned for this entry and
+        # there is no time to take. Conformance's rule, again.
+        return "NUL byte in the program or its argv: unspawnable"
     outside = conformance.absolute_paths(entry.program)
     for a in entry.argv_tail:
         outside.extend(p for p in conformance.absolute_paths(a) if p not in outside)
@@ -455,35 +478,41 @@ def corpus_time(
             runnable.append(e)
 
     root = paths.project_dir()
-    before = conformance.dirty_paths(root)
+    before = conformance._snapshot(root)
 
     results = {a.name: ArmResult(a.name) for a in resolved}
     reps = max(1, int(repeat))
     total_units = reps * len(runnable)
     done = 0
-    for _ in range(reps):
-        for entry in runnable:
-            tail = list(entry.argv_tail)
-            stdin = entry.stdin_sample
-            for arm in resolved:
-                # A fresh cwd per (arm, entry): corpus programs write files, and
-                # without isolation one arm reads back what the previous one just
-                # created and times a different program than the others did.
-                cwd = tempfile.mkdtemp(prefix="lypning-bench-")
-                try:
-                    s = time_one(
-                        arm, entry.program, argv_tail=tail, stdin=stdin,
-                        cwd=Path(cwd), timeout=timeout,
-                    )
-                finally:
-                    shutil.rmtree(cwd, ignore_errors=True)
-                per = results[arm.name].per_entry
-                per[entry.id] = _keep_best(per.get(entry.id), s)
-            done += 1
-            if progress is not None:
-                progress(done, total_units, entry)
-
-    damage = _report_damage(before, root)
+    # The net closes on every path out of the loop, the ones that leave by
+    # raising included — a `KeyboardInterrupt` on a long run is the ordinary way
+    # a benchmark ends, and it is the moment the tree is most likely to be
+    # holding a corpus program's writes (conformance.close_net).
+    try:
+        for _ in range(reps):
+            for entry in runnable:
+                tail = list(entry.argv_tail)
+                stdin = entry.stdin_sample
+                for arm in resolved:
+                    # A fresh cwd per (arm, entry): corpus programs write files,
+                    # and without isolation one arm reads back what the previous
+                    # one just created and times a different program than the
+                    # others did.
+                    cwd = tempfile.mkdtemp(prefix="lypning-bench-")
+                    try:
+                        s = time_one(
+                            arm, entry.program, argv_tail=tail, stdin=stdin,
+                            cwd=Path(cwd), timeout=timeout,
+                        )
+                    finally:
+                        shutil.rmtree(cwd, ignore_errors=True)
+                    per = results[arm.name].per_entry
+                    per[entry.id] = _keep_best(per.get(entry.id), s)
+                done += 1
+                if progress is not None:
+                    progress(done, total_units, entry)
+    finally:
+        damage = _report_damage(before, root)
 
     # The shared subset: entries every available arm actually executed. With no
     # arms there is nothing shared, which is different from everything shared.
@@ -681,8 +710,9 @@ def render(report: BenchReport) -> str:
 
     if report.damage:
         out.append("")
-        out.append("!! {0} repository files were changed by corpus programs:".format(
-            len(report.damage.paths)))
+        n = len(report.damage.paths)
+        out.append("!! {0} repository file{1} changed by corpus programs:".format(
+            n, "" if n == 1 else "s"))
         for p in report.damage.paths[:20]:
             out.append("     {0}".format(p))
         if len(report.damage.paths) > 20:

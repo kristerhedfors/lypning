@@ -74,11 +74,15 @@ a number with nothing to divide by is not a measurement. So there is a control:
 frozen lypning-mp stdlib.**
 
 ```bash
-bash scripts/build-micropython.sh --stock    # → micropython/build/micropython-stock
-npm run lypning:bench                    # the table
-npm run lypning:bench:record             # ... and a dated entry in the ledger
-make -C lypning-mp bench                    # builds whichever binary is missing first
+bash ../scripts/build-micropython.sh --stock   # → build/micropython-stock
+lypning bench                                  # the four arms: startup and corpus
+lypning gate --compare                         # shape, against the real CPython
 ```
+
+The per-subsystem variant-vs-stock table in `docs/BENCH-LEDGER.md` was produced
+by an upstream harness that did not come across with the extraction; its
+readings are still the reasoning, but `lypning bench` is what this package
+measures with.
 
 **Run it after any of these, and record the result:**
 
@@ -241,7 +245,7 @@ nothing on stdout:
 
 ```
 $ lypning-mp -c 'import subprocess'; echo $?
-lypning: unsupported: module: subprocess
+lypning-mp: unsupported: module: subprocess
 90
 ```
 
@@ -302,8 +306,7 @@ dict built by inserting N distinct string keys:
 
 The last column is what the ordering decision actually *costs*, rather than what
 the workload costs: the same insertions on a stock build of the same MicroPython
-commit through the same toolchain (`docs/BENCH-LEDGER.md`, 2026-08-14,
-`npm run lypning:bench`). Reading back out of the dict is worse than filling it —
+commit through the same toolchain (`docs/BENCH-LEDGER.md`, 2026-08-14). Reading back out of the dict is worse than filling it —
 12.4× on the same 10,000 keys, because a lookup is a linear scan too.
 
 That is clean quadratic behaviour: doubling the keys quadruples the time. Two

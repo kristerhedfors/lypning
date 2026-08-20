@@ -1,14 +1,15 @@
 # lypning-mp — the Python subset
 
-*Spec date: 2026-08-13. Status: IMPLEMENTED — on 2026-08-13 `micropython/build/lypning-mp`
+*Spec date: 2026-08-13. Status: IMPLEMENTED — on 2026-08-13 `assets/micropython/build/lypning-mp`
 passed 189 of the 202 corpus entries then in the battery, with 0 mismatches and
 13 unsupported. The battery has grown since: `lypning conformance` loads
 `seed-corpus.jsonl` plus the harvested `corpus.jsonl` and dedups them to 375
-entries as of 2026-08-15, so run `npm run lypning:conformance` for the current
-pass/unsupported split.*
+entries as of 2026-08-15, so run `lypning conformance` for the current
+pass/unsupported split — it prints the corpus size it loaded, which has grown
+again since.*
 
-**lypning-mp** (py + gram) is a minimal Python interpreter for the in-browser Linux
-sandbox (CheerpX, x86-32, `public/js/sandbox.js`). It exists because the real
+**lypning-mp** is a minimal Python interpreter for the in-browser Linux
+sandbox (CheerpX, x86-32). It exists because the real
 thing is unaffordable there: `docs/SANDBOX-PERFORMANCE.md` §1 measures
 `python3 --version` at **8573 ms cold / 87 ms warm**, and `src/prompts.js`
 already tells the agent that "awk/sed/grep beat starting python3 for simple
@@ -270,7 +271,7 @@ Each decision is tied to corpus frequency and to the sandbox cost model.
 
 | feature | corpus | decision and reason |
 |---|---|---|
-| `subprocess`, `os.system`, `multiprocessing` | 1 + 1 + 0 entries, **0 repo occurrences** | **Out.** The caller already *is* a shell: a python program that shells out pays the interpreter's cost and then the 6.5 ms-per-spawn plus cold-ELF cost (`docs/SANDBOX-PERFORMANCE.md` §3) for something the agent could have written as the next line of its own bash block. lypning-mp exits **90** with `lypning: unsupported: module: subprocess`, which is a clear instruction to the agent to hoist the command into the shell. It does **not** silently shell out — a fake `subprocess` that works would keep the expensive pattern alive. |
+| `subprocess`, `os.system`, `multiprocessing` | 1 + 1 + 0 entries, **0 repo occurrences** | **Out.** The caller already *is* a shell: a python program that shells out pays the interpreter's cost and then the 6.5 ms-per-spawn plus cold-ELF cost (`docs/SANDBOX-PERFORMANCE.md` §3) for something the agent could have written as the next line of its own bash block. lypning-mp exits **90** with `lypning-mp: unsupported: module: subprocess`, which is a clear instruction to the agent to hoist the command into the shell. It does **not** silently shell out — a fake `subprocess` that works would keep the expensive pattern alive. |
 | `argparse` | 1 | **Out.** Class-heavy, and `sys.argv` covers every observed need (`argv-*`). Exit 90 `module: argparse`. |
 | `threading`, `asyncio`, `async`/`await` | 1, 0 | **Out.** lypning-mp is single-threaded on one WASM CPU; concurrency buys nothing and no entry needs it. |
 | `http.server`, `socket`, any network | 1 (repo!) | **Out.** `python3 -m http.server 8123` is real in `docs/TESTING.md`, but that runs on a developer's laptop, not in the VM — and the VM has no usable network (`src/prompts.js:423`: "treat the sandbox as OFFLINE"). Exit 90 `module: http.server`. |
@@ -353,18 +354,18 @@ When a program uses something lypning-mp does not implement:
 exit code 90
 stderr, one line, nothing else:
 
-lypning: unsupported: <kind>: <detail>
+lypning-mp: unsupported: <kind>: <detail>
 ```
 
 `<kind>` is exactly one of `syntax`, `builtin`, `module`, `attribute`,
 `argument`. `<detail>` names the precise thing:
 
 ```
-lypning: unsupported: module: subprocess
-lypning: unsupported: builtin: eval
-lypning: unsupported: syntax: decorator
-lypning: unsupported: attribute: str.casefold
-lypning: unsupported: argument: sorted(reverse=)
+lypning-mp: unsupported: module: subprocess
+lypning-mp: unsupported: builtin: input
+lypning-mp: unsupported: syntax: decorator
+lypning-mp: unsupported: attribute: str.casefold
+lypning-mp: unsupported: argument: keyword strict
 ```
 
 90 is clear of 0/1/2 (CPython's own), of 126/127 (shell "cannot execute" /

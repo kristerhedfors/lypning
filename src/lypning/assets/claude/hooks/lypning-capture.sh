@@ -54,7 +54,7 @@ done
 # as the two characters \t or \n — none of these patterns depend on real
 # whitespace. `*py*-c*` is the deliberately loose stand-in for capture.py's
 # `py\s+-c`; the runners are listed by name rather than screening on " run "
-# alone, which `npm run …` would trip on nearly every build command.
+# alone, which `make run …` would trip on nearly every build command.
 case "$LYPNING_HOOK_PAYLOAD" in
   *python*) : ;;
   *py*-c*) : ;;

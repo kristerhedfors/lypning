@@ -2,7 +2,7 @@
 
 *Charter and design. Started 2026-08-13.*
 
-**lypning-mp** (py + gram) is a Python-subset runtime built for one job: run the
+**lypning-mp** is a Python-subset runtime built for one job: run the
 python one-liners an agentic coding CLI actually types, inside the in-browser
 CheerpX Linux VM, without the cold-start cost that makes `python3` unusable
 there.
@@ -19,7 +19,8 @@ on loudly and predictably (§6).
 ## 1. Why — the measurement that justifies the project
 
 From `docs/SANDBOX-PERFORMANCE.md` §1, measured by
-`tests/e2e/sandbox-perf.spec.js` driving a real Chromium against production:
+an upstream Playwright battery driving a real Chromium against production
+(`docs/SANDBOX-PERFORMANCE.md`):
 
 | command | cold | warm | ratio |
 |---|---|---|---|
@@ -57,10 +58,11 @@ to *within the same order as the floor*.
 ## 1a. Measured in a real VM (2026-08-14)
 
 The acceptance metric below was blocked on work item 8 from the day this file was
-written. It is now measured. `scripts/vm-measure.mjs` builds nothing and
+written. It is now measured. The upstream VM harness builds nothing and
 deploys nothing: it serves a local ext2 over HTTP Range, boots the pinned CheerpX
 in headless Chromium with the same device stack and mounts as
-`public/js/sandbox.js`, and times probes with a fresh IndexedDB block cache.
+the site's own CheerpX loader, and times probes with a fresh IndexedDB block
+cache.
 
 Against a 131 MB Alpine i386 image carrying both interpreters:
 
@@ -106,7 +108,7 @@ deployed.
 ## 2. Acceptance metric
 
 One number, measured the same way the table above was measured — a new case in
-`tests/e2e/sandbox-perf.spec.js`, against a real VM, cold cache:
+the upstream Playwright battery, against a real VM, cold cache:
 
 > **A cold `lypning-mp -c '<typical corpus one-liner>'` completes in under 500 ms,
 > and a warm one within the 50–85 ms exec floor.**
@@ -118,7 +120,7 @@ Secondary, checked locally and cheaply in CI:
 | stripped static binary size | ≤ 700 KB | `lypning gate` |
 | file-opens on `-c 'pass'` | ≤ 3 | same, via `strace -f -e trace=file` |
 | linked shared objects | 0 | same, `file` reports "statically linked" |
-| corpus conformance | 100% of Tier 0 | `npm run lypning:conformance` |
+| corpus conformance | 100% of Tier 0 | `lypning conformance` |
 
 `lypning gate` enforces the first three and prints the baseline
 alongside, so a build change is judged in seconds instead of a Playwright run.
@@ -270,7 +272,7 @@ observation is most of §3a on its own.
 
 ## 5. Delivery path into the sandbox
 
-`scripts/build-sandbox-image.sh` builds the Alpine i386 image and today lists:
+The upstream image builder assembles the Alpine i386 image and today lists:
 
 ```
 PKGS_COMMON="bash coreutils grep sed gawk findutils file less python3 jq nodejs git"
@@ -338,11 +340,11 @@ message format.
 lypning-mp is defined by what it is asked to run, so the corpus is the
 specification and it must keep growing on its own.
 
-`lypning capture/` installs a `python`/`python3` shim early on `$PATH`
-that appends every invocation — argv, the `-c` program text, cwd, exit code —
-to a log, plus a `PreToolUse` hook that records python-bearing shell commands.
-`harvest.mjs` merges those, and any Claude Code transcript it can find, into
-`tests/corpus/corpus.jsonl`, deduplicated by normalised program text.
+`lypning install` puts a `python`/`python3` shim early on `$PATH` that appends
+every invocation — argv, the `-c` program text, cwd, exit code — to a log, plus
+a `PreToolUse` hook that records python-bearing shell commands. `lypning
+harvest` merges those, and any Claude Code transcript it can find, into
+`assets/corpus/corpus.jsonl`, deduplicated by normalised program text.
 
 Two rules keep this honest:
 
@@ -392,12 +394,12 @@ captured into a file that died with its container.
 Three fixes, in the order they matter:
 
 1. **The runner no longer feeds the log.** `referencePython()` resolves to a
-   real CPython ELF via `findRealCPython` (the same helper the gate uses, for
-   the same reason — measuring the shim as a baseline once projected a 330-second
-   cold cost), and `runOne` spawns with `LYPNING_CAPTURE=0`. Either alone closes
-   the loop; both are kept because they fail differently. Pinned by
-   `tests/corpus/conformance.test.mjs`, whose loop test asserts an empty log
-   after a full run.
+   real CPython ELF via `engines.find_cpython` (the same helper the gate uses,
+   for the same reason — measuring the shim as a baseline once projected a
+   330-second cold cost), and every spawn carries `LYPNING_CAPTURE=0`. Either
+   alone closes the loop; both are kept because they fail differently. Pinned by
+   `tests/test_conformance.py`, whose loop test asserts an empty log after a
+   full run.
 2. **Harvest enforces the separation it documents.** A sighting whose program
    is byte-identical to a seed program is dropped and counted as
    `seedCollision`, reported on every run. Keeping the two *files* apart never
@@ -448,12 +450,12 @@ are ephemeral containers on independent branches.**
 
 The durable unit is now one file per session,
 `tests/corpus/sightings/<session>.jsonl`, written by the same `Stop` hook
-(`--export`) and staged by `.githooks/pre-commit` — narrowly, that one directory
-only, and before the secret scan so what it stages is scanned. One writer per
-path means no branch can conflict with another, and an unrelated PR carries an
-**added** file rather than a rewritten one. `corpus.jsonl` becomes a DERIVED
-artifact, regenerated by `npm run lypning:harvest` from however many sightings
-have accumulated; no individual session has to produce it.
+(`--export`). The hooks never run `git`, so staging that directory is the
+session's own business. One writer per path means no branch can conflict with
+another, and an unrelated PR carries an **added** file rather than a rewritten
+one. `corpus.jsonl` becomes a DERIVED artifact, regenerated by `lypning harvest`
+from however many sightings have accumulated; no individual session has to
+produce it.
 
 Two details this forced, both load-bearing:
 
@@ -482,11 +484,11 @@ deletes 138 of `main`'s own records, which is how that rule got tested.)
 | 2 | subset spec + seed corpus | `docs/SUBSET.md`, `tests/corpus/seed-corpus.jsonl` | **done** — 161 entries, tiered |
 | 3 | conformance runner + build gate | `lypning conformance`, `lypning gate` | **done** — both proven against stubs |
 | 4 | charter | this file | **done** |
-| 5 | capture harness + corpus growth | `lypning capture/` | in progress |
-| 6 | the variant + build | `micropython/`, `scripts/build-micropython.sh` | in progress |
-| 7 | the frozen shim stdlib | `micropython/lib/` | in progress |
-| 8 | live cold/warm measurement in the real VM | `scripts/vm-measure.mjs` | **done** — §1a, measured 2026-08-14 |
-| 9 | image delivery, staged | `scripts/build-sandbox-image.sh` | lypning-mp installs; the alias-vs-alongside call is now an owner decision with evidence (§1a) |
+| 5 | capture harness + corpus growth | `capture.py`, `harvest.py`, `shim.py` | in progress |
+| 6 | the variant + build | `assets/micropython/`, `assets/scripts/build-micropython.sh` | in progress |
+| 7 | the frozen shim stdlib | `assets/micropython/lib/` | in progress |
+| 8 | live cold/warm measurement in the real VM | upstream VM harness | **done** — §1a, measured 2026-08-14 |
+| 9 | image delivery, staged | upstream image builder | lypning-mp installs; the alias-vs-alongside call is now an owner decision with evidence (§1a) |
 | — | `lypningd` | — | **not being built** — §3a |
 
 ## 8a. The optimisation pass (2026-08-14)
@@ -625,7 +627,7 @@ of **90 with one greppable line**. The message was right and everything around i
 was wrong, so a caller branching on 90 to retry with real `python3` had never
 fired for any of them.
 
-The fix routes a `NotImplementedError` carrying the `lypning: unsupported: `
+The fix routes a `NotImplementedError` carrying the `lypning-mp: unsupported: `
 marker into the same exit-90 path. Two things about it are worth keeping:
 
 - **It needs two call sites, and that was found by deleting one.** `-c` and a

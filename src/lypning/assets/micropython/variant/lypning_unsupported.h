@@ -208,7 +208,7 @@ static inline bool lypning_is_cpython_builtin(const char *name) {
  */
 static inline NORETURN void lypning_exit_unsupported(const char *kind, const char *a, const char *b) {
     char line[160];
-    static const char prefix[] = "lypning: unsupported: ";
+    static const char prefix[] = "lypning-mp: unsupported: ";
     size_t n = 0;
     const char *piece[5] = { prefix, kind, ": ", a, b };
     for (int i = 0; i < 5; i++) {
@@ -368,14 +368,14 @@ static inline NORETURN void lypning_exit_unsupported_kwarg(const char *name) {
  * re.VERBOSE, csv quoting. Discovered 2026-08-14 by adding corpus entries for
  * two silent divergences and finding they landed on exit 1.
  *
- * The shim already writes the complete line ("lypning: unsupported: argument:
+ * The shim already writes the complete line ("lypning-mp: unsupported: argument:
  * re(VERBOSE)"), so this prints it verbatim rather than rebuilding it. Anything
  * that is not a NotImplementedError carrying the marker is left completely
  * alone and still gets its ordinary traceback and exit 1 — a program's own
  * NotImplementedError must stay the program's own error.
  */
 static inline void lypning_check_unsupported_exc(mp_obj_t exc) {
-    static const char marker[] = "lypning: unsupported: ";
+    static const char marker[] = "lypning-mp: unsupported: ";
     const size_t mlen = sizeof(marker) - 1;
 
     if (!mp_obj_is_exception_instance(exc)) {

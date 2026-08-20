@@ -1,28 +1,21 @@
 # Sandbox command performance
 
 Measured cost of running shell commands in the in-browser Linux sandbox
-(CheerpX, `public/js/sandbox.js`), and what follows from it for the commands
-the bash-lite agent should prefer.
+(CheerpX), and what follows from it for the commands an agent working in one
+should prefer.
 
-All numbers come from `tests/e2e/sandbox-perf.spec.js` driving a real Chromium
-against production. They are order-of-magnitude figures, not benchmarks: the
-disk is streamed over the network, so run-to-run variance of ±50% is normal on
-anything that touches a cold block. The *ratios* are stable and are what the
-guidance rests on.
+> **These numbers were measured upstream and cannot be re-run here.** The
+> battery was a Playwright spec driving a real Chromium against
+> deepresearch.se's production sandbox, and it stayed with that project
+> (`README.md` §8). This document is kept because the *cost model* it produced
+> is what both lypning tiers are designed against — it is the reason a subset
+> exists at all. Nothing in this package reproduces it; `lypning gate` measures
+> the shape (bytes, file opens) that the model says the cost follows from, and
+> `lypning bench` measures wall clock on an ordinary filesystem.
 
-```bash
-cd tests
-npx playwright test --config=sandbox-perf.pw.config.js -g "performance"   # the battery
-npx playwright test --config=sandbox-perf.pw.config.js -g "agent trace"   # one agent turn, timestamped
-PERF_REPEATS=5 npx playwright test --config=sandbox-perf.pw.config.js     # more samples
-```
-
-Both specs need `BASIC_AUTH_USER` / `BASIC_AUTH_PASS` (break-glass), and both
-call `stripCrossOriginAuth()` from `e2e/helpers.js` — see the "Auth must not
-reach the CDN" note at the bottom, which is a trap worth knowing about.
-
-How to extend the battery, read its output, and avoid the traps that make a run
-measure nothing: the **sandbox-perf-eval** skill.
+They are order-of-magnitude figures, not benchmarks: the disk is streamed over
+the network, so run-to-run variance of ±50% is normal on anything that touches a
+cold block. The *ratios* are stable and are what the guidance rests on.
 
 ## The cost model
 

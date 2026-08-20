@@ -30,7 +30,7 @@ import json
 import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from . import paths
 
@@ -183,38 +183,72 @@ def _decode(line: str, default_source: str) -> Entry | None:
     return Entry.from_obj(obj, default_source=default_source)
 
 
-def load(path: Path | str, *, default_source: str = SHIM) -> List[Entry]:
+def load(path: Path | str, *, default_source: str = SHIM,
+         problems: Optional[List[str]] = None) -> List[Entry]:
     """Every record in one JSONL file, in file order. Never raises.
 
     A corpus file is appended to by a shell shim and by hooks that can be killed
     mid-write, so a half-written last line is expected rather than exceptional:
     it is skipped, and so is a file that has gone missing. The caller of a
     describe-the-corpus function has no useful response to an exception.
+
+    **Skipping is not the same as saying nothing.** A corpus that has been
+    replaced by something that is not JSON loads as zero programs, and every
+    count downstream then reports a number that is quietly wrong — the one
+    failure mode of this module. Pass ``problems`` and each unreadable file or
+    undecodable line appends one line naming the file and the fix; the caller
+    decides how loudly to say it.
     """
     try:
         with open(str(path), "r", encoding="utf-8", errors="replace") as fh:
             text = fh.read()
-    except OSError:
+    except FileNotFoundError:
+        return []  # a corpus that was never harvested is the normal empty state
+    except OSError as e:
+        if problems is not None:
+            problems.append("%s is not readable (%s)"
+                            % (path, e.strerror or type(e).__name__))
         return []
     out: List[Entry] = []
+    bad = 0
     for line in text.split("\n"):
+        if not line.strip():
+            continue
         e = _decode(line, default_source)
-        if e is not None:
+        if e is None:
+            bad += 1
+        else:
             out.append(e)
+    if bad and problems is not None:
+        problems.append(
+            "%s: %d line%s not JSON — %s"
+            % (path, bad, "" if bad == 1 else "s",
+               "a truncated last line is normal; a whole file of them means the "
+               "file was overwritten, and `lypning harvest` rebuilds it from "
+               "tests/corpus/sightings/"))
     return out
 
 
-def load_default() -> List[Entry]:
+def load_default(problems: Optional[List[str]] = None) -> List[Entry]:
     """The shipped corpus: harvested plus seed, deduped by id.
 
     The seed corpus is hand-written test vectors keyed by slug; the harvested one
     is content-addressed. They do not collide, but they are merged rather than
     concatenated so that a seed program that later shows up in a harvest under
     its ``py-`` id still counts once.
+
+    ``problems`` is passed straight through to :func:`load`: a caller that hands
+    one in gets told when a file was skipped instead of read.
     """
-    harvested = load(paths.CORPUS_FILE)
-    seed = load(paths.SEED_CORPUS_FILE, default_source=SEED)
-    return merge(harvested, seed)
+    groups = [load(paths.CORPUS_FILE, problems=problems),
+              load(paths.SEED_CORPUS_FILE, default_source=SEED, problems=problems)]
+    # In a wheel install the harvest cannot write the shipped file, so it keeps
+    # its own in state (paths.corpus_write_file). Merged here and nowhere else,
+    # so a pip user's captured programs still count exactly once.
+    local = paths.corpus_write_file()
+    if local != paths.CORPUS_FILE:
+        groups.append(load(local, problems=problems))
+    return merge(*groups)
 
 
 def load_sightings(dir: Path | str | None = None) -> List[Entry]:

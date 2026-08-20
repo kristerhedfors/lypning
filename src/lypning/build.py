@@ -23,6 +23,7 @@ Nothing here prints. :func:`report` renders a table and returns it.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -97,6 +98,9 @@ class BuildResult:
     target: str = ""
     log: str = ""
     skipped_reason: str = ""
+    # A dry run is neither built nor broken, and reporting it as FAILED is how a
+    # first `lypning build --all --dry-run` reads as a broken install.
+    dry_run: bool = False
 
     @property
     def cheerpx_blocks(self) -> int:
@@ -132,6 +136,21 @@ def _join(*parts: str) -> str:
     return "\n".join(p for p in parts if p)
 
 
+def _why(out: str) -> str:
+    """The last thing the build actually said, for the one-line status.
+
+    An exit code alone is not a fix: `build-micropython.sh failed (exit 35)` is
+    a curl TLS error that reads as a mystery, while the line above it names the
+    URL it could not reach. The full log stays behind ``-v``.
+    """
+    lines = [l.strip() for l in (out or "").splitlines() if l.strip()]
+    if not lines:
+        return ""
+    # ANSI from the shell script's own headings would otherwise land mid-table.
+    last = re.sub(r"\x1b\[[0-9;]*m", "", lines[-1])
+    return " — %s%s" % (last[:160], "" if len(last) <= 160 else "…")
+
+
 def _size(p: Path | None) -> int:
     try:
         return p.stat().st_size if p else 0
@@ -150,7 +169,7 @@ def _run(cmd: Sequence[str], *, cwd: Path | None = None,
         full.update(env)
     try:
         proc = subprocess.run(
-            list(cmd), capture_output=True, text=True, errors="replace",
+            list(cmd), capture_output=True, text=True, encoding="utf-8", errors="replace",
             cwd=str(cwd) if cwd else None, env=full, timeout=timeout, check=False,
         )
         return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
@@ -294,9 +313,19 @@ def _ensure_rust_target(triple: str, verbose: bool) -> tuple[str, str]:
     return triple, "installed rust std for %s" % triple
 
 
-def build_rust(target: str = "host", jobs: int | None = None,
+def build_rust(target: str = "musl", jobs: int | None = None,
                verbose: bool = False, dry_run: bool = False) -> BuildResult:
-    """Build the Rust core, then refuse to call it ok until the contract holds."""
+    """Build the Rust core, then refuse to call it ok until the contract holds.
+
+    The default is STATIC MUSL, and that is not a preference — it is the same
+    default scripts/build-rust.sh has documented since the first measurement.
+    A dynamically linked core opens five files before `main` and starts 5.5x
+    slower (docs/LYPNING.md §1), which gives back most of what the runtime won;
+    worse, :func:`install_binaries` puts whatever is built into the state bin
+    dir, which :func:`engines.find_lypning` prefers over every cargo target —
+    so a host build silently becomes the binary every later measurement uses.
+    ``--target host`` still builds the glibc control, deliberately.
+    """
     t0 = time.perf_counter()
     triple = resolve_target(target)
     if triple is None:
@@ -342,7 +371,7 @@ def build_rust(target: str = "host", jobs: int | None = None,
             engines.LYPNING, target=triple or "host", binary=None,
             seconds=time.perf_counter() - t0,
             log=_join(*notes, " ".join(cmd), "would produce: %s" % binary),
-            skipped_reason="dry run: nothing was built",
+            skipped_reason="dry run: nothing was built", dry_run=True,
         )
 
     rc, out = _run(cmd, cwd=workdir, timeout=_CARGO_TIMEOUT)
@@ -350,7 +379,8 @@ def build_rust(target: str = "host", jobs: int | None = None,
         return BuildResult(engines.LYPNING, target=triple or "host",
                            seconds=time.perf_counter() - t0,
                            log=_join(*notes, _tail(out, verbose)),
-                           skipped_reason="cargo build failed (exit %d)" % rc)
+                           skipped_reason="cargo build failed (exit %d)%s (`-v` for the full log)"
+                                          % (rc, _why(out)))
     if not binary.is_file():
         return BuildResult(engines.LYPNING, target=triple or "host",
                            seconds=time.perf_counter() - t0,
@@ -386,12 +416,17 @@ def build_rust(target: str = "host", jobs: int | None = None,
 def _micropython_stage() -> tuple[Path, Path, Path, str]:
     """``(script, tree, out, note)`` — lay out what the shell script expects.
 
-    ``build-micropython.sh`` derives everything from its own location: the tree
-    it builds is ``<script>/../lypning-mp`` and it writes the binary inside that
-    tree. Rather than fork the script or move the asset, a staging directory is
-    handed to it with the script copied in and ``lypning-mp`` symlinked at the
-    engine tree under :func:`paths.build_dir`, which is exactly where
-    :func:`engines.find_micropython` looks for the result.
+    ``build-micropython.sh`` derives everything from its own location: it builds
+    ``<script>/../micropython`` and writes the binary to ``build/lypning-mp``
+    inside that tree. Rather than fork the script or move the asset, a staging
+    directory is handed to it with the script copied in and ``micropython``
+    symlinked at the engine tree under :func:`paths.build_dir`, which is exactly
+    where :func:`engines.find_micropython` looks for the result.
+
+    The link name is the script's, not the engine's. It was ``lypning-mp`` once
+    — the engine's name reads better — and the build died at "no patches in
+    micropython/variant/patches" every time, because the script had been handed
+    a tree under a name it never looks for.
     """
     tree = paths.build_dir() / "micropython"
     note = ""
@@ -405,15 +440,20 @@ def _micropython_stage() -> tuple[Path, Path, Path, str]:
 
     # The stage lives in state, not in build_dir(): in a checkout build_dir() is
     # the asset tree and this plumbing is not source, and it cannot live inside
-    # $LYPNING_WORK either because `--clean` removes that directory out from
-    # under the running script.
+    # $LYPNING_WORK either because a clean rebuild removes that directory out
+    # from under the running script.
     stage = paths.ensure_dir(paths.state_dir() / "mp-stage")
     scripts = paths.ensure_dir(stage / "scripts")
     script = scripts / "build-micropython.sh"
     shutil.copy2(paths.SCRIPTS_DIR / "build-micropython.sh", script)
     os.chmod(script, 0o755)
 
-    link = stage / "lypning-mp"
+    # A stage left over from the version that named this link after the engine.
+    stale = stage / engines.MICROPYTHON
+    if stale.is_symlink():
+        stale.unlink()
+
+    link = stage / "micropython"
     if link.is_symlink() or link.exists():
         if not link.is_symlink() or os.readlink(str(link)) != str(tree):
             if link.is_symlink() or link.is_file():
@@ -496,12 +536,13 @@ def build_micropython(verbose: bool = False, clean: bool = False,
                       " ".join("%s=%s" % kv for kv in sorted(env.items())) + " " + " ".join(cmd),
                       "would produce: %s" % out_bin,
                       "musl cached: %s, micropython cached: %s" % (musl_cached, mpy_cached)),
-            skipped_reason="dry run: nothing was built",
+            skipped_reason="dry run: nothing was built", dry_run=True,
         )
 
     rc, out = _run(cmd, cwd=script.parent.parent, env=env, timeout=_MICROPYTHON_TIMEOUT)
     if rc != 0 or not out_bin.is_file():
-        return skipped("build-micropython.sh failed (exit %d)" % rc, _join(note, _tail(out, verbose)))
+        return skipped("build-micropython.sh failed (exit %d)%s (`-v` for the full log)"
+                       % (rc, _why(out)), _join(note, _tail(out, verbose)))
 
     size = _size(out_bin)
     return BuildResult(
@@ -531,7 +572,7 @@ def _c_probe() -> tuple[int, str]:
 # --- orchestration -----------------------------------------------------------
 
 
-def build_all(rust: bool = True, micropython: bool = True, target: str = "host",
+def build_all(rust: bool = True, micropython: bool = True, target: str = "musl",
               jobs: int | None = None, verbose: bool = False,
               dry_run: bool = False) -> list[BuildResult]:
     """Build what was asked for, in tier order, and never stop on a failure.
@@ -591,6 +632,8 @@ def report(results: Iterable[BuildResult] | BuildResult, verbose: bool = False) 
     for r in items:
         if r.ok:
             status = "ok" + ("  (%s)" % r.skipped_reason if r.skipped_reason else "")
+        elif r.dry_run:
+            status = r.skipped_reason or "dry run"
         else:
             status = "FAILED: " + (r.skipped_reason or "unknown")
         rows.append((
@@ -607,7 +650,9 @@ def report(results: Iterable[BuildResult] | BuildResult, verbose: bool = False) 
         cells = [row[i].ljust(widths[i]) for i in range(len(head) - 1)] + [row[-1]]
         lines.append("  ".join(cells).rstrip())
     for r in items:
-        if verbose and r.log:
+        # A dry run's whole output IS the commands — printing only the table
+        # would leave `--dry-run` saying nothing a plain `--help` does not.
+        if (verbose or r.dry_run) and r.log:
             lines.append("")
             lines.append("--- %s ---" % r.engine)
             lines.append(r.log)

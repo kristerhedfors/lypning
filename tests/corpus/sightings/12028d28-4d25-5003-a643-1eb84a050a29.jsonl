@@ -1,0 +1,3 @@
+{"key":"py-467988004dbd","id":"py-467988004dbd","program":"print(\"shimmed\", 6*7)","argv_tail":[],"source":"shim","session":"12028d28-4d25-5003-a643-1eb84a050a29","first_seen":"2026-08-20T08:09:27.408Z","count":1,"stdin_sample":null}
+{"key":"py-7ae6794736a3","id":"py-7ae6794736a3","program":"print(\"hello from a shimmed python\")","argv_tail":[],"source":"shim","session":"12028d28-4d25-5003-a643-1eb84a050a29","first_seen":"2026-08-20T07:49:01.810Z","count":1,"stdin_sample":null}
+{"key":"py-d287bb7f9d15","id":"py-d287bb7f9d15","program":"print(1)","argv_tail":[],"source":"hook","session":"12028d28-4d25-5003-a643-1eb84a050a29","first_seen":"2026-08-20T07:52:52.317Z","count":1,"stdin_sample":null}

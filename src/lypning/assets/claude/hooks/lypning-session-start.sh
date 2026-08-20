@@ -5,13 +5,13 @@
 # install:
 #
 #   1. **Refresh the capture shim.** `.claude/` is committed and survives; the
-#      shim lives in ~/.local/bin, which does not. A shim installed in a previous
-#      session is not on this session's PATH, so without this the shim feed
-#      silently stops the first time the container is recycled. `lypning shim
-#      install` is idempotent and REFUSES to overwrite an interpreter that is not
-#      one of ours, so re-running it costs nothing and cannot swap a python out
-#      from under the session. LYPNING_CAPTURE=0 turns the whole harness off,
-#      including this.
+#      shim lives in $LYPNING_HOME/bin (~/.lypning/bin), which does not. A shim
+#      installed in a previous session is not on this session's PATH, so without
+#      this the shim feed silently stops the first time the container is
+#      recycled. `lypning shim install` is idempotent and REFUSES to overwrite
+#      an interpreter that is not one of ours, so re-running it costs nothing
+#      and cannot swap a python out from under the session. LYPNING_CAPTURE=0
+#      turns the whole harness off, including this.
 #
 #   2. **Report the engine build state in one line.** An agent that does not know
 #      the Rust core is missing will quote a routing decision that never

@@ -4,7 +4,7 @@
 to run Python one-liners. CPython costs 8.5 seconds the first time it is
 touched. What should we ship instead?*
 
-**lypning-mp** (py + thon → py + gram) is the working name for a minimal
+**lypning-mp** is the working name for a minimal
 Python-subset interpreter for the CheerpX sandbox. This document surveys what
 it could be built from, and recommends one.
 
@@ -57,7 +57,7 @@ mechanism.**
 
 ### The delivery path
 
-`scripts/build-sandbox-image.sh` builds the Alpine i386 image and its
+The upstream image builder assembles the Alpine i386 image and its
 `PKGS_COMMON` currently reads:
 
 ```sh
@@ -448,7 +448,7 @@ roughly **450–500 ms cold**, plus the 50–85 ms exec floor. Call it **under
 This is an **extrapolation, not a measurement**. It assumes cold cost is roughly
 linear in bytes streamed, which the ratios in `SANDBOX-PERFORMANCE.md` support
 but do not prove at this size. It must be confirmed by
-`tests/e2e/sandbox-perf.spec.js` against a real image before it is quoted as
+the upstream Playwright battery against a real image before it is quoted as
 fact. The direction is not in doubt; the constant is.
 
 Warm, lypning-mp's own contribution is ~1 ms of a 50–85 ms round trip — i.e. **below
@@ -575,7 +575,7 @@ agent prompt should prefer `python3 -S -c`.
    toolchains mean trusting a third-party binary, and **the Docker daemon is not
    available here.** Building musl from source took under a minute.
 5. **Live verification before the claim.** The 450–500 ms cold figure in §5 is
-   an extrapolation. Confirm it with `tests/e2e/sandbox-perf.spec.js` against a
+   an extrapolation. Confirm it with the upstream Playwright battery against a
    real Alpine i386 image, cold and warm, before it goes in any user-facing
    copy.
 6. **Then edit `PKGS_COMMON`.** Replacing `python3` removes 27.0 MiB and 16

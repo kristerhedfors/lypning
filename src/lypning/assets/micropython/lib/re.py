@@ -21,7 +21,7 @@ class error(Exception):
 
 
 def _unsupported(tok):
-    raise NotImplementedError("lypning: unsupported: argument: re(" + tok + ")")
+    raise NotImplementedError("lypning-mp: unsupported: argument: re(" + tok + ")")
 
 
 # The flags this shim actually implements. U/UNICODE is CPython 3's default and

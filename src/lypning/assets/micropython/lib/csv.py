@@ -32,7 +32,7 @@ class Error(Exception):
 
 
 def _unsupported(what):
-    raise NotImplementedError("lypning: unsupported: argument: csv(" + what + ")")
+    raise NotImplementedError("lypning-mp: unsupported: argument: csv(" + what + ")")
 
 
 def _one(name, v, none_ok=False):

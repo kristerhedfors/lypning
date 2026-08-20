@@ -151,7 +151,7 @@ def _run(cmd: Sequence[str], timeout: float = 30.0,
     the tool's own answer and is handed back for the caller to read."""
     try:
         return subprocess.run(
-            list(cmd), capture_output=True, text=True, errors="replace",
+            list(cmd), capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=timeout, env=env, check=False,
         )
     except (OSError, subprocess.SubprocessError):

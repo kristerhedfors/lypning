@@ -19,7 +19,8 @@
 # as exit 128+n rather than propagating as a signal death). Off by default.
 #
 # Environment:
-#   LYPNING_LOG          log path (default $HOME/.lypning/invocations.jsonl)
+#   LYPNING_LOG          log path (default $LYPNING_HOME/invocations.jsonl,
+#                        and $HOME/.lypning/invocations.jsonl when that is unset)
 #   LYPNING_CAPTURE=0    disable logging entirely (still execs python)
 #   LYPNING_CAPTURE_EXIT=1  wait-and-log-exit mode (see above)
 
@@ -105,9 +106,14 @@ lypning_disabled=""
 
 lypning_log=""
 if [ -z "$lypning_disabled" ]; then
+  # The default is spelled exactly as lypning/paths.py and lypning-harvest.sh
+  # spell it — $LYPNING_HOME first, then $HOME/.lypning — because a divergence
+  # here does not fail, it silently sends the shim feed to a file the harvester
+  # never reads. Two parameter expansions, no forks.
   lypning_log=${LYPNING_LOG:-}
-  if [ -z "$lypning_log" ] && [ -n "${HOME:-}" ]; then
-    lypning_log="$HOME/.lypning/invocations.jsonl"
+  if [ -z "$lypning_log" ]; then
+    lypning_state=${LYPNING_HOME:-${HOME:+$HOME/.lypning}}
+    [ -n "$lypning_state" ] && lypning_log="$lypning_state/invocations.jsonl"
   fi
   # NOTE: the probe runs in a SUBSHELL on purpose. `:` is a POSIX special
   # built-in, so a failed redirect on it exits a non-interactive dash outright —

@@ -322,7 +322,7 @@ index 9e9704a..e083f32 100644
 +// contract (§7) like anything else out of the subset — one stderr line, exit 90
 +// — instead of silently doing nothing.
 +static int lypning_no_repl(void) {
-+    static const char msg[] = "lypning: unsupported: argument: interactive REPL\n";
++    static const char msg[] = "lypning-mp: unsupported: argument: interactive REPL\n";
 +    ssize_t ignored = write(STDERR_FILENO, msg, sizeof(msg) - 1);
 +    (void)ignored;
 +    return FORCED_EXIT | LYPNING_UNSUPPORTED_EXIT;

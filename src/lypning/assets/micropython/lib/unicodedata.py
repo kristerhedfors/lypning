@@ -101,7 +101,7 @@ _GS = None
 
 
 def _unsupported(what):
-    raise NotImplementedError("lypning: unsupported: " + what)
+    raise NotImplementedError("lypning-mp: unsupported: " + what)
 
 
 def _refuse(what):

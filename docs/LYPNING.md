@@ -22,8 +22,9 @@ programs an agent types are a much narrower target than "Python".
 ## 1. The measurement, first
 
 Everything below is downstream of one table. 472 harvested programs
-(`tests/corpus/corpus.jsonl` + `tests/corpus/seed-corpus.jsonl`), min of 5,
-arms interleaved per entry, on this container (2026-08-16).
+(`assets/corpus/corpus.jsonl` + `assets/corpus/seed-corpus.jsonl`), min of 5,
+arms interleaved per entry, on the upstream container (2026-08-16), before this
+package was extracted from it.
 
 **Do not carry a remembered corpus size.** The capture harness grows it every
 session — this project's first table was over 420 programs and the number was
@@ -71,7 +72,7 @@ Read it in this order:
   against lypning-mp's 269,316 B; both are static musl and both open zero files, so
   they arrive at the same place by different routes.
 
-Reproduce: `bash scripts/build-rust.sh && lypning bench`.
+Reproduce: `lypning build --rust && lypning bench`.
 
 > **Running the corpus can rewrite this repository.** It is harvested from real
 > agent sessions, so it is full of programs that edit `src/` and `docs/`. Every
@@ -97,7 +98,7 @@ and each engine's result is one of three things:
 | verdict | meaning | is it a failure? |
 |---|---|---|
 | MATCH | stdout + exit code identical to CPython | no |
-| UNSUPPORTED | exit **90** with `lypning: unsupported: <kind>: <detail>` | **no** — this is coverage, and the build order |
+| UNSUPPORTED | exit **90** with `<engine>: unsupported: <kind>: <detail>` | **no** — this is coverage, and the build order |
 | MISMATCH | anything else | **yes, always** |
 
 Current (2026-08-16, 472 programs):
@@ -239,7 +240,52 @@ read consults the staged writes first, so `open(p,'w').write(x)` followed by
 `open(p).read()` behaves exactly as in CPython. `os.path.exists`, `getsize`,
 `isfile`, `remove` and `rename` all see the overlay too.
 
-Two escape hatches, both handled rather than assumed away:
+### The barrier is lypning's alone — lypning-mp has none
+
+**This is the sharpest asymmetry between the two subset tiers, and it is not
+visible from the exit codes.** lypning-mp is MicroPython: it streams stdout as
+the program produces it, so a program that prints and *then* reaches an
+unsupported construct has already committed those bytes when it exits 90.
+
+```
+$ lypning-mp -c 'print("BEFORE")
+import unicodedata as u
+print(u.decomposition(chr(0xC0)))'
+BEFORE                                            # <- already on stdout
+lypning-mp: unsupported: attribute: unicodedata.decomposition   # (stderr, exit 90)
+
+$ lypning -c 'print("BEFORE")
+import subprocess'
+lypning: unsupported: module: import subprocess   # (stderr, exit 90) — stdout empty
+```
+
+Two corpus programs (`py-876af0f0a956`, `py-b2a043f241f1`) reproduce it. The
+upstream harness could not see them: it classified a run as UNSUPPORTED the
+moment a refusal line appeared on stderr, without asking whether stdout was
+already dirty. `lypning conformance` checks, and reports it as
+`contract: refused after N byte(s) had already reached stdout`.
+
+What follows from it:
+
+- **Through the dispatcher, it is contained.** `lypning run` captures each
+  tier's stdout in the parent and discards it on exit 90, so the caller sees
+  exactly one tier's output. The mixture arm is clean over the whole corpus.
+  The barrier for lypning-mp therefore lives in the *dispatcher*, not in the
+  engine — which is a weaker guarantee, because it holds only while the
+  dispatcher is the one running it.
+- **Invoking `lypning-mp` directly is not safe for a program that might
+  refuse.** As a drop-in `python3` in a pipeline it can emit partial output and
+  exit 90, and a consumer reading stdout will act on the fragment.
+- **Side effects, not just stdout.** lypning-mp stages nothing, so a file it
+  wrote before refusing stays written. The retry then re-executes those writes.
+  Nothing in the corpus does this today, which is luck rather than design.
+
+Fixing it properly means buffering all output inside the MicroPython VM, which
+fights the heap budget the tier exists to respect. It is tracked rather than
+waived, and `lypning conformance` fails while it stands.
+
+Two escape hatches in lypning's own barrier, both handled rather than assumed
+away:
 
 - **Size.** Past 8 MiB of buffered output the run commits early and *loses* its
   ability to fall back; a later refusal is then reported as a hard error rather
@@ -251,10 +297,15 @@ Two escape hatches, both handled rather than assumed away:
 ## 7. Building
 
 ```bash
-bash scripts/build-rust.sh                # host musl (x86_64) — what the bench uses
-bash scripts/build-rust.sh --target i686  # the CheerpX sandbox target
-bash scripts/build-rust.sh --glibc        # the dynamic-linking control
+lypning build --rust                      # host musl (x86_64) — what the bench uses
+lypning build --rust --target i686        # the CheerpX sandbox target
+lypning build --rust --target host        # the dynamic-linking control
 ```
+
+All three install over the same `~/.lypning/bin/lypning`, and the build line
+names the target it just put there — a control left installed is a control
+every route then uses. `lypning build --rust` puts the default musl build back.
+`lypning build --dry-run` prints the cargo command without running it.
 
 **Static musl is a precondition, not a preference.** Measured, `-c 'pass'`, min
 of 30:
@@ -295,8 +346,9 @@ the **x86_64** binary. CheerpX is 32-bit x86 only, so that binary cannot be
 loaded in the sandbox at all: the numbers that motivate the project were taken
 with an artifact that does not run in the environment they are about.
 
-The i686 build now ships in the image (`scripts/build-sandbox-image.sh` installs
-it beside lypning-mp) and `scripts/vm-measure.mjs` has lypning probes. Measured
+The i686 build (`lypning build --rust --target i686`) now ships in the upstream
+image beside lypning-mp, and that project's VM harness has lypning probes.
+Measured
 2026-08-19 against `build/alpine-i386-lypning.ext2`, 5 repeats, headless CheerpX:
 
 | probe | lypning-mp cold | lypning cold | python3 cold |
@@ -368,7 +420,8 @@ runtime's FIRST probe; a later one's byte count is not a size.
 | `rust/src/io.rs` | files, streams, and the commit barrier |
 | `rust/src/route.rs` | the classifier |
 | `rust/src/main.rs` | CLI, the exit contract, and the dispatcher |
-| `scripts/build-rust.sh` | the build, with the shape and contract smoke checks |
+| `assets/scripts/build-rust.sh` | the standalone build, with the shape and contract smoke checks |
+| `lypning build --rust` | the same build, driven from the CLI |
 | `lypning bench` | the four-arm benchmark |
 | `lypning conformance` | three engines + the mixture + routing accuracy |
-| `tests/test_routing.py` | unit tests, in `npm test` |
+| `tests/test_engines.py`, `tests/test_conformance.py` | the unit half (`make test`) |

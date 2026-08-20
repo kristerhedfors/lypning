@@ -89,7 +89,7 @@ bite silently — a program that finishes, prints something plausible, and exits
    tokeniser will quietly drop every Swedish word containing å/ä/ö. Closing it
    means a change in `lib/re1.5/charclass.c`, not in this directory.
 2. `\b`, `\B`, `\A`, `\Z`, `\G` and pattern backreferences (`\1`) raise
-   `NotImplementedError("lypning: unsupported: argument: re(...)")`. They are
+   `NotImplementedError("lypning-mp: unsupported: argument: re(...)")`. They are
    rejected rather than passed through because re1.5 compiles `\b` as the
    *literal letter b* — the silent-wrongness case this whole contract exists to
    prevent.

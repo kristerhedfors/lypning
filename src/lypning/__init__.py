@@ -14,6 +14,8 @@ See ``docs/LYPNING.md`` for the design and ``docs/MICROPYTHON.md`` for the cost
 model both runtimes are optimised against.
 """
 
+from __future__ import annotations
+
 __version__ = "0.1.0"
 
 UNSUPPORTED_EXIT = 90

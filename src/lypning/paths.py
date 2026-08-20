@@ -40,8 +40,18 @@ SEED_CORPUS_FILE = CORPUS_DIR / "seed-corpus.jsonl"
 
 
 def package_is_writable() -> bool:
-    """True in a source checkout / editable install, false in a normal wheel."""
-    return os.access(ASSETS, os.W_OK)
+    """True in a source checkout / editable install, false in a normal wheel.
+
+    Writability alone is the wrong question: site-packages inside a virtualenv
+    is writable too, and answering yes there puts cargo's ``target/`` — a
+    gigabyte of object files ``pip uninstall`` has never heard of — inside the
+    installed package. What is actually meant is "is this a checkout", and the
+    thing only a checkout has is the repo's ``pyproject.toml`` above ``src/``.
+    """
+    for root in (PACKAGE_ROOT.parent, PACKAGE_ROOT.parent.parent):
+        if (root / "pyproject.toml").is_file():
+            return os.access(ASSETS, os.W_OK)
+    return False
 
 
 # --- state (writable, outside the package) -----------------------------------
@@ -77,6 +87,20 @@ def build_dir() -> Path:
     if package_is_writable():
         return ASSETS
     return state_dir() / "build"
+
+
+def corpus_write_file() -> Path:
+    """Where a harvest is allowed to add to the corpus.
+
+    In a checkout that is the shipped file itself: corpus growth is a commit,
+    which is the whole point of harvesting. In a wheel it cannot be — assets are
+    read-only, and a ``pip uninstall`` that leaves a rewritten corpus behind is
+    worse than one that grows nothing. So the fold lands in state instead, and
+    :func:`lypning.corpus.load_default` merges it back on the way out.
+    """
+    if package_is_writable():
+        return CORPUS_FILE
+    return state_dir() / "corpus.jsonl"
 
 
 def log_path() -> Path:

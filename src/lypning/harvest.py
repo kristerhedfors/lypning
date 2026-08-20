@@ -279,6 +279,12 @@ _OPAQUE = re.compile(r"[A-Za-z0-9_\-+/=]{24,}")
 # The label used in a marker, and the one hit that is not a pattern name.
 UNSAFE = "unsafe"
 
+# A marker this module already wrote. Its space-free form is by construction a
+# run of 24+ characters from the opaque class, so a residual scan that did not
+# excise it would read every successfully redacted BARE value as a leftover
+# credential — and drop the very sighting redaction had just made safe.
+_MARKER_TEXT = re.compile(r"\[REDACTED[^\]\n]*\]")
+
 
 def _looks_opaque(token: str) -> bool:
     if len(token) < 24:
@@ -297,6 +303,7 @@ def _residual(text: str) -> bool:
     for the one thing they have in common with the ones we do catch: a
     credential word within reach of a long opaque token.
     """
+    text = _MARKER_TEXT.sub("[]", text)
     for m in re.finditer(r"(?i)" + _NAME + r"|Bearer", text):
         window = text[m.end(): m.end() + 64]
         for tok in _OPAQUE.findall(window):
@@ -1087,7 +1094,8 @@ def fold_into_corpus(sightings: Sequence[Sighting],
     are never dropped — a hand-curated entry and a rotated-away log both
     survive.
     """
-    target = Path(corpus_path) if corpus_path is not None else paths.CORPUS_FILE
+    target = Path(corpus_path) if corpus_path is not None else paths.corpus_write_file()
+    paths.ensure_dir(target.parent)
     existing = corpus.load(target)
     by_id: Dict[str, corpus.Entry] = {e.id: e for e in existing}
     added = 0

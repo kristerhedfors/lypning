@@ -66,6 +66,6 @@ def new(name, data=b""):
     if fn is None:
         if name in _GUARANTEED.split():
             raise NotImplementedError(
-                "lypning: unsupported: attribute: hashlib." + name)
+                "lypning-mp: unsupported: attribute: hashlib." + name)
         raise ValueError("unsupported hash type " + name)
     return _make(fn, name, data)

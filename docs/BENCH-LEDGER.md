@@ -6,23 +6,26 @@ built from, the machine, and the full table — including the rows where lypning
 **lost**, which are the rows that stop the same optimisation being re-proposed
 next month.
 
+> **Every entry below was recorded upstream**, by a variant-vs-stock
+> micro-benchmark harness that did not come across with the extraction. This
+> package ships the two measurements that did — `lypning bench` (four arms,
+> startup and corpus) and `lypning gate` (shape: static, bytes, file opens) —
+> and neither appends to this file. The entries are kept because the *readings*
+> in them are still the reasoning this project runs on, including the rows
+> where lypning-mp lost. **Do not quote a number from here as a measurement of
+> your machine; re-run `lypning bench` and quote that, with its date and the
+> corpus size it printed.**
+
 ```bash
-bash scripts/build-micropython.sh            # micropython/build/lypning-mp
-bash scripts/build-micropython.sh --stock    # micropython/build/micropython-stock — the control
-npm run lypning:bench                    # print the table
-npm run lypning:bench:record             # ... and append a dated entry here
+lypning build --micropython     # assets/micropython/build/lypning-mp
+lypning bench                   # the four arms: startup and corpus
+lypning gate --compare          # shape, against the real CPython
 ```
 
-Run it after any change to `micropython/variant/`, any patch in
-`micropython/variant/patches/`, any addition to `micropython/lib/`, and any bump of the
-MicroPython pin. It is deliberately not in CI — see *Why this is not a CI gate*
-below.
-
-> **Rule for adding an entry.** A number reaches this file only from a run of
-> `lypning bench --micropython --record`, against a stock control built from the
-> same pin by `scripts/build-micropython.sh --stock`, with both binaries' SHA-256
-> recorded. Hand-typed numbers do not go here. A row the harness marked noisy
-> (`!`) is not a finding and must not be quoted as one.
+Re-measure after any change to `assets/micropython/variant/`, any patch in
+`assets/micropython/variant/patches/`, any addition to
+`assets/micropython/lib/`, and any bump of the MicroPython pin. It is
+deliberately not in CI — see *Why this is not a CI gate* below.
 
 ---
 
@@ -33,7 +36,7 @@ this take", which nobody needs to know. Against **stock MicroPython built from
 the same commit through the same toolchain** they answer "what did our changes
 cost", which is the only question a benchmark can settle.
 
-The control is built by `scripts/build-micropython.sh --stock`. Its `build_stock()`
+The control is built by `assets/scripts/build-micropython.sh --stock`. Its `build_stock()`
 comment is the authority on what is held equal — same pinned commit, same
 musl-i386 libc, same `-Os -DNDEBUG`, same static link, same strip, and the
 toolchain flags are **extracted verbatim** from
@@ -94,8 +97,8 @@ and only on rows neither run marked `!`.
 | One row's `py/stock min` grows, controls unchanged | A real cost in that feature. The controls (`float-format`, `str-methods`, `sort-ints`, `re-sub-native`) staying flat is what makes it *that* feature's cost rather than a global shift. |
 | **Every** row's ratio grows, controls included | Not a feature regression. Something global moved — a config switch, the allocator, the optimisation level, or the control was rebuilt differently. Check the binary shape table first. |
 | A `dict-insert-*` ratio stops growing with n | Suspect the harness, not a fix. The ordered map is a linear array; the ratio is *supposed* to roughly quadruple per doubling. A flat ratio means the case stopped exercising it. |
-| A cell flips `ok` → `unsupported` on lypning-mp | A capability was lost. This belongs in the conformance battery (`npm run lypning:conformance`), which is the gate; the bench merely noticed. |
-| A cell flips `unsupported` → `ok` on **stock** | The control was built wrong. Stock cannot grow features. Rebuild it with `scripts/build-micropython.sh --stock` and check the "is not lypning-mp" shape checks passed. |
+| A cell flips `ok` → `unsupported` on lypning-mp | A capability was lost. This belongs in the conformance battery (`lypning conformance`), which is the gate; the bench merely noticed. |
+| A cell flips `unsupported` → `ok` on **stock** | The control was built wrong. Stock cannot grow features. Rebuild it with `assets/scripts/build-micropython.sh --stock` and check the "is not lypning-mp" shape checks passed. |
 | Binary size or file-opens moved | The size/opens gate (`lypning gate`) is the authority on those, not this file. They are printed here only so an entry is self-contained. |
 | Both min and median move together by <10% with no code change | Machine noise. The startup floor drifts by that much between runs on a shared box. |
 

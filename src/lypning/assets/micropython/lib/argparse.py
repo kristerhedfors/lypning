@@ -32,7 +32,7 @@ _KW = ("action", "nargs", "const", "default", "type", "choices", "required",
 
 
 def _u(kind, what):
-    raise NotImplementedError("lypning: unsupported: " + kind + ": " + what)
+    raise NotImplementedError("lypning-mp: unsupported: " + kind + ": " + what)
 
 
 class ArgumentError(Exception):

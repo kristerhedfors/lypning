@@ -1,26 +1,23 @@
 ---
 name: lypning-mp
 description: >-
-  Load when working on lypning-mp — the minimal Python-subset runtime built for the
-  in-browser CheerpX sandbox (docs/MICROPYTHON.md). Triggers: "build lypning-mp", "run
-  the lypning-mp gates", "why is python slow in the sandbox", "add a module to
-  lypning-mp", "the conformance run has mismatches", "grow the python corpus",
-  "benchmark lypning-mp", "did that change make lypning-mp slower", "what does the
-  ordered dict cost", anything touching lypning-mp/, scripts/build-micropython.sh,
-  lypning gate, lypning bench --micropython, lypning capture/,
-  or tests/corpus/. Covers the cost model that justifies the project, the two
-  gates and how to read them, the STOCK-MICROPYTHON CONTROL and the performance
-  benchmark that measures what our variant costs, the capture harness that
-  grows the corpus by itself, and the eight traps already paid for — including
-  a .gitignore that silently swallowed the whole frozen stdlib and a
+  The second tier of lypning's mixture — a MicroPython variant with a frozen
+  shim stdlib, static musl i386. Load when building it (`lypning build
+  --micropython`), when a program was routed to lypning-mp and refused, when a
+  conformance run reports MISMATCH on that arm, when python startup or binary
+  size in a sandbox is the question, when adding a module to its frozen stdlib,
+  or when growing the harvested corpus both tiers are built against. Covers the
+  cost model that justifies the project, the two gates and how to read them, the
+  STOCK-MICROPYTHON CONTROL, the capture harness, and the traps already paid for
+  — including a .gitignore that silently swallowed the whole frozen stdlib and a
   measurement bug that inverted into a pass.
 ---
 
 # lypning-mp — the minimal Python for the sandbox
 
-**lypning-mp** (py + gram) is a MicroPython unix-port variant — static, musl, i386,
-frozen stdlib — that runs the python one-liners an agentic CLI actually types,
-inside the CheerpX Linux VM. It is deliberately not a Python implementation.
+**lypning-mp** is a MicroPython unix-port variant — static, musl, i386, frozen
+stdlib — that runs the python one-liners an agentic CLI actually types, inside
+the CheerpX Linux VM. It is deliberately not a Python implementation.
 
 Full charter: `docs/MICROPYTHON.md`. Subset spec: `docs/SUBSET.md`. The survey
 that chose the base: `docs/RESEARCH.md`.
@@ -48,14 +45,14 @@ exec round-trip floor** per command, **6.5 ms** per process spawn, and
 ## 2. The two gates — run both, they answer different questions
 
 ```bash
-node lypning gate micropython/build/lypning-mp --compare   # shape
-LYPNING_MP_BIN=micropython/build/lypning-mp npm run lypning:conformance    # correctness
+lypning gate --compare                        # shape (defaults to lypning-mp)
+lypning conformance --engine lypning-mp       # correctness
 ```
 
 **The build gate** checks static / ≤700,000 B / ≤3 file opens on `-c 'pass'`,
 and prints CPython beside it. It projects a cold cost from the measured shape —
 that projection is a convenience, never the acceptance. `docs/MICROPYTHON.md` §2
-accepts on `tests/e2e/sandbox-perf.spec.js` against a real VM.
+accepts on a cold run in a real VM, never on the projection.
 
 **The conformance runner** executes every corpus entry under *both* CPython and
 lypning-mp and splits the result three ways. The split is the whole point:
@@ -63,7 +60,7 @@ lypning-mp and splits the result three ways. The split is the whole point:
 | verdict | meaning | is it a failure? |
 |---|---|---|
 | MATCH | stdout + exit code identical to CPython | no |
-| UNSUPPORTED | exit **90** with `lypning: unsupported: <kind>: <detail>` | **no** — this is coverage, and the build order |
+| UNSUPPORTED | exit **90** with `<engine>: unsupported: <kind>: <detail>` | **no** — this is coverage, and the build order |
 | MISMATCH | anything else | **yes, always** |
 
 Silent semantic divergence is the one outcome that would make a subset runtime
@@ -73,10 +70,9 @@ MISMATCH must be zero; UNSUPPORTED is just work not done yet.
 Useful invocations:
 
 ```bash
-node tests/corpus/conformance.mjs                    # reference-only: is the CORPUS still sane?
-... conformance.mjs --plan                           # just the ranked build order
-... conformance.mjs --tag json                       # one module at a time
-... conformance.mjs --json | node -e '…'             # machine-readable
+lypning conformance --engine lypning-mp --plan   # just the ranked build order
+lypning conformance --limit 50                   # the first 50 programs, for a fast loop
+lypning conformance --json                       # machine-readable
 ```
 
 `--plan` ranks every missing feature by how many corpus entries it unblocks.
@@ -93,11 +89,13 @@ stock MicroPython, same pinned commit, same musl-i386 toolchain, unpatched, no
 frozen lypning-mp stdlib.
 
 ```bash
-bash scripts/build-micropython.sh --stock   # → micropython/build/micropython-stock
-npm run lypning:bench                   # the table
-npm run lypning:bench:record            # ... appended to docs/BENCH-LEDGER.md
-node lypning bench --micropython --case dict --repeats 25   # one group, harder
+bash assets/scripts/build-micropython.sh --stock   # → assets/micropython/build/micropython-stock
+lypning bench                                      # the four arms: startup and corpus
 ```
+
+The per-subsystem variant-vs-stock table in `docs/BENCH-LEDGER.md` was produced
+by an upstream harness that did not come across with the extraction; the numbers
+below are its readings, and `lypning bench` is what this package measures with.
 
 **Run it after any variant or patch change, any addition to `micropython/lib/`, and
 any bump of the MicroPython pin** — and before/after any change made in order to
@@ -138,9 +136,9 @@ answers "what did our variant cost against stock, per subsystem". None of them
 answers "did this change make the programs lypning-mp is asked to run faster".
 
 ```bash
-node lypning corpus-time micropython/build/lypning-mp              # one binary
-node lypning corpus-time A.bin B.bin --repeats 5          # A/B, interleaved
-npm run lypning:corpus-time -- A.bin B.bin --json
+lypning bench --corpus                     # every arm, every program
+lypning bench --corpus --repeat 5          # min of 5, arms interleaved per entry
+LYPNING_MP_BIN=./candidate.bin lypning bench --corpus --arm lypning-mp --arm cpython
 ```
 
 Every program in `corpus.jsonl` and `seed-corpus.jsonl`, min of repeats, both
@@ -195,17 +193,17 @@ bundle, and what makes function placement worth exactly zero.
 
 ## 3. The corpus grows by itself — do not hand-write entries
 
-`lypning capture/` installs a `python`/`python3` shim early on `$PATH`
-that logs every invocation, plus a PreToolUse hook that catches command strings
-the shim cannot see (heredocs, `uv run`). `harvest.mjs` merges those and any
-Claude Code transcript into `tests/corpus/corpus.jsonl`, deduped by normalised
-program text. Both are wired into `.claude/settings.json`, so every session in
-this repo feeds it.
+`lypning install` puts a `python`/`python3` shim early on `$PATH` that logs
+every invocation, plus a PreToolUse hook that catches command strings the shim
+cannot see (heredocs, `uv run`). `lypning harvest` merges those and any Claude
+Code transcript into `assets/corpus/corpus.jsonl`, deduped by normalised program
+text. Both hooks are merged into `.claude/settings.json` by the same command, so
+every session in a wired repo feeds it.
 
 ```bash
-sh lypning shim install          # idempotent; --status, --uninstall, --force
-npm run lypning:harvest                     # fold everything into the corpus
-node lypning harvest --export   # what the Stop hook runs
+lypning shim install            # idempotent; also `shim status`, `shim uninstall`, --force
+lypning harvest                 # fold everything into the corpus
+lypning harvest --export        # what the Stop hook runs
 ```
 
 **What is COLLECTED is `tests/corpus/sightings/<session>.jsonl`, not the corpus**
@@ -218,9 +216,10 @@ A shared mutable file is not a collection point when the writers are ephemeral
 containers on independent branches.
 
 Now the Stop hook publishes one file per session (one writer per path, so no
-branch conflicts, and an unrelated PR carries an *added* file), `.githooks/pre-commit`
-stages that directory, and `corpus.jsonl` is DERIVED — regenerate it with
-`npm run lypning:harvest` whenever you are working on lypning-mp; no session has to.
+branch conflicts, and an unrelated PR carries an *added* file) and `corpus.jsonl`
+is DERIVED — regenerate it with `lypning harvest` whenever you are working on
+lypning-mp; no session has to. The hooks never run `git`, so staging that
+directory is yours to do.
 Sighting keys are namespaced by session because a log line number means
 something different in every container — that namespacing is also what stops the
 fold counting one invocation twice when it reads both a session's live log and
@@ -283,8 +282,14 @@ have caught that.
 ## 4. Building
 
 ```bash
-bash scripts/build-micropython.sh          # musl-i386 from source, pinned MicroPython, variant, strip
+lypning build --micropython                # musl-i386 from source, pinned MicroPython, variant, strip
+lypning build --micropython --dry-run      # print the command and the cache state; build nothing
 ```
+
+That drives `assets/scripts/build-micropython.sh`, which can also be run
+directly. It needs `gcc-multilib` and a network for two pinned downloads; both
+are checked before anything is started, and a missing one is named rather than
+discovered five minutes in.
 
 `gcc -m32 -static` works in the dev container **and i386 binaries execute
 there**, so the real target artifact can be built and gated in CI with no
@@ -372,7 +377,7 @@ Three rules follow, and each cost a build to learn:
   a shim, grep it for constants it defines but never reads; that is where the
   next one of these lives.
 
-All of it is pinned by smoke checks in `scripts/build-micropython.sh` and by the
+All of it is pinned by smoke checks in `assets/scripts/build-micropython.sh` and by the
 `re-verbose-flag` / `re-ascii-flag` / `csv-quote-all` / `csv-escapechar` corpus
 entries.
 
@@ -414,9 +419,9 @@ Rebuilding after a **config** change needs the generated headers dropped —
 
 ## 4d. Measuring in a REAL VM (the number §2 accepts on)
 
-```bash
-sudo bash scripts/build-sandbox-image.sh alpine alpine-i386-test 512   # needs root + loop mount
-node scripts/vm-measure.mjs build/alpine-i386-test.ext2 --repeats 5
+```
+(upstream only — the image builder and the headless-VM harness stayed with
+ deepresearch.se and are not part of this package)
 ```
 
 This needs no deploy, no R2 and no live site: it serves a local ext2 over HTTP
@@ -473,30 +478,31 @@ Each of these cost real time and each would recur.
   the bare-pid prefix that `-f -o` emits and read a 110-line trace as **zero
   file opens** — a perfect score on the project's central metric. Zero is the
   target, so nothing looked wrong. Prefix forms are now pinned in
-  `scripts/lypning-gate.test.mjs`.
+  `tests/test_gate.py`.
 - **The capture shim breaks naive baselines.** With the shim installed,
   `command -v python3` returns an 8,971-byte shell script; measuring it as "the
   baseline" gave 30 file opens and a projected cold cost of 330 seconds. A wrong
   baseline is worse than none because it looks like a number. Use
-  `findRealCPython`, which walks PATH for a genuine ELF.
+  `engines.find_cpython`, which walks PATH past anything carrying the shim
+  marker.
 - **Per-entry temp cwd breaks relative binary paths.** The conformance runner
   gives every entry its own temp directory (so file-writing entries stop
   littering the repo, and so lypning-mp cannot read back a file CPython created).
-  That makes `LYPNING_MP_BIN=micropython/build/lypning-mp` resolve against the temp dir.
-  Resolve to absolute once.
-- **Regenerate the introspection artifacts AFTER staging, not before, whenever
-  a change ADDS a file.** The bundlers enumerate TRACKED files, so running all
-  four before `git add` silently skips the new ones: the committed snapshot
-  described 1089 files while the working tree had 1092, `npm test` passed
-  locally because the artifacts and the untracked files were consistent right up
-  until the commit made them tracked, and CI failed on both drift tests. Editing
-  an existing file does not have this failure mode, which is why it takes a
-  while to bite. Also note the snapshot indexes `docs/` and `skills-disabled/`,
-  not just `src/` and `public/js/` — a docs-only or skill-only edit stales it
-  too, and the fix is always all four bundlers, never editing an artifact.
+  That makes a relative `LYPNING_MP_BIN=...` resolve against the temp dir.
+  Resolve to absolute once — `lypning status` prints the path it resolved.
+- **A generated index that enumerates TRACKED files goes stale the moment a
+  change ADDS one.** Regenerating before `git add` silently skips the new files:
+  the committed snapshot described 1089 files while the working tree had 1092,
+  the suite passed locally because the artifacts and the untracked files were
+  consistent right up until the commit made them tracked, and CI failed on both
+  drift tests. Editing an existing file does not have this failure mode, which
+  is why it takes a while to bite. Also note such a snapshot indexes `docs/` and
+  the skills, not just the source — a docs-only or skill-only edit stales it
+  too, and the fix is always to regenerate, never to edit an artifact.
 
-- **`process.exit()` truncates piped stdout.** Node's stdout is async on a pipe,
-  so `--json` was cut mid-object. Set `process.exitCode` and return.
+- **Exiting hard truncates piped stdout.** `--json` was cut mid-object because
+  the process exited before the pipe drained. Return an exit code and let the
+  runtime flush; `cli.py` flushes `sys.stdout` in a `finally` for this reason.
 
 ## 6. What is deliberately NOT here
 

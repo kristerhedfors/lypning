@@ -6,7 +6,7 @@ thing:
 
 ```
 $ lypning-mp -c 'import subprocess'
-lypning: unsupported: module: subprocess
+lypning-mp: unsupported: module: subprocess
 $ echo $?
 90
 ```
@@ -55,7 +55,7 @@ Three different reasons, and they call for different reactions:
 The largest cluster in the corpus by a wide margin. lypning-mp has no `subprocess` on purpose: faking a shell-out from inside a subset interpreter would be a second, worse shell. The rewrite is always the same shape — run the command in the bash block you are already in, and let Python read the result on stdin.
 
 ```python
-# before — lypning: unsupported: module: subprocess
+# before — lypning-mp: unsupported: module: subprocess
 import subprocess
 r = subprocess.run(["echo", "hi"], capture_output=True, text=True)
 print(r.stdout.strip().upper())
@@ -80,7 +80,7 @@ echo hi | lypning-mp script.py
 The same hoist, for the other half of the cluster: a command that emits one record per line. `git ls-files`, `find`, `rg -l` all fit.
 
 ```python
-# before — lypning: unsupported: module: subprocess
+# before — lypning-mp: unsupported: module: subprocess
 import subprocess
 out = subprocess.run(["printf", "a.py\nb.txt\nc.py\n"], capture_output=True, text=True).stdout
 print(sum(1 for f in out.split("\n") if f.endswith(".py")))
@@ -105,7 +105,7 @@ git ls-files | lypning-mp script.py
 `os.system` is `subprocess` wearing a smaller hat, and the variant disables it for the same reason. If the exit code is what you want, the shell already has it in `$?`.
 
 ```python
-# before — lypning: unsupported: attribute: os.system
+# before — lypning-mp: unsupported: attribute: os.system
 import os
 rc = os.system("true")
 print("rc", rc)
@@ -130,7 +130,7 @@ true; lypning-mp script.py $?
 `input()` is compiled out: it exists to prompt an interactive user, and there is never one on the other end of a sandbox command. Reading stdin directly is what it did anyway, minus the prompt.
 
 ```python
-# before — lypning: unsupported: builtin: input
+# before — lypning-mp: unsupported: builtin: input
 name = input()
 print("hello", name)
 ```
@@ -151,7 +151,7 @@ print("hello", name)
 Every itertools function an agent reaches for has a comprehension that is the same length. The module is 30 KB of C that would buy about six lines of Python.
 
 ```python
-# before — lypning: unsupported: module: itertools
+# before — lypning-mp: unsupported: module: itertools
 import itertools
 print(list(itertools.chain([1, 2], [3])))
 print(list(itertools.islice(range(10), 3)))
@@ -170,7 +170,7 @@ print([x for i, x in enumerate(range(10)) if i < 3])
 `reduce` is three lines written out, and the written-out version is the one the next reader understands. `functools.lru_cache` has no short rewrite; use a dict.
 
 ```python
-# before — lypning: unsupported: module: functools
+# before — lypning-mp: unsupported: module: functools
 import functools
 print(functools.reduce(lambda a, b: a * b, [1, 2, 3, 4], 1))
 ```
@@ -190,7 +190,7 @@ print(acc)
 `string` is five string constants and a template class. Two of the constants are what anyone imports it for.
 
 ```python
-# before — lypning: unsupported: module: string
+# before — lypning-mp: unsupported: module: string
 import string
 print(string.ascii_lowercase[:3], string.digits[:3])
 ```
@@ -209,7 +209,7 @@ print(ascii_lowercase[:3], digits[:3])
 `itemgetter(1)` and `lambda r: r[1]` are the same thing; `attrgetter` and `methodcaller` likewise.
 
 ```python
-# before — lypning: unsupported: module: operator
+# before — lypning-mp: unsupported: module: operator
 import operator
 rows = [("b", 2), ("a", 1)]
 print(sorted(rows, key=operator.itemgetter(1)))
@@ -228,7 +228,7 @@ print(sorted(rows, key=lambda r: r[1]))
 `bisect` is worth having when a list is maintained in order across many inserts. In a one-liner it is almost always used once, and sorting once costs less than the import would.
 
 ```python
-# before — lypning: unsupported: module: bisect
+# before — lypning-mp: unsupported: module: bisect
 import bisect
 xs = [1, 3, 5, 7]
 print(bisect.bisect_left(xs, 4))
@@ -247,7 +247,7 @@ print(sum(1 for x in xs if x < 4))
 `enum` needs a metaclass, which MicroPython does not have. A class holding constants covers what a one-liner uses it for; what it loses is the `repr` and the iteration, so check whether you print the member.
 
 ```python
-# before — lypning: unsupported: module: enum
+# before — lypning-mp: unsupported: module: enum
 import enum
 class Colour(enum.Enum):
     RED = 1
@@ -270,7 +270,7 @@ print(Colour.RED, Colour.GREEN)
 This one cannot be shimmed rather than merely is not: `@dataclass` reads the class body's annotations out of `__annotations__`, and MicroPython's compiler parses annotations and discards them, so there is nothing for a shim to read. The generated methods are the short part.
 
 ```python
-# before — lypning: unsupported: module: dataclasses
+# before — lypning-mp: unsupported: module: dataclasses
 from dataclasses import dataclass
 @dataclass
 class P:
@@ -297,7 +297,7 @@ print(P(1), P(1, 2).y)
 There is no scheduler here and nothing to overlap with: the work is CPU-bound inside a single-threaded VM, so threads would serialise anyway. Concurrency in the sandbox belongs to the shell (`&`, `xargs -P`), not to the interpreter.
 
 ```python
-# before — lypning: unsupported: module: threading
+# before — lypning-mp: unsupported: module: threading
 import threading
 out = []
 ts = [threading.Thread(target=lambda i=i: out.append(i * i)) for i in range(4)]
@@ -321,7 +321,7 @@ print(sorted(out))
 Annotations are parsed and discarded, so they cost nothing and mean nothing here. Only the `typing` import fails; the annotations themselves are fine, including `int | None`.
 
 ```python
-# before — lypning: unsupported: module: typing
+# before — lypning-mp: unsupported: module: typing
 from typing import List, Optional
 def first(xs: List[int]) -> Optional[int]:
     return xs[0] if xs else None
@@ -344,7 +344,7 @@ print(first([7]), first([]))
 The 3.9 string methods are absent. The slice is the definition, and the `startswith` guard is the part people forget when they hand-roll it.
 
 ```python
-# before — lypning: unsupported: attribute: str.removeprefix
+# before — lypning-mp: unsupported: attribute: str.removeprefix
 s = "src/prompts.js"
 print(s.removeprefix("src/"), "x.py".removesuffix(".py"))
 ```
@@ -362,7 +362,7 @@ print(s[4:] if s.startswith("src/") else s, "x.py"[:-3] if "x.py".endswith(".py"
 `casefold` differs from `lower` only for a handful of scripts — German ß, Greek final sigma, Cherokee. For ASCII and for Swedish they are identical, so if the input is either, `lower()` is the same answer. If it is not, this is a case to send to real python3.
 
 ```python
-# before — lypning: unsupported: attribute: str.casefold
+# before — lypning-mp: unsupported: attribute: str.casefold
 print("Räksmörgås ABC".casefold())
 ```
 
@@ -378,7 +378,7 @@ print("Räksmörgås ABC".lower())
 `math` is present; `prod` (3.8) is one of the few names missing from it.
 
 ```python
-# before — lypning: unsupported: attribute: math.prod
+# before — lypning-mp: unsupported: attribute: math.prod
 import math
 print(math.prod([2, 3, 7]))
 ```
@@ -398,7 +398,7 @@ print(p)
 `heapq`'s heap operations are there; the two convenience wrappers are not. For the list sizes a one-liner handles, sorting is not the expensive part.
 
 ```python
-# before — lypning: unsupported: attribute: heapq.nsmallest
+# before — lypning-mp: unsupported: attribute: heapq.nsmallest
 import heapq
 xs = [5, 1, 9, 3]
 print(heapq.nsmallest(2, xs), heapq.nlargest(2, xs))
@@ -419,7 +419,7 @@ print(sorted(xs)[:2], sorted(xs, reverse=True)[:2])
 The 3.10 keyword. What it buys is the error, so the rewrite is to raise it.
 
 ```python
-# before — lypning: unsupported: argument: keyword strict
+# before — lypning-mp: unsupported: argument: keyword strict
 a, b = [1, 2], [3, 4]
 print(list(zip(a, b, strict=True)))
 ```
@@ -439,7 +439,7 @@ print(list(zip(a, b)))
 A whole family lands here at once: MicroPython's C builtins take these arguments, they just do not take them by NAME. `round(x, 2)`, `int(s, 16)`, `s.split(sep, 1)`, `b.decode('utf-8', 'replace')` all work; only the keyword form does not.
 
 ```python
-# before — lypning: unsupported: argument: keyword maxsplit
+# before — lypning-mp: unsupported: argument: keyword maxsplit
 print("a b c".split(" ", maxsplit=1))
 print(round(1.2345, ndigits=2), int("ff", base=16))
 ```
@@ -459,7 +459,7 @@ print(round(1.2345, 2), int("ff", 16))
 The 3.10 structural-pattern statement is not in this parser. A `match` on a literal is an if-chain; a `match` that destructures needs the unpacking written out, which is where the rewrite stops being mechanical.
 
 ```python
-# before — lypning: unsupported: syntax: match statement
+# before — lypning-mp: unsupported: syntax: match statement
 def kind(x):
     match x:
         case 0:
@@ -490,7 +490,7 @@ print(kind(0), kind(3), kind("s"))
 `f(**kw)` works; `{**a, **b}` does not. `dict(a)` copies and `update` merges, in the same left-to-right order the literal has.
 
 ```python
-# before — lypning: unsupported: syntax: dict unpacking in a literal ({**d})
+# before — lypning-mp: unsupported: syntax: dict unpacking in a literal ({**d})
 defaults = {"n": 1, "v": False}
 overrides = {"v": True}
 print({**defaults, **overrides, "extra": 1})
@@ -513,7 +513,7 @@ print(merged)
 The `/` marks parameters that callers may not pass by name. Nothing in a one-liner depends on that being enforced, and removing it does not change any call that was already legal.
 
 ```python
-# before — lypning: unsupported: syntax: positional-only parameter (def f(a, /, b))
+# before — lypning-mp: unsupported: syntax: positional-only parameter (def f(a, /, b))
 def clamp(x, /, lo=0, hi=10):
     return max(lo, min(hi, x))
 print(clamp(15), clamp(-1, hi=5))
@@ -533,7 +533,7 @@ print(clamp(15), clamp(-1, hi=5))
 Exception groups are 3.11 and there is no `ExceptionGroup` here. Unless the code genuinely raises a group, `except*` over a single exception is a plain `except`.
 
 ```python
-# before — lypning: unsupported: syntax: except* (exception groups)
+# before — lypning-mp: unsupported: syntax: except* (exception groups)
 try:
     raise ValueError("bad")
 except* ValueError as eg:
@@ -555,7 +555,7 @@ except ValueError:
 The 3.10 parenthesized form exists to wrap a long line. The unparenthesized multi-item form parses fine, and so does nesting.
 
 ```python
-# before — lypning: unsupported: syntax: parenthesized with-items
+# before — lypning-mp: unsupported: syntax: parenthesized with-items
 open("a.txt", "w").write("1")
 open("b.txt", "w").write("2")
 with (
@@ -582,7 +582,7 @@ with open("a.txt") as f, open("b.txt") as g:
 lypning-mp's heap is a fraction of CPython's, and `json.load` followed by `json.dumps` holds the text, the parsed object and the re-serialised text at once. This was the single MISMATCH in a 472-entry conformance run before heap exhaustion was given its own exit code. If the question is about the TEXT, never build the object; if it is about the object, read the file in pieces.
 
 ```python
-# before — lypning: unsupported: memory: heap exhausted (this input is larger than lypning-mp's heap)
+# before — lypning-mp: unsupported: memory: heap exhausted (this input is larger than lypning-mp's heap)
 import json
 d = json.loads(BIG)
 s = json.dumps(d)
@@ -602,19 +602,25 @@ Do not write one from imagination. The point of this page is that every entry
 came from a program someone ran, so start from the evidence:
 
 ```bash
-LYPNING_MP_BIN=micropython/build/lypning-mp lypning conformance --json |
-  node -e 'JSON.parse(require("fs").readFileSync(0,"utf8")).results
-    .filter(e => e.verdict === "UNSUPPORTED")
-    .forEach(e => console.log(e.id, "|", e.program.split("\n")[0]))'
+lypning conformance --engine lypning-mp --plan
+```
+
+`--plan` ranks the refusals by how many corpus programs each one blocks — that
+is the order worth writing recipes in — and names an example id per blocker.
+Pull the program itself out of the corpus by that id:
+
+```bash
+lypning corpus --json | jq -r '.[] | select(.id=="py-0a1daaa0c965") | .program'
 ```
 
 Then add the recipe to the section it belongs in, with the marker comment above
-it and both fenced blocks, and run:
+it and both fenced blocks, and check both halves against the real thing:
 
 ```bash
-LYPNING_MP_BIN=micropython/build/lypning-mp node --test tests/test_cookbook.py
+lypning route -c '<the before form>'     # it must actually be refused
+lypning run   -c '<the after form>'      # it must match python3
 ```
 
-The suite will tell you if the *before* is not actually refused, if the *after*
-does not match CPython, or if the two forms disagree. All three have caught a
-draft recipe that read perfectly well and was wrong.
+A recipe whose *before* is not actually refused, or whose *after* does not
+match CPython, is worse than no recipe. All three of those have caught a draft
+that read perfectly well and was wrong.

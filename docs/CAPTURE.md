@@ -1,13 +1,17 @@
-# lypning-capture
+# Capture — the two feeds, the harvest, and the privacy rules
 
-lypning-mp is a minimal Python-subset runtime for the in-browser sandbox. It only
-has to run the python that actually gets run here — the one-liners Claude Code
-reaches for a hundred times a day. This directory captures those invocations
-from live dev environments and merges them into a committed corpus,
-`tests/corpus/corpus.jsonl`, which is the target lypning-mp is built against.
+lypning's two subset tiers only have to run the python that actually gets run —
+the one-liners a coding agent reaches for a hundred times a day. This is how
+those invocations are captured from live sessions and merged into the committed
+corpus, `src/lypning/assets/corpus/corpus.jsonl`, which is the target both
+tiers are built against.
 
 Nothing here guesses at what python "should" support. The corpus is a
 recording.
+
+Everything below is wired by one command — `lypning install`, which merges the
+hooks into `.claude/settings.json` and installs the shim (`README.md` §3). This
+document is what that command wires, and why.
 
 ## The two feeds
 
@@ -24,23 +28,24 @@ $LYPNING_LOG              # default ~/.lypning/invocations.jsonl
 
 That log is outside the repo, and these containers are ephemeral. So a third
 step publishes it into the tree: `.claude/hooks/lypning-harvest.sh` (Stop) writes
-`tests/corpus/sightings/<session>.jsonl`, and `.githooks/pre-commit` stages that
-one directory so it rides along with whatever commit the session was making.
-Those files are the durable evidence; the corpus is derived from them.
+`tests/corpus/sightings/<session>.jsonl` in the project. **The hooks never run
+`git`** — a hook that made commits would fight the session's own git work — so
+staging that directory is yours to do, or not. Those files are the durable
+evidence; the corpus is derived from them.
 
 ```
 python-shim ─┐
 hook ────────┼─> ~/.lypning/invocations.jsonl ─┐
              │                                ├─> --export ─> tests/corpus/sightings/<session>.jsonl ─┐
 ~/.claude/projects/**/*.jsonl ────────────────┘                                                       │
-                                                                                                      ├─> harvest.py ─> tests/corpus/corpus.jsonl
+                                                                                                      ├─> `lypning harvest` ─> assets/corpus/corpus.jsonl
 tests/corpus/sightings/*.jsonl (every session that ever ran) ─────────────────────────────────────────┤
-tests/corpus/corpus.jsonl (existing) ─────────────────────────────────────────────────────────────────┘
+assets/corpus/corpus.jsonl (existing) ────────────────────────────────────────────────────────────────┘
 ```
 
 ## Why per-session files, and not just the corpus
 
-The Stop hook originally folded the log straight into `tests/corpus/corpus.jsonl`
+The Stop hook originally folded the log straight into the corpus
 and **that still lost the data**. One shared file that every session rewrites
 conflicts across branches by construction, and merging it was never worth it to
 a session whose PR was about something else. Measured 2026-08-14, over the 19
@@ -59,29 +64,43 @@ consequences worth knowing:
   something different in every container. Keys are namespaced by session, which
   is also what lets the fold read a session's live log and its own published
   file without counting the same invocation twice.
-* `corpus.jsonl` is now DERIVED. Run `npm run lypning:harvest` to regenerate it
-  from the accumulated sightings; no individual session has to.
+* `corpus.jsonl` is now DERIVED. Run `lypning harvest` to regenerate it from
+  the accumulated sightings; no individual session has to.
 
 ## Install
 
 ```sh
-lypning shim install            # copies the shim to ~/.local/bin/{python,python3}
-lypning shim install --status   # what is installed, is it current, is it on PATH
-lypning shim install --uninstall
+lypning shim install            # copies the shim to ~/.lypning/bin/{python,python3}
+lypning shim status             # what is installed, is it current, is it on PATH
+lypning shim uninstall
 ```
+
+`lypning install` does this as one of its three pieces; the subcommand above is
+the shim on its own.
 
 Idempotent — re-running refreshes the installed copy and says whether anything
 changed. It **refuses** to overwrite a target that is not one of our shims
 (that would silently swap one interpreter for another); pass `--force` to move
-the incumbent aside as `<name>.lypning-backup`, which `--uninstall` restores.
+the incumbent aside as `<name>.lypning-backup`, which `lypning shim uninstall`
+restores.
 
-`~/.local/bin` is already first on `$PATH` in this environment. Elsewhere, set
-`LYPNING_MP_BIN` to a directory that is.
+The shim only ever runs if its directory is first on `$PATH`:
 
-### The hook (add this to `.claude/settings.json` yourself)
+```sh
+export PATH="$HOME/.lypning/bin:$PATH"
+```
 
-This directory deliberately does not edit `.claude/settings.json`. Add the
-`PreToolUse` block below to the existing `"hooks"` object:
+`lypning shim status` says so loudly when the shim is installed but shadowed,
+because that failure and "not installed at all" have the same symptom — an
+empty log. `--bin-dir DIR` installs somewhere else; `$LYPNING_HOME` moves the
+whole state directory.
+
+### The hook
+
+`lypning install` merges the block below into `.claude/settings.json` — append
+only, unrelated keys and hooks untouched, backed up first, and `--dry-run`
+prints the exact diff before anything is written. To add it by hand instead,
+this is the `PreToolUse` entry:
 
 ```json
 "PreToolUse": [
@@ -146,32 +165,37 @@ iterations per case:
 | Payload | Per call |
 | --- | --- |
 | non-python (`ls -la`) | **2.7 ms** |
-| non-python that looks busy (`npm run build && git status`) | **3.4 ms** |
+| non-python that looks busy (`make build && git status`) | **3.4 ms** |
 | python (`python3 -c "print(1+1)"`) | **66 ms** |
-| *(rejected design: spawn node first, decide after)* | *73 ms on every command* |
+| *(rejected design: spawn the interpreter first, decide after)* | *73 ms on every command* |
 
 The difference is entirely in where the decision happens. The hook reads stdin
 with the `read` builtin, screens the payload with a `case` statement, and
-spawns `node` only when that screen matches — so the ~66 ms interpreter start
-is paid only by commands that can actually produce a corpus entry.
+spawns `lypning hook pre-tool-use` only when that screen matches — so the
+interpreter start is paid only by commands that can actually produce a corpus
+entry.
 
-The shell screen is deliberately broader than the JS regexes that follow it
-(an over-match costs one wasted node spawn; a miss loses a corpus entry
-forever), and the JS regexes remain the precise filter, so a loose screen can
+The shell screen is deliberately broader than the regexes in `capture.py` that
+follow it (an over-match costs one wasted spawn; a miss loses a corpus entry
+forever), and those regexes remain the precise filter, so a loose screen can
 never put noise in the log. Runners are screened by name (`uv run`, `pipx
-run`, …) rather than on `" run "`, which every `npm run …` in the repo would
-otherwise trip.
+run`, …) rather than on `" run "`, which every `make run …` would otherwise
+trip.
 
 ## Harvest
 
 ```sh
-lypning harvest                 # merge into tests/corpus/corpus.jsonl
+lypning harvest                 # derive the corpus from every sightings file + the live log
 lypning harvest --export        # publish THIS session's sightings, write no corpus
 lypning harvest --dry-run       # report, write nothing
-lypning harvest --no-transcripts
-lypning harvest --no-sightings  # fold the live log only
-lypning harvest --log X --corpus Y --transcripts Z --sightings S
+lypning harvest --transcripts   # also scan Claude Code transcripts
+lypning harvest --json          # the same report, machine-readable
 ```
+
+The corpus it writes is `src/lypning/assets/corpus/corpus.jsonl` in a checkout
+and `$LYPNING_HOME/corpus.jsonl` in a wheel install, where the assets are
+read-only; `lypning status` prints which. The transcript root is
+`$LYPNING_TRANSCRIPTS`, else `~/.claude/projects`.
 
 `--export` is what the Stop hook runs. It writes only
 `tests/corpus/sightings/<session>.jsonl` — never the corpus — as a union by
@@ -234,18 +258,16 @@ paths, occasionally a token pasted into a one-liner.
   deliberate: it says which credential to rotate without restating it.
 * `harvest.py` redacts before writing. Every program, argv tail, and stdin
   sample is matched against the repo's canonical credential patterns — the same
-  set as `scripts/scan-secrets` (OpenAI `sk-`, Berget `sk_ber_`, Groq `gsk_`,
+  set as `SECRET_PATTERNS` (OpenAI `sk-`, Berget `sk_ber_`, Groq `gsk_`,
   AWS `AKIA`, GitHub `ghp_`/`github_pat_`, Google `AIza`, Slack `xox*`, PEM
   private-key blocks) — and matches become `[REDACTED <prefix> <n> chars]`.
   Redaction happens BEFORE the hash, so the `id` is a function of the text that
   actually gets written, and re-harvesting the raw log cannot fork a record.
   The marker cannot re-match, so redaction is idempotent.
-* Keep the two pattern lists in sync. `scripts/scan-secrets` is the canonical
-  one (owned by the security-posture skill §1); `SECRET_PATTERNS` in
-  `harvest.py` mirrors it.
-* Redaction is a backstop, not a promise. Run `scripts/scan-secrets` before
-  committing a corpus refresh, and read the diff — a secret in a shape nobody
-  has a pattern for still reads as ordinary program text.
+* `SECRET_PATTERNS` in `harvest.py` is the canonical list in this package.
+* Redaction is a backstop, not a promise. Read the diff on a corpus refresh —
+  a secret in a shape nobody has a pattern for still reads as ordinary program
+  text.
 * `LYPNING_CAPTURE=0` disables both the shim's logging and the hook.
 
 ## Environment
@@ -255,9 +277,9 @@ paths, occasionally a token pasted into a one-liner.
 | `LYPNING_LOG` | log path (default `~/.lypning/invocations.jsonl`; falls back to `$TMPDIR/lypning-mp-<uid>/` when `$HOME` is unwritable, then gives up silently) |
 | `LYPNING_CAPTURE=0` | disable capture entirely; the shim still execs python |
 | `LYPNING_CAPTURE_EXIT=1` | shim waits for the child instead of exec-ing it, adding an `{"kind":"exit"}` record with `exit_code` and `wall_ms` |
-| `LYPNING_MP_BIN` | install target directory (default `~/.local/bin`) |
+| `LYPNING_HARVEST=0` | keep capturing; stop the Stop hook publishing sightings |
+| `LYPNING_HOME` | state directory (default `~/.lypning`) — the shim's bin dir, the log, the build trees |
 | `LYPNING_TRANSCRIPTS` | transcript root for the harvest (default `~/.claude/projects`) |
-| `LYPNING_CORPUS` | corpus path for the harvest (default `tests/corpus/corpus.jsonl`) |
 
 ## What the shim does and does not promise
 
@@ -287,7 +309,7 @@ resolves absolute entries as text and reads candidates with the shell's own
 `read` builtin, so it adds no processes at all — an earlier version that ran
 `cd`+`pwd` per PATH directory and called `dirname` cost 15.5 ms instead. This
 is a dev-environment capture harness: `LYPNING_CAPTURE=0` removes the logging
-cost, and `--uninstall` removes the shim.
+cost, and `lypning shim uninstall` removes the shim.
 
 ## Tests
 

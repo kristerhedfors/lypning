@@ -93,10 +93,14 @@ class Action:
     note: str = ""
     component: str = ""  # "skill" | "hook" | "settings" | "shim"
     source: Optional[Path] = None
+    #: Only for ``skip``: this thing is ALREADY as the install wants it. The
+    #: other skips are refusals and warnings, which must never be summarised as
+    #: "already in place" — that is the one summary a reader takes as "fine".
+    present: bool = False
 
     def as_dict(self) -> dict:
         return {"kind": self.kind, "path": str(self.path), "note": self.note,
-                "component": self.component}
+                "component": self.component, "present": self.present}
 
 
 @dataclass
@@ -113,6 +117,15 @@ class Plan:
     def changes(self) -> List[Action]:
         return [a for a in self.actions if a.kind != "skip"]
 
+    @property
+    def already(self) -> List[Action]:
+        return [a for a in self.actions if a.kind == "skip" and a.present]
+
+    @property
+    def notes(self) -> List[Action]:
+        """Skips that are NOT "already fine": refusals, warnings, failures."""
+        return [a for a in self.actions if a.kind == "skip" and not a.present]
+
     def as_dict(self) -> dict:
         return {
             "project": str(self.project),
@@ -128,6 +141,17 @@ class Plan:
 
 def _project(project: Path | str | None) -> Path:
     return Path(project).expanduser().resolve() if project else paths.project_dir()
+
+
+def _is_git_worktree(p: Path) -> bool:
+    """Did the project root come from a repository, or from a bare ``cd``?
+
+    ``paths.project_dir`` falls back to the current directory when there is no
+    git toplevel, which is right — a ``.claude`` directory is useful in a plain
+    directory too — but a plan that writes into whatever directory the user
+    happened to be standing in should say so rather than look deliberate.
+    """
+    return (p / ".git").exists()
 
 
 def claude_dir(project: Path | str | None = None, scope: str = "project") -> Path:
@@ -317,11 +341,27 @@ def _file_action(src: Path, dest: Path, component: str) -> Action:
     if dest.is_file():
         try:
             if dest.read_bytes() == src.read_bytes():
-                return Action("skip", dest, "identical", component, src)
+                return Action("skip", dest, "identical", component, src, present=True)
         except OSError:
             pass
         return Action("write", dest, "overwrite", component, src)
     return Action("write", dest, "new", component, src)
+
+
+def _path_warning() -> Optional[Action]:
+    """The one failure a shim install cannot detect by looking at its own files.
+
+    A shim that is written but never reached reads as a successful install for
+    as long as it takes somebody to wonder why the corpus is empty (shim.py).
+    `status` and `doctor` say so; so must the command that just installed it,
+    which is the moment the user is actually looking.
+    """
+    problem = shim_module.path_problem()
+    if not problem:
+        return None
+    return Action("skip", paths.bin_dir(),
+                  "WARNING: %s — fix: export PATH=\"%s:$PATH\""
+                  % (problem, paths.bin_dir()), "shim")
 
 
 def plan_install(
@@ -376,7 +416,7 @@ def plan_install(
             if not added:
                 actions.append(Action("skip", settings_path,
                                       "all %d hook entries already present" % len(entries),
-                                      "settings"))
+                                      "settings", present=True))
             else:
                 backup = settings_path.with_name(settings_path.name + SETTINGS_BACKUP_SUFFIX)
                 if settings_path.is_file() and not backup.exists():
@@ -391,7 +431,7 @@ def plan_install(
     if want_shim:
         for st in shim_module.status():
             if st.state == "current":
-                actions.append(Action("skip", st.path, "shim already current", "shim"))
+                actions.append(Action("skip", st.path, "shim already current", "shim", present=True))
             elif st.state == "stale":
                 actions.append(Action("write", st.path, "refresh stale shim", "shim",
                                       paths.SHIM_SRC))
@@ -402,6 +442,9 @@ def plan_install(
                     "backup", st.path,
                     "NOT a lypning shim — needs --force, which moves it to %s%s"
                     % (st.path.name, shim_module.BACKUP_SUFFIX), "shim", paths.SHIM_SRC))
+        warning = _path_warning()
+        if warning is not None:
+            actions.append(warning)
 
     return Plan(actions, proj, scope, settings_path, diff)
 
@@ -484,6 +527,9 @@ def apply(plan: Plan, *, force: bool = False) -> List[Action]:
             # A refused shim must not fail the rest of the install: the hooks and
             # the skill are useful on their own, and the refusal is the message.
             done.append(Action("skip", paths.bin_dir(), str(e), "shim"))
+        warning = _path_warning()
+        if warning is not None:
+            done.append(warning)
     return done
 
 
@@ -579,7 +625,18 @@ def status(project: Path | str | None = None) -> dict:
         }
 
     log = paths.log_path()
+    # "Absent" and "there but unusable" have the same symptom — an empty corpus
+    # — and only one of them is the normal state of a fresh install. A log that
+    # is a directory, or that this user cannot read, is reported as the failure
+    # it is rather than as "not created yet" (shim.py holds the same rule for
+    # a shim that is installed but shadowed).
+    log_error = None
+    if log.exists() and not log.is_file():
+        log_error = "%s exists but is not a file — move it aside, or set $LYPNING_LOG" % log
+    elif log.is_file() and not os.access(str(log), os.R_OK):
+        log_error = "%s is not readable — fix its permissions, or set $LYPNING_LOG" % log
     out["log"] = {"path": str(log), "exists": log.is_file(),
+                  "error": log_error,
                   "bytes": log.stat().st_size if log.is_file() else 0}
     out["shim"] = {
         "bin_dir": str(paths.bin_dir()),
@@ -601,7 +658,9 @@ _SIGIL = {"write": "+", "merge": "~", "backup": "b", "remove": "-", "skip": "."}
 def render_plan(plan: Plan) -> str:
     """The dry-run report: every action, then the settings.json diff."""
     out = [
-        "project : %s" % plan.project,
+        "project : %s%s" % (plan.project, "" if _is_git_worktree(plan.project)
+                            else "  (not a git work tree — this is just the "
+                                 "current directory; --project names another)"),
         "scope   : %s (%s)" % (plan.scope, claude_dir(plan.project, plan.scope)),
         "",
     ]
@@ -612,8 +671,15 @@ def render_plan(plan: Plan) -> str:
         out.append("%s %-7s %s%s" % (_SIGIL.get(a.kind, "?"), a.kind, a.path, note))
     changes = len(plan.changes)
     out.append("")
-    out.append("%d change%s, %d already in place"
-               % (changes, "" if changes == 1 else "s", len(plan.actions) - changes))
+    summary = "%d change%s, %d already in place" % (
+        changes, "" if changes == 1 else "s", len(plan.already))
+    notes = len(plan.notes)
+    if notes:
+        # A warning counted as "already in place" is how a plan that will not
+        # do what the user asked reads as a plan that is fine.
+        summary += ", %d warning%s (the `.` line%s above)" % (
+            notes, "" if notes == 1 else "s", "" if notes == 1 else "s")
+    out.append(summary)
     if plan.diff:
         # The diff carries its own ---/+++ header naming the file, so nothing is
         # printed above it: a second header would only invite a reader to mistake
