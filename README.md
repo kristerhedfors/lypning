@@ -61,39 +61,43 @@ Read it in this order:
   files at startup, so they arrive at the same place by different routes.
 
 **Re-measure. Do not cite — and the first bullet above did not reproduce.**
-Running `lypning bench` here on 2026-08-20, on a different container against a
-corpus capture has grown to **842 programs, 763 measured**, with all three
-engines built:
+Running `lypning bench --startup-repeat 15` here on **2026-08-20** (4 CPUs,
+Linux 6.18.5, all three engines built) against a corpus capture that has grown
+to **842 programs, 763 measured**:
 
 ```
 shared subset — 500 programs every arm executed
 
 arm          ran  refused   shared total    median   vs cpython
-cpython      763        0        9153.3 ms    16.12    1.000x
-lypning      500      263         716.9 ms     1.37    0.078x
-lypning-mp   714       49         583.6 ms     1.13    0.064x
-mixture      763        0         978.4 ms     1.33    0.107x
+cpython      763        0        6955.3 ms    12.36    1.000x
+lypning      500      263         497.9 ms     0.96    0.072x
+lypning-mp   714       49         434.2 ms     0.84    0.062x
+mixture      763        0         754.1 ms     1.04    0.108x
 
 whole corpus                     vs cpython
-cpython     18207.5 ms             1.000x
-mixture      5925.7 ms             0.325x   (0 unanswered — saves 67.5%)
+cpython     13497.7 ms             1.000x
+mixture      4339.6 ms             0.322x   (0 unanswered — saves 67.8%)
 
 startup — `-c 'pass'`, min of 15
-mixture 0.77 ms   lypning-mp 0.83 ms   lypning 0.91 ms   cpython 13.84 ms
+lypning-mp 0.60 ms   mixture 0.62 ms   lypning 0.68 ms   cpython 11.65 ms
 ```
 
-The mixture result held: 763/763 answered at 0.325x of CPython, a 67.5% saving.
+The mixture result held: 763/763 answered at 0.322x of CPython, a 67.8% saving.
 **The ordering of the two subset engines reversed.** Upstream measured lypning
 at 0.102x beating lypning-mp at 0.143x on the shared subset; here lypning-mp is
-0.064x against lypning's 0.078x, and it starts faster too (0.83 ms against
-0.91 ms). Two consecutive runs agree to within 2%, so this is not noise.
+0.062x against lypning's 0.072x, and it starts faster too (0.60 ms against
+0.68 ms). Successive runs on this box agree on the ordering and on the ratios to
+within about a point, while the absolute milliseconds move by tens of percent
+with the machine's load — which is the reason the ratios are what get quoted
+and the reason `bench` is not a CI gate.
 
 Read honestly, that means **the first bullet above is upstream's result, not a
 property of the design.** The shared subset is by construction the 500 programs
 lypning accepted — the simplest in the corpus — where both engines sit near
 their startup floor, and lypning-mp's floor is lower: its binary is 294,788 B
-against lypning's 1,036,984 B. The claim that a runtime built for two-thirds of
-the distribution beats a general one *on that two-thirds* is a claim about a
+against lypning's 1,045,176 B (both printed by `lypning status`, and both move
+whenever an engine is rebuilt). The claim that a runtime built for two-thirds
+of the distribution beats a general one *on that two-thirds* is a claim about a
 particular corpus on a particular machine, and this machine did not reproduce
 it.
 
@@ -125,9 +129,10 @@ environment that does not have one. Until `lypning build` runs, `lypning
 status` says `not built` and every program routes straight to CPython.
 
 **The Rust core needs `cargo`** and nothing else — the crate has zero
-dependencies, so nothing is fetched from crates.io. A clean release build took
-**17.9 s** on this container (4 CPUs, 2026-08-20); budget ~25 s on a slower box.
-Build it alone with `lypning build --rust`.
+dependencies, so nothing is fetched from crates.io. Clean release builds on this
+container (4 CPUs, 2026-08-20) took **13.3 s and 17.9 s** — the spread is the
+box's load, not the crate — so call it well under a minute and budget more on a
+slower machine. `lypning build --rust` prints the seconds it actually took.
 
 **The MicroPython tier is optional and usually absent.** It needs a 32-bit C
 toolchain (`gcc-multilib`) and network access — the build fetches musl and a
@@ -136,7 +141,7 @@ with no flags attempts both and exits non-zero if either fails, so ask for the
 one you want:
 
 ```bash
-lypning build --rust           # the core, ~18 s, cargo only
+lypning build --rust           # the core, seconds, cargo only
 lypning build --micropython    # the second tier, needs a toolchain + network
 lypning build --dry-run        # print the commands, build nothing
 ```
@@ -338,7 +343,9 @@ Interpreter mode is decided before argument parsing, so anything that calls
 | `lypning shim {install,uninstall,status}` | the `python`/`python3` capture shim on its own |
 | `lypning hook {pre-tool-use,stop}` | hook entry points; event JSON on stdin, protocol JSON on stdout |
 | `lypning conformance [--plan] [--engine E]` | run the corpus against CPython and grade every answer |
+| `lypning fuzz [--iterations N] [--seed S]` | generate programs from the subset and diff them against CPython |
 | `lypning bench [--startup] [--corpus]` | time the four arms, interleaved, min of repeats |
+| `lypning corpus-time [--engine E] [--baseline F] [--record F]` | time the corpus on ONE binary, and diff two runs of it |
 | `lypning gate [BIN] [--compare]` | static? how many bytes? how many file opens? |
 | `lypning harvest [--export]` | captured invocations → sightings → corpus |
 | `lypning corpus [--stats] [--list]` | inspect the harvested programs |
@@ -456,6 +463,26 @@ sides and leaves the measurement rather than being scored as a disagreement.
 lypning bench              # startup and corpus
 lypning bench --startup    # `-c 'pass'`, min of 5, arms interleaved
 ```
+
+**`bench` compares arms; `corpus-time` compares runs.** They answer different
+questions and are not interchangeable. `bench` asks what the mixture costs
+against CPython — four arms, interleaved. `corpus-time` asks whether the change
+you just made to one engine sped up the programs it is actually asked to run,
+by timing the whole corpus on **one** binary and diffing that run against a
+recorded one:
+
+```bash
+lypning corpus-time --record before.json          # the baseline
+lypning corpus-time --baseline before.json        # after the change
+lypning corpus-time --engine target/release/lypning --baseline before.json
+```
+
+The diff is taken over the entries **both** runs timed, and that intersection
+is printed rather than assumed — the corpus grows every session, so a baseline
+from last week covers a different set of programs. Entries that exit 90 are
+timed rather than skipped (a refusal costs the spawn the agent waited for) and
+counted apart, because a change that moves an entry in or out of the subset
+changes what is being timed.
 
 Two warnings, both of which this project has already paid for.
 
@@ -577,7 +604,9 @@ src/lypning/
   paths.py             the assets (read-only, in the wheel) / state (~/.lypning) split
   build.py             cargo and make — and the refusal-contract assert on the result
   conformance.py       MATCH / UNSUPPORTED / MISMATCH, and the build plan
-  bench.py             four arms, interleaved, min of repeats, two totals
+  routing.py           IDEAL / LATE / WASTED / UNSAFE — did the classifier pick right
+  fuzz.py              generate from the subset's own grammar, diff, shrink
+  bench.py             four arms, interleaved, min of repeats, two totals — and corpus-time
   gate.py              static? how many bytes? how many file opens?
   corpus.py            load, merge, describe — the one module that is pure data
   capture.py           the hook entry points
@@ -592,7 +621,8 @@ src/lypning/
   assets/scripts/      build-rust.sh, build-micropython.sh
 docs/                  see below
 tests/
-Makefile               thin wrappers: build test conformance bench gate install dist clean
+Makefile               thin wrappers: build test check conformance fuzz bench gate
+                       doctor install dist dist-check clean  (`make help`)
 ```
 
 | doc | what |

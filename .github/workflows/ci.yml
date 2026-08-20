@@ -1,0 +1,301 @@
+# CI runs the deterministic half of this project and nothing else.
+#
+# `lypning bench` is deliberately absent. A wall-clock benchmark on a shared
+# runner measures the runner: the arms are 1-2 ms apart and a noisy neighbour
+# moves them further than a real regression would. `bench` knows it is in CI and
+# prints a banner saying so; the place a timing becomes a fact is
+# docs/BENCH-LEDGER.md, with the machine and the date attached. What CI can
+# decide is correctness — does an engine ever disagree with CPython, does the
+# refusal contract still hold on the binary that was just built, does the wheel
+# a `pip` user gets actually work — and that is what is below.
+#
+# Two of these jobs are `continue-on-error` and neither of them is decoration;
+# each says at its own head what makes it blocking again.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The capture harness exists to record what an agent typed. A runner types
+  # nothing, so both feeds are off: anything they wrote here would be noise
+  # entering the corpus through the back door.
+  LYPNING_CAPTURE: "0"
+  LYPNING_HARVEST: "0"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  # --- the floor, enforced by running it ------------------------------------
+  #
+  # requires-python is ">=3.9" and pyproject claims a classifier for every
+  # minor through 3.13. A claim nothing executes is a comment, so every one of
+  # them runs the suite. No cargo here on purpose: without an engine built,
+  # conftest skips the ~100 tests that spawn one and the remaining ~470 are the
+  # pure-Python half — which is exactly the half a syntax-level 3.9 regression
+  # (a `match`, a runtime `X | Y`, a missing `from __future__ import
+  # annotations`) breaks. The `core` job below runs the other half once.
+  tests:
+    name: pytest (python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: install (dev extra — pytest is dev-only; the package itself has no deps)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: the package imports with zero third-party runtime dependencies
+        # `pip check` on a tree whose only extra is pytest proves the runtime
+        # dependency list is still empty, which is invariant 6 and the one thing
+        # a reviewer cannot see by reading a diff of pyproject.toml alone.
+        run: |
+          pip check
+          python -c "import lypning, sys; print(lypning.__version__, 'on', sys.version.split()[0])"
+      - name: pytest
+        run: python -m pytest tests -q
+      - name: the CLI answers on this interpreter
+        # An unbuilt tree must route to CPython and say why, never crash: this is
+        # the state every `pip install lypning` starts in.
+        run: |
+          lypning --version
+          lypning status
+          lypning route -c 'print(2**8)'
+          test "$(lypning run -c 'print(2**8)')" = 256
+
+  # --- the core: build it, then prove the contract on what was built --------
+  core:
+    name: rust core — contract, gate, conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: strace, so the file-open check is measured rather than skipped
+        # `lypning gate` treats an unmeasurable check as not-passing and labels
+        # it `unmeasured`; without strace the 0-file-opens property — the whole
+        # reason the binary is static musl — is never actually tested. An apt
+        # outage must not redden the job, so this step tolerates its own failure
+        # and says what is lost.
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq strace \
+            || echo "no strace: gate will report file opens as unmeasured, which is not a pass"
+      - name: build the core
+        # build.py refuses to report `ok` until the refusal contract holds on
+        # the binary it just produced — the assertion is inside this line, not
+        # after it. The steps below re-assert it from outside anyway, because a
+        # build that reported ok and a binary that behaves are two claims.
+        run: lypning build --rust
+      - name: the exit-90 contract, asserted on the binary
+        # exit 90, exactly one `<engine>: unsupported: <kind>: <detail>` line on
+        # stderr, nothing at all on stdout. This is the one property of lypning
+        # that has only ever broken silently: a parser change that turns a
+        # refusal into a traceback still compiles, still links, still passes
+        # --version. A dispatcher that saw a traceback instead of 90 would
+        # report the engine's error as the program's.
+        run: |
+          # stderr lands in $RUNNER_TEMP, not the workspace: the last step of
+          # this job fails on an untracked file, and it is meant to be reporting
+          # the corpus, not this step's scratch.
+          e="$RUNNER_TEMP/refusal.err"
+          set +e
+          out=$(lypning -c 'import subprocess' 2>"$e"); rc=$?
+          set -e
+          err=$(cat "$e")
+          test "$rc" = 90        || { echo "exit $rc, want 90"; exit 1; }
+          test -z "$out"         || { echo "stdout was not empty: $out"; exit 1; }
+          test "$(wc -l <"$e")" = 1 || { echo "stderr was not one line:"; cat "$e"; exit 1; }
+          case "$err" in "lypning: unsupported: "*) ;; *) echo "bad contract line: $err"; exit 1 ;; esac
+          echo "refusal: exit 90, one line on stderr, clean stdout — $err"
+      - name: the commit barrier — a refusal after a print still writes nothing
+        # The half of the contract that makes falling onward safe. If the tier
+        # had already committed those bytes, CPython's rerun would append to
+        # them and the caller would see the prefix twice. docs/LYPNING.md §6.
+        run: |
+          set +e
+          out=$(lypning -c 'print("committed"); import subprocess' 2>/dev/null); rc=$?
+          set -e
+          test "$rc" = 90 || { echo "exit $rc, want 90"; exit 1; }
+          test -z "$out"  || { echo "the tier committed stdout before refusing: $out"; exit 1; }
+          echo "commit barrier: refused after a print, stdout still empty"
+      - name: doctor
+        # Non-zero on any FAIL. Reports WARN for the hooks, the shim and the
+        # absent MicroPython tier, which is the correct state for a runner.
+        run: lypning doctor
+      - name: gate the core
+        # static, zero shared objects, zero file opens, and the byte count that
+        # the cold cost is a step function of.
+        run: lypning gate
+      - name: pytest, now with an engine to spawn
+        # The ~100 cases the matrix job skips: everything that runs a program
+        # through a tier and compares the answer.
+        run: python -m pytest tests -q
+      - name: conformance — the arms that are clean
+        # Named arms, not a bare `lypning conformance`, and the difference
+        # matters. A bare run on this runner is clean too, but only because the
+        # MicroPython tier is not built here — CI whose meaning depends on what
+        # happens to be installed is CI that will one day go quiet. These two
+        # arms are clean by selection: MISMATCH 0, and the routing-safety gate
+        # (UNSAFE must be 0) over every program the mixture answered.
+        #
+        # The third arm, lypning-mp, is known red — see the job below.
+        run: lypning conformance --engine lypning --engine mixture
+      - name: the corpus rewrites repositories; check the net held
+        # conformance runs every entry in its own temp cwd and brackets the
+        # battery with a git snapshot, but that is a net and not a sandbox: it
+        # cannot undo a write outside the repository, only make the next one
+        # loud. The first measurement runs upstream rewrote 34 tracked files.
+        run: |
+          dirty=$(git status --porcelain)
+          test -z "$dirty" || { echo "$dirty"; echo "the battery changed tracked files"; exit 1; }
+
+  # --- known red, on purpose and in public ----------------------------------
+  #
+  # NON-BLOCKING, and it fails today. `lypning conformance` over all three arms
+  # ends at MISMATCH 2, both on lypning-mp, both the same defect: MicroPython
+  # streams stdout, so a program that prints before reaching an unsupported
+  # construct has already committed those bytes when it exits 90. The routing
+  # gate reports the consequence as UNSAFE 1. docs/LYPNING.md §6 has the
+  # reproduction, CHANGELOG.md records why it is tracked rather than waived.
+  #
+  # This job exists so that number stays visible. Widening a capability table to
+  # make it green would convert a loud failure into a silent one, which is the
+  # one thing invariant 1 forbids.
+  #
+  # WHAT MAKES IT BLOCKING AGAIN: when lypning-mp grows a commit barrier and
+  # this job ends at MISMATCH 0, delete `continue-on-error` here and replace the
+  # `core` job's `--engine lypning --engine mixture` with a bare
+  # `lypning conformance`. Until then, a green tick here is the news.
+  #
+  # The tier build is the other reason for `continue-on-error`: it needs a
+  # 32-bit toolchain and it fetches musl and a pinned MicroPython over the
+  # network, so an upstream outage is an outage and not a regression. It runs
+  # anyway, every time, because a tier nobody builds in CI is a tier that rots.
+  micropython-tier:
+    name: "micropython tier + full battery (non-blocking: known red)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: the 32-bit toolchain
+        # gcc-multilib is the whole reason this tier is absent by default:
+        # lypning-mp is an i386 static musl binary, and 294,788 B of it is why
+        # it starts as fast as it does.
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-multilib strace
+      - name: build both tiers
+        run: |
+          lypning build --rust
+          lypning build --micropython
+      - name: status
+        run: lypning status
+      - name: gate lypning-mp
+        # With both built, a bare `lypning gate` picks lypning-mp — the tier the
+        # 700,000 B budget was written for.
+        run: lypning gate
+      - name: pytest, with both tiers present
+        # The commit-barrier cases in tests/test_commit_barrier.py can only run
+        # here; everywhere else they skip for want of a binary.
+        run: python -m pytest tests -q
+      - name: the full conformance battery — expected to end at MISMATCH 2
+        run: lypning conformance
+      - name: what the refusals say to build next
+        run: lypning conformance --plan
+      - name: the corpus rewrites repositories; check the net held
+        run: |
+          dirty=$(git status --porcelain)
+          test -z "$dirty" || { echo "$dirty"; echo "the battery changed tracked files"; exit 1; }
+
+  # --- the artefacts a `pip install` actually gets --------------------------
+  #
+  # The wheel path is the one nobody tests by accident: assets are read-only,
+  # `build_dir()` falls back to ~/.lypning/build, and the shell hook scripts may
+  # not have shipped at all. Everything here is done against the built artefacts
+  # in a venv that has never seen the checkout.
+  packaging:
+    name: sdist + wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: build and lint the artefacts
+        # `make dist-check` is `python -m build`, `twine check` on both, and the
+        # assertion that no build output rode along in the wheel. Both tools are
+        # dev-only: neither is a runtime dependency and neither may become one.
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+          make dist-check
+      - name: upload the artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+      - name: install the wheel into a venv that has never seen this checkout
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/venv/bin/lypning" --version
+          "$RUNNER_TEMP/venv/bin/lypning" status
+          "$RUNNER_TEMP/venv/bin/lypning" corpus --stats
+          "$RUNNER_TEMP/venv/bin/lypning" install --dry-run
+          test "$("$RUNNER_TEMP/venv/bin/lypning" run -c 'print(2**8)')" = 256
+      - name: build the core out of the installed wheel
+        # The read-only-assets path: with no writable package tree, cargo must
+        # build under $LYPNING_HOME/build and install into $LYPNING_HOME/bin.
+        # A wheel whose engines cannot be built is a CLI that always routes to
+        # CPython, which is the failure this job exists to catch.
+        env:
+          LYPNING_HOME: ${{ runner.temp }}/lyp-state
+        run: |
+          "$RUNNER_TEMP/venv/bin/lypning" build --rust
+          "$RUNNER_TEMP/venv/bin/lypning" status
+          "$RUNNER_TEMP/venv/bin/lypning" gate
+          test "$("$RUNNER_TEMP/venv/bin/lypning" route -c 'print(2**8)')" = "lypning"
+      - name: the sdist can build the engines it ships the source of
+        # An sdist that unpacks to something un-buildable is the same failure as
+        # a missing file, one step later. Built in a directory of its own so
+        # nothing here can resolve back to the checkout.
+        env:
+          LYPNING_HOME: ${{ runner.temp }}/sdist-state
+        run: |
+          mkdir -p "$RUNNER_TEMP/sdist" && tar xzf dist/*.tar.gz -C "$RUNNER_TEMP/sdist"
+          cd "$RUNNER_TEMP/sdist"/lypning-*
+          PYTHONPATH=src python -m lypning build --rust
+          PYTHONPATH=src python -m lypning gate
+          PYTHONPATH=src python -m lypning conformance --engine lypning --engine mixture

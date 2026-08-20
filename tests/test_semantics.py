@@ -1,0 +1,109 @@
+"""Where lypning has to agree with CPython, pinned one program at a time.
+
+Every case here is a divergence `lypning fuzz` (or a sweep around one of its
+counterexamples) actually found: a program both interpreters ran to exit 0 while
+printing different answers. That is the failure mode this project exists to
+prevent — a refusal is loud and one spawn later CPython answers, but a wrong
+answer at exit 0 is read as the truth — so each one gets a line here rather than
+only a fuzzer seed, because a seed is a lottery ticket and this is a test.
+
+The assertion is differential, not literal: the program runs on the Rust core
+and on the real CPython and the two outputs must be equal. Nothing here encodes
+what the answer *is*, so a case cannot rot into pinning our own bug.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from lypning import UNSUPPORTED_EXIT, engines
+
+#: ``(id, program)``. Each prints everything it compares, so a failure names the
+#: value rather than just the case.
+CASES = [
+    (
+        "partition-empty-separator",
+        "def t(f):\n"
+        "    try:\n"
+        "        print(f())\n"
+        "    except ValueError as e:\n"
+        "        print('ValueError:', e)\n"
+        "t(lambda: ''.partition(''))\n"
+        "t(lambda: 'abc'.rpartition(''))\n",
+    ),
+    (
+        "round-keeps-the-sign-of-zero",
+        "print(round(-0.5, 0), round(0.5, 0), round(-0.4, 0), round(-1.5, 0))\n",
+    ),
+    (
+        "nonfinite-gets-a-sign-slot",
+        "inf = float('inf')\n"
+        "for s in ['+', ' ', '010', '+010', '+f', '+e', '+g']:\n"
+        "    print(s, format(inf, s), format(-inf, s), format(float('nan'), s))\n",
+    ),
+    (
+        "numbers-right-align-with-no-presentation-type",
+        "print(repr(format(7, '10')), repr(format(1.5, '10')), repr(format('x', '10')))\n"
+        "print(repr(f'{1.5:10}{7:6}'))\n",
+    ),
+    (
+        "grouping-stops-at-the-exponent",
+        "for v in [1e17, 1e-7, 123456.0, 12345678.5]:\n"
+        "    print(repr(format(v, '_')), repr(format(v, ',')))\n",
+    ),
+    (
+        "case-predicates-test-cased-characters",
+        "for s in ['\\u65e5\\u672c', 'abc', 'ABC', '\\u65e5\\u672ca', '\\u01c5', '\\u01c5abc', '123']:\n"
+        "    print(s.islower(), s.isupper(), s.isalpha())\n",
+    ),
+]
+
+
+@pytest.mark.parametrize("case_id,program", CASES, ids=[c[0] for c in CASES])
+def test_lypning_agrees_with_cpython(case_id, program, lypning_bin):
+    ours = engines.run(engines.LYPNING, program, binary=lypning_bin)
+    if ours.refused:
+        pytest.skip("outside the subset on this build: %s" % ours.stderr.strip())
+    theirs = engines.run(engines.CPYTHON, program)
+    if theirs.returncode == 127:
+        pytest.skip("no reference CPython")
+    assert ours.returncode == theirs.returncode
+    assert ours.stdout == theirs.stdout
+
+
+# --- the other half of agreement: refuse, rather than answer differently -----
+
+#: A method CPython's type HAS and lypning does not. Every one of these routed
+#: to the Rust core — `route.rs` asks only whether the name is a method of ANY
+#: type it knows — and died with `AttributeError` at exit 1, which is the
+#: program's own failure and is passed through unchanged. The caller got a
+#: traceback where CPython prints an answer, with no second tier to recover on.
+MISSING_METHODS = [
+    ("bytes-count", 'print(b"abc".count(b"a"))'),
+    ("bytes-rpartition", 'print(b"x".rpartition(b"A"))'),
+    ("str-istitle", 'print("Hello World".istitle())'),
+    ("str-center", 'print("x".center(5, "-"))'),
+    ("set-isdisjoint", "print({1, 2}.isdisjoint({3}))"),
+    ("dict-fromkeys", 'print(dict.fromkeys("ab"))'),
+]
+
+
+@pytest.mark.parametrize("case_id,program", MISSING_METHODS,
+                         ids=[c[0] for c in MISSING_METHODS])
+def test_a_method_cpython_has_refuses_instead_of_raising(case_id, program, lypning_bin):
+    r = engines.run(engines.LYPNING, program, binary=lypning_bin)
+    assert r.returncode == UNSUPPORTED_EXIT, "a method CPython has must leave by exit 90"
+    assert r.stdout == "", "the commit barrier let output escape before a refusal"
+    assert "-method:" in r.stderr, r.stderr
+
+
+def test_an_attribute_neither_has_keeps_cpythons_error(lypning_bin):
+    """The other side of the split, and why it is not just "refuse on any miss".
+
+    `'x'.nosuch()` is the program's own bug. CPython raises AttributeError at
+    exit 1 and so must lypning — refusing it would send a broken program down
+    the whole chain to be told the same thing three times.
+    """
+    r = engines.run(engines.LYPNING, 'print("x".nosuch())', binary=lypning_bin)
+    assert r.returncode == 1
+    assert "AttributeError" in r.stderr

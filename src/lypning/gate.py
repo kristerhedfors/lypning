@@ -348,10 +348,21 @@ def file_opens(binary: Path | str, program: str = PROBE) -> Tuple[Optional[int],
 
 
 def _engine_of(p: Path) -> str:
+    """Which engine a binary is, from its name.
+
+    The suffixed forms are cross-target builds — `lypning build --target i686`
+    installs `lypning-i686` rather than overwriting the host's engine — and they
+    are still the engine they are named after. Missing that put the i686 Rust
+    core against lypning-mp's 700 KB budget and FAILed a build that was fine:
+    two different runtimes with two different jobs, and only the opens==0 rule
+    is shared between them.
+
+    lypning-mp is checked first because `lypning-mp` also starts with `lypning`.
+    """
     name = p.name
-    if name == engines.MICROPYTHON:
+    if name == engines.MICROPYTHON or name.startswith(engines.MICROPYTHON + "-"):
         return engines.MICROPYTHON
-    if name == engines.LYPNING:
+    if name == engines.LYPNING or name.startswith(engines.LYPNING + "-"):
         return engines.LYPNING
     return ""
 

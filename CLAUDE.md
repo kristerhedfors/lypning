@@ -34,7 +34,9 @@ other passed. `engines.py`, `build.py`.
 
 **3. Never quote a remembered corpus size.**
 Capture grows it every session. Upstream published 420, then 472 within the
-day; this tree loads 839. Every tool prints the count it loaded — quote that
+day; this tree was written up at 839 and loaded 842 the next morning — which is
+why no live number appears in this sentence either. Every tool prints the count
+it loaded — quote that
 number, from that run, with its date. The same applies to every timing in
 `docs/`: those were measured on the upstream container before extraction. If a
 number matters to a claim you are making, re-run it. `bench.py`,

@@ -16,8 +16,6 @@ See docs/LYPNING.md §6.
 
 from __future__ import annotations
 
-import pytest
-
 from lypning import UNSUPPORTED_EXIT, engines
 
 # Prints, then refuses. The print must be reached before the refusal for either
@@ -29,16 +27,15 @@ PRINT_THEN_REFUSE_MP = (
     "print(u.decomposition(chr(0xC0)))\n"
 )
 
-needs_rust = pytest.mark.skipif(
-    engines.find_lypning() is None, reason="the Rust core is not built"
-)
-needs_mp = pytest.mark.skipif(
-    engines.find_micropython() is None, reason="lypning-mp is not built"
-)
+# The `lypning_bin` / `micropython_bin` fixtures rather than a module-level
+# `skipif`: a mark is evaluated at IMPORT time, before the autouse fixture in
+# conftest has moved `$LYPNING_HOME`, so in a wheel install — where the binary
+# lives only under that dir — the mark saw a built engine and the test then ran
+# against an unbuilt one and failed on exit 127. The fixtures resolve at call
+# time, which is the only time the answer is true.
 
 
-@needs_rust
-def test_rust_core_refuses_with_stdout_untouched() -> None:
+def test_rust_core_refuses_with_stdout_untouched(lypning_bin) -> None:
     r = engines.run(engines.LYPNING, PRINT_THEN_REFUSE_RUST)
     assert r.returncode == UNSUPPORTED_EXIT
     assert r.stdout == "", "the commit barrier let output escape before a refusal"
@@ -46,8 +43,7 @@ def test_rust_core_refuses_with_stdout_untouched() -> None:
     assert r.stderr.count("\n") == 1, "a refusal is exactly one line on stderr"
 
 
-@needs_mp
-def test_micropython_tier_has_no_barrier() -> None:
+def test_micropython_tier_has_no_barrier(micropython_bin) -> None:
     """KNOWN DEFECT. If this fails, lypning-mp gained a barrier — update
     docs/LYPNING.md §6, the README, and conformance's `contract` verdict."""
     r = engines.run(engines.MICROPYTHON, PRINT_THEN_REFUSE_MP)
@@ -58,8 +54,7 @@ def test_micropython_tier_has_no_barrier() -> None:
     )
 
 
-@needs_mp
-def test_dispatcher_contains_the_leak() -> None:
+def test_dispatcher_contains_the_leak(micropython_bin) -> None:
     """The leak is invisible through `lypning run`: each tier's stdout is
     captured in the parent and dropped on exit 90, so the caller sees exactly
     one tier's output. This is what keeps the mixture arm clean, and it is a

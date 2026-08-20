@@ -44,7 +44,8 @@ PROG = "lypning"
 #: that could plausibly be a program is the interpreter's.
 COMMANDS = (
     "run", "route", "build", "status", "doctor", "install", "uninstall",
-    "shim", "hook", "conformance", "bench", "gate", "harvest", "corpus",
+    "shim", "hook", "conformance", "fuzz", "bench", "corpus-time", "gate",
+    "harvest", "corpus",
 )
 
 #: The only dash-flags this CLI keeps for itself. Every other flag belongs to
@@ -242,10 +243,13 @@ def cmd_route(ns: argparse.Namespace) -> int:
 def cmd_build(ns: argparse.Namespace) -> int:
     build = _mod("build")
     rust, mp = ns.rust, ns.micropython
-    if ns.all or not (rust or mp):
+    # `--stock` alone builds only the control: it is the benchmark's control,
+    # not a tier, and asking for it must not silently rebuild the two engines.
+    if ns.all or not (rust or mp or ns.stock):
         rust = mp = True
     results = build.build_all(rust=rust, micropython=mp, target=ns.target,
-                              jobs=ns.jobs, verbose=ns.verbose, dry_run=ns.dry_run)
+                              jobs=ns.jobs, verbose=ns.verbose, dry_run=ns.dry_run,
+                              stock=ns.stock)
     if ns.json:
         _json({"results": [_plain(r) for r in results],
                "dry_run": bool(ns.dry_run),
@@ -264,7 +268,38 @@ def cmd_build(ns: argparse.Namespace) -> int:
         r = by_engine.get(Path(p).name)
         target = getattr(r, "target", None) if r else None
         _out("installed %s%s" % (p, "  (target: %s)" % target if target else ""))
-    return 0 if all(r.ok for r in results) else 1
+    ok = all(r.ok for r in results)
+    if ns.verify:
+        # Verified even when a build failed, and the exit code is the AND of the
+        # two: the tiers are independent, so a broken MicroPython build must not
+        # cost the Rust core its battery — and must not let it report ok either.
+        ok = _render_verify(build.verify(results)) and ok
+    return 0 if ok else 1
+
+
+def _render_verify(v: Any) -> bool:
+    """Print the gate and the battery, each through its own module's renderer.
+
+    Returns whether both held. Rendering here rather than in :mod:`build` keeps
+    every report formatted by the module that owns its vocabulary — a gate is
+    checks against budgets, a conformance run is verdicts against CPython, and
+    a third renderer for the pair would be a third place for either to drift.
+    """
+    gate = _mod("gate")
+    conformance = _mod("conformance")
+    for note in v.notes:
+        _out("note: %s" % note)
+    for binary, report in v.gates:
+        _out("")
+        _out("--- gate: %s ---" % binary)
+        _out(gate.render(report))
+    if v.conformance is not None:
+        _out("")
+        _out("--- conformance ---")
+        _out(conformance.render(v.conformance))
+    _out("")
+    _out("verify: %s in %.1f s" % ("ok" if v.ok else "FAILED", v.seconds))
+    return bool(v.ok)
 
 
 # --- status ------------------------------------------------------------------
@@ -673,9 +708,14 @@ def cmd_hook(ns: argparse.Namespace) -> int:
 
 def cmd_conformance(ns: argparse.Namespace) -> int:
     conf = _mod("conformance")
+    routing = _mod("routing")
     arms = list(ns.engine) if ns.engine else None
     report = conf.run(engines=arms, limit=ns.limit, timeout=ns.timeout,
                       progress=_progress("conformance"))
+    # Two gates over one battery, and they fail for different reasons: an engine
+    # that disagrees with CPython, and a classifier that sends a program to one
+    # that does. Both are correctness; WASTED and LATE are cost and gate nothing.
+    routed = routing.grade(report)
     if ns.json:
         obj: Dict[str, Any] = {
             "total": report.total,
@@ -687,6 +727,22 @@ def cmd_conformance(ns: argparse.Namespace) -> int:
             "mismatches": report.mismatches,
             "skipped": [_plain(s) for s in report.skipped],
             "routing_errors": [_plain(r) for r in report.routing_errors],
+            "routing": {
+                "counts": routed.counts,
+                "predictions": routed.predictions,
+                "graded": routed.graded,
+                "ungraded": routed.ungraded,
+                "ungraded_total": routed.ungraded_total,
+                "scored": routed.scored,
+                "ideal_pct": routed.ideal_pct,
+                "first_try_pct": routed.first_try_pct,
+                "note": routed.note,
+                "ok": routed.ok,
+                # Only the fatal grade is enumerated: UNSAFE is a bug report and
+                # needs its programs named, while 200 LATE ids are a histogram
+                # nobody reads out of a JSON blob.
+                "unsafe": [_plain(s) for s in routed.unsafe()],
+            },
             "engines": {},
         }
         for name, er in report.engines.items():
@@ -701,6 +757,38 @@ def cmd_conformance(ns: argparse.Namespace) -> int:
         _json(obj)
     else:
         _out(conf.render(report, plan=ns.plan))
+        if not ns.plan:
+            # `--plan` is a build order and nothing else; a routing table under
+            # it would be answering a question the caller did not ask.
+            _out("\n" + routing.render(routed))
+    return 0 if report.ok and routed.ok else 1
+
+
+# --- fuzz --------------------------------------------------------------------
+
+
+def cmd_fuzz(ns: argparse.Namespace) -> int:
+    fuzz = _mod("fuzz")
+    report = fuzz.run(iterations=ns.iterations, seed=ns.seed, engine=ns.engine,
+                      timeout=ns.timeout, progress=_progress("fuzz"))
+    if report.not_run:
+        raise Usage(report.not_run)
+    if report.unbuilt:
+        # Exit 2, like everywhere else the core is missing: nothing ran, and the
+        # fix is a command rather than a change to anything measured.
+        raise Usage("%s or the reference CPython is not built — `lypning build --rust`"
+                    % ns.engine)
+    if ns.json:
+        _json({
+            "seed": report.seed, "iterations": report.iterations, "engine": report.engine,
+            "binary": report.binary, "reference": report.reference,
+            "ran": report.ran, "agreed": report.agreed, "refused": report.refused,
+            "seconds": report.seconds, "ok": report.ok,
+            "refusal_kinds": report.refusal_kinds,
+            "counterexamples": [_plain(c) for c in report.counterexamples],
+        })
+    else:
+        _out(fuzz.render(report))
     return 0 if report.ok else 1
 
 
@@ -756,6 +844,13 @@ def _render_startup(report: Any, base: str = "cpython") -> str:
 
 def cmd_bench(ns: argparse.Namespace) -> int:
     bench = _mod("bench")
+    if ns.micropython:
+        return _bench_micropython(bench, ns)
+    if ns.record or ns.note:
+        # Said rather than ignored: a caller who typed `--record` and got a
+        # table and no file would have to diff the ledger to find out.
+        raise Usage("--record and --note belong to --micropython, which is the run the "
+                    "ledger is a history of")
     arms = list(ns.arm) if ns.arm else None
     both = not (ns.startup or ns.corpus)
     if both:
@@ -775,6 +870,78 @@ def cmd_bench(ns: argparse.Namespace) -> int:
         _out(_render_startup(report))
     else:
         _out(bench.render(report))
+    return 0
+
+
+def _bench_micropython(bench: Any, ns: argparse.Namespace) -> int:
+    """lypning-mp against the benchmark control, and the ledger entry for it."""
+    report = bench.micropython(repeat=ns.repeat, startup_repeat=ns.startup_repeat,
+                               limit=ns.limit, timeout=ns.timeout, note=ns.note or "",
+                               progress=_progress("bench"))
+    if report.missing:
+        # Exit 2, not 1: nothing was measured and the fix is a command, which is
+        # what this CLI reserves 2 for.
+        raise Usage("; ".join(report.missing))
+    if ns.json:
+        _json(dict(_plain(report), ledger=bench.ledger_entry(report)))
+    else:
+        _out(bench.render_micropython(report))
+    if ns.record:
+        # The ledger is append-only and newest-first, so the entry is INSERTED
+        # at its marker. record_ledger refuses a file without one rather than
+        # appending an entry that would read as the oldest in the file.
+        try:
+            written = bench.record_ledger(ns.record, bench.ledger_entry(report))
+        except ValueError as e:
+            raise Failure(str(e))
+        if not ns.json:
+            _out("recorded in %s" % written)
+    return 0
+
+
+# --- corpus-time ---------------------------------------------------------------
+
+
+def cmd_corpus_time(ns: argparse.Namespace) -> int:
+    bench = _mod("bench")
+    baseline = None
+    # Read BEFORE the run: a baseline that does not parse should cost a second,
+    # not the ten minutes of measurement whose comparison it was going to be.
+    if ns.baseline:
+        try:
+            baseline = bench.load_record(ns.baseline)
+        except ValueError as e:
+            raise Failure(str(e))
+    # Same reasoning for the destination: an unwritable --record discovered
+    # AFTER the corpus has been timed throws the measurement away.
+    if ns.record:
+        try:
+            bench.check_record_target(ns.record)
+        except ValueError as e:
+            raise Failure(str(e))
+    timing = bench.corpus_time_one(ns.engine, repeat=ns.repeat, limit=ns.limit,
+                                   timeout=ns.timeout, progress=_progress("corpus-time"))
+    if timing is None:
+        raise Usage("%s is not built and is not a path to a binary — `lypning build`, or "
+                    "name one with --engine PATH" % ns.engine)
+    diff = None
+    if baseline is not None:
+        diff = bench.diff_record(baseline, timing, top=ns.top)
+        diff.baseline_path = str(ns.baseline)
+    if ns.record:
+        try:
+            written = bench.write_record(timing, ns.record)
+        except ValueError as e:
+            raise Failure(str(e))
+        if not ns.json:
+            _out("recorded in %s" % written)
+    if ns.json:
+        payload = bench.timing_record(timing)
+        if diff is not None:
+            payload["diff"] = _plain(diff)
+        _json(payload)
+    else:
+        _out(bench.render_corpus_time(timing, diff))
     return 0
 
 
@@ -969,11 +1136,22 @@ examples:
   lypning build                       both tiers
   lypning build --rust --target host  the dynamically linked glibc control
   lypning build --micropython --jobs 4
+  lypning build --stock               the benchmark control, on its own
+  lypning build --micropython --verify
   lypning build --all --dry-run       print the commands, build nothing
 """)
     s.add_argument("--rust", action="store_true", help="build the Rust core")
     s.add_argument("--micropython", action="store_true", help="build the MicroPython tier")
     s.add_argument("--all", action="store_true", help="both (the default when neither is named)")
+    s.add_argument("--stock", action="store_true",
+                   help="build the benchmark CONTROL: upstream MicroPython, unpatched, no "
+                        "frozen stdlib, same pinned commit and toolchain. Not an engine and "
+                        "not installed — it is what `lypning bench --micropython` measures "
+                        "against")
+    s.add_argument("--verify", action="store_true",
+                   help="after building, gate what was built and run the whole conformance "
+                        "battery with the new binaries pinned — the battery covers every tier "
+                        "that is built, so it can fail on a tier this line did not touch")
     s.add_argument("--target", default="musl", metavar="T",
                    help="musl, host, x86_64, i686, or a full triple (default: musl — "
                         "static; `host` is the dynamically linked control)")
@@ -1110,6 +1288,12 @@ full of programs that rewrite src/.
 
 --plan turns the refusals into a build order: which unimplemented feature
 blocks the most programs.
+
+The same run grades ROUTING SAFETY, which is a different question: not whether
+an engine agreed with CPython, but whether the classifier SENT each program to
+one that did. UNSAFE (routed to an engine that mismatches) is fatal and exits 1
+alongside a MISMATCH; WASTED and LATE are what a wrong route costs in spawns and
+milliseconds, and neither gates anything.
 """, """
 examples:
   lypning conformance --limit 50
@@ -1118,11 +1302,49 @@ examples:
 """)
     s.add_argument("--engine", action="append", metavar="E",
                    help="arm to measure: lypning, lypning-mp, mixture (repeatable)")
-    s.add_argument("--plan", action="store_true", help="append the build order implied by the refusals")
+    s.add_argument("--plan", action="store_true",
+                   help="print the build order implied by the refusals INSTEAD of the table")
     s.add_argument("--limit", type=int, metavar="N", help="only the first N corpus programs")
     s.add_argument("--timeout", type=float, default=30.0, metavar="S", help="per-program timeout (default 30)")
     s.add_argument("--json", action="store_true", help="machine-readable")
     s.set_defaults(func=cmd_conformance)
+
+    # fuzz
+    s = _sub(subs, "fuzz", "generate programs from the subset and diff against CPython", """
+The conformance battery grades the programs agents happened to type; this
+generates them. The corpus is a sample, not a specification, so "MISMATCH 0"
+over it is evidence about lypning's surface only in proportion to how much of
+that surface it touches — a fraction nobody has measured.
+
+Programs are drawn from a typed grammar over lypning's OWN tables, so every
+probe is something it claims to handle. Exit 90 means the generator wandered
+outside the subset: counted as a refusal, never a finding. A genuine
+disagreement at exit 0, a crash, or a refusal that broke the exit-90 contract
+is a counterexample, and each one is shrunk to a minimal program before it is
+printed. Any counterexample exits 1.
+
+The seed makes a run exactly reproducible and is always printed: a fuzzer whose
+failures cannot be replayed is a random number generator.
+""", """
+examples:
+  lypning fuzz --iterations 2000
+  lypning fuzz --seed 1 --iterations 600
+  lypning fuzz --engine lypning-mp --json
+""")
+    s.add_argument("--iterations", type=int, default=500, metavar="N",
+                   help="programs to generate (default 500)")
+    s.add_argument("--seed", type=int, metavar="S",
+                   help="fix the run; the default is random and is printed")
+    # The tiers only. CPython is the oracle every arm is diffed against, so
+    # offering it as an arm offers a run that compares it with itself, agrees on
+    # every program, and prints a clean bill of health having tested nothing.
+    s.add_argument("--engine", default=engines.LYPNING, metavar="E",
+                   choices=[e for e in engines.ENGINE_ORDER if e != engines.CPYTHON],
+                   help="tier under test (default lypning)")
+    s.add_argument("--timeout", type=float, default=30.0, metavar="S",
+                   help="per-program timeout (default 30)")
+    s.add_argument("--json", action="store_true", help="machine-readable")
+    s.set_defaults(func=cmd_fuzz)
 
     # bench
     s = _sub(subs, "bench", "time startup and the whole corpus, arm by arm", """
@@ -1142,9 +1364,18 @@ examples:
   lypning bench --startup
   lypning bench --corpus --limit 100
   lypning bench --repeat 3 --json
+  lypning bench --micropython --record docs/BENCH-LEDGER.md
 """)
     s.add_argument("--startup", action="store_true", help="startup only")
     s.add_argument("--corpus", action="store_true", help="corpus only")
+    s.add_argument("--micropython", action="store_true",
+                   help="a different comparison: lypning-mp against the benchmark control "
+                        "(`lypning build --stock`), which is what says what OUR variant costs")
+    s.add_argument("--record", metavar="FILE",
+                   help="with --micropython, insert the run as an entry at the marker in "
+                        "docs/BENCH-LEDGER.md (newest first)")
+    s.add_argument("--note", metavar="TEXT",
+                   help="with --micropython, the recorded entry's title — what this run was for")
     s.add_argument("--repeat", type=int, default=1, metavar="N", help="corpus passes, best per entry (default 1)")
     s.add_argument("--startup-repeat", type=int, default=5, metavar="N", help="startup samples (default 5)")
     s.add_argument("--limit", type=int, metavar="N", help="only the first N corpus programs")
@@ -1152,6 +1383,48 @@ examples:
     s.add_argument("--timeout", type=float, default=30.0, metavar="S", help="per-program timeout (default 30)")
     s.add_argument("--json", action="store_true", help="machine-readable")
     s.set_defaults(func=cmd_bench)
+
+    # corpus-time
+    s = _sub(subs, "corpus-time", "time the whole corpus on ONE binary", """
+The instrument a speed change is accepted on, and a different question from
+`bench`. `bench` compares arms — what the mixture costs against CPython.
+This compares runs of one binary: did the change I just made speed up the
+programs lypning is actually asked to run.
+
+They disagree, routinely and by an order of magnitude, because a microbenchmark
+loops twenty thousand times while a corpus entry runs once and exits — so its
+cost is startup, parse and compile rather than steady-state dispatch. A
+synthetic workload once said a compiler change was worth 48 ms per program
+where the corpus said 0.14 ms (docs/MICROPYTHON.md §8a).
+
+Min of --repeat, one temp cwd per entry, LYPNING_CAPTURE=0 in every child.
+Entries that exit 90 are TIMED, not skipped — a refusal costs a spawn the agent
+waited for — and counted separately, because a change that moves an entry in or
+out of the subset changes what is being timed.
+
+--record writes this run; --baseline reads one back and diffs the two over the
+entries BOTH runs timed. The corpus grows every session, so that intersection
+is stated rather than assumed. The corpus size loaded is printed every time.
+""", """
+examples:
+  lypning corpus-time --record before.json
+  lypning corpus-time --engine lypning-mp --repeat 5
+  lypning corpus-time --engine target/release/lypning --baseline before.json
+""")
+    s.add_argument("--engine", default=engines.LYPNING, metavar="NAME|PATH",
+                   help="cpython, lypning, lypning-mp, mixture — or a path to a binary that is "
+                        "not installed yet (default: lypning)")
+    s.add_argument("--repeat", type=int, default=3, metavar="N",
+                   help="passes, best per entry (default 3)")
+    s.add_argument("--limit", type=int, metavar="N", help="only the first N corpus programs")
+    s.add_argument("--baseline", metavar="FILE", help="a --record file to diff this run against")
+    s.add_argument("--record", metavar="FILE", help="write this run for a later --baseline")
+    s.add_argument("--top", type=int, default=12, metavar="N",
+                   help="biggest movers to list against a baseline (default 12)")
+    s.add_argument("--timeout", type=float, default=30.0, metavar="S",
+                   help="per-program timeout (default 30)")
+    s.add_argument("--json", action="store_true", help="machine-readable")
+    s.set_defaults(func=cmd_corpus_time)
 
     # gate
     s = _sub(subs, "gate", "measure a binary against the acceptance table", """

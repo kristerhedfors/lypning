@@ -600,11 +600,13 @@ image helps the boot too — not because it makes the sandbox fast.
 
 ## Sources
 
-Measured here: §2 in full. Read, not measured:
+Measured here: §2 in full. Read, not measured. Entries marked **[upstream]** are
+documents in the `deepresearch.se` repository this package was extracted from
+(`README.md` §8); they did not come across and do not resolve here:
 
 - Cost model and the CheerpX signal-delivery probe: `docs/SANDBOX-PERFORMANCE.md`
-- i386-only constraint and the image recipe: `docs/SANDBOX-LOCAL-IMAGE.md`, `scripts/build-sandbox-image.sh`
-- Engine decision: `docs/JS-VM-RESEARCH.md`
+- i386-only constraint and the image recipe: `docs/SANDBOX-LOCAL-IMAGE.md`, `scripts/build-sandbox-image.sh` — **[upstream]**
+- Engine decision: `docs/JS-VM-RESEARCH.md` — **[upstream]**
 - [MicroPython](https://github.com/micropython/micropython) · [pocketpy](https://github.com/pocketpy/pocketpy) · [Berry](https://github.com/berry-lang/berry) · [Snek](https://github.com/keith-packard/snek) · [PikaPython](https://github.com/pikasTech/PikaPython)
 - [RustPython WASM binary size (issue #4203)](https://github.com/RustPython/RustPython/issues/4203)
 - CPython freezing: [bpo-45020 freeze startup modules](https://bugs.python.org/issue45020) · [bpo-45661 freeze commonly used stdlib](https://bugs.python.org/issue45661) · [deep-freeze removal, issue #108716](https://github.com/python/cpython/issues/108716) · [`Programs/_freeze_module.c`](https://github.com/python/cpython/blob/main/Programs/_freeze_module.c)

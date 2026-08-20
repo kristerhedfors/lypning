@@ -777,7 +777,15 @@ fn round_half_even(f: f64, ndigits: i64) -> f64 {
     if ndigits == 0 {
         let r = f.round();
         return if (f - f.trunc()).abs() == 0.5 && r % 2.0 != 0.0 {
-            r - f.signum()
+            // The half-even correction can land on zero, and `-1.0 - -1.0` is
+            // +0.0 in IEEE where CPython keeps `round(-0.5, 0) == -0.0`. The
+            // sign of a zero is the only thing this line restores.
+            let even = r - f.signum();
+            if even == 0.0 {
+                even.copysign(f)
+            } else {
+                even
+            }
         } else {
             r
         };

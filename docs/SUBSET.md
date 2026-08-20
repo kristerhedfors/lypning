@@ -22,7 +22,7 @@ subset.
 
 ## 1. The evidence base
 
-Everything below traces to `tests/corpus/seed-corpus.jsonl` — 161 programs,
+Everything below traces to `assets/corpus/seed-corpus.jsonl` — 161 programs,
 each with the stdout that the system CPython 3.11.15 actually produced (154
 entries; 7 are deliberately blank because their output is a wall clock, a PRNG
 stream, or a module we will never have).
@@ -41,7 +41,12 @@ they create themselves, so they are cwd-independent; the rest still leave files
 behind, so a runner that does not use a scratch cwd will litter the repo.
 
 **What the repo actually contains** (the whole observed set — python is rare
-here, which is itself a finding):
+here, which is itself a finding).
+
+> Every path in the right-hand column is a file in the **upstream**
+> `deepresearch.se` repository this package was extracted from (`README.md` §8),
+> not in this one. They are citations for where each invocation was observed;
+> none of them resolve here and none are meant to.
 
 | invocation | where |
 |---|---|

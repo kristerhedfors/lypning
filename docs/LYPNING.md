@@ -10,8 +10,8 @@ The three interpreters are the mixture:
 
 | tier | what it is | where it lives |
 |---|---|---|
-| **lypning** | this — a Rust subset, ~1,300 lines of interpreter | `rust/` |
-| **lypning-mp** | a MicroPython variant with a frozen shim stdlib | `micropython/`, [`docs/MICROPYTHON.md`](LYPNING-MP.md) |
+| **lypning** | this — a Rust subset, ~1,300 lines of interpreter | `assets/rust/` |
+| **lypning-mp** | a MicroPython variant with a frozen shim stdlib | `assets/micropython/`, [`docs/MICROPYTHON.md`](MICROPYTHON.md) |
 | **CPython** | the real thing | the system `python3` |
 
 lypning-mp exists because CPython costs **8,573 ms cold** in the CheerpX sandbox
@@ -33,25 +33,25 @@ stale within the day. Every tool prints the count it loaded; quote that.
 ```
 startup — `-c 'pass'`
 
-arm         min ms    vs cpython
+arm         min ms   vs cpython
 cpython      11.04     1.000x
-lypning-mp        1.20     0.109x
-lypning          1.03     0.093x
+lypning-mp    1.20     0.109x
+lypning       1.03     0.093x
 mixture       1.05     0.095x
 
 corpus — 472 programs
 
-arm         ran  refused   shared total (323)   vs cpython
-cpython     472        0          4314.4 ms      1.000x
-lypning-mp      444       28           616.5 ms      0.143x
-lypning        324      148           440.3 ms      0.102x
-mixture     472        0           547.0 ms      0.127x
+arm          ran  refused   shared total (323)   vs cpython
+cpython      472        0          4314.4 ms      1.000x
+lypning-mp   444       28           616.5 ms      0.143x
+lypning      324      148           440.3 ms      0.102x
+mixture      472        0           547.0 ms      0.127x
 
 whole corpus — what a session of 472 one-liners costs
 
 cpython     6987.9 ms   1.000x
-lypning-mp      1153.1 ms   0.165x   (28 unanswered)
-lypning         673.3 ms   0.096x   (148 unanswered)
+lypning-mp  1153.1 ms   0.165x   (28 unanswered)
+lypning      673.3 ms   0.096x   (148 unanswered)
 mixture     1860.8 ms   0.266x   (0 unanswered)
 ```
 
@@ -68,23 +68,29 @@ Read it in this order:
   programs; 52 more arrived when main folded in the day's sightings, and
   coverage went UP (67.1% → 68.6%) with mismatches still at zero. That is a
   small but real generalisation signal rather than a fit to the sample.
-- **Startup is at parity with lypning-mp, not better.** lypning's binary is 1,020,600 B
-  against lypning-mp's 269,316 B; both are static musl and both open zero files, so
-  they arrive at the same place by different routes.
+- **Startup is at parity with lypning-mp, not better.** lypning's binary was
+  1,020,600 B against lypning-mp's 269,316 B *as built upstream on 2026-08-16*;
+  both are static musl and both open zero files, so they arrive at the same
+  place by different routes. Both counts move with every rebuild — `lypning
+  status` and `lypning gate` print the ones you actually have.
 
 Reproduce: `lypning build --rust && lypning bench`.
 
 > **Running the corpus can rewrite this repository.** It is harvested from real
 > agent sessions, so it is full of programs that edit `src/` and `docs/`. Every
-> entry runs in its own temp directory, which contains the relative paths, but
-> 17 entries carry an absolute one. Both tools bracket the run with a
-> `git status` check that reports and restores anything they changed, and fail
-> if they changed anything — this is a net, not a sandbox. It exists because the
-> first measurement runs here rewrote 34 tracked files.
+> entry runs in its own temp directory, which contains the relative paths.
+> Entries that name an ABSOLUTE path are skipped rather than run, and both
+> tools print how many they skipped on every run — do not carry the number from
+> here, it grows with the corpus. Both tools then bracket the battery with a
+> `git status` check that reports and restores anything that changed anyway,
+> and **fail the run** when something did: numbers taken against a moving tree
+> are numbers nobody can stand behind. This is a net, not a sandbox — it cannot
+> undo a write outside the repository, only make the next one loud. It exists
+> because the first measurement runs here rewrote 34 tracked files.
 
-It is
-deliberately **not in CI** — a wall-clock benchmark on a shared runner measures
-the runner. CI keeps the deterministic half (conformance, routing safety).
+`lypning bench` is deliberately **not in CI** — a wall-clock benchmark on a
+shared runner measures the runner. CI keeps the deterministic half (conformance,
+routing safety).
 
 ## 2. Conformance: the number that must be zero
 
@@ -101,17 +107,21 @@ and each engine's result is one of three things:
 | UNSUPPORTED | exit **90** with `<engine>: unsupported: <kind>: <detail>` | **no** — this is coverage, and the build order |
 | MISMATCH | anything else | **yes, always** |
 
-Current (2026-08-16, 472 programs):
+Upstream, on 2026-08-16, over the 472 programs the corpus then held:
 
 ```
-engine     MATCH  UNSUPPORTED  MISMATCH   coverage
-lypning         324          148         0     68.6%
-lypning-mp       443           28         1     93.9%
-mixture      472            0         0    100.0%
+engine      MATCH  UNSUPPORTED  MISMATCH   coverage
+lypning       324          148         0     68.6%
+lypning-mp    443           28         1     93.9%
+mixture       472            0         0    100.0%
 ```
 
-The one lypning-mp MISMATCH is pre-existing and belongs to lypning: `json.load` on a
-4 MB file exhausts its heap. The dispatcher recovers from it (§5).
+**That table is history, not status.** Run `lypning conformance` for this
+tree's — it prints the corpus size it loaded, and this tree is red on the
+lypning-mp arm for a different reason (`README.md` §5, §6 below).
+
+The one lypning-mp MISMATCH above is pre-existing: `json.load` on a 4 MB file
+exhausts its heap. The dispatcher recovers from it (§5).
 
 **A subset runtime that silently disagrees with CPython is worse than no runtime
 at all**, because the agent that typed the one-liner will not notice. That is
@@ -177,7 +187,7 @@ the program text. That is the design:
   the parser is therefore an *exact* answer to "can lypning run this", costing one
   parse and no process spawn.
 - The tiers below cannot be asked the same way — they are separate binaries — so
-  those are capability **tables** in `rust/src/route.rs`, kept honest by the
+  those are capability **tables** in `assets/rust/src/route.rs`, kept honest by the
   routing arm of the conformance runner.
 
 The routing score is asymmetric on purpose:
@@ -228,7 +238,7 @@ effects twice.
 Routing to lypning is only sound if a lypning run that ends in `unsupported` left
 **nothing** behind. Otherwise the retry re-executes the side effects and the
 file is written twice, or half. So a lypning run is transactional
-(`rust/src/io.rs`):
+(`assets/rust/src/io.rs`):
 
 - stdout and stderr accumulate in memory and are written once, at a successful
   exit;
@@ -404,22 +414,22 @@ runtime's FIRST probe; a later one's byte count is not a size.
 
 | path | what |
 |---|---|
-| `rust/Cargo.toml` | zero-dependency crate, size-tuned release profile |
-| `rust/src/lex.rs` | tokenizer, layout (INDENT/DEDENT), string prefixes and escapes |
-| `rust/src/parse.rs` | recursive-descent parser; every gap becomes `unsupported: <kind>` |
-| `rust/src/ast.rs` | the subset AST |
-| `rust/src/eval.rs` | tree-walking evaluator, real scope chains, `UnboundLocalError` analysis |
-| `rust/src/value.rs` | values, insertion-ordered dict, set, the bigint and set-order refusals |
-| `rust/src/ops.rs` | operators, indexing, slicing, `%`-formatting, Python's floor/mod rules |
-| `rust/src/iter.rs` | iteration; lazy `range`, file lines and generator expressions |
-| `rust/src/fmt.rs` | `str`/`repr`, float repr, the format-spec mini-language |
-| `rust/src/builtins.rs` | the builtin functions, chosen by corpus frequency |
-| `rust/src/methods.rs` | str/list/dict/set/bytes/file methods; the tables the router reads |
-| `rust/src/modules.rs` | `sys`, `os`, `os.path`, `io`, `json` |
-| `rust/src/json.rs` | JSON parse + dump, written against CPython's exact output |
-| `rust/src/io.rs` | files, streams, and the commit barrier |
-| `rust/src/route.rs` | the classifier |
-| `rust/src/main.rs` | CLI, the exit contract, and the dispatcher |
+| `assets/rust/Cargo.toml` | zero-dependency crate, size-tuned release profile |
+| `assets/rust/src/lex.rs` | tokenizer, layout (INDENT/DEDENT), string prefixes and escapes |
+| `assets/rust/src/parse.rs` | recursive-descent parser; every gap becomes `unsupported: <kind>` |
+| `assets/rust/src/ast.rs` | the subset AST |
+| `assets/rust/src/eval.rs` | tree-walking evaluator, real scope chains, `UnboundLocalError` analysis |
+| `assets/rust/src/value.rs` | values, insertion-ordered dict, set, the bigint and set-order refusals |
+| `assets/rust/src/ops.rs` | operators, indexing, slicing, `%`-formatting, Python's floor/mod rules |
+| `assets/rust/src/iter.rs` | iteration; lazy `range`, file lines and generator expressions |
+| `assets/rust/src/fmt.rs` | `str`/`repr`, float repr, the format-spec mini-language |
+| `assets/rust/src/builtins.rs` | the builtin functions, chosen by corpus frequency |
+| `assets/rust/src/methods.rs` | str/list/dict/set/bytes/file methods; the tables the router reads |
+| `assets/rust/src/modules.rs` | `sys`, `os`, `os.path`, `io`, `json` |
+| `assets/rust/src/json.rs` | JSON parse + dump, written against CPython's exact output |
+| `assets/rust/src/io.rs` | files, streams, and the commit barrier |
+| `assets/rust/src/route.rs` | the classifier |
+| `assets/rust/src/main.rs` | CLI, the exit contract, and the dispatcher |
 | `assets/scripts/build-rust.sh` | the standalone build, with the shape and contract smoke checks |
 | `lypning build --rust` | the same build, driven from the CLI |
 | `lypning bench` | the four-arm benchmark |

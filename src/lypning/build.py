@@ -17,7 +17,15 @@ user actually hits and the path nobody tests, so the crate is copied into
 directory and no copy happens, which is what keeps ``cargo build`` by hand and
 ``lypning build`` sharing one object cache.
 
-Nothing here prints. :func:`report` renders a table and returns it.
+Two things here are not tiers and are shaped by that. The benchmark CONTROL
+(:func:`build_stock`) is a binary this package builds and deliberately never
+installs, because the engine bin dir is what the finders read and a control that
+can be found is a control that can be run. And :func:`verify` is the build's own
+``--verify``: gate the shape, run the whole battery, both pointed at the binary
+that was just produced rather than at whatever is already installed.
+
+Nothing here prints. :func:`report` renders a table and returns it; the two
+reports :func:`verify` collects are rendered by the modules that own them.
 """
 
 from __future__ import annotations
@@ -28,7 +36,7 @@ import shutil
 import socket
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -412,72 +420,149 @@ def build_rust(target: str = "musl", jobs: int | None = None,
 
 # --- micropython -------------------------------------------------------------
 
+#: The benchmark control's file name. Deliberately **not** an engine name —
+#: there are exactly three of those — because the control is the thing
+#: lypning-mp is measured *against*. An engine finder that could turn it up
+#: would eventually route a program to unpatched upstream MicroPython, and the
+#: whole comparison would read 1.00x and look like a clean result.
+STOCK_BINARY = "micropython-stock"
 
-def _micropython_stage() -> tuple[Path, Path, Path, str]:
-    """``(script, tree, out, note)`` — lay out what the shell script expects.
+#: The pin lives in the build script and is read back out of it, never restated
+#: here: an entry in ``docs/BENCH-LEDGER.md`` claims both binaries came from one
+#: commit, and that claim has to come from the file that does the checking out.
+_PIN_RE = {
+    "tag": re.compile(r'^MPY_TAG="([^"]+)"', re.M),
+    "commit": re.compile(r'^MPY_COMMIT="([0-9a-f]+)"', re.M),
+}
 
-    ``build-micropython.sh`` derives everything from its own location: it builds
-    ``<script>/../micropython`` and writes the binary to ``build/lypning-mp``
-    inside that tree. Rather than fork the script or move the asset, a staging
-    directory is handed to it with the script copied in and ``micropython``
-    symlinked at the engine tree under :func:`paths.build_dir`, which is exactly
-    where :func:`engines.find_micropython` looks for the result.
 
-    The link name is the script's, not the engine's. It was ``lypning-mp`` once
-    — the engine's name reads better — and the build died at "no patches in
-    micropython/variant/patches" every time, because the script had been handed
-    a tree under a name it never looks for.
+def micropython_pin() -> dict[str, str]:
+    """``{"tag": ..., "commit": ...}``, or empty strings when it cannot be read."""
+    out = {"tag": "", "commit": ""}
+    try:
+        text = (paths.SCRIPTS_DIR / "build-micropython.sh").read_text(encoding="utf-8")
+    except OSError:
+        return out
+    for key, pattern in _PIN_RE.items():
+        m = pattern.search(text)
+        if m:
+            out[key] = m.group(1)
+    return out
+
+
+def _micropython_workdir() -> tuple[Path, Path, str]:
+    """``(script, tree, note)`` — the tree to build, and the script to build it with.
+
+    ``build-micropython.sh`` derives everything from its own location: the
+    engine tree is ``<script>/../micropython`` and both binaries land in
+    ``build/`` inside it, which is exactly where :func:`engines.find_micropython`
+    and :func:`stock_binary` look. In a checkout that is the asset tree as it
+    ships, nothing is copied, and a ``make`` by hand shares the musl and
+    MicroPython caches with this.
+
+    In a wheel it cannot be: the assets are read-only, and the script would
+    derive a tree inside site-packages and try to write a MicroPython checkout,
+    a musl build and two binaries into it. So **both** halves are copied under
+    :func:`paths.build_dir` keeping the same relative layout — the script beside
+    a ``micropython`` sibling — because the layout is the interface.
     """
-    tree = paths.build_dir() / "micropython"
+    root = paths.build_dir()
+    tree = root / "micropython"
+    script = root / "scripts" / "build-micropython.sh"
     note = ""
+
+    # A staging tree built by the version of this function that worked around a
+    # bug in the script's own path derivation (it looked for `$REPO_ROOT/lypning-mp`
+    # while the asset ships at `micropython/`). The script derives the right
+    # tree now, so the symlink farm is dead weight — and a stale symlink into
+    # the asset tree is worse than dead weight the day the asset moves.
+    shutil.rmtree(paths.state_dir() / "mp-stage", ignore_errors=True)
+
     try:
         same = tree.resolve() == paths.MICROPYTHON_DIR.resolve()
     except OSError:
         same = False
-    if not same:
-        n = _sync_tree(paths.MICROPYTHON_DIR, tree, skip={".build", "build", ".git"})
-        note = "engine tree copied to %s, %d file(s) refreshed" % (tree, n)
+    if same:
+        return paths.SCRIPTS_DIR / "build-micropython.sh", tree, note
 
-    # The stage lives in state, not in build_dir(): in a checkout build_dir() is
-    # the asset tree and this plumbing is not source, and it cannot live inside
-    # $LYPNING_WORK either because a clean rebuild removes that directory out
-    # from under the running script.
-    stage = paths.ensure_dir(paths.state_dir() / "mp-stage")
-    scripts = paths.ensure_dir(stage / "scripts")
-    script = scripts / "build-micropython.sh"
+    n = _sync_tree(paths.MICROPYTHON_DIR, tree, skip={".build", "build", ".git"})
+    paths.ensure_dir(script.parent)
     shutil.copy2(paths.SCRIPTS_DIR / "build-micropython.sh", script)
     os.chmod(script, 0o755)
+    return script, tree, ("engine tree copied to %s (package tree is read-only), "
+                          "%d file(s) refreshed" % (tree, n))
 
-    # A stage left over from the version that named this link after the engine.
-    stale = stage / engines.MICROPYTHON
-    if stale.is_symlink():
-        stale.unlink()
 
-    link = stage / "micropython"
-    if link.is_symlink() or link.exists():
-        if not link.is_symlink() or os.readlink(str(link)) != str(tree):
-            if link.is_symlink() or link.is_file():
-                link.unlink()
-            else:
-                shutil.rmtree(link, ignore_errors=True)
-    if not link.exists():
-        link.symlink_to(tree, target_is_directory=True)
-    return script, tree, tree / "build" / engines.MICROPYTHON, note
+def stock_binary() -> Path | None:
+    """The benchmark control, or ``None``. Absent far more often than present.
+
+    ``$LYPNING_STOCK_BIN`` first, then the one path the build script writes it
+    to. Never ``$PATH`` and never the engine bin dir: the control has to be
+    something a caller asked for by name, and nothing else should be able to
+    pick it up by accident.
+    """
+    env = os.environ.get("LYPNING_STOCK_BIN", "").strip()
+    candidates = [Path(env).expanduser()] if env else []
+    candidates.append(paths.build_dir() / "micropython" / "build" / STOCK_BINARY)
+    for c in candidates:
+        if c.is_file() and os.access(c, os.X_OK):
+            return c.resolve()
+    return None
 
 
 def build_micropython(verbose: bool = False, clean: bool = False,
                       dry_run: bool = False) -> BuildResult:
     """Build the MicroPython tier, or say precisely why it cannot be built.
 
-    Every precondition the shell script would ``die`` on is checked here first,
+    Every precondition the shell script would ``die`` on is checked first,
     because a caller running ``lypning build --all`` on a machine without
     ``gcc-multilib`` wants one line telling it which apt package is missing, not
     a 5,000-line log with the answer in the middle.
     """
+    return _build_micropython(False, verbose=verbose, clean=clean, dry_run=dry_run)
+
+
+def build_stock(verbose: bool = False, clean: bool = False,
+                dry_run: bool = False) -> BuildResult:
+    """Build the benchmark CONTROL: upstream MicroPython, unpatched.
+
+    Same pinned commit, same musl-i386 libc, same compiler and flags, same strip
+    — and none of our port patch and none of the frozen shim stdlib. That
+    subtraction is the only reason a lypning-mp timing means anything, and it is
+    valid only if the two binaries differ in nothing else, so the script does
+    not hand-write the control's makefile: it **extracts the block between the
+    ``SHARED TOOLCHAIN BLOCK`` markers in
+    ``assets/micropython/variant/mpconfigvariant.mk`` verbatim** into it, and
+    dies rather than fall back to copied flags if the markers are gone. ``-m32``,
+    ``-static``, ``-Wl,-m,elf_i386``, ``-fno-stack-protector`` and
+    ``COPT=-Os -DNDEBUG`` therefore cannot drift apart: editing them edits both
+    binaries. The control's tree is additionally asserted clean at the pinned
+    commit after its reset, which is the mechanical proof that no patch of ours
+    reached it, and its own shape checks assert it is **not** lypning-mp — a copy
+    of lypning-mp sitting here would make every ratio in the ledger read 1.00
+    and look like a clean result.
+
+    The five things the offline static build forces on the control instead —
+    empty ``FROZEN_MANIFEST``, no btree, no ffi, no ssl, no FAT/littlefs — are
+    listed in ``build_stock()`` in the script, which is the authority. The
+    result is what ``lypning bench --micropython`` compares against.
+    """
+    return _build_micropython(True, verbose=verbose, clean=clean, dry_run=dry_run)
+
+
+def _build_micropython(stock: bool, verbose: bool = False, clean: bool = False,
+                       dry_run: bool = False) -> BuildResult:
+    """The shared preflight and invocation. ``stock`` picks which binary comes out.
+
+    One function because the two builds share every precondition — the same
+    toolchain, the same musl, the same checkout, the same network — and a second
+    copy of those checks is a second place for them to go stale.
+    """
     t0 = time.perf_counter()
+    label = STOCK_BINARY if stock else engines.MICROPYTHON
 
     def skipped(reason: str, log: str = "") -> BuildResult:
-        return BuildResult(engines.MICROPYTHON, target="i386-musl",
+        return BuildResult(label, target="i386-musl",
                            seconds=time.perf_counter() - t0, log=log, skipped_reason=reason)
 
     src_script = paths.SCRIPTS_DIR / "build-micropython.sh"
@@ -506,9 +591,10 @@ def build_micropython(verbose: bool = False, clean: bool = False,
             _tail(out, verbose))
 
     try:
-        script, tree, out_bin, note = _micropython_stage()
+        script, tree, note = _micropython_workdir()
     except OSError as e:
-        return skipped("cannot stage the build tree: %s" % e)
+        return skipped("cannot prepare the build tree: %s" % e)
+    out_bin = tree / "build" / label
 
     work = tree / ".build"
     env = {
@@ -519,6 +605,8 @@ def build_micropython(verbose: bool = False, clean: bool = False,
     cmd = ["bash", str(script)]
     if clean:
         cmd.append("--clean")
+    if stock:
+        cmd.append("--stock")
 
     # Two pinned downloads, once. Cached, the build needs no network at all, so
     # only probe when the cache is cold — an offline rebuild is legitimate.
@@ -531,7 +619,7 @@ def build_micropython(verbose: bool = False, clean: bool = False,
 
     if dry_run:
         return BuildResult(
-            engines.MICROPYTHON, target="i386-musl", seconds=time.perf_counter() - t0,
+            label, target="i386-musl", seconds=time.perf_counter() - t0,
             log=_join(note,
                       " ".join("%s=%s" % kv for kv in sorted(env.items())) + " " + " ".join(cmd),
                       "would produce: %s" % out_bin,
@@ -546,7 +634,7 @@ def build_micropython(verbose: bool = False, clean: bool = False,
 
     size = _size(out_bin)
     return BuildResult(
-        engines.MICROPYTHON, ok=True, binary=out_bin, size_bytes=size,
+        label, ok=True, binary=out_bin, size_bytes=size,
         seconds=time.perf_counter() - t0, target="i386-musl",
         log=_join(note, _tail(out, verbose),
                   "%s — %d bytes" % (out_bin, size),
@@ -574,18 +662,45 @@ def _c_probe() -> tuple[int, str]:
 
 def build_all(rust: bool = True, micropython: bool = True, target: str = "musl",
               jobs: int | None = None, verbose: bool = False,
-              dry_run: bool = False) -> list[BuildResult]:
+              dry_run: bool = False, stock: bool = False) -> list[BuildResult]:
     """Build what was asked for, in tier order, and never stop on a failure.
 
     The tiers are independent — a missing 32-bit toolchain says nothing about
     the Rust core — so one failing must not cost the caller the other's result.
+
+    ``stock`` is the benchmark control rather than a tier, and it comes last for
+    the same reason: it is the slowest thing here and the only one nothing else
+    depends on.
     """
     results: list[BuildResult] = []
     if rust:
         results.append(build_rust(target=target, jobs=jobs, verbose=verbose, dry_run=dry_run))
     if micropython:
         results.append(build_micropython(verbose=verbose, dry_run=dry_run))
+    if stock:
+        results.append(build_stock(verbose=verbose, dry_run=dry_run))
     return results
+
+
+def _runs_here(target: str) -> bool:
+    """Can a binary built for ``target`` execute on this machine?
+
+    Only the architecture is asked about. A 32-bit build often *does* run on a
+    64-bit host, but only when the loader for it is installed, and a musl-static
+    i686 binary that happens to run here is still not what this host should be
+    dispatching to — the host build exists and is faster to nobody's surprise.
+    Same-arch is the only honest yes.
+    """
+    if not target:
+        return True
+    import platform
+
+    host = platform.machine()
+    arch = target.split("-", 1)[0]
+    if arch == host:
+        return True
+    # x86_64 and amd64 are the same machine under two names.
+    return {arch, host} == {"x86_64", "amd64"}
 
 
 def install_binaries(results: Iterable[BuildResult]) -> list[Path]:
@@ -600,10 +715,25 @@ def install_binaries(results: Iterable[BuildResult]) -> list[Path]:
     for r in results:
         if not r.ok or r.binary is None:
             continue
+        if r.engine == STOCK_BINARY:
+            # The control stays in the build tree. This directory is where the
+            # engine finders look, and a control that can be found is a control
+            # that can be run — at which point the benchmark compares stock
+            # against stock and reports 1.00x as a result.
+            continue
         src = Path(r.binary)
         if not src.is_file():
             continue
+        # A CROSS-TARGET build is not this machine's engine. `--target i686`
+        # exists for the CheerpX sandbox, and installing it as `lypning` made
+        # the default engine a 32-bit binary: every dispatch, conformance run
+        # and benchmark afterwards silently measured the wrong artifact, and on
+        # a host without multilib it would not have executed at all. So a build
+        # that cannot run here is installed under a suffixed name and reported,
+        # never over the plain one.
         dest = dest_dir / r.engine
+        if r.target and not _runs_here(r.target):
+            dest = dest_dir / ("%s-%s" % (r.engine, r.target.split("-")[0]))
         tmp = dest.with_name(dest.name + ".new")
         try:
             shutil.copy2(src, tmp)
@@ -617,6 +747,93 @@ def install_binaries(results: Iterable[BuildResult]) -> list[Path]:
             continue
         installed.append(dest)
     return installed
+
+
+# --- verify ------------------------------------------------------------------
+
+
+@dataclass
+class VerifyResult:
+    """What ``--verify`` found. Every part is kept; ``ok`` is their conjunction.
+
+    ``gates`` is ``[(binary, GateReport)]`` and ``conformance`` is a
+    :class:`lypning.conformance.Report`, both held rather than reduced to a
+    boolean: the caller renders them with their own modules' renderers, which is
+    the only way the reason a gate failed survives the trip.
+    """
+
+    gates: list[tuple[str, object]] = field(default_factory=list)
+    conformance: object = None
+    notes: list[str] = field(default_factory=list)
+    seconds: float = 0.0
+
+    @property
+    def ok(self) -> bool:
+        gates_ok = all(getattr(g, "ok", False) for _, g in self.gates)
+        conf = self.conformance
+        return bool(gates_ok and (conf is None or getattr(conf, "ok", False)))
+
+
+def verify(results: Iterable[BuildResult] | None = None, *, limit: int | None = None,
+           compare: bool = True, timeout: float = 30.0) -> VerifyResult:
+    """Build's ``--verify``: gate the binaries, then run the whole battery.
+
+    The two halves answer different questions and neither is optional because
+    the other passed. The gate is shape — static, bytes, file opens — and is
+    what predicts cold cost in the sandbox. The battery is agreement with
+    CPython, and it is the only thing that catches a build that produces a
+    perfectly shaped binary which quietly answers differently.
+
+    **Both are pointed at the binaries this build just produced**, by pinning
+    ``$LYPNING_BIN`` and ``$LYPNING_MP_BIN`` for the duration. Without that a
+    build whose binary is broken enough not to be installed would be verified
+    against the previous one still sitting in the bin dir, and report ``ok`` for
+    a binary nobody measured. The environment is restored afterwards: this is a
+    library, and a caller that runs anything else in the same process must not
+    inherit our overrides.
+
+    The benchmark control is skipped and said so: it is unpatched upstream
+    MicroPython and owes none of these contracts.
+    """
+    t0 = time.perf_counter()
+    # Imported here rather than at module scope: a plain `lypning build --rust`
+    # must not pay for the corpus loader and `ast` in order to run cargo.
+    from . import conformance, gate
+
+    out = VerifyResult()
+    pins: dict[str, str] = {}
+    subjects: list[Path] = []
+    for r in (list(results) if results is not None else []):
+        if r.engine == STOCK_BINARY:
+            out.notes.append("the benchmark control is not gated: it is upstream "
+                             "MicroPython and owes none of these contracts")
+            continue
+        if not r.ok or r.binary is None:
+            continue
+        subjects.append(Path(r.binary))
+        var = {engines.LYPNING: "LYPNING_BIN", engines.MICROPYTHON: "LYPNING_MP_BIN"}.get(r.engine)
+        if var:
+            pins[var] = str(r.binary)
+    if results is None:
+        subjects = [p for p in (engines.find_lypning(), engines.find_micropython()) if p]
+
+    saved = {k: os.environ.get(k) for k in ("LYPNING_BIN", "LYPNING_MP_BIN")}
+    try:
+        os.environ.update(pins)
+        for b in subjects:
+            out.gates.append((str(b), gate.gate(b, compare=compare)))
+        if engines.find_cpython() is None:
+            out.notes.append("no reference CPython: the battery was not run")
+        else:
+            out.conformance = conformance.run(limit=limit, timeout=timeout)
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    out.seconds = time.perf_counter() - t0
+    return out
 
 
 # --- rendering ---------------------------------------------------------------

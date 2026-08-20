@@ -14,7 +14,7 @@ on loudly and predictably (§6).
 > **Status: design + build in progress.** Nothing here is deployed. The
 > companion documents are `docs/RESEARCH.md` (what to build it from),
 > `docs/SUBSET.md` (what it must execute), and the corpus at
-> `tests/corpus/`.
+> `assets/corpus/` (`lypning corpus --stats`).
 
 ## 1. Why — the measurement that justifies the project
 
@@ -481,7 +481,7 @@ deletes 138 of `main`'s own records, which is how that rule got tested.)
 | # | piece | artifact | state |
 |---|---|---|---|
 | 1 | implementation survey, ranked on cold cost | `docs/RESEARCH.md` | **done** — MicroPython variant, musl, i386 |
-| 2 | subset spec + seed corpus | `docs/SUBSET.md`, `tests/corpus/seed-corpus.jsonl` | **done** — 161 entries, tiered |
+| 2 | subset spec + seed corpus | `docs/SUBSET.md`, `assets/corpus/seed-corpus.jsonl` | **done** — 161 entries, tiered |
 | 3 | conformance runner + build gate | `lypning conformance`, `lypning gate` | **done** — both proven against stubs |
 | 4 | charter | this file | **done** |
 | 5 | capture harness + corpus growth | `capture.py`, `harvest.py`, `shim.py` | in progress |
@@ -525,7 +525,7 @@ took a loop/regex/json workload from 518 ms to 433 ms, because it inlines and
 drops code across translation units where `--gc-sections` only works at section
 granularity. It is also the one change with a real correctness hazard: LTO
 across `setjmp`/`longjmp` is the classic miscompile, and that is precisely how
-MicroPython raises. Six `nlr-*` entries in `tests/corpus/seed-corpus.jsonl` pin
+MicroPython raises. Six `nlr-*` entries in `assets/corpus/seed-corpus.jsonl` pin
 it — deep recursive unwinding, `finally` ordering, locals live across a raise,
 generator close, 2000 sequential raises reusing the NLR buffer, and the
 recursion limit. All six match CPython exactly.

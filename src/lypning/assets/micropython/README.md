@@ -15,10 +15,25 @@ Berry, RustPython and a stripped CPython.
 
 ## Build
 
+The supported entry point is the CLI, which works from a checkout and from an
+installed wheel alike:
+
 ```bash
-bash scripts/build-micropython.sh        # → micropython/build/lypning-mp
-make -C lypning-mp verify               # build, then run both gates
-bash scripts/build-micropython.sh --stock   # → micropython/build/micropython-stock, the benchmark control
+lypning build --micropython            # → $LYPNING_HOME/bin/lypning-mp
+lypning build --micropython --verify   # build, then gate it and run the battery
+lypning build --stock                  # the benchmark control (not an engine)
+```
+
+The script and this directory's `Makefile` are the same build one layer down,
+and are what to reach for when debugging the build itself. **Paths named in
+prose on this page are relative to `assets/`** — the directory this one sits in,
+so `scripts/build-micropython.sh` and `micropython/variant/` — while the
+commands below are typed from *this* directory and reach up one level:
+
+```bash
+bash ../scripts/build-micropython.sh           # → build/lypning-mp
+make verify                                    # from THIS directory: build + both gates
+bash ../scripts/build-micropython.sh --stock   # → build/micropython-stock
 ```
 
 About 40 s from nothing on this container, seconds on a rebuild. It needs the
@@ -376,3 +391,8 @@ measured by `tests/e2e/sandbox-perf.spec.js` against a real Alpine i386 image.
 The gate's `~499 ms` estimate is a projection from binary shape and is labelled
 as one everywhere it prints. Confirm it before quoting it, then edit
 `PKGS_COMMON` in `scripts/build-sandbox-image.sh`.
+
+> Both of those files — the Playwright spec and the image recipe — live in the
+> **upstream** `deepresearch.se` repository and did not come across with the
+> extraction. Nothing in this package runs them, so this paragraph is a
+> statement of what the acceptance metric *is*, not a command you can type here.

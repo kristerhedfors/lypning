@@ -1,13 +1,16 @@
 ---
 name: lypning
-description: Route Python one-liners through lypning instead of python3, and understand what it refuses. Load when about to run python from Bash in a repo where lypning is installed (`lypning -c`, `lypning run -c`, `lypning route -c`), when a command exited 90 or printed "unsupported:", when python startup cost matters, or when asked why a program went to CPython rather than the subset. Also load when working ON this package — the Rust subset, the MicroPython tier, the classifier, the conformance battery, the four-arm benchmark, the capture harness that grows the corpus, or anything under src/lypning/ or assets/rust/.
+description: Route Python one-liners through lypning instead of python3, and understand what it refuses. Load when about to run python from Bash in a repo where lypning is installed (`lypning -c`, `lypning run -c`, `lypning route -c`), when a command exited 90 or printed "unsupported:", when python startup cost matters, or when asked why a program went to CPython rather than the subset. Also load when working ON this package — the Rust subset, the MicroPython tier, the classifier, the conformance battery, the differential fuzzer, the benchmarks (`lypning bench`, `lypning corpus-time`), the capture harness that grows the corpus, or anything under src/lypning/ or assets/rust/.
 ---
 
 # lypning — Mixture of Pythons
 
-Reference: `docs/LYPNING.md` (design), `docs/MICROPYTHON.md` (the cost model the
-second tier is built against), `docs/COOKBOOK.md` (unsupported Python,
-rewritten), `MICROPYTHON.md` next to this file (the second tier's charter).
+Reference: `MICROPYTHON.md` next to this file (the second tier's charter) is the
+only one that ships with the skill. The rest — `docs/LYPNING.md` (design),
+`docs/MICROPYTHON.md` (the cost model the second tier is built against),
+`docs/COOKBOOK.md` (unsupported Python, rewritten) — live in the **lypning
+repository**, not in the project this skill was installed into. Do not go
+looking for them here unless this *is* that repository.
 
 ## 1. Using it
 
@@ -33,20 +36,22 @@ non-zero exit is the program's own and is returned unchanged — a dispatcher
 that retried on exit 1 would run a half-completed program twice.
 
 If `lypning status` says `not built`, everything routes to cpython and the
-numbers below do not apply. `lypning build --rust` takes ~20 s and needs only
+numbers below do not apply. `lypning build --rust` takes seconds and needs only
 cargo. The lypning-mp tier needs a 32-bit C toolchain and a network and is
 **absent by default**; that is a status line, never an error.
 
 **Never quote a remembered corpus size.** Capture grows it every session. Every
 tool prints the count it loaded — quote that number, from that run.
 
-## 2. The three gates — run all three, they answer different questions
+## 2. The gates — they answer different questions, so run the ones that apply
 
 ```bash
 lypning build --rust          # shape: static, 0 opens, and the refusal contract asserted
 lypning conformance           # correctness: every tier + the mixture, graded against CPython
 lypning conformance --plan    # what to build next: which refusal blocks the most programs
-lypning bench                 # cost: four arms, interleaved, min of repeats
+lypning fuzz                  # correctness on programs NOBODY typed — generated from the subset
+lypning bench                 # cost, arm vs arm: what the mixture costs against CPython
+lypning corpus-time           # cost, run vs run: did MY change speed the corpus up
 lypning gate --compare        # bytes and file opens, against the real CPython
 python3 -m pytest             # the unit half (`make test`)
 ```
@@ -54,6 +59,23 @@ python3 -m pytest             # the unit half (`make test`)
 Verdicts per engine: **MATCH**, **UNSUPPORTED** (exit 90 + one line on stderr —
 this is coverage and the build order, not a failure), **MISMATCH** (always a
 failure, must be zero).
+
+**`conformance` grades the programs agents happened to type; `fuzz` generates
+them.** The corpus is a sample, not a specification, so MISMATCH 0 over it is
+evidence about lypning's surface only in proportion to how much of that surface
+it touches. `lypning fuzz` draws from lypning's OWN builtin and method tables,
+runs each program under CPython and under the engine, shrinks every
+counterexample to a minimal program, and prints the seed that replays the run
+whether or not anything failed. Exit 90 means the generator wandered outside the
+subset: a refusal, never a finding.
+
+**`bench` compares arms; `corpus-time` compares runs of ONE binary.** Reach for
+`corpus-time` when you changed an engine and want to know whether the corpus got
+faster — `--record before.json`, then `--baseline before.json`, and the diff is
+taken over the entries both runs timed (the corpus grows, so that intersection
+is printed rather than assumed). It disagrees with a microbenchmark routinely
+and by an order of magnitude, because a corpus entry runs once and exits: its
+cost is startup, parse and compile, not steady-state dispatch.
 
 **A subset runtime that silently disagrees with CPython is worse than no
 runtime at all**, because the agent that typed the one-liner will not notice. It
@@ -91,7 +113,11 @@ only ever blocked by the first thing it hits — so re-run it.
   + the `interned` name list — three places, and missing the third gives
   `unsupported: module-attr` for something that is implemented.
 - After ANY of these, re-run `lypning conformance`. Coverage going up is the
-  point; MISMATCH going above zero cancels the change.
+  point; MISMATCH going above zero cancels the change. Then run `lypning fuzz`:
+  the corpus only exercises what someone typed, and a new builtin or method is
+  exactly the surface nobody has typed at yet. `str.partition("")`,
+  `round(-0.5, 0)`, `format(7, "10")` and `"日本".islower()` were all found this
+  way, and all four were already "covered" by a green conformance run.
 
 **Do not implement `re`.** It is the largest single gap and it is deliberate:
 lypning-mp has a regex engine, so `import re` is a routing decision. If it is

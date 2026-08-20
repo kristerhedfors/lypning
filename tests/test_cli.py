@@ -120,3 +120,106 @@ def test_run_passes_a_program_s_own_exit_code_through(capsys, lypning_bin):
     assert cli.main(["run", "-c", "import sys; sys.exit(3)"]) == 3
     assert cli.main(["run", "-c", "print('hi')"]) == 0
     assert capsys.readouterr().out == "hi\n"
+
+
+def test_corpus_time_json_is_a_record_a_later_run_can_read(capsys, tmp_path, lypning_bin):
+    rec = tmp_path / "before.json"
+    assert cli.main(["corpus-time", "--limit", "2", "--repeat", "1",
+                     "--record", str(rec), "--json"]) == 0
+    obj = json.loads(capsys.readouterr().out)
+    assert obj["engine"] == "lypning"
+    assert obj["corpus_loaded"] >= obj["timed"] >= 1
+    # The file is the same record, which is what --baseline reads back.
+    assert json.loads(rec.read_text(encoding="utf-8"))["entries"] == obj["entries"]
+    assert cli.main(["corpus-time", "--limit", "2", "--repeat", "1",
+                     "--baseline", str(rec), "--json"]) == 0
+    again = json.loads(capsys.readouterr().out)
+    assert again["diff"]["shared"] >= 1
+
+
+@pytest.mark.parametrize("content,expect", [
+    ("not json at all", "is not JSON"),
+    ('{"hello": 1}', "not a corpus-time record"),
+    ('{"schema": "who-knows", "entries": {}}', "re-record it"),
+])
+def test_a_corrupt_baseline_is_one_line_naming_the_fix(content, expect, tmp_path, capsys):
+    """And it costs a second, not the whole measurement.
+
+    ``--baseline`` is read BEFORE the corpus is timed on purpose: discovering
+    the comparison is impossible after ten minutes of measurement throws the
+    measurement away. This asserts the message, and the absence of a traceback
+    — a stack trace here reads as a bug in lypning rather than a bad file.
+    """
+    bad = tmp_path / "baseline.json"
+    bad.write_text(content, encoding="utf-8")
+    assert cli.main(["corpus-time", "--limit", "1", "--baseline", str(bad)]) == 1
+    err = capsys.readouterr().err
+    assert expect in err and "Traceback" not in err
+    assert err.count("\n") == 1
+
+
+def test_a_missing_baseline_names_the_command_that_writes_one(tmp_path, capsys):
+    assert cli.main(["corpus-time", "--limit", "1",
+                     "--baseline", str(tmp_path / "nope.json")]) == 1
+    err = capsys.readouterr().err
+    assert "corpus-time --record" in err and "Traceback" not in err
+
+
+def test_an_unwritable_record_target_is_refused_before_the_run(tmp_path, capsys, monkeypatch):
+    """The destination is checked up front for the same reason the baseline is.
+
+    A run that timed the whole corpus and then could not write the file has
+    thrown the expensive half away, and the only evidence left is an
+    ``OSError`` the caller did not ask for.
+    """
+    from lypning import bench
+
+    def explode(*_a, **_k):
+        raise AssertionError("the corpus was timed before the target was checked")
+
+    monkeypatch.setattr(bench, "corpus_time_one", explode)
+    # An ancestor that exists and is not a directory: unwritable for any user,
+    # including the root this suite often runs as, where a mode bit would not be
+    # enforced and the test would pass by accident.
+    blocker = tmp_path / "a-file"
+    blocker.write_text("", encoding="utf-8")
+    assert cli.main(["corpus-time", "--limit", "1",
+                     "--record", str(blocker / "sub" / "r.json")]) == 1
+    err = capsys.readouterr().err
+    assert "--record" in err and "Traceback" not in err
+
+
+def test_a_record_target_that_is_a_directory_says_so(tmp_path, capsys, monkeypatch):
+    from lypning import bench
+
+    monkeypatch.setattr(bench, "corpus_time_one",
+                        lambda *a, **k: pytest.fail("checked too late"))
+    assert cli.main(["corpus-time", "--limit", "1", "--record", str(tmp_path)]) == 1
+    err = capsys.readouterr().err
+    assert "is a directory" in err and "Traceback" not in err
+
+
+def test_corpus_time_on_an_unbuilt_engine_exits_2_without_a_traceback(no_micropython, capsys):
+    # Exit 2: nothing ran and the fix is a command, which is what 2 is for here.
+    assert cli.main(["corpus-time", "--engine", "lypning-mp", "--limit", "1"]) == 2
+    err = capsys.readouterr().err
+    assert "not built" in err and "Traceback" not in err
+
+
+def test_bench_micropython_exits_2_when_the_control_is_absent(no_micropython, monkeypatch, capsys):
+    from lypning import build
+
+    monkeypatch.setattr(build, "stock_binary", lambda: None)
+    assert cli.main(["bench", "--micropython"]) == 2
+    err = capsys.readouterr().err
+    assert "lypning build --stock" in err and "Traceback" not in err
+
+
+def test_build_stock_dry_run_builds_nothing_and_says_what_it_would_run(capsys):
+    assert cli.main(["build", "--stock", "--dry-run", "--json"]) == 0
+    obj = json.loads(capsys.readouterr().out)
+    assert obj["dry_run"] is True
+    # Only the control: --stock is not a tier, and asking for it must not
+    # silently rebuild the two engines.
+    assert [r["engine"] for r in obj["results"]] == ["micropython-stock"]
+    assert obj["installed"] == []

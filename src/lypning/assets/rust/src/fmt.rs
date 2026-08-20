@@ -214,10 +214,28 @@ fn fixed_from_digits(digits: &str, decpt: i32) -> String {
 }
 
 /// Shortest round-tripping decimal digits and the base-10 exponent of the
-/// leading digit. Rust's `{:e}` is already shortest-roundtrip, so this is a
-/// parse rather than a re-derivation.
+/// leading digit.
+///
+/// Rust's `{:e}` gives the shortest round-tripping digits, which is most of the
+/// answer — but not all of it, because "shortest" can be a TIE and the two
+/// implementations break ties differently. `(1/-143.0) * 1e17` is exactly
+/// -699300699300699.25, one ulp being 0.125 here, so both …699.2 and …699.3
+/// are 17 digits and both round-trip. CPython (David Gay) resolves the tie to
+/// EVEN and prints …699.2; Rust's `{:e}` rounds away and printed …699.3. A
+/// wrong answer at exit 0, which is the class the contract exists to prevent —
+/// `lypning fuzz` found it, seed 1223909964.
+///
+/// So `{:e}` is asked only for the digit COUNT, and the digits themselves come
+/// from `{:.*e}`, which converts exactly and rounds half-to-even like CPython.
+/// The exponent is re-read from that second render rather than carried over
+/// from the first: rounding at the chosen width can carry (9.99 -> 1.0e+1) and
+/// move the decimal point with it.
 fn shortest_digits(x: f64) -> (String, i32) {
-    let s = format!("{:e}", x); // e.g. "1.2345e3", "1e-5"
+    let shortest = format!("{:e}", x); // e.g. "1.2345e3", "1e-5"
+    let (mant, _) = shortest.split_once('e').unwrap();
+    let ndigits = mant.chars().filter(|c| c.is_ascii_digit()).count().max(1);
+
+    let s = format!("{:.*e}", ndigits - 1, x);
     let (mant, exp) = s.split_once('e').unwrap();
     let exp: i32 = exp.parse().unwrap();
     let digits: String = mant.chars().filter(|c| c.is_ascii_digit()).collect();
@@ -423,7 +441,7 @@ pub fn format_value(v: &Value, spec_src: &str) -> R<String> {
                 let s = to_str(&Value::Float(f.abs()))?;
                 group_float(&s, sp.grouping)
             } else {
-                return Ok(pad(&nonfinite(*f, false), &sp, false));
+                return Ok(pad_signed(nonfinite_sign(*f, &sp), &nonfinite(*f, false), &sp, true));
             };
             let signch = if f.is_sign_negative() {
                 "-"
@@ -434,7 +452,7 @@ pub fn format_value(v: &Value, spec_src: &str) -> R<String> {
                     _ => "",
                 }
             };
-            return Ok(pad_signed(signch, &body, &sp));
+            return Ok(pad_signed(signch, &body, &sp, true));
         }
     }
 
@@ -487,21 +505,21 @@ pub fn format_value(v: &Value, spec_src: &str) -> R<String> {
         'f' | 'F' => {
             let f = float_of(v)?;
             if !f.is_finite() {
-                return Ok(pad(&nonfinite(f, ty.is_uppercase()), &sp, false));
+                return Ok(pad_signed(nonfinite_sign(f, &sp), &nonfinite(f, ty.is_uppercase()), &sp, true));
             }
             group_float(&format!("{:.*}", sp.precision.unwrap_or(6), f.abs()), sp.grouping)
         }
         'e' | 'E' => {
             let f = float_of(v)?;
             if !f.is_finite() {
-                return Ok(pad(&nonfinite(f, ty == 'E'), &sp, false));
+                return Ok(pad_signed(nonfinite_sign(f, &sp), &nonfinite(f, ty == 'E'), &sp, true));
             }
             exp_format(f.abs(), sp.precision.unwrap_or(6), ty == 'E')
         }
         'g' | 'G' => {
             let f = float_of(v)?;
             if !f.is_finite() {
-                return Ok(pad(&nonfinite(f, ty == 'G'), &sp, false));
+                return Ok(pad_signed(nonfinite_sign(f, &sp), &nonfinite(f, ty == 'G'), &sp, true));
             }
             g_format(f.abs(), sp.precision.unwrap_or(6), ty == 'G', sp.alt)
         }
@@ -526,21 +544,33 @@ pub fn format_value(v: &Value, spec_src: &str) -> R<String> {
             _ => "",
         }
     };
-    Ok(pad_signed(signch, &body, &sp))
+    Ok(pad_signed(signch, &body, &sp, true))
 }
 
 fn nonfinite(f: f64, upper: bool) -> String {
-    let s = if f.is_nan() {
-        "nan"
-    } else if f < 0.0 {
-        "-inf"
-    } else {
-        "inf"
-    };
+    let s = if f.is_nan() { "nan" } else { "inf" };
     if upper {
         s.to_uppercase()
     } else {
         s.to_string()
+    }
+}
+
+/// The sign slot for an infinity or a NaN — CPython gives them one too.
+///
+/// Two things fall out of putting it in the SIGN slot rather than in the body:
+/// `format(inf, "+")` is `+inf` and not `inf`, and `format(-inf, "010")` is
+/// `-000000inf` and not `000000-inf`, because zero fill goes between the sign
+/// and the digits. Both were wrong while the body carried its own minus.
+fn nonfinite_sign(f: f64, sp: &Spec) -> &'static str {
+    if f.is_sign_negative() && !f.is_nan() {
+        "-"
+    } else {
+        match sp.sign {
+            Some('+') => "+",
+            Some(' ') => " ",
+            _ => "",
+        }
     }
 }
 
@@ -583,6 +613,13 @@ fn group(digits: &str, sep: Option<char>, size: usize) -> String {
 
 fn group_float(s: &str, sep: Option<char>) -> String {
     if sep.is_none() {
+        return s.to_string();
+    }
+    // A body already in exponent form has no integer part to group. Grouping
+    // the whole string put a separator inside the exponent — CPython renders
+    // `format(1e17, "_")` as `1e+17` where this answered `1e_+17`. `lypning
+    // fuzz` found it.
+    if s.contains('e') || s.contains('E') {
         return s.to_string();
     }
     match s.split_once('.') {
@@ -644,11 +681,11 @@ fn strip_zeros(s: &str) -> String {
     t.trim_end_matches('.').to_string()
 }
 
-fn pad(body: &str, sp: &Spec, _numeric: bool) -> String {
-    pad_signed("", body, sp)
+fn pad(body: &str, sp: &Spec, numeric: bool) -> String {
+    pad_signed("", body, sp, numeric)
 }
 
-fn pad_signed(sign: &str, body: &str, sp: &Spec) -> String {
+fn pad_signed(sign: &str, body: &str, sp: &Spec, numeric: bool) -> String {
     let full_len = sign.chars().count() + body.chars().count();
     let Some(w) = sp.width else {
         return format!("{sign}{body}");
@@ -658,17 +695,12 @@ fn pad_signed(sign: &str, body: &str, sp: &Spec) -> String {
     }
     let padn = w - full_len;
     let fill = sp.fill.unwrap_or(' ');
-    // Default alignment: '>' for numbers, '<' for everything else. The caller
-    // signals "number" by having produced a sign slot or a numeric type.
-    let align = sp.align.unwrap_or(if sp.ty.is_some()
-        && !matches!(sp.ty, Some('s') | Some('c'))
-    {
-        '>'
-    } else if sign.is_empty() {
-        '<'
-    } else {
-        '>'
-    });
+    // Default alignment: '>' for numbers, '<' for everything else, and the
+    // CALLER says which — it is the only one that knows. Inferring it from a
+    // non-empty sign slot instead left every positive number with no
+    // presentation type aligned as if it were a string: `format(7, "10")` and
+    // `f"{1.5:10}"` padded on the right where CPython pads on the left.
+    let align = sp.align.unwrap_or(if numeric { '>' } else { '<' });
     let f: String = std::iter::repeat(fill).take(padn).collect();
     match align {
         '<' => format!("{sign}{body}{f}"),

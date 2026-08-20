@@ -53,6 +53,79 @@ const FILE_METHODS: &[&str] = &[
     "close", "read", "readline", "readlines", "seek", "tell", "write", "writelines",
 ];
 
+/// Methods CPython's builtin types have and lypning does not — the exit-90 list.
+///
+/// The split is docs/SUBSET.md §7 rule 4, the one `BUILTINS` already draws for
+/// names: a method CPython HAS and lypning does not is lypning being too small,
+/// so it must leave by the refusal contract and let the dispatcher retry on an
+/// interpreter that has it. A name NEITHER has is the program's own bug and
+/// keeps CPython's `AttributeError` at exit 1.
+///
+/// The gap this closes was reachable and silent. `route.rs` asks only whether a
+/// name is a method of ANY type it knows, so `b"abc".count(b"a")` — `count` is
+/// in `STR_METHODS` — routed to lypning, which has no `bytes.count`, and the
+/// caller got an `AttributeError` traceback at exit 1 where CPython prints `1`.
+/// Exit 1 is the program's own and the dispatcher must return it unchanged, so
+/// there was no second chance. Generated from `dir()` minus the tables above,
+/// which is why it cannot claim something we implement.
+const STR_MISSING: &[&str] = &[
+    "center", "expandtabs", "format_map", "isascii", "isdecimal", "isidentifier", "isprintable",
+    "istitle", "maketrans", "translate",
+];
+
+const DICT_MISSING: &[&str] = &[
+    "fromkeys",
+];
+
+const SET_MISSING: &[&str] = &[
+    "difference_update", "intersection_update", "isdisjoint", "pop",
+    "symmetric_difference_update",
+];
+
+const BYTES_MISSING: &[&str] = &[
+    "capitalize", "center", "count", "expandtabs", "fromhex", "index", "isalnum", "isalpha",
+    "isascii", "isdigit", "islower", "isspace", "istitle", "isupper", "ljust", "maketrans",
+    "partition", "removeprefix", "removesuffix", "rfind", "rindex", "rjust", "rpartition",
+    "splitlines", "swapcase", "title", "translate", "zfill",
+];
+
+/// `islower` / `isupper`: at least one CASED character, and every cased one
+/// passing `want`.
+///
+/// Cased is not `is_alphabetic`, which is what this used to test. 日 is
+/// alphabetic and has no case at all, so `"日本".islower()` is False in CPython
+/// where testing the alphabetic characters answered True — a wrong answer at
+/// exit 0 on any CJK string. A titlecase letter is cased and is neither lower
+/// nor upper, which is why the third clause asks for a case MAPPING rather
+/// than trusting the two predicates. `lypning fuzz` found it.
+fn cased_all(s: &str, want: fn(char) -> bool) -> bool {
+    let mut seen = false;
+    for c in s.chars() {
+        if c.is_lowercase() || c.is_uppercase() || c.to_lowercase().next() != Some(c) {
+            seen = true;
+            if !want(c) {
+                return false;
+            }
+        }
+    }
+    seen
+}
+
+/// Does CPython's version of this type have `name` where we do not?
+///
+/// Asked only after :func:`method_name` has said no, so it can never shadow
+/// something lypning implements.
+pub fn missing_method(recv: &Value, name: &str) -> bool {
+    let table: &[&str] = match recv {
+        Value::Str(_) => STR_MISSING,
+        Value::Dict(_) => DICT_MISSING,
+        Value::Set(_) => SET_MISSING,
+        Value::Bytes(_) => BYTES_MISSING,
+        _ => return false,
+    };
+    table.contains(&name)
+}
+
 /// Is `name` a method of `recv`? Returns the interned name so the caller can
 /// build a `Value::Bound` without allocating.
 pub fn method_name(recv: &Value, name: &str) -> Option<&'static str> {
@@ -395,6 +468,12 @@ fn str_method(
         }
         "partition" | "rpartition" => {
             let sep = sarg(&args, 0, name)?;
+            // CPython rejects the empty separator here exactly as it does in
+            // split(); without this the fuzzer's `"".rpartition("")` answered
+            // ('', '', '') at exit 0 where CPython raises.
+            if sep.is_empty() {
+                return Err(value_err("empty separator"));
+            }
             let found = if name == "partition" {
                 s.find(sep.as_ref())
             } else {
@@ -457,10 +536,8 @@ fn str_method(
                 "isalpha" => s.chars().all(|c| c.is_alphabetic()),
                 "isalnum" => s.chars().all(|c| c.is_alphanumeric()),
                 "isspace" => s.chars().all(|c| c.is_whitespace()),
-                "islower" => {
-                    s.chars().any(|c| c.is_alphabetic()) && !s.chars().any(|c| c.is_uppercase())
-                }
-                _ => s.chars().any(|c| c.is_alphabetic()) && !s.chars().any(|c| c.is_lowercase()),
+                "islower" => cased_all(&s, char::is_lowercase),
+                _ => cased_all(&s, char::is_uppercase),
             })
         }
         "encode" => {
@@ -1132,7 +1209,27 @@ fn as_bytes_arg(v: &Value, method: &str) -> R<Vec<u8>> {
 }
 
 /// `bytes.find` uniquely also accepts an INTEGER, meaning one byte value.
+/// The argument to `bytes.find` and friends: a bytes-like, or a single byte
+/// VALUE as an integer.
+///
+/// `bool` has to land in the integer arm, not the bytes arm. In Python `bool`
+/// is a subclass of `int`, so `b"abc".find(False)` searches for byte 0 and
+/// answers -1 — where matching only `Value::Int` raised `TypeError: a
+/// bytes-like object is required, not 'bool'` at exit **1**. Exit 1 is the
+/// program's own and the dispatcher returns it unchanged, so the caller got a
+/// traceback for a program CPython runs fine, with no second chance. Every
+/// other place bool-as-int matters (indexing, `range`, arithmetic, `*`) already
+/// went through the numeric coercion and was correct; this was the one arm that
+/// matched the variant directly. `lypning fuzz` found it, seed 1295253061.
 fn as_bytes_or_byte(v: Option<&Value>, method: &str) -> R<Vec<u8>> {
+    let promoted;
+    let v = match v {
+        Some(Value::Bool(b)) => {
+            promoted = Value::Int(if *b { 1 } else { 0 });
+            Some(&promoted)
+        }
+        other => other,
+    };
     match v {
         Some(Value::Int(n)) => {
             if !(0..=255).contains(n) {

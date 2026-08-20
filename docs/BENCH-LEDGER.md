@@ -6,13 +6,17 @@ built from, the machine, and the full table — including the rows where lypning
 **lost**, which are the rows that stop the same optimisation being re-proposed
 next month.
 
-> **Every entry below was recorded upstream**, by a variant-vs-stock
+> **Every entry below the marker was recorded upstream**, by a variant-vs-stock
 > micro-benchmark harness that did not come across with the extraction. This
 > package ships the two measurements that did — `lypning bench` (four arms,
 > startup and corpus) and `lypning gate` (shape: static, bytes, file opens) —
-> and neither appends to this file. The entries are kept because the *readings*
-> in them are still the reasoning this project runs on, including the rows
-> where lypning-mp lost. **Do not quote a number from here as a measurement of
+> and `lypning bench --micropython --record docs/BENCH-LEDGER.md` inserts one
+> entry at the marker, in the corpus's terms rather than the per-subsystem
+> terms of the entries below it; the entry says so in its own words, because a
+> row that looks like the rows under it and was measured by a different
+> instrument is worse than no row. The upstream entries are kept because the
+> *readings* in them are still the reasoning this project runs on, including
+> the rows where lypning-mp lost. **Do not quote a number from here as a measurement of
 > your machine; re-run `lypning bench` and quote that, with its date and the
 > corpus size it printed.**
 

@@ -367,6 +367,9 @@ impl Interp {
                 if let Some(m) = crate::methods::method_name(&p, name) {
                     return Ok(Value::Bound(Rc::new(base.clone()), m));
                 }
+                if crate::methods::missing_method(&p, name) {
+                    return Err(missing_method_err(&p, name));
+                }
             }
         }
         if let Value::Exc(_, msg) = base {
@@ -396,11 +399,24 @@ impl Interp {
                 _ => {}
             }
         }
+        if crate::methods::missing_method(base, name) {
+            return Err(missing_method_err(base, name));
+        }
         Err(attr_err(format!(
             "'{}' object has no attribute '{name}'",
             type_name(base)
         )))
     }
+}
+
+/// A method CPython has and lypning does not: exit 90, never `AttributeError`.
+///
+/// `AttributeError` at exit 1 is the program's own failure and the dispatcher
+/// returns it unchanged, so it is the one answer the caller cannot recover
+/// from. See `methods::missing_method`.
+fn missing_method_err(recv: &Value, name: &str) -> LypningError {
+    let ty = type_name(recv);
+    unsupported(&format!("{ty}-method"), &format!("{ty}.{name}()"))
 }
 
 // ---- numbers --------------------------------------------------------------

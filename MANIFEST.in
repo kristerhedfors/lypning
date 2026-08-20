@@ -1,0 +1,34 @@
+# What the sdist carries beyond the wheel.
+#
+# The wheel's contents are decided by [tool.setuptools.package-data] in
+# pyproject.toml and are already right: the engine sources, the corpus, the
+# skill and the hooks. This file exists for the one thing a *source*
+# distribution has to do that a wheel does not — be built and checked from —
+# and for one thing setuptools gets wrong on its own.
+#
+# The wrong thing first: setuptools sweeps `tests/test_*.py` into the sdist by
+# name and leaves `tests/conftest.py` behind, so an unpacked sdist collects 500+
+# tests and then dies on the first fixture. A test suite that ships broken is
+# worse than one that does not ship.
+
+include Makefile
+include CHANGELOG.md CLAUDE.md
+recursive-include docs *.md
+
+# `make test` and `make conformance` are the two gates a downstream packager
+# runs before trusting a build, and both need the tree rather than the package.
+# Named by extension rather than `graft tests`: a graft also takes
+# `tests/__pycache__` — a quarter of a megabyte of .pyc in every sdist built
+# from a tree anyone has run pytest in, which then needs a `global-exclude` to
+# take back out, which warns four times per build about matching nothing.
+recursive-include tests *.py
+recursive-include tests/corpus *.jsonl
+
+# Defence, not decoration. `include_package_data = true` means anything named
+# here under src/ lands in the *wheel* too, and these three directories are
+# where cargo and the MicroPython make put hundreds of megabytes of object
+# files. Nothing above names them today; these lines are what stops a future
+# `graft src` from shipping a gigabyte to everyone who types `pip install`.
+prune src/lypning/assets/rust/target
+prune src/lypning/assets/micropython/build
+prune src/lypning/assets/micropython/.build

@@ -358,6 +358,13 @@ class Report:
     routing_errors: List[RoutingError]
     skipped: List[Skip]
     seconds: float
+    #: ``{entry_id: Route}`` — where the classifier sent each program it was
+    #: asked about. Recorded rather than graded here: whether a route was
+    #: *cheap enough* is a separate measurement with its own vocabulary and its
+    #: own gate (:mod:`lypning.routing`), and this module owns only the one
+    #: verdict that must be zero. Empty when the mixture arm did not run, since
+    #: that is the arm that consults the classifier.
+    routes: Dict[str, eng.Route] = field(default_factory=dict)
     damage: List[str] = field(default_factory=list)
     unbuilt: List[str] = field(default_factory=list)
     reference: str = ""
@@ -880,6 +887,7 @@ def run(
     ref_bin: Optional[Path] = None
     reports: Dict[str, EngineReport] = {}
     routing_errors: List[RoutingError] = []
+    routes: Dict[str, eng.Route] = {}
     skipped: List[Skip] = []
     # The net closes on EVERY path out of here, the ones that leave by raising
     # included: by then every entry before the failure has already run, so that
@@ -937,6 +945,8 @@ def run(
             )
 
         routing_errors = _routing_errors(scored, arms)
+        routes = {r.entry_id: eng.Route(r.predicted, r.route_kind, r.route_detail)
+                  for r in scored if r.predicted}
     finally:
         damage = close_net(root, before)
 
@@ -945,6 +955,7 @@ def run(
         routing_errors=routing_errors,
         skipped=skipped,
         seconds=time.perf_counter() - started,
+        routes=routes,
         damage=damage,
         unbuilt=unbuilt,
         reference=str(ref_bin or ""),
