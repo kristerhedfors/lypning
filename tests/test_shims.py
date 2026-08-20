@@ -441,7 +441,7 @@ print(c.most_common(3), len(c), "a" in c)'''),
     ("collections", "counter-update", r'''from collections import Counter
 c = Counter("abc")
 c.update("bcd")
-print(sorted(c.items()), c.total())'''),
+print(sorted(c.items()), c.total())'''),  # Counter.total() is 3.10+
     ("collections", "defaultdict-int", r'''from collections import defaultdict
 d = defaultdict(int)
 for w in "a b a c a".split():
@@ -724,10 +724,12 @@ class Differential:
         cpython: Optional[Dict[str, List[str]]],
         shim: Optional[Dict[str, List[str]]],
         error: Optional[str],
+        oracle_version: "Optional[tuple]" = None,
     ) -> None:
         self.cpython = cpython or {}
         self.shim = shim or {}
         self.error = error
+        self.oracle_version = oracle_version or (0, 0)
 
     def require(self) -> None:
         if self.error:
@@ -797,6 +799,23 @@ def _oracle_and_lib() -> Tuple[Path, Path]:
     return python, lib
 
 
+def _oracle_version(python: "Path") -> tuple:
+    """``(major, minor)`` of the interpreter acting as the oracle.
+
+    Asked of the binary rather than read from ``sys.version_info``: the oracle
+    is whichever CPython ``engines.find_cpython()`` resolved, which need not be
+    the one running pytest.
+    """
+    out = subprocess.run(
+        [str(python), "-c", "import sys;print('%d %d' % sys.version_info[:2])"],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    try:
+        return tuple(int(n) for n in out.stdout.split())
+    except ValueError:  # pragma: no cover
+        return (0, 0)
+
+
 @pytest.fixture(scope="session")
 def differential(tmp_path_factory) -> Differential:
     """Both runs, once per session.
@@ -815,7 +834,7 @@ def differential(tmp_path_factory) -> Differential:
         shim = _run(python, "shim", cases, scratch, lib)
     except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as exc:
         return Differential(None, None, str(exc))
-    return Differential(cpython, shim, None)
+    return Differential(cpython, shim, None, _oracle_version(python))
 
 
 # --- the tests ----------------------------------------------------------------
@@ -867,19 +886,39 @@ def test_the_shim_run_really_imports_the_shim_tree(tmp_path) -> None:
     )
 
 
+# Cases whose ORACLE has to be new enough to express them.
+#
+# The shims are written against a current CPython, so a shim can be AHEAD of an
+# old one: `Counter.total()` arrived in 3.10, and under a 3.9 oracle the
+# differential reports the shim answering where CPython raises AttributeError.
+# That is the oracle being old, not the shim being wrong. Failing on it would
+# leave the 3.9 matrix job green only if the case were deleted — so the case
+# stays, and is compared on every interpreter that can express it.
+#
+# The oracle is NOT necessarily the interpreter running pytest: conftest strips
+# $LYPNING_CPYTHON, so it is resolved off $PATH.
+_CASE_MIN_PYTHON = {
+    "counter-update": (3, 10),
+}
+
+
 @pytest.mark.parametrize("module", MODULES)
 def test_shim_matches_cpython(module: str, differential: Differential) -> None:
     """Every case for one shim module, byte for byte against the live oracle."""
     differential.require()
+    oracle = differential.oracle_version
+    graded = [
+        (mod, cid) for mod, cid, _ in CASES
+        if mod == module and _CASE_MIN_PYTHON.get(cid, (0, 0)) <= oracle
+    ]
     failures = [
-        differential.report(mod, cid)
-        for mod, cid, _ in CASES
-        if mod == module and not differential.agree(cid)
+        differential.report(mod, cid) for mod, cid in graded
+        if not differential.agree(cid)
     ]
     assert not failures, "%s: %d of %d cases diverge from CPython\n\n%s" % (
         module,
         len(failures),
-        sum(1 for mod, _, _ in CASES if mod == module),
+        len(graded),
         "\n\n".join(failures),
     )
 

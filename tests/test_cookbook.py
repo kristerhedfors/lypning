@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -82,6 +83,13 @@ class Recipe:
     #: when the before form cannot be run to completion at all — the heap recipe
     #: exists precisely because its input does not fit.
     equivalent: bool = True
+    #: ``min_python=3.10`` — the oldest CPython whose own syntax and builtins can
+    #: express this recipe's BEFORE. Assertion 3 compares the two halves under
+    #: CPython, and on an older interpreter the before does not run there either,
+    #: so the comparison has nothing to say. Skipped rather than failed: the
+    #: recipe is not wrong, the oracle simply predates the feature the recipe is
+    #: about. ``zip(strict=)`` and ``match`` are 3.10, ``except*`` is 3.11.
+    min_python: tuple = ()
     #: ``synthetic=yes`` marks a before that is illustrative rather than runnable
     #: (it names a placeholder). It skips execution entirely and is the one
     #: escape hatch; keep it rare and justified on the page.
@@ -136,6 +144,9 @@ def parse_cookbook(md: str) -> List[Recipe]:
             stdin=attrs.get("stdin", ""),
             argv=json.loads(attrs["argv"]) if "argv" in attrs else [],
             equivalent=attrs.get("equivalent") != "no",
+            min_python=tuple(
+                int(n) for n in attrs.get("min_python", "").split(".") if n
+            ),
             synthetic=attrs.get("synthetic") == "yes",
         ))
     return recipes
@@ -192,6 +203,31 @@ def _cpython() -> Path:
     if b is None:  # pragma: no cover - this suite runs under one
         pytest.skip("no reference CPython")
     return b
+
+
+def _oracle_version() -> tuple:
+    """The version of the CPython acting as the oracle — which is NOT necessarily
+    the one running pytest. conftest strips ``$LYPNING_CPYTHON``, so the oracle
+    is resolved off ``$PATH`` and a matrix job can run 3.9 while the shell's
+    ``python3`` is 3.12, or the reverse."""
+    out = subprocess.run(
+        [str(_cpython()), "-c", "import sys;print('%d %d' % sys.version_info[:2])"],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    try:
+        return tuple(int(n) for n in out.stdout.split())
+    except ValueError:  # pragma: no cover - an oracle that cannot say is not one
+        return ()
+
+
+def _require_oracle(recipe: Recipe) -> None:
+    if recipe.min_python and _oracle_version() < recipe.min_python:
+        pytest.skip(
+            "%s needs CPython %s as the oracle; this one is %s"
+            % (recipe.id,
+               ".".join(str(n) for n in recipe.min_python),
+               ".".join(str(n) for n in _oracle_version()))
+        )
 
 
 def _run(binary: Path, engine: str, program: str, recipe: Recipe) -> engines.Result:
@@ -313,6 +349,7 @@ def test_the_rewrite_runs_under_cpython(recipe):
 @_EQUIVALENT
 def test_the_rewrite_computes_what_the_original_computed(recipe):
     """The assertion the other two cannot make, and it needs no engine."""
+    _require_oracle(recipe)
     before = _run(_cpython(), engines.CPYTHON, recipe.before, recipe)
     after = _run(_cpython(), engines.CPYTHON, recipe.after, recipe)
     assert before.returncode == 0, (
