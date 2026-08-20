@@ -49,9 +49,26 @@ def test_zero_runtime_dependencies() -> None:
     repository nobody here will ever see.
     """
     cfg = _project()
-    assert cfg["project"]["dependencies"] == []
+    assert cfg["project"]["dependencies"] == [], (
+        "`pip install lypning` must resolve nothing. This is the invariant; the "
+        "extras below are the door it is easy to leave open."
+    )
+
+    # An extra is opt-in, so it is not a runtime dependency — but it is one
+    # keystroke away from being treated as normal, and every extra added is one
+    # more thing a user might install into a shared environment. So the set is
+    # an allowlist with a stated reason each, and adding one is a deliberate
+    # edit HERE, not a quiet line in pyproject.toml.
+    allowed = {
+        "dev": "the test suite",
+        "docs": "site/build.py only; never imported by the package",
+    }
     extras = cfg["project"]["optional-dependencies"]
-    assert set(extras) == {"dev"}, "a second extra is a dependency with a door held open"
+    unexpected = set(extras) - set(allowed)
+    assert not unexpected, (
+        "undeclared extra(s) %s — add them here with a reason, or drop them"
+        % sorted(unexpected)
+    )
     assert all(d.startswith("pytest") for d in extras["dev"])
 
 
@@ -133,3 +150,24 @@ def test_ci_executes_the_floor_it_claims() -> None:
     """
     text = WORKFLOW.read_text()
     assert re.search(r'python:\s*\[.*"3\.9".*\]', text)
+
+
+@needs_toml
+def test_no_extra_is_imported_by_the_package() -> None:
+    """The allowlist above is only true while nothing under `src/lypning/`
+    imports what an extra installs.
+
+    An extra that the package imports is a runtime dependency wearing a
+    disguise: it works on the machine that ran `pip install .[docs]` and raises
+    ImportError on every other one. `markdown` and `pygments` are build-time
+    tools for the docs site, which lives outside the package for exactly this
+    reason.
+    """
+    forbidden = {"markdown", "pygments"}
+    offenders = []
+    for path in sorted(PACKAGE.rglob("*.py")):
+        src = path.read_text(encoding="utf-8")
+        for mod in forbidden:
+            if re.search(r"^\s*(import %s|from %s\b)" % (mod, mod), src, re.M):
+                offenders.append("%s imports %s" % (path.name, mod))
+    assert not offenders, offenders
