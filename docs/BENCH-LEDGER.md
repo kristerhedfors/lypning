@@ -582,3 +582,52 @@ are different builds.
 
 ---
 
+
+---
+
+## 2026-08-20 — first run with all three engines, post-extraction
+
+The first measurement taken in the `lypning` package rather than in
+deepresearch.se, and the first anywhere with all three arms built at once on
+this host. Machine: 4 CPUs, Linux 6.18.5-fc-v20 x86_64. Corpus: 842 harvested,
+763 measured, 79 skipped for naming an absolute path the per-entry temp cwd does
+not contain. Engines: lypning 1,036,984 B (static musl x86-64), lypning-mp
+294,788 B (static musl i386, stripped), CPython 3.11.15.
+
+```
+startup — `-c 'pass'`, min of 15, arms interleaved
+mixture 0.77   lypning-mp 0.83   lypning 0.91   cpython 13.84       (ms)
+
+shared subset — 500 programs every arm executed
+arm          ran  refused   shared total    median   vs cpython
+cpython      763        0        9153.3 ms    16.12    1.000x
+lypning      500      263         716.9 ms     1.37    0.078x
+lypning-mp   714       49         583.6 ms     1.13    0.064x
+mixture      763        0         978.4 ms     1.33    0.107x
+
+whole corpus
+cpython     18207.5 ms   1.000x
+lypning      1125.6 ms   0.062x   (263 unanswered)
+lypning-mp   1402.2 ms   0.077x   (49 unanswered)
+mixture      5925.7 ms   0.325x   (0 unanswered — saves 12,281.7 ms, 67.5%)
+```
+
+**The subset ordering reversed against 2026-08-16.** That run had lypning at
+0.102x beating lypning-mp at 0.143x on the shared subset, and lypning starting
+faster (1.03 ms against 1.20 ms). Here both are the other way round, by 19% on
+the shared total and by 0.08 ms at startup. Two consecutive runs agreed to
+within 2%, so it is not noise on this host.
+
+The likely mechanism, stated as a hypothesis rather than a finding: the shared
+subset is by construction the programs lypning accepted, which are the simplest
+in the corpus, so both engines sit close to their startup floor — and
+lypning-mp's binary is 3.5x smaller. That predicts the gap should shrink as
+lypning's coverage grows to include heavier programs. Not tested.
+
+**This is a run where the subset lost, recorded because this ledger is where
+those go.** The mixture result was unaffected: 763/763 answered, zero
+mismatches, 0.325x of CPython.
+
+Conformance on the same tree: lypning 500 MATCH / 263 UNSUPPORTED / 0 MISMATCH
+(65.5% coverage), lypning-mp 714 / 47 / **2** (93.6%), mixture 763 / 0 / 0
+(100%). The two MISMATCHes are the commit-barrier defect — `docs/LYPNING.md` §6.

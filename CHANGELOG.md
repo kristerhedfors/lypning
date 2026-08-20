@@ -138,8 +138,15 @@ This release is that work as a standalone, installable Python package.
 - **The measured tables in `docs/` predate the extraction.** They were taken on
   the upstream container (2026-08-16, 472 programs) and are quoted as the
   argument for the project, not as a claim about your machine. Re-running
-  `lypning bench` here on 2026-08-20 over 760 measured programs reproduced the
-  ordering and moved every absolute number. Re-measure; do not cite.
+  `lypning bench` here on 2026-08-20 over 763 measured programs, with all three
+  engines built, moved every absolute number **and reversed the ordering of the
+  two subset engines**: lypning-mp came in at 0.064x of CPython on the shared
+  subset against lypning's 0.078x, where upstream had lypning ahead at 0.102x
+  against 0.143x. Two consecutive runs agreed to within 2%. The mixture result
+  held (763/763 answered, 0.325x, a 67.5% saving). So upstream's "the subset
+  engine is fastest on the work it accepts" is a result about that corpus on
+  that machine, not a property of the design. Re-measure; do not cite, and do
+  not carry a remembered ordering either. `docs/BENCH-LEDGER.md` has the run.
 - **`lypning-mp` breaks the refusal contract on 2 of 763 corpus programs**
   (measured 2026-08-20 on a binary from `lypning build --micropython` here): it
   refuses with exit 90 *after* 54 and 147 bytes have already reached stdout,

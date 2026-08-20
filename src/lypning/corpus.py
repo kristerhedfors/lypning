@@ -24,6 +24,7 @@ that is pure data, so it works identically whether or not anything is built.
 from __future__ import annotations
 
 import ast
+import warnings
 import builtins
 import hashlib
 import json
@@ -401,8 +402,16 @@ def _imports_and_builtins(program: str) -> Tuple[List[str], List[str]] | None:
     """Module roots and builtin references in one program, or None if it will not
     parse under this CPython — a 3.12 program read by a 3.9 is unparsed, not
     empty, and the difference has to reach the report."""
+    # These are programs harvested from real sessions, not code we wrote, and
+    # some of them spell a regex in a plain string — `'\\.'` is a
+    # DeprecationWarning in 3.6+ and a SyntaxWarning from 3.12. Compiling one
+    # must not put a warning in the caller's output about a line nobody here can
+    # fix, so the parse is silenced. Syntax that does not parse at all is still
+    # reported, as None.
     try:
-        tree = ast.parse(program)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            tree = ast.parse(program)
     except (SyntaxError, ValueError, MemoryError, RecursionError):
         return None
     mods: List[str] = []

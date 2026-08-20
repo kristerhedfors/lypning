@@ -60,13 +60,47 @@ Read it in this order:
   ~1.0 MB against lypning-mp's ~270 KB; both are static musl and both open zero
   files at startup, so they arrive at the same place by different routes.
 
-**Re-measure. Do not cite.** Running `lypning bench` here on 2026-08-20 — a
-different container, a corpus that capture has grown to **842 programs, 763
-measured** — gave a different table with the same shape: mixture 0.106x of
-CPython on the 500-program shared subset, 0.339x over the whole corpus, and
-CPython's own startup at 13.43 ms rather than 11.04 ms. The ordering held; every
-absolute number moved. Both tools print the corpus size they loaded, every run,
-for exactly this reason — **never quote a remembered corpus size**.
+**Re-measure. Do not cite — and the first bullet above did not reproduce.**
+Running `lypning bench` here on 2026-08-20, on a different container against a
+corpus capture has grown to **842 programs, 763 measured**, with all three
+engines built:
+
+```
+shared subset — 500 programs every arm executed
+
+arm          ran  refused   shared total    median   vs cpython
+cpython      763        0        9153.3 ms    16.12    1.000x
+lypning      500      263         716.9 ms     1.37    0.078x
+lypning-mp   714       49         583.6 ms     1.13    0.064x
+mixture      763        0         978.4 ms     1.33    0.107x
+
+whole corpus                     vs cpython
+cpython     18207.5 ms             1.000x
+mixture      5925.7 ms             0.325x   (0 unanswered — saves 67.5%)
+
+startup — `-c 'pass'`, min of 15
+mixture 0.77 ms   lypning-mp 0.83 ms   lypning 0.91 ms   cpython 13.84 ms
+```
+
+The mixture result held: 763/763 answered at 0.325x of CPython, a 67.5% saving.
+**The ordering of the two subset engines reversed.** Upstream measured lypning
+at 0.102x beating lypning-mp at 0.143x on the shared subset; here lypning-mp is
+0.064x against lypning's 0.078x, and it starts faster too (0.83 ms against
+0.91 ms). Two consecutive runs agree to within 2%, so this is not noise.
+
+Read honestly, that means **the first bullet above is upstream's result, not a
+property of the design.** The shared subset is by construction the 500 programs
+lypning accepted — the simplest in the corpus — where both engines sit near
+their startup floor, and lypning-mp's floor is lower: its binary is 294,788 B
+against lypning's 1,036,984 B. The claim that a runtime built for two-thirds of
+the distribution beats a general one *on that two-thirds* is a claim about a
+particular corpus on a particular machine, and this machine did not reproduce
+it.
+
+What survives re-measurement is the part the mixture is actually for: answering
+everything CPython answers, for a third of the cost. Both tools print the corpus
+size they loaded, every run, for exactly this reason — **never quote a
+remembered corpus size**, and do not carry a remembered ordering either.
 
 `docs/LYPNING.md` §1 is the full table with its caveats, `docs/BENCH-LEDGER.md`
 is the append-only history including the runs where the subset lost.
