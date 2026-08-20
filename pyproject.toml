@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lypning"
+version = "0.1.0"
+description = "A tiny Python subset in Rust, a frozen-stdlib MicroPython, and the router that picks between them — for the one-liners coding agents actually type."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "Krister Hedfors", email = "krister.hedfors@gmail.com" }]
+keywords = ["python-subset", "interpreter", "micropython", "rust", "claude-code", "coding-agent", "sandbox", "benchmark"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Rust",
+  "Topic :: Software Development :: Interpreters",
+  "Topic :: Software Development :: Testing",
+]
+# ZERO runtime dependencies, on purpose. This package installs into the same
+# environment as whatever the agent is working on; a dependency of ours is a
+# version conflict in someone else's project.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.urls]
+Homepage = "https://github.com/kristerhedfors/lypning"
+Source = "https://github.com/kristerhedfors/lypning"
+Documentation = "https://github.com/kristerhedfors/lypning/tree/main/docs"
+
+[project.scripts]
+lypning = "lypning.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+lypning = [
+  "assets/rust/Cargo.toml",
+  "assets/rust/Cargo.lock",
+  "assets/rust/src/*.rs",
+  "assets/micropython/Makefile",
+  "assets/micropython/README.md",
+  "assets/micropython/variant/*",
+  "assets/micropython/variant/patches/*",
+  "assets/micropython/lib/*.py",
+  "assets/micropython/lib/*/*.py",
+  "assets/micropython/lib/README.md",
+  "assets/scripts/*.sh",
+  "assets/shim/python-shim",
+  "assets/corpus/*.jsonl",
+  "assets/claude/skills/lypning/*.md",
+  "assets/claude/hooks/*.sh",
+  "assets/claude/*.json",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
