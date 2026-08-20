@@ -414,7 +414,7 @@ print(sorted(xs)[:2], sorted(xs, reverse=True)[:2])
 
 ### zip(strict=True) — check the lengths yourself
 
-<!-- recipe id=zip-strict kind=argument detail="keyword strict" -->
+<!-- recipe id=zip-strict min_python=3.10 kind=argument detail="keyword strict" -->
 
 The 3.10 keyword. What it buys is the error, so the rewrite is to raise it.
 
@@ -454,7 +454,7 @@ print(round(1.2345, 2), int("ff", 16))
 
 ### match — if / elif
 
-<!-- recipe id=match-statement kind=syntax detail="match statement" -->
+<!-- recipe id=match-statement min_python=3.10 kind=syntax detail="match statement" -->
 
 The 3.10 structural-pattern statement is not in this parser. A `match` on a literal is an if-chain; a `match` that destructures needs the unpacking written out, which is where the rewrite stops being mechanical.
 
@@ -528,7 +528,7 @@ print(clamp(15), clamp(-1, hi=5))
 
 ### except* — catch the group as one
 
-<!-- recipe id=except-star kind=syntax detail="except* (exception groups)" -->
+<!-- recipe id=except-star min_python=3.11 kind=syntax detail="except* (exception groups)" -->
 
 Exception groups are 3.11 and there is no `ExceptionGroup` here. Unless the code genuinely raises a group, `except*` over a single exception is a plain `except`.
 
