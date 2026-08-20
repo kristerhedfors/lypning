@@ -14,3 +14,5 @@ dist/
 venv/
 # Local engine cache
 .lypning/
+# Pages build output
+_site/

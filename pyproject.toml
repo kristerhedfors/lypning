@@ -50,6 +50,11 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]
+# Build-time only, for site/build.py. NOT runtime dependencies — the installed
+# package has none, on purpose: it lands in the same environment as whatever the
+# agent is working on, so a dependency of ours is a version conflict in someone
+# else's project.
+docs = ["markdown>=3.4", "pygments>=2.14"]
 
 [project.urls]
 Homepage = "https://github.com/kristerhedfors/lypning"

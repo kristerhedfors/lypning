@@ -299,3 +299,17 @@ jobs:
           PYTHONPATH=src python -m lypning build --rust
           PYTHONPATH=src python -m lypning gate
           PYTHONPATH=src python -m lypning conformance --engine lypning --engine mixture
+
+  site:
+    # The docs site is a rendering of the repository's own markdown, so a
+    # renamed doc or a moved heading breaks a cross-reference. `--check` fails
+    # here, on the pull request, rather than shipping a 404 to a reader.
+    name: docs site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[docs]"
+      - run: python3 site/build.py --out _site --check
