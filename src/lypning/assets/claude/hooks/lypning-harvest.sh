@@ -69,13 +69,16 @@ done
 #
 # `hook stop` runs the equivalent of `lypning harvest --export --quiet`: it
 # publishes this session's sightings and never writes the corpus. stdout is
-# redirected to stderr so hook output can never be mistaken for the hook's JSON
-# protocol response, which must be the only thing on stdout.
+# The subcommand emits its own protocol line, because `lypning hook …` is also
+# usable as a hook on its own. Here the WRAPPER owns the response, so the
+# subcommand's stdout is discarded outright rather than routed to stderr —
+# routing it there put a stray {"continue":true} in the transcript on every
+# single fire. Its stderr is kept: that is where a real diagnostic would appear.
 if command -v lypning >/dev/null 2>&1; then
-  printf '%s' "$LYPNING_HOOK_PAYLOAD" | lypning hook stop >&2 2>&1 && ok
+  printf '%s' "$LYPNING_HOOK_PAYLOAD" | lypning hook stop >/dev/null && ok
 fi
 if command -v python3 >/dev/null 2>&1; then
-  printf '%s' "$LYPNING_HOOK_PAYLOAD" | python3 -m lypning hook stop >&2 2>&1 || true
+  printf '%s' "$LYPNING_HOOK_PAYLOAD" | python3 -m lypning hook stop >/dev/null || true
 fi
 
 ok
