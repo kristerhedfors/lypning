@@ -1,0 +1,275 @@
+#!/bin/sh
+# lypning-capture: transparent `python` / `python3` wrapper.
+# LYPNING_SHIM_MARKER v1 — this line is how the shim recognises ANOTHER copy of
+# itself on $PATH (see find_real below) so it can never exec into itself.
+#
+# It appends one JSON object per invocation to $LYPNING_LOG and then EXECS the
+# real interpreter. The wrapped run must be byte-identical to an unwrapped one:
+#   * stdin/stdout/stderr are inherited untouched (nothing here reads stdin),
+#   * the exec replaces this process, so the exit code and every signal
+#     disposition are the interpreter's own,
+#   * no output of any kind is produced on the normal path.
+# Every logging step is best-effort: a failure to log NEVER fails the command.
+#
+# EXIT CODE / WALL TIME: with a plain exec there is no at-exit path, so the
+# default record carries "exit_code":null,"wall_ms":null. Set
+# LYPNING_CAPTURE_EXIT=1 to wait for the child instead of exec-ing it; that adds
+# a second {"kind":"exit"} record with the code and elapsed ms, at the cost of
+# one extra process in between (a signal that kills the child is then reported
+# as exit 128+n rather than propagating as a signal death). Off by default.
+#
+# Environment:
+#   LYPNING_LOG          log path (default $HOME/.lypning/invocations.jsonl)
+#   LYPNING_CAPTURE=0    disable logging entirely (still execs python)
+#   LYPNING_CAPTURE_EXIT=1  wait-and-log-exit mode (see above)
+
+self_name=${0##*/}
+case "$self_name" in
+  python | python3 | python3.* | python2 | python2.*) : ;;
+  *) self_name=python3 ;;
+esac
+
+# Absolute directory this shim lives in — excluded from the PATH scan. Done with
+# parameter expansion rather than `dirname`, and the cd+pwd only when $0 is
+# relative: two forks saved on every python invocation in the environment.
+case "$0" in
+  */*) self_dir=${0%/*} ;;
+  *) self_dir="." ;;
+esac
+case "$self_dir" in
+  /*) : ;;
+  *) self_dir=$(cd "$self_dir" 2>/dev/null && pwd) || self_dir="" ;;
+esac
+
+# find_real NAME -> prints the first executable NAME on $PATH that is neither in
+# the shim's own directory nor another installed copy of this shim.
+find_real() {
+  _name=$1
+  IFS=:
+  for _d in $PATH; do
+    [ -n "$_d" ] || _d=.
+    _cand="$_d/$_name"
+    [ -f "$_cand" ] && [ -x "$_cand" ] || continue
+    # An absolute PATH entry is compared as text; only a relative one is worth a
+    # subshell to resolve. This runs in front of EVERY python invocation, so a
+    # `cd`+`pwd` per PATH directory is a dozen forks nobody should pay for.
+    case "$_d" in
+      /*) _dabs=$_d ;;
+      *) _dabs=$(cd "$_d" 2>/dev/null && pwd) || continue ;;
+    esac
+    [ -n "$self_dir" ] && [ "$_dabs" = "$self_dir" ] && continue
+    # Cheap shim detection with no extra processes: read the first few lines and
+    # look for the marker. Binary interpreters simply never match. An executable
+    # we cannot READ cannot be this shim (the shim is a readable text file), so
+    # it is accepted as the real interpreter. The outer brace + 2>/dev/null
+    # keeps a failed open from printing a shell diagnostic (dash prints it
+    # before an inner-only redirect can take effect).
+    [ -r "$_cand" ] || { printf '%s\n' "$_dabs/$_name"; return 0; }
+    _shimmy=""
+    {
+      {
+        _i=0
+        while [ "$_i" -lt 8 ] && IFS= read -r _l; do
+          case "$_l" in *LYPNING_SHIM_MARKER*)
+            _shimmy=1
+            break
+            ;;
+          esac
+          _i=$((_i + 1))
+        done
+      } <"$_cand"
+    } 2>/dev/null
+    [ -n "$_shimmy" ] && continue
+    printf '%s\n' "$_dabs/$_name"
+    return 0
+  done
+  return 1
+}
+
+real=$(find_real "$self_name" 2>/dev/null)
+if [ -z "$real" ]; then
+  for alt in python3 python; do
+    [ "$alt" = "$self_name" ] && continue
+    real=$(find_real "$alt" 2>/dev/null)
+    [ -n "$real" ] && break
+  done
+fi
+if [ -z "$real" ]; then
+  printf '%s: command not found\n' "$self_name" >&2
+  exit 127
+fi
+
+# ---------------------------------------------------------------- logging ----
+lypning_disabled=""
+[ "${LYPNING_CAPTURE:-1}" = "0" ] && lypning_disabled=1
+
+lypning_log=""
+if [ -z "$lypning_disabled" ]; then
+  lypning_log=${LYPNING_LOG:-}
+  if [ -z "$lypning_log" ] && [ -n "${HOME:-}" ]; then
+    lypning_log="$HOME/.lypning/invocations.jsonl"
+  fi
+  # NOTE: the probe runs in a SUBSHELL on purpose. `:` is a POSIX special
+  # built-in, so a failed redirect on it exits a non-interactive dash outright —
+  # which would kill the python invocation this wrapper must never touch.
+  if [ -n "$lypning_log" ]; then
+    mkdir -p "${lypning_log%/*}" 2>/dev/null
+    ( : >>"$lypning_log" ) 2>/dev/null || lypning_log=""
+  fi
+  if [ -z "$lypning_log" ]; then
+    # $HOME missing or unwritable: fall back to a per-uid tmp dir, and give up
+    # silently if even that fails.
+    _alt="${TMPDIR:-/tmp}/lypning-mp-$(id -u 2>/dev/null || echo 0)"
+    if mkdir -p "$_alt" 2>/dev/null; then
+      lypning_log="$_alt/invocations.jsonl"
+      ( : >>"$lypning_log" ) 2>/dev/null || lypning_log=""
+    fi
+  fi
+fi
+
+# The record builder. awk is used purely as a JSON encoder (no shell quoting can
+# survive an arbitrary `-c` program). Everything arrives as ARGV positionals, so
+# no value is ever re-interpreted: the program exits inside BEGIN, hence awk
+# never treats an argument as a file name or a var=value assignment.
+LYPNING_AWK='
+function esc(s,   i, c, o, n2) {
+  gsub(/\\/, "\\\\", s)
+  gsub(/"/, "\\\"", s)
+  if (s ~ /[[:cntrl:]]/) {
+    o = ""; n2 = length(s)
+    for (i = 1; i <= n2; i++) {
+      c = substr(s, i, 1)
+      if (c in CTL) {
+        if (c == NL) o = o "\\n"
+        else if (c == CR) o = o "\\r"
+        else if (c == TB) o = o "\\t"
+        else o = o sprintf("\\u%04x", CTL[c])
+      } else o = o c
+    }
+    s = o
+  }
+  return s
+}
+function q(s) { return "\"" esc(s) "\"" }
+function jnum(s) { return (s == "" || s !~ /^-?[0-9]+$/) ? "null" : s }
+BEGIN {
+  for (k = 1; k < 32; k++) CTL[sprintf("%c", k)] = k
+  CTL[sprintf("%c", 127)] = 127
+  NL = sprintf("%c", 10); CR = sprintf("%c", 13); TB = sprintf("%c", 9)
+
+  ts = ARGV[1]; cwd = ARGV[2]; sess = ARGV[3]; spipe = ARGV[4]; skind = ARGV[5]
+  shim = ARGV[6]; exe = ARGV[7]; pid = ARGV[8]; run = ARGV[9]; kind = ARGV[10]
+  ec = ARGV[11]; wm = ARGV[12]
+
+  n = 0
+  for (i = 13; i < ARGC; i++) { n++; A[n] = ARGV[i] }
+
+  hasprog = 0; hasmod = 0; hasscr = 0; tail = 0
+  for (i = 1; i <= n; i++) {
+    a = A[i]
+    if (a == "-c" && i < n) { prog = A[i + 1]; hasprog = 1; tail = i + 2; break }
+    if (a == "-m" && i < n) { mod = A[i + 1]; hasmod = 1; tail = i + 2; break }
+    if (a == "-") { tail = i + 1; break }
+    if (substr(a, 1, 1) != "-") { scr = a; hasscr = 1; tail = i + 1; break }
+  }
+
+  out = "{" q("kind") ":" q(kind)
+  out = out "," q("ts") ":" q(ts)
+  out = out "," q("session") ":" (sess == "" ? "null" : q(sess))
+  out = out "," q("cwd") ":" q(cwd)
+  out = out "," q("shim") ":" q(shim)
+  out = out "," q("exe") ":" q(exe)
+  out = out "," q("pid") ":" jnum(pid)
+  out = out "," q("run") ":" q(run)
+  out = out "," q("argv") ":["
+  for (i = 1; i <= n; i++) out = out (i > 1 ? "," : "") q(A[i])
+  out = out "]"
+  out = out "," q("program") ":" (hasprog ? q(prog) : "null")
+  out = out "," q("module") ":" (hasmod ? q(mod) : "null")
+  out = out "," q("script") ":" (hasscr ? q(scr) : "null")
+  out = out "," q("argv_tail") ":["
+  if (tail > 0) { c2 = 0; for (i = tail; i <= n; i++) { out = out (c2++ ? "," : "") q(A[i]) } }
+  out = out "]"
+  out = out "," q("stdin_pipe") ":" (spipe == "true" ? "true" : "false")
+  out = out "," q("stdin_kind") ":" q(skind)
+  out = out "," q("exit_code") ":" jnum(ec)
+  out = out "," q("wall_ms") ":" jnum(wm)
+  out = out "}"
+  print out
+  exit 0
+}
+'
+
+# One `date` for both the ISO stamp and the nanosecond clock — they are always
+# wanted together, and this is the hot path. Sets PG_TS and PG_NS. Falls back
+# per-field when the platform's date lacks %3N / %N (busybox, macOS).
+lypning_now() {
+  _now=$(date -u +'%Y-%m-%dT%H:%M:%S.%3NZ %s%N' 2>/dev/null) || _now=""
+  PG_TS=${_now% *}
+  PG_NS=${_now#* }
+  case "$PG_TS" in
+    '' | *N* | *%*) PG_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || PG_TS="" ;;
+  esac
+  case "$PG_NS" in
+    '' | *[!0-9]*) PG_NS=$(date +%s 2>/dev/null)000000000 ;;
+  esac
+}
+
+# stdin shape, observed without reading a single byte from it.
+if [ -t 0 ]; then
+  stdin_pipe=false
+  stdin_kind=tty
+else
+  stdin_pipe=true
+  if [ -p /dev/stdin ] 2>/dev/null; then
+    stdin_kind=pipe
+  elif [ -f /dev/stdin ] 2>/dev/null; then
+    stdin_kind=file
+  else
+    stdin_kind=other
+  fi
+fi
+
+lypning_now
+start_ns=$PG_NS
+run_id="$$-$start_ns"
+
+if [ -n "$lypning_log" ]; then
+  line=$(
+    awk "$LYPNING_AWK" \
+      "$PG_TS" "${PWD:-.}" "${CLAUDE_CODE_SESSION_ID:-}" \
+      "$stdin_pipe" "$stdin_kind" "$self_name" "$real" "$$" "$run_id" \
+      "python_invocation" "" "" "$@" 2>/dev/null
+  ) || line=""
+  case "$line" in
+    '{'*) { printf '%s\n' "$line" >>"$lypning_log"; } 2>/dev/null || : ;;
+    *) : ;;
+  esac
+fi
+
+# ------------------------------------------------------------------- run -----
+if [ "${LYPNING_CAPTURE_EXIT:-0}" = "1" ] && [ -n "$lypning_log" ]; then
+  "$real" "$@"
+  rc=$?
+  lypning_now
+  end_ns=$PG_NS
+  # Arithmetic on a non-numeric operand is a FATAL shell error in dash, which
+  # would swallow the child's exit code — so both operands are checked first.
+  wall_ms=""
+  case "$start_ns$end_ns" in
+    '' | *[!0-9]*) : ;;
+    *) wall_ms=$(((end_ns - start_ns) / 1000000)) ;;
+  esac
+  line=$(
+    awk "$LYPNING_AWK" \
+      "$PG_TS" "${PWD:-.}" "${CLAUDE_CODE_SESSION_ID:-}" \
+      "$stdin_pipe" "$stdin_kind" "$self_name" "$real" "$$" "$run_id" \
+      "exit" "$rc" "$wall_ms" 2>/dev/null
+  ) || line=""
+  case "$line" in
+    '{'*) { printf '%s\n' "$line" >>"$lypning_log"; } 2>/dev/null || : ;;
+  esac
+  exit $rc
+fi
+
+exec "$real" "$@"
