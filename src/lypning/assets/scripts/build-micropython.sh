@@ -59,7 +59,7 @@ MPY_TAG="v1.28.0"
 MPY_COMMIT="e0e9fbb17ed6fd06bb76e266ae554784c9c80804"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LYPNING_MP_DIR="$REPO_ROOT/lypning-mp"
+LYPNING_MP_DIR="$REPO_ROOT/micropython"
 WORK="${LYPNING_WORK:-$LYPNING_MP_DIR/.build}"
 OUT="$LYPNING_MP_DIR/build/lypning-mp"
 
@@ -444,7 +444,7 @@ cp "$BUILT" "$OUT"
 # 6. Smoke checks — the contracts that must hold on every build
 # --------------------------------------------------------------------------
 # These are not the gates (lypning gate) and not the conformance
-# battery (tests/corpus/conformance.mjs). They are the handful of properties
+# battery (lypning conformance). They are the handful of properties
 # that make those two worth running at all, checked here so a broken build
 # fails at the build rather than three tools later.
 say "Smoke checks"
@@ -527,7 +527,7 @@ check "csv silently-swallowed kwarg exits 90" \
 # the source reaches the scanner differently in each (a string for -c, a path
 # for a file, a buffered read for stdin), so one working proves nothing about
 # the others. micropython/variant/lypning_compat.h; the scanner's own battery is
-# tests/corpus/syntax-scan.test.mjs.
+# tests/test_syntax_scan.py.
 check "missing syntax exits 90 (-c)" \
     "$("$OUT" -c 'match x:
     case 1: pass' >/dev/null 2>&1; echo $?)" "90"
@@ -628,12 +628,12 @@ BYTES="$(stat -c %s "$OUT")"
 [ "$fail" = 0 ] || die "smoke checks failed"
 
 say "Built $OUT — $BYTES bytes"
-echo "    file opens on -c 'pass':  node lypning gate $OUT --compare"
-echo "    conformance vs CPython:   LYPNING_MP_BIN=$OUT node tests/corpus/conformance.mjs"
+echo "    file opens on -c 'pass':  lypning gate $OUT --compare"
+echo "    conformance vs CPython:   LYPNING_MP_BIN=$OUT lypning conformance"
 
 if [ "$DO_VERIFY" = 1 ]; then
     say "Gate"
-    node "$REPO_ROOT/lypning gate" "$OUT" --compare
+    lypning gate "$OUT" --compare
     say "Conformance"
-    LYPNING_MP_BIN="$OUT" node "$REPO_ROOT/tests/corpus/conformance.mjs"
+    LYPNING_MP_BIN="$OUT" lypning conformance
 fi

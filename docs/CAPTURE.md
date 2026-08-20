@@ -33,7 +33,7 @@ python-shim ─┐
 hook ────────┼─> ~/.lypning/invocations.jsonl ─┐
              │                                ├─> --export ─> tests/corpus/sightings/<session>.jsonl ─┐
 ~/.claude/projects/**/*.jsonl ────────────────┘                                                       │
-                                                                                                      ├─> harvest.mjs ─> tests/corpus/corpus.jsonl
+                                                                                                      ├─> harvest.py ─> tests/corpus/corpus.jsonl
 tests/corpus/sightings/*.jsonl (every session that ever ran) ─────────────────────────────────────────┤
 tests/corpus/corpus.jsonl (existing) ─────────────────────────────────────────────────────────────────┘
 ```
@@ -165,12 +165,12 @@ otherwise trip.
 ## Harvest
 
 ```sh
-node lypning harvest                 # merge into tests/corpus/corpus.jsonl
-node lypning harvest --export        # publish THIS session's sightings, write no corpus
-node lypning harvest --dry-run       # report, write nothing
-node lypning harvest --no-transcripts
-node lypning harvest --no-sightings  # fold the live log only
-node lypning harvest --log X --corpus Y --transcripts Z --sightings S
+lypning harvest                 # merge into tests/corpus/corpus.jsonl
+lypning harvest --export        # publish THIS session's sightings, write no corpus
+lypning harvest --dry-run       # report, write nothing
+lypning harvest --no-transcripts
+lypning harvest --no-sightings  # fold the live log only
+lypning harvest --log X --corpus Y --transcripts Z --sightings S
 ```
 
 `--export` is what the Stop hook runs. It writes only
@@ -232,7 +232,7 @@ paths, occasionally a token pasted into a one-liner.
   false-positive on anything but the secret — and writes
   `[REDACTED env <NAME> <n> chars]`. Naming the variable rather than the value is
   deliberate: it says which credential to rotate without restating it.
-* `harvest.mjs` redacts before writing. Every program, argv tail, and stdin
+* `harvest.py` redacts before writing. Every program, argv tail, and stdin
   sample is matched against the repo's canonical credential patterns — the same
   set as `scripts/scan-secrets` (OpenAI `sk-`, Berget `sk_ber_`, Groq `gsk_`,
   AWS `AKIA`, GitHub `ghp_`/`github_pat_`, Google `AIza`, Slack `xox*`, PEM
@@ -242,7 +242,7 @@ paths, occasionally a token pasted into a one-liner.
   The marker cannot re-match, so redaction is idempotent.
 * Keep the two pattern lists in sync. `scripts/scan-secrets` is the canonical
   one (owned by the security-posture skill §1); `SECRET_PATTERNS` in
-  `harvest.mjs` mirrors it.
+  `harvest.py` mirrors it.
 * Redaction is a backstop, not a promise. Run `scripts/scan-secrets` before
   committing a corpus refresh, and read the diff — a secret in a shape nobody
   has a pattern for still reads as ordinary program text.
@@ -292,11 +292,11 @@ cost, and `--uninstall` removes the shim.
 ## Tests
 
 ```sh
-node --test lypning capture/harvest.test.mjs
+python3 -m pytest tests/test_harvest.py
 ```
 
 Covers dedup, normalization, redaction, command extraction (quoting, heredocs,
 runners), re-run idempotency, and the durability path — per-session export,
 key namespacing, and the no-double-count property of the fold.
 
-`npm test` picks this file up via the `scripts/*/*.test.mjs` glob.
+`pytest` picks this file up from `tests/`.

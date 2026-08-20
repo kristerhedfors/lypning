@@ -164,7 +164,7 @@ MICROPY_ROM_TEXT_COMPRESSION = 0
 # LTO across setjmp/longjmp is the classic miscompile hazard, and MicroPython
 # raises exceptions through exactly that (the NLR machinery), so this is NOT
 # accepted on the conformance battery alone. It is pinned by a dedicated
-# stress case in tests/corpus/conformance.mjs ("nlr-stress"): deep recursive
+# stress case in lypning conformance ("nlr-stress"): deep recursive
 # unwinding, finally ordering, locals live across a raise, generator close,
 # 2000 sequential raises reusing the NLR buffer, and the recursion limit. All
 # match CPython exactly.

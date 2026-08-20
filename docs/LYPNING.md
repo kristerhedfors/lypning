@@ -71,7 +71,7 @@ Read it in this order:
   against lypning-mp's 269,316 B; both are static musl and both open zero files, so
   they arrive at the same place by different routes.
 
-Reproduce: `bash scripts/build-rust.sh && node lypning bench`.
+Reproduce: `bash scripts/build-rust.sh && lypning bench`.
 
 > **Running the corpus can rewrite this repository.** It is harvested from real
 > agent sessions, so it is full of programs that edit `src/` and `docs/`. Every
@@ -88,7 +88,7 @@ the runner. CI keeps the deterministic half (conformance, routing safety).
 ## 2. Conformance: the number that must be zero
 
 ```
-node lypning conformance
+lypning conformance
 ```
 
 Every corpus program runs under CPython (the reference) and under each engine,

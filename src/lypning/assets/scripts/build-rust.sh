@@ -108,7 +108,7 @@ done
 cat <<EOF
 
 next:
-    node lypning conformance          # three engines + routing safety
-    node lypning conformance --plan   # what to build next in lypning
-    node lypning bench              # the four-arm benchmark
+    lypning conformance          # three engines + routing safety
+    lypning conformance --plan   # what to build next in lypning
+    lypning bench              # the four-arm benchmark
 EOF

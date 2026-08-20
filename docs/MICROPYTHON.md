@@ -115,7 +115,7 @@ Secondary, checked locally and cheaply in CI:
 
 | gate | target | how it is checked |
 |---|---|---|
-| stripped static binary size | ≤ 700 KB | `node lypning gate` |
+| stripped static binary size | ≤ 700 KB | `lypning gate` |
 | file-opens on `-c 'pass'` | ≤ 3 | same, via `strace -f -e trace=file` |
 | linked shared objects | 0 | same, `file` reports "statically linked" |
 | corpus conformance | 100% of Tier 0 | `npm run lypning:conformance` |
@@ -125,7 +125,7 @@ alongside, so a build change is judged in seconds instead of a Playwright run.
 
 ### The baseline, measured
 
-`node lypning gate <bin> --compare` on this dev container, against
+`lypning gate <bin> --compare` on this dev container, against
 the system CPython 3.11:
 
 | | CPython 3.11 | an empty static i386 C binary |
@@ -480,7 +480,7 @@ deletes 138 of `main`'s own records, which is how that rule got tested.)
 |---|---|---|---|
 | 1 | implementation survey, ranked on cold cost | `docs/RESEARCH.md` | **done** — MicroPython variant, musl, i386 |
 | 2 | subset spec + seed corpus | `docs/SUBSET.md`, `tests/corpus/seed-corpus.jsonl` | **done** — 161 entries, tiered |
-| 3 | conformance runner + build gate | `tests/corpus/conformance.mjs`, `lypning gate` | **done** — both proven against stubs |
+| 3 | conformance runner + build gate | `lypning conformance`, `lypning gate` | **done** — both proven against stubs |
 | 4 | charter | this file | **done** |
 | 5 | capture harness + corpus growth | `lypning capture/` | in progress |
 | 6 | the variant + build | `micropython/`, `scripts/build-micropython.sh` | in progress |

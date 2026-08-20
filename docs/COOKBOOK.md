@@ -26,7 +26,7 @@ This file is the second branch: the rewrites, one per thing an agent actually
 typed. It is not a style guide and none of it is about writing better Python —
 every "before" here is perfectly good Python that this interpreter cannot run.
 
-**Every recipe on this page is executed by `tests/corpus/cookbook.test.mjs`,
+**Every recipe on this page is executed by `tests/test_cookbook.py`,
 against a real lypning-mp build and a real CPython.** For each one the test asserts
 three things: the *before* still exits 90 with the stated contract line, the
 *after* produces byte-identical stdout and exit code under lypning-mp and CPython,
@@ -42,7 +42,7 @@ Three different reasons, and they call for different reactions:
 | reason | examples | what to do |
 |---|---|---|
 | **Deliberately excluded** | `subprocess`, `os.system`, `threading`, `input()` | Rewrite. These are not coming: shelling out from inside a subset interpreter would be a second, worse shell, and there is no scheduler to thread against. |
-| **Not built yet** | `itertools`, `functools`, `bisect`, `string`, `copy`, `decimal` | Rewrite, or retry. `node tests/corpus/conformance.mjs --plan` ranks these by how many real programs each would unblock — that ranking is the build order. |
+| **Not built yet** | `itertools`, `functools`, `bisect`, `string`, `copy`, `decimal` | Rewrite, or retry. `lypning conformance --plan` ranks these by how many real programs each would unblock — that ranking is the build order. |
 | **Cannot be built** | `@dataclass`, `enum` | Rewrite. `@dataclass` reads `__annotations__`, which MicroPython's compiler parses and discards; `enum` needs a metaclass. Neither has anything for a shim to stand on. |
 
 
@@ -602,7 +602,7 @@ Do not write one from imagination. The point of this page is that every entry
 came from a program someone ran, so start from the evidence:
 
 ```bash
-LYPNING_MP_BIN=micropython/build/lypning-mp node tests/corpus/conformance.mjs --json |
+LYPNING_MP_BIN=micropython/build/lypning-mp lypning conformance --json |
   node -e 'JSON.parse(require("fs").readFileSync(0,"utf8")).results
     .filter(e => e.verdict === "UNSUPPORTED")
     .forEach(e => console.log(e.id, "|", e.program.split("\n")[0]))'
@@ -612,7 +612,7 @@ Then add the recipe to the section it belongs in, with the marker comment above
 it and both fenced blocks, and run:
 
 ```bash
-LYPNING_MP_BIN=micropython/build/lypning-mp node --test tests/corpus/cookbook.test.mjs
+LYPNING_MP_BIN=micropython/build/lypning-mp node --test tests/test_cookbook.py
 ```
 
 The suite will tell you if the *before* is not actually refused, if the *after*

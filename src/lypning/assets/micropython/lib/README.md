@@ -8,7 +8,7 @@ opens, which is the whole reason lypning-mp exists (`docs/RESEARCH.md` §2.4).
 They close the gap between what MicroPython ships and what
 `docs/SUBSET.md` §3.3 says Tier 0 needs, plus the Tier 1 modules the
 harvested corpus turned out to want. Each one is verified against **real CPython
-3.11** by `tests/corpus/shims.test.mjs`, which runs every case twice — once
+3.11** by `tests/test_shims.py`, which runs every case twice — once
 against CPython's stdlib, once against these files over restricted stand-ins for
 the MicroPython C modules — and requires byte-identical output. CPython is the
 oracle on every run; nothing below is asserted from memory.
@@ -196,12 +196,12 @@ bite silently — a program that finishes, prints something plausible, and exits
 ## Rules for adding a module here
 
 - **Run it, do not reason about it.** Add cases to
-  `tests/corpus/shims.test.mjs`; they are compared against live CPython. The
+  `tests/test_shims.py`; they are compared against live CPython. The
   suite's fake `ure` deliberately rejects what re1.5 cannot compile, so a shim
   that leans on CPython's regex fails there rather than in the sandbox.
 - **Every byte is frozen into a binary with a 700,000 B gate and streamed over a
   WebSocket on first use.** Write what the corpus needs, not the general case.
-- **Derive the next module from `node tests/corpus/conformance.mjs --plan`**, not
+- **Derive the next module from `lypning conformance --plan`**, not
   from a list. It ranks by entries unblocked and the ranking moves as things
   land.
 - **Any divergence you cannot close goes in the table above**, with the

@@ -179,7 +179,7 @@
 // "not in the corpus": NEITHER MODULE EXISTS IN CPYTHON. framebuf drives pixel
 // buffers on embedded displays and uctypes maps hardware registers; both are
 // MicroPython extensions. Since conformance is defined against CPython
-// (tests/corpus/conformance.mjs), a corpus entry that imports either could
+// (lypning conformance), a corpus entry that imports either could
 // never MATCH, so cutting them costs no coverage at all. Contrast heapq, which
 // has zero corpus references but IS a CPython module and therefore stays.
 #undef MICROPY_PY_FRAMEBUF

@@ -96,7 +96,7 @@ and only on rows neither run marked `!`.
 | A `dict-insert-*` ratio stops growing with n | Suspect the harness, not a fix. The ordered map is a linear array; the ratio is *supposed* to roughly quadruple per doubling. A flat ratio means the case stopped exercising it. |
 | A cell flips `ok` → `unsupported` on lypning-mp | A capability was lost. This belongs in the conformance battery (`npm run lypning:conformance`), which is the gate; the bench merely noticed. |
 | A cell flips `unsupported` → `ok` on **stock** | The control was built wrong. Stock cannot grow features. Rebuild it with `scripts/build-micropython.sh --stock` and check the "is not lypning-mp" shape checks passed. |
-| Binary size or file-opens moved | The size/opens gate (`node lypning gate`) is the authority on those, not this file. They are printed here only so an entry is self-contained. |
+| Binary size or file-opens moved | The size/opens gate (`lypning gate`) is the authority on those, not this file. They are printed here only so an entry is self-contained. |
 | Both min and median move together by <10% with no code change | Machine noise. The startup floor drifts by that much between runs on a shared box. |
 
 **The 30 s exec ceiling is the one absolute.** A command that crosses it destroys
@@ -117,7 +117,7 @@ result is a red build nobody trusts, which is worse than no check.
 What CI *does* carry is the non-timing half, which is deterministic: the binary
 is static, under 700,000 B, and opens at most 3 files on `-c 'pass'`
 (`lypning gate`), and every corpus entry still matches CPython
-(`tests/corpus/conformance.mjs`). Those catch the changes that would move these
+(`lypning conformance`). Those catch the changes that would move these
 timings anyway — a feature switched off, a module unfrozen, a dynamic link — and
 they catch them without a stopwatch. The timing run is a documented command plus
 this ledger.

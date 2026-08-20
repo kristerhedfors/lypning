@@ -30,10 +30,10 @@ verify:
 	@bash $(ROOT)/scripts/build-micropython.sh --verify
 
 gate: $(BIN)
-	@node $(ROOT)/lypning gate $(BIN) --compare
+	@lypning gate $(BIN) --compare
 
 conformance: $(BIN)
-	@LYPNING_MP_BIN=$(abspath $(BIN)) node $(ROOT)/tests/corpus/conformance.mjs
+	@LYPNING_MP_BIN=$(abspath $(BIN)) lypning conformance
 
 $(BIN):
 	@bash $(ROOT)/scripts/build-micropython.sh
@@ -46,7 +46,7 @@ $(STOCK):
 	@bash $(ROOT)/scripts/build-micropython.sh --stock
 
 bench: $(BIN) $(STOCK)
-	@node $(ROOT)/lypning bench --micropython
+	@lypning bench --micropython
 
 clean:
 	rm -rf $(LYPNING_MP_DIR)build

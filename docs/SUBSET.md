@@ -2,7 +2,7 @@
 
 *Spec date: 2026-08-13. Status: IMPLEMENTED — on 2026-08-13 `micropython/build/lypning-mp`
 passed 189 of the 202 corpus entries then in the battery, with 0 mismatches and
-13 unsupported. The battery has grown since: `tests/corpus/conformance.mjs` loads
+13 unsupported. The battery has grown since: `lypning conformance` loads
 `seed-corpus.jsonl` plus the harvested `corpus.jsonl` and dedups them to 375
 entries as of 2026-08-15, so run `npm run lypning:conformance` for the current
 pass/unsupported split.*
@@ -390,7 +390,7 @@ Rules that make the code branchable:
 5. **Nothing else on stderr in the 90 case.** No traceback, no banner, no
    suggestion text. One greppable line.
 
-The conformance runner (`tests/corpus/conformance.mjs`) diffs lypning-mp against
+The conformance runner (`lypning conformance`) diffs lypning-mp against
 real CPython and recognises exactly three outcomes:
 
 | outcome | definition | verdict |

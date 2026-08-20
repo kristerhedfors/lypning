@@ -38,8 +38,8 @@ built *and run* in this container and in CI.
 ## Gates
 
 ```bash
-node lypning gate micropython/build/lypning-mp --compare
-LYPNING_MP_BIN=$PWD/micropython/build/lypning-mp node tests/corpus/conformance.mjs
+lypning gate micropython/build/lypning-mp --compare
+LYPNING_MP_BIN=$PWD/micropython/build/lypning-mp lypning conformance
 ```
 
 The first measures the three things that predict cold cost — statically linked,
