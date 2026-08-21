@@ -450,18 +450,25 @@ def _rel_base(root: Path) -> Path:
 
 
 def _is_candidate(path: Path, rel_base: Path) -> bool:
-    """Worth opening at all.
+    """Worth opening FIRST — a priority, not a filter.
 
-    Two cheap name tests standing in front of the expensive shape test, so a
-    repository full of .jsonl fixtures costs a directory listing rather than a
-    read of every one of them. Both are guesses about where a source publishes;
-    :func:`looks_like_collection` is what actually decides, so a guess that is
-    too generous costs one open and a guess that is too narrow loses a
-    collection — which is why the ``sightings`` test looks at every ancestor
-    directory rather than only the immediate parent.
+    This used to be the filter, and it made "discovery is by shape" false: a
+    ``.jsonl`` whose name held no ``corpus`` and whose parents held no
+    ``sightings`` was never opened, so the shape test never ran on it. That is
+    not a corner case. ``lypning install --collect-only --sightings DIR`` exists
+    precisely so a repository can publish somewhere that suits it, and the first
+    thing tried here — a repository publishing to ``.lypning/programs`` — was
+    invisible to the importer that told it to. The two halves of the feature
+    contradicted each other, and the failure was the quiet kind: zero files
+    found reads exactly like a source that has nothing to give.
+
+    So every ``.jsonl`` is shape-tested now, and these two name tests only
+    decide what gets tested before the open budget runs out. A source that
+    publishes where anyone would guess is still found first and still cheap; one
+    that publishes anywhere else is found too. The ``sightings`` test looks at
+    every ancestor rather than the immediate parent because a rolled-up
+    directory nests.
     """
-    if path.suffix != ".jsonl":
-        return False
     if "corpus" in path.name.lower():
         return True
     try:
@@ -566,14 +573,17 @@ def discover(root: Path, *, entries: int = MAX_WALK_ENTRIES,
         # A location naming one file is a location a human wrote down, so this
         # path does not screen symlinks — following the link the user typed is
         # the point of typing it. The size cap is not optional either way.
-        ok = (_is_candidate(base, _rel_base(base.parent))
-              and _within_cap(base) and looks_like_collection(base))
+        # No name test at all: a location naming one file is a location a human
+        # wrote down, and refusing to read it because of what it is called would
+        # be answering a question they already answered.
+        ok = _within_cap(base) and looks_like_collection(base)
         return Discovery([base] if ok else [], False)
 
     rel_base = _rel_base(base)
     found: List[Path] = []
+    likely: List[Path] = []
+    rest: List[Path] = []
     walked = 0
-    opened = 0
     truncated = False
     stop = False
     try:
@@ -600,18 +610,13 @@ def discover(root: Path, *, entries: int = MAX_WALK_ENTRIES,
                     truncated = stop = True
                     break
                 path = Path(dirpath) / name
-                if not _is_candidate(path, rel_base):
+                if path.suffix != ".jsonl":
                     continue
-                # Everything past here is a read, so the open is counted before
-                # it happens: a bound charged after the fact bounds nothing.
-                opened += 1
-                if opened > opens:
-                    truncated = stop = True
-                    break
-                if not _inside(path, base_real) or not _within_cap(path):
-                    continue
-                if looks_like_collection(path):
-                    found.append(path)
+                # Collected now, opened later. The shape test is the decider and
+                # it must run on every .jsonl, but the open budget may not
+                # stretch to all of them — so the walk gathers and the pass
+                # below spends, likeliest first.
+                (likely if _is_candidate(path, rel_base) else rest).append(path)
             if stop:
                 # Only the two exhausted budgets end the walk. A directory
                 # pruned for depth is one branch cut, not a reason to abandon
@@ -619,6 +624,20 @@ def discover(root: Path, *, entries: int = MAX_WALK_ENTRIES,
                 break
     except OSError:
         pass  # a tree that vanished mid-walk yields what it had already given
+
+    # Likeliest first, so a budget that runs out spends what it had on the files
+    # a source most probably published to — and says so rather than reporting
+    # the remainder as absent.
+    opened = 0
+    for path in likely + rest:
+        if opened >= opens:
+            truncated = True
+            break
+        opened += 1
+        if not _inside(path, base_real) or not _within_cap(path):
+            continue
+        if looks_like_collection(path):
+            found.append(path)
     return Discovery(sorted(set(found)), truncated)
 
 

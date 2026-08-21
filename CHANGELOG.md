@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — discovery was a name filter wearing a shape test's clothes
+
+`lypning install --collect-only --sightings DIR` exists so a contributing
+repository can publish where it likes. Discovery only ever opened a `.jsonl`
+that had `corpus` in its name or a `sightings` ancestor directory, so the shape
+test never ran on anything else — and the first repository wired with
+`--sightings .lypning/programs` published exactly where it was told and was
+invisible to the importer that told it. The two halves of the feature
+contradicted each other, and the failure was the quiet kind this module's own
+docstring warns about: zero files found reads exactly like a source with nothing
+to give.
+
+Every `.jsonl` is shape-tested now, bounded by the same open budget as before.
+The two name tests survive as a priority order — they decide which files are
+read first when the budget is finite, not which files exist.
+
+Found by running the loop end to end in a scratch repository rather than by
+reading it: the docs had described the name filter in one paragraph and argued
+against it in the next.
+
 ### Fixed — the gate the fold walked around
 
 `harvest.fold_into_corpus` checked redaction, the size cap, and a program that
@@ -55,7 +75,8 @@ file it already has.
 
 - **Discovery is by SHAPE, not by directory name.** A `.jsonl` whose first
   non-blank lines parse as JSON objects carrying a non-empty `program` is a
-  collection, wherever in the tree it sits. Matching on a directory name would
+  collection, wherever in the tree it sits and whatever it is called. The name
+  tests decide only what gets read first when the open budget is finite. Matching on a directory name would
   mean every contributing repository had to be told what to call its evidence,
   and the first one that disagreed would be invisible rather than reported — an
   import finding zero files reads exactly like an upstream that captured nothing.

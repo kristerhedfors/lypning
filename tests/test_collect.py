@@ -128,6 +128,27 @@ def test_discover_finds_a_collection_under_a_directory_nobody_told_us_about(tmp_
     assert collect.discover(root).files == [odd]
 
 
+def test_discover_finds_a_collection_whose_name_hints_at_nothing(tmp_path):
+    # The regression this exists for. Discovery was a NAME filter with a shape
+    # confirmation: no `corpus` in the file name and no `sightings` ancestor
+    # meant the file was never opened, so the shape test never ran.
+    # `install --collect-only --sightings DIR` exists so a repository can publish
+    # where it likes, and the first thing tried — `.lypning/programs` — was
+    # invisible to the importer that told it to publish there. Zero files found
+    # reads exactly like a source with nothing to give, so it failed quietly.
+    root = tmp_path / "theirs"
+    hidden = _collection(root / ".lypning" / "programs" / "demo-session.jsonl",
+                         ["import csv,io; print('%s hidden')" % MARK])
+    assert collect.discover(root).files == [hidden]
+
+    # And the shape test is still the decider: a .jsonl of something else in the
+    # same nondescript place is not a collection just because it was opened.
+    other = root / ".lypning" / "programs" / "metrics.jsonl"
+    other.write_text("".join(json.dumps({"n": i}) + "\n" for i in range(6)),
+                     encoding="utf-8")
+    assert collect.discover(root).files == [hidden]
+
+
 def test_a_name_that_matches_is_not_enough_the_lines_decide(tmp_path):
     # `_is_candidate` is a cheap filter in front of the shape test, never the
     # answer. A repository with a corpus of something else — coverage data,
@@ -1086,7 +1107,7 @@ def test_one_file_cannot_contribute_unbounded_records(tmp_path, monkeypatch):
     assert (result.gathered, result.added) == (4, 4)
 
 
-def test_a_tree_of_files_that_are_not_collections_stops_at_the_entry_limit(tmp_path, monkeypatch):
+def test_a_tree_of_files_that_are_not_collections_stops_at_the_entry_limit(tmp_path):
     # The bound counts entries WALKED, not candidates found, which is the only
     # version of it that bounds anything: a tree of two million files ending in
     # .txt yields no candidates at all, so a limit on matches is a limit a large
@@ -1100,32 +1121,23 @@ def test_a_tree_of_files_that_are_not_collections_stops_at_the_entry_limit(tmp_p
     # got past all 200 ever reaches it.
     late = _collection(junk / "zz-corpus.jsonl", ["print('%s late')" % MARK])
 
-    examined = []
-    real = collect._is_candidate
-    monkeypatch.setattr(collect, "_is_candidate",
-                        lambda path, base: (examined.append(path), real(path, base))[1])
-
     # The limit is reached before the collection is, and the walk stops there
     # rather than carrying on to report what it liked — and says it stopped,
     # because an empty list is what a source with nothing to give also returns.
+    # The 200 files that could never be collections are what consumes it, which
+    # is the claim: the budget is spent by the WALK, not by matches.
     short = collect.discover(root, entries=16)
     assert short.files == []
     assert short.truncated is True
-    assert len(examined) <= 16
 
-    # The contrast that makes that number mean something: given room, this same
-    # tree costs a per-entry test on every one of the 201 files that were never
-    # candidates. That is the work the bound exists to stop, and it is invisible
-    # in the result either way — an unbounded walk of a large source and a
-    # bounded one both return the collections they found.
-    del examined[:]
-    assert collect.discover(root, entries=10 ** 9).files == [late]
-    assert len(examined) > 200
+    # The contrast that makes that mean something: given room, the same tree
+    # finds the collection that sorts after all of them.
+    roomy = collect.discover(root, entries=10 ** 9)
+    assert roomy.files == [late]
+    assert roomy.truncated is False
 
     # And the shipped ceiling is a real one over a real tree, not an absent one
     # — but it is nowhere near a tree this size, which is the whole point of it.
-    del examined[:]
     whole = collect.discover(root)
     assert whole.files == [late]
     assert whole.truncated is False
-    assert 0 < len(examined) <= collect.MAX_WALK_ENTRIES

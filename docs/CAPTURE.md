@@ -349,10 +349,9 @@ entirely for one run.
 ### Discovery is by shape, not by name
 
 Nothing in the registry says *where* in a repository the programs are. The
-importer walks the tree, considers every `.jsonl` that either sits under a
-directory called `sightings` or is named `*corpus*.jsonl`, and then confirms by
-reading it: the first few non-blank lines must parse as JSON objects carrying a
-non-empty `program` string.
+importer walks the tree and decides by reading: a `.jsonl` is a collection when
+its first few non-blank lines parse as JSON objects carrying a non-empty
+`program` string, wherever in the tree it sits and whatever it is called.
 
 Matching on a directory name instead would mean every contributing repository
 had to be told what to call its evidence, and the first one that disagreed would
@@ -360,6 +359,16 @@ be silently invisible — an import that reports zero files is indistinguishable
 from an upstream that captured nothing. Shape has no such failure mode. It is
 also what lets `--sightings` exist at all: a repository free to publish under any
 name it likes is only free if nothing downstream is matching on that name.
+
+That last sentence is here because it was once false. Discovery began as a name
+filter with a shape confirmation — a file with no `corpus` in its name and no
+`sightings` ancestor was never opened, so the shape test never ran on it — and
+the first repository wired with `--collect-only --sightings .lypning/programs`
+published where it was told and was invisible to the importer that told it. The
+two halves of the feature contradicted each other and neither one complained.
+The name tests survive, demoted: they decide only which files are shape-tested
+*first*, so the open budget below is spent on the likely places before the
+unlikely ones.
 
 The walk prunes `.git`, `node_modules`, `target`, `.venv`, `venv`,
 `__pycache__`, `dist` and `build`, and is bounded in both file count and bytes,
