@@ -303,6 +303,27 @@ bugs found in this ledger came from reading a hot path for *speed* and noticing
 something else — the speed queue is a correctness search that happens to be
 sorted by cost.
 
+### A new refusal is a new code path through the fall-through
+
+Adding an `unsupported` kind does not only change what lypning answers — it
+changes *when* the dispatcher runs a program twice, and that second run is the
+part nobody tests. A new `encoding` refusal in iteration 17 was the first
+refusal in this tree that happens **at runtime, after the program has already
+read stdin**, and it immediately exposed a pre-existing silent wrong answer:
+every tier was inheriting the caller's pipe, so lypning consumed it and CPython
+was handed an empty stream. Empty output, exit 0, no error anywhere.
+
+So after adding or moving a refusal, run the whole chain, not just the engine:
+
+```bash
+printf 'INPUT' | PYTHONPATH=src python3 -m lypning run -c 'PROGRAM'   # the chain
+printf 'INPUT' | python3 -c 'PROGRAM'                                  # the truth
+```
+
+and check them against each other. **`conformance` does not cover this**: it
+runs the `mixture` arm, but only over corpus programs, and none of those refuses
+at runtime after consuming stdin.
+
 ### The other traps, each already paid for
 
 - **A two-phase allocation is a trap on this target.** Allocate small, then move
