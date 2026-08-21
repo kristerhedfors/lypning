@@ -243,16 +243,19 @@ impl Interp {
                         None => fo.data.len(),
                     };
                     fo.pos = end;
-                    let chunk = fo.data[start..end].to_vec();
                     Some(if fo.binary {
-                        Value::Bytes(Rc::new(chunk))
+                        Value::Bytes(Rc::new(fo.data[start..end].to_vec()))
                     } else {
-                        Value::Str(decode_utf8(&chunk)?.into())
+                        // Straight from the file buffer's slice into the
+                        // `Rc<str>`. This used to build a `Vec<u8>` and then a
+                        // `String` on the way, so every line of every file read
+                        // in a `for` loop was copied three times.
+                        Value::Str(decode_utf8_rc(&fo.data[start..end])?)
                     })
                 }
             }
             Iter::Stdin => match mio::stdin_line()? {
-                Some(b) => Some(Value::Str(decode_utf8(&b)?.into())),
+                Some(b) => Some(Value::Str(decode_utf8_rc(&b)?)),
                 None => None,
             },
             Iter::Gen(g) => {
@@ -420,16 +423,37 @@ impl Interp {
     }
 }
 
+/// The same check, straight into the `Rc<str>` a `Value::Str` is made of.
+///
+/// `decode_utf8` returns a `String`, and every caller that wanted a VALUE then
+/// paid `Rc<str>::from(String)` — a second allocation and a second copy of
+/// bytes that had already been validated and copied once. On the line-reading
+/// path that was **three** copies of every line: the slice out of the buffer,
+/// the `String`, and the `Rc<str>`. This makes it two, and the validation is
+/// the identical `std::str::from_utf8` with the identical error.
+pub fn decode_utf8_rc(b: &[u8]) -> R<std::rc::Rc<str>> {
+    match std::str::from_utf8(b) {
+        Ok(s) => Ok(std::rc::Rc::from(s)),
+        Err(e) => Err(utf8_error(b, &e)),
+    }
+}
+
 pub fn decode_utf8(b: &[u8]) -> R<String> {
     match std::str::from_utf8(b) {
         Ok(s) => Ok(s.to_string()),
-        Err(e) => Err(LypningError::exc(
-            "UnicodeDecodeError",
-            format!(
-                "'utf-8' codec can't decode byte 0x{:02x} in position {}: invalid start byte",
-                b.get(e.valid_up_to()).copied().unwrap_or(0),
-                e.valid_up_to()
-            ),
-        )),
+        Err(e) => Err(utf8_error(b, &e)),
     }
+}
+
+/// The one place the decode error is worded, so the two decoders above cannot
+/// report the same bytes differently.
+fn utf8_error(b: &[u8], e: &std::str::Utf8Error) -> LypningError {
+    LypningError::exc(
+        "UnicodeDecodeError",
+        format!(
+            "'utf-8' codec can't decode byte 0x{:02x} in position {}: invalid start byte",
+            b.get(e.valid_up_to()).copied().unwrap_or(0),
+            e.valid_up_to()
+        ),
+    )
 }

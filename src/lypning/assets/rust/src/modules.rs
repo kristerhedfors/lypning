@@ -194,15 +194,15 @@ pub fn call_module_method(
             };
             return Err(LypningError::Exit(code));
         }
-        ("sys.stdin", "read") => Value::Str(crate::iter::decode_utf8(&mio::stdin_rest()?)?.into()),
+        ("sys.stdin", "read") => Value::Str(crate::iter::decode_utf8_rc(&mio::stdin_rest()?)?),
         ("sys.stdin", "readline") => match mio::stdin_line()? {
-            Some(b) => Value::Str(crate::iter::decode_utf8(&b)?.into()),
+            Some(b) => Value::Str(crate::iter::decode_utf8_rc(&b)?),
             None => Value::Str("".into()),
         },
         ("sys.stdin", "readlines") => {
             let mut out = Vec::new();
             while let Some(b) = mio::stdin_line()? {
-                out.push(Value::Str(crate::iter::decode_utf8(&b)?.into()));
+                out.push(Value::Str(crate::iter::decode_utf8_rc(&b)?));
             }
             list(out)
         }

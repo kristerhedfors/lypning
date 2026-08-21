@@ -28,6 +28,56 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-21 · iteration 16 — a line was copied three times
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1037 loaded, 861 timed
+
+`open(` is in **52%** of corpus programs, and every line read from a file in a
+`for` loop was copied three times: a `Vec<u8>` sliced out of the buffer, a
+`String` from `decode_utf8`, and then the `Rc<str>` a `Value::Str` is actually
+made of. `decode_utf8_rc` does the identical `std::str::from_utf8` check and
+lands in the `Rc<str>` directly, so it is one slice and one copy. The error
+wording moved into a single `utf8_error` so the two decoders cannot drift.
+
+| | before | after |
+|---|---:|---:|
+| `for line in open(f)`, 50k lines | 25.55 ms | **20.71 ms** |
+| the same file in UTF-8, 20k lines | 10.46 ms | **8.86 ms** |
+| `.readlines()` | 34.58 ms | **28.08 ms** |
+| `for line in sys.stdin`, 50k lines | 24.69 ms | **21.44 ms** |
+| `f.read()` | 2.39 ms | **1.82 ms** |
+| a plain loop — the control | 16.84 ms | 17.14 ms |
+
+perf `file-write-read` 4.43x → **3.54x**. conformance 529 / 332 / **0** and
+1,045,176 bytes, both unchanged. corpus-time flat within its band.
+
+### A divergence found on the way, not fixed here, and why
+
+Verifying the decode path against CPython on **invalid UTF-8** turned up two
+disagreements. Both are **pre-existing** — identical on the iteration-0 binary,
+so this change did not cause them — and both are real:
+
+* **stdin.** CPython decodes stdin with `surrogateescape` (PEP 383), so
+  `for l in sys.stdin` on `b"ok\n\xff\xfe\n"` yields `'\udcff\udcfe\n'` and
+  exits 0. lypning raises `UnicodeDecodeError`.
+* **A text file, line at a time.** lypning yields `'ok\n'` and *then* raises, at
+  a position counted within the line (5). CPython decodes a buffered block, so
+  it raises before yielding anything, at a position counted in the file (8).
+  Whole-file `f.read()` agrees exactly, because there the slice and the file are
+  the same bytes.
+
+Left for its own iteration rather than half-fixed here. The cheap correct answer
+is a **refusal** — `unsupported: encoding` — which hands the program to CPython
+and its surrogateescape; the thing to check first is whether the commit barrier
+is still armed at that point, because a refusal after output has been committed
+is not available. That check is the iteration, not a footnote to this one.
+
+Recorded because a divergence nobody has written down is a divergence that gets
+rediscovered. Neither is reachable from the corpus today: nothing in it reads
+invalid UTF-8 in text mode.
+
+---
+
 ## 2026-08-21 · iteration 15 — a generator step stopped rebuilding itself
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1037 loaded, 861 timed

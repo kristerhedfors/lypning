@@ -10,7 +10,7 @@ use crate::err::*;
 use crate::eval::{int_val, Interp};
 use crate::fmt;
 use crate::io as mio;
-use crate::iter::decode_utf8;
+
 use crate::ops;
 use crate::value::*;
 use std::cell::RefCell;
@@ -1081,7 +1081,7 @@ fn bytes_method(
                     return Err(unsupported("encoding", &format!("decode(errors='{e}')")));
                 }
             }
-            Value::Str(decode_utf8(b)?.into())
+            Value::Str(crate::iter::decode_utf8_rc(b)?)
         }
         "hex" => Value::Str(
             b.iter()
@@ -1375,7 +1375,7 @@ fn file_method(
             if fo.binary {
                 Value::Bytes(Rc::new(chunk))
             } else {
-                Value::Str(decode_utf8(&chunk)?.into())
+                Value::Str(crate::iter::decode_utf8_rc(&chunk)?)
             }
         }
         "readline" => {
