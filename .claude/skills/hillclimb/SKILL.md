@@ -237,6 +237,39 @@ The refusals left in the corpus are worth seconds; making the interpreter twice
 as fast at everything is worth tens of milliseconds. Both are worth doing. They
 are not worth the same, and the ledger should not pretend they are.
 
+### Two things no gate here can see
+
+**A complexity bug.** All four gates run each program once, at whatever size the
+corpus captured. `for line in sys.stdin` was **quadratic** — 2.3 seconds for
+sixteen thousand lines against CPython's 3.4 milliseconds — and every gate was
+green, because only 19 corpus entries carry a captured stdin sample and the
+largest is 38 bytes. That is not evidence that real inputs are small: the shim
+inherits the pipe rather than reading it, so the sample size is a property of
+the *instrument*. **The corpus's blind spots are shaped like its capture
+mechanism.** When a change is about complexity rather than constant factors, the
+evidence is a ladder across input sizes — and `perf` and `corpus-time` are
+expected to say nothing.
+
+**A construct nobody has typed yet.** `conformance` grades the corpus, not the
+language, so `MISMATCH 0` means *no disagreement among the programs we have*. It
+is still the right gate — it is the only one that grades against real usage —
+but it is not a proof. Five silent wrong answers were live in the tree with
+every gate green (`isinstance` on an exception; ledger, iteration 13). What
+found them was enumerating one construct's shapes and diffing them against
+CPython in a shell loop, which costs fifteen programs and two minutes:
+
+```bash
+for p in "print(isinstance(ValueError('b'), ValueError))" …; do
+  a=$(lypning -c "$p" 2>&1; echo rc=$?); b=$(python3 -c "$p" 2>&1; echo rc=$?)
+  [ "$a" = "$b" ] || echo "MISMATCH: $p"
+done
+```
+
+Do that for whatever construct the iteration made you read. Both correctness
+bugs found in this ledger came from reading a hot path for *speed* and noticing
+something else — the speed queue is a correctness search that happens to be
+sorted by cost.
+
 ### The other traps, each already paid for
 
 - **A two-phase allocation is a trap on this target.** Allocate small, then move
@@ -319,6 +352,15 @@ unit of risk:
 `conformance --plan` ranks by programs unblocked. Read it as bytes-per-program
 and not as programs alone: `re` unblocks the most and costs the most, and a
 handful of small modules unblock two or three each for a few hundred bytes.
+
+**Look for refusals that are not capability gaps first — they are free.** Every
+`unsupported` kind should name something another interpreter could actually
+*do*. `token: byte 0x24` did not: `$p` is a shell paste, and CPython's answer is
+`SyntaxError`, not an answer lypning lacked. Routing those to a syntax error
+turned 5 corpus programs from UNSUPPORTED to MATCH **for zero bytes**, and
+nothing is behind them — a SyntaxError is terminal, where a module unblocks a
+program that then hits the next module. Sweep the `by kind:` list at the bottom
+of `--plan` for the same shape before implementing anything.
 
 Refusals that must **stay** refusals, whatever the plan says: anything needing a
 network or another process (`subprocess`, `http.server`, `threading`), anything
