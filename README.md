@@ -804,5 +804,8 @@ Makefile               thin wrappers: build test check conformance fuzz bench ga
 | `docs/COOKBOOK.md` | unsupported Python, rewritten — what to type when a tier refuses |
 | `docs/EMBEDDING.md` | linking the runtime into a harness: the C ABI, the five hosts over it, and what a refusal means when there is no exit code |
 | `docs/BENCH-LEDGER.md` | append-only measurement history, including the losses |
+| `docs/HILLCLIMB.md` | append-only ledger of improvement steps — the four numbers each moved, and the ones that moved nothing |
 
-Working on this repository? Read `CLAUDE.md` first.
+Working on this repository? Read `CLAUDE.md` first, and
+`.claude/skills/hillclimb/SKILL.md` for the loop that improves it — what to
+measure, which instrument can see which curve, and the traps already paid for.
