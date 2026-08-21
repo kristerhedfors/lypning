@@ -234,6 +234,14 @@ are not worth the same, and the ledger should not pretend they are.
 
 ### The other traps, each already paid for
 
+- **A two-phase allocation is a trap on this target.** Allocate small, then move
+  and grow, and musl's mallocng can hand you a cliff: the argument list's first
+  version was *eight times* slower than the `Vec` it replaced — for six
+  arguments, and only six; seven and eight were fine (ledger, iteration 8).
+  Allocate once at the final size wherever the size is known. And when a
+  benchmark is bad at exactly one input size, **sweep the neighbours before
+  blaming the algorithm** — this allocator has now produced three such cliffs
+  in this ledger, and none of them was in the code the row named.
 - **`opt-level = "s"`.** The release profile is compiled for size, and the
   comment justifying it is about startup, not throughput. Changing it is a
   legitimate experiment and it is a *step*, with a ledger entry naming the byte
@@ -338,6 +346,15 @@ PYTHONPATH=src python3 -m lypning corpus --stats                    # the new sh
 `PreToolUse` hook is wired into `.claude/settings.json`, but hooks are read at
 session start, so a session that wired them is not the session they capture.
 The transcript scan reaches backwards and does not care.
+
+**The corpus reflects whoever is typing into it, including you.** One session of
+this loop added 195 programs and moved `pathlib` from the 2nd-least blocked
+module to the **second most** — 41 programs — because this loop edits files with
+`pathlib` one-liners. That is not a bug: the corpus is real usage and the
+sessions doing this work are real sessions. But it means a build order can drift
+toward the habits of the agent reading it. `lypning corpus --stats` prints the
+split by source (`hook`, `shim`, `transcript`, `seed`); when `transcript` is a
+large share, read `--plan` knowing part of it is a mirror.
 
 Harvest **at the end of an iteration, not the start** — the corpus is what the
 next conformance run is graded against, and changing the denominator in the

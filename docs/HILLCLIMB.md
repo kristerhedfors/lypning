@@ -28,6 +28,57 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-21 · iteration 9 — the corpus grew, and it grew toward us
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64
+
+`lypning harvest --transcripts` at the end of the session's work. The
+`PreToolUse` hook is wired into `.claude/settings.json`, but hooks are read at
+session start, so the session that wired them is not a session they capture; the
+transcript scan reaches backwards and does not care.
+
+| | before | after |
+|---|---:|---:|
+| corpus | 842 | **1037** |
+| runnable (rest name an absolute path) | 763 | 861 |
+| conformance | 500 / 263 / **0** | 524 / 337 / **0** |
+| coverage | 65.5% | 60.9% |
+
+**The coverage number fell and nothing regressed.** 195 new programs arrived,
+24 of them inside the subset and 74 outside it, so the denominator grew faster
+than the numerator. That is what invariant 1 means by a rising UNSUPPORTED count
+being a coverage number and a build order rather than a regression — and it is
+the shape to expect from every harvest, because a program already inside the
+subset is one nobody had to write down.
+
+### The part worth reading twice
+
+The build order moved, and not evenly:
+
+| blocker | before | after |
+|---|---:|---:|
+| `import re` | 97 | 112 |
+| **`import pathlib`** | **2** | **41** |
+| `import subprocess` | 9 | 15 |
+| `import collections` | 11 | 15 |
+
+`pathlib` went from nearly-nobody to the **second largest single blocker** in one
+session — because *this loop* edits files with `pathlib` one-liners, and this
+loop's transcript is now 20.7% of the corpus (`lypning corpus --stats`).
+
+This is not a bug and the harvest should not stop: the corpus is real usage and
+these were real sessions doing real work. But it is a bias with a direction, and
+the direction is *toward whoever is reading the build order*. An optimiser that
+harvests itself, then optimises for what it harvested, is measuring its own
+habits. Recorded here, and in the skill, so the next reading of `--plan` is made
+with the source split in view.
+
+No engine change in this entry. The bytes, the binary and the `perf` suite are
+untouched; the numbers every later entry is compared against have a new
+denominator, which is why each entry states the corpus size it loaded.
+
+---
+
 ## 2026-08-21 · iteration 8 — the argument list stops allocating
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 842 loaded, 763 timed
