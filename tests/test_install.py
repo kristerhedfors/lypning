@@ -228,6 +228,21 @@ def _ours(settings, event):
     return [c for c in _commands(settings, event) if "lypning" in c.lower()]
 
 
+def _shim_wiring(settings):
+    """Every command of ours that would install the shim, filed under any event.
+
+    Keyed on the spec's spellings rather than on the event name, because "no
+    SessionStart array" is a weaker claim than the plan makes: an entry filed
+    under another event still runs, and a hook has several correct spellings —
+    the copied script or the CLI entry point, with or without a prefix.
+    """
+    spec = next(s for s in install.HOOKS if not s.collect)
+    names = (spec.fallback,) + tuple(spec.scripts)
+    return [c for event in (settings.get("hooks") or {})
+            for c in _ours(settings, event)
+            if any(n in c.lower() for n in names)]
+
+
 def test_hook_entries_collect_only_keeps_only_the_collecting_specs():
     every_script = [name for spec in install.HOOKS for name in spec.scripts]
     full = install.hook_entries("project", every_script)
@@ -347,12 +362,15 @@ def test_switching_install_shape_never_leaves_two_hooks_that_both_harvest(
     assert len(_ours(after, "PreToolUse")) == 1
     assert _ours(after, "Stop")[0].startswith("LYPNING_SIGHTINGS=")
 
-    # And back the other way: the last install wins, in both directions.
+    # And back the other way: still one of each, and the engine wiring the
+    # collect-only install pruned is back. "The last install wins" governs the
+    # SPELLING of a hook — where it publishes is the one thing it does not
+    # govern, which is the test two below this one.
     install.install(project, shim=False)
     back = json.loads(settings_path.read_text(encoding="utf-8"))
     assert len(_ours(back, "Stop")) == 1
     assert len(_ours(back, "PreToolUse")) == 1
-    assert "LYPNING_SIGHTINGS" not in _ours(back, "Stop")[0]
+    assert len(_ours(back, "SessionStart")) == 1
 
     install.uninstall(project)
     assert "lypning" not in settings_path.read_text(encoding="utf-8").lower()
@@ -394,3 +412,108 @@ def test_the_plan_says_the_install_is_deliberately_small(project, settings_path)
     assert "collect-only" in text
     assert WEIRD_SIGHTINGS in text
     assert "LYPNING_SIGHTINGS" in text
+
+
+# --- the two ways a shape change lies quietly ---------------------------------
+
+
+def test_collect_only_over_a_full_install_agrees_with_its_own_plan(project, settings_path):
+    """The plan says "no shim". The settings file has to say it too.
+
+    `merge_hooks` only adds and rewrites, so a SessionStart entry a previous full
+    install wired survives a plain merge — and that entry runs the shim installer
+    at the top of every session. The plan printed above it still reads "no shim,
+    no skill", which is the opposite of what the file then does: a repository
+    whose operator asked in as many words for no shim gets one anyway, once per
+    session, under a report that says they do not have one. Nothing fails; the
+    only symptom is a python3 on the PATH of a foreign repo, which is exactly the
+    thing a collector may not cost the repositories it collects from.
+
+    The assertion is agreement rather than a fixed outcome: the plan's claim and
+    the file's content are one fact, and a later implementation is free to
+    resolve it the other way round (keep the wiring, stop claiming) as long as
+    they still say the same thing.
+    """
+    _write(settings_path, FOREIGN_SETTINGS)
+    install.install(project, shim=False)
+    wired = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert _shim_wiring(wired), "nothing was wired, so pruning it proves nothing"
+
+    plan = install.plan_install(project, collect_only=True)
+    text = install.render_plan(plan)
+    install.apply(plan)
+    after = json.loads(settings_path.read_text(encoding="utf-8"))
+
+    claims_no_shim = "no shim" in text
+    assert claims_no_shim == (not _shim_wiring(after)), (
+        "the plan and settings.json disagree about whether a shim gets installed:\n%s"
+        % text)
+    # And which way this implementation resolved it: by removing the wiring.
+    assert claims_no_shim and not _shim_wiring(after)
+    # As a planned change with a diff, not silently on the way past — a user
+    # reading the dry-run has to see the entry leave before it leaves.
+    # `---` is the diff's own header, so it is not evidence of a removed line.
+    assert any(line.startswith("-") and not line.startswith("---") for line in plan.diff)
+    assert "SessionStart" in text
+    # The collecting half is untouched by the pruning.
+    assert len(_ours(after, "PreToolUse")) == 1
+    assert len(_ours(after, "Stop")) == 1
+
+
+def test_a_plain_install_after_a_collect_only_one_does_not_move_the_evidence(
+        project, settings_path):
+    """An omitted --sightings is not a request to relocate a corpus.
+
+    The publish directory lives in the hook command and nowhere else, so a merge
+    that rewrote that command with only today's flags would reset it to the
+    default: the Stop hook starts writing under `tests/corpus` in a repo that
+    deliberately has no `tests/`, and every session file already published to the
+    configured directory becomes invisible to every later harvest. Nobody typed a
+    flag to ask for that, and nothing downstream reports it — both directories
+    exist, both look right, and the count only ever goes up.
+    """
+    _write(settings_path, FOREIGN_SETTINGS)
+    install.install(project, collect_only=True, sightings=WEIRD_SIGHTINGS)
+
+    plan = install.plan_install(project, shim=False)
+    install.apply(plan)
+    after = json.loads(settings_path.read_text(encoding="utf-8"))
+
+    assert install.configured_sightings(after) == WEIRD_SIGHTINGS
+    assert _ours(after, "Stop")[0].startswith(
+        "LYPNING_SIGHTINGS=%s " % install.sh_quote(WEIRD_SIGHTINGS))
+    # Inherited, not asked for — and the operator is told that, in the line that
+    # names the flag that would move it. A location kept silently is a location
+    # nobody can find out about without reading the JSON.
+    assert plan.sightings == WEIRD_SIGHTINGS
+    assert plan.sightings_inherited and plan.sightings_previous is None
+    text = install.render_plan(plan)
+    assert WEIRD_SIGHTINGS in text
+    assert "kept" in text and "--sightings" in text
+
+
+def test_moving_the_publish_directory_takes_the_flag_and_says_what_it_costs(
+        project, settings_path):
+    """The other half of the same rule: inheriting must not become "never moves".
+
+    An operator who does want the evidence somewhere else says so, and the one
+    thing they cannot find out afterwards is what stayed behind — so the plan
+    says it before the write, as a warning rather than as a change.
+    """
+    _write(settings_path, FOREIGN_SETTINGS)
+    install.install(project, collect_only=True, sightings=WEIRD_SIGHTINGS)
+    elsewhere = str(project / "elsewhere")
+
+    plan = install.plan_install(project, collect_only=True, sightings=elsewhere)
+    assert plan.sightings == elsewhere
+    assert plan.sightings_previous == WEIRD_SIGHTINGS
+    assert not plan.sightings_inherited
+    assert [a for a in plan.notes if "WARNING" in a.note and WEIRD_SIGHTINGS in a.note]
+    text = install.render_plan(plan)
+    assert WEIRD_SIGHTINGS in text and elsewhere in text
+    assert "warning" in text  # counted as a warning, never as "already in place"
+
+    install.apply(plan)
+    after = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert install.configured_sightings(after) == elsewhere
+    assert len(_ours(after, "Stop")) == 1

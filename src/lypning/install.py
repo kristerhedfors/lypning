@@ -31,7 +31,18 @@ contribute the python its agents type gets exactly that: no shim shadowing its
 ``python3``, no skill spending its context window, no cargo. That cheapness is
 not a convenience, it is the precondition for collecting from other repositories
 at all, because a repo which does not use lypning will only run a collector it
-does not have to adopt.
+does not have to adopt. Because it is a shape and not a subset, switching *into*
+it removes the engine wiring a previous install left behind
+(:func:`prune_hooks`) — a merge that only ever added would leave the shim being
+installed every session under a plan that says "no shim".
+
+**A publish directory is evidence, not a preference.** ``--sightings DIR`` is
+carried in the hook command itself, which makes the settings file the only place
+it is recorded — so an install that omits the flag READS IT BACK rather than
+resetting it (:func:`configured_sightings`). Every other collision here is
+resolved by "the last install wins", and this one is not: what loses is a
+directory of already-published session files, which no later harvest would ever
+look in again. Moving it stays possible, by saying so.
 
 The MicroPython tier is allowed to be missing throughout — an engine that is not
 built is a status line, never an error.
@@ -46,7 +57,7 @@ import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import paths, shim
 
@@ -62,6 +73,11 @@ SETTINGS_BACKUP_SUFFIX = ".lypning-backup"
 # hook plausibly does, which is what makes "remove exactly ours" decidable from
 # the settings file alone, with no state of our own to keep in sync.
 OUR_MARK = "lypning"
+
+# The environment variable the hook commands carry their publish directory in.
+# Named once because it is written into the command, parsed back out of it, and
+# relied on to contain OUR_MARK so uninstall still matches a prefixed command.
+SIGHTINGS_VAR = "LYPNING_SIGHTINGS"
 
 
 @dataclass(frozen=True)
@@ -133,6 +149,14 @@ class Plan:
     #: install the full set.
     collect_only: bool = False
     sightings: Optional[str] = None
+    #: ``sightings`` was not asked for on this run — it was read back out of the
+    #: hook commands already in settings.json. See :func:`plan_install` for why
+    #: an omitted flag inherits rather than resets.
+    sightings_inherited: bool = False
+    #: The publish directory the hooks used BEFORE this run, when this run moves
+    #: them somewhere else. A directory of already-published evidence is about to
+    #: stop being read; the plan says so out loud.
+    sightings_previous: Optional[str] = None
 
     @property
     def changes(self) -> List[Action]:
@@ -154,6 +178,8 @@ class Plan:
             "settings": str(self.settings_path) if self.settings_path else None,
             "collect_only": self.collect_only,
             "sightings": self.sightings,
+            "sightings_inherited": self.sightings_inherited,
+            "sightings_previous": self.sightings_previous,
             "actions": [a.as_dict() for a in self.actions],
             "diff": self.diff,
         }
@@ -225,6 +251,52 @@ def sh_quote(value: str) -> str:
     return "'" + value.replace("'", "'\"'\"'") + "'"
 
 
+def sh_unquote(text: str) -> str:
+    """Read one shell word off the front of ``text``. The inverse of :func:`sh_quote`.
+
+    Only ever applied to a word :func:`sh_quote` wrote, so the grammar it has to
+    cover is small: a run of single-quoted chunks, double-quoted chunks (that is
+    what the ``'"'"'`` escape leaves behind) and bare characters, ending at the
+    first unquoted space. An unbalanced quote returns the empty string rather
+    than a guess — a command we cannot parse is a command whose publish directory
+    we must not claim to know, and the caller treats "" as "no prefix here".
+    """
+    out: List[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch in "'\"":
+            j = text.find(ch, i + 1)
+            if j < 0:
+                return ""
+            out.append(text[i + 1:j])
+            i = j + 1
+        elif ch == " ":
+            break
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def configured_sightings(settings: Dict[str, Any]) -> Optional[str]:
+    """The publish directory the hooks in this settings file ALREADY use.
+
+    Read back out of the command string because that is the only place it was
+    ever written — a collector whose install is one merge into a file the repo
+    already has does not get to keep a config file of its own (see
+    :func:`hook_entries`). Which means the settings file is the state, and this
+    is how a later install finds out what the earlier one chose.
+    """
+    for command in _our_commands(settings):
+        head, sep, rest = command.partition("=")
+        if sep and head.strip() == SIGHTINGS_VAR:
+            value = sh_unquote(rest).strip()
+            if value:
+                return value
+    return None
+
+
 def _hook_id(command: str) -> Optional[str]:
     """Which of our hooks a command IS, whatever spelling it arrived in.
 
@@ -274,7 +346,7 @@ def hook_entries(
             # Uninstall keeps working for free: `LYPNING_SIGHTINGS` contains
             # OUR_MARK, so a prefixed command matches strip_hooks by both halves
             # rather than by neither.
-            command = "LYPNING_SIGHTINGS=%s %s" % (sh_quote(where), command)
+            command = "%s=%s %s" % (SIGHTINGS_VAR, sh_quote(where), command)
         out.append((spec.event, spec.matcher, command))
     return out
 
@@ -426,6 +498,66 @@ def strip_hooks(settings: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
     ``LYPNING_SIGHTINGS='…'`` prefix carries OUR_MARK itself, so a prefixed
     command matches here twice over rather than falling off the end of uninstall.
     """
+    return _drop_hooks(settings, lambda cmd: True)
+
+
+def unwanted_events(collect_only: bool) -> Tuple[str, ...]:
+    """The events whose hook this install shape does NOT want wired.
+
+    A collect-only install is defined by what it leaves out, so the specs it
+    leaves out are the specs it has to be able to take back out — see
+    :func:`prune_hooks`.
+    """
+    if not collect_only:
+        return ()
+    return tuple(spec.event for spec in HOOKS if not spec.collect)
+
+
+def prune_hooks(
+    settings: Dict[str, Any],
+    events: Sequence[str],
+) -> Tuple[Dict[str, Any], List[str]]:
+    """Remove OUR entries for hooks this install shape does not want.
+
+    This is what stops ``--collect-only`` after a full install from being a lie.
+    :func:`merge_hooks` only adds and rewrites, so without this the SessionStart
+    entry survives — and that entry runs ``lypning shim install`` every session,
+    which is a python3 shim on the PATH of a repository whose operator just
+    asked, in as many words, for no shim. A plan that then printed "no shim, no
+    skill" would be summarising the opposite of what the settings file does.
+
+    Removal, not a warning, because the alternative costs the user more: leaving
+    it means hand-editing someone else's JSON, and hand-editing a foreign repo's
+    config is exactly the friction a collector cannot afford (module docstring).
+    What removal costs is one ``lypning install`` to put it back, which is a
+    command, and it is shown as a planned change with a diff before it happens.
+
+    The hook *script* in ``.claude/hooks`` is left where it is. It is inert —
+    nothing execs it once no command names it — and deleting a file on the way
+    past is a cost, where removing the entry only undoes wiring we put there.
+    ``uninstall`` is still the thing that removes files.
+    """
+    if not events:
+        return copy.deepcopy(settings), []
+    wanted = set(events)
+    # By hook identity rather than by which event array the entry sits in: the
+    # id survives every spelling (script or CLI, prefixed or not), and an entry
+    # filed under the wrong event is still the hook we are dropping. A command
+    # of ours we cannot identify is kept — never delete on a guess.
+    return _drop_hooks(settings, lambda cmd: _hook_id(cmd) in wanted)
+
+
+def _drop_hooks(
+    settings: Dict[str, Any],
+    drop: Callable[[str], bool],
+) -> Tuple[Dict[str, Any], List[str]]:
+    """Remove our hook entries for which ``drop(command)`` is true.
+
+    Shared by :func:`strip_hooks` and :func:`prune_hooks` so the delicate part —
+    which group survives an emptying, and which event array is deleted — has one
+    implementation and cannot drift between uninstall and a shape change. Only
+    commands carrying OUR_MARK are ever offered to ``drop``.
+    """
     out = copy.deepcopy(settings)
     removed: List[str] = []
     hooks = out.get("hooks")
@@ -443,7 +575,7 @@ def strip_hooks(settings: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
             kept: List[Any] = []
             for h in g["hooks"]:
                 cmd = h.get("command", "") if isinstance(h, dict) else ""
-                if isinstance(cmd, str) and OUR_MARK in cmd.lower():
+                if isinstance(cmd, str) and OUR_MARK in cmd.lower() and drop(cmd):
                     removed.append(cmd)
                 else:
                     kept.append(h)
@@ -522,12 +654,45 @@ def plan_install(
         # flags consistently. Nothing below this line needs an engine, a
         # toolchain or a context window.
         want_shim = want_skill = False
-    where = (sightings or "").strip() or None
     proj = _project(project)
     root = claude_dir(proj, scope)
     actions: List[Action] = []
     settings_path = root / "settings.json"
     diff: List[str] = []
+
+    # Read before deciding anything, because two of the decisions below depend on
+    # what a previous install already wired.
+    before, settings_err = load_settings(settings_path)
+    already_publishing = None if settings_err else configured_sightings(before)
+
+    asked = (sightings or "").strip() or None
+    where = asked
+    inherited = False
+    if where is None and already_publishing:
+        # An OMITTED --sightings is not a request to move the evidence. The
+        # merge's "last install wins" rule is right for a spelling — a script
+        # path, a CLI entry point — and wrong here, because the losing side is a
+        # directory of published files: reset the prefix and the Stop hook starts
+        # writing to tests/corpus/sightings (creating a `tests/` in a repo that
+        # deliberately has none), while every session file already published
+        # under the old directory becomes invisible to every later harvest.
+        # Nobody typed a flag to cause that. So the configured location wins over
+        # the default, and only an explicit --sightings moves it.
+        where = already_publishing
+        inherited = True
+    moved_from = already_publishing if (
+        asked and already_publishing and asked != already_publishing) else None
+    if moved_from:
+        # An explicit --sightings IS a request to move, so it is honoured — but
+        # the files under the old directory do not move with it and nothing reads
+        # them afterwards, which is the kind of thing an operator wants to hear
+        # before the write rather than after.
+        actions.append(Action(
+            "skip", settings_path,
+            "WARNING: the hooks publish to %s today; this moves them to %s. "
+            "Files already published under %s stay there and no later harvest "
+            "reads them — move them across, or re-run with --sightings %s"
+            % (moved_from, asked, moved_from, moved_from), "settings"))
 
     if want_skill:
         src = paths.SKILL_SRC
@@ -567,12 +732,17 @@ def plan_install(
         for name in copied:
             actions.append(_file_action(hooks_src / name, dest_root / name, "hook"))
 
-        before, err = load_settings(settings_path)
-        if err:
-            actions.append(Action("skip", settings_path, err + " — refusing to touch it", "settings"))
+        if settings_err:
+            actions.append(Action("skip", settings_path,
+                                  settings_err + " — refusing to touch it", "settings"))
         else:
-            after, added = merge_hooks(before, entries)
-            if not added:
+            # Prune first, then merge onto the pruned copy: the entries this
+            # shape does not want have to be gone before we count what is
+            # "already present", or a collect-only install over a full one plans
+            # zero changes while leaving the shim wiring in place.
+            pruned, dropped = prune_hooks(before, unwanted_events(collect_only))
+            after, added = merge_hooks(pruned, entries)
+            if not added and not dropped:
                 actions.append(Action("skip", settings_path,
                                       "all %d hook entries already present" % len(entries),
                                       "settings", present=True))
@@ -584,13 +754,21 @@ def plan_install(
                 # Appended and rewritten entries are both changes to the file but
                 # they are not the same news, and a reader who has just switched
                 # a repo between install shapes needs to see which happened.
-                fresh = len(_our_commands(after)) - len(_our_commands(before))
+                # Counted against `pruned`, not `before`: a removal is its own
+                # news and must not be netted off against an addition.
+                fresh = len(_our_commands(after)) - len(_our_commands(pruned))
                 rewritten = len(added) - fresh
                 parts = []
                 if fresh:
                     parts.append("add %d hook entr%s" % (fresh, "y" if fresh == 1 else "ies"))
                 if rewritten:
                     parts.append("rewrite %d of ours in place" % rewritten)
+                if dropped:
+                    parts.append("remove %d engine-wiring entr%s this shape does "
+                                 "not use (%s)" % (len(dropped),
+                                                   "y" if len(dropped) == 1 else "ies",
+                                                   ", ".join(sorted(set(
+                                                       _hook_id(c) or "?" for c in dropped)))))
                 note = ", ".join(parts) or "update %d hook entries" % len(added)
                 if not settings_path.is_file():
                     note += " (creating the file)"
@@ -616,7 +794,8 @@ def plan_install(
             actions.append(warning)
 
     return Plan(actions, proj, scope, settings_path, diff,
-                collect_only=collect_only, sightings=where)
+                collect_only=collect_only, sightings=where,
+                sightings_inherited=inherited, sightings_previous=moved_from)
 
 
 
@@ -677,19 +856,31 @@ def apply(plan: Plan, *, force: bool = False) -> List[Action]:
                     done.append(Action("skip", a.path, err, "settings"))
                     continue
                 scripts = _available_scripts(paths.HOOKS_SRC, a.path.parent / "hooks")
-                after, added = merge_hooks(before, hook_entries(
+                # Same order as the plan — prune, then merge onto the pruned
+                # copy — because `plan.sightings` is already the RESOLVED
+                # directory and `plan.collect_only` is the shape, so this
+                # re-derivation reaches the same file the diff showed.
+                pruned, dropped = prune_hooks(before, unwanted_events(plan.collect_only))
+                after, added = merge_hooks(pruned, hook_entries(
                     plan.scope, scripts,
                     collect_only=plan.collect_only, sightings=plan.sightings))
-                if not added:
+                if not added and not dropped:
                     done.append(Action("skip", a.path, "already present", "settings"))
                     continue
                 paths.ensure_dir(a.path.parent)
                 a.path.write_text(dumps_settings(after), encoding="utf-8")
                 # "wrote", not "added": since the merge supersedes an entry that
                 # is already ours, some of these may have replaced a differently
-                # spelled one rather than arrived new.
-                done.append(Action("merge", a.path, "wrote %d hook entr%s" % (
-                    len(added), "y" if len(added) == 1 else "ies"), "settings"))
+                # spelled one rather than arrived new. A removal is reported
+                # separately — an operator who reads only this line has to learn
+                # that something left the file, not just that something arrived.
+                note = "wrote %d hook entr%s" % (
+                    len(added), "y" if len(added) == 1 else "ies")
+                if dropped:
+                    note += ", removed %d not used by this shape (%s)" % (
+                        len(dropped), ", ".join(sorted(set(
+                            _hook_id(c) or "?" for c in dropped))))
+                done.append(Action("merge", a.path, note, "settings"))
             else:
                 done.append(Action("skip", a.path, "nothing to do", a.component))
         except OSError as e:
@@ -843,12 +1034,24 @@ def render_plan(plan: Plan) -> str:
     # and a plan is read by someone deciding whether to run it. Two lines here
     # are the difference between "this install is deliberately small" and "this
     # install looks like it is missing half of itself".
+    #
+    # This line is a claim about the settings file, so prune_hooks is what makes
+    # it true: whatever a previous install wired, the plan below removes the
+    # engine-wiring entries, and the removal is one of the actions printed.
     if plan.collect_only:
         out.append("mode    : collect-only — capture and publish; "
                    "no shim, no skill, no engine needed")
     if plan.sightings:
-        out.append("publish : %s  (LYPNING_SIGHTINGS, set on each hook command)"
-                   % plan.sightings)
+        # Where the evidence goes is the one setting that is expensive to get
+        # wrong quietly, so the line says whether this run CHOSE it or merely
+        # kept it, and names the flag that changes it either way.
+        if plan.sightings_inherited:
+            source = "already wired in settings.json; kept — --sightings DIR moves it"
+        elif plan.sightings_previous:
+            source = "MOVED from %s — see the warning below" % plan.sightings_previous
+        else:
+            source = "%s, set on each hook command" % SIGHTINGS_VAR
+        out.append("publish : %s  (%s)" % (plan.sightings, source))
     out.append("")
     if not plan.actions:
         out.append("nothing to do")

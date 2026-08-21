@@ -43,6 +43,12 @@ UNSCRUBBABLE = "k9QpLm2xR7vT4wYz1sD8fG5hJ0nB6c"
 # added is reporting this test's records and not something already on disk.
 MARK = "lypning collect fixture 8c1d"
 
+# The shape of an AWS access key and nothing more: no scanner issued it and no
+# pattern in `harvest.redact` describes it, which is the point. A field the fold
+# copies through untouched cannot be made safe by redaction, so dropping it is
+# the only defence there is.
+AWS_SHAPED = "AKIA" + "J7QX2M5NRTVB4ZC9"
+
 
 def _record(program, **over):
     """One line of a published collection, in the shape another repo would write.
@@ -75,8 +81,24 @@ def _collection(path, programs):
     return path
 
 
+def _published(path, records):
+    """Write a .jsonl of already-built records, for the tests whose subject is a
+    field rather than a program: everything :func:`_record` fills in by default
+    is a claim, and these are the tests that make the claim a hostile one."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+    return path
+
+
 def _source(location, name="theirs"):
     return collect.Source(name=name, location=str(location))
+
+
+def _only(target):
+    """The single record a corpus holds, as an object."""
+    lines = target.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1, lines
+    return json.loads(lines[0])
 
 
 # --- discovery ---------------------------------------------------------------
@@ -214,9 +236,15 @@ def test_read_collection_drops_a_corrupt_line_and_keeps_the_file(tmp_path):
 
     got = collect.read_collection(path)
     assert [s.program for s in got] == ["print('%s 1')" % MARK, "print('%s 2')" % MARK]
-    # Provenance is what the record declared. It is not ours to relabel: a shim
-    # record from another repository still means a program that actually ran.
-    assert {s.source for s in got} == {"shim"}
+    # Provenance is NOT what the record declared. This test used to assert that a
+    # published `shim` stayed `shim`, which was the permissive reading: `shim`
+    # means THIS harness watched the program run, and an import has watched a
+    # file. `harvest.SOURCE_RANK` puts it above everything, `_combine` and
+    # `fold_into_corpus` keep the higher rank, and the ranking is what
+    # `harvest.known_keys` and the frequency table are read through — so a
+    # stranger's word would outrank this repository's own evidence forever. The
+    # cap is applied where a Sighting first exists, so no caller can forget it.
+    assert {s.source for s in got} == {collect.IMPORT_SOURCE_CEILING}
 
 
 # --- the import --------------------------------------------------------------
@@ -705,3 +733,280 @@ def test_a_clone_of_a_real_local_repository_is_read_but_never_run(tmp_path, git_
     again = collect.import_sources([src], corpus_path=target)
     assert again.sources[0]["note"] in ("updated", "cloned")
     assert again.added == 0
+
+
+# --- what a published record may not claim ------------------------------------
+#
+# Six defects an audit reproduced against this module, one test each. Every one
+# of them is a claim a source controls being believed, or a bound a source
+# controls being trusted: the failure is always that the import did what the
+# file said instead of what an import can know.
+
+
+def test_an_imported_stdin_sample_never_reaches_the_corpus(tmp_path):
+    # The field means "what a session piped into this program HERE", which an
+    # import cannot say about a program that ran on a machine this one has never
+    # seen. Both payloads are the auditor's, and each costs something different.
+    #
+    # The path is the expensive one: `conformance._run_entry` screens `program`
+    # and `argv_tail` with `absolute_paths()` and skips an entry naming a path
+    # outside its temp cwd — it does NOT screen stdin, which it reads and feeds
+    # to CPython and to every engine arm. A program that opens what stdin names
+    # for writing therefore truncates a file in this checkout on the next
+    # `lypning conformance`, and again under `lypning bench`.
+    victim = str(paths.PACKAGE_ROOT / "collect.py")
+    root = tmp_path / "theirs"
+    published = _published(root / "sightings" / "s.jsonl", [
+        _record("import sys\nopen(sys.stdin.read().strip(), 'w')", stdin_sample=victim),
+        _record("print('%s creds')" % MARK, stdin_sample=AWS_SHAPED),
+    ])
+    target = tmp_path / "corpus.jsonl"
+
+    result = collect.import_sources([_source(root)], corpus_path=target)
+
+    assert result.added == 2  # the programs are content and survive
+    blob = target.read_bytes()
+    assert victim.encode("utf-8") not in blob
+    assert AWS_SHAPED.encode("utf-8") not in blob
+    assert b'"stdin_sample":null' in blob
+    # Dropped where a Sighting first exists, not on the way out of the import, so
+    # no future caller of `read_collection` has to remember to disarm one.
+    assert [s.stdin_sample for s in collect.read_collection(published)] == [None, None]
+
+    # Why it has to be dropped rather than redacted: the fold redacts `program`
+    # and `argv_tail` and copies this field through untouched. `_as_imported` is
+    # the whole of what stands between a published stdin_sample and a committed
+    # file, and this is that fold being handed one directly.
+    unguarded = tmp_path / "unguarded.jsonl"
+    harvest.fold_into_corpus(
+        [harvest.Sighting(key="k", program="print('%s pipe')" % MARK,
+                          stdin_sample=AWS_SHAPED)], unguarded)
+    assert AWS_SHAPED.encode("utf-8") in unguarded.read_bytes()
+
+
+def test_an_imported_record_cannot_claim_a_count_a_stamp_or_a_provenance(tmp_path):
+    # One record, three lies, and each merges in the direction that makes it
+    # permanent: count with `max`, first_seen with `min`, source with the higher
+    # rank. Nothing short of hand-editing the corpus lowers any of them again.
+    root = tmp_path / "theirs"
+    program = "print('%s claim')" % MARK
+    _published(root / "sightings" / "s.jsonl", [
+        _record(program, count=99999, first_seen="1970-01-01T00:00:00Z", source="shim"),
+    ])
+    target = tmp_path / "corpus.jsonl"
+
+    collect.import_sources([_source(root)], corpus_path=target)
+
+    rec = _only(target)
+    # Clamped, not refused: the ordering an honest count carries is worth
+    # keeping, and the tail no honest count reaches is not.
+    assert rec["count"] == collect.MAX_IMPORT_COUNT
+    # `""` and not "now" and not 1970. `min` skips the empty string, so an
+    # unknown stamp stays movable; a fabricated epoch would win forever.
+    assert rec["first_seen"] == ""
+    # `shim` asserts THIS harness watched the program run. An import watched a
+    # file, and `transcript` is the weakest claim that still means "observed".
+    assert rec["source"] == collect.IMPORT_SOURCE_CEILING
+
+    # And the half that makes the clamp worth having: this repository sees the
+    # same program for itself, and its honest evidence is not locked out.
+    honest = harvest.Sighting(key=harvest.sighting_key(program), program=program,
+                              source="shim", first_seen="2026-03-04T05:06:07Z", count=3)
+    harvest.fold_into_corpus([honest], target)
+
+    rec = _only(target)
+    assert rec["first_seen"] == "2026-03-04T05:06:07Z"  # the epoch would have pinned this
+    assert rec["source"] == "shim"                      # observed here, and it says so
+    assert rec["count"] == collect.MAX_IMPORT_COUNT     # max, so bounded rather than 99999
+
+
+def test_the_gate_a_local_export_applies_stands_in_front_of_an_import(tmp_path):
+    # `fold_into_corpus` is not that gate: it checks redaction, the size cap and
+    # a program that normalises to nothing, and lets the other two through.
+    # `pass` is what a session runs to find out whether an interpreter EXISTS,
+    # so it says nothing at all about the python that interpreter runs.
+    root = tmp_path / "theirs"
+    # The blank one is whitespace rather than "": an empty `program` string
+    # fails the shape test, so a file carrying one is not a collection at all
+    # and this gate never sees it. What reaches here is a program that
+    # normalises to nothing, which is `python3 -c ''` and a blank heredoc body.
+    _collection(root / "sightings" / "s.jsonl",
+                ["pass", "  pass  \n\npass\n", "  \n \n", "print('%s real')" % MARK])
+    target = tmp_path / "corpus.jsonl"
+
+    result = collect.import_sources([_source(root)], corpus_path=target)
+
+    assert result.gathered == 4  # all four were read
+    assert (result.new, result.added, result.total) == (1, 1, 1)
+    assert _only(target)["program"] == "print('%s real')" % MARK
+
+    # The identical program captured HERE is refused by the identical function,
+    # which is the promise README.md §3c makes: the same fold a local
+    # `lypning harvest` uses, reached the same way. A second implementation of
+    # this test is a second implementation that drifts.
+    local = harvest.Sighting(key="k", program="pass", source="shim")
+    assert harvest._clean(local, set()) == (None, [], "trivial")
+    assert harvest.is_interesting("pass", set()) is False
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "collect._publishable does not screen a program for being a program: "
+    "`$P` with a shell redirection in argv_tail still folds into the corpus. "
+    "Delete this marker when the gate lands - an XPASS here is the fix arriving"))
+def test_a_shell_fragment_a_local_capture_would_never_produce_is_refused(tmp_path):
+    # The record the import run before `_publishable` existed actually wrote: an
+    # unexpanded shell variable, with the shell's redirection captured as an
+    # argv tail. It is not a Python program, so no engine can be built to be
+    # fast at it and no conformance case can be written from it — it is a row in
+    # the frequency table that ranks work, describing work nobody has.
+    #
+    # A local capture cannot produce it: `capture.looks_pythonish` screens the
+    # COMMAND, and `$P >/tmp/c.txt` does not mention python, so it never becomes
+    # a sighting here. An import starts one line later, from a record that
+    # already claims to be a program, and nothing on that path asks.
+    root = tmp_path / "theirs"
+    _published(root / "sightings" / "s.jsonl", [
+        _record("$P", argv_tail=[">/tmp/c.txt"]),
+        _record("print('%s program')" % MARK),
+    ])
+    target = tmp_path / "corpus.jsonl"
+
+    result = collect.import_sources([_source(root)], corpus_path=target)
+
+    assert result.gathered == 2  # both were read
+    assert (result.new, result.added) == (1, 1)  # one is a program
+    assert "$P" not in target.read_text(encoding="utf-8")
+
+
+def test_a_program_the_corpus_already_holds_is_not_re_added(tmp_path):
+    # The feedback loop, which is what makes this quiet rather than loud: a
+    # program leaves here, is published by a source, and comes back as a second
+    # observation under a key spelled differently — expectation turning into
+    # evidence that agents type it. The counts a reader trusts are the ones the
+    # engines are built from.
+    ours = tmp_path / "ours"
+    program = "print('%s round trip')" % MARK
+    _collection(ours / "sightings" / "s.jsonl", [program])
+    target = tmp_path / "corpus.jsonl"
+    collect.import_sources([_source(ours, "ours")], corpus_path=target)
+    before = target.read_bytes()
+    stamp = target.stat().st_mtime_ns
+
+    # A different source, a foreign key, the same program.
+    theirs = tmp_path / "theirs"
+    _published(theirs / "evidence" / "corpus.jsonl", [_record(program, count=9)])
+    result = collect.import_sources([_source(theirs, "theirs")], corpus_path=target)
+
+    assert result.gathered == 1  # it was read, and then refused
+    assert (result.new, result.added) == (0, 0)
+    assert result.total == 1
+    assert target.read_bytes() == before
+    assert target.stat().st_mtime_ns == stamp
+
+
+def test_a_symlink_pointing_out_of_the_tree_is_never_read(tmp_path):
+    # `os.walk` does not descend into symlinked DIRECTORIES, but `open` follows
+    # symlinked files without comment. A published `sightings/imported.jsonl ->
+    # ~/.lypning/invocations.jsonl` is the unredacted capture log, which
+    # docs/CAPTURE.md says in as many words is not safe to publish, and one fold
+    # later it is a committed file. It passes the shape test because it IS the
+    # record type the shape test looks for.
+    outside = _collection(tmp_path / "outside" / "invocations.jsonl",
+                          ["print('%s outside')" % MARK])
+    root = tmp_path / "theirs"
+    own = _collection(root / "sightings" / "own.jsonl", ["print('%s own')" % MARK])
+    try:
+        (root / "sightings" / "absolute.jsonl").symlink_to(outside)
+        (root / "sightings" / "relative.jsonl").symlink_to(
+            os.path.join(os.pardir, os.pardir, "outside", "invocations.jsonl"))
+    except OSError:
+        pytest.skip("this filesystem does not do symlinks")
+
+    # Both spellings, because a check that only caught the absolute one would
+    # leave the relative one — which is the one a repository can commit.
+    assert collect.discover(root) == [own]
+
+    target = tmp_path / "corpus.jsonl"
+    result = collect.import_sources([_source(root)], corpus_path=target)
+
+    assert result.added == 1
+    text = target.read_text(encoding="utf-8")
+    assert "%s outside" % MARK not in text
+    assert "%s own" % MARK in text
+
+
+def test_an_oversized_file_named_as_the_location_itself_is_refused(tmp_path, monkeypatch):
+    # `--from /path/to/dump.jsonl` is the spelling that skips the walk, and with
+    # it the walk's size test: a five-line shape test is cheap because it reads
+    # five lines, which is not a size guard. The cap has to hold on both paths
+    # into `discover` and again inside `read_collection`, because that is not
+    # the only caller.
+    monkeypatch.setattr(collect, "MAX_SOURCE_BYTES", 256)
+    dump = _collection(tmp_path / "dump" / "sightings" / "dump.jsonl",
+                       ["print('%s %s')" % (MARK, "padding" * 40)])
+    assert dump.stat().st_size > collect.MAX_SOURCE_BYTES
+
+    assert collect.discover(dump) == []      # named directly
+    assert collect.read_collection(dump) == []  # and re-checked where it is read
+    target = tmp_path / "corpus.jsonl"
+
+    result = collect.import_sources([_source(dump)], corpus_path=target)
+
+    assert (result.gathered, result.added) == (0, 0)
+    assert not target.exists()
+
+
+def test_one_file_cannot_contribute_unbounded_records(tmp_path, monkeypatch):
+    # The byte cap bounds the FILE and this bounds what comes out of it, which
+    # are two different quantities: a .jsonl of one-byte programs is inside the
+    # byte cap and still a few million Sighting objects, and the merge holds
+    # every one of them in memory at once because it is a dict.
+    monkeypatch.setattr(collect, "MAX_SOURCE_RECORDS", 4)
+    root = tmp_path / "theirs"
+    path = _collection(root / "sightings" / "many.jsonl",
+                       ["print('%s %d')" % (MARK, i) for i in range(40)])
+    assert collect._within_cap(path)  # small: it is the record count that bounds this
+
+    assert len(collect.read_collection(path)) == 4
+    target = tmp_path / "corpus.jsonl"
+    result = collect.import_sources([_source(root)], corpus_path=target)
+    assert (result.gathered, result.added) == (4, 4)
+
+
+def test_a_tree_of_files_that_are_not_collections_stops_at_the_entry_limit(tmp_path, monkeypatch):
+    # The bound counts entries WALKED, not candidates found, which is the only
+    # version of it that bounds anything: a tree of two million files ending in
+    # .txt yields no candidates at all, so a limit on matches is a limit a large
+    # — or merely hostile — source never reaches.
+    root = tmp_path / "theirs"
+    junk = root / "logs"
+    junk.mkdir(parents=True)
+    for i in range(200):
+        (junk / ("j%03d.txt" % i)).write_text("not a collection\n", encoding="utf-8")
+    # Sorts after every one of them in its own directory, so only a walk that
+    # got past all 200 ever reaches it.
+    late = _collection(junk / "zz-corpus.jsonl", ["print('%s late')" % MARK])
+
+    examined = []
+    real = collect._is_candidate
+    monkeypatch.setattr(collect, "_is_candidate",
+                        lambda path, base: (examined.append(path), real(path, base))[1])
+
+    # The limit is reached before the collection is, and the walk stops there
+    # rather than carrying on to report what it liked.
+    assert collect.discover(root, limit=16) == []
+    assert len(examined) <= 16
+
+    # The contrast that makes that number mean something: given room, this same
+    # tree costs a per-entry test on every one of the 201 files that were never
+    # candidates. That is the work the bound exists to stop, and it is invisible
+    # in the result either way — an unbounded walk of a large source and a
+    # bounded one both return the collections they found.
+    del examined[:]
+    assert collect.discover(root, limit=10 ** 9) == [late]
+    assert len(examined) > 200
+
+    # And the shipped ceiling is a real one over a real tree, not an absent one.
+    del examined[:]
+    assert collect.discover(root) == [late]
+    assert 0 < len(examined) <= collect.MAX_FILES

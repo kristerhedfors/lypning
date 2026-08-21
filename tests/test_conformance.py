@@ -11,6 +11,8 @@ been seen to fire is a comment.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from lypning import conformance, corpus
 from lypning import engines as eng
 from lypning.conformance import MATCH, MISMATCH, UNSUPPORTED
@@ -237,3 +239,65 @@ def test_an_unbuilt_engine_is_an_absent_arm_not_a_failed_one(no_micropython):
     assert report.engines == {}
     assert report.mismatches == 0
     assert report.ok
+
+
+def test_every_arm_graded_against_cpython_starts_from_the_same_pinned_env(monkeypatch):
+    """The mixture arm ends at CPython, so it has to start like the reference.
+
+    `dispatch` had no `env` parameter at all, so this one arm ran without the
+    environment `_env_for` pins for every other. The mixture falls through to
+    CPython for whatever the cheap tiers refuse, which means the thing being
+    graded against CPython WAS CPython — started under a random hash seed. A
+    program whose output derives from set ordering (`csv.DictWriter` builds its
+    error message by joining `keys() - fieldnames`) then disagreed with itself,
+    about half the time. An intermittent MISMATCH is worse than a steady one: it
+    teaches a reader to re-run the gate until it comes up green, which is the
+    habit that makes invariant 1 stop meaning anything.
+
+    So the flaky symptom is not what is tested here — a coin flip does not fail
+    a suite reliably enough to be a test. The invariant is: whatever `_env_for`
+    pins, EVERY arm compared against the reference is started with it. Each arm
+    gets its own sandbox on purpose (a separate cwd and capture log, so the
+    second cannot read back what the first wrote), so agreement is asserted
+    after normalising each arm's sandbox path onto the reference's — anything
+    else in the environment that differs, or a value that does not live in the
+    sandbox at all, is the bug.
+    """
+    seen = {}
+
+    def fake_run(engine, program="", **kw):
+        seen[engine] = kw.get("env")
+        return _res(engine=engine)
+
+    def fake_run_library(program="", **kw):
+        seen[eng.LIBRARY] = kw.get("env")
+        return _res(engine=eng.LIBRARY)
+
+    def fake_dispatch(program="", **kw):
+        seen[conformance.MIXTURE] = kw.get("env")
+        # The shape that made this invisible: the dispatcher relaying CPython.
+        return eng.Dispatch(_res(engine=eng.CPYTHON), eng.Route(eng.CPYTHON), [])
+
+    monkeypatch.setattr(eng, "run", fake_run)
+    monkeypatch.setattr(eng, "run_library", fake_run_library)
+    monkeypatch.setattr(eng, "dispatch", fake_dispatch)
+    # Every tier present, so the set of arms is the same on a machine that built
+    # them and one that did not. An arm this test silently dropped would be an
+    # arm whose environment nothing checks.
+    monkeypatch.setattr(eng, "find", lambda engine: Path("/bin/engine"))
+    monkeypatch.setattr(eng, "library_ready", lambda: (True, ""))
+
+    arms = [eng.LYPNING, eng.MICROPYTHON, eng.LIBRARY, conformance.MIXTURE]
+    conformance.run([ENTRY], engines=arms, timeout=30)
+
+    assert set(seen) == set(arms) | {eng.CPYTHON}, "an arm never ran: %s" % sorted(seen)
+    reference = seen[eng.CPYTHON]
+    assert reference, "the reference itself ran with the ambient environment"
+    for arm, env in sorted(seen.items()):
+        assert env, "%s ran with the ambient environment" % arm
+        cwd = env.get("PWD")
+        assert cwd, "%s was given no sandbox to be pinned to" % arm
+        assert {k: v.replace(cwd, reference["PWD"]) for k, v in env.items()} == reference, arm
+    # Named on its own because it is the one that broke, and because the report
+    # of the breakage was a MISMATCH pointing at an engine.
+    assert seen[conformance.MIXTURE]["PYTHONHASHSEED"] == reference["PYTHONHASHSEED"]

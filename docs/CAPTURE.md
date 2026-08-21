@@ -224,7 +224,7 @@ One record per DISTINCT program:
 | `source` | strongest provenance seen: `shim` > `hook` > `transcript` > `manual` |
 | `first_seen` | earliest timestamp across all sightings |
 | `count` | number of distinct sightings, never decreasing |
-| `stdin_sample` | `null` unless known — the shim must not read stdin, so only hand-curated (`manual`) records ever carry one |
+| `stdin_sample` | `null` unless known — the shim must not read stdin, so only hand-curated (`manual`) records ever carry one, and never an imported one (see *Collecting from other repositories*) |
 
 Normalization for the dedup hash unifies line endings, strips per-line trailing
 whitespace, and drops surrounding blank lines. It does **not** touch
@@ -383,14 +383,37 @@ they support a lie — the frequency table that ranks what to implement next, th
 conflicting. A program imported from elsewhere is not a record of anything that
 happened in a session here.
 
-**Redaction runs on the way in, through the same code path as a local harvest.**
-Imported sightings are handed to `harvest.fold_into_corpus`, which is the only
-place in this package that writes the corpus. So an import gets the same
-redaction before the hash, the same size guard, and the same max-not-sum
-counting a local harvest gets — a program two sources both published lands once,
-with the earliest `first_seen` and the strongest provenance either declared.
-There is no second implementation of any of it, which is the only reason the
-privacy rules below can be stated once and be true of both paths.
+**The gate and the redaction run on the way in, through the same code path as a
+local harvest.** Imported sightings go through `harvest._clean` — the gate a
+local export puts in front of the fold — and then to
+`harvest.fold_into_corpus`, which is the only place in this package that writes
+the corpus. So an import gets the same redaction before the hash, the same size
+guard, the same three rejections a local export applies, and the same
+max-not-sum counting — a program two sources both published lands once, with the
+earliest `first_seen` and the strongest provenance either declared. There is no
+second implementation of any of it, which is the only reason the privacy rules
+below can be stated once and be true of both paths.
+
+Two of those rejections are cheap hygiene: a program that normalises to nothing,
+and a `pass`-only program, which is what a session runs to find out whether an
+interpreter *exists* and therefore says nothing about the python it runs. The
+third — already in the corpus — is the feedback-loop guard, and it is the reason
+the gate has to sit in front of the fold rather than being left to it. A seed
+record is an expectation somebody typed by hand, keyed by a slug rather than by
+content, so a fold left to itself does not recognise one and re-files it as an
+*observation*; the frequency table that ranks what to implement next then reads
+its own wishes back as evidence. `harvest.known_keys` exists because that
+happened once here, and importing is a second door into the same room.
+
+**An import carries no `stdin_sample`, and that is a provenance argument rather
+than a filter.** The field means "what a session piped into this program
+*here*" — a claim about a local session, which an import is not. There is no
+version of it this repository can verify, so there is nothing honest to keep and
+the field is dropped outright rather than redacted. `source`, `count` and
+`first_seen` are treated the same way and each has its own reason in
+`collect.py`: a record can only ever lower its claim on the way in, never raise
+it, and a `first_seen` that could not be one is recorded as unknown rather than
+as now.
 
 Every tool prints the number of programs it loaded and the number it added. That
 is the number to quote — from that run, with its date. Import is a second way

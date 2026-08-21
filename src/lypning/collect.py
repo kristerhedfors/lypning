@@ -13,6 +13,25 @@ at :func:`harvest.fold_into_corpus`, which is the only place the corpus is
 written and already does redaction, the size guard and max-not-sum counting.
 Nothing in this module opens :func:`paths.sightings_dir`.
 
+AN IMPORTED RECORD MAY NOT CLAIM WHAT AN IMPORT CANNOT KNOW. A published line
+is somebody else's assertion about a machine this one has never seen, and the
+moment a registry names a URL it is an assertion a stranger controls. Four
+fields are claims rather than content and every one of them is cut down on the
+way in by :func:`_as_imported`: ``stdin_sample`` is dropped outright,
+``source`` is capped at the weakest provenance that still means "observed",
+``count`` is clamped, and ``first_seen`` has to parse as a plausible instant or
+it is discarded. This is the only place that trimming happens, so a record
+reaching the fold has already stopped claiming.
+
+THE SAME GATE A LOCAL HARVEST APPLIES. The fold is not the whole of what a
+local export does: :func:`harvest._clean` stands in front of it and drops the
+empty program, the ``pass``-only program and the program the corpus already
+holds. An import runs the identical function over identical records, because
+``README.md`` §3c and ``docs/CAPTURE.md`` both promise "the same fold a local
+``lypning harvest`` uses" and a promise the code does not keep is worse than no
+promise. Skipping it once already cost this corpus records that no local export
+would have published.
+
 DISCOVERY IS BY SHAPE, NOT BY NAME. A published collection is recognised by
 sampling its first few lines and asking whether they are JSON objects carrying a
 ``program`` string — never by the directory it sits in. Matching on a name would
@@ -33,6 +52,7 @@ checkout's ``assets/`` is a nested repository in ``git status`` forever.
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import os
@@ -49,9 +69,51 @@ from . import corpus, harvest, paths
 # would cost more memory than the whole corpus is worth.
 MAX_SOURCE_BYTES = 32 * 1024 * 1024
 
-# Most files examined under one source. A source is an arbitrary repository, so
-# the walk needs a ceiling that does not depend on the source behaving.
+# Most records taken from one collection file. The byte cap bounds the file and
+# this bounds what comes out of it, which are two different quantities: a
+# hand-written .jsonl of one-byte programs is inside the byte cap and still a
+# few million Sighting objects, and every one of them is held in memory at once
+# because the merge is a dict. A source that publishes more distinct programs
+# than this is a dump, not a session's evidence.
+MAX_SOURCE_RECORDS = 20000
+
+# Most filesystem entries examined under one source, directories included. A
+# source is an arbitrary repository, so the walk needs a ceiling that does not
+# depend on the source behaving. It counts entries WALKED and not candidates
+# found, which is the only version of this bound that bounds anything: a tree of
+# two million files ending in .txt yields no candidates at all, so a limit on
+# matches is a limit that a hostile — or merely large — source never reaches.
+# What it bounds is the per-entry work — the name tests, the stat, the read.
+# Listing one directory is still one `scandir`, which is what `os.walk` is; a
+# bound cannot make that partial, and it does not stat anything.
 MAX_FILES = 4096
+
+# Deepest directory the walk descends to. A path can nest until the filesystem
+# says no, and a symlink loop is not the only way to get there: a fetched tree
+# carrying its own vendored checkouts is enough. The bound is on depth rather
+# than on total work because the file limit already bounds the work; this bounds
+# the recursion that produces it.
+MAX_DEPTH = 24
+
+# The strongest provenance an imported record may keep. `shim` and `hook` are
+# claims about THIS harness having watched a program run — the shim ranks above
+# everything because it proves execution — and an import has watched a file.
+# `transcript` is the weakest claim that still means "somebody observed this",
+# which is exactly what a published line is. It is a ceiling and never a floor:
+# a record declaring something weaker (`manual`, a seed) keeps what it declared.
+# Because the fold keeps the incumbent on a tie, a downgraded import can never
+# overwrite the provenance of a program this repository has seen for itself.
+IMPORT_SOURCE_CEILING = "transcript"
+
+# Largest count an imported record may claim. The count is not decoration: it is
+# the frequency table `lypning corpus --stats` prints and the build order
+# `conformance --plan` hands to whoever writes the next opcode. `fold_into_corpus`
+# merges counts with max, so an inflated number is PERMANENT — re-importing a
+# corrected upstream cannot lower it, and neither can anything short of editing
+# the corpus by hand. The clamp keeps the ordering an honest count carries and
+# discards the tail no honest count reaches: on 2026-08-21 the largest count
+# over the 681 records this tree's corpus loaded was 45.
+MAX_IMPORT_COUNT = 100
 
 # Ten minutes. A shallow clone of a large repository over a slow link is
 # minutes; anything past this is a hang, and a hang inside a Stop hook would be
@@ -396,38 +458,105 @@ def _is_candidate(path: Path, rel_base: Path) -> bool:
     return any(part.lower() == "sightings" for part in parts)
 
 
+def _within_cap(path: Path) -> bool:
+    """Is this file small enough to read at all?
+
+    Its own function because the guard has to hold on BOTH paths into
+    :func:`discover` and again inside :func:`read_collection`. It used to live
+    inside the walk loop only, which left ``--from /path/to/dump.jsonl`` — the
+    spelling that names a file directly — going straight from the five-line
+    shape test to reading every line of a multi-gigabyte dump. A cheap test that
+    is only cheap because it reads five lines is not a size guard.
+    """
+    try:
+        return path.stat().st_size <= MAX_SOURCE_BYTES
+    except OSError:
+        return False
+
+
+def _inside(path: Path, root: Path) -> bool:
+    """Does this candidate actually live in the tree we are walking?
+
+    ``os.walk`` does not descend into symlinked directories, but ``stat`` and
+    ``open`` follow symlinked FILES without comment, so a fetched tree that
+    publishes ``sightings/imported.jsonl -> ../../../../.lypning/invocations.jsonl``
+    hands the importer the unredacted capture log — which ``docs/CAPTURE.md``
+    says in as many words is not safe to publish — and, one fold later, a
+    committed file. A ``~/.claude/projects/**`` transcript is the same shape and
+    the same story. Both satisfy the shape test, because they are exactly the
+    record type the shape test is looking for.
+
+    So a symlink found by the walk is skipped and the target is resolved and
+    required to be under the resolved root, which also catches the spellings a
+    plain ``islink`` check does not: a hard-to-see chain, or a root that is
+    itself reached through a link.
+    """
+    try:
+        if os.path.islink(str(path)):
+            return False
+        path.resolve().relative_to(root)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _depth(dirpath: str, base: Path) -> int:
+    """How far below the walk root this directory sits. 0 is the root itself."""
+    try:
+        rel = os.path.relpath(dirpath, str(base))
+    except (OSError, ValueError):
+        return MAX_DEPTH  # unrelatable to the root: descend no further from it
+    return 0 if rel == os.curdir else rel.count(os.sep) + 1
+
+
 def discover(root: Path, *, limit: int = MAX_FILES) -> List[Path]:
     """Every published collection under a tree. Sorted, deduplicated, never raises.
 
-    The bound is on files *considered*, not on files matched: a walk over
-    somebody else's repository is a walk over an unknown quantity, and the cost
-    of the limit being hit is a note in a report, while the cost of no limit is
-    an import that never returns.
+    The bound is on entries *walked*, not on files matched and not on candidates
+    considered: a walk over somebody else's repository is a walk over an unknown
+    quantity, the cost of the limit being hit is a short report, and the cost of
+    a limit that counts only what it liked is an import that walks two million
+    files to find out none of them were candidates. :data:`MAX_DEPTH` bounds the
+    other axis.
     """
     base = Path(root)
+    try:
+        base_real = base.resolve()
+    except OSError:
+        base_real = base
+
     if base.is_file():
-        ok = _is_candidate(base, _rel_base(base.parent)) and looks_like_collection(base)
+        # A location naming one file is a location a human wrote down, so this
+        # path does not screen symlinks — following the link the user typed is
+        # the point of typing it. The size cap is not optional either way.
+        ok = (_is_candidate(base, _rel_base(base.parent))
+              and _within_cap(base) and looks_like_collection(base))
         return [base] if ok else []
 
     rel_base = _rel_base(base)
     found: List[Path] = []
-    considered = 0
+    walked = 0
     try:
         for dirpath, dirnames, filenames in os.walk(str(base)):
+            # The directory counts as an entry too. A tree of a million empty
+            # directories costs nothing per file and is still a tree somebody
+            # can hand us, so a bound that only counted files would not bound it.
+            walked += 1
+            if walked > limit:
+                break
             # In place, because os.walk reads this list back to decide where to
             # descend; rebinding it would prune nothing.
             dirnames[:] = sorted(d for d in dirnames if d not in _PRUNE and not d.startswith(".git"))
+            if _depth(dirpath, base) >= MAX_DEPTH:
+                dirnames[:] = []  # files at this level still count, children do not
             for name in sorted(filenames):
-                if considered >= limit:
+                walked += 1
+                if walked > limit:
                     return sorted(set(found))
                 path = Path(dirpath) / name
                 if not _is_candidate(path, rel_base):
                     continue
-                considered += 1
-                try:
-                    if path.stat().st_size > MAX_SOURCE_BYTES:
-                        continue
-                except OSError:
+                if not _inside(path, base_real) or not _within_cap(path):
                     continue
                 if looks_like_collection(path):
                     found.append(path)
@@ -436,22 +565,134 @@ def discover(root: Path, *, limit: int = MAX_FILES) -> List[Path]:
     return sorted(set(found))
 
 
+# --- what an imported record is allowed to claim ------------------------------
+
+
+# An instant, in the spellings a published record actually uses: the `Z` suffix
+# `datetime.fromisoformat` does not accept before 3.11, a numeric offset with or
+# without its colon, and a fractional part of any length. Matching by shape
+# rather than handing the string to a parser is what makes "1970-01-01",
+# "yesterday" and "" all fail the same way, which is the point — this is a
+# plausibility test, not a date library.
+_ISO_INSTANT = re.compile(
+    r"^(\d{4})-(\d{2})-(\d{2})[Tt ](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?"
+    r"\s*(?:([Zz])|([+-])(\d{2}):?(\d{2}))?$")
+
+# Before this, nothing a harness of this shape could have recorded existed, so
+# no honest `first_seen` is under it and every fabricated one a poisoner reaches
+# for — the epoch, year one, a negative-looking stamp — is.
+_FIRST_SEEN_FLOOR = datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc)
+
+# A day, because a source whose clock is ahead of this one is not lying and a
+# record stamped in the next century is.
+_FIRST_SEEN_SKEW = datetime.timedelta(days=1)
+
+
+def _instant(text: Any) -> Optional[datetime.datetime]:
+    """A published timestamp as a UTC datetime, or None if it is not one."""
+    m = _ISO_INSTANT.match(str(text or "").strip())
+    if m is None:
+        return None
+    try:
+        when = datetime.datetime(
+            int(m.group(1)), int(m.group(2)), int(m.group(3)),
+            int(m.group(4)), int(m.group(5)), int(m.group(6)),
+            int((m.group(7) or "0").ljust(6, "0")[:6]), tzinfo=datetime.timezone.utc)
+    except ValueError:
+        return None  # month 13, day 32: shaped like an instant, is not one
+    if m.group(9):
+        sign = -1 if m.group(9) == "-" else 1
+        offset = datetime.timedelta(hours=int(m.group(10)), minutes=int(m.group(11)))
+        when -= sign * offset  # the stated offset back off, leaving UTC
+    return when
+
+
+def _believable_first_seen(text: Any) -> str:
+    """The record's ``first_seen`` if it could be one, otherwise ``""``.
+
+    ``""`` and not "now". :func:`harvest.fold_into_corpus` merges stamps with
+    ``min``, so a fabricated ``1970-01-01`` does not just arrive wrong, it wins
+    and keeps winning: the corpus record is pinned to it and no later import can
+    move it. Substituting the current time instead would fix the ordering by
+    telling the same kind of lie in the other direction — this repository does
+    not know when somebody else's program first ran. ``""`` is the spelling
+    ``min`` already skips, and it is the honest one: unknown.
+    """
+    when = _instant(text)
+    if when is None:
+        return ""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if when < _FIRST_SEEN_FLOOR or when > now + _FIRST_SEEN_SKEW:
+        return ""
+    return str(text).strip()
+
+
+# The rank the ceiling sits at, resolved once: the cap is a comparison on every
+# record read out of every file.
+_CEILING_RANK = harvest.SOURCE_RANK[IMPORT_SOURCE_CEILING]
+
+
+def _as_imported(s: harvest.Sighting) -> harvest.Sighting:
+    """One published record, reduced to what an import can honestly assert.
+
+    Everything trimmed here is a CLAIM rather than content, and every claim on
+    a published line is written by whoever controls the source. The program text
+    is content and survives — redaction and the size guard are the fold's job
+    and it does them. These four are not content:
+
+    ``stdin_sample`` is dropped, not redacted, not screened. The field means
+    "what a session piped into this program HERE", which an import cannot
+    honestly claim about a program that ran somewhere else, and carrying it
+    costs twice over. :func:`harvest.fold_into_corpus` redacts ``program`` and
+    ``argv_tail`` and copies ``stdin_sample`` through untouched, so an
+    unredacted credential in that field lands verbatim in a committed file. And
+    :func:`conformance._run_entry` screens ``program`` and ``argv_tail`` with
+    ``absolute_paths()`` and skips an entry that names a path outside its temp
+    cwd — it does not screen stdin, which it reads and feeds to CPython and to
+    every engine arm. A source publishing ``{"program": "…open(sys.stdin.read()
+    .strip(), 'w')…", "stdin_sample": "<a path in this checkout>"}`` therefore
+    gets a file in this repository truncated by the next `lypning conformance`,
+    and `lypning bench` on the same path. Nothing about that needs the source to
+    be hostile on purpose. There is no version of this field an import can
+    verify, so there is nothing to keep.
+
+    ``source`` is capped at :data:`IMPORT_SOURCE_CEILING`, ``count`` at
+    :data:`MAX_IMPORT_COUNT`, and ``first_seen`` has to survive
+    :func:`_believable_first_seen`; each constant carries the reason it exists.
+    All three are one-way: this never raises a record's claim, only lowers it.
+    """
+    count = s.count if isinstance(s.count, int) and not isinstance(s.count, bool) else 1
+    return replace(
+        s,
+        stdin_sample=None,
+        source=(IMPORT_SOURCE_CEILING
+                if harvest.SOURCE_RANK.get(s.source, 0) > _CEILING_RANK else s.source),
+        count=max(1, min(count, MAX_IMPORT_COUNT)),
+        first_seen=_believable_first_seen(s.first_seen),
+    )
+
+
 def read_collection(path: Path) -> List[harvest.Sighting]:
     """A published file back as sightings. A corrupt line is dropped, never fatal.
 
-    Read line by line rather than whole: these files are bounded by
-    :data:`MAX_SOURCE_BYTES`, which is large enough that slurping one to find
-    out it is unparseable is a cost worth not paying.
+    Read line by line rather than whole, and stopped at
+    :data:`MAX_SOURCE_RECORDS`: the byte cap is re-checked here rather than
+    assumed, because :func:`discover` is not the only caller and a file named
+    directly used to reach this function unmeasured.
 
-    Provenance is whatever the record declares. It is not downgraded to mark it
-    as imported, because it is not ours to relabel — a shim record from another
-    repository still means a program that actually ran, and
-    :data:`harvest.SOURCE_RANK` already ranks the spellings it does not know.
+    Provenance is NOT whatever the record declares. Every record goes through
+    :func:`_as_imported` at the moment it becomes a :class:`harvest.Sighting`,
+    which is the earliest point at which one exists — so no caller of this
+    function, present or future, has to remember to disarm one.
     """
     out: List[harvest.Sighting] = []
+    if not _within_cap(Path(path)):
+        return out
     try:
         with open(str(path), "r", encoding="utf-8", errors="replace") as fh:
             for line in fh:
+                if len(out) >= MAX_SOURCE_RECORDS:
+                    break
                 if not line.strip():
                     continue
                 try:
@@ -460,7 +701,7 @@ def read_collection(path: Path) -> List[harvest.Sighting]:
                     continue
                 s = harvest.Sighting.from_obj(obj)
                 if s is not None:
-                    out.append(s)
+                    out.append(_as_imported(s))
     except OSError:
         return out
     return out
@@ -498,25 +739,37 @@ class ImportResult:
         }
 
 
-def _publishable_key(s: harvest.Sighting) -> Optional[str]:
-    """The id this sighting would land under, or None if the fold will drop it.
+def _publishable(sightings: Sequence[harvest.Sighting],
+                 known: Set[str]) -> List[harvest.Sighting]:
+    """The records an import may publish, redacted and re-keyed, in order.
 
-    A restatement of :func:`harvest.fold_into_corpus`'s guards, and the only
-    duplication in this module. It exists so ``--dry-run`` can quote the number
-    the real run will produce instead of an optimistic one; the fold remains the
-    single writer, and if the two ever disagree it is this function that is
-    wrong. Redaction runs first because it changes the text and therefore the
-    key — the corpus stores the redacted program, so that is the id to compare.
+    This calls :func:`harvest._clean` — the private one, deliberately, because
+    it IS the gate a local ``lypning harvest`` puts in front of the fold and a
+    second implementation of it is a second implementation that drifts. The fold
+    alone is not that gate: it checks redaction, the size cap and a program that
+    normalises to nothing, and it does not check the other two things ``_clean``
+    checks. A ``pass``-only program is what a session runs to find out whether an
+    interpreter EXISTS, so it says nothing about the python that interpreter
+    runs; and a program the corpus already holds re-enters as an observation
+    under a key the seed corpus spells differently, which is how an expectation
+    somebody typed by hand turns into evidence that agents type it (see
+    :func:`harvest.known_keys`, which exists because that happened).
+
+    Importing without this gate is not theoretical either: the import run before
+    this function existed put records into the corpus that no local export could
+    have produced, one of them an unexpanded shell variable with shell
+    redirections captured as ``argv_tail``, which is not a Python program at all.
+
+    Running it here also means ``--dry-run`` can quote the number the real run
+    will produce rather than an optimistic one, because these are the very
+    records the fold is then handed.
     """
-    program, hits = harvest.redact(s.program)
-    if not harvest.is_safe(hits) or not harvest.normalise(program):
-        return None
-    if len(program.encode("utf-8")) > harvest.MAX_PROGRAM_BYTES:
-        return None
-    _, tail_hits = harvest.redact_argv(s.argv_tail)
-    if not harvest.is_safe(tail_hits):
-        return None
-    return harvest.sighting_key(program)
+    out: List[harvest.Sighting] = []
+    for s in sightings:
+        cleaned, _hits, _why = harvest._clean(s, known)
+        if cleaned is not None:
+            out.append(cleaned)
+    return out
 
 
 def import_sources(sources: Sequence[Source], *, corpus_path: Optional[Path] = None,
@@ -529,6 +782,10 @@ def import_sources(sources: Sequence[Source], *, corpus_path: Optional[Path] = N
     same reason: both sides are counting the same occurrences. The key is
     recomputed rather than taken from the record; see the merge loop for what
     trusting a foreign one costs.
+
+    Between the merge and the fold sits :func:`_publishable`, which is the gate
+    a local export applies — so an import is the same fold reached the same way,
+    which is what ``README.md`` §3c says it is.
 
     Nothing here writes a sighting. The imported programs go to
     :func:`harvest.fold_into_corpus` and stop there; see the module docstring
@@ -550,12 +807,14 @@ def import_sources(sources: Sequence[Source], *, corpus_path: Optional[Path] = N
                 # record declares. A key is only a dedup handle if both sides
                 # compute it the same way, and another repository's does not
                 # have to: measured against the source this package was
-                # extracted from, 1403 of 2081 declared keys disagreed with
+                # extracted from, most of the declared keys disagreed with
                 # `sighting_key` — it keys on the raw program text where this
                 # tree keys on the normalised text, and its seed records are
                 # keyed by hand-written slugs. Merging on what the file said
-                # would have reported 2081 programs where there are 790, and
-                # then handed the fold the same program under two spellings.
+                # would have reported far more distinct programs than there are,
+                # and then handed the fold the same program under two spellings.
+                # Re-run `lypning collect --dry-run` if you want that ratio as a
+                # number: it is a property of whatever is registered today.
                 key = harvest.sighting_key(s.program)
                 s = replace(s, key=key)
                 cur = merged.get(key)
@@ -572,27 +831,20 @@ def import_sources(sources: Sequence[Source], *, corpus_path: Optional[Path] = N
     sightings = [merged[k] for k in sorted(merged)]
     result.gathered = len(sightings)
 
-    # Both counts are taken over the key a program would be PUBLISHED under —
-    # redaction rewrites the text and therefore the id, and counting the raw
-    # form would report a program as new and then file it as another.
-    publishable = {k for k in (_publishable_key(s) for s in sightings) if k is not None}
-
-    # Two different questions, so two different sets. `added` asks what the fold
-    # will put in the FILE it is about to write, which only that file can
-    # answer. `new` asks what the corpus a READER sees has not got, which is a
-    # larger thing in both shapes this package ships in: in a checkout it also
-    # holds the seed records, and in a wheel it also holds the shipped corpus
-    # the fold may not write into.
+    # What "already known" means, and it is two things. The corpus the fold is
+    # about to write is one of them, and only that file can answer for it. The
+    # corpus a READER sees is the larger one in both shapes this package ships
+    # in: in a checkout it also holds the seed records, and in a wheel it also
+    # holds the shipped corpus the fold may not write into.
     #
     # The seed half is the one with a price already paid. A seed program is an
     # expectation somebody typed by hand, keyed by a slug rather than by
-    # content, so the fold does not recognise one and re-files it as an
-    # observation; :func:`harvest.known_keys` exists because an early harvest
-    # reported 138 of its 197 "observed" programs when they were byte-identical
-    # to seeds, and expectation must not inflate the frequency table that ranks
-    # work. The fold is not ours to change from here, so the import reports both
-    # numbers and :func:`render` names the gap rather than leaving a reader to
-    # decide which of the two is the broken one.
+    # content, so a fold left to itself does not recognise one and re-files it
+    # as an observation; :func:`harvest.known_keys` exists because an early
+    # harvest reported most of its "observed" programs when they were
+    # byte-identical to seeds, and expectation must not inflate the frequency
+    # table that ranks work. Passing this set to the gate below is what keeps
+    # that from happening again through the import door.
     corpus_ids: Set[str] = set()
     try:
         corpus_ids = {e.id for e in corpus.load(target)}
@@ -601,6 +853,14 @@ def import_sources(sources: Sequence[Source], *, corpus_path: Optional[Path] = N
     known = set(corpus_ids)
     if corpus_path is None:
         known |= harvest.known_keys()
+
+    # The gate, then the counts over what survived it. Both counts are taken on
+    # the key a program would be PUBLISHED under — redaction rewrites the text
+    # and therefore the id, and counting the raw form would report a program as
+    # new and then file it as another. The gate has already done that rewrite,
+    # so these keys are the ones the fold will use.
+    keep = _publishable(sightings, known)
+    publishable = {s.key for s in keep}
     result.new = len(publishable - known)
 
     if dry_run:
@@ -609,7 +869,7 @@ def import_sources(sources: Sequence[Source], *, corpus_path: Optional[Path] = N
         result.total = len(corpus_ids) + len(would)
         return result
 
-    result.added, result.total = harvest.fold_into_corpus(sightings, target)
+    result.added, result.total = harvest.fold_into_corpus(keep, target)
     return result
 
 

@@ -37,10 +37,10 @@ Capture grows it every session, and `lypning collect` grows it again from
 repositories that are not this one. Upstream published 420, then 472 within the
 day; this tree was written up at 839 and loaded 842 the next morning — which is
 why no live number appears in this sentence either. Every tool prints the count
-it loaded — quote that
-number, from that run, with its date. The same applies to every timing in
-`docs/`: those were measured on the upstream container before extraction. If a
-number matters to a claim you are making, re-run it. `bench.py`,
+it loaded — quote that number, from that run, with its date. A remembered size
+is now stale for two reasons rather than one. The same applies to every timing
+in `docs/`: those were measured on the upstream container before extraction.
+If a number matters to a claim you are making, re-run it. `bench.py`,
 `docs/BENCH-LEDGER.md`.
 
 **4. The corpus rewrites repositories. Run it behind the net.**
@@ -99,10 +99,13 @@ traceback reaches a user unless `LYPNING_DEBUG=1`.
 
 **9. The names.**
 Engine strings are exactly `"lypning"`, `"lypning-mp"`, `"cpython"`; env vars
-are `LYPNING_*`; the state dir is `~/.lypning` (`$LYPNING_HOME`). The two
-upstream names appear in exactly one place — the credit paragraph in
-`README.md` — and in the historical corpus JSONL, whose programs are captured
-verbatim and are not ours to edit. Nowhere else, including comments.
+are `LYPNING_*`; the state dir is `~/.lypning` (`$LYPNING_HOME`). In anything
+this repository *writes* — prose, code, comments — the two upstream names
+appear in exactly one place, the credit paragraph in `README.md`. Nowhere else.
+The exemption is captured program TEXT, whatever it happens to contain, from a
+session here or in any repository `lypning collect` imports from: that is a
+recording, it is never edited, and it now grows by machine on a schedule. An
+edited recording is not a recording. `collect.py`.
 
 ## Before you say you are done
 

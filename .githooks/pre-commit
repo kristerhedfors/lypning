@@ -1,21 +1,32 @@
 #!/bin/sh
 # lypning: pre-commit hook — stage the session's sightings, and nothing else.
 #
-# WHY THIS EXISTS. The Stop hook publishes tests/corpus/sightings/<session>.jsonl
-# and deliberately stops there: a hook that made commits would fight the
-# session's own git work. But these containers are ephemeral, and evidence that
-# is not committed is evidence that is lost — the whole harness ends at a file
-# nobody `git add`ed, which is the one step a session, mid-way through a PR
-# about something else entirely, reliably forgets. That is not hypothetical
+# WHY THIS EXISTS. The Stop hook publishes <sightings>/<session>.jsonl and
+# deliberately stops there: a hook that made commits would fight the session's
+# own git work. But these containers are ephemeral, and evidence that is not
+# committed is evidence that is lost — the whole harness ends at a file nobody
+# `git add`ed, which is the one step a session, mid-way through a PR about
+# something else entirely, reliably forgets. That is not hypothetical
 # arithmetic about this repository: until the .claude/ directory beside this
 # file was written, nothing here was wired at all, and every session that ever
-# worked in this tree captured nothing. tests/corpus/sightings held one file.
+# worked in this tree captured nothing — including the sessions that spent
+# their time typing python one-liners at this very corpus. The harness was
+# never broken here; it was never run on itself.
 #
-# DELIBERATELY NARROW. One directory. This hook runs inside somebody else's
-# commit, and a commit that quietly grew a file its author did not choose is a
-# worse failure than a lost sighting: the author would have to notice to undo
-# it. So it stages exactly tests/corpus/sightings and never `git add -A`, never
-# a `git commit`, never a `git stash`, and it does not care what else is dirty.
+# WHERE IT LOOKS IS NOT FIXED. $LYPNING_SIGHTINGS moves the directory, and
+# `--sightings` teaches people to set it, so a hook that only ever checked
+# tests/corpus/sightings would find nothing, exit 0 without a word, and lose
+# precisely the sightings of the contributor who followed the documentation.
+# The rule below is the rule in paths.py sightings_dir() and has to stay the
+# same rule: unset or blank is the default, `~` expands, absolute is used as
+# given, relative resolves against the top of the working tree.
+#
+# DELIBERATELY NARROW. One directory, adds only. This hook runs inside somebody
+# else's commit, and a commit that quietly grew a file its author did not choose
+# is a worse failure than a lost sighting: the author would have to notice to
+# undo it. So it stages exactly the sightings directory and never `git add -A`,
+# never `-u`, never a `git commit`, never a `git stash`, and it does not care
+# what else is dirty.
 #
 # IT MUST NEVER FAIL A COMMIT. Every git call ends in `|| true` and every path
 # ends in `exit 0`. A capture harness that can reject a commit has made itself
@@ -30,9 +41,11 @@
 # fresh `git config`; .claude/settings.json says so where a reader will look.
 #
 # Environment:
-#   LYPNING_CAPTURE=0  the harness is off; stage nothing (LYPNING_HARVEST=0
-#                      leaves capture running but publishes no sightings, so
-#                      there is nothing here for this hook to find anyway)
+#   LYPNING_CAPTURE=0     the harness is off; stage nothing (LYPNING_HARVEST=0
+#                         leaves capture running but publishes no sightings, so
+#                         there is nothing here for this hook to find anyway)
+#   LYPNING_SIGHTINGS     where the Stop hook publishes; same resolution rule as
+#                         paths.py, because a second rule is a second answer
 
 [ "${LYPNING_CAPTURE-}" = "0" ] && exit 0
 
@@ -42,11 +55,33 @@
 # the author narrowed the commit on purpose and this hook is not entitled to
 # widen it. Detect it the only way a hook can — GIT_INDEX_FILE pointing
 # somewhere other than the repository's own index — and stand down.
-index_path=$(git rev-parse --git-path index 2>/dev/null) || index_path=""
-if [ -n "${GIT_INDEX_FILE-}" ] && [ -n "$index_path" ]; then
-  if [ "$GIT_INDEX_FILE" != "$index_path" ] && [ "$GIT_INDEX_FILE" != "$(cd "$(dirname "$index_path")" 2>/dev/null && pwd)/$(basename "$index_path")" ]; then
-    exit 0
-  fi
+#
+# The comparison is against $GIT_DIR/index, and it has to be: `rev-parse
+# --git-path index` HONOURS GIT_INDEX_FILE, so during the partial commit it
+# reports the temporary index and the guard compares that value against itself,
+# matches, and waves through the exact case it exists to catch. Measured, not
+# reasoned about: `git commit -m x -- a.txt` on git 2.43 runs this hook with
+# GIT_INDEX_FILE=.git/next-index-<pid>.lock, which `--git-path index` echoes
+# back verbatim. `--absolute-git-dir` does not move — it is the worktree's own
+# gitdir even in a linked worktree, whose index is the one git would use here.
+#
+# If GIT_INDEX_FILE is set and the git dir CANNOT be located, the comparison
+# cannot be made and the honest answer is "unknown". Unknown stands down as
+# well: standing down wrongly costs one sighting, which the next commit picks up
+# anyway, while proceeding wrongly writes into somebody's narrowed commit, which
+# is the one failure this whole hook is written to avoid.
+if [ -n "${GIT_INDEX_FILE-}" ]; then
+  git_dir=$(git rev-parse --absolute-git-dir 2>/dev/null) || git_dir=""
+  [ -n "$git_dir" ] || exit 0
+  # GIT_INDEX_FILE arrives relative on a normal commit (.git/index) and absolute
+  # on a narrowed one, so spell it absolutely before comparing. Hooks run at the
+  # top of the working tree; if that ever stops being true the paths differ, the
+  # guard stands down, and a sighting waits for the next commit.
+  case $GIT_INDEX_FILE in
+    /*) index_abs=$GIT_INDEX_FILE ;;
+    *) index_abs=$PWD/$GIT_INDEX_FILE ;;
+  esac
+  [ "$index_abs" = "$git_dir/index" ] || exit 0
 fi
 
 # Hooks are normally run from the top of the working tree, but "normally" is not
@@ -54,11 +89,39 @@ fi
 # relative to whatever cwd this inherited.
 top=$(git rev-parse --show-toplevel 2>/dev/null) || top=""
 [ -n "$top" ] || exit 0
-[ -d "$top/tests/corpus/sightings" ] || exit 0
+
+# paths.py strips the value before deciding, so a value that is only whitespace
+# is the default and not a directory named " ". Parameter expansion only: this
+# runs on every commit in the clone, nearly all of which have nothing to stage,
+# and a fork is a fork.
+sightings=${LYPNING_SIGHTINGS-}
+while :; do
+  case $sightings in
+    [[:space:]]*) sightings=${sightings#?} ;;
+    *[[:space:]]) sightings=${sightings%?} ;;
+    *) break ;;
+  esac
+done
+if [ -n "${HOME-}" ]; then
+  case $sightings in
+    "~"|"~/"*) sightings=$HOME${sightings#\~} ;;
+  esac
+fi
+case $sightings in
+  "") dir=$top/tests/corpus/sightings ;;
+  /*) dir=$sightings ;;
+  *) dir=$top/$sightings ;;
+esac
+
+[ -d "$dir" ] || exit 0
 
 # `git add` on an unchanged directory is a no-op, so this is silent on the
 # overwhelming majority of commits: the export is a pure function of its inputs
-# and rewrites nothing when the session typed no new python.
-git add -- "$top/tests/corpus/sightings" || true
+# and rewrites nothing when the session typed no new python. A $LYPNING_SIGHTINGS
+# pointing outside the working tree makes git refuse and say so on stderr, once
+# per commit; the message is left alone rather than swallowed, because a
+# repository cannot commit a file it does not contain and the alternative is
+# publishing sightings that silently never ship. The commit still succeeds.
+git add -- "$dir" || true
 
 exit 0

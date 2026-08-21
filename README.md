@@ -418,7 +418,7 @@ editing the file; `--from` replaces the registry for one run. Exit 1 means every
 source failed to resolve — importing nothing *new* is a success, and the usual
 outcome.
 
-Three properties worth knowing before you point it at a repository:
+Four properties worth knowing before you point it at a repository:
 
 - **Discovery is by shape, not by directory name.** A `.jsonl` whose first lines
   are JSON objects carrying a non-empty `program` is a collection, wherever it
@@ -431,10 +431,20 @@ Three properties worth knowing before you point it at a repository:
   hanging.
 - **An import writes the corpus and never `tests/corpus/sightings`.** Those files
   are one-writer-per-session evidence of what ran *here*; somebody else's programs
-  in them would make their provenance a lie. Everything arrives through the same
-  fold a local `lypning harvest` uses, so imported programs are redacted,
-  size-guarded and merged max-not-sum by the same code — a program two sources
-  both published lands once.
+  in them would make their provenance a lie. Everything arrives through the gate
+  a local export applies and then the same fold a local `lypning harvest` uses —
+  the same two functions, not a second copy of either — so an imported program is
+  redacted, size-guarded, dropped if it is empty or `pass`-only, dropped if the
+  corpus already holds it, and merged max-not-sum: a program two sources both
+  published lands once. That last rejection is the feedback-loop guard. A program
+  the corpus already holds re-enters as an *observation*, and a seed record is an
+  expectation somebody typed by hand — without the gate, the frequency table that
+  ranks what to implement next reads its own wishes back as evidence.
+- **An import claims nothing about this session.** `stdin_sample` means "what a
+  session piped into this program *here*", which an import cannot honestly say
+  about a program that ran somewhere else, so the field is dropped rather than
+  redacted. `source`, `count` and `first_seen` are capped the same way: a record
+  can only ever lower its claim on the way in, never raise it.
 
 `docs/CAPTURE.md` has the whole story, including the data-flow diagram with the
 import path drawn in.
@@ -676,8 +686,9 @@ safe. `lypning harvest` (run deliberately, never from a hook) derives
 **Programs from elsewhere.** The corpus is not limited to this repository's
 sessions. `lypning collect` imports what other repositories published — a git
 URL or a path on this machine, found by shape rather than by directory name,
-and folded in by the same code a local harvest runs, so an imported program is
-redacted by the same pass. An import writes the corpus and never
+and put through the same gate and the same fold a local harvest runs, so an
+imported program is redacted by the same pass and dropped by the same three
+rejections. An import writes the corpus and never
 `tests/corpus/sightings`: those files are evidence of what ran *here*, and
 somebody else's programs are not. §3c is the wiring on both ends.
 
