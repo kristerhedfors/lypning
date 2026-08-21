@@ -11,7 +11,10 @@ recording.
 
 Everything below is wired by one command — `lypning install`, which merges the
 hooks into `.claude/settings.json` and installs the shim (`README.md` §3). This
-document is what that command wires, and why.
+document is what that command wires, and why. The capture half stands alone:
+`lypning install --collect-only` wires the two hooks and nothing else, which is
+how a repository that never builds an engine still contributes the python its
+agents type — see *Collecting from other repositories* below.
 
 ## The two feeds
 
@@ -38,9 +41,13 @@ python-shim ─┐
 hook ────────┼─> ~/.lypning/invocations.jsonl ─┐
              │                                ├─> --export ─> tests/corpus/sightings/<session>.jsonl ─┐
 ~/.claude/projects/**/*.jsonl ────────────────┘                                                       │
-                                                                                                      ├─> `lypning harvest` ─> assets/corpus/corpus.jsonl
-tests/corpus/sightings/*.jsonl (every session that ever ran) ─────────────────────────────────────────┤
-assets/corpus/corpus.jsonl (existing) ────────────────────────────────────────────────────────────────┘
+                                                                                                      ├─> `lypning harvest` ┐
+tests/corpus/sightings/*.jsonl (every session that ever ran) ─────────────────────────────────────────┤                     │
+assets/corpus/corpus.jsonl (existing) ────────────────────────────────────────────────────────────────┘                     │
+                                                                                                                            ├─> assets/corpus/corpus.jsonl
+another repo, installed --collect-only ─> ITS published sightings ─┐                                                        │
+$LYPNING_SOURCES, --from PATH ─────────────────────────────────────┴─> ~/.lypning/sources/<slug>/ ─> `lypning collect` ─────┘
+                                                                       (found by SHAPE, never executed)
 ```
 
 ## Why per-session files, and not just the corpus
@@ -238,6 +245,158 @@ PreToolUse-captured variant of the transcript class (the same command string,
 seen earlier and more reliably), and it is ranked above `transcript` for
 exactly that reason.
 
+## Collecting from other repositories
+
+The corpus is a recording of what agents actually type, and this repository is
+one workspace among many. A one-liner typed in somebody else's repo is exactly
+the same kind of evidence as a one-liner typed here — it was just published
+somewhere else. Nothing about that evidence requires an engine to produce it.
+
+So collection is separable from the engine, and the separation is the point: a
+repository can run the two capture hooks, publish per-session files, and never
+build a binary, never install a shim, never route a single program through
+anything. A repository that would have to compile a Rust core before it could
+contribute programs will not contribute programs. This one asks it to merge two
+hook entries into a file it already has.
+
+### The three steps
+
+**1. In the other repository, install the collecting half.**
+
+```sh
+lypning install --collect-only --sightings .lypning/programs --dry-run
+lypning install --collect-only --sightings .lypning/programs
+```
+
+`--collect-only` keeps the PreToolUse and Stop hooks — the pair that records and
+publishes — and drops the shim and the skill. Those two are engine wiring, and
+this repository is not routing anything: nothing `--collect-only` installs needs
+an engine, so `lypning status` there saying `not built` is the expected state
+and not a problem to fix.
+
+`--sightings DIR` chooses where the Stop hook publishes. The default,
+`tests/corpus/sightings`, is right for this repository and wrong for nearly
+every other one — a repo with no `tests/` does not want to grow one on our
+account, and a directory a project did not choose is a directory it will delete.
+The value is carried in the hook command itself, as an `LYPNING_SIGHTINGS='<dir>'`
+prefix, rather than in a config file of ours that the repository would then own
+forever. It is single-quoted (a path with a space in it stays one path), an
+absolute path is used as given, and a relative one resolves against the project
+root, so the wiring still means the same thing after the checkout moves.
+
+Everything else is the ordinary install and unchanged by either flag:
+`settings.json` is merged and never overwritten, backed up once before the first
+modification, `--dry-run` prints the exact unified diff and writes nothing, and
+`lypning uninstall` removes precisely what was added, prefix and all.
+
+**2. That repository commits what its sessions publish.**
+
+Same files, same shape, same rules as here: one writer per session so two
+branches cannot conflict, an *added* file rather than a rewritten one, and every
+record redacted, seed-guarded and size-capped before it is written. **No hook
+runs `git`**, there either — whether those files get committed is that
+repository's decision, exactly as it is this one's.
+
+**3. Here, import them.**
+
+```sh
+lypning collect --list          # the registry, and what is already cached
+lypning collect --dry-run       # everything computed, no corpus written
+lypning collect                 # fetch, discover, read, fold
+lypning collect --from ../sibling-checkout
+lypning collect --offline       # never run git; import only what is cached
+lypning collect --json
+```
+
+Exit 0 when at least one source resolved, 1 when none did. "Resolved nothing new"
+is a success: an upstream that has not grown since the last import is the normal
+case, not a failure.
+
+### The registry
+
+Sources live in `src/lypning/assets/corpus/sources.json`, beside the corpus and
+shipped in the wheel with it, so a `pip` user's registry is the same list a
+checkout has. Each entry is a name, a location and a note:
+
+```json
+{
+  "sources": [
+    {
+      "name": "some-repo",
+      "location": "https://github.com/example/some-repo",
+      "note": "why this repository's programs are worth having"
+    }
+  ]
+}
+```
+
+A location is either a git URL — shallow-cloned into
+`$LYPNING_HOME/sources/<slug>`, never into the package tree, because a clone
+under `site-packages` is a clone `pip uninstall` has never heard of — or a path
+on this machine, which is read where it lies and never copied. The slug carries
+a short hash of the full location, so two forks with the same repository name do
+not land in one directory.
+
+Adding a source is a one-line diff a reviewer can read. That is deliberate:
+importing from a repository is a decision about whose programs the engines get
+built against, and it should look like a decision.
+
+`$LYPNING_SOURCES` adds locations without editing the file —
+`os.pathsep`-separated, the same two forms, which is what a checkout sitting
+next to this one wants. `--from LOCATION` (repeatable) replaces the registry
+entirely for one run.
+
+### Discovery is by shape, not by name
+
+Nothing in the registry says *where* in a repository the programs are. The
+importer walks the tree, considers every `.jsonl` that either sits under a
+directory called `sightings` or is named `*corpus*.jsonl`, and then confirms by
+reading it: the first few non-blank lines must parse as JSON objects carrying a
+non-empty `program` string.
+
+Matching on a directory name instead would mean every contributing repository
+had to be told what to call its evidence, and the first one that disagreed would
+be silently invisible — an import that reports zero files is indistinguishable
+from an upstream that captured nothing. Shape has no such failure mode. It is
+also what lets `--sightings` exist at all: a repository free to publish under any
+name it likes is only free if nothing downstream is matching on that name.
+
+The walk prunes `.git`, `node_modules`, `target`, `.venv`, `venv`,
+`__pycache__`, `dist` and `build`, and is bounded in both file count and bytes,
+because a source is a repository somebody else controls the size of.
+
+### What is never run, and what is never written
+
+**Nothing from a fetched tree is executed.** An imported program is corpus data —
+text for the engines and CPython to be pointed at, later, deliberately, behind
+the net described in `CLAUDE.md` — not a script to run now. `git` itself is
+invoked with `-c core.hooksPath=/dev/null` so a fetched repository's own hooks
+cannot run either, and with `GIT_TERMINAL_PROMPT=0` so a URL that needs a
+credential fails immediately instead of hanging on a prompt in someone's CI.
+
+**An import writes the corpus and only the corpus.** It never publishes into
+`tests/corpus/sightings`, and that refusal is about provenance rather than
+tidiness. Those files are one-writer-per-session evidence of what ran in *this*
+repository; someone else's programs written into them would make every claim
+they support a lie — the frequency table that ranks what to implement next, the
+`first_seen` history, the session namespacing that keeps two branches from
+conflicting. A program imported from elsewhere is not a record of anything that
+happened in a session here.
+
+**Redaction runs on the way in, through the same code path as a local harvest.**
+Imported sightings are handed to `harvest.fold_into_corpus`, which is the only
+place in this package that writes the corpus. So an import gets the same
+redaction before the hash, the same size guard, and the same max-not-sum
+counting a local harvest gets — a program two sources both published lands once,
+with the earliest `first_seen` and the strongest provenance either declared.
+There is no second implementation of any of it, which is the only reason the
+privacy rules below can be stated once and be true of both paths.
+
+Every tool prints the number of programs it loaded and the number it added. That
+is the number to quote — from that run, with its date. Import is a second way
+the corpus grows, so a remembered size is now stale for two reasons instead of
+one.
+
 ## Privacy
 
 **The log is not safe to publish. The corpus is committed.** A captured `-c`
@@ -278,8 +437,10 @@ paths, occasionally a token pasted into a one-liner.
 | `LYPNING_CAPTURE=0` | disable capture entirely; the shim still execs python |
 | `LYPNING_CAPTURE_EXIT=1` | shim waits for the child instead of exec-ing it, adding an `{"kind":"exit"}` record with `exit_code` and `wall_ms` |
 | `LYPNING_HARVEST=0` | keep capturing; stop the Stop hook publishing sightings |
+| `LYPNING_SIGHTINGS` | where the Stop hook publishes (default `<project>/tests/corpus/sightings`) — absolute as given, relative against the project root; `lypning install --sightings DIR` writes it into the hook command |
 | `LYPNING_HOME` | state directory (default `~/.lypning`) — the shim's bin dir, the log, the build trees |
 | `LYPNING_TRANSCRIPTS` | transcript root for the harvest (default `~/.claude/projects`) |
+| `LYPNING_SOURCES` | extra `lypning collect` locations, `os.pathsep`-separated — appended to the registry, never replacing it |
 
 ## What the shim does and does not promise
 

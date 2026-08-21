@@ -111,6 +111,10 @@ lypning = [
   "assets/scripts/*.sh",
   "assets/shim/python-shim",
   "assets/corpus/*.jsonl",
+  # The source registry `lypning collect` reads. Data, and useless to a pip
+  # user if it stays behind in the checkout: the corpus glob above is by
+  # extension and .json is not .jsonl, so this line is not redundant.
+  "assets/corpus/*.json",
   "assets/claude/skills/lypning/*.md",
   "assets/claude/hooks/*.sh",
   "assets/claude/*.json",

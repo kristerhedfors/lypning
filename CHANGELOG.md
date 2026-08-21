@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — collecting from repositories that will never build an engine
+
+The corpus is a recording of what agents actually type, and this repository is
+one workspace among many. A one-liner typed in some other repo is the same
+evidence; it was just published somewhere else. So capture is now separable from
+the engine. `lypning install --collect-only` wires the pair that collects — the
+PreToolUse hook that records and the Stop hook that publishes — and drops the
+shim and the skill, which are engine wiring; nothing it installs needs a binary,
+so `not built` is the expected state in a collecting repository rather than a
+problem to fix. `lypning collect` imports what such a repository published.
+
+A repository that has to compile a Rust core before it can contribute programs
+will not contribute programs. This one asks it to merge two hook entries into a
+file it already has.
+
+- **Discovery is by SHAPE, not by directory name.** A `.jsonl` whose first
+  non-blank lines parse as JSON objects carrying a non-empty `program` is a
+  collection, wherever in the tree it sits. Matching on a directory name would
+  mean every contributing repository had to be told what to call its evidence,
+  and the first one that disagreed would be invisible rather than reported — an
+  import finding zero files reads exactly like an upstream that captured nothing.
+- **`--sightings DIR`, so the collecting repository chooses.**
+  `tests/corpus/sightings` is this repository's convention and nobody else's; a
+  repo with no `tests/` will delete a directory it did not ask for, and with it
+  the evidence. The directory is carried in the hook command as an
+  `LYPNING_SIGHTINGS='<dir>'` prefix — POSIX-quoted, absolute as given, relative
+  against the project root — rather than in a config file the collecting repo
+  would then own forever. `$LYPNING_SIGHTINGS` unset keeps the old default byte
+  for byte, so a repository that never sets it cannot notice this exists.
+- **A registry that is data.** `src/lypning/assets/corpus/sources.json` ships in
+  the wheel beside the corpus, so a `pip` user's source list is the one a
+  checkout has, and adding a source is a one-line diff a reviewer can read —
+  which is the right shape for a decision about whose programs the engines get
+  built against. `$LYPNING_SOURCES` appends without editing it; `--from`
+  replaces it for one run.
+- **`--offline` never runs `git`.** A source already cloned under
+  `~/.lypning/sources` resolves from there and anything else is reported
+  unresolved, which is what makes this usable in CI and on a plane. Exit 1 means
+  every source failed to resolve; importing nothing *new* is a success and the
+  usual outcome.
+- **An import writes the corpus and never `tests/corpus/sightings`.** Those files
+  are one-writer-per-session evidence of what ran in *this* repository, and
+  somebody else's programs written into them would make their provenance a lie —
+  along with the `first_seen` history and the frequency table that ranks what to
+  implement next. Everything arrives through `harvest.fold_into_corpus`, still
+  the only place the corpus is written, so imported programs get the same
+  redaction before the hash, the same size guard and the same max-not-sum merge a
+  local harvest gets. A program two sources both published lands once.
+- **Nothing from a fetched tree is executed.** An imported program is corpus
+  data — text the engines are pointed at later, deliberately, behind the net —
+  not a script to run now. Clones and fetches run with `core.hooksPath` pointed
+  at `/dev/null` so a fetched repository's own git hooks cannot run, and with
+  `GIT_TERMINAL_PROMPT=0` so a URL that needs a credential fails immediately
+  instead of hanging on a prompt nobody is there to answer.
+- **Documented on both ends.** `docs/CAPTURE.md` gains *Collecting from other
+  repositories* — the three-step shape, the registry, the environment overrides
+  and the provenance argument — and its data-flow diagram now draws the import
+  path into the same fold as the local harvest. `README.md` §3c is the short
+  version, and §4's reference table carries `collect`.
+
 ### Added — lypning as a library, for harnesses that would rather link than spawn
 
 The runtime is now buildable as a C ABI (`lypning build --lib` →

@@ -74,5 +74,52 @@ def test_project_dir_falls_back_to_the_start_dir_outside_a_work_tree(tmp_path, m
     assert paths.project_dir(lonely) == lonely.resolve()
 
 
-def test_sightings_dir_is_one_directory_under_the_project(tmp_path):
+def test_sightings_dir_is_one_directory_under_the_project(tmp_path, monkeypatch):
+    monkeypatch.delenv("LYPNING_SIGHTINGS", raising=False)
     assert paths.sightings_dir(tmp_path) == tmp_path / "tests" / "corpus" / "sightings"
+
+
+def test_sightings_dir_takes_an_absolute_override_as_given(tmp_path, monkeypatch):
+    # The harness is worth installing in repositories that are not this one, and
+    # none of them want a `tests/corpus/` they never asked for.
+    monkeypatch.setenv("LYPNING_SIGHTINGS", str(tmp_path / "elsewhere" / "programs"))
+    assert paths.sightings_dir(tmp_path / "project") == tmp_path / "elsewhere" / "programs"
+
+
+def test_sightings_dir_resolves_a_relative_override_against_the_project(tmp_path, monkeypatch):
+    # Relative, because the value is written into a hook command that is
+    # committed: an absolute path baked into `.claude/settings.json` stops being
+    # true the moment the checkout is cloned somewhere else.
+    monkeypatch.setenv("LYPNING_SIGHTINGS", "var/programs")
+    assert paths.sightings_dir(tmp_path) == tmp_path / "var" / "programs"
+
+
+def test_a_blank_lypning_sightings_keeps_the_default(tmp_path, monkeypatch):
+    # An exported-but-empty variable is the shell's way of saying unset. Taking
+    # it literally would publish into the project root, and a repository that
+    # never sets this must not be able to notice the override exists.
+    monkeypatch.setenv("LYPNING_SIGHTINGS", "   ")
+    assert paths.sightings_dir(tmp_path) == tmp_path / "tests" / "corpus" / "sightings"
+
+
+def test_sightings_dir_follows_the_project_when_no_project_is_passed(tmp_path, monkeypatch):
+    monkeypatch.delenv("LYPNING_SIGHTINGS", raising=False)
+    d = tmp_path / "somewhere"
+    d.mkdir()
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(d))
+    assert paths.sightings_dir() == d.resolve() / "tests" / "corpus" / "sightings"
+
+
+def test_sources_cache_dir_is_state_never_the_asset_tree(tmp_path, monkeypatch):
+    # A clone under site-packages is a working tree `pip uninstall` has never
+    # heard of; one under a checkout's assets/ is a nested repository that shows
+    # up in `git status` forever.
+    monkeypatch.setenv("LYPNING_HOME", str(tmp_path / "state"))
+    assert paths.sources_cache_dir() == tmp_path / "state" / "sources"
+
+
+def test_the_sources_registry_ships_beside_the_corpus():
+    # Data, not code, and in the wheel: a pip user gets the same list a checkout
+    # has, and adding a source stays a one-line diff a reviewer can read.
+    assert paths.SOURCES_FILE == paths.CORPUS_DIR / "sources.json"
+    assert paths.SOURCES_FILE.parent == paths.CORPUS_FILE.parent

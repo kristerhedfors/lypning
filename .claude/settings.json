@@ -1,0 +1,44 @@
+{
+  "$comment": [
+    "This is exactly what `lypning install` would have merged into this file, checked in so it does not have to be run.",
+    "WHY IT IS COMMITTED. This repository ships the capture harness and, until this file existed, did not run it on itself: there was no .claude/ directory here at all. Every session that ever worked in this tree captured nothing — including the sessions that spent their time typing python one-liners at this very corpus, which is the exact material the corpus is for. tests/corpus/sightings held one session file. The harness was never broken; it was never wired. A fresh clone of this repo now captures from its first session, with nobody running an install first.",
+    "The scripts in .claude/hooks/ are byte-for-byte copies of src/lypning/assets/claude/hooks/. Copies, not edits: they are the shipped and tested definition of the contract, and a drifted copy here would be a second definition of it. If you change behaviour, change the asset and re-copy.",
+    "MERGE, DO NOT REPLACE. There was no settings.json here to merge with, so this file is only these three entries. `lypning install` appends into whatever it finds and backs the original up once; if you ever add unrelated keys or hooks below, the same rule applies to anyone editing this file by hand. Dropping a fresh object over the top of it costs whoever comes next every hook they had.",
+    "Every one of these prints {\"continue\":true,\"suppressOutput\":true} and exits 0 on every path, including its own failures. There is deliberately no permissionDecision field: answering \"allow\" from a PreToolUse hook would bypass the permission prompt for every Bash command in the session, which is a far bigger change than a capture harness is allowed to make.",
+    "Off switches, no edit required: LYPNING_CAPTURE=0 disables the whole harness, LYPNING_HARVEST=0 keeps capturing but stops the Stop hook publishing. CI sets both, because a runner types nothing and anything it captured would be noise entering the corpus through the back door.",
+    "ONE THING THIS FILE CANNOT DO FOR YOU. The Stop hook publishes tests/corpus/sightings/<session>.jsonl but deliberately does not commit — a hook that made commits would fight the session's own git work. .githooks/pre-commit stages that one directory so the file rides along with a commit the session was making anyway, and git only consults it once you have said so: `git config core.hooksPath .githooks`. That is a per-clone setting git will not let a checked-in file make on your behalf, and the SessionStart hook is not the place to make it either — it would be this harness reconfiguring your git without being asked. Run it once per clone; an ephemeral container is a new clone."
+  ],
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/lypning-session-start.sh\""
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/lypning-capture.sh\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/lypning-harvest.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}

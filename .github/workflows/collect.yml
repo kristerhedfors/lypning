@@ -1,0 +1,179 @@
+# The harvesting build: import what other repositories published, weekly.
+#
+# ci.yml decides correctness. This job decides nothing — it grows the corpus and
+# then asks a human. `lypning collect` merges programs published by the sources
+# in src/lypning/assets/corpus/sources.json, and the argument this project makes
+# only stops being an argument about one repository's sessions if that import
+# happens on a schedule rather than whenever somebody remembers.
+#
+# IT OPENS A PULL REQUEST, IT DOES NOT PUSH. The corpus is the input to every
+# conformance run and every benchmark, so a bad import is not a bad file — it is
+# a moved baseline, and a moved baseline is discovered later, from the wrong
+# direction, as an engine that appears to have regressed. A corpus that grows
+# without a human looking is how that becomes history. The PR is the human.
+#
+# NOTHING TO IMPORT IS THE COMMON CASE, and it must be silent: upstream sources
+# publish in bursts, so most weeks the fold finds programs it already has and
+# this job ends green with no branch, no PR, and nothing said.
+#
+# Note the token caveat when reviewing: a PR opened with the default
+# GITHUB_TOKEN does not itself trigger `ci`, by GitHub's own loop prevention. So
+# the checks on a corpus PR are the ones a reviewer asks for — close and reopen
+# it, or push an empty commit — and a green tick is not automatic here the way
+# it is on a human's branch.
+
+name: collect
+
+on:
+  schedule:
+    # Weekly, Mondays 06:17 UTC. Off the hour on purpose: the scheduler queues
+    # every :00 job on the planet at once, and a job that only has to run once a
+    # week has no reason to stand in that line.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  # Both are the minimum for the last step and neither is more than that:
+  # `contents: write` pushes the import branch, `pull-requests: write` opens the
+  # PR against it. Nothing here writes to the default branch.
+  contents: write
+  pull-requests: write
+
+concurrency:
+  # Two imports racing would push two branches from the same base and open two
+  # PRs proposing overlapping folds. Whoever is already going wins; a manual
+  # dispatch during a scheduled run waits rather than duplicating it.
+  group: collect
+  cancel-in-progress: false
+
+env:
+  # A runner types nothing, so both capture feeds are off — anything they wrote
+  # would be noise entering the corpus through the back door, which is the same
+  # stance ci.yml takes and for the same reason.
+  #
+  # IMPORTING IS NOT CAPTURING, and the switches do not touch it. LYPNING_CAPTURE
+  # and LYPNING_HARVEST gate the two hook entry points in lypning/capture.py and
+  # nothing else; `lypning collect` and `lypning harvest` are deliberate
+  # commands, run by name, and they do their work here with both set to 0. That
+  # is the distinction this whole job rests on: it records nothing about itself
+  # and folds in what other people recorded about themselves.
+  LYPNING_CAPTURE: "0"
+  LYPNING_HARVEST: "0"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  collect:
+    name: import published corpora, open a PR if anything grew
+    # A fork inherits this file, its schedule, and a token that can write to
+    # itself — so without this guard the first fork to sit for a week opens a
+    # corpus PR against its own main that nobody asked for and nobody owns.
+    if: github.repository == 'kristerhedfors/lypning'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: install
+        # No dev extra: this job runs two commands and neither needs pytest.
+        # `pip check` is ci.yml's job, not this one's.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: collect — merge what the sources published
+        # NOT --offline. That flag exists so conformance and a plane work; here
+        # the network is the entire point, and a source that has to be cloned is
+        # a source being imported for the first time.
+        #
+        # Exit 1 from collect means EVERY source failed to resolve, which on a
+        # weekly schedule is an upstream outage far more often than it is a
+        # defect of ours. Reddening the job would train a reader to ignore it,
+        # so the failure is reported and the run carries on to harvest — which
+        # then finds nothing changed and ends silent, exactly as it should.
+        #
+        # Redirected rather than piped through `tee`: the runner's shell has no
+        # pipefail, so a pipeline would report tee's exit status and swallow
+        # exactly the failure this step is being careful about.
+        run: |
+          lypning collect --json > "$RUNNER_TEMP/collect.json" \
+            || echo "collect failed — no source resolved; treating as an outage, not a regression"
+          cat "$RUNNER_TEMP/collect.json" || true
+
+      - name: harvest — derive the corpus from everything now present
+        # The fold is a pure function of its inputs, so this is what makes the
+        # diff below meaningful: run twice over unchanged sources it produces a
+        # byte-identical corpus and touches nothing.
+        #
+        # Unlike collect, this one is allowed to redden the job: harvest touches
+        # no network and reads only what is already on disk, so a failure here
+        # is ours and not an outage.
+        run: |
+          lypning harvest --json > "$RUNNER_TEMP/harvest.json"
+          cat "$RUNNER_TEMP/harvest.json"
+
+      - name: did the corpus actually change?
+        id: changed
+        # Scoped to the corpus directory rather than a bare `git status`: the
+        # only file this job is entitled to propose is the one it just folded,
+        # and anything else that turned up dirty is a separate problem that must
+        # not ride into a PR titled "corpus".
+        run: |
+          diff=$(git status --porcelain -- src/lypning/assets/corpus)
+          if [ -z "$diff" ]; then
+            echo "changed=no" >> "$GITHUB_OUTPUT"
+            echo "corpus unchanged — nothing to propose"
+          else
+            echo "changed=yes" >> "$GITHUB_OUTPUT"
+            echo "$diff"
+          fi
+
+      - name: open the pull request
+        if: steps.changed.outputs.changed == 'yes'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # A dated branch per import, not one long-lived `corpus` branch. Each
+        # import is its own reviewable claim about what entered the baseline; a
+        # reused branch would let an unreviewed week be silently rewritten by
+        # the next one, and the PR a human was halfway through reading would
+        # change under them. For the same reason nothing here force-pushes: if
+        # today's branch already exists, today's import is already proposed and
+        # this run has nothing to add.
+        #
+        # `git add` names the corpus directory, never `-A`, so nothing
+        # incidental on the runner can reach the branch.
+        run: |
+          branch="corpus/collect-$(date -u +%Y%m%d)"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            echo "$branch already exists — today's import is already open for review"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add -- src/lypning/assets/corpus
+          git commit -m "corpus: weekly import from the published sources"
+          git push origin "$branch"
+          {
+            echo 'Scheduled `lypning collect` followed by `lypning harvest`.'
+            echo
+            echo 'Review this the way you would review a moved baseline, because that is'
+            echo 'what it is: the corpus is the input to every conformance run and every'
+            echo 'benchmark. Read the programs, not just the counts.'
+            echo
+            echo 'The JSON below is what those two commands printed on THIS run. It is the'
+            echo 'only place these numbers are true — do not carry them into prose, a'
+            echo 'commit message, or docs/ without re-running and dating them.'
+            echo
+            echo '```json'
+            cat "$RUNNER_TEMP/collect.json" 2>/dev/null || echo '{"note":"collect produced no output"}'
+            cat "$RUNNER_TEMP/harvest.json" 2>/dev/null || true
+            echo '```'
+          } > "$RUNNER_TEMP/body.md"
+          # No --base: gh targets the repository's default branch, which is the
+          # one fact about this repo that a workflow should not be restating.
+          gh pr create \
+            --head "$branch" \
+            --title "corpus: weekly import ($(date -u +%Y-%m-%d))" \
+            --body-file "$RUNNER_TEMP/body.md"

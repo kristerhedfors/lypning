@@ -1,0 +1,17 @@
+{
+  "$comment": [
+    "The repositories `lypning collect` imports published programs from. Data, not code: adding a source is a one-line diff a reviewer can read, and it ships in the wheel so a pip user gets the same list a checkout has.",
+    "A source is a name, a location and a note. The location is either a git URL — shallow-cloned into ~/.lypning/sources, never into the package tree — or a path on this machine, which is read where it lies and never copied.",
+    "DISCOVERY IS BY SHAPE, NOT BY NAME. Nothing here says where in a repository the programs are. The importer walks the tree for .jsonl files, samples the first few lines of each, and keeps the ones whose lines parse as JSON objects carrying a non-empty \"program\" string. That is the whole reason a source may publish under any directory name it likes: matching on a directory name would mean every repository had to be told what to call its evidence, and the first one that disagreed would be invisible.",
+    "An import adds to the corpus and NEVER to tests/corpus/sightings. Those files are one-writer-per-session evidence of what ran in THIS repository; someone else's programs written into them would make provenance a lie, and provenance is what the frequency table that ranks work is built on.",
+    "$LYPNING_SOURCES adds locations without editing this file — os.pathsep-separated, same two forms, useful for a checkout sitting next to this one. `lypning collect --from LOCATION` overrides the registry entirely for one run.",
+    "Nothing from a fetched tree is ever executed, and git hooks in it are disabled on every command that touches it. An imported program is corpus data — text to run the engines against — not a script to run."
+  ],
+  "sources": [
+    {
+      "name": "deepresearch.se",
+      "location": "https://github.com/kristerhedfors/deepresearch.se",
+      "note": "the repository lypning was extracted from; its sessions publish programs lypning has not seen"
+    }
+  ]
+}

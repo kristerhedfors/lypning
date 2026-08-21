@@ -24,6 +24,15 @@ and the capture log is never touched.
 merge shown as a unified diff of the JSON. A user gets to read the change to
 their config before it is a change to their config.
 
+**A collect-only install is a first-class shape.** The engine tiers need a built
+binary, a shim on ``$PATH`` and a skill; *collection* needs none of that — two
+hooks and a directory to publish into. A repository that merely wants to
+contribute the python its agents type gets exactly that: no shim shadowing its
+``python3``, no skill spending its context window, no cargo. That cheapness is
+not a convenience, it is the precondition for collecting from other repositories
+at all, because a repo which does not use lypning will only run a collector it
+does not have to adopt.
+
 The MicroPython tier is allowed to be missing throughout — an engine that is not
 built is a status line, never an error.
 """
@@ -63,14 +72,20 @@ class HookSpec:
     matcher: Optional[str]
     scripts: Tuple[str, ...]
     fallback: str
+    #: Does this hook serve COLLECTION, or engine wiring? The two are separable
+    #: and a collect-only install keeps only the collecting ones — see the module
+    #: docstring for why that separation is what makes collection portable.
+    collect: bool = True
 
 
 HOOKS: Tuple[HookSpec, ...] = (
     # SessionStart re-installs the shim: these containers are ephemeral and a
     # shim that was installed in a previous session is not on this one's PATH.
+    # That is engine wiring, not collection — it is the one spec a collect-only
+    # install drops, and the reason the field exists.
     HookSpec("SessionStart", None,
              ("lypning-session-start.sh", "lypning-install.sh", "lypning-shim.sh"),
-             "lypning shim install"),
+             "lypning shim install", collect=False),
     # PreToolUse/Bash catches the command string — heredoc bodies, `uv run`
     # wrappers, write-then-run — which the shim never sees as argv.
     HookSpec("PreToolUse", "Bash",
@@ -112,6 +127,12 @@ class Plan:
     scope: str = "project"
     settings_path: Optional[Path] = None
     diff: List[str] = field(default_factory=list)
+    #: The two collection choices travel WITH the plan, because :func:`apply`
+    #: re-derives the hook entries from it rather than replaying the planned
+    #: text. A plan that forgot them would dry-run as collect-only and then
+    #: install the full set.
+    collect_only: bool = False
+    sightings: Optional[str] = None
 
     @property
     def changes(self) -> List[Action]:
@@ -131,6 +152,8 @@ class Plan:
             "project": str(self.project),
             "scope": self.scope,
             "settings": str(self.settings_path) if self.settings_path else None,
+            "collect_only": self.collect_only,
+            "sightings": self.sightings,
             "actions": [a.as_dict() for a in self.actions],
             "diff": self.diff,
         }
@@ -187,12 +210,72 @@ def _available_scripts(*dirs: Path) -> List[str]:
     return names
 
 
-def hook_entries(scope: str, scripts: Sequence[str]) -> List[Tuple[str, Optional[str], str]]:
-    """The ``(event, matcher, command)`` triples this install wants present."""
+def sh_quote(value: str) -> str:
+    """POSIX single-quoting for a value that then goes inside a JSON string.
+
+    Two layers of escaping are in play and only one of them is done for us: the
+    json module handles the JSON, nothing handles the shell. A sightings
+    directory is a path the user chose, so it may contain a space — which would
+    silently turn one hook command into a command plus an argument nobody asked
+    for — and it may contain a quote. Single quotes protect everything except a
+    single quote, which has to be closed, escaped and reopened; that is what the
+    ``'"'"'`` is. Public because it is the kind of thing that is only ever wrong
+    in the case nobody thought to try by hand.
+    """
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def _hook_id(command: str) -> Optional[str]:
+    """Which of our hooks a command IS, whatever spelling it arrived in.
+
+    A hook has several correct spellings — the copied script or the CLI entry
+    point, with or without an ``LYPNING_SIGHTINGS=`` prefix — and the merge has
+    to recognise all of them as the same hook. Matching on the command string
+    alone would let a second spelling of a hook that is already installed land
+    beside the first (see :func:`merge_hooks`). The event is a sufficient id:
+    each spec owns one, and the merge only ever compares within one event.
+    """
+    low = command.lower()
+    for spec in HOOKS:
+        if spec.fallback in low or any(name in low for name in spec.scripts):
+            return spec.event
+    return None
+
+
+def hook_entries(
+    scope: str,
+    scripts: Sequence[str],
+    *,
+    collect_only: bool = False,
+    sightings: Optional[str] = None,
+) -> List[Tuple[str, Optional[str], str]]:
+    """The ``(event, matcher, command)`` triples this install wants present.
+
+    ``collect_only`` keeps only the collecting specs; ``sightings`` names the
+    directory the Stop hook publishes into.
+    """
+    where = (sightings or "").strip()
     out: List[Tuple[str, Optional[str], str]] = []
     for spec in HOOKS:
+        if collect_only and not spec.collect:
+            continue
         chosen = next((n for n in spec.scripts if n in scripts), None)
-        out.append((spec.event, spec.matcher, _hook_command(scope, chosen, spec.fallback)))
+        command = _hook_command(scope, chosen, spec.fallback)
+        if where:
+            # The collecting repository chooses where published files land, and
+            # says so in the hook command itself rather than in a config file of
+            # its own — a collector whose install is one merge into a file that
+            # already exists is one a foreign repo will actually accept.
+            #
+            # The prefix goes on every entry we write, not only the collecting
+            # ones: the variable is inert where nothing reads it, and a rule with
+            # an exception is a rule the next reader has to remember.
+            #
+            # Uninstall keeps working for free: `LYPNING_SIGHTINGS` contains
+            # OUR_MARK, so a prefixed command matches strip_hooks by both halves
+            # rather than by neither.
+            command = "LYPNING_SIGHTINGS=%s %s" % (sh_quote(where), command)
+        out.append((spec.event, spec.matcher, command))
     return out
 
 
@@ -239,16 +322,53 @@ def _commands_of(group: Any) -> List[str]:
     return [h.get("command", "") for h in hooks if isinstance(h, dict)]
 
 
+def _our_commands(settings: Dict[str, Any]) -> List[str]:
+    """Every hook command in this settings object that is one of ours."""
+    out: List[str] = []
+    hooks = settings.get("hooks")
+    if not isinstance(hooks, dict):
+        return out
+    for groups in hooks.values():
+        if not isinstance(groups, list):
+            continue
+        for g in groups:
+            out.extend(c for c in _commands_of(g)
+                       if isinstance(c, str) and OUR_MARK in c.lower())
+    return out
+
+
+def _find_ours(groups: Sequence[Any], ident: Optional[str]) -> Optional[Dict[str, Any]]:
+    """The existing hook dict that is already our ``ident`` hook, if any."""
+    if ident is None:
+        return None
+    for g in groups:
+        if not isinstance(g, dict) or not isinstance(g.get("hooks"), list):
+            continue
+        for h in g["hooks"]:
+            if not isinstance(h, dict):
+                continue
+            cmd = h.get("command")
+            if isinstance(cmd, str) and OUR_MARK in cmd.lower() and _hook_id(cmd) == ident:
+                return h
+    return None
+
+
 def merge_hooks(
     settings: Dict[str, Any],
     entries: Sequence[Tuple[str, Optional[str], str]],
 ) -> Tuple[Dict[str, Any], List[str]]:
     """Add our entries to a deep copy. Returns ``(new_settings, added_commands)``.
 
-    Append-only, by construction: an existing group is extended at the end and a
-    new group goes at the end of the event's list, so nothing that was already
-    in the file changes index. Insertion order of a dict is preserved by the
-    copy, which is what keeps unrelated keys where the user put them.
+    Append-only for everything that is not already ours: an existing group is
+    extended at the end and a new group goes at the end of the event's list, so
+    nothing that was already in the file changes index. Insertion order of a
+    dict is preserved by the copy, which is what keeps unrelated keys where the
+    user put them.
+
+    The one thing that is *replaced* rather than appended is an entry that is
+    already ours, spelled differently — see below. That is not a cost to the
+    user: the entry it overwrites is ours and the command overwriting it is the
+    one they just asked for.
     """
     out = copy.deepcopy(settings)
     added: List[str] = []
@@ -268,6 +388,21 @@ def merge_hooks(
             hooks[event] = groups
         if any(command in _commands_of(g) for g in groups):
             continue  # already there — this is what makes re-running a no-op
+        mine = _find_ours(groups, _hook_id(command))
+        if mine is not None:
+            # Same hook, different spelling: a --collect-only install after a
+            # plain one (the command gains an LYPNING_SIGHTINGS prefix), or a
+            # wheel's CLI spelling after a checkout's script. Rewrite it in
+            # place instead of appending. Appending would leave two Stop hooks
+            # that BOTH harvest, publishing to two different directories on
+            # every turn boundary, and nothing downstream could tell the user
+            # which one their evidence went to — `status` would list both and
+            # uninstall would remove both, so the duplication is silent for
+            # exactly as long as it takes someone to wonder why. The last
+            # install wins, and there is always exactly one of each of ours.
+            mine["command"] = command
+            added.append(command)
+            continue
         entry = {"type": "command", "command": command}
         target = next((g for g in groups
                        if isinstance(g, dict) and _matcher_of(g) == matcher
@@ -285,7 +420,12 @@ def merge_hooks(
 
 
 def strip_hooks(settings: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
-    """Remove every hook entry whose command mentions lypning. Nothing else."""
+    """Remove every hook entry whose command mentions lypning. Nothing else.
+
+    A collect-only install is removed by the same rule and needs no help: the
+    ``LYPNING_SIGHTINGS='…'`` prefix carries OUR_MARK itself, so a prefixed
+    command matches here twice over rather than falling off the end of uninstall.
+    """
     out = copy.deepcopy(settings)
     removed: List[str] = []
     hooks = out.get("hooks")
@@ -371,9 +511,18 @@ def plan_install(
     shim: bool = True,
     hooks: bool = True,
     skill: bool = True,
+    collect_only: bool = False,
+    sightings: Optional[str] = None,
 ) -> Plan:
     """Compute the whole install. **Writes nothing.**"""
     want_shim, want_hooks, want_skill = shim, hooks, skill
+    if collect_only:
+        # Not "shim and skill happen to be off" — off is what collect-only MEANS,
+        # so it is decided here rather than left to the caller to pass three
+        # flags consistently. Nothing below this line needs an engine, a
+        # toolchain or a context window.
+        want_shim = want_skill = False
+    where = (sightings or "").strip() or None
     proj = _project(project)
     root = claude_dir(proj, scope)
     actions: List[Action] = []
@@ -404,10 +553,20 @@ def plan_install(
                 "skip", dest_root,
                 "no hook scripts in %s — wiring the `lypning hook` CLI entry points instead"
                 % hooks_src, "hook"))
-        for name in scripts:
+
+        entries = hook_entries(scope, scripts, collect_only=collect_only, sightings=where)
+        copied = scripts
+        if collect_only:
+            # Copy only the scripts a wired entry actually names. A full install
+            # keeps copying everything in the source directory, because a helper
+            # script that no command names may still be sourced by one that is —
+            # but a collect-only install must not leave the session-start script
+            # in a tree where nothing runs it, which would read as a shim install
+            # that failed rather than one that was never asked for.
+            copied = [n for n in scripts if any(n in cmd for _, _, cmd in entries)]
+        for name in copied:
             actions.append(_file_action(hooks_src / name, dest_root / name, "hook"))
 
-        entries = hook_entries(scope, scripts)
         before, err = load_settings(settings_path)
         if err:
             actions.append(Action("skip", settings_path, err + " — refusing to touch it", "settings"))
@@ -422,7 +581,17 @@ def plan_install(
                 if settings_path.is_file() and not backup.exists():
                     actions.append(Action("backup", backup, "copy of the current settings.json",
                                           "settings", settings_path))
-                note = "add %d hook entr%s" % (len(added), "y" if len(added) == 1 else "ies")
+                # Appended and rewritten entries are both changes to the file but
+                # they are not the same news, and a reader who has just switched
+                # a repo between install shapes needs to see which happened.
+                fresh = len(_our_commands(after)) - len(_our_commands(before))
+                rewritten = len(added) - fresh
+                parts = []
+                if fresh:
+                    parts.append("add %d hook entr%s" % (fresh, "y" if fresh == 1 else "ies"))
+                if rewritten:
+                    parts.append("rewrite %d of ours in place" % rewritten)
+                note = ", ".join(parts) or "update %d hook entries" % len(added)
                 if not settings_path.is_file():
                     note += " (creating the file)"
                 actions.append(Action("merge", settings_path, note, "settings"))
@@ -446,7 +615,8 @@ def plan_install(
         if warning is not None:
             actions.append(warning)
 
-    return Plan(actions, proj, scope, settings_path, diff)
+    return Plan(actions, proj, scope, settings_path, diff,
+                collect_only=collect_only, sightings=where)
 
 
 
@@ -507,13 +677,19 @@ def apply(plan: Plan, *, force: bool = False) -> List[Action]:
                     done.append(Action("skip", a.path, err, "settings"))
                     continue
                 scripts = _available_scripts(paths.HOOKS_SRC, a.path.parent / "hooks")
-                after, added = merge_hooks(before, hook_entries(plan.scope, scripts))
+                after, added = merge_hooks(before, hook_entries(
+                    plan.scope, scripts,
+                    collect_only=plan.collect_only, sightings=plan.sightings))
                 if not added:
                     done.append(Action("skip", a.path, "already present", "settings"))
                     continue
                 paths.ensure_dir(a.path.parent)
                 a.path.write_text(dumps_settings(after), encoding="utf-8")
-                done.append(Action("merge", a.path, "added %d entries" % len(added), "settings"))
+                # "wrote", not "added": since the merge supersedes an entry that
+                # is already ours, some of these may have replaced a differently
+                # spelled one rather than arrived new.
+                done.append(Action("merge", a.path, "wrote %d hook entr%s" % (
+                    len(added), "y" if len(added) == 1 else "ies"), "settings"))
             else:
                 done.append(Action("skip", a.path, "nothing to do", a.component))
         except OSError as e:
@@ -662,8 +838,18 @@ def render_plan(plan: Plan) -> str:
                             else "  (not a git work tree — this is just the "
                                  "current directory; --project names another)"),
         "scope   : %s (%s)" % (plan.scope, claude_dir(plan.project, plan.scope)),
-        "",
     ]
+    # An absent shim and an absent skill are the POINT of a collect-only plan,
+    # and a plan is read by someone deciding whether to run it. Two lines here
+    # are the difference between "this install is deliberately small" and "this
+    # install looks like it is missing half of itself".
+    if plan.collect_only:
+        out.append("mode    : collect-only — capture and publish; "
+                   "no shim, no skill, no engine needed")
+    if plan.sightings:
+        out.append("publish : %s  (LYPNING_SIGHTINGS, set on each hook command)"
+                   % plan.sightings)
+    out.append("")
     if not plan.actions:
         out.append("nothing to do")
     for a in plan.actions:

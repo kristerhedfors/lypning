@@ -33,7 +33,8 @@ to report `ok`. If you touch the refusal path, `lypning build --rust` and
 other passed. `engines.py`, `build.py`.
 
 **3. Never quote a remembered corpus size.**
-Capture grows it every session. Upstream published 420, then 472 within the
+Capture grows it every session, and `lypning collect` grows it again from
+repositories that are not this one. Upstream published 420, then 472 within the
 day; this tree was written up at 839 and loaded 842 the next morning — which is
 why no live number appears in this sentence either. Every tool prints the count
 it loaded — quote that
@@ -53,7 +54,11 @@ is a **net, not a sandbox** — it cannot undo a write outside the repository, i
 only makes the next occurrence loud. Do not remove it, do not "optimise" the
 temp cwd away, and check `git status` yourself after any run that crashed
 mid-way. It exists because the first measurement runs upstream rewrote 34
-tracked files. `conformance.py`, `bench.py`.
+tracked files. `lypning collect` widens whose edit history that is: an imported
+program came out of a session in another repository and gets no review here, so
+nothing in a fetched tree is ever *executed* on the way in — it is read as data,
+with git's own hooks disabled — and it runs behind the same net and no other.
+`conformance.py`, `bench.py`, `collect.py`.
 
 **5. Hooks never block and never fail a session.**
 Every hook prints `{"continue":true,"suppressOutput":true}` and exits 0 on every

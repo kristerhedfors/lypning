@@ -867,8 +867,13 @@ def _run_entry(
             continue
         if arm == MIXTURE:
             with _Sandbox("mix") as cwd:
+                # The same env as the reference, for the same reason every other
+                # arm gets it: the mixture ends at CPython for whatever the cheap
+                # tiers refuse, so without this the arm compared against CPython
+                # IS CPython — started under a different hash seed, a different
+                # locale, and with its capture log pointing outside the sandbox.
                 d = eng.dispatch(program, argv_tail=argv_tail, stdin=stdin, cwd=cwd,
-                                 timeout=timeout)
+                                 timeout=timeout, env=_env_for(cwd))
             got = d.result
             # End to end is what the caller pays: every refused tier plus the one
             # that answered.

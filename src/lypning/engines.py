@@ -550,6 +550,7 @@ def dispatch(
     stdin: str | None = None,
     cwd: Path | str | None = None,
     timeout: float | None = 30.0,
+    env: dict[str, str] | None = None,
 ) -> Dispatch:
     """Route, then run, falling through on a REFUSAL until a tier answers.
 
@@ -560,6 +561,22 @@ def dispatch(
     *with* the contract line. Exit 90 on its own is a number the program chose
     (``sys.exit(90)``), and treating it as a refusal re-runs a program that has
     already done half its work, once per remaining tier.
+
+    ``env`` reaches EVERY tier the chain touches, and a caller that compares this
+    result against another run must pass the same one it gave that run. The
+    mixture is the arm where forgetting is invisible: it falls through to CPython
+    for anything the cheap tiers refuse, so a caller grading it against a CPython
+    reference is then comparing two CPythons started under different rules. That
+    reads as an engine disagreeing with CPython when what actually differs is the
+    hash seed — ``conformance._env_for`` pins ``PYTHONHASHSEED`` precisely so two
+    CPythons agree before either is used as a reference, and a set-derived error
+    message (``csv.DictWriter`` builds one by joining ``keys() - fieldnames``)
+    then comes out in a different order about half the time. A MISMATCH that
+    lands on one run in two is worse than a steady one: it trains a reader to
+    re-run until the gate is green.
+
+    Routing is exempt because it never executes the program — ``route`` is a
+    static parse that already runs with capture disabled.
     """
     r = route(program, timeout=timeout)
     attempts: list[Result] = []
@@ -567,7 +584,8 @@ def dispatch(
     for engine in chain_from(r.engine):
         if find(engine) is None:
             continue
-        res = run(engine, program, argv_tail=argv_tail, stdin=stdin, cwd=cwd, timeout=timeout)
+        res = run(engine, program, argv_tail=argv_tail, stdin=stdin, cwd=cwd, timeout=timeout,
+                  env=env)
         last = res
         if not res.refused:
             return Dispatch(res, r, attempts)

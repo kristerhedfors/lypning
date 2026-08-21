@@ -223,3 +223,154 @@ def test_build_stock_dry_run_builds_nothing_and_says_what_it_would_run(capsys):
     # silently rebuild the two engines.
     assert [r["engine"] for r in obj["results"]] == ["micropython-stock"]
     assert obj["installed"] == []
+
+
+# --- collect / install --collect-only ----------------------------------------
+#
+# Both commands have to work on a machine with no network and no registry,
+# because that is the machine a repository which does not use lypning has.
+
+
+@pytest.fixture
+def no_registry(tmp_path, monkeypatch):
+    """No sources anywhere: no registry file, no ``$LYPNING_SOURCES``.
+
+    The registry is a path rather than an environment variable, so it is moved
+    rather than unset — and it has to be moved, not merely left alone: a test
+    that fell through to the shipped registry would clone every URL in it, and
+    a suite that reaches the network is a suite that fails on a train and
+    passes for the wrong reason everywhere else.
+    """
+    from lypning import paths
+
+    monkeypatch.setattr(paths, "SOURCES_FILE", tmp_path / "no-such-sources.json")
+    monkeypatch.delenv("LYPNING_SOURCES", raising=False)
+    monkeypatch.delenv("LYPNING_SIGHTINGS", raising=False)
+
+
+def _tree(root):
+    """Every path under ``root`` and the bytes of every file, for comparison."""
+    out = {}
+    for p in sorted(root.rglob("*")):
+        out[str(p.relative_to(root))] = p.read_bytes() if p.is_file() else None
+    return out
+
+
+def test_collect_list_says_where_to_put_a_source_when_there_are_none(
+        no_registry, capsys):
+    assert cli.main(["collect", "--list"]) == 0
+    out = capsys.readouterr().out
+    # A user with no sources has to be told all three ways to name one; a
+    # listing that only said "none" would leave them nowhere to go.
+    assert "--from" in out and "LYPNING_SOURCES" in out and "sources.json" in out
+
+
+def test_collect_list_json_is_parseable_and_fetches_nothing(no_registry, capsys):
+    assert cli.main(["collect", "--list", "--json"]) == 0
+    obj = json.loads(capsys.readouterr().out)
+    assert obj["sources"] == []
+    assert obj["registry"].endswith("no-such-sources.json")
+
+
+def test_collect_list_reads_the_shipped_registry_without_reaching_it(capsys, tmp_path):
+    """``--list`` is what a user types to find out where an import would reach.
+
+    A listing that resolved its sources would be the clone they were deciding
+    whether to make. Asserted against whatever the registry ships rather than
+    against a name: the entries are data somebody edits, the not-fetching is
+    the behaviour.
+    """
+    assert cli.main(["collect", "--list", "--json"]) == 0
+    obj = json.loads(capsys.readouterr().out)
+    for row in obj["sources"]:
+        assert row["state"] in ("cached", "not fetched", "local", "no such path")
+        if row["url"]:
+            # $LYPNING_HOME is a fresh temp dir, so nothing can be cached yet —
+            # and if a listing had fetched, this directory would exist.
+            assert row["state"] == "not fetched"
+            assert not Path(row["cache"]).exists()
+
+
+def test_collect_from_a_url_lists_it_unfetched(no_registry, capsys):
+    assert cli.main(["collect", "--from", "https://example.invalid/nope.git",
+                     "--list", "--json"]) == 0
+    row = json.loads(capsys.readouterr().out)["sources"][0]
+    assert row["url"] is True
+    assert row["state"] == "not fetched"
+    assert not Path(row["cache"]).exists()
+
+
+def test_collect_with_no_sources_exits_2_without_a_traceback(no_registry, capsys):
+    # Nothing ran and the fix is a command, which is what 2 is for here. A
+    # report of "0 new" would be indistinguishable from an upstream that grew
+    # nothing, which is the one thing this must not look like.
+    assert cli.main(["collect"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "no sources configured" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_collect_dry_run_json_imports_a_local_tree_and_writes_no_corpus(
+        no_registry, tmp_path, capsys):
+    """A source on this machine, discovered by SHAPE and read with no network.
+
+    ``--offline`` is passed to prove it: a local location is read where it lies,
+    so the whole import happens without a single git process.
+    """
+    published = tmp_path / "other-repo" / "tests" / "corpus" / "sightings"
+    published.mkdir(parents=True)
+    (published / "session.jsonl").write_text(
+        "\n".join(json.dumps({"program": prog}) for prog in
+                  ("print('from another repo')", "import sys; sys.exit(0)")) + "\n",
+        encoding="utf-8")
+
+    assert cli.main(["collect", "--from", str(tmp_path / "other-repo"),
+                     "--dry-run", "--offline", "--json"]) == 0
+    obj = json.loads(capsys.readouterr().out)
+    assert obj["dry_run"] is True
+    assert obj["gathered"] == 2
+    assert [s["note"] for s in obj["sources"]] == ["local"]
+    assert obj["sources"][0]["files"] == 1
+
+    corpus = Path(obj["corpus"])
+    before = corpus.read_bytes() if corpus.is_file() else None
+    assert cli.main(["collect", "--from", str(tmp_path / "other-repo"),
+                     "--dry-run", "--offline", "--quiet"]) == 0
+    assert (corpus.read_bytes() if corpus.is_file() else None) == before
+    assert capsys.readouterr().out == ""
+
+
+def test_collect_exits_1_when_every_source_failed_to_resolve(
+        no_registry, tmp_path, capsys):
+    assert cli.main(["collect", "--from", str(tmp_path / "not-there"),
+                     "--dry-run", "--offline", "--json"]) == 1
+    obj = json.loads(capsys.readouterr().out)
+    assert obj["sources"][0]["resolved"] is None
+    assert obj["sources"][0]["note"] == "no such path"
+
+
+def test_install_collect_only_dry_run_writes_nothing_at_all(
+        tmp_path, project, no_registry, capsys):
+    """Not "writes no settings" — writes nothing, anywhere under the temp root.
+
+    A dry run that created the hooks directory, or the state dir, has already
+    changed the thing the user asked to see before changing.
+    """
+    before = _tree(tmp_path)
+    assert cli.main(["install", "--collect-only", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "collect-only" in out
+    assert _tree(tmp_path) == before
+
+
+def test_install_collect_only_dry_run_json_names_the_two_hooks(
+        project, no_registry, capsys):
+    assert cli.main(["install", "--collect-only", "--dry-run", "--json",
+                     "--sightings", ".lypning/programs"]) == 0
+    obj = json.loads(capsys.readouterr().out)
+    assert obj["collect_only"] is True
+    assert obj["sightings"] == ".lypning/programs"
+    # No shim, no skill: the components a foreign repository is not adopting.
+    assert set(a["component"] for a in obj["actions"]) <= set(("hook", "settings"))
+    assert any("LYPNING_SIGHTINGS='.lypning/programs'" in line for line in obj["diff"])

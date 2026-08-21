@@ -45,7 +45,7 @@ PROG = "lypning"
 COMMANDS = (
     "run", "route", "build", "lib", "status", "doctor", "install", "uninstall",
     "shim", "hook", "conformance", "fuzz", "bench", "corpus-time", "gate",
-    "harvest", "corpus",
+    "harvest", "collect", "corpus",
 )
 
 #: The only dash-flags this CLI keeps for itself. Every other flag belongs to
@@ -858,7 +858,8 @@ def cmd_install(ns: argparse.Namespace) -> int:
     install = _mod("install")
     scope = "user" if ns.user else "project"
     plan = install.plan_install(ns.project, scope=scope, shim=not ns.no_shim,
-                                hooks=not ns.no_hooks, skill=not ns.no_skill)
+                                hooks=not ns.no_hooks, skill=not ns.no_skill,
+                                collect_only=ns.collect_only, sightings=ns.sightings)
     if ns.dry_run:
         if ns.json:
             _json(plan.as_dict())
@@ -1253,6 +1254,97 @@ def cmd_harvest(ns: argparse.Namespace) -> int:
     return 0
 
 
+# --- collect -----------------------------------------------------------------
+
+#: One sentence, said twice: as a listing when nothing is registered, and as a
+#: refusal when an import was asked for anyway. The three ways to name a source
+#: belong together — a reader who has none has to be told all of them.
+_NO_SOURCES = ("no sources configured — add one to %s, name one with --from, or "
+               "set $LYPNING_SOURCES")
+
+
+def _source_states(collect: Any, sources: Sequence[Any]) -> List[Dict[str, Any]]:
+    """The registry as it stands, plus what is already on disk for each entry.
+
+    Answered by LOOKING, never by fetching. ``--list`` is what a user types to
+    find out where an import would reach before letting it reach, so a listing
+    that resolved its sources would be the clone they were deciding whether to
+    make. The cache path is computed from the same slug :func:`collect.fetch`
+    would use, which is what makes "not fetched" a fact about the directory the
+    next import will actually write.
+    """
+    rows: List[Dict[str, Any]] = []
+    for src in sources:
+        row: Dict[str, Any] = {"name": src.name, "location": src.location,
+                               "note": src.note, "url": src.is_url, "cache": None}
+        if src.is_url:
+            cache = paths.sources_cache_dir() / collect.slug(src.location)
+            row["cache"] = str(cache)
+            row["state"] = "cached" if (cache / ".git").exists() else "not fetched"
+        else:
+            # A location on this machine is read where it lies, so there is no
+            # cache to have and the only question is whether it is still there.
+            row["state"] = "local" if Path(src.location).expanduser().exists() else "no such path"
+        rows.append(row)
+    return rows
+
+
+def _render_sources(rows: List[Dict[str, Any]]) -> str:
+    """The listing. Same shape as :func:`collect.render`'s per-source block, so
+    ``--list`` and an import name their sources the same way."""
+    if not rows:
+        return _NO_SOURCES % paths.SOURCES_FILE
+    width = max(len(str(r["name"])) for r in rows)
+    out = ["sources", "=" * 7]
+    for r in rows:
+        out.append("%s  %s" % (str(r["name"]).ljust(width), r["state"]))
+        out.append("  " + str(r["location"]))
+        if r.get("cache"):
+            out.append("  cache: %s" % r["cache"])
+        if r.get("note"):
+            out.append("  %s" % r["note"])
+    out.append("")
+    out.append("registry: %s" % paths.SOURCES_FILE)
+    return "\n".join(out)
+
+
+def cmd_collect(ns: argparse.Namespace) -> int:
+    collect = _mod("collect")
+    if ns.source:
+        # `--from` replaces the registry rather than adding to it: a caller who
+        # named a location wants that one imported, and quietly cloning six
+        # registered repositories alongside it is a network request they did not
+        # ask for. The name is the slug, which is what the cache is called.
+        sources = [collect.Source(name=collect.slug(loc), location=loc, note="--from")
+                   for loc in ns.source]
+    else:
+        sources = collect.load_sources()
+
+    if ns.list:
+        rows = _source_states(collect, sources)
+        if ns.json:
+            _json({"sources": rows, "registry": str(paths.SOURCES_FILE)})
+        elif not ns.quiet:
+            _out(_render_sources(rows))
+        return 0
+
+    if not sources:
+        # Exit 2, like every other "nothing to do and the fix is a command":
+        # an import with no sources wrote no corpus, and reporting that as a
+        # successful import of zero programs would read as an empty upstream.
+        raise Usage(_NO_SOURCES % paths.SOURCES_FILE)
+
+    result = collect.import_sources(sources, dry_run=ns.dry_run, offline=ns.offline)
+    if ns.json:
+        _json(result.to_obj())
+    elif not ns.quiet:
+        _out(collect.render(result))
+    # Every source unresolved is this command's own failure — no network, a
+    # registry of dead URLs — and it is exactly the case a report of "0 new"
+    # would otherwise be indistinguishable from an upstream that grew nothing.
+    return 1 if not result.resolved else 0
+
+
 # --- corpus ------------------------------------------------------------------
 
 
@@ -1510,11 +1602,19 @@ settings.json diff without writing a byte — read it first.
 
 The shim refuses to overwrite a file it did not write unless you pass --force,
 in which case the original is moved aside and restored on uninstall.
+
+--collect-only installs the capture pair and nothing else: the two hooks that
+record and publish, no shim and no skill. That is the install for a repository
+that wants to contribute the python its agents type without taking on an
+engine, and nothing it wires needs one to be built. Pair it with --sightings to
+choose where the published files land, because a repository that is not this
+one does not want a tests/corpus/ it never asked for.
 """, """
 examples:
   lypning install --dry-run
   lypning install --project /path/to/repo
   lypning install --user --no-shim
+  lypning install --collect-only --sightings .lypning/programs
 """)
     s.add_argument("--project", metavar="DIR",
                    help="project root (default: $CLAUDE_PROJECT_DIR, else the git "
@@ -1523,6 +1623,12 @@ examples:
     s.add_argument("--no-shim", action="store_true", help="skip the python/python3 shim")
     s.add_argument("--no-hooks", action="store_true", help="skip the Claude Code hooks")
     s.add_argument("--no-skill", action="store_true", help="skip the skill documentation")
+    s.add_argument("--collect-only", action="store_true",
+                   help="capture and publish only: the two capture hooks, no shim and no "
+                        "skill, and no engine needed anywhere")
+    s.add_argument("--sightings", metavar="DIR",
+                   help="where the Stop hook publishes (default tests/corpus/sightings); "
+                        "relative resolves against the project root")
     s.add_argument("--force", action="store_true", help="move a foreign python/python3 aside instead of refusing")
     s.add_argument("--dry-run", action="store_true", help="print the plan and the settings diff; write nothing")
     s.add_argument("--json", action="store_true", help="machine-readable")
@@ -1790,6 +1896,54 @@ examples:
     s.add_argument("--quiet", action="store_true", help="say nothing; the exit code is the answer")
     s.add_argument("--json", action="store_true", help="machine-readable")
     s.set_defaults(func=cmd_harvest)
+
+    # collect
+    s = _sub(subs, "collect", "import published programs from other repositories", """
+A source is a repository that wired this harness in and published what its own
+agents ran. Importing one merges those programs into this corpus, which is how
+the argument this project makes stops being an argument about one repository's
+sessions.
+
+Discovery is by SHAPE. A .jsonl whose first lines are objects carrying a
+non-empty `program` is a collection, wherever it sits in the tree — so a source
+is a URL and not a URL plus a path somebody has to keep correct, and the other
+repository is free to call its directory whatever it likes.
+
+An import writes the CORPUS and only the corpus. It never publishes into
+tests/corpus/sightings: those files are this repository's own per-session
+evidence, one writer per path, and somebody else's programs are not a record of
+what happened in a session here. Everything arrives through the same fold a
+local harvest uses, so imported programs are redacted, size-guarded and merged
+max-not-sum — a program two sources both published lands once.
+
+--offline never runs git at all. It is what makes this work in CI and on a
+plane: a source already cloned under ~/.lypning/sources resolves from there,
+and anything else is reported unresolved rather than waited for. Exit 1 means
+every source failed to resolve, which is a different thing from an upstream
+that grew nothing.
+
+The registry ships beside the corpus; $LYPNING_SOURCES adds to it, and --from
+replaces it for one run.
+""", """
+examples:
+  lypning collect --list
+  lypning collect                       every registered source
+  lypning collect --from ../other-repo  one tree on this machine
+  lypning collect --dry-run --json
+""")
+    # `from` is a keyword, so argparse's derived attribute is unreachable as
+    # `ns.from`; the flag a user types is the one that matters, not the dest.
+    s.add_argument("--from", dest="source", action="append", metavar="LOCATION",
+                   help="a git URL or a path on this machine (repeatable); replaces the "
+                        "registry for this run")
+    s.add_argument("--list", action="store_true",
+                   help="the registry and what is already cached; fetch nothing, write nothing")
+    s.add_argument("--dry-run", action="store_true", help="report; write no corpus")
+    s.add_argument("--offline", action="store_true",
+                   help="never run git; import only what is already cached")
+    s.add_argument("--quiet", action="store_true", help="say nothing; the exit code is the answer")
+    s.add_argument("--json", action="store_true", help="machine-readable")
+    s.set_defaults(func=cmd_collect)
 
     # corpus
     s = _sub(subs, "corpus", "inspect the harvested programs", """

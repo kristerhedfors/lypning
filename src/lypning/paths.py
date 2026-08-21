@@ -44,6 +44,11 @@ HOOKS_SRC = CLAUDE_ASSETS / "hooks"
 
 CORPUS_FILE = CORPUS_DIR / "corpus.jsonl"
 SEED_CORPUS_FILE = CORPUS_DIR / "seed-corpus.jsonl"
+#: The registry of other repositories whose published programs are worth
+#: importing. Data, not code, and shipped in the wheel beside the corpus: a
+#: user who pip-installed the package gets the same list a checkout has, and
+#: adding to it is a one-line diff a reviewer can read.
+SOURCES_FILE = CORPUS_DIR / "sources.json"
 
 
 def package_is_writable() -> bool:
@@ -94,6 +99,19 @@ def build_dir() -> Path:
     if package_is_writable():
         return ASSETS
     return state_dir() / "build"
+
+
+def sources_cache_dir() -> Path:
+    """Where a remote collection is cloned to before it is read.
+
+    State, never the asset tree, and not conditional on the tree being writable
+    the way :func:`build_dir` is. A clone under site-packages is a working tree
+    ``pip uninstall`` has never heard of and will leave behind; a clone under a
+    checkout's ``assets/`` is a nested repository that shows up in ``git
+    status`` forever. Both are someone else's code sitting inside our package,
+    which is precisely the thing an import must not do.
+    """
+    return state_dir() / "sources"
 
 
 def corpus_write_file() -> Path:
@@ -148,8 +166,19 @@ def sightings_dir(project: Path | str | None = None) -> Path:
     captured programs: every branch rewrote it, so every branch conflicted, and
     the merge was never worth it to a session whose work was about something
     else (docs/CAPTURE.md). One writer per path cannot conflict.
+
+    ``$LYPNING_SIGHTINGS`` moves the directory, because the harness is worth
+    installing in repositories that are not this one and none of them want a
+    ``tests/corpus/`` they never asked for. Absolute is used as given; relative
+    resolves against the project root, so the value written into a hook command
+    stays meaningful after a checkout moves. Unset or blank is the default, byte
+    for byte — a repository that never sets it cannot notice this exists.
     """
     root = Path(project) if project else project_dir()
+    env = os.environ.get("LYPNING_SIGHTINGS", "").strip()
+    if env:
+        chosen = Path(env).expanduser()
+        return chosen if chosen.is_absolute() else root / chosen
     return root / "tests" / "corpus" / "sightings"
 
 
