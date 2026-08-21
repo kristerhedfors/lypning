@@ -13,12 +13,55 @@ use std::rc::Rc;
 pub struct Parser {
     t: Vec<Token>,
     i: usize,
+    /// How deep the grammar currently is, against [`MAX_PARSE_DEPTH`].
+    depth: u32,
+    /// Binary operators chained so far, against [`MAX_CHAIN_OPS`]. Counted for
+    /// the whole parse rather than per chain: chains compose, and it is the
+    /// longest PATH through the tree that the evaluator and the drop both walk.
+    chain_ops: u32,
 }
+
+/// The nesting a program is allowed, and it is a measurement rather than a
+/// taste.
+///
+/// One level of `(` costs roughly 8 KB of stack here — the precedence chain is
+/// a dozen frames deep before it reaches `atom` — and a source file with 1,200
+/// of them segfaulted an 8 MB stack. Embedded that segfault belongs to the
+/// HOST, and a stack overflow is not an unwind, so no guard at the ABI boundary
+/// can catch it: it has to be refused before it is reached.
+///
+/// 64 is where the two ends meet. The deepest program in the harvested corpus
+/// (842 entries, loaded 2026-08-20) nests 18, the 99th percentile nests 11, and
+/// the median nests 2 — so 64 is three and a half times the deepest thing an
+/// agent has ever actually typed, while costing at most half a megabyte of
+/// stack, which is safe on a host thread rather than only on a main one.
+/// CPython refuses these too (`SyntaxError: too many nested parentheses`), so
+/// routing one onward gets the caller an error either way — the difference is
+/// only whether it arrives as an error or as a signal.
+pub const MAX_PARSE_DEPTH: u32 = 64;
+
+/// How many binary operators one program may chain together, in total.
+///
+/// A separate limit from the one above because a chain is not nesting:
+/// `1+1+1+…` is parsed by an iterative loop (`bin_level`) into a LEFT-LEANING
+/// tree, so a flat chain of a hundred thousand terms parses without recursing
+/// at all — and then two things walk that spine one frame per node. The
+/// evaluator does (`eval::MAX_EXPR_DEPTH` catches that), and so does the AST's
+/// own derived `Drop`, which nothing can catch: the tree is dropped after the
+/// refusal, so bounding only the evaluator still segfaulted the host on a 1 MB
+/// thread.
+///
+/// So the tree is never built that deep. A one-liner with a thousand binary
+/// operators in it is not a program anyone typed, and a program that has one
+/// gets its answer from CPython.
+pub const MAX_CHAIN_OPS: u32 = 1000;
 
 pub fn parse(src: &str) -> R<Vec<Stmt>> {
     let mut p = Parser {
         t: tokenize(src)?,
         i: 0,
+        depth: 0,
+        chain_ops: 0,
     };
     let mut body = Vec::new();
     while !p.at_eof() {
@@ -159,6 +202,10 @@ impl Parser {
     }
 
     fn block(&mut self) -> R<Vec<Stmt>> {
+        self.nested("block", |p| p.block_inner())
+    }
+
+    fn block_inner(&mut self) -> R<Vec<Stmt>> {
         self.expect_op(":")?;
         if self.eat_newline() {
             if !matches!(self.peek(), Tok::Indent) {
@@ -848,6 +895,13 @@ impl Parser {
         'outer: loop {
             for (s, op) in ops {
                 if self.is_op(s) {
+                    self.chain_ops += 1;
+                    if self.chain_ops > MAX_CHAIN_OPS {
+                        return Err(unsupported(
+                            "recursion",
+                            &format!("more than {MAX_CHAIN_OPS} chained operators"),
+                        ));
+                    }
                     self.bump();
                     let rhs = next(self)?;
                     lhs = Expr::Bin(*op, Box::new(lhs), Box::new(rhs));
@@ -1053,7 +1107,31 @@ impl Parser {
         Ok(clauses)
     }
 
+    /// One level deeper, and back out again however this returns.
+    ///
+    /// Written as a wrapper rather than an increment inside each body because
+    /// both callees are threaded with `?`: a hand-balanced counter would leak a
+    /// level on every syntax error, and a long-lived host would watch its own
+    /// nesting limit tighten with each bad program it was handed.
+    fn nested<T>(&mut self, what: &str, f: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
+        self.depth += 1;
+        if self.depth > MAX_PARSE_DEPTH {
+            self.depth -= 1;
+            return Err(unsupported(
+                "recursion",
+                &format!("{what} nested deeper than {MAX_PARSE_DEPTH}"),
+            ));
+        }
+        let r = f(self);
+        self.depth -= 1;
+        r
+    }
+
     fn atom(&mut self) -> R<Expr> {
+        self.nested("expression", |p| p.atom_inner())
+    }
+
+    fn atom_inner(&mut self) -> R<Expr> {
         match self.peek().clone() {
             Tok::Int(v) => {
                 self.bump();
@@ -1341,6 +1419,8 @@ fn parse_fstring(raw: &str, raw_prefix: bool) -> R<Vec<FPart>> {
                 let mut p = Parser {
                     t: tokenize(expr_src.trim())?,
                     i: 0,
+                    depth: 0,
+                    chain_ops: 0,
                 };
                 let e = p.expr_list()?;
                 if !matches!(p.peek(), Tok::Newline | Tok::Eof) {

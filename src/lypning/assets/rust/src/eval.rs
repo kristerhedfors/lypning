@@ -35,6 +35,16 @@ pub enum Flow {
 /// interpreter with a real limit instead of dying here.
 const MAX_DEPTH: usize = 180;
 
+/// How deep one expression may be evaluated. See [`Interp::eval`].
+///
+/// Sized against `MAX_DEPTH` above rather than against the stack alone: a legal
+/// recursive function at 179 frames spends about three `eval` levels per frame,
+/// so anything below ~540 would refuse programs this runtime already runs. 600
+/// clears that and is comfortable on a 1 MB host thread — measured, on a
+/// `threading.stack_size(1 << 20)` thread, against the deepest recursion
+/// `MAX_DEPTH` allows.
+const MAX_EXPR_DEPTH: u32 = 600;
+
 pub struct Interp {
     pub globals: Scope,
     /// Innermost-last scope chain for the function currently executing.
@@ -45,6 +55,14 @@ pub struct Interp {
     assigned: Vec<Rc<HashSet<Rc<str>>>>,
     pub modules: HashMap<Rc<str>, Value>,
     depth: usize,
+    /// Statements executed and loop iterations taken, against the host's
+    /// budget. Two plain fields rather than a thread_local read per statement:
+    /// this is the hottest branch in the interpreter, and it must cost a
+    /// register compare or it is not affordable at all.
+    steps: u64,
+    step_limit: u64,
+    /// How deep `eval` currently is, against [`MAX_EXPR_DEPTH`].
+    expr_depth: u32,
 }
 
 impl Interp {
@@ -56,6 +74,12 @@ impl Interp {
             assigned: Vec::new(),
             modules: HashMap::new(),
             depth: 0,
+            steps: 0,
+            expr_depth: 0,
+            // Read once, here, rather than per statement. Zero — the CLI's
+            // value, since a process can simply be killed — compiles the check
+            // down to a comparison that is never true.
+            step_limit: crate::host::step_limit(),
         }
     }
 
@@ -123,7 +147,30 @@ impl Interp {
         Ok(Flow::Normal)
     }
 
+    /// One unit of progress against the host's budget.
+    ///
+    /// Called from the two places an unbounded program must pass through: every
+    /// statement, and every advance of every iterator. The second is not
+    /// redundant — `sum(range(10**18))` is ONE statement, and a bound that only
+    /// counted statements would let it run forever inside a host that asked for
+    /// a bound.
+    #[inline(always)]
+    pub(crate) fn tick(&mut self) -> R<()> {
+        if self.step_limit == 0 {
+            return Ok(());
+        }
+        self.steps += 1;
+        if self.steps > self.step_limit {
+            return Err(unsupported(
+                "steps",
+                &format!("still running after {} steps", self.step_limit),
+            ));
+        }
+        Ok(())
+    }
+
     fn exec(&mut self, s: &Stmt) -> R<Flow> {
+        self.tick()?;
         match s {
             Stmt::Pass => {}
             Stmt::Expr(e) => {
@@ -328,7 +375,20 @@ impl Interp {
                 if !finally.is_empty() {
                     match self.exec_block(finally)? {
                         Flow::Normal => {}
-                        other => return Ok(other),
+                        other => {
+                            // A `break` or `return` in `finally` DISCARDS an
+                            // in-flight exception — that is CPython's rule and
+                            // it is kept. It must not discard a REFUSAL:
+                            // `unsupported` is not the program's exception, it
+                            // is this runtime saying it cannot run the program,
+                            // and swallowing it hands the caller a wrong answer
+                            // at exit 0 instead of routing onward to CPython.
+                            // Same reasoning as the `except` arm above.
+                            if out.as_ref().err().is_some_and(|e| e.is_unsupported()) {
+                                return out;
+                            }
+                            return Ok(other);
+                        }
                     }
                 }
                 return out;
@@ -494,7 +554,34 @@ impl Interp {
 
     // ---- expressions ------------------------------------------------------
 
+    /// Evaluate one expression, one level deeper.
+    ///
+    /// `parse::MAX_PARSE_DEPTH` bounds how deeply the grammar NESTS, which is
+    /// not the same thing: `1+1+1+…` is parsed by an iterative loop into a
+    /// left-leaning tree whose spine is one node per term, so a flat chain of
+    /// two thousand terms parses fine and then recurses two thousand deep here.
+    /// On a host thread with a 1 MB stack that is a SIGSEGV in the caller's
+    /// process — and a stack overflow is not an unwind, so nothing at the ABI
+    /// boundary can catch it.
+    ///
+    /// A plain field rather than the thread_local `err::Nest`: this is the
+    /// hottest function in the interpreter and the check has to compile to a
+    /// register compare.
     pub fn eval(&mut self, e: &Expr) -> R<Value> {
+        self.expr_depth += 1;
+        if self.expr_depth > MAX_EXPR_DEPTH {
+            self.expr_depth -= 1;
+            return Err(unsupported(
+                "recursion",
+                &format!("expression evaluation nested deeper than {MAX_EXPR_DEPTH}"),
+            ));
+        }
+        let r = self.eval_inner(e);
+        self.expr_depth -= 1;
+        r
+    }
+
+    fn eval_inner(&mut self, e: &Expr) -> R<Value> {
         Ok(match e {
             Expr::None => Value::None,
             Expr::True => Value::Bool(true),
@@ -1142,5 +1229,32 @@ pub fn clamp_index(i: i64, n: i64) -> i64 {
         (n + i).max(0)
     } else {
         i.min(n)
+    }
+}
+
+
+/// Take an interpreter apart without recursing on the values it holds.
+///
+/// The counterpart of [`crate::value::dismantle`] for everything one run
+/// accumulated: its globals, the scopes of any function still referenced, and
+/// the module table. Called by [`crate::embed::run`] on the way out — the
+/// binary does not need it, because a process that is about to exit does not
+/// have to survive dropping what it built.
+pub fn dismantle_interp(it: Interp) {
+    let Interp {
+        globals,
+        chain,
+        modules,
+        ..
+    } = it;
+    for scope in std::iter::once(globals).chain(chain) {
+        if let Ok(cell) = Rc::try_unwrap(scope) {
+            for (_, v) in cell.into_inner() {
+                crate::value::dismantle(v);
+            }
+        }
+    }
+    for (_, v) in modules {
+        crate::value::dismantle(v);
     }
 }

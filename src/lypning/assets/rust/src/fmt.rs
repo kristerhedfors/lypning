@@ -27,6 +27,10 @@ pub fn to_str(v: &Value) -> R<String> {
 }
 
 pub fn repr(v: &Value) -> R<String> {
+    // A list that contains itself at 50,000 levels is not a program anyone
+    // typed, but it is a program a loop can build in one line — and without
+    // this the answer to printing it is SIGSEGV. See `err::Nest`.
+    let _nest = crate::err::Nest::enter("repr")?;
     Ok(match v {
         Value::None => "None".into(),
         Value::Bool(b) => if *b { "True" } else { "False" }.into(),
@@ -382,7 +386,16 @@ pub fn parse_spec(s: &str) -> R<Spec> {
         i += 1;
     }
     if i > ws {
-        sp.width = Some(c[ws..i].iter().collect::<String>().parse().unwrap());
+        // Not `.unwrap()`: a numeric field wider than `usize` is a program
+        // CPython answers with an error, and panicking on it aborts the binary
+        // (exit 134) and reaches a host as an unexplained failure.
+        sp.width = Some(
+            c[ws..i]
+                .iter()
+                .collect::<String>()
+                .parse()
+                .map_err(|_| value_err("Format specifier width is too large"))?,
+        );
     }
     if i < c.len() && (c[i] == ',' || c[i] == '_') {
         sp.grouping = Some(c[i]);
@@ -397,7 +410,13 @@ pub fn parse_spec(s: &str) -> R<Spec> {
         if i == ps {
             return Err(value_err("Format specifier missing precision"));
         }
-        sp.precision = Some(c[ps..i].iter().collect::<String>().parse().unwrap());
+        sp.precision = Some(
+            c[ps..i]
+                .iter()
+                .collect::<String>()
+                .parse()
+                .map_err(|_| value_err("Format specifier precision is too large"))?,
+        );
     }
     if i < c.len() {
         let t = c[i];

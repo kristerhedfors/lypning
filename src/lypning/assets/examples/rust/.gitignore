@@ -1,0 +1,14 @@
+# Cargo's build tree, and it is worth its own line here even though the repo
+# root ignores this exact path and MANIFEST.in prunes it by name. `assets/` is
+# NOT packaged wholesale — package-data is an explicit allowlist that names
+# this directory's Cargo.toml and src/*.rs and nothing else — so the wheel is
+# already safe. What this file is for is the copy: in a wheel this directory is
+# read-only and has to be moved somewhere writable before it will build, and
+# the 150+ MB cargo then leaves here should not turn up in whatever repository
+# it was moved into.
+/target
+
+# Deliberately NOT ignored: lypning-embed-example.txt, which one of the
+# programs really writes. If a run ever leaves it behind, `git status` saying
+# so is the point — the run is supposed to remove it on both paths, and hiding
+# the evidence would only make the next occurrence quiet.

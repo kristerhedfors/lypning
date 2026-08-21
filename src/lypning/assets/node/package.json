@@ -1,0 +1,26 @@
+{
+  "name": "lypning",
+  "version": "0.1.0",
+  "description": "Run agent-typed Python one-liners in the node process, or be told to run them on CPython",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "node": ">=12"
+  },
+  "dependencies": {},
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "example.js",
+    "README.md",
+    "Cargo.toml",
+    "Cargo.lock",
+    "src"
+  ],
+  "scripts": {
+    "build": "cargo build --release --manifest-path Cargo.toml",
+    "example": "node example.js"
+  }
+}

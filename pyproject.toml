@@ -78,6 +78,29 @@ lypning = [
   "assets/rust/Cargo.toml",
   "assets/rust/Cargo.lock",
   "assets/rust/src/*.rs",
+  # The C ABI's contract and its four hosts. Headers and example sources are
+  # SOURCE, not build output — a wheel that shipped the library but not the
+  # header would ship something no one can compile against. Named by extension
+  # rather than by directory for the reason the MANIFEST states at length:
+  # `include-package-data` means a careless glob here puts cargo's `target/` in
+  # everyone's wheel.
+  "assets/include/*.h",
+  "assets/include/*.hpp",
+  "assets/examples/c/Makefile",
+  "assets/examples/c/*.c",
+  "assets/examples/cpp/Makefile",
+  "assets/examples/cpp/*.cpp",
+  "assets/examples/rust/Cargo.toml",
+  "assets/examples/rust/Cargo.lock",
+  "assets/examples/rust/.gitignore",
+  "assets/examples/rust/src/*.rs",
+  "assets/node/*.js",
+  "assets/node/*.ts",
+  "assets/node/*.json",
+  "assets/node/*.md",
+  "assets/node/src/*.rs",
+  "assets/node/Cargo.toml",
+  "assets/node/Cargo.lock",
   "assets/micropython/Makefile",
   "assets/micropython/README.md",
   "assets/micropython/variant/*",

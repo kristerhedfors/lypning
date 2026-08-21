@@ -1,0 +1,37 @@
+# Cargo.toml — a Rust host that embeds lypning, built OUT of the crate's tree.
+#
+# The one invariant this file holds: this package must never become part of the
+# package it depends on. Cargo has no way to say "not a workspace member"
+# except by declaring a workspace of one, which is what the empty table below
+# is. Today nothing above this directory is a workspace root, so the table
+# looks redundant; the day somebody adds one over `assets/`, this example would
+# silently inherit that workspace's profiles — including its `panic` setting,
+# which is the single thing `src/main.rs` is about — and its `target/`, which
+# lives inside the directory the wheel packages wholesale. Both failures build
+# cleanly and are noticed much later.
+[workspace]
+
+[package]
+name = "lypning-embed-example"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# One dependency, by path, and it is the crate this example exists to
+# demonstrate. Zero others: CLAUDE.md invariant 6 is a rule about the package,
+# and an example that reaches for a crate to print a table teaches the reader
+# that reaching is normal here.
+#
+# `capi` stays off. A Rust host calls `lypning::run` directly, so the C ABI
+# would be dead code in this binary — and its `#[cfg(panic = "abort")]`
+# compile_error would then start policing a profile that is ours to choose.
+#
+# This path is also the one thing in the package that refers to where the
+# package is, which matters in a wheel: `assets/` is read-only there, so the
+# directory has to be copied somewhere writable before cargo can build it.
+# `~/.lypning/build/examples/rust` keeps the path resolving, because that is
+# where `lypning build --rust` already put a writable copy of the crate.
+# Anywhere else, this line is the only edit.
+[dependencies]
+lypning = { path = "../../rust" }

@@ -45,7 +45,13 @@ pub struct Route {
     /// The construct that pushed the program past lypning, if any.
     pub kind: String,
     pub detail: String,
-    /// Every module the program imports, in source order.
+    /// Every module the program imports — **sorted and deduplicated**, not in
+    /// source order. It is collected through a `BTreeSet` because the question
+    /// it answers is "which modules does this need", which has no order, and a
+    /// set cannot report `import os` twice for a program that says it twice.
+    /// The doc here said "in source order" for as long as it was wrong; a host
+    /// that indexed `imports[0]` expecting the first line got the alphabetically
+    /// first module instead.
     pub imports: Vec<String>,
 }
 

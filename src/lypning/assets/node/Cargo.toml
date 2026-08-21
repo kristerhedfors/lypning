@@ -1,0 +1,43 @@
+# The Node addon: a cdylib that node dlopen()s, and nothing else.
+#
+# `[workspace]` is here and empty on purpose. Without it cargo walks up, finds
+# no workspace, and is fine — but the moment anything above this directory grows
+# a `[workspace]`, this crate would silently join it and inherit its profiles,
+# including `panic = "abort"`, which the C ABI refuses to compile against. An
+# empty table makes this crate its own root, permanently.
+[workspace]
+
+[package]
+name = "lypning-node"
+version = "0.1.0"
+edition = "2021"
+description = "Node-API addon for the lypning Python-subset runtime"
+license = "MIT"
+publish = false
+
+# ZERO dependencies but the runtime itself (CLAUDE.md invariant 6). In
+# particular no napi-rs and no node-gyp: the Node-API symbols are declared in
+# src/napi.rs and resolved out of the host `node` process at dlopen time, so
+# there is nothing to link and nothing to download. `features = ["capi"]`
+# because this addon calls the same C entry points the C and C++ hosts do.
+[dependencies]
+lypning = { path = "../rust", features = ["capi"] }
+
+[lib]
+name = "lypning_node"
+# `cdylib` only. An rlib would pull the whole runtime into a static archive
+# nobody here links, for a crate whose single consumer is `process.dlopen`.
+crate-type = ["cdylib"]
+
+# `panic = "unwind"`, and this is not a preference.
+#
+# capi.rs has a `compile_error!` under `#[cfg(panic = "abort")]` because with
+# abort its boundary `catch_unwind` never runs — the first bug in the
+# interpreter would abort the whole node process, taking an event loop and
+# every unrelated request with it. Unwind is rustc's default; it is written out
+# here so that deleting it is a decision rather than an oversight.
+[profile.release]
+panic = "unwind"
+opt-level = "s"
+lto = true
+codegen-units = 1

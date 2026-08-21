@@ -50,6 +50,7 @@ PAGES = [
     ("docs/MICROPYTHON.md", "docs/micropython.html", "MicroPython tier", "The frozen-stdlib variant, and the cost model both runtimes are optimised against."),
     ("docs/RESEARCH.md", "docs/research.html", "Research", "How the runtime was chosen and built, including what was measured and rejected."),
     ("docs/CAPTURE.md", "docs/capture.html", "Capture", "The hooks and shim that grow the corpus, and what they do and do not record."),
+    ("docs/EMBEDDING.md", "docs/embedding.html", "Embedding", "Linking the runtime into a harness: the C ABI, the five bindings, and what a refusal means with no exit code."),
     ("docs/BENCH-LEDGER.md", "docs/bench-ledger.html", "Bench ledger", "Append-only measurement history, including the runs where the subset lost."),
     ("docs/SANDBOX-PERFORMANCE.md", "docs/sandbox-performance.html", "Sandbox cost", "The measurements the whole project is downstream of."),
     ("CLAUDE.md", "contributing.html", "Working agreement", "The invariants an agent changing this repository must not break."),

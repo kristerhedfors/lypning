@@ -18,23 +18,13 @@
 //! interchangeable: 0/1 as CPython, and **90 with one line on stderr** for a
 //! construct outside the subset.
 
-mod ast;
-mod builtins;
-mod err;
-mod eval;
-mod fmt;
-mod io;
-mod iter;
-mod json;
-mod lex;
-mod methods;
-mod modules;
-mod ops;
-mod parse;
-mod route;
-mod value;
+//! The modules themselves live in `lib.rs`: this binary is one consumer of the
+//! crate and the C ABI is another, and both run programs through the same
+//! `embed`/`io` code so the refusal contract has exactly one implementation.
 
-use err::{LypningError, UNSUPPORTED_EXIT};
+use lypning::embed::fall_onward;
+use lypning::err::{LypningError, UNSUPPORTED_EXIT};
+use lypning::{eval, io, parse, route};
 use std::io::{Read, Write};
 
 fn main() {
@@ -299,32 +289,6 @@ fn parse_run_args(args: &[String]) -> Result<(String, Vec<String>, Option<String
     }
     eprintln!("lypning: run needs -c PROG, a FILE, or -");
     Err(2)
-}
-
-/// Should the chain move past an intermediate engine's result?
-///
-/// Exit 90 is the declared refusal. The other two signals are subtler and both
-/// come from measurement rather than design:
-///
-///   * **`MemoryError`.** lypning-mp's heap is a fraction of CPython's, so
-///     `json.load` on a 4 MB file dies there and succeeds under python3. A
-///     MemoryError from an intermediate engine is a property of THAT ENGINE,
-///     never the program's answer, so it is a refusal in all but name. This was
-///     the single UNSAFE route left in the corpus, found by the routing arm of
-///     `lypning conformance`.
-///   * **A traceback with exit 0.** No conforming Python reports an uncaught
-///     exception and then claims success; an engine that does would hand the
-///     caller empty stdout and a zero status, the worst available outcome.
-///
-/// Deliberately NOT here: an ordinary non-zero exit with a traceback. That is
-/// very often the program's own correct answer (`assert`, a deliberate
-/// `raise`), and re-running it on CPython would execute its side effects twice.
-fn fall_onward(code: i32, stderr: &[u8]) -> bool {
-    if code == UNSUPPORTED_EXIT {
-        return true;
-    }
-    let has = |needle: &[u8]| stderr.windows(needle.len()).any(|w| w == needle);
-    has(b"MemoryError") || (code == 0 && has(b"Traceback ("))
 }
 
 fn engine_path(e: route::Engine) -> String {

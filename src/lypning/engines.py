@@ -25,6 +25,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -38,6 +39,14 @@ SHIM_MARKER = "LYPNING_SHIM_MARKER"
 LYPNING = "lypning"
 MICROPYTHON = "lypning-mp"
 CPYTHON = "cpython"
+
+#: Not a fourth engine — the same lypning, reached through the C ABI instead of
+#: through a process, the way an embedding host reaches it. It is spelled
+#: separately because it is a separate ARM to measure: the interpreter is
+#: identical, the plumbing around it (`embed.rs`, `capi.rs`) is not, and a
+#: conformance battery that never exercised the plumbing would prove nothing
+#: about the artefact a harness actually links.
+LIBRARY = "library"
 
 ENGINE_ORDER = (LYPNING, MICROPYTHON, CPYTHON)
 
@@ -242,6 +251,147 @@ class Result:
             kind, _, detail = rest.partition(": ")
             return (kind.strip(), detail.strip())
         return ("", self.stderr.strip())
+
+
+# --- the library arm ---------------------------------------------------------
+
+#: One loaded library per path. Loading a shared object costs a `dlopen` and a
+#: relocation pass, which is small but is not zero — and the whole argument for
+#: the library is that a run costs a function call, so paying a load per run
+#: would measure the wrong thing.
+_LIBRARIES: dict[str, object] = {}
+
+#: The library runs IN THIS PROCESS, so the cwd it sees is the process's own —
+#: and `os.chdir` is process-wide, not per thread. The conformance battery gives
+#: every run its own temp cwd and runs the arms in a thread pool, which those two
+#: facts together make unsafe: two threads chdir-ing for two entries would each
+#: run in the other's directory. The lock serialises the library arm alone; the
+#: spawned arms pass `cwd=` to the child and are unaffected.
+_CHDIR_LOCK = threading.Lock()
+
+
+def find_library() -> Path | None:
+    """The C ABI library, or ``None``. See :func:`lypning.embed.find_library`.
+
+    Raises :class:`lypning.embed.LibraryError` for a ``$LYPNING_LIB`` that names
+    nothing, exactly as :func:`_override` does for the engine binaries: a caller
+    who named a path must be told it is wrong, not told to build what they have.
+    """
+    from . import embed
+    return embed.find_library()
+
+
+def library_ready() -> tuple[bool, str]:
+    """``(usable, why_not)`` for the C ABI, without running a program.
+
+    Asked before a battery starts, because "the library is stale" and "the
+    library disagrees with CPython" are different facts and only one of them is
+    a bug in the runtime. A library built before a symbol was added loads fine
+    and then fails at the first call — reporting that as 800 MISMATCHes would
+    bury the one line that says to rebuild it.
+    """
+    from . import embed
+    try:
+        path = embed.find_library()
+        if path is None:
+            return False, "not built — run `lypning build --lib`"
+        embed.Library(path)
+        return True, ""
+    except embed.LibraryError as e:
+        return False, str(e)
+
+
+def run_library(
+    program: str = "",
+    *,
+    argv_tail: Sequence[str] = (),
+    stdin: str | None = None,
+    cwd: Path | str | None = None,
+    library: Path | None = None,
+    step_limit: int = 0,
+    env: dict[str, str] | None = None,
+) -> Result:
+    """Run ``program`` through the C ABI, in this process, and score it like a spawn.
+
+    Returns the same :class:`Result` the spawned arms return, so every consumer —
+    :func:`lypning.conformance.classify` above all — compares the library against
+    CPython by exactly the rules it uses for a binary. That is the point: the
+    library is only worth shipping if it is held to the same MISMATCH-is-a-bug
+    standard as the tier it embeds.
+
+    ``wall_ns`` here is the function call, not a spawn, which is why it is not
+    comparable to the other arms' wall times without saying so out loud.
+    """
+    from . import embed
+    try:
+        path = Path(library) if library else embed.find_library()
+        if path is None:
+            return Result(LIBRARY, "", 127, "", "lypning: the C ABI is not built — run "
+                                                "`lypning build --lib`\n", 0)
+        key = str(path)
+        lib = _LIBRARIES.get(key)
+        if lib is None:
+            lib = embed.Library(path)
+            _LIBRARIES[key] = lib
+    except embed.LibraryError as e:
+        return Result(LIBRARY, "", 127, "", "lypning: %s\n" % e, 0)
+
+    data = (stdin or "").encode("utf-8")
+    saved_env = {k: os.environ.get(k) for k in (env or {})}
+    with _CHDIR_LOCK:
+        previous = os.getcwd()
+        try:
+            if cwd:
+                os.chdir(str(cwd))
+            # The spawned arms are handed an environment (`conformance._env_for`);
+            # this one shares the caller's, because the program runs HERE. So the
+            # same variables are set around the call and put back after — without
+            # it, `os.environ['PYTHONHASHSEED']` answers differently in this arm
+            # than in the CPython reference it is being compared against, which
+            # is a MISMATCH reported against the runtime for a difference the
+            # battery itself created.
+            if env:
+                os.environ.update(env)
+            t0 = time.perf_counter_ns()
+            try:
+                out = lib.run(program, args=list(argv_tail), stdin=data, step_limit=step_limit)
+            finally:
+                wall = time.perf_counter_ns() - t0
+        except OSError as e:
+            # A cwd that cannot be entered is `run`'s 127, not an exception: a
+            # battery that raised here would abandon the run with the repository
+            # still holding a corpus program's writes.
+            return Result(LIBRARY, str(path), 127, "", "lypning: %s\n" % e, 0)
+        finally:
+            try:
+                os.chdir(previous)
+            except OSError:
+                pass
+            for k, v in saved_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+    # `errors="replace"`, matching `run` above and for the same reason: the two
+    # sides of a comparison must decode by identical rules or two different
+    # non-ASCII outputs compare equal. `_as_text` adds the other half of that
+    # agreement — `subprocess` translates newlines and a raw `decode` does not.
+    return Result(
+        LIBRARY, str(path), out.exit_code,
+        _as_text(out.stdout), _as_text(out.stderr), wall,
+    )
+
+
+def _as_text(raw: bytes) -> str:
+    """Decode exactly as ``subprocess.run(..., text=True)`` would.
+
+    Two rules, and both must match or a comparison lies. ``errors="replace"``
+    is the first. UNIVERSAL NEWLINES is the second and is the one that bites: a
+    spawned arm's ``\r\n`` arrives as ``\n``, so a program printing a carriage
+    return matched CPython through a subprocess and MISMATCHed through the
+    library — a disagreement the battery invented rather than found.
+    """
+    return raw.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _argv_for(engine: str, binary: Path, program: str, script: Path | None) -> list[str]:

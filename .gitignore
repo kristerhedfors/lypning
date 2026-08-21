@@ -16,3 +16,10 @@ venv/
 .lypning/
 # Pages build output
 _site/
+
+# Build trees for the C ABI's hosts. The library and its examples are built
+# where their sources live, exactly as the Rust core is.
+src/lypning/assets/examples/rust/target/
+src/lypning/assets/node/target/
+src/lypning/assets/examples/*/embed
+src/lypning/assets/examples/*/*.o

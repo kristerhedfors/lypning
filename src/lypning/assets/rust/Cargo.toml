@@ -15,6 +15,35 @@ license = "MIT"
 name = "lypning"
 path = "src/main.rs"
 
+# The same code, twice over: an `rlib` for the binary above and, when the
+# `capi` feature is on, a `cdylib`/`staticlib` for hosts that embed the runtime
+# instead of spawning it. One crate rather than two so there is one parser, one
+# evaluator and one commit barrier — a second implementation of the refusal
+# contract is exactly how a MISMATCH reaches a release.
+[lib]
+name = "lypning"
+path = "src/lib.rs"
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[features]
+# Off by default so `cargo build` still builds the binary and nothing else.
+# The C ABI is compiled only for the library build, which is also the only
+# build allowed to unwind — see `capi.rs` for why that is enforced rather than
+# documented.
+default = []
+capi = []
+
+# The library's profile, and the one thing it may not inherit is `panic`.
+#
+# `abort` is right for the binary: there is nothing to save, and the unwinding
+# tables are bytes in an image whose cold cost is measured in device blocks. It
+# is wrong for a library, where an abort takes down an application that merely
+# asked to run a one-liner. So the C ABI catches every unwind at its boundary,
+# and this profile is what gives it something to catch.
+[profile.release-lib]
+inherits = "release"
+panic = "unwind"
+
 [profile.release]
 opt-level = "s"   # size, not speed: 96% of an invocation is the OS spawning
                   # the process (docs/MICROPYTHON.md §8c), so codegen quality cannot
