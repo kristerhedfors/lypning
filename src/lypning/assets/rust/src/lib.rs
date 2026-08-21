@@ -31,6 +31,7 @@ pub mod embed;
 pub mod err;
 pub mod eval;
 pub mod fmt;
+pub mod hash;
 pub mod host;
 pub mod io;
 pub mod iter;

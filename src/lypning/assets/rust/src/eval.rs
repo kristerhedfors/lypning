@@ -12,13 +12,13 @@ use crate::fmt;
 use crate::modules;
 use crate::value::*;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use crate::hash::{Map, Set as FastSet};
 use std::rc::Rc;
 
-pub type Scope = Rc<RefCell<HashMap<Rc<str>, Value>>>;
+pub type Scope = Rc<RefCell<Map<Rc<str>, Value>>>;
 
 pub fn new_scope() -> Scope {
-    Rc::new(RefCell::new(HashMap::new()))
+    Rc::new(RefCell::new(crate::hash::map()))
 }
 
 pub enum Flow {
@@ -50,10 +50,10 @@ pub struct Interp {
     /// Innermost-last scope chain for the function currently executing.
     pub chain: Vec<Scope>,
     /// Names declared `global` in the function currently executing.
-    global_decls: Vec<HashSet<Rc<str>>>,
+    global_decls: Vec<FastSet<Rc<str>>>,
     /// Names assigned somewhere in the current function body.
-    assigned: Vec<Rc<HashSet<Rc<str>>>>,
-    pub modules: HashMap<Rc<str>, Value>,
+    assigned: Vec<Rc<FastSet<Rc<str>>>>,
+    pub modules: Map<Rc<str>, Value>,
     depth: usize,
     /// Statements executed and loop iterations taken, against the host's
     /// budget. Two plain fields rather than a thread_local read per statement:
@@ -72,7 +72,7 @@ impl Interp {
             chain: Vec::new(),
             global_decls: Vec::new(),
             assigned: Vec::new(),
-            modules: HashMap::new(),
+            modules: crate::hash::map(),
             depth: 0,
             steps: 0,
             expr_depth: 0,
@@ -826,7 +826,7 @@ impl Interp {
                     defaults,
                     lambda: Some(Rc::new((**body).clone())),
                     env: self.chain.clone(),
-                    assigned: Rc::new(HashSet::new()),
+                    assigned: Rc::new(crate::hash::set()),
                 }))
             }
             Expr::Comp {
@@ -849,7 +849,32 @@ impl Interp {
                 kwargs,
                 dstar,
             } => {
-                let f = self.eval(func)?;
+                // A method call is the commonest call an agent types — a
+                // `.foo()` is in most corpus programs — and routing one through
+                // `get_attr` builds a `Value::Bound`, which heap-allocates an
+                // `Rc<Value>` for the receiver purely to hand it to
+                // `call_method` a few lines later and drop it again. When the
+                // base really has the method, call it directly and never build
+                // the bound object.
+                //
+                // Everything else still goes through `get_attr`, including a
+                // module attribute and an UNBOUND method (`str.upper`), because
+                // both mean something different and `get_attr` is where that
+                // difference is decided.
+                let mut method: Option<(Value, &'static str)> = None;
+                let mut f = Value::None;
+                match &**func {
+                    Expr::Attr(b, n) => {
+                        let bv = self.eval(b)?;
+                        match crate::methods::method_name(&bv, n) {
+                            Some(m) if !matches!(bv, Value::Module(_)) => {
+                                method = Some((bv, m));
+                            }
+                            _ => f = self.get_attr(&bv, n)?,
+                        }
+                    }
+                    _ => f = self.eval(func)?,
+                }
                 let mut a = Vec::with_capacity(args.len());
                 for (i, x) in args.iter().enumerate() {
                     let v = self.eval(x)?;
@@ -877,7 +902,10 @@ impl Interp {
                         kw.push((ks, v));
                     }
                 }
-                self.call(&f, a, kw)?
+                match method {
+                    Some((recv, m)) => crate::methods::call_method(self, &recv, m, a, kw)?,
+                    None => self.call(&f, a, kw)?,
+                }
             }
         })
     }
@@ -1070,7 +1098,7 @@ impl Interp {
             c.push(scope);
             c
         });
-        self.global_decls.push(HashSet::new());
+        self.global_decls.push(crate::hash::set());
         self.assigned.push(f.assigned.clone());
         let r = match &f.lambda {
             Some(body) => self.eval(body),
@@ -1094,8 +1122,8 @@ pub struct IterState {
 /// Every name assigned anywhere in a function body, including its parameters.
 /// Used to make an early read raise `UnboundLocalError` rather than silently
 /// finding a global of the same name.
-fn assigned_names(body: &[Stmt], params: &Params) -> HashSet<Rc<str>> {
-    let mut out = HashSet::new();
+fn assigned_names(body: &[Stmt], params: &Params) -> FastSet<Rc<str>> {
+    let mut out = crate::hash::set();
     for n in &params.names {
         out.insert(n.clone());
     }
@@ -1103,8 +1131,8 @@ fn assigned_names(body: &[Stmt], params: &Params) -> HashSet<Rc<str>> {
     out
 }
 
-fn collect_assigned(body: &[Stmt], out: &mut HashSet<Rc<str>>) {
-    fn tgt(t: &Target, out: &mut HashSet<Rc<str>>) {
+fn collect_assigned(body: &[Stmt], out: &mut FastSet<Rc<str>>) {
+    fn tgt(t: &Target, out: &mut FastSet<Rc<str>>) {
         match t {
             Target::Name(n) => {
                 out.insert(n.clone());

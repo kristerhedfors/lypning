@@ -28,6 +28,79 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-21 · iteration 3 — method dispatch, and the hasher underneath everything
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 842 loaded, 763 timed
+
+Two changes to the same layer, both from the top of the weighted queue.
+
+**Method dispatch.** `x.foo()` evaluated the attribute first, and `get_attr`
+built a `Value::Bound` — an `Rc<Value>` heap-allocated for the receiver — purely
+to hand it to `call_method` a few lines later and drop it. `Expr::Call` now
+recognises an `Expr::Attr` callee whose base really has the method and calls it
+directly. Module attributes and unbound methods (`str.upper`) still go through
+`get_attr`, because both mean something different and that is where the
+difference is decided. And `method_name` binary-searches its tables instead of
+scanning them — `STR_METHODS` is 37 entries and the scan ran on every attribute.
+
+**The hasher.** Every scope is a `HashMap<Rc<str>, Value>` and every name read
+hashes a short identifier. std's default is SipHash-1-3 behind an OS-seeded
+`RandomState`: a keyed MAC chosen to survive attacker-chosen keys arriving over
+a network, doing setup and finalisation for a six-byte identifier in a process
+with a step limit that exits in under a millisecond. Replaced with twenty lines
+of FNV-1a (`hash.rs`, no dependency — invariant 6), used by scopes, the module
+table, `Dict`'s index, `Set`'s index and the pending-file map.
+
+This cannot change an answer: a `Dict` keeps insertion order in a `Vec` and uses
+the map only as an index into it, and `Set` order is refused wherever it would
+be observable.
+
+| | before | after |
+|---|---|---|
+| bytes | 1,045,176 (8 blocks) | 1,045,176 (8 blocks) |
+| conformance | 500 / 263 / **0** | 500 / 263 / **0** |
+| perf TOTAL | 4.87x | **3.78x** |
+| corpus-time | 552.2 ms | **533.1 ms (−3.5%)** |
+| startup | 0.63 ms | 0.63 ms |
+
+Rows that moved, `lypning perf`, min of 5, startup subtracted:
+
+| case | corpus | before | after |
+|---|---|---|---|
+| `str-split` | 10% | 50.95x | **9.72x** |
+| `call-recursive` | 8% | 34.21x | **21.96x** |
+| `str-methods` | 38% | 6.66x | **5.12x** |
+| `call-method` | 83% | 4.70x | **3.82x** |
+| `loop-range` | 5% | 2.42x | **1.61x** |
+| `list-index` | 20% | 2.64x | **1.85x** |
+| `name-lookup` | 27% | 2.85x | **2.26x** |
+| `dict-get` | 12% | 4.94x | **3.94x** |
+
+**Two things worth knowing next time.**
+
+*The size accounting is a step function and it nearly bit.* The method-dispatch
+change alone added 4,096 bytes — 696 of them past the 1,048,576 B mark — which
+took the binary from 8 device blocks to **9**. A block is the unit a cold read
+streams in, so that is a real cost for a duplicated dispatch arm. The hasher
+change gave the 4,096 back exactly (SipHash and `RandomState` leave the image
+entirely), and the pair lands on the original byte count. Had it not, the
+dispatch change would have been the one to drop.
+
+*`str-split` at 47x → 9.7x came from the HASHER, not from anything in split.*
+Nothing in `.split()` hashes. Iteration 1 recorded that splitting a short string
+was bimodal — 8 tokens of one character cost 8.7 µs, 8 tokens of three
+characters 2.3 µs — and concluded it was a musl mallocng size-class effect
+rather than an interpreter one. Removing `RandomState` changed the size of every
+scope map and moved the whole allocation pattern out of the slow mode. That
+conclusion was right and the fix for it was three files away from the symptom.
+**The lesson is not about split; it is that on musl a "this row is slow" reading
+can be an allocation-shape reading, and the code the row names may be innocent.**
+
+Run-to-run variance was checked before believing any of this: three consecutive
+`perf` runs of the same binary agreed within 3%.
+
+---
+
 ## 2026-08-21 · iteration 2 — the queue is ratio TIMES prevalence, not ratio
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 842 programs loaded

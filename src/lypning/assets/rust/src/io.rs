@@ -23,7 +23,7 @@
 use crate::err::{unsupported, LypningError, R};
 use crate::host;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use crate::hash::Map;
 use std::io::{Read, Write};
 
 /// Past this many buffered bytes the run commits early and gives up its
@@ -50,7 +50,7 @@ pub struct FileObj {
 #[derive(Default)]
 pub struct Pending {
     /// path -> (bytes, append?) staged until commit
-    pub files: HashMap<String, (Vec<u8>, bool)>,
+    pub files: Map<String, (Vec<u8>, bool)>,
     /// Ordered so the flush reproduces the program's own write order.
     pub order: Vec<String>,
 }
@@ -60,8 +60,8 @@ thread_local! {
     static ERRBUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     static PENDING: RefCell<Pending> = RefCell::new(Pending::default());
     static COMMITTED: RefCell<bool> = const { RefCell::new(false) };
-    static DELETED: RefCell<std::collections::HashSet<String>> =
-        RefCell::new(std::collections::HashSet::new());
+    static DELETED: RefCell<crate::hash::Set<String>> =
+        RefCell::new(crate::hash::Set::with_hasher(crate::hash::BuildFnv));
 }
 
 /// Record that something irreversible happened outside the staging area.

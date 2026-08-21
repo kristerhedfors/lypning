@@ -139,7 +139,14 @@ pub fn method_name(recv: &Value, name: &str) -> Option<&'static str> {
         Value::File(_) => FILE_METHODS,
         _ => return None,
     };
-    table.iter().find(|m| **m == name).copied()
+    // Binary search, not a scan: `.foo()` appears in most corpus programs and
+    // STR_METHODS alone is 37 entries, so a linear miss cost dozens of string
+    // compares on the hottest attribute path there is. Every table above is
+    // written in sorted order and `tests/test_method_tables.py` holds them to
+    // it — an unsorted table would make binary search MISS a method that exists,
+    // which is an AttributeError where CPython answers, and invariant 1 says
+    // that is the failure that matters.
+    table.binary_search(&name).ok().map(|i| table[i])
 }
 
 fn kwget(kw: &[(Rc<str>, Value)], name: &str) -> Option<Value> {
