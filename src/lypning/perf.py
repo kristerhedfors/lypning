@@ -153,9 +153,14 @@ SUITE: Tuple[Case, ...] = (
     Case("str-of-scalar", "fmt",
          "n = 0\nfor i in range(60000):\n    n += len(str(i)) + len(repr('ab'))\nprint(n)",
          r"\b(str|repr)\("),
+    # Probed on `repr(` alone — 6% of the corpus — and NOT on `print(`, which is
+    # 87% and was what this row was weighted by until iteration 7. The case
+    # reprs a LIST: printing a composite reaches the same code, so the probe
+    # understates a little, and understating is the right direction. `print()`
+    # of a scalar is a different path, it is `print-lines`, and lypning wins it.
     Case("str-repr", "fmt",
          "n = 0\nfor i in range(40000):\n    n += len(repr([i, 'a', 1.5]))\nprint(n)",
-         '\\b(repr|print)\\('),
+         r"\brepr\("),
 
     # --- containers ---
     Case("list-append", "list",

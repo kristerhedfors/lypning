@@ -5,6 +5,7 @@
 //! Anything not here is `unsupported: builtin`, which is a routing signal, not
 //! a failure — see `route.rs`.
 
+use crate::args::Args;
 use crate::err::*;
 use crate::eval::{int_val, Interp};
 use crate::fmt;
@@ -123,7 +124,7 @@ fn no_kw(name: &str, kw: &[(Rc<str>, Value)]) -> R<()> {
 pub fn call_builtin(
     it: &mut Interp,
     name: &str,
-    mut args: Vec<Value>,
+    mut args: Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     // `raise ValueError("x")` / `except E as e` construct exception instances.
@@ -242,7 +243,7 @@ pub fn call_builtin(
                 Some(Value::Bool(b)) => Value::Int(*b as i64),
                 Some(Value::Bytes(b)) => {
                     let s = decode_utf8(b)?;
-                    return call_builtin(it, "int", vec![Value::Str(s.into())], kw);
+                    return call_builtin(it, "int", Args::one(Value::Str(s.into())), kw);
                 }
                 Some(other) => {
                     return Err(type_err(format!(
@@ -370,10 +371,10 @@ pub fn call_builtin(
         }
         "min" | "max" => {
             let want_max = name == "max";
-            let items = if args.len() == 1 {
+            let items: Vec<Value> = if args.len() == 1 {
                 it.collect_unordered(args.remove(0))?
             } else {
-                args.clone()
+                args.to_vec()
             };
             let keyf = kwget(&kw, "key");
             let default = kwget(&kw, "default");
@@ -745,7 +746,7 @@ fn arg1(name: &str, args: &[Value]) -> R<Value> {
 fn keyed(it: &mut Interp, keyf: &Option<Value>, v: &Value) -> R<Value> {
     match keyf {
         None => Ok(v.clone()),
-        Some(f) => it.call(f, vec![v.clone()], Vec::new()),
+        Some(f) => it.call(f, Args::one(v.clone()), Vec::new()),
     }
 }
 

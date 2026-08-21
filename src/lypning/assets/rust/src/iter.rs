@@ -256,7 +256,7 @@ impl Interp {
             }
             Iter::Map(f, its) => {
                 let f = f.clone();
-                let mut args = Vec::with_capacity(its.len());
+                let mut args = crate::args::Args::with_capacity(its.len());
                 for it in its.iter_mut() {
                     match self.iter_next(it)? {
                         Some(v) => args.push(v),
@@ -274,7 +274,7 @@ impl Interp {
                     let keep = match &pred {
                         None => truthy(&v)?,
                         Some(f) => {
-                            let r = self.call(f, vec![v.clone()], Vec::new())?;
+                            let r = self.call(f, crate::args::Args::one(v.clone()), Vec::new())?;
                             truthy(&r)?
                         }
                     };

@@ -5,6 +5,7 @@
 //! at all. Adding a method here is what widens lypning's share of the corpus, so
 //! the tables are the build order made concrete.
 
+use crate::args::Args;
 use crate::err::*;
 use crate::eval::{int_val, Interp};
 use crate::fmt;
@@ -157,7 +158,7 @@ pub fn call_method(
     it: &mut Interp,
     recv: &Value,
     name: &str,
-    args: Vec<Value>,
+    args: Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     // An unbound method (`str.upper`) arrives with the TYPE as receiver; the
@@ -214,7 +215,7 @@ fn str_method(
     it: &mut Interp,
     s: &Rc<str>,
     name: &str,
-    args: Vec<Value>,
+    args: Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     Ok(match name {
@@ -727,7 +728,7 @@ fn list_method(
     it: &mut Interp,
     l: &Rc<RefCell<Vec<Value>>>,
     name: &str,
-    args: Vec<Value>,
+    args: Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     Ok(match name {
@@ -829,7 +830,7 @@ fn list_method(
             for x in &items {
                 keys.push(match &keyf {
                     None => x.clone(),
-                    Some(f) => it.call(f, vec![x.clone()], Vec::new())?,
+                    Some(f) => it.call(f, Args::one(x.clone()), Vec::new())?,
                 });
             }
             ops::sort_values(&mut items, &mut keys, rev)?;
@@ -846,7 +847,7 @@ fn dict_method(
     it: &mut Interp,
     d: &Rc<RefCell<Dict>>,
     name: &str,
-    args: Vec<Value>,
+    args: Args,
     _kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     Ok(match name {
@@ -938,7 +939,7 @@ fn set_method(
     it: &mut Interp,
     s: &Rc<RefCell<Set>>,
     name: &str,
-    args: Vec<Value>,
+    args: Args,
     _kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     let other_set = |it: &mut Interp, v: &Value| -> R<Rc<RefCell<Set>>> {
@@ -981,7 +982,7 @@ fn set_method(
             Value::Set(Rc::new(RefCell::new(out)))
         }
         "update" => {
-            for a in &args {
+            for a in args.iter() {
                 let o = other_set(it, a)?;
                 let items = o.borrow().items.clone();
                 for v in items {
@@ -992,7 +993,7 @@ fn set_method(
         }
         "union" | "intersection" | "difference" | "symmetric_difference" => {
             let mut acc = Value::Set(s.clone());
-            for a in &args {
+            for a in args.iter() {
                 let o = other_set(it, a)?;
                 let Value::Set(cur) = &acc else { unreachable!() };
                 acc = ops::set_op(
@@ -1031,7 +1032,7 @@ fn set_method(
 
 // ---- bytes ----------------------------------------------------------------
 
-fn tuple_method(t: &Rc<Vec<Value>>, name: &str, args: Vec<Value>) -> R<Value> {
+fn tuple_method(t: &Rc<Vec<Value>>, name: &str, args: Args) -> R<Value> {
     let needle = args
         .first()
         .ok_or_else(|| type_err(format!("{name}() takes exactly one argument")))?;
@@ -1061,7 +1062,7 @@ fn bytes_method(
     it: &mut Interp,
     b: &Rc<Vec<u8>>,
     name: &str,
-    args: Vec<Value>,
+    args: Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     Ok(match name {
@@ -1347,7 +1348,7 @@ fn file_method(
     it: &mut Interp,
     f: &Rc<RefCell<mio::FileObj>>,
     name: &str,
-    args: Vec<Value>,
+    args: Args,
     _kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     Ok(match name {

@@ -6,6 +6,7 @@
 //! silently finding a global of the same name — the exact shape of "plausible
 //! wrong answer" this runtime exists to avoid.
 
+use crate::args::Args;
 use crate::ast::*;
 use crate::err::*;
 use crate::fmt;
@@ -875,7 +876,7 @@ impl Interp {
                     }
                     _ => f = self.eval(func)?,
                 }
-                let mut a = Vec::with_capacity(args.len());
+                let mut a = Args::with_capacity(args.len());
                 for (i, x) in args.iter().enumerate() {
                     let v = self.eval(x)?;
                     if star.contains(&i) {
@@ -991,7 +992,7 @@ impl Interp {
 
     // ---- calls ------------------------------------------------------------
 
-    pub fn call(&mut self, f: &Value, args: Vec<Value>, kw: Vec<(Rc<str>, Value)>) -> R<Value> {
+    pub fn call(&mut self, f: &Value, args: Args, kw: Vec<(Rc<str>, Value)>) -> R<Value> {
         match f {
             Value::Builtin(name) => crate::builtins::call_builtin(self, name, args, kw),
             Value::Bound(recv, name) => crate::methods::call_method(self, recv, name, args, kw),
@@ -1003,7 +1004,7 @@ impl Interp {
         }
     }
 
-    fn call_func(&mut self, f: Rc<FuncObj>, args: Vec<Value>, kw: Vec<(Rc<str>, Value)>) -> R<Value> {
+    fn call_func(&mut self, f: Rc<FuncObj>, args: Args, kw: Vec<(Rc<str>, Value)>) -> R<Value> {
         self.depth += 1;
         if self.depth > MAX_DEPTH {
             self.depth -= 1;
@@ -1020,7 +1021,7 @@ impl Interp {
     fn call_func_inner(
         &mut self,
         f: Rc<FuncObj>,
-        args: Vec<Value>,
+        mut args: Args,
         kw: Vec<(Rc<str>, Value)>,
     ) -> R<Value> {
         let p = &f.params;
@@ -1032,7 +1033,13 @@ impl Interp {
             let mut s = scope.borrow_mut();
             let mut used = vec![false; p.names.len()];
             let mut extra = Vec::new();
-            for (i, a) in args.into_iter().enumerate() {
+            // Indexed with `Args::take` rather than `into_iter`: consuming the
+            // list as an iterator would turn it into a `Vec` first, which is
+            // exactly the allocation `Args` exists to remove and would put it
+            // back on the hottest call in the interpreter.
+            let nargs = args.len();
+            for i in 0..nargs {
+                let a = args.take(i);
                 if i < npos {
                     s.insert(p.names[i].clone(), a);
                     used[i] = true;

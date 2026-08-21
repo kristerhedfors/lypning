@@ -28,6 +28,100 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-21 · iteration 8 — the argument list stops allocating
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 842 loaded, 763 timed
+
+Iteration 6 said allocation count is the lever. This is the biggest single
+allocation the interpreter makes: every call built a `Vec<Value>` for its
+arguments and dropped it again. The cost was measured before anything was
+written, by varying only the argument count:
+
+| `def f(...)`: return 1 | µs/call | delta vs 0 args |
+|---|---:|---:|
+| `f()` | 0.258 | — |
+| `f(1)` | 0.446 | **+0.188** |
+| `f(1, 2)` | 0.461 | +0.203 |
+| `f(1, 2, 3)` | 0.494 | +0.236 |
+
+The step is at the **first** argument — 0.188 µs — and then 0.024 µs each after
+it. That shape is an allocation, not work, and it costs more than an entire
+zero-argument call.
+
+`args::Args` keeps up to four arguments in the caller's stack frame and spills
+to a `Vec` past that. No `unsafe`: vacated slots hold `Value::None`, which is a
+discriminant write, so the array stays `[Value; 4]` and `Deref` still hands out
+a real `&[Value]` — which is why `args.first()`, `args.get(i)`, `args.len()` and
+`args.iter()` did not have to change at any of their call sites. Binding a
+function's parameters uses `Args::take(i)` rather than `into_iter`, because
+consuming it as an iterator would build the `Vec` again.
+
+| against the previous commit's binary | ratio |
+|---|---:|
+| `len(t)` in a loop | **0.86x** |
+| `t.count('a')` in a loop | **0.81x** |
+| `print(1, 2, 3)` in a loop | **0.80x** |
+| `fib(21)` | 0.95x |
+| `def f(a)` … `f(1)` | 1.05x |
+| `def f()` … `f()` | 1.21x |
+
+perf `call-method` — the top of the weighted queue at 83% of corpus programs —
+went **3.61x → 2.39x**. TOTAL 3.73x → 3.70x. corpus-time 552.0 → 551.5 ms, flat,
+as a compute change is there.
+
+**The trade, stated plainly:** builtin and method calls got 14–19% faster and
+Python `def` calls got 2–6% slower, worst at 21% for a call with no arguments at
+all, which pays the array's initialisation and buys nothing. That is a good
+trade *for this corpus* — a `.foo()` is in 83% of its programs and a `def` in 8%
+— and it would be a bad one for a workload of deep zero-argument calls. The next
+step for it is passing `Args` by `&mut` instead of moving 152 bytes through
+`call` → `call_func` → `call_func_inner`.
+
+### The cliff, which is worth more than the change
+
+The first version spilled by growing: start inline, and on the fifth argument
+move the four across into a fresh `Vec` and push. That version was **eight times
+slower than the `Vec` it replaced — for six arguments, and only six**:
+
+| args | previous | INLINE=2 | INLINE=4 | INLINE=8 |
+|---:|---:|---:|---:|---:|
+| 5 | 21.7 | 30.2 | 29.0 | 21.7 |
+| **6** | **28.2** | **227.4** | **221.7** | **27.2** |
+| 7 | 32.4 | 37.3 | 32.9 | 26.8 |
+
+Seven arguments were fine. Eight were fine. Six were catastrophic, at two
+different INLINE values with two different spill capacities — and not at all
+when six arguments stayed inline. This is the **same musl mallocng size-class
+resonance iteration 1 recorded for `str-split`** and iteration 3 dissolved by
+accident, and it is the third time this allocator has produced a cliff that
+looks like an algorithmic bug and is not one.
+
+The fix was to stop growing into the spill: the caller knows the argument count
+before it starts, so `Args::with_capacity` allocates the final size once. That
+needed an explicit `spilled` flag rather than `spill.is_empty()`, because a
+pre-allocated empty `Vec` is not the same thing as no `Vec`.
+
+**The rule to carry:** on this target, a two-phase allocation — allocate small,
+then move and grow — is a trap. Allocate once at the final size wherever the
+size is known. And when a benchmark is bad at exactly one input size, suspect
+the allocator before the algorithm; sweep the neighbours first, because one
+point is not a curve.
+
+| | before | after |
+|---|---|---|
+| bytes | 1,045,176 (8 blocks) | 1,045,176 (8 blocks) |
+| conformance | 500 / 263 / **0** | 500 / 263 / **0** |
+| perf TOTAL | 3.73x | 3.70x |
+| perf `call-method` (83%) | 3.61x | **2.39x** |
+| corpus-time | 552.0 ms | 551.5 ms |
+
+Pinned in `tests/test_semantics.py`: every arity from 0 to 9 across the inline
+boundary, on a plain function, `*args`, `**kwargs`, defaults, star-unpacking,
+and on builtins and methods — which reach the same argument list by three
+different paths.
+
+---
+
 ## 2026-08-21 · iteration 6 — callgrind, and the `String` nobody needed
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 842 loaded, 763 timed

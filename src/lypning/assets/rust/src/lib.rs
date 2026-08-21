@@ -25,6 +25,7 @@
 //! programs at once; one thread may not run two at once, and gets
 //! [`Status::Busy`] rather than an interleaved answer if it tries.
 
+pub mod args;
 pub mod ast;
 pub mod builtins;
 pub mod embed;

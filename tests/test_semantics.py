@@ -22,6 +22,30 @@ from lypning import UNSUPPORTED_EXIT, engines
 #: value rather than just the case.
 CASES = [
     (
+        # Arguments live in the caller's stack frame up to `args::INLINE` and
+        # spill to a Vec past it (`assets/rust/src/args.rs`). That boundary is
+        # invisible from Python and must stay invisible: this walks every arity
+        # across it, on a plain function, on `*args`, on keywords, and on
+        # builtins and methods, which take three different paths to the same
+        # argument list.
+        "argument-count-across-the-inline-boundary",
+        "def f(*a, **k):\n"
+        "    return (len(a), a, sorted(k.items()))\n"
+        "for n in range(0, 10):\n"
+        "    print(n, f(*list(range(n))))\n"
+        "def g(a=0, b=1, c=2, d=3, e=4, h=5, i=6, j=7, k=8):\n"
+        "    return (a, b, c, d, e, h, i, j, k)\n"
+        "print(g())\n"
+        "print(g(9))\n"
+        "print(g(9, 8, 7, 6, 5))\n"
+        "print(g(9, 8, 7, 6, 5, 4, 3, 2, 1))\n"
+        "print(g(a=1, k=2))\n"
+        "print(g(*[1, 2, 3, 4, 5, 6], **{'i': 7}))\n"
+        "print(max(1, 2, 3, 4, 5, 6, 7), min(9, 8, 7, 6, 5, 4, 3))\n"
+        "print('a,b,c,d,e,f,g'.split(',', 5))\n"
+        "print('%s-%s-%s-%s-%s-%s' % (1, 2, 3, 4, 5, 6))\n",
+    ),
+    (
         # `IOError` is not a subclass of `OSError` in CPython, it is the same
         # class under a second name — so it has to match in both directions.
         # lypning had it only as a CLAUSE that catches an OSError, not as a KIND
