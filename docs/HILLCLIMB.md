@@ -28,6 +28,84 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-21 · iteration 4 — a MISMATCH found by chasing a speed row, and a speed change that bought nothing
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 842 loaded, 763 timed
+
+Two results, and the negative one is the longer entry.
+
+### The change that did not work
+
+`str-repr` sat at the top of the queue (4.3x, 88% of corpus programs), so the
+builtin call path was opened. `eval::lookup` reaches `builtins::builtin` on every
+`print`, `len` and `range` — a builtin name is by construction a miss in every
+scope — and that function linear-scanned 39 BUILTINS and then 24 EXCEPTIONS;
+`call_builtin` then asked `is_exception_name` for a **third** pass before it
+could dispatch. Three linear passes over ~70 static strings per call looks
+exactly like a finding.
+
+Converted all three to `binary_search`. Measured, on this container, min of 7:
+
+| | before | after |
+|---|---|---|
+| `repr(i)` in a loop | 0.644 µs/call | 0.671 µs/call |
+| `len(t)` in a loop | 0.298 µs/call | 0.303 µs/call |
+
+**No gain**, at or below noise. The scan was never the cost: 39 short-string
+compares that mostly differ in the first byte or in length are a few tens of
+nanoseconds against a call that costs 650. The rest is elsewhere — the argument
+`Vec`, the `String` → `Rc<str>` conversion on the result, the `Nest` guard, the
+`match name` dispatch itself.
+
+So it was **reverted**, and the ordering constraint it would have imposed on both
+tables forever went with it. A change that buys nothing and costs a rule is worse
+than no change. `tests/test_method_tables.py` still guards `methods.rs`, where
+binary search did pay (37 entries, on every `.foo()`), and now carries a comment
+saying why `builtins.rs` is not in it.
+
+**Do not re-propose binary-searching BUILTINS or EXCEPTIONS.** The reasoning is
+sound and the measurement says it does not matter.
+
+### The MISMATCH it turned up on the way
+
+Sorting `EXCEPTIONS` for that search needed `IOError` moved away from `OSError`,
+which raised the question of how aliasing was handled at all. It was not, in one
+direction:
+
+```
+raise OSError(…) / except IOError  →  caught          (agreed with CPython)
+raise IOError(…) / except OSError  →  traceback, exit 1  (CPython: caught)
+```
+
+`IOError` and `EnvironmentError` are not *subclasses* of `OSError` in CPython —
+they are the same class under three names. `exc_matches` had them on the clause
+side only, so an `except OSError` did not catch a kind named `IOError`. That is a
+wrong answer at a wrong exit code, which is what invariant 1 is about, and the
+asymmetry is why it read as working from the direction anyone would test first.
+
+Not in the corpus, so `conformance` never saw it. Fixed, and pinned in
+`tests/test_semantics.py` — differentially, against the real CPython, like every
+case in that file.
+
+| | before | after |
+|---|---|---|
+| bytes | 1,045,176 (8 blocks) | 1,045,176 (8 blocks) |
+| conformance | 500 / 263 / **0** | 500 / 263 / **0** |
+| perf TOTAL | 3.78x | 3.65x (the reverted change is not in this) |
+| corpus-time | 552.2 ms | 543.6 ms |
+| a MISMATCH nobody had | present | **fixed** |
+
+The `perf` and `corpus-time` rows moved less than the noise band between them —
+nothing in the shipped diff is a speed change. They are recorded because a
+regression gate that only gets read when it is green teaches nobody anything.
+
+**The transferable lesson:** the speed queue is also a correctness search. Reading
+a hot path closely enough to optimise it is reading it closely enough to find
+what is wrong with it, and on this iteration the second thing was worth more than
+the first.
+
+---
+
 ## 2026-08-21 · iteration 3 — method dispatch, and the hasher underneath everything
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 842 loaded, 763 timed

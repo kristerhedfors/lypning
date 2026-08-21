@@ -1231,9 +1231,19 @@ pub fn exc_matches(clause: &str, kind: &str) -> bool {
         "Exception" => kind != "SystemExit" && kind != "KeyboardInterrupt",
         "ArithmeticError" => matches!(kind, "ZeroDivisionError" | "OverflowError" | "FloatingPointError"),
         "LookupError" => matches!(kind, "IndexError" | "KeyError"),
+        // `IOError` and `EnvironmentError` are not subclasses of `OSError` in
+        // CPython — they ARE it, two names bound to the same class. So they have
+        // to appear on BOTH sides: as a clause that catches an OSError, which
+        // they already did, and as a KIND that an `except OSError` catches,
+        // which they did not. `raise IOError(...)` therefore escaped an
+        // `except OSError` and exited 1 with a traceback where CPython printed
+        // the handler's output — a wrong answer at a wrong exit code, which is
+        // the one failure invariant 1 is about. It was asymmetric and so it read
+        // as working from the other direction.
         "OSError" | "IOError" | "EnvironmentError" => matches!(
             kind,
-            "OSError" | "FileNotFoundError" | "PermissionError" | "FileExistsError" | "IsADirectoryError" | "NotADirectoryError"
+            "OSError" | "IOError" | "EnvironmentError" | "FileNotFoundError" | "PermissionError"
+                | "FileExistsError" | "IsADirectoryError" | "NotADirectoryError"
         ),
         "ValueError" => kind == "UnicodeDecodeError" || kind == "JSONDecodeError",
         "NameError" => kind == "UnboundLocalError",

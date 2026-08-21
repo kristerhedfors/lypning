@@ -22,6 +22,35 @@ from lypning import UNSUPPORTED_EXIT, engines
 #: value rather than just the case.
 CASES = [
     (
+        # `IOError` is not a subclass of `OSError` in CPython, it is the same
+        # class under a second name — so it has to match in both directions.
+        # lypning had it only as a CLAUSE that catches an OSError, not as a KIND
+        # an `except OSError` catches, and the asymmetry is why it read as
+        # working: raising OSError and catching IOError was fine, and the
+        # reverse escaped the handler and exited 1 with a traceback.
+        "ioerror-is-oserror-in-both-directions",
+        "for raiser, catcher in [('IOError', 'OSError'), ('OSError', 'IOError'),\n"
+        "                        ('IOError', 'IOError'), ('OSError', 'OSError'),\n"
+        "                        ('IOError', 'Exception'), ('FileNotFoundError', 'IOError')]:\n"
+        "    print(raiser, catcher)\n"
+        "try:\n"
+        "    raise IOError('boom')\n"
+        "except OSError as e:\n"
+        "    print('OSError caught', e)\n"
+        "try:\n"
+        "    raise OSError('boom')\n"
+        "except IOError as e:\n"
+        "    print('IOError caught', e)\n"
+        "try:\n"
+        "    raise IOError('boom')\n"
+        "except Exception as e:\n"
+        "    print('Exception caught', e)\n"
+        "try:\n"
+        "    raise FileNotFoundError('boom')\n"
+        "except IOError as e:\n"
+        "    print('IOError caught FNF', e)\n",
+    ),
+    (
         "partition-empty-separator",
         "def t(f):\n"
         "    try:\n"
