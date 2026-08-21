@@ -120,6 +120,87 @@ def test_a_case_that_failed_is_out_of_the_total():
     assert r.totals() == {"cpython": 0.0, "lypning": 0.0}
 
 
+# --- corpus prevalence, and the queue it reorders ----------------------------
+
+
+class _E:
+    def __init__(self, program):
+        self.program = program
+
+
+def test_prevalence_is_the_fraction_of_programs_the_probe_matches():
+    entries = [_E("print(a.split())"), _E("print(1)"), _E("x = b.split(',')"), _E("pass")]
+    w, n = perf.prevalence(entries)
+    assert n == 4
+    assert w["str-split"] == pytest.approx(0.5)
+
+
+def test_a_case_with_no_probe_is_absent_rather_than_zero():
+    # "we did not ask" and "nobody types this" are different answers, and a zero
+    # in the weight column would silently retire a case nobody meant to retire.
+    named = {c.name for c in perf.SUITE if c.probe}
+    w, _ = perf.prevalence([_E("print(1)")])
+    assert set(w) == named
+    for c in perf.SUITE:
+        if not c.probe:
+            assert c.name not in w
+
+
+def test_an_unloadable_corpus_is_a_hole_and_not_a_crash():
+    # A diagnostic that refuses to run without its denominator is a diagnostic
+    # nobody runs.
+    assert perf.prevalence([]) == ({}, 0)
+
+
+def test_the_weight_is_how_far_behind_times_how_often_it_is_typed():
+    c = _case("a", {"cpython": 1.0, "lypning": 5.0})   # 5x
+    r = _report([c])
+    r.prevalence = {"a": 0.5}
+    assert r.weight(c) == pytest.approx((5.0 - 1.0) * 0.5)
+
+
+def test_a_case_that_beats_cpython_weighs_zero_rather_than_negative():
+    # Being ahead somewhere does not buy time back somewhere else.
+    c = _case("a", {"cpython": 4.0, "lypning": 1.0})
+    r = _report([c])
+    r.prevalence = {"a": 0.5}
+    assert r.weight(c) == 0.0
+
+
+def test_the_queue_is_ordered_by_weight_and_not_by_ratio():
+    # The row this project actually learned it from: `s += x` in a loop measured
+    # 43x CPython — the worst ratio in the suite — against a corpus in which it
+    # appears in one program out of 842.
+    rare = _case("rare", {"cpython": 1.0, "lypning": 44.0})     # 44x, 0.1%
+    common = _case("common", {"cpython": 1.0, "lypning": 6.0})  # 6x, 50%
+    r = _report([rare, common])
+    r.prevalence = {"rare": 0.001, "common": 0.5}
+    r.corpus_size = 842
+    text = perf.render(r)
+    queue = text[text.index("THE QUEUE"):]
+    assert queue.index("common") < queue.index("rare")
+    # …while the table above it still leads with the worst ratio.
+    assert text.index("rare") < text.index("THE QUEUE")
+
+
+def test_a_case_too_small_to_trust_is_named():
+    r = _report([_case("thin", {"cpython": 0.4, "lypning": 30.0})])
+    assert "too small to trust" in perf.render(r) and "thin" in perf.render(r)
+
+
+def test_every_probe_compiles():
+    import re as _re
+    for c in perf.SUITE:
+        if c.probe:
+            _re.compile(c.probe)
+
+
+def test_every_case_has_a_probe():
+    # A case with no probe cannot be ranked, and an unrankable case in a suite
+    # whose whole point is the ranking is a case that quietly stops mattering.
+    assert [c.name for c in perf.SUITE if not c.probe] == []
+
+
 # --- the record and the diff -------------------------------------------------
 
 

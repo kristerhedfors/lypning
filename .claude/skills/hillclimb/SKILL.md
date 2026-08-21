@@ -109,9 +109,19 @@ PYTHONPATH=src python3 -m lypning perf                       # speed:    worst r
 PYTHONPATH=src python3 -m lypning conformance --engine lypning --plan   # coverage: most programs first
 ```
 
-Neither is advice. `perf` sorts by how much slower lypning is than CPython at
-something it *already does*; `--plan` sorts by how many corpus programs one
-missing feature blocks. Take the top row you can do in one mechanism.
+Neither is advice. `--plan` sorts by how many corpus programs one missing
+feature blocks. `perf` prints two orderings and **the one to work from is the
+second**: the table sorts by ratio, and THE QUEUE under it sorts by ratio times
+how much of the corpus types the construct. Take the top row of the queue that
+you can do in one mechanism.
+
+The difference between those two orderings is not academic and is the reason the
+weighting exists. The suite's worst row was once `s += x` in a loop at 43x
+CPython — a genuine quadratic, and a real defect. It appears in **one** of the
+corpus's programs. Fixing it properly means replacing the string representation;
+doing that on the strength of the ratio alone would have been an afternoon spent
+on a tenth of a percent of the workload, with the microbenchmark applauding
+throughout. Check the `corpus` column before you believe a ratio.
 
 ### Move 3 — change one thing
 

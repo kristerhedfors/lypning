@@ -642,8 +642,15 @@ lypning perf --only str-concat      # one construct, while you work on it
 lypning perf --record before.json   # …and --baseline before.json after
 ```
 
-That ordering is the work queue for raw speed. It is **deliberately not an
-acceptance gate** — a microbenchmark once said a change was worth 48 ms per
+The table sorts by ratio; the **queue printed under it does not**. A ratio ranks
+by how badly lypning loses, which is not the same list as what that costs
+anybody: this suite reported `s += x` in a loop at 43x CPython — its worst row —
+against a corpus in which that construct appears in *one program out of the 842
+loaded*. So every case carries a regex, the corpus is scanned on each run, and
+the queue is ordered by **how far behind, times how much of the corpus types
+it**. That second ordering is the work queue for raw speed.
+
+It is **deliberately not an acceptance gate** — a microbenchmark once said a change was worth 48 ms per
 program where the corpus said 0.14 (`docs/MICROPYTHON.md` §8a). Find with
 `perf`, accept with `corpus-time --baseline`. Two rules keep the table honest:
 every case prints a checksum the arms must agree on, so a construct that is

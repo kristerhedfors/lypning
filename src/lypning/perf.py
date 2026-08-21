@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import re
 import subprocess
 import tempfile
 import time
@@ -44,7 +45,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
-from . import bench, engines
+from . import bench, corpus, engines
 
 #: Arms worth comparing by default. The mixture and lypning-mp are absent on
 #: purpose: this table's question is "how fast is the Rust interpreter at a
@@ -57,6 +58,14 @@ REFERENCE = engines.CPYTHON
 
 DEFAULT_REPEAT = 5
 DEFAULT_TIMEOUT = 60.0
+
+#: Below this much reference-arm work, a case's ratio is mostly the startup
+#: subtraction and its noise. CPython's startup is ~11 ms here and is subtracted
+#: whole, so a case where CPython did 0.5 ms of work divides two numbers that are
+#: both rounding error. Cases are SIZED past this; the check is there to catch a
+#: case that drifted under it on a faster machine, and it prints rather than
+#: failing — the row is still evidence, just not a ranking.
+NOISE_FLOOR_MS = 2.0
 
 
 @dataclass(frozen=True)
@@ -75,6 +84,12 @@ class Case:
     name: str
     group: str
     program: str
+    #: A regex matched against every corpus program, to say how often agents
+    #: actually type the construct this case times. A ratio without it is a
+    #: microbenchmark: the suite once reported `s += x` in a loop at 43x
+    #: CPython, and that construct appears in ONE of the corpus's programs.
+    #: Empty means "no honest probe" — reported as unknown, never as zero.
+    probe: str = ""
 
 
 #: The suite. Sized against CPython at roughly 3–30 ms per case on the container
@@ -87,78 +102,153 @@ class Case:
 SUITE: Tuple[Case, ...] = (
     # --- the interpreter loop itself ---
     Case("loop-range", "loop",
-         "s = 0\nfor i in range(200000):\n    s += i\nprint(s)"),
+         "s = 0\nfor i in range(200000):\n    s += i\nprint(s)",
+         '\\bfor\\s+\\w+\\s+in\\s+range\\('),
     Case("loop-while", "loop",
-         "i = 0\ns = 0\nwhile i < 150000:\n    s += i\n    i += 1\nprint(s)"),
+         "i = 0\ns = 0\nwhile i < 150000:\n    s += i\n    i += 1\nprint(s)",
+         '^\\s*while\\s'),
     Case("loop-nested", "loop",
-         "s = 0\nfor i in range(400):\n    for j in range(400):\n        s += i * j\nprint(s)"),
+         "s = 0\nfor i in range(400):\n    for j in range(400):\n        s += i * j\nprint(s)",
+         '\\bfor\\s+\\w+\\s+in\\b'),
 
     # --- names and calls ---
     Case("name-lookup", "name",
-         "a = 1\nb = 2\nc = 3\nd = 4\ns = 0\nfor i in range(100000):\n    s += a + b + c + d\nprint(s)"),
+         "a = 1\nb = 2\nc = 3\nd = 4\ns = 0\nfor i in range(100000):\n    s += a + b + c + d\nprint(s)",
+         '\\bfor\\s+\\w+\\s+in\\b'),
     Case("call-func", "call",
-         "def f(a, b):\n    return a + b\ns = 0\nfor i in range(100000):\n    s = f(s, i)\nprint(s)"),
+         "def f(a, b):\n    return a + b\ns = 0\nfor i in range(100000):\n    s = f(s, i)\nprint(s)",
+         '^\\s*def\\s'),
     Case("call-recursive", "call",
-         "def fib(n):\n    return n if n < 2 else fib(n - 1) + fib(n - 2)\nprint(fib(21))"),
+         "def fib(n):\n    return n if n < 2 else fib(n - 1) + fib(n - 2)\nprint(fib(24))",
+         '^\\s*def\\s'),
     Case("call-method", "call",
-         "t = 'abcdef'\nn = 0\nfor i in range(100000):\n    n += t.count('a')\nprint(n)"),
+         "t = 'abcdef'\nn = 0\nfor i in range(100000):\n    n += t.count('a')\nprint(n)",
+         '\\.\\w+\\('),
 
     # --- strings ---
     Case("str-concat", "str",
-         "s = ''\nfor i in range(20000):\n    s += 'x'\nprint(len(s))"),
+         "s = ''\nfor i in range(20000):\n    s += 'x'\nprint(len(s))",
+         '(?s)(for |while ).{0,400}?^\\s*\\w+\\s*\\+=\\s*[\'\\"f]'),
     Case("str-join", "str",
-         "a = ['ab'] * 200000\nprint(len(''.join(a)))"),
+         "a = ['ab'] * 600000\nprint(len(''.join(a)))",
+         '\\.join\\('),
     Case("str-methods", "str",
-         "t = '  Hello World  '\nn = 0\nfor i in range(40000):\n    n += len(t.strip().lower().replace('o', '0'))\nprint(n)"),
+         "t = '  Hello World  '\nn = 0\nfor i in range(40000):\n    n += len(t.strip().lower().replace('o', '0'))\nprint(n)",
+         '\\.(strip|lower|upper|replace|lstrip|rstrip)\\('),
     Case("str-split", "str",
-         "t = 'a b c d e f g h'\nn = 0\nfor i in range(40000):\n    n += len(t.split())\nprint(n)"),
+         "t = 'a b c d e f g h'\nn = 0\nfor i in range(40000):\n    n += len(t.split())\nprint(n)",
+         '\\.split(lines)?\\('),
     Case("str-slice", "str",
-         "t = 'abcdefghij' * 10\nn = 0\nfor i in range(60000):\n    n += len(t[5:-5])\nprint(n)"),
+         "t = 'abcdefghij' * 10\nn = 0\nfor i in range(60000):\n    n += len(t[5:-5])\nprint(n)",
+         '\\[[^]\\[]*:[^]\\[]*\\]'),
     Case("str-fmt-pct", "fmt",
-         "n = 0\nfor i in range(40000):\n    n += len('%d-%s' % (i, 'a'))\nprint(n)"),
+         "n = 0\nfor i in range(60000):\n    n += len('%d-%s' % (i, 'a'))\nprint(n)",
+         '[\'\\"][^\'\\"]*%[sdrfx][^\'\\"]*[\'\\"]\\s*%'),
     Case("str-fstring", "fmt",
-         "n = 0\nfor i in range(40000):\n    n += len(f'{i}-a')\nprint(n)"),
+         "n = 0\nfor i in range(60000):\n    n += len(f'{i}-a')\nprint(n)",
+         'f[\'\\"]'),
     Case("str-repr", "fmt",
-         "n = 0\nfor i in range(40000):\n    n += len(repr([i, 'a', 1.5]))\nprint(n)"),
+         "n = 0\nfor i in range(40000):\n    n += len(repr([i, 'a', 1.5]))\nprint(n)",
+         '\\b(repr|print)\\('),
 
     # --- containers ---
     Case("list-append", "list",
-         "a = []\nfor i in range(150000):\n    a.append(i * 2)\nprint(len(a), a[-1])"),
+         "a = []\nfor i in range(150000):\n    a.append(i * 2)\nprint(len(a), a[-1])",
+         '\\.append\\('),
     Case("list-index", "list",
-         "a = list(range(100000))\ns = 0\nfor i in range(100000):\n    s += a[i]\nprint(s)"),
+         "a = list(range(100000))\ns = 0\nfor i in range(100000):\n    s += a[i]\nprint(s)",
+         '\\[\\s*-?\\w+\\s*\\]'),
     Case("list-comp", "list",
-         "print(sum([i * i for i in range(200000)]))"),
+         "print(sum([i * i for i in range(200000)]))",
+         '\\[[^]\\[]*\\bfor\\b[^]\\[]*\\]'),
     Case("list-sort", "list",
-         "a = [(i * 7919) % 100000 for i in range(100000)]\na.sort()\nprint(a[0], a[-1])"),
+         "a = [(i * 7919) % 100000 for i in range(100000)]\na.sort()\nprint(a[0], a[-1])",
+         '\\b(sorted\\(|\\.sort\\()'),
     Case("dict-set", "dict",
-         "d = {}\nfor i in range(60000):\n    d[str(i)] = i\nprint(len(d))"),
+         "d = {}\nfor i in range(60000):\n    d[str(i)] = i\nprint(len(d))",
+         '\\[[^]\\[]*\\]\\s*='),
     Case("dict-get", "dict",
-         "d = {}\nfor i in range(2000):\n    d[str(i)] = i\ns = 0\nfor j in range(30):\n    for i in range(2000):\n        s += d[str(i)]\nprint(s)"),
+         "d = {}\nfor i in range(2000):\n    d[str(i)] = i\ns = 0\nfor j in range(30):\n    for i in range(2000):\n        s += d[str(i)]\nprint(s)",
+         '\\.(get|items|keys|values)\\(|\\bdict\\('),
     Case("tuple-unpack", "tuple",
-         "s = 0\nfor a, b in [(1, 2)] * 100000:\n    s += a * b\nprint(s)"),
+         "s = 0\nfor a, b in [(1, 2)] * 100000:\n    s += a * b\nprint(s)",
+         '\\bfor\\s+\\w+\\s*,\\s*\\w+'),
     Case("membership", "container",
-         "a = list(range(200))\nn = 0\nfor i in range(2000):\n    for j in range(100):\n        if j in a:\n            n += 1\nprint(n)"),
+         "a = list(range(200))\nn = 0\nfor i in range(2000):\n    for j in range(100):\n        if j in a:\n            n += 1\nprint(n)",
+         '\\bin \\[|\\bin \\(|\\bnot in \\['),
 
     # --- iterators the corpus leans on ---
     Case("enumerate-zip", "iter",
-         "a = list(range(60000))\ns = 0\nfor i, (x, y) in enumerate(zip(a, a)):\n    s += x + y\nprint(s)"),
+         "a = list(range(60000))\ns = 0\nfor i, (x, y) in enumerate(zip(a, a)):\n    s += x + y\nprint(s)",
+         '\\b(enumerate|zip)\\('),
     Case("builtin-sum-len", "iter",
-         "a = list(range(50000))\ns = 0\nfor i in range(20):\n    s += sum(a) + len(a)\nprint(s)"),
+         "a = list(range(50000))\ns = 0\nfor i in range(20):\n    s += sum(a) + len(a)\nprint(s)",
+         '\\b(sum|len|min|max)\\('),
 
     # --- the two modules the corpus actually imports ---
     Case("json-dumps", "json",
-         "import json\nd = {'a': 1, 'b': [1, 2, 3], 'c': 'x' * 20}\nn = 0\nfor i in range(20000):\n    n += len(json.dumps(d))\nprint(n)"),
+         "import json\nd = {'a': 1, 'b': [1, 2, 3], 'c': 'x' * 20}\nn = 0\nfor i in range(20000):\n    n += len(json.dumps(d))\nprint(n)",
+         'json\\.dump'),
     Case("json-loads", "json",
-         "import json\nt = '{\"a\": 1, \"b\": [1, 2, 3], \"c\": \"xxxxxxxxxx\"}'\nn = 0\nfor i in range(20000):\n    n += len(json.loads(t))\nprint(n)"),
+         "import json\nt = '{\"a\": 1, \"b\": [1, 2, 3], \"c\": \"xxxxxxxxxx\"}'\nn = 0\nfor i in range(20000):\n    n += len(json.loads(t))\nprint(n)",
+         'json\\.load'),
 
     # --- I/O, which is what `open` at 652 corpus sightings means ---
     Case("file-write-read", "io",
          "lines = ['line %d\\n' % i for i in range(20000)]\n"
          "with open('perf.txt', 'w') as fh:\n    fh.write(''.join(lines))\n"
-         "n = 0\nwith open('perf.txt') as fh:\n    for line in fh:\n        n += len(line)\nprint(n)"),
+         "n = 0\nwith open('perf.txt') as fh:\n    for line in fh:\n        n += len(line)\nprint(n)",
+         '\\bopen\\('),
     Case("print-lines", "io",
-         "for i in range(30000):\n    print(i)"),
+         "for i in range(30000):\n    print(i)",
+         '\\bprint\\('),
 )
+
+#: How much of the corpus each case's construct appears in, and why that column
+#: exists at all.
+#:
+#: A ratio on its own ranks by how badly the interpreter loses. It does not rank
+#: by how much that costs anybody, and the two orderings are not the same list.
+#: This suite reported `s += x` in a loop at 43x CPython — the worst row it had —
+#: against a corpus in which that construct appears in ONE program out of 842.
+#: Rewriting the string representation to fix it would have been an afternoon
+#: spent on 0.1% of the workload, and the microbenchmark would have applauded.
+#:
+#: So every case carries a regex, the corpus is scanned once per run, and the
+#: work queue is ordered by how far the case is behind TIMES how often the
+#: construct is typed. CLAUDE.md invariant 3 applies to the denominator like
+#: everything else: the corpus size is loaded and printed, never remembered.
+
+
+def prevalence(entries: Optional[Sequence[Any]] = None) -> Tuple[Dict[str, float], int]:
+    """Fraction of corpus programs each case's probe matches, and the corpus size.
+
+    A case with no probe is absent from the mapping rather than present with a
+    zero: "we did not ask" and "nobody types this" are different answers, and a
+    zero in a weight column would silently retire a case nobody meant to retire.
+
+    Never raises. A corpus that cannot be loaded gives ``({}, 0)`` — the column
+    becomes a hole and the table still prints, because a diagnostic that refuses
+    to run without its denominator is a diagnostic nobody runs.
+    """
+    try:
+        rows = list(entries) if entries is not None else corpus.load_default()
+    except Exception:
+        return ({}, 0)
+    programs = [getattr(e, "program", "") or "" for e in rows]
+    if not programs:
+        return ({}, 0)
+    out: Dict[str, float] = {}
+    for case in SUITE:
+        if not case.probe:
+            continue
+        try:
+            rx = re.compile(case.probe, re.M | re.S)
+        except re.error:
+            continue
+        out[case.name] = sum(1 for t in programs if rx.search(t)) / len(programs)
+    return (out, len(programs))
+
 
 RAN = bench.RAN
 REFUSED = bench.REFUSED
@@ -212,6 +302,24 @@ class PerfReport:
     repeat: int
     host: Dict[str, object]
     reference: str = REFERENCE
+    #: Corpus prevalence per case name, and the corpus size it was taken over.
+    prevalence: Dict[str, float] = field(default_factory=dict)
+    corpus_size: int = 0
+
+    def weight(self, case: CaseResult) -> Optional[float]:
+        """How much of the corpus this case is behind on.
+
+        ``(ratio - 1) x prevalence``: how far the interpreter is behind CPython,
+        times how much of the workload types the construct. A case that is
+        faster than CPython weighs zero rather than negative — being ahead
+        somewhere does not buy time back somewhere else.
+        """
+        p = self.prevalence.get(case.name)
+        r = max(case.ratio.get(a, 0.0) for a in self.arms if a != self.reference) \
+            if len(self.arms) > 1 else None
+        if p is None or not r:
+            return None
+        return max(r - 1.0, 0.0) * p
 
     @property
     def ok(self) -> bool:
@@ -370,6 +478,7 @@ def run(
             shutil.rmtree(str(tmp), ignore_errors=True)
         results.append(row)
 
+    weights, size = prevalence()
     return PerfReport(
         arms=names,
         startup=start,
@@ -377,6 +486,8 @@ def run(
         seconds=time.perf_counter() - t0,
         repeat=int(repeat),
         host=bench.host_info(resolved),
+        prevalence=weights,
+        corpus_size=size,
     )
 
 
@@ -419,6 +530,7 @@ def render(report: PerfReport, *, top: int = 0) -> str:
         head += " %9s" % a[:9]
     for a in others:
         head += " %8s" % "vs ref"
+    head += " %7s" % "corpus"
     out.append(head)
     rows = [c for c in report.cases if c.ok and c.ratio]
     rows.sort(key=lambda c: -max([c.ratio.get(a, 0.0) for a in others] or [0.0]))
@@ -429,9 +541,19 @@ def render(report: PerfReport, *, top: int = 0) -> str:
             line += " " + _ms(c.net.get(a))
         for a in others:
             line += " %8s" % _x(c.ratio.get(a))
+        pv = report.prevalence.get(c.name)
+        line += " %7s" % ("—" if pv is None else "%.0f%%" % (pv * 100))
         out.append(line)
     if top and len(rows) > top:
         out.append("  … %d more cases, %s" % (len(rows) - top, "--top 0 for all"))
+
+    thin = [c.name for c in report.cases
+            if c.ok and 0 < c.net.get(REFERENCE, 0.0) < NOISE_FLOOR_MS]
+    if thin:
+        out.append("")
+        out.append("  ! too small to trust — the reference arm spent under %.0f ms of work "
+                   "on %s, so its ratio is mostly the startup subtraction. Grow the case."
+                   % (NOISE_FLOOR_MS, ", ".join(thin)))
 
     totals = report.totals()
     shared = report.shared()
@@ -442,10 +564,26 @@ def render(report: PerfReport, *, top: int = 0) -> str:
                          if totals.get(REFERENCE) else " %8s" % "—" for a in others))
 
     slow = [c for c in rows if any(c.ratio.get(a, 0) > 1.0 for a in others)]
-    if slow:
+    weighted = [(report.weight(c), c) for c in slow]
+    weighted = [(w, c) for w, c in weighted if w]
+    weighted.sort(key=lambda t: -t[0])
+    if weighted:
         out.append("")
-        out.append("the queue — every case where lypning is slower than CPython at "
-                   "something it already supports:")
+        out.append("THE QUEUE — how far behind, TIMES how much of the corpus types it.")
+        out.append("A ratio alone ranks by how badly lypning loses, not by what that "
+                   "costs anyone; the two are different lists.")
+        out.append("%-18s %-9s %8s %8s %9s" % ("case", "group", "vs ref", "corpus", "weight"))
+        for w, c in weighted[:10]:
+            worst = max(c.ratio.get(a, 0.0) for a in others)
+            out.append("%-18s %-9s %8s %7.0f%% %9.2f"
+                       % (c.name, c.group, _x(worst),
+                          100 * report.prevalence.get(c.name, 0.0), w))
+        out.append("  prevalence over the %d corpus programs loaded on THIS run "
+                   "(invariant 3)." % report.corpus_size)
+    elif slow:
+        out.append("")
+        out.append("the queue — slower than CPython, but the corpus could not be "
+                   "loaded, so these are unweighted:")
         for c in slow[:8]:
             worst = max((c.ratio.get(a, 0.0), a) for a in others)
             out.append("  %-18s %-9s %8s slower on %s" % (c.name, c.group, _x(worst[0]), worst[1]))
@@ -477,6 +615,8 @@ def record(report: PerfReport) -> Dict[str, Any]:
         "arms": list(report.arms),
         "reference": report.reference,
         "startup": dict(report.startup),
+        "prevalence": dict(report.prevalence),
+        "corpus_size": report.corpus_size,
         "host": dict(report.host),
         "seconds": report.seconds,
         "ok": report.ok,
@@ -487,6 +627,7 @@ def record(report: PerfReport) -> Dict[str, Any]:
                 "verdict": c.verdict,
                 "net": dict(c.net),
                 "ratio": dict(c.ratio),
+                "weight": report.weight(c),
                 "note": c.note,
             }
             for c in report.cases

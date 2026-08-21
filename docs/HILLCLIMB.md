@@ -28,6 +28,65 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-21 · iteration 2 — the queue is ratio TIMES prevalence, not ratio
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 842 programs loaded
+
+No engine change. The instrument was ranking the wrong list.
+
+`lypning perf` sorted by how badly lypning loses to CPython. Its worst row was
+`str-concat` at 43x — a genuine quadratic, since `Value::Str(Rc<str>)` cannot
+grow and every `s += x` copies the whole string. The fix is a different string
+representation: `Rc<String>` with an in-place append when the refcount is one.
+That is an afternoon, it touches every string site in the crate, and it adds a
+second pointer hop to *every* string read.
+
+Before starting it, the corpus was asked how often agents actually type it:
+
+| construct | corpus programs (of 842) |
+|---|---|
+| `open(` | 51.9% |
+| slice `[a:b]` | 17.2% |
+| `json.` | 15.4% |
+| `.join(` | 8.6% |
+| `.split(` | 8.1% |
+| `def ` | 8.0% |
+| f-string | 7.5% |
+| `'%s' % x` | 2.3% |
+| **`s += x` inside a loop** | **0.1% — one program** |
+
+**So the change was not made**, and the instrument was fixed instead. Every case
+now carries a regex, the corpus is scanned on each run, and a second ordering is
+printed under the table: **how far behind, times how much of the corpus types
+it**. `str-concat` drops off the queue at 0% prevalence and stays in the table
+as a row, which is the right place for a real defect nobody is paying for.
+
+The queue that ordering produces, and the actual work list from here:
+
+| case | vs CPython | corpus | weight |
+|---|---|---|---|
+| `str-split` | 50.9x | 10% | 4.86 |
+| `file-write-read` | 7.3x | 52% | 3.27 |
+| `str-repr` | 4.7x | 88% | 3.26 |
+| `call-method` | 4.7x | 83% | 3.09 |
+| `call-recursive` | 34.2x | 8% | 2.64 |
+| `str-methods` | 6.7x | 38% | 2.15 |
+
+Two other suite defects fixed while in there: four cases were sized so small
+that CPython spent under 2 ms on them, which makes a startup-subtracted ratio
+mostly rounding error — `call-recursive` read 22x, 34x and 73x on three
+consecutive runs of the same binary. They are bigger now, and the tool prints a
+`too small to trust` line if any case drifts under the floor on a faster machine.
+
+| | before | after |
+|---|---|---|
+| bytes | 1,045,176 | 1,045,176 (no engine change) |
+| conformance | 500 / 263 / **0** | 500 / 263 / **0** |
+| perf | ranked by ratio | ranked by ratio x prevalence |
+| corpus-time | — | not run: no engine change to regress |
+
+---
+
 ## 2026-08-21 · iteration 1 — stop copying whole sequences to reach part of one
 
 **commit** `2e0931f` · **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 ·
