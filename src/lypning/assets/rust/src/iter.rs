@@ -50,11 +50,23 @@ pub enum Iter {
 }
 
 /// A generator expression, suspended between elements.
+///
+/// The AST is behind `Rc` because `gen_step` has to detach it from the borrow
+/// on `st` before calling back into `eval` — and it used to do that by
+/// **deep-cloning the clause and the element expression on every element
+/// yielded**, one allocation per AST node, per element. A refcount bump does
+/// the same job.
 pub struct GenState {
-    pub clauses: Vec<CompClause>,
-    pub elt: Expr,
+    pub clauses: Rc<Vec<CompClause>>,
+    pub elt: Rc<Expr>,
     pub env: Vec<Scope>,
-    pub scope: Scope,
+    /// `None` only in a [`GenState::placeholder`], which exists to fill the
+    /// `RefCell` while the real state is out and whose scope is never read —
+    /// it is marked `running` and `done`, and both are checked first. An
+    /// `Option` rather than a shared empty scope because a `thread_local` for
+    /// it measured 8% slower on recursion: adding one shifts the TLS block, and
+    /// the recursion guard already lives there.
+    pub scope: Option<Scope>,
     pub stack: Vec<Iter>,
     pub started: bool,
     pub done: bool,
@@ -64,12 +76,12 @@ pub struct GenState {
 }
 
 impl GenState {
-    pub fn new(clauses: Vec<CompClause>, elt: Expr, env: Vec<Scope>) -> Self {
+    pub fn new(clauses: Rc<Vec<CompClause>>, elt: Rc<Expr>, env: Vec<Scope>) -> Self {
         GenState {
             clauses,
             elt,
             env,
-            scope: crate::eval::new_scope(),
+            scope: Some(crate::eval::new_scope()),
             stack: Vec::new(),
             started: false,
             done: false,
@@ -78,10 +90,10 @@ impl GenState {
     }
     fn placeholder() -> Self {
         GenState {
-            clauses: Vec::new(),
-            elt: Expr::None,
+            clauses: Rc::new(Vec::new()),
+            elt: Rc::new(Expr::None),
             env: Vec::new(),
-            scope: crate::eval::new_scope(),
+            scope: None,
             stack: Vec::new(),
             started: true,
             done: true,
@@ -319,13 +331,18 @@ impl Interp {
         // conflict; put it back on every exit path.
         let mut st = std::mem::replace(&mut *g.borrow_mut(), GenState::placeholder());
         st.running = true;
-        let saved = std::mem::replace(&mut self.chain, {
-            let mut c = st.env.clone();
-            c.push(st.scope.clone());
-            c
-        });
+        // The chain vector comes from the same pool `call_func_inner` uses:
+        // this runs once per element yielded, so allocating one here was a
+        // malloc and a free per element of every generator expression.
+        let mut c = self.take_chain();
+        c.extend_from_slice(&st.env);
+        if let Some(sc) = &st.scope {
+            c.push(sc.clone());
+        }
+        let saved = std::mem::replace(&mut self.chain, c);
         let r = self.gen_step(&mut st);
-        self.chain = saved;
+        let spent = std::mem::replace(&mut self.chain, saved);
+        self.give_chain(spent);
         st.running = false;
         if r.is_err() || matches!(r, Ok(None)) {
             st.done = true;
@@ -347,7 +364,11 @@ impl Interp {
             let next = self.iter_next(&mut cur)?;
             let Some(v) = next else { continue };
             st.stack.push(cur);
-            let clause = st.clauses[level].clone();
+            // One refcount bump, not a deep copy of the clause's expression
+            // tree. It has to leave the borrow on `st` because the loop below
+            // pushes onto `st.stack`.
+            let clauses = st.clauses.clone();
+            let clause = &clauses[level];
             self.assign(&clause.target, v)?;
             let mut ok = true;
             for cond in &clause.ifs {
@@ -360,15 +381,14 @@ impl Interp {
             if !ok {
                 continue;
             }
-            if level + 1 < st.clauses.len() {
-                let nxt = st.clauses[level + 1].iter.clone();
-                let v = self.eval(&nxt)?;
+            if level + 1 < clauses.len() {
+                let v = self.eval(&clauses[level + 1].iter)?;
                 let it = self.make_iter(v)?;
                 st.stack.push(it);
                 continue;
             }
             let elt = st.elt.clone();
-            return Ok(Some(self.eval(&elt)?));
+            return Ok(Some(self.eval(&*elt)?));
         }
         Ok(None)
     }

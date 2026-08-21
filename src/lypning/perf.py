@@ -169,6 +169,12 @@ SUITE: Tuple[Case, ...] = (
     Case("list-index", "list",
          "a = list(range(100000))\ns = 0\nfor i in range(100000):\n    s += a[i]\nprint(s)",
          '\\[\\s*-?\\w+\\s*\\]'),
+    # A generator expression is a different machine from a comprehension — it
+    # suspends between elements — and the suite had no case for one until a
+    # change made them 2.5x faster and no row moved (ledger, iteration 15).
+    Case("genexpr", "iter",
+         "print(sum(x * x for x in range(150000)))",
+         r"\((?![^()]*\[)[^()]*\bfor\b[^()]*\)"),
     Case("list-comp", "list",
          "print(sum([i * i for i in range(200000)]))",
          '\\[[^]\\[]*\\bfor\\b[^]\\[]*\\]'),

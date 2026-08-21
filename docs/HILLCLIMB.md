@@ -28,6 +28,72 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-21 · iteration 15 — a generator step stopped rebuilding itself
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1037 loaded, 861 timed
+
+A generator expression appears in **6.8%** of the corpus, and every element it
+yielded allocated four times before evaluating anything:
+
+1. `GenState::placeholder()` built a fresh scope — an `Rc<RefCell<HashMap>>` —
+   to fill the `RefCell` while the real state was out;
+2. `gen_next` cloned the closure environment into a new `Vec<Scope>`;
+3. `gen_step` **deep-cloned the clause**, one allocation per AST node;
+4. and then **deep-cloned the element expression**, the same way.
+
+Now: the placeholder's scope is an `Option` (never read — a placeholder is
+marked `running` and `done`, and both are checked first), the chain vector comes
+from the pool `call_func_inner` already uses, and the AST lives behind `Rc`, so
+(3) and (4) are refcount bumps. The AST is still deep-copied **once**, when the
+generator is created; moving the `Rc` into `Expr::Comp` itself would remove that
+too and is a separate change.
+
+| | before | after |
+|---|---:|---:|
+| `sum(x*x for x in range(100k))` | 61.93 ms | **26.52 ms** |
+| `', '.join(str(x) for x in …)` | 21.4 ms | **11.8 ms** |
+| `any(x<0 for x in …)` | 52.3 ms | **21.7 ms** |
+| nested `for a … for b …` | 66.5 ms | **24.0 ms** |
+| a genexpr created inside a loop | 68.5 ms | 51.5 ms |
+| `[x*x for x in …]` — the control | 16.9 ms | 16.6 ms |
+
+conformance 529 / 332 / **0**, bytes 1,045,176, both unchanged. Laziness still
+holds where it must: `any(1/x for x in [1, 0])` is `True` on both, never
+dividing.
+
+### The 7% that would not go away, and how to tell noise from a regression
+
+`fib(23)` came out **7% slower**, on a change that touches nothing a recursive
+call executes. Five hypotheses, each built and measured:
+
+| suspected cause | result |
+|---|---|
+| a new `thread_local` shifting the TLS block | no — 1.077x before and after removing it |
+| the extracted `take_chain`/`give_chain` helpers | no — 1.086x with them inlined back |
+| `#[inline]` on those helpers | no change either way |
+| the `Expr::Comp` arm widening `eval_inner`'s stack frame | **partial** — `#[inline(never)]` recovered ~2% |
+| `new_scope` losing a caller and with it an inlining decision | **partial** — `#[inline]` recovered ~2% |
+
+Net: 49.2 ms → 51.2 ms, about 4%, on deep recursion only; one-argument calls and
+the plain loop are flat. Shipped, because 2.4x on 6.8% of the corpus against 4%
+on deep recursion is not a close call, and `corpus-time` sits inside its band.
+
+**The method is the transferable part.** The way to know a small regression is
+real is to *perturb the baseline build* — rebuild the unchanged source three
+more times with a comment added to an unrelated file, and measure the spread:
+
+```
+baseline source, four builds:   48.85  49.31  49.55  49.18   (1.4%)
+changed source, four builds:    51.39  52.81  52.91  53.41   (3.9%)
+```
+
+The bands do not overlap, so it is a regression and not luck. Do this **before**
+spending an afternoon on a 3% reading. At `opt-level = "s"` with LTO and
+`codegen-units = 1`, a change in one part of the crate moves inlining decisions
+in another, and the two have no source-level relationship at all.
+
+---
+
 ## 2026-08-21 · iteration 14 — five programs of coverage for zero bytes
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1037 loaded, 861 timed

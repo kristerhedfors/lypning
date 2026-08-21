@@ -18,6 +18,11 @@ use std::rc::Rc;
 
 pub type Scope = Rc<RefCell<Map<Rc<str>, Value>>>;
 
+/// `#[inline]` because it is one allocation on the function-call path and
+/// `opt-level = "s"` will not inline it unprompted. It had exactly one caller
+/// outside that path until iteration 15 removed it, and losing that caller was
+/// enough to change what the optimiser did here — see `docs/HILLCLIMB.md`.
+#[inline]
 pub fn new_scope() -> Scope {
     Rc::new(RefCell::new(crate::hash::map()))
 }
@@ -845,11 +850,7 @@ impl Interp {
                 val,
                 clauses,
             } => match kind {
-                CompKind::Gen => Value::Gen(Rc::new(RefCell::new(crate::iter::GenState::new(
-                    clauses.clone(),
-                    (**elt).clone(),
-                    self.chain.clone(),
-                )))),
+                CompKind::Gen => self.make_gen(clauses, elt),
                 _ => self.eval_comp(*kind, elt, val.as_deref(), clauses)?,
             },
             Expr::Call {
@@ -1133,6 +1134,49 @@ impl Interp {
             self.chain_pool.push(spent);
         }
         r
+    }
+
+    /// Build a suspended generator expression.
+    ///
+    /// `#[inline(never)]`, and that is the whole reason it is a function.
+    /// `eval_inner` is one enormous `match` and it is what recursion recurses
+    /// through, so every local this arm needs widens the stack frame of EVERY
+    /// expression evaluation, including the ones that never look at it.
+    /// Inlining the four lines below cost `fib(23)` 8% — measured, after the
+    /// same 8% survived three other explanations (a `thread_local`, an
+    /// extracted helper, and code layout, which is worth only ~1% here).
+    #[inline(never)]
+    fn make_gen(&mut self, clauses: &[crate::ast::CompClause], elt: &Expr) -> Value {
+        // Deep-cloned ONCE, when the generator is created, where it used to be
+        // deep-cloned again for every element the generator yielded. Making
+        // `Expr::Comp` hold the `Rc` itself would remove this one too and is a
+        // separate change.
+        Value::Gen(Rc::new(RefCell::new(crate::iter::GenState::new(
+            Rc::new(clauses.to_vec()),
+            Rc::new(elt.clone()),
+            self.chain.clone(),
+        ))))
+    }
+
+    /// An empty scope-chain vector, from the pool if one is waiting.
+    ///
+    /// `#[inline]` because `opt-level = "s"` will not inline it on its own, and
+    /// it sits on the function-call path where a call instruction is a
+    /// measurable share of the work.
+    #[inline]
+    pub fn take_chain(&mut self) -> Vec<Scope> {
+        self.chain_pool.pop().unwrap_or_default()
+    }
+
+    /// Hand a spent one back. Cleared here rather than on reuse, so a frame's
+    /// scopes drop when the frame ends and not whenever the vector is next
+    /// taken out.
+    #[inline]
+    pub fn give_chain(&mut self, mut spent: Vec<Scope>) {
+        spent.clear();
+        if self.chain_pool.len() < CHAIN_POOL_MAX {
+            self.chain_pool.push(spent);
+        }
     }
 }
 
