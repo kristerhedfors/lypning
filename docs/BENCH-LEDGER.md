@@ -133,6 +133,67 @@ this ledger.
 
 <!-- lypning-bench: newest entry is inserted directly below this line -->
 
+## 2026-08-21 — the four arms, whole corpus — `lypning bench`, not the variant-vs-stock harness
+
+**Different instrument from every entry below it.** This is `lypning bench
+--startup-repeat 15 --repeat 3` — four arms over the harvested corpus, arms
+interleaved per entry — and not the variant-vs-stock micro-benchmark the rest of
+this ledger records. There is no stock control in it, so no `py/stock` verdict:
+it answers what the *mixture* costs against CPython, which is the project's
+headline claim, rather than what our MicroPython changes cost. Recorded by hand
+from the run's own output, and labelled as such so no row here is mistaken for a
+row below.
+
+Machine: 4 CPUs, Linux 6.18.44-fc-v21 (x86_64), a Claude Code container. Corpus
+**842 programs loaded, 763 measured**, 79 skipped for naming an absolute path.
+Binaries as built here that day: lypning 1,045,176 B, lypning-mp 294,788 B,
+cpython (system 3.11) 6,639,992 B.
+
+```
+startup — `-c 'pass'`, min of 15
+
+arm         min ms   vs cpython
+cpython      10.88     1.000x
+lypning       0.70     0.064x
+lypning-mp    0.61     0.056x
+mixture       0.58     0.053x
+
+shared subset — the 500 programs every arm executed, min of 3
+
+arm          ran  refused   shared total   median   vs cpython
+cpython      763        0       6658.3 ms   12.03     1.000x
+lypning      500      263        486.2 ms    0.94     0.073x
+lypning-mp   714       49        407.7 ms    0.79     0.061x
+mixture      763        0        685.7 ms    0.92     0.103x
+
+whole corpus — every entry, for every arm
+
+cpython     13428.9 ms   1.000x
+lypning       743.8 ms   0.055x   (263 unanswered)
+lypning-mp   1297.1 ms   0.097x   (49 unanswered)
+mixture      4565.2 ms   0.340x   (0 unanswered — saves 8863.7 ms, 66.0%)
+```
+
+**The result that reproduced:** the mixture answers 763 of 763 at 0.340x of
+CPython. Upstream measured 0.266x over 472 programs on 2026-08-16 and this tree
+measured 0.322x over the same 763 on 2026-08-20 — three runs, two machines, two
+corpus sizes, the same order of saving.
+
+**The result that did not:** upstream had lypning ahead of lypning-mp on the
+shared subset (0.102x against 0.143x). Both runs in this tree reverse it —
+0.073x against 0.061x here. The shared subset is by construction the programs
+lypning accepts, where both engines sit near their startup floor, and
+lypning-mp's floor is lower because its binary is a third the size. That
+ordering is a property of a corpus on a machine, not of the design; the mixture
+result is the one that is a property of the design.
+
+Correctness from the same tree, same day, `lypning conformance` over the same
+763: lypning 500 MATCH / 263 UNSUPPORTED / **0 MISMATCH**, lypning-mp 714 / 47 /
+**2**, mixture 763 / 0 / 0. The two are the streamed-stdout contract defect
+(`docs/LYPNING.md` §6), tracked rather than waived.
+
+---
+
 ## 2026-08-15 — lypning-mp vs stock MicroPython — after the regex-shim and map-growth pass
 
 MicroPython pin **v1.28.0** (`e0e9fbb17ed6`), repo `353b9646ea52` (working tree dirty) on branch `claude/lypning-mp-compiler-optimization-h5lejf`. Control built by `bash scripts/build-micropython.sh --stock`.

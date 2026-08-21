@@ -69,6 +69,11 @@ GITHUB = "https://github.com/kristerhedfors/lypning"
 # resolve to the blob on GitHub rather than to a dead relative path.
 SOURCE_SUFFIXES = (".py", ".rs", ".sh", ".h", ".mk", ".toml", ".jsonl", ".yml", ".json")
 
+# Images the markdown references by repo path. They are copied to the SAME path
+# under the output, so `src="docs/logo.svg"` needs no rewriting and means the
+# same thing in a checkout, on GitHub, and here.
+IMAGES = ("docs/logo.svg",)
+
 _BY_SOURCE = {src: out for src, out, _, _ in PAGES}
 
 
@@ -92,6 +97,13 @@ def rewrite_links(body: str, page_src: str) -> str:
         path, _, frag = target.partition("#")
         if not path:
             return m.group(0)
+        # The landing page is authored against the RENDERED tree, so its links
+        # are already site paths. Mapping them as repo paths sent every
+        # `docs/*.html` on it to a GitHub blob URL for a file that does not
+        # exist in the repository — a 404 the link check could not see,
+        # because it skips absolute URLs.
+        if path.endswith(".html"):
+            return m.group(0)
         resolved = str((here / path).as_posix())
         # Normalise ../ without touching the filesystem — the target may be a
         # path that only exists on GitHub.
@@ -103,7 +115,11 @@ def rewrite_links(body: str, page_src: str) -> str:
             elif part not in (".", ""):
                 parts.append(part)
         resolved = "/".join(parts)
-        if resolved in _BY_SOURCE:
+        if resolved in IMAGES:
+            # Copied to the same path under the output, so it maps to itself —
+            # only the walk back up to the site root differs per page.
+            dest = up + resolved
+        elif resolved in _BY_SOURCE:
             dest = up + _BY_SOURCE[resolved]
         elif resolved.endswith(SOURCE_SUFFIXES) or "/" in resolved:
             dest = "%s/blob/main/%s" % (GITHUB, resolved)
@@ -111,7 +127,7 @@ def rewrite_links(body: str, page_src: str) -> str:
             return m.group(0)
         return '%s"%s%s"' % (prefix, dest, ("#" + frag) if frag else "")
 
-    return re.sub(r'(href=)"([^"]+)"', repl, body)
+    return re.sub(r'((?:href|src)=)"([^"]+)"', repl, body)
 
 
 def nav_html(current: str, depth: int) -> str:
@@ -305,6 +321,13 @@ def build(out_dir: Path) -> int:
 
     for asset in ("style.css", "favicon.svg"):
         shutil.copy2(SITE / asset, out_dir / asset)
+    for image in IMAGES:
+        src_img = ROOT / image
+        if not src_img.is_file():
+            sys.exit("site/build.py: %s is in IMAGES but not in the tree" % image)
+        dest_img = out_dir / image
+        dest_img.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src_img, dest_img)
     # codehilite emits Pygments class names and nothing else; without the
     # matching stylesheet every code block renders as undifferentiated text and
     # the `highlight` extension is dead weight in the page.
@@ -338,11 +361,15 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def check_links(out: Path) -> list[tuple[str, str]]:
-    """Every relative href must resolve to a file that was actually written."""
+    """Every relative href and src must resolve to a file that was written.
+
+    ``src`` is checked alongside ``href`` because an image that did not get
+    copied is exactly as broken as a dead link and rather more visible.
+    """
     dead: list[tuple[str, str]] = []
     for page in sorted(out.rglob("*.html")):
         text = page.read_text(encoding="utf-8")
-        for href in re.findall(r'href="([^"]+)"', text):
+        for href in re.findall(r'(?:href|src)="([^"]+)"', text):
             if re.match(r"^(https?:|mailto:|#|//)", href):
                 continue
             target = (page.parent / href.partition("#")[0]).resolve()

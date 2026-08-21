@@ -211,6 +211,9 @@ body {
 /* ---- landing page ---- */
 
 .hero { margin: 0 0 3rem; }
+/* The mark, not the wordmark: the <h1> right under it already says the name,
+   and two copies of it read as a rendering bug rather than as branding. */
+.hero .hero-logo { width: 72px; height: auto; display: block; margin: 0 0 1rem; }
 .hero h1 {
   font-family: var(--mono); font-size: clamp(2.4rem, 1.6rem + 3.4vw, 3.6rem);
   letter-spacing: -.045em; font-weight: 750; margin: 0 0 .5rem; line-height: 1;

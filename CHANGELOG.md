@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — the documentation leads with a measurement taken today, not one remembered from upstream
+
+`README.md` and `docs/LYPNING.md` both opened on the upstream table of
+2026-08-16 and its headline bullet, *lypning is the fastest engine on the work
+it accepts*. That bullet had already failed to reproduce twice, and the
+correction was sixty lines below the claim. Both documents now open on a run
+taken in this tree — `lypning bench --startup-repeat 15 --repeat 3` on
+2026-08-21, 4 CPUs, 842 programs loaded and 763 measured — with the upstream
+table kept underneath as history and the reversal stated where the claim used
+to be. `docs/BENCH-LEDGER.md` carries the same run as a dated entry, marked as
+`lypning bench` rather than the variant-vs-stock harness the entries below it
+come from.
+
+What that run says: the mixture answers **763 of 763 at 0.340x of CPython**, a
+66.0% saving, and `lypning conformance` on the same tree grades it 763 / 0 / 0
+with the two known lypning-mp MISMATCHes unchanged. What it does not say is
+anything about the ordering of the two subset engines, which has now reversed on
+every machine outside the one it was first measured on.
+
+### Added — a logo, and a picture of where a program actually goes
+
+- **A thundercloud** — `docs/logo.svg`, in the README and in the site's hero.
+  The name came from lightning, and the mark says so without a word of prose.
+  It is theme-aware and mid-toned enough to survive a page whose theme its own
+  media query cannot see.
+- **The dataflow, drawn.** `README.md` and `docs/LYPNING.md` §5 now carry the
+  same diagram: shim or hook, then the classifier, then the three tiers with the
+  signal that moves a program from each to the next, annotated with where the
+  classifier actually sent the 763 programs (64.1% / 24.9% / 11.0%). It is the
+  one thing about the design that a paragraph explains badly and a picture
+  explains at a glance.
+
+### Fixed — every `docs/*.html` link on the landing page pointed at a GitHub 404
+
+`site/build.py` resolved links relative to the repository, so the landing page's
+own site-relative targets — `docs/lypning.html` and the eight documentation
+cards — were rewritten to `github.com/.../blob/main/docs/lypning.html`, a file
+that does not exist in the repository. `--check` could not see it: it skips
+absolute URLs. Targets that already end in `.html` are now left alone, `src` is
+rewritten alongside `href` so an image can be referenced by its repository path,
+and the link check covers `src` too — a missing image now fails the build rather
+than appearing as a broken image on the page. The site's Embedding page, which
+existed but was reachable only from the nav, is now in the documentation grid.
+
 ### Added — lypning as a library, for harnesses that would rather link than spawn
 
 The runtime is now buildable as a C ABI (`lypning build --lib` →

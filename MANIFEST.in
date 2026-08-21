@@ -14,6 +14,9 @@
 include Makefile
 include CHANGELOG.md CLAUDE.md
 recursive-include docs *.md
+# The README references docs/logo.svg; an sdist whose README shows a broken
+# image is a small thing that looks like a broken package.
+recursive-include docs *.svg
 
 # `make test` and `make conformance` are the two gates a downstream packager
 # runs before trusting a build, and both need the tree rather than the package.
