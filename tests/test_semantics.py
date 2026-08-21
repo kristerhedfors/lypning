@@ -275,6 +275,42 @@ def test_stdin_agrees_with_cpython(case_id, program, stdin, lypning_bin):
     assert (ours.stdout, ours.returncode) == (theirs.stdout, theirs.returncode)
 
 
+#: Bytes that cannot begin a token in any Python 3 program. CPython answers each
+#: with a SyntaxError at exit 1 and empty stdout, and so must lypning: a refusal
+#: means "outside my subset, try the next interpreter", and there is no
+#: interpreter for which `$p` is a program. Four corpus entries are shell paste
+#: accidents of exactly this shape and were each costing a spawn to be told by
+#: CPython what lypning already knew.
+IMPOSSIBLE_BYTES = ["$p", "$1", "`x`", "?", "!", "x !", 'r#"a"#']
+
+#: The other side of the same line, and the reason it is drawn at ASCII. Each of
+#: these CONTAINS one of those bytes and is a perfectly good program.
+POSSIBLE_ANYWAY = [
+    ('print("$p ? `x`")', "$p ? `x`\n"),
+    ("# $ ? `\nprint(1)", "1\n"),
+    ("print(1 != 2)", "True\n"),
+    # Python 3 identifiers may be Unicode, so a non-ASCII byte is NOT an
+    # impossible one and must keep its refusal rather than joining the list.
+    ("\u03c0 = 1\nprint(\u03c0)", "1\n"),
+]
+
+
+@pytest.mark.parametrize("program", IMPOSSIBLE_BYTES)
+def test_an_impossible_byte_is_a_syntax_error_not_a_refusal(program, lypning_bin):
+    r = engines.run(engines.LYPNING, program, binary=lypning_bin)
+    assert r.returncode == 1, "CPython's own verdict is SyntaxError at exit 1"
+    assert r.stdout == ""
+    assert r.stderr != ""
+    assert ": unsupported: " not in r.stderr, "a refusal here would send it down the chain"
+
+
+@pytest.mark.parametrize("program,expected", POSSIBLE_ANYWAY,
+                         ids=[p[0][:20] for p in POSSIBLE_ANYWAY])
+def test_those_bytes_are_still_fine_inside_a_program(program, expected, lypning_bin):
+    r = engines.run(engines.LYPNING, program, binary=lypning_bin)
+    assert (r.returncode, r.stdout) == (0, expected), r.stderr
+
+
 def test_an_attribute_neither_has_keeps_cpythons_error(lypning_bin):
     """The other side of the split, and why it is not just "refuse on any miss".
 

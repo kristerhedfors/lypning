@@ -28,6 +28,54 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-21 · iteration 14 — five programs of coverage for zero bytes
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1037 loaded, 861 timed
+
+`$`, `` ` ``, `?` and a bare `!` cannot begin a token in **any** Python 3
+program. CPython answers each with a SyntaxError at exit 1 and empty stdout.
+lypning was answering `unsupported: token: byte 0x24`, which is exit 90 — and
+exit 90 means *"outside my subset, try the next interpreter"*, when there is no
+interpreter for which `$p` is a program.
+
+The corpus has four entries of exactly this shape — `$p`, `$1`, and a Rust
+`r#"…"#` paste — shell accidents an agent typed and a capture faithfully
+recorded. Every one was costing a process spawn to be told by CPython what
+lypning already knew.
+
+One line in `lex.rs`, alongside the `!` case that was already there.
+
+| | before | after |
+|---|---:|---:|
+| bytes | 1,045,176 (8 blocks) | **1,045,176 (8 blocks)** |
+| conformance MATCH | 524 | **529** |
+| UNSUPPORTED | 337 | **332** |
+| coverage | 60.9% | **61.4%** |
+| MISMATCH | 0 | 0 |
+| `token` blockers in `--plan` | 4 | **0 — the kind is gone** |
+
+**Five programs for zero bytes, which is the best ratio available.** And nothing
+is behind it: a SyntaxError is terminal, not a capability gap, so there is no
+second blocker waiting once the first is cleared. That is what makes this
+different from a module — `import base64` unblocks four programs and one of them
+immediately hits `import re`.
+
+**Where the line is drawn, and why at ASCII.** Not extended to non-ASCII bytes:
+Python 3 identifiers may be Unicode, so `π = 1` is a valid program and refusing
+it is the correct answer. Pinned both ways in `tests/test_semantics.py` — seven
+impossible bytes must exit 1, and four programs *containing* those bytes (in a
+string, in a comment, as `!=`, and as a Unicode identifier) must still run.
+
+### The general shape
+
+A refusal is free only when the answer is genuinely elsewhere. Where CPython's
+answer is *"this is not a program"*, a refusal is a spawn spent to learn nothing,
+and the classifier is left believing a capability gap exists where there is only
+a typo. Worth a sweep: **every `unsupported` kind should be a thing another
+interpreter could actually do.** `token` was not one.
+
+---
+
 ## 2026-08-21 · iteration 13 — five live MISMATCHes that `conformance` was never going to see
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1037 loaded, 861 timed
