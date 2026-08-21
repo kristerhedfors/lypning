@@ -163,6 +163,50 @@ jobs:
         #
         # The third arm, lypning-mp, is known red — see the job below.
         run: lypning conformance --engine lypning --engine mixture
+      # --- the same contract, through the ABI instead of through a process ---
+      #
+      # The library shares the interpreter with the binary above and does NOT
+      # share the exit path, and the exit path is the half that has only ever
+      # broken silently. So it is built here and held to every property the
+      # binary is held to, in its own terms.
+      - name: build the C ABI
+        # `build --lib` refuses to report ok until the refusal contract holds
+        # through the ABI on the library it just produced. Same assertion,
+        # same reason, one indirection further out.
+        run: lypning build --lib
+      - name: the exit-90 contract, asserted through the ABI
+        # A shared object has no exit code and no stderr of its own, so each of
+        # the three pinned properties is re-asserted as a value — plus a fourth
+        # that only embedding needs: the refusal must ASK to be routed onward,
+        # because in-process it is the host that owns the retry, and a refusal
+        # nobody acts on is a program that never ran.
+        run: |
+          python - <<'EOF'
+          from lypning import embed
+          lib = embed.Library()
+          out = lib.run("import subprocess")
+          assert out.status == embed.UNSUPPORTED, out.status_name
+          assert out.exit_code == 90, out.exit_code
+          assert out.stdout == b"", out.stdout[:120]
+          assert out.stderr == embed.REFUSAL_LINE, out.stderr[:160]
+          assert out.fall_onward and not out.committed
+          print("library refusal: unsupported, exit 90, clean stdout, one line, routes onward")
+          EOF
+      - name: a host compiles against what `lypning lib` printed
+        # The flags are the product: they get substituted into somebody's
+        # compiler line, so printing them is not the same claim as their
+        # working. This is the shipped C example, built the way its README
+        # says, against the INSTALLED library rather than the build tree.
+        run: |
+          gcc $(lypning lib --cflags) src/lypning/assets/examples/c/embed.c \
+              -o "$RUNNER_TEMP/embed" $(lypning lib --libs)
+          cd "$RUNNER_TEMP" && ./embed
+      - name: conformance — the library arm, scored like a spawned one
+        # The whole corpus through the C ABI in this process, against CPython,
+        # by the rules the spawned arms are scored by. It must reach MISMATCH 0
+        # AND agree with the `lypning` arm program for program: the two
+        # disagreeing is the drift this arm exists to catch.
+        run: lypning conformance --engine lypning --engine library
       - name: the corpus rewrites repositories; check the net held
         # conformance runs every entry in its own temp cwd and brackets the
         # battery with a git snapshot, but that is a net and not a sandbox: it
