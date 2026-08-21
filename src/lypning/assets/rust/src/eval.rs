@@ -1055,12 +1055,7 @@ impl Interp {
                 } else if p.star.is_some() {
                     extra.push(a);
                 } else {
-                    return Err(type_err(format!(
-                        "{}() takes {} positional arguments but {} were given",
-                        f.name,
-                        npos,
-                        i + 1
-                    )));
+                    return Err(arity_error(&f.name, npos, &f.defaults, nargs));
                 }
             }
             if let Some(si) = p.star {
@@ -1181,6 +1176,39 @@ impl Used {
             self.big[i]
         }
     }
+}
+
+/// CPython's wording for "too many positional arguments", to the letter.
+///
+/// Three things vary and all three were wrong here. The count reported is the
+/// number GIVEN, not the index the binder stopped at — `f1(1, 2, 3)` says three,
+/// not two. A function with defaults says `from R to N`, never a bare `N`. And
+/// `argument` and `was` are singular only in the cases CPython makes them
+/// singular in, which are not the same case: `takes 1 positional argument`, but
+/// `takes from 0 to 1 positional arguments`.
+///
+/// This is a message, so it reaches stdout only through `except TypeError as e:
+/// print(e)`. That is why `conformance` never caught it, and why it is a
+/// divergence rather than a refusal. Found by reading the call path for
+/// allocations — which is where the last such find came from too.
+fn arity_error(name: &str, npos: usize, defaults: &[Option<Value>], given: usize) -> LypningError {
+    let required = defaults
+        .iter()
+        .take(npos)
+        .take_while(|d| d.is_none())
+        .count();
+    let takes = if required == npos {
+        format!(
+            "{npos} positional argument{}",
+            if npos == 1 { "" } else { "s" }
+        )
+    } else {
+        format!("from {required} to {npos} positional arguments")
+    };
+    type_err(format!(
+        "{name}() takes {takes} but {given} {} given",
+        if given == 1 { "was" } else { "were" }
+    ))
 }
 
 pub struct IterState {

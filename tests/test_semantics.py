@@ -22,6 +22,29 @@ from lypning import UNSUPPORTED_EXIT, engines
 #: value rather than just the case.
 CASES = [
     (
+        # The "too many positional arguments" message varies three ways and all
+        # three were wrong: the count reported was where the binder stopped
+        # rather than how many were given; a function with defaults must say
+        # `from R to N`; and `argument`/`was` are singular in different cases
+        # (`takes 1 positional argument`, but `takes from 0 to 1 positional
+        # arguments`). It reaches stdout only through `print(e)`, which is why
+        # the conformance corpus never caught it.
+        "arity-typeerror-wording",
+        "def f0():\n    pass\n"
+        "def f1(a):\n    pass\n"
+        "def f2(a, b):\n    pass\n"
+        "def d1(a=1):\n    pass\n"
+        "def d2(a, b=1):\n    pass\n"
+        "def d3(a=1, b=2, c=3):\n    pass\n"
+        "cases = [(f0, [1]), (f1, [1, 2]), (f1, [1, 2, 3]), (f2, [1, 2, 3]),\n"
+        "         (d1, [1, 2]), (d2, [1, 2, 3]), (d2, [1, 2, 3, 4]), (d3, [1, 2, 3, 4])]\n"
+        "for fn, a in cases:\n"
+        "    try:\n"
+        "        fn(*a)\n"
+        "    except TypeError as e:\n"
+        "        print(repr(str(e)))\n",
+    ),
+    (
         # Arguments live in the caller's stack frame up to `args::INLINE` and
         # spill to a Vec past it (`assets/rust/src/args.rs`). That boundary is
         # invisible from Python and must stay invisible: this walks every arity
