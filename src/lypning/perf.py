@@ -168,13 +168,17 @@ SUITE: Tuple[Case, ...] = (
          "print(sum([i * i for i in range(200000)]))",
          '\\[[^]\\[]*\\bfor\\b[^]\\[]*\\]'),
     Case("list-sort", "list",
-         "a = [(i * 7919) % 100000 for i in range(100000)]\na.sort()\nprint(a[0], a[-1])",
+         "a = [(i * 7919) % 100000 for i in range(100000)]\n"
+         "b = list(a)\nfor _ in range(6):\n    b = list(a)\n    b.sort()\nprint(b[0], b[-1])",
          '\\b(sorted\\(|\\.sort\\()'),
     Case("dict-set", "dict",
-         "d = {}\nfor i in range(60000):\n    d[str(i)] = i\nprint(len(d))",
+         "keys = [str(i) for i in range(60000)]\n"
+         "d = {}\nfor k in keys:\n    d[k] = 1\nprint(len(d))",
          '\\[[^]\\[]*\\]\\s*='),
     Case("dict-get", "dict",
-         "d = {}\nfor i in range(2000):\n    d[str(i)] = i\ns = 0\nfor j in range(30):\n    for i in range(2000):\n        s += d[str(i)]\nprint(s)",
+         "keys = [str(i) for i in range(2000)]\n"
+         "d = {}\nfor k in keys:\n    d[k] = 1\n"
+         "s = 0\nfor j in range(30):\n    for k in keys:\n        s += d[k]\nprint(s)",
          '\\.(get|items|keys|values)\\(|\\bdict\\('),
     Case("tuple-unpack", "tuple",
          "s = 0\nfor a, b in [(1, 2)] * 100000:\n    s += a * b\nprint(s)",
@@ -200,9 +204,15 @@ SUITE: Tuple[Case, ...] = (
          'json\\.load'),
 
     # --- I/O, which is what `open` at 652 corpus sightings means ---
+    # The content is built ONCE, outside what is timed, and by repetition rather
+    # than by formatting. This case used to build its lines with `'%d' % i` in a
+    # comprehension, which callgrind showed was most of its cost — so a row
+    # labelled `io`, weighted by how often the corpus opens a file, was really
+    # reporting on `%` formatting, which the corpus barely uses (ledger,
+    # iteration 7).
     Case("file-write-read", "io",
-         "lines = ['line %d\\n' % i for i in range(20000)]\n"
-         "with open('perf.txt', 'w') as fh:\n    fh.write(''.join(lines))\n"
+         "block = 'a line of text\\n' * 20000\n"
+         "with open('perf.txt', 'w') as fh:\n    fh.write(block)\n"
          "n = 0\nwith open('perf.txt') as fh:\n    for line in fh:\n        n += len(line)\nprint(n)",
          '\\bopen\\('),
     Case("print-lines", "io",
