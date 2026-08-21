@@ -28,6 +28,65 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-21 · iteration 12 — `for line in sys.stdin` was quadratic
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1037 loaded, 861 timed
+
+`stdin_line()` called `stdin_all()`, and `stdin_all()` ends in `.clone()` of the
+**entire captured input**. Once per line. `modules.rs` calls
+`stdin → transform → stdout` the corpus's largest single cluster, so this was
+the hottest real path in the runtime and it was O(n²).
+
+Measured before and after, `for line in sys.stdin: n += len(line)`, ~22-byte
+lines, min of 3, against CPython 3.11 with each arm's startup subtracted:
+
+| lines | before | after | CPython |
+|---:|---:|---:|---:|
+| 1,000 | 2.96 ms | **0.49 ms** | 0.75 ms |
+| 4,000 | 182.75 ms | **2.18 ms** | 0.73 ms |
+| 16,000 | 2,299.99 ms | **8.41 ms** | 2.40 ms |
+| 64,000 | *not run* | **34.68 ms** | 11.49 ms |
+
+Four times the cost per doubling became two. At sixteen thousand lines that is
+**273x**, and lypning goes from 678x *slower* than the interpreter it exists to
+preempt, to 3.5x. It stays linear at sixty-four thousand.
+
+The fix is small: a private `stdin_fill()` holding the read half, and
+`stdin_line`/`stdin_rest` doing their scan and their one small slice inside the
+buffer's borrow. `stdin_all()` keeps its copy — `sys.stdin.read()` and the
+dispatcher's `stdin_consumed()` replay both need to own the bytes and both pay
+for it once, and shrinking that would reach into the exit-90 fall-through, where
+a truncated stream is a wrong answer rather than a slow one.
+
+| | before | after |
+|---|---|---|
+| bytes | 1,045,176 (8 blocks) | 1,045,176 (8 blocks) |
+| conformance | 524 / 337 / **0** | 524 / 337 / **0** |
+| corpus-time | — | unchanged, and it cannot see this |
+
+**Why `bench` and `corpus-time` are flat, and why that is not a defence of
+them.** Of the 1037 corpus programs loaded, only 19 carry a captured stdin
+sample: 38 bytes at most, six lines at most, twelve bytes and three lines at the
+median. That is not evidence that real inputs are small — it is what the capture
+harness can record. The shim inherits the pipe untouched rather than reading it
+(`assets/shim/python-shim`), so the samples are an artefact of the instrument
+and the quadratic path was fully live in real use.
+
+**So the corpus has a blind spot, and it is shaped like its own capture
+mechanism.** A cost that only appears at scale cannot be found by any of the
+four gates here; this one was found by reading the code, and confirmed with a
+scaling ladder written for the purpose. When a change is about *complexity*
+rather than constant factors, the evidence is a ladder across input sizes, and
+`perf` and `corpus-time` are expected to say nothing.
+
+Pinned in `tests/test_semantics.py` — seven cases, differential against the real
+CPython. They pin the **cursor**, not the speed: `readline` then `read`, `read`
+then `readlines`, iteration then `read`, a last line with no newline, empty
+input. That shared cursor is what this change could plausibly have broken, and a
+timing assertion on a shared runner would only have measured the runner.
+
+---
+
 ## 2026-08-21 · iteration 11 — two allocations out of every Python call
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1037 loaded, 861 timed

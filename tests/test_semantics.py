@@ -173,6 +173,73 @@ def test_a_method_cpython_has_refuses_instead_of_raising(case_id, program, lypni
     assert "-method:" in r.stderr, r.stderr
 
 
+#: ``(id, program)`` run with bytes on stdin, differentially, exactly as above.
+#:
+#: Split out because these need an input and the cases above do not. The reason
+#: they exist is `stdin_line`: it used to re-copy the whole captured input for
+#: every line, which made `for line in sys.stdin` quadratic — the corpus's
+#: largest single cluster, at 2.3 seconds for sixteen thousand lines against
+#: CPython's 3.4 milliseconds. The fix moved the slicing inside the buffer's
+#: borrow, and the thing it could plausibly have broken is the CURSOR that
+#: `readline`, `read`, `readlines` and iteration share. So the cursor is what
+#: these pin, in every interleaving, rather than the speed — a timing assertion
+#: on a shared runner measures the runner.
+STDIN_CASES = [
+    (
+        "readline-then-read",
+        "import sys\nprint(repr(sys.stdin.readline()))\n"
+        "print(repr(sys.stdin.readline()))\nprint(repr(sys.stdin.read()))\n",
+        "a\nbb\nccc\ndddd\n",
+    ),
+    (
+        "read-consumes-everything-including-later-readlines",
+        "import sys\nprint(repr(sys.stdin.read()))\n"
+        "print(repr(sys.stdin.readline()), sys.stdin.readlines())\n",
+        "a\nbb\nccc\n",
+    ),
+    (
+        "iteration-then-read",
+        "import sys\nfor line in sys.stdin:\n    print(repr(line))\n"
+        "print('rest', repr(sys.stdin.read()))\n",
+        "a\nbb\nccc\ndddd\n",
+    ),
+    (
+        "readline-then-readlines",
+        "import sys\nprint(repr(sys.stdin.readline()), sys.stdin.readlines())\n",
+        "a\nbb\nccc\n",
+    ),
+    (
+        "last-line-has-no-newline",
+        "import sys\nfor line in sys.stdin:\n    print(repr(line))\n",
+        "x\ny",
+    ),
+    (
+        "empty-stdin",
+        "import sys\nprint(repr(sys.stdin.read()), sys.stdin.readlines())\n",
+        "",
+    ),
+    (
+        "many-lines-stay-in-order",
+        "import sys\nn = 0\nlast = ''\n"
+        "for line in sys.stdin:\n    n += 1\n    last = line\n"
+        "print(n, repr(last))\n",
+        "".join("line %d\n" % i for i in range(500)),
+    ),
+]
+
+
+@pytest.mark.parametrize("case_id,program,stdin", STDIN_CASES,
+                         ids=[c[0] for c in STDIN_CASES])
+def test_stdin_agrees_with_cpython(case_id, program, stdin, lypning_bin):
+    cpython = engines.find_cpython()
+    if cpython is None:
+        pytest.skip("no CPython to compare against")
+    ours = engines.run(engines.LYPNING, program, binary=lypning_bin, stdin=stdin)
+    theirs = engines.run(engines.CPYTHON, program, binary=cpython, stdin=stdin)
+    assert ours.returncode != UNSUPPORTED_EXIT, ours.stderr
+    assert (ours.stdout, ours.returncode) == (theirs.stdout, theirs.returncode)
+
+
 def test_an_attribute_neither_has_keeps_cpythons_error(lypning_bin):
     """The other side of the split, and why it is not just "refuse on any miss".
 
