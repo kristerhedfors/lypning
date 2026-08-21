@@ -28,6 +28,63 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-21 · iteration 13 — five live MISMATCHes that `conformance` was never going to see
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1037 loaded, 861 timed
+
+`type_name()` of every exception instance is the literal string `"Exception"`
+(`value.rs`), and `isinstance` compared its second argument against that string.
+So, all at **exit 0, with no refusal and no error**:
+
+| program | lypning | CPython |
+|---|---|---|
+| `isinstance(ValueError('b'), ValueError)` | **False** | True |
+| `isinstance(FileNotFoundError('x'), OSError)` | **False** | True |
+| `isinstance(SystemExit(), Exception)` | **True** | False |
+| `except Exception as e: isinstance(e, ValueError)` | **False** | True |
+| `isinstance(type(3), type)` | **False** | True |
+
+Five silent wrong answers, in the runtime whose entire argument is that it never
+gives one. `conformance` was reporting **0 MISMATCH** the whole time and was not
+wrong to: no corpus program calls `isinstance` on an exception yet.
+
+The fix routes an `Exc` through **`exc_matches`** — the same table an `except`
+clause uses — so the two can never disagree about the hierarchy. `SystemExit`
+falls out correctly because that table already knows `Exception` does not catch
+it, which is the point of having one table instead of two.
+
+`isinstance(x, type)` is now **refused** rather than answered. It asks whether
+`x` is a class, and lypning's `Value::Builtin` is both `int` and `print`, so
+answering means guessing which builtins are types. A refusal costs one spawn and
+CPython answers — invariant 1's trade, taken deliberately.
+
+| | before | after |
+|---|---|---|
+| bytes | 1,045,176 (8 blocks) | 1,045,176 (8 blocks) |
+| conformance | 524 / 337 / **0** | 524 / 337 / **0** |
+| live MISMATCHes outside the corpus | **5** | **0** |
+
+Fifteen shapes verified against the real CPython — the hierarchy in both
+directions, `IOError`/`OSError` aliasing, tuple-of-classes, `bool` under `int`,
+and the negatives — and pinned in `tests/test_semantics.py`.
+
+### What this says about the gates
+
+**`conformance` measures the corpus, not the language.** A construct nobody has
+typed yet is a construct it cannot grade, and MISMATCH 0 means "no disagreement
+*among the programs we have*". That is still the right gate — it is the only one
+that grades against real usage — but it is not a proof, and the ledger should
+stop reading it as one.
+
+Both bugs found today came from **reading a hot path closely**: the arity
+message from the call-binding code in iteration 11, and this from a survey of
+what `type()` refuses. Neither came from a gate. `docs/COOKBOOK.md`-style
+enumeration of a construct's shapes, run differentially against CPython, finds
+things the corpus has not reached — and it is cheap: fifteen programs and a
+shell loop.
+
+---
+
 ## 2026-08-21 · iteration 12 — `for line in sys.stdin` was quadratic
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1037 loaded, 861 timed

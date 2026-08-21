@@ -638,18 +638,21 @@ pub fn call_builtin(
                 .get(1)
                 .cloned()
                 .ok_or_else(|| type_err("isinstance expected 2 arguments, got 1"))?;
-            let names: Vec<String> = match &cls {
+            // `&'static str`, not `String`: these come out of `Value::Builtin`,
+            // which already interns them, and building a `String` per class was
+            // an allocation for a comparison.
+            let names: Vec<&'static str> = match &cls {
                 Value::Tuple(t) => t
                     .iter()
                     .map(|c| match c {
-                        Value::Builtin(b) => Ok(b.to_string()),
+                        Value::Builtin(b) => Ok(*b),
                         other => Err(type_err(format!(
                             "isinstance() arg 2 must be a type, not {}",
                             type_name(other)
                         ))),
                     })
                     .collect::<R<Vec<_>>>()?,
-                Value::Builtin(b) => vec![b.to_string()],
+                Value::Builtin(b) => vec![*b],
                 other => {
                     return Err(type_err(format!(
                         "isinstance() arg 2 must be a type, not {}",
@@ -657,14 +660,32 @@ pub fn call_builtin(
                     )))
                 }
             };
+            // `isinstance(x, type)` asks whether x is a CLASS. lypning has no
+            // class objects of its own and `Value::Builtin` is both `int` and
+            // `print`, so answering would mean guessing which builtins are
+            // types. Refused instead: a refusal costs one spawn and CPython
+            // answers, and this is exactly the trade invariant 1 describes.
+            if names.contains(&"type") {
+                return Err(unsupported("isinstance", "isinstance() against `type`"));
+            }
             let t = type_name(&v);
             Value::Bool(names.iter().any(|n| {
-                n == t
+                // An exception instance is matched through the SAME hierarchy
+                // table `except` uses, not by its type name. `type_name` of any
+                // `Exc` is the literal string "Exception", so comparing against
+                // it answered False for `isinstance(ValueError('b'),
+                // ValueError)` and True for `isinstance(SystemExit(),
+                // Exception)` — both at exit 0, both wrong, and neither visible
+                // to `conformance` because no corpus entry did it yet. One
+                // table, so this can never disagree with an `except` clause.
+                if let Value::Exc(kind, _) = &v {
+                    return crate::eval::exc_matches(n, kind);
+                }
+                *n == t
                     // bool is a subclass of int in Python; str/bytes are not
                     // related, and neither are list/tuple.
-                    || (n == "int" && t == "bool")
-                    || (n == "float" && matches!(t, "float"))
-                    || (n == "Exception" && t == "Exception")
+                    || (*n == "int" && t == "bool")
+                    || (*n == "float" && matches!(t, "float"))
             }))
         }
         "open" => {

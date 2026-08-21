@@ -22,6 +22,36 @@ from lypning import UNSUPPORTED_EXIT, engines
 #: value rather than just the case.
 CASES = [
     (
+        # `type_name` of every exception instance is the literal string
+        # "Exception", and `isinstance` compared against it — so
+        # `isinstance(ValueError('b'), ValueError)` was False and
+        # `isinstance(SystemExit(), Exception)` was True, both at exit 0, both
+        # wrong. Nothing in the corpus did it yet, so `conformance` was clean
+        # the whole time. It goes through `exc_matches` now, which is the same
+        # table an `except` clause uses, so the two cannot drift apart.
+        "isinstance-of-an-exception-follows-the-hierarchy",
+        "pairs = [\n"
+        "    (ValueError('b'), ValueError), (ValueError('b'), Exception),\n"
+        "    (ValueError('b'), TypeError), (SystemExit(), Exception),\n"
+        "    (FileNotFoundError('x'), OSError), (IOError('x'), OSError),\n"
+        "    (OSError('x'), IOError), (KeyError('k'), LookupError),\n"
+        "    (IndexError(), LookupError), (ZeroDivisionError(), ArithmeticError),\n"
+        "    (ValueError('b'), BaseException),\n"
+        "]\n"
+        "for v, c in pairs:\n"
+        "    print(isinstance(v, c))\n"
+        "print(isinstance(ValueError('b'), (TypeError, ValueError)))\n"
+        "print(isinstance(ValueError('b'), (TypeError, KeyError)))\n"
+        "try:\n"
+        "    raise ValueError('v')\n"
+        "except Exception as e:\n"
+        "    print(isinstance(e, ValueError), isinstance(e, TypeError), isinstance(e, Exception))\n"
+        "print(isinstance(1, int), isinstance(True, int), isinstance(1, bool))\n"
+        "print(isinstance(1.5, float), isinstance('a', str), isinstance(b'x', bytes))\n"
+        "print(isinstance([1], list), isinstance((1,), tuple), isinstance({1: 2}, dict))\n"
+        "print(isinstance(1, (str, float)), isinstance(None, int))\n",
+    ),
+    (
         # The "too many positional arguments" message varies three ways and all
         # three were wrong: the count reported was where the binder stopped
         # rather than how many were given; a function with defaults must say
@@ -161,6 +191,11 @@ MISSING_METHODS = [
     ("str-center", 'print("x".center(5, "-"))'),
     ("set-isdisjoint", "print({1, 2}.isdisjoint({3}))"),
     ("dict-fromkeys", 'print(dict.fromkeys("ab"))'),
+    # Not a missing method — a deliberate refusal. `isinstance(x, type)` asks
+    # whether x is a class, and `Value::Builtin` is both `int` and `print`, so
+    # lypning would have to guess which builtins are types. It used to answer
+    # False for `isinstance(type(3), type)`: a wrong answer at exit 0.
+    ("isinstance-against-type", "print(isinstance(type(3), type))"),
 ]
 
 
@@ -170,7 +205,7 @@ def test_a_method_cpython_has_refuses_instead_of_raising(case_id, program, lypni
     r = engines.run(engines.LYPNING, program, binary=lypning_bin)
     assert r.returncode == UNSUPPORTED_EXIT, "a method CPython has must leave by exit 90"
     assert r.stdout == "", "the commit barrier let output escape before a refusal"
-    assert "-method:" in r.stderr, r.stderr
+    assert ": unsupported: " in r.stderr, r.stderr
 
 
 #: ``(id, program)`` run with bytes on stdin, differentially, exactly as above.
