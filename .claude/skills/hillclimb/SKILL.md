@@ -123,6 +123,38 @@ doing that on the strength of the ratio alone would have been an afternoon spent
 on a tenth of a percent of the workload, with the microbenchmark applauding
 throughout. Check the `corpus` column before you believe a ratio.
 
+### Move 2b — when the gradient does not say *why*
+
+`perf` names the construct. It does not name the instruction. There is a
+profiler on this container — `valgrind`, not `perf(1)` — and `callgrind` counts
+instructions exactly, which beats sampling for a program that lives half a
+millisecond:
+
+```bash
+cd src/lypning/assets/rust
+cargo build --release --target x86_64-unknown-linux-musl \
+      --config 'profile.release.strip=false' --config 'profile.release.debug=1'
+valgrind --tool=callgrind --callgrind-out-file=cg.out \
+      target/x86_64-unknown-linux-musl/release/lypning -c 'PROGRAM'
+callgrind_annotate --threshold=85 cg.out
+```
+
+Two things to know before reading the output.
+
+**Ir is not time.** Callgrind counts instructions retired, and instructions
+retire at wildly different rates. This tree has both halves of that lesson
+already: the builtin-name table scans are ~12% of instructions and replacing
+them with binary search bought *no wall clock at all* (ledger, iteration 4),
+because a predictable, cache-resident SIMD `memcmp` runs at an IPC the
+allocator's pointer chasing never will. So use callgrind to find **where the
+work is**, and the wall clock to decide **whether removing it helped**. Never
+the other way round.
+
+**The standing answer, until it changes:** on `len(str(i))` in a loop, about a
+quarter of all instructions are inside musl's `malloc` and `free`. Allocation
+count is the lever on this interpreter. A change that removes an allocation from
+a hot path is worth trying; a change that only shortens a scan probably is not.
+
 ### Move 3 — change one thing
 
 One mechanism per commit. Not one file, not one line — one *mechanism*, so that
@@ -222,6 +254,14 @@ are not worth the same, and the ledger should not pretend they are.
 - **A `perf` case that lypning refuses fails the run.** That is deliberate: the
   suite is a claim about what the subset covers. If a change narrows the subset,
   `perf` says so before `conformance` has to.
+- **A measured win that moves no row means the suite has a hole, not that the
+  win was imaginary.** It happened here: `str()` and `repr()` of a scalar got
+  8–21% faster and the table did not move, because every `repr` case in the
+  suite was a *composite* repr taking a different path, and nothing called
+  either on a scalar — a construct in 8% of corpus programs. **Add the missing
+  case in the same iteration**, while it is still obvious what it should
+  measure, and say in the ledger that the TOTAL renumbered. A suite that only
+  contains cases somebody already optimised stops being a gradient.
 - **The corpus rewrites repositories** (invariant 4). `conformance`, `bench`,
   `corpus-time` and `perf` all run behind the net, and `git status` after a run
   that crashed mid-way is still your job.
@@ -238,6 +278,9 @@ worst, function calls next, containers and the loop itself already within a
 small factor. The mechanisms behind those rows, in rough order of payoff per
 unit of risk:
 
+- **Allocation count, everywhere.** This is the standing first answer: a quarter
+  of the instruction stream is `malloc`/`free`. Every item below is a special
+  case of it.
 - **Copying a whole container to reach part of one.** `Vec<char>` for one
   character, an index vector for a contiguous slice, a `Vec<String>` that is
   then copied again into `Rc<str>`. Look for `.collect()` on a path that only
