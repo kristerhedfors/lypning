@@ -489,6 +489,7 @@ Interpreter mode is decided before argument parsing, so anything that calls
 | `lypning fuzz [--iterations N] [--seed S]` | generate programs from the subset and diff them against CPython |
 | `lypning bench [--startup] [--corpus]` | time the four arms, interleaved, min of repeats |
 | `lypning corpus-time [--engine E] [--baseline F] [--record F]` | time the corpus on ONE binary, and diff two runs of it |
+| `lypning perf [--only CASE] [--baseline F] [--record F]` | one construct at a time against CPython — where the interpreter's time goes |
 | `lypning lib [--cflags\|--libs\|--path\|--static\|--include] [--json]` | where the embeddable C ABI is, and the line to compile against it |
 | `lypning gate [BIN] [--compare]` | static? how many bytes? how many file opens? |
 | `lypning harvest [--export]` | captured invocations → sightings → corpus |
@@ -628,6 +629,27 @@ from last week covers a different set of programs. Entries that exit 90 are
 timed rather than skipped (a refusal costs the spawn the agent waited for) and
 counted apart, because a change that moves an entry in or out of the subset
 changes what is being timed.
+
+**`perf` finds the gradient; neither of the other two can.** A corpus run says
+the programs cost N milliseconds. It does not say *which construct* to open
+next, because a corpus entry touches twenty of them and its cost is mostly the
+spawn. `lypning perf` runs one small loop per construct on lypning and on
+CPython, subtracts each arm's own startup, and sorts by the ratio:
+
+```bash
+lypning perf                        # the whole suite, worst ratio first
+lypning perf --only str-concat      # one construct, while you work on it
+lypning perf --record before.json   # …and --baseline before.json after
+```
+
+That ordering is the work queue for raw speed. It is **deliberately not an
+acceptance gate** — a microbenchmark once said a change was worth 48 ms per
+program where the corpus said 0.14 (`docs/MICROPYTHON.md` §8a). Find with
+`perf`, accept with `corpus-time --baseline`. Two rules keep the table honest:
+every case prints a checksum the arms must agree on, so a construct that is
+fast because it computes something else fails rather than wins; and a case
+lypning *refuses* fails too, because the suite is a claim about what the subset
+already covers. Either exits 1.
 
 Two warnings, both of which this project has already paid for.
 
