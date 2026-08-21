@@ -28,6 +28,87 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-21 · iteration 6 — callgrind, and the `String` nobody needed
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 842 loaded, 763 timed
+
+### Stop guessing: there is a profiler on this container
+
+`valgrind` is installed, `perf` is not. `callgrind` counts instructions exactly,
+which is better than sampling for a program that lives half a millisecond. The
+recipe, worth keeping:
+
+```bash
+cd src/lypning/assets/rust
+cargo build --release --target x86_64-unknown-linux-musl \
+      --config 'profile.release.strip=false' --config 'profile.release.debug=1'
+valgrind --tool=callgrind --callgrind-out-file=cg.out \
+      target/x86_64-unknown-linux-musl/release/lypning -c 'PROGRAM'
+callgrind_annotate --threshold=85 cg.out
+```
+
+On `n += len(str(i))` × 3000, by share of all instructions:
+
+| | share |
+|---|---:|
+| musl `malloc` / `free` (`alloc_slot`, `nontrivial_free`, `meta.h`) | **~26%** |
+| `builtins::builtin` + `is_exception_name` — the linear table scans | ~12% |
+| `eval_inner` / `eval` / `exec_block` | ~10% |
+| `memcmp` (shared between the scans and `match name`) | 5.8% |
+
+**A quarter of the instruction stream is the allocator.** That is the lever, and
+it is the number to bring to any future argument about this interpreter's speed.
+
+It also settles iteration 4's puzzle from the other side. The table scans really
+are ~12% of *instructions* — and replacing them with binary search still bought
+no wall clock, because a predictable, cache-resident SIMD `memcmp` retires far
+more instructions per cycle than the allocator's pointer chasing does. **Ir is
+not time.** Use callgrind to find *where the work is*, and the wall clock to
+decide whether removing it helped.
+
+### The change
+
+`fmt::to_str` returns a `String`, because `repr` composes nested values into
+one. Every caller that wanted a `Value` then paid `Rc<str>::from(String)` — a
+second allocation and a second copy of bytes just written, then a free. Added
+`to_rc`, `repr_rc` and `int_rc`: a str is already an `Rc<str>` (clone the
+refcount, **zero** allocations where there were two), and an int is written into
+a twenty-byte stack buffer (one allocation instead of two). `int_rc` counts down
+on the negative side, because `-i64::MIN` overflows and that is reachable from a
+corpus program.
+
+`str` and `repr` are kept apart rather than sharing an arm: `str('a')` is `a`
+and `repr('a')` is `'a'`, and that is precisely the kind of shared shortcut that
+would produce a silent wrong answer.
+
+| microcase, min of 7 | iteration 0 | now | net of drift |
+|---|---:|---:|---:|
+| `str(i)` | 0.746 µs | 0.589 µs | **−9%** |
+| `str(s)` | 0.771 µs | 0.536 µs | **−21%** |
+| `repr(i)` | 0.720 µs | 0.573 µs | **−8%** |
+| `len(t)` (the control — untouched by this change) | 0.348 µs | 0.302 µs | — |
+
+### And the suite could not see any of it
+
+perf TOTAL stayed at 3.65x. `str-repr` is `repr([i, 'a', 1.5])`, which is a
+*composite* repr and falls through to the old path; no case called `str()` or
+`repr()` on a scalar at all — a construct that appears in 8% of corpus programs.
+
+So a case was added (`str-of-scalar`), and the general lesson goes in the skill:
+**when a change you measured helps and no row moves, the suite has a hole.** Add
+the case in the same iteration, while you still know what it should measure.
+Adding it renumbers the TOTAL (30 cases now, not 29), which is why `perf --diff`
+prints the intersection rather than assuming it.
+
+| | before | after |
+|---|---|---|
+| bytes | 1,045,176 (8 blocks) | 1,045,176 (8 blocks) |
+| conformance | 500 / 263 / **0** | 500 / 263 / **0** |
+| perf TOTAL | 3.65x (29 cases) | 3.97x (30 cases — a new, slow case, not a regression) |
+| corpus-time | 552.2 ms | 542.8 ms |
+
+---
+
 ## 2026-08-21 · iteration 5 — `opt-level`, measured rather than argued (kept at `"s"`)
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 842 loaded, 763 timed

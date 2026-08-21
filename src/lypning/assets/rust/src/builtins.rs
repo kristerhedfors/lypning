@@ -181,7 +181,7 @@ pub fn call_builtin(
             let v = arg1(name, &args)?;
             Value::Int(length(&v)? as i64)
         }
-        "repr" => Value::Str(fmt::repr(&arg1(name, &args)?)?.into()),
+        "repr" => Value::Str(fmt::repr_rc(&arg1(name, &args)?)?),
         "str" => match args.first() {
             None => Value::Str("".into()),
             Some(v) => {
@@ -191,7 +191,7 @@ pub fn call_builtin(
                     let Value::Bytes(b) = v else { unreachable!() };
                     Value::Str(decode_utf8(b)?.into())
                 } else {
-                    Value::Str(fmt::to_str(v)?.into())
+                    Value::Str(fmt::to_rc(v)?)
                 }
             }
         },

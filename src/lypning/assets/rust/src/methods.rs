@@ -680,7 +680,7 @@ fn str_format(
                 }
                 let text = match conv {
                     Some('r') => fmt::format_value(&Value::Str(fmt::repr(&v)?.into()), &spec)?,
-                    Some('s') => fmt::format_value(&Value::Str(fmt::to_str(&v)?.into()), &spec)?,
+                    Some('s') => fmt::format_value(&Value::Str(fmt::to_rc(&v)?), &spec)?,
                     Some(c) => {
                         return Err(value_err(format!("Unknown conversion specifier {c}")))
                     }

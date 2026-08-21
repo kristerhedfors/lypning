@@ -147,6 +147,12 @@ SUITE: Tuple[Case, ...] = (
     Case("str-fstring", "fmt",
          "n = 0\nfor i in range(60000):\n    n += len(f'{i}-a')\nprint(n)",
          'f[\'\\"]'),
+    # `str(x)` and `repr(x)` of a SCALAR, which is a different path from the
+    # composite one below it and was invisible here until a change improved it
+    # by a fifth and moved no row in the table (ledger, iteration 6).
+    Case("str-of-scalar", "fmt",
+         "n = 0\nfor i in range(60000):\n    n += len(str(i)) + len(repr('ab'))\nprint(n)",
+         r"\b(str|repr)\("),
     Case("str-repr", "fmt",
          "n = 0\nfor i in range(40000):\n    n += len(repr([i, 'a', 1.5]))\nprint(n)",
          '\\b(repr|print)\\('),
