@@ -28,6 +28,47 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-21 · iteration 5 — `opt-level`, measured rather than argued (kept at `"s"`)
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 842 loaded, 763 timed
+
+The release profile is compiled for size, and the comment justifying it is about
+*startup*: 96% of a one-liner's cost is the OS spawning the process, so codegen
+quality cannot buy what a smaller image can. That is an argument about spawn
+cost, not about throughput, and this loop is aimed at throughput — so it was
+worth an hour to check whether the argument still holds when the question
+changes. It does.
+
+Three builds, one line apart, everything else identical (`lto = true`,
+`codegen-units = 1`, `panic = "abort"`, `strip = true`):
+
+| `opt-level` | bytes | **device blocks** | perf TOTAL | startup | corpus-time |
+|---|---:|---:|---:|---:|---:|
+| **`"s"`** (kept) | **1,045,176** | **8** | **3.65x** | 0.63 ms | 543.6 ms |
+| `2` | 1,172,152 | 9 | 3.70x | 0.60 ms | — |
+| `3` | 1,184,440 | **10** | 3.51x | 0.64 ms | 537.3 ms |
+
+`opt-level = 2` buys **nothing** — 3.70 against 3.65 is inside the ±3% band
+three consecutive runs of one binary showed — and costs 126,976 bytes and a
+device block.
+
+`opt-level = 3` buys a real **4%** of compute, and costs 139,264 bytes and **two**
+device blocks. A block is the unit a cold read streams in on the device this
+project is sized for, so that is two extra blocks on every cold start to make the
+interpreter 4% faster at the tenth of a corpus run that is not the spawn. The
+corpus agrees it is not worth it: 537.3 ms against 543.6, which is 1.2% and
+inside the deadband.
+
+**Kept at `"s"`. Do not re-propose either without a new reason** — not "the
+interpreter is a big match statement so surely inlining helps", which is the
+reason this was tried. The measurement is above; take a new one on a different
+machine if the machine is the new reason.
+
+conformance was 500 / 263 / **0** on all three, as it must be — an optimisation
+level that changed an answer would be a compiler bug and is worth knowing about.
+
+---
+
 ## 2026-08-21 · iteration 4 — a MISMATCH found by chasing a speed row, and a speed change that bought nothing
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 842 loaded, 763 timed
