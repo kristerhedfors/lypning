@@ -17,9 +17,32 @@
 # `--sightings` teaches people to set it, so a hook that only ever checked
 # tests/corpus/sightings would find nothing, exit 0 without a word, and lose
 # precisely the sightings of the contributor who followed the documentation.
-# The rule below is the rule in paths.py sightings_dir() and has to stay the
-# same rule: unset or blank is the default, `~` expands, absolute is used as
-# given, relative resolves against the top of the working tree.
+# Every way of getting the resolution slightly wrong fails in that same
+# shape — no directory, no message, no evidence — so being close is worth
+# nothing here: the answer has to be the answer paths.py sightings_dir() gave
+# the Stop hook, which is the only reason there is a file to stage at all. Two
+# halves of that rule are easy to lose in a shell, and both were. `~name` is
+# somebody's home directory, not a directory called `~name`, and $HOME is only
+# the answer for a bare `~` and only while it is set. A relative value hangs off
+# project_dir() — $CLAUDE_PROJECT_DIR when it names one, the enclosing work tree
+# otherwise — and Claude Code sets that variable, to a directory that need not
+# be the top of the tree.
+#
+# SPELLED IN SH, NOT ASKED OF paths.py. Importing the package would be one rule
+# by construction, and it was rejected on three counts of which any one is
+# enough. There is no timeout in POSIX sh, so an interpreter that blocks —
+# a stalled mount under site-packages, somebody's sitecustomize — blocks the
+# commit, and the rule below this one is that nothing here may. The `python3`
+# it would reach for may be our own shim, which would route the question through
+# the interception the harness installs, inside somebody's commit, with capture
+# live. And a fresh checkout with nothing installed still has to stage its
+# sightings, so the sh rule has to exist regardless — shipping both would be two
+# rules that can disagree, which is the failure this paragraph is about. So: one
+# rule, in sh, written to be read beside sightings_dir() and changed with it.
+# Two corners of expanduser() stay out of a shell's reach and are left there
+# knowingly: a value padded with non-ASCII whitespace, and $HOME set to the
+# empty string, where the passwd entry is used instead. Neither is a value a
+# session can produce.
 #
 # DELIBERATELY NARROW. One directory, adds only. This hook runs inside somebody
 # else's commit, and a commit that quietly grew a file its author did not choose
@@ -46,6 +69,8 @@
 #                         there is nothing here for this hook to find anyway)
 #   LYPNING_SIGHTINGS     where the Stop hook publishes; same resolution rule as
 #                         paths.py, because a second rule is a second answer
+#   CLAUDE_PROJECT_DIR    what a relative $LYPNING_SIGHTINGS hangs off, when it
+#                         names a directory; the top of the work tree otherwise
 
 [ "${LYPNING_CAPTURE-}" = "0" ] && exit 0
 
@@ -84,33 +109,101 @@ if [ -n "${GIT_INDEX_FILE-}" ]; then
   [ "$index_abs" = "$git_dir/index" ] || exit 0
 fi
 
-# Hooks are normally run from the top of the working tree, but "normally" is not
-# a guarantee worth a mis-staged path, so the pathspec is anchored rather than
-# relative to whatever cwd this inherited.
-top=$(git rev-parse --show-toplevel 2>/dev/null) || top=""
-[ -n "$top" ] || exit 0
+# paths.py strips both values before deciding, so a value that is only
+# whitespace is the default and not a directory named " ". Parameter expansion
+# only: this runs on every commit in the clone, nearly all of which have nothing
+# to stage, and a fork is a fork.
+trim() {
+  trimmed=$1
+  while :; do
+    case $trimmed in
+      [[:space:]]*) trimmed=${trimmed#?} ;;
+      *[[:space:]]) trimmed=${trimmed%?} ;;
+      *) break ;;
+    esac
+  done
+}
 
-# paths.py strips the value before deciding, so a value that is only whitespace
-# is the default and not a directory named " ". Parameter expansion only: this
-# runs on every commit in the clone, nearly all of which have nothing to stage,
-# and a fork is a fork.
-sightings=${LYPNING_SIGHTINGS-}
-while :; do
-  case $sightings in
-    [[:space:]]*) sightings=${sightings#?} ;;
-    *[[:space:]]) sightings=${sightings%?} ;;
-    *) break ;;
-  esac
-done
-if [ -n "${HOME-}" ]; then
-  case $sightings in
-    "~"|"~/"*) sightings=$HOME${sightings#\~} ;;
-  esac
+# The home directory out of a passwd entry, for the tilde rule below. `eval`
+# would expand a tilde in one line and would also run whatever else
+# $LYPNING_SIGHTINGS happened to contain, inside somebody else's commit, so the
+# lookup is done by hand. getent is not POSIX and minimal images ship without
+# it; /etc/passwd answers for those, and misses network directories exactly the
+# way a missing getent does. A `~name` neither can find is one expanduser could
+# not find either — it raises there, so the Stop hook published nothing and
+# there is nothing here to lose. The bare `~` reaches this only with $HOME
+# unset, and if even the current user cannot be named the hook stands down
+# rather than guess at a home directory: one sighting waits for the next commit,
+# which is the cheap direction to be wrong in.
+lookup_home() {
+  homedir=""
+  entry=$(getent passwd "$1" 2>/dev/null) || entry=""
+  if [ -z "$entry" ]; then
+    while IFS= read -r line; do
+      case $line in
+        "$1":*) entry=$line; break ;;
+      esac
+    done < /etc/passwd 2>/dev/null
+  fi
+  [ -n "$entry" ] || return 1
+  rest=${entry#*:*:*:*:*:}
+  homedir=${rest%%:*}
+  [ -n "$homedir" ]
+}
+
+trim "${LYPNING_SIGHTINGS-}"; sightings=$trimmed
+trim "${CLAUDE_PROJECT_DIR-}"; project=$trimmed
+
+# A relative value hangs off project_dir(), and project_dir() prefers
+# $CLAUDE_PROJECT_DIR whenever it names a real directory. Resolving it with `cd`
+# asks both questions at once — is it there, and what is it called once the
+# symlinks are gone — which is what Path(env).is_dir() and .resolve() answer
+# between them, and it is one fork in the rare case rather than any in the
+# common one. If neither source names a directory we are not in a tree this hook
+# can add to, and the pathspec would be anchored to whatever cwd it inherited.
+if [ -n "$project" ]; then
+  project=$(cd "$project" 2>/dev/null && pwd -P) || project=""
 fi
+if [ -z "$project" ]; then
+  project=$(git rev-parse --show-toplevel 2>/dev/null) || project=""
+fi
+[ -n "$project" ] || exit 0
+
 case $sightings in
-  "") dir=$top/tests/corpus/sightings ;;
+  "~"*)
+    # `~name` is that user's home directory and `~` is this one's; a hook that
+    # expanded only the second looks under the project for a directory whose
+    # name begins with a tilde, never finds one, and is silent about it.
+    # expanduser() reads $HOME for the bare form and falls back to the passwd
+    # entry when it is unset, so a session started without $HOME — a cron, a
+    # bare `env`, a container that never set it — still agrees.
+    tpath=${sightings#\~}
+    user=${tpath%%/*}
+    suffix=${tpath#"$user"}
+    homedir=""; found=0
+    if [ -z "$user" ] && [ -n "${HOME-}" ]; then
+      homedir=$HOME; found=1
+    else
+      [ -n "$user" ] || user=$(id -un 2>/dev/null) || user=""
+      if [ -n "$user" ] && lookup_home "$user"; then found=1; fi
+    fi
+    if [ "$found" = 1 ]; then
+      # expanduser() drops trailing slashes before it joins, so `HOME=/x/` and
+      # `HOME=/x` name one directory rather than two; a home of `/` drops to
+      # nothing and the join is the root itself.
+      while :; do
+        case $homedir in */) homedir=${homedir%/} ;; *) break ;; esac
+      done
+      sightings=$homedir$suffix
+      [ -n "$sightings" ] || sightings=/
+    fi
+    ;;
+esac
+
+case $sightings in
+  "") dir=$project/tests/corpus/sightings ;;
   /*) dir=$sightings ;;
-  *) dir=$top/$sightings ;;
+  *) dir=$project/$sightings ;;
 esac
 
 [ -d "$dir" ] || exit 0

@@ -1625,10 +1625,12 @@ examples:
     s.add_argument("--no-skill", action="store_true", help="skip the skill documentation")
     s.add_argument("--collect-only", action="store_true",
                    help="capture and publish only: the two capture hooks, no shim and no "
-                        "skill, and no engine needed anywhere")
+                        "skill, and no engine needed anywhere; over an earlier full "
+                        "install it also REMOVES the session-start entry that wired them")
     s.add_argument("--sightings", metavar="DIR",
-                   help="where the Stop hook publishes (default tests/corpus/sightings); "
-                        "relative resolves against the project root")
+                   help="where the Stop hook publishes; relative resolves against the "
+                        "project root. Omitted, it KEEPS the directory an earlier install "
+                        "wired, and defaults to tests/corpus/sightings only when none is")
     s.add_argument("--force", action="store_true", help="move a foreign python/python3 aside instead of refusing")
     s.add_argument("--dry-run", action="store_true", help="print the plan and the settings diff; write nothing")
     s.add_argument("--json", action="store_true", help="machine-readable")

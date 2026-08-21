@@ -151,3 +151,70 @@ def test_normalise_keeps_indentation_and_drops_the_rest():
     # `-c $'\nimport os'` and would otherwise file one program under two keys.
     assert harvest.normalise("\n\nif x:\n    y  \n\n") == "if x:\n    y"
     assert harvest.sighting_key("\nprint(1)\n") == harvest.sighting_key("print(1)")
+
+
+# --- what is not a program, and what is not evidence -------------------------
+#
+# Both rules below are enforced in `_why_unusable`, which is the gate BOTH the
+# export and the fold ask. They live here rather than beside the import tests
+# because neither one is about importing: a local capture produces both shapes,
+# and did.
+
+
+def test_an_unexpanded_shell_variable_is_not_a_program():
+    # `python3 -c "$PROG"`, where the shell would have expanded `$PROG` and the
+    # capture deliberately does not evaluate anything. What lands is the
+    # reference, not the program — and `$P` is not even syntactically python.
+    for text in ("$P", "$2", "${prog}", "$e"):
+        assert harvest._why_uninteresting(text, set()) == "placeholder", text
+    # A `$` that is part of a real program is untouched: only a program that is
+    # NOTHING but the reference is refused.
+    assert harvest._why_uninteresting("print('$P')", set()) == ""
+    assert harvest._why_uninteresting("import re;re.match(r'^\\$\\w+$', s)", set()) == ""
+
+
+def test_a_program_that_imports_this_package_is_not_evidence():
+    # Every session that develops lypning types dozens of these and the hooks
+    # capture them like anything else. The corpus is what `conformance --plan`
+    # turns into a build order, so our own development traffic entering it
+    # measures what we were doing last week rather than what agents type.
+    assert harvest._why_uninteresting("import lypning", set()) == "self"
+    assert harvest._why_uninteresting("from lypning import harvest", set()) == "self"
+    assert harvest._why_uninteresting("  import lypning.collect as c", set()) == "self"
+    # Mentioning the name is ordinary python — reading a path, grepping a file —
+    # and stays. Only the import is refused.
+    assert harvest._why_uninteresting("print(open('lypning.txt').read())", set()) == ""
+    assert harvest._why_uninteresting("import json  # for lypning", set()) == ""
+
+
+def test_the_fold_applies_the_content_gate_the_export_does(tmp_path):
+    # The hole this closes: `_clean` runs on the export path only, so
+    # `--transcripts` and every imported collection reached `fold_into_corpus`
+    # without passing through it. Measured on this container's transcripts
+    # before the fix, that let dozens of `import lypning` one-liners into the
+    # corpus and made lypning its most-imported module.
+    target = tmp_path / "corpus.jsonl"
+    sightings = [
+        harvest.Sighting(key=harvest.sighting_key(p), program=p)
+        for p in ("import lypning", "$P", "pass", "", "print('kept')")
+    ]
+    added, total = harvest.fold_into_corpus(sightings, target)
+    assert (added, total) == (1, 1)
+    assert json.loads(target.read_text(encoding="utf-8").splitlines()[0])["program"] == "print('kept')"
+
+
+def test_the_fold_still_merges_a_record_the_corpus_already_holds(tmp_path):
+    # The identity test must NOT move into the fold with the content tests: a
+    # program already in the corpus is exactly what a fold is merging, and
+    # rejecting it as "known" would drop every count and timestamp update.
+    target = tmp_path / "corpus.jsonl"
+    program = "print('merged')"
+    one = harvest.Sighting(key=harvest.sighting_key(program), program=program,
+                           first_seen="2026-02-02T00:00:00.000Z", count=2)
+    assert harvest.fold_into_corpus([one], target) == (1, 1)
+    again = harvest.Sighting(key=harvest.sighting_key(program), program=program,
+                             first_seen="2026-01-01T00:00:00.000Z", count=7)
+    added, total = harvest.fold_into_corpus([again], target)
+    assert (added, total) == (0, 1)
+    rec = json.loads(target.read_text(encoding="utf-8").splitlines()[0])
+    assert rec["count"] == 7 and rec["first_seen"] == "2026-01-01T00:00:00.000Z"

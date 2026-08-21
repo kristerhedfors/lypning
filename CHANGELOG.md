@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — the gate the fold walked around
+
+`harvest.fold_into_corpus` checked redaction, the size cap, and a program that
+normalises to nothing. Every other test lived in `harvest._clean`, on the export
+path — so `lypning harvest --transcripts`, and every imported collection, reached
+the fold without passing through it. A gate that half the inputs walk around is
+not a gate.
+
+The content tests now sit in `_why_unusable`, which the fold and the export both
+ask. The identity test — already in the corpus — deliberately stays out of the
+fold: a record the corpus already holds is exactly what a fold is merging, and
+rejecting it there would drop every count and timestamp update on the floor.
+
+Two rules joined it, both found by running the harvest rather than by reading it:
+
+- **A program that is nothing but an unexpanded shell variable is not a
+  program.** `python3 -c "$PROG"` is captured before the shell expands it, so
+  what lands is the reference — `$P`, `$2`, `${prog}` — which is not python and
+  never ran. Recording it is recording an artifact of our own extraction. Two
+  such records reached the corpus before this test existed; they stay, because
+  the fold never drops a record it already holds and a corpus that gets edited
+  stops being a recording.
+- **A program that imports this package is not evidence about what agents
+  type.** Every session that develops lypning types dozens of them and the hooks
+  capture them like anything else. Measured on this container's transcripts
+  (2026-08-21): 156 programs harvested, 70 importing lypning, which made it the
+  most imported module in the result — ahead of `sys`, `pathlib` and `json`.
+  That is a build order for an engine nobody is building. Only the import is
+  refused; a program that merely mentions the name is reading a path or grepping
+  a file, and stays.
+
 ### Added — collecting from repositories that will never build an engine
 
 The corpus is a recording of what agents actually type, and this repository is

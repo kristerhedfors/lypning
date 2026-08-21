@@ -668,7 +668,28 @@ def plan_install(
     asked = (sightings or "").strip() or None
     where = asked
     inherited = False
-    if where is None and already_publishing:
+    if not want_hooks:
+        # The publish directory is carried in the hook command and recorded
+        # nowhere else, so a run that writes no hook entry cannot choose one and
+        # cannot move one. A plan that resolved it anyway would print a `publish:`
+        # line, and — over an install that already publishes elsewhere — a move
+        # warning for a move that never happens: apply() leaves settings.json
+        # byte-identical, the old directory keeps receiving, and the operator has
+        # been told the opposite in the one report they were given to read first.
+        # A flag that did nothing is said out loud instead, because a user who
+        # typed --sightings and got silence reads the silence as agreement.
+        if asked:
+            actions.append(Action(
+                "skip", settings_path,
+                "WARNING: --sightings %s does nothing here — the publish directory "
+                "rides on the hook command and --no-hooks writes none, so %s"
+                % (asked,
+                   ("the hooks already wired keep publishing to %s" % already_publishing)
+                   if already_publishing else
+                   "nothing publishes until an install wires the hooks"),
+                "settings"))
+        where = None
+    elif where is None and already_publishing:
         # An OMITTED --sightings is not a request to move the evidence. The
         # merge's "last install wins" rule is right for a spelling — a script
         # path, a CLI entry point — and wrong here, because the losing side is a
@@ -681,7 +702,8 @@ def plan_install(
         where = already_publishing
         inherited = True
     moved_from = already_publishing if (
-        asked and already_publishing and asked != already_publishing) else None
+        want_hooks and asked and already_publishing
+        and asked != already_publishing) else None
     if moved_from:
         # An explicit --sightings IS a request to move, so it is honoured — but
         # the files under the old directory do not move with it and nothing reads

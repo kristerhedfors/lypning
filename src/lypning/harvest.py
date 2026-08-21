@@ -383,6 +383,30 @@ def redact(program: str) -> Tuple[str, List[str]]:
     return out, hits
 
 
+# `python3 -c "$PROG"`, where the shell would have expanded `$PROG` and this
+# parser deliberately does not. What lands is the REFERENCE, not the program:
+# `$P`, `${prog}`, `$2`. Recording that as python is recording an artifact of
+# our own extraction rather than anything an agent typed, and it is not even
+# syntactically python — a corpus of what agents run has no place for a program
+# that never existed. Two such records reached the corpus before this test did;
+# they stay, because `fold_into_corpus` never drops a record it already holds
+# and a corpus that gets edited is no longer a recording.
+_PLACEHOLDER = re.compile(r"^\$\{?\w+\}?$")
+
+
+# A program that imports THIS package. Every session that develops lypning
+# types dozens of them, and the wired hooks capture them like anything else —
+# but the corpus is what `conformance --plan` turns into a build order, so a
+# project's own development traffic entering it does not measure what agents
+# type, it measures what we were doing last week. Measured on this container's
+# transcripts (2026-08-21): 156 programs harvested, 70 of them importing
+# lypning, which made it the single most imported module in the result — ahead
+# of `sys`, `pathlib` and `json`. That is a build order for an engine nobody is
+# building. Only the IMPORT is rejected: a program that merely mentions the name
+# is reading a path or grepping a file, which is ordinary python and stays.
+_SELF_IMPORT = re.compile(r"(?m)^\s*(?:import\s+lypning\b|from\s+lypning[\w.]*\s+import\b)")
+
+
 # A credential name standing alone as one argv element. The VALUE is then the
 # next element, which is the one shape no single-string scan can see.
 _ARGV_NAME = re.compile(r"(?i)^--?" + _NAME + r"$|^" + _NAME + r"$")
@@ -451,23 +475,48 @@ def known_keys(refresh: bool = False) -> Set[str]:
 def is_interesting(program: str, known: Optional[Set[str]] = None) -> bool:
     """Is this program worth publishing?
 
-    Three rejections, in cost order: a program that is empty once normalised
+    Five rejections, in cost order: a program that is empty once normalised
     (``python3 -c ''``, a heredoc with a blank body), a program that is only
     ``pass`` (what a session runs to check an interpreter *exists*, which says
-    nothing about the python it runs), and anything the corpus already holds
-    under the same key — republishing that would add a line to a committed file
-    to say something already committed.
+    nothing about the python it runs), a program that is nothing but an
+    unexpanded shell variable, a program that imports this package (our own
+    development traffic is not evidence about what agents type), and anything
+    the corpus already holds under the same key — republishing that would add a line to a committed file to say
+    something already committed.
     """
     return not _why_uninteresting(program, known_keys() if known is None else known)
 
 
-def _why_uninteresting(program: str, known: Set[str]) -> str:
-    """The same three tests, naming which one fired. ``""`` means keep it."""
-    text = normalise(program)
+def _why_unusable(text: str) -> str:
+    """The four tests that are about the PROGRAM, naming which one fired.
+
+    Split from the identity test below because a fold has to ask a different
+    question than an export does. An export asks "is this worth publishing",
+    and a program the corpus already holds is not. A fold asks "may this text
+    enter the corpus at all", and there the already-held case is the whole
+    point — it is a record being merged, not a duplicate being added. Running
+    the identity test inside :func:`fold_into_corpus` would drop every update
+    to an existing record on the floor.
+
+    ``text`` must already be normalised; both callers have done it.
+    """
     if not text:
         return "empty"
     if all(ln.strip() in ("", "pass") for ln in text.split("\n")):
         return "trivial"
+    if _PLACEHOLDER.match(text):
+        return "placeholder"
+    if _SELF_IMPORT.search(text):
+        return "self"
+    return ""
+
+
+def _why_uninteresting(program: str, known: Set[str]) -> str:
+    """The same five tests, naming which one fired. ``""`` means keep it."""
+    text = normalise(program)
+    why = _why_unusable(text)
+    if why:
+        return why
     if sighting_key(text) in known:
         return "known"
     return ""
@@ -1101,7 +1150,13 @@ def fold_into_corpus(sightings: Sequence[Sighting],
     added = 0
     for s in sightings:
         program, hits = redact(s.program)
-        if not is_safe(hits) or not normalise(program):
+        if not is_safe(hits):
+            continue
+        # The content tests, not just the empty one. The export path applies
+        # these in `_clean`, but `--transcripts` and every imported collection
+        # reach the fold WITHOUT passing through an export, so a gate that lived
+        # only there was a gate half the inputs walked around.
+        if _why_unusable(normalise(program)):
             continue
         if len(program.encode("utf-8")) > MAX_PROGRAM_BYTES:
             continue

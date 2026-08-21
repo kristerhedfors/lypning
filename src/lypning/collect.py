@@ -77,16 +77,27 @@ MAX_SOURCE_BYTES = 32 * 1024 * 1024
 # than this is a dump, not a session's evidence.
 MAX_SOURCE_RECORDS = 20000
 
-# Most filesystem entries examined under one source, directories included. A
-# source is an arbitrary repository, so the walk needs a ceiling that does not
-# depend on the source behaving. It counts entries WALKED and not candidates
-# found, which is the only version of this bound that bounds anything: a tree of
-# two million files ending in .txt yields no candidates at all, so a limit on
-# matches is a limit that a hostile — or merely large — source never reaches.
-# What it bounds is the per-entry work — the name tests, the stat, the read.
-# Listing one directory is still one `scandir`, which is what `os.walk` is; a
-# bound cannot make that partial, and it does not stat anything.
-MAX_FILES = 4096
+# Two bounds, because a walk over somebody else's repository has two costs and
+# one number cannot hold both. A source is an arbitrary repository, so neither
+# ceiling may depend on the source behaving — and neither may be low enough for
+# an ordinary one to reach, because a walk that stops early stops in whichever
+# directory sorts first and reports the source as publishing nothing.
+#
+# Entries WALKED, directories included. This is the cheap axis: a directory is
+# one `scandir` the walk had to make to know the entry exists, and an entry that
+# is not a candidate costs a suffix test on a name. So the ceiling is set where
+# a tree stops being a repository — a generated corpus, a vendored monorepo, an
+# artefact directory nobody meant to publish — and nowhere near where an
+# ordinary source lives: this repository walks a few hundred.
+MAX_WALK_ENTRIES = 200000
+
+# Files OPENED. This is the expensive axis and the one a bound on matches would
+# miss: `looks_like_collection` is a read, and the two name tests in front of it
+# are guesses, so a source with ten thousand files called `corpus.jsonl` costs
+# ten thousand reads before a single one is rejected. Past this many published
+# collections in one tree it is a dump rather than a session's evidence, and the
+# per-file record cap has nothing to say about how many files there are.
+MAX_SHAPE_TESTS = 4096
 
 # Deepest directory the walk descends to. A path can nest until the filesystem
 # says no, and a symlink loop is not the only way to get there: a fetched tree
@@ -111,8 +122,10 @@ IMPORT_SOURCE_CEILING = "transcript"
 # merges counts with max, so an inflated number is PERMANENT — re-importing a
 # corrected upstream cannot lower it, and neither can anything short of editing
 # the corpus by hand. The clamp keeps the ordering an honest count carries and
-# discards the tail no honest count reaches: on 2026-08-21 the largest count
-# over the 681 records this tree's corpus loaded was 45.
+# discards the tail no honest count reaches: `lypning corpus --stats` on
+# 2026-08-21 loaded 842 entries — what a reader sees, the harvested corpus and
+# the seed together, not either file's line count — and the largest count over
+# them was 45.
 MAX_IMPORT_COUNT = 100
 
 # Ten minutes. A shallow clone of a large repository over a slow link is
@@ -486,10 +499,14 @@ def _inside(path: Path, root: Path) -> bool:
     the same story. Both satisfy the shape test, because they are exactly the
     record type the shape test is looking for.
 
-    So a symlink found by the walk is skipped and the target is resolved and
-    required to be under the resolved root, which also catches the spellings a
-    plain ``islink`` check does not: a hard-to-see chain, or a root that is
-    itself reached through a link.
+    So every symlink the walk hands back is refused outright, whatever it points
+    at. Refusing one that points inside the tree costs the import nothing — the
+    file it names is walked in its own right — and asking where it leads instead
+    would put the answer in the hands of the thing being screened. The
+    resolve-and-compare after it is a second question, not the same one: it
+    catches a candidate whose PARENT left the tree, which ``os.walk`` does not
+    descend into today and which a change to how this walk descends would
+    otherwise turn into a read outside the tree with nothing here noticing.
     """
     try:
         if os.path.islink(str(path)):
@@ -509,15 +526,35 @@ def _depth(dirpath: str, base: Path) -> int:
     return 0 if rel == os.curdir else rel.count(os.sep) + 1
 
 
-def discover(root: Path, *, limit: int = MAX_FILES) -> List[Path]:
-    """Every published collection under a tree. Sorted, deduplicated, never raises.
+@dataclass(frozen=True)
+class Discovery:
+    """What one walk found, and whether it was allowed to finish.
 
-    The bound is on entries *walked*, not on files matched and not on candidates
-    considered: a walk over somebody else's repository is a walk over an unknown
-    quantity, the cost of the limit being hit is a short report, and the cost of
-    a limit that counts only what it liked is an import that walks two million
-    files to find out none of them were candidates. :data:`MAX_DEPTH` bounds the
-    other axis.
+    Two fields rather than a list of paths, because a walk that stopped at a
+    bound and a source that publishes nothing produce the same empty list, and
+    that confusion is the failure this module's docstring says it cannot afford:
+    an import that finds nothing looks exactly like an import from a source that
+    has nothing. ``truncated`` is the only thing that separates them, so it is
+    carried out of the walk, into :class:`ImportResult` and onto the report
+    rather than being a decision made and forgotten here. A bound that quietly
+    returns fewer files is worse than no bound at all — the import still says
+    ``ok``, and what it lost was somebody's whole collection.
+    """
+
+    files: List[Path] = field(default_factory=list)
+    truncated: bool = False
+
+
+def discover(root: Path, *, entries: int = MAX_WALK_ENTRIES,
+             opens: int = MAX_SHAPE_TESTS) -> Discovery:
+    """Every published collection under a tree, and whether the walk finished.
+
+    Sorted, deduplicated, never raises. The bounds are :data:`MAX_WALK_ENTRIES`
+    on what the walk looks at, :data:`MAX_SHAPE_TESTS` on what it opens, and
+    :data:`MAX_DEPTH` on how far down it goes; each constant carries why it sits
+    where it does. Hitting any of the three sets ``truncated`` on the result,
+    which is what makes the cost of a limit being hit a short report rather than
+    a source that has silently gone quiet.
     """
     base = Path(root)
     try:
@@ -531,38 +568,58 @@ def discover(root: Path, *, limit: int = MAX_FILES) -> List[Path]:
         # the point of typing it. The size cap is not optional either way.
         ok = (_is_candidate(base, _rel_base(base.parent))
               and _within_cap(base) and looks_like_collection(base))
-        return [base] if ok else []
+        return Discovery([base] if ok else [], False)
 
     rel_base = _rel_base(base)
     found: List[Path] = []
     walked = 0
+    opened = 0
+    truncated = False
+    stop = False
     try:
         for dirpath, dirnames, filenames in os.walk(str(base)):
             # The directory counts as an entry too. A tree of a million empty
             # directories costs nothing per file and is still a tree somebody
             # can hand us, so a bound that only counted files would not bound it.
             walked += 1
-            if walked > limit:
+            if walked > entries:
+                truncated = stop = True
                 break
             # In place, because os.walk reads this list back to decide where to
             # descend; rebinding it would prune nothing.
             dirnames[:] = sorted(d for d in dirnames if d not in _PRUNE and not d.startswith(".git"))
-            if _depth(dirpath, base) >= MAX_DEPTH:
-                dirnames[:] = []  # files at this level still count, children do not
+            if _depth(dirpath, base) >= MAX_DEPTH and dirnames:
+                # Files at this level still count, children do not — and a tree
+                # that publishes below here has had part of itself hidden, which
+                # is the same lie as a stopped walk and is reported the same way.
+                dirnames[:] = []
+                truncated = True
             for name in sorted(filenames):
                 walked += 1
-                if walked > limit:
-                    return sorted(set(found))
+                if walked > entries:
+                    truncated = stop = True
+                    break
                 path = Path(dirpath) / name
                 if not _is_candidate(path, rel_base):
                     continue
+                # Everything past here is a read, so the open is counted before
+                # it happens: a bound charged after the fact bounds nothing.
+                opened += 1
+                if opened > opens:
+                    truncated = stop = True
+                    break
                 if not _inside(path, base_real) or not _within_cap(path):
                     continue
                 if looks_like_collection(path):
                     found.append(path)
+            if stop:
+                # Only the two exhausted budgets end the walk. A directory
+                # pruned for depth is one branch cut, not a reason to abandon
+                # the siblings that are still within every bound there is.
+                break
     except OSError:
         pass  # a tree that vanished mid-walk yields what it had already given
-    return sorted(set(found))
+    return Discovery(sorted(set(found)), truncated)
 
 
 # --- what an imported record is allowed to claim ------------------------------
@@ -721,6 +778,12 @@ class ImportResult:
     total: int = 0
     corpus: str = ""
     dry_run: bool = False
+    #: The sources whose walk stopped at a bound instead of at the end of the
+    #: tree. Named rather than counted, because the question a reader has next
+    #: is which collection they are missing, and the answer starts with whose.
+    #: Empty is the ordinary case and the one that means the counts above are
+    #: the whole of what these sources publish.
+    truncated: List[str] = field(default_factory=list)
 
     @property
     def resolved(self) -> List[Dict[str, Any]]:
@@ -736,6 +799,7 @@ class ImportResult:
             "total": self.total,
             "corpus": self.corpus,
             "dry_run": self.dry_run,
+            "truncated": list(self.truncated),
         }
 
 
@@ -746,14 +810,13 @@ def _publishable(sightings: Sequence[harvest.Sighting],
     This calls :func:`harvest._clean` — the private one, deliberately, because
     it IS the gate a local ``lypning harvest`` puts in front of the fold and a
     second implementation of it is a second implementation that drifts. The fold
-    alone is not that gate: it checks redaction, the size cap and a program that
-    normalises to nothing, and it does not check the other two things ``_clean``
-    checks. A ``pass``-only program is what a session runs to find out whether an
-    interpreter EXISTS, so it says nothing about the python that interpreter
-    runs; and a program the corpus already holds re-enters as an observation
-    under a key the seed corpus spells differently, which is how an expectation
-    somebody typed by hand turns into evidence that agents type it (see
-    :func:`harvest.known_keys`, which exists because that happened).
+    now runs the content half of that gate itself, so the two agree about what
+    is a program; what it cannot run is the IDENTITY half, because a record the
+    corpus already holds is exactly what a fold is merging. That last test is
+    what this function adds: a program the corpus already holds re-enters as an
+    observation under a key the seed corpus spells differently, which is how an
+    expectation somebody typed by hand turns into evidence that agents type it
+    (see :func:`harvest.known_keys`, which exists because that happened).
 
     Importing without this gate is not theoretical either: the import run before
     this function existed put records into the corpus that no local export could
@@ -798,7 +861,10 @@ def import_sources(sources: Sequence[Source], *, corpus_path: Optional[Path] = N
     merged: Dict[str, harvest.Sighting] = {}
     for source in sources:
         path, note = fetch(source, offline=offline)
-        files = discover(path) if path is not None else []
+        walk = discover(path) if path is not None else Discovery()
+        files = walk.files
+        if walk.truncated:
+            result.truncated.append(source.name)
         programs = 0
         for file in files:
             for s in read_collection(file):
@@ -826,6 +892,7 @@ def import_sources(sources: Sequence[Source], *, corpus_path: Optional[Path] = N
             "files": len(files),
             "programs": programs,
             "note": note,
+            "truncated": walk.truncated,
         })
 
     sightings = [merged[k] for k in sorted(merged)]
@@ -889,15 +956,21 @@ def render(result: ImportResult) -> str:
         ("corpus", "{0} added, {1} total".format(result.added, result.total)),
         ("file", result.corpus + ("  (dry run - not written)" if result.dry_run else "")),
     ]
-    if result.added > result.new:
-        # Never silent. Added exceeding new means the fold wrote records for
-        # programs the corpus a reader sees already holds — a seed record under
-        # a hand-written slug, or, in a wheel, the shipped file the fold is not
-        # allowed to write into. Both are worth a line: the first is how an
-        # expectation quietly becomes an observation, and the second is how a
-        # state corpus grows a copy of what already shipped.
-        rows.append(("note", "{0} of those the corpus already holds under another key "
-                             "or in the shipped file".format(result.added - result.new)))
+    # There is deliberately no "added exceeded new" line here. `_publishable`
+    # drops every record whose key is in `known`, and `known` holds the ids of
+    # the corpus being written plus, in the shape that has them, the seed and
+    # shipped keys — so `new` counts exactly the records handed to the fold and
+    # `added` can only be that number or fewer. A branch for a case the gate has
+    # made unreachable reads to the next person as a case that still happens,
+    # and sends them looking for the path that produces it.
+
+    if result.truncated:
+        # A walk that stopped at a bound and a source with nothing to publish
+        # return the same empty list, and this is the only line that tells them
+        # apart. It says INCOMPLETE rather than a count because the number of
+        # collections it did not reach is exactly what it did not stay to learn.
+        rows.append(("truncated", "{0}: the walk stopped at a limit, so these counts "
+                                  "are INCOMPLETE".format(", ".join(result.truncated))))
     width = max(len(k) for k, _ in rows)
     out = ["collect", "=" * 7]
     for k, v in rows:
@@ -911,9 +984,13 @@ def render(result: ImportResult) -> str:
     out.append("")
     name_width = max(len(str(s.get("name") or "")) for s in result.sources)
     for s in result.sources:
+        # The marker rides in the note column and next to the counts it
+        # qualifies, because a per-source count that is short is read one row at
+        # a time and a warning three rows up is read once.
+        note = str(s.get("note") or "") + (" [walk truncated]" if s.get("truncated") else "")
         out.append("{0}  {1:>4} file(s)  {2:>6} program(s)  {3}".format(
             str(s.get("name") or "").ljust(name_width),
-            s.get("files") or 0, s.get("programs") or 0, s.get("note") or ""))
+            s.get("files") or 0, s.get("programs") or 0, note))
         # The location on its own line rather than in the row: a git URL is
         # sixty characters and would push the counts off the side of a terminal,
         # and the counts are what a reader came for.

@@ -13,7 +13,7 @@ import subprocess
 
 import pytest
 
-from lypning import install
+from lypning import cli, install
 
 FOREIGN_SETTINGS = {
     "model": "opusmagnum",
@@ -517,3 +517,88 @@ def test_moving_the_publish_directory_takes_the_flag_and_says_what_it_costs(
     after = json.loads(settings_path.read_text(encoding="utf-8"))
     assert install.configured_sightings(after) == elsewhere
     assert len(_ours(after, "Stop")) == 1
+
+
+def test_a_plan_that_writes_no_hook_never_announces_a_move(project, settings_path):
+    """--no-hooks with a --sightings flag: the plan may not promise a relocation.
+
+    The publish directory rides on the hook command, so a run that writes no hook
+    entry cannot move it. Announcing the move anyway is the failure mode the plan
+    exists to prevent, only inverted — the report said the evidence had moved, the
+    file came out byte-identical, and the old directory went on receiving under a
+    name nobody is looking at any more. A dry-run that lies about a write is worse
+    than no dry-run, because it is the one output a careful operator trusts.
+    """
+    _write(settings_path, FOREIGN_SETTINGS)
+    install.install(project, collect_only=True, sightings=WEIRD_SIGHTINGS)
+    elsewhere = str(project / "elsewhere")
+    before = settings_path.read_bytes()
+
+    plan = install.plan_install(project, hooks=False, shim=False, skill=False,
+                                sightings=elsewhere)
+    assert plan.sightings is None and plan.sightings_previous is None
+    assert not plan.sightings_inherited
+    text = install.render_plan(plan)
+    assert "publish :" not in text
+    assert "MOVED" not in text
+    # Inert, and said so: silence in front of a flag the user typed reads as
+    # agreement, and the directory that keeps receiving is the one worth naming.
+    note = [a for a in plan.notes if "WARNING" in a.note and elsewhere in a.note]
+    assert note and WEIRD_SIGHTINGS in note[0].note
+
+    install.apply(plan)
+    assert settings_path.read_bytes() == before
+    after = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert install.configured_sightings(after) == WEIRD_SIGHTINGS
+
+
+def test_no_hooks_and_no_publish_directory_yet_still_says_nothing_moved(project):
+    """The same run against a project with no install at all: no line to inherit.
+
+    The warning has to hold when there is nothing configured either, because that
+    is the shape a first-time user hits — and "nothing publishes yet" is a
+    different sentence from "the old directory keeps receiving".
+    """
+    plan = install.plan_install(project, hooks=False, shim=False, skill=False,
+                                sightings="wherever")
+    assert plan.sightings is None
+    assert "publish :" not in install.render_plan(plan)
+    assert [a for a in plan.notes if "WARNING" in a.note and "wherever" in a.note]
+
+
+def test_the_hook_wiring_run_still_resolves_the_publish_directory(project, settings_path):
+    """The guard above is about --no-hooks only: hooks on, everything still works.
+
+    A fix that suppressed the publish line whenever it was inconvenient would
+    take the inherit and move reporting with it, which is the louder half of the
+    same rule.
+    """
+    _write(settings_path, FOREIGN_SETTINGS)
+    install.install(project, collect_only=True, sightings=WEIRD_SIGHTINGS)
+
+    kept = install.plan_install(project, collect_only=True)
+    assert kept.sightings == WEIRD_SIGHTINGS and kept.sightings_inherited
+    assert "publish :" in install.render_plan(kept)
+
+    elsewhere = str(project / "elsewhere")
+    moved = install.plan_install(project, collect_only=True, sightings=elsewhere)
+    assert moved.sightings_previous == WEIRD_SIGHTINGS
+    assert "MOVED" in install.render_plan(moved)
+
+
+def test_the_install_help_describes_what_the_two_collection_flags_do(capsys):
+    """Help that under-describes a step is the same defect as a plan that does.
+
+    Neither behaviour is guessable from the flag name and both are destructive in
+    the quiet way: an omitted --sightings inherits rather than defaulting, and
+    --collect-only over a full install takes an entry away. A user who reads only
+    --help must be able to predict both, or the dry-run is the first place they
+    find out what they asked for — and the flags exist for repositories that read
+    the help and then run the install unattended.
+    """
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["install", "--help"])
+    body = capsys.readouterr().out
+    body = body[body.index("--collect-only", body.index("options:")):]
+    assert "KEEPS" in body and "tests/corpus/sightings" in body
+    assert "REMOVES" in body

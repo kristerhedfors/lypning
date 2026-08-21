@@ -115,7 +115,7 @@ def test_discover_finds_a_sightings_directory_and_a_corpus_file(tmp_path):
                          ["print('%s b')" % MARK])
     corpus_file = _collection(root / "data" / "corpus.jsonl", ["print('%s c')" % MARK])
 
-    assert collect.discover(root) == sorted([published, rolled, corpus_file])
+    assert collect.discover(root).files == sorted([published, rolled, corpus_file])
 
 
 def test_discover_finds_a_collection_under_a_directory_nobody_told_us_about(tmp_path):
@@ -125,7 +125,7 @@ def test_discover_finds_a_collection_under_a_directory_nobody_told_us_about(tmp_
     root = tmp_path / "theirs"
     odd = _collection(root / "evidence" / "harvested" / "runs-corpus.jsonl",
                       ["print('%s odd')" % MARK])
-    assert collect.discover(root) == [odd]
+    assert collect.discover(root).files == [odd]
 
 
 def test_a_name_that_matches_is_not_enough_the_lines_decide(tmp_path):
@@ -139,7 +139,7 @@ def test_a_name_that_matches_is_not_enough_the_lines_decide(tmp_path):
     not_programs.write_text(
         "".join(json.dumps({"name": "n%d" % i, "ms": i}) + "\n" for i in range(6)),
         encoding="utf-8")
-    assert collect.discover(root) == []
+    assert collect.discover(root).files == []
 
 
 def test_looks_like_collection_rejects_what_is_not_a_collection(tmp_path):
@@ -192,7 +192,7 @@ def test_discover_prunes_dot_git(tmp_path):
     _collection(root / ".git" / "sightings" / "b.jsonl", ["print('%s drop')" % MARK])
     _collection(root / "node_modules" / "pkg" / "corpus.jsonl", ["print('%s drop')" % MARK])
     _collection(root / "target" / "corpus.jsonl", ["print('%s drop')" % MARK])
-    assert collect.discover(root) == [wanted]
+    assert collect.discover(root).files == [wanted]
 
 
 def test_discover_survives_a_symlink_loop_and_a_directory_it_cannot_read(tmp_path):
@@ -211,7 +211,7 @@ def test_discover_survives_a_symlink_loop_and_a_directory_it_cannot_read(tmp_pat
     os.chmod(str(closed), 0o000)
     try:
         # Holds whether or not the caller is root: nothing findable is inside.
-        assert collect.discover(root) == [wanted]
+        assert collect.discover(root).files == [wanted]
     finally:
         os.chmod(str(closed), 0o755)
 
@@ -220,8 +220,8 @@ def test_discover_accepts_a_single_file_because_that_is_what_people_type(tmp_pat
     # `--from ../other/tests/corpus/sightings/sess-a.jsonl` is the obvious thing
     # to try when importing one file, and a walk of a file finds nothing.
     one = _collection(tmp_path / "sightings" / "sess-a.jsonl", ["print('%s one')" % MARK])
-    assert collect.discover(one) == [one]
-    assert collect.discover(one.parent) == [one]
+    assert collect.discover(one).files == [one]
+    assert collect.discover(one.parent).files == [one]
 
 
 def test_read_collection_drops_a_corrupt_line_and_keeps_the_file(tmp_path):
@@ -440,6 +440,30 @@ def test_render_returns_a_string_and_prints_nothing(tmp_path, capsys):
     assert capsys.readouterr().out == ""
 
 
+def test_added_can_never_exceed_new_because_the_gate_runs_first(tmp_path):
+    # `_publishable` drops every record whose key is already known, so the fold
+    # is only ever handed records the corpus does not hold — `new` counts those
+    # and `added` counts the ones the fold then wrote, which is that number or
+    # fewer. The report used to carry a line for `added > new`; it is gone
+    # because a branch for a case the gate has made unreachable sends the next
+    # reader looking for the path that produces it. If a change ever makes the
+    # inequality reachable again, this is the test that says so.
+    root = tmp_path / "theirs"
+    _collection(root / "sightings" / "a.jsonl", ["print('%s twice')" % MARK])
+    _collection(root / "sightings" / "b.jsonl", ["print('%s twice')" % MARK,
+                                                 "print('%s once')" % MARK])
+    target = tmp_path / "corpus.jsonl"
+
+    first = collect.import_sources([_source(root)], corpus_path=target)
+    second = collect.import_sources([_source(root)], corpus_path=target)
+
+    assert (first.new, first.added) == (2, 2)
+    assert (second.new, second.added) == (0, 0)  # the second run has nothing to say
+    for result in (first, second):
+        assert result.added <= result.new
+        assert "already holds under another key" not in collect.render(result)
+
+
 def test_render_says_so_when_there_is_nothing_configured():
     out = collect.render(collect.ImportResult())
     assert "no sources configured" in out
@@ -624,8 +648,13 @@ def test_import_result_to_obj_is_json_and_holds_no_paths(tmp_path):
     round_tripped = json.loads(json.dumps(obj))
 
     assert round_tripped == obj
-    assert set(obj) == {"sources", "gathered", "new", "added", "total", "corpus", "dry_run"}
+    assert set(obj) == {"sources", "gathered", "new", "added", "total", "corpus",
+                        "dry_run", "truncated"}
     assert obj["corpus"] == str(tmp_path / "corpus.jsonl")
+    # A walk that finished says so in the JSON too: a consumer of `--json` reads
+    # a zero the same way a reader of the report does, and has the same right to
+    # know whether the zero is the source's answer or the walk's.
+    assert obj["truncated"] == []
 
 
 def test_a_source_that_fails_does_not_cost_the_import_the_ones_that_work(tmp_path):
@@ -681,15 +710,87 @@ def test_a_clone_is_never_placed_inside_the_package(monkeypatch, tmp_path):
     assert paths.PACKAGE_ROOT not in cache.parents
 
 
-def test_the_walk_is_bounded_by_the_file_limit(tmp_path):
-    # A source is an arbitrary repository, so the ceiling must not depend on the
-    # source behaving. The cost of the limit is a short report; the cost of no
-    # limit is an import that never returns.
+def test_the_walk_is_bounded_on_both_of_its_costs(tmp_path):
+    # A source is an arbitrary repository, so neither ceiling may depend on the
+    # source behaving. The cost of no limit is an import that never returns; the
+    # cost of a limit is a short list, which is why neither bound is allowed to
+    # produce one quietly — see the truncation tests below.
     root = tmp_path / "theirs"
     for i in range(12):
         _collection(root / "sightings" / ("s%02d.jsonl" % i), ["print('%s %d')" % (MARK, i)])
-    assert len(collect.discover(root, limit=4)) <= 4
-    assert len(collect.discover(root)) == 12
+
+    assert len(collect.discover(root, entries=4).files) <= 4
+    assert len(collect.discover(root, opens=4).files) <= 4
+    assert len(collect.discover(root).files) == 12
+    assert collect.discover(root).truncated is False
+
+
+def test_an_ordinary_repository_is_nowhere_near_the_walk_bound(tmp_path):
+    # The bound that counts entries has to sit far past a repository, because a
+    # walk that stops early stops in whichever directory sorts FIRST: five
+    # thousand files under `aaa/` and the collection under `tests/` is a source
+    # that reports zero programs while publishing hundreds. The number here is
+    # ordinary — this repository is smaller — and a ceiling an ordinary tree can
+    # reach breaks the feature on exactly the repositories it exists for.
+    root = tmp_path / "theirs"
+    bulk = root / "aaa"
+    bulk.mkdir(parents=True)
+    for i in range(5000):
+        (bulk / ("f%04d.txt" % i)).write_text("x\n", encoding="utf-8")
+    published = _collection(root / "tests" / "corpus" / "sightings" / "sess.jsonl",
+                            ["print('%s deep in the tree')" % MARK])
+
+    walk = collect.discover(root)
+    assert walk.files == [published]
+    assert walk.truncated is False
+
+    target = tmp_path / "corpus.jsonl"
+    result = collect.import_sources([_source(root, "big")], corpus_path=target)
+    assert (result.gathered, result.added) == (1, 1)
+    assert result.truncated == []
+    assert "1 file(s)" in collect.render(result)
+
+
+def test_a_truncated_walk_is_never_reported_as_a_source_with_nothing(tmp_path, monkeypatch):
+    # The failure this whole module is built around: an import that finds
+    # nothing looks exactly like an import from a source that has nothing. A
+    # bound that returns a short list and says nothing manufactures that
+    # confusion — the run still reports `ok`, and what it dropped was somebody's
+    # entire collection. So truncation leaves the walk, reaches the result, and
+    # is on the report in both places a reader looks: the summary and the row.
+    root = tmp_path / "theirs"
+    for i in range(12):
+        _collection(root / "sightings" / ("s%02d.jsonl" % i), ["print('%s %d')" % (MARK, i)])
+
+    real = collect.discover
+    monkeypatch.setattr(collect, "discover", lambda path, **kw: real(path, entries=4))
+    result = collect.import_sources([_source(root, "clipped")],
+                                    corpus_path=tmp_path / "corpus.jsonl")
+
+    assert result.truncated == ["clipped"]
+    assert result.sources[0]["truncated"] is True
+    assert result.to_obj()["truncated"] == ["clipped"]
+
+    out = collect.render(result)
+    out.encode("ascii")
+    assert "INCOMPLETE" in out
+    assert "clipped" in out.split("\n")[-3]  # the row, not only the summary
+
+
+def test_the_depth_bound_is_reported_the_same_way_as_a_stopped_walk(tmp_path):
+    # A branch cut for depth loses collections exactly the way a stopped walk
+    # does, so it is the same word to the reader. It is not the same thing to
+    # the walk: the siblings that are still inside every bound are still walked.
+    root = tmp_path / "theirs"
+    deep = root
+    for i in range(collect.MAX_DEPTH + 2):
+        deep = deep / ("d%d" % i)
+    _collection(deep / "corpus.jsonl", ["print('%s too deep')" % MARK])
+    shallow = _collection(root / "sightings" / "s.jsonl", ["print('%s reachable')" % MARK])
+
+    walk = collect.discover(root)
+    assert walk.files == [shallow]
+    assert walk.truncated is True
 
 
 def test_a_file_larger_than_the_cap_is_not_a_collection(tmp_path, monkeypatch):
@@ -699,7 +800,7 @@ def test_a_file_larger_than_the_cap_is_not_a_collection(tmp_path, monkeypatch):
     root = tmp_path / "theirs"
     _collection(root / "sightings" / "big.jsonl",
                 ["print('%s %s')" % (MARK, "padding" * 40)])
-    assert collect.discover(root) == []
+    assert collect.discover(root).files == []
 
 
 @requires_git
@@ -849,10 +950,6 @@ def test_the_gate_a_local_export_applies_stands_in_front_of_an_import(tmp_path):
     assert harvest.is_interesting("pass", set()) is False
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "collect._publishable does not screen a program for being a program: "
-    "`$P` with a shell redirection in argv_tail still folds into the corpus. "
-    "Delete this marker when the gate lands - an XPASS here is the fix arriving"))
 def test_a_shell_fragment_a_local_capture_would_never_produce_is_refused(tmp_path):
     # The record the import run before `_publishable` existed actually wrote: an
     # unexpanded shell variable, with the shell's redirection captured as an
@@ -924,7 +1021,7 @@ def test_a_symlink_pointing_out_of_the_tree_is_never_read(tmp_path):
 
     # Both spellings, because a check that only caught the absolute one would
     # leave the relative one — which is the one a repository can commit.
-    assert collect.discover(root) == [own]
+    assert collect.discover(root).files == [own]
 
     target = tmp_path / "corpus.jsonl"
     result = collect.import_sources([_source(root)], corpus_path=target)
@@ -933,6 +1030,22 @@ def test_a_symlink_pointing_out_of_the_tree_is_never_read(tmp_path):
     text = target.read_text(encoding="utf-8")
     assert "%s outside" % MARK not in text
     assert "%s own" % MARK in text
+
+
+def test_a_symlink_is_refused_whatever_it_points_at(tmp_path):
+    # Including one whose target is inside the tree. The walk does not ask a
+    # symlink where it leads, because that answer belongs to the thing being
+    # screened; refusing it costs the import nothing, since the file it names is
+    # walked in its own right and turns up under its own name.
+    root = tmp_path / "theirs"
+    own = _collection(root / "sightings" / "own.jsonl", ["print('%s own')" % MARK])
+    try:
+        (root / "sightings" / "link.jsonl").symlink_to(own)
+    except OSError:
+        pytest.skip("this filesystem does not do symlinks")
+
+    assert collect._inside(root / "sightings" / "link.jsonl", root.resolve()) is False
+    assert collect.discover(root).files == [own]
 
 
 def test_an_oversized_file_named_as_the_location_itself_is_refused(tmp_path, monkeypatch):
@@ -946,7 +1059,7 @@ def test_an_oversized_file_named_as_the_location_itself_is_refused(tmp_path, mon
                        ["print('%s %s')" % (MARK, "padding" * 40)])
     assert dump.stat().st_size > collect.MAX_SOURCE_BYTES
 
-    assert collect.discover(dump) == []      # named directly
+    assert collect.discover(dump).files == []      # named directly
     assert collect.read_collection(dump) == []  # and re-checked where it is read
     target = tmp_path / "corpus.jsonl"
 
@@ -993,8 +1106,11 @@ def test_a_tree_of_files_that_are_not_collections_stops_at_the_entry_limit(tmp_p
                         lambda path, base: (examined.append(path), real(path, base))[1])
 
     # The limit is reached before the collection is, and the walk stops there
-    # rather than carrying on to report what it liked.
-    assert collect.discover(root, limit=16) == []
+    # rather than carrying on to report what it liked — and says it stopped,
+    # because an empty list is what a source with nothing to give also returns.
+    short = collect.discover(root, entries=16)
+    assert short.files == []
+    assert short.truncated is True
     assert len(examined) <= 16
 
     # The contrast that makes that number mean something: given room, this same
@@ -1003,10 +1119,13 @@ def test_a_tree_of_files_that_are_not_collections_stops_at_the_entry_limit(tmp_p
     # in the result either way — an unbounded walk of a large source and a
     # bounded one both return the collections they found.
     del examined[:]
-    assert collect.discover(root, limit=10 ** 9) == [late]
+    assert collect.discover(root, entries=10 ** 9).files == [late]
     assert len(examined) > 200
 
-    # And the shipped ceiling is a real one over a real tree, not an absent one.
+    # And the shipped ceiling is a real one over a real tree, not an absent one
+    # — but it is nowhere near a tree this size, which is the whole point of it.
     del examined[:]
-    assert collect.discover(root) == [late]
-    assert 0 < len(examined) <= collect.MAX_FILES
+    whole = collect.discover(root)
+    assert whole.files == [late]
+    assert whole.truncated is False
+    assert 0 < len(examined) <= collect.MAX_WALK_ENTRIES

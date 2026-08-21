@@ -388,16 +388,26 @@ local harvest.** Imported sightings go through `harvest._clean` — the gate a
 local export puts in front of the fold — and then to
 `harvest.fold_into_corpus`, which is the only place in this package that writes
 the corpus. So an import gets the same redaction before the hash, the same size
-guard, the same three rejections a local export applies, and the same
+guard, the same five rejections a local export applies, and the same
 max-not-sum counting — a program two sources both published lands once, with the
 earliest `first_seen` and the strongest provenance either declared. There is no
 second implementation of any of it, which is the only reason the privacy rules
 below can be stated once and be true of both paths.
 
-Two of those rejections are cheap hygiene: a program that normalises to nothing,
-and a `pass`-only program, which is what a session runs to find out whether an
-interpreter *exists* and therefore says nothing about the python it runs. The
-third — already in the corpus — is the feedback-loop guard, and it is the reason
+Four of those rejections are about the program. Two are cheap hygiene: a program
+that normalises to nothing, and a `pass`-only program, which is what a session
+runs to find out whether an interpreter *exists* and therefore says nothing
+about the python it runs. The third is a program that is nothing but an
+unexpanded shell variable — `python3 -c "$PROG"` captured before the shell
+expanded it, so what lands is the *reference*, which is not python and never
+ran. The fourth is a program that imports this package: every session that
+develops lypning types dozens of them and the hooks capture them like anything
+else, but the corpus is what `conformance --plan` turns into a build order, so
+our own development traffic entering it measures what we were doing last week
+rather than what agents type. Only the import is refused — a program that merely
+mentions the name is reading a path or grepping a file, and stays.
+
+The fifth — already in the corpus — is the feedback-loop guard, and it is the reason
 the gate has to sit in front of the fold rather than being left to it. A seed
 record is an expectation somebody typed by hand, keyed by a slug rather than by
 content, so a fold left to itself does not recognise one and re-files it as an
