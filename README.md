@@ -17,7 +17,7 @@ route cost one wasted process spawn instead of a wrong answer.
 
 ---
 
-## The numbers, up front
+## Performance comparison
 
 `lypning bench --startup-repeat 15 --repeat 3`, run on **2026-08-21** on this
 container — 4 CPUs, Linux 6.18.44-fc-v21, all three engines built — against a
@@ -42,12 +42,12 @@ Correctness on the same tree, from `lypning conformance`: `lypning` 500 MATCH ·
 **763 / 763**, zero. Those two are one known defect, tracked rather than waived
 — §5.
 
-Numbers from one run on one machine. The reason every tool prints the corpus
-size it loaded is that yours will differ, so re-run rather than cite: §1 is this
-table in full, with its caveats and with the upstream result this tree did *not*
+These are numbers from one run on one machine, and every tool prints the corpus
+size it loaded so that a reader can tell one run from another. §1 is the same
+table in full, with its caveats and with the upstream result this tree did not
 reproduce.
 
-## How a program reaches an interpreter
+## The dataflow
 
 ```
   python3 -c 'import json,sys; print(len(json.load(sys.stdin)))'
@@ -84,31 +84,30 @@ reproduce.
   the program's own stdout, the program's own exit code
 ```
 
-The classifier is a static analysis over lypning's own front end, not a
-heuristic over the program text — so "can tier 1 run this" is an *exact*
-answer, costing one parse and no spawn. The tiers below it cannot be asked that
-way, because they are separate binaries, so those are capability tables; and
-the same `lypning conformance` run that grades answers also grades routes:
-**91.1% IDEAL, 97.5% right on the first try** over the 763 programs above.
+The classifier is a static analysis over lypning's own front end rather than a
+heuristic over the program text, so "can tier 1 run this" is an exact answer
+costing one parse and no spawn. The tiers below it cannot be asked that way,
+because they are separate binaries, so those are capability tables; the same
+`lypning conformance` run that grades answers also grades routes, at **91.1%
+IDEAL and 97.5% right on the first try** over the 763 programs above.
 
-Three properties make the fall-through affordable, and each is load-bearing:
+Three properties make the fall-through affordable:
 
-- **The winning case costs nothing.** A program routed to tier 1 runs in *this*
-  process — no second spawn, no pipe. About 96% of a one-liner's cost is the OS
-  spawning a process, so a dispatcher that forked even for the case it got
-  right would hand back most of what the fast engine won.
-- **A refusal is a non-event.** Exit `90`, one `<engine>: unsupported: <kind>:
-  <detail>` line on stderr, nothing on stdout — lypning stages its output and
-  discards it, so a refused run is observably a no-op. That commit barrier is
-  what makes falling onward *safe* rather than merely possible
-  (`docs/LYPNING.md` §6).
+- **The accepted case needs no extra process.** A program routed to tier 1 runs
+  in *this* process — no second spawn, no pipe. About 96% of a one-liner's cost
+  is the OS spawning a process, so a dispatcher that forked even for the case it
+  got right would give back most of what the fast engine won.
+- **A refusal leaves nothing behind.** Exit `90`, one `<engine>: unsupported:
+  <kind>: <detail>` line on stderr, nothing on stdout — lypning stages its
+  output and discards it, so a refused run is observably a no-op. That commit
+  barrier is what makes falling onward safe (`docs/LYPNING.md` §6).
 - **Only the middle tier is forked.** It has to be, because its own refusal has
   to be catchable: the capability table knows lypning-mp *has* `re`, not that
   this build lacks `re.VERBOSE`. The terminal tier is `exec`'d — no fork, no
   way back, and none needed.
 
-So a wrong route costs one process spawn. It never costs a wrong answer, and
-that is the only reason a mixture is allowed to guess at all.
+A wrong route therefore costs one process spawn rather than a wrong answer,
+which is what makes routing by prediction acceptable here.
 
 ---
 
@@ -148,12 +147,11 @@ mixture      4565.2 ms   0.340x   (0 unanswered — saves 8863.7 ms, 66.0%)
 Read it in this order:
 
 - **The mixture answers everything CPython answers** — 763 of 763, and zero
-  mismatches on its own arm — for 0.340x of CPython's cost. That is the claim
-  the project exists to make, and it is the one that has held on every machine
-  it has been run on.
+  mismatches on its own arm — for 0.340x of CPython's cost. That is the result
+  the mixture is built for, and it has held on every machine it has been run on.
 - **The other two arms are cheap because they refuse**, not because they are
   faster: 263 and 49 programs unanswered. `bench` annotates their whole-corpus
-  totals with exactly that sentence, because the number is otherwise a trap.
+  totals with that note, because the total is otherwise easy to read as speed.
 - **Startup is a floor, not a ranking.** All three engines arrive within a
   tenth of a millisecond of each other, 15–19x under CPython; they are static
   musl binaries that open no files at startup, and past that the differences
@@ -162,8 +160,7 @@ Read it in this order:
 There are two totals in that output and they answer different questions. The
 *shared subset* is the only apples-to-apples comparison — a total over
 different program sets is not a comparison at all — and the *whole corpus* is
-what the session actually costs. Both are printed and both are labelled, for
-the same reason.
+what the session actually costs. `bench` prints both and labels both.
 
 ### What upstream measured, and what did not reproduce
 
@@ -193,16 +190,16 @@ point, while the absolute milliseconds move by tens of percent with the
 machine's load, which is why the ratios are what get quoted and why `bench` is
 not a CI gate.
 
-Read honestly, that thesis was **upstream's result, not a property of the
-design**. The shared subset is by construction the programs lypning accepted —
-the simplest in the corpus — where both engines sit near their startup floor,
-and lypning-mp's floor is lower: 294,788 B against lypning's 1,045,176 B (both
-printed by `lypning status`, and both move whenever an engine is rebuilt).
+That thesis was upstream's result, not a property of the design. The shared
+subset is by construction the programs lypning accepted — the simplest in the
+corpus — where both engines sit near their startup floor, and lypning-mp's floor
+is lower: 294,788 B against lypning's 1,045,176 B (both printed by `lypning
+status`, and both move whenever an engine is rebuilt).
 
-What survives re-measurement is the part the mixture is actually for: answering
-everything CPython answers, for about a third of the cost. Both tools print the
-corpus size they loaded on every run for exactly this reason — **never quote a
-remembered corpus size**, and do not carry a remembered ordering either.
+What survives re-measurement is the mixture result: everything CPython answers,
+for about a third of the cost. Both tools print the corpus size they loaded on
+every run for this reason — do not quote a remembered corpus size, and do not
+carry a remembered ordering either.
 
 `docs/LYPNING.md` §1 is the design's own version of this table,
 `docs/BENCH-LEDGER.md` is the append-only history including the runs where the
@@ -449,8 +446,8 @@ if (lypning_result_should_fall_onward(r)) run_on_python3(src);  /* your path */
 else                                      use(lypning_result_stdout(r, &n));
 ```
 
-That branch is the whole integration, and getting it right is the whole
-contract: **a refusal is not an error.** It means the program is outside the
+That branch is the whole integration, and getting it right is the contract:
+**a refusal is not an error.** It means the program is outside the
 subset, that lypning ran none of it, and that CPython should answer now. A
 harness that reports it as a failure has turned a speedup into a bug — silently,
 because the program was fine.
@@ -567,7 +564,7 @@ the real signal. The other 783 are compared in full. The exclusion list is in
 to grow — the temptation it guards against is silencing a real divergence by
 declaring it unspecified.
 
-**The gate is live, not aspirational, and it is currently red.** This tree has
+**The gate is live, and it is currently red.** This tree has
 two MISMATCHes, both on the `lypning-mp` arm, both the same defect: MicroPython
 streams stdout, so a program that prints before reaching an unsupported
 construct has already committed those bytes when it exits 90. lypning's Rust
@@ -657,8 +654,8 @@ deterministic half — conformance and routing safety.
 
 ## 7. The corpus, capture, and privacy
 
-The corpus is the argument. It is not a test suite someone designed; it is what
-agents actually typed, captured from real sessions:
+The corpus is not a test suite someone designed; it is what agents actually
+typed, captured from real sessions:
 
 ```
 $ lypning corpus --stats

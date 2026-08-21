@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed — the documentation leads with a measurement taken today, not one remembered from upstream
+### Changed — the documentation leads with a measurement taken in this tree, not one carried from upstream
 
 `README.md` and `docs/LYPNING.md` both opened on the upstream table of
 2026-08-16 and its headline bullet, *lypning is the fastest engine on the work
@@ -22,22 +22,19 @@ come from.
 
 What that run says: the mixture answers **763 of 763 at 0.340x of CPython**, a
 66.0% saving, and `lypning conformance` on the same tree grades it 763 / 0 / 0
-with the two known lypning-mp MISMATCHes unchanged. What it does not say is
-anything about the ordering of the two subset engines, which has now reversed on
-every machine outside the one it was first measured on.
+with the two known lypning-mp MISMATCHes unchanged. It says nothing about the
+ordering of the two subset engines, which has now reversed on every machine
+outside the one it was first measured on.
 
-### Added — a logo, and a picture of where a program actually goes
+### Added — a logo, and a diagram of the dispatch path
 
-- **A thundercloud** — `docs/logo.svg`, in the README and in the site's hero.
-  The name came from lightning, and the mark says so without a word of prose.
-  It is theme-aware and mid-toned enough to survive a page whose theme its own
-  media query cannot see.
+- **A thundercloud** — `docs/logo.svg`, in the README and in the site's hero,
+  for the lightning the name came from. It is theme-aware, and mid-toned enough
+  to stay legible on a page whose theme its own media query cannot see.
 - **The dataflow, drawn.** `README.md` and `docs/LYPNING.md` §5 now carry the
   same diagram: shim or hook, then the classifier, then the three tiers with the
   signal that moves a program from each to the next, annotated with where the
-  classifier actually sent the 763 programs (64.1% / 24.9% / 11.0%). It is the
-  one thing about the design that a paragraph explains badly and a picture
-  explains at a glance.
+  classifier sent the 763 programs (64.1% / 24.9% / 11.0%).
 
 ### Fixed — every `docs/*.html` link on the landing page pointed at a GitHub 404
 

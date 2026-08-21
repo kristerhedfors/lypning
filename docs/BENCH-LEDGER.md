@@ -139,10 +139,9 @@ this ledger.
 --startup-repeat 15 --repeat 3` — four arms over the harvested corpus, arms
 interleaved per entry — and not the variant-vs-stock micro-benchmark the rest of
 this ledger records. There is no stock control in it, so no `py/stock` verdict:
-it answers what the *mixture* costs against CPython, which is the project's
-headline claim, rather than what our MicroPython changes cost. Recorded by hand
-from the run's own output, and labelled as such so no row here is mistaken for a
-row below.
+it measures what the *mixture* costs against CPython rather than what our
+MicroPython changes cost. Recorded by hand from the run's own output, and
+labelled as such so no row here is mistaken for a row below.
 
 Machine: 4 CPUs, Linux 6.18.44-fc-v21 (x86_64), a Claude Code container. Corpus
 **842 programs loaded, 763 measured**, 79 skipped for naming an absolute path.
@@ -184,8 +183,8 @@ shared subset (0.102x against 0.143x). Both runs in this tree reverse it —
 0.073x against 0.061x here. The shared subset is by construction the programs
 lypning accepts, where both engines sit near their startup floor, and
 lypning-mp's floor is lower because its binary is a third the size. That
-ordering is a property of a corpus on a machine, not of the design; the mixture
-result is the one that is a property of the design.
+ordering is a property of a corpus on a machine; the mixture ratio is the part
+that has held across both.
 
 Correctness from the same tree, same day, `lypning conformance` over the same
 763: lypning 500 MATCH / 263 UNSUPPORTED / **0 MISMATCH**, lypning-mp 714 / 47 /

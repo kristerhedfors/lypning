@@ -33,7 +33,7 @@ so a refused run is observably a no-op.</p>
 <h3>lypning-mp</h3>
 <div class="meta">MicroPython · 294,788 B · static musl i386 · 0 file opens</div>
 <p>A variant whose shim stdlib is compiled in. <code>import json</code> streams zero bytes
-off the disk image — that is the whole design thesis.</p>
+off the disk image — that is the design thesis.</p>
 </div>
 <div class="tier">
 <h3>cpython</h3>
@@ -58,23 +58,23 @@ per entry, startup min of 15.
 
 Over the whole corpus the mixture answers **763 of 763** at **0.340x** of CPython — a
 **66.0% saving**, 8.9 seconds off a session's worth of one-liners, with nothing left
-unanswered. The two subset arms look cheaper only because they refuse work, and a refusal
+unanswered. The two subset arms are cheaper only because they refuse work, and a refusal
 still costs its spawn.
 
 <div class="note">
-<p><strong>Re-measure. Do not cite.</strong> The upstream run of 2026-08-16 had
+<p><strong>Re-measure rather than cite.</strong> The upstream run of 2026-08-16 had
 <code>lypning</code> ahead of <code>lypning-mp</code>; both re-runs here reversed it. The
 mixture result held, the ranking of the two subset engines did not — it is a claim about
 one corpus on one machine, not a property of the design. Every tool prints the corpus size
 it loaded, every run, for exactly this reason.</p>
 </div>
 
-## How a program reaches an interpreter
+## The dataflow
 
-The classifier is a static analysis over lypning's own front end, not a heuristic over the
-program text, so *can tier 1 run this* is an exact answer costing one parse and no spawn.
-The shares below are where it sent the 763 programs in the run above — **91.1% to the
-cheapest tier that works, 97.5% right on the first try.**
+The classifier is a static analysis over lypning's own front end rather than a heuristic
+over the program text, so *can tier 1 run this* is an exact answer costing one parse and no
+spawn. The shares below are where it sent the 763 programs in the run above — **91.1% to
+the cheapest tier that works, 97.5% right on the first try.**
 
 ```
   python3 -c 'import json,sys; print(len(json.load(sys.stdin)))'
@@ -111,8 +111,8 @@ cheapest tier that works, 97.5% right on the first try.**
   the program's own stdout, the program's own exit code
 ```
 
-A wrong route costs one process spawn. It never costs a wrong answer, and that is the only
-reason a mixture is allowed to guess at all.
+A wrong route therefore costs one process spawn rather than a wrong answer, which is what
+makes routing by prediction acceptable here.
 [The dispatcher, in detail →](docs/lypning.html#5-the-dispatcher-and-why-it-is-the-binary-itself)
 
 ## Three things that make it work

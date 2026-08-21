@@ -21,10 +21,11 @@ programs an agent types are a much narrower target than "Python".
 
 ## 1. The measurement, first
 
-Everything below is downstream of one table, and the table gets **re-measured,
-never remembered**. The capture harness grows the corpus every session — this
-project's first table was over 420 programs and the number was stale within the
-day. Every tool prints the count it loaded; quote that one, with its date.
+Everything below is downstream of one table, and the table is re-measured
+rather than quoted from memory. The capture harness grows the corpus every
+session — this project's first table was over 420 programs and the number was
+stale within the day. Every tool prints the count it loaded; quote that one,
+with its date.
 
 This tree, on **2026-08-21**: `lypning bench --startup-repeat 15 --repeat 3`,
 4 CPUs, Linux 6.18.44-fc-v21, all three engines built, **842 programs loaded and
@@ -60,19 +61,19 @@ Read it in this order:
 
 - **The mixture answers everything CPython answers** — 763 of 763, zero
   mismatches on its own arm — at **0.340x of CPython's cost**, a 66.0% saving.
-  This is the result the design exists to produce and the one that has held on
-  every machine it has been run on.
+  This is the result the design is built for, and it has held on every machine
+  it has been run on.
 - **The other two arms are cheap because they refuse**, not because they are
   faster: 263 and 49 programs unanswered, and a refusal still costs its spawn.
-  `bench` prints that sentence next to those totals for a reason.
+  `bench` prints that note next to those totals.
 - **Startup is a floor the three share.** All three engines land within a tenth
   of a millisecond of each other, 15–19x under CPython. They are static musl
   binaries that open no files at startup; past that, the differences are the
   machine.
 - **The subset was not tuned to this corpus.** It was built against 420
   programs and has been measured against every capture since; coverage has gone
-  up as the corpus grew, with mismatches on the lypning arm still at zero. That
-  is a generalisation signal rather than a fit to the sample.
+  up as the corpus grew, with mismatches on the lypning arm still at zero, which
+  suggests it generalises rather than fitting the sample.
 
 Both binary sizes move with every rebuild — 1,045,176 B and 294,788 B in this
 tree today; `lypning status` and `lypning gate` print the ones you actually
@@ -107,12 +108,12 @@ the ratios to within about a point while the absolute milliseconds move by tens
 of percent with load — which is why ratios are what get quoted, and why `bench`
 is not a CI gate.
 
-So that thesis is **upstream's result on upstream's corpus, not a property of
-the design.** The shared subset is by construction the programs lypning
-accepted — the simplest in the corpus — where both engines sit near their
-startup floor, and lypning-mp's floor is lower because its binary is a third the
-size. What survived re-measurement is the mixture result: everything CPython
-answers, for about a third of the cost.
+So that thesis is upstream's result on upstream's corpus, not a property of the
+design. The shared subset is by construction the programs lypning accepted —
+the simplest in the corpus — where both engines sit near their startup floor,
+and lypning-mp's floor is lower because its binary is a third the size. What
+survived re-measurement is the mixture result: everything CPython answers, for
+about a third of the cost.
 
 Reproduce: `lypning build --rust && lypning bench`.
 
@@ -157,11 +158,11 @@ lypning-mp    714           47         2     93.6%
 mixture       763            0         0    100.0%
 ```
 
-**The gate is red, and it is red on the lypning-mp arm.** Both MISMATCHes are
-one defect and it is the contract, not a computation: MicroPython streams
-stdout, so a program that prints before it reaches an unsupported construct has
-already committed those bytes when it exits 90 (§6). It is tracked rather than
-waived — `lypning conformance` fails while it stands.
+**The gate is red on the lypning-mp arm.** Both MISMATCHes are one defect, and
+it is in the contract rather than in a computation: MicroPython streams stdout,
+so a program that prints before it reaches an unsupported construct has already
+committed those bytes when it exits 90 (§6). It is tracked rather than waived —
+`lypning conformance` fails while it stands.
 
 Upstream, on 2026-08-16, over the 472 programs the corpus then held:
 
@@ -263,8 +264,8 @@ routing over 763 programs
 
 The one UNSAFE is the streamed-stdout defect of §2 reached through the router:
 a program predicted for lypning-mp whose ideal tier is CPython. The dispatcher
-recovered it, and it still counts — a route that lands on an engine which
-mismatches is the one outcome that spends trust instead of milliseconds.
+recovered it, and it still counts, because a route to an engine that mismatches
+costs a wrong answer rather than an extra spawn.
 
 A wrong route costs a process spawn. A wrong *answer* costs the user's trust, so
 UNSAFE is tracked separately and the dispatcher is built to recover from it.
