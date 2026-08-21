@@ -28,6 +28,52 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-21 · iteration 11 — two allocations out of every Python call
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1037 loaded, 861 timed
+
+`call-recursive` stayed at the top of the queue after iteration 10, so
+`call_func_inner` was read for allocations rather than for logic. It made four
+per call: the scope's `Rc`, the scope map's table, a `Vec<bool>` of
+"was this parameter bound", and a fresh `Vec<Scope>` for the frame's scope
+chain. The last two are removable and nothing else in the function changes.
+
+* **`used` is a `u64` bitmask.** Sixty-four covers every function anyone types
+  — CPython's own hard limit on positional parameters is 255 — and past 64 it
+  falls back to the vector, so behaviour is *identical* rather than merely
+  unlikely to differ.
+* **The scope-chain vector is recycled.** Spent chains go back to a pool capped
+  at 64, cleared at the point the frame ends so scopes still drop on time. A
+  recursion now pays for its depth once instead of once per frame per call.
+
+| against iteration 10's binary | ratio |
+|---|---:|
+| `fib(21)` | **0.71x** |
+| a closure called in a loop | **0.79x** |
+| `def f(a)` … `f(1)` | **0.84x** |
+| `def f(a,b,c)` … `f(1,2,3)` | 0.86x |
+| `def f()` … `f()` | 0.88x |
+| `len(t)` — the control, no `def` involved | 0.98x |
+
+| | before | after |
+|---|---|---|
+| bytes | 1,045,176 (8 blocks) | 1,045,176 (8 blocks) |
+| conformance | 524 / 337 / **0** | 524 / 337 / **0** |
+| perf `call-recursive` | 20.19x | **17.56x** |
+| perf TOTAL | 3.55x | 3.60x — inside the band, see below |
+| corpus-time, min of 3 | 1.10 s | 1.11 s — flat |
+
+**On reading the aggregates here.** perf TOTAL moved 3.55 → 3.60 and
+corpus-time 1.10 → 1.11 s, and neither is a regression: both are inside the ~3%
+spread iteration 10 measured, and the TOTAL is a sum of absolute milliseconds,
+so it is dominated by the slowest cases and moves when they breathe. The claim
+this entry makes is the per-case table above — six samples per cell, one
+mechanism changed, and a control (`len(t)`) that does not go through
+`call_func_inner` and did not move. **When a targeted change is real and the
+aggregate is flat, say which one you are claiming and why.**
+
+---
+
 ## 2026-08-21 · iteration 10 — paying iteration 8's debt, and sweeping `INLINE`
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1037 loaded, 861 timed

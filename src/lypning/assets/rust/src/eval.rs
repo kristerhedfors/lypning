@@ -64,7 +64,15 @@ pub struct Interp {
     step_limit: u64,
     /// How deep `eval` currently is, against [`MAX_EXPR_DEPTH`].
     expr_depth: u32,
+    /// Spent scope-chain vectors, kept to be filled again. See
+    /// `call_func_inner`; capped at [`CHAIN_POOL_MAX`] so a deep recursion
+    /// cannot leave the pool holding its whole depth for the rest of the run.
+    chain_pool: Vec<Vec<Scope>>,
 }
+
+/// How many scope-chain vectors to keep. Above the depth of any recursion this
+/// runtime allows to finish, and small enough to be nothing.
+const CHAIN_POOL_MAX: usize = 64;
 
 impl Interp {
     pub fn new() -> Self {
@@ -77,6 +85,7 @@ impl Interp {
             depth: 0,
             steps: 0,
             expr_depth: 0,
+            chain_pool: Vec::new(),
             // Read once, here, rather than per statement. Zero — the CLI's
             // value, since a process can simply be killed — compiles the check
             // down to a comparison that is never true.
@@ -1031,7 +1040,7 @@ impl Interp {
             - p.dstar.map_or(0, |_| 1);
         {
             let mut s = scope.borrow_mut();
-            let mut used = vec![false; p.names.len()];
+            let mut used = Used::new(p.names.len());
             let mut extra = Vec::new();
             // Indexed with `Args::take` rather than `into_iter`: consuming the
             // list as an iterator would turn it into a `Vec` first, which is
@@ -1042,7 +1051,7 @@ impl Interp {
                 let a = args.take(i);
                 if i < npos {
                     s.insert(p.names[i].clone(), a);
-                    used[i] = true;
+                    used.set(i);
                 } else if p.star.is_some() {
                     extra.push(a);
                 } else {
@@ -1056,14 +1065,14 @@ impl Interp {
             }
             if let Some(si) = p.star {
                 s.insert(p.names[si].clone(), Value::Tuple(Rc::new(extra)));
-                used[si] = true;
+                used.set(si);
             }
             let mut leftover = Dict::new();
             for (k, v) in kw {
                 match p.names[..npos].iter().position(|n| *n == k) {
                     Some(i) => {
                         s.insert(p.names[i].clone(), v);
-                        used[i] = true;
+                        used.set(i);
                     }
                     None => {
                         if p.dstar.is_some() {
@@ -1082,10 +1091,10 @@ impl Interp {
                     p.names[di].clone(),
                     Value::Dict(Rc::new(RefCell::new(leftover))),
                 );
-                used[di] = true;
+                used.set(di);
             }
             for i in 0..npos {
-                if !used[i] {
+                if !used.get(i) {
                     match &f.defaults[i] {
                         Some(d) => {
                             s.insert(p.names[i].clone(), d.clone());
@@ -1100,11 +1109,15 @@ impl Interp {
                 }
             }
         }
-        let saved_chain = std::mem::replace(&mut self.chain, {
-            let mut c = f.env.clone();
-            c.push(scope);
-            c
-        });
+        // The scope chain is rebuilt per call — the closure's environment plus
+        // this frame — and the vector that holds it used to be allocated and
+        // freed per call. Recycled instead: the spent one goes back to the pool
+        // at the bottom of this function, so a recursion pays for its depth once
+        // rather than once per frame per call.
+        let mut c = self.chain_pool.pop().unwrap_or_default();
+        c.extend_from_slice(&f.env);
+        c.push(scope);
+        let saved_chain = std::mem::replace(&mut self.chain, c);
         self.global_decls.push(crate::hash::set());
         self.assigned.push(f.assigned.clone());
         let r = match &f.lambda {
@@ -1117,8 +1130,56 @@ impl Interp {
         };
         self.assigned.pop();
         self.global_decls.pop();
-        self.chain = saved_chain;
+        // Cleared here rather than on reuse, so the frame's scopes are dropped
+        // when the frame ends and not whenever the vector is next taken out.
+        let mut spent = std::mem::replace(&mut self.chain, saved_chain);
+        spent.clear();
+        if self.chain_pool.len() < CHAIN_POOL_MAX {
+            self.chain_pool.push(spent);
+        }
         r
+    }
+}
+
+/// One "was this parameter bound" flag per parameter, without the allocation a
+/// `Vec<bool>` costs on every single call.
+///
+/// A call is where this interpreter allocates most (a quarter of its whole
+/// instruction stream is musl's malloc and free — `docs/HILLCLIMB.md`
+/// iteration 6), and a vector of flags for a function with two parameters is
+/// one of them. Sixty-four covers every function anyone types; CPython's own
+/// hard limit on positional parameters is 255, and past 64 this falls back to
+/// the vector so the behaviour is IDENTICAL rather than merely unlikely to
+/// differ.
+struct Used {
+    bits: u64,
+    big: Vec<bool>,
+}
+
+impl Used {
+    fn new(n: usize) -> Self {
+        Used {
+            bits: 0,
+            big: if n > 64 { vec![false; n] } else { Vec::new() },
+        }
+    }
+
+    #[inline]
+    fn set(&mut self, i: usize) {
+        if self.big.is_empty() {
+            self.bits |= 1u64 << i;
+        } else {
+            self.big[i] = true;
+        }
+    }
+
+    #[inline]
+    fn get(&self, i: usize) -> bool {
+        if self.big.is_empty() {
+            self.bits & (1u64 << i) != 0
+        } else {
+            self.big[i]
+        }
     }
 }
 
