@@ -124,7 +124,7 @@ fn no_kw(name: &str, kw: &[(Rc<str>, Value)]) -> R<()> {
 pub fn call_builtin(
     it: &mut Interp,
     name: &str,
-    mut args: Args,
+    args: &mut Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     // `raise ValueError("x")` / `except E as e` construct exception instances.
@@ -243,7 +243,7 @@ pub fn call_builtin(
                 Some(Value::Bool(b)) => Value::Int(*b as i64),
                 Some(Value::Bytes(b)) => {
                     let s = decode_utf8(b)?;
-                    return call_builtin(it, "int", Args::one(Value::Str(s.into())), kw);
+                    return call_builtin(it, "int", &mut Args::one(Value::Str(s.into())), kw);
                 }
                 Some(other) => {
                     return Err(type_err(format!(
@@ -495,7 +495,8 @@ pub fn call_builtin(
         }
         "zip" => {
             let mut its = Vec::with_capacity(args.len());
-            for a in args {
+            for i in 0..args.len() {
+                let a = args.take(i);
                 its.push(it.make_iter(a)?);
             }
             Value::IterObj(Rc::new(RefCell::new(Iter::Zip(its))), "zip")
@@ -506,7 +507,8 @@ pub fn call_builtin(
             }
             let f = args.remove(0);
             let mut its = Vec::with_capacity(args.len());
-            for a in args {
+            for i in 0..args.len() {
+                let a = args.take(i);
                 its.push(it.make_iter(a)?);
             }
             Value::IterObj(Rc::new(RefCell::new(Iter::Map(f, its))), "map")
@@ -746,7 +748,7 @@ fn arg1(name: &str, args: &[Value]) -> R<Value> {
 fn keyed(it: &mut Interp, keyf: &Option<Value>, v: &Value) -> R<Value> {
     match keyf {
         None => Ok(v.clone()),
-        Some(f) => it.call(f, Args::one(v.clone()), Vec::new()),
+        Some(f) => it.call(f, &mut Args::one(v.clone()), Vec::new()),
     }
 }
 

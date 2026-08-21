@@ -20,8 +20,24 @@
 //!
 //! So arguments live in the caller's stack frame until there are more than
 //! [`INLINE`] of them, at which point they spill to a `Vec` and behave exactly
-//! as before. Four covers `print(a, b, c, d)` and everything narrower, which is
-//! very nearly all of the corpus.
+//! as before.
+//!
+//! [`INLINE`] is **two**, and that is a measurement rather than a guess. The
+//! array is initialised on every call whether or not it is used, so a wider one
+//! taxes the zero- and one-argument calls that dominate — `len(x)`, `str(x)`,
+//! `open(p)`, `x.split(s)`, `f(x)` — to spare the three-argument ones that do
+//! not. Swept against the whole `lypning perf` suite, which weights each case
+//! by how much of the corpus types it:
+//!
+//! ```text
+//!   Vec (before)  3.72x CPython      INLINE=3      3.67x
+//!   INLINE=2      3.55x  <- kept     INLINE=4      3.63x
+//! ```
+//!
+//! Two costs `print(a, b, c)` about 2%, and buys 24% on `len(t)`, 26% on
+//! `t.count(c)` and 11% on recursive calls. Re-sweep before changing it; the
+//! answer is a property of this corpus and of musl's allocator, not of the
+//! code.
 //!
 //! **No `unsafe`.** The vacated slots hold `Value::None`, which is a discriminant
 //! write and allocates nothing, so the array can be a plain `[Value; INLINE]`
@@ -41,8 +57,9 @@
 use crate::value::Value;
 use std::ops::Deref;
 
-/// Arguments held without allocating. Four, because five is `print(a,b,c,d,e)`.
-pub const INLINE: usize = 4;
+/// Arguments held without allocating. Two — see the module note; it is swept,
+/// not chosen.
+pub const INLINE: usize = 2;
 
 pub struct Args {
     inline: [Value; INLINE],

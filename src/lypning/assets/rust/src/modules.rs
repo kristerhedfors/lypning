@@ -165,7 +165,7 @@ pub fn call_module_method(
     it: &mut Interp,
     m: &str,
     name: &str,
-    args: Args,
+    args: &mut Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     if !crate::host::filesystem_allowed() && touches_disk(m, name) {
@@ -427,7 +427,7 @@ pub fn call_module_method(
                 .first()
                 .cloned()
                 .ok_or_else(|| type_err("load() missing 1 required positional argument"))?;
-            let text = crate::methods::call_method(it, &f, "read", Args::new(), Vec::new())?;
+            let text = crate::methods::call_method(it, &f, "read", &mut Args::new(), Vec::new())?;
             json::parse(&fmt::to_str(&text)?)?
         }
         // `args.first()`, not `args[0]`: `json.dumps()` with no argument is a
@@ -456,7 +456,7 @@ pub fn call_module_method(
                 it,
                 &f,
                 "write",
-                Args::one(Value::Str(text.into())),
+                &mut Args::one(Value::Str(text.into())),
                 Vec::new(),
             )?;
             Value::None

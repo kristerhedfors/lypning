@@ -158,7 +158,7 @@ pub fn call_method(
     it: &mut Interp,
     recv: &Value,
     name: &str,
-    args: Args,
+    args: &mut Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     // An unbound method (`str.upper`) arrives with the TYPE as receiver; the
@@ -215,7 +215,7 @@ fn str_method(
     it: &mut Interp,
     s: &Rc<str>,
     name: &str,
-    args: Args,
+    args: &mut Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     Ok(match name {
@@ -728,7 +728,7 @@ fn list_method(
     it: &mut Interp,
     l: &Rc<RefCell<Vec<Value>>>,
     name: &str,
-    args: Args,
+    args: &mut Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     Ok(match name {
@@ -830,7 +830,7 @@ fn list_method(
             for x in &items {
                 keys.push(match &keyf {
                     None => x.clone(),
-                    Some(f) => it.call(f, Args::one(x.clone()), Vec::new())?,
+                    Some(f) => it.call(f, &mut Args::one(x.clone()), Vec::new())?,
                 });
             }
             ops::sort_values(&mut items, &mut keys, rev)?;
@@ -847,7 +847,7 @@ fn dict_method(
     it: &mut Interp,
     d: &Rc<RefCell<Dict>>,
     name: &str,
-    args: Args,
+    args: &mut Args,
     _kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     Ok(match name {
@@ -939,7 +939,7 @@ fn set_method(
     it: &mut Interp,
     s: &Rc<RefCell<Set>>,
     name: &str,
-    args: Args,
+    args: &mut Args,
     _kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     let other_set = |it: &mut Interp, v: &Value| -> R<Rc<RefCell<Set>>> {
@@ -1032,7 +1032,7 @@ fn set_method(
 
 // ---- bytes ----------------------------------------------------------------
 
-fn tuple_method(t: &Rc<Vec<Value>>, name: &str, args: Args) -> R<Value> {
+fn tuple_method(t: &Rc<Vec<Value>>, name: &str, args: &mut Args) -> R<Value> {
     let needle = args
         .first()
         .ok_or_else(|| type_err(format!("{name}() takes exactly one argument")))?;
@@ -1062,7 +1062,7 @@ fn bytes_method(
     it: &mut Interp,
     b: &Rc<Vec<u8>>,
     name: &str,
-    args: Args,
+    args: &mut Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     Ok(match name {
@@ -1182,7 +1182,11 @@ fn bytes_method(
         }
         "join" => {
             let items = it.iter_collect(
-                args.into_iter().next().ok_or_else(|| type_err("join() takes exactly one argument"))?,
+                if args.is_empty() {
+                    return Err(type_err("join() takes exactly one argument"));
+                } else {
+                    args.take(0)
+                },
             )?;
             let mut out: Vec<u8> = Vec::new();
             for (i, v) in items.iter().enumerate() {
@@ -1348,7 +1352,7 @@ fn file_method(
     it: &mut Interp,
     f: &Rc<RefCell<mio::FileObj>>,
     name: &str,
-    args: Args,
+    args: &mut Args,
     _kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     Ok(match name {

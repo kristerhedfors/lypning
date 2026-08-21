@@ -28,6 +28,64 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-21 · iteration 10 — paying iteration 8's debt, and sweeping `INLINE`
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1037 loaded, 861 timed
+
+The re-ranked queue on the grown corpus put `call-recursive` first — Python
+`def` calls, which is exactly what iteration 8 made 2–21% slower while making
+builtin and method calls 14–19% faster. Two changes, both aimed there.
+
+**`Args` travels by `&mut`.** It was moved by value through `call` →
+`call_func` → `call_func_inner`, three copies of the struct per call. Now the
+top frame owns it and the rest borrow. Worth a little on its own (`f()` 8.8 →
+8.4, `fib(21)` 25.1 → 24.8) and not the main thing.
+
+**`INLINE` is 2, and it was swept rather than chosen.** The array is initialised
+on every call whether or not it is used, so a wide one taxes the zero- and
+one-argument calls that dominate — `len(x)`, `str(x)`, `open(p)`, `x.split(s)`,
+`f(x)` — to spare three-argument ones that are rarer. Against the whole `perf`
+suite, which weights every case by corpus prevalence:
+
+| | perf TOTAL |
+|---|---:|
+| `Vec` (before iteration 8) | 3.72x |
+| **`INLINE = 2`** | **3.55x** |
+| `INLINE = 3` | 3.67x |
+| `INLINE = 4` | 3.63x |
+
+Two costs `print(a, b, c)` about 2% and buys 24% on `len(t)`, 26% on
+`t.count(c)` and 11% on `fib`. **The zero-argument regression iteration 8 booked
+is gone**: `f()` is 7.7 against the `Vec` build's 7.6.
+
+| | before (iteration 8) | after |
+|---|---|---|
+| bytes | 1,045,176 (8 blocks) | 1,045,176 (8 blocks) |
+| conformance | 524 / 337 / **0** | 524 / 337 / **0** |
+| perf TOTAL | 3.72x (`Vec` baseline) | **3.55x** |
+| perf `call-method` (86%) | 2.38x | **2.18x** |
+| corpus-time, min of 3 | 1.12 s | **1.10 s** |
+
+### The instrument correction
+
+`corpus-time` was read once and said **+1.4%, SLOWER**. Three runs of each
+binary said otherwise:
+
+```
+new   1.14  1.11  1.10 s     ->  min 1.10
+prev  1.12  1.12  1.12 s     ->  min 1.12
+```
+
+The single comparison landed inside the instrument's own spread. **`corpus-time`
+has a ~3% noise band on this container, not the ±1% the skill claimed**, and one
+run of it is not a reading. Both corrections are in the skill now: take the
+minimum of at least three runs, and treat anything inside ±3% as flat.
+
+Had that not been checked, this iteration would have been reverted for a
+regression it does not have.
+
+---
+
 ## 2026-08-21 · iteration 9 — the corpus grew, and it grew toward us
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64

@@ -904,8 +904,8 @@ impl Interp {
                     }
                 }
                 match method {
-                    Some((recv, m)) => crate::methods::call_method(self, &recv, m, a, kw)?,
-                    None => self.call(&f, a, kw)?,
+                    Some((recv, m)) => crate::methods::call_method(self, &recv, m, &mut a, kw)?,
+                    None => self.call(&f, &mut a, kw)?,
                 }
             }
         })
@@ -992,7 +992,7 @@ impl Interp {
 
     // ---- calls ------------------------------------------------------------
 
-    pub fn call(&mut self, f: &Value, args: Args, kw: Vec<(Rc<str>, Value)>) -> R<Value> {
+    pub fn call(&mut self, f: &Value, args: &mut Args, kw: Vec<(Rc<str>, Value)>) -> R<Value> {
         match f {
             Value::Builtin(name) => crate::builtins::call_builtin(self, name, args, kw),
             Value::Bound(recv, name) => crate::methods::call_method(self, recv, name, args, kw),
@@ -1004,7 +1004,7 @@ impl Interp {
         }
     }
 
-    fn call_func(&mut self, f: Rc<FuncObj>, args: Args, kw: Vec<(Rc<str>, Value)>) -> R<Value> {
+    fn call_func(&mut self, f: Rc<FuncObj>, args: &mut Args, kw: Vec<(Rc<str>, Value)>) -> R<Value> {
         self.depth += 1;
         if self.depth > MAX_DEPTH {
             self.depth -= 1;
@@ -1021,7 +1021,7 @@ impl Interp {
     fn call_func_inner(
         &mut self,
         f: Rc<FuncObj>,
-        mut args: Args,
+        args: &mut Args,
         kw: Vec<(Rc<str>, Value)>,
     ) -> R<Value> {
         let p = &f.params;

@@ -174,7 +174,7 @@ substitute it for the final build of a step.
 PYTHONPATH=src python3 -m lypning build --rust      # 1. builds AND asserts the refusal contract
 PYTHONPATH=src python3 -m lypning conformance --engine lypning   # 2. MISMATCH must be 0
 PYTHONPATH=src python3 -m lypning perf --baseline $B/perf.json   # 3. the focus curve
-PYTHONPATH=src python3 -m lypning corpus-time --repeat 3 --baseline $B/corpus.json  # 4. no regression
+PYTHONPATH=src python3 -m lypning corpus-time --repeat 3 --baseline $B/corpus.json  # 4. no regression — run it 3x, read the min
 python3 -m pytest -q                                # the Python side, which the four do not cover
 PYTHONPATH=src python3 -m lypning doctor            # 0 FAIL
 git status --short                                  # invariant 4: check it yourself
@@ -220,7 +220,12 @@ This has three consequences and each of them is a way to be wrong:
 2. **Do not dismiss a speed change because `corpus-time` did not move.** Being
    flat there is the *expected* shape of a compute win. What `corpus-time` is
    for is catching the opposite: a change that made the common case slower.
-   Treat it as a regression gate with a ±1% deadband, not as the reward.
+   Treat it as a regression gate with a **±3% deadband**, not as the reward —
+   and take the **minimum of at least three runs** before reading it. Measured
+   on this container: three consecutive runs of one binary spanned 1.10, 1.11
+   and 1.14 s. A single-run comparison said a change was 1.4% *slower* that the
+   minimum of three showed 1.8% faster. One run of `corpus-time` is not a
+   reading.
 3. **Never claim a corpus number you did not get.** "16% faster" is a claim
    about `perf`'s suite, not about a session's one-liners. Say which.
 

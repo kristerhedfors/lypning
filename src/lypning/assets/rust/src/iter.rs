@@ -263,7 +263,7 @@ impl Interp {
                         None => return Ok(None),
                     }
                 }
-                Some(self.call(&f, args, Vec::new())?)
+                Some(self.call(&f, &mut args, Vec::new())?)
             }
             Iter::Filter(pred, inner) => {
                 let pred = pred.clone();
@@ -274,7 +274,7 @@ impl Interp {
                     let keep = match &pred {
                         None => truthy(&v)?,
                         Some(f) => {
-                            let r = self.call(f, crate::args::Args::one(v.clone()), Vec::new())?;
+                            let r = self.call(f, &mut crate::args::Args::one(v.clone()), Vec::new())?;
                             truthy(&r)?
                         }
                     };
