@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="lypning">
+  <title>lypning — a thundercloud, for the lightning the name came from</title>
+  <style>
+    /* Mid-tone by default so the mark survives a page whose theme the media
+       query cannot see — an SVG in an &lt;img&gt; follows the viewer's system
+       setting, not the background it happens to be sitting on. */
+    .cloud { fill: #6f6c66 }
+    .rain  { stroke: #8d8981 }
+    .bolt  { fill: #9a4a20 }
+    @media (prefers-color-scheme: dark) {
+      .cloud { fill: #a9a49b }
+      .rain  { stroke: #837e75 }
+      .bolt  { fill: #e0885a }
+    }
+  </style>
+  <g class="cloud" fill="#6f6c66">
+    <circle cx="23" cy="26" r="10"/>
+    <circle cx="36" cy="21" r="13"/>
+    <circle cx="47" cy="28" r="9"/>
+    <rect x="13" y="27" width="43" height="12" rx="6"/>
+  </g>
+  <g class="rain" stroke="#8d8981" stroke-width="3.4" stroke-linecap="round" fill="none">
+    <line x1="19" y1="45" x2="16" y2="52"/>
+    <line x1="46" y1="45" x2="43" y2="52"/>
+    <line x1="53" y1="44" x2="51" y2="49"/>
+  </g>
+  <path class="bolt" fill="#9a4a20" d="M36 32 L24 51 h7.5 L27 62 L44 42 h-8.5 l5.5 -10 Z"/>
+</svg>

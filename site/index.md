@@ -1,6 +1,7 @@
 # lypning
 
 <div class="hero">
+<img class="hero-logo" src="docs/logo.svg" alt="" width="72" height="72">
 <h1>lypning</h1>
 <p class="tagline">Run a Python one-liner on the cheapest of three interpreters that can
 actually run it — a subset written in Rust, a frozen-stdlib MicroPython, and CPython for
@@ -44,27 +45,75 @@ cheap never.</p>
 
 ## The measurement, first
 
-Everything else is downstream of this table. Measured 2026-08-20 on a 4-CPU container,
-**842 programs harvested, 763 timed**, arms interleaved per entry.
+Everything else is downstream of this table. Measured 2026-08-21 on a 4-CPU container
+(Linux 6.18.44-fc-v21), **842 programs harvested, 763 timed**, min of 3, arms interleaved
+per entry, startup min of 15.
 
 | arm | ran | refused | shared total (500) | vs cpython | startup |
 |---|---:|---:|---:|---:|---:|
-| `cpython` | 763 | 0 | 9153.3 ms | 1.000x | 13.84 ms |
-| `lypning` | 500 | 263 | 716.9 ms | 0.078x | 0.91 ms |
-| `lypning-mp` | 714 | 49 | 583.6 ms | 0.064x | 0.83 ms |
-| **mixture** | **763** | **0** | **978.4 ms** | **0.107x** | **0.77 ms** |
+| `cpython` | 763 | 0 | 6658.3 ms | 1.000x | 10.88 ms |
+| `lypning` | 500 | 263 | 486.2 ms | 0.073x | 0.70 ms |
+| `lypning-mp` | 714 | 49 | 407.7 ms | 0.061x | 0.61 ms |
+| **mixture** | **763** | **0** | **685.7 ms** | **0.103x** | **0.58 ms** |
 
-Over the whole corpus the mixture answers **763 of 763** at **0.325x** of CPython — a
-**67.5% saving** with nothing left unanswered. The two subset arms look cheaper only
-because they refuse work, and a refusal still costs its spawn.
+Over the whole corpus the mixture answers **763 of 763** at **0.340x** of CPython — a
+**66.0% saving**, 8.9 seconds off a session's worth of one-liners, with nothing left
+unanswered. The two subset arms look cheaper only because they refuse work, and a refusal
+still costs its spawn.
 
 <div class="note">
-<p><strong>Re-measure. Do not cite.</strong> The upstream run four days earlier had
-<code>lypning</code> ahead of <code>lypning-mp</code>; here the ordering reversed. The
+<p><strong>Re-measure. Do not cite.</strong> The upstream run of 2026-08-16 had
+<code>lypning</code> ahead of <code>lypning-mp</code>; both re-runs here reversed it. The
 mixture result held, the ranking of the two subset engines did not — it is a claim about
 one corpus on one machine, not a property of the design. Every tool prints the corpus size
 it loaded, every run, for exactly this reason.</p>
 </div>
+
+## How a program reaches an interpreter
+
+The classifier is a static analysis over lypning's own front end, not a heuristic over the
+program text, so *can tier 1 run this* is an exact answer costing one parse and no spawn.
+The shares below are where it sent the 763 programs in the run above — **91.1% to the
+cheapest tier that works, 97.5% right on the first try.**
+
+```
+  python3 -c 'import json,sys; print(len(json.load(sys.stdin)))'
+     │
+     │  the shim on PATH — or the PreToolUse hook — hands the program
+     ▼  to lypning instead of to CPython
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │ lypning run — the dispatcher IS the Rust binary, not a wrapper      │
+  │ classify: ask lypning's own parser which tier can take this program │
+  └───┬─────────────────────────────────┬──────────────┬────────────────┘
+      │ 64.1%                           │ 24.9%        │ 11.0%
+      ▼                                 │              │
+  ┌───────────────────────────────────┐ │              │
+  │ 1  lypning · Rust subset          │ │              │
+  │    runs IN-PROCESS — zero spawns  │ │              │
+  │    output staged to the barrier   │ │              │
+  └───┬───────────────────────────────┘ │              │
+      │ exit 90 · one line on stderr,   │              │
+      │ and stdout never written        │              │
+      ▼                                 │              │
+  ┌───────────────────────────────────┐ │              │
+  │ 2  lypning-mp · MicroPython       │◀┘              │
+  │    forked, so its own refusal     │                │
+  │    is catchable; streams stdout   │                │
+  └───┬───────────────────────────────┘                │
+      │ exit 90 · MemoryError · traceback with exit 0  │
+      ▼                                                │
+  ┌───────────────────────────────────┐                │
+  │ 3  cpython · the reference        │◀───────────────┘
+  │    exec'd — no fork, no way back  │
+  │    and none is needed             │
+  └───┬───────────────────────────────┘
+      ▼
+  the program's own stdout, the program's own exit code
+```
+
+A wrong route costs one process spawn. It never costs a wrong answer, and that is the only
+reason a mixture is allowed to guess at all.
+[The dispatcher, in detail →](docs/lypning.html#5-the-dispatcher-and-why-it-is-the-binary-itself)
 
 ## Three things that make it work
 
@@ -93,6 +142,9 @@ where CPython breaks them to even. <a href="changelog.html">All six →</a></p>
 
 ## Where it stands
 
+Every row from a run in this tree on 2026-08-21, over the 842-program capture.
+Re-run them rather than citing them.
+
 | check | result |
 |---|---|
 | conformance, `lypning` | 500 MATCH · 263 UNSUPPORTED · <span class="verdict ok">0 MISMATCH</span> · 65.5% coverage |
@@ -100,7 +152,7 @@ where CPython breaks them to even. <a href="changelog.html">All six →</a></p>
 | conformance, mixture | <span class="verdict ok">763 / 763</span> · 100% |
 | routing safety | 91.1% ideal · 97.5% correct first try · <span class="verdict warn">UNSAFE 1</span> |
 | gate | <span class="verdict ok">PASS</span> on all four binaries · 0 file opens each |
-| test suite | <span class="verdict ok">659 passing</span> · Python 3.9–3.13 |
+| test suite | <span class="verdict ok">666 passing</span> · 58 skipped · Python 3.9–3.13 |
 
 The two MISMATCHes are one known defect, tracked rather than waived: `lypning-mp` streams
 stdout, so a program that prints before reaching an unsupported construct has already
@@ -133,6 +185,7 @@ Uninstall is the exact inverse and never deletes the capture log.
 <a class="doclink" href="docs/micropython.html"><strong>MicroPython tier</strong><span>The frozen-stdlib variant and the cost model behind it.</span></a>
 <a class="doclink" href="docs/research.html"><strong>Research</strong><span>How the runtime was chosen, including what was measured and rejected.</span></a>
 <a class="doclink" href="docs/capture.html"><strong>Capture</strong><span>The hooks and shim that grow the corpus.</span></a>
+<a class="doclink" href="docs/embedding.html"><strong>Embedding</strong><span>The C ABI, the five hosts over it, and what a refusal means with no exit code.</span></a>
 <a class="doclink" href="docs/bench-ledger.html"><strong>Bench ledger</strong><span>Append-only history, including the runs where the subset lost.</span></a>
 <a class="doclink" href="docs/sandbox-performance.html"><strong>Sandbox cost</strong><span>The measurements the whole project is downstream of.</span></a>
 <a class="doclink" href="contributing.html"><strong>Working agreement</strong><span>The invariants an agent changing this repo must not break.</span></a>

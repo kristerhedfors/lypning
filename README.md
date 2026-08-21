@@ -1,5 +1,7 @@
 # lypning — a mixture of Pythons
 
+<img src="docs/logo.svg" alt="" width="72" height="72">
+
 `lypning` runs a Python program on the cheapest of three interpreters that can
 actually run it: a from-scratch Python subset written in Rust, a MicroPython
 variant with a frozen shim stdlib, and the real CPython for everything the
@@ -15,22 +17,161 @@ route cost one wasted process spawn instead of a wrong answer.
 
 ---
 
-## 1. The measurement, first
+## The numbers, up front
 
-Everything below is downstream of one table. **472 harvested programs, min of
-5, arms interleaved per entry, measured 2026-08-16** — on the upstream
-container, *before* this package was extracted from it. Quoted here because it
-is the argument for the project; it is not a claim about your machine.
+`lypning bench --startup-repeat 15 --repeat 3`, run on **2026-08-21** on this
+container — 4 CPUs, Linux 6.18.44-fc-v21, all three engines built — against a
+corpus capture that had grown to **842 programs, 763 of them measurable**:
+
+| | `cpython` | `lypning` | `lypning-mp` | **mixture** |
+|---|---:|---:|---:|---:|
+| startup, `-c 'pass'`, min of 15 | 10.88 ms | 0.70 ms | 0.61 ms | **0.58 ms** |
+| the 500 programs every arm ran | 6658.3 ms | 486.2 ms | 407.7 ms | **685.7 ms** |
+| …as a ratio | 1.000x | 0.073x | 0.061x | **0.103x** |
+| all 763, refusals included | 13428.9 ms | 743.8 ms | 1297.1 ms | **4565.2 ms** |
+| …of which it answered | 763 | 500 | 714 | **763** |
+| binary | 6,639,992 B | 1,045,176 B | 294,788 B | — |
+
+**The mixture answers all 763 programs for 0.340x of CPython's cost** — 8.9
+seconds saved across one session's worth of one-liners, with nothing left
+unanswered. The two subset arms are cheaper than the mixture only because they
+refuse work, and a refusal still costs its spawn.
+
+Correctness on the same tree, from `lypning conformance`: `lypning` 500 MATCH ·
+263 UNSUPPORTED · **0 MISMATCH**; `lypning-mp` 714 · 47 · **2**; the mixture
+**763 / 763**, zero. Those two are one known defect, tracked rather than waived
+— §5.
+
+Numbers from one run on one machine. The reason every tool prints the corpus
+size it loaded is that yours will differ, so re-run rather than cite: §1 is this
+table in full, with its caveats and with the upstream result this tree did *not*
+reproduce.
+
+## How a program reaches an interpreter
 
 ```
-startup — `-c 'pass'`
+  python3 -c 'import json,sys; print(len(json.load(sys.stdin)))'
+     │
+     │  the shim on PATH — or the PreToolUse hook — hands the program
+     ▼  to lypning instead of to CPython
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │ lypning run — the dispatcher IS the Rust binary, not a wrapper      │
+  │ classify: ask lypning's own parser which tier can take this program │
+  └───┬─────────────────────────────────┬──────────────┬────────────────┘
+      │ 64.1%                           │ 24.9%        │ 11.0%
+      ▼                                 │              │
+  ┌───────────────────────────────────┐ │              │
+  │ 1  lypning · Rust subset          │ │              │
+  │    runs IN-PROCESS — zero spawns  │ │              │
+  │    output staged to the barrier   │ │              │
+  └───┬───────────────────────────────┘ │              │
+      │ exit 90 · one line on stderr,   │              │
+      │ and stdout never written        │              │
+      ▼                                 │              │
+  ┌───────────────────────────────────┐ │              │
+  │ 2  lypning-mp · MicroPython       │◀┘              │
+  │    forked, so its own refusal     │                │
+  │    is catchable; streams stdout   │                │
+  └───┬───────────────────────────────┘                │
+      │ exit 90 · MemoryError · traceback with exit 0  │
+      ▼                                                │
+  ┌───────────────────────────────────┐                │
+  │ 3  cpython · the reference        │◀───────────────┘
+  │    exec'd — no fork, no way back  │
+  │    and none is needed             │
+  └───┬───────────────────────────────┘
+      ▼
+  the program's own stdout, the program's own exit code
+```
 
-arm         min ms   vs cpython
-cpython      11.04     1.000x
-lypning-mp    1.20     0.109x
-lypning       1.03     0.093x
-mixture       1.05     0.095x
+The classifier is a static analysis over lypning's own front end, not a
+heuristic over the program text — so "can tier 1 run this" is an *exact*
+answer, costing one parse and no spawn. The tiers below it cannot be asked that
+way, because they are separate binaries, so those are capability tables; and
+the same `lypning conformance` run that grades answers also grades routes:
+**91.1% IDEAL, 97.5% right on the first try** over the 763 programs above.
 
+Three properties make the fall-through affordable, and each is load-bearing:
+
+- **The winning case costs nothing.** A program routed to tier 1 runs in *this*
+  process — no second spawn, no pipe. About 96% of a one-liner's cost is the OS
+  spawning a process, so a dispatcher that forked even for the case it got
+  right would hand back most of what the fast engine won.
+- **A refusal is a non-event.** Exit `90`, one `<engine>: unsupported: <kind>:
+  <detail>` line on stderr, nothing on stdout — lypning stages its output and
+  discards it, so a refused run is observably a no-op. That commit barrier is
+  what makes falling onward *safe* rather than merely possible
+  (`docs/LYPNING.md` §6).
+- **Only the middle tier is forked.** It has to be, because its own refusal has
+  to be catchable: the capability table knows lypning-mp *has* `re`, not that
+  this build lacks `re.VERBOSE`. The terminal tier is `exec`'d — no fork, no
+  way back, and none needed.
+
+So a wrong route costs one process spawn. It never costs a wrong answer, and
+that is the only reason a mixture is allowed to guess at all.
+
+---
+
+## 1. The measurement, first
+
+Everything else is downstream of one table, and the table is re-measured rather
+than remembered. This is the run quoted above, in full — `lypning bench
+--startup-repeat 15 --repeat 3` on **2026-08-21**, 4 CPUs, Linux 6.18.44-fc-v21,
+**842 programs loaded, 763 measured**, 79 skipped for naming an absolute path
+the per-entry temp cwd does not contain:
+
+```
+startup — `-c 'pass'`, min of 15, arms interleaved
+
+arm             min ms   vs cpython
+cpython          10.88   1.000x
+lypning           0.70   0.064x
+lypning-mp        0.61   0.056x
+mixture           0.58   0.053x
+
+shared subset — the 500 programs every arm executed, min of 3
+
+arm          ran  refused   shared total    median   vs cpython
+cpython      763        0       6658.3 ms    12.03    1.000x
+lypning      500      263        486.2 ms     0.94    0.073x
+lypning-mp   714       49        407.7 ms     0.79    0.061x
+mixture      763        0        685.7 ms     0.92    0.103x
+
+whole corpus — what a session of 763 one-liners costs
+
+cpython     13428.9 ms   1.000x
+lypning       743.8 ms   0.055x   (263 unanswered)
+lypning-mp   1297.1 ms   0.097x   (49 unanswered)
+mixture      4565.2 ms   0.340x   (0 unanswered — saves 8863.7 ms, 66.0%)
+```
+
+Read it in this order:
+
+- **The mixture answers everything CPython answers** — 763 of 763, and zero
+  mismatches on its own arm — for 0.340x of CPython's cost. That is the claim
+  the project exists to make, and it is the one that has held on every machine
+  it has been run on.
+- **The other two arms are cheap because they refuse**, not because they are
+  faster: 263 and 49 programs unanswered. `bench` annotates their whole-corpus
+  totals with exactly that sentence, because the number is otherwise a trap.
+- **Startup is a floor, not a ranking.** All three engines arrive within a
+  tenth of a millisecond of each other, 15–19x under CPython; they are static
+  musl binaries that open no files at startup, and past that the differences
+  are the machine.
+
+There are two totals in that output and they answer different questions. The
+*shared subset* is the only apples-to-apples comparison — a total over
+different program sets is not a comparison at all — and the *whole corpus* is
+what the session actually costs. Both are printed and both are labelled, for
+the same reason.
+
+### What upstream measured, and what did not reproduce
+
+The table this project was written up with is not the table above. Upstream, on
+**2026-08-16**, over the 472 programs the corpus then held (min of 5, arms
+interleaved):
+
+```
 corpus — 472 programs
 
 arm          ran  refused   shared total (323)   vs cpython
@@ -38,76 +179,34 @@ cpython      472        0          4314.4 ms      1.000x
 lypning-mp   444       28           616.5 ms      0.143x
 lypning      324      148           440.3 ms      0.102x
 mixture      472        0           547.0 ms      0.127x
-
-whole corpus — what a session of 472 one-liners costs
-
-cpython     6987.9 ms   1.000x
-lypning-mp  1153.1 ms   0.165x   (28 unanswered)
-lypning      673.3 ms   0.096x   (148 unanswered)
-mixture     1860.8 ms   0.266x   (0 unanswered)
 ```
 
-Read it in this order:
+That run had **lypning ahead of lypning-mp on the shared subset** — 0.102x
+against 0.143x — and it was written up as the thesis: a runtime built for
+two-thirds of the distribution beats a general one on that two-thirds.
 
-- **lypning is the fastest engine on the work it accepts** — 0.102x of CPython
-  on the shared subset, and faster there than lypning-mp (0.143x). That is the
-  whole thesis: a runtime built for two-thirds of the distribution beats a
-  general one on that two-thirds.
-- **The mixture answers everything CPython answers** — 472/472, zero
-  mismatches — at 0.266x of CPython's cost. The other two arms are cheaper
-  only because they refuse work, and a refusal still costs its spawn.
-- **Startup is at parity with lypning-mp, not better.** lypning's binary is
-  ~1.0 MB against lypning-mp's ~270 KB; both are static musl and both open zero
-  files at startup, so they arrive at the same place by different routes.
+**The ordering reversed here, and has stayed reversed.** Both re-runs in this
+tree — 2026-08-20 and the 2026-08-21 run above — put lypning-mp ahead
+(0.061x against 0.073x, and 0.61 ms against 0.70 ms at startup). Successive
+runs on this box agree on the ordering and on the ratios to within about a
+point, while the absolute milliseconds move by tens of percent with the
+machine's load, which is why the ratios are what get quoted and why `bench` is
+not a CI gate.
 
-**Re-measure. Do not cite — and the first bullet above did not reproduce.**
-Running `lypning bench --startup-repeat 15` here on **2026-08-20** (4 CPUs,
-Linux 6.18.5, all three engines built) against a corpus capture that has grown
-to **842 programs, 763 measured**:
-
-```
-shared subset — 500 programs every arm executed
-
-arm          ran  refused   shared total    median   vs cpython
-cpython      763        0        6955.3 ms    12.36    1.000x
-lypning      500      263         497.9 ms     0.96    0.072x
-lypning-mp   714       49         434.2 ms     0.84    0.062x
-mixture      763        0         754.1 ms     1.04    0.108x
-
-whole corpus                     vs cpython
-cpython     13497.7 ms             1.000x
-mixture      4339.6 ms             0.322x   (0 unanswered — saves 67.8%)
-
-startup — `-c 'pass'`, min of 15
-lypning-mp 0.60 ms   mixture 0.62 ms   lypning 0.68 ms   cpython 11.65 ms
-```
-
-The mixture result held: 763/763 answered at 0.322x of CPython, a 67.8% saving.
-**The ordering of the two subset engines reversed.** Upstream measured lypning
-at 0.102x beating lypning-mp at 0.143x on the shared subset; here lypning-mp is
-0.062x against lypning's 0.072x, and it starts faster too (0.60 ms against
-0.68 ms). Successive runs on this box agree on the ordering and on the ratios to
-within about a point, while the absolute milliseconds move by tens of percent
-with the machine's load — which is the reason the ratios are what get quoted
-and the reason `bench` is not a CI gate.
-
-Read honestly, that means **the first bullet above is upstream's result, not a
-property of the design.** The shared subset is by construction the 500 programs
-lypning accepted — the simplest in the corpus — where both engines sit near
-their startup floor, and lypning-mp's floor is lower: its binary is 294,788 B
-against lypning's 1,045,176 B (both printed by `lypning status`, and both move
-whenever an engine is rebuilt). The claim that a runtime built for two-thirds
-of the distribution beats a general one *on that two-thirds* is a claim about a
-particular corpus on a particular machine, and this machine did not reproduce
-it.
+Read honestly, that thesis was **upstream's result, not a property of the
+design**. The shared subset is by construction the programs lypning accepted —
+the simplest in the corpus — where both engines sit near their startup floor,
+and lypning-mp's floor is lower: 294,788 B against lypning's 1,045,176 B (both
+printed by `lypning status`, and both move whenever an engine is rebuilt).
 
 What survives re-measurement is the part the mixture is actually for: answering
-everything CPython answers, for a third of the cost. Both tools print the corpus
-size they loaded, every run, for exactly this reason — **never quote a
+everything CPython answers, for about a third of the cost. Both tools print the
+corpus size they loaded on every run for exactly this reason — **never quote a
 remembered corpus size**, and do not carry a remembered ordering either.
 
-`docs/LYPNING.md` §1 is the full table with its caveats, `docs/BENCH-LEDGER.md`
-is the append-only history including the runs where the subset lost.
+`docs/LYPNING.md` §1 is the design's own version of this table,
+`docs/BENCH-LEDGER.md` is the append-only history including the runs where the
+subset lost.
 
 ---
 
@@ -665,7 +764,8 @@ src/lypning/
   assets/claude/       the skill, the hook scripts, the settings.json fragment
   assets/shim/         python-shim (POSIX sh, no python)
   assets/scripts/      build-rust.sh, build-micropython.sh
-docs/                  see below
+docs/                  see below, plus logo.svg — the thundercloud in the name
+site/                  the GitHub Pages generator: build.py, index.md, style.css
 tests/
 Makefile               thin wrappers: build test check conformance fuzz bench gate
                        doctor install dist dist-check clean  (`make help`)
@@ -680,7 +780,7 @@ Makefile               thin wrappers: build test check conformance fuzz bench ga
 | `docs/RESEARCH.md` | what the second tier should have been built from, and why MicroPython won |
 | `docs/CAPTURE.md` | the two capture feeds, the harvest, and the privacy rules |
 | `docs/COOKBOOK.md` | unsupported Python, rewritten — what to type when a tier refuses |
-| `docs/EMBEDDING.md` | linking the runtime into a harness: the C ABI, the four bindings, and what a refusal means when there is no exit code |
+| `docs/EMBEDDING.md` | linking the runtime into a harness: the C ABI, the five hosts over it, and what a refusal means when there is no exit code |
 | `docs/BENCH-LEDGER.md` | append-only measurement history, including the losses |
 
 Working on this repository? Read `CLAUDE.md` first.

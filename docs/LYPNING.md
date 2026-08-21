@@ -21,24 +21,70 @@ programs an agent types are a much narrower target than "Python".
 
 ## 1. The measurement, first
 
-Everything below is downstream of one table. 472 harvested programs
-(`assets/corpus/corpus.jsonl` + `assets/corpus/seed-corpus.jsonl`), min of 5,
-arms interleaved per entry, on the upstream container (2026-08-16), before this
-package was extracted from it.
+Everything below is downstream of one table, and the table gets **re-measured,
+never remembered**. The capture harness grows the corpus every session — this
+project's first table was over 420 programs and the number was stale within the
+day. Every tool prints the count it loaded; quote that one, with its date.
 
-**Do not carry a remembered corpus size.** The capture harness grows it every
-session — this project's first table was over 420 programs and the number was
-stale within the day. Every tool prints the count it loaded; quote that.
+This tree, on **2026-08-21**: `lypning bench --startup-repeat 15 --repeat 3`,
+4 CPUs, Linux 6.18.44-fc-v21, all three engines built, **842 programs loaded and
+763 measured** (`assets/corpus/corpus.jsonl` + `assets/corpus/seed-corpus.jsonl`;
+79 skipped for naming an absolute path the per-entry temp cwd does not contain).
 
 ```
-startup — `-c 'pass'`
+startup — `-c 'pass'`, min of 15, arms interleaved
 
 arm         min ms   vs cpython
-cpython      11.04     1.000x
-lypning-mp    1.20     0.109x
-lypning       1.03     0.093x
-mixture       1.05     0.095x
+cpython      10.88     1.000x
+lypning       0.70     0.064x
+lypning-mp    0.61     0.056x
+mixture       0.58     0.053x
 
+shared subset — the 500 programs every arm executed, min of 3
+
+arm          ran  refused   shared total   median   vs cpython
+cpython      763        0       6658.3 ms   12.03     1.000x
+lypning      500      263        486.2 ms    0.94     0.073x
+lypning-mp   714       49        407.7 ms    0.79     0.061x
+mixture      763        0        685.7 ms    0.92     0.103x
+
+whole corpus — what a session of 763 one-liners costs
+
+cpython     13428.9 ms   1.000x
+lypning       743.8 ms   0.055x   (263 unanswered)
+lypning-mp   1297.1 ms   0.097x   (49 unanswered)
+mixture      4565.2 ms   0.340x   (0 unanswered — saves 8863.7 ms, 66.0%)
+```
+
+Read it in this order:
+
+- **The mixture answers everything CPython answers** — 763 of 763, zero
+  mismatches on its own arm — at **0.340x of CPython's cost**, a 66.0% saving.
+  This is the result the design exists to produce and the one that has held on
+  every machine it has been run on.
+- **The other two arms are cheap because they refuse**, not because they are
+  faster: 263 and 49 programs unanswered, and a refusal still costs its spawn.
+  `bench` prints that sentence next to those totals for a reason.
+- **Startup is a floor the three share.** All three engines land within a tenth
+  of a millisecond of each other, 15–19x under CPython. They are static musl
+  binaries that open no files at startup; past that, the differences are the
+  machine.
+- **The subset was not tuned to this corpus.** It was built against 420
+  programs and has been measured against every capture since; coverage has gone
+  up as the corpus grew, with mismatches on the lypning arm still at zero. That
+  is a generalisation signal rather than a fit to the sample.
+
+Both binary sizes move with every rebuild — 1,045,176 B and 294,788 B in this
+tree today; `lypning status` and `lypning gate` print the ones you actually
+have.
+
+### The upstream table, and the bullet that did not reproduce
+
+The project was written up on a different run: upstream, **2026-08-16**, over
+the 472 programs the corpus then held, min of 5, arms interleaved, before this
+package was extracted from that container.
+
+```
 corpus — 472 programs
 
 arm          ran  refused   shared total (323)   vs cpython
@@ -47,32 +93,26 @@ lypning-mp   444       28           616.5 ms      0.143x
 lypning      324      148           440.3 ms      0.102x
 mixture      472        0           547.0 ms      0.127x
 
-whole corpus — what a session of 472 one-liners costs
-
-cpython     6987.9 ms   1.000x
-lypning-mp  1153.1 ms   0.165x   (28 unanswered)
-lypning      673.3 ms   0.096x   (148 unanswered)
-mixture     1860.8 ms   0.266x   (0 unanswered)
+whole corpus     cpython 6987.9 ms 1.000x     mixture 1860.8 ms 0.266x
 ```
 
-Read it in this order:
+That run put **lypning ahead of lypning-mp on the shared subset** — 0.102x
+against 0.143x — and it was written up as the thesis: a runtime built for
+two-thirds of the distribution beats a general one on that two-thirds.
 
-- **lypning is the fastest engine on the work it accepts** — 0.102x against
-  CPython on the shared subset, and faster than lypning-mp there (0.143x). That is
-  the whole thesis: a runtime built for 69% of the distribution beats a general
-  one on that 69%.
-- **The mixture answers everything CPython answers** — 472/472, zero
-  mismatches — at **0.266x of CPython's cost**, a 73.4% saving. The other two
-  arms are cheaper only because they refuse work.
-- **The subset was not tuned to this corpus.** It was built against 420
-  programs; 52 more arrived when main folded in the day's sightings, and
-  coverage went UP (67.1% → 68.6%) with mismatches still at zero. That is a
-  small but real generalisation signal rather than a fit to the sample.
-- **Startup is at parity with lypning-mp, not better.** lypning's binary was
-  1,020,600 B against lypning-mp's 269,316 B *as built upstream on 2026-08-16*;
-  both are static musl and both open zero files, so they arrive at the same
-  place by different routes. Both counts move with every rebuild — `lypning
-  status` and `lypning gate` print the ones you actually have.
+**Both re-runs in this tree reversed it.** On 2026-08-20 and again on
+2026-08-21 lypning-mp came in ahead (0.061x against 0.073x above), and starts
+marginally faster too. Successive runs on one box agree on the ordering and on
+the ratios to within about a point while the absolute milliseconds move by tens
+of percent with load — which is why ratios are what get quoted, and why `bench`
+is not a CI gate.
+
+So that thesis is **upstream's result on upstream's corpus, not a property of
+the design.** The shared subset is by construction the programs lypning
+accepted — the simplest in the corpus — where both engines sit near their
+startup floor, and lypning-mp's floor is lower because its binary is a third the
+size. What survived re-measurement is the mixture result: everything CPython
+answers, for about a third of the cost.
 
 Reproduce: `lypning build --rust && lypning bench`.
 
@@ -107,6 +147,22 @@ and each engine's result is one of three things:
 | UNSUPPORTED | exit **90** with `<engine>: unsupported: <kind>: <detail>` | **no** — this is coverage, and the build order |
 | MISMATCH | anything else | **yes, always** |
 
+This tree, on **2026-08-21**, over the 763 of 842 corpus programs the battery
+could run:
+
+```
+engine      MATCH  UNSUPPORTED  MISMATCH   coverage
+lypning       500          263         0     65.5%
+lypning-mp    714           47         2     93.6%
+mixture       763            0         0    100.0%
+```
+
+**The gate is red, and it is red on the lypning-mp arm.** Both MISMATCHes are
+one defect and it is the contract, not a computation: MicroPython streams
+stdout, so a program that prints before it reaches an unsupported construct has
+already committed those bytes when it exits 90 (§6). It is tracked rather than
+waived — `lypning conformance` fails while it stands.
+
 Upstream, on 2026-08-16, over the 472 programs the corpus then held:
 
 ```
@@ -116,12 +172,11 @@ lypning-mp    443           28         1     93.9%
 mixture       472            0         0    100.0%
 ```
 
-**That table is history, not status.** Run `lypning conformance` for this
-tree's — it prints the corpus size it loaded, and this tree is red on the
-lypning-mp arm for a different reason (`README.md` §5, §6 below).
-
-The one lypning-mp MISMATCH above is pre-existing: `json.load` on a 4 MB file
-exhausts its heap. The dispatcher recovers from it (§5).
+**That table is history, not status**, and so is the one above it by the time
+you read this — run `lypning conformance` for your own, and quote the corpus
+size it prints. The single lypning-mp MISMATCH upstream was a different defect:
+`json.load` on a 4 MB file exhausting its heap. The dispatcher recovers from
+that one too (§5).
 
 **A subset runtime that silently disagrees with CPython is worse than no runtime
 at all**, because the agent that typed the one-liner will not notice. That is
@@ -190,20 +245,26 @@ the program text. That is the design:
   those are capability **tables** in `assets/rust/src/route.rs`, kept honest by the
   routing arm of the conformance runner.
 
-The routing score is asymmetric on purpose:
+The routing score is asymmetric on purpose (this tree, 2026-08-21, same run as
+§2 — `lypning conformance` grades routes and answers together):
 
 ```
-routing over 472 programs
+routing over 763 programs
 
-  IDEAL       439  routed to the cheapest engine that works
-  WASTED       15  engine refused; one extra spawn, right answer
-  LATE         17  worked, but a cheaper engine would have too
+  IDEAL       695  routed to the cheapest engine that works
+  WASTED       18  engine refused; one extra spawn, right answer
+  LATE         49  worked, but a cheaper engine would have too
   UNSAFE        1  routed to an engine that MISMATCHES
   NO-ENGINE     0
 
-  accuracy 93.0% ideal, 96.6% correct-on-first-try
-  predictions: lypning=319  lypning-mp=122  cpython=31
+  accuracy 91.1% ideal, 97.5% correct-on-first-try
+  predictions: lypning=489  lypning-mp=190  cpython=84
 ```
+
+The one UNSAFE is the streamed-stdout defect of §2 reached through the router:
+a program predicted for lypning-mp whose ideal tier is CPython. The dispatcher
+recovered it, and it still counts — a route that lands on an engine which
+mismatches is the one outcome that spends trust instead of milliseconds.
 
 A wrong route costs a process spawn. A wrong *answer* costs the user's trust, so
 UNSAFE is tracked separately and the dispatcher is built to recover from it.
@@ -212,6 +273,43 @@ UNSAFE is tracked separately and the dispatcher is built to recover from it.
 
 ```
 lypning run -c 'print(1 + 1)'
+```
+
+End to end, with the shares from the routing run in §4:
+
+```
+  python3 -c 'import json,sys; print(len(json.load(sys.stdin)))'
+     │
+     │  the shim on PATH — or the PreToolUse hook — hands the program
+     ▼  to lypning instead of to CPython
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │ lypning run — the dispatcher IS the Rust binary, not a wrapper      │
+  │ classify: ask lypning's own parser which tier can take this program │
+  └───┬─────────────────────────────────┬──────────────┬────────────────┘
+      │ 64.1%                           │ 24.9%        │ 11.0%
+      ▼                                 │              │
+  ┌───────────────────────────────────┐ │              │
+  │ 1  lypning · Rust subset          │ │              │
+  │    runs IN-PROCESS — zero spawns  │ │              │
+  │    output staged to the barrier   │ │              │
+  └───┬───────────────────────────────┘ │              │
+      │ exit 90 · one line on stderr,   │              │
+      │ and stdout never written        │              │
+      ▼                                 │              │
+  ┌───────────────────────────────────┐ │              │
+  │ 2  lypning-mp · MicroPython       │◀┘              │
+  │    forked, so its own refusal     │                │
+  │    is catchable; streams stdout   │                │
+  └───┬───────────────────────────────┘                │
+      │ exit 90 · MemoryError · traceback with exit 0  │
+      ▼                                                │
+  ┌───────────────────────────────────┐                │
+  │ 3  cpython · the reference        │◀───────────────┘
+  │    exec'd — no fork, no way back  │
+  │    and none is needed             │
+  └───┬───────────────────────────────┘
+      ▼
+  the program's own stdout, the program's own exit code
 ```
 
 Two properties make the mixture cheap enough to be worth having:
