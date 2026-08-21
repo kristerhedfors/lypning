@@ -237,6 +237,39 @@ The refusals left in the corpus are worth seconds; making the interpreter twice
 as fast at everything is worth tens of milliseconds. Both are worth doing. They
 are not worth the same, and the ledger should not pretend they are.
 
+### Before you believe a small regression: perturb the baseline
+
+At `opt-level = "s"` with `lto = true` and `codegen-units = 1`, **a change in one
+part of the crate moves inlining decisions in another part it has no source-level
+relationship with.** A generator-expression change cost `fib(23)` 7% (ledger,
+iteration 15); five hypotheses were built and measured before it became clear
+that most of it was the optimiser, not the code.
+
+So when a reading moves by single-digit percent, find out what the *build* is
+worth first. Rebuild the **unchanged** source three more times with a comment
+added to an unrelated file, and measure the spread:
+
+```bash
+for tag in P Q R; do
+  printf '\n// probe %s\n' "$tag" >> src/lypning/assets/rust/src/json.rs
+  cargo build --release --manifest-path src/lypning/assets/rust/Cargo.toml \
+        --target x86_64-unknown-linux-musl
+  cp src/lypning/assets/rust/target/x86_64-unknown-linux-musl/release/lypning $B/base$tag
+done
+git checkout -- src/lypning/assets/rust/src/json.rs
+```
+
+Then time the same program on all four and on your change. Measured here:
+baseline `48.85 49.31 49.55 49.18` against changed `51.39 52.81 52.91 53.41` —
+non-overlapping, so real. Overlapping bands mean you have nothing, and an
+afternoon spent on it is an afternoon spent on the linker.
+
+Two attributes are worth trying when a hot path slows down for no reason you can
+see, and both earned their place here: `#[inline(never)]` on a *cold* arm of a
+big `match`, so its locals stop widening the stack frame of every call through
+that function; and `#[inline]` on a small hot helper, which `opt-level = "s"`
+will not inline unprompted.
+
 ### Two things no gate here can see
 
 **A complexity bug.** All four gates run each program once, at whatever size the
