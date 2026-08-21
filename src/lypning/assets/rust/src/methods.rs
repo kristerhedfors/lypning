@@ -292,13 +292,17 @@ fn str_method(
                     )))
                 }
             };
-            let parts: Vec<String> = match sep {
+            // Built straight into `Value::Str`. The intermediate `Vec<String>`
+            // this replaces allocated every part TWICE — once as a `String` and
+            // again when that `String` was copied into an `Rc<str>` — which on a
+            // one-liner that splits in a loop is most of the cost of the call.
+            let parts: Vec<Value> = match sep {
                 // Whitespace splitting collapses runs and drops leading and
                 // trailing empties; separator splitting does neither.
                 None => {
-                    let mut v: Vec<String> = Vec::new();
+                    let mut v: Vec<Value> = Vec::new();
                     if maxsplit < 0 {
-                        v = s.split_whitespace().map(|x| x.to_string()).collect();
+                        v = s.split_whitespace().map(|x| Value::Str(x.into())).collect();
                     } else if name == "split" {
                         let mut rest: &str = s;
                         let mut n = 0;
@@ -306,7 +310,7 @@ fn str_method(
                         while n < maxsplit && !rest.is_empty() {
                             match rest.find(char::is_whitespace) {
                                 Some(i) => {
-                                    v.push(rest[..i].to_string());
+                                    v.push(Value::Str(rest[..i].into()));
                                     rest = rest[i..].trim_start();
                                     n += 1;
                                 }
@@ -314,7 +318,7 @@ fn str_method(
                             }
                         }
                         if !rest.is_empty() {
-                            v.push(rest.to_string());
+                            v.push(Value::Str(rest.into()));
                         }
                     } else {
                         return Err(unsupported(
@@ -329,22 +333,22 @@ fn str_method(
                         return Err(value_err("empty separator"));
                     }
                     if maxsplit < 0 {
-                        s.split(sep.as_ref()).map(|x| x.to_string()).collect()
+                        s.split(sep.as_ref()).map(|x| Value::Str(x.into())).collect()
                     } else if name == "split" {
                         s.splitn(maxsplit as usize + 1, sep.as_ref())
-                            .map(|x| x.to_string())
+                            .map(|x| Value::Str(x.into()))
                             .collect()
                     } else {
-                        let mut v: Vec<String> = s
+                        let mut v: Vec<Value> = s
                             .rsplitn(maxsplit as usize + 1, sep.as_ref())
-                            .map(|x| x.to_string())
+                            .map(|x| Value::Str(x.into()))
                             .collect();
                         v.reverse();
                         v
                     }
                 }
             };
-            list(parts.into_iter().map(|p| Value::Str(p.into())).collect())
+            list(parts)
         }
         "splitlines" => {
             let keepends = match args.first().cloned().or_else(|| kwget(&kw, "keepends")).as_ref() {
