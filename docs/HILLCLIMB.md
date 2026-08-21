@@ -28,6 +28,76 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-21 · iteration 17 — the dispatcher was the one giving the wrong answer
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1037 loaded, 861 timed
+
+Two fixes, and the second is the one that matters.
+
+### Text decoding refuses where it cannot agree
+
+Iteration 16 recorded two places where lypning's decoding disagrees with
+CPython's and left them. Both now **refuse**:
+
+* **stdin** — CPython decodes it with `surrogateescape` (PEP 383), so
+  `for l in sys.stdin` over `b"ok\n\xff\n"` yields `'\udcff\n'` at exit 0
+  where lypning raised `UnicodeDecodeError`.
+* **a text file read a line at a time** — CPython decodes a buffered block and
+  raises before yielding anything, at a file-relative position; lypning yielded
+  the first line and then raised at a line-relative one.
+
+`bytes.decode()` and a whole-file `f.read()` agree exactly on both interpreters
+and keep raising, unchanged. Checking the barrier first, as iteration 16 said to:
+a refusal reached after output has been committed is already turned into a plain
+exit-1 error rather than a routable 90, by both `main.rs` and `embed.rs`. So
+refusing here is safe, and the fall-through does the right thing — `lypning run`
+now prints CPython's `'\udcff\udcfe\n'`.
+
+### And then the fall-through did not work
+
+Verifying that revealed something worse, **pre-existing**, and reproducible on
+the iteration-0 binary:
+
+```
+$ printf '2\n3\n' | lypning run -c 'import sys
+  for l in sys.stdin: print(int(l) * 10**30)'
+                     ← nothing. exit 0.
+$ printf '2\n3\n' | python3 -c '…'
+2000000000000000000000000000000
+3000000000000000000000000000000
+```
+
+`cli.cmd_run` passed `stdin=None` to `engines.dispatch`, so every tier
+**inherited** the caller's pipe. lypning read both lines, overflowed on the
+bignum, and exited 90 — and CPython was then handed a stream with nothing left
+in it. Empty output, exit 0, no error anywhere.
+
+**The dispatcher itself produced the wrong answer**, which is precisely the
+failure the whole fall-through mechanism exists to prevent. The Rust `lypning
+run` captures and replays and was always right; only the Python CLI was wrong.
+
+Why it stayed hidden: a refusal the classifier predicts **statically** never
+touches stdin — `import ctypes` routes straight to CPython and lypning never
+runs. Only a **runtime** refusal after stdin has been read reaches the bug, and
+that is exactly the case iteration 16's new `encoding` refusal created.
+
+Fixed by reading a piped stdin once, before dispatching, and handing the same
+bytes to every attempt. A terminal is left alone — reading it would block for
+input the program may never want. Pinned in `tests/test_cli.py`, both ways: the
+fall-through case, and a run that never falls through, so the capture cannot
+break the ordinary path.
+
+conformance 529 / 332 / **0**, bytes 1,045,176, both unchanged.
+
+**Two lessons, both about where to look.** A fix that creates a *new refusal
+path* is a fix that exercises the fall-through for the first time in that shape
+— so test the fall-through, not just the refusal. And "the dispatcher agrees
+with CPython" is a claim no gate in this tree makes: `conformance` runs the
+`mixture` arm, but only over corpus programs, and none of them refuses at
+runtime after reading stdin.
+
+---
+
 ## 2026-08-21 · iteration 16 — a line was copied three times
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1037 loaded, 861 timed

@@ -706,7 +706,10 @@ pub fn call_builtin(
             }
             match mio::stdin_line()? {
                 Some(b) => {
-                    let s = decode_utf8(&b)?;
+                    let s = crate::iter::decode_text(
+                        &b,
+                        "non-UTF-8 bytes on stdin (CPython decodes it with surrogateescape)",
+                    )?;
                     Value::Str(s.trim_end_matches('\n').trim_end_matches('\r').into())
                 }
                 None => return Err(LypningError::exc("EOFError", "EOF when reading a line")),

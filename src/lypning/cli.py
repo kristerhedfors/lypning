@@ -210,10 +210,41 @@ def _progress(label: str) -> Optional[Callable[..., None]]:
 # --- run / route -------------------------------------------------------------
 
 
+def _replayable_stdin() -> Optional[str]:
+    """A piped stdin, read ONCE so every tier in the chain can be handed it.
+
+    Without this each engine inherits the pipe and the first one to run consumes
+    it. That is fine while a refusal is predicted STATICALLY — the classifier
+    routes `import ctypes` straight to CPython and lypning never touches the
+    stream — and it is a silent wrong answer as soon as a refusal happens at
+    RUNTIME, after the program has already read stdin:
+
+        printf '2\n3\n' | lypning run -c 'import sys
+        for l in sys.stdin: print(int(l) * 10**30)'
+
+    lypning reads both lines, overflows, and exits 90; CPython is then handed a
+    stream with nothing left in it and prints nothing, at exit 0. The dispatcher
+    itself produced the empty answer — which is exactly the failure the whole
+    fall-through exists to prevent. The Rust `lypning run` already captures and
+    replays; this is the same rule on this side of the fence.
+
+    A terminal is left alone: reading it would block for input the program may
+    never want. Nothing else is: a pipe the program ignores costs one read of
+    bytes that were going to be discarded anyway.
+    """
+    try:
+        if sys.stdin is None or sys.stdin.isatty():
+            return None
+        return sys.stdin.read()
+    except (OSError, ValueError):
+        # No stdin at all, or it is closed. Inheriting is then the same thing.
+        return None
+
+
 def cmd_run(ns: argparse.Namespace) -> int:
     program, tail, stdin = _read_program(ns)
-    if ns.stdin and stdin is None:
-        stdin = sys.stdin.read()
+    if stdin is None:
+        stdin = sys.stdin.read() if ns.stdin else _replayable_stdin()
     d = engines.dispatch(program, argv_tail=tail, stdin=stdin, timeout=ns.timeout)
     if ns.verbose:
         chain = " -> ".join([a.engine for a in d.attempts] + [d.engine])

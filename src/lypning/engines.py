@@ -560,6 +560,13 @@ def dispatch(
     *with* the contract line. Exit 90 on its own is a number the program chose
     (``sys.exit(90)``), and treating it as a refusal re-runs a program that has
     already done half its work, once per remaining tier.
+
+    ``stdin`` is handed to **every** attempt, and supplying it is the caller's
+    job. Leaving it ``None`` lets each engine inherit the caller's own stream,
+    which the first tier then consumes — so a program that reads stdin and only
+    afterwards hits a refusal gives the next tier an empty stream and the run
+    prints nothing. :func:`lypning.cli._replayable_stdin` is what fills it in
+    for ``lypning run``.
     """
     r = route(program, timeout=timeout)
     attempts: list[Result] = []

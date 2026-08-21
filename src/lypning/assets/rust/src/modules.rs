@@ -194,15 +194,15 @@ pub fn call_module_method(
             };
             return Err(LypningError::Exit(code));
         }
-        ("sys.stdin", "read") => Value::Str(crate::iter::decode_utf8_rc(&mio::stdin_rest()?)?),
+        ("sys.stdin", "read") => Value::Str(crate::iter::decode_text(&mio::stdin_rest()?, "non-UTF-8 bytes on stdin (CPython decodes it with surrogateescape)")?),
         ("sys.stdin", "readline") => match mio::stdin_line()? {
-            Some(b) => Value::Str(crate::iter::decode_utf8_rc(&b)?),
+            Some(b) => Value::Str(crate::iter::decode_text(&b, "non-UTF-8 bytes on stdin (CPython decodes it with surrogateescape)")?),
             None => Value::Str("".into()),
         },
         ("sys.stdin", "readlines") => {
             let mut out = Vec::new();
             while let Some(b) = mio::stdin_line()? {
-                out.push(Value::Str(crate::iter::decode_utf8_rc(&b)?));
+                out.push(Value::Str(crate::iter::decode_text(&b, "non-UTF-8 bytes on stdin (CPython decodes it with surrogateescape)")?));
             }
             list(out)
         }

@@ -250,12 +250,18 @@ impl Interp {
                         // `Rc<str>`. This used to build a `Vec<u8>` and then a
                         // `String` on the way, so every line of every file read
                         // in a `for` loop was copied three times.
-                        Value::Str(decode_utf8_rc(&fo.data[start..end])?)
+                        Value::Str(decode_text(
+                            &fo.data[start..end],
+                            "non-UTF-8 bytes in a text-mode line read",
+                        )?)
                     })
                 }
             }
             Iter::Stdin => match mio::stdin_line()? {
-                Some(b) => Some(Value::Str(decode_utf8_rc(&b)?)),
+                Some(b) => Some(Value::Str(decode_text(
+                    &b,
+                    "non-UTF-8 bytes on stdin (CPython decodes it with surrogateescape)",
+                )?)),
                 None => None,
             },
             Iter::Gen(g) => {
@@ -420,6 +426,35 @@ impl Interp {
             return Ok(s.borrow().items.clone());
         }
         self.iter_collect(v)
+    }
+}
+
+/// Text-mode decoding, which is where lypning and CPython genuinely disagree —
+/// so it **refuses** rather than raising.
+///
+/// `bytes.decode()` and a whole-file `f.read()` both raise `UnicodeDecodeError`
+/// on both interpreters, with the same message and the same position, and those
+/// keep using [`decode_utf8_rc`]. Two text paths do not agree, and neither
+/// disagreement is fixable cheaply:
+///
+///   * **stdin.** CPython decodes it with `surrogateescape` (PEP 383), so
+///     `for l in sys.stdin` over `b"ok\n\xff\n"` yields `'\udcff\n'` and exits
+///     0 where lypning raised.
+///   * **A text file, a line at a time.** CPython decodes a buffered block, so
+///     it raises *before* yielding any line, at a position counted in the file.
+///     lypning reads line by line, so it yielded the first line and then raised
+///     at a position counted within the second — different stdout, same exit
+///     code, which is the shape invariant 1 exists to stop.
+///
+/// A refusal is the cheap correct answer: the barrier discards the staged
+/// output, the dispatcher hands the program to CPython, and CPython does the
+/// surrogateescape. If output has already been committed the refusal is turned
+/// into a plain exit-1 error rather than a routable 90, which `main.rs` and
+/// `embed.rs` already do for every refusal.
+pub fn decode_text(b: &[u8], what: &str) -> R<std::rc::Rc<str>> {
+    match std::str::from_utf8(b) {
+        Ok(s) => Ok(std::rc::Rc::from(s)),
+        Err(_) => Err(unsupported("encoding", what)),
     }
 }
 
