@@ -165,10 +165,18 @@ sandbox that opens zero files. Then 22% off the binary, every change measured
 judged at all · [PR #435][u435]; and the first measurement in a real VM, where
 the frozen stdlib streams zero bytes and CPython wedges · [PR #444][u444].
 
-**2026-08-13** — `pygram` begins as a *charter, a subset spec, a corpus and the
-two gates that will judge it* — written before the code. MicroPython is picked
-on evidence two commits later, and a daemon design dropped on the same
+**2026-08-13** — `pygram` begins, and the first commit contains **no
+interpreter**: a charter, a subset spec, a conformance runner, a size gate and a
+seed corpus — 1,856 lines of instrument before a line of the thing it measures.
+The exit-`90` refusal contract and the MATCH / UNSUPPORTED / MISMATCH split,
+which are invariants 1 and 2 today, are specified there on day one. MicroPython
+is picked on evidence two commits later and a daemon design dropped on the same
 evidence; `docs/RESEARCH.md` is that survey.
+
+**2026-07-24** — `python3 --version` is measured at **8,573 ms cold** against
+87 ms warm inside the sandbox, and written down. Three weeks before either
+runtime exists — the number came first, and both were built for it. It is
+`docs/SANDBOX-PERFORMANCE.md` today.
 
 **2026-07-04** — DeepResearch.se's first commit.
 
