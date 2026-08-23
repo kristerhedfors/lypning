@@ -177,6 +177,14 @@ that stays in the subset*, and this study is the first thing that has measured
 the difference. The cheapest fix is not a longer skill: it is the T2 paragraph,
 which is 744 bytes.
 
+> **The skill has since been changed in response.** `SKILL.md` now carries a
+> §1a — the motive, the correctness rule, the ten rewrites that account for
+> nearly all of the gap, and the three run-time refusals no import can dodge.
+> **T3's 81.7% describes the text as it was when it was measured**, and that text
+> is kept verbatim at `study/prompts/skill.md` so the row stays reproducible. The
+> new section has not been measured; re-running T3 against it is the obvious next
+> experiment, and it is one path in `study/treatments.json`.
+
 **Per task**, control against the cheapest static prompt that solves it:
 
 | task | tempts | tier-1 feasible | control | cheapest static prompt that gets it | engine in the loop |

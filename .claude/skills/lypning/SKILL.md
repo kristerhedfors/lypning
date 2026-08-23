@@ -43,6 +43,62 @@ cargo. The lypning-mp tier needs a 32-bit C toolchain and a network and is
 **Never quote a remembered corpus size.** Capture grows it every session. Every
 tool prints the count it loaded — quote that number, from that run.
 
+## 1a. Writing python that stays on tier 1
+
+This section exists because it was measured to be missing. `docs/PROMPTING.md`
+put 884 agent-written programs through nine prompt treatments; this file, handed
+over verbatim, scored **81.7%** against **88.5%** for prompts that said the
+following, and the gap was entirely programs that reached for an import the
+subset does not have. What follows is the part of that gap this file can close.
+
+**The motive, which is most of the win.** The fastest tier runs the program in
+the dispatcher's own process — no second spawn, and about 96% of a one-liner's
+cost is the spawn. A program that leaves the subset does not cost a little more,
+it costs everything: a wasted classification plus the full CPython price. So the
+question to ask while typing is not "is this valid Python" but "does this need a
+module". Over a battery of 26 realistic tasks that one framing moved the mixture
+from 0.470x of CPython to 0.178x.
+
+**Correctness outranks the tier, always, and it is not close.** Never approximate
+an answer to stay inside the subset, and never reimplement a standard algorithm
+to avoid an import — the study has an agent that wrote 54 lines of SHA-256 by
+hand rather than `import hashlib`, to save about eleven milliseconds. **The
+subset is a routing decision, not a challenge.** A fall-back is free and always
+safe; a wrong answer is the one thing this project exists to prevent.
+
+**The rewrites that account for nearly all of it.** Each is an exact
+substitution, not an approximation:
+
+| instead of | write |
+|---|---|
+| `collections.Counter(xs)` | `d = {}` then `d[x] = d.get(x, 0) + 1` |
+| `Counter(...).most_common(k)` | `sorted(d.items(), key=lambda kv: (-kv[1], kv[0]))[:k]` |
+| `defaultdict(list)` | `d.setdefault(k, []).append(v)` |
+| `re.sub(r"\s+", " ", s)` | `" ".join(s.split())` |
+| `re.findall(r"\d+", s)` | accumulate digit runs in a `for` over the characters |
+| `import csv`, for simple rows | `line.split(",")` over `f.read().splitlines()` |
+| `import pathlib` | `os.path.join` / `basename` / `splitext`, and `open` |
+| `math.sqrt(n)` / `math.isqrt(n)` | `n ** 0.5` / an integer binary search |
+| `import datetime` for durations | `divmod` on integer seconds |
+| `dict.fromkeys(xs)` to dedupe | a `for` loop with a membership test |
+
+And the three that no rewrite of an import can dodge, because they are decided
+while the program runs and no parser can see them coming: **64-bit integers**
+(anything past the signed range refuses — let it fall back), **set iteration
+order** (`set(...)` and `len(set(...))` are fine; printing or iterating one is
+refused, so `sorted(set(...))`), and **`os.listdir`**, whose order the filesystem
+defines rather than Python.
+
+If you must import, the cheap ones still land on lypning-mp rather than CPython:
+`re`, `collections`, `math`, `csv`, `hashlib`, `datetime`, `random`, `struct`,
+`base64`, `pathlib`, `textwrap`, `glob`, `statistics`, `time`, `urllib.parse`,
+`zlib`. `subprocess`, `itertools`, `functools`, `argparse` and `unicodedata` go
+straight to CPython.
+
+**One caveat about `lypning route`, until it is fixed.** It reports every
+`os.path.<fn>()` call as `cpython`, and the engine runs all of them on tier 1
+anyway (`docs/LYPNING.md` §4). Do not rewrite `os.path` code to satisfy it.
+
 ## 2. The gates — they answer different questions, so run the ones that apply
 
 ```bash

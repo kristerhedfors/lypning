@@ -42,7 +42,28 @@ Three things worth knowing before writing such a prompt:
 No prompt ever bought a wrong answer: **0 MISMATCH and 0 incorrect results over
 884 programs**, pinned by `tests/test_study.py`.
 
-### Fixed — nothing yet, but two defects the study found and quantified
+### Changed — the skill now says how to write for the subset, not just how to work on it
+
+`SKILL.md` gains a §1a, because the study measured that it was missing. The file
+handed to an agent verbatim scored 81.7% against 88.5% for prompts that carried
+the same information the new section does, and every point of that gap was a
+program reaching for an import the subset does not have.
+
+§1a is the part the study says is load-bearing, in this order: the **motive**
+(the fast tier runs in the dispatcher's own process, so a program that leaves the
+subset does not cost a little more, it costs a wasted classification plus a full
+spawn); the **correctness rule**, stated harder than before — never approximate
+an answer and never reimplement a standard algorithm to stay inside, because the
+subset is a routing decision and not a challenge; the **ten rewrites** that
+account for nearly all of the measured gap; the **three run-time refusals** no
+import can dodge; and a warning not to rewrite `os.path` code to satisfy
+`lypning route`, which currently under-reports it.
+
+The new section is **not** measured. `study/prompts/skill.md` keeps the text T3
+actually scored, so that row stays reproducible, and re-running T3 against the
+new file is one path in `study/treatments.json`.
+
+### Known — two defects the study found and quantified, neither fixed here
 
 - **The classifier sends every `os.path.<fn>()` call past tier 1, and tier 1
   runs them.** 35 of the 884 programs — 4.0%, and *all* of the classifier's
@@ -62,6 +83,13 @@ No prompt ever bought a wrong answer: **0 MISMATCH and 0 incorrect results over
   host is the worst case because the shim logs the driver script and none of the
   programs it ran. `study/hosts/capture.h` documents the record shape that makes
   a host loggable today and argues the fix belongs in the C ABI.
+
+Both are now written down where a reader would look for them rather than only in
+the study: the `os.path` route defect in `docs/LYPNING.md` §4, under the routing
+score it inflates, and the capture blind spot in `docs/CAPTURE.md`, next to the
+table of what each feed catches and misses. `docs/EMBEDDING.md` §4 gains the
+cross-host result — five bindings, one ABI, 393 programs, identical answers on
+the refusal path included — and the note that the ABI has no capture hook.
 
 ### Changed — the corpus grew to 1235, and 393 of those are this study's own output
 
