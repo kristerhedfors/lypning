@@ -22,16 +22,16 @@ except ImportError:
         # `binascii`, not `base64`. A program that prints a caught exception gets
         # the QUALIFIED name — from `repr()`, from a traceback, or from
         # `'%s.%s' % (type(e).__module__, type(e).__name__)` — and defining the
-        # class here makes that `base64.Error` where CPython says
+        # class here would otherwise make that `base64.Error` where CPython says
         # `binascii.Error`.
         #
-        # In the class BODY, never as `Error.__module__ = ...` afterwards.
-        # MicroPython locks a class once it is built, so the assignment raised at
-        # import time and took `import base64` down with it — every base64
-        # program on that tier went from a stdout difference at exit 0 to exit 1.
-        # A name set in the body is part of the class dict and cannot fail that
-        # way; if MicroPython ignores it the qualified name is simply wrong
-        # again, which is where this started and is not a crash.
+        # In the class body because that is where it belongs, and for no
+        # stronger reason: checked on MicroPython 1.22.1, a later
+        # `Error.__module__ = ...` is accepted too. An earlier version of this
+        # comment claimed MicroPython locks a class and that the assignment was
+        # crashing `import base64`; that was wrong, and the crash it was invented
+        # to explain is the one described in `README.md` divergence 17 — builtin
+        # types have no `__module__` there at all.
         __module__ = "binascii"
 
 

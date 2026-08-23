@@ -20,21 +20,16 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   `binascii.Error`, so `type(e).__name__` disagreed. Found by a harvested corpus
   entry that prints it — and it surfaced as an **UNSAFE route**, not a MISMATCH,
   because the classifier had already sent the program to that tier.
+- `Error(ValueError)` with `__module__ = "binascii"` in the class body, so the
+  qualified name agrees too. Verified on a real MicroPython 1.22.1 rather than
+  reasoned about: the shipped shim raises `binascii.Error` there.
 - `tests/test_shims.py` could not have caught it: the shim run imported
   CPython's `binascii` and got `Error` for free. It now models MicroPython's,
   whose defining feature is an **absence**.
-- The **qualified** name needed it too and the first pass missed it: defining
-  the class in `base64.py` made it `base64.Error` where CPython says
-  `binascii.Error`, which is what `repr()` and a traceback print. A second
-  corpus entry was already printing that half, so the fix shipped at half
-  strength and CI said so. `__module__` is set in the class **body** — as an
-  assignment afterwards it raised at import, because MicroPython locks a class
-  once built, and took every base64 program on that tier to exit 1.
-- What is left is the message text, and that *is* divergence 19's kind of
-  difference — Python does not specify it — so that entry is tagged
-  `implementation-defined`. The type and the qualified name are pinned in
-  `tests/test_shims.py` instead, because the tag stops stdout being compared
-  and must not be what covers for a thing that is actually fixed.
+- Also recorded, and *not* fixable from a shim: **MicroPython builtin types have
+  no `__module__`**. `TypeError.__module__` is `'builtins'` on CPython and an
+  `AttributeError` there. That is what makes one corpus entry exit 1, and it is
+  a MISMATCH on that tier until the runtime grows the attribute.
 
 **2026-08-23** — A hillclimb loop, the instrument it needs, and six defects it
 found · [#7]
