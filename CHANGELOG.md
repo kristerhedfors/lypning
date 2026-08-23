@@ -73,7 +73,7 @@ found · [#7]
 
 ---
 
-## [0.1.0] — 2026-08-20 · the extraction · [#1]
+## 0.1.0 — 2026-08-20 · the extraction · [#1]
 
 First release. The two runtimes lifted out of [DeepResearch.se][ds], where they
 were entangled with its npm scripts, its `tests/corpus/`, its `.claude/` wiring
@@ -181,7 +181,6 @@ evidence; `docs/RESEARCH.md` is that survey.
 [#5]: https://github.com/kristerhedfors/lypning/pull/5
 [#6]: https://github.com/kristerhedfors/lypning/pull/6
 [#7]: https://github.com/kristerhedfors/lypning/pull/7
-[0.1.0]: https://github.com/kristerhedfors/lypning/releases/tag/v0.1.0
 [ds]: https://github.com/kristerhedfors/deepresearch.se
 [u432]: https://github.com/kristerhedfors/deepresearch.se/pull/432
 [u434]: https://github.com/kristerhedfors/deepresearch.se/pull/434
