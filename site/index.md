@@ -188,5 +188,6 @@ Uninstall is the exact inverse and never deletes the capture log.
 <a class="doclink" href="docs/embedding.html"><strong>Embedding</strong><span>The C ABI, the five hosts over it, and what a refusal means with no exit code.</span></a>
 <a class="doclink" href="docs/bench-ledger.html"><strong>Bench ledger</strong><span>Append-only history, including the runs where the subset lost.</span></a>
 <a class="doclink" href="docs/sandbox-performance.html"><strong>Sandbox cost</strong><span>The measurements the whole project is downstream of.</span></a>
+<a class="doclink" href="changelog.html"><strong>Changelog</strong><span>Every change that matters, back to before the project had this name.</span></a>
 <a class="doclink" href="contributing.html"><strong>Working agreement</strong><span>The invariants an agent changing this repo must not break.</span></a>
 </div>

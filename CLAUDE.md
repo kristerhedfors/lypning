@@ -95,9 +95,12 @@ traceback reaches a user unless `LYPNING_DEBUG=1`.
 **9. The names.**
 Engine strings are exactly `"lypning"`, `"lypning-mp"`, `"cpython"`; env vars
 are `LYPNING_*`; the state dir is `~/.lypning` (`$LYPNING_HOME`). The two
-upstream names appear in exactly one place — the credit paragraph in
-`README.md` — and in the historical corpus JSONL, whose programs are captured
-verbatim and are not ours to edit. Nowhere else, including comments.
+upstream names belong to the project's history and appear in exactly three
+places: the credit paragraph in `README.md`, the *Before the name* section of
+`CHANGELOG.md`, and the historical corpus JSONL, whose programs are captured
+verbatim and are not ours to edit. Nowhere else, including comments — and never
+as a live identifier, which is the half that matters: a name that still resolves
+to something is a name that can drift back into the code.
 
 ## Before you say you are done
 

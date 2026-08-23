@@ -313,3 +313,76 @@ body {
 .prose a.xref { text-decoration: none; border-bottom: 1px dashed var(--rule); }
 .prose a.xref:hover { border-bottom-color: var(--accent); }
 .prose a.xref code { color: var(--link); }
+
+/* ---- the changelog, which is a timeline rather than prose ----------------
+ *
+ * No markup of its own: CHANGELOG.md stays plain markdown so it reads as a
+ * file in a checkout, which is the rule the whole site is built on. Every
+ * entry there is a paragraph opening with a bold date, so that is what this
+ * styles — the date becomes the marker down the left, and the bullets under it
+ * become the entry.
+ */
+
+.page-changelog .prose h2 {
+  font-size: 1.15rem;
+  letter-spacing: .01em;
+  margin: 3rem 0 1.25rem;
+  padding-top: .75rem;
+}
+
+/* The date that opens an entry. Mono and accent-coloured so the eye can run
+ * down the column without reading a word. */
+.page-changelog .prose p > strong:first-child {
+  font-family: var(--mono);
+  font-size: .8em;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: .01em;
+}
+
+/* An entry: the date paragraph, then its bullets, sharing one rail. */
+.page-changelog .prose p {
+  margin: 1.6rem 0 .5rem;
+  line-height: 1.6;
+}
+
+.page-changelog .prose ul {
+  margin: .5rem 0 1.75rem;
+  padding-left: 1.15rem;
+  border-left: 2px solid var(--rule-soft);
+  list-style: none;
+}
+
+.page-changelog .prose ul li {
+  position: relative;
+  margin: .45rem 0;
+  font-size: .93rem;
+  color: var(--fg-muted);
+  line-height: 1.6;
+}
+
+.page-changelog .prose ul li::before {
+  content: "";
+  position: absolute;
+  left: -1.4rem;
+  top: .62em;
+  width: .3rem;
+  height: .3rem;
+  border-radius: 50%;
+  background: var(--rule);
+}
+
+/* A bolded lead-in inside a bullet is the point of that bullet. */
+.page-changelog .prose ul li strong { color: var(--fg); font-weight: 600; }
+
+/* The PR links: small, mono, and not shouting. */
+.page-changelog .prose p a[href*="/pull/"] {
+  font-family: var(--mono);
+  font-size: .82em;
+  text-decoration: none;
+  border-bottom: 1px solid var(--rule);
+}
+.page-changelog .prose p a[href*="/pull/"]:hover { border-bottom-color: var(--accent); }
+
+/* The rename table earns a little more room than a measurement table. */
+.page-changelog .prose table { font-size: .9rem; }
