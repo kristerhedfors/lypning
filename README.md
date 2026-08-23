@@ -761,9 +761,10 @@ This package was extracted from
 where it was developed as **`mopy`** (the Rust subset) and **`pygram`** (the
 MicroPython variant) to make Python affordable inside that project's in-browser
 CheerpX sandbox. The measurements in §1, the corpus, the conformance battery
-and the capture harness all come from there. Those two names appear nowhere
-else in this repository — this paragraph is the historical attribution and the
-whole of it.
+and the capture harness all come from there. `CHANGELOG.md` carries the dated
+history under *Before the name*, with links to the upstream pull requests; those
+two names appear in this repository only there, here, and inside the historical
+corpus JSONL, whose captured programs are left verbatim.
 
 MIT licensed. See `LICENSE`.
 

@@ -95,9 +95,12 @@ traceback reaches a user unless `LYPNING_DEBUG=1`.
 **9. The names.**
 Engine strings are exactly `"lypning"`, `"lypning-mp"`, `"cpython"`; env vars
 are `LYPNING_*`; the state dir is `~/.lypning` (`$LYPNING_HOME`). The two
-upstream names appear in exactly one place — the credit paragraph in
-`README.md` — and in the historical corpus JSONL, whose programs are captured
-verbatim and are not ours to edit. Nowhere else, including comments.
+upstream names belong to the project's history and appear in exactly three
+places: the credit paragraph in `README.md`, the *Before the name* section of
+`CHANGELOG.md`, and the historical corpus JSONL, whose programs are captured
+verbatim and are not ours to edit. Nowhere else, including comments — and never
+as a live identifier, which is the half that matters: a name that still resolves
+to something is a name that can drift back into the code.
 
 ## Before you say you are done
 
@@ -112,6 +115,14 @@ git status                # the corpus runs behind a net, but check it yourself
 correctness. Run it when you changed something that could plausibly be slower,
 quote the corpus size it printed, and remember it is deliberately not in CI: a
 wall-clock benchmark on a shared runner measures the runner.
+
+**And add the changelog entry.** One per pull request, at the top of
+`CHANGELOG.md`, under `## Unreleased`: a dated line, a title, a link to the PR,
+and at most a handful of bullets. The PR body is where the reasoning goes and
+the entry must not repeat it — the file stays scannable only because nothing in
+it is said twice. It is published at `lypning.dev/changelog.html`, so an entry
+that overstates is a claim on a website; quote numbers the way every other
+document here has to (invariant 3), or leave them out.
 
 ## Two shapes that must both keep working
 

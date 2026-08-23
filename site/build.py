@@ -54,7 +54,7 @@ PAGES = [
     ("docs/BENCH-LEDGER.md", "docs/bench-ledger.html", "Bench ledger", "Append-only measurement history, including the runs where the subset lost."),
     ("docs/SANDBOX-PERFORMANCE.md", "docs/sandbox-performance.html", "Sandbox cost", "The measurements the whole project is downstream of."),
     ("CLAUDE.md", "contributing.html", "Working agreement", "The invariants an agent changing this repository must not break."),
-    ("CHANGELOG.md", "changelog.html", "Changelog", "Every release, and the defects tracked rather than waived."),
+    ("CHANGELOG.md", "changelog.html", "Changelog", "Every change that matters, back to before the project had this name — with the defects tracked rather than waived."),
 ]
 
 EXTENSIONS = ["extra", "tables", "fenced_code", "codehilite", "toc", "sane_lists", "admonition"]
@@ -139,6 +139,18 @@ def nav_html(current: str, depth: int) -> str:
     return "\n".join(items)
 
 
+def body_class(out_rel: str) -> str:
+    """``page-changelog`` for ``changelog.html``, and so on.
+
+    One hook so a page can be given a shape of its own without a second
+    template. The changelog is the page that needs it: it is a timeline rather
+    than prose, and it wants dates set as markers instead of as bold words in a
+    sentence.
+    """
+    stem = Path(out_rel).name[: -len(".html")] if out_rel.endswith(".html") else out_rel
+    return "page-" + re.sub(r"[^a-z0-9]+", "-", stem.lower()).strip("-")
+
+
 def shell(*, title: str, body: str, current: str, depth: int, description: str,
           toc: str = "", wide: bool = False) -> str:
     up = "../" * depth
@@ -156,7 +168,7 @@ def shell(*, title: str, body: str, current: str, depth: int, description: str,
 <link rel="icon" href="{up}favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="{up}style.css">
 </head>
-<body>
+<body class="{body_class(current)}">
 <a class="skip" href="#main">Skip to content</a>
 <header class="topbar">
   <nav class="nav">{nav_html(current, depth)}</nav>
