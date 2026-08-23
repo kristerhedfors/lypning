@@ -14,6 +14,23 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-23** — `base64.b64decode` raises the class CPython raises · [#9]
+
+- The MicroPython tier's shim raised a bare `ValueError` where CPython raises
+  `binascii.Error`, so `type(e).__name__` disagreed. Found by a harvested corpus
+  entry that prints it — and it surfaced as an **UNSAFE route**, not a MISMATCH,
+  because the classifier had already sent the program to that tier.
+- `Error(ValueError)` with `__module__ = "binascii"` in the class body, so the
+  qualified name agrees too. Verified on a real MicroPython 1.22.1 rather than
+  reasoned about: the shipped shim raises `binascii.Error` there.
+- `tests/test_shims.py` could not have caught it: the shim run imported
+  CPython's `binascii` and got `Error` for free. It now models MicroPython's,
+  whose defining feature is an **absence**.
+- Also recorded, and *not* fixable from a shim: **MicroPython builtin types have
+  no `__module__`**. `TypeError.__module__` is `'builtins'` on CPython and an
+  `AttributeError` there. That is what makes one corpus entry exit 1, and it is
+  a MISMATCH on that tier until the runtime grows the attribute.
+
 **2026-08-23** — How far a prompt can push an agent into the subset · [#10]
 
 - Nine prompt treatments × 3–4 independent agents × 26 deterministic tasks:
@@ -138,17 +155,25 @@ Recorded here rather than waived, because widening a capability table to make a
 number green converts a loud failure into a silent one. `README.md` §5 and
 `.github/workflows/ci.yml` both point at this section.
 
-- **`lypning conformance` ends at MISMATCH 2, both on `lypning-mp`**, both the
-  same defect: MicroPython streams stdout, so a program that prints before
-  reaching an unsupported construct has already committed those bytes when it
-  exits 90. The Rust core stages output and discards it on refusal; the
-  MicroPython tier cannot, and the dispatcher covers for it. Reproduction in
-  `docs/LYPNING.md` §6. Blocking again once that tier grows a commit barrier.
-- **1 UNSAFE route**, which is the same defect from the other side: `hashlib`
-  is in the classifier's table, so one program routes to `lypning-mp`, prints
-  147 bytes and then refuses. Narrowing the table to dodge it would cost every
-  other `hashlib` program a tier and hide the defect. `tests/test_routing.py`
-  pins it as the only shape an UNSAFE route takes here.
+- **`lypning conformance` does not end at 0 on the `lypning-mp` arm**, and the
+  largest class is one defect: MicroPython streams stdout, so a program that
+  prints before reaching an unsupported construct has already committed those
+  bytes when it exits 90. The Rust core stages output and discards it on
+  refusal; the MicroPython tier cannot, and the dispatcher covers for it.
+  Reproduction in `docs/LYPNING.md` §6. Blocking again once that tier grows a
+  commit barrier.
+
+  The count is **not** the 2 this file used to state. Measured 2026-08-23 with
+  the tier actually built, **over the 1037-program corpus of that hour**:
+  MISMATCH 8, UNSAFE 3. Three of those are the barrier defect above; the rest
+  are gaps this tier had never been run against, exposed by a corpus that had
+  grown 842 → 1037 the same day. It is **1430 now** ([#10]), so that pair is
+  already a reading about a smaller corpus and not a current fact.
+  `tests/test_routing.py` pins `contract:` as the only shape an UNSAFE route may
+  take, so one that goes wrong any other way fails there rather than joining a
+  count. Re-measure before quoting either number — and note that CI's
+  MicroPython job builds that tier over the network and often cannot, in which
+  case it reports nothing at all rather than a number.
 - **`float ** float` is one ULP off on some arguments.** Both engines call
   their libm's `pow`; the core is static musl and the reference here is glibc,
   and glibc's is correctly rounded on these where musl's is not. `lypning fuzz`
@@ -227,6 +252,8 @@ runtime exists — the number came first, and both were built for it. It is
 [#5]: https://github.com/kristerhedfors/lypning/pull/5
 [#6]: https://github.com/kristerhedfors/lypning/pull/6
 [#7]: https://github.com/kristerhedfors/lypning/pull/7
+[#9]: https://github.com/kristerhedfors/lypning/pull/9
+
 [#10]: https://github.com/kristerhedfors/lypning/pull/10
 [ds]: https://github.com/kristerhedfors/deepresearch.se
 [u432]: https://github.com/kristerhedfors/deepresearch.se/pull/432

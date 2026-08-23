@@ -140,8 +140,47 @@ bite silently — a program that finishes, prints something plausible, and exits
 ### Everything else
 
 17. `base64.b64decode` does not validate: MicroPython's `a2b_base64` is lenient
-    where CPython raises `binascii.Error`. Both reject bad padding, with
-    different messages. `validate=True` is accepted and ignored.
+    where CPython raises. Both reject bad padding, with different messages.
+    `validate=True` is accepted and ignored.
+
+    The exception's **type** used to differ too, and no longer does. CPython
+    raises `binascii.Error`; MicroPython's `binascii` defines no `Error` at all
+    and raised a bare `ValueError`. **Observed 2026-08-23** by a harvested corpus
+    entry (`py-16c1663c6170`) that does the ordinary thing with a caught
+    exception and prints its type name — and it surfaced as an UNSAFE *route*
+    rather than a MISMATCH, because the classifier had already sent it here.
+
+    Unlike #19 this is not implementation-defined: a message is text Python does
+    not specify, but the class `base64` raises is documented. `base64.py` defines
+    `Error(ValueError)` when `binascii` has none to import, with
+    `__module__ = "binascii"` in the class body so the QUALIFIED name agrees too
+    — `repr()`, a traceback and
+    `'%s.%s' % (type(e).__module__, type(e).__name__)` all print it. Verified
+    directly on MicroPython 1.22.1: the shipped shim raises `binascii.Error`
+    there. Pinned by `base64-bad-padding-exception-name`,
+    `base64-error-qualified-name` and `base64-error-is-a-valueerror` in
+    `tests/test_shims.py`, which can only fail because that suite now models
+    MicroPython's `binascii` — an absence, so it had to be modelled deliberately
+    or the shim run would keep importing CPython's and getting `Error` for free.
+
+    What is left is the message text — CPython's `Incorrect padding` against
+    MicroPython's `incorrect padding` — and that IS #19's kind of difference.
+
+17a. **Builtin types have no `__module__`.** `TypeError.__module__` is
+    `'builtins'` on CPython and raises `AttributeError` on MicroPython; a class
+    defined in Python has one either way. This is the runtime's, not this
+    directory's (as in #15), and it is not fixable from a shim.
+
+    It is recorded here because it is what actually breaks `py-9b16a7261b96`, a
+    corpus entry that prints `type(e).__module__` for every exception it catches
+    — so the first builtin one ends the program and the entry exits 1 where
+    CPython exits 0. **That entry was briefly tagged `implementation-defined` on
+    the theory that only the base64 message still differed. The theory was
+    wrong** — the tag suppresses the stdout comparison and the exit-code
+    difference remains, so it bought nothing and misdescribed the cause. The tag
+    is removed; the entry is a MISMATCH on this tier for a concrete missing
+    feature, which is the honest thing for it to be.
+
 18. `json.dumps` is pure Python and therefore slower than the C encoder it
     replaces. It has to be: MicroPython's `dumps` has no `indent`, no
     `sort_keys`, and no `ensure_ascii`, and it emits raw UTF-8 where CPython

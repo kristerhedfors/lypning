@@ -220,7 +220,39 @@ if MODE == "shim":
     ucollections.namedtuple = _collections.namedtuple
     ucollections.OrderedDict = _collections.OrderedDict
 
-    for _mod in (ure, uos, ujson, uhashlib, ucollections):
+    # --- binascii: MicroPython's, which has no Error ------------------------
+    #
+    # Not a u-prefixed name and not shimmed in this directory — the shims import
+    # `binascii` and get the C module. Modelled here because the ONE thing that
+    # matters about it is an absence: MicroPython's binascii defines no `Error`,
+    # so `a2b_base64` raises a bare ValueError where CPython raises
+    # `binascii.Error`. Without this stand-in the shim run imported CPython's
+    # binascii, `base64.py` got the real `Error` for free, and a divergence that
+    # is live in the sandbox could not fail here. It shipped that way until a
+    # harvested corpus entry printed `type(e).__name__` and the routing gate
+    # caught it as an UNSAFE route.
+    def _mp_a2b(data):
+        try:
+            return _binascii.a2b_base64(data)
+        except _binascii.Error as e:
+            # MicroPython has no Error to raise, and its message text is its
+            # own. Lower-cased here from CPython's because that is what the one
+            # message actually observed from the real tier looks like:
+            # CI printed `incorrect padding` against CPython's `Incorrect
+            # padding`. A model, and only as good as that observation — but a
+            # model that keeps the difference VISIBLE, which importing CPython's
+            # binascii did not.
+            raise ValueError(str(e)[:1].lower() + str(e)[1:])
+
+    binascii = type(sys)("binascii")
+    binascii.a2b_base64 = _mp_a2b
+    binascii.b2a_base64 = _binascii.b2a_base64
+    binascii.hexlify = _binascii.hexlify
+    binascii.unhexlify = _binascii.unhexlify
+    binascii.crc32 = _binascii.crc32
+    # and deliberately NO `binascii.Error`.
+
+    for _mod in (ure, uos, ujson, uhashlib, ucollections, binascii):
         sys.modules[_mod.__name__] = _mod
 
     # Drop the CPython modules the shims replace, then put the shim tree first.
@@ -313,6 +345,38 @@ for n in range(1, 6):
 print(base64.b64encode(b""), base64.b64decode(b""))'''),
     ("base64", "base64-altchars", r'''import base64
 print(base64.b64encode(bytes([251, 255, 190]), b"@$"))'''),
+    # The exception's TYPE, not its message. CPython's base64 raises
+    # binascii.Error; MicroPython's binascii has no Error and raises a bare
+    # ValueError. A harvested corpus entry prints exactly this and it surfaced
+    # as an UNSAFE route (README divergence 17).
+    ("base64", "base64-bad-padding-exception-name", r'''import base64
+for c in [b"aGk", b"a", b"aGkxaGk", b"aGk=aGk=", b"====", b"aa=="]:
+    try:
+        print(c, repr(base64.b64decode(c)))
+    except Exception as e:
+        print(c, "RAISE", type(e).__name__)'''),
+    # The subclassing half: whatever it is called, `except ValueError` must
+    # still catch it, or the fix would break every program that already worked.
+    # The QUALIFIED name, which is what a program printing an exception gets from
+    # repr(), traceback, or `%s.%s % (type(e).__module__, type(e).__name__)`.
+    # Defining `Error` in base64.py made it `base64.Error`; CPython's lives in
+    # binascii. A corpus entry prints exactly this.
+    ("base64", "base64-error-qualified-name", r'''import base64
+for c in [b"aGk", b"a"]:
+    try:
+        base64.b64decode(c)
+    except Exception as e:
+        t = type(e)
+        print(c, "%s.%s" % (t.__module__, t.__name__))'''),
+    ("base64", "base64-error-is-a-valueerror", r'''import base64
+try:
+    base64.b64decode(b"aGk")
+except ValueError as e:
+    print("caught as ValueError:", type(e).__name__)
+try:
+    base64.b64decode(b"aGk")
+except Exception as e:
+    print("isinstance ValueError:", isinstance(e, ValueError))'''),
 
     # ---- os.path -------------------------------------------------------------
     ("os.path", "ospath-join", r'''import os.path as p
