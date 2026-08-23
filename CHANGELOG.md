@@ -14,6 +14,44 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-23** — How far a prompt can push an agent into the subset · [#10]
+
+- Nine prompt treatments × 3–4 independent agents × 26 deterministic tasks:
+  **884 generated programs**, all kept, all routed by lypning's own parser and
+  run against CPython. **66.3% → 88.5%**, and 88.5% *is the ceiling* — three
+  tasks are outside the subset for any natural solution. Six treatments answer
+  100% of what is feasible. **0 MISMATCH, 0 wrong answers.**
+- **The cheapest saturating prompt carries no feature list**: 744 bytes of
+  motive ties the generated capability tables, the rewrite cookbook, both, and
+  both plus the engine in a verify loop. The one-sentence nudge is the least
+  reproducible prompt measured — 11.5 pp between replicates, against 0.0 pp for
+  every saturating one.
+- Cost beats coverage: the mixture's bill over the same tasks falls **0.470x →
+  0.169x** of CPython, because a program that leaves the subset costs a wasted
+  classification *plus* a full spawn. The price is ~1.4 lines per program.
+- `SKILL.md` scored **81.7%** — second-weakest of the nine — so it gains a §1a
+  on writing *for* the subset rather than working *on* lypning. Not measured,
+  and says so; `study/prompts/skill.md` keeps the text T3 actually scored.
+- **Every one of the classifier's false negatives was `os.path`**: 35 of 884
+  sent past tier 1 that tier 1 then ran correctly, all `.getsize()`,
+  `.splitext()` and `.basename()`. `walk_expr` resolves a module attribute only
+  when the base is a bare name. Not fixed here — it would invalidate the
+  study's own measurements — and written up in `docs/LYPNING.md` §4, because an
+  agent told to trust `lypning route` rewrites working code to satisfy it.
+- **Using lypning as a library is invisible to lypning's capture.** Both feeds
+  watch for a process; `lypning_run()` spawns none. Written up in
+  `docs/CAPTURE.md`; `study/hosts/capture.h` is the forty-line workaround and
+  argues the fix belongs in the C ABI.
+- All five hosts — C, C++, Rust, Node, Python — driven over one shared set of
+  393 programs and **agreeing byte for byte, refusal path included**. Corpus
+  1037 → 1430.
+- ⚠️ That fold moved conformance's tier-1 coverage 61.4% → 69.9% with the engine
+  unchanged. Those points are this study's own output; exclude
+  `tests/corpus/sightings/lypning-prompting-study.jsonl` before quoting corpus
+  coverage as a field number.
+- Re-scored against the merged engine after [#7]: **not one of the 884 rows
+  moved.**
+
 **2026-08-23** — A hillclimb loop, the instrument it needs, and six defects it
 found · [#7]
 
@@ -189,6 +227,7 @@ runtime exists — the number came first, and both were built for it. It is
 [#5]: https://github.com/kristerhedfors/lypning/pull/5
 [#6]: https://github.com/kristerhedfors/lypning/pull/6
 [#7]: https://github.com/kristerhedfors/lypning/pull/7
+[#10]: https://github.com/kristerhedfors/lypning/pull/10
 [ds]: https://github.com/kristerhedfors/deepresearch.se
 [u432]: https://github.com/kristerhedfors/deepresearch.se/pull/432
 [u434]: https://github.com/kristerhedfors/deepresearch.se/pull/434

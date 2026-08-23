@@ -124,6 +124,22 @@ The C ABI is the real API; four of the five are conveniences over it. Add a
 capability there and it exists everywhere; add it anywhere else and the five
 quietly disagree.
 
+**They have now been run against each other rather than assumed to agree.** The
+prompting study ([PROMPTING.md](PROMPTING.md) §7) drove all five hosts over one
+shared set of 393 agent-written programs, each host with its own copy of the set
+and each program with its own working directory, and all five answered
+identically — 341 ran, 52 refused, 0 other — **including on the refusal path**,
+which is the half that has only ever broken silently. Re-run it with
+`sh study/hosts/run_all.sh`; a disagreement there is a binding bug and nothing
+else in the project would notice one.
+
+**What the ABI does not have is a capture hook.** A `lypning_run()` spawns no
+interpreter, so neither of the capture feeds in [CAPTURE.md](CAPTURE.md) can see
+it, and a harness that wants its programs to reach the corpus has to write the
+record itself. `study/hosts/capture.h` is a working example in about forty lines
+of C and argues that the right home for it is here, where all five hosts would
+inherit it at once.
+
 ## 5. Rules of the surface
 
 * **A run belongs to one thread.** Two threads may run two programs at once —
