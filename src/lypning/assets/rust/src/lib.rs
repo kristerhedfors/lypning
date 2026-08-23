@@ -25,12 +25,14 @@
 //! programs at once; one thread may not run two at once, and gets
 //! [`Status::Busy`] rather than an interleaved answer if it tries.
 
+pub mod args;
 pub mod ast;
 pub mod builtins;
 pub mod embed;
 pub mod err;
 pub mod eval;
 pub mod fmt;
+pub mod hash;
 pub mod host;
 pub mod io;
 pub mod iter;

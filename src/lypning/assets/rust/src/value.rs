@@ -16,7 +16,7 @@
 
 use crate::err::{type_err, unsupported, R};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use crate::hash::Map;
 use std::rc::Rc;
 
 use crate::ast::{Params, Stmt};
@@ -68,7 +68,7 @@ pub struct FuncObj {
     /// The scope chain this function was defined in — its closure.
     pub env: Vec<crate::eval::Scope>,
     /// Every name the body assigns; see `eval::assigned_names`.
-    pub assigned: Rc<std::collections::HashSet<Rc<str>>>,
+    pub assigned: Rc<crate::hash::Set<Rc<str>>>,
 }
 
 // ---- hashable keys --------------------------------------------------------
@@ -124,7 +124,7 @@ pub fn hkey(v: &Value) -> R<HKey> {
 #[derive(Default)]
 pub struct Dict {
     pub entries: Vec<(Value, Value)>,
-    index: HashMap<HKey, usize>,
+    index: Map<HKey, usize>,
     /// Tombstone count; `entries` holds `Value::None` placeholders that
     /// `iter()` skips, so deletion does not disturb the order of the rest.
     holes: usize,
@@ -197,7 +197,7 @@ pub struct Set {
     /// Kept in insertion order so `sorted()` is stable for equal keys, but the
     /// order is NEVER observable — see the module comment.
     pub items: Vec<Value>,
-    index: HashMap<HKey, usize>,
+    index: Map<HKey, usize>,
 }
 
 impl Set {

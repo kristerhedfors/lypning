@@ -24,6 +24,9 @@ src/lypning/assets/node/target/
 src/lypning/assets/examples/*/embed
 src/lypning/assets/examples/*/*.o
 
+# hillclimb baselines — throwaway, per-machine, never committed
+.hillclimb/
+
 # The prompting study's host binaries and its regenerable working set. The
 # programs, the prompts and the scored results are committed; what a compiler
 # or a run produced from them is not.

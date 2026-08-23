@@ -5,11 +5,12 @@
 //! at all. Adding a method here is what widens lypning's share of the corpus, so
 //! the tables are the build order made concrete.
 
+use crate::args::Args;
 use crate::err::*;
 use crate::eval::{int_val, Interp};
 use crate::fmt;
 use crate::io as mio;
-use crate::iter::decode_utf8;
+
 use crate::ops;
 use crate::value::*;
 use std::cell::RefCell;
@@ -139,7 +140,14 @@ pub fn method_name(recv: &Value, name: &str) -> Option<&'static str> {
         Value::File(_) => FILE_METHODS,
         _ => return None,
     };
-    table.iter().find(|m| **m == name).copied()
+    // Binary search, not a scan: `.foo()` appears in most corpus programs and
+    // STR_METHODS alone is 37 entries, so a linear miss cost dozens of string
+    // compares on the hottest attribute path there is. Every table above is
+    // written in sorted order and `tests/test_method_tables.py` holds them to
+    // it — an unsorted table would make binary search MISS a method that exists,
+    // which is an AttributeError where CPython answers, and invariant 1 says
+    // that is the failure that matters.
+    table.binary_search(&name).ok().map(|i| table[i])
 }
 
 fn kwget(kw: &[(Rc<str>, Value)], name: &str) -> Option<Value> {
@@ -150,7 +158,7 @@ pub fn call_method(
     it: &mut Interp,
     recv: &Value,
     name: &str,
-    args: Vec<Value>,
+    args: &mut Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     // An unbound method (`str.upper`) arrives with the TYPE as receiver; the
@@ -207,7 +215,7 @@ fn str_method(
     it: &mut Interp,
     s: &Rc<str>,
     name: &str,
-    args: Vec<Value>,
+    args: &mut Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     Ok(match name {
@@ -292,13 +300,17 @@ fn str_method(
                     )))
                 }
             };
-            let parts: Vec<String> = match sep {
+            // Built straight into `Value::Str`. The intermediate `Vec<String>`
+            // this replaces allocated every part TWICE — once as a `String` and
+            // again when that `String` was copied into an `Rc<str>` — which on a
+            // one-liner that splits in a loop is most of the cost of the call.
+            let parts: Vec<Value> = match sep {
                 // Whitespace splitting collapses runs and drops leading and
                 // trailing empties; separator splitting does neither.
                 None => {
-                    let mut v: Vec<String> = Vec::new();
+                    let mut v: Vec<Value> = Vec::new();
                     if maxsplit < 0 {
-                        v = s.split_whitespace().map(|x| x.to_string()).collect();
+                        v = s.split_whitespace().map(|x| Value::Str(x.into())).collect();
                     } else if name == "split" {
                         let mut rest: &str = s;
                         let mut n = 0;
@@ -306,7 +318,7 @@ fn str_method(
                         while n < maxsplit && !rest.is_empty() {
                             match rest.find(char::is_whitespace) {
                                 Some(i) => {
-                                    v.push(rest[..i].to_string());
+                                    v.push(Value::Str(rest[..i].into()));
                                     rest = rest[i..].trim_start();
                                     n += 1;
                                 }
@@ -314,7 +326,7 @@ fn str_method(
                             }
                         }
                         if !rest.is_empty() {
-                            v.push(rest.to_string());
+                            v.push(Value::Str(rest.into()));
                         }
                     } else {
                         return Err(unsupported(
@@ -329,22 +341,22 @@ fn str_method(
                         return Err(value_err("empty separator"));
                     }
                     if maxsplit < 0 {
-                        s.split(sep.as_ref()).map(|x| x.to_string()).collect()
+                        s.split(sep.as_ref()).map(|x| Value::Str(x.into())).collect()
                     } else if name == "split" {
                         s.splitn(maxsplit as usize + 1, sep.as_ref())
-                            .map(|x| x.to_string())
+                            .map(|x| Value::Str(x.into()))
                             .collect()
                     } else {
-                        let mut v: Vec<String> = s
+                        let mut v: Vec<Value> = s
                             .rsplitn(maxsplit as usize + 1, sep.as_ref())
-                            .map(|x| x.to_string())
+                            .map(|x| Value::Str(x.into()))
                             .collect();
                         v.reverse();
                         v
                     }
                 }
             };
-            list(parts.into_iter().map(|p| Value::Str(p.into())).collect())
+            list(parts)
         }
         "splitlines" => {
             let keepends = match args.first().cloned().or_else(|| kwget(&kw, "keepends")).as_ref() {
@@ -669,7 +681,7 @@ fn str_format(
                 }
                 let text = match conv {
                     Some('r') => fmt::format_value(&Value::Str(fmt::repr(&v)?.into()), &spec)?,
-                    Some('s') => fmt::format_value(&Value::Str(fmt::to_str(&v)?.into()), &spec)?,
+                    Some('s') => fmt::format_value(&Value::Str(fmt::to_rc(&v)?), &spec)?,
                     Some(c) => {
                         return Err(value_err(format!("Unknown conversion specifier {c}")))
                     }
@@ -716,7 +728,7 @@ fn list_method(
     it: &mut Interp,
     l: &Rc<RefCell<Vec<Value>>>,
     name: &str,
-    args: Vec<Value>,
+    args: &mut Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     Ok(match name {
@@ -818,7 +830,7 @@ fn list_method(
             for x in &items {
                 keys.push(match &keyf {
                     None => x.clone(),
-                    Some(f) => it.call(f, vec![x.clone()], Vec::new())?,
+                    Some(f) => it.call(f, &mut Args::one(x.clone()), Vec::new())?,
                 });
             }
             ops::sort_values(&mut items, &mut keys, rev)?;
@@ -835,7 +847,7 @@ fn dict_method(
     it: &mut Interp,
     d: &Rc<RefCell<Dict>>,
     name: &str,
-    args: Vec<Value>,
+    args: &mut Args,
     _kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     Ok(match name {
@@ -927,7 +939,7 @@ fn set_method(
     it: &mut Interp,
     s: &Rc<RefCell<Set>>,
     name: &str,
-    args: Vec<Value>,
+    args: &mut Args,
     _kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     let other_set = |it: &mut Interp, v: &Value| -> R<Rc<RefCell<Set>>> {
@@ -970,7 +982,7 @@ fn set_method(
             Value::Set(Rc::new(RefCell::new(out)))
         }
         "update" => {
-            for a in &args {
+            for a in args.iter() {
                 let o = other_set(it, a)?;
                 let items = o.borrow().items.clone();
                 for v in items {
@@ -981,7 +993,7 @@ fn set_method(
         }
         "union" | "intersection" | "difference" | "symmetric_difference" => {
             let mut acc = Value::Set(s.clone());
-            for a in &args {
+            for a in args.iter() {
                 let o = other_set(it, a)?;
                 let Value::Set(cur) = &acc else { unreachable!() };
                 acc = ops::set_op(
@@ -1020,7 +1032,7 @@ fn set_method(
 
 // ---- bytes ----------------------------------------------------------------
 
-fn tuple_method(t: &Rc<Vec<Value>>, name: &str, args: Vec<Value>) -> R<Value> {
+fn tuple_method(t: &Rc<Vec<Value>>, name: &str, args: &mut Args) -> R<Value> {
     let needle = args
         .first()
         .ok_or_else(|| type_err(format!("{name}() takes exactly one argument")))?;
@@ -1050,7 +1062,7 @@ fn bytes_method(
     it: &mut Interp,
     b: &Rc<Vec<u8>>,
     name: &str,
-    args: Vec<Value>,
+    args: &mut Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     Ok(match name {
@@ -1069,7 +1081,7 @@ fn bytes_method(
                     return Err(unsupported("encoding", &format!("decode(errors='{e}')")));
                 }
             }
-            Value::Str(decode_utf8(b)?.into())
+            Value::Str(crate::iter::decode_utf8_rc(b)?)
         }
         "hex" => Value::Str(
             b.iter()
@@ -1170,7 +1182,11 @@ fn bytes_method(
         }
         "join" => {
             let items = it.iter_collect(
-                args.into_iter().next().ok_or_else(|| type_err("join() takes exactly one argument"))?,
+                if args.is_empty() {
+                    return Err(type_err("join() takes exactly one argument"));
+                } else {
+                    args.take(0)
+                },
             )?;
             let mut out: Vec<u8> = Vec::new();
             for (i, v) in items.iter().enumerate() {
@@ -1336,7 +1352,7 @@ fn file_method(
     it: &mut Interp,
     f: &Rc<RefCell<mio::FileObj>>,
     name: &str,
-    args: Vec<Value>,
+    args: &mut Args,
     _kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     Ok(match name {
@@ -1359,7 +1375,7 @@ fn file_method(
             if fo.binary {
                 Value::Bytes(Rc::new(chunk))
             } else {
-                Value::Str(decode_utf8(&chunk)?.into())
+                Value::Str(crate::iter::decode_utf8_rc(&chunk)?)
             }
         }
         "readline" => {
