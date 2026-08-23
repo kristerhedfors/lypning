@@ -42,6 +42,21 @@
 
     {
       "engine": "lypning-mp",
+      "entry_id": "py-9b16a7261b96",
+      "kind": "stdout",
+      "class": "defect",
+      "why": "builtin types have no __module__ (lib/README.md 17a). The entry prints type(e).__module__ for every exception it catches and dies on the first builtin one, so stdout stops at line 12. NOT the base64 defect this entry used to carry: that is closed, and lines 1-11 now match CPython byte for byte. Not fixable from a shim -- it is ~6 lines in objtype.c beside the existing __name__/__dict__/__bases__ handlers, deferred deliberately because returning 'builtins' for every C-defined type is over-broad and wants its own decision."
+    },
+    {
+      "engine": "mixture",
+      "entry_id": "py-9b16a7261b96",
+      "kind": "stdout",
+      "class": "defect",
+      "why": "the same program through the dispatcher. The tier exits 1 with a traceback rather than 90, and an ordinary non-zero exit is deliberately NOT treated as a refusal (re-running would execute side effects twice), so the fall-through does not rescue it -- the routing gate grades it UNSAFE, not rescued. A loud crash where CPython succeeds, not a silently wrong answer: the silently-wrong half was `validate=True` being ignored, and that is fixed."
+    },
+
+    {
+      "engine": "lypning-mp",
       "entry_id": "py-a17250cecb37",
       "kind": "exit",
       "class": "corpus-artifact",
@@ -63,14 +78,19 @@
     }
   ],
 
-  "_not_accepted": [
-    "Deliberately absent, so the job stays red for it:",
+  "_history": [
+    "py-9b16a7261b96 was deliberately held OUT of this file when it was written,",
+    "because base64 was then answering a validation question wrongly:",
+    "`b64decode(b\"a!Gk=\", validate=True)` returned b'hi' where CPython raises, and",
+    "`b64encode(\"hi\")` encoded a str the same way. Those are fixed in",
+    "lib/base64.py — not waived — and lines 1-11 of that program now match CPython",
+    "byte for byte. The entry is accepted above for what is left, which is a",
+    "different and separately documented defect (lib/README.md 17a).",
     "",
-    "  lypning-mp / py-9b16a7261b96 / stdout   (and the same program on `mixture`)",
-    "    base64.b64decode raises `binascii.Error: incorrect padding` where CPython",
-    "    says `Incorrect padding`. A real wrong answer, not a refusal — and the",
-    "    routing gate grades it UNSAFE and NOT rescued, meaning the dispatcher's",
-    "    fall-through does not save the caller from it. This is the one kind of",
-    "    failure the whole project exists to prevent, so it is not waived here."
+    "Recorded because it is the argument for scoring by identity in one paragraph:",
+    "the line here names a CAUSE, so when the cause changed the line had to be",
+    "rewritten and re-justified. A count would have carried straight over — same",
+    "number, same green or red — with nobody noticing that the mismatch it was",
+    "covering had stopped being the same mismatch."
   ]
 }

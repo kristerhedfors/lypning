@@ -231,22 +231,59 @@ if MODE == "shim":
     # is live in the sandbox could not fail here. It shipped that way until a
     # harvested corpus entry printed `type(e).__name__` and the routing gate
     # caught it as an UNSAFE route.
+    _B64_ALPHABET = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
     def _mp_a2b(data):
-        try:
-            return _binascii.a2b_base64(data)
-        except _binascii.Error as e:
-            # MicroPython has no Error to raise, and its message text is its
-            # own. Lower-cased here from CPython's because that is what the one
-            # message actually observed from the real tier looks like:
-            # CI printed `incorrect padding` against CPython's `Incorrect
-            # padding`. A model, and only as good as that observation — but a
-            # model that keeps the difference VISIBLE, which importing CPython's
-            # binascii did not.
-            raise ValueError(str(e)[:1].lower() + str(e)[1:])
+        """A transcription of `extmod/modbinascii.c`, not a wrapper around CPython's.
+
+        It used to be the wrapper, lower-casing CPython's message on the way out.
+        That model was wrong in a way only the real binary could show, and it was
+        wrong in the direction that hides work: CPython's decoder REACHES A
+        DIFFERENT VERDICT from MicroPython's on the same bytes. `b64decode(b"a")`
+        raises `Invalid base64-encoded string: number of data characters (1)…`
+        there and a flat `incorrect padding` here, so a lower-cased CPython
+        message modelled a divergence that does not exist and hid one that does.
+        Verified against a built lypning-mp: this function and the C agree.
+
+        The loop is the C loop. `hadpad`, the two `nbits` tests and the trailing
+        `if nbits` are what decide every padding message the shim has to
+        translate, so they are transcribed rather than approximated.
+        """
+        shift = 0
+        nbits = 0
+        hadpad = False
+        out = bytearray()
+        for ch in bytes(data):
+            if ch == 0x3D:  # b"="
+                if nbits == 2 or (nbits == 4 and hadpad):
+                    nbits = 0
+                    break
+                hadpad = True
+            sextet = _B64_ALPHABET.find(bytes([ch]))
+            if sextet < 0:
+                continue
+            hadpad = False
+            shift = (shift << 6) | sextet
+            nbits += 6
+            if nbits >= 8:
+                nbits -= 8
+                out.append((shift >> nbits) & 0xFF)
+        if nbits:
+            # No `Error` to raise, and the message is MicroPython's own.
+            raise ValueError("incorrect padding")
+        return bytes(out)
+
+    def _mp_b2a(data, newline=True):
+        # MicroPython's takes anything with a buffer AND a str; CPython's rejects
+        # the str. Modelled as the absence of a check, because the check now
+        # lives in the shim and a model that kept CPython's would test nothing.
+        if isinstance(data, str):
+            data = data.encode()
+        return _binascii.b2a_base64(bytes(data), newline=newline)
 
     binascii = type(sys)("binascii")
     binascii.a2b_base64 = _mp_a2b
-    binascii.b2a_base64 = _binascii.b2a_base64
+    binascii.b2a_base64 = _mp_b2a
     binascii.hexlify = _binascii.hexlify
     binascii.unhexlify = _binascii.unhexlify
     binascii.crc32 = _binascii.crc32
@@ -377,6 +414,39 @@ try:
     base64.b64decode(b"aGk")
 except Exception as e:
     print("isinstance ValueError:", isinstance(e, ValueError))'''),
+    # The message TEXT, which is the half divergence 17 had left open. Two
+    # different verdicts, not two spellings of one: MicroPython's decoder says
+    # `incorrect padding` for every unfinished quad, and CPython separates out
+    # the one-more-than-a-multiple-of-4 case with a character count.
+    ("base64", "base64-padding-message-text", r'''import base64
+for c in [b"aGk", b"a", b"aGkxx", b"aGkxaGk", b"=aGk", b"aGkxaGkxa"]:
+    try:
+        print(c, repr(base64.b64decode(c)))
+    except Exception as e:
+        print(c, "RAISE", e)'''),
+    # `validate=True` was accepted and IGNORED, so this returned b'hi' where
+    # CPython raises. Not a message difference — the tier answering "is this
+    # valid base64" with the wrong answer. The four strict messages are
+    # CPython 3.11+; see the note in lib/base64.py about older references.
+    ("base64", "base64-validate-rejects", r'''import base64
+for c in [b"a!Gk=", b"aG k=", b"\n\naGk=", b"====", b"=aGk", b"aGk==", b"aGk=aGk=",
+          b"a=a", b"aGk=\n", b"-_--", b"aGk=", b"aGkx", b"", b"aa=="]:
+    try:
+        print(c, repr(base64.b64decode(c, validate=True)))
+    except Exception as e:
+        print(c, "RAISE", e)'''),
+    # b64encode took a str and encoded it; CPython raises. Encoding text without
+    # being told the codec is a guess, and the tier must not guess.
+    # Labelled rather than repr()'d: a memoryview's repr carries its address,
+    # which differs between two runs of the SAME interpreter and would make this
+    # case fail forever for a reason that is not about base64.
+    ("base64", "base64-encode-rejects-non-bytes", r'''import base64
+for label, a in [("str", "hi"), ("int", 123), ("None", None), ("bytes", b"hi"),
+                 ("bytearray", bytearray(b"hi")), ("memoryview", memoryview(b"hi"))]:
+    try:
+        print(label, repr(base64.b64encode(a)))
+    except Exception as e:
+        print(label, "RAISE", type(e).__name__, e)'''),
 
     # ---- os.path -------------------------------------------------------------
     ("os.path", "ospath-join", r'''import os.path as p
@@ -963,6 +1033,13 @@ def test_the_shim_run_really_imports_the_shim_tree(tmp_path) -> None:
 # $LYPNING_CPYTHON, so it is resolved off $PATH.
 _CASE_MIN_PYTHON = {
     "counter-update": (3, 10),
+    # `validate=True` reached `binascii.a2b_base64(strict_mode=True)` in CPython
+    # 3.11. Before that `base64` did its own regex check and raised
+    # `Non-base64 digit found` for everything this case distinguishes — so on a
+    # 3.9 or 3.10 oracle the shim REJECTS the same inputs and words it
+    # differently, and grading the text against that oracle would be grading it
+    # against a CPython this message was never copied from.
+    "base64-validate-rejects": (3, 11),
 }
 
 

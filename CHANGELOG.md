@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-08-23** — Split the MicroPython gate, so its red means one thing · [#11]
+**2026-08-23** — Split the MicroPython gate, and fix what it turned out to hide · [#11]
 
 - The job could not build for four consecutive runs and rendered identically
   whether the tier had answered a program wrongly or `musl.libc.org` had stopped
@@ -28,18 +28,30 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   second network probe: the failure that started this (`curl: (35) Recv
   failure`) happens while a TCP connect to the same host still succeeds.
   `lypning build --skip-unavailable` is what a gate uses to tell them apart.
-- The accepted mismatches are enumerated by **identity** — engine, entry, kind —
-  in `.github/known-mismatches.json`, never by count: a count lets one defect be
-  fixed while another appears and keeps the tick green.
-- **With the tier built, the battery does not end where this file said it did.**
-  Re-measured today over the 1430 programs then loaded: mismatches on
-  `lypning-mp`, three of them the documented commit barrier, three of them
-  self-referential corpus entries that `import lypning` and cannot resolve it
-  off CPython's path. The remaining one is **not waived**: `base64.b64decode`
-  reports `incorrect padding` where CPython says `Incorrect padding`, it reaches
-  the **mixture** arm, and the routing gate grades it UNSAFE and *not* rescued.
-  The `core` job cannot see it — the tier is absent there, so the program routes
-  to CPython and matches.
+- Accepted mismatches are enumerated by **identity** in
+  `.github/known-mismatches.json`, never by count: a count lets one defect be
+  fixed while another appears and keeps the tick green. Measured with the tier
+  built over the 1430 programs then loaded — the commit barrier, three
+  self-referential entries that `import lypning`, and one that was not a
+  refusal at all.
+- That last one: **`base64` was not validating.** `validate=True` was accepted
+  and ignored, so `b64decode(b"a!Gk=", validate=True)` returned `b'hi'` where
+  CPython raises, and `b64encode("hi")` encoded a `str` the same way. Not a
+  message difference — the tier answering "is this valid base64" wrongly, on a
+  module the classifier routes to on sight, and invisible to the `core` job
+  because the tier is absent there.
+- `lib/base64.py` gains `_scan`, a transcription of CPython's error detection
+  **only** — the decode stays on the C function, so the happy path is still one
+  C call. It closes the message text too. Checked by brute force rather than by
+  reading the C: every string up to length 6 over ``aG=!\n-`` plus 60,000
+  random ones, **0 divergences**, and all eleven `base64` cases run against a
+  built lypning-mp. `Discontinuous padding not allowed` was found that way and
+  by nothing else. The strict messages are CPython 3.11's; the case says so.
+- **The `binascii` model in `tests/test_shims.py` was wrong** in the direction
+  that hides work — it wrapped CPython's decoder and lower-cased the message,
+  modelling a divergence that does not exist while hiding one that does. Now a
+  transcription of `extmod/modbinascii.c`. The tier grew 1,216 B, still 3
+  device blocks.
 
 **2026-08-23** — `base64.b64decode` raises the class CPython raises · [#9]
 

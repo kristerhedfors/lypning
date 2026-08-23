@@ -139,9 +139,43 @@ bite silently — a program that finishes, prints something plausible, and exits
 
 ### Everything else
 
-17. `base64.b64decode` does not validate: MicroPython's `a2b_base64` is lenient
-    where CPython raises. Both reject bad padding, with different messages.
-    `validate=True` is accepted and ignored.
+17. **Closed.** `base64.b64decode` used not to validate, and `validate=True` was
+    accepted and ignored — so `b64decode(b"a!Gk=", validate=True)` returned
+    `b'hi'` where CPython raises. That was not a message difference but a wrong
+    ANSWER to "is this valid base64", reached by a tier the classifier routes to
+    on `import base64`. `b64encode` had the matching hole in the other
+    direction: it took a `str` and encoded it where CPython raises `TypeError`.
+
+    `base64.py` now carries `_scan`, a transcription of CPython's
+    `binascii_a2b_base64_impl` error detection — detection only, so the decode
+    stays on the C function, which already agreed with CPython on every value
+    both accept. It runs when `validate=True` (the C decoder has no strict mode,
+    so nothing else can be right) and when the C decoder has already failed (to
+    say what CPython would have said about the same bytes). The happy path is
+    still one C call.
+
+    That also closes the message text, which used to be the half this entry left
+    open: MicroPython says `incorrect padding` for every unfinished quad, where
+    CPython separates the one-more-than-a-multiple-of-4 case out with its own
+    message and a character count. Two verdicts, not two spellings.
+
+    **The four strict messages are CPython 3.11's** — `validate=True` only began
+    reaching `a2b_base64(strict_mode=True)` there; 3.9 and 3.10 raised
+    `Non-base64 digit found` for all of them. Against an older oracle the shim
+    still rejects the same inputs and words it differently, which is why
+    `base64-validate-rejects` declares `(3, 11)`.
+
+    Verified two ways, because the model and the binary can disagree: brute
+    force over every string up to length 6 from `aG=!\n-` plus 60,000 random
+    ones (0 divergences from CPython), and all eleven `base64` cases in
+    `tests/test_shims.py` run against a built lypning-mp. The `b"a=a"` case —
+    `Discontinuous padding not allowed`, a different message from `Excess data
+    after padding` — was found only by the brute force.
+
+    Doing this exposed a wrong MODEL, which is the more useful finding. The
+    `binascii` stand-in in `tests/test_shims.py` wrapped CPython's `a2b_base64`
+    and lower-cased its message, so it modelled a divergence that does not exist
+    and hid one that does. It is now a transcription of the C.
 
     The exception's **type** used to differ too, and no longer does. CPython
     raises `binascii.Error`; MicroPython's `binascii` defines no `Error` at all
@@ -163,8 +197,20 @@ bite silently — a program that finishes, prints something plausible, and exits
     MicroPython's `binascii` — an absence, so it had to be modelled deliberately
     or the shim run would keep importing CPython's and getting `Error` for free.
 
-    What is left is the message text — CPython's `Incorrect padding` against
-    MicroPython's `incorrect padding` — and that IS #19's kind of difference.
+    What was left after that was the message text — CPython's `Incorrect
+    padding` against MicroPython's `incorrect padding` — and it was filed as
+    #19's kind of difference, the kind Python does not specify and this
+    directory does not chase. It is closed anyway, above, and the reason is
+    worth keeping: chasing it turned up `validate=True` being ignored, which is
+    not a message at all. A divergence dismissed as cosmetic was sitting on top
+    of one that made the tier answer a validation question wrongly.
+
+    **What is left is not in this directory.** `py-9b16a7261b96` still
+    MISMATCHes, and now for #17a alone — the entry prints `type(e).__module__`
+    for every exception it catches, and reaches its first builtin one on the
+    `TypeError` that `b64encode("hi")` now correctly raises. Closing base64 made
+    that entry fail SOONER, which is the honest outcome and not a regression:
+    the engine got better and the probe got shorter.
 
 17a. **Builtin types have no `__module__`.** `TypeError.__module__` is
     `'builtins'` on CPython and raises `AttributeError` on MicroPython; a class
