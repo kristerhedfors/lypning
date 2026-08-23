@@ -23,3 +23,11 @@ src/lypning/assets/examples/rust/target/
 src/lypning/assets/node/target/
 src/lypning/assets/examples/*/embed
 src/lypning/assets/examples/*/*.o
+
+# The prompting study's host binaries and its regenerable working set. The
+# programs, the prompts and the scored results are committed; what a compiler
+# or a run produced from them is not.
+study/hosts/run_c
+study/hosts/run_cpp
+study/hosts/run_rust/target/
+study/data/hostset/

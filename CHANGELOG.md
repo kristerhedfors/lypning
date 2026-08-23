@@ -7,6 +7,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — the prompting study: can an agent be *asked* into the subset?
+
+`docs/PROMPTING.md` and `study/`. Nine prompt treatments, from no information at
+all to the engine answering for itself, × three or four independent Claude Code
+agents each, × 26 deterministic tasks written to the corpus's own shape —
+**884 generated programs, 375 of them distinct**, every one kept verbatim,
+routed by lypning's own parser, executed on the Rust core and on CPython, and
+graded in `conformance`'s vocabulary. Run 2026-08-23 on this container.
+
+The result: **66.3% of what an unprompted agent writes runs on the cheapest
+tier; 88.5% is the ceiling** — three of the 26 tasks are outside the subset for
+any natural solution — **and six of the nine treatments reach 100% of the tasks
+that are feasible at all.** The cost effect is larger than the coverage effect:
+the mixture's bill over the same 26 tasks falls from 0.470x of CPython to
+0.169x, because the programs a prompt removes are the ones that cost a wasted
+classification *plus* a full spawn.
+
+Three things worth knowing before writing such a prompt:
+
+- **The cheapest prompt that saturates carries no feature list.** 744 bytes of
+  motive — a fast tier tries every program, a refusal costs a spawn, correctness
+  outranks the tier, *and we are deliberately not telling you which features are
+  in* — matches the generated capability tables, the rewrite cookbook, both
+  together, and both plus the engine in a verify loop.
+- **The one-sentence nudge is the least reproducible prompt measured**, 11.5
+  percentage points between its best and worst replicate. Every saturating
+  treatment has a spread of 0.0 pp across four independent agents.
+- **`SKILL.md` — the artifact `lypning install` writes — is the second-weakest
+  prompt in the study**, at 81.7%. It is a document about working *on* lypning,
+  and this is the first thing to measure that it is not a document about writing
+  a program that stays in the subset.
+
+No prompt ever bought a wrong answer: **0 MISMATCH and 0 incorrect results over
+884 programs**, pinned by `tests/test_study.py`.
+
+### Fixed — nothing yet, but two defects the study found and quantified
+
+- **The classifier sends every `os.path.<fn>()` call past tier 1, and tier 1
+  runs them.** 35 of the 884 programs — 4.0%, and *all* of the classifier's
+  false negatives — were `.getsize()`, `.splitext()` and `.basename()`.
+  `route.rs`'s `Expr::Attr` arm resolves a module attribute only when the base is
+  a bare name, so `os.getenv` is decided correctly and `os.path.basename` falls
+  through to the method table and misses. It is a LATE route, inside the budget
+  `lypning conformance` already reports — but the study shows it now also
+  *teaches*: agents told to trust `lypning route` replaced `os.path.splitext`
+  with hand-rolled `rfind`, which is worse code written to satisfy a tier the
+  original already met. Not fixed here, deliberately: the change would invalidate
+  the study's own measurements, and 35-for-35 MATCH is exactly the evidence a
+  maintainer wants in front of them when making it.
+- **Using lypning as a library is invisible to lypning's capture.** Both feeds
+  watch for a process; an in-process `lypning_run()` spawns none. Five hosts can
+  run ten thousand programs and the corpus will not grow by one, and the Python
+  host is the worst case because the shim logs the driver script and none of the
+  programs it ran. `study/hosts/capture.h` documents the record shape that makes
+  a host loggable today and argues the fix belongs in the C ABI.
+
+### Changed — the corpus grew to 1235, and 393 of those are this study's own output
+
+Every generated program was run through the installed `python3` shim and through
+**all five hosts the C ABI has** — C, C++, Rust, Node and Python — over one
+shared program set. The five agree byte for byte, refusal path included: 341
+ran, 52 refused, 0 other, on all five. That produced 2,849 capture records,
+`lypning harvest` folded 393 distinct programs in, and the corpus went from 842
+to 1235.
+
+`.claude/` is committed with it — the hooks, the skill and the merged
+`settings.json` that `lypning install` writes, applied to this repository by the
+tool this repository ships. It is what §3 of the README tells a user to do, it
+is what made the capture above automatic, and `lypning uninstall` is its exact
+inverse. Anyone who would rather not run a `PreToolUse` hook on every Bash call
+in this tree should run that before starting a session.
+
+**Read the coverage number that comes out of it with care.** `lypning
+conformance` reported 65.5% tier-1 coverage before the fold and 73.4% after it,
+with nothing about the engine changed in between. The eight points are programs
+written under prompts designed to produce subset-clean Python. The sightings are
+one file — `tests/corpus/sightings/lypning-prompting-study.jsonl` — and anyone
+quoting corpus coverage as evidence about what agents type *in the field* should
+exclude it first.
+
+
 ### Changed — the documentation leads with a measurement taken today, not one remembered from upstream
 
 `README.md` and `docs/LYPNING.md` both opened on the upstream table of

@@ -1,0 +1,18 @@
+# The Rust host. A workspace of one, for the same reason
+# assets/examples/rust/Cargo.toml is: a workspace root appearing above this
+# directory would silently hand this package that workspace's profiles and
+# target/, and both failures build cleanly.
+[workspace]
+
+[package]
+name = "lypning-study-host"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# One dependency, by path, and no others — CLAUDE.md invariant 6. The capture
+# record below is written with a hand-rolled escaper rather than serde for
+# exactly that reason.
+[dependencies]
+lypning = { path = "../../../src/lypning/assets/rust" }

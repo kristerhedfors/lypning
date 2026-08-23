@@ -1,0 +1,20 @@
+{
+  "T0": {"label": "control",          "parts": [],                                        "tools": false,
+         "gloss": "no mention of lypning, a subset, or performance at all"},
+  "T1": {"label": "nudge",            "parts": ["nudge.md"],                              "tools": false,
+         "gloss": "one sentence: prefer plain, simple Python"},
+  "T2": {"label": "runtime-aware",    "parts": ["runtime-aware.md"],                      "tools": false,
+         "gloss": "the motive and the cost, but no feature list"},
+  "T3": {"label": "skill",            "parts": ["skill.md"],                              "tools": false,
+         "gloss": "the SKILL.md `lypning install` actually writes, verbatim"},
+  "T4": {"label": "capability-brief", "parts": ["capability-brief.md"],                   "tools": false,
+         "gloss": "the exact tables, generated from the engine's own source"},
+  "T5": {"label": "cookbook",         "parts": ["cookbook.md"],                           "tools": false,
+         "gloss": "rewrite rules only — do this, not that"},
+  "T6": {"label": "brief+cookbook",   "parts": ["capability-brief.md", "cookbook.md"],    "tools": false,
+         "gloss": "the maximal static prompt: tables and rewrites together"},
+  "T7": {"label": "verify-once",      "parts": ["capability-brief.md", "cookbook.md", "verify-once.md"], "tools": true,
+         "gloss": "T6 plus one machine-checked revision per task"},
+  "T8": {"label": "verify-loop",      "parts": ["capability-brief.md", "cookbook.md", "verify-loop.md"], "tools": true,
+         "gloss": "T6 plus iterate against `route` and the engine until it runs"}
+}

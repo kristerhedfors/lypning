@@ -1,0 +1,19 @@
+{
+  "loaded": 842,
+  "routed": 842,
+  "engines": {
+    "cpython": 109,
+    "lypning": 528,
+    "lypning-mp": 205
+  },
+  "kinds": {
+    "module": 254,
+    "decorator": 6,
+    "class": 6,
+    "method": 22,
+    "generator": 3,
+    "module-attr": 18,
+    "token": 4,
+    "syntax": 1
+  }
+}

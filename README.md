@@ -310,6 +310,16 @@ produce. Paths are printed absolute; they are shortened here.
 | settings | `.claude/settings.json` | three hook entries, **merged** |
 | shim | `~/.lypning/bin/{python,python3}` | a POSIX-sh wrapper that logs one JSON line and then execs the real interpreter |
 
+**How much does the skill actually move the agent?** Measured, in
+[docs/PROMPTING.md](docs/PROMPTING.md): nine prompt treatments over 884 generated
+programs, on 2026-08-23. An unprompted agent writes Python that runs on the
+cheapest tier **66.3%** of the time; the best prompts reach **88.5%**, which is
+the ceiling of that battery; and the shipped `SKILL.md` reaches 81.7%, behind a
+744-byte paragraph that gives the agent the *motive* and deliberately no feature
+list at all. The same document has what that is worth in milliseconds — the
+mixture's bill over the same tasks falls from 0.470x of CPython to 0.169x — and
+what it costs in program length, which is about 1.4 lines.
+
 ### What it merges
 
 `settings.json` is a file you own and have opinions about, so it is never
@@ -781,6 +791,7 @@ Makefile               thin wrappers: build test check conformance fuzz bench ga
 | `docs/CAPTURE.md` | the two capture feeds, the harvest, and the privacy rules |
 | `docs/COOKBOOK.md` | unsupported Python, rewritten — what to type when a tier refuses |
 | `docs/EMBEDDING.md` | linking the runtime into a harness: the C ABI, the five hosts over it, and what a refusal means when there is no exit code |
+| `docs/PROMPTING.md` | can an agent be *asked* into the subset? 884 generated programs across nine prompt treatments, and what each one bought |
 | `docs/BENCH-LEDGER.md` | append-only measurement history, including the losses |
 
 Working on this repository? Read `CLAUDE.md` first.
