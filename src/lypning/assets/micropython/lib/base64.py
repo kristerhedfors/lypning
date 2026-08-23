@@ -1,6 +1,26 @@
 # lypning-mp frozen shim: base64 over binascii. See micropython/lib/README.md.
 from binascii import a2b_base64 as _a2b, b2a_base64 as _b2a
 
+# CPython's `base64` raises `binascii.Error` on malformed input; MicroPython's
+# `binascii` raises a plain `ValueError` and defines no `Error` at all. That is
+# not an implementation-defined difference the way a message is (README
+# divergence 19): the exception's TYPE is part of what `base64` documents, and a
+# program doing the ordinary thing with a caught exception —
+# `except Exception as e: print(type(e).__name__)` — prints `Error` on CPython
+# and printed `ValueError` here. A harvested corpus entry does exactly that, and
+# it showed up as an UNSAFE route rather than as a MISMATCH, because the
+# classifier had sent it to this tier.
+#
+# `Error` subclasses `ValueError`, so every `except ValueError` that worked
+# before still catches it. Imported from `binascii` when there is one to import,
+# so that under CPython this shim raises CPython's own class and not a look-alike
+# — two classes with the same name is how `except binascii.Error` starts missing.
+try:
+    from binascii import Error
+except ImportError:
+    class Error(ValueError):
+        pass
+
 
 def b64encode(s, altchars=None):
     r = _b2a(s)
@@ -16,7 +36,12 @@ def b64decode(s, altchars=None, validate=False):
         s = s.encode()
     if altchars:
         s = s.replace(altchars[0:1], b"+").replace(altchars[1:2], b"/")
-    return _a2b(s)
+    try:
+        return _a2b(s)
+    except Error:
+        raise
+    except ValueError as e:
+        raise Error(str(e))
 
 
 def urlsafe_b64encode(s):

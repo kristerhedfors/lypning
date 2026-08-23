@@ -140,8 +140,26 @@ bite silently — a program that finishes, prints something plausible, and exits
 ### Everything else
 
 17. `base64.b64decode` does not validate: MicroPython's `a2b_base64` is lenient
-    where CPython raises `binascii.Error`. Both reject bad padding, with
-    different messages. `validate=True` is accepted and ignored.
+    where CPython raises. Both reject bad padding, with different messages.
+    `validate=True` is accepted and ignored.
+
+    The exception's **type** used to differ too, and no longer does. CPython
+    raises `binascii.Error`; MicroPython's `binascii` defines no `Error` at all
+    and raised a bare `ValueError`, so `type(e).__name__` printed `ValueError`
+    here and `Error` there. **Observed 2026-08-23** by a harvested corpus entry
+    (`py-16c1663c6170`) that does the ordinary thing with a caught exception and
+    prints its type name — and it surfaced as an UNSAFE *route* rather than a
+    MISMATCH, because the classifier had already sent it to this tier.
+
+    Unlike #19 this is not implementation-defined: a message is text Python does
+    not specify, but the class `base64` raises is documented. `base64.py` now
+    defines `Error(ValueError)` when `binascii` has none to import, so
+    `except ValueError` catches exactly what it caught before and the name
+    agrees. Pinned by `base64-bad-padding-exception-name` and
+    `base64-error-is-a-valueerror` in `tests/test_shims.py`, which can only fail
+    because that suite now models MicroPython's `binascii` — an absence, so it
+    had to be modelled deliberately or the shim run would keep importing
+    CPython's and getting `Error` for free.
 18. `json.dumps` is pure Python and therefore slower than the C encoder it
     replaces. It has to be: MicroPython's `dumps` has no `indent`, no
     `sort_keys`, and no `ensure_ascii`, and it emits raw UTF-8 where CPython

@@ -14,6 +14,18 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-23** — `base64.b64decode` raises the class CPython raises · [#9]
+
+- The MicroPython tier's shim raised a bare `ValueError` where CPython raises
+  `binascii.Error`, so `type(e).__name__` disagreed. Found by a harvested corpus
+  entry that prints it — and it surfaced as an **UNSAFE route**, not a MISMATCH,
+  because the classifier had already sent the program to that tier.
+- `tests/test_shims.py` could not have caught it: the shim run imported
+  CPython's `binascii` and got `Error` for free. It now models MicroPython's,
+  whose defining feature is an **absence**.
+- Not the same as divergence 19: a message is text Python does not specify, but
+  the class `base64` raises is documented.
+
 **2026-08-23** — A hillclimb loop, the instrument it needs, and six defects it
 found · [#7]
 
@@ -189,6 +201,7 @@ runtime exists — the number came first, and both were built for it. It is
 [#5]: https://github.com/kristerhedfors/lypning/pull/5
 [#6]: https://github.com/kristerhedfors/lypning/pull/6
 [#7]: https://github.com/kristerhedfors/lypning/pull/7
+[#9]: https://github.com/kristerhedfors/lypning/pull/9
 [ds]: https://github.com/kristerhedfors/deepresearch.se
 [u432]: https://github.com/kristerhedfors/deepresearch.se/pull/432
 [u434]: https://github.com/kristerhedfors/deepresearch.se/pull/434
