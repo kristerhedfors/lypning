@@ -117,18 +117,22 @@ Recorded here rather than waived, because widening a capability table to make a
 number green converts a loud failure into a silent one. `README.md` §5 and
 `.github/workflows/ci.yml` both point at this section.
 
-- **`lypning conformance` ends at MISMATCH 2, both on `lypning-mp`**, both the
-  same defect: MicroPython streams stdout, so a program that prints before
-  reaching an unsupported construct has already committed those bytes when it
-  exits 90. The Rust core stages output and discards it on refusal; the
-  MicroPython tier cannot, and the dispatcher covers for it. Reproduction in
-  `docs/LYPNING.md` §6. Blocking again once that tier grows a commit barrier.
-- **2 UNSAFE routes**, which are that same defect from the other side: a
-  program routes to `lypning-mp`, prints (147 and 693 bytes), and then refuses.
-  Narrowing the classifier's table to dodge them would cost every other program
-  of that shape a tier and hide the defect. `tests/test_routing.py` pins
-  `contract:` as the only shape an UNSAFE route is allowed to take, so a route
-  that goes wrong any other way fails there rather than joining a count.
+- **`lypning conformance` does not end at 0 on the `lypning-mp` arm**, and the
+  largest class is one defect: MicroPython streams stdout, so a program that
+  prints before reaching an unsupported construct has already committed those
+  bytes when it exits 90. The Rust core stages output and discards it on
+  refusal; the MicroPython tier cannot, and the dispatcher covers for it.
+  Reproduction in `docs/LYPNING.md` §6. Blocking again once that tier grows a
+  commit barrier.
+
+  The count is **not** the 2 this file used to state. Measured 2026-08-23 with
+  the tier actually built: MISMATCH 8, UNSAFE 3. Three of those are the barrier
+  defect above; the rest are gaps this tier had never been run against, exposed
+  by a corpus that grew 842 → 1037 the same day. `tests/test_routing.py` pins
+  `contract:` as the only shape an UNSAFE route may take, so one that goes wrong
+  any other way fails there rather than joining a count. Re-measure before
+  quoting either number — CI's MicroPython job builds that tier over the network
+  and frequently cannot, in which case it reports nothing at all.
 - **`float ** float` is one ULP off on some arguments.** Both engines call
   their libm's `pow`; the core is static musl and the reference here is glibc,
   and glibc's is correctly rounded on these where musl's is not. `lypning fuzz`
