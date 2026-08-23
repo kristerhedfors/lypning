@@ -9,8 +9,14 @@
 # refusal contract still hold on the binary that was just built, does the wheel
 # a `pip` user gets actually work — and that is what is below.
 #
-# Two of these jobs are `continue-on-error` and neither of them is decoration;
-# each says at its own head what makes it blocking again.
+# One job here is `continue-on-error` and it is not decoration; it says at its
+# own head what makes it blocking. Exactly one, because a non-blocking job is a
+# claim about WHY its red is tolerable, and a job whose red had two possible
+# meanings could not make that claim: the MicroPython work used to be one job
+# that reddened for a wrong answer and for an unreachable download alike, so
+# for four runs it reported an outage in the vocabulary of a defect and nobody
+# noticed the battery under it had stopped running. It is two jobs now — can
+# the tier be built, and does the tier agree — and only the second is excused.
 
 name: ci
 
@@ -157,11 +163,19 @@ jobs:
         # Named arms, not a bare `lypning conformance`, and the difference
         # matters. A bare run on this runner is clean too, but only because the
         # MicroPython tier is not built here — CI whose meaning depends on what
-        # happens to be installed is CI that will one day go quiet. These two
-        # arms are clean by selection: MISMATCH 0, and the routing-safety gate
-        # (UNSAFE must be 0) over every program the mixture answered.
+        # happens to be installed is CI that will one day go quiet.
         #
-        # The third arm, lypning-mp, is known red — see the job below.
+        # READ THAT SENTENCE AGAIN, because it is true of the `mixture` arm on
+        # this line and was not known to be when it was written. `mixture` is
+        # clean HERE only while lypning-mp is absent: the classifier then routes
+        # to CPython what it would otherwise hand to the tier. Measured
+        # 2026-08-23 with the tier built, this same arm mismatches — see the
+        # `_not_accepted` note in .github/known-mismatches.json. So the arm that
+        # grades what the caller actually gets is graded, for that program, on
+        # the one configuration where the caller cannot be hurt by it.
+        #
+        # `lypning` is clean by selection and unconditionally. The third arm,
+        # lypning-mp, is known red — see the micropython-conformance job.
         run: lypning conformance --engine lypning --engine mixture
       # --- the same contract, through the ABI instead of through a process ---
       #
@@ -216,33 +230,28 @@ jobs:
           dirty=$(git status --porcelain)
           test -z "$dirty" || { echo "$dirty"; echo "the battery changed tracked files"; exit 1; }
 
-  # --- known red, on purpose and in public ----------------------------------
+  # --- can the tier be built at all -----------------------------------------
   #
-  # NON-BLOCKING, and it fails today. `lypning conformance` over all three arms
-  # ends at MISMATCH 2, both on lypning-mp, both the same defect: MicroPython
-  # streams stdout, so a program that prints before reaching an unsupported
-  # construct has already committed those bytes when it exits 90. The routing
-  # gate reports the consequence as UNSAFE 1. docs/LYPNING.md §6 has the
-  # reproduction, CHANGELOG.md records why it is tracked rather than waived.
+  # BLOCKING, and it can only redden for one reason: every precondition held,
+  # the build ran, and it did not produce a binary.
   #
-  # This job exists so that number stays visible. Widening a capability table to
-  # make it green would convert a loud failure into a silent one, which is the
-  # one thing invariant 1 forbids.
+  # It was not always able to say that. This job and the battery below it used
+  # to be one job, and that job rendered identically whether the tier had
+  # answered a program wrongly or `musl.libc.org` had merely stopped answering
+  # — which it did, for four consecutive runs, while the whole battery under it
+  # silently never ran. A gate whose red has two meanings has none.
   #
-  # WHAT MAKES IT BLOCKING AGAIN: when lypning-mp grows a commit barrier and
-  # this job ends at MISMATCH 0, delete `continue-on-error` here and replace the
-  # `core` job's `--engine lypning --engine mixture` with a bare
-  # `lypning conformance`. Until then, a green tick here is the news.
-  #
-  # The tier build is the other reason for `continue-on-error`: it needs a
-  # 32-bit toolchain and it fetches musl and a pinned MicroPython over the
-  # network, so an upstream outage is an outage and not a regression. It runs
-  # anyway, every time, because a tier nobody builds in CI is a tier that rots.
-  micropython-tier:
-    name: "micropython tier + full battery (non-blocking: known red)"
+  # `--skip-unavailable` is what buys the distinction: a tier that cannot be
+  # ATTEMPTED here — no 32-bit toolchain, no cargo, an unreachable pinned
+  # download — exits 0 and says `unavailable`, and the `built` output below
+  # carries that fact to the battery, which then skips rather than pretending.
+  # A build that RAN and broke still exits 1 and still reddens this job.
+  micropython-build:
+    name: "micropython tier — does it build"
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    continue-on-error: true
+    outputs:
+      built: ${{ steps.build.outputs.built }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -254,28 +263,148 @@ jobs:
           pip install -e ".[dev]"
       - name: the 32-bit toolchain
         # gcc-multilib is the whole reason this tier is absent by default:
-        # lypning-mp is an i386 static musl binary, and 294,788 B of it is why
-        # it starts as fast as it does.
+        # lypning-mp is an i386 static musl binary, and its size is why it
+        # starts as fast as it does. `lypning gate` prints the byte count that
+        # matters; this comment deliberately does not quote one (invariant 3).
         run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-multilib strace
       - name: build both tiers
+        id: build
+        # The Rust core first and WITHOUT --skip-unavailable: cargo is present
+        # on this runner, so anything short of `ok` there is a real failure and
+        # the `core` job's opinion of it is not a substitute for this one.
         run: |
           lypning build --rust
-          lypning build --micropython
+          lypning build --micropython --skip-unavailable
+          # Asked of the engine finder rather than of a path or a grep over
+          # `status`: this is the exact question the battery will ask, and the
+          # tier legitimately lands in more than one place (the state bin dir in
+          # a wheel, the asset build tree in a checkout).
+          if python3 -c 'import sys; from lypning import engines; sys.exit(0 if engines.find_micropython() else 1)'; then
+            echo "built=true" >> "$GITHUB_OUTPUT"
+            echo "the tier built; the battery runs against it"
+          else
+            echo "built=false" >> "$GITHUB_OUTPUT"
+            echo '::warning title=MicroPython tier unavailable::This runner could not attempt the tier - see the "unavailable:" reason in the build table above. The conformance battery is SKIPPED, not passed.'
+          fi
       - name: status
         run: lypning status
       - name: gate lypning-mp
         # With both built, a bare `lypning gate` picks lypning-mp — the tier the
-        # 700,000 B budget was written for.
+        # byte budget was written for. Nothing to gate if it is not there.
+        if: steps.build.outputs.built == 'true'
         run: lypning gate
+      - name: stage the binaries for the battery
+        # Staged into ONE directory before upload: given two paths,
+        # upload-artifact roots the archive at their least common ancestor,
+        # which for a state dir and a workspace path is `/` — and the job below
+        # would unpack a deep tree where it expected two files. Asked of the
+        # engine finders so the staging cannot disagree with what was found.
+        if: steps.build.outputs.built == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/engines"
+          python3 - <<'EOF'
+          import os, shutil
+          from lypning import engines
+          out = os.path.join(os.environ["RUNNER_TEMP"], "engines")
+          for find in (engines.find_lypning, engines.find_micropython):
+              p = find()
+              assert p is not None, find.__name__
+              shutil.copy2(p, os.path.join(out, p.name))
+              print("staged %s (%d B)" % (p, p.stat().st_size))
+          EOF
+      - name: keep them for the battery
+        # So the job below runs against exactly what was built here, rather than
+        # rebuilding and taking a second, independent chance at the same
+        # upstream outage.
+        if: steps.build.outputs.built == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: engines
+          path: ${{ runner.temp }}/engines
+          if-no-files-found: error
+          retention-days: 1
+
+  # --- known red, on purpose, by identity and not by count -------------------
+  #
+  # NON-BLOCKING, and it fails today. `lypning conformance` over all three arms
+  # ends on lypning-mp mismatches with one cause: MicroPython streams stdout, so
+  # a program that prints before reaching an unsupported construct has already
+  # committed those bytes when it exits 90. The routing gate reports the
+  # consequence as UNSAFE. docs/LYPNING.md §6 has the reproduction, CHANGELOG.md
+  # records why it is tracked rather than waived.
+  #
+  # Those mismatches are enumerated in .github/known-mismatches.json BY IDENTITY
+  # — engine, entry, kind — and never by count. A count would let one defect be
+  # fixed while another appeared and keep the tick green, which is invariant 1's
+  # silent failure with a badge on it. Anything not in that file reddens the
+  # step below; so does a ledger entry that has stopped reproducing.
+  #
+  # It SKIPS, visibly, when the tier could not be built. That is the whole point
+  # of the split: this job's red now means a wrong answer and nothing else.
+  #
+  # WHAT MAKES IT BLOCKING: when lypning-mp grows a commit barrier and the
+  # ledger empties, delete `continue-on-error` here and replace the `core` job's
+  # `--engine lypning --engine mixture` with a bare `lypning conformance`.
+  micropython-conformance:
+    name: "micropython tier — does it agree with CPython (non-blocking: known red)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: micropython-build
+    if: needs.micropython-build.outputs.built == 'true'
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: the binaries the build job produced
+        uses: actions/download-artifact@v4
+        with:
+          name: engines
+          # NOT the workspace. The last step of this job fails on any change to
+          # the tree, and `git status --porcelain` counts untracked files — two
+          # engine binaries unpacked next to the checkout would fail the net
+          # check while reporting the battery had rewritten the repository.
+          path: ${{ runner.temp }}/engines
+      - name: put them where the engine finders look
+        # Into the state bin dir, which is the first place both finders look in
+        # either shape of install, and chmod +x because the artifact store does
+        # not preserve the bit. `status` is the assertion: if either engine is
+        # missing here, every arm below silently degrades to CPython and the
+        # battery reports a clean run of nothing.
+        run: |
+          mkdir -p "$HOME/.lypning/bin"
+          cp "$RUNNER_TEMP/engines/lypning" "$RUNNER_TEMP/engines/lypning-mp" "$HOME/.lypning/bin/"
+          chmod +x "$HOME/.lypning/bin/lypning" "$HOME/.lypning/bin/lypning-mp"
+          lypning status
+          python3 -c 'from lypning import engines; assert engines.find_lypning() and engines.find_micropython(), "an engine did not survive the artifact round-trip"'
       - name: pytest, with both tiers present
         # The commit-barrier cases in tests/test_commit_barrier.py can only run
         # here; everywhere else they skip for want of a binary.
         run: python -m pytest tests -q
-      - name: the full conformance battery — expected to end at MISMATCH 2
-        run: lypning conformance
+      - name: the full battery, scored against the accepted-mismatch ledger
+        # `conformance` itself is absolute and exits 1 on any MISMATCH — that is
+        # invariant 1 and it does not bend. The ledger decides this JOB's
+        # outcome, and only this job's: a mismatch it does not name is a
+        # regression, and a mismatch it names that stopped reproducing is good
+        # news that still needs the file edited.
+        run: |
+          lypning conformance --json > "$RUNNER_TEMP/conformance.json" || true
+          python3 .github/scripts/known-mismatches.py \
+            --report "$RUNNER_TEMP/conformance.json" \
+            --ledger .github/known-mismatches.json
+      - name: the battery in the vocabulary a human reads
+        if: always()
+        run: lypning conformance || true
       - name: what the refusals say to build next
+        if: always()
         run: lypning conformance --plan
       - name: the corpus rewrites repositories; check the net held
+        if: always()
         run: |
           dirty=$(git status --porcelain)
           test -z "$dirty" || { echo "$dirty"; echo "the battery changed tracked files"; exit 1; }

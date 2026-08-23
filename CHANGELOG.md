@@ -14,6 +14,33 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-23** — Split the MicroPython gate, so its red means one thing · [#11]
+
+- The job could not build for four consecutive runs and rendered identically
+  whether the tier had answered a program wrongly or `musl.libc.org` had stopped
+  answering. It is now two: **does it build**, which is blocking and can only
+  redden when every precondition held and the build still produced no binary;
+  and **does it agree with CPython**, which runs on the built binaries and
+  *skips*, visibly, when there are none.
+- `BuildResult.unavailable` splits a precondition this machine does not meet
+  from a build that ran and broke — until now both printed `FAILED` and exited
+  1. A failed download is classified by the fetcher's own exit code, not by a
+  second network probe: the failure that started this (`curl: (35) Recv
+  failure`) happens while a TCP connect to the same host still succeeds.
+  `lypning build --skip-unavailable` is what a gate uses to tell them apart.
+- The accepted mismatches are enumerated by **identity** — engine, entry, kind —
+  in `.github/known-mismatches.json`, never by count: a count lets one defect be
+  fixed while another appears and keeps the tick green.
+- **With the tier built, the battery does not end where this file said it did.**
+  Re-measured today over the 1430 programs then loaded: mismatches on
+  `lypning-mp`, three of them the documented commit barrier, three of them
+  self-referential corpus entries that `import lypning` and cannot resolve it
+  off CPython's path. The remaining one is **not waived**: `base64.b64decode`
+  reports `incorrect padding` where CPython says `Incorrect padding`, it reaches
+  the **mixture** arm, and the routing gate grades it UNSAFE and *not* rescued.
+  The `core` job cannot see it — the tier is absent there, so the program routes
+  to CPython and matches.
+
 **2026-08-23** — `base64.b64decode` raises the class CPython raises · [#9]
 
 - The MicroPython tier's shim raised a bare `ValueError` where CPython raises
@@ -255,6 +282,7 @@ runtime exists — the number came first, and both were built for it. It is
 [#9]: https://github.com/kristerhedfors/lypning/pull/9
 
 [#10]: https://github.com/kristerhedfors/lypning/pull/10
+[#11]: https://github.com/kristerhedfors/lypning/pull/11
 [ds]: https://github.com/kristerhedfors/deepresearch.se
 [u432]: https://github.com/kristerhedfors/deepresearch.se/pull/432
 [u434]: https://github.com/kristerhedfors/deepresearch.se/pull/434
