@@ -1,0 +1,68 @@
+{
+  "repeat": 3,
+  "treatments": {
+    "T0": {
+      "cells": 4,
+      "programs_per_cell": 26,
+      "mixture_ms": 169.4,
+      "cpython_ms": 360.5,
+      "ratio": 0.47
+    },
+    "T1": {
+      "cells": 4,
+      "programs_per_cell": 26,
+      "mixture_ms": 141.8,
+      "cpython_ms": 360.7,
+      "ratio": 0.393
+    },
+    "T2": {
+      "cells": 4,
+      "programs_per_cell": 26,
+      "mixture_ms": 60.6,
+      "cpython_ms": 340.2,
+      "ratio": 0.178
+    },
+    "T3": {
+      "cells": 4,
+      "programs_per_cell": 26,
+      "mixture_ms": 98.9,
+      "cpython_ms": 329.9,
+      "ratio": 0.3
+    },
+    "T4": {
+      "cells": 4,
+      "programs_per_cell": 26,
+      "mixture_ms": 63.9,
+      "cpython_ms": 330.4,
+      "ratio": 0.193
+    },
+    "T5": {
+      "cells": 4,
+      "programs_per_cell": 26,
+      "mixture_ms": 71.8,
+      "cpython_ms": 330.2,
+      "ratio": 0.218
+    },
+    "T6": {
+      "cells": 4,
+      "programs_per_cell": 26,
+      "mixture_ms": 67.8,
+      "cpython_ms": 336.5,
+      "ratio": 0.202
+    },
+    "T7": {
+      "cells": 3,
+      "programs_per_cell": 26,
+      "mixture_ms": 57.4,
+      "cpython_ms": 338.5,
+      "ratio": 0.169
+    },
+    "T8": {
+      "cells": 3,
+      "programs_per_cell": 26,
+      "mixture_ms": 62.6,
+      "cpython_ms": 344.0,
+      "ratio": 0.182
+    }
+  }
+}

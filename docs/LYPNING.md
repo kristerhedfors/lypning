@@ -269,6 +269,30 @@ mismatches is the one outcome that spends trust instead of milliseconds.
 A wrong route costs a process spawn. A wrong *answer* costs the user's trust, so
 UNSAFE is tracked separately and the dispatcher is built to recover from it.
 
+### One systematic LATE route: `os.path`
+
+The prompting study ([PROMPTING.md](PROMPTING.md) §6) put 884 agent-written
+programs through the classifier and then through the engine, and found that
+**every one of the classifier's false negatives was the same construct**: 35
+programs sent past tier 1 that tier 1 then ran correctly, of which
+`os.path.getsize()` was 16, `os.path.splitext()` 15 and `os.path.basename()` 4,
+and nothing else.
+
+`walk_expr`'s `Expr::Attr` arm in `route.rs` resolves a module attribute only
+when the base is a bare `Expr::Name`. So `os.getenv` is decided against
+`modules::MODULES` and answered correctly, while `os.path.basename` — whose base
+is itself an `Expr::Attr` — falls past that check into the method table, misses
+every entry there, and is blocked as `method: .basename()`. The engine
+implements all three; the classifier has no way to see that it does.
+
+It is a LATE route, so it is a budget rather than a gate, and it is already
+inside the LATE the run above reports. What the study adds is that the cost is
+no longer only a spawn: an agent told to trust `lypning route` — which is what
+the skill tells it to do — will *rewrite working code to satisfy a tier the
+original already met*. Two of the study's agents replaced `os.path.splitext`
+with a hand-rolled `rfind` for exactly that reason. A classifier that
+under-reports its own engine teaches once it is inside a prompt loop.
+
 ## 5. The dispatcher, and why it is the binary itself
 
 ```
