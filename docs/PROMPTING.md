@@ -21,6 +21,15 @@ Rust core built and lypning-mp absent. **34 cells** (nine prompt treatments ×
 three or four independent replicate agents), **26 tasks** per cell, **884
 programs**, 375 of them distinct.
 
+> **Re-verified after the hillclimb work landed.** The engine changed under this
+> study between its generation pass and its merge — six correctness defects
+> fixed, `for line in sys.stdin` de-quadratified, four characters moved from a
+> refusal to a `SyntaxError`. All 884 programs were re-scored against the merged
+> engine and **not one row moved**: same route, same verdict, same
+> `tier1_win`, on every one. The tier-1 surface the treatments describe did not
+> move either — `study/gen_brief.py` regenerates `capability-brief.md`
+> byte-identically. The table below is therefore a measurement of both engines.
+
 | id | treatment | n | routes tier 1 | **runs on tier 1** | of the 23 feasible | correct | MISMATCH |
 |---|---|---:|---:|---:|---:|---:|---:|
 | T0 | control | 104 | 62.5% | **66.3%** | 75.0% | 100.0% | 0 |
@@ -354,17 +363,19 @@ python-embed   393     ┘
 
 `lypning harvest --export` published 393 distinct programs to
 `tests/corpus/sightings/lypning-prompting-study.jsonl`; `lypning harvest` folded
-them in. **The corpus went from 842 programs to 1235.**
+them in. **The corpus went from 1037 programs to 1430.** Re-running the export
+on the merged tree wrote `0 new, 393 total, unchanged`, which is the purity
+`harvest.py` promises, checked rather than trusted.
 
 > **The corpus is now partly this study's own output, and that must not be
-> quoted as a field number.** `lypning conformance` read 65.5% tier-1 coverage
-> over the corpus before the fold and 73.4% after it, over 1139 programs instead
-> of 763. Nothing about the engine changed between those two runs. The eight
-> points are 393 programs written by agents under nine prompt treatments, six of
-> which were designed to produce subset-clean Python — so folding them in raises
-> the number the corpus exists to report honestly. The sightings are one file and
-> can be excluded by name. Anyone quoting corpus coverage as evidence about what
-> agents type in the field should exclude
+> quoted as a field number.** On the merged tree, `lypning conformance` read
+> **61.4%** tier-1 coverage over the corpus before the fold and **69.9%** after
+> it, over 1237 programs instead of 861. Nothing about the engine changed between
+> those two runs. The 8.5 points are 393 programs written by agents under nine
+> prompt treatments, six of which were designed to produce subset-clean Python —
+> so folding them in raises the number the corpus exists to report honestly. The
+> sightings are one file and can be excluded by name. Anyone quoting corpus
+> coverage as evidence about what agents type in the field should exclude
 > `tests/corpus/sightings/lypning-prompting-study.jsonl` first, and
 > `study/baseline.py` says so at the top for the same reason.
 
@@ -418,11 +429,24 @@ not reimplement a standard algorithm to stay in the subset*, and they should.
   that the project is about a Python subset. Agents were told to ignore it; that
   is a request, not a guarantee. So T0 is checked against something the
   contamination cannot reach: the corpus itself, captured from real agent
-  sessions doing unrelated work. Routed on 2026-08-23, before this study's own
-  harvest, over the 842 programs it then held, **62.7% went to tier 1** —
-  against T0's 62.5% routed and 66.3% run. The control cell and the field agree
-  to within a point, which is the strongest evidence available that the leak did
-  not do much.
+  sessions doing unrelated work — and the anchor is **two** numbers, not one,
+  because the corpus grew between them:
+
+  | corpus, routed before this study's fold | programs | to tier 1 |
+  |---|---:|---:|
+  | as it stood on 2026-08-23 morning | 842 | **62.7%** |
+  | after the hillclimb work landed | 1037 | **55.6%** |
+
+  T0 routed 62.5% and ran 66.3%, so it sits on the first anchor and seven points
+  above the second. The move is not noise and it is not the agents: the 195
+  programs the hillclimb session added are largely `transcript`-sourced (the
+  corpus went from 20 transcript entries to 215), and a session doing *engine
+  work* types longer, heavier Python than a session doing data wrangling. That is
+  worth knowing on its own — **"what agents type" is not one distribution, it is
+  a function of what the session is doing** — and it means the control cell is
+  bracketed by the field rather than confirmed by it. It remains the best
+  available evidence that the `CLAUDE.md` leak did not do much, and it is weaker
+  evidence than one number would have looked.
 * **Twenty-six tasks are not the distribution.** They were written to the
   corpus's shape and deliberately loaded with fourteen import temptations, which
   is a harder battery than a real session. A corpus one-liner is a median of six
