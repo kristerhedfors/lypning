@@ -23,8 +23,16 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 - `tests/test_shims.py` could not have caught it: the shim run imported
   CPython's `binascii` and got `Error` for free. It now models MicroPython's,
   whose defining feature is an **absence**.
-- Not the same as divergence 19: a message is text Python does not specify, but
-  the class `base64` raises is documented.
+- The **qualified** name needed it too and the first pass missed it: defining
+  the class in `base64.py` made it `base64.Error` where CPython says
+  `binascii.Error`, which is what `repr()` and a traceback print. A second
+  corpus entry was already printing that half, so the fix shipped at half
+  strength and CI said so. `Error.__module__` is set explicitly.
+- What is left is the message text, and that *is* divergence 19's kind of
+  difference — Python does not specify it — so that entry is tagged
+  `implementation-defined`. The type and the qualified name are pinned in
+  `tests/test_shims.py` instead, because the tag stops stdout being compared
+  and must not be what covers for a thing that is actually fixed.
 
 **2026-08-23** — A hillclimb loop, the instrument it needs, and six defects it
 found · [#7]
@@ -118,11 +126,12 @@ number green converts a loud failure into a silent one. `README.md` §5 and
   exits 90. The Rust core stages output and discards it on refusal; the
   MicroPython tier cannot, and the dispatcher covers for it. Reproduction in
   `docs/LYPNING.md` §6. Blocking again once that tier grows a commit barrier.
-- **1 UNSAFE route**, which is the same defect from the other side: `hashlib`
-  is in the classifier's table, so one program routes to `lypning-mp`, prints
-  147 bytes and then refuses. Narrowing the table to dodge it would cost every
-  other `hashlib` program a tier and hide the defect. `tests/test_routing.py`
-  pins it as the only shape an UNSAFE route takes here.
+- **2 UNSAFE routes**, which are that same defect from the other side: a
+  program routes to `lypning-mp`, prints (147 and 693 bytes), and then refuses.
+  Narrowing the classifier's table to dodge them would cost every other program
+  of that shape a tier and hide the defect. `tests/test_routing.py` pins
+  `contract:` as the only shape an UNSAFE route is allowed to take, so a route
+  that goes wrong any other way fails there rather than joining a count.
 - **`float ** float` is one ULP off on some arguments.** Both engines call
   their libm's `pow`; the core is static musl and the reference here is glibc,
   and glibc's is correctly rounded on these where musl's is not. `lypning fuzz`

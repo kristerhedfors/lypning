@@ -235,7 +235,14 @@ if MODE == "shim":
         try:
             return _binascii.a2b_base64(data)
         except _binascii.Error as e:
-            raise ValueError(str(e))     # MicroPython has no Error to raise
+            # MicroPython has no Error to raise, and its message text is its
+            # own. Lower-cased here from CPython's because that is what the one
+            # message actually observed from the real tier looks like:
+            # CI printed `incorrect padding` against CPython's `Incorrect
+            # padding`. A model, and only as good as that observation — but a
+            # model that keeps the difference VISIBLE, which importing CPython's
+            # binascii did not.
+            raise ValueError(str(e)[:1].lower() + str(e)[1:])
 
     binascii = type(sys)("binascii")
     binascii.a2b_base64 = _mp_a2b
@@ -350,6 +357,17 @@ for c in [b"aGk", b"a", b"aGkxaGk", b"aGk=aGk=", b"====", b"aa=="]:
         print(c, "RAISE", type(e).__name__)'''),
     # The subclassing half: whatever it is called, `except ValueError` must
     # still catch it, or the fix would break every program that already worked.
+    # The QUALIFIED name, which is what a program printing an exception gets from
+    # repr(), traceback, or `%s.%s % (type(e).__module__, type(e).__name__)`.
+    # Defining `Error` in base64.py made it `base64.Error`; CPython's lives in
+    # binascii. A corpus entry prints exactly this.
+    ("base64", "base64-error-qualified-name", r'''import base64
+for c in [b"aGk", b"a"]:
+    try:
+        base64.b64decode(c)
+    except Exception as e:
+        t = type(e)
+        print(c, "%s.%s" % (t.__module__, t.__name__))'''),
     ("base64", "base64-error-is-a-valueerror", r'''import base64
 try:
     base64.b64decode(b"aGk")

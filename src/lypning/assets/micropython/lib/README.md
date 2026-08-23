@@ -155,11 +155,26 @@ bite silently — a program that finishes, prints something plausible, and exits
     not specify, but the class `base64` raises is documented. `base64.py` now
     defines `Error(ValueError)` when `binascii` has none to import, so
     `except ValueError` catches exactly what it caught before and the name
-    agrees. Pinned by `base64-bad-padding-exception-name` and
-    `base64-error-is-a-valueerror` in `tests/test_shims.py`, which can only fail
-    because that suite now models MicroPython's `binascii` — an absence, so it
-    had to be modelled deliberately or the shim run would keep importing
-    CPython's and getting `Error` for free.
+    agrees. Pinned by `base64-bad-padding-exception-name`,
+    `base64-error-qualified-name` and `base64-error-is-a-valueerror` in
+    `tests/test_shims.py`, which can only fail because that suite now models
+    MicroPython's `binascii` — an absence, so it had to be modelled deliberately
+    or the shim run would keep importing CPython's and getting `Error` for free.
+
+    The QUALIFIED name needed fixing too, and the first pass missed it: defining
+    the class here made it `base64.Error` where CPython says `binascii.Error`,
+    which is what `repr()`, a traceback and
+    `'%s.%s' % (type(e).__module__, type(e).__name__)` all print. A second corpus
+    entry (`py-9b16a7261b96`) was already printing the half that was still
+    wrong, so the fix went out at half strength and CI said so.
+    `Error.__module__` is set explicitly now.
+
+    What is left is the message text — CPython's `Incorrect padding` against
+    MicroPython's `incorrect padding` — and that IS #19's kind of difference, so
+    `py-9b16a7261b96` is tagged `implementation-defined` rather than chased. The
+    tag stops stdout being compared for that entry, which is exactly why the
+    type and the qualified name are pinned in `tests/test_shims.py` instead:
+    they are fixed, and the tag must not be what covers for them.
 18. `json.dumps` is pure Python and therefore slower than the C encoder it
     replaces. It has to be: MicroPython's `dumps` has no `indent`, no
     `sort_keys`, and no `ensure_ascii`, and it emits raw UTF-8 where CPython

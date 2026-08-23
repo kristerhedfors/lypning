@@ -21,6 +21,14 @@ except ImportError:
     class Error(ValueError):
         pass
 
+    # `binascii`, not `base64`. A program that prints a caught exception gets the
+    # QUALIFIED name — from `repr()`, from a traceback, or from
+    # `'%s.%s' % (type(e).__module__, type(e).__name__)` — and defining the class
+    # here made that `base64.Error` where CPython says `binascii.Error`. Fixing
+    # the bare name and leaving this was half a fix, and a second corpus entry
+    # was already printing the half that was still wrong.
+    Error.__module__ = "binascii"
+
 
 def b64encode(s, altchars=None):
     r = _b2a(s)
