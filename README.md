@@ -489,6 +489,7 @@ Interpreter mode is decided before argument parsing, so anything that calls
 | `lypning fuzz [--iterations N] [--seed S]` | generate programs from the subset and diff them against CPython |
 | `lypning bench [--startup] [--corpus]` | time the four arms, interleaved, min of repeats |
 | `lypning corpus-time [--engine E] [--baseline F] [--record F]` | time the corpus on ONE binary, and diff two runs of it |
+| `lypning perf [--only CASE] [--baseline F] [--record F]` | one construct at a time against CPython — where the interpreter's time goes |
 | `lypning lib [--cflags\|--libs\|--path\|--static\|--include] [--json]` | where the embeddable C ABI is, and the line to compile against it |
 | `lypning gate [BIN] [--compare]` | static? how many bytes? how many file opens? |
 | `lypning harvest [--export]` | captured invocations → sightings → corpus |
@@ -628,6 +629,34 @@ from last week covers a different set of programs. Entries that exit 90 are
 timed rather than skipped (a refusal costs the spawn the agent waited for) and
 counted apart, because a change that moves an entry in or out of the subset
 changes what is being timed.
+
+**`perf` finds the gradient; neither of the other two can.** A corpus run says
+the programs cost N milliseconds. It does not say *which construct* to open
+next, because a corpus entry touches twenty of them and its cost is mostly the
+spawn. `lypning perf` runs one small loop per construct on lypning and on
+CPython, subtracts each arm's own startup, and sorts by the ratio:
+
+```bash
+lypning perf                        # the whole suite, worst ratio first
+lypning perf --only str-concat      # one construct, while you work on it
+lypning perf --record before.json   # …and --baseline before.json after
+```
+
+The table sorts by ratio; the **queue printed under it does not**. A ratio ranks
+by how badly lypning loses, which is not the same list as what that costs
+anybody: this suite reported `s += x` in a loop at 43x CPython — its worst row —
+against a corpus in which that construct appears in *one program out of the 842
+loaded*. So every case carries a regex, the corpus is scanned on each run, and
+the queue is ordered by **how far behind, times how much of the corpus types
+it**. That second ordering is the work queue for raw speed.
+
+It is **deliberately not an acceptance gate** — a microbenchmark once said a change was worth 48 ms per
+program where the corpus said 0.14 (`docs/MICROPYTHON.md` §8a). Find with
+`perf`, accept with `corpus-time --baseline`. Two rules keep the table honest:
+every case prints a checksum the arms must agree on, so a construct that is
+fast because it computes something else fails rather than wins; and a case
+lypning *refuses* fails too, because the suite is a claim about what the subset
+already covers. Either exits 1.
 
 Two warnings, both of which this project has already paid for.
 
@@ -782,5 +811,8 @@ Makefile               thin wrappers: build test check conformance fuzz bench ga
 | `docs/COOKBOOK.md` | unsupported Python, rewritten — what to type when a tier refuses |
 | `docs/EMBEDDING.md` | linking the runtime into a harness: the C ABI, the five hosts over it, and what a refusal means when there is no exit code |
 | `docs/BENCH-LEDGER.md` | append-only measurement history, including the losses |
+| `docs/HILLCLIMB.md` | append-only ledger of improvement steps — the four numbers each moved, and the ones that moved nothing |
 
-Working on this repository? Read `CLAUDE.md` first.
+Working on this repository? Read `CLAUDE.md` first, and
+`.claude/skills/hillclimb/SKILL.md` for the loop that improves it — what to
+measure, which instrument can see which curve, and the traps already paid for.

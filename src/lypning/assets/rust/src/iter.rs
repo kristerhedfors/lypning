@@ -50,11 +50,23 @@ pub enum Iter {
 }
 
 /// A generator expression, suspended between elements.
+///
+/// The AST is behind `Rc` because `gen_step` has to detach it from the borrow
+/// on `st` before calling back into `eval` — and it used to do that by
+/// **deep-cloning the clause and the element expression on every element
+/// yielded**, one allocation per AST node, per element. A refcount bump does
+/// the same job.
 pub struct GenState {
-    pub clauses: Vec<CompClause>,
-    pub elt: Expr,
+    pub clauses: Rc<Vec<CompClause>>,
+    pub elt: Rc<Expr>,
     pub env: Vec<Scope>,
-    pub scope: Scope,
+    /// `None` only in a [`GenState::placeholder`], which exists to fill the
+    /// `RefCell` while the real state is out and whose scope is never read —
+    /// it is marked `running` and `done`, and both are checked first. An
+    /// `Option` rather than a shared empty scope because a `thread_local` for
+    /// it measured 8% slower on recursion: adding one shifts the TLS block, and
+    /// the recursion guard already lives there.
+    pub scope: Option<Scope>,
     pub stack: Vec<Iter>,
     pub started: bool,
     pub done: bool,
@@ -64,12 +76,12 @@ pub struct GenState {
 }
 
 impl GenState {
-    pub fn new(clauses: Vec<CompClause>, elt: Expr, env: Vec<Scope>) -> Self {
+    pub fn new(clauses: Rc<Vec<CompClause>>, elt: Rc<Expr>, env: Vec<Scope>) -> Self {
         GenState {
             clauses,
             elt,
             env,
-            scope: crate::eval::new_scope(),
+            scope: Some(crate::eval::new_scope()),
             stack: Vec::new(),
             started: false,
             done: false,
@@ -78,10 +90,10 @@ impl GenState {
     }
     fn placeholder() -> Self {
         GenState {
-            clauses: Vec::new(),
-            elt: Expr::None,
+            clauses: Rc::new(Vec::new()),
+            elt: Rc::new(Expr::None),
             env: Vec::new(),
-            scope: crate::eval::new_scope(),
+            scope: None,
             stack: Vec::new(),
             started: true,
             done: true,
@@ -231,16 +243,25 @@ impl Interp {
                         None => fo.data.len(),
                     };
                     fo.pos = end;
-                    let chunk = fo.data[start..end].to_vec();
                     Some(if fo.binary {
-                        Value::Bytes(Rc::new(chunk))
+                        Value::Bytes(Rc::new(fo.data[start..end].to_vec()))
                     } else {
-                        Value::Str(decode_utf8(&chunk)?.into())
+                        // Straight from the file buffer's slice into the
+                        // `Rc<str>`. This used to build a `Vec<u8>` and then a
+                        // `String` on the way, so every line of every file read
+                        // in a `for` loop was copied three times.
+                        Value::Str(decode_text(
+                            &fo.data[start..end],
+                            "non-UTF-8 bytes in a text-mode line read",
+                        )?)
                     })
                 }
             }
             Iter::Stdin => match mio::stdin_line()? {
-                Some(b) => Some(Value::Str(decode_utf8(&b)?.into())),
+                Some(b) => Some(Value::Str(decode_text(
+                    &b,
+                    "non-UTF-8 bytes on stdin (CPython decodes it with surrogateescape)",
+                )?)),
                 None => None,
             },
             Iter::Gen(g) => {
@@ -256,14 +277,14 @@ impl Interp {
             }
             Iter::Map(f, its) => {
                 let f = f.clone();
-                let mut args = Vec::with_capacity(its.len());
+                let mut args = crate::args::Args::with_capacity(its.len());
                 for it in its.iter_mut() {
                     match self.iter_next(it)? {
                         Some(v) => args.push(v),
                         None => return Ok(None),
                     }
                 }
-                Some(self.call(&f, args, Vec::new())?)
+                Some(self.call(&f, &mut args, Vec::new())?)
             }
             Iter::Filter(pred, inner) => {
                 let pred = pred.clone();
@@ -274,7 +295,7 @@ impl Interp {
                     let keep = match &pred {
                         None => truthy(&v)?,
                         Some(f) => {
-                            let r = self.call(f, vec![v.clone()], Vec::new())?;
+                            let r = self.call(f, &mut crate::args::Args::one(v.clone()), Vec::new())?;
                             truthy(&r)?
                         }
                     };
@@ -319,13 +340,18 @@ impl Interp {
         // conflict; put it back on every exit path.
         let mut st = std::mem::replace(&mut *g.borrow_mut(), GenState::placeholder());
         st.running = true;
-        let saved = std::mem::replace(&mut self.chain, {
-            let mut c = st.env.clone();
-            c.push(st.scope.clone());
-            c
-        });
+        // The chain vector comes from the same pool `call_func_inner` uses:
+        // this runs once per element yielded, so allocating one here was a
+        // malloc and a free per element of every generator expression.
+        let mut c = self.take_chain();
+        c.extend_from_slice(&st.env);
+        if let Some(sc) = &st.scope {
+            c.push(sc.clone());
+        }
+        let saved = std::mem::replace(&mut self.chain, c);
         let r = self.gen_step(&mut st);
-        self.chain = saved;
+        let spent = std::mem::replace(&mut self.chain, saved);
+        self.give_chain(spent);
         st.running = false;
         if r.is_err() || matches!(r, Ok(None)) {
             st.done = true;
@@ -347,7 +373,11 @@ impl Interp {
             let next = self.iter_next(&mut cur)?;
             let Some(v) = next else { continue };
             st.stack.push(cur);
-            let clause = st.clauses[level].clone();
+            // One refcount bump, not a deep copy of the clause's expression
+            // tree. It has to leave the borrow on `st` because the loop below
+            // pushes onto `st.stack`.
+            let clauses = st.clauses.clone();
+            let clause = &clauses[level];
             self.assign(&clause.target, v)?;
             let mut ok = true;
             for cond in &clause.ifs {
@@ -360,15 +390,14 @@ impl Interp {
             if !ok {
                 continue;
             }
-            if level + 1 < st.clauses.len() {
-                let nxt = st.clauses[level + 1].iter.clone();
-                let v = self.eval(&nxt)?;
+            if level + 1 < clauses.len() {
+                let v = self.eval(&clauses[level + 1].iter)?;
                 let it = self.make_iter(v)?;
                 st.stack.push(it);
                 continue;
             }
             let elt = st.elt.clone();
-            return Ok(Some(self.eval(&elt)?));
+            return Ok(Some(self.eval(&*elt)?));
         }
         Ok(None)
     }
@@ -400,16 +429,66 @@ impl Interp {
     }
 }
 
+/// Text-mode decoding, which is where lypning and CPython genuinely disagree —
+/// so it **refuses** rather than raising.
+///
+/// `bytes.decode()` and a whole-file `f.read()` both raise `UnicodeDecodeError`
+/// on both interpreters, with the same message and the same position, and those
+/// keep using [`decode_utf8_rc`]. Two text paths do not agree, and neither
+/// disagreement is fixable cheaply:
+///
+///   * **stdin.** CPython decodes it with `surrogateescape` (PEP 383), so
+///     `for l in sys.stdin` over `b"ok\n\xff\n"` yields `'\udcff\n'` and exits
+///     0 where lypning raised.
+///   * **A text file, a line at a time.** CPython decodes a buffered block, so
+///     it raises *before* yielding any line, at a position counted in the file.
+///     lypning reads line by line, so it yielded the first line and then raised
+///     at a position counted within the second — different stdout, same exit
+///     code, which is the shape invariant 1 exists to stop.
+///
+/// A refusal is the cheap correct answer: the barrier discards the staged
+/// output, the dispatcher hands the program to CPython, and CPython does the
+/// surrogateescape. If output has already been committed the refusal is turned
+/// into a plain exit-1 error rather than a routable 90, which `main.rs` and
+/// `embed.rs` already do for every refusal.
+pub fn decode_text(b: &[u8], what: &str) -> R<std::rc::Rc<str>> {
+    match std::str::from_utf8(b) {
+        Ok(s) => Ok(std::rc::Rc::from(s)),
+        Err(_) => Err(unsupported("encoding", what)),
+    }
+}
+
+/// The same check, straight into the `Rc<str>` a `Value::Str` is made of.
+///
+/// `decode_utf8` returns a `String`, and every caller that wanted a VALUE then
+/// paid `Rc<str>::from(String)` — a second allocation and a second copy of
+/// bytes that had already been validated and copied once. On the line-reading
+/// path that was **three** copies of every line: the slice out of the buffer,
+/// the `String`, and the `Rc<str>`. This makes it two, and the validation is
+/// the identical `std::str::from_utf8` with the identical error.
+pub fn decode_utf8_rc(b: &[u8]) -> R<std::rc::Rc<str>> {
+    match std::str::from_utf8(b) {
+        Ok(s) => Ok(std::rc::Rc::from(s)),
+        Err(e) => Err(utf8_error(b, &e)),
+    }
+}
+
 pub fn decode_utf8(b: &[u8]) -> R<String> {
     match std::str::from_utf8(b) {
         Ok(s) => Ok(s.to_string()),
-        Err(e) => Err(LypningError::exc(
-            "UnicodeDecodeError",
-            format!(
-                "'utf-8' codec can't decode byte 0x{:02x} in position {}: invalid start byte",
-                b.get(e.valid_up_to()).copied().unwrap_or(0),
-                e.valid_up_to()
-            ),
-        )),
+        Err(e) => Err(utf8_error(b, &e)),
     }
+}
+
+/// The one place the decode error is worded, so the two decoders above cannot
+/// report the same bytes differently.
+fn utf8_error(b: &[u8], e: &std::str::Utf8Error) -> LypningError {
+    LypningError::exc(
+        "UnicodeDecodeError",
+        format!(
+            "'utf-8' codec can't decode byte 0x{:02x} in position {}: invalid start byte",
+            b.get(e.valid_up_to()).copied().unwrap_or(0),
+            e.valid_up_to()
+        ),
+    )
 }

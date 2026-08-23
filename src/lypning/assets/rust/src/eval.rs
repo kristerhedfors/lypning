@@ -6,19 +6,25 @@
 //! silently finding a global of the same name — the exact shape of "plausible
 //! wrong answer" this runtime exists to avoid.
 
+use crate::args::Args;
 use crate::ast::*;
 use crate::err::*;
 use crate::fmt;
 use crate::modules;
 use crate::value::*;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use crate::hash::{Map, Set as FastSet};
 use std::rc::Rc;
 
-pub type Scope = Rc<RefCell<HashMap<Rc<str>, Value>>>;
+pub type Scope = Rc<RefCell<Map<Rc<str>, Value>>>;
 
+/// `#[inline]` because it is one allocation on the function-call path and
+/// `opt-level = "s"` will not inline it unprompted. It had exactly one caller
+/// outside that path until iteration 15 removed it, and losing that caller was
+/// enough to change what the optimiser did here — see `docs/HILLCLIMB.md`.
+#[inline]
 pub fn new_scope() -> Scope {
-    Rc::new(RefCell::new(HashMap::new()))
+    Rc::new(RefCell::new(crate::hash::map()))
 }
 
 pub enum Flow {
@@ -50,10 +56,10 @@ pub struct Interp {
     /// Innermost-last scope chain for the function currently executing.
     pub chain: Vec<Scope>,
     /// Names declared `global` in the function currently executing.
-    global_decls: Vec<HashSet<Rc<str>>>,
+    global_decls: Vec<FastSet<Rc<str>>>,
     /// Names assigned somewhere in the current function body.
-    assigned: Vec<Rc<HashSet<Rc<str>>>>,
-    pub modules: HashMap<Rc<str>, Value>,
+    assigned: Vec<Rc<FastSet<Rc<str>>>>,
+    pub modules: Map<Rc<str>, Value>,
     depth: usize,
     /// Statements executed and loop iterations taken, against the host's
     /// budget. Two plain fields rather than a thread_local read per statement:
@@ -63,7 +69,15 @@ pub struct Interp {
     step_limit: u64,
     /// How deep `eval` currently is, against [`MAX_EXPR_DEPTH`].
     expr_depth: u32,
+    /// Spent scope-chain vectors, kept to be filled again. See
+    /// `call_func_inner`; capped at [`CHAIN_POOL_MAX`] so a deep recursion
+    /// cannot leave the pool holding its whole depth for the rest of the run.
+    chain_pool: Vec<Vec<Scope>>,
 }
+
+/// How many scope-chain vectors to keep. Above the depth of any recursion this
+/// runtime allows to finish, and small enough to be nothing.
+const CHAIN_POOL_MAX: usize = 64;
 
 impl Interp {
     pub fn new() -> Self {
@@ -72,10 +86,11 @@ impl Interp {
             chain: Vec::new(),
             global_decls: Vec::new(),
             assigned: Vec::new(),
-            modules: HashMap::new(),
+            modules: crate::hash::map(),
             depth: 0,
             steps: 0,
             expr_depth: 0,
+            chain_pool: Vec::new(),
             // Read once, here, rather than per statement. Zero — the CLI's
             // value, since a process can simply be killed — compiles the check
             // down to a comparison that is never true.
@@ -826,7 +841,7 @@ impl Interp {
                     defaults,
                     lambda: Some(Rc::new((**body).clone())),
                     env: self.chain.clone(),
-                    assigned: Rc::new(HashSet::new()),
+                    assigned: Rc::new(crate::hash::set()),
                 }))
             }
             Expr::Comp {
@@ -835,11 +850,7 @@ impl Interp {
                 val,
                 clauses,
             } => match kind {
-                CompKind::Gen => Value::Gen(Rc::new(RefCell::new(crate::iter::GenState::new(
-                    clauses.clone(),
-                    (**elt).clone(),
-                    self.chain.clone(),
-                )))),
+                CompKind::Gen => self.make_gen(clauses, elt),
                 _ => self.eval_comp(*kind, elt, val.as_deref(), clauses)?,
             },
             Expr::Call {
@@ -849,8 +860,33 @@ impl Interp {
                 kwargs,
                 dstar,
             } => {
-                let f = self.eval(func)?;
-                let mut a = Vec::with_capacity(args.len());
+                // A method call is the commonest call an agent types — a
+                // `.foo()` is in most corpus programs — and routing one through
+                // `get_attr` builds a `Value::Bound`, which heap-allocates an
+                // `Rc<Value>` for the receiver purely to hand it to
+                // `call_method` a few lines later and drop it again. When the
+                // base really has the method, call it directly and never build
+                // the bound object.
+                //
+                // Everything else still goes through `get_attr`, including a
+                // module attribute and an UNBOUND method (`str.upper`), because
+                // both mean something different and `get_attr` is where that
+                // difference is decided.
+                let mut method: Option<(Value, &'static str)> = None;
+                let mut f = Value::None;
+                match &**func {
+                    Expr::Attr(b, n) => {
+                        let bv = self.eval(b)?;
+                        match crate::methods::method_name(&bv, n) {
+                            Some(m) if !matches!(bv, Value::Module(_)) => {
+                                method = Some((bv, m));
+                            }
+                            _ => f = self.get_attr(&bv, n)?,
+                        }
+                    }
+                    _ => f = self.eval(func)?,
+                }
+                let mut a = Args::with_capacity(args.len());
                 for (i, x) in args.iter().enumerate() {
                     let v = self.eval(x)?;
                     if star.contains(&i) {
@@ -877,7 +913,10 @@ impl Interp {
                         kw.push((ks, v));
                     }
                 }
-                self.call(&f, a, kw)?
+                match method {
+                    Some((recv, m)) => crate::methods::call_method(self, &recv, m, &mut a, kw)?,
+                    None => self.call(&f, &mut a, kw)?,
+                }
             }
         })
     }
@@ -963,7 +1002,7 @@ impl Interp {
 
     // ---- calls ------------------------------------------------------------
 
-    pub fn call(&mut self, f: &Value, args: Vec<Value>, kw: Vec<(Rc<str>, Value)>) -> R<Value> {
+    pub fn call(&mut self, f: &Value, args: &mut Args, kw: Vec<(Rc<str>, Value)>) -> R<Value> {
         match f {
             Value::Builtin(name) => crate::builtins::call_builtin(self, name, args, kw),
             Value::Bound(recv, name) => crate::methods::call_method(self, recv, name, args, kw),
@@ -975,7 +1014,7 @@ impl Interp {
         }
     }
 
-    fn call_func(&mut self, f: Rc<FuncObj>, args: Vec<Value>, kw: Vec<(Rc<str>, Value)>) -> R<Value> {
+    fn call_func(&mut self, f: Rc<FuncObj>, args: &mut Args, kw: Vec<(Rc<str>, Value)>) -> R<Value> {
         self.depth += 1;
         if self.depth > MAX_DEPTH {
             self.depth -= 1;
@@ -992,7 +1031,7 @@ impl Interp {
     fn call_func_inner(
         &mut self,
         f: Rc<FuncObj>,
-        args: Vec<Value>,
+        args: &mut Args,
         kw: Vec<(Rc<str>, Value)>,
     ) -> R<Value> {
         let p = &f.params;
@@ -1002,33 +1041,34 @@ impl Interp {
             - p.dstar.map_or(0, |_| 1);
         {
             let mut s = scope.borrow_mut();
-            let mut used = vec![false; p.names.len()];
+            let mut used = Used::new(p.names.len());
             let mut extra = Vec::new();
-            for (i, a) in args.into_iter().enumerate() {
+            // Indexed with `Args::take` rather than `into_iter`: consuming the
+            // list as an iterator would turn it into a `Vec` first, which is
+            // exactly the allocation `Args` exists to remove and would put it
+            // back on the hottest call in the interpreter.
+            let nargs = args.len();
+            for i in 0..nargs {
+                let a = args.take(i);
                 if i < npos {
                     s.insert(p.names[i].clone(), a);
-                    used[i] = true;
+                    used.set(i);
                 } else if p.star.is_some() {
                     extra.push(a);
                 } else {
-                    return Err(type_err(format!(
-                        "{}() takes {} positional arguments but {} were given",
-                        f.name,
-                        npos,
-                        i + 1
-                    )));
+                    return Err(arity_error(&f.name, npos, &f.defaults, nargs));
                 }
             }
             if let Some(si) = p.star {
                 s.insert(p.names[si].clone(), Value::Tuple(Rc::new(extra)));
-                used[si] = true;
+                used.set(si);
             }
             let mut leftover = Dict::new();
             for (k, v) in kw {
                 match p.names[..npos].iter().position(|n| *n == k) {
                     Some(i) => {
                         s.insert(p.names[i].clone(), v);
-                        used[i] = true;
+                        used.set(i);
                     }
                     None => {
                         if p.dstar.is_some() {
@@ -1047,10 +1087,10 @@ impl Interp {
                     p.names[di].clone(),
                     Value::Dict(Rc::new(RefCell::new(leftover))),
                 );
-                used[di] = true;
+                used.set(di);
             }
             for i in 0..npos {
-                if !used[i] {
+                if !used.get(i) {
                     match &f.defaults[i] {
                         Some(d) => {
                             s.insert(p.names[i].clone(), d.clone());
@@ -1065,12 +1105,16 @@ impl Interp {
                 }
             }
         }
-        let saved_chain = std::mem::replace(&mut self.chain, {
-            let mut c = f.env.clone();
-            c.push(scope);
-            c
-        });
-        self.global_decls.push(HashSet::new());
+        // The scope chain is rebuilt per call — the closure's environment plus
+        // this frame — and the vector that holds it used to be allocated and
+        // freed per call. Recycled instead: the spent one goes back to the pool
+        // at the bottom of this function, so a recursion pays for its depth once
+        // rather than once per frame per call.
+        let mut c = self.chain_pool.pop().unwrap_or_default();
+        c.extend_from_slice(&f.env);
+        c.push(scope);
+        let saved_chain = std::mem::replace(&mut self.chain, c);
+        self.global_decls.push(crate::hash::set());
         self.assigned.push(f.assigned.clone());
         let r = match &f.lambda {
             Some(body) => self.eval(body),
@@ -1082,9 +1126,133 @@ impl Interp {
         };
         self.assigned.pop();
         self.global_decls.pop();
-        self.chain = saved_chain;
+        // Cleared here rather than on reuse, so the frame's scopes are dropped
+        // when the frame ends and not whenever the vector is next taken out.
+        let mut spent = std::mem::replace(&mut self.chain, saved_chain);
+        spent.clear();
+        if self.chain_pool.len() < CHAIN_POOL_MAX {
+            self.chain_pool.push(spent);
+        }
         r
     }
+
+    /// Build a suspended generator expression.
+    ///
+    /// `#[inline(never)]`, and that is the whole reason it is a function.
+    /// `eval_inner` is one enormous `match` and it is what recursion recurses
+    /// through, so every local this arm needs widens the stack frame of EVERY
+    /// expression evaluation, including the ones that never look at it.
+    /// Inlining the four lines below cost `fib(23)` 8% — measured, after the
+    /// same 8% survived three other explanations (a `thread_local`, an
+    /// extracted helper, and code layout, which is worth only ~1% here).
+    #[inline(never)]
+    fn make_gen(&mut self, clauses: &[crate::ast::CompClause], elt: &Expr) -> Value {
+        // Deep-cloned ONCE, when the generator is created, where it used to be
+        // deep-cloned again for every element the generator yielded. Making
+        // `Expr::Comp` hold the `Rc` itself would remove this one too and is a
+        // separate change.
+        Value::Gen(Rc::new(RefCell::new(crate::iter::GenState::new(
+            Rc::new(clauses.to_vec()),
+            Rc::new(elt.clone()),
+            self.chain.clone(),
+        ))))
+    }
+
+    /// An empty scope-chain vector, from the pool if one is waiting.
+    ///
+    /// `#[inline]` because `opt-level = "s"` will not inline it on its own, and
+    /// it sits on the function-call path where a call instruction is a
+    /// measurable share of the work.
+    #[inline]
+    pub fn take_chain(&mut self) -> Vec<Scope> {
+        self.chain_pool.pop().unwrap_or_default()
+    }
+
+    /// Hand a spent one back. Cleared here rather than on reuse, so a frame's
+    /// scopes drop when the frame ends and not whenever the vector is next
+    /// taken out.
+    #[inline]
+    pub fn give_chain(&mut self, mut spent: Vec<Scope>) {
+        spent.clear();
+        if self.chain_pool.len() < CHAIN_POOL_MAX {
+            self.chain_pool.push(spent);
+        }
+    }
+}
+
+/// One "was this parameter bound" flag per parameter, without the allocation a
+/// `Vec<bool>` costs on every single call.
+///
+/// A call is where this interpreter allocates most (a quarter of its whole
+/// instruction stream is musl's malloc and free — `docs/HILLCLIMB.md`
+/// iteration 6), and a vector of flags for a function with two parameters is
+/// one of them. Sixty-four covers every function anyone types; CPython's own
+/// hard limit on positional parameters is 255, and past 64 this falls back to
+/// the vector so the behaviour is IDENTICAL rather than merely unlikely to
+/// differ.
+struct Used {
+    bits: u64,
+    big: Vec<bool>,
+}
+
+impl Used {
+    fn new(n: usize) -> Self {
+        Used {
+            bits: 0,
+            big: if n > 64 { vec![false; n] } else { Vec::new() },
+        }
+    }
+
+    #[inline]
+    fn set(&mut self, i: usize) {
+        if self.big.is_empty() {
+            self.bits |= 1u64 << i;
+        } else {
+            self.big[i] = true;
+        }
+    }
+
+    #[inline]
+    fn get(&self, i: usize) -> bool {
+        if self.big.is_empty() {
+            self.bits & (1u64 << i) != 0
+        } else {
+            self.big[i]
+        }
+    }
+}
+
+/// CPython's wording for "too many positional arguments", to the letter.
+///
+/// Three things vary and all three were wrong here. The count reported is the
+/// number GIVEN, not the index the binder stopped at — `f1(1, 2, 3)` says three,
+/// not two. A function with defaults says `from R to N`, never a bare `N`. And
+/// `argument` and `was` are singular only in the cases CPython makes them
+/// singular in, which are not the same case: `takes 1 positional argument`, but
+/// `takes from 0 to 1 positional arguments`.
+///
+/// This is a message, so it reaches stdout only through `except TypeError as e:
+/// print(e)`. That is why `conformance` never caught it, and why it is a
+/// divergence rather than a refusal. Found by reading the call path for
+/// allocations — which is where the last such find came from too.
+fn arity_error(name: &str, npos: usize, defaults: &[Option<Value>], given: usize) -> LypningError {
+    let required = defaults
+        .iter()
+        .take(npos)
+        .take_while(|d| d.is_none())
+        .count();
+    let takes = if required == npos {
+        format!(
+            "{npos} positional argument{}",
+            if npos == 1 { "" } else { "s" }
+        )
+    } else {
+        format!("from {required} to {npos} positional arguments")
+    };
+    type_err(format!(
+        "{name}() takes {takes} but {given} {} given",
+        if given == 1 { "was" } else { "were" }
+    ))
 }
 
 pub struct IterState {
@@ -1094,8 +1262,8 @@ pub struct IterState {
 /// Every name assigned anywhere in a function body, including its parameters.
 /// Used to make an early read raise `UnboundLocalError` rather than silently
 /// finding a global of the same name.
-fn assigned_names(body: &[Stmt], params: &Params) -> HashSet<Rc<str>> {
-    let mut out = HashSet::new();
+fn assigned_names(body: &[Stmt], params: &Params) -> FastSet<Rc<str>> {
+    let mut out = crate::hash::set();
     for n in &params.names {
         out.insert(n.clone());
     }
@@ -1103,8 +1271,8 @@ fn assigned_names(body: &[Stmt], params: &Params) -> HashSet<Rc<str>> {
     out
 }
 
-fn collect_assigned(body: &[Stmt], out: &mut HashSet<Rc<str>>) {
-    fn tgt(t: &Target, out: &mut HashSet<Rc<str>>) {
+fn collect_assigned(body: &[Stmt], out: &mut FastSet<Rc<str>>) {
+    fn tgt(t: &Target, out: &mut FastSet<Rc<str>>) {
         match t {
             Target::Name(n) => {
                 out.insert(n.clone());
@@ -1203,9 +1371,19 @@ pub fn exc_matches(clause: &str, kind: &str) -> bool {
         "Exception" => kind != "SystemExit" && kind != "KeyboardInterrupt",
         "ArithmeticError" => matches!(kind, "ZeroDivisionError" | "OverflowError" | "FloatingPointError"),
         "LookupError" => matches!(kind, "IndexError" | "KeyError"),
+        // `IOError` and `EnvironmentError` are not subclasses of `OSError` in
+        // CPython — they ARE it, two names bound to the same class. So they have
+        // to appear on BOTH sides: as a clause that catches an OSError, which
+        // they already did, and as a KIND that an `except OSError` catches,
+        // which they did not. `raise IOError(...)` therefore escaped an
+        // `except OSError` and exited 1 with a traceback where CPython printed
+        // the handler's output — a wrong answer at a wrong exit code, which is
+        // the one failure invariant 1 is about. It was asymmetric and so it read
+        // as working from the other direction.
         "OSError" | "IOError" | "EnvironmentError" => matches!(
             kind,
-            "OSError" | "FileNotFoundError" | "PermissionError" | "FileExistsError" | "IsADirectoryError" | "NotADirectoryError"
+            "OSError" | "IOError" | "EnvironmentError" | "FileNotFoundError" | "PermissionError"
+                | "FileExistsError" | "IsADirectoryError" | "NotADirectoryError"
         ),
         "ValueError" => kind == "UnicodeDecodeError" || kind == "JSONDecodeError",
         "NameError" => kind == "UnboundLocalError",

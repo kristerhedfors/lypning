@@ -23,7 +23,7 @@
 use crate::err::{unsupported, LypningError, R};
 use crate::host;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use crate::hash::Map;
 use std::io::{Read, Write};
 
 /// Past this many buffered bytes the run commits early and gives up its
@@ -50,7 +50,7 @@ pub struct FileObj {
 #[derive(Default)]
 pub struct Pending {
     /// path -> (bytes, append?) staged until commit
-    pub files: HashMap<String, (Vec<u8>, bool)>,
+    pub files: Map<String, (Vec<u8>, bool)>,
     /// Ordered so the flush reproduces the program's own write order.
     pub order: Vec<String>,
 }
@@ -60,8 +60,8 @@ thread_local! {
     static ERRBUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     static PENDING: RefCell<Pending> = RefCell::new(Pending::default());
     static COMMITTED: RefCell<bool> = const { RefCell::new(false) };
-    static DELETED: RefCell<std::collections::HashSet<String>> =
-        RefCell::new(std::collections::HashSet::new());
+    static DELETED: RefCell<crate::hash::Set<String>> =
+        RefCell::new(crate::hash::Set::with_hasher(crate::hash::BuildFnv));
 }
 
 /// Record that something irreversible happened outside the staging area.
@@ -385,6 +385,32 @@ thread_local! {
 /// undone (the bytes are consumed), so `stdin_consumed()` reports it and the
 /// dispatcher replays the captured bytes rather than re-reading the pipe.
 pub fn stdin_all() -> R<Vec<u8>> {
+    stdin_fill()?;
+    STDIN.with(|s| Ok(s.borrow().as_ref().unwrap().clone()))
+}
+
+/// Make sure stdin has been read, and return nothing.
+///
+/// The half of [`stdin_all`] that is not a copy. It exists because
+/// [`stdin_line`] used to call `stdin_all` — which ends in `.clone()` of the
+/// WHOLE captured input — once per line, making `for line in sys.stdin`
+/// quadratic in the size of its input. Measured on this container before the
+/// split, ~22-byte lines, min of 3:
+///
+/// ```text
+///   1,000 lines     2.96 ms        8,000 lines    583.68 ms
+///   2,000 lines    49.93 ms       16,000 lines  2,299.99 ms
+///   4,000 lines   182.75 ms
+/// ```
+///
+/// Roughly four times the cost per doubling, against CPython's 3.39 ms at
+/// sixteen thousand. `modules.rs` calls `stdin -> transform -> stdout` the
+/// corpus's largest single cluster, so this was the hottest real path there is.
+///
+/// `stdin_all` keeps its copy: `sys.stdin.read()` and the dispatcher's replay
+/// (`stdin_consumed`, which decides whether a refusal after reading stdin can
+/// re-exec) both need to own the bytes, and both pay for it once.
+fn stdin_fill() -> R<()> {
     STDIN.with(|s| {
         let mut s = s.borrow_mut();
         if s.is_none() {
@@ -394,7 +420,7 @@ pub fn stdin_all() -> R<Vec<u8>> {
                 .map_err(|e| os_error("<stdin>", &e))?;
             *s = Some(buf);
         }
-        Ok(s.as_ref().unwrap().clone())
+        Ok(())
     })
 }
 
@@ -403,24 +429,35 @@ pub fn stdin_consumed() -> Option<Vec<u8>> {
 }
 
 pub fn stdin_rest() -> R<Vec<u8>> {
-    let all = stdin_all()?;
-    let pos = STDIN_POS.with(|p| *p.borrow());
-    STDIN_POS.with(|p| *p.borrow_mut() = all.len());
-    Ok(all[pos.min(all.len())..].to_vec())
+    stdin_fill()?;
+    // Sliced inside the borrow. The cursor lives in a different thread_local,
+    // so reading and writing it here does not overlap this one.
+    STDIN.with(|s| {
+        let b = s.borrow();
+        let all = b.as_ref().unwrap();
+        let pos = STDIN_POS.with(|p| *p.borrow()).min(all.len());
+        STDIN_POS.with(|p| *p.borrow_mut() = all.len());
+        Ok(all[pos..].to_vec())
+    })
 }
 
 pub fn stdin_line() -> R<Option<Vec<u8>>> {
-    let all = stdin_all()?;
-    let pos = STDIN_POS.with(|p| *p.borrow());
-    if pos >= all.len() {
-        return Ok(None);
-    }
-    let end = match all[pos..].iter().position(|c| *c == b'\n') {
-        Some(i) => pos + i + 1,
-        None => all.len(),
-    };
-    STDIN_POS.with(|p| *p.borrow_mut() = end);
-    Ok(Some(all[pos..end].to_vec()))
+    stdin_fill()?;
+    STDIN.with(|s| {
+        let b = s.borrow();
+        let all = b.as_ref().unwrap();
+        let pos = STDIN_POS.with(|p| *p.borrow());
+        if pos >= all.len() {
+            return Ok(None);
+        }
+        let end = match all[pos..].iter().position(|c| *c == b'\n') {
+            Some(i) => pos + i + 1,
+            None => all.len(),
+        };
+        STDIN_POS.with(|p| *p.borrow_mut() = end);
+        // The only copy that is left, and it is one line long.
+        Ok(Some(all[pos..end].to_vec()))
+    })
 }
 
 // ---- the embedded seam -----------------------------------------------------

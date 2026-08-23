@@ -7,6 +7,7 @@
 //! lypning-mp already has one, so `import re` is a routing decision rather than a
 //! gap to fill here.
 
+use crate::args::Args;
 use crate::err::*;
 use crate::eval::Interp;
 use crate::fmt;
@@ -164,7 +165,7 @@ pub fn call_module_method(
     it: &mut Interp,
     m: &str,
     name: &str,
-    args: Vec<Value>,
+    args: &mut Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     if !crate::host::filesystem_allowed() && touches_disk(m, name) {
@@ -193,15 +194,15 @@ pub fn call_module_method(
             };
             return Err(LypningError::Exit(code));
         }
-        ("sys.stdin", "read") => Value::Str(crate::iter::decode_utf8(&mio::stdin_rest()?)?.into()),
+        ("sys.stdin", "read") => Value::Str(crate::iter::decode_text(&mio::stdin_rest()?, "non-UTF-8 bytes on stdin (CPython decodes it with surrogateescape)")?),
         ("sys.stdin", "readline") => match mio::stdin_line()? {
-            Some(b) => Value::Str(crate::iter::decode_utf8(&b)?.into()),
+            Some(b) => Value::Str(crate::iter::decode_text(&b, "non-UTF-8 bytes on stdin (CPython decodes it with surrogateescape)")?),
             None => Value::Str("".into()),
         },
         ("sys.stdin", "readlines") => {
             let mut out = Vec::new();
             while let Some(b) = mio::stdin_line()? {
-                out.push(Value::Str(crate::iter::decode_utf8(&b)?.into()));
+                out.push(Value::Str(crate::iter::decode_text(&b, "non-UTF-8 bytes on stdin (CPython decodes it with surrogateescape)")?));
             }
             list(out)
         }
@@ -319,7 +320,7 @@ pub fn call_module_method(
         }
         ("os.path", "join") => {
             let mut out = String::new();
-            for a in &args {
+            for a in args.iter() {
                 let part = fmt::to_str(a)?;
                 if part.starts_with('/') {
                     out = part;
@@ -426,7 +427,7 @@ pub fn call_module_method(
                 .first()
                 .cloned()
                 .ok_or_else(|| type_err("load() missing 1 required positional argument"))?;
-            let text = crate::methods::call_method(it, &f, "read", Vec::new(), Vec::new())?;
+            let text = crate::methods::call_method(it, &f, "read", &mut Args::new(), Vec::new())?;
             json::parse(&fmt::to_str(&text)?)?
         }
         // `args.first()`, not `args[0]`: `json.dumps()` with no argument is a
@@ -455,7 +456,7 @@ pub fn call_module_method(
                 it,
                 &f,
                 "write",
-                vec![Value::Str(text.into())],
+                &mut Args::one(Value::Str(text.into())),
                 Vec::new(),
             )?;
             Value::None

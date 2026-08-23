@@ -44,7 +44,7 @@ PROG = "lypning"
 #: that could plausibly be a program is the interpreter's.
 COMMANDS = (
     "run", "route", "build", "lib", "status", "doctor", "install", "uninstall",
-    "shim", "hook", "conformance", "fuzz", "bench", "corpus-time", "gate",
+    "shim", "hook", "conformance", "fuzz", "bench", "corpus-time", "perf", "gate",
     "harvest", "corpus",
 )
 
@@ -210,10 +210,41 @@ def _progress(label: str) -> Optional[Callable[..., None]]:
 # --- run / route -------------------------------------------------------------
 
 
+def _replayable_stdin() -> Optional[str]:
+    """A piped stdin, read ONCE so every tier in the chain can be handed it.
+
+    Without this each engine inherits the pipe and the first one to run consumes
+    it. That is fine while a refusal is predicted STATICALLY — the classifier
+    routes `import ctypes` straight to CPython and lypning never touches the
+    stream — and it is a silent wrong answer as soon as a refusal happens at
+    RUNTIME, after the program has already read stdin:
+
+        printf '2\n3\n' | lypning run -c 'import sys
+        for l in sys.stdin: print(int(l) * 10**30)'
+
+    lypning reads both lines, overflows, and exits 90; CPython is then handed a
+    stream with nothing left in it and prints nothing, at exit 0. The dispatcher
+    itself produced the empty answer — which is exactly the failure the whole
+    fall-through exists to prevent. The Rust `lypning run` already captures and
+    replays; this is the same rule on this side of the fence.
+
+    A terminal is left alone: reading it would block for input the program may
+    never want. Nothing else is: a pipe the program ignores costs one read of
+    bytes that were going to be discarded anyway.
+    """
+    try:
+        if sys.stdin is None or sys.stdin.isatty():
+            return None
+        return sys.stdin.read()
+    except (OSError, ValueError):
+        # No stdin at all, or it is closed. Inheriting is then the same thing.
+        return None
+
+
 def cmd_run(ns: argparse.Namespace) -> int:
     program, tail, stdin = _read_program(ns)
-    if ns.stdin and stdin is None:
-        stdin = sys.stdin.read()
+    if stdin is None:
+        stdin = sys.stdin.read() if ns.stdin else _replayable_stdin()
     d = engines.dispatch(program, argv_tail=tail, stdin=stdin, timeout=ns.timeout)
     if ns.verbose:
         chain = " -> ".join([a.engine for a in d.attempts] + [d.engine])
@@ -1199,6 +1230,62 @@ def cmd_corpus_time(ns: argparse.Namespace) -> int:
     return 0
 
 
+# --- perf --------------------------------------------------------------------
+
+
+def cmd_perf(ns: argparse.Namespace) -> int:
+    perf = _mod("perf")
+    # Both files are checked BEFORE the suite runs, for the reason corpus-time
+    # checks them first: a baseline that does not parse, or a --record that
+    # cannot be written, should cost a millisecond rather than the whole run.
+    baseline = None
+    if ns.baseline:
+        try:
+            baseline = perf.load_record(ns.baseline)
+        except ValueError as e:
+            raise Failure(str(e))
+    if ns.record:
+        try:
+            perf.check_record_target(ns.record)
+        except ValueError as e:
+            raise Failure(str(e))
+    names = set(c.name for c in perf.SUITE)
+    if ns.only:
+        unknown = [n for n in ns.only if n not in names]
+        if unknown:
+            raise Usage("no such case: %s (try `lypning perf --list`)" % ", ".join(unknown))
+    if ns.list:
+        _out("\n".join("%-18s %-9s %s" % (c.name, c.group, c.program.splitlines()[0][:48])
+                        for c in perf.SUITE))
+        return 0
+    report = perf.run(arms=list(ns.arm) if ns.arm else None, repeat=ns.repeat,
+                      only=ns.only or None, timeout=ns.timeout,
+                      progress=_progress("perf"))
+    d = perf.diff(baseline, report, arm=ns.diff_arm) if baseline is not None else None
+    if d is not None:
+        d.baseline_path = str(ns.baseline)
+    if ns.record:
+        try:
+            written = perf.write_record(report, ns.record)
+        except ValueError as e:
+            raise Failure(str(e))
+        if not ns.json:
+            _out("recorded in %s" % written)
+    if ns.json:
+        payload = perf.record(report)
+        if d is not None:
+            payload["diff"] = _plain(d)
+        _json(payload)
+    else:
+        _out(perf.render(report, top=ns.top))
+        if d is not None:
+            _out(perf.render_diff(d))
+    # A case the arms disagreed about, refused, or failed is a bug in the tree,
+    # not a slow row — invariant 1 on the suite's own terms. It exits 1 for the
+    # same reason a MISMATCH does.
+    return 0 if report.ok else 1
+
+
 # --- gate --------------------------------------------------------------------
 
 
@@ -1738,6 +1825,53 @@ examples:
                    help="per-program timeout (default 30)")
     s.add_argument("--json", action="store_true", help="machine-readable")
     s.set_defaults(func=cmd_corpus_time)
+
+    # perf
+    s = _sub(subs, "perf", "time one construct at a time against CPython", """
+Where the interpreter's time goes, construct by construct — and the one thing
+in this tree that is deliberately NOT an acceptance gate.
+
+`bench` and `corpus-time` time the programs agents actually type. Those run once
+and exit, so most of what they cost is the spawn, and they are what a speed
+change is accepted on. They cannot tell you WHICH construct to open next, because
+a corpus entry touches twenty. This can: one small loop per construct, run on
+lypning and on CPython, each arm's own startup subtracted, sorted worst ratio
+first. That ordering is the work queue.
+
+Read it as a diagnostic and accept on `corpus-time --baseline`. A microbenchmark
+once said a change was worth 48 ms per program where the corpus said 0.14
+(docs/MICROPYTHON.md 8a) — this table is the same kind of instrument and lies
+the same way.
+
+Every case prints a checksum and the arms must agree on it, so a construct that
+is fast because it computes something else fails here rather than winning. A case
+lypning REFUSES fails too: the suite is a claim about what the subset already
+covers, and drift out of it is news. Either exits 1.
+""", """
+examples:
+  lypning perf
+  lypning perf --only str-concat --repeat 9
+  lypning perf --record before.json
+  lypning perf --baseline before.json
+""")
+    s.add_argument("--arm", action="append", metavar="A",
+                   help="cpython, lypning, lypning-mp, mixture (repeatable; "
+                        "default cpython and lypning)")
+    s.add_argument("--repeat", type=int, default=5, metavar="N",
+                   help="samples per case, best of (default 5)")
+    s.add_argument("--only", action="append", metavar="CASE",
+                   help="just this case (repeatable)")
+    s.add_argument("--list", action="store_true", help="the suite; run nothing")
+    s.add_argument("--top", type=int, default=0, metavar="N",
+                   help="only the N worst rows (default 0, all)")
+    s.add_argument("--baseline", metavar="FILE", help="a --record file to diff this run against")
+    s.add_argument("--record", metavar="FILE", help="write this run for a later --baseline")
+    s.add_argument("--diff-arm", default=engines.LYPNING, metavar="A",
+                   help="which arm the --baseline diff is about (default lypning)")
+    s.add_argument("--timeout", type=float, default=60.0, metavar="S",
+                   help="per-case timeout (default 60)")
+    s.add_argument("--json", action="store_true", help="machine-readable")
+    s.set_defaults(func=cmd_perf)
 
     # gate
     s = _sub(subs, "gate", "measure a binary against the acceptance table", """

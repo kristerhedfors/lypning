@@ -83,8 +83,10 @@ def _cli(*args, **kw):
     env = {"PYTHONPATH": SRC, "PATH": "/usr/bin:/bin", "HOME": home,
            "LYPNING_HOME": home + "/state", "CLAUDE_PROJECT_DIR": home}
     env.update(kw.pop("env", {}))
+    stdin = kw.pop("stdin", "")
     return subprocess.run([sys.executable, "-m", "lypning"] + list(args),
-                          capture_output=True, text=True, env=env, cwd=home, timeout=120)
+                          input=stdin, capture_output=True, text=True, env=env,
+                          cwd=home, timeout=120)
 
 
 def test_a_bad_subcommand_exits_2_without_a_traceback(tmp_path):
@@ -223,3 +225,35 @@ def test_build_stock_dry_run_builds_nothing_and_says_what_it_would_run(capsys):
     # silently rebuild the two engines.
     assert [r["engine"] for r in obj["results"]] == ["micropython-stock"]
     assert obj["installed"] == []
+
+
+# --- the dispatcher has to be able to replay stdin ----------------------------
+
+
+def test_run_replays_stdin_after_a_runtime_refusal(tmp_path, lypning_bin):
+    """The failure this exists for is a SILENT one, and it was live.
+
+    A refusal the classifier predicts statically never touches stdin — `import
+    ctypes` routes straight to CPython. A refusal that happens at RUNTIME is a
+    different shape: lypning reads the whole stream, overflows, and exits 90,
+    and if every engine merely INHERITS the caller's pipe there is nothing left
+    for CPython to read. It printed nothing, at exit 0, and the dispatcher was
+    the thing that produced the empty answer.
+
+    Two integers whose product needs a bignum, so the refusal cannot happen
+    until after both lines have been read.
+    """
+    program = "import sys\nfor l in sys.stdin:\n    print(int(l) * 10 ** 30)\n"
+    p = _cli("run", "-c", program, home=str(tmp_path), stdin="2\n3\n",
+             env={"LYPNING_BIN": str(lypning_bin)})
+    assert p.returncode == 0, p.stderr
+    assert p.stdout.split() == ["2" + "0" * 30, "3" + "0" * 30], p.stdout
+
+
+def test_run_does_not_lose_stdin_when_the_first_tier_answers(tmp_path, lypning_bin):
+    # The other side of it: capturing stdin must not change a run that never
+    # falls through.
+    program = "import sys\nprint(sum(int(l) for l in sys.stdin))\n"
+    p = _cli("run", "-c", program, home=str(tmp_path), stdin="1\n2\n3\n",
+             env={"LYPNING_BIN": str(lypning_bin)})
+    assert (p.returncode, p.stdout.strip()) == (0, "6"), p.stderr

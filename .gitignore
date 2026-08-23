@@ -23,3 +23,6 @@ src/lypning/assets/examples/rust/target/
 src/lypning/assets/node/target/
 src/lypning/assets/examples/*/embed
 src/lypning/assets/examples/*/*.o
+
+# hillclimb baselines — throwaway, per-machine, never committed
+.hillclimb/

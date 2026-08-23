@@ -17,6 +17,7 @@
 
 use crate::err::{unsupported, value_err, R};
 use crate::value::{set_order_refused, type_name, Dict, Value};
+use std::rc::Rc;
 
 pub fn to_str(v: &Value) -> R<String> {
     Ok(match v {
@@ -24,6 +25,76 @@ pub fn to_str(v: &Value) -> R<String> {
         Value::Exc(_, m) => m.to_string(),
         _ => repr(v)?,
     })
+}
+
+/// `str(v)` as the `Rc<str>` a `Value::Str` is made of — no `String` in between.
+///
+/// [`to_str`] has to return a `String`, because `repr` composes nested values
+/// into one. Every caller that wanted a *value* out of it then paid
+/// `Rc<str>::from(String)`: a second allocation and a second copy of bytes that
+/// had just been written. On this build a callgrind run of `len(str(i))` in a
+/// loop put a quarter of all instructions inside musl's malloc and free, so the
+/// round trip is not a rounding error.
+///
+/// Two cases carry nearly all the traffic and neither needs it. A str is
+/// already an `Rc<str>`, so `str(s)` is a refcount bump and **zero**
+/// allocations where it used to be two. An int goes through [`int_rc`], which
+/// writes its digits into a stack buffer, so it allocates once instead of twice.
+/// Everything else falls back to `repr` and is exactly as it was.
+pub fn to_rc(v: &Value) -> R<Rc<str>> {
+    Ok(match v {
+        Value::Str(s) => s.clone(),
+        Value::Exc(_, m) => m.clone(),
+        Value::Int(i) => int_rc(*i),
+        _ => repr(v)?.into(),
+    })
+}
+
+/// `repr(v)` as an `Rc<str>`, with the same two shortcuts [`to_rc`] takes.
+///
+/// Separate from `to_rc` because `repr` and `str` differ on exactly the type
+/// that matters here: `str('a')` is `a` and `repr('a')` is `'a'`. Getting that
+/// wrong would be a silent wrong answer, so the two do not share an arm.
+pub fn repr_rc(v: &Value) -> R<Rc<str>> {
+    Ok(match v {
+        Value::Int(i) => int_rc(*i),
+        _ => repr(v)?.into(),
+    })
+}
+
+/// An `i64` rendered directly into an `Rc<str>`.
+///
+/// `i.to_string()` allocates a `String` that is immediately copied into an
+/// `Rc<str>` and dropped. The digits fit in twenty bytes — nineteen for
+/// `i64::MIN` plus its sign — so a stack buffer removes one malloc and one free
+/// from every integer that becomes a string, which on the corpus is most of
+/// them.
+pub fn int_rc(i: i64) -> Rc<str> {
+    let mut buf = [0u8; 20];
+    let mut n = buf.len();
+    let neg = i < 0;
+    // Counted down on the NEGATIVE side: `-i64::MIN` overflows, and this is the
+    // one place a wrapping panic would be reachable from a corpus program.
+    let mut v = if neg { i } else { -i };
+    loop {
+        n -= 1;
+        buf[n] = b'0' + (-(v % 10)) as u8;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    if neg {
+        n -= 1;
+        buf[n] = b'-';
+    }
+    match std::str::from_utf8(&buf[n..]) {
+        Ok(s) => Rc::from(s),
+        // Unreachable: every byte written above is ASCII. Falling back rather
+        // than unwrapping because a panic in a formatter is not a refusal and
+        // would leave the exit-90 contract behind.
+        Err(_) => Rc::from(i.to_string().as_str()),
+    }
 }
 
 pub fn repr(v: &Value) -> R<String> {

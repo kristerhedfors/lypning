@@ -232,7 +232,23 @@ impl<'a> Lexer<'a> {
                 return Ok(());
             }
         }
-        if self.peek() == b'!' {
+        // Bytes that cannot begin a token in ANY Python 3 program, inside or
+        // outside the subset: `!` on its own (`!=` is matched by the operator
+        // table above), `$`, `?` and a backtick — Python 2's repr quotes, gone
+        // since 2008. CPython answers each with a SyntaxError at exit 1 and
+        // empty stdout, so that is what lypning must answer too.
+        //
+        // A refusal here would be a lie in the other direction: `unsupported`
+        // means "outside my subset, try the next interpreter", and there is no
+        // interpreter for which `$p` is a program. The corpus has four entries
+        // that are shell paste accidents — `$p`, `$1`, and a Rust `r#"…"#`
+        // block — and every one of them was costing a spawn to be told by
+        // CPython what lypning already knew.
+        //
+        // Deliberately NOT extended to non-ASCII bytes: Python 3 identifiers
+        // may be Unicode, so `π = 1` is a valid program and refusing it is
+        // correct.
+        if matches!(self.peek(), b'!' | b'$' | b'?' | b'`') {
             return Err(LypningError::syntax(self.line, "invalid syntax"));
         }
         Err(unsupported(

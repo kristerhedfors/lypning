@@ -173,7 +173,12 @@ impl Interp {
                 _ => return Err(type_err("a bytes-like object is required")),
             },
             Value::List(l) => {
-                let items = l.borrow().clone();
+                // The borrow is held across the loop rather than snapshotted:
+                // `eq` takes no `&mut Interp` and cannot re-enter the evaluator,
+                // so nothing can mutate the list underneath it. The snapshot it
+                // replaces cost a Vec allocation and a refcount bump per element
+                // on every `x in xs`.
+                let items = l.borrow();
                 for x in items.iter() {
                     if eq(x, needle)? {
                         return Ok(true);
@@ -232,9 +237,19 @@ impl Interp {
                 t[i].clone()
             }
             Value::Str(s) => {
-                let chars: Vec<char> = s.chars().collect();
-                let i = norm_index(crate::eval::int_val(idx)?, chars.len(), "string")?;
-                Value::Str(chars[i].to_string().into())
+                // ASCII is the case every one-liner is, and there a byte offset
+                // IS a character offset — so the index is O(1) and the result is
+                // a subslice of bytes that already exist. The general path below
+                // collects the whole string into a `Vec<char>` to reach one of
+                // them, which is O(n) in the string for an O(1) question.
+                if s.is_ascii() {
+                    let i = norm_index(crate::eval::int_val(idx)?, s.len(), "string")?;
+                    Value::Str(s[i..i + 1].into())
+                } else {
+                    let chars: Vec<char> = s.chars().collect();
+                    let i = norm_index(crate::eval::int_val(idx)?, chars.len(), "string")?;
+                    Value::Str(chars[i].to_string().into())
+                }
             }
             Value::Bytes(b) => {
                 let i = norm_index(crate::eval::int_val(idx)?, b.len(), "bytearray")?;
@@ -318,24 +333,54 @@ impl Interp {
             })
         };
         let (lo, hi) = (opt(&lo)?, opt(&hi)?);
+        // `step == 1` is what almost every slice in the corpus is, and it names a
+        // CONTIGUOUS range. The general path below has to materialise the picked
+        // indices because a step can skip or reverse; taking that range directly
+        // is one copy instead of an index vector plus a gather.
+        let contiguous = step == 1;
         Ok(match base {
             Value::Str(s) => {
-                let chars: Vec<char> = s.chars().collect();
-                let picked = slice_indices(chars.len(), lo, hi, step);
-                Value::Str(picked.into_iter().map(|i| chars[i]).collect::<String>().into())
+                // Byte offsets are character offsets exactly when the text is
+                // ASCII. Non-ASCII falls through to the general path rather than
+                // growing a second boundary-scanning implementation of its own —
+                // one more way to slice a string is one more way to slice it
+                // differently from CPython.
+                if contiguous && s.is_ascii() {
+                    let (a, b) = slice_span(s.len(), lo, hi);
+                    Value::Str(s[a..b].into())
+                } else {
+                    let chars: Vec<char> = s.chars().collect();
+                    let picked = slice_indices(chars.len(), lo, hi, step);
+                    Value::Str(picked.into_iter().map(|i| chars[i]).collect::<String>().into())
+                }
             }
             Value::Bytes(b) => {
-                let picked = slice_indices(b.len(), lo, hi, step);
-                Value::Bytes(Rc::new(picked.into_iter().map(|i| b[i]).collect()))
+                if contiguous {
+                    let (x, y) = slice_span(b.len(), lo, hi);
+                    Value::Bytes(Rc::new(b[x..y].to_vec()))
+                } else {
+                    let picked = slice_indices(b.len(), lo, hi, step);
+                    Value::Bytes(Rc::new(picked.into_iter().map(|i| b[i]).collect()))
+                }
             }
             Value::List(l) => {
                 let b = l.borrow();
-                let picked = slice_indices(b.len(), lo, hi, step);
-                list(picked.into_iter().map(|i| b[i].clone()).collect())
+                if contiguous {
+                    let (x, y) = slice_span(b.len(), lo, hi);
+                    list(b[x..y].to_vec())
+                } else {
+                    let picked = slice_indices(b.len(), lo, hi, step);
+                    list(picked.into_iter().map(|i| b[i].clone()).collect())
+                }
             }
             Value::Tuple(t) => {
-                let picked = slice_indices(t.len(), lo, hi, step);
-                Value::Tuple(Rc::new(picked.into_iter().map(|i| t[i].clone()).collect()))
+                if contiguous {
+                    let (x, y) = slice_span(t.len(), lo, hi);
+                    Value::Tuple(Rc::new(t[x..y].to_vec()))
+                } else {
+                    let picked = slice_indices(t.len(), lo, hi, step);
+                    Value::Tuple(Rc::new(picked.into_iter().map(|i| t[i].clone()).collect()))
+                }
             }
             other => {
                 return Err(type_err(format!(
@@ -751,6 +796,25 @@ pub fn norm_index(i: i64, n: usize, what: &str) -> R<usize> {
         return Err(index_err(format!("{what} index out of range")));
     }
     Ok(j as usize)
+}
+
+/// The half-open `[start, stop)` a `step == 1` slice selects — Python's own
+/// clamping, without the index vector.
+///
+/// Kept beside [`slice_indices`] and derived the same way on purpose: these two
+/// must agree for every `(n, lo, hi)`, and a reader checking that should not
+/// have to go looking. `stop` is never below `start`, which is how Python's
+/// empty slice (`'abc'[2:1]`) comes out empty rather than panicking on an
+/// inverted range.
+pub fn slice_span(n: usize, lo: Option<i64>, hi: Option<i64>) -> (usize, usize) {
+    let n = n as i64;
+    let clamp = |v: i64| -> i64 {
+        let v = if v < 0 { n + v } else { v };
+        v.clamp(0, n)
+    };
+    let start = lo.map_or(0, clamp);
+    let stop = hi.map_or(n, clamp).max(start);
+    (start as usize, stop as usize)
 }
 
 pub fn slice_indices(n: usize, lo: Option<i64>, hi: Option<i64>, step: i64) -> Vec<usize> {
