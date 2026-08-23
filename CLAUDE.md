@@ -116,6 +116,14 @@ correctness. Run it when you changed something that could plausibly be slower,
 quote the corpus size it printed, and remember it is deliberately not in CI: a
 wall-clock benchmark on a shared runner measures the runner.
 
+**And add the changelog entry.** One per pull request, at the top of
+`CHANGELOG.md`, under `## Unreleased`: a dated line, a title, a link to the PR,
+and at most a handful of bullets. The PR body is where the reasoning goes and
+the entry must not repeat it — the file stays scannable only because nothing in
+it is said twice. It is published at `lypning.dev/changelog.html`, so an entry
+that overstates is a claim on a website; quote numbers the way every other
+document here has to (invariant 3), or leave them out.
+
 ## Two shapes that must both keep working
 
 **A source checkout**, where `assets/` is writable, `build_dir()` is the asset
