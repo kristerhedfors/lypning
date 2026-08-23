@@ -167,7 +167,14 @@ bite silently — a program that finishes, prints something plausible, and exits
     `'%s.%s' % (type(e).__module__, type(e).__name__)` all print. A second corpus
     entry (`py-9b16a7261b96`) was already printing the half that was still
     wrong, so the fix went out at half strength and CI said so.
-    `Error.__module__` is set explicitly now.
+
+    `__module__` is set in the class BODY, never as `Error.__module__ = ...`
+    afterwards. MicroPython locks a class once it is built, so the assignment
+    raised at import and took `import base64` down with it: every base64 program
+    on that tier went from a stdout difference at exit 0 to **exit 1**, which is
+    a worse failure than the one being fixed. Setting the name in the body
+    cannot fail that way — at worst MicroPython ignores it and the qualified
+    name is wrong again, which is a difference and not a crash.
 
     What is left is the message text — CPython's `Incorrect padding` against
     MicroPython's `incorrect padding` — and that IS #19's kind of difference, so

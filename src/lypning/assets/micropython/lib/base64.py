@@ -19,15 +19,20 @@ try:
     from binascii import Error
 except ImportError:
     class Error(ValueError):
-        pass
-
-    # `binascii`, not `base64`. A program that prints a caught exception gets the
-    # QUALIFIED name — from `repr()`, from a traceback, or from
-    # `'%s.%s' % (type(e).__module__, type(e).__name__)` — and defining the class
-    # here made that `base64.Error` where CPython says `binascii.Error`. Fixing
-    # the bare name and leaving this was half a fix, and a second corpus entry
-    # was already printing the half that was still wrong.
-    Error.__module__ = "binascii"
+        # `binascii`, not `base64`. A program that prints a caught exception gets
+        # the QUALIFIED name — from `repr()`, from a traceback, or from
+        # `'%s.%s' % (type(e).__module__, type(e).__name__)` — and defining the
+        # class here makes that `base64.Error` where CPython says
+        # `binascii.Error`.
+        #
+        # In the class BODY, never as `Error.__module__ = ...` afterwards.
+        # MicroPython locks a class once it is built, so the assignment raised at
+        # import time and took `import base64` down with it — every base64
+        # program on that tier went from a stdout difference at exit 0 to exit 1.
+        # A name set in the body is part of the class dict and cannot fail that
+        # way; if MicroPython ignores it the qualified name is simply wrong
+        # again, which is where this started and is not a crash.
+        __module__ = "binascii"
 
 
 def b64encode(s, altchars=None):

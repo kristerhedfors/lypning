@@ -27,7 +27,9 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   the class in `base64.py` made it `base64.Error` where CPython says
   `binascii.Error`, which is what `repr()` and a traceback print. A second
   corpus entry was already printing that half, so the fix shipped at half
-  strength and CI said so. `Error.__module__` is set explicitly.
+  strength and CI said so. `__module__` is set in the class **body** — as an
+  assignment afterwards it raised at import, because MicroPython locks a class
+  once built, and took every base64 program on that tier to exit 1.
 - What is left is the message text, and that *is* divergence 19's kind of
   difference — Python does not specify it — so that entry is tagged
   `implementation-defined`. The type and the qualified name are pinned in
