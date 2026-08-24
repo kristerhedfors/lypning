@@ -16,7 +16,7 @@ on loudly and predictably (§6).
 > `docs/SUBSET.md` (what it must execute), and the corpus at
 > `assets/corpus/` (`lypning corpus --stats`).
 
-## 1. Why — the measurement that justifies the project
+## 1. Rationale
 
 From `docs/SANDBOX-PERFORMANCE.md` §1, measured by
 an upstream Playwright battery driving a real Chromium against production
@@ -125,7 +125,7 @@ Secondary, checked locally and cheaply in CI:
 `lypning gate` enforces the first three and prints the baseline
 alongside, so a build change is judged in seconds instead of a Playwright run.
 
-### The baseline, measured
+### Measured baseline
 
 `lypning gate <bin> --compare` on this dev container, against
 the system CPython 3.11:
@@ -154,7 +154,7 @@ mature dynamic-language VM with **neither `re` nor `json`** — compiles to
 365,660 B. **The gate is 700 KB**, set against the measured 541,688 B
 MicroPython prototype with room for the frozen shims.
 
-### The toolchain works here, which makes the gate cheap
+### Toolchain availability
 
 Verified in this container: `gcc -m32 -static` produces a working
 `ELF 32-bit LSB executable, Intel 80386, statically linked`, **and i386
@@ -168,7 +168,7 @@ entry is executed by **both** system CPython and lypning-mp, and the stdout, std
 and exit code must match. A subset runtime that silently disagrees with Python
 is worse than no runtime, because the agent will not notice.
 
-## 3. The implementation, and the daemon that was asked for
+## 3. Implementation
 
 **Decided (2026-08-13, `docs/RESEARCH.md` §6): lypning-mp is a MicroPython
 unix-port variant** — static, musl, i386, with a frozen lypning-mp stdlib and
@@ -194,7 +194,7 @@ The two alternatives were considered and rejected on measurement, not taste:
   109 → 63**, so while `python3` remains in the image the agent prompt should
   prefer `python3 -S -c`.
 
-### 3a. The daemon does not earn its keep, and the mechanism it needs is broken
+### 3a. Assessment of the daemon proposal
 
 The daemon was an explicit requirement — a resident runtime to cut startup — so
 it was measured before being dropped rather than argued away. Three findings,
@@ -237,7 +237,7 @@ future workload running many one-liners inside one `execInSandbox` batch, or a
 lypning-mp whose initialisation grows expensive (a large frozen corpus, a loaded
 index). Neither is true today.
 
-## 4. The `lypningd` design, recorded but not built
+## 4. The `lypningd` design (recorded, not built)
 
 **Not built, by owner decision (§3a). Nothing below is implemented.** Kept so
 that reversing §3a means reading a design rather than rediscovering one. A zygote, the shape Android's zygote and preforked application servers
@@ -315,7 +315,7 @@ container on a normal filesystem, where CPython's cold cost is a page cache
 miss rather than a network fetch. **lypning-mp is a sandbox optimisation, not a
 platform-wide python replacement.**
 
-## 6. The fallback contract — what happens outside the subset
+## 6. The fallback contract
 
 This is the part that decides whether a subset runtime is usable at all.
 
@@ -359,7 +359,7 @@ The corpus drives the build order: implement in descending order of how many
 entries a feature unblocks, and re-run the conformance diff against CPython on
 every change.
 
-### 7a. The feedback loop that made the first harvest mostly fiction
+### 7a. A feedback loop in the first harvest
 
 Capture worked from the day it shipped. Growth did not, and the frequency table
 was measuring the wrong thing. Both were found on 2026-08-14, by reading the
@@ -530,7 +530,7 @@ it — deep recursive unwinding, `finally` ordering, locals live across a raise,
 generator close, 2000 sequential raises reusing the NLR buffer, and the
 recursion limit. All six match CPython exactly.
 
-### Rejected, with the measurement that rejected them
+### Rejected options, with the measurements that rejected them
 
 Recorded so the same ideas are not re-tried by whoever reads the config next.
 
@@ -552,7 +552,7 @@ Recorded so the same ideas are not re-tried by whoever reads the config next.
   byte-identical functions. Gold also rejects `-z noseparate-code`, so it lands
   156 B larger than the default linker while adding a toolchain dependency.
 
-### Two measurement traps this pass paid for
+### Two measurement traps
 
 - **The stripped file size is quantised to the 4,096 B page.** Three different
   changes each reported exactly −4,096 B, and one of them had moved only 2,100 B
@@ -563,7 +563,7 @@ Recorded so the same ideas are not re-tried by whoever reads the config next.
   worth 48 ms. Timing the 340 real corpus programs said 0.14 ms each. The corpus
   is the honest instrument, because it is the distribution lypning-mp was built for.
 
-### What is now at its floor
+### Components now at their floor
 
 A six-module import — `re, json, os, base64, collections, datetime` — costs
 **13 syscalls in total and zero file syscalls beyond `execve`**. The `sys.path`
@@ -579,7 +579,7 @@ A six-lane survey of what was left took the binary from 304,440 B to
 corpus entries for two suspected silent divergences then exposed a defect in the
 fallback contract that had been present since the frozen shims were written.
 
-### The size work
+### Size reduction
 
 | change | file size | mechanism |
 |---|---|---|
@@ -611,7 +611,7 @@ remaining caller of libc's `fprintf`, which drags in `vfprintf`, `printf_core`,
 `py/formatfloat.c` for its own float formatting. `MICROPY_USE_INTERNAL_PRINTF`
 supplies `printf` but not `fprintf`, which is how they survived.
 
-### The bug: the fallback contract only ever worked from C
+### Defect: the fallback contract worked only from C
 
 Adding corpus entries for `re.VERBOSE` and `csv.writer(quoting=…)` — both of
 which the shims declared as constants and then silently ignored, returning `[]`
@@ -645,7 +645,7 @@ differs from the behaviour it actually has. Conformance went 195/13/0 →
 **195 MATCH / 17 UNSUPPORTED / 0 MISMATCH** — the four new entries are honest
 coverage gaps instead of silent wrong answers.
 
-### Rejected, with the measurement
+### Rejected options
 
 - **UPX** (−123,388 B at `-9`, −142,936 B with LZMA) is the largest number in the
   survey and still wrong. The stub opens `/proc/self/exe`, so **file opens go
@@ -662,7 +662,7 @@ coverage gaps instead of silent wrong answers.
 - **Dropping the six least-used frozen modules** saves 4,096 B for MATCH 195 →
   188. Every one is a real CPython module, so it is coverage sold for one page.
 
-### What this pass does not change
+### Out of scope for this pass
 
 lypning-mp still is not deployed — the sandbox image is not built, so `/api/sandbox-image`
 serves the third-party WebVM disk and nothing here reaches a user yet. Both
@@ -681,7 +681,7 @@ do modern compiler optimisation techniques have left to give — and answered it
 with builds rather than reasoning. **The answer is nothing, and the reason is
 worth more than the flags.**
 
-### The measurements that closed the compiler question
+### Measurements resolving the compiler question
 
 Every row was built and timed on one machine, against the same corpus.
 
@@ -726,7 +726,7 @@ Two mechanical findings ride along, both of which cost a build:
   without a real profile. Anyone hoping for PGO's speed while keeping `-Os` is
   chasing something that does not exist.
 
-### The cost model gains a constant: 131,072 B
+### A constant in the cost model: 131,072 B
 
 CheerpX streams the disk image in **128 KiB device blocks** (the constant is in
 `cx_esm.js`; `262144` and `524288` appear nowhere). Cold cost is therefore not
@@ -741,7 +741,7 @@ nothing on their own and are worth a block as part of that total.
 
 `llvm-bolt` is independently ruled out: it has no i386/x86-32 target.
 
-### What was actually worth doing
+### Changes retained
 
 All of it was algorithmic, and all of it was above the compiler.
 
@@ -764,7 +764,7 @@ All of it was algorithmic, and all of it was above the compiler.
   map, so a 20,000-key dict reallocated 5,000 times. Worth 0.96x, and worth more
   as information: the allocator was never the problem.
 
-### The dict, priced and left standing
+### The dict: priced and retained
 
 `insert 10,000 then look up all 10,000` is **8.49x** stock and a 20,000-key
 insert takes 1.15 s on this host — which the ledger's own note says is optimistic
@@ -787,7 +787,7 @@ would be by far the largest hunk in a port patch that the project keeps small so
 that tracking upstream stays a rebase (§6). It wants its own change, its own
 review and its own conformance run — not the tail of a pass about compiler flags.
 
-### The instrument this pass needed and did not have
+### An instrument this pass lacked
 
 `lypning corpus-time` times every corpus program on one binary or
 two, interleaved, min-of-repeats, each in its own temp directory with
@@ -801,7 +801,7 @@ said 16x and the corpus said nothing, or the benchmark said nothing and the
 held-out workload said 11% slower. §8a already recorded a synthetic workload
 overstating a result tenfold. This is the general form of it.
 
-## 9. What would make this project wrong
+## 9. Conditions that would invalidate this project
 
 Recorded up front so it can be checked rather than argued:
 
@@ -818,7 +818,7 @@ Recorded up front so it can be checked rather than argued:
 
 Each of these is measurable, and each has a gate above that would catch it.
 
-### What lypning-mp does not fix, stated plainly
+### Limitations of lypning-mp
 
 Cold **VM boot** still dominates a sandbox turn. The agent trace in
 `docs/SANDBOX-PERFORMANCE.md` shows 24.4 s of boot against 290 ms of commands,

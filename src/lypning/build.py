@@ -85,6 +85,58 @@ _LOG_TAIL_VERBOSE = 400
 _CARGO_TIMEOUT = 1800.0
 _MICROPYTHON_TIMEOUT = 5400.0
 
+#: The host the MicroPython tier's two pinned downloads come from, and the one
+#: the preflight asks about before starting a build that would need it. Named
+#: rather than spelled inline because it appears in the reason line too, and two
+#: spellings would drift into two different answers.
+_PINNED_HOST = "musl.libc.org"
+
+#: Exit codes that mean the transport failed, not the build. ``build-
+#: micropython.sh`` runs ``curl``/``wget`` unguarded under ``set -e``, so the
+#: fetcher's own exit code becomes the script's — which is the most precise
+#: signal available about whose fault a failure was, and far better than asking
+#: the network a second time.
+#:
+#: curl: 5/6 resolve, 7 connect, 18 partial transfer, 28 timeout, 35 TLS
+#: connect, 52 empty reply, 55/56 send/recv, 92 HTTP/2 stream.
+#: wget: 4 network failure, 8 server error.
+#:
+#: curl's 22 — an HTTP error status under ``-f`` — is deliberately NOT here. It
+#: covers a transient 503 and a permanent 404 alike, and a 404 means the pinned
+#: URL has rotted, which is a real break that needs a human and must redden.
+#: Reddening on somebody's 503 is the cheaper of the two mistakes.
+_FETCH_NETWORK_EXITS = frozenset((4, 5, 6, 7, 8, 18, 28, 35, 52, 55, 56, 92))
+
+#: What a transport failure says when it is the shell script's ``die`` that
+#: reports it, so the exit code is 1 and only the message names the cause.
+#: Matched against the tail of the build log, case-insensitively.
+_NETWORK_PHRASES = (
+    "could not resolve", "couldn't resolve", "failed to connect", "connection reset",
+    "connection refused", "recv failure", "send failure", "ssl connect error",
+    "tls connect error", "empty reply from server", "operation timed out",
+    "timed out", "network is unreachable", "temporary failure in name resolution",
+    "could not clone", "unable to access", "transfer closed", "remote end hung up",
+)
+
+
+def _transport_failed(rc: int, out: str) -> bool:
+    """Did the fetch fail, rather than the build?
+
+    Two signals, because neither alone is enough. The exit code is exact when
+    ``curl`` or ``wget`` died on its own; when the script caught the failure and
+    called ``die`` instead, the code is a flat 1 and only the message knows.
+
+    A network probe is deliberately NOT one of the signals. The failure this
+    exists to classify — ``curl: (35) Recv failure: Connection reset by peer``
+    — happens while a TCP connect to the same host on the same port still
+    succeeds, so a re-probe answers "reachable" and calls an outage a
+    regression. Ask what actually broke, not whether the host answers now.
+    """
+    if rc in _FETCH_NETWORK_EXITS:
+        return True
+    low = (out or "").lower()
+    return any(p in low for p in _NETWORK_PHRASES)
+
 
 # --- records -----------------------------------------------------------------
 
@@ -96,6 +148,23 @@ class BuildResult:
     ``skipped_reason`` is not restricted to skips: it carries the one-line "why"
     for anything a caller would otherwise have to read ``log`` to discover — a
     missing toolchain, a fallback to the host target, a broken contract.
+
+    ``unavailable`` splits that "why" into the two kinds a caller must be able
+    to act on differently, because until it existed they rendered identically
+    and a gate could not tell them apart:
+
+    * **unavailable** — a precondition this machine does not meet. No 32-bit
+      toolchain, no cargo, no network to fetch a pinned tarball that is not yet
+      cached. Nothing was attempted, so nothing can be broken; the correct
+      response is to install something or to carry on without the tier.
+    * **failed** (``unavailable`` false, ``ok`` false) — every precondition
+      held, the build ran, and it did not produce a binary. That is a
+      regression and the only one of the two worth reddening a gate.
+
+    The distinction is the whole reason a CI job can say what its red means.
+    A build that dies mid-download is classified by what the fetcher said (see
+    :func:`_transport_failed`) and reported as *unavailable* rather than failed:
+    an upstream outage is an outage, whichever side of the preflight it lands on.
     """
 
     engine: str
@@ -114,6 +183,9 @@ class BuildResult:
     # A dry run is neither built nor broken, and reporting it as FAILED is how a
     # first `lypning build --all --dry-run` reads as a broken install.
     dry_run: bool = False
+    #: A precondition this machine does not meet, rather than a build that
+    #: broke. See the class docstring: this is the field a gate branches on.
+    unavailable: bool = False
 
     @property
     def label(self) -> str:
@@ -353,7 +425,8 @@ def build_rust(target: str = "musl", jobs: int | None = None,
     if tc["cargo"] is None:
         return BuildResult(engines.LYPNING, target=triple or "host",
                            seconds=time.perf_counter() - t0,
-                           skipped_reason="cargo not found — install Rust: https://rustup.rs")
+                           skipped_reason="cargo not found — install Rust: https://rustup.rs",
+                           unavailable=True)
     if not (paths.RUST_DIR / "Cargo.toml").is_file():
         return BuildResult(engines.LYPNING, target=triple or "host",
                            seconds=time.perf_counter() - t0,
@@ -483,7 +556,8 @@ def build_lib(target: str = "host", jobs: int | None = None,
     if tc["cargo"] is None:
         return BuildResult(engines.LYPNING, artifact="lib", target=triple or "host",
                            seconds=time.perf_counter() - t0,
-                           skipped_reason="cargo not found — install Rust: https://rustup.rs")
+                           skipped_reason="cargo not found — install Rust: https://rustup.rs",
+                           unavailable=True)
     if not (paths.RUST_DIR / "Cargo.toml").is_file():
         return BuildResult(engines.LYPNING, artifact="lib", target=triple or "host",
                            seconds=time.perf_counter() - t0,
@@ -769,9 +843,10 @@ def _build_micropython(stock: bool, verbose: bool = False, clean: bool = False,
     t0 = time.perf_counter()
     label = STOCK_BINARY if stock else engines.MICROPYTHON
 
-    def skipped(reason: str, log: str = "") -> BuildResult:
+    def skipped(reason: str, log: str = "", unavailable: bool = False) -> BuildResult:
         return BuildResult(label, target="i386-musl",
-                           seconds=time.perf_counter() - t0, log=log, skipped_reason=reason)
+                           seconds=time.perf_counter() - t0, log=log, skipped_reason=reason,
+                           unavailable=unavailable)
 
     src_script = paths.SCRIPTS_DIR / "build-micropython.sh"
     if not src_script.is_file():
@@ -785,9 +860,9 @@ def _build_micropython(stock: bool, verbose: bool = False, clean: bool = False,
     if shutil.which("cc") is None and "gcc" not in missing:
         missing.append("cc")
     if missing:
-        return skipped("missing build tools: %s" % ", ".join(missing))
+        return skipped("missing build tools: %s" % ", ".join(missing), unavailable=True)
     if shutil.which("curl") is None and shutil.which("wget") is None:
-        return skipped("need curl or wget to download the musl tarball")
+        return skipped("need curl or wget to download the musl tarball", unavailable=True)
 
     # The 32-bit host toolchain. Naming the apt package is the single most
     # useful thing this check can do, so it says it the way the script does.
@@ -796,7 +871,7 @@ def _build_micropython(stock: bool, verbose: bool = False, clean: bool = False,
         return skipped(
             "gcc cannot target i386 — install the multilib toolchain: "
             "sudo apt-get install -y gcc-multilib libc6-dev-i386",
-            _tail(out, verbose))
+            _tail(out, verbose), unavailable=True)
 
     try:
         script, tree, note = _micropython_workdir()
@@ -820,10 +895,10 @@ def _build_micropython(stock: bool, verbose: bool = False, clean: bool = False,
     # only probe when the cache is cold — an offline rebuild is legitimate.
     musl_cached = (work / "musl-i386" / "lib" / "libc.a").is_file()
     mpy_cached = (work / "micropython" / ".git").exists()
-    if not (musl_cached and mpy_cached) and not _can_reach("musl.libc.org"):
+    if not (musl_cached and mpy_cached) and not _can_reach(_PINNED_HOST):
         return skipped(
             "no network, and the pinned musl/MicroPython downloads are not cached in %s" % work,
-            note)
+            note, unavailable=True)
 
     if dry_run:
         return BuildResult(
@@ -837,8 +912,14 @@ def _build_micropython(stock: bool, verbose: bool = False, clean: bool = False,
 
     rc, out = _run(cmd, cwd=script.parent.parent, env=env, timeout=_MICROPYTHON_TIMEOUT)
     if rc != 0 or not out_bin.is_file():
-        return skipped("build-micropython.sh failed (exit %d)%s (`-v` for the full log)"
-                       % (rc, _why(out)), _join(note, _tail(out, verbose)))
+        # The preflight probe ran minutes ago and only proves the host answered
+        # *then*. A download that died halfway is an outage wearing a build
+        # failure's clothes, so ask what broke before calling this a regression.
+        network = _transport_failed(rc, out)
+        return skipped(
+            "build-micropython.sh %s (exit %d)%s (`-v` for the full log)"
+            % ("could not fetch its pinned downloads" if network else "failed", rc, _why(out)),
+            _join(note, _tail(out, verbose)), unavailable=network)
 
     size = _size(out_bin)
     return BuildResult(
@@ -1091,6 +1172,12 @@ def report(results: Iterable[BuildResult] | BuildResult, verbose: bool = False) 
             status = "ok" + ("  (%s)" % r.skipped_reason if r.skipped_reason else "")
         elif r.dry_run:
             status = r.skipped_reason or "dry run"
+        elif r.unavailable:
+            # Deliberately not "FAILED". Nothing was attempted, so nothing is
+            # broken, and a reader who sees FAILED here goes looking for a
+            # regression that does not exist — which is exactly how four CI
+            # runs' worth of "no network" read as a wrong answer in the tier.
+            status = "unavailable: " + (r.skipped_reason or "unknown")
         else:
             status = "FAILED: " + (r.skipped_reason or "unknown")
         rows.append((

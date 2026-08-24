@@ -32,6 +32,7 @@ imported, every module that did ``import os`` holds the object, and popping
 from __future__ import annotations
 
 import json
+import sys
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -231,22 +232,59 @@ if MODE == "shim":
     # is live in the sandbox could not fail here. It shipped that way until a
     # harvested corpus entry printed `type(e).__name__` and the routing gate
     # caught it as an UNSAFE route.
+    _B64_ALPHABET = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
     def _mp_a2b(data):
-        try:
-            return _binascii.a2b_base64(data)
-        except _binascii.Error as e:
-            # MicroPython has no Error to raise, and its message text is its
-            # own. Lower-cased here from CPython's because that is what the one
-            # message actually observed from the real tier looks like:
-            # CI printed `incorrect padding` against CPython's `Incorrect
-            # padding`. A model, and only as good as that observation — but a
-            # model that keeps the difference VISIBLE, which importing CPython's
-            # binascii did not.
-            raise ValueError(str(e)[:1].lower() + str(e)[1:])
+        """A transcription of `extmod/modbinascii.c`, not a wrapper around CPython's.
+
+        It used to be the wrapper, lower-casing CPython's message on the way out.
+        That model was wrong in a way only the real binary could show, and it was
+        wrong in the direction that hides work: CPython's decoder REACHES A
+        DIFFERENT VERDICT from MicroPython's on the same bytes. `b64decode(b"a")`
+        raises `Invalid base64-encoded string: number of data characters (1)…`
+        there and a flat `incorrect padding` here, so a lower-cased CPython
+        message modelled a divergence that does not exist and hid one that does.
+        Verified against a built lypning-mp: this function and the C agree.
+
+        The loop is the C loop. `hadpad`, the two `nbits` tests and the trailing
+        `if nbits` are what decide every padding message the shim has to
+        translate, so they are transcribed rather than approximated.
+        """
+        shift = 0
+        nbits = 0
+        hadpad = False
+        out = bytearray()
+        for ch in bytes(data):
+            if ch == 0x3D:  # b"="
+                if nbits == 2 or (nbits == 4 and hadpad):
+                    nbits = 0
+                    break
+                hadpad = True
+            sextet = _B64_ALPHABET.find(bytes([ch]))
+            if sextet < 0:
+                continue
+            hadpad = False
+            shift = (shift << 6) | sextet
+            nbits += 6
+            if nbits >= 8:
+                nbits -= 8
+                out.append((shift >> nbits) & 0xFF)
+        if nbits:
+            # No `Error` to raise, and the message is MicroPython's own.
+            raise ValueError("incorrect padding")
+        return bytes(out)
+
+    def _mp_b2a(data, newline=True):
+        # MicroPython's takes anything with a buffer AND a str; CPython's rejects
+        # the str. Modelled as the absence of a check, because the check now
+        # lives in the shim and a model that kept CPython's would test nothing.
+        if isinstance(data, str):
+            data = data.encode()
+        return _binascii.b2a_base64(bytes(data), newline=newline)
 
     binascii = type(sys)("binascii")
     binascii.a2b_base64 = _mp_a2b
-    binascii.b2a_base64 = _binascii.b2a_base64
+    binascii.b2a_base64 = _mp_b2a
     binascii.hexlify = _binascii.hexlify
     binascii.unhexlify = _binascii.unhexlify
     binascii.crc32 = _binascii.crc32
@@ -349,8 +387,15 @@ print(base64.b64encode(bytes([251, 255, 190]), b"@$"))'''),
     # binascii.Error; MicroPython's binascii has no Error and raises a bare
     # ValueError. A harvested corpus entry prints exactly this and it surfaced
     # as an UNSAFE route (README divergence 17).
+    # `b"aGk=aGk="` was here and is deliberately not any more: it is data after
+    # completed padding, and CPython's answer for it MOVED IN A PATCH RELEASE.
+    # 3.11, 3.12 and 3.13.12 all decode it to b'hi'; a later 3.13 rejects it.
+    # A differential case compares against whatever interpreter is installed, so
+    # it can only pin what CPython holds still. The tier's answer for that input
+    # is pinned instead in `test_base64_shim_output_is_pinned_without_an_oracle`,
+    # where no oracle can move underneath it.
     ("base64", "base64-bad-padding-exception-name", r'''import base64
-for c in [b"aGk", b"a", b"aGkxaGk", b"aGk=aGk=", b"====", b"aa=="]:
+for c in [b"aGk", b"a", b"aGkxaGk", b"====", b"aa=="]:
     try:
         print(c, repr(base64.b64decode(c)))
     except Exception as e:
@@ -377,6 +422,42 @@ try:
     base64.b64decode(b"aGk")
 except Exception as e:
     print("isinstance ValueError:", isinstance(e, ValueError))'''),
+    # Which inputs are REJECTED, not what the rejection is called. CPython's
+    # base64 error taxonomy is not a stable contract — it was reworked in 3.11
+    # and reworked again inside 3.13 — so a case that printed `e` here would be
+    # pinning this file to one patch release of one interpreter. The exact
+    # wording the tier produces is pinned without an oracle further down.
+    ("base64", "base64-padding-rejects", r'''import base64
+for c in [b"aGk", b"a", b"aGkxx", b"aGkxaGk", b"=aGk", b"aGkxaGkxa"]:
+    try:
+        print(c, repr(base64.b64decode(c)))
+    except Exception as e:
+        print(c, "RAISE", type(e).__name__)'''),
+    # `validate=True` was accepted and IGNORED, so these returned a value where
+    # CPython raises. Not a message difference — the tier answering "is this
+    # valid base64" with the wrong answer. The SET of inputs strict mode refuses
+    # has held from 3.11 through 3.13 even while the wording moved twice, so the
+    # set is what this pins; `_CASE_MIN_PYTHON` keeps 3.9 and 3.10 out, where
+    # base64 used a regex and refused a different set entirely.
+    ("base64", "base64-validate-rejects", r'''import base64
+for c in [b"a!Gk=", b"aG k=", b"\n\naGk=", b"====", b"=aGk", b"aGk==", b"aGk=aGk=",
+          b"a=a", b"aGk=\n", b"-_--", b"aGk=", b"aGkx", b"", b"aa=="]:
+    try:
+        print(c, repr(base64.b64decode(c, validate=True)))
+    except Exception as e:
+        print(c, "RAISE", type(e).__name__)'''),
+    # b64encode took a str and encoded it; CPython raises. Encoding text without
+    # being told the codec is a guess, and the tier must not guess.
+    # Labelled rather than repr()'d: a memoryview's repr carries its address,
+    # which differs between two runs of the SAME interpreter and would make this
+    # case fail forever for a reason that is not about base64.
+    ("base64", "base64-encode-rejects-non-bytes", r'''import base64
+for label, a in [("str", "hi"), ("int", 123), ("None", None), ("bytes", b"hi"),
+                 ("bytearray", bytearray(b"hi")), ("memoryview", memoryview(b"hi"))]:
+    try:
+        print(label, repr(base64.b64encode(a)))
+    except Exception as e:
+        print(label, "RAISE", type(e).__name__, e)'''),
 
     # ---- os.path -------------------------------------------------------------
     ("os.path", "ospath-join", r'''import os.path as p
@@ -963,6 +1044,13 @@ def test_the_shim_run_really_imports_the_shim_tree(tmp_path) -> None:
 # $LYPNING_CPYTHON, so it is resolved off $PATH.
 _CASE_MIN_PYTHON = {
     "counter-update": (3, 10),
+    # `validate=True` reached `binascii.a2b_base64(strict_mode=True)` in CPython
+    # 3.11. Before that `base64` did its own regex check and raised
+    # `Non-base64 digit found` for everything this case distinguishes — so on a
+    # 3.9 or 3.10 oracle the shim REJECTS the same inputs and words it
+    # differently, and grading the text against that oracle would be grading it
+    # against a CPython this message was never copied from.
+    "base64-validate-rejects": (3, 11),
 }
 
 
@@ -985,6 +1073,100 @@ def test_shim_matches_cpython(module: str, differential: Differential) -> None:
         len(graded),
         "\n\n".join(failures),
     )
+
+
+def _load_base64_shim():
+    """Import `lib/base64.py` over a stub `binascii`, with nothing else patched.
+
+    Deliberately not the differential harness: that one compares against the
+    installed CPython, and the whole point here is to assert something no
+    interpreter on the machine gets a vote in.
+    """
+    import types
+    src = (paths.MICROPYTHON_LIB / "base64.py").read_text(encoding="utf-8")
+    stub = types.ModuleType("binascii")
+
+    def _unused(*a, **k):                     # pragma: no cover - never reached
+        raise AssertionError("_scan must not need the C decoder")
+    stub.a2b_base64 = _unused
+    stub.b2a_base64 = _unused
+    ns = {"__name__": "base64_shim_under_test"}
+    real = sys.modules.get("binascii")
+    sys.modules["binascii"] = stub
+    try:
+        exec(compile(src, str(paths.MICROPYTHON_LIB / "base64.py"), "exec"), ns)
+    finally:
+        if real is None:
+            sys.modules.pop("binascii", None)
+        else:
+            sys.modules["binascii"] = real
+    return ns
+
+
+#: `(input, strict) -> the message the tier produces`, asserted literally.
+#:
+#: CPython's own answers for these moved twice while this was being written —
+#: once between 3.10 and 3.11, and again inside 3.13 — so they are recorded as
+#: OUR output rather than compared to an oracle that is still moving. The
+#: differential cases above pin the part that has held still: which inputs are
+#: refused at all.
+_SCAN_EXPECTED = (
+    (b"aGk", False, "Incorrect padding"),
+    (b"=aGk", False, "Incorrect padding"),
+    (b"aGkxaGk", False, "Incorrect padding"),
+    (b"a", False, "Invalid base64-encoded string: number of data characters (1) "
+                  "cannot be 1 more than a multiple of 4"),
+    (b"aGkxx", False, "Invalid base64-encoded string: number of data characters (5) "
+                      "cannot be 1 more than a multiple of 4"),
+    (b"aGk=", False, None),
+    (b"aa==", False, None),
+    (b"====", False, None),
+    (b"aGk=aGk=", False, None),   # data after completed padding: decoded, not refused
+    (b"", False, None),
+    (b"====", True, "Leading padding not allowed"),
+    (b"=aGk", True, "Leading padding not allowed"),
+    (b"a!Gk=", True, "Only base64 data is allowed"),
+    (b"\n\naGk=", True, "Only base64 data is allowed"),
+    (b"-_--", True, "Only base64 data is allowed"),
+    (b"aGk==", True, "Excess data after padding"),
+    (b"aGk=aGk=", True, "Excess data after padding"),
+    (b"aGk=\n", True, "Excess data after padding"),
+    (b"a=a", True, "Discontinuous padding not allowed"),
+    (b"aGk=", True, None),
+    (b"aGkx", True, None),
+    (b"", True, None),
+)
+
+
+@pytest.mark.parametrize("data, strict, want", _SCAN_EXPECTED,
+                         ids=["%r-%s" % (d, "strict" if s else "lenient")
+                              for d, s, _ in _SCAN_EXPECTED])
+def test_base64_shim_output_is_pinned_without_an_oracle(data, strict, want):
+    """What `_scan` says, fixed in this file rather than read off an interpreter.
+
+    Every other base64 assertion here is differential, and a differential test
+    can only pin what CPython holds still. CPython did not hold this still: the
+    strict taxonomy arrived in 3.11 and was reworked again in a 3.13 patch
+    release, so the same case can pass on one runner and fail on the next with
+    nothing in this repository having changed.
+
+    That is not a reason to stop asserting the wording — it is a reason to
+    assert it somewhere an interpreter upgrade cannot silently rewrite the
+    expectation.
+    """
+    ns = _load_base64_shim()
+    assert ns["_scan"](data, strict) == want
+
+
+def test_the_base64_shim_needs_no_c_decoder_to_reach_a_verdict():
+    """`_scan` is pure. The stub above would raise if it were not.
+
+    It matters because the decode stays on MicroPython's C function: if `_scan`
+    ever started calling it, the second walk of the input would become a second
+    decode, and the cost of `validate=True` would stop being a scan.
+    """
+    ns = _load_base64_shim()
+    assert ns["_scan"](b"a!Gk=", True) == "Only base64 data is allowed"
 
 
 @pytest.mark.parametrize(

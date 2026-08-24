@@ -290,11 +290,18 @@ def cmd_build(ns: argparse.Namespace) -> int:
                               # loadable shared object must not be on a glibc host.
                               lib_target=ns.target if "--target" in sys.argv else "")
 
+    # A tier this machine cannot attempt is not a tier that broke. `--skip-
+    # unavailable` is what lets a gate say which of the two it saw: without it
+    # both are exit 1, and a job that reddens for an unreachable musl.libc.org
+    # reads exactly like one that found a wrong answer.
+    def _built(r: Any) -> bool:
+        return bool(r.ok or (ns.skip_unavailable and r.unavailable))
+
     if ns.json:
         _json({"results": [_plain(r) for r in results],
                "dry_run": bool(ns.dry_run),
                "installed": []})
-        return 0 if ns.dry_run or all(r.ok for r in results) else 1
+        return 0 if ns.dry_run or all(_built(r) for r in results) else 1
     _out(build.report(results, verbose=ns.verbose))
     if ns.dry_run:
         return 0
@@ -315,7 +322,7 @@ def cmd_build(ns: argparse.Namespace) -> int:
         r = by_engine.get(Path(p).name)
         target = getattr(r, "target", None) if r else None
         _out("installed %s%s" % (p, "  (target: %s)" % target if target else ""))
-    ok = all(r.ok for r in results)
+    ok = all(_built(r) for r in results)
     if ns.verify:
         # Verified even when a build failed, and the exit code is the AND of the
         # two: the tiers are independent, so a broken MicroPython build must not
@@ -1507,6 +1514,11 @@ examples:
                         "static; `host` is the dynamically linked control)")
     s.add_argument("--jobs", type=int, metavar="N", help="parallel jobs for cargo")
     s.add_argument("--dry-run", action="store_true", help="print what would run; build nothing")
+    s.add_argument("--skip-unavailable", action="store_true",
+                   help="exit 0 when a tier could not be ATTEMPTED — no 32-bit toolchain, no "
+                        "cargo, no network for a pinned download. A build that ran and broke "
+                        "still exits 1. For a gate that must redden on a regression and not "
+                        "on an upstream outage")
     s.add_argument("--json", action="store_true", help="machine-readable")
     s.add_argument("-v", "--verbose", action="store_true", help="append each build's log")
     s.set_defaults(func=cmd_build)

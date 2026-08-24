@@ -96,7 +96,7 @@ size is irrelevant:
 
 Marginal throughput above 64 KB is ~0.9 ms/KB, i.e. ~1.1 MB/s.
 
-## What this means for the agent
+## Implications for the agent
 
 Prefer:
 
@@ -123,7 +123,7 @@ Avoid:
   and is one of the most expensive things measured: it stats every `PATH`
   directory, all cold, and in one run took the full 30 s ceiling.
 
-## The 30 s ceiling destroys the VM
+## The 30 s ceiling
 
 This is the sharpest operational edge and it is easy to hit by accident.
 
@@ -222,7 +222,7 @@ cold VM boot (24.4 s here, with the `/src` source mount; a bare boot measures
 paying a cold boot**, which argues for pre-warming the VM and for keeping it
 alive rather than shaving milliseconds off individual commands.
 
-## Shipped: the guest-side stdout cap
+## The guest-side stdout cap (shipped)
 
 The transcript keeps only `MAX_OUTPUT_CHARS` (4000) per command, so every byte
 a command returns beyond that was already being thrown away — after paying full
@@ -260,7 +260,7 @@ silently truncate every download. Only the three agent-loop call sites opt in
 (`stream.js`, and `drc-research.js`'s loop and `run_bash` tool), where the
 output is bound for a transcript that clamps to 4000 chars anyway.
 
-## On short-circuiting `cat`
+## Short-circuiting `cat`
 
 An obvious idea is to intercept `cat <path>` in `execInSandbox` and serve it
 some faster way. The measurements say what that would and would not buy.

@@ -178,7 +178,7 @@ Also Tier 0 because their absence breaks the above: `str` methods
 | `base64` | 2 | `b64encode`, `b64decode`, `urlsafe_b64encode` |
 | `math` | 1 | `sqrt`, `floor`, `ceil`, `pi`, `log10` — the "standard math via python3" line in `src/prompts.js` |
 
-### 3.4 Frequency table — the build order
+### 3.4 Frequency table (build order)
 
 Entries whose program contains the construct, counted mechanically over
 `seed-corpus.jsonl` (139 programs). The regexes are conservative: multi-clause
@@ -313,7 +313,7 @@ divergence.
 | exit codes | clean end → 0; `sys.exit(n)` → n; uncaught exception → 1 with a traceback on stderr and nothing extra on stdout | `stdin-exit-code-nonzero`, `uncaught-exception-traceback` |
 | iteration over a file/stdin | yields lines *with* their `\n`, lazily (so `break` after 2 lines does not read the rest) | `stdin-head-n` |
 
-### Dict ordering — exact, and what it costs
+### Dict ordering: exactness and cost
 
 CPython has guaranteed `dict` insertion order since 3.7. MicroPython's dict is
 an open-addressing hash map that does not preserve it, so `print(d)`,
@@ -338,7 +338,7 @@ large-dict case belongs in the live `tests/e2e/sandbox-perf.spec.js` run that
 The permanent fix is CPython's compact-dict layout — ordered array plus hash
 index, O(1) *and* ordered — which is a VM change, not a variant change.
 
-### Where we may cheat, and the risk
+### Permitted approximations, and their risk
 
 | cheat | risk |
 |---|---|
@@ -351,7 +351,7 @@ index, O(1) *and* ordered — which is a VM change, not a variant change.
 | Locale: assume `C.UTF-8` always | `locale`-sensitive `strftime`/sorting differs. No corpus entry sets a locale. |
 | `os.walk` ordering | Sort before printing, as `os-listdir-sorted` does. |
 
-## 7. Failure modes — the unsupported contract
+## 7. Failure modes: the unsupported contract
 
 When a program uses something lypning-mp does not implement:
 

@@ -53,7 +53,7 @@ exit-1 error rather than a routable 90, by both `main.rs` and `embed.rs`. So
 refusing here is safe, and the fall-through does the right thing — `lypning run`
 now prints CPython's `'\udcff\udcfe\n'`.
 
-### And then the fall-through did not work
+### The fall-through defect
 
 Verifying that revealed something worse, **pre-existing**, and reproducible on
 the iteration-0 binary:
@@ -121,7 +121,7 @@ wording moved into a single `utf8_error` so the two decoders cannot drift.
 perf `file-write-read` 4.43x → **3.54x**. conformance 529 / 332 / **0** and
 1,045,176 bytes, both unchanged. corpus-time flat within its band.
 
-### A divergence found on the way, not fixed here, and why
+### A divergence found but not fixed here
 
 Verifying the decode path against CPython on **invalid UTF-8** turned up two
 disagreements. Both are **pre-existing** — identical on the iteration-0 binary,
@@ -181,7 +181,7 @@ conformance 529 / 332 / **0**, bytes 1,045,176, both unchanged. Laziness still
 holds where it must: `any(1/x for x in [1, 0])` is `True` on both, never
 dividing.
 
-### The 7% that would not go away, and how to tell noise from a regression
+### Distinguishing noise from a regression
 
 `fib(23)` came out **7% slower**, on a change that touches nothing a recursive
 call executes. Five hypotheses, each built and measured:
@@ -252,7 +252,7 @@ it is the correct answer. Pinned both ways in `tests/test_semantics.py` — seve
 impossible bytes must exit 1, and four programs *containing* those bytes (in a
 string, in a comment, as `!=`, and as a Unicode identifier) must still run.
 
-### The general shape
+### General shape
 
 A refusal is free only when the answer is genuinely elsewhere. Where CPython's
 answer is *"this is not a program"*, a refusal is a spawn spent to learn nothing,
@@ -302,7 +302,7 @@ Fifteen shapes verified against the real CPython — the hierarchy in both
 directions, `IOError`/`OSError` aliasing, tuple-of-classes, `bool` under `int`,
 and the negatives — and pinned in `tests/test_semantics.py`.
 
-### What this says about the gates
+### Implications for the gates
 
 **`conformance` measures the corpus, not the language.** A construct nobody has
 typed yet is a construct it cannot grade, and MISMATCH 0 means "no disagreement
@@ -505,7 +505,7 @@ being a coverage number and a build order rather than a regression — and it is
 the shape to expect from every harvest, because a program already inside the
 subset is one nobody had to write down.
 
-### The part worth reading twice
+### The principal finding
 
 The build order moved, and not evenly:
 
@@ -582,7 +582,7 @@ trade *for this corpus* — a `.foo()` is in 83% of its programs and a `def` in 
 step for it is passing `Args` by `&mut` instead of moving 152 bytes through
 `call` → `call_func` → `call_func_inner`.
 
-### The cliff, which is worth more than the change
+### The size cliff
 
 The first version spilled by growing: start inline, and on the fifth argument
 move the four across into a fresh `Vec` and push. That version was **eight times
@@ -631,7 +631,7 @@ different paths.
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 842 loaded, 763 timed
 
-### Stop guessing: there is a profiler on this container
+### Profiling on this container
 
 `valgrind` is installed, `perf` is not. `callgrind` counts instructions exactly,
 which is better than sampling for a program that lives half a millisecond. The
@@ -687,7 +687,7 @@ would produce a silent wrong answer.
 | `repr(i)` | 0.720 µs | 0.573 µs | **−8%** |
 | `len(t)` (the control — untouched by this change) | 0.348 µs | 0.302 µs | — |
 
-### And the suite could not see any of it
+### Why the suite could not see it
 
 perf TOTAL stayed at 3.65x. `str-repr` is `repr([i, 'a', 1.5])`, which is a
 *composite* repr and falls through to the old path; no case called `str()` or
@@ -755,7 +755,7 @@ level that changed an answer would be a compiler bug and is worth knowing about.
 
 Two results, and the negative one is the longer entry.
 
-### The change that did not work
+### The change that was rejected
 
 `str-repr` sat at the top of the queue (4.3x, 88% of corpus programs), so the
 builtin call path was opened. `eval::lookup` reaches `builtins::builtin` on every
@@ -787,7 +787,7 @@ saying why `builtins.rs` is not in it.
 **Do not re-propose binary-searching BUILTINS or EXCEPTIONS.** The reasoning is
 sound and the measurement says it does not matter.
 
-### The MISMATCH it turned up on the way
+### A MISMATCH found in passing
 
 Sorting `EXCEPTIONS` for that search needed `IOError` moved away from `OSError`,
 which raised the question of how aliasing was handled at all. It was not, in one

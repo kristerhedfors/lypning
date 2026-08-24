@@ -33,7 +33,7 @@ deliberately not in CI — see *Why this is not a CI gate* below.
 
 ---
 
-## What is being measured, and against what
+## Scope of measurement
 
 lypning-mp is a MicroPython variant. On its own its timings answer "how long does
 this take", which nobody needs to know. Against **stock MicroPython built from
@@ -55,7 +55,7 @@ optimisation, and — the entire premise of the project — a runtime whose cost
 the sandbox is *cold start*, not warm CPU (`docs/MICROPYTHON.md` §1). lypning-mp losing
 to CPython on a warm microbenchmark is expected and is not a result.
 
-## How to read this
+## Reading the tables
 
 **The ratio is the deliverable.** `py/stock min` is the verdict: lypning-mp's
 floor-subtracted minimum over stock's, on the same case. 1.00 means our variant
@@ -91,7 +91,7 @@ Python `re` shim, the second goes straight at the C engine both builds share. A
 gap in the first and none in the second locates the cost in the shim, not in the
 engine — which is a completely different thing to fix.
 
-## What a regression looks like
+## Identifying a regression
 
 Compare a new entry against the previous one **on the same machine**, row by row,
 and only on rows neither run marked `!`.
@@ -112,7 +112,7 @@ numbers on x86-64; the emulated i386 guest is substantially slower, so a case
 that takes seconds here is the one to worry about there. The
 `dict-insert-20k` row is the standing example.
 
-## Why this is not a CI gate
+## Exclusion from CI
 
 A wall-clock benchmark on a shared CI runner measures the runner. Every number
 here moves by more than 10% between back-to-back runs on an idle machine, and CI
@@ -303,7 +303,7 @@ where the dict cost is not — see `py/map.c` in the port patch.
 | stdin 2,000 lines -> frequency dict -> top 5 | 45.6 | 44.9 | 41.7 | 41.1 | 17.5 | 16.6 |
 | stdin 2,000 lines -> filter + upper -> stdout | 7.32 | 7.15 | 13.7 | 13.0 | 14.1 | 12.9 |
 
-### Cases a binary could not run (data, not failures)
+### Cases a binary could not run
 | case | binary | verdict | reason |
 |---|---|---|---|
 | ure.sub(r"\W+") x2000, ASCII (native sub, no shim) | CPython3* | unsupported | ModuleNotFoundError: No module named 'ure' |
@@ -398,7 +398,7 @@ MicroPython pin **v1.28.0** (`e0e9fbb17ed6`), repo `bb939924dc43` on branch `cla
 | stdin 2,000 lines -> frequency dict -> top 5 | 67.7 | 65.3 | 70.0 | 68.1 | 21.2 | 20.5 |
 | stdin 2,000 lines -> filter + upper -> stdout | 10.0 | 9.43 | 16.0 | 15.6 | 16.8 | 15.4 |
 
-### Cases a binary could not run (data, not failures)
+### Cases a binary could not run
 | case | binary | verdict | reason |
 |---|---|---|---|
 | ure.sub(r"\W+") x2000, ASCII (native sub, no shim) | CPython3* | unsupported | ModuleNotFoundError: No module named 'ure' |
@@ -413,7 +413,7 @@ Config: repeats=15 warmup=3 max-case-ms=30000. Verdict ratio uses the floor-subt
 
 ---
 
-### Reading
+### Interpretation
 
 **This is the harness's first real job: judging someone else's optimization.**
 PR #434 changed only `micropython/variant/mpconfigvariant.h` and `mpconfigvariant.mk`
@@ -540,7 +540,7 @@ MicroPython pin **v1.28.0** (`e0e9fbb17ed6`), repo `fa90a86e22e9` (working tree 
 | stdin 2,000 lines -> frequency dict -> top 5 | 79.5 | 77.0 | 59.6 | 57.4 | 17.2 | 16.1 |
 | stdin 2,000 lines -> filter + upper -> stdout | 7.24 | 7.12 | 14.9 | 14.4 | 13.2 | 12.5 |
 
-### Cases a binary could not run (data, not failures)
+### Cases a binary could not run
 | case | binary | verdict | reason |
 |---|---|---|---|
 | ure.sub(r"\W+") x2000, ASCII (native sub, no shim) | CPython3* | unsupported | ModuleNotFoundError: No module named 'ure' |
@@ -551,7 +551,7 @@ MicroPython pin **v1.28.0** (`e0e9fbb17ed6`), repo `fa90a86e22e9` (working tree 
 Machine: Intel(R) Xeon(R) Processor @ 2.80GHz x4, 17 GB, Linux 6.18.5-fc-v20 x86_64, node v22.22.2. Load average at start/end: 0.56 0.52 0.36 / 0.99 0.77 0.49.
 Config: repeats=15 warmup=3 max-case-ms=30000. Verdict ratio uses the floor-subtracted MIN.
 
-### Reading
+### Interpretation
 
 Reproducibility first, because nothing below is worth reading without it. This
 battery was run twice back to back on the same idle machine, and the ratios

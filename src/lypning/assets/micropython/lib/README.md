@@ -139,9 +139,61 @@ bite silently — a program that finishes, prints something plausible, and exits
 
 ### Everything else
 
-17. `base64.b64decode` does not validate: MicroPython's `a2b_base64` is lenient
-    where CPython raises. Both reject bad padding, with different messages.
-    `validate=True` is accepted and ignored.
+17. **Closed.** `base64.b64decode` used not to validate, and `validate=True` was
+    accepted and ignored — so `b64decode(b"a!Gk=", validate=True)` returned
+    `b'hi'` where CPython raises. That was not a message difference but a wrong
+    ANSWER to "is this valid base64", reached by a tier the classifier routes to
+    on `import base64`. `b64encode` had the matching hole in the other
+    direction: it took a `str` and encoded it where CPython raises `TypeError`.
+
+    `base64.py` now carries `_scan`, a transcription of CPython's
+    `binascii_a2b_base64_impl` error detection — detection only, so the decode
+    stays on the C function, which already agreed with CPython on every value
+    both accept. It runs when `validate=True` (the C decoder has no strict mode,
+    so nothing else can be right) and when the C decoder has already failed (to
+    say what CPython would have said about the same bytes). The happy path is
+    still one C call.
+
+    That also closes the message text, which used to be the half this entry left
+    open: MicroPython says `incorrect padding` for every unfinished quad, where
+    CPython separates the one-more-than-a-multiple-of-4 case out with its own
+    message and a character count. Two verdicts, not two spellings.
+
+    **CPython's base64 error taxonomy is not a stable contract, and this was
+    learned the expensive way.** `validate=True` only began reaching
+    `a2b_base64(strict_mode=True)` in 3.11; 3.9 and 3.10 raised `Non-base64
+    digit found` for everything. Then it moved *again inside 3.13*: a CI runner
+    on a later 3.13 than the container this was written on reports `Excess
+    padding not allowed` where 3.13.12 says `Excess data after padding`, and
+    refuses `b"aGk=aGk="` in LENIENT mode, which 3.11, 3.12 and 3.13.12 all
+    decode to `b'hi'`.
+
+    So the differential cases pin which inputs are refused — a set that has held
+    from 3.11 through every 3.13 seen so far — and not what the refusal is
+    called. The wording the shim produces is pinned instead in
+    `test_base64_shim_output_is_pinned_without_an_oracle`, where an interpreter
+    upgrade cannot rewrite the expectation underneath it.
+    `base64-validate-rejects` still declares `(3, 11)`, because 3.10 refuses a
+    genuinely different set: it accepts `b"aGk=="` where 3.11 onward rejects it.
+
+    **Known divergence, and not closable from here:** on a CPython new enough to
+    refuse `b"aGk=aGk="` without `validate=True`, this shim returns `b'hi'` —
+    MicroPython's C decoder stops at the first completed padding and the decode
+    is deliberately left on it. Matching that would mean reimplementing the
+    decode in Python and picking one CPython release to be right about, when the
+    releases disagree with each other.
+
+    Verified two ways, because the model and the binary can disagree: brute
+    force over every string up to length 6 from `aG=!\n-` plus 60,000 random
+    ones (0 divergences from CPython), and all eleven `base64` cases in
+    `tests/test_shims.py` run against a built lypning-mp. The `b"a=a"` case —
+    `Discontinuous padding not allowed`, a different message from `Excess data
+    after padding` — was found only by the brute force.
+
+    Doing this exposed a wrong MODEL, which is the more useful finding. The
+    `binascii` stand-in in `tests/test_shims.py` wrapped CPython's `a2b_base64`
+    and lower-cased its message, so it modelled a divergence that does not exist
+    and hid one that does. It is now a transcription of the C.
 
     The exception's **type** used to differ too, and no longer does. CPython
     raises `binascii.Error`; MicroPython's `binascii` defines no `Error` at all
@@ -163,8 +215,20 @@ bite silently — a program that finishes, prints something plausible, and exits
     MicroPython's `binascii` — an absence, so it had to be modelled deliberately
     or the shim run would keep importing CPython's and getting `Error` for free.
 
-    What is left is the message text — CPython's `Incorrect padding` against
-    MicroPython's `incorrect padding` — and that IS #19's kind of difference.
+    What was left after that was the message text — CPython's `Incorrect
+    padding` against MicroPython's `incorrect padding` — and it was filed as
+    #19's kind of difference, the kind Python does not specify and this
+    directory does not chase. It is closed anyway, above, and the reason is
+    worth keeping: chasing it turned up `validate=True` being ignored, which is
+    not a message at all. A divergence dismissed as cosmetic was sitting on top
+    of one that made the tier answer a validation question wrongly.
+
+    **What is left is not in this directory.** `py-9b16a7261b96` still
+    MISMATCHes, and now for #17a alone — the entry prints `type(e).__module__`
+    for every exception it catches, and reaches its first builtin one on the
+    `TypeError` that `b64encode("hi")` now correctly raises. Closing base64 made
+    that entry fail SOONER, which is the honest outcome and not a regression:
+    the engine got better and the probe got shorter.
 
 17a. **Builtin types have no `__module__`.** `TypeError.__module__` is
     `'builtins'` on CPython and raises `AttributeError` on MicroPython; a class

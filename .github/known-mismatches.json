@@ -1,0 +1,96 @@
+{
+  "_": [
+    "Mismatches the micropython-conformance job accepts, BY IDENTITY.",
+    "",
+    "Scored by .github/scripts/known-mismatches.py. A mismatch not named here",
+    "reddens that job; a mismatch named here that stops reproducing reddens it",
+    "too, because a ledger nobody prunes is a ledger that waives things nobody",
+    "remembers. Identity is (engine, entry_id, kind) — never a count, because a",
+    "count lets one defect be fixed while another appears and keeps the tick",
+    "green, which is invariant 1's silent failure with a badge on it.",
+    "",
+    "`lypning conformance` itself is unchanged and absolute: MISMATCH must be 0",
+    "and it exits 1 on any. This file governs one CI job's outcome and nothing",
+    "else. It is not a capability table and must never be used as one.",
+    "",
+    "Measured 2026-08-23 over a corpus of 1430 programs. Both numbers move every",
+    "session (invariant 3) — re-run rather than quoting these."
+  ],
+
+  "accepted": [
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-876af0f0a956",
+      "kind": "contract",
+      "class": "defect",
+      "why": "commit barrier: refused after 54 B had reached stdout (docs/LYPNING.md §6)"
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-b2a043f241f1",
+      "kind": "contract",
+      "class": "defect",
+      "why": "commit barrier: refused after 147 B had reached stdout (docs/LYPNING.md §6)"
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-d47e7737aa13",
+      "kind": "contract",
+      "class": "defect",
+      "why": "commit barrier: refused after 693 B had reached stdout (docs/LYPNING.md §6)"
+    },
+
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-9b16a7261b96",
+      "kind": "stdout",
+      "class": "defect",
+      "why": "builtin types have no __module__ (lib/README.md 17a). The entry prints type(e).__module__ for every exception it catches and dies on the first builtin one, so stdout stops at line 12. NOT the base64 defect this entry used to carry: that is closed, and lines 1-11 now match CPython byte for byte. Not fixable from a shim -- it is ~6 lines in objtype.c beside the existing __name__/__dict__/__bases__ handlers, deferred deliberately because returning 'builtins' for every C-defined type is over-broad and wants its own decision."
+    },
+    {
+      "engine": "mixture",
+      "entry_id": "py-9b16a7261b96",
+      "kind": "stdout",
+      "class": "defect",
+      "why": "the same program through the dispatcher. The tier exits 1 with a traceback rather than 90, and an ordinary non-zero exit is deliberately NOT treated as a refusal (re-running would execute side effects twice), so the fall-through does not rescue it -- the routing gate grades it UNSAFE, not rescued. A loud crash where CPython succeeds, not a silently wrong answer: the silently-wrong half was `validate=True` being ignored, and that is fixed."
+    },
+
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-a17250cecb37",
+      "kind": "exit",
+      "class": "corpus-artifact",
+      "why": "self-referential entry: `sys.path.insert(0,'src'); from lypning import perf`. It runs under the CPython reference only because THIS repository is importable there, and every entry runs in a temp cwd with no src/ (invariant 4). Not an engine defect; the tier is right to fail an import it cannot satisfy. A corpus tag cannot express this — `is_nondeterministic` relaxes stdout, not the exit code."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-d72e3ff2ddbe",
+      "kind": "exit",
+      "class": "corpus-artifact",
+      "why": "self-referential entry: `from lypning import engines`, resolved from site-packages under the reference and from nowhere under the tier. Same cause as py-a17250cecb37."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-ed8fafe6cdb2",
+      "kind": "exit",
+      "class": "corpus-artifact",
+      "why": "self-referential entry: `from lypning import corpus` + `inspect.getsourcefile`. Same cause as py-a17250cecb37."
+    }
+  ],
+
+  "_history": [
+    "py-9b16a7261b96 was deliberately held OUT of this file when it was written,",
+    "because base64 was then answering a validation question wrongly:",
+    "`b64decode(b\"a!Gk=\", validate=True)` returned b'hi' where CPython raises, and",
+    "`b64encode(\"hi\")` encoded a str the same way. Those are fixed in",
+    "lib/base64.py — not waived — and lines 1-11 of that program now match CPython",
+    "byte for byte. The entry is accepted above for what is left, which is a",
+    "different and separately documented defect (lib/README.md 17a).",
+    "",
+    "Recorded because it is the argument for scoring by identity in one paragraph:",
+    "the line here names a CAUSE, so when the cause changed the line had to be",
+    "rewritten and re-justified. A count would have carried straight over — same",
+    "number, same green or red — with nobody noticing that the mismatch it was",
+    "covering had stopped being the same mismatch."
+  ]
+}
