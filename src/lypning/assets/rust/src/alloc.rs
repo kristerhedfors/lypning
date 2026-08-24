@@ -130,14 +130,26 @@ fn class_of(layout: Layout) -> Option<usize> {
 }
 
 unsafe impl GlobalAlloc for Lypalloc {
-    /// `inline(never)`, and it is not a detail. With `#[inline]` here the three
-    /// methods are duplicated into the `__rust_alloc` shims and everything that
-    /// reaches them, and the binary came out **8,192 bytes larger** for no
-    /// measurable speed — the fast path is a pop and a store, so the call is
-    /// already most of the remaining cost and duplicating it buys nothing. The
-    /// image is a step function in 131,072 B device blocks (`docs/LYPNING.md`
-    /// §8), so those bytes are not free the way they would be anywhere else.
-    #[inline(never)]
+    /// `#[inline]`, and it was `inline(never)` for four iterations because the
+    /// bytes could not be afforded — the image is a step function in 131,072 B
+    /// device blocks (`docs/LYPNING.md` §8) and there were 3,400 bytes of
+    /// headroom when this file was written. Boxing the error payload (ledger,
+    /// iteration 22) freed 45,056 B, and the attribute was re-measured rather
+    /// than assumed.
+    ///
+    /// It costs **4,096 B** and is worth it. The reading is a hard one to take
+    /// honestly, because it is the size where this profile's own inlining
+    /// decisions move on their own, so it was taken the way the skill says to:
+    /// **four builds of the unchanged source** with a comment moved in an
+    /// unrelated file, against **three of the changed** one. Perf TOTAL, ms:
+    ///
+    ///   unchanged  1690.46  1703.90  1705.45  1726.75
+    ///   `#[inline]` 1634.44  1653.03  1662.16
+    ///
+    /// The bands do not overlap — the worst inlined build beats the best
+    /// non-inlined one by 28 ms — so the ~3.3% is a real difference and not the
+    /// linker. `membership`, `dict-set` and `str-repr` carry most of it.
+    #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let class = match class_of(layout) {
             Some(c) => c,
@@ -177,7 +189,7 @@ unsafe impl GlobalAlloc for Lypalloc {
         out
     }
 
-    #[inline(never)]
+    #[inline]
     unsafe fn dealloc(&self, p: *mut u8, layout: Layout) {
         let class = match class_of(layout) {
             Some(c) => c,
@@ -197,7 +209,7 @@ unsafe impl GlobalAlloc for Lypalloc {
     /// worst row in `lypning perf`. Small blocks keep the default path, where
     /// the copy is at most 256 bytes and the pop is cheaper than anything
     /// `System` could do.
-    #[inline(never)]
+    #[inline]
     unsafe fn realloc(&self, p: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         if class_of(layout).is_none()
             && layout.align() <= GRAIN

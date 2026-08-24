@@ -28,6 +28,44 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-24 · iteration 23 — spending 4 KB of the 45 that iteration 22 freed
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1488 loaded, 1272 timed
+
+**bytes** 975,048 → 979,144 (+4,096; **8 blocks**, headroom 69,432) ·
+**conformance** 888 / 384 / **0 MISMATCH** ·
+**perf** TOTAL ~1707 → ~1650 ms (−3.3%, bands below) ·
+**corpus** 1.69 → 1.65 s, 0.974x
+
+Iteration 18 set `#[inline(never)]` on the allocator's three `GlobalAlloc`
+methods and said in as many words that it was a byte decision to revisit when
+the budget allowed. Iteration 22 freed 45,056 B. This spends 4,096 of them.
+
+**The measurement is the entry.** A single A/B said −48 ms, or 2.9% — squarely
+inside the range where this profile's inlining decisions move on their own
+(iteration 15), and exactly the reading the skill says not to believe. So it was
+taken its way: **four builds of the unchanged source**, differing only by a
+comment appended to an unrelated file, against **three of the changed** one.
+
+```
+perf TOTAL, ms
+  inline(never)   1690.46   1703.90   1705.45   1726.79
+  inline          1634.44   1653.03   1662.16
+```
+
+The baseline's own spread is 36 ms — 2.1%, which is why one comparison could
+never have settled this. But the bands **do not overlap**: the worst inlined
+build beats the best non-inlined one by 28 ms. Real, and about 3.3%.
+`membership` (−14.83), `dict-set` (−9.04) and `str-repr` (−4.08) carry most of
+it; twelve rows move and none regresses.
+
+The `inline(never)` comment in `alloc.rs` also said the attribute cost "8,192
+bytes for no measurable speed". Both halves were wrong by iteration 23: it is
+4,096 bytes on this binary, and the speed is measurable when you measure it
+properly. The comment now carries the seven numbers instead of the conclusion.
+
+---
+
 ## 2026-08-24 · iteration 22 — the error type was in every return value
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1488 loaded, 1272 timed
