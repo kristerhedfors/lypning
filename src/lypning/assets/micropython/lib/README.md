@@ -159,11 +159,29 @@ bite silently — a program that finishes, prints something plausible, and exits
     CPython separates the one-more-than-a-multiple-of-4 case out with its own
     message and a character count. Two verdicts, not two spellings.
 
-    **The four strict messages are CPython 3.11's** — `validate=True` only began
-    reaching `a2b_base64(strict_mode=True)` there; 3.9 and 3.10 raised
-    `Non-base64 digit found` for all of them. Against an older oracle the shim
-    still rejects the same inputs and words it differently, which is why
-    `base64-validate-rejects` declares `(3, 11)`.
+    **CPython's base64 error taxonomy is not a stable contract, and this was
+    learned the expensive way.** `validate=True` only began reaching
+    `a2b_base64(strict_mode=True)` in 3.11; 3.9 and 3.10 raised `Non-base64
+    digit found` for everything. Then it moved *again inside 3.13*: a CI runner
+    on a later 3.13 than the container this was written on reports `Excess
+    padding not allowed` where 3.13.12 says `Excess data after padding`, and
+    refuses `b"aGk=aGk="` in LENIENT mode, which 3.11, 3.12 and 3.13.12 all
+    decode to `b'hi'`.
+
+    So the differential cases pin which inputs are refused — a set that has held
+    from 3.11 through every 3.13 seen so far — and not what the refusal is
+    called. The wording the shim produces is pinned instead in
+    `test_base64_shim_output_is_pinned_without_an_oracle`, where an interpreter
+    upgrade cannot rewrite the expectation underneath it.
+    `base64-validate-rejects` still declares `(3, 11)`, because 3.10 refuses a
+    genuinely different set: it accepts `b"aGk=="` where 3.11 onward rejects it.
+
+    **Known divergence, and not closable from here:** on a CPython new enough to
+    refuse `b"aGk=aGk="` without `validate=True`, this shim returns `b'hi'` —
+    MicroPython's C decoder stops at the first completed padding and the decode
+    is deliberately left on it. Matching that would mean reimplementing the
+    decode in Python and picking one CPython release to be right about, when the
+    releases disagree with each other.
 
     Verified two ways, because the model and the binary can disagree: brute
     force over every string up to length 6 from `aG=!\n-` plus 60,000 random
