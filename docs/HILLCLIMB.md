@@ -28,6 +28,62 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-24 · iteration 34 — unpacking copied the tuple it was taking apart
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 983,240 → 983,240 (**8 blocks**, unchanged) ·
+**conformance** 906 / 399 / **0 MISMATCH** ·
+**perf** `tuple-unpack` **27.59 → 23.73 ms** (−14%), `enumerate-zip` 32.30 →
+28.06 (−13%) ·
+**corpus** 1.58 → 1.57 s, 0.993x ·
+**fuzz** seed 20260824 × 3000, 0 counterexamples
+
+`a, b = pair` went through `iter_collect`, which for a tuple is `(**t).clone()`
+— a fresh `Vec<Value>`, every element cloned into it, handed over one at a time,
+and the vector dropped. The shape is everywhere: `for k, v in d.items()`,
+`a, b = b, a`, `for i, x in enumerate(…)`.
+
+A tuple of exactly the right length with no star target now assigns straight
+from the source.
+
+**A list deliberately does not**, and that is the interesting half. CPython's
+`UNPACK_SEQUENCE` reads every element before assigning any, so a target that
+mutates the list must not be visible to the elements after it — the snapshot is
+required, and the snapshot is exactly the copy `iter_collect` already makes.
+There is nothing to win there. A tuple is immutable, so reading it in place and
+snapshotting it are the same thing. (`l[f()], l[1] = src` where `f` appends to
+`src` is pinned.)
+
+### The same message defect as `join`, in the same shape
+
+The 36-program sweep found `a, b = 5` reporting `'int' object is not iterable`
+where CPython says **`cannot unpack non-iterable int object`**. Unpacking has its
+own message, exactly as `join` does. Pre-existing on the iteration-33 binary.
+
+And the same trap: the remap goes on `make_iter` **alone**, with the drain
+written out, or every exception the sequence raises while being drained becomes
+it — `a, b = (1//x for x in [1, 0])` would report a TypeError where CPython
+raises ZeroDivisionError. That is the third time this exact shape has come up
+(`sum`, `join`, here), which is starting to look like a pattern rather than three
+accidents.
+
+### The pins that did not pin anything
+
+The message cases went into `CASES` first and **passed on the binary that had
+the bug** — because `CASES` compares stdout and the exit code, and every one of
+them exits 1 with empty stdout whether the message is right or wrong. A test
+that cannot fail is worse than no test, because it reads as coverage.
+
+They are in a new `STDERR_CASES` now, with a test that asserts the message and
+checks the oracle first, so a CPython that changed its wording fails loudly
+instead of quietly turning the assertion into a tautology. Three of them fail on
+the iteration-33 binary; the behavioural pins (nested, star, subscript targets,
+swap, the list snapshot) stay in `CASES`, where comparing stdout is exactly
+right.
+
+---
+
 ## 2026-08-24 · iteration 33 — `1 == 2` paid for a recursion guard
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed

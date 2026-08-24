@@ -490,7 +490,57 @@ impl Interp {
             Target::Name(n) => self.bind(n, v),
             Target::Tuple(parts) => {
                 let star_at = parts.iter().position(|p| matches!(p, Target::Star(_)));
-                let items = self.iter_collect(v)?;
+                // `a, b = pair` with a tuple or list of exactly the right
+                // length is the shape almost every unpack has — `for k, v in
+                // d.items()`, `a, b = b, a`, `for i, x in enumerate(…)` — and it
+                // does not need the sequence copied to be taken apart.
+                // `iter_collect` builds a fresh `Vec<Value>`, clones every
+                // element into it, hands them over one at a time and drops the
+                // vector; here the elements are cloned straight out of the
+                // source. Anything else — a star target, a generator, a string,
+                // the wrong length — falls through to the general path below,
+                // which owns every error message.
+                // A TUPLE only, and that is not an oversight. Unpacking a LIST
+                // has to snapshot it — CPython's `UNPACK_SEQUENCE` reads every
+                // element before it assigns any, so a target that mutates the
+                // list must not be seen by the elements after it — and a
+                // snapshot is exactly the copy `iter_collect` already makes.
+                // There is nothing to win there. A tuple is immutable, so
+                // reading it in place and snapshotting it are the same thing.
+                if star_at.is_none() {
+                    if let Value::Tuple(t) = &v {
+                        if t.len() == parts.len() {
+                            for (p, x) in parts.iter().zip(t.iter()) {
+                                self.assign(p, x.clone())?;
+                            }
+                            return Ok(());
+                        }
+                    }
+                }
+                // Unpacking has its OWN message for a non-iterable — `a, b = 5`
+                // is "cannot unpack non-iterable int object", where
+                // `iter_collect` produced the generic "'int' object is not
+                // iterable". Same exit code, different sentence, and the
+                // sentence is what the caller reads.
+                //
+                // As in `str.join` (ledger, iteration 28), the remap is on
+                // `make_iter` ALONE and the drain is written out for it. Wrapping
+                // the whole collect would turn every exception the sequence
+                // raises *while being drained* into this message — `a, b = (1//x
+                // for x in [1, 0])` would report a TypeError where CPython raises
+                // ZeroDivisionError.
+                let tname = type_name(&v);
+                let mut iter = self.make_iter(v).map_err(|e| {
+                    if e.is_unsupported() {
+                        e
+                    } else {
+                        type_err(format!("cannot unpack non-iterable {tname} object"))
+                    }
+                })?;
+                let mut items = Vec::new();
+                while let Some(x) = self.iter_next(&mut iter)? {
+                    items.push(x);
+                }
                 match star_at {
                     None => {
                         if items.len() != parts.len() {

@@ -162,6 +162,17 @@ CASES = [
     ("hkey-tuple-nested", "d = {(1, (2, 3)): 'a'}\nprint(d[(1, (2, 3))])"),
     ("hkey-collapses-numeric", "d = {1: 'a'}\nd[1.0] = 'b'\nd[True] = 'c'\nprint(len(d), d[1])"),
     ("membership-mixed", "print(1 in [1.0], 'a' in ['a'], (1,) in [(1,)], None in [None])"),
+    # The tuple fast path must not change any of these. (The MESSAGE cases for
+    # unpacking are in `STDERR_CASES` below, not here: `CASES` compares stdout
+    # and the exit code, so a message case put here passes on the very binary
+    # that has the bug — which is how the first draft of these was written.)
+    ("unpack-wrong-length-few", "a, b, c = (1, 2)"),
+    ("unpack-wrong-length-many", "a, b = (1, 2, 3)"),
+    ("unpack-nested", "a, (b, (c, d)) = 1, (2, (3, 4))\nprint(a, b, c, d)"),
+    ("unpack-star-mid", "a, *b, c = (1, 2, 3, 4, 5)\nprint(a, b, c)"),
+    ("unpack-into-subscripts", "l = [0, 0, 0]\nl[0], (l[1], l[2]) = 1, (2, 3)\nprint(l)"),
+    ("unpack-swap", "a, b = 1, 2\na, b = b, a\nprint(a, b)"),
+    ("unpack-list-is-snapshotted", "src = [1, 2]\ndef f():\n    src.append(9)\n    return 0\nl = [0, 0]\nl[f()], l[1] = src\nprint(l, src)"),
 ]
 
 needs_engine = pytest.mark.skipif(
@@ -291,4 +302,58 @@ def test_json_unterminated_string_points_at_the_opening_quote() -> None:
     assert want in got.stderr, (
         "lypning reported %r; it used to point at char 4, the end of the scan"
         % got.stderr.strip()[-120:]
+    )
+
+
+#: Cases whose whole content is the message on stderr. `CASES` cannot hold them:
+#: it compares stdout and the exit code, and every one of these exits 1 with
+#: empty stdout on both interpreters whether the message is right or wrong.
+#:
+#: Each pair is (name, program, the substring CPython must produce). The oracle
+#: is checked first on every run, so a CPython that changed its wording fails
+#: loudly here instead of silently turning the test into a tautology.
+STDERR_CASES = [
+    # Unpacking has its own message for a non-iterable, and the same trap `join`
+    # had: the remap must be on `make_iter` alone, or every exception raised
+    # while DRAINING the sequence turns into it.
+    ("unpack-non-iterable-int", "a, b = 5",
+     "cannot unpack non-iterable int object"),
+    ("unpack-non-iterable-none", "a, b = None",
+     "cannot unpack non-iterable NoneType object"),
+    ("unpack-non-iterable-float", "a, b = 1.5",
+     "cannot unpack non-iterable float object"),
+    ("unpack-generator-raises-through", "a, b = (1//x for x in [1, 0])",
+     "ZeroDivisionError"),
+    ("unpack-generator-value-error", "a, b = (int(x) for x in ['1', 'z'])",
+     "invalid literal for int()"),
+    # The same shape in `join`, kept beside it so the pair is visible.
+    ("join-non-iterable-message-text", "print(','.join(5))",
+     "can only join an iterable"),
+    ("join-generator-raises-through-text",
+     "print(','.join(str(1//x) for x in [1, 0]))", "ZeroDivisionError"),
+]
+
+
+@needs_engine
+@pytest.mark.parametrize(
+    "name,program,message", STDERR_CASES, ids=[c[0] for c in STDERR_CASES]
+)
+def test_the_message_on_stderr_matches_cpython(name, program, message) -> None:
+    ref = subprocess.run(
+        [sys.executable, "-c", program], capture_output=True, text=True, timeout=30
+    )
+    assert ref.returncode == 1 and message in ref.stderr, (
+        "the oracle moved: CPython no longer produces %r for %s — got %r"
+        % (message, name, ref.stderr.strip()[-200:])
+    )
+    got = engines.run(engines.LYPNING, program, timeout=30)
+    assert not got.refused, (
+        "%s: a refusal is safe but wrong here — CPython raises rather than "
+        "answering, so lypning can and should raise the same thing" % name
+    )
+    assert got.returncode == 1, "%s: exit %d, stdout %r" % (
+        name, got.returncode, got.stdout)
+    assert message in got.stderr, (
+        "%s: lypning said %r, CPython says %r" % (
+            name, got.stderr.strip()[-160:], message)
     )
