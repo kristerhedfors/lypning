@@ -14,6 +14,19 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-24** — Every markdown file the docs cite opens as rendered · [#12]
+
+- `docs/PROMPTING.md` and `docs/HILLCLIMB.md` are in README §9's table and were
+  cited across the docs, and the site published neither. Both now have a page,
+  and `site/build.py` refuses to build if any `docs/*.md` has none.
+- A backtick citation of markdown the site does *not* publish — a study prompt,
+  a skill, an asset README — now resolves to the blob view that renders it.
+  Upstream provenance paths stay plain code: they are not in this tree to open,
+  and a citation that 404s is worse than one that does not move.
+- `site/build.py --check` grew the assertion that catches this class of failure:
+  an unlinked citation is not a dead link, it is grey text, so `check_links`
+  could never see it. Bare names like `SKILL.md` are held to it too.
+
 **2026-08-23** — `base64.b64decode` raises the class CPython raises · [#9]
 
 - The MicroPython tier's shim raised a bare `ValueError` where CPython raises
@@ -255,6 +268,7 @@ runtime exists — the number came first, and both were built for it. It is
 [#9]: https://github.com/kristerhedfors/lypning/pull/9
 
 [#10]: https://github.com/kristerhedfors/lypning/pull/10
+[#12]: https://github.com/kristerhedfors/lypning/pull/12
 [ds]: https://github.com/kristerhedfors/deepresearch.se
 [u432]: https://github.com/kristerhedfors/deepresearch.se/pull/432
 [u434]: https://github.com/kristerhedfors/deepresearch.se/pull/434

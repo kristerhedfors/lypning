@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import os
 import re
 import shutil
 import sys
@@ -50,8 +51,10 @@ PAGES = [
     ("docs/MICROPYTHON.md", "docs/micropython.html", "MicroPython tier", "The frozen-stdlib variant, and the cost model both runtimes are optimised against."),
     ("docs/RESEARCH.md", "docs/research.html", "Research", "How the runtime was chosen and built, including what was measured and rejected."),
     ("docs/CAPTURE.md", "docs/capture.html", "Capture", "The hooks and shim that grow the corpus, and what they do and do not record."),
+    ("docs/PROMPTING.md", "docs/prompting.html", "Prompting", "Can an agent be asked into the subset? 884 generated programs across nine treatments."),
     ("docs/EMBEDDING.md", "docs/embedding.html", "Embedding", "Linking the runtime into a harness: the C ABI, the five bindings, and what a refusal means with no exit code."),
     ("docs/BENCH-LEDGER.md", "docs/bench-ledger.html", "Bench ledger", "Append-only measurement history, including the runs where the subset lost."),
+    ("docs/HILLCLIMB.md", "docs/hillclimb.html", "Hillclimb ledger", "Append-only history of improvement steps — the four numbers each moved, and the ones that moved nothing."),
     ("docs/SANDBOX-PERFORMANCE.md", "docs/sandbox-performance.html", "Sandbox cost", "The measurements the whole project is downstream of."),
     ("CLAUDE.md", "contributing.html", "Working agreement", "The invariants an agent changing this repository must not break."),
     ("CHANGELOG.md", "changelog.html", "Changelog", "Every change that matters, back to before the project had this name — with the defects tracked rather than waived."),
@@ -66,8 +69,12 @@ EXTENSION_CONFIGS = {
 GITHUB = "https://github.com/kristerhedfors/lypning"
 
 # Source files the docs link to directly. They have no rendered page, so they
-# resolve to the blob on GitHub rather than to a dead relative path.
-SOURCE_SUFFIXES = (".py", ".rs", ".sh", ".h", ".mk", ".toml", ".jsonl", ".yml", ".json")
+# resolve to the blob on GitHub rather than to a dead relative path. ``.md`` is
+# in the list on purpose and only ever reached after the lookup in _BY_SOURCE
+# below: a markdown file this site does not publish — a study prompt, a skill,
+# an asset README — still has to open as RENDERED markdown for the reader, and
+# GitHub's blob view renders it.
+SOURCE_SUFFIXES = (".py", ".rs", ".sh", ".h", ".mk", ".toml", ".jsonl", ".yml", ".json", ".md")
 
 # Images the markdown references by repo path. They are copied to the SAME path
 # under the output, so `src="docs/logo.svg"` needs no rewriting and means the
@@ -75,6 +82,23 @@ SOURCE_SUFFIXES = (".py", ".rs", ".sh", ".h", ".mk", ".toml", ".jsonl", ".yml", 
 IMAGES = ("docs/logo.svg",)
 
 _BY_SOURCE = {src: out for src, out, _, _ in PAGES}
+
+
+def _repo_path(here: Path, target: str) -> str:
+    """``target``, written relative to ``here``, as a path from the repo root.
+
+    Normalises ``..`` textually rather than through the filesystem: the target
+    may be a path that only exists on GitHub, or in the upstream repository
+    this one was extracted from.
+    """
+    parts: list[str] = []
+    for part in (here / target).as_posix().split("/"):
+        if part == "..":
+            if parts:
+                parts.pop()
+        elif part not in (".", ""):
+            parts.append(part)
+    return "/".join(parts)
 
 
 def rewrite_links(body: str, page_src: str) -> str:
@@ -104,17 +128,7 @@ def rewrite_links(body: str, page_src: str) -> str:
         # because it skips absolute URLs.
         if path.endswith(".html"):
             return m.group(0)
-        resolved = str((here / path).as_posix())
-        # Normalise ../ without touching the filesystem — the target may be a
-        # path that only exists on GitHub.
-        parts: list[str] = []
-        for part in resolved.split("/"):
-            if part == "..":
-                if parts:
-                    parts.pop()
-            elif part not in (".", ""):
-                parts.append(part)
-        resolved = "/".join(parts)
+        resolved = _repo_path(here, path)
         if resolved in IMAGES:
             # Copied to the same path under the output, so it maps to itself —
             # only the walk back up to the site root differs per page.
@@ -197,7 +211,65 @@ def render(src: Path) -> tuple[str, str]:
     return body, getattr(md, "toc", "")
 
 
-_XREF = re.compile(r"<code>(docs/[A-Z0-9-]+\.md|README\.md|CHANGELOG\.md|CLAUDE\.md)(\s+§[^<]*)?</code>")
+# A whole code span that is nothing but a repo path ending in `.md`, optionally
+# followed by the section or line marker the docs cite with. Anchored at both
+# ends on purpose: a span like `lypning bench --record docs/BENCH-LEDGER.md` is
+# a command to type, not a citation to follow. The negative lookahead keeps
+# `hashlib.md5` out.
+_MD_SPAN = r"<code>([^<\s]+\.md)(?![0-9A-Za-z])((?:\s+§[^<]*|:[0-9,]+)?)</code>"
+_XREF = re.compile(_MD_SPAN)
+
+# The two files the prose names by their bare filename, because the full path
+# would swamp the sentence they appear in and neither is ambiguous in context.
+# They are here rather than spelled out in the documents on purpose: `SKILL.md`
+# is what an agent sees the file called in its own session, and rewriting the
+# sentence to say `src/lypning/assets/claude/skills/lypning/SKILL.md` would make
+# the prose worse to serve the renderer. The basename alone does NOT resolve —
+# three files in this tree are called SKILL.md — so the mapping has to be
+# stated, and `check_markdown` fails the build on any bare name that is not.
+BARE_NAMES = {
+    "SKILL.md": "src/lypning/assets/claude/skills/lypning/SKILL.md",
+    "capability-brief.md": "study/prompts/capability-brief.md",
+}
+
+
+def _candidates(target: str, page_src: str) -> list[str]:
+    """Every repo path a citation of ``target`` from ``page_src`` could mean."""
+    found = [_repo_path(Path(page_src).parent, target), _repo_path(Path("."), target)]
+    if target in BARE_NAMES:
+        found.append(BARE_NAMES[target])
+    return found
+
+
+def _markdown_destination(target: str, page_src: str) -> str:
+    """Where a cited markdown file opens as RENDERED markdown, or ``""``.
+
+    Three outcomes, and the third is as deliberate as the other two:
+
+    * a file this site publishes → its own page, one click and no round trip;
+    * any other markdown file in this repository → the blob view on GitHub,
+      which renders it. A study prompt, a skill, an asset README: unpublished
+      here, but a reader following the citation must still land on prose rather
+      than on a 404 or a raw-text download;
+    * a path that is not in this tree → nothing, and the citation stays plain
+      code. `docs/TESTING.md:1226` and `docs/SANDBOX-LOCAL-IMAGE.md` are
+      PROVENANCE — citations of the upstream repository this was extracted
+      from, marked as such in the prose — and turning a citation into a link
+      that 404s would be worse than leaving it plain.
+
+    Citations are written relative to the citing file or to the repository root
+    — both spellings are in the docs, sometimes on the same page — so both are
+    tried, nearest first, and then :data:`BARE_NAMES`.
+    """
+    for candidate in _candidates(target, page_src):
+        if candidate == page_src:
+            return ""
+        if candidate in _BY_SOURCE:
+            depth = len(Path(_BY_SOURCE[page_src]).parent.parts)
+            return "../" * depth + _BY_SOURCE[candidate]
+        if (ROOT / candidate).is_file():
+            return "%s/blob/main/%s" % (GITHUB, candidate)
+    return ""
 
 
 def linkify_xrefs(body: str, page_src: str) -> str:
@@ -209,21 +281,18 @@ def linkify_xrefs(body: str, page_src: str) -> str:
     render time, leaving the source markdown exactly as a reader in a terminal
     wants it.
 
-    Only pages this site actually publishes are linked. The rest are left as
-    code, deliberately: `docs/TESTING.md:1226` and `docs/SANDBOX-LOCAL-IMAGE.md`
-    are PROVENANCE — citations of the upstream repository this was extracted
-    from, marked as such in the prose — and turning a citation into a link that
-    404s would be worse than leaving it plain.
+    :func:`_markdown_destination` decides where each one goes, and
+    :func:`check_markdown` asserts afterwards that none of the repository's own
+    markdown was left unlinked.
     """
-    depth = len(Path(_BY_SOURCE[page_src]).parent.parts)
-    up = "../" * depth
-
     def repl(m: "re.Match[str]") -> str:
         target, section = m.group(1), (m.group(2) or "")
-        if target not in _BY_SOURCE or target == page_src:
+        dest = _markdown_destination(target, page_src)
+        if not dest:
             return m.group(0)
-        return '<a class="xref" href="%s%s"><code>%s%s</code></a>' % (
-            up, _BY_SOURCE[target], target, section
+        rel = ' rel="noopener"' if dest.startswith("http") else ""
+        return '<a class="xref" href="%s"%s><code>%s%s</code></a>' % (
+            dest, rel, target, section
         )
 
     return _XREF.sub(repl, body)
@@ -274,7 +343,26 @@ def pygments_css() -> str:
     ])
 
 
+def check_pages_cover_docs() -> None:
+    """Every document in ``docs/`` gets a page. No opt-in, no quiet omissions.
+
+    README §9's table is the index of ``docs/`` and ``tests/test_docs.py`` holds
+    it to exactly what is on disk, so a doc that is missing HERE is a doc a
+    reader is pointed at from the site and cannot open on it. Two were —
+    ``PROMPTING.md`` and ``HILLCLIMB.md`` — and nothing noticed, because an
+    unpublished doc is not a dead link, it is a citation that renders as grey
+    text. This is the check that would have.
+    """
+    missing = sorted("docs/%s" % p.name for p in (ROOT / "docs").glob("*.md")
+                     if "docs/%s" % p.name not in _BY_SOURCE)
+    if missing:
+        sys.exit("site/build.py: %s in docs/ but not in PAGES — every doc gets a "
+                 "page, or a reader following a cross-reference cannot open it"
+                 % ", ".join(missing))
+
+
 def build(out_dir: Path) -> int:
+    check_pages_cover_docs()
     if out_dir.exists():
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True)
@@ -369,6 +457,14 @@ def main(argv: list[str] | None = None) -> int:
         if dead:
             return 1
         print("link check: every intra-site href resolves")
+
+        unlinked = check_markdown(out)
+        for page, target in unlinked:
+            print("unreachable markdown: %s cites %s and does not link it"
+                  % (page, target), file=sys.stderr)
+        if unlinked:
+            return 1
+        print("markdown check: every cited file in this repository opens rendered")
     return 0
 
 
@@ -388,6 +484,72 @@ def check_links(out: Path) -> list[tuple[str, str]]:
             if not target.exists():
                 dead.append((str(page.relative_to(out)), href))
     return dead
+
+
+# The same span, plus whatever link is wrapped around it — so the check below
+# sees exactly what linkify_xrefs saw, and reports the ones it left alone.
+_MD_CITATION = re.compile(r"(<a\b[^>]*>)?" + _MD_SPAN)
+
+
+def check_markdown(out: Path) -> list[tuple[str, str]]:
+    """No markdown file of ours may be cited on the site without being openable.
+
+    :func:`check_links` cannot see this failure: an unlinked citation is not a
+    dead link, it is grey text, and it looks exactly like the upstream
+    provenance citations that are supposed to stay grey. The difference is
+    whether the path is in THIS tree — if it is, the reader is being told to go
+    read a file the site gives them no way to open.
+
+    So this asserts the outcome rather than the intent, over the HTML that was
+    actually written: every code span naming a markdown file that exists here
+    carries a link, to its own page or to the blob view that renders it.
+
+    A citation with no directory in it is held to the same standard through
+    :data:`BARE_NAMES`, because that is the shape that fails quietly — a bare
+    `SKILL.md` resolves against neither the citing directory nor the root, so
+    it would otherwise be indistinguishable from an upstream path we do not
+    have. Any bare name whose basename does exist somewhere in this tree must
+    be mapped, or spelled out in the document.
+    """
+    by_output = {o: s for s, o, _, _ in PAGES}
+    # The landing page is authored for the web, but its citations are written
+    # from the repository root, which is how build() renders it too.
+    by_output["index.html"] = "README.md"
+    ours = _markdown_basenames()
+
+    unreachable: list[tuple[str, str]] = []
+    for page in sorted(out.rglob("*.html")):
+        rel = page.relative_to(out).as_posix()
+        page_src = by_output.get(rel)
+        if page_src is None:
+            continue
+        text = page.read_text(encoding="utf-8")
+        for anchor, target, _marker in _MD_CITATION.findall(text):
+            if anchor:
+                continue
+            candidates = _candidates(target, page_src)
+            if any(c == page_src for c in candidates):
+                continue
+            if any((ROOT / c).is_file() for c in candidates):
+                unreachable.append((rel, target))
+            elif "/" not in target and target in ours:
+                unreachable.append((rel, target))
+    return unreachable
+
+
+def _markdown_basenames() -> set[str]:
+    """The filename of every markdown file in the tree, build output pruned.
+
+    Only the NAMES: this exists to tell "a bare citation of one of ours" from a
+    bare citation of a file that was never here, and a name is all a bare
+    citation gives us to go on.
+    """
+    skip = {".git", "target", "build", "node_modules", "_site", "dist", "__pycache__"}
+    names: set[str] = set()
+    for _dirpath, dirnames, filenames in os.walk(ROOT):
+        dirnames[:] = [d for d in dirnames if d not in skip]
+        names.update(f for f in filenames if f.endswith(".md"))
+    return names
 
 
 if __name__ == "__main__":
