@@ -90,6 +90,73 @@ const BYTES_MISSING: &[&str] = &[
     "splitlines", "swapcase", "title", "translate", "zfill",
 ];
 
+/// Characters whose Unicode **full case folding** is not their lowercasing.
+///
+/// `str.casefold()` was `to_lowercase()`, which is right for every ASCII string
+/// and wrong for 297 codepoints — including the one everybody reaches for:
+/// `'ß'.casefold()` is `'ss'` in CPython and was `'ß'` here, so
+/// `'ß'.casefold() == 'ss'.casefold()` was False. Caseless comparison is the
+/// entire purpose of the method.
+///
+/// Rust's `std` has no full case folding and this refuses rather than shipping a
+/// table, because a table here would be a **second** source of Unicode truth in
+/// a runtime whose first one is whatever the toolchain shipped — and two of them
+/// drift apart silently. `docs/SUBSET.md` §7 rule 4: a method CPython has and
+/// lypning does not have *correctly* leaves by the refusal contract, and the
+/// dispatcher gets the real answer one spawn later. Over-refusing is a coverage
+/// number; answering `'ß'` is a wrong answer.
+///
+/// 41 ranges, derived by asking CPython for every codepoint where
+/// `chr(c).casefold() != chr(c).lower()` — not copied from a document.
+fn casefold_differs(c: char) -> bool {
+    matches!(c,
+        '\u{b5}' | '\u{df}' | '\u{149}' | '\u{17f}' | '\u{1f0}' | '\u{345}' | '\u{390}'
+        | '\u{3b0}' | '\u{3c2}' | '\u{3d0}'..='\u{3d1}' | '\u{3d5}'..='\u{3d6}'
+        | '\u{3f0}'..='\u{3f1}' | '\u{3f5}' | '\u{587}' | '\u{13a0}'..='\u{13f5}'
+        | '\u{13f8}'..='\u{13fd}' | '\u{1c80}'..='\u{1c88}' | '\u{1e96}'..='\u{1e9b}'
+        | '\u{1e9e}' | '\u{1f50}' | '\u{1f52}' | '\u{1f54}' | '\u{1f56}'
+        | '\u{1f80}'..='\u{1faf}' | '\u{1fb2}'..='\u{1fb4}' | '\u{1fb6}'..='\u{1fb7}'
+        | '\u{1fbc}' | '\u{1fbe}' | '\u{1fc2}'..='\u{1fc4}' | '\u{1fc6}'..='\u{1fc7}'
+        | '\u{1fcc}' | '\u{1fd2}'..='\u{1fd3}' | '\u{1fd6}'..='\u{1fd7}'
+        | '\u{1fe2}'..='\u{1fe4}' | '\u{1fe6}'..='\u{1fe7}' | '\u{1ff2}'..='\u{1ff4}'
+        | '\u{1ff6}'..='\u{1ff7}' | '\u{1ffc}' | '\u{ab70}'..='\u{abbf}'
+        | '\u{fb00}'..='\u{fb06}' | '\u{fb13}'..='\u{fb17}')
+}
+
+/// Characters whose Unicode **titlecase** is not their uppercase.
+///
+/// `title()` and `capitalize()` uppercased the leading letter of each word where
+/// CPython titlecases it. For 135 codepoints those differ, and the two families
+/// that matter are the digraphs — `'ǅ'.title()` is `'ǅ'`, not `'Ǆ'` — and the
+/// sharp s, where `'ß'.capitalize()` is `'Ss'` and not `'SS'`.
+///
+/// Refused for the same reason as `casefold_differs`: `std` has no
+/// `char::to_titlecase`, and inventing a table is inventing a second Unicode.
+/// 18 ranges, derived from CPython the same way.
+fn titlecase_differs(c: char) -> bool {
+    matches!(c,
+        '\u{df}' | '\u{1c4}'..='\u{1cc}' | '\u{1f1}'..='\u{1f3}' | '\u{587}'
+        | '\u{10d0}'..='\u{10fa}' | '\u{10fd}'..='\u{10ff}' | '\u{1f80}'..='\u{1faf}'
+        | '\u{1fb2}'..='\u{1fb4}' | '\u{1fb7}' | '\u{1fbc}' | '\u{1fc2}'..='\u{1fc4}'
+        | '\u{1fc7}' | '\u{1fcc}' | '\u{1ff2}'..='\u{1ff4}' | '\u{1ff7}' | '\u{1ffc}'
+        | '\u{fb00}'..='\u{fb06}' | '\u{fb13}'..='\u{fb17}')
+}
+
+/// Refuse the whole call if any character in the receiver is one this mapping
+/// cannot reproduce. Scanning the receiver rather than only the positions the
+/// method would map is deliberate over-refusal: it costs one linear pass on a
+/// path that already makes a copy, and it cannot be wrong the way a clever
+/// position-aware version could be.
+fn refuse_unmappable(s: &str, bad: fn(char) -> bool, method: &str) -> R<()> {
+    match s.chars().find(|&c| bad(c)) {
+        None => Ok(()),
+        Some(c) => Err(unsupported(
+            "str-method",
+            &format!("str.{method}() of U+{:04X}", c as u32),
+        )),
+    }
+}
+
 /// Python's whitespace for `str`, which is **not** Rust's.
 ///
 /// `char::is_whitespace` is the Unicode `White_Space` property. CPython's
@@ -247,20 +314,36 @@ fn str_method(
     Ok(match name {
         "upper" => Value::Str(s.to_uppercase().into()),
         "lower" => Value::Str(s.to_lowercase().into()),
-        "casefold" => Value::Str(s.to_lowercase().into()),
-        "swapcase" => Value::Str(
-            s.chars()
-                .map(|c| {
-                    if c.is_uppercase() {
-                        c.to_lowercase().next().unwrap_or(c)
-                    } else {
-                        c.to_uppercase().next().unwrap_or(c)
-                    }
-                })
-                .collect::<String>()
-                .into(),
-        ),
+        "casefold" => {
+            refuse_unmappable(s, casefold_differs, "casefold")?;
+            Value::Str(s.to_lowercase().into())
+        }
+        // `.next()` here TRUNCATED every multi-character mapping: `'ß'` swapped
+        // to `'S'` where CPython gives `'SS'`, `'İ'` to `'i'` where CPython gives
+        // `'i̇'` (two codepoints), `'ǰ'` to `'J'` where CPython gives `'J̌'`. It is
+        // `extend` now, which is the same thing `capitalize` and `title` below
+        // were already doing correctly — one arm out of three had it wrong.
+        "swapcase" => {
+            let mut out = String::new();
+            for c in s.chars() {
+                if c.is_uppercase() {
+                    out.extend(c.to_lowercase());
+                } else if c.is_lowercase() {
+                    out.extend(c.to_uppercase());
+                } else {
+                    // Neither, so CPython leaves it alone — and the `else`
+                    // that used to uppercase everything else was wrong for
+                    // every TITLECASE character: `'ǅ'.swapcase()` is `'ǅ'` in
+                    // CPython and was `'Ǆ'` here. `Lt` is not `Lu`, and
+                    // `is_uppercase()` is the Uppercase property, not "has a
+                    // lowercase mapping".
+                    out.push(c);
+                }
+            }
+            Value::Str(out.into())
+        }
         "capitalize" => {
+            refuse_unmappable(s, titlecase_differs, "capitalize")?;
             let mut out = String::new();
             for (i, c) in s.chars().enumerate() {
                 if i == 0 {
@@ -272,6 +355,7 @@ fn str_method(
             Value::Str(out.into())
         }
         "title" => {
+            refuse_unmappable(s, titlecase_differs, "title")?;
             let mut out = String::new();
             let mut prev_alpha = false;
             for c in s.chars() {

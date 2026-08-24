@@ -104,6 +104,14 @@ CASES = [
     # Character offsets, not byte offsets, once the receiver is not ASCII.
     ("find-non-ascii-offset", "print('héllo é'.find('é', 2))"),
     ("count-non-ascii-bounded", "print('日本語日'.count('日', 1))"),
+    # `swapcase` took `.next()` of the case mapping, which TRUNCATES every
+    # multi-character one, and it uppercased anything that was not uppercase —
+    # including titlecase, which CPython leaves alone.
+    ("swapcase-sharp-s", "print('ß'.swapcase())"),
+    ("swapcase-dotted-i", "print('İ'.swapcase())"),
+    ("swapcase-j-caron", "print('ǰ'.swapcase())"),
+    ("swapcase-titlecase-is-left-alone", "print('ǅ'.swapcase())"),
+    ("swapcase-ascii-unchanged", "print('aB1 c'.swapcase())"),
 ]
 
 needs_engine = pytest.mark.skipif(
@@ -132,3 +140,43 @@ def test_matches_cpython(name: str, program: str) -> None:
     assert got.stdout == ref.stdout, (
         "%s: lypning printed %r, CPython printed %r" % (name, got.stdout, ref.stdout)
     )
+
+
+#: Case mappings lypning cannot reproduce, which must leave by the refusal
+#: contract rather than answer. They are here rather than in `CASES` because
+#: `CASES` asserts lypning MATCHES CPython, and a refusal is the opposite claim:
+#: exit 90, one line on stderr, nothing on stdout, and the dispatcher gets the
+#: real answer from CPython one spawn later.
+REFUSES = [
+    # `'ß'.casefold()` is `'ss'`; aliasing casefold to lowercasing answered `'ß'`
+    # at exit 0, so `'ß'.casefold() == 'ss'.casefold()` was False — and caseless
+    # comparison is the whole purpose of the method.
+    ("casefold-sharp-s", "print('ß'.casefold())"),
+    ("casefold-micro", "print('µ'.casefold())"),
+    ("casefold-ligature", "print('ﬁ'.casefold())"),
+    # Titlecase is not uppercase: `'ǅ'.title()` is `'ǅ'`, and `'ß'.capitalize()`
+    # is `'Ss'` rather than `'SS'`.
+    ("title-digraph", "print('ǅx'.title())"),
+    ("capitalize-sharp-s", "print('ßx'.capitalize())"),
+]
+
+
+@needs_engine
+@pytest.mark.parametrize("name,program", REFUSES, ids=[c[0] for c in REFUSES])
+def test_refuses_rather_than_answering(name: str, program: str) -> None:
+    got = engines.run(engines.LYPNING, program, timeout=30)
+    assert got.refused, (
+        "%s must REFUSE: lypning cannot reproduce this case mapping, so an "
+        "answer here is a wrong answer at exit 0. Got exit %d, stdout %r"
+        % (name, got.returncode, got.stdout)
+    )
+    assert got.stdout == "", (
+        "%s wrote to stdout before refusing (%r) — the commit barrier is what "
+        "makes the retry on the next tier safe" % (name, got.stdout)
+    )
+    # And the tier that gets it must actually answer, or the refusal has only
+    # moved the problem.
+    ref = subprocess.run(
+        [sys.executable, "-c", program], capture_output=True, text=True, timeout=30
+    )
+    assert ref.returncode == 0, "%s: CPython does not answer it either" % name
