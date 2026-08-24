@@ -516,6 +516,13 @@ fn str_method(
             }
             list(out)
         }
+        // Two things were wasted here and the larger one is invisible in the
+        // code: `iter_collect` on a list **copies the whole list** before a
+        // single byte is joined. On `''.join(['ab'] * 600000)` that is 24 MB of
+        // `Value` moved to produce 1.2 MB of answer, and the copy is never read
+        // twice. A list and a tuple are borrowed in place now; anything else
+        // still materialises, because a generator has to be drained before it
+        // can be measured.
         "join" => {
             let v = args
                 .first()
@@ -524,21 +531,38 @@ fn str_method(
             if matches!(v, Value::Set(_)) {
                 return Err(set_order_refused("join() over a set"));
             }
-            let items = it.iter_collect(v)?;
-            let mut out = String::new();
-            for (i, x) in items.iter().enumerate() {
-                let Value::Str(xs) = x else {
-                    return Err(type_err(format!(
-                        "sequence item {i}: expected str instance, {} found",
-                        type_name(x)
-                    )));
-                };
-                if i > 0 {
-                    out.push_str(s);
+            match &v {
+                Value::List(l) => join_parts(s, &l.borrow())?,
+                Value::Tuple(t) => join_parts(s, t)?,
+                _ => {
+                    // `join` has its own message for a non-iterable and it is
+                    // not the generic one: CPython says "can only join an
+                    // iterable" where `iter_collect` produced "'int' object is
+                    // not iterable". Same exit code, different sentence, and
+                    // the sentence is what the caller reads.
+                    //
+                    // The remap is on `make_iter` ALONE and the draining loop is
+                    // written out for that reason. Wrapping `iter_collect`
+                    // instead — which is what this was for one build — swallows
+                    // every exception the sequence raises *while being drained*:
+                    // `','.join(str(1//x) for x in [1, 0])` reported "can only
+                    // join an iterable" where CPython raises ZeroDivisionError.
+                    // Turning one exception into a different one is the same
+                    // class of defect as answering the wrong number.
+                    let mut iter = it.make_iter(v).map_err(|e| {
+                        if e.is_unsupported() {
+                            e
+                        } else {
+                            type_err("can only join an iterable")
+                        }
+                    })?;
+                    let mut items = Vec::new();
+                    while let Some(x) = it.iter_next(&mut iter)? {
+                        items.push(x);
+                    }
+                    join_parts(s, &items)?
                 }
-                out.push_str(xs);
             }
-            Value::Str(out.into())
         }
         "replace" => {
             let (from, to) = (sarg(&args, 0, "replace")?, sarg(&args, 1, "replace")?);
@@ -725,6 +749,40 @@ fn str_method(
             ))
         }
     })
+}
+
+/// `sep.join(parts)` over an already-materialised slice: measure, then fill.
+///
+/// The first pass sums the bytes and does the type check; the second writes into
+/// a `String` that is already exactly the right size. `String::new()` doubled
+/// its way to the answer, which for a 1.2 MB result is around twenty
+/// reallocations and as many bytes copied again as the answer contains.
+///
+/// The type check staying in the FIRST pass is not incidental: CPython reports
+/// `sequence item {i}` for the first non-str and produces no output, so finding
+/// it before anything is written is what keeps the error identical.
+fn join_parts(sep: &str, items: &[Value]) -> R<Value> {
+    let mut total = 0usize;
+    for (i, x) in items.iter().enumerate() {
+        let Value::Str(xs) = x else {
+            return Err(type_err(format!(
+                "sequence item {i}: expected str instance, {} found",
+                type_name(x)
+            )));
+        };
+        total += xs.len();
+    }
+    total += sep.len() * items.len().saturating_sub(1);
+    let mut out = String::with_capacity(total);
+    for (i, x) in items.iter().enumerate() {
+        if i > 0 {
+            out.push_str(sep);
+        }
+        if let Value::Str(xs) = x {
+            out.push_str(xs);
+        }
+    }
+    Ok(Value::Str(out.into()))
 }
 
 /// Apply the optional `start`/`end` arguments that several str methods take:

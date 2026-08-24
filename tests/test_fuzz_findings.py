@@ -112,6 +112,17 @@ CASES = [
     ("swapcase-j-caron", "print('ǰ'.swapcase())"),
     ("swapcase-titlecase-is-left-alone", "print('ǅ'.swapcase())"),
     ("swapcase-ascii-unchanged", "print('aB1 c'.swapcase())"),
+    # `join` has its own message for a non-iterable, and the fix for it briefly
+    # wrapped the whole drain instead of just `make_iter` — which turned every
+    # exception the sequence raised WHILE being drained into that message.
+    # Turning one exception into a different one is the same class of defect as
+    # answering the wrong number, so both halves are pinned.
+    ("join-non-iterable-message", "print(','.join(5))"),
+    ("join-non-iterable-none", "print(','.join(None))"),
+    ("join-generator-raises-through", "print(','.join(str(1//x) for x in [1,0]))"),
+    ("join-generator-value-error", "print(','.join(str(int(x)) for x in ['1','z']))"),
+    ("join-bad-item-index", "print(','.join(x for x in ['a', 2]))"),
+    ("join-empty-and-single", "print(repr(','.join([])), repr(','.join(['a'])))"),
 ]
 
 needs_engine = pytest.mark.skipif(

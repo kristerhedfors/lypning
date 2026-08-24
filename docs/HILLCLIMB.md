@@ -28,6 +28,56 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-24 · iteration 28 — `join` copied the list it was only reading
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 983,240 → 983,240 (**8 blocks**, unchanged) ·
+**conformance** 906 / 399 / **0 MISMATCH** ·
+**perf** `str-join` **76.63 → 57.87 ms** (6.31x → ~4.8x); TOTAL 1514.87 → 1461.01 ·
+**corpus** 1.58 → 1.53 s, 0.969x ·
+**fuzz** seed 20260824 × 3000, 0 counterexamples
+
+Two wastes, and the larger one was invisible in the code. `iter_collect` on a
+list **copies the whole list**, so `''.join(['ab'] * 600000)` moved 24 MB of
+`Value` to produce 1.2 MB of answer — a copy nothing reads twice. A list and a
+tuple are borrowed in place now; anything else still materialises, because a
+generator has to be drained before it can be measured.
+
+The second: `String::new()` doubled its way to the result. `join_parts` sums the
+byte lengths in the pass that already has to type-check every element, then
+fills a `String` sized exactly. The type check staying in that **first** pass is
+not incidental — CPython reports `sequence item {i}` for the first non-str and
+produces no output, so finding it before anything is written is what keeps the
+error identical.
+
+### The bug this iteration introduced, and how it was caught
+
+The 25-case sweep turned up one difference that was pre-existing: `','.join(5)`
+said `'int' object is not iterable` where CPython says **`can only join an
+iterable`**. `join` has its own message. Fixing it by wrapping `iter_collect` in
+a `map_err` made every case pass — and **broke the generator path**:
+
+```
+','.join(str(1//x) for x in [1, 0])
+  lypning   TypeError: can only join an iterable
+  CPython   ZeroDivisionError: integer division or modulo by zero
+```
+
+Every exception the sequence raised *while being drained* became the
+not-iterable message. Turning one exception into a different one is the same
+class of defect as answering the wrong number, and the sweep did not catch it
+because the sweep had no generator that raises. Trying one by hand did.
+
+The remap is on **`make_iter` alone** now, with the draining loop written out so
+it cannot be re-collapsed by accident. That also avoids the alternative fix — a
+second list of which `Value` variants are iterable — which would have been a
+copy of `make_iter`'s own match, free to drift.
+
+Six cases pinned, including both halves of that pair.
+
+---
+
 ## 2026-08-24 · iteration 27 — 32,104 syscalls for one one-liner
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1488 loaded, 1272 timed
