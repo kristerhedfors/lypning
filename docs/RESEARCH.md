@@ -14,7 +14,7 @@ rather than measured. The two are not mixed.
 
 ---
 
-## 1. The constraint that actually decides this
+## 1. The deciding constraint
 
 The obvious ranking criteria — RSS, warm benchmark speed, "how fast is the VM" —
 are the wrong ones. `docs/SANDBOX-PERFORMANCE.md` §1 measures the real cost
@@ -332,7 +332,7 @@ The known language-level divergences that matter: integers are arbitrary
 precision only if `MICROPY_LONGINT_IMPL` says so (the unix port enables it),
 `str.center` takes no fill character, and there is no `collections.Counter`.
 
-### pocketpy — the runner-up, and not close
+### pocketpy
 
 MIT, **2.2.0**. Note the brief's premise is out of date: pocketpy v2 is **pure
 C11** (84 `.c` files, zero `.cpp`), not headers-only C++17. That is an
@@ -347,7 +347,7 @@ argument position, and `str.center` takes no fill character. `re` is not a shim
 away — it would have to be written. Its design centre is game scripting, where
 those are reasonable omissions; ours is text munging, where `re` is the point.
 
-### Berry — the right shape, the wrong language
+### Berry
 
 MIT, commit `c304823`. The smallest real result here: **365,660 bytes** static
 i386 musl, 0.97 ms startup, zero file opens. Architecturally it is exactly what
@@ -361,7 +361,7 @@ with a frozen stdlib fits in 366 KB, which is the yardstick for judging whether
 a purpose-built interpreter (option (b) in §6) would actually be smaller than
 MicroPython. It would not be, by much.
 
-### The rest
+### Remaining candidates
 
 | candidate | verdict | why |
 |---|---|---|
@@ -480,7 +480,7 @@ the following right, and each is a place bugs live:
 | **signals** | Reset handlers and the signal mask in the child (they are inherited), and forward SIGINT/SIGTERM from client to child. |
 | **tty** | Decide whether the child is a session leader; `isatty()` must answer correctly or `input()` and progress output misbehave. |
 
-### Verdict: the daemon does not earn its keep here
+### Verdict
 
 Three reasons, in order of force.
 
@@ -548,7 +548,7 @@ family is worth stealing regardless of what we ship: **`-S`** cuts CPython's
 startup file syscalls 109 → 63, so while `python3` remains in the image the
 agent prompt should prefer `python3 -S -c`.
 
-### What "done" looks like
+### Completion criteria
 
 1. **A variant, not a fork.** `ports/unix/variants/lypning-mp/` — a
    `mpconfigvariant.h` enabling `MICROPY_PY_RE_MATCH_SPAN_START_END` and
@@ -588,7 +588,7 @@ agent prompt should prefer `python3 -S -c`.
    `bashAgentPrompt` — the alternative is a `command -v python3` that finds
    nothing, which §1 shows is the single most expensive failure mode in this VM.
 
-### What this does not fix
+### Limitations
 
 Cold *boot* still dominates a sandbox turn. The agent trace in
 `SANDBOX-PERFORMANCE.md` shows 24.4 s of VM boot against 290 ms of commands, so

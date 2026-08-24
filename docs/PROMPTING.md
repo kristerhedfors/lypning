@@ -14,7 +14,7 @@ MISMATCH vocabulary `lypning conformance` uses.
 
 ---
 
-## 1. The measurement, first
+## 1. Measurement
 
 Run on **2026-08-23**, on this container — 4 CPUs, Linux 6.18.44-fc-v21, the
 Rust core built and lypning-mp absent. **34 cells** (nine prompt treatments ×
@@ -74,7 +74,7 @@ Read it in this order:
 
 ---
 
-## 2. How it was run
+## 2. Method
 
 **Nine treatments**, a ladder from no information to the engine answering for
 itself. Each is a file in `study/prompts/`, and each generator agent was told to
@@ -131,7 +131,7 @@ incident where it earned its keep.
 
 ---
 
-## 3. The spread, and what it says about vague prompts
+## 3. Spread across treatments
 
 | id | treatment | replicates | tier-1 rate per replicate | mean | spread |
 |---|---|---:|---|---:|---:|
@@ -157,7 +157,7 @@ prompt says enough, the outcome stops depending on which agent read it.
 
 ---
 
-## 4. What stopped everything that did not make it
+## 4. Causes of failure
 
 | id | treatment | the three commonest blockers |
 |---|---|---|
@@ -221,7 +221,7 @@ The full table, all 26 rows, is `study/data/tables.md`.
 
 ---
 
-## 5. What it cost, in milliseconds and in lines
+## 5. Cost, in milliseconds and in lines
 
 Coverage is a proxy. What a user gets is a cheaper session, and the two are not
 the same number: a program that stays in the subset runs **in the dispatcher's
@@ -266,7 +266,7 @@ Python" writes out loops it did not need to.
 
 ---
 
-## 6. Three things the study found in the machinery, not in the prompts
+## 6. Findings in the machinery rather than the prompts
 
 ### 6a. Every one of the classifier's false negatives was `os.path`
 
@@ -321,7 +321,7 @@ all five hosts would inherit it at once.
 
 ---
 
-## 7. The five hosts, and the capture that closed the loop
+## 7. The five hosts, and the capture loop
 
 The study's programs were then run through **every host the C ABI has** — C,
 C++, Rust, Node and Python — over one shared program set, with each host given
@@ -381,7 +381,7 @@ on the merged tree wrote `0 new, 393 total, unchanged`, which is the purity
 
 ---
 
-## 8. The ceiling, and the two programs that went through it
+## 8. The ceiling, and the two programs that exceeded it
 
 Three tasks are outside the subset for any natural solution: `listdir-filter`
 (`os.listdir` order is the filesystem's, and is refused), `big-factorial` (30!
@@ -422,7 +422,7 @@ not reimplement a standard algorithm to stay in the subset*, and they should.
 
 ---
 
-## 9. What this does not show
+## 9. Limitations
 
 * **The control cell is contaminated, and is anchored rather than trusted.**
   Every generator agent ran inside this repository, whose `CLAUDE.md` announces
@@ -465,7 +465,7 @@ not reimplement a standard algorithm to stay in the subset*, and they should.
 
 ---
 
-## 10. Reproducing it
+## 10. Reproduction
 
 Everything is committed: the tasks with their derived expectations, all nine
 prompt texts, all 884 generated programs, all 884 scored rows, and the tables.
