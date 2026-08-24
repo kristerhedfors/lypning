@@ -28,6 +28,65 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-24 · iteration 21 — thirty-six silent wrong answers about whitespace
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1488 loaded, 1272 timed
+
+**bytes** 1,020,104 → 1,020,104 (**8 blocks**, unchanged) ·
+**conformance** 888 / 384 / **0 MISMATCH** ·
+**perf** TOTAL 1779.09 → 1738.24 ms ·
+**corpus** 1.69 → 1.65 s, **0.974x** ·
+**fuzz** seed 20260824 × 2500, 0 counterexamples
+
+A reading pass over the string methods — nominally for speed — turned up a
+whitespace disagreement. Written out as a shell diff loop over fifteen candidate
+characters × seven methods, it was **36 wrong answers, every one at exit 0**:
+
+* **`str` whitespace is Unicode `White_Space` plus U+001C–U+001F.** Rust's
+  `char::is_whitespace` is `White_Space` alone, and lypning used it directly in
+  five places. `'a\x1cb'.split()` answered `['a\x1cb']` against CPython's
+  `['a', 'b']`; `'\x1ca\x1c'.strip()` kept both; `'\x1c'.isspace()` was False.
+  Four characters × five methods.
+* **`splitlines` splits on eleven boundaries and this split on three.** `\x0b`,
+  `\x0c`, `\x1c`, `\x1d`, `\x1e`, U+0085, U+2028 and U+2029 all produced one line
+  where CPython produces two. Three of those are multi-byte, which is why the
+  byte-wise scan could not have been extended in place — it walks chars now.
+
+The two sets are **not the same set**, and the fix keeps them apart on purpose: a
+tab is whitespace and not a boundary, `\x1f` is whitespace and not a boundary
+either, and U+2028 is both. Two more places that look like they want the new
+predicate and must not have it: **`bytes`**, whose whitespace is ASCII only
+(`b'\x1c'.isspace()` is False in CPython), and **`int()`/`float()`**, whose strip
+is `White_Space` (`int('\x1c5')` is a ValueError). Both verified against CPython
+rather than assumed, and both pinned.
+
+### Verified over the whole codepoint space, not over a list
+
+A hand-picked list of characters is how this bug survived in the first place, so
+the check is a program both interpreters run: for every one of the 1,112,064
+codepoints (surrogates excluded), collect the ones where `chr(c).isspace()`, then
+where `('a'+chr(c)+'b').split()` is two elements, then `strip`, then
+`splitlines`, then `splitlines(True)` — and diff the five answers.
+
+**All five agree exactly.** 29 whitespace codepoints, 10 line boundaries, same
+sets and same sums on both. That is the strongest form this verification has:
+there is no sixteenth character left to have missed.
+
+23 cases went into `tests/test_fuzz_findings.py`, which asserts against live
+CPython. 16 of them fail on the iteration-20 binary and 7 pass — the 7 being the
+controls that must NOT change, which is the half of a regression test that
+usually goes unwritten.
+
+### And it made things faster
+
+Bytes did not move. `perf` TOTAL went down 40.85 ms and `corpus-time`
+1.69 → 1.65 s, **0.974x — outside the deadband, in the good direction**, which
+was no part of the intent: `s.split(py_space).filter(non-empty)` turns out to
+beat `split_whitespace()`, and the `char_indices` line scan beats the byte scan
+it replaced. Recorded because it happened, not claimed as a reason.
+
+---
+
 ## 2026-08-24 · iteration 20 — `sum()` was mostly copying, and it could not sum strings
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1488 loaded, 1272 timed

@@ -90,6 +90,32 @@ const BYTES_MISSING: &[&str] = &[
     "splitlines", "swapcase", "title", "translate", "zfill",
 ];
 
+/// Python's whitespace for `str`, which is **not** Rust's.
+///
+/// `char::is_whitespace` is the Unicode `White_Space` property. CPython's
+/// `Py_UNICODE_ISSPACE` is that plus the four C0 information separators
+/// U+001C–U+001F, which Unicode gives bidirectional class B or S and does not
+/// mark as White_Space. The difference is four characters and it was five wrong
+/// answers each: `'a\x1cb'.split()` answered `['a\x1cb']` where CPython answers
+/// `['a', 'b']`, `'\x1ca\x1c'.strip()` kept both separators, and
+/// `'\x1c'.isspace()` was False. All at exit 0, all invisible to
+/// `conformance` — no corpus program contains a C0 separator, which is what
+/// makes this the shape the corpus cannot see (skill §3).
+///
+/// Deliberately scoped to `str`, and the two places it must NOT be used are
+/// worth naming because both look like they want it:
+///
+///   * **`bytes`.** `b'\x1c'.isspace()` is False in CPython and
+///     `(b'a\x1cb').split()` is one element — the bytes methods use ASCII
+///     whitespace only. The `bytes` arms below are correct as they stand.
+///   * **`int()` and `float()`.** Their leading/trailing strip uses
+///     `White_Space` — `int('\x1c5')` is a ValueError in CPython — so
+///     `builtins.rs`'s `trim()` is right and must stay a `trim()`.
+#[inline]
+fn py_space(c: char) -> bool {
+    matches!(c, '\u{1c}'..='\u{1f}') || c.is_whitespace()
+}
+
 /// `islower` / `isupper`: at least one CASED character, and every cased one
 /// passing `want`.
 ///
@@ -275,7 +301,7 @@ fn str_method(
                 }
             };
             let pred = |c: char| match &chars {
-                None => c.is_whitespace(),
+                None => py_space(c),
                 Some(set) => set.contains(&c),
             };
             let t = match name {
@@ -310,16 +336,19 @@ fn str_method(
                 None => {
                     let mut v: Vec<Value> = Vec::new();
                     if maxsplit < 0 {
-                        v = s.split_whitespace().map(|x| Value::Str(x.into())).collect();
+                        v = s.split(py_space)
+                            .filter(|x| !x.is_empty())
+                            .map(|x| Value::Str(x.into()))
+                            .collect();
                     } else if name == "split" {
                         let mut rest: &str = s;
                         let mut n = 0;
-                        rest = rest.trim_start();
+                        rest = rest.trim_start_matches(py_space);
                         while n < maxsplit && !rest.is_empty() {
-                            match rest.find(char::is_whitespace) {
+                            match rest.find(py_space) {
                                 Some(i) => {
                                     v.push(Value::Str(rest[..i].into()));
-                                    rest = rest[i..].trim_start();
+                                    rest = rest[i..].trim_start_matches(py_space);
                                     n += 1;
                                 }
                                 None => break,
@@ -363,24 +392,43 @@ fn str_method(
                 Some(v) => truthy(v)?,
                 None => false,
             };
+            // CPython splits on ELEVEN boundaries, not two. This split on `\n`,
+            // `\r` and `\r\n` only, so `'a\x0bb'.splitlines()` answered
+            // `['a\x0bb']` where CPython answers `['a', 'b']` — and the same for
+            // `\x0c`, `\x1c`, `\x1d`, `\x1e`, `\x85` and ` `/` `,
+            // seven more silent wrong answers at exit 0. Three of them are
+            // multi-byte, which is why this walks chars rather than bytes now.
+            //
+            // NOT the same set as `py_space` above, and they are not
+            // interchangeable: a tab and a plain space are whitespace and are
+            // not line boundaries, while `\x1f` is both. Two lists, deliberately.
             let mut out = Vec::new();
-            let b = s.as_bytes();
-            let mut i = 0;
-            while i < b.len() {
-                let start = i;
-                while i < b.len() && b[i] != b'\n' && b[i] != b'\r' {
-                    i += 1;
-                }
-                let text_end = i;
-                if i < b.len() {
-                    if b[i] == b'\r' && i + 1 < b.len() && b[i + 1] == b'\n' {
-                        i += 2;
-                    } else {
-                        i += 1;
+            let mut start = 0usize;
+            let mut cs = s.char_indices().peekable();
+            while let Some((i, c)) = cs.next() {
+                let brk = match c {
+                    '\n' | '\u{0b}' | '\u{0c}' | '\u{1c}' | '\u{1d}' | '\u{1e}' | '\u{85}'
+                    | '\u{2028}' | '\u{2029}' => c.len_utf8(),
+                    // The only two-character boundary, and it must be consumed
+                    // as one or `'a\r\nb'` becomes three lines.
+                    '\r' => {
+                        if matches!(cs.peek(), Some((_, '\n'))) {
+                            cs.next();
+                            2
+                        } else {
+                            1
+                        }
                     }
-                }
-                let end = if keepends { i } else { text_end };
+                    _ => continue,
+                };
+                let end = if keepends { i + brk } else { i };
                 out.push(Value::Str(s[start..end].into()));
+                start = i + brk;
+            }
+            // A trailing boundary ends the string rather than starting an empty
+            // last line: `'a\n'.splitlines()` is `['a']`, not `['a', '']`.
+            if start < s.len() {
+                out.push(Value::Str(s[start..].into()));
             }
             list(out)
         }
@@ -547,7 +595,7 @@ fn str_method(
                 "isdigit" | "isnumeric" => s.chars().all(|c| c.is_numeric()),
                 "isalpha" => s.chars().all(|c| c.is_alphabetic()),
                 "isalnum" => s.chars().all(|c| c.is_alphanumeric()),
-                "isspace" => s.chars().all(|c| c.is_whitespace()),
+                "isspace" => s.chars().all(py_space),
                 "islower" => cased_all(&s, char::is_lowercase),
                 _ => cased_all(&s, char::is_uppercase),
             })

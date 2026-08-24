@@ -41,6 +41,45 @@ CASES = [
     # Cased, not alphabetic: 日 is alphabetic and has no case at all.
     ("islower-uncased", 'print("日本".islower())'),
     ("isupper-uncased", 'print("日本".isupper())'),
+    # Python's whitespace is Unicode White_Space PLUS U+001C-U+001F, which Rust's
+    # `char::is_whitespace` excludes. Four characters, and every one of them was
+    # a wrong answer at exit 0 in `split`, `strip`, `lstrip`, `rstrip` and
+    # `isspace` at once. Pinned per-method rather than once, because the fix
+    # routes five separate call sites through one predicate and any of them
+    # could be reverted alone.
+    ("split-c0-separator", r"print('a\x1cb'.split())"),
+    ("split-c0-unit", r"print('a\x1fb'.split())"),
+    ("split-c0-maxsplit", r"print('\x1d a b'.split(None, 1))"),
+    ("strip-c0-separator", r"print(repr('\x1ca\x1c'.strip()))"),
+    ("lstrip-c0-separator", r"print(repr('\x1ea'.lstrip()))"),
+    ("rstrip-c0-separator", r"print(repr('a\x1e'.rstrip()))"),
+    ("isspace-c0-separator", r"print('\x1c'.isspace(), '\x1f'.isspace())"),
+    # …and `bytes` does NOT follow it: `b'\x1c'.isspace()` is False in CPython.
+    # Pinned so that "fix the str set" never gets copied across to the byte one.
+    ("bytes-split-c0-is-not-space", r"print(len(b'a\x1cb'.split()))"),
+    ("bytes-strip-c0-is-not-space", r"print(b'\x1ca\x1c'.strip())"),
+    # …nor does `int()`/`float()`, whose strip is White_Space only.
+    ("int-c0-separator-is-not-space", r"print(int('\x0b5'))"),
+    # `splitlines` splits on ELEVEN boundaries. This split on three, so seven
+    # characters — three of them multi-byte — silently produced one line where
+    # CPython produces two. Not the same set as the whitespace one above: a tab
+    # is whitespace and not a boundary, `\x1f` is whitespace and not a boundary
+    # either, and U+2028 is both.
+    ("splitlines-vertical-tab", r"print('a\x0bb'.splitlines())"),
+    ("splitlines-form-feed", r"print('a\x0cb'.splitlines())"),
+    ("splitlines-file-separator", r"print('a\x1cb'.splitlines())"),
+    ("splitlines-group-separator", r"print('a\x1db'.splitlines())"),
+    ("splitlines-record-separator", r"print('a\x1eb'.splitlines())"),
+    ("splitlines-unit-separator-is-not-a-break", r"print(len('a\x1fb'.splitlines()))"),
+    ("splitlines-nel", r"print(len('a\x85b'.splitlines()))"),
+    ("splitlines-line-separator", r"print(len('a\u2028b'.splitlines()))"),
+    ("splitlines-para-separator", r"print(len('a\u2029b'.splitlines()))"),
+    ("splitlines-keepends-multibyte", r"print(len('a\u2028b'.splitlines(True)))"),
+    # The two-character boundary has to be consumed as one, and the trailing one
+    # must not start an empty last line.
+    ("splitlines-crlf", r"print('a\r\nb'.splitlines())"),
+    ("splitlines-trailing", r"print('a\nb\n'.splitlines())"),
+    ("splitlines-empty", r"print(''.splitlines(), '\n'.splitlines())"),
 ]
 
 needs_engine = pytest.mark.skipif(
