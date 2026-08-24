@@ -28,6 +28,96 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-24 · iteration 31 — two negative results, and a win the suite cannot see
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 983,240 → 983,240 (**8 blocks**, unchanged) ·
+**conformance** 906 / 399 / **0 MISMATCH** ·
+**perf** TOTAL 1450.20 → 1443.29 (min of 3 interleaved) — **flat** ·
+**corpus** 1.58 → 1.57 s, 0.994x
+
+`str-methods` was the top of the queue (3.18x, 36% of the corpus). Three things
+were tried. **Two of them made it slower and are the useful half of this entry.**
+
+### Negative result 1: hand-rolling the ASCII case map is 18x slower
+
+The plan was an ASCII fast path for `lower`/`upper`, on the theory that
+`to_lowercase()` pays for Unicode machinery an ASCII string does not need.
+`std` already has that fast path, and it is **vectorised**. 200,000 iterations
+over a 960-byte ASCII string:
+
+```
+s.to_lowercase()                                  17.3 ms
+push(b.to_ascii_lowercase() as char) in a loop   306.6 ms
+s.to_ascii_lowercase()                            15.3 ms
+```
+
+Pushing one char at a time is exactly what the fast path exists to avoid. The
+comment in `methods.rs` now carries those three numbers so the idea does not come
+back.
+
+### Negative result 2: counting matches to presize `replace` costs more than it saves
+
+`std`'s `str::replace` starts from `String::new()` and grows, so presizing looks
+free. It is not: knowing the size needs a **second pass over the receiver**, and
+measured that way `str-methods` came out **29% slower** (34.57 → 44.71 ms). At
+the sizes strings actually have on this path, a pass costs more than the
+reallocations it removes.
+
+### What survived: two early exits that allocate nothing
+
+* `strip`/`lstrip`/`rstrip` when nothing was trimmed — `trim_matches` returns a
+  subslice, so equal length is equal content, and the answer is the receiver.
+* `replace` when the needle is absent — found with **`find`**, which stops at the
+  first match, not with a count. The case that pays for the scan is the case
+  that skips an allocation entirely.
+
+Both also match CPython more closely than before: `s.replace('x', 'y') is s` is
+True in CPython when nothing matched, and now here too.
+
+### The suite cannot see the win, and the reason is a bias worth naming
+
+`str-methods` is flat, because its receiver is `'  Hello World  '` — a string
+where **every** method changes something. That is not what the corpus looks like:
+a line that has just come out of `splitlines()` is already stripped, and a
+`text.replace(old, new)` needle is often absent. Measured directly, min of 7:
+
+```
+                       before    after   cpython
+strip-clean-lines       21.34    20.25     19.77   −5.1%
+replace-absent           2.36     1.94     16.80  −18.0%
+mixed strip+replace     28.60    26.19     20.03   −8.5%
+strip-dirty-lines       21.71    21.45     21.18   −1.2%
+replace-present         28.33    28.08     24.55   −0.9%
+```
+
+The last two are the shapes the suite *does* measure, and they are flat — so
+this is not a trade, it is a win on half the distribution and nothing on the
+other half.
+
+**No case was added for it, deliberately.** The skill's rule is that a win moving
+no row means the suite has a hole — but the hole here is that `str-methods` uses
+an unrepresentative receiver, and adding `str-methods-noop` immediately after
+optimising the noop path is how a gradient turns into a trophy case. The honest
+fix is to decide whether `str-methods` should have a representative receiver,
+which renumbers the row and breaks comparability with every entry above. That is
+a decision for an iteration that is not also the one that benefits from it.
+
+### And a reading that was noise
+
+A single `--baseline` comparison said the change cost **+30.90 ms**, concentrated
+in `dict-set` (+7.10), `membership` (+2.76) and `str-split` (+2.40) — three rows
+with no causal path to a change in `methods.rs`. Three interleaved rounds of both
+binaries: before 1450.20 / 1483.72 / 1450.47, after 1446.80 / 1456.41 / 1443.29.
+Overlapping, and the minimum went the other way. One comparison is not a reading;
+this is the third time that sentence has earned its place in this file.
+
+1,875 replace/strip combinations against CPython — receiver, needle, replacement,
+count, and the three strip variants with and without an argument — 0 mismatches.
+
+---
+
 ## 2026-08-24 · iteration 30 — three passes over the receiver to answer an O(1) question
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
