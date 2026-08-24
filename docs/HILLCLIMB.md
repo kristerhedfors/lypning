@@ -28,6 +28,55 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-24 · iteration 33 — `1 == 2` paid for a recursion guard
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 983,240 → 983,240 (**8 blocks**, unchanged) ·
+**conformance** 906 / 399 / **0 MISMATCH** ·
+**perf** `membership` **127.43 → 99.52 ms** (−22%), `list-sort` 278.65 → 254.35
+(−8.7%); TOTAL 1428.74 → 1391.39 ·
+**corpus** 1.58 → 1.58 s, 1.002x ·
+**fuzz** three seeds × 2500, 0 counterexamples
+
+`err::Nest` bounds the three descents a *program* chooses the depth of — `repr`,
+`hkey`, and comparison — because each was measured overflowing the stack, and a
+stack overflow embedded is the **host's** SIGSEGV rather than a refusal it can
+route onward. It is the right guard.
+
+It was taken at the top of `eq`, `order` and `hkey`, before any dispatch. So
+`1 == 2` paid for it. So did `'a' in ['b', 'c']`, and every dict get, every dict
+insert, and every `in` over a dict or set — because each of those hashes a key
+through `hkey`. A thread_local read-modify-write in, an `R<Nest>` built, and
+another read-modify-write out, on operations that **cannot recurse at all**.
+
+The guard now sits on the arms that descend: the composite arms of `eq`, the
+`List`/`Tuple` arms of `order`, and the one `Tuple` arm of `hkey`. Scalars,
+numbers, strings and bytes go straight through.
+
+### The measurement that matters is that nothing changed
+
+A speed change to a safety guard is only worth having if the guard still works,
+and "still works" here means a specific shape: shallow answers, deep **refuses**,
+and nothing ever exits any other way — 139 is a SIGSEGV the dispatcher cannot
+route onward. Both binaries, five descents (`eq`, `order`, `in`, tuple-as-dict-key,
+`repr`), depths 10 / 100 / 400 / 490 / 600 / 2,000 / 20,000:
+
+**Every cell identical**, including the transition — 490 answers, 600 refuses,
+on both. No crash at 20,000 deep on either.
+
+`tests/test_recursion_guard.py` is that shape as a permanent test, and it
+**passes on both binaries**, which is the point and is worth saying plainly: it
+catches nothing today. It is a characterisation test for the next change to this
+code, not evidence for this one. It asserts the shape rather than the number,
+because `MAX_NEST` may move and a test pinning 500 would only ever be edited.
+
+It also could not live in `test_fuzz_findings.py`: those cases assert lypning
+**agrees** with CPython, and the whole point of these is that lypning refuses
+where CPython answers. That is the contract working.
+
+---
+
 ## 2026-08-24 · iteration 32 — four allocations to write one line
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed

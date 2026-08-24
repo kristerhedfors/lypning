@@ -152,6 +152,16 @@ CASES = [
     ("print-sep-end-strings", "print('a', 'b', sep='|', end='#')"),
     ("print-no-args", "print()"),
     ("print-many-args", "print(1, 'a', None, [1, 2], (3,), {'k': 1})"),
+    # The recursion guard moved off the scalar paths of `eq`, `order` and `hkey`
+    # (ledger, iteration 33). These are the shallow structures it must still get
+    # right — the DEEP ones cannot live here because they refuse, and `CASES`
+    # asserts a match; `tests/test_recursion_guard.py` covers those.
+    ("eq-nested-lists", "print([[1, [2]]] == [[1, [2]]], [[1, [2]]] == [[1, [3]]])"),
+    ("eq-numeric-tower", "print(1 == 1.0, 1 == True, 0 == False, 1.5 == 1.5)"),
+    ("order-nested", "print(sorted([[2, 1], [1, 9], [1, 2]]))"),
+    ("hkey-tuple-nested", "d = {(1, (2, 3)): 'a'}\nprint(d[(1, (2, 3))])"),
+    ("hkey-collapses-numeric", "d = {1: 'a'}\nd[1.0] = 'b'\nd[True] = 'c'\nprint(len(d), d[1])"),
+    ("membership-mixed", "print(1 in [1.0], 'a' in ['a'], (1,) in [(1,)], None in [None])"),
 ]
 
 needs_engine = pytest.mark.skipif(
