@@ -28,6 +28,90 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-24 · iteration 20 — `sum()` was mostly copying, and it could not sum strings
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1488 loaded, 1272 timed
+
+**bytes** 1,020,104 → 1,020,104 (**8 blocks**, unchanged) ·
+**conformance** 888 / 384 / **0 MISMATCH**, unchanged ·
+**perf** `builtin-sum-len` **38.50 → 4.65 ms**, `list-comp` 39.99 → 32.87,
+`genexpr` 43.78 → 40.14; TOTAL 1779.09 → 1745.43 ms ·
+**corpus** 1.69 → 1.70 s, 1.005x, inside the deadband
+
+Iteration 18 emptied the allocator out of the profile, so callgrind on
+`sum(a) + len(a)` now points somewhere new: `iter_collect` at 16.9% inclusive
+over 20 calls. `Interp::iter_collect` on a list is `l.borrow().clone()` — a full
+`Vec<Value>` copy — and `sum` was calling it before adding anything.
+Decomposed: **23.6 ns per element materialising and dropping the copy against 18
+ns doing the additions.** `sum` of a generator measured the same as `list()` of
+the same generator, because the buffer *was* the job.
+
+Two layers, both in the one `"sum"` arm:
+
+* **Drive the iterator instead of draining it.** `make_iter` on a list is
+  already a live view that copies nothing (`Iter::List(Rc, usize)`); only
+  `iter_collect` materialises. This is also the more faithful of the two —
+  CPython's `sum` pulls one element at a time.
+* **An i64 loop for the case the corpus actually types**, `sum()` of a list of
+  ints: a borrowed scan with `checked_add`, bailing to the general path on the
+  first non-int or the first overflow. Bailing is free because the loop has no
+  effects to undo, and the general path then produces the TypeError or the
+  `bigint` refusal that was always the right answer.
+
+The row went **8.3x faster** and is now below CPython. `list-comp` and `genexpr`
+moved too — both feed a `sum()` — and nothing regressed. Bytes did not move at
+all, which is the pleasant surprise: the fast loop is smaller than the
+`iter_collect` call and the `Vec` drop glue it replaced.
+
+### The bug this turned up on the way past
+
+`sum(['a', 'b'], '')` printed **`ab` at exit 0**. CPython raises
+`TypeError: sum() can't sum strings [use ''.join(seq) instead]`, and checks the
+*start* argument for it before it looks at the sequence at all — `sum([1, 2],
+'')` is the same TypeError. `sum([b'x'], b'')` was the same defect in bytes.
+
+A wrong answer, not a refusal, and invisible to every gate: no corpus program
+sums with a string start, so `conformance` was green over it, and `perf` does
+not evaluate semantics. It is the second correctness bug in this ledger found by
+reading a hot path for *speed* (iteration 13 was the first), which is the
+argument for the speed queue that has nothing to do with speed.
+
+Reproduced on the iteration-19 binary, so it is not this change's. Both types
+now raise CPython's message. `sum(['a', 'b'])` needs no case — the default start
+is `0` and `0 + 'a'` already raises what CPython raises.
+
+Checked with a 41-program differential sweep of `sum`: empty, start, mixed
+int/float, bools, tuple/range/dict-values/generator/map/filter, list and tuple
+concatenation, overflow at the head, the tail and through the start, sets of
+ints and of floats, and the not-iterable and missing-argument errors. One
+disagreement left in it and it is not about `sum`: `zip.__name__` is an
+`AttributeError` at exit 1 where CPython answers, which is the shape
+`STR_MISSING` exists to catch — an attribute CPython has must **refuse**, not
+raise, because exit 1 is terminal and there is no second chance. Logged, not
+fixed here.
+
+### The fuzz gate is red, and it was red before this
+
+`lypning fuzz --seed 3 --iterations 2500` finds two counterexamples. Both
+reproduce **identically on the iteration-19 binary** (`LYPNING_BIN=… fuzz --seed
+3`), so neither belongs to this step, and seed 20260824 at 3000 iterations finds
+zero — which is the useful thing to know about a fuzzer's seed.
+
+1. `1.7976931348623157e308 ** 0.5` → `…97e+154` against CPython's `…96e+154`.
+   One ULP, and it is a **libm** difference: CPython's `pow` is glibc's, lypning
+   links musl's. Not fixable by being more careful; fixable only by shipping a
+   `pow` or by refusing non-integral float exponents, which is a design decision
+   and not a bug fix.
+2. `{}.pop(['x'])` → `TypeError: unhashable type: 'list'` against CPython's
+   `KeyError: ['x']`. CPython short-circuits an **empty** dict before it hashes
+   the key, so the same call on a non-empty dict is a TypeError on both. A
+   genuine quirk to reproduce rather than a principle.
+
+Each is its own iteration; the four gates and the sweep above are what this step
+was accepted on.
+
+---
+
 ## 2026-08-24 · iteration 19 — buying the device block back, and the flag that could not
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1430 loaded, 1237 timed
