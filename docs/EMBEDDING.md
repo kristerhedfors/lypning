@@ -13,7 +13,7 @@ handling it correctly.
 
 ---
 
-## 1. The one thing you must get right
+## 1. The critical requirement
 
 ```c
 lypning_result *r = lypning_run(q);
@@ -50,7 +50,7 @@ rather than the status. It is true for three outcomes, not one: a refusal, a
 `BUSY` that executed nothing, and a `PANIC` that reached no commit. All three
 mean the same thing — lypning did not answer, and the program still needs one.
 
-## 2. What you get, and what it costs
+## 2. Capabilities and costs
 
 Measured on this machine (4 CPUs, Linux 6.18.5) on **2026-08-20**, against a
 corpus capture that had grown to **842 programs, 528 of them routed to lypning**.
@@ -140,7 +140,7 @@ record itself. `study/hosts/capture.h` is a working example in about forty lines
 of C and argues that the right home for it is here, where all five hosts would
 inherit it at once.
 
-## 5. Rules of the surface
+## 5. Rules of the API surface
 
 * **A run belongs to one thread.** Two threads may run two programs at once —
   the state is thread_local. One thread may not run two at once, and gets
@@ -158,7 +158,7 @@ inherit it at once.
   program must run somewhere specific, put your process there, or use the
   binary.
 
-## 6. Bounding a program you did not write
+## 6. Bounding an untrusted program
 
 Every program a coding harness runs was written by a language model, so
 "do not run untrusted programs" is not advice a harness can follow.
@@ -180,7 +180,7 @@ told the file is missing, which would be a wrong answer at exit 0; you are told
 lypning would not run it, and you decide whether CPython gets it. Policy belongs
 to the host, not to the runtime.
 
-## 7. What can still take your process down
+## 7. Remaining failure modes
 
 Honesty first: a stack overflow is not an unwind, so no guard at the ABI
 boundary can catch one. Everything below was reachable from ordinary program
@@ -209,7 +209,7 @@ The last row is worth stating plainly: `LYPNING_PANIC` means the runtime failed,
 not your program. Report it — and route it onward, which
 `should_fall_onward()` will already be telling you to do.
 
-## 8. Holding it honest
+## 8. Verification
 
 The library is not trusted because it shares an interpreter with the binary —
 it shares the interpreter but not the exit path, and the exit path is the part

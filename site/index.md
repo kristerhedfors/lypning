@@ -43,7 +43,7 @@ cheap never.</p>
 </div>
 </div>
 
-## The measurement, first
+## Measurement
 
 Everything else is downstream of this table. Measured 2026-08-21 on a 4-CPU container
 (Linux 6.18.44-fc-v21), **842 programs harvested, 763 timed**, min of 3, arms interleaved
@@ -115,7 +115,7 @@ A wrong route costs one process spawn. It never costs a wrong answer, and that i
 reason a mixture is allowed to guess at all.
 [The dispatcher, in detail →](docs/lypning.html#5-the-dispatcher-and-why-it-is-the-binary-itself)
 
-## Three things that make it work
+## Three design decisions
 
 <div class="cards">
 <div class="card">
@@ -140,7 +140,7 @@ where CPython breaks them to even. <a href="changelog.html">All six →</a></p>
 </div>
 </div>
 
-## Where it stands
+## Current status
 
 Every row from a run in this tree on 2026-08-21, over the 842-program capture.
 Re-run them rather than citing them.
@@ -160,7 +160,7 @@ committed those bytes when it exits 90. It is contained through the dispatcher a
 if you exec the binary directly. `lypning conformance` fails while it stands.
 [The reproduction and its consequences →](docs/lypning.html#the-barrier-is-lypnings-alone-lypning-mp-has-none)
 
-## Hook it into a coding session
+## Integration with a coding session
 
 ```bash
 pip install lypning     # pure Python, zero runtime dependencies

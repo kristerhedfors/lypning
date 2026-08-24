@@ -54,7 +54,7 @@ tests/corpus/sightings/*.jsonl (every session that ever ran) ──────�
 assets/corpus/corpus.jsonl (existing) ────────────────────────────────────────────────────────────────┘
 ```
 
-## Why per-session files, and not just the corpus
+## Rationale for per-session files
 
 The Stop hook originally folded the log straight into the corpus
 and **that still lost the data**. One shared file that every session rewrites
@@ -292,7 +292,7 @@ paths, occasionally a token pasted into a one-liner.
 | `LYPNING_HOME` | state directory (default `~/.lypning`) — the shim's bin dir, the log, the build trees |
 | `LYPNING_TRANSCRIPTS` | transcript root for the harvest (default `~/.claude/projects`) |
 
-## What the shim does and does not promise
+## Shim guarantees
 
 The wrapped run is transparent: stdin/stdout/stderr are inherited untouched
 (nothing in the shim reads stdin), and because it `exec`s, the interpreter's

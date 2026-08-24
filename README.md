@@ -17,7 +17,7 @@ route cost one wasted process spawn instead of a wrong answer.
 
 ---
 
-## The numbers, up front
+## Measured performance
 
 `lypning bench --startup-repeat 15 --repeat 3`, run on **2026-08-21** on this
 container — 4 CPUs, Linux 6.18.44-fc-v21, all three engines built — against a
@@ -112,7 +112,7 @@ that is the only reason a mixture is allowed to guess at all.
 
 ---
 
-## 1. The measurement, first
+## 1. Measurement
 
 Everything else is downstream of one table, and the table is re-measured rather
 than remembered. This is the run quoted above, in full — `lypning bench
@@ -165,7 +165,7 @@ different program sets is not a comparison at all — and the *whole corpus* is
 what the session actually costs. Both are printed and both are labelled, for
 the same reason.
 
-### What upstream measured, and what did not reproduce
+### Upstream measurements and their reproduction
 
 The table this project was written up with is not the table above. Upstream, on
 **2026-08-16**, over the 472 programs the corpus then held (min of 5, arms
@@ -218,7 +218,7 @@ subset lost.
 > create one, so the `pages` workflow fails until that is set rather than
 > pretending to have published.
 
-## 2. Install
+## 2. Installation
 
 ```bash
 pip install lypning     # pure Python, zero runtime dependencies
@@ -267,7 +267,7 @@ lypning doctor      # the same with an opinion; exits non-zero on any FAIL
 
 ---
 
-## 3. Hook it into a coding session
+## 3. Integration with a coding session
 
 This is the point of the package. `lypning install` wires three things into a
 repository so that a Claude Code session (a) can route its python through the
@@ -301,7 +301,7 @@ b backup  .claude/settings.json.lypning-backup     — copy of the current setti
 …followed by the exact unified diff of `settings.json` that the merge would
 produce. Paths are printed absolute; they are shortened here.
 
-### What it writes
+### Files written
 
 | what | where | why |
 |---|---|---|
@@ -320,7 +320,7 @@ list at all. The same document has what that is worth in milliseconds — the
 mixture's bill over the same tasks falls from 0.470x of CPython to 0.169x — and
 what it costs in program length, which is about 1.4 lines.
 
-### What it merges
+### Settings merged
 
 `settings.json` is a file you own and have opinions about, so it is never
 overwritten. The merge deep-copies what is there, appends only entries whose
@@ -406,7 +406,7 @@ stub, a pyenv shim, a distro symlink — because clobbering one fails later,
 somewhere else, as a different bug every time. `--force` moves the original to
 `<name>.lypning-backup` and `uninstall` puts it back.
 
-### Undo it
+### Uninstallation
 
 ```bash
 lypning uninstall --dry-run    # list exactly what would go
@@ -427,7 +427,7 @@ before the first modification is the byte-for-byte original.
 the harness that captured them, and deleting them here would be unrecoverable.
 `uninstall` says so on its last line. `rm -rf ~/.lypning` is the manual step.
 
-### Once it is wired
+### Verifying the installation
 
 The shim only runs if its directory is first on `$PATH`:
 
@@ -441,7 +441,7 @@ have the same symptom — an empty log — and only one of them looks fixed.
 
 ---
 
-## 3b. Embed it — link the runtime into your harness
+## 3b. Embedding the runtime in a host
 
 A shim on `$PATH` is one way in. The other is to **link the runtime** and skip
 the process entirely: `liblypning` runs a program in your own thread, with its
@@ -542,7 +542,7 @@ Environment:
 
 ---
 
-## 5. The conformance contract
+## 5. Conformance contract
 
 ```bash
 lypning conformance
@@ -694,7 +694,7 @@ deterministic half — conformance and routing safety.
 
 ---
 
-## 7. The corpus, capture, and privacy
+## 7. Corpus, capture, and privacy
 
 The corpus is the argument. It is not a test suite someone designed; it is what
 agents actually typed, captured from real sessions:
@@ -780,7 +780,7 @@ MIT licensed. See `LICENSE`.
 
 ---
 
-## 9. Layout
+## 9. Repository layout
 
 ```
 src/lypning/

@@ -19,7 +19,7 @@ lypning-mp exists because CPython costs **8,573 ms cold** in the CheerpX sandbox
 because lypning-mp is still an interpreter written for microcontrollers, and the
 programs an agent types are a much narrower target than "Python".
 
-## 1. The measurement, first
+## 1. Measurement
 
 Everything below is downstream of one table, and the table gets **re-measured,
 never remembered**. The capture harness grows the corpus every session — this
@@ -78,7 +78,7 @@ Both binary sizes move with every rebuild — 1,045,176 B and 294,788 B in this
 tree today; `lypning status` and `lypning gate` print the ones you actually
 have.
 
-### The upstream table, and the bullet that did not reproduce
+### Upstream results and the item that did not reproduce
 
 The project was written up on a different run: upstream, **2026-08-16**, over
 the 472 programs the corpus then held, min of 5, arms interleaved, before this
@@ -132,7 +132,7 @@ Reproduce: `lypning build --rust && lypning bench`.
 shared runner measures the runner. CI keeps the deterministic half (conformance,
 routing safety).
 
-## 2. Conformance: the number that must be zero
+## 2. Conformance
 
 ```
 lypning conformance
@@ -182,7 +182,7 @@ that one too (§5).
 at all**, because the agent that typed the one-liner will not notice. That is
 why MISMATCH is the gate and UNSUPPORTED is not.
 
-## 3. What lypning implements, and why exactly that
+## 3. The implemented subset, and its rationale
 
 The subset is chosen from the corpus, not from the language reference. Measured
 prevalence over the 558 harvested and seeded programs:
@@ -205,7 +205,7 @@ implemented**: lypning-mp already has a regex engine, so `import re` is a routin
 decision rather than a hole. `subprocess` appears nowhere in `src/` and goes
 straight to CPython.
 
-### The three refusals that keep it honest
+### The three refusals
 
 A subset can be wrong in two ways, and only one of them is acceptable. These are
 the places where lypning refuses rather than approximates:
@@ -293,7 +293,7 @@ original already met*. Two of the study's agents replaced `os.path.splitext`
 with a hand-rolled `rfind` for exactly that reason. A classifier that
 under-reports its own engine teaches once it is inside a prompt loop.
 
-## 5. The dispatcher, and why it is the binary itself
+## 5. The dispatcher
 
 ```
 lypning run -c 'print(1 + 1)'
@@ -355,7 +355,7 @@ non-zero exit with a traceback is deliberately *not* one of them — that is ver
 often the program's own correct answer, and re-running it would execute its side
 effects twice.
 
-## 6. The commit barrier — what makes falling onward safe
+## 6. The commit barrier
 
 Routing to lypning is only sound if a lypning run that ends in `unsupported` left
 **nothing** behind. Otherwise the retry re-executes the side effects and the
@@ -372,7 +372,7 @@ read consults the staged writes first, so `open(p,'w').write(x)` followed by
 `open(p).read()` behaves exactly as in CPython. `os.path.exists`, `getsize`,
 `isfile`, `remove` and `rename` all see the overlay too.
 
-### The barrier is lypning's alone — lypning-mp has none
+### The barrier applies to lypning only
 
 **This is the sharpest asymmetry between the two subset tiers, and it is not
 visible from the exit codes.** lypning-mp is MicroPython: it streams stdout as
@@ -456,7 +456,7 @@ Zero runtime dependencies — `std` only. That follows CLAUDE.md invariant 5 and
 adds a second reason: every crate linked in is bytes in a binary whose cold cost
 is a step function in CheerpX's 131,072 B device blocks.
 
-## 8. Size: where it stands
+## 8. Size
 
 | binary | bytes | CheerpX blocks |
 |---|---|---|
@@ -471,7 +471,7 @@ blocks needs 103,096 B, which no single flag provides; the levers not yet tried
 are `build-std` with `panic_immediate_abort` (nightly) and cutting the `std`
 formatting machinery. This is the clearest open work item.
 
-## 8a. In a real VM — the measurement that was missing
+## 8a. Measurement in a sandbox VM
 
 Every lypning figure before 2026-08-19 came from a normal Linux filesystem, with
 the **x86_64** binary. CheerpX is 32-bit x86 only, so that binary cannot be
@@ -517,7 +517,7 @@ is fresh per RUN, not per probe, so the first probe to touch a binary pays for
 all of its blocks and later probes on the same binary read as free. Compare each
 runtime's FIRST probe; a later one's byte count is not a size.
 
-## 9. What is deliberately not here
+## 9. Deliberate exclusions
 
 - **No `re`.** 14.0% of the corpus and the single biggest routing bucket, but a
   regex engine is a large amount of code with deep semantics, and lypning-mp already
@@ -532,7 +532,7 @@ runtime's FIRST probe; a later one's byte count is not a size.
   (`docs/MICROPYTHON.md` §4) applies unchanged: interpreter init is a rounding error
   inside the process-spawn floor.
 
-## 10. Files
+## 10. File layout
 
 | path | what |
 |---|---|
