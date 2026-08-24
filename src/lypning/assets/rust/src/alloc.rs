@@ -56,8 +56,37 @@ const GRAIN: usize = 16;
 /// is 48, a small `Vec<Value>` is 40 per element. Everything the interpreter
 /// allocates in a loop lands under 256 bytes; the tail above it is buffers,
 /// which belong to `System` anyway.
-const CLASSES: usize = 16;
-const MAX_SMALL: usize = CLASSES * GRAIN;
+const SMALL_CLASSES: usize = 16;
+const MAX_SMALL: usize = SMALL_CLASSES * GRAIN;
+
+/// Above 256 B the classes go by powers of two, 512 B through 128 KiB, and the
+/// reason is a syscall count rather than an instruction count.
+///
+/// musl hands a medium allocation straight to `mmap` and gives it back with
+/// `munmap`. `s += 'x'` twenty thousand times allocates every length from 1 to
+/// 20,000 and frees the previous one — measured on this container, **16,055
+/// `mmap` and 16,047 `munmap`**, 32,104 syscalls for one one-liner, and
+/// `str-concat` has been the worst row in `lypning perf` for as long as the
+/// table has existed. With power-of-two classes the whole run of lengths from
+/// 2,049 to 4,096 is one 4 KiB block handed back and forth, so the syscalls
+/// collapse to one per class transition: **nine, not sixteen thousand.**
+///
+/// The trade is rounding waste, and it is bounded at **2x** — `alloc(513)` gets
+/// 1,024 B. That is the right trade for a process whose life is milliseconds and
+/// the wrong one for anything long-lived; measured peak RSS is in the ledger
+/// beside the syscall count, because "bounded at 2x" is a proof and not a
+/// measurement.
+///
+/// The ceiling matters as much as the floor. Above 128 KiB an allocation goes to
+/// `System` untouched, so a genuinely large buffer keeps `mremap` on growth —
+/// a `Vec` doubling toward 8 MiB wants the kernel to move a page table, not to
+/// copy 8 MiB into a block we cached.
+const LARGE_MIN_SHIFT: u32 = 9; // 512 B
+const LARGE_MAX_SHIFT: u32 = 17; // 128 KiB
+const LARGE_CLASSES: usize = (LARGE_MAX_SHIFT - LARGE_MIN_SHIFT + 1) as usize;
+const MAX_LARGE: usize = 1 << LARGE_MAX_SHIFT;
+
+const CLASSES: usize = SMALL_CLASSES + LARGE_CLASSES;
 
 /// Carved from `System` and never given back. 64 KiB is 4,096 of the smallest
 /// class — large enough that the carve is not itself a hot path, small enough
@@ -121,12 +150,25 @@ impl Lypalloc {
 /// `GlobalAlloc` forbids it — but `size == 0` would map to class 0 harmlessly
 /// anyway.
 #[inline(always)]
-fn class_of(layout: Layout) -> Option<usize> {
-    if layout.align() > GRAIN || layout.size() > MAX_SMALL {
+fn class_of(layout: Layout) -> Option<(usize, usize)> {
+    if layout.align() > GRAIN {
         return None;
     }
-    // `(size + 15) / 16 - 1`, with size 0 clamped to class 0.
-    Some((layout.size().wrapping_add(GRAIN - 1) / GRAIN).saturating_sub(1))
+    let size = layout.size();
+    if size <= MAX_SMALL {
+        // `(size + 15) / 16 - 1`, with size 0 clamped to class 0.
+        let c = (size.wrapping_add(GRAIN - 1) / GRAIN).saturating_sub(1);
+        return Some((c, (c + 1) * GRAIN));
+    }
+    if size > MAX_LARGE {
+        return None;
+    }
+    // Round up to a power of two, floored at 512 B: `ceil(log2(size))`.
+    let shift = (usize::BITS - (size - 1).leading_zeros()).max(LARGE_MIN_SHIFT);
+    Some((
+        SMALL_CLASSES + (shift - LARGE_MIN_SHIFT) as usize,
+        1usize << shift,
+    ))
 }
 
 unsafe impl GlobalAlloc for Lypalloc {
@@ -151,11 +193,10 @@ unsafe impl GlobalAlloc for Lypalloc {
     /// linker. `membership`, `dict-set` and `str-repr` carry most of it.
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let class = match class_of(layout) {
+        let (class, size) = match class_of(layout) {
             Some(c) => c,
             None => return System.alloc(layout),
         };
-        let size = (class + 1) * GRAIN;
         self.acquire();
         let pool = &mut *self.pool.get();
         let head = pool.free[class];
@@ -164,6 +205,14 @@ unsafe impl GlobalAlloc for Lypalloc {
             pool.free[class] = *(head as *mut *mut u8);
             self.release();
             return head;
+        }
+        // A large class is taken from `System` at its own size rather than
+        // carved: one of them can be half the chunk. It is cached on free like
+        // any other class, which is the entire point — the syscall happens once
+        // per class rather than once per allocation.
+        if size > MAX_SMALL {
+            self.release();
+            return System.alloc(Layout::from_size_align_unchecked(size, GRAIN));
         }
         // Carve from the current chunk, taking a new one when it is exhausted.
         // The remainder of the old chunk is abandoned rather than threaded onto
@@ -191,7 +240,7 @@ unsafe impl GlobalAlloc for Lypalloc {
 
     #[inline]
     unsafe fn dealloc(&self, p: *mut u8, layout: Layout) {
-        let class = match class_of(layout) {
+        let (class, _) = match class_of(layout) {
             Some(c) => c,
             None => return System.dealloc(p, layout),
         };
@@ -202,19 +251,31 @@ unsafe impl GlobalAlloc for Lypalloc {
         self.release();
     }
 
-    /// Overridden only for the case the default would get badly wrong: a large
-    /// block growing. `GlobalAlloc`'s default is alloc-copy-dealloc, which for a
-    /// buffer being doubled in a loop turns `mremap` into a full copy every
-    /// time — and a growing buffer is exactly the shape of `s += x`, already the
-    /// worst row in `lypning perf`. Small blocks keep the default path, where
-    /// the copy is at most 256 bytes and the pop is cheaper than anything
-    /// `System` could do.
+    /// Three cases, and only the middle one is `GlobalAlloc`'s default.
+    ///
+    /// **Same class in, same class out — return the pointer.** A block is
+    /// already its whole class, so growing from 2,049 to 4,096 bytes needs no
+    /// allocation and no copy at all. `dealloc` will later be handed the *new*
+    /// layout, which maps to the same class, so the block goes back on the right
+    /// free list; that is what makes returning `p` sound rather than merely
+    /// convenient.
+    ///
+    /// **Above the cached range at both ends — hand it to `System`.** A `Vec`
+    /// doubling toward 8 MiB wants `mremap` to move a page table, not a copy of
+    /// 8 MiB into a block we cached. Losing that is how a bump allocator makes a
+    /// program slower rather than faster.
+    ///
+    /// **Otherwise the default**, alloc-copy-dealloc through this allocator.
     #[inline]
     unsafe fn realloc(&self, p: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        if class_of(layout).is_none()
-            && layout.align() <= GRAIN
-            && new_size > MAX_SMALL
-        {
+        let old = class_of(layout);
+        let new = class_of(Layout::from_size_align_unchecked(new_size, layout.align()));
+        if let (Some((a, _)), Some((b, _))) = (old, new) {
+            if a == b {
+                return p;
+            }
+        }
+        if old.is_none() && new.is_none() && layout.align() <= GRAIN {
             return System.realloc(p, layout, new_size);
         }
         // Default: allocate under the new layout, copy the overlap, free.

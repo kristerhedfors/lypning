@@ -28,6 +28,86 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-24 · iteration 27 — 32,104 syscalls for one one-liner
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1488 loaded, 1272 timed
+
+**bytes** 979,144 → 983,240 (+4,096; **8 blocks**, headroom 65,336) ·
+**conformance** 888 / 384 / **0 MISMATCH** ·
+**perf** `str-concat` **231.55 → 17.22 ms**; TOTAL 1670.99 → 1475.23 (−11.7%) ·
+**corpus** 1.69 → 1.51 s, **0.896x** ·
+**fuzz** seed 20260824 × 3000, 0 counterexamples
+
+`str-concat` has been the worst row in the table since the table existed —
+31.09x CPython at the last reading — and the standing explanation was the
+quadratic: `Value::Str(Rc<str>)` cannot grow, so `s += 'x'` copies the whole
+string every time. The standing answer was a growable string representation, the
+largest single change on the §4a list.
+
+**It was not the quadratic. It was syscalls.** `strace -c` on
+`s += 'x'` twenty thousand times:
+
+```
+16,055  mmap
+16,047  munmap
+```
+
+musl hands a medium allocation straight to `mmap` and gives it back with
+`munmap`, and this loop allocates every length from 1 to 20,000 while freeing
+the previous one. 32,104 syscalls, 0.69 s of syscall time, for one one-liner.
+The copying was never the expensive part.
+
+So `alloc.rs` grew nine more classes: powers of two from 512 B to 128 KiB, over
+`System`, cached on free exactly like the small ones. The whole run of lengths
+from 2,049 to 4,096 is now one 4 KiB block handed back and forth, so a syscall
+happens once per class transition rather than once per allocation:
+
+```
+32,104 syscalls  ->  21
+```
+
+`realloc` gained the case that falls out of it: **same class in, same class out
+returns the pointer**, so growing from 2,049 to 4,096 bytes needs no allocation
+and no copy at all. Sound because `dealloc` is later handed the *new* layout,
+which maps to the same class.
+
+The ceiling is as deliberate as the floor. Above 128 KiB an allocation goes to
+`System` untouched and `realloc` forwards to `System::realloc`, so a `Vec`
+doubling toward 8 MiB still gets `mremap` to move a page table instead of a copy
+into a block we cached. Losing that is how this change would have made things
+slower.
+
+### What it cost
+
+**Bytes:** +4,096, still 8 blocks.
+
+**Memory: nothing measurable.** Power-of-two classes waste up to 2x by
+construction and that is a proof, not a measurement — so it was measured. Peak
+RSS over five allocation-churn programs, before → after: 22.0 → 22.2 MB,
+31.0 → 31.5 MB, and three unchanged at the 8.0 MB floor. CPython is higher on
+every one.
+
+`s += 'x'` × 20,000 end to end went **236.4 ms → 18.9 ms**, which is faster than
+CPython's 21.8 ms on the same program.
+
+### This demotes the standing branch
+
+The growable string representation has been the named answer to `str-concat`
+through this whole ledger. On this evidence it is worth far less than it looked:
+the row is 17 ms now, roughly 2x CPython rather than 31x, and what is left of it
+*is* the quadratic copy. That is a real cost and a real branch, but it is no
+longer the largest single win available and should stop being described as one.
+
+Verified beyond the four gates, because an allocator change earns it: 165
+programs straddling **every** power-of-two class boundary and its neighbours
+(255/256/257 … 131,071/131,072/131,073 … 1,000,000) in four shapes each —
+`'x'*n`, `[0]*n`, `bytes` of n, and a loop growing across the boundary — 0
+mismatches; the 216-program small-boundary sweep from iteration 18, still 0; the
+44,352-cell string-bounds grid, still identical; 3,000 fuzz programs, 0
+counterexamples.
+
+---
+
 ## 2026-08-24 · iteration 26 — the JSON decoder answered malformed documents
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1488 loaded, 1272 timed
