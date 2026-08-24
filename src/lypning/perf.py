@@ -138,6 +138,18 @@ SUITE: Tuple[Case, ...] = (
     Case("str-split", "str",
          "t = 'a b c d e f g h'\nn = 0\nfor i in range(40000):\n    n += len(t.split())\nprint(n)",
          '\\.split(lines)?\\('),
+    # The six methods that take optional start/end bounds, and the suite had no
+    # case for ANY of them until iteration 30 — `call-method` probes `.count()`
+    # on a six-character string, which does not reach `slice_str`. Two scouts
+    # independently found `slice_str` walking the receiver three times before
+    # looking at the needle, on calls that pass no bounds at all, and neither
+    # could show it: a measured win that moves no row means the suite has a hole
+    # (skill §3). The haystack is 1,000 bytes on purpose — the defect is linear
+    # in the RECEIVER, so a short one hides it, which is how it survived.
+    Case("str-scan", "str",
+         "t = 'abcdefghij' * 100\nn = 0\nfor i in range(40000):\n"
+         "    n += 1 if t.startswith('abc') else 0\n    n += t.find('hij')\nprint(n)",
+         r'\.(startswith|endswith|find|rfind|index|rindex)\('),
     Case("str-slice", "str",
          "t = 'abcdefghij' * 10\nn = 0\nfor i in range(60000):\n    n += len(t[5:-5])\nprint(n)",
          '\\[[^]\\[]*:[^]\\[]*\\]'),

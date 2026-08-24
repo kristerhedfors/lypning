@@ -28,6 +28,62 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-24 · iteration 30 — three passes over the receiver to answer an O(1) question
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 983,240 → 983,240 (**8 blocks**, unchanged) ·
+**conformance** 906 / 399 / **0 MISMATCH** ·
+**perf** new row `str-scan` **101.43 → 23.66 ms, 7.79x → 1.81x**; the suite is
+32 cases now and **the TOTAL renumbered** ·
+**corpus** 1.58 → 1.60 s, 1.015x, inside the deadband
+
+`t.startswith('#')` passes no bounds, and `slice_str` walked the receiver
+**three times** before looking at the needle: `chars().count()` to find `n`, then
+two `char_indices().nth()` walks to turn 0 and `n` back into byte offsets it
+already had. On a 4,000-byte haystack that is ~69,000 instructions to answer a
+question about the first character. `line.startswith('#')` over a long line is
+an ordinary agent one-liner.
+
+The fix is four lines: no bounds, no work.
+
+### The reason this is worth an entry is the case, not the fix
+
+**No perf case reached this function.** The suite's only method row is
+`call-method`, which is `.count('a')` on a six-character string, and `count` did
+not go through `slice_str` until iteration 24 put it there. Two scouts found the
+defect independently by reading, and neither could show it moving anything —
+which the skill has a rule for: *a measured win that moves no row means the suite
+has a hole, and the case goes in the same iteration.*
+
+So `str-scan` is new: `startswith` and `find` over a **1,000-byte** haystack,
+40,000 times. The length is the point — the defect is linear in the receiver, so
+the six-character strings elsewhere in the suite would have hidden it exactly as
+they did. Measured on the iteration-29 binary it reads **7.79x**, which would
+have made it the second-worst row in the table; on this one it is **1.81x**.
+
+The suite is 32 cases and its TOTAL is not comparable with earlier entries.
+Re-recorded: **1470.00 ms against CPython's 783.71, 1.88x**.
+
+This is also a scan removal, which the ledger's iteration-4 negative result says
+usually buys nothing. That result was about shortening a **fixed** 39-entry table
+scan that was cache-resident SIMD `memcmp`; this deletes three passes whose
+length is the caller's data. The distinction is the whole reason the earlier
+result did not rule this out.
+
+### And the grid became a test
+
+`tests/test_str_bounds_grid.py` runs the 44,352-cell cross-product from
+iteration 24 as a permanent gate — the same program on both interpreters, one
+process each, 0.17 s. It is a grid rather than a list of examples because a list
+of examples is exactly what failed to find the original bug: the first fix
+passed all fourteen chosen cases and still left 609 cells wrong.
+
+On the iteration-23 binary it reports **3,409 of 44,352 cells disagree**, which
+is what a regression gate for this function should look like.
+
+---
+
 ## 2026-08-24 · iteration 29 — a call built an empty hash table and then grew it
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed

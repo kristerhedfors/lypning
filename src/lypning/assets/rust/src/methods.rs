@@ -820,6 +820,21 @@ fn slice_str<'a>(
     start: Option<&Value>,
     end: Option<&Value>,
 ) -> R<Option<(&'a str, i64)>> {
+    // No bounds, no work. Without this, `t.startswith('#')` — no `start`, no
+    // `end` — walked the receiver THREE times before looking at the needle:
+    // `chars().count()` to find `n`, then two `char_indices().nth()` walks to
+    // turn 0 and `n` back into byte offsets it already had. Measured on a
+    // 4,000-byte haystack that is ~69,000 instructions to answer an O(1)
+    // question, and `line.startswith('#')` over a long line is an ordinary
+    // one-liner.
+    //
+    // This is a scan removal, which the ledger's iteration-4 negative result
+    // says usually buys nothing. That result was about shortening a FIXED
+    // 39-entry table scan; this deletes three passes whose length is the
+    // caller's data.
+    if matches!(start, None | Some(Value::None)) && matches!(end, None | Some(Value::None)) {
+        return Ok(Some((s, 0)));
+    }
     let n = s.chars().count() as i64;
     let lo = match start {
         None | Some(Value::None) => 0,
