@@ -192,7 +192,7 @@ pub fn call_module_method(
                     1
                 }
             };
-            return Err(LypningError::Exit(code));
+            return Err(LypningError::exit(code));
         }
         ("sys.stdin", "read") => Value::Str(crate::iter::decode_text(&mio::stdin_rest()?, "non-UTF-8 bytes on stdin (CPython decodes it with surrogateescape)")?),
         ("sys.stdin", "readline") => match mio::stdin_line()? {

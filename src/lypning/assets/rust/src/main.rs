@@ -128,9 +128,9 @@ fn finish(r: Result<(), LypningError>, report_refusal: bool) -> i32 {
             }
             0
         }
-        Err(LypningError::Exit(n)) => {
+        Err(ref e) if e.is_exit().is_some() => {
             let _ = io::commit();
-            n
+            e.is_exit().unwrap_or(0)
         }
         Err(e) if e.is_unsupported() => {
             if io::is_committed() {

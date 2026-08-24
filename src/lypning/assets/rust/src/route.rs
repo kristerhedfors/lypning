@@ -19,7 +19,7 @@
 //! guess right often enough that the chain rarely runs twice.
 
 use crate::ast::*;
-use crate::err::LypningError;
+use crate::err::ErrKind;
 use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,7 +99,11 @@ const CPYTHON_ONLY_KINDS: &[&str] = &["async", "decorator", "generator"];
 pub fn route(src: &str) -> Route {
     let mut imports = Vec::new();
     match crate::parse::parse(src) {
-        Err(LypningError::Unsupported { kind, detail }) => {
+        Err(ref e) if matches!(e.kind(), ErrKind::Unsupported { .. }) => {
+            let (kind, detail) = match e.kind() {
+                ErrKind::Unsupported { kind, detail } => (kind.clone(), detail.clone()),
+                _ => unreachable!(),
+            };
             // The parse stopped before the imports could be collected, so scan
             // the source for them: the import line is what usually decides the
             // tier, and it is cheap and unambiguous to find.
@@ -112,14 +116,20 @@ pub fn route(src: &str) -> Route {
                 imports,
             }
         }
-        Err(LypningError::Syntax { line, msg }) => Route {
+        Err(ref e) if matches!(e.kind(), ErrKind::Syntax { .. }) => {
+            let (line, msg) = match e.kind() {
+                ErrKind::Syntax { line, msg } => (*line, msg.clone()),
+                _ => unreachable!(),
+            };
             // A syntax error is not a capability gap. CPython owns it, because
             // its message is the one the caller expects to read.
-            engine: Engine::CPython,
-            kind: "syntax".into(),
-            detail: format!("line {line}: {msg}"),
-            imports: scan_imports(src),
-        },
+            Route {
+                engine: Engine::CPython,
+                kind: "syntax".into(),
+                detail: format!("line {line}: {msg}"),
+                imports: scan_imports(src),
+            }
+        }
         Err(other) => Route {
             engine: Engine::CPython,
             kind: "error".into(),

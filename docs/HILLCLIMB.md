@@ -28,6 +28,80 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-24 · iteration 22 — the error type was in every return value
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1488 loaded, 1272 timed
+
+**bytes** 1,020,104 → **975,048** (−45,056; 8 blocks, headroom 73,528) ·
+**conformance** 888 / 384 / **0 MISMATCH** ·
+**perf** TOTAL 1742.66 → 1656.86 ms (−4.9%), clean A/B against a HEAD build ·
+**corpus** 1.69 → 1.63 s, **0.962x** ·
+**fuzz** seed 20260824 × 3000, 0 counterexamples
+
+`R<T> = Result<T, LypningError>` is the return type of essentially every
+function here and roughly 790 `?` operators apply it. `LypningError` was an enum
+held **inline**, and its largest variant is two `String`s:
+
+```
+inline  ErrKind= 48   R<Value>= 48   R<bool>= 48   R<()>= 48
+boxed   Boxed  =  8   R<Value>= 40   R<bool>= 16   R<()>=  8
+```
+
+So twenty functions returning `R<()>` were moving 48 bytes to say nothing went
+wrong, and `R<Value>` carried a discriminant word beside a `Value` that already
+has a spare tag. Boxed, `R<()>` is one register, `R<bool>` is two, and
+`R<Value>` niche-encodes into `Value`'s own tag and costs **nothing** over a bare
+`Value` — which is the row that matters, because `eval` returns one.
+
+`LypningError` is now a newtype over `Box<ErrKind>`. All ~12 constructor helpers
+keep their signatures, so none of the ~301 `Err(...)` sites changed and the
+`Box::new` is emitted once per helper rather than once per site. Eleven places
+matched a variant directly and were rewritten to `e.kind()`.
+
+The trade is **one heap allocation per error constructed**, and it is a good
+trade here for a specific reason worth writing down: errors are not control flow
+in this runtime. Nothing raises per element; the one builtin that raises per call
+(`next()`'s `StopIteration`) raises once per call, not once per item. The 790 `?`
+sites pay on every evaluation; the allocation pays when a program is about to
+stop.
+
+The win is broad rather than deep, which is what a change to the calling
+convention should look like: `list-sort` −32.17 ms, `dict-set` −6.59,
+`call-recursive` −4.32, `tuple-unpack` −4.07, `str-of-scalar` −4.47,
+`list-append` −3.30, `call-method` −2.86, `enumerate-zip` −2.85, `str-slice`
+−2.71, `loop-range` −2.50 — twelve rows past 2 ms and nothing worse.
+
+**Measured as a clean A/B**, not against the running baseline: three iterations
+had landed since it was recorded, so HEAD was rebuilt to a separate binary and
+both were run under `LYPNING_BIN`. Attributing three changes' worth of
+improvement to one of them is the easiest number in this file to get wrong.
+
+### The gate that actually matters here
+
+Four of the eleven rewritten sites *are* the exit-90 contract — `main.rs`'s
+`finish`, `embed.rs`'s outcome mapping and `route.rs`'s two error arms. That is
+invariant 2's known silent-failure mode: a refusal that becomes a traceback
+still compiles, still links, still passes `--version`.
+
+`build --rust` asserts the contract and passed. It was also checked by hand, as a
+**differential against the HEAD binary** over 21 cases: refusals by module,
+builtin and bigint; a refusal reached after output was already staged; a syntax
+error; `sys.exit` with 3, 0, a string and nothing; `raise
+NotImplementedError`; ZeroDivisionError; NameError; `except` catching a real
+exception and *not* catching a refusal or an exit; four `route` outputs; and
+`lypning run` falling through to CPython. **All 21 byte-identical on exit code,
+stdout and stderr.**
+
+### The byte number changes what is affordable next
+
+Headroom before a 9th device block went from 28,472 B to **73,528 B**. Two
+candidates that were priced as "probably does not fit" — `#[inline]` on the
+allocator's `GlobalAlloc` methods (8,192 B, ~3% on the perf TOTAL, iteration 18)
+and the `percent_format` rewrite — are now affordable. That was not the reason
+for this step and it is the most useful thing it produced.
+
+---
+
 ## 2026-08-24 · iteration 21 — thirty-six silent wrong answers about whitespace
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1488 loaded, 1272 timed

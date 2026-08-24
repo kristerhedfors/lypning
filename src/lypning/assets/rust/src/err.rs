@@ -18,8 +18,11 @@ use std::fmt;
 
 pub const UNSUPPORTED_EXIT: i32 = 90;
 
+/// What went wrong. Reached through [`LypningError::kind`], never stored inline
+/// — see the type below for why that indirection is worth a heap allocation on
+/// a path that is, by construction, not hot.
 #[derive(Debug, Clone)]
-pub enum LypningError {
+pub enum ErrKind {
     /// A construct outside the subset. Safe to retry on another interpreter.
     Unsupported { kind: String, detail: String },
     /// A syntax error. CPython would also fail, so this is NOT routed onward
@@ -31,6 +34,28 @@ pub enum LypningError {
     Exit(i32),
 }
 
+/// One pointer, and the size is the whole point.
+///
+/// `R<T>` is the return type of essentially every function in this interpreter
+/// and there are ~790 `?` operators applying it. `ErrKind` is 48 bytes, so while
+/// it lived inline **every** `R<T>` was at least 48 bytes: `R<()>` — twenty
+/// functions return it — was 48 bytes of stack traffic to say "nothing went
+/// wrong", `R<bool>` likewise, and `R<Value>` carried a discriminant word beside
+/// a `Value` that already has a spare tag.
+///
+/// Boxed, the same three are **8, 16 and 40** bytes: `R<()>` is one register,
+/// `R<bool>` is two, and `R<Value>` niche-encodes the error into `Value`'s own
+/// tag and costs nothing over a bare `Value`.
+///
+/// The trade is one heap allocation per error CONSTRUCTED, and it is a good
+/// trade here precisely because errors are not control flow in this runtime:
+/// nothing raises per element, and the one builtin that raises per call
+/// (`next()`'s StopIteration) raises once per call and not once per item. The
+/// ~790 `?` sites pay on every single evaluation; the allocation pays when a
+/// program is about to stop.
+#[derive(Debug, Clone)]
+pub struct LypningError(Box<ErrKind>);
+
 #[derive(Debug, Clone)]
 pub struct Exc {
     pub kind: &'static str,
@@ -38,47 +63,65 @@ pub struct Exc {
 }
 
 impl LypningError {
+    #[inline]
+    pub fn new(kind: ErrKind) -> Self {
+        LypningError(Box::new(kind))
+    }
+    /// The payload. Every site that used to `match` on the enum matches on this.
+    #[inline]
+    pub fn kind(&self) -> &ErrKind {
+        &self.0
+    }
     pub fn syntax(line: u32, msg: &str) -> Self {
-        LypningError::Syntax {
+        Self::new(ErrKind::Syntax {
             line,
             msg: msg.to_string(),
-        }
-    }
-    pub fn exc(kind: &'static str, msg: impl Into<String>) -> Self {
-        LypningError::Exc(Exc {
-            kind,
-            msg: msg.into(),
         })
     }
+    pub fn exc(kind: &'static str, msg: impl Into<String>) -> Self {
+        Self::new(ErrKind::Exc(Exc {
+            kind,
+            msg: msg.into(),
+        }))
+    }
+    pub fn exit(code: i32) -> Self {
+        Self::new(ErrKind::Exit(code))
+    }
     pub fn is_unsupported(&self) -> bool {
-        matches!(self, LypningError::Unsupported { .. })
+        matches!(*self.0, ErrKind::Unsupported { .. })
+    }
+    pub fn is_exit(&self) -> Option<i32> {
+        match *self.0 {
+            ErrKind::Exit(n) => Some(n),
+            _ => None,
+        }
     }
 }
 
 impl fmt::Display for LypningError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LypningError::Unsupported { kind, detail } => {
+        match &*self.0 {
+            ErrKind::Unsupported { kind, detail } => {
                 write!(f, "lypning: unsupported: {kind}: {detail}")
             }
-            LypningError::Syntax { line, msg } => write!(f, "  line {line}\nSyntaxError: {msg}"),
-            LypningError::Exc(e) => {
+            ErrKind::Syntax { line, msg } => write!(f, "  line {line}\nSyntaxError: {msg}"),
+            ErrKind::Exc(e) => {
                 if e.msg.is_empty() {
                     write!(f, "{}", e.kind)
                 } else {
                     write!(f, "{}: {}", e.kind, e.msg)
                 }
             }
-            LypningError::Exit(n) => write!(f, "SystemExit: {n}"),
+            ErrKind::Exit(n) => write!(f, "SystemExit: {n}"),
         }
     }
 }
 
 pub fn unsupported(kind: &str, detail: &str) -> LypningError {
-    LypningError::Unsupported {
+    LypningError::new(ErrKind::Unsupported {
         kind: kind.to_string(),
         detail: detail.to_string(),
-    }
+    })
 }
 
 pub type R<T> = Result<T, LypningError>;

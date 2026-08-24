@@ -279,15 +279,9 @@ impl Interp {
                     Some(e) => self.eval(e)?,
                 };
                 return Err(match e {
-                    Value::Exc(k, m) => LypningError::Exc(Exc {
-                        kind: k,
-                        msg: m.to_string(),
-                    }),
+                    Value::Exc(k, m) => LypningError::exc(k, m.to_string()),
                     Value::Builtin(name) if crate::builtins::is_exception_name(name) => {
-                        LypningError::Exc(Exc {
-                            kind: crate::builtins::exception_static(name),
-                            msg: String::new(),
-                        })
+                        LypningError::exc(crate::builtins::exception_static(name), "")
                     }
                     other => {
                         return Err(type_err(format!(
@@ -363,7 +357,7 @@ impl Interp {
                         // `unsupported` is a runtime capability gap, not a
                         // Python exception: catching it with `except Exception`
                         // would turn a routing signal into a wrong answer.
-                        if err.is_unsupported() || matches!(err, LypningError::Exit(_)) {
+                        if err.is_unsupported() || err.is_exit().is_some() {
                             Err(err)
                         } else {
                             let kind = err_kind(&err);
@@ -1346,15 +1340,15 @@ fn collect_assigned(body: &[Stmt], out: &mut FastSet<Rc<str>>) {
 }
 
 pub fn err_kind(e: &LypningError) -> &'static str {
-    match e {
-        LypningError::Exc(x) => x.kind,
+    match e.kind() {
+        ErrKind::Exc(x) => x.kind,
         _ => "RuntimeError",
     }
 }
 pub fn err_msg(e: &LypningError) -> String {
-    match e {
-        LypningError::Exc(x) => x.msg.clone(),
-        other => other.to_string(),
+    match e.kind() {
+        ErrKind::Exc(x) => x.msg.clone(),
+        _ => e.to_string(),
     }
 }
 
