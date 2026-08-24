@@ -28,6 +28,50 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-24 · iteration 32 — four allocations to write one line
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 983,240 → 983,240 (**8 blocks**, unchanged) ·
+**conformance** 906 / 399 / **0 MISMATCH** ·
+**perf** `print-lines` **14.42 → 12.24 ms** (−15%) ·
+**corpus** 1.58 → 1.53 s, 0.966x ·
+**fuzz** seed 20260824 × 3000, 0 counterexamples
+
+`print(` is the one construct nearly every corpus program executes, and the arm
+allocated four times to write one line: a `String` for a separator it never uses
+when there is one argument, a `String` for a newline, a `String` to accumulate
+into, and one more from `to_str`. The defaults are `&'static str` now, and the
+single-argument case — which is almost every `print` — takes the string `to_str`
+already built instead of copying it into a second one.
+
+`print-lines` was **0.27x** CPython before this, so the row was never the reason
+to do it. The reason is the one the instruments cannot show: `corpus-time` is
+spawn-bound and cannot see a per-call allocation at all, and this is the call
+every program makes.
+
+### And the sweep found two more silent wrong answers
+
+`sep` and `end` must be `str` or `None`, and CPython checks the **type** rather
+than converting. This converted:
+
+```
+print('a', end=2)    printed `a2`   CPython raises TypeError
+print('a', sep=1)    printed `a`    CPython raises TypeError
+```
+
+The second is the more interesting one. With a single argument the separator is
+never used, so a bad `sep=` was accepted **silently** and would only have shown
+up the day someone added a second argument. Both reproduce on the iteration-31
+binary; both now raise CPython's exact message, including the type name.
+
+35 print shapes swept against CPython — zero, one and many arguments, every
+`sep`/`end` combination including `None`, `file=` to stdout and stderr, an
+invalid keyword, `*` unpacking, non-ASCII, and a 100,000-byte line — 0
+mismatches. Eight pinned; four fail on the previous binary.
+
+---
+
 ## 2026-08-24 · iteration 31 — two negative results, and a win the suite cannot see
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed

@@ -136,14 +136,53 @@ pub fn call_builtin(
         return Ok(Value::Exc(exception_static(name), msg.into()));
     }
     Ok(match name {
+        // `print(` is in nearly every corpus program, and this arm allocated
+        // four times to write one line: a `String` for a separator it never
+        // uses when there is one argument, a `String` for a newline, a
+        // `String` to accumulate into, and one more from `to_str`. The
+        // defaults are `&'static str` now and the single-argument case reuses
+        // the string `to_str` already built.
+        //
+        // `print-lines` was 0.27x CPython before this, so the row was never the
+        // reason — the reason is that `corpus-time` is spawn-bound and cannot
+        // see per-call allocations at all (skill §3), while `print` is the one
+        // construct nearly every program in the corpus executes.
         "print" => {
-            let sep = match kwget(&kw, "sep") {
-                Some(Value::None) | None => " ".to_string(),
-                Some(v) => fmt::to_str(&v)?,
+            // `sep` and `end` must be str or None, and CPython checks the TYPE
+            // rather than converting. `fmt::to_str` converted: `print('a',
+            // end=2)` printed `a2` and `print('a', sep=1)` printed `a` at exit
+            // 0, both where CPython raises. The first is a wrong answer on
+            // stdout; the second is worse in a way that is easy to miss — with
+            // one argument the separator is never used, so the bad keyword was
+            // accepted silently and only showed up if a second argument ever
+            // appeared.
+            let sep_owned;
+            let sep: &str = match kwget(&kw, "sep") {
+                Some(Value::None) | None => " ",
+                Some(Value::Str(v)) => {
+                    sep_owned = v;
+                    sep_owned.as_ref()
+                }
+                Some(other) => {
+                    return Err(type_err(format!(
+                        "sep must be None or a string, not {}",
+                        type_name(&other)
+                    )))
+                }
             };
-            let end = match kwget(&kw, "end") {
-                Some(Value::None) | None => "\n".to_string(),
-                Some(v) => fmt::to_str(&v)?,
+            let end_owned;
+            let end: &str = match kwget(&kw, "end") {
+                Some(Value::None) | None => "\n",
+                Some(Value::Str(v)) => {
+                    end_owned = v;
+                    end_owned.as_ref()
+                }
+                Some(other) => {
+                    return Err(type_err(format!(
+                        "end must be None or a string, not {}",
+                        type_name(&other)
+                    )))
+                }
             };
             let to_err = match kwget(&kw, "file") {
                 Some(Value::Module("sys.stderr")) => true,
@@ -162,14 +201,23 @@ pub fn call_builtin(
                     )));
                 }
             }
-            let mut out = String::new();
-            for (i, a) in args.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(&sep);
+            // One argument is the shape almost every `print` has: take the
+            // string `to_str` built rather than copying it into a second one
+            // and dropping the first.
+            let mut out = match args.first() {
+                Some(a) if args.len() == 1 => fmt::to_str(a)?,
+                _ => {
+                    let mut acc = String::new();
+                    for (i, a) in args.iter().enumerate() {
+                        if i > 0 {
+                            acc.push_str(sep);
+                        }
+                        acc.push_str(&fmt::to_str(a)?);
+                    }
+                    acc
                 }
-                out.push_str(&fmt::to_str(a)?);
-            }
-            out.push_str(&end);
+            };
+            out.push_str(end);
             if to_err {
                 mio::write_err(out.as_bytes())?;
             } else {

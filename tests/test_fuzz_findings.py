@@ -139,6 +139,19 @@ CASES = [
     # The presized map must hold every name the body binds, not just the params.
     ("scope-varying-local-counts", "def one(): x=1; return x\ndef four(): a=1;b=2;c=3;d=4; return a+b+c+d\ndef eight(): a=1;b=2;c=3;d=4;e=5;f=6;g=7;h=8; return a+b+c+d+e+f+g+h\nprint(sum(one()+four()+eight() for _ in range(50)))"),
     ("scope-kwargs-eight", "def f(a,b,c,d,e,f_,g,h):\n    return a+b+c+d+e+f_+g+h\nprint(f(1,2,3,4,5,6,7,8), f(h=8,g=7,f_=6,e=5,d=4,c=3,b=2,a=1))"),
+    # `print`'s `sep` and `end` must be str or None — CPython checks the TYPE
+    # rather than converting. Converting them printed `a2` for `end=2` at exit
+    # 0, and `sep=1` was accepted silently because with one argument the
+    # separator is never used: the bad keyword only showed if a second argument
+    # ever appeared.
+    ("print-sep-int-is-a-type-error", "print('a', sep=1)"),
+    ("print-end-int-is-a-type-error", "print('a', end=2)"),
+    ("print-sep-bytes-is-a-type-error", "print('a', 'b', sep=b'x')"),
+    ("print-end-list-is-a-type-error", "print('a', end=[1])"),
+    ("print-sep-end-none-are-the-defaults", "print('a', 'b', sep=None, end=None)"),
+    ("print-sep-end-strings", "print('a', 'b', sep='|', end='#')"),
+    ("print-no-args", "print()"),
+    ("print-many-args", "print(1, 'a', None, [1, 2], (3,), {'k': 1})"),
 ]
 
 needs_engine = pytest.mark.skipif(
