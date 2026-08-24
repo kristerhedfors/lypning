@@ -180,3 +180,65 @@ def test_refuses_rather_than_answering(name: str, program: str) -> None:
         [sys.executable, "-c", program], capture_output=True, text=True, timeout=30
     )
     assert ref.returncode == 0, "%s: CPython does not answer it either" % name
+
+
+#: `json.loads` documents that must FAIL to decode, with CPython's exact message
+#: and position. They are separate from `CASES` because both interpreters exit 1
+#: with a traceback, so the assertion is on the message rather than on stdout —
+#: and lypning names the exception `JSONDecodeError` where CPython's traceback
+#: shows `json.decoder.JSONDecodeError`, which is the module path of a class
+#: lypning does not have a module for.
+JSON_ERRORS = [
+    # Raw control characters are invalid inside a JSON string, and the decoder
+    # ACCEPTED them: `json.loads('"a\tb"')` returned `'a\tb'` at exit 0. That is
+    # the worst shape a decoder can have — a malformed document is answered, so
+    # a program that should have been routed onward to get its JSONDecodeError
+    # got a result instead. The bound is `< 0x20` exactly, per RFC 8259.
+    ("json-tab-in-string", 'chr(9)', "Invalid control character at: line 1 column 3 (char 2)"),
+    ("json-newline-in-string", 'chr(10)', "Invalid control character at: line 1 column 3 (char 2)"),
+    ("json-nul-in-string", 'chr(0)', "Invalid control character at: line 1 column 3 (char 2)"),
+    ("json-unit-sep-in-string", 'chr(31)', "Invalid control character at: line 1 column 3 (char 2)"),
+]
+
+
+@needs_engine
+@pytest.mark.parametrize(
+    "name,ch,message", JSON_ERRORS, ids=[c[0] for c in JSON_ERRORS]
+)
+def test_json_rejects_what_cpython_rejects(name: str, ch: str, message: str) -> None:
+    program = "import json\nprint(repr(json.loads('\"a' + %s + 'b\"')))" % ch
+    ref = subprocess.run(
+        [sys.executable, "-c", program], capture_output=True, text=True, timeout=30
+    )
+    assert ref.returncode == 1 and message in ref.stderr, (
+        "the oracle moved: CPython no longer reports %r for %s" % (message, name)
+    )
+    got = engines.run(engines.LYPNING, program, timeout=30)
+    assert not got.refused, (
+        "%s: a refusal is safe but wrong here — CPython raises rather than "
+        "answering, so lypning can and should raise too" % name
+    )
+    assert got.returncode == 1, (
+        "%s: exit %d — the document is invalid and must not decode. stdout %r"
+        % (name, got.returncode, got.stdout)
+    )
+    assert message in got.stderr, (
+        "%s: lypning said %r, CPython says %r — the POSITION is the answer for "
+        "a decode error" % (name, got.stderr.strip()[-120:], message)
+    )
+
+
+@needs_engine
+def test_json_unterminated_string_points_at_the_opening_quote() -> None:
+    """"starting at" means the quote, not where the scan gave up."""
+    program = "import json\nprint(json.loads('\"abc'))"
+    want = "Unterminated string starting at: line 1 column 1 (char 0)"
+    ref = subprocess.run(
+        [sys.executable, "-c", program], capture_output=True, text=True, timeout=30
+    )
+    assert want in ref.stderr, "the oracle moved: %s" % ref.stderr.strip()[-160:]
+    got = engines.run(engines.LYPNING, program, timeout=30)
+    assert want in got.stderr, (
+        "lypning reported %r; it used to point at char 4, the end of the scan"
+        % got.stderr.strip()[-120:]
+    )

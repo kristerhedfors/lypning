@@ -28,6 +28,52 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-24 · iteration 26 — the JSON decoder answered malformed documents
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1488 loaded, 1272 timed
+
+**bytes** 979,144 → 979,144 (**8 blocks**, unchanged) ·
+**conformance** 888 / 384 / **0 MISMATCH** ·
+**corpus** 1.69 → 1.59 s, 0.939x ·
+**fuzz** seed 20260824 × 3000, 0 counterexamples
+
+Two defects in `json.loads`, the last of the four the iteration-24 reading pass
+turned up.
+
+**A raw control character inside a string was accepted.** `json.loads('"a\tb"')`
+returned `'a\tb'` at exit 0 where CPython raises `JSONDecodeError: Invalid
+control character at: line 1 column 3 (char 2)`. It is invalid JSON by RFC 8259
+and `strict=True` is CPython's default — lypning has no `strict=False` to
+justify it either.
+
+That is the worst shape a decoder can have, and worse than a plain wrong answer:
+a **malformed document is answered**, so a program whose correct outcome is a
+`JSONDecodeError` gets a value instead, and the dispatcher never learns there was
+anything to route onward. The run-scan stopped at `"` and `\` and nothing else;
+it stops at `< 0x20` now. The bound is exact — DEL (0x7f) is legal in a JSON
+string and CPython accepts it.
+
+**"Unterminated string starting at" pointed at the end of the scan.** `'"abc'`
+reported `char 4` where CPython reports `char 0`, the opening quote. On the one
+class of document where the message *is* the answer, it named the wrong place.
+
+Swept over every control character 0x00–0x20 plus DEL, in three positions, plus
+the truncated and nested documents: **45 documents, 0 mismatches** — same message
+text, same line, same column, same char offset.
+
+**One difference that is left, and is not this:** lypning's traceback names the
+exception `JSONDecodeError` where CPython's shows `json.decoder.JSONDecodeError`.
+That is the module path of a class lypning has no module for, it is on stderr,
+and conformance grades stdout and the exit code. Faking a module path to match a
+traceback would be inventing provenance; recorded rather than fixed.
+
+Nine cases pinned, in two new tests: `CASES` asserts lypning *matches* CPython on
+stdout, and these assert on a **message on stderr at exit 1**, which is a
+different claim. Both assert the oracle still says what the test thinks it says
+before checking lypning against it. Five fail on the iteration-25 binary.
+
+---
+
 ## 2026-08-24 · iteration 25 — all six case methods disagreed with CPython
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1488 loaded, 1272 timed
