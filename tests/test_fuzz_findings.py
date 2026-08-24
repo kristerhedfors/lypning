@@ -80,6 +80,30 @@ CASES = [
     ("splitlines-crlf", r"print('a\r\nb'.splitlines())"),
     ("splitlines-trailing", r"print('a\nb\n'.splitlines())"),
     ("splitlines-empty", r"print(''.splitlines(), '\n'.splitlines())"),
+    # `str.count` took `start` and `end` and ignored both. Not an edge case:
+    # `line.count(',', 1)` is ordinary input, and it answered the count over the
+    # whole string at exit 0.
+    ("count-start", "print('Hello'.count('l', 3))"),
+    ("count-start-end", "print('Hello'.count('l', 0, 3))"),
+    ("count-empty-needle-bounded", "print('abc'.count('', 1, 2))"),
+    ("count-start-past-end", "print('Hello'.count('l', 99))"),
+    # `start` is folded-and-floored but NOT capped at len, while `end` is capped
+    # at both ends; then `end < start` is no-match and `end == start` is a real
+    # empty slice. Capping `start` too collapsed "past the end" onto "empty slice
+    # at the end", so the empty needle was found there — six methods, exit 0.
+    ("find-start-past-end", "print('Hello'.find('', 99))"),
+    ("rfind-start-past-end", "print('Hello'.rfind('', 99))"),
+    ("startswith-start-past-end", "print('Hello'.startswith('', 99))"),
+    ("endswith-start-past-end", "print('Hello'.endswith('', 99))"),
+    ("index-start-past-end", "print('Hello'.find('', 6), 'Hello'.find('', 5))"),
+    # The pair no hand-picked list was going to contain: `end` folding to BEFORE
+    # `start` is no-match, folding to exactly `start` is the empty slice.
+    ("find-end-before-start", "print('a'.find('', 1, -99))"),
+    ("find-end-equals-start", "print('a'.find('', 0, -99))"),
+    ("find-end-lt-start", "print('Hello'.find('', 3, 2), 'Hello'.find('', 3, 3))"),
+    # Character offsets, not byte offsets, once the receiver is not ASCII.
+    ("find-non-ascii-offset", "print('héllo é'.find('é', 2))"),
+    ("count-non-ascii-bounded", "print('日本語日'.count('日', 1))"),
 ]
 
 needs_engine = pytest.mark.skipif(

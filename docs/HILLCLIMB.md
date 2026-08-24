@@ -28,6 +28,79 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-24 · iteration 24 — `'Hello'.count('l', 3)` answered 2
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1488 loaded, 1272 timed
+
+**bytes** 979,144 → 979,144 (**8 blocks**, unchanged) ·
+**conformance** 888 / 384 / **0 MISMATCH** ·
+**corpus** 1.69 → 1.61 s, 0.955x ·
+**fuzz** seed 20260824 × 3000, 0 counterexamples
+
+Two defects in the optional `start`/`end` bounds that seven `str` methods take,
+found by reading `methods.rs`. Both silent, both at exit 0.
+
+**`count` took its bounds and ignored them.** The arm read `args[0]` and nothing
+else, so `'Hello'.count('l', 3)` answered 2 where CPython answers 1. That is not
+an edge case — `line.count(',', 1)` is a thing agents type.
+
+**The other six clamped a start that CPython does not clamp.** CPython's
+`ADJUST_INDICES` is deliberately asymmetric: a negative `start` folds and floors
+at 0 but a positive one is **never capped at `len`**, while `end` is capped at
+both ends; then `end < start` is the no-match answer and `end == start` is a real
+empty slice. `clamp_index` capped `start` too, which collapsed "past the end"
+onto "the empty slice at the end" — so the empty needle was found there:
+
+```
+'Hello'.find('', 99)         5      CPython -1
+'Hello'.rfind('', 99)        5      CPython -1
+'Hello'.startswith('', 99)   True   CPython False
+'Hello'.endswith('', 99)     True   CPython False
+'Hello'.index('', 99)        5      CPython ValueError
+```
+
+`slice_str` now returns `Option<(&str, i64)>` — the slice *and* the character
+offset it starts at — where `None` is "no match" and `Some(("", lo))` is the
+empty slice. Making those two different **types** rather than the same empty
+string is the point; they were the same value, which is why one line was wrong
+in six places. `count` goes through the same function, so there is now one
+definition of what the bounds mean instead of two. The `find` arm also stops
+walking the receiver a second time to recompute the offset — it comes back from
+`slice_str`.
+
+### The grid, and the pair that needed it
+
+The first fix was `start > n ⇒ None`, which made all fourteen hand-picked cases
+pass. It was **wrong**, and a 33,957-cell grid over receiver × needle × start ×
+end × method said so: 609 cells still differed. `'a'.find('', 1, -99)` is -1 —
+`end` folds to 0, which is *before* start — while `'a'.find('', 0, -99)` is 0.
+`start > n` is just one corner of `end < start`, and no list of examples anyone
+would write by hand contains that pair.
+
+Re-run with non-ASCII receivers and needles: **44,352 cells, all identical.**
+Fourteen cases pinned in `tests/test_fuzz_findings.py`; 12 fail on the
+iteration-23 binary.
+
+Bytes did not move. `corpus-time` came in at 0.955x, outside the deadband and
+faster, which is not attributable here: the `find` arm lost a full second walk of
+the receiver, but no corpus program is bounds-heavy enough to explain 77 ms, so
+read it as the run and not the change.
+
+### Still outstanding from the same reading pass
+
+Two verified, neither fixed here, each its own iteration:
+
+* **`json.loads` accepts raw control characters inside a string.**
+  `json.loads('"a\tb"')` returns `'a\tb'` where CPython raises
+  `JSONDecodeError: Invalid control character`. A malformed document is accepted
+  and answered, so a program that should have gone to CPython gets a result.
+* **`casefold` is aliased to `to_lowercase`, and `title` uses `to_uppercase`.**
+  `'ß'.casefold()` is `'ß'` where CPython gives `'ss'` — and caseless comparison
+  is the entire purpose of `casefold`. `'ǅ'.title()` gives `'Ǆ'` where CPython
+  gives `'ǅ'`.
+
+---
+
 ## 2026-08-24 · iteration 23 — spending 4 KB of the 45 that iteration 22 freed
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1488 loaded, 1272 timed

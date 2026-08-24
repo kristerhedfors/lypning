@@ -483,33 +483,38 @@ fn str_method(
                     .collect::<R<Vec<_>>>()?,
                 _ => return Err(type_err(format!("{name} first arg must be str or a tuple of str"))),
             };
-            // The optional start/end arguments slice first.
-            let sub = slice_str(s, args.get(1), args.get(2))?;
-            Value::Bool(pats.iter().any(|p| {
-                if name == "startswith" {
-                    sub.starts_with(p.as_ref())
-                } else {
-                    sub.ends_with(p.as_ref())
-                }
-            }))
+            // The optional start/end arguments slice first — and a start past
+            // the end of the string is False, not a test against the empty
+            // slice. See `slice_str`.
+            match slice_str(s, args.get(1), args.get(2))? {
+                None => Value::Bool(false),
+                Some((sub, _)) => Value::Bool(pats.iter().any(|p| {
+                    if name == "startswith" {
+                        sub.starts_with(p.as_ref())
+                    } else {
+                        sub.ends_with(p.as_ref())
+                    }
+                })),
+            }
         }
         "find" | "index" | "rfind" | "rindex" => {
             let needle = sarg(&args, 0, name)?;
-            let start_off = match args.get(1) {
-                Some(Value::None) | None => 0,
-                Some(v) => {
-                    let n = s.chars().count() as i64;
-                    crate::eval::clamp_index(int_val(v)?, n)
+            // The offset comes back from `slice_str` rather than being
+            // recomputed here: the old copy walked the string a second time to
+            // derive it, and clamped where `slice_str` now refuses.
+            let found = match slice_str(s, args.get(1), args.get(2))? {
+                None => None,
+                Some((sub, start_off)) => {
+                    let byte_pos = if name.starts_with('r') {
+                        sub.rfind(needle.as_ref())
+                    } else {
+                        sub.find(needle.as_ref())
+                    };
+                    byte_pos.map(|bp| start_off + sub[..bp].chars().count() as i64)
                 }
             };
-            let sub = slice_str(s, args.get(1), args.get(2))?;
-            let byte_pos = if name.starts_with('r') {
-                sub.rfind(needle.as_ref())
-            } else {
-                sub.find(needle.as_ref())
-            };
-            match byte_pos {
-                Some(bp) => Value::Int(start_off + sub[..bp].chars().count() as i64),
+            match found {
+                Some(at) => Value::Int(at),
                 None => {
                     if name.ends_with("index") {
                         return Err(value_err("substring not found"));
@@ -518,12 +523,25 @@ fn str_method(
                 }
             }
         }
+        // `count` took `start` and `end` and **ignored both**, which is not an
+        // edge case: `'Hello'.count('l', 3)` answered 2 where CPython answers 1,
+        // and `line.count(',', 1)` is ordinary input. It was reachable, silent,
+        // and at exit 0. It now goes through the same `slice_str` as the five
+        // scanning methods beside it, so there is one definition of what the
+        // bounds mean rather than two.
         "count" => {
             let needle = sarg(&args, 0, "count")?;
-            Value::Int(if needle.is_empty() {
-                s.chars().count() as i64 + 1
-            } else {
-                s.matches(needle.as_ref()).count() as i64
+            Value::Int(match slice_str(s, args.get(1), args.get(2))? {
+                None => 0,
+                Some((sub, _)) => {
+                    if needle.is_empty() {
+                        // An empty needle matches between every pair of
+                        // characters and at both ends.
+                        sub.chars().count() as i64 + 1
+                    } else {
+                        sub.matches(needle.as_ref()).count() as i64
+                    }
+                }
             })
         }
         "partition" | "rpartition" => {
@@ -625,19 +643,63 @@ fn str_method(
     })
 }
 
-/// Apply the optional `start`/`end` arguments that several str methods take.
-fn slice_str<'a>(s: &'a Rc<str>, start: Option<&Value>, end: Option<&Value>) -> R<&'a str> {
+/// Apply the optional `start`/`end` arguments that several str methods take:
+/// the slice, plus the CHARACTER offset it begins at so a caller reporting a
+/// position can translate back.
+///
+/// `Ok(None)` means **start is past the end of the string**, and that is a
+/// different answer from the empty slice — which is the bug this signature
+/// exists to make impossible to write again. `clamp_index` pinned an
+/// out-of-range start to `n`, so `'Hello'.find('', 99)` searched the empty slice
+/// at position 5, found the empty needle there, and answered **5** where CPython
+/// answers -1. The same one line was wrong in six methods:
+///
+///     'Hello'.find('', 99)         5      CPython -1
+///     'Hello'.rfind('', 99)        5      CPython -1
+///     'Hello'.startswith('', 99)   True   CPython False
+///     'Hello'.endswith('', 99)     True   CPython False
+///     'Hello'.index('', 99)        5      CPython ValueError
+///     'Hello'.count('', 99)        —      (count ignored its bounds entirely)
+///
+/// The rule is CPython's `ADJUST_INDICES` and it is not symmetric: a negative
+/// `start` is folded and floored at 0 but a positive one is **not capped at
+/// `len`**, while `end` is capped at both ends. Then `end < start` is the
+/// no-match answer and `end == start` is a real empty slice. That single
+/// asymmetry is the whole bug: `clamp_index` capped `start` at `len` too, which
+/// collapsed "past the end" onto "empty slice at the end" and made
+/// `'Hello'.find('', 99)` answer 5.
+///
+/// Both halves are load-bearing and a grid over 33,957 combinations of receiver,
+/// needle, start, end and method is what settled it — `'a'.find('', 1, -99)` is
+/// -1 (end folds to 0, which is *before* start) while `'a'.find('', 0, -99)` is
+/// 0, and no hand-picked list was going to contain that pair.
+fn slice_str<'a>(
+    s: &'a Rc<str>,
+    start: Option<&Value>,
+    end: Option<&Value>,
+) -> R<Option<(&'a str, i64)>> {
     let n = s.chars().count() as i64;
     let lo = match start {
         None | Some(Value::None) => 0,
-        Some(v) => crate::eval::clamp_index(int_val(v)?, n),
+        Some(v) => {
+            let raw = int_val(v)?;
+            // Folded and floored, never capped — see above.
+            if raw < 0 {
+                (n + raw).max(0)
+            } else {
+                raw
+            }
+        }
     };
     let hi = match end {
         None | Some(Value::None) => n,
         Some(v) => crate::eval::clamp_index(int_val(v)?, n),
     };
-    if hi <= lo {
-        return Ok("");
+    if hi < lo {
+        return Ok(None);
+    }
+    if hi == lo {
+        return Ok(Some(("", lo)));
     }
     let bl = s
         .char_indices()
@@ -649,7 +711,7 @@ fn slice_str<'a>(s: &'a Rc<str>, start: Option<&Value>, end: Option<&Value>) -> 
         .nth(hi as usize)
         .map(|(i, _)| i)
         .unwrap_or(s.len());
-    Ok(&s[bl..bh])
+    Ok(Some((&s[bl..bh], lo)))
 }
 
 /// `str.format` — the runtime twin of the f-string parser in `parse.rs`.
