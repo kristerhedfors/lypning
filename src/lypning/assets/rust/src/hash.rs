@@ -105,6 +105,16 @@ pub fn map<K, V>() -> Map<K, V> {
     Map::default()
 }
 
+/// A map sized for what it is about to hold.
+///
+/// Here rather than at the call site so `BuildFnv` is named in one file: a
+/// `HashMap::with_capacity_and_hasher` written elsewhere would be the second
+/// place that has to know which hasher this interpreter uses.
+#[inline]
+pub fn map_with_capacity<K, V>(n: usize) -> Map<K, V> {
+    Map::with_capacity_and_hasher(n, BuildFnv::default())
+}
+
 #[inline]
 pub fn set<T>() -> Set<T> {
     Set::default()

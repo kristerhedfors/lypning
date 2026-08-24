@@ -123,6 +123,22 @@ CASES = [
     ("join-generator-value-error", "print(','.join(str(int(x)) for x in ['1','z']))"),
     ("join-bad-item-index", "print(','.join(x for x in ['a', 2]))"),
     ("join-empty-and-single", "print(repr(','.join([])), repr(','.join(['a'])))"),
+    # A frame's scope map is recycled between calls (ledger, iteration 29), and
+    # a scope that ESCAPED the frame must never be. These are the three ways it
+    # escapes — a nested `def`, a `lambda`, a generator expression — each with
+    # enough intervening calls to have cycled the pool many times over. A
+    # recycled captured scope is a cleared map handed to a closure: a wrong
+    # answer, not a refusal.
+    ("scope-nested-def-escapes", "def outer():\n    x = 1\n    def inner():\n        return x\n    return inner\nprint(outer()())"),
+    ("scope-lambda-escapes", "def mk(n):\n    return lambda k: k + n\nprint(mk(10)(1), mk(20)(1))"),
+    ("scope-genexpr-outlives-frame", "def gen(n):\n    return (i * n for i in range(3))\nprint(list(gen(5)))"),
+    ("scope-closures-survive-recycling", "def mk(n):\n    return lambda: n\ndef noise(k):\n    a=k;b=k;c=k;d=k;e=k;f=k\n    return a+b+c+d+e+f\nfs=[mk(i) for i in range(10)]\nfor i in range(300):\n    noise(i)\nprint([f() for f in fs])"),
+    ("scope-genexpr-survives-recycling", "def gen(n):\n    return (i + n for i in range(3))\ndef noise(k):\n    a=k;b=k;c=k;d=k\n    return a+b+c+d\ng = gen(100)\nfor i in range(200):\n    noise(i)\nprint(list(g))"),
+    ("scope-two-closures-one-frame", "def mk(n):\n    return (lambda: n), (lambda: n * 2)\na, b = mk(7)\nprint(a(), b())"),
+    ("scope-closure-made-in-recursion", "def r(n):\n    if n == 0:\n        return []\n    f = lambda: n\n    return [f] + r(n-1)\nprint([g() for g in r(6)])"),
+    # The presized map must hold every name the body binds, not just the params.
+    ("scope-varying-local-counts", "def one(): x=1; return x\ndef four(): a=1;b=2;c=3;d=4; return a+b+c+d\ndef eight(): a=1;b=2;c=3;d=4;e=5;f=6;g=7;h=8; return a+b+c+d+e+f+g+h\nprint(sum(one()+four()+eight() for _ in range(50)))"),
+    ("scope-kwargs-eight", "def f(a,b,c,d,e,f_,g,h):\n    return a+b+c+d+e+f_+g+h\nprint(f(1,2,3,4,5,6,7,8), f(h=8,g=7,f_=6,e=5,d=4,c=3,b=2,a=1))"),
 ]
 
 needs_engine = pytest.mark.skipif(

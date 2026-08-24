@@ -73,11 +73,25 @@ pub struct Interp {
     /// `call_func_inner`; capped at [`CHAIN_POOL_MAX`] so a deep recursion
     /// cannot leave the pool holding its whole depth for the rest of the run.
     chain_pool: Vec<Vec<Scope>>,
+    /// Spent frame scopes, kept with their hash tables intact. A function's
+    /// scope map starts EMPTY on every call and grows into hashbrown's capacity
+    /// steps as parameters and locals are bound — measured on this container,
+    /// the 2-to-4-bound-names step costs +268 ns/call and 4-to-8 costs +545,
+    /// both of them table growth on a table whose final size was known before
+    /// the first insert. That is the two-phase-allocation trap CLAUDE.md and the
+    /// skill both name. Recycling keeps the table, so a repeatedly called
+    /// function grows it once for the whole run instead of once per call.
+    scope_pool: Vec<Scope>,
 }
 
 /// How many scope-chain vectors to keep. Above the depth of any recursion this
 /// runtime allows to finish, and small enough to be nothing.
 const CHAIN_POOL_MAX: usize = 64;
+
+/// The same bound for [`Interp::scope_pool`], and for the same reason: a deep
+/// recursion must not leave the pool holding its whole depth for the rest of
+/// the run.
+const SCOPE_POOL_MAX: usize = 64;
 
 impl Interp {
     pub fn new() -> Self {
@@ -91,6 +105,7 @@ impl Interp {
             steps: 0,
             expr_depth: 0,
             chain_pool: Vec::new(),
+            scope_pool: Vec::new(),
             // Read once, here, rather than per statement. Zero — the CLI's
             // value, since a process can simply be killed — compiles the check
             // down to a comparison that is never true.
@@ -1029,7 +1044,10 @@ impl Interp {
         kw: Vec<(Rc<str>, Value)>,
     ) -> R<Value> {
         let p = &f.params;
-        let scope = new_scope();
+        let scope = self.take_scope(&f);
+        // Taken BEFORE the move into the chain below: the teardown has to know
+        // which `Rc` was this frame's own, and by then it is inside the vector.
+        let scope_ptr = Rc::as_ptr(&scope);
         let npos = p.names.len()
             - p.star.map_or(0, |_| 1)
             - p.dstar.map_or(0, |_| 1);
@@ -1123,6 +1141,33 @@ impl Interp {
         // Cleared here rather than on reuse, so the frame's scopes are dropped
         // when the frame ends and not whenever the vector is next taken out.
         let mut spent = std::mem::replace(&mut self.chain, saved_chain);
+        // Recycle this frame's own scope, and ONLY if nothing captured it.
+        // A nested `def`, a `lambda` and a generator expression each clone the
+        // whole chain, which clones this `Rc` — so `strong_count == 1` is
+        // exactly the test, and it is exact because the crate creates no `Weak`
+        // anywhere. Handing a captured scope back to the pool would give a
+        // closure a cleared map: a wrong answer, not a refusal.
+        //
+        // `try_borrow_mut` rather than `borrow_mut` because a live borrow here
+        // would mean a `Ref` outlived the frame, and under `panic = "abort"`
+        // finding out by aborting is not a diagnosis. Declining to recycle is.
+        if self.scope_pool.len() < SCOPE_POOL_MAX
+            && spent
+                .last()
+                .is_some_and(|s| Rc::as_ptr(s) == scope_ptr && Rc::strong_count(s) == 1)
+        {
+            let s = spent.pop().expect("checked by last() above");
+            let emptied = match s.try_borrow_mut() {
+                Ok(mut m) => {
+                    m.clear();
+                    true
+                }
+                Err(_) => false,
+            };
+            if emptied {
+                self.scope_pool.push(s);
+            }
+        }
         spent.clear();
         if self.chain_pool.len() < CHAIN_POOL_MAX {
             self.chain_pool.push(spent);
@@ -1158,6 +1203,21 @@ impl Interp {
     /// it sits on the function-call path where a call instruction is a
     /// measurable share of the work.
     #[inline]
+    /// A frame scope from the pool, or a new one sized for what it will hold.
+    ///
+    /// `assigned` is every name the body binds, parameters included
+    /// (`assigned_names`), so the final size is known before the first insert. A
+    /// lambda's `assigned` is deliberately empty, which is why the parameters
+    /// are the floor rather than the answer.
+    #[inline]
+    fn take_scope(&mut self, f: &FuncObj) -> Scope {
+        if let Some(s) = self.scope_pool.pop() {
+            return s;
+        }
+        let n = f.assigned.len().max(f.params.names.len());
+        Rc::new(RefCell::new(crate::hash::map_with_capacity(n)))
+    }
+
     pub fn take_chain(&mut self) -> Vec<Scope> {
         self.chain_pool.pop().unwrap_or_default()
     }

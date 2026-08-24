@@ -28,6 +28,75 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-24 · iteration 29 — a call built an empty hash table and then grew it
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 983,240 → 983,240 (**8 blocks**, unchanged) ·
+**conformance** 906 / 399 / **0 MISMATCH** ·
+**perf** `call-recursive` 62.55 → 55.80, `call-func` 44.44 → 39.52 (both ≈ −11%) ·
+**corpus** 1.58 → 1.57 s, 0.994x — inside the deadband, as expected ·
+**fuzz** four seeds × 2500
+
+Every call to a Python function allocated a fresh `Rc<RefCell<Map>>`, inserted
+its parameters and locals into a table that started **empty**, and dropped the
+whole thing at the end. Measured per call on this container, 200,000 iterations,
+empty-loop floor subtracted:
+
+```
+def f():          178 ns
+f(a)              261
+f(a, b)           296
+f(a, b, c, d)     564
+f(a … h)        1,109
+```
+
+The 2→4 step is +268 ns and 4→8 is +545 — those are hashbrown capacity steps on
+a table whose final size was known before the first insert. That is the
+two-phase-allocation trap CLAUDE.md and the skill both name, and it was on the
+hottest call in the interpreter.
+
+Two halves, one mechanism:
+
+* **Presize.** `assigned` is already every name the body binds, parameters
+  included, computed at definition time. A lambda's `assigned` is deliberately
+  empty, so the parameter count is the floor rather than the answer.
+* **Pool.** Spent scopes go back to `Interp::scope_pool` with their tables
+  intact, beside the chain-vector pool that was already there. `clear()` keeps
+  capacity, so a function called in a loop grows its table once for the whole
+  run instead of once per call. Capped at 64, like the chain pool, so a deep
+  recursion cannot leave the pool holding its depth.
+
+`call-method` did **not** move, which is the right answer and worth stating: it
+allocates no scope, so a change here that moved it would have been the optimiser
+rather than the code.
+
+### The way this goes wrong is silent
+
+A scope that escaped its frame must never be recycled — a closure handed a
+cleared map is a wrong answer, not a refusal. The guard is
+`Rc::strong_count == 1` on the frame's own scope, and it is exact for a specific
+reason: the chain is cloned at exactly three sites (a nested `def`, a `lambda`,
+a generator expression), each cloning every `Rc` in it, and **the crate creates
+no `Weak` anywhere**, so the strong count is the whole story. Checked by grep,
+not by memory.
+
+`try_borrow_mut` rather than `borrow_mut`: a live borrow here would mean a `Ref`
+outlived the frame, and under `panic = "abort"` finding that out by aborting is
+not a diagnosis. Declining to recycle is.
+
+Eighteen programs cover the three escape routes, including two that create
+closures and then make **300 intervening calls** — cycling the pool many times
+over — before reading them back. All 18 agree with CPython (one refuses on call
+depth, which is a refusal and not a disagreement). Ten are pinned.
+
+**One fuzz seed is red and it is the known one.** `4242` finds
+`1.7976931348623157e308 ** 0.5` off by one ULP — the musl-against-glibc `pow`
+difference recorded in iteration 20 — and it reproduces identically on the
+iteration-28 binary. Three other seeds × 2500 are clean.
+
+---
+
 ## 2026-08-24 · iteration 28 — `join` copied the list it was only reading
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
