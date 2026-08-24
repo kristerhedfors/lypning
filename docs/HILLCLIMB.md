@@ -28,6 +28,66 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-24 · iteration 18 — the allocator was the interpreter
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1430 loaded, 1237 timed
+
+**bytes** 1,045,176 → 1,049,272 (**8 → 9 blocks**) ·
+**conformance** 865 MATCH / 372 UNSUPPORTED / **0 MISMATCH**, unchanged ·
+**perf** TOTAL 2164.77 → 1802.73 ms, 2.93x → 2.31x ·
+**corpus** 1.69 → 1.44 s, **0.850x**, outside the ±3% deadband
+
+The gradient said `str-split`. Callgrind said something else. On
+`t.split()` in a loop, **43.9% of every instruction retired was inside musl's
+mallocng** — `alloc_slot`, `nontrivial_free` and two `meta.h` helpers — against
+2.6% in `eval`. The ledger's standing answer has been "about a quarter"; on this
+program it is closer to a half, and it is not a property of `split`. It is what
+every row of the table has been measuring.
+
+So the step is `src/alloc.rs`: a size-classed free-list allocator over
+bump-allocated 64 KiB chunks, installed as the binary's `#[global_allocator]`.
+Sixteen classes of 16 bytes; a free block threads the next pointer through its
+own first word, so a live object carries no header and the class is recomputed
+from the `Layout` the caller has to hand back. Anything above 256 bytes or
+asking for more than 16-byte alignment goes to `System` unchanged — big buffers
+want `mremap` on growth, and a bump allocator's inability to return memory is
+worst exactly there.
+
+Every row moved, because every row was paying it. `json-loads` went from 4.47x
+CPython to **0.68x** — it is now faster than CPython, having been the fourth
+worst ratio in the table. `call-recursive` 13.53x → 7.47x, `str-fmt-pct`
+7.15x → 4.86x, `str-split` 7.18x → 3.70x. Nothing regressed.
+
+**It cost a device block, and that is the honest headline.** 1,049,272 B is 696
+bytes over 8 × 131,072, so cold first-touch in CheerpX now fetches a ninth block
+(`docs/LYPNING.md` §8a). The escape measured but deliberately NOT taken here,
+because it is a second mechanism: `opt-level = "z"` with this allocator builds
+at 996,024 B, back inside 8 blocks with 52 KiB to spare. That is the next
+iteration and it has its own speed question to answer.
+
+`#[inline(never)]` on the three `GlobalAlloc` methods is load-bearing for the
+byte count: with `#[inline]` the binary is **8,192 bytes larger** and the perf
+TOTAL was 1754 ms against 1807 — a 3% difference, which is inside the band where
+this profile's inlining decisions move on their own (iteration 15). Smaller won.
+Worth revisiting the moment the byte budget has room.
+
+Beyond the four gates, because an allocator is not the kind of thing conformance
+can be trusted alone on: `lypning fuzz --seed 20260824 --iterations 3000` — 3000
+generated programs, **0 counterexamples**; a hand-written sweep of 216 programs
+straddling every class boundary and the 256-byte cutoff (`'x'*n`, `[0]*n`,
+`bytes` of n, for n around 0, 16k±1, 256±1, 4096±1) against CPython — **0
+mismatches**; and peak RSS on five allocation-churn programs, which is *lower*
+than CPython's on every one (22.1 MB against 28.2 MB building 300,000 strings)
+and flat at the 8.1 MB floor on the churn cases, so the free lists are recycling
+rather than the chunks accumulating.
+
+**What this does not say.** It is one machine and one libc. The win is against
+*musl's mallocng specifically*; glibc's allocator is a different program and this
+number is not a claim about it. The i686 build that CheerpX actually loads was
+not re-measured here.
+
+---
+
 ## 2026-08-21 · iteration 17 — the dispatcher was the one giving the wrong answer
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1037 loaded, 861 timed
