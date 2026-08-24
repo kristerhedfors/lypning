@@ -28,6 +28,69 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-24 · iteration 19 — buying the device block back, and the flag that could not
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1430 loaded, 1237 timed
+
+**bytes** 1,049,272 → 1,020,104 (**9 → 8 blocks**) ·
+**conformance** 865 / 372 / **0 MISMATCH**, unchanged ·
+**perf** TOTAL 1802.73 → 1758.77 ms (−2.4%, inside the band) ·
+**corpus** 1.45 → 1.47 s, 1.013x, inside the ±3% deadband
+
+Iteration 18 spent a device block and said the next step was `opt-level = "z"`,
+which builds at 996,024 B and would buy it back. **It was measured and rejected.**
+
+### The negative result first
+
+`"z"` against `"s"`, same source, same allocator: `perf` TOTAL **1802.73 →
+2371.69 ms, +31.6% slower**, and not concentrated anywhere — `tuple-unpack`,
+`enumerate-zip`, `str-slice`, `str-fstring`, `json-loads`, `dict-get` and
+`print-lines` each gave up a third or more. A third of the interpreter's
+throughput is not a price worth one block. `docs/LYPNING.md` §8 said `"z"`
+"buys nothing under the cost model that matters", which was a statement about
+bytes and read like a statement about the flag; it now carries the speed number
+too.
+
+### What worked instead
+
+The musl targets build a **static-PIE** by default, and the relocations that
+costs are a section: `.rela.dyn`, 33,864 B of a 1,049,272 B image. `-C
+relocation-model=static` removes it. 1,049,272 → **1,020,104 B**, nine blocks
+back to eight, and `perf` went *down* 2.4% rather than up — which is inside the
+band where this profile's inlining decisions move on their own (iteration 15) and
+is not claimed as a win.
+
+**The claim that did not survive its own measurement.** The first draft of the
+config file argued this on two grounds, bytes and startup: ~1,400 relative
+relocations processed before `main`, in a program whose whole startup is under a
+millisecond, ought to show. It does not. `-c 'pass'`, min of 60 interleaved runs:
+**0.387 ms as a PIE against 0.388 ms without.** The comment now says so, because
+a plausible mechanism stated as a measured one is how a document starts lying.
+
+### Where the flag lives, which is the whole difficulty
+
+Not in `RUSTFLAGS` inside `build.py`: cargo would then produce a different
+binary by hand than through our tooling, and — worse than aesthetics — the two
+would not share an object cache, so alternating rebuilds the world. It is
+`assets/rust/.cargo/config.toml`, read by cargo from the working directory
+upward, which works because `build.py` already runs cargo with `cwd=` the crate
+directory.
+
+That puts it in **the wheel's** hands, and the wheel is the shape nobody tests by
+accident (CLAUDE.md). Tested on purpose: `pip install` of a built wheel into a
+venv, then `LYPNING_HOME=<tmp> lypning build --rust` → **1,020,104 B, 8 blocks**,
+byte-identical to the checkout, with the config staged into
+`~/.lypning/build/rust/.cargo/`.
+
+`tests/test_packaging.py` grew the guard, and it is a different guard from the
+one already there. Every other `package-data` entry fails *loudly* when it goes
+missing — cargo cannot build without `Cargo.toml`. This one fails silently: the
+build succeeds, all four gates pass, and the binary is one device block larger
+for no reason anyone would ever look for. It also names a dot directory, which
+is exactly the kind of line a tidy-up deletes.
+
+---
+
 ## 2026-08-24 · iteration 18 — the allocator was the interpreter
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1430 loaded, 1237 timed

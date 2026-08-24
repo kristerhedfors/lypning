@@ -1,0 +1,36 @@
+# Cargo configuration for the engine crate.
+#
+# Read by cargo from the *current working directory* upward, which is why
+# `build.py` runs cargo with `cwd=` the crate directory rather than relying on
+# `--manifest-path` alone: a flag that only applies when the build goes through
+# our tooling would mean `cargo build` by hand produces a different binary from
+# `lypning build --rust`, and CLAUDE.md's "two shapes" section is explicit that
+# those two must share an object cache. Different rustflags do not share one —
+# cargo rebuilds the world every time you alternate.
+#
+# It ships in the wheel too (`pyproject.toml` names it in `package-data`, and
+# `_sync_tree` copies it into `~/.lypning/build`), because the wheel is the shape
+# a `pip` user actually gets and a wheel that built a 29 KB larger binary than
+# the checkout would be a difference nobody would find on purpose.
+
+[build]
+# **Static, not static-PIE.** The musl targets default to a position-independent
+# executable, and the relocations a PIE needs to fix itself up at load are
+# `.rela.dyn`: 33,864 B of a 1,049,272 B image, in a binary whose cold cost in
+# the CheerpX sandbox is a step function in 131,072 B device blocks
+# (`docs/LYPNING.md` §8). Measured on this tree, 2026-08-24:
+# **1,049,272 B -> 1,020,104 B**, which is the difference between nine blocks
+# and eight.
+#
+# **Startup is NOT part of the argument, and it was worth measuring to find that
+# out.** Processing ~1,400 relative relocations before `main` sounds like it
+# should show up in a program whose whole startup is under a millisecond, and it
+# does not: `-c 'pass'`, min of 60 interleaved runs, 0.387 ms as a PIE against
+# 0.388 ms without. The win here is bytes and only bytes.
+#
+# What it gives up is ASLR for the executable's own image. That is a real
+# security property and the trade is deliberate: lypning is a short-lived
+# interpreter for a one-liner an agent typed, it takes no network input, and the
+# alternative is a permanent device block. A host that wants a PIE builds one —
+# this is a default, not a pin.
+rustflags = ["-C", "relocation-model=static"]

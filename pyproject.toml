@@ -78,6 +78,10 @@ lypning = [
   "assets/rust/Cargo.toml",
   "assets/rust/Cargo.lock",
   "assets/rust/src/*.rs",
+  # Named explicitly, and it has to be: a wheel without it builds a binary 29 KB
+  # larger than the checkout's — a whole CheerpX device block — and nothing in
+  # any gate would say so, because both binaries pass everything. See the file.
+  "assets/rust/.cargo/config.toml",
   # The C ABI's contract and its four hosts. Headers and example sources are
   # SOURCE, not build output — a wheel that shipped the library but not the
   # header would ship something no one can compile against. Named by extension
