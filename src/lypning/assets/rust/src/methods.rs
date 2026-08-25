@@ -268,6 +268,41 @@ fn kwget(kw: &[(Rc<str>, Value)], name: &str) -> Option<Value> {
     kw.iter().find(|(k, _)| k.as_ref() == name).map(|(_, v)| v.clone())
 }
 
+/// The methods that accept keyword arguments at all, by receiver type.
+///
+/// Almost none do. `str.replace`, `str.strip`, `dict.get` and their neighbours
+/// are C functions with positional-only parameters, so CPython answers
+/// `TypeError: str.strip() takes no keyword arguments` — and lypning **silently
+/// ignored** the keyword and answered without it. `'xax'.strip(chars='x')`
+/// returned `'xax'` at exit 0, `'a'.ljust(width=5)` returned `'a'`, and
+/// `d.get('b', default=2)` returned `None`. Every one of those is a plausible
+/// spelling that CPython refuses and this accepted with the wrong answer.
+///
+/// Enumerated by asking CPython 3.11 rather than by reading the manual: each
+/// name below was called with a keyword and kept only if it did not raise.
+/// `str.format` and `dict.update` take arbitrary keywords by design and are the
+/// reason this is a per-method allow-list and not a per-type flag.
+fn accepts_kw(ty: &str, name: &str) -> bool {
+    match ty {
+        "str" => matches!(
+            name,
+            "split" | "rsplit" | "splitlines" | "encode" | "expandtabs" | "format" | "format_map"
+        ),
+        "bytes" => matches!(name, "decode" | "split" | "rsplit" | "splitlines" | "hex"),
+        "list" => name == "sort",
+        "dict" => name == "update",
+        _ => false,
+    }
+}
+
+/// CPython's own wording, and the check every dispatcher below runs first.
+fn reject_kw(ty: &str, name: &str, kw: &[(Rc<str>, Value)]) -> R<()> {
+    if kw.is_empty() || accepts_kw(ty, name) {
+        return Ok(());
+    }
+    Err(type_err(format!("{ty}.{name}() takes no keyword arguments")))
+}
+
 pub fn call_method(
     it: &mut Interp,
     recv: &Value,
@@ -332,6 +367,7 @@ fn str_method(
     args: &mut Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
+    reject_kw("str", name, &kw)?;
     Ok(match name {
         // `std`'s `to_uppercase` / `to_lowercase` already carry a vectorised
         // ASCII fast path and size the output exactly. Measured on this
@@ -435,7 +471,12 @@ fn str_method(
                 Some(v) => int_val(v)?,
                 None => -1,
             };
-            let sep = match args.first() {
+            // `maxsplit=` was read as a keyword and `sep=` was not, so
+            // `'a,b'.split(sep=',')` split on WHITESPACE and answered `['a,b']`
+            // at exit 0 — a wrong answer for an ordinary spelling, and one the
+            // half-finished keyword handling right above it made easy to miss.
+            let sep_arg = args.first().cloned().or_else(|| kwget(&kw, "sep"));
+            let sep = match sep_arg.as_ref() {
                 None | Some(Value::None) => None,
                 Some(Value::Str(x)) => Some(x.clone()),
                 Some(other) => {
@@ -1054,6 +1095,7 @@ fn list_method(
     args: &mut Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
+    reject_kw("list", name, &kw)?;
     Ok(match name {
         "append" => {
             let v = args
@@ -1168,8 +1210,9 @@ fn dict_method(
     d: &Rc<RefCell<Dict>>,
     name: &str,
     args: &mut Args,
-    _kw: Vec<(Rc<str>, Value)>,
+    kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
+    reject_kw("dict", name, &kw)?;
     Ok(match name {
         "get" => match d.borrow().get(args.first().unwrap_or(&Value::None))? {
             Some(v) => v,
@@ -1233,7 +1276,7 @@ fn dict_method(
                     }
                 }
             }
-            for (k, v) in _kw {
+            for (k, v) in kw {
                 d.borrow_mut().insert(Value::Str(k), v)?;
             }
             Value::None
@@ -1260,8 +1303,9 @@ fn set_method(
     s: &Rc<RefCell<Set>>,
     name: &str,
     args: &mut Args,
-    _kw: Vec<(Rc<str>, Value)>,
+    kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
+    reject_kw("set", name, &kw)?;
     let other_set = |it: &mut Interp, v: &Value| -> R<Rc<RefCell<Set>>> {
         match v {
             Value::Set(o) => Ok(o.clone()),
@@ -1385,6 +1429,7 @@ fn bytes_method(
     args: &mut Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
+    reject_kw("bytes", name, &kw)?;
     Ok(match name {
         "decode" => {
             if let Some(e) = args.first().cloned().or_else(|| kwget(&kw, "encoding")).as_ref() {
@@ -1456,7 +1501,9 @@ fn bytes_method(
             Value::Bytes(Rc::new(b[lo..hi].to_vec()))
         }
         "split" | "rsplit" => {
-            let sep = match args.first() {
+            // Same keyword gap as `str.split` above, kept in step with it.
+            let sep_arg = args.first().cloned().or_else(|| kwget(&kw, "sep"));
+            let sep = match sep_arg.as_ref() {
                 None | Some(Value::None) => None,
                 Some(v) => Some(as_bytes_arg(v, name)?),
             };

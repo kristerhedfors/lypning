@@ -145,12 +145,30 @@ pub fn reverse_arg(kw: &[(Rc<str>, Value)]) -> R<bool> {
     }
 }
 
+/// Builtins whose parameters are positional-only, so naming one is a TypeError.
+///
+/// Almost all of them, and lypning **silently ignored** the keyword instead:
+/// `bool(x=1)` answered `False` — the no-argument result — at exit 0. Naming an
+/// argument is an ordinary way to be wrong, and CPython says so; answering the
+/// wrong thing without a word is the one outcome this project treats as always
+/// a bug.
+///
+/// Enumerated by asking CPython 3.11, not by reading the manual. The builtins
+/// deliberately absent from this list are the ones that really do take
+/// keywords: `print`, `int`, `round`, `sorted`, `min`, `max`, `sum`, `open`,
+/// `str`, `bytes`, `enumerate`, `zip` and `dict`.
+const NO_KEYWORDS: &[&str] = &[
+    "abs", "all", "any", "bin", "bool", "chr", "divmod", "filter", "float", "format", "hex",
+    "isinstance", "iter", "len", "list", "map", "next", "oct", "ord", "range", "repr", "set",
+    "tuple",
+];
+
 fn no_kw(name: &str, kw: &[(Rc<str>, Value)]) -> R<()> {
     match kw.first() {
         None => Ok(()),
-        Some((k, _)) => Err(type_err(format!(
-            "{name}() takes no keyword arguments (got '{k}')"
-        ))),
+        // CPython's exact wording for a C builtin: no "(got 'x')" tail, which
+        // is the shape used for Python-level functions and not for these.
+        Some(_) => Err(type_err(format!("{name}() takes no keyword arguments"))),
     }
 }
 
@@ -160,6 +178,9 @@ pub fn call_builtin(
     args: &mut Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
+    if !kw.is_empty() && NO_KEYWORDS.contains(&name) {
+        return Err(type_err(format!("{name}() takes no keyword arguments")));
+    }
     // `raise ValueError("x")` / `except E as e` construct exception instances.
     if is_exception_name(name) {
         let msg = match args.first() {
@@ -278,6 +299,15 @@ pub fn call_builtin(
             }
         },
         "int" => {
+            // `x` is positional-only in CPython, so naming it is a TypeError —
+            // and this arm used to IGNORE the keyword and fall through to the
+            // no-argument case, so `int(x='5')` answered **0** at exit 0.
+            if let Some((k, _)) = kw.iter().find(|(k, _)| k.as_ref() != "base") {
+                return Err(type_err(format!(
+                    "'{k}' is an invalid keyword argument for int()"
+                )));
+            }
+            let explicit_base = args.get(1).is_some() || kwget(&kw, "base").is_some();
             let base = match args.get(1) {
                 Some(v) => int_val(v)?,
                 None => match kwget(&kw, "base") {
@@ -285,6 +315,17 @@ pub fn call_builtin(
                     None => 10,
                 },
             };
+            // `i64::from_str_radix` PANICS outside 2..=36, and a panic is exit
+            // 134 — not 0, not 90, so the dispatcher hands it straight back and
+            // the caller reads a Rust abort. `int(s, 0)` is ordinary Python
+            // (detect the base from the prefix) and aborted the interpreter.
+            if base != 0 && !(2..=36).contains(&base) {
+                return Err(value_err("int() base must be >= 2 and <= 36, or 0"));
+            }
+            if explicit_base && !matches!(args.first(), Some(Value::Str(_)) | Some(Value::Bytes(_)))
+            {
+                return Err(type_err("int() can't convert non-string with explicit base"));
+            }
             match args.first() {
                 None => Value::Int(0),
                 Some(Value::Str(s)) => {
@@ -293,7 +334,36 @@ pub fn call_builtin(
                         Some(r) => (r, true),
                         None => (t.strip_prefix('+').unwrap_or(t), false),
                     };
-                    let t2 = if base == 16 {
+                    // Base 0 reads the prefix and then holds the literal to
+                    // Python's *source* rules, where a leading zero on a decimal
+                    // is not allowed: `int('010', 0)` is a ValueError while
+                    // `int('00', 0)` is 0. That asymmetry only exists for base 0.
+                    //
+                    // `reported` stays at what the CALLER passed: CPython says
+                    // "with base 0" even after it has resolved the prefix to 16,
+                    // and a message naming the detected base would send a reader
+                    // looking for an argument nobody wrote.
+                    let reported = base;
+                    let mut base = base;
+                    let t2 = if base == 0 {
+                        let (rest, detected) = match t.get(..2) {
+                            Some("0x") | Some("0X") => (&t[2..], 16),
+                            Some("0o") | Some("0O") => (&t[2..], 8),
+                            Some("0b") | Some("0B") => (&t[2..], 2),
+                            _ => (t, 10),
+                        };
+                        base = detected;
+                        if detected == 10 {
+                            let digits: String = rest.chars().filter(|c| *c != '_').collect();
+                            if digits.starts_with('0') && digits.chars().any(|c| c != '0') {
+                                return Err(value_err(format!(
+                                    "invalid literal for int() with base 0: {}",
+                                    fmt::str_repr(s)?
+                                )));
+                            }
+                        }
+                        rest
+                    } else if base == 16 {
                         t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")).unwrap_or(t)
                     } else if base == 8 {
                         t.strip_prefix("0o").or_else(|| t.strip_prefix("0O")).unwrap_or(t)
@@ -313,7 +383,7 @@ pub fn call_builtin(
                         }
                         Err(_) => {
                             return Err(value_err(format!(
-                                "invalid literal for int() with base {base}: {}",
+                                "invalid literal for int() with base {reported}: {}",
                                 fmt::str_repr(s)?
                             )))
                         }
@@ -444,7 +514,22 @@ pub fn call_builtin(
         // code, there being no `__add__` to call — but the eager version was
         // only ever accidentally right about it.
         "sum" => {
-            let start = args.get(1).cloned().unwrap_or(Value::Int(0));
+            // `start` is positional-OR-keyword since 3.8. Reading only the
+            // positional slot did not refuse `sum(xs, start=10)` — it ignored
+            // the keyword and summed from 0, so the answer was silently short
+            // by the start value at exit 0. The type check below then never saw
+            // a keyword start either, so `sum([], start='')` answered 0 where
+            // CPython raises.
+            if let Some((k, _)) = kw.iter().find(|(k, _)| k.as_ref() != "start") {
+                return Err(type_err(format!(
+                    "sum() takes no keyword arguments (got '{k}')"
+                )));
+            }
+            let start = args
+                .get(1)
+                .cloned()
+                .or_else(|| kwget(&kw, "start"))
+                .unwrap_or(Value::Int(0));
             // CPython refuses a str or bytes START before it looks at the
             // sequence at all — `sum([], '')` is a TypeError and so is
             // `sum([1, 2], '')`. lypning did not, and just concatenated:
@@ -595,13 +680,26 @@ pub fn call_builtin(
             }
         },
         "round" => {
-            let v = arg1(name, &args)?;
-            let nd = match args.get(1) {
-                Some(x) => Some(int_val(x)?),
-                None => match kwget(&kw, "ndigits") {
-                    Some(x) => Some(int_val(&x)?),
-                    None => None,
-                },
+            if let Some((k, _)) = kw
+                .iter()
+                .find(|(k, _)| !matches!(k.as_ref(), "number" | "ndigits"))
+            {
+                return Err(type_err(format!(
+                    "'{k}' is an invalid keyword argument for round()"
+                )));
+            }
+            let v = match args.first() {
+                Some(v) => v.clone(),
+                None => kwget(&kw, "number")
+                    .ok_or_else(|| type_err("round() missing required argument 'number' (pos 1)"))?,
+            };
+            // `ndigits=None` is the DEFAULT and means "round to an integer", the
+            // same family as `key=None` (iteration 51). Passed through
+            // `int_val` it raised at exit 1, so `round(x, None)` — which is what
+            // an optional precision looks like — failed on valid Python.
+            let nd = match args.get(1).cloned().or_else(|| kwget(&kw, "ndigits")) {
+                None | Some(Value::None) => None,
+                Some(x) => Some(int_val(&x)?),
             };
             match (&v, nd) {
                 (Value::Int(i), None) => Value::Int(*i),

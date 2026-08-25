@@ -41,6 +41,23 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   `reverse=` goes through `__index__` in CPython; read for truthiness it turned
   a TypeError into an ascending sort at exit 0. Both pinned, and both checked
   against the broken binary first.
+- **Keyword arguments were silently ignored across the builtins and container
+  methods.** `'xax'.strip(chars='x')` returned `'xax'`, `'a'.ljust(width=5)`
+  returned `'a'`, `{'a':1}.get('b', default=2)` returned `None`, `bool(x=1)`
+  returned `False`, `int(x='5')` returned `0` — all at exit 0, all a TypeError in
+  CPython. The allow-lists of which parameters may be named are now enumerated by
+  asking CPython 3.11, and everything else raises with its exact wording.
+- **The half-wired half was worse.** `str.split` read `maxsplit=` and not `sep=`,
+  so `'a,b'.split(sep=',')` split on whitespace and answered `['a,b']`;
+  `sum(xs, start=10)` ignored the start and summed from zero;
+  `round(2.5, None)` and `round(number=2.5)` raised where CPython answers.
+- **`int(s, 0)` aborted the interpreter.** `i64::from_str_radix` panics outside
+  radix 2–36, so every out-of-range base exited **134** — neither 0 nor 90, so
+  the dispatcher hands the Rust abort straight back to the caller. Base 0 is now
+  implemented, leading-zero rule included, and verified as a 252-cell grid.
+- Pinned as a 60-cell keyword grid comparing values *and* messages. Binary
+  995,528 B, still 8 blocks; every arm's MISMATCH count and the whole routing
+  table unchanged.
 - A survey of **lypning-mp** verified 34 further divergences, recorded in
   `docs/HILLCLIMB.md` rather than fixed: that tier's sort is genuinely unstable,
   `round(2.5, 0)` is `3.0`, `isinstance(True, int)` is `False`, `json.loads`

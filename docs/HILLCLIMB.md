@@ -28,6 +28,115 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 52 — keyword arguments were being ignored, and one of them aborted the process
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded, 1307
+graded
+
+**bytes** 991,432 → **995,528 B**, still **8 blocks** (52,048 B of headroom to
+the ninth). **correctness** lypning 908 MATCH / 399 UNSUPPORTED / **0
+MISMATCH**; lypning-mp 11 and mixture 1, unchanged. **routing** IDEAL 1235,
+LATE 40, WASTED 28, UNSAFE 4 — unchanged, and worth stating: this touched every
+method dispatcher and **no corpus program moved**.
+
+Iteration 51 found two defects in keyword handling. This entry sweeps that
+class properly: 129 probes over every keyword-able parameter of the builtins and
+container methods the subset implements. **Sixteen divergences**, and they are
+not sixteen bugs — they are one bug with sixteen faces.
+
+### The bug: an unread keyword was silently dropped
+
+```
+'xax'.strip(chars='x')        ->  'xax'    cpython: TypeError
+'a'.ljust(width=5)            ->  'a'      cpython: TypeError
+{'a':1}.get('b', default=2)   ->  None     cpython: TypeError
+bool(x=1)                     ->  False    cpython: TypeError
+int(x='5')                    ->  0        cpython: TypeError
+```
+
+Every one is exit 0 with a plausible answer. Naming an argument is an ordinary
+way to be slightly wrong, CPython says so immediately, and here it produced the
+default-shaped result instead — `bool()` with no argument, `strip()` with no
+`chars`, `get()` with no default.
+
+Almost none of CPython's builtins and container methods take keywords at all:
+they are C functions with positional-only parameters. The allow-lists are now
+**enumerated by asking CPython 3.11**, not by reading the manual —
+
+```
+str    split rsplit splitlines encode expandtabs format format_map
+bytes  decode split rsplit splitlines hex
+list   sort
+dict   update
+set    (none)
+```
+
+— and everything else answers `TypeError: str.strip() takes no keyword
+arguments`, in CPython's exact wording. The existing `no_kw` helper had the
+wrong wording too: it appended `(got 'x')`, which is the shape CPython uses for
+Python-level functions and not for these.
+
+### The half-wired half, which is worse
+
+`str.split` read `maxsplit=` as a keyword and **not** `sep=`. So:
+
+```
+'a,b'.split(sep=',')   ->  ['a,b']     cpython: ['a', 'b']
+```
+
+It split on whitespace and answered at exit 0. That is not an exotic spelling —
+and the finished-looking keyword handling one line above it is exactly why
+nobody looked. `sum(xs, start=10)` had the same shape: the start was ignored and
+the sum came back short, silently. `round(2.5, None)` and `round(number=2.5)`
+raised at exit 1, the same `None`-is-the-default family as iteration 51's
+`key=None`.
+
+### And one that aborted the interpreter
+
+```
+$ lypning -c "print(int('0x1f', 0))"
+        (exit 134 — SIGABRT, a Rust panic)
+$ python3.11 -c "print(int('0x1f', 0))"
+31
+```
+
+`i64::from_str_radix` **panics** outside radix 2..=36, and every out-of-range
+base reached it: `int(s, 0)`, `int(s, 1)`, `int(s, 37)`, `int(s, -1)`. Exit 134
+is neither 0 nor 90, so the dispatcher hands it straight back and the caller
+reads a Rust abort message for valid Python. `int(s, 0)` — take the base from
+the prefix — is ordinary code for anything parsing hex.
+
+Base 0 is now implemented, including the rule that only exists there: a leading
+zero on a *decimal* literal is invalid, so `int('010', 0)` raises while
+`int('00', 0)` is 0. The failure message keeps the caller's base, because CPython
+says "with base 0" even after resolving the prefix to 16 — a message naming the
+detected base would send a reader looking for an argument nobody wrote. Verified
+as a grid: **252 cells over 28 literals × 9 bases, all identical.**
+
+### Why no gate saw any of it
+
+Same reason as iterations 49 and 51, stated once more because it is now a
+pattern rather than an anecdote. The corpus measures **what agents typed**; the
+fuzzer generates from the **grammar**. Keyword arguments are in neither: agents
+overwhelmingly write the positional form, and a grammar-driven generator emits
+calls, not argument-naming variations. The gap between what the subset *claims*
+and what anything *checks* is where this whole class lived.
+
+### Pinned
+
+`tests/test_keyword_grid.py`, 60 cells, comparing values **and messages** —
+"takes no keyword arguments" is the point, and a bare TypeError would pass
+whatever raised it. Plus the 252-cell `int()` base grid.
+
+Run against the pre-fix binary: it **fails**, though by refusing rather than by
+differing, and that is worth knowing. Dropping `sep=` turns
+`rsplit(sep=',', maxsplit=1)` into `rsplit(None, 1)`, which the subset genuinely
+refuses — so the regression arrives disguised as a coverage problem. The failure
+message says both, because a future reader who trims the grid to make it run has
+deleted the pin instead of fixing the bug.
+
+---
+
 ## 2026-08-25 · iteration 51 — `key=None` and `reverse=None`, wrong in opposite directions
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded, 1307
