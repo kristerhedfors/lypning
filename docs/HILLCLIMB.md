@@ -28,6 +28,59 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-24 · iteration 35 — two allocations per generator element, and a reading that was the machine
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 983,240 → 987,336 (+4,096; **8 blocks**, headroom 61,240) ·
+**conformance** 906 / 399 / **0 MISMATCH** ·
+**perf** `genexpr` **22.22 → 16.92 ms** (−24%, min of 3 interleaved) ·
+**corpus** no change outside noise ·
+**fuzz** seed 20260824 × 3000, 0 counterexamples
+
+`gen_next` swaps the real `GenState` out of its `RefCell` so `eval` can re-enter,
+and filled the hole with `GenState::placeholder()` — which built
+`Rc::new(Vec::new())` and `Rc::new(Expr::None)`. **Two heap allocations and two
+frees per element yielded**: an `RcBox` around a 24-byte `Vec` header, and one
+sized to the largest `Expr` variant, both dropped a few lines later when the real
+state goes back.
+
+The stand-in borrows the real state's two `Rc`s instead. Two refcount increments
+do the same job, and neither field is ever read through it — the placeholder is
+marked `running` and `done`, and both are checked before anything else.
+
+29 generator programs against CPython — laziness (`any(1//x for x in [1, 0])` is
+`True` because the second element is never asked for), a generator that raises
+partway, closures captured by one, a generator outliving its frame, `next` with
+and without a default, partial consumption then `list()`, nested and interleaved
+generators, and 200,000 elements — 0 mismatches.
+
+### The reading that was the machine, not the code
+
+The first `--baseline` run said `genexpr` **35.25 → 16.83** and the TOTAL
+1428.74 → 901.32, a 37% improvement across **every row** — `tuple-unpack`,
+`loop-while`, `call-method`, `list-append`, all down 13–15%, none of which this
+change touches. `corpus-time` said 0.617x.
+
+None of it was real. The build had also dropped from 19 s to 12 s and `pytest`
+from 17.5 s to 11.3 s: the box had got quieter, because the ten subagents of a
+background sweep had stopped competing for four CPUs. A `--baseline` file
+recorded under load and compared against a run without it measures the load.
+
+Three interleaved rounds of both binaries, same minute:
+
+```
+                 TOTAL                    genexpr
+  before   892.14  900.60  858.34    22.22  25.18  27.21
+  after    882.03  863.34  852.91    17.68  16.92  18.91
+```
+
+`genexpr`'s bands do not overlap — −24%, real. The TOTAL's overlap completely —
+flat, and the 37% was a fiction. `perf` interleaves its two ARMS for exactly this
+reason, so the ratio inside one run is trustworthy; a recorded baseline from an
+earlier moment is not, and this is the second entry in two days to say so.
+
+
 ## 2026-08-24 · iteration 34 — unpacking copied the tuple it was taking apart
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
