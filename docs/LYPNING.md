@@ -278,14 +278,14 @@ The routing score is asymmetric on purpose (this tree, 2026-08-25, same run as
 ```
 routing over 1305 programs
 
-  IDEAL      1223  routed to the cheapest engine that works
+  IDEAL      1233  routed to the cheapest engine that works
   WASTED       28  engine refused; one extra spawn, right answer
-  LATE         50  worked, but a cheaper engine would have too
+  LATE         40  worked, but a cheaper engine would have too
   UNSAFE        4  routed to an engine that MISMATCHES
   NO-ENGINE     0
 
-  accuracy 93.7% ideal, 97.5% correct-on-first-try
-  predictions: lypning=888  lypning-mp=299  cpython=118
+  accuracy 94.5% ideal, 97.5% correct-on-first-try
+  predictions: lypning=888  lypning-mp=309  cpython=108
 ```
 
 **LATE counts only programs a cheaper tier would have *answered*.** It did not

@@ -28,6 +28,92 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 47 — the middle tier had decorators and generators all along
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305
+graded
+
+**bytes** 987,336 B, 8 blocks — identical again; this is two table entries.
+**correctness** lypning 906/399/**0**, lypning-mp 11, mixture 1, all unchanged.
+**speed** / **corpus** not run: nothing on an executed path changed.
+
+### The comment was the bug
+
+```rust
+/// Constructs no MicroPython-derived runtime has, so a program using one goes
+/// straight to CPython rather than paying a lypning-mp spawn to be told no.
+const CPYTHON_ONLY_KINDS: &[&str] = &["async", "decorator", "generator"];
+```
+
+Two of those three are language features MicroPython implements. Asked rather
+than assumed:
+
+```
+$ lypning-mp -c 'def d(f):
+      def w(*a): return f(*a)*2
+      return w
+  @d
+  def g(x): return x+1
+  print(g(3))'
+8
+$ lypning-mp -c 'def g():
+      yield 1
+  gen = g(); print(next(gen)); gen.close(); print("closed")'
+1
+closed
+```
+
+Ten corpus programs were routed past a tier that runs them — seven decorators
+and three generators, every one of them LATE in iteration 46's cleaned-up list.
+
+### `async` stays, and why it is the interesting one
+
+`async def f(): return 1` **parses** on lypning-mp and exits 0. The syntax is
+not the problem; `asyncio` is absent, and a program that says `async` needs it.
+The refusal is clean — exit 90, empty stdout — so routing there would buy a
+spawn and still land on CPython.
+
+That is the distinction this list is actually for: **where a program ends up,
+not what a parser accepts.** Both halves of the old entry were wrong in that
+frame — decorator and generator were listed as absent syntax that is present,
+and `async` is present syntax that goes nowhere.
+
+### What moved
+
+```
+              before   after
+  IDEAL        1223     1233
+  LATE           50       40
+  WASTED         28       28
+  UNSAFE          4        4
+  cpython       118      108
+```
+
+**WASTED did not move by one.** That was the number at risk — relaxing a
+CPython-only kind should, in principle, start sending programs to a tier that
+then refuses them. It did not, and not by luck: `engine_for` checks the imports
+*before* it reaches the kind match, so `@functools.lru_cache` is decided by
+`import functools` and still goes straight to CPython. Pinned in
+`tests/test_routing.py`, because that ordering is what makes this change free
+and a later edit could quietly reverse it.
+
+### Three iterations, one dial
+
+45, 46 and 47 were all routing, no engine:
+
+```
+  IDEAL   1190 -> 1233      LATE  83 -> 40      routed to cpython  132 -> 108
+```
+
+**Twenty-four programs stopped paying a CPython spawn**, at zero bytes and zero
+risk to any arm's MISMATCH count. For comparison, iteration 44 measured the
+evaluator at ~13% of a corpus program's cost — the whole surface the previous
+forty-odd iterations were optimising. A CPython spawn is roughly ten times a
+lypning one. This dial was cheaper than the last one by a wide margin, and it
+was cheaper because the instrument had been printing the answer for weeks.
+
+---
+
 ## 2026-08-25 · iteration 46 — a quarter of the LATE budget was the grader, not the router
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305

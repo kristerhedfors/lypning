@@ -46,6 +46,15 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   reads **IDEAL 1223, LATE 50** over 1305 graded programs, with correct-on-first-
   try unchanged at 97.5% — those programs always reached the right answer on the
   first spawn.
+- **`decorator` and `generator` were listed as constructs no MicroPython-derived
+  runtime has.** It has both, in the language. Ten more programs stopped paying a
+  CPython spawn, and **WASTED did not move by one** — the imports are checked
+  before the blocker kind, so `@functools.lru_cache` is still decided by
+  `import functools`. `async` stays CPython-only for the opposite reason to the
+  one recorded: `async def` parses there, but `asyncio` does not exist.
+- Across the three routing changes: **IDEAL 1190 → 1233, LATE 83 → 40, programs
+  routed to CPython 132 → 108**, at zero bytes — the binary is identical
+  throughout — and with every arm's MISMATCH count unchanged.
 
 **2026-08-25** — `%`-formatting agrees with CPython, and the numbers are re-measured · [#14]
 

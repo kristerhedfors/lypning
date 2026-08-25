@@ -112,7 +112,41 @@ const MICROPYTHON_MODULES: &[&str] = &[
 
 /// Constructs no MicroPython-derived runtime has, so a program using one goes
 /// straight to CPython rather than paying a lypning-mp spawn to be told no.
-const CPYTHON_ONLY_KINDS: &[&str] = &["async", "decorator", "generator"];
+///
+/// `decorator` and `generator` were here and should not have been: MicroPython
+/// implements both, in the language rather than a library. Ten corpus programs
+/// were sent past a tier that runs them — measured, not assumed:
+///
+/// ```text
+/// $ lypning-mp -c 'def d(f):
+///       def w(*a): return f(*a)*2
+///       return w
+///   @d
+///   def g(x): return x+1
+///   print(g(3))'
+/// 8
+/// $ lypning-mp -c 'def g():
+///       yield 1
+///   gen = g(); print(next(gen)); gen.close(); print("closed")'
+/// 1
+/// closed
+/// ```
+///
+/// `async` stays, and for a reason that shows what this list is really for:
+/// `async def` *parses* there, so the syntax is not the problem — `asyncio` is
+/// absent, and the program needs it to do anything. The refusal is clean (exit
+/// 90, empty stdout), so routing an `async` program here would cost a spawn and
+/// still reach CPython. This list is about where a program ENDS UP, not about
+/// what a parser accepts.
+///
+/// A decorator that comes *from* an absent module costs nothing either, and not
+/// by luck: `engine_for` checks the imports before it reaches this match, so
+/// `@functools.lru_cache` is decided by `import functools` and still goes
+/// straight to CPython. What is left to pay for is a decorator or generator that
+/// imports nothing lypning-mp lacks and fails there for some other reason — one
+/// spawn, and the chain still answers. WASTED is a budget; a program that could
+/// have skipped CPython entirely is worth more than that.
+const CPYTHON_ONLY_KINDS: &[&str] = &["async"];
 
 pub fn route(src: &str) -> Route {
     let mut imports = Vec::new();
@@ -199,9 +233,10 @@ fn engine_for(kind: &str, imports: &[String]) -> Engine {
         | "repr-unicode" | "class" | "recursion" | "with" | "format" | "percent-format"
         | "os-listdir" | "type" | "json" | "open-mode" | "fstring" | "print-file" | "round"
         | "setattr" | "del" | "augassign" | "slice-assign" | "unpack" | "kwonly" | "nonlocal"
-        | "import" | "file-seek" | "open-newline" | "escape" | "ellipsis" | "complex" => {
-            Engine::MicroPython
-        }
+        | "import" | "file-seek" | "open-newline" | "escape" | "ellipsis" | "complex"
+        // Both are language features there, not library ones. See
+        // CPYTHON_ONLY_KINDS, which listed them as absent until it was measured.
+        | "decorator" | "generator" => Engine::MicroPython,
         // A construct nobody named yet: send it to the most capable tier rather
         // than guess, and let the conformance run reclassify it with evidence.
         _ => Engine::CPython,

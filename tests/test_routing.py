@@ -333,9 +333,29 @@ def test_resolution_stops_at_the_first_thing_that_is_not_a_module(lypning_bin):
 
 
 def test_constructs_no_micropython_derived_runtime_has_skip_the_middle_tier(lypning_bin):
-    for program in ("@dec\ndef f(): pass", "async def f(): pass",
+    # `async` alone, and not because the syntax is rejected there — `async def`
+    # parses on lypning-mp. `asyncio` is absent, and the program needs it to do
+    # anything, so the tier would refuse cleanly one spawn later. This list is
+    # about where a program ends up, not what a parser accepts.
+    assert _route("async def f(): pass").engine == eng.CPYTHON
+
+
+def test_decorators_and_generators_are_language_features_the_middle_tier_has(lypning_bin):
+    # Both sat in CPYTHON_ONLY_KINDS as "constructs no MicroPython-derived
+    # runtime has", which was never true: MicroPython implements them in the
+    # language. Ten corpus programs were routed past a tier that runs them.
+    for program in ("@dec\ndef f(): pass",
                     "def g():\n    yield 1\nprint(list(g()))"):
-        assert _route(program).engine == eng.CPYTHON, program
+        assert _route(program).engine == eng.MICROPYTHON, program
+    # A generator *expression* is not the blocker and never was — tier 1 runs it.
+    assert _route("print(list(x * 2 for x in range(3)))").engine == eng.LYPNING
+
+
+def test_a_decorator_from_an_absent_module_is_still_decided_by_the_import(lypning_bin):
+    # The imports are checked before the blocker kind is, so relaxing the kind
+    # did not start sending `@functools.lru_cache` to a tier without functools.
+    # This is what keeps WASTED flat across that change.
+    assert _route("import functools\n@functools.lru_cache\ndef f(x): return x").engine == eng.CPYTHON
 
 
 def test_an_unbuilt_classifier_routes_everything_to_cpython_and_says_why(monkeypatch):
