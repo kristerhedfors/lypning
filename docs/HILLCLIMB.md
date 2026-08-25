@@ -28,6 +28,79 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 51 — `key=None` and `reverse=None`, wrong in opposite directions
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded, 1307
+graded
+
+**bytes** 987,336 B, 8 blocks — unchanged. **correctness** lypning 908 MATCH /
+399 UNSUPPORTED / **0 MISMATCH**; lypning-mp 11 and mixture 1, unchanged.
+**routing** IDEAL 1235, LATE 40, WASTED 28, UNSAFE 4 — all unchanged.
+
+Found by probing the neighbourhood of iteration 49's defect on the theory that
+defects cluster. They did: thirteen ordering probes, one file, two bugs, and
+they fail in opposite directions from the same three call sites.
+
+### `key=None` was called
+
+```
+$ lypning -c 'print(sorted([3,1,2], key=None))'
+TypeError: 'NoneType' object is not callable      (exit 1)
+$ python3.11 -c '(same)'
+[1, 2, 3]
+```
+
+`None` is the *default* for `key=`, not a callable. It is also how an optional
+key gets spelled — `sorted(xs, key=chooser)` where `chooser` may be `None` — so
+this is ordinary code, not a corner. All four call sites had it: `sorted`,
+`list.sort`, `min`, `max`.
+
+Exit 1 is the program's own exit, so **the dispatcher does not fall through**.
+The caller got a TypeError for valid Python instead of the answer, with no tier
+below to rescue it. Loud rather than silent, which is the better half of bad.
+
+### `reverse=None` was obeyed
+
+```
+$ lypning -c 'print(sorted([3,1,2], reverse=None))'
+[1, 2, 3]                                         (exit 0)
+$ python3.11 -c '(same)'
+TypeError: 'NoneType' object cannot be interpreted as an integer
+```
+
+The worse half. `reverse=` goes through `__index__` in CPython, so a non-integer
+is a TypeError; read for truthiness it became an ascending sort at exit 0 — a
+**wrong answer where an error was owed**, and nothing to notice it by.
+
+The two are the same mistake seen from both sides: one keyword was assumed to be
+a callable and the other was assumed to be a truth value, and neither assumption
+was checked against what CPython does with it. `key_arg` and `reverse_arg` now
+carry both rules once, for all four call sites.
+
+### Pinned, and checked against the defect
+
+Six cases plus one stderr-text case — the message matters here, because the
+stdout pin cannot tell this TypeError from any other. **Run against the broken
+binary first: 6 failures there, 0 after.**
+
+That check is not ceremony. This tree has shipped a pin that passed on the
+defect it named, and a pin nobody has seen fail is a pin nobody has tested.
+
+### The method, restated
+
+Iteration 49's defect was found by an adversarial probe, not by any of the four
+gates. This one was found by asking what *else* lives next to it. Two defects
+from thirteen probes in one afternoon, in code that has been at MISMATCH 0 over
+1,305 corpus programs the whole time.
+
+**The corpus measures what agents typed. It cannot measure what the subset
+claims.** That is the fuzzer's job and it generates from the grammar, so
+keyword-argument edge cases — `key=None`, `reverse=None` — are outside what it
+reaches too. The gap between "what we ship" and "what anything checks" is where
+both of these lived.
+
+---
+
 ## 2026-08-25 · iteration 50 — generalising the shared-failure rule made LATE 614, REVERTED
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded, 1307

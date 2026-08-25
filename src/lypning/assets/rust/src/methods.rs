@@ -1143,11 +1143,8 @@ fn list_method(
         }
         "copy" => list(l.borrow().clone()),
         "sort" => {
-            let keyf = kwget(&kw, "key");
-            let rev = match kwget(&kw, "reverse") {
-                Some(v) => truthy(&v)?,
-                None => false,
-            };
+            let keyf = crate::builtins::key_arg(&kw, "key");
+            let rev = crate::builtins::reverse_arg(&kw)?;
             let mut items = l.borrow().clone();
             let mut keys = Vec::with_capacity(items.len());
             for x in &items {

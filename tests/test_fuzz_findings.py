@@ -257,6 +257,20 @@ CASES = [
     ("sort-reverse-ties-inplace", 'L = [("a", 1), ("b", 1), ("c", 1), ("d", 0)]\nL.sort(key=lambda t: t[1], reverse=True)\nprint(L)'),
     ("sort-reverse-no-ties", "print(sorted([5, 3, 1, 4], reverse=True))"),
     ("sort-reverse-degenerate", "print(sorted([], reverse=True), sorted([1], reverse=True))"),
+    # `key=None` is the DEFAULT, not a callable. It is also how an optional key
+    # gets spelled — `sorted(xs, key=chooser)` where `chooser` may be None — and
+    # reading it as a value to call raised TypeError at exit 1. Exit 1 is the
+    # program's own, so the dispatcher does not fall through and the caller got
+    # that error instead of the answer, for valid Python.
+    ("sort-key-none", "print(sorted([3, 1, 2], key=None))"),
+    ("sort-key-none-inplace", "x = [3, 1, 2]\nx.sort(key=None)\nprint(x)"),
+    ("sort-key-none-reverse", "print(sorted([3, 1, 2], key=None, reverse=True))"),
+    ("minmax-key-none", "print(min([3, 1, 2], key=None), max([3, 1, 2], key=None))"),
+    ("minmax-key-none-default", "print(min([1, 2], key=None, default=9))"),
+    # The other direction, and the worse one: `reverse=` goes through __index__
+    # in CPython, so a non-integer is a TypeError. Read for truthiness it was an
+    # ascending sort at exit 0 — a wrong answer where an error was owed.
+    ("sort-reverse-int", "print(sorted([3, 1, 2], reverse=1), sorted([3, 1, 2], reverse=0))"),
 ]
 
 needs_engine = pytest.mark.skipif(
@@ -415,6 +429,11 @@ STDERR_CASES = [
      "can only join an iterable"),
     ("join-generator-raises-through-text",
      "print(','.join(str(1//x) for x in [1, 0]))", "ZeroDivisionError"),
+    # `reverse=` is read through __index__, so the message names an integer and
+    # not a bool. Pinned as text because the stdout pin above cannot tell this
+    # error from any other TypeError.
+    ("sort-reverse-none-message", "print(sorted([3, 1, 2], reverse=None))",
+     "'NoneType' object cannot be interpreted as an integer"),
 ]
 
 

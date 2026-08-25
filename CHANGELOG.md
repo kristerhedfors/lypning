@@ -33,6 +33,14 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   distinct values across lengths 0–13, cross-checking `sorted` against
   `list.sort`. Both were **run against the broken binary first** — 5 failures
   there, 0 after. Two seed corpus entries cover the idiom going forward.
+- **`key=None` raised TypeError and `reverse=None` was obeyed** — the same
+  mistake from both sides, at all four call sites (`sorted`, `list.sort`, `min`,
+  `max`). `None` is the default for `key=`, and it is how an optional key gets
+  spelled, so `sorted(xs, key=chooser)` with a `None` chooser died at exit 1 —
+  which the dispatcher does not treat as a refusal, so nothing rescued it.
+  `reverse=` goes through `__index__` in CPython; read for truthiness it turned
+  a TypeError into an ascending sort at exit 0. Both pinned, and both checked
+  against the broken binary first.
 - A survey of **lypning-mp** verified 34 further divergences, recorded in
   `docs/HILLCLIMB.md` rather than fixed: that tier's sort is genuinely unstable,
   `round(2.5, 0)` is `3.0`, `isinstance(True, int)` is `False`, `json.loads`

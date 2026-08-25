@@ -112,6 +112,39 @@ fn kwget(kw: &[(Rc<str>, Value)], name: &str) -> Option<Value> {
     kw.iter().find(|(k, _)| k.as_ref() == name).map(|(_, v)| v.clone())
 }
 
+/// The `key=` argument of `sorted`, `list.sort`, `min` and `max`.
+///
+/// `None` is the DEFAULT, not a callable, and passing it explicitly means "no
+/// key" — which matters because `key=None` is how an optional key is spelled:
+/// `sorted(xs, key=chooser)` where `chooser` may be `None`. Reading it as a
+/// value to call raised `TypeError: 'NoneType' object is not callable` at
+/// exit 1, and an ordinary non-zero exit is the program's own, so the
+/// dispatcher does not fall through — the caller got that error for valid
+/// Python instead of the answer.
+pub fn key_arg(kw: &[(Rc<str>, Value)], name: &str) -> Option<Value> {
+    match kwget(kw, name) {
+        Some(Value::None) | None => None,
+        Some(v) => Some(v),
+    }
+}
+
+/// The `reverse=` argument, which CPython reads through `__index__` rather than
+/// for truthiness. `sorted(xs, reverse=None)` is a TypeError there and was an
+/// ascending sort here — a wrong answer at exit 0, which is worse than the
+/// error it should have been. Only `bool` and `int` have `__index__` in this
+/// subset, so anything else is refused with CPython's own wording.
+pub fn reverse_arg(kw: &[(Rc<str>, Value)]) -> R<bool> {
+    match kwget(kw, "reverse") {
+        None => Ok(false),
+        Some(Value::Bool(b)) => Ok(b),
+        Some(Value::Int(i)) => Ok(i != 0),
+        Some(other) => Err(type_err(format!(
+            "'{}' object cannot be interpreted as an integer",
+            type_name(&other)
+        ))),
+    }
+}
+
 fn no_kw(name: &str, kw: &[(Rc<str>, Value)]) -> R<()> {
     match kw.first() {
         None => Ok(()),
@@ -510,7 +543,7 @@ pub fn call_builtin(
             } else {
                 args.to_vec()
             };
-            let keyf = kwget(&kw, "key");
+            let keyf = key_arg(&kw, "key");
             let default = kwget(&kw, "default");
             if items.is_empty() {
                 return match default {
@@ -539,11 +572,8 @@ pub fn call_builtin(
                 .cloned()
                 .ok_or_else(|| type_err("sorted expected 1 argument, got 0"))?;
             let mut items = it.collect_unordered(v)?;
-            let keyf = kwget(&kw, "key");
-            let rev = match kwget(&kw, "reverse") {
-                Some(v) => truthy(&v)?,
-                None => false,
-            };
+            let keyf = key_arg(&kw, "key");
+            let rev = reverse_arg(&kw)?;
             let mut keys = Vec::with_capacity(items.len());
             for x in &items {
                 keys.push(keyed(it, &keyf, x)?);
