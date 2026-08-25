@@ -28,6 +28,51 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 42 — the same negative result, re-run with the reason for doubting it
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **REVERTED, nothing committed to the engine**
+
+`memcmp` is the **largest single entry** in the profile of both rows at the top
+of the queue — 7.55% of `call-method`, 6.62% of `str-split` — and a good part of
+it is name resolution scanning tables:
+
+* `builtin()` walked `BUILTINS` with `.iter().find()`. `len` sits **19 compares**
+  in, and a name that is *not* a builtin — the common case on a scope miss —
+  walked all 39 and then all 24 exceptions before answering `None`.
+* `is_exception_name()` is asked by `call_builtin` before **every** builtin call
+  and scanned 24 unsorted entries to do it.
+
+Iteration 4 already tried binary search here and measured zero. The reason to
+re-run it was specific and, I thought, good: **that reading was taken when a
+quarter to a half of the instruction stream was inside musl's allocator.**
+Iterations 18 and 27 removed the allocator. The surroundings had changed
+completely, so the result might have too.
+
+**It had not.** `EXCEPTIONS` sorted, all three readers switched to
+`binary_search`, three interleaved rounds against the unchanged binary:
+
+```
+            TOTAL     str-split  name-lookup  call-method
+  scan     1172.8       35.1        20.1         21.9      (minima)
+  bsearch  1195.8       35.6        20.3         22.0
+```
+
+Every individual row is flat, and the **TOTAL is 2% WORSE with
+non-overlapping bands**. Reverted in full — the engine is unchanged.
+
+The mechanism is the one iteration 4 named and it survives the allocator's
+removal intact: a linear walk of a small, sorted, cache-resident table is
+perfectly branch-predicted and its `memcmp`s are two or three bytes long, while
+a binary search over 39 entries is five or six *unpredictable* branches. High Ir
+at high IPC beats low Ir at low IPC. **Ir is not time**, and this is the second
+time this table has proved it.
+
+What this actually rules out is broader than the change: `memcmp` sitting at the
+top of a callgrind profile is not, by itself, a reason to do anything. The next
+person to see 7.55% there now has two measurements saying so, taken under
+opposite conditions.
+
+
 ## 2026-08-25 · iteration 41 — a two-way searcher to look for one byte
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
