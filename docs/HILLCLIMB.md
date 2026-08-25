@@ -28,6 +28,78 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 50 — generalising the shared-failure rule made LATE 614, REVERTED
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded, 1307
+graded
+
+**Nothing kept**, and this entry also **corrects iteration 46's reasoning**,
+which is the more useful half.
+
+### The idea
+
+Iteration 46 stopped crediting a tier whose MATCH was a shared failure, but only
+on `syntax` routes. Iteration 47's leftover LATE list looked like the same thing
+wearing different labels — programs routed `lypning-mp -> lypning` on
+`module: import re`, where the "ideal" tier had exited 1 with empty stdout.
+Measured over the 40 remaining LATE routes, **28 had exactly that shape.**
+
+The obvious move was to drop the `syntax` condition and key on the failure
+instead: skip a cheaper tier when it exited non-zero, printed nothing, *and the
+reference failed too*.
+
+### It produced this
+
+```
+              before   after
+  IDEAL        1235      661
+  LATE           40      614
+```
+
+1,139 tier-verdicts across the corpus met the condition, not 28.
+
+### Why, and why the first reading was wrong
+
+The 28 are programs like `s = open('src/main.rs').read()` — an agent's edit
+history. The battery gives every entry a **fresh temp cwd** (invariant 4), so the
+file is not there, and the program dies on line 1 on every tier before reaching
+anything a tier would refuse.
+
+The mistake was calling that a grader artifact. It is not. For a program that
+fails identically everywhere, the cheapest tier really is the cheapest way to get
+that answer, so `predicted=cpython, ideal=lypning` is a **truthful** LATE: it did
+cost more for the same result. What it is not is *actionable* — no feature work
+changes it, because the failure is environmental. Truthful and unactionable are
+different complaints, and only the second one applies.
+
+And the rule cannot be keyed on the failure, because it then fires on the far
+larger population where the route is **correct**: a program routed to lypning,
+which reproduces CPython's exception exactly, has its own destination struck off
+the ladder, ideal moves to CPython, and a right answer at the cheapest tier is
+graded LATE. That is the 614.
+
+### What still stands, and on what grounds
+
+Iteration 46's `syntax`-only rule is unaffected, but the reasoning that survives
+is narrower than the one it was committed with. It is **not** "agreement on a
+failure is not an answer" — that is the general claim, and the general claim is
+false. It is specifically that for a syntax error **CPython's stderr is the
+deliverable**: it names the file, the line and the column and prints the
+offending source, and lypning's says "line 1". The classifier routes there on
+purpose for that reason, and the battery compares stdout, which cannot see it.
+That argument is about diagnostics and does not extend past them.
+
+### The honest reading of LATE 40
+
+Twelve are capability gaps. Twenty-eight are programs that die on a missing file
+in the battery's sandbox — real cost differences in the battery, silent about
+capability, and quite possibly correctly routed in the cwd the agent actually
+had, where the file exists and the tier would refuse for real. **The next
+iteration should work the twelve and not re-derive the twenty-eight**, which is
+what this entry is for.
+
+---
+
 ## 2026-08-25 · iteration 49 — `reverse=True` was reversing the ties, in the Rust core
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded (two
