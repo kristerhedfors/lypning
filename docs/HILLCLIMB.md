@@ -28,6 +28,70 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 36 — twelve allocations for seven bytes
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 987,336 → **983,240** (−4,096; 8 blocks) ·
+**conformance** 906 / 399 / **0 MISMATCH** ·
+**perf** `str-fmt-pct` **85.16 → 63.36 ms** (−26%); TOTAL +0.9%, see below ·
+**corpus** 938.2 → 932.2 ms, 0.994x ·
+**fuzz** seed 20260824 × 3000, 0 counterexamples
+
+`'%d-%s' % (i, 'a')` produces seven bytes and allocated about a dozen times to
+do it. Three of those are gone:
+
+* **The format string was collected into a `Vec<char>` on every call** — four
+  bytes per character of a string that is almost always ASCII. The scan walks
+  the bytes now and copies each literal run with one `push_str`. `%` is ASCII
+  and cannot occur inside a multi-byte sequence, so every slice boundary is a
+  character boundary by construction.
+* **The translated spec was a fresh `format!` per conversion.** One buffer,
+  cleared and refilled, for the whole call.
+* The output starts at the format string's length rather than at zero.
+
+`read_spec` now writes into that buffer and returns only the index; its pieces
+are byte slices of the format string, so none of them allocates either. The one
+place a non-ASCII character can appear is the conversion letter, and that is an
+error path — decoded there so the message can still name it.
+
+### How a refactor gets accepted
+
+Nothing about this is supposed to change an answer, so the gate is not
+"agrees with CPython" — it is **"agrees with the binary before it"**, which is a
+stronger claim and a cheaper one to check. The whole conversion grid, run on
+both binaries: conversion × flags × width × precision × value.
+
+**29,100 cells identical, 0 differing.** Plus a second pass over 4,536
+spec/value pairs comparing exit code, stdout *and stderr* — including the
+conversions that refuse and the ones that raise — **0 differing**. The refusal
+set is unchanged, which is the half a value-only comparison would have missed.
+
+The `perf` TOTAL reads +0.9%, spread as +0.3 to +0.5 across a dozen rows with no
+causal path to `ops.rs`, while the row this touches moved −21.81 ms. That is the
+optimiser redistributing inlining, the shape iteration 15 documented; the byte
+count moving *down* 4,096 on a change that only deletes work is the same effect
+from the other side.
+
+### What the grid found on the way, and did not fix
+
+Run against **CPython** rather than against the previous binary, the same grid
+reports **8,346 differing cells of 29,100**, and they reproduce on the
+iteration-35 binary — pre-existing, not this change's. The first family is
+precision on an integer conversion, which in C and Python means *minimum
+digits*:
+
+```
+'%.2d' % 1     lypning '1'     CPython '01'
+'%.7d' % -42   lypning '-42'   CPython '-0000042'
+```
+
+lypning translates `.N` straight through to a `format()` precision, and
+`format(1, '.2d')` is not a thing — so the precision is silently dropped. 8,346
+cells is a multiplier over flags and widths rather than 8,346 defects, and
+sorting them into distinct causes is the next iteration, not this one.
+
+
 ## 2026-08-24 · iteration 35 — two allocations per generator element, and a reading that was the machine
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed

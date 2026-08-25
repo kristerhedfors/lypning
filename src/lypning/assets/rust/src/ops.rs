@@ -902,49 +902,67 @@ pub fn set_op(x: &Rc<RefCell<Set>>, y: &Rc<RefCell<Set>>, op: SetOp) -> R<Value>
 
 // ---- printf-style % formatting -------------------------------------------
 
+/// `'%d-%s' % (i, 'a')` — seven bytes of output, and this used to allocate a
+/// dozen times to produce them.
+///
+/// Three of those are gone. The format string was collected into a
+/// `Vec<char>` on **every call** — four bytes per character of a string that is
+/// almost always ASCII — where the scan can walk the bytes and copy each literal
+/// run with one `push_str`; `%` is ASCII and cannot occur inside a multi-byte
+/// sequence, so every slice boundary here is a character boundary. The
+/// translated spec was a fresh `format!` **per conversion**, and is now one
+/// buffer cleared and refilled for the whole call. And the output starts at the
+/// format string's length instead of at zero.
+///
+/// What is left per conversion is `percent_one`'s chain, which is its own
+/// problem and is documented there.
 fn percent_format(f: &str, arg: &Value) -> R<String> {
     let args: Vec<Value> = match arg {
         Value::Tuple(t) => (**t).clone(),
         other => vec![other.clone()],
     };
-    let b: Vec<char> = f.chars().collect();
-    let mut out = String::new();
+    let b = f.as_bytes();
+    let mut out = String::with_capacity(f.len());
+    // One buffer for every conversion in this format string.
+    let mut spec = String::new();
     let mut ai = 0;
     let mut i = 0;
     while i < b.len() {
-        if b[i] != '%' {
-            out.push(b[i]);
-            i += 1;
+        if b[i] != b'%' {
+            // The whole literal run in one copy rather than a push per char.
+            let start = i;
+            while i < b.len() && b[i] != b'%' {
+                i += 1;
+            }
+            out.push_str(&f[start..i]);
             continue;
         }
         i += 1;
-        if i < b.len() && b[i] == '%' {
+        if i < b.len() && b[i] == b'%' {
             out.push('%');
             i += 1;
             continue;
         }
         // Mapping key `%(name)s` — used with a dict on the right.
-        if i < b.len() && b[i] == '(' {
+        if i < b.len() && b[i] == b'(' {
             let mut j = i + 1;
-            while j < b.len() && b[j] != ')' {
+            while j < b.len() && b[j] != b')' {
                 j += 1;
             }
-            let key: String = b[i + 1..j].iter().collect();
+            let key = &f[i + 1..j];
             let Value::Dict(d) = arg else {
                 return Err(type_err("format requires a mapping"));
             };
             let v = d
                 .borrow()
-                .get(&Value::Str(key.clone().into()))?
+                .get(&Value::Str(key.into()))?
                 .ok_or_else(|| key_err(format!("'{key}'")))?;
             i = j + 1;
-            let (spec, ni) = read_spec(&b, i)?;
-            i = ni;
+            i = read_spec(f, b, i, &mut spec)?;
             out.push_str(&fmt::format_value(&v, &spec)?);
             continue;
         }
-        let (spec, ni) = read_spec(&b, i)?;
-        i = ni;
+        i = read_spec(f, b, i, &mut spec)?;
         let v = args
             .get(ai)
             .ok_or_else(|| type_err("not enough arguments for format string"))?;
@@ -959,74 +977,84 @@ fn percent_format(f: &str, arg: &Value) -> R<String> {
     Ok(out)
 }
 
-/// Read one printf conversion and translate it into a `format()` spec.
-fn read_spec(b: &[char], mut i: usize) -> R<(String, usize)> {
-    let mut flags = String::new();
-    while i < b.len() && matches!(b[i], '-' | '+' | ' ' | '#' | '0') {
-        flags.push(b[i]);
+/// Read one printf conversion and translate it into a `format()` spec, written
+/// into `spec` rather than returned. Returns the index just past the conversion.
+///
+/// Every part of a conversion is ASCII, so the pieces are byte slices of the
+/// format string itself and none of them allocates. The one place a non-ASCII
+/// character can appear is the conversion letter, and that is an error path —
+/// it is decoded there so the message can name it.
+fn read_spec(f: &str, b: &[u8], mut i: usize, spec: &mut String) -> R<usize> {
+    spec.clear();
+    let flag0 = i;
+    while i < b.len() && matches!(b[i], b'-' | b'+' | b' ' | b'#' | b'0') {
         i += 1;
     }
-    let mut width = String::new();
+    let flags = &f[flag0..i];
+    let width0 = i;
     while i < b.len() && b[i].is_ascii_digit() {
-        width.push(b[i]);
         i += 1;
     }
-    let mut prec = String::new();
-    if i < b.len() && b[i] == '.' {
+    let width = &f[width0..i];
+    let prec0 = i;
+    let mut bare_dot = false;
+    if i < b.len() && b[i] == b'.' {
         i += 1;
-        prec.push('.');
+        let digits0 = i;
         while i < b.len() && b[i].is_ascii_digit() {
-            prec.push(b[i]);
             i += 1;
         }
-        if prec == "." {
-            prec.push('0');
-        }
+        bare_dot = i == digits0;
     }
-    while i < b.len() && matches!(b[i], 'l' | 'h' | 'L') {
+    let prec = &f[prec0..i];
+    while i < b.len() && matches!(b[i], b'l' | b'h' | b'L') {
         i += 1;
     }
     if i >= b.len() {
         return Err(value_err("incomplete format"));
     }
-    let conv = b[i];
-    i += 1;
-    let ty = match conv {
-        'd' | 'i' | 'u' => "d",
-        's' => "s",
-        'r' => "r",
-        'f' | 'F' => "f",
-        'e' => "e",
-        'E' => "E",
-        'g' => "g",
-        'G' => "G",
-        'x' => "x",
-        'X' => "X",
-        'o' => "o",
-        'c' => "c",
-        other => {
+    let ty = match b[i] {
+        b'd' | b'i' | b'u' => "d",
+        b's' => "s",
+        b'r' => "r",
+        b'f' | b'F' => "f",
+        b'e' => "e",
+        b'E' => "E",
+        b'g' => "g",
+        b'G' => "G",
+        b'x' => "x",
+        b'X' => "X",
+        b'o' => "o",
+        b'c' => "c",
+        _ => {
+            let other = f[i..].chars().next().unwrap_or('?');
             return Err(unsupported(
                 "percent-format",
                 &format!("%{other} conversion"),
-            ))
+            ));
         }
     };
-    let align = if flags.contains('-') {
-        "<"
+    i += 1;
+    if flags.contains('-') {
+        spec.push('<');
     } else if flags.contains('0') && ty != "s" && ty != "r" {
-        "0"
-    } else {
-        ""
-    };
-    let sign = if flags.contains('+') {
-        "+"
+        spec.push('0');
+    }
+    if flags.contains('+') {
+        spec.push('+');
     } else if flags.contains(' ') {
-        " "
-    } else {
-        ""
-    };
-    let alt = if flags.contains('#') { "#" } else { "" };
-    Ok((format!("{align}{sign}{alt}{width}{prec}{ty}"), i))
+        spec.push(' ');
+    }
+    if flags.contains('#') {
+        spec.push('#');
+    }
+    spec.push_str(width);
+    spec.push_str(prec);
+    if bare_dot {
+        spec.push('0');
+    }
+    spec.push_str(ty);
+    Ok(i)
 }
 
 fn percent_one(v: &Value, spec: &str) -> R<String> {
