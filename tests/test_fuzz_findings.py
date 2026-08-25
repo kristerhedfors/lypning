@@ -241,7 +241,7 @@ CASES = [
     ("bytefind-ascii-needle-in-multibyte", "print('aé日b'.count('a'), 'aé日b'.find('b'), 'aé日b'.rfind('b'))"),
     ("bytefind-two-char-needle", "print('banana'.count('an'), 'banana'.find('an'), 'banana'.rfind('an'))"),
     ("bytefind-overlapping", "print('aaaa'.count('aa'), 'aaaa'.count('a'))"),
-    ("bytefind-nul-and-tab", r"print('a b	c'.count(' '), 'a b	c'.find('	'))"),
+    ("bytefind-nul-and-tab", "print('a\\x00b\\tc'.count('\\x00'), 'a\\x00b\\tc'.find('\\t'))"),
     ("bytefind-empty-haystack", "print(''.count('a'), ''.find('a'), ''.rfind('a'))"),
     ("bytefind-index-raises", "print('abc'.index('z'))"),
     ("bytefind-with-bounds", "print('banana'.count('a', 2), 'banana'.find('a', 2), 'banana'.rfind('a', 0, 3))"),
