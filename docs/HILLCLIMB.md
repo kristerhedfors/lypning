@@ -28,6 +28,81 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 39 — the numbers, re-measured with the third tier built
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+Not a change to the interpreter. A measurement pass, because every figure in
+`README.md` and `docs/LYPNING.md` still described the 2026-08-21 tree — a
+different binary, a corpus two-fifths smaller, and iterations 18–38 ago.
+
+**lypning-mp was built for the first time in this tree**, which needed
+`gcc-multilib` and a working archive. That matters more than it sounds: without
+it the mixture arm falls straight through to CPython on every refusal, and the
+first run of the day reported **0.541x** where the real figure is **0.302x**.
+A benchmark with a hole where a tier should be is not a slower result, it is a
+different question.
+
+```
+startup, min of 15    cpython 11.57   lypning 0.66   lypning-mp 0.61   mixture 0.60
+shared subset (904)   cpython 1.000x  lypning 0.089x lypning-mp 0.102x mixture 0.131x
+whole corpus (1305)   cpython 1.000x  lypning 0.069x lypning-mp 0.098x mixture 0.302x
+```
+
+**The mixture saves 69.8%** — 16,658 ms across 1305 programs, nothing
+unanswered. That is up from the 66.0% recorded on 2026-08-21, on a corpus that
+has since grown by 709 programs.
+
+**lypning is ahead of lypning-mp on the shared subset again**, 0.089x against
+0.102x. That ordering is now on its third reading: upstream had lypning ahead,
+this tree reversed it twice, and the allocator work has put it back. The docs say
+plainly that this is not evidence the question is settled — the shared subset is
+by construction the programs lypning accepts, where both engines sit near their
+startup floor, and a capture that adds harder shared programs can move it again.
+
+### Building the tier turned two gates red, and none of it is this session's
+
+`lypning conformance` with all three arms: **12 MISMATCH** — 11 on lypning-mp,
+1 on the mixture — and routing safety **4 UNSAFE**. The lypning arm stays at
+906 / 399 / **0**.
+
+Four of the eleven are the commit-barrier defect §6 already describes. **Six of
+the other seven arrived with the corpus, not with the tier**, and they are the
+most interesting thing in this entry: iterations 24–26 wrote differential probes
+to find defects in the *Rust core* — grids over `str.find` bounds, over
+`json.loads` control characters, over `int()` whitespace — the capture harness
+harvested them from the transcript, and they now find **the same defect families
+in lypning-mp**. `'Hello'.find('', 6)` answers 5 there; `json.loads('"a\tb"')`
+returns a string. Both were always true of the tier. Nothing could see them until
+a corpus entry looked.
+
+The mixture's single mismatch is the one shape §5 exists to prevent: lypning-mp
+answers `py-9b16a7261b96` at exit 0 with the wrong output, so the chain never
+falls onward. Three of the four UNSAFE routes the dispatcher recovered; that one
+it cannot.
+
+CI is unaffected — it does not build the tier, and the comment on the `core`
+job's conformance line already said why the mixture arm is clean only in that
+configuration.
+
+### Pruning the accept-list, and a limit in the scorer
+
+`.github/known-mismatches.json` gained 7 entries and lost 3, and the scorer now
+exits 0: every observed mismatch is named and every named one reproduces.
+
+The three removed were flagged **GOOD NEWS — no longer reproduces**. Two of them
+genuinely are: `py-a17250cecb37` and `py-ed8fafe6cdb2` now exit **90** on the
+tier, which is a refusal and the correct outcome. The third, `py-d72e3ff2ddbe`,
+**still differs when run by hand** — mp exits 1 on `from lypning import engines`
+where CPython exits 0 — and the battery simply does not surface it, because the
+entry is graded on its exit code alone.
+
+So the scorer cannot tell *fixed* from *no longer measured*, and its message
+asserts the first. That is a real gap and it is written into the ledger file
+rather than worked around, because the next person to read a GOOD NEWS line
+deserves to know it might mean neither.
+
+
 ## 2026-08-25 · iteration 38 — the conversion grid goes to zero
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed

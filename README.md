@@ -19,28 +19,30 @@ route cost one wasted process spawn instead of a wrong answer.
 
 ## Measured performance
 
-`lypning bench --startup-repeat 15 --repeat 3`, run on **2026-08-21** on this
+`lypning bench --startup-repeat 15 --repeat 3`, run on **2026-08-25** on this
 container — 4 CPUs, Linux 6.18.44-fc-v21, all three engines built — against a
-corpus capture that had grown to **842 programs, 763 of them measurable**:
+corpus capture that had grown to **1551 programs, 1305 of them measurable**:
 
 | | `cpython` | `lypning` | `lypning-mp` | **mixture** |
 |---|---:|---:|---:|---:|
-| startup, `-c 'pass'`, min of 15 | 10.88 ms | 0.70 ms | 0.61 ms | **0.58 ms** |
-| the 500 programs every arm ran | 6658.3 ms | 486.2 ms | 407.7 ms | **685.7 ms** |
-| …as a ratio | 1.000x | 0.073x | 0.061x | **0.103x** |
-| all 763, refusals included | 13428.9 ms | 743.8 ms | 1297.1 ms | **4565.2 ms** |
-| …of which it answered | 763 | 500 | 714 | **763** |
-| binary | 6,639,992 B | 1,045,176 B | 294,788 B | — |
+| startup, `-c 'pass'`, min of 15 | 11.57 ms | 0.66 ms | 0.61 ms | **0.60 ms** |
+| the 904 programs every arm ran | 13093.8 ms | 1164.3 ms | 1336.8 ms | **1718.1 ms** |
+| …as a ratio | 1.000x | 0.089x | 0.102x | **0.131x** |
+| all 1305, refusals included | 23865.0 ms | 1638.0 ms | 2335.8 ms | **7206.6 ms** |
+| …of which it answered | 1305 | 906 | 1236 | **1305** |
+| binary | 6,639,992 B | 987,336 B | 296,100 B | — |
 
-**The mixture answers all 763 programs for 0.340x of CPython's cost** — 8.9
+**The mixture answers all 1305 programs for 0.302x of CPython's cost** — 16.7
 seconds saved across one session's worth of one-liners, with nothing left
 unanswered. The two subset arms are cheaper than the mixture only because they
 refuse work, and a refusal still costs its spawn.
 
-Correctness on the same tree, from `lypning conformance`: `lypning` 500 MATCH ·
-263 UNSUPPORTED · **0 MISMATCH**; `lypning-mp` 714 · 47 · **2**; the mixture
-**763 / 763**, zero. Those two are one known defect, tracked rather than waived
-— §5.
+Correctness on the same tree, from `lypning conformance`: `lypning` 906 MATCH ·
+399 UNSUPPORTED · **0 MISMATCH**; `lypning-mp` 1229 · 65 · **11**; the mixture
+**1305 / 1305** with **1**. Every one of those twelve is lypning-mp's, four are
+the known contract defect, and six arrived when the corpus grew probes that look
+for exactly this class — tracked rather than waived, §5 and `docs/LYPNING.md`
+§2.
 
 Numbers from one run on one machine. The reason every tool prints the corpus
 size it loaded is that yours will differ, so re-run rather than cite: §1 is this
@@ -89,7 +91,7 @@ heuristic over the program text — so "can tier 1 run this" is an *exact*
 answer, costing one parse and no spawn. The tiers below it cannot be asked that
 way, because they are separate binaries, so those are capability tables; and
 the same `lypning conformance` run that grades answers also grades routes:
-**91.1% IDEAL, 97.5% right on the first try** over the 763 programs above.
+**91.0% IDEAL, 97.5% right on the first try** over the 1305 programs above.
 
 Three properties make the fall-through affordable, and each is load-bearing:
 
@@ -116,46 +118,47 @@ that is the only reason a mixture is allowed to guess at all.
 
 Everything else is downstream of one table, and the table is re-measured rather
 than remembered. This is the run quoted above, in full — `lypning bench
---startup-repeat 15 --repeat 3` on **2026-08-21**, 4 CPUs, Linux 6.18.44-fc-v21,
-**842 programs loaded, 763 measured**, 79 skipped for naming an absolute path
+--startup-repeat 15 --repeat 3` on **2026-08-25**, 4 CPUs, Linux 6.18.44-fc-v21,
+**1551 programs loaded, 1305 measured**, 246 skipped for naming an absolute path
 the per-entry temp cwd does not contain:
 
 ```
 startup — `-c 'pass'`, min of 15, arms interleaved
 
 arm             min ms   vs cpython
-cpython          10.88   1.000x
-lypning           0.70   0.064x
-lypning-mp        0.61   0.056x
-mixture           0.58   0.053x
+cpython          11.57   1.000x
+lypning           0.66   0.057x
+lypning-mp        0.61   0.053x
+mixture           0.60   0.052x
 
-shared subset — the 500 programs every arm executed, min of 3
+shared subset — the 904 programs every arm executed, min of 3
 
 arm          ran  refused   shared total    median   vs cpython
-cpython      763        0       6658.3 ms    12.03    1.000x
-lypning      500      263        486.2 ms     0.94    0.073x
-lypning-mp   714       49        407.7 ms     0.79    0.061x
-mixture      763        0        685.7 ms     0.92    0.103x
+cpython     1305        0      13093.8 ms    12.83    1.000x
+lypning      906      399       1164.3 ms     0.91    0.089x
+lypning-mp  1236       69       1336.8 ms     0.90    0.102x
+mixture     1305        0       1718.1 ms     0.92    0.131x
 
-whole corpus — what a session of 763 one-liners costs
+whole corpus — what a session of 1305 one-liners costs
 
-cpython     13428.9 ms   1.000x
-lypning       743.8 ms   0.055x   (263 unanswered)
-lypning-mp   1297.1 ms   0.097x   (49 unanswered)
-mixture      4565.2 ms   0.340x   (0 unanswered — saves 8863.7 ms, 66.0%)
+cpython     23865.0 ms   1.000x
+lypning      1638.0 ms   0.069x   (399 unanswered)
+lypning-mp   2335.8 ms   0.098x   (69 unanswered)
+mixture      7206.6 ms   0.302x   (0 unanswered — saves 16658.4 ms, 69.8%)
 ```
 
 Read it in this order:
 
-- **The mixture answers everything CPython answers** — 763 of 763, and zero
-  mismatches on its own arm — for 0.340x of CPython's cost. That is the claim
-  the project exists to make, and it is the one that has held on every machine
-  it has been run on.
+- **The mixture answers everything CPython answers** — 1305 of 1305 — for
+  0.302x of CPython's cost. That is the claim the project exists to make, and it
+  is the one that has held on every machine it has been run on. Its own arm now
+  carries one mismatch, and that is lypning-mp leaking through it rather than
+  the dispatcher: §5.
 - **The other two arms are cheap because they refuse**, not because they are
-  faster: 263 and 49 programs unanswered. `bench` annotates their whole-corpus
+  faster: 399 and 69 programs unanswered. `bench` annotates their whole-corpus
   totals with exactly that sentence, because the number is otherwise a trap.
 - **Startup is a floor, not a ranking.** All three engines arrive within a
-  tenth of a millisecond of each other, 15–19x under CPython; they are static
+  twentieth of a millisecond of each other, 17–19x under CPython; they are static
   musl binaries that open no files at startup, and past that the differences
   are the machine.
 
@@ -196,8 +199,11 @@ not a CI gate.
 Read honestly, that thesis was **upstream's result, not a property of the
 design**. The shared subset is by construction the programs lypning accepted —
 the simplest in the corpus — where both engines sit near their startup floor,
-and lypning-mp's floor is lower: 294,788 B against lypning's 1,045,176 B (both
-printed by `lypning status`, and both move whenever an engine is rebuilt).
+and lypning-mp's floor is lower: 296,100 B against lypning's 987,336 B (both
+printed by `lypning status`, and both move whenever an engine is rebuilt). On
+2026-08-25 the ordering flipped back — lypning 0.089x against lypning-mp's
+0.102x — which is the third time it has moved and is not evidence that it has
+settled.
 
 What survives re-measurement is the part the mixture is actually for: answering
 everything CPython answers, for about a third of the cost. Both tools print the
@@ -567,7 +573,7 @@ than a release blocker.
 Two caveats on how the grading actually works, both worth knowing before you
 quote a coverage number:
 
-**7% of the corpus is graded on its exit code alone.** 59 of 842 programs ask
+**8.5% of the corpus is graded on its exit code alone.** 132 of 1551 programs ask
 about *this run* rather than about a computation — `os.fstat(1).st_ino` prints
 the inode of whichever pipe it was handed, `datetime.now()` is never twice the
 same, `repr(frozenset)` moves with the hash seed, and `sys.stdlib_module_names`
@@ -655,8 +661,8 @@ lypning perf --record before.json   # …and --baseline before.json after
 The table sorts by ratio; the **queue printed under it does not**. A ratio ranks
 by how badly lypning loses, which is not the same list as what that costs
 anybody: this suite reported `s += x` in a loop at 43x CPython — its worst row —
-against a corpus in which that construct appears in *one program out of the 842
-loaded*. So every case carries a regex, the corpus is scanned on each run, and
+against a corpus in which that construct appears in *no program at all* — the
+suite prints its prevalence beside every row, and `str-concat`'s is 0%. So every case carries a regex, the corpus is scanned on each run, and
 the queue is ordered by **how far behind, times how much of the corpus types
 it**. That second ordering is the work queue for raw speed.
 
@@ -686,7 +692,7 @@ deterministic half — conformance and routing safety.
 > **Running the corpus can rewrite a repository.** These are real programs from
 > real agent sessions, so the corpus is full of one-liners that edit `src/` and
 > `docs/`. Every entry runs in its own temp cwd, entries naming an absolute path
-> are skipped rather than run (79 of 842 here), and the whole battery is
+> are skipped rather than run (246 of 1551 here), and the whole battery is
 > bracketed by a `git status` snapshot that restores and reports anything that
 > changed anyway. That last one is a **net, not a sandbox**: it cannot undo a
 > write outside the repository, it only makes the next occurrence loud. It
@@ -701,24 +707,30 @@ agents actually typed, captured from real sessions:
 
 ```
 $ lypning corpus --stats
-entries            842
-  hook             384   45.6%
-  shim             277   32.9%
-  seed             161   19.1%
-  transcript        20    2.4%
-one-liners         112   13.3%
-multi-line         730   86.7%
-length (lines)  median 6  p90 61  max 600
-with argv           25
+entries           1551
+  shim             670   43.2%
+  hook             404   26.0%
+  transcript       316   20.4%
+  seed             161   10.4%
+one-liners         141    9.1%
+multi-line        1410   90.9%
+length (lines)  median 7  p90 46  max 600
+with argv           55
 with stdin          19
-unparsed here        5
+unparsed here       21
 
 top imports           top builtins
-sys            135    print          1025
-json           128    open            652
-io             122    len             241
-re             115    repr            101
+sys            465    print          2025
+json           269    open            909
+re             166    len             418
+io             124    int             255
 ```
+
+`transcript` is 20.4% of that and climbing, and it is worth reading the split
+before reading a build order off it: the transcript feed is what the sessions
+*working on lypning* typed, so part of any ranking derived from it is a mirror.
+The hillclimb skill says the same thing at more length, and `lypning corpus
+--stats` prints the split precisely so it can be read that way.
 
 **What gets logged.** Two feeds, both appending JSON lines to
 `~/.lypning/invocations.jsonl`. The shim catches every invocation that reached
