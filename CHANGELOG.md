@@ -58,6 +58,15 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 - Pinned as a 60-cell keyword grid comparing values *and* messages. Binary
   995,528 B, still 8 blocks; every arm's MISMATCH count and the whole routing
   table unchanged.
+- **Malformed calls were answered instead of raising.** Extra positional
+  arguments were dropped and missing ones defaulted, so `'ab'.strip('a','b')`
+  returned `'b'`, `len([1],[2])` returned `1`, `chr(65,66)` returned `'A'`,
+  `divmod(1,2,3)` returned `(0,1)` — nineteen cases, all at exit 0 — and
+  `[1].insert(0)` put a `None` **into the list**. Arity tables now bound both
+  ends, with the floor counting positionals only so `round(number=2.5)` still
+  works. Fifty-five error-message *wordings* still differ from CPython's and are
+  recorded rather than fixed: both interpreters raise, which is the part that
+  matters.
 - A survey of **lypning-mp** verified 34 further divergences, recorded in
   `docs/HILLCLIMB.md` rather than fixed: that tier's sort is genuinely unstable,
   `round(2.5, 0)` is `3.0`, `isinstance(True, int)` is `False`, `json.loads`

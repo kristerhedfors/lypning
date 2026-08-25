@@ -28,6 +28,83 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 53 — malformed calls were being answered, and an oracle question asked wrong
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded, 1307
+graded
+
+**bytes** 995,528 → **999,624 B**, still **8 blocks** (48,952 B to the ninth).
+**correctness** lypning 908 MATCH / 399 UNSUPPORTED / **0 MISMATCH**;
+lypning-mp 11, mixture 1. **routing** IDEAL 1235, LATE 40, WASTED 28, UNSAFE 4 —
+all unchanged, on a change that constrains every call in the language.
+
+The axis next to iteration 52's keywords: **argument counts**. 74 probes over
+malformed calls, and the same shape of defect — an extra argument was dropped in
+silence and a missing one defaulted, so the call answered instead of raising.
+
+```
+'ab'.strip('a','b')  ->  'b'          [1].insert(0)   ->  inserts None
+[1].append(1,2)      ->  appends 1    {}.get()        ->  None
+len([1],[2])         ->  1            abs(1,2)        ->  1
+chr(65,66)           ->  'A'          divmod(1,2,3)   ->  (0, 1)
+repr(1,2)            ->  '1'          sorted([1],[2]) ->  [1]
+```
+
+Nineteen of them, every one exit 0. `[1].insert(0)` is the one that is not
+merely a wrong answer: it puts a `None` **into the list** and carries on.
+
+Arity tables in `builtins.rs` and `methods.rs` now bound both ends. Afterwards:
+**0 silent wrong answers over the same 74 probes.**
+
+### The floor counts positionals only
+
+`round(number=2.5)` has no positional arguments and is a complete call, so the
+minimum applies only when nothing was passed by name. The ceiling always
+applies — a keyword never makes an extra positional legal. Caught by the
+iteration-52 grid, which is the argument for keeping old grids running.
+
+### The mistake worth recording: the oracle answered a different question
+
+The tables were derived by calling CPython with 0..6 arguments and recording
+which counts it accepted. The first derivation put `format` at **(1, 1)**. It
+takes two.
+
+The probe had called `format(1, 1)`, which raises
+`TypeError: format() argument 2 must be str, not int` — a **type** error whose
+text contains the word "argument", and the classifier keyed on that word. So a
+type failure was recorded as an arity limit, and the table then rejected
+`format(3.5, '.1f')`. **17 tests failed**, which is the only reason it was
+caught before the commit.
+
+Deriving a table from an oracle is the right method and it is what made the rest
+of this correct. But an oracle only answers the question actually asked, and
+"does this raise" is not "is this too many arguments". The second pass used
+type-correct fillers per call. `type` came back (1, 3) — the three-argument class
+form — and is left out of the table entirely rather than guessed at.
+
+### What is deliberately NOT fixed
+
+**Fifty-five message-text differences remain**, measured and left:
+
+```
+lypning:  str.strip() takes at most 1 argument (2 given)
+cpython:  strip expected at most 1 argument, got 2
+```
+
+Both raise, both at the same exit code; only the wording differs. That is a real
+gap and a much smaller one — the caller gets an error either way and learns the
+same thing — and matching CPython's per-function phrasing across fifty-five
+messages is a large change for it. So the pin in `tests/test_call_shape.py`
+asserts the **outcome shape and not the message**: whether an error happened at
+all is what must never differ. Pinning the text would freeze fifty-five strings
+that are allowed to be wrong.
+
+It asserts both directions. A check that simply refused everything would pass a
+one-sided test, so 22 **well-formed** calls sit in the same grid, and the failure
+message names which side broke.
+
+---
+
 ## 2026-08-25 · iteration 52 — keyword arguments were being ignored, and one of them aborted the process
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded, 1307

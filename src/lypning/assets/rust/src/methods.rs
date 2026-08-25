@@ -303,6 +303,91 @@ fn reject_kw(ty: &str, name: &str, kw: &[(Rc<str>, Value)]) -> R<()> {
     Err(type_err(format!("{ty}.{name}() takes no keyword arguments")))
 }
 
+/// How many POSITIONAL arguments each method takes, as `(min, max)`.
+///
+/// Extra arguments were silently dropped and missing ones silently defaulted,
+/// so a malformed call answered instead of raising:
+///
+/// ```text
+/// 'ab'.strip('a', 'b')   ->  'b'    cpython: TypeError   (the second arg won)
+/// [1].insert(0)          ->  inserts None
+/// [1].append(1, 2)       ->  appends 1, drops 2
+/// {}.get()               ->  None
+/// {}.get('a', 1, 2)      ->  1
+/// [1].pop(0, 1)          ->  1
+/// ```
+///
+/// Every one is exit 0 with a plausible-looking result, which is the shape this
+/// project treats as always a bug: CPython tells the caller immediately and this
+/// did something else quietly. `[1].insert(0)` is the worst of them — it does
+/// not merely answer wrongly, it corrupts the list with a `None`.
+///
+/// Derived by calling CPython 3.11 with 0..6 arguments and recording which
+/// counts it accepted, not by reading the manual. A name absent from this table
+/// is unchecked, so adding a method does not silently acquire a wrong limit —
+/// the arm's own argument handling stays the fallback. `str.format` and the
+/// variadic set operations are deliberately absent for that reason.
+fn arity(ty: &str, name: &str) -> Option<(usize, usize)> {
+    let n = match (ty, name) {
+        ("str", "replace") => (2, 3),
+        ("str", "find" | "rfind" | "index" | "rindex" | "count" | "startswith" | "endswith") => (1, 3),
+        ("str", "split" | "rsplit") => (0, 2),
+        ("str", "strip" | "lstrip" | "rstrip") => (0, 1),
+        ("str", "join" | "partition" | "rpartition" | "removeprefix" | "removesuffix" | "zfill") => (1, 1),
+        ("str", "splitlines" | "expandtabs") => (0, 1),
+        ("str", "encode") => (0, 2),
+        ("str", "ljust" | "rjust" | "center") => (1, 2),
+        ("str", "upper" | "lower" | "title" | "capitalize" | "swapcase" | "casefold") => (0, 0),
+        ("bytes", "replace") => (2, 3),
+        ("bytes", "find" | "rfind" | "index" | "rindex" | "count" | "startswith" | "endswith") => (1, 3),
+        ("bytes", "split" | "rsplit") => (0, 2),
+        ("bytes", "strip" | "lstrip" | "rstrip") => (0, 1),
+        ("bytes", "join" | "partition" | "rpartition") => (1, 1),
+        ("bytes", "splitlines") => (0, 1),
+        ("bytes", "decode") => (0, 2),
+        ("list", "append" | "remove" | "extend" | "count") => (1, 1),
+        ("list", "insert") => (2, 2),
+        ("list", "pop") => (0, 1),
+        ("list", "index") => (1, 3),
+        ("list", "sort" | "reverse" | "clear" | "copy") => (0, 0),
+        ("dict", "get" | "pop" | "setdefault") => (1, 2),
+        ("dict", "update") => (0, 1),
+        ("dict", "keys" | "values" | "items" | "clear" | "copy") => (0, 0),
+        ("set", "add" | "discard" | "remove") => (1, 1),
+        ("set", "clear" | "copy" | "pop") => (0, 0),
+        _ => return None,
+    };
+    Some(n)
+}
+
+/// CPython's wording, which distinguishes an exact count from a range.
+fn plural(n: usize) -> &'static str {
+    if n == 1 {
+        "argument"
+    } else {
+        "arguments"
+    }
+}
+
+fn check_arity(ty: &str, name: &str, args: &Args, kw: &[(Rc<str>, Value)]) -> R<()> {
+    let Some((lo, hi)) = arity(ty, name) else { return Ok(()) };
+    let n = args.len();
+    // The floor counts POSITIONAL arguments, so it only applies when nothing was
+    // passed by name: `round(number=2.5)` has none and is still a complete call.
+    // The ceiling always applies — a keyword never makes an extra positional
+    // legal.
+    if n <= hi && (n >= lo || !kw.is_empty()) {
+        return Ok(());
+    }
+    Err(type_err(if lo == hi {
+        format!("{ty}.{name}() takes exactly {lo} {} ({n} given)", plural(lo))
+    } else if n > hi {
+        format!("{ty}.{name}() takes at most {hi} {} ({n} given)", plural(hi))
+    } else {
+        format!("{ty}.{name}() takes at least {lo} {} ({n} given)", plural(lo))
+    }))
+}
+
 pub fn call_method(
     it: &mut Interp,
     recv: &Value,
@@ -368,6 +453,7 @@ fn str_method(
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     reject_kw("str", name, &kw)?;
+    check_arity("str", name, args, &kw)?;
     Ok(match name {
         // `std`'s `to_uppercase` / `to_lowercase` already carry a vectorised
         // ASCII fast path and size the output exactly. Measured on this
@@ -1096,6 +1182,7 @@ fn list_method(
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     reject_kw("list", name, &kw)?;
+    check_arity("list", name, args, &kw)?;
     Ok(match name {
         "append" => {
             let v = args
@@ -1213,6 +1300,7 @@ fn dict_method(
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     reject_kw("dict", name, &kw)?;
+    check_arity("dict", name, args, &kw)?;
     Ok(match name {
         "get" => match d.borrow().get(args.first().unwrap_or(&Value::None))? {
             Some(v) => v,
@@ -1306,6 +1394,7 @@ fn set_method(
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     reject_kw("set", name, &kw)?;
+    check_arity("set", name, args, &kw)?;
     let other_set = |it: &mut Interp, v: &Value| -> R<Rc<RefCell<Set>>> {
         match v {
             Value::Set(o) => Ok(o.clone()),
@@ -1430,6 +1519,7 @@ fn bytes_method(
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     reject_kw("bytes", name, &kw)?;
+    check_arity("bytes", name, args, &kw)?;
     Ok(match name {
         "decode" => {
             if let Some(e) = args.first().cloned().or_else(|| kwget(&kw, "encoding")).as_ref() {

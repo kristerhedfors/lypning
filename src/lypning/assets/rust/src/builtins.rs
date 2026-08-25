@@ -172,6 +172,67 @@ fn no_kw(name: &str, kw: &[(Rc<str>, Value)]) -> R<()> {
     }
 }
 
+/// How many POSITIONAL arguments each builtin takes, as `(min, max)`.
+///
+/// The same defect as the method table in `methods.rs`: extras were dropped in
+/// silence, so `abs(1, 2)` answered `1`, `chr(65, 66)` answered `'A'`,
+/// `len([1], [2])` answered `1`, `repr(1, 2)` answered `'1'` and
+/// `divmod(1, 2, 3)` answered `(0, 1)` — every one at exit 0 where CPython
+/// raises. Derived by calling CPython 3.11 with 0..6 arguments.
+///
+/// `min`, `max`, `print` and `zip` are variadic and absent. `str`, `bytes` and
+/// `open` are absent because their upper bound depends on which overload the
+/// caller reached, and a wrong ceiling here would refuse working code — those
+/// arms keep their own handling.
+fn arity(name: &str) -> Option<(usize, usize)> {
+    Some(match name {
+        "len" | "abs" | "chr" | "ord" | "hex" | "oct" | "bin" | "repr" | "sorted" | "all"
+        | "any" => (1, 1),
+        // `format(value, format_spec)` takes two, and the first derivation of
+        // this table said one. The probe had called `format(1, 1)`, which fails
+        // with "argument 2 must be str, not int" — a TYPE error whose text
+        // contains the word "argument", so it was scored as an arity limit.
+        // Deriving a table by asking the oracle only works if the question is
+        // asked with type-correct values; `type` came back (1, 3) for the
+        // three-argument class form and is left out entirely rather than
+        // guessed at.
+        "format" => (1, 2),
+        "bool" | "float" | "list" | "tuple" | "set" => (0, 1),
+        "divmod" | "isinstance" => (2, 2),
+        "int" => (0, 2),
+        "round" | "sum" | "next" | "iter" => (1, 2),
+        "range" => (1, 3),
+        _ => return None,
+    })
+}
+
+fn plural(n: usize) -> &'static str {
+    if n == 1 {
+        "argument"
+    } else {
+        "arguments"
+    }
+}
+
+fn check_arity(name: &str, args: &Args, kw: &[(Rc<str>, Value)]) -> R<()> {
+    let Some((lo, hi)) = arity(name) else { return Ok(()) };
+    let n = args.len();
+    // The floor counts POSITIONAL arguments, so it only applies when nothing was
+    // passed by name: `round(number=2.5)` has none and is still a complete call.
+    // The ceiling always applies — a keyword never makes an extra positional
+    // legal.
+    if n <= hi && (n >= lo || !kw.is_empty()) {
+        return Ok(());
+    }
+    Err(type_err(if lo == hi {
+        format!("{name}() takes exactly {lo} {} ({n} given)", plural(lo))
+    } else if n > hi {
+        format!("{name}() takes at most {hi} {} ({n} given)", plural(hi))
+    } else {
+        format!("{name}() takes at least {lo} {} ({n} given)", plural(lo))
+    }))
+}
+
 pub fn call_builtin(
     it: &mut Interp,
     name: &str,
@@ -181,6 +242,7 @@ pub fn call_builtin(
     if !kw.is_empty() && NO_KEYWORDS.contains(&name) {
         return Err(type_err(format!("{name}() takes no keyword arguments")));
     }
+    check_arity(name, args, &kw)?;
     // `raise ValueError("x")` / `except E as e` construct exception instances.
     if is_exception_name(name) {
         let msg = match args.first() {
