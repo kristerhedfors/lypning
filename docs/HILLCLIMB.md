@@ -28,6 +28,97 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 37 — the format spec was built in the wrong order, and `%5s` leaned the wrong way
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 983,240 → 983,240 (**8 blocks**, unchanged) ·
+**conformance** 906 / 399 / **0 MISMATCH** ·
+**perf** flat (interleaved, below) ·
+**fuzz** seed 20260824 × 3000, 0 counterexamples
+
+`%`-formatting works by translating each conversion into a `format()` spec.
+Iteration 36 measured that translation and left the disagreements it found for
+this one: **8,346 differing cells of 29,100** in the conversion grid. Sorted by
+cause, they were twenty families and four defects. Two are fixed here.
+
+**`%5s` leans the wrong way.** The default alignment for a `%s` conversion is
+**right**; `format()`'s default for a string is **left**. So `'%5s' % 'ab'`
+produced `'ab   '` where CPython produces `'   ab'` — which is every `%`
+one-liner that lines a column up, and about as ordinary as input gets.
+
+**The pieces of a format spec are not commutative.** The order is
+`[align][sign][#][0][width][.prec][type]`, and this emitted the zero-pad flag
+*first, as if it were an alignment*:
+
+```
+format(1.5, '+0f')   '+1.500000'        format(255, '#05x')   '0x0ff'
+format(1.5, '0+f')   ValueError         format(255, '0#5x')   ValueError
+```
+
+So every conversion combining `0` with a sign or with `#` raised ValueError where
+CPython formats. Two smaller rules came with it, both checked against CPython
+rather than assumed: a `-` beats a `0` (`'%-05d' % 255` is `'255  '`), and a `0`
+never applies to a string conversion (`'%05s' % 'a'` is `'    a'`).
+
+### The gate for a correctness change is three-way, not two
+
+"Agrees with CPython more often" is not enough — the question is whether anything
+that agreed **stopped**. So the grid was run on three binaries at once, 23,616
+cells:
+
+```
+  14614  both agree with CPython
+   2618  FIXED
+      0  BROKEN
+   2920  both wrong, unchanged
+    776  both wrong, but changed
+   2688  refused by one or both
+```
+
+**Zero broken.** The 448 cells inside that "refused" row that are *newly* refused
+are an improvement too, and worth reading carefully: they were a **wrong
+ValueError** before and are an exit-90 refusal now, so the dispatcher hands them
+to CPython and the caller gets the real answer. `'%+0d' % 1.5` is `'+1'` in
+CPython; lypning said ValueError, and now refuses — because `%d` on a float was
+always a refusal and the bogus ValueError had been masking it.
+
+The 776 "both wrong, but changed" are the same story one step short: `'%+0.2d' %
+1` went from ValueError to `'+1'`, where CPython says `'+01'`. Closer, still
+wrong, and the reason is the next defect.
+
+### Still open, from the same grid
+
+* **`%.Nd` is minimum DIGITS, not a `format()` precision.** `'%.2d' % 1` is
+  `'01'` and `'%.7d' % -42` is `'-0000042'`; lypning passes `.N` straight through
+  to a precision, which for an integer is meaningless, so it is dropped.
+  `format(-1, '03d')` is `'-01'`, so the shape is expressible — it needs the
+  precision turned into a width around the sign, composed with the *outer* width.
+* **`#` on a float conversion.** `'%#.0f' % 0.0` is `'0.'` — the alternate form
+  keeps the decimal point — and lypning gives `'0'`. This one is not a
+  translation bug: `format(0.0, '#.0f')` is wrong in lypning's own `format()`.
+* **`format(255, '#05x')` is `'0x0ff'` and lypning says `'00xff'`.** Also
+  `format()`'s own, reachable with no `%` anywhere: the `0x` prefix has to come
+  before the zero fill.
+
+### On the numbers
+
+The machine restarted mid-iteration and the `--baseline` files predate it, so the
+absolute readings are worthless — the suite reported +489 ms and `pytest` had
+gone from 12.6 s to 21.7 s on unchanged code. Measured the only way that works,
+three interleaved rounds of both binaries in the same minute:
+
+```
+  TOTAL      before 1351.9  1403.7  1358.6      after 1338.9  1364.3  1372.6
+  str-fmt-pct       79.3    79.5    80.3              77.4    77.9    81.5
+```
+
+Overlapping on both. A correctness fix that adds three `push`es to a `String`
+costs nothing measurable, which is what it should cost.
+
+11 cases pinned; 7 fail on the iteration-36 binary.
+
+
 ## 2026-08-25 · iteration 36 — twelve allocations for seven bytes
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed

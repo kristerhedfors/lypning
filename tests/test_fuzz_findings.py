@@ -173,6 +173,29 @@ CASES = [
     ("unpack-into-subscripts", "l = [0, 0, 0]\nl[0], (l[1], l[2]) = 1, (2, 3)\nprint(l)"),
     ("unpack-swap", "a, b = 1, 2\na, b = b, a\nprint(a, b)"),
     ("unpack-list-is-snapshotted", "src = [1, 2]\ndef f():\n    src.append(9)\n    return 0\nl = [0, 0]\nl[f()], l[1] = src\nprint(l, src)"),
+    # `%`-formatting translates each conversion into a `format()` spec, and the
+    # spec was being built in the wrong order with the wrong default alignment.
+    # 2,618 cells of the conversion grid.
+    #
+    # The default alignment for `%s` is RIGHT and `format()`'s default for a
+    # string is LEFT, so the translation has to say `>` out loud. Without it
+    # every `%` one-liner that lines a column up came out flush the wrong way.
+    ("pct-str-width-right-aligns", "print(repr('%5s' % 'ab'))"),
+    ("pct-str-width-left-with-dash", "print(repr('%-5s' % 'ab'))"),
+    ("pct-repr-width-right-aligns", "print(repr('%5r' % 'ab'))"),
+    ("pct-str-zero-flag-is-ignored", "print(repr('%05s' % 'a'))"),
+    ("pct-str-width-and-precision", "print(repr('%5.2s' % 'abc'))"),
+    # The pieces of a format spec are not commutative: `+0f` is valid and `0+f`
+    # is a ValueError, `#05x` is `0x0ff` and `0#5x` is a ValueError. The zero-pad
+    # flag was emitted first, as if it were an alignment.
+    ("pct-sign-then-zero-float", "print(repr('%+0f' % 0))"),
+    ("pct-space-then-zero-float", "print(repr('% 0e' % 0))"),
+    ("pct-zero-width-int", "print(repr('%05d' % 42), repr('%05d' % -42))"),
+    ("pct-plus-zero-width-int", "print(repr('%+05d' % 42))"),
+    # A `-` beats a `0`, and neither applies to a string conversion.
+    ("pct-dash-beats-zero", "print(repr('%-05d' % 255), repr('%-05.1f' % 1.5))"),
+    ("pct-alt-form-hex-width", "print(repr('%-#5x' % 255), repr('%#5x' % 255))"),
+    ("pct-sign-and-dash", "print(repr('%+-5d' % 255), repr('% -5d' % 255))"),
 ]
 
 needs_engine = pytest.mark.skipif(

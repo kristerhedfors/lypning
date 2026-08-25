@@ -1035,10 +1035,22 @@ fn read_spec(f: &str, b: &[u8], mut i: usize, spec: &mut String) -> R<usize> {
         }
     };
     i += 1;
-    if flags.contains('-') {
+    // `[align][sign][#][0][width][.prec][type]`, in that order, because that is
+    // the order `format()` parses and the pieces are NOT commutative: `+0f` is
+    // valid and `0+f` is a ValueError, `#05x` is `0x0ff` and `0#5x` is a
+    // ValueError. This used to emit the zero-pad flag as if it were an
+    // alignment, first, so every `%` conversion combining `0` with a sign or
+    // with `#` raised ValueError where CPython formats — 1,560 cells of the
+    // conversion grid.
+    let left = flags.contains('-');
+    if left {
         spec.push('<');
-    } else if flags.contains('0') && ty != "s" && ty != "r" {
-        spec.push('0');
+    } else if ty == "s" || ty == "r" {
+        // **The default alignment for `%s` is RIGHT**, and `format()`'s default
+        // for a string is LEFT — so the translation has to say so out loud.
+        // Without this `'%5s' % 'ab'` produced `'ab   '` where CPython produces
+        // `'   ab'`, which is every `%` one-liner that lines a column up.
+        spec.push('>');
     }
     if flags.contains('+') {
         spec.push('+');
@@ -1047,6 +1059,11 @@ fn read_spec(f: &str, b: &[u8], mut i: usize, spec: &mut String) -> R<usize> {
     }
     if flags.contains('#') {
         spec.push('#');
+    }
+    // A `-` beats a `0`: `'%-05d' % 255` is `'255  '`, not zero-padded. And a
+    // `0` never applies to a string conversion: `'%05s' % 'a'` is `'    a'`.
+    if flags.contains('0') && !left && ty != "s" && ty != "r" {
+        spec.push('0');
     }
     spec.push_str(width);
     spec.push_str(prec);
