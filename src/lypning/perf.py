@@ -233,8 +233,18 @@ SUITE: Tuple[Case, ...] = (
     # labelled `io`, weighted by how often the corpus opens a file, was really
     # reporting on `%` formatting, which the corpus barely uses (ledger,
     # iteration 7).
+    #
+    # **20,000 lines was too few and the suite said so**: it began printing
+    # "the reference arm spent under 2 ms of work on file-write-read, so its
+    # ratio is mostly the startup subtraction". Raised to 100,000 in iteration
+    # 43, where the reference arm does ~17 ms and the row measures I/O. It is
+    # not a cosmetic change — the net ratio GROWS with the size (1.82x at
+    # 20,000, 2.36x at 100,000, 2.45x at 200,000), so the small case was hiding
+    # a real per-byte gap rather than merely measuring it imprecisely. Resizing
+    # renumbers the row and the TOTAL; earlier ledger entries are not comparable
+    # across it.
     Case("file-write-read", "io",
-         "block = 'a line of text\\n' * 20000\n"
+         "block = 'a line of text\\n' * 100000\n"
          "with open('perf.txt', 'w') as fh:\n    fh.write(block)\n"
          "n = 0\nwith open('perf.txt') as fh:\n    for line in fh:\n        n += len(line)\nprint(n)",
          '\\bopen\\('),

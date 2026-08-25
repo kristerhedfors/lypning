@@ -28,6 +28,79 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 43 — the row the suite said it could not see
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 987,336 → 987,336 · **conformance** 906 / 399 / **0 MISMATCH** ·
+**perf** `file-write-read` **1.98x → 2.40x**, weight 0.41 → **0.59** — and the
+TOTAL renumbered
+
+`lypning perf` had started printing its own warning on this row:
+
+> ! too small to trust — the reference arm spent under 2 ms of work on
+> file-write-read, so its ratio is mostly the startup subtraction. Grow the case.
+
+`file-write-read` is typed by **42% of the corpus** — the second-highest
+prevalence in the suite — and the instrument was saying out loud that it could
+not measure it. So this iteration grew the case rather than optimising anything.
+
+**It was not merely imprecise, it was hiding a gap.** The net ratio *grows* with
+the size:
+
+```
+  lines     lypning net   cpython net   ratio
+  20,000       8.7 ms        4.8 ms     1.82x
+  50,000      20.5           9.7        2.12x
+ 100,000      40.1          17.0        2.36x
+ 200,000      81.3          33.2        2.45x
+```
+
+A per-byte cost higher than CPython's does not show at a size where both arms
+are mostly startup. The case is 100,000 lines now — the reference arm does 17 ms
+of work, comfortably clear of the 2 ms floor — and the row reads **2.40x**
+instead of 1.98x. Resizing renumbers the row and the TOTAL; entries above this
+one are not comparable across it.
+
+Unlike iteration 31's `str-methods` bias, there is no trophy-case problem here:
+nothing was optimised in this iteration, so the resize cannot flatter anything I
+did.
+
+### What the case now shows, for whoever takes it
+
+With a row that can see I/O, callgrind and `strace` say the gap is **not** I/O:
+
+* **Syscalls are already right.** The whole file is read in **2 `read` calls**;
+  there is no per-line syscall to remove.
+* `core::str::converts::from_utf8` is 3.90% — each line revalidated as UTF-8.
+* The interpreter loop is **22%**: `exec_block` 4.73, `eval` 4.00, `eval'2` 3.86,
+  `lookup` 3.09, `assign` 2.45, and `memcmp` 6.79 on top of it.
+
+So `file-write-read` at 2.40x is mostly 100,000 iterations of a Python loop, not
+100,000 lines of file handling. That is the same answer the last three profiles
+gave, and it is the finding this iteration ends on — see below.
+
+### The gradient under the current dial is flat
+
+Iterations 41–43: one win (`call-method` −14%, real), **two reverted negative
+results** (binary-searched name tables, ASCII byte-scan split), and a suite fix.
+Every profile taken since iteration 41 — `call-method`, `str-split`,
+`file-write-read` — puts the same thing on top: `memcmp` from name resolution,
+and then `eval`/`exec_block`/`lookup`/`assign`, which together are 18–22% of
+every run.
+
+The leaf operations are done. What is left is the **tree-walking evaluator
+itself**, and making that cheaper is not an iteration — it is the
+slot-resolved-frames branch the skill already names: resolve local names to
+indices at definition time, so `lookup` stops hashing a string and `builtin()`
+stops being reached at all on a miss. `assigned_names` already computes the set
+that branch needs.
+
+Recording it here rather than starting it: it is a multi-step change to the
+calling convention, and the skill's rule is to name a branch and take a smaller
+step meanwhile.
+
+
 ## 2026-08-25 · iteration 42 — the same negative result, re-run with the reason for doubting it
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **REVERTED, nothing committed to the engine**
