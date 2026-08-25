@@ -67,6 +67,25 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   works. Fifty-five error-message *wordings* still differ from CPython's and are
   recorded rather than fixed: both interpreters raise, which is the part that
   matters.
+- **`bytes` was the unswept side, and six defects lived there.** `bytes.rsplit`
+  was `split` under a different name — `from_right` reached the splitter and was
+  discarded; the whitespace set omitted `\x0b`, which Rust excludes and Python
+  counts; whitespace splitting with `maxsplit` was wrong at both ends;
+  `find`/`startswith`/`endswith` ignored `start` and `end`; and `hex(sep)`
+  dropped the separator. Gridded at 1,342 cells. The `str` side was gridded the
+  same way and is clean — it *refuses* the one case bytes got wrong silently.
+- **Six more, each its own root cause.** `9.0 // 0.7` answered `11.0` (CPython
+  corrects the floor when the discarded fraction exceeds half a unit — 623-cell
+  grid); `True | False` answered `1` (bool overrides three bitwise operators, and
+  only when both operands are bool); `list.index`/`tuple.index` ignored `start`
+  and `stop`; `zip(a, b, strict=True)` **silently removed the guard it was asked
+  to enforce** and is now refused; and `max({-1,1}, key=abs)` leaked this
+  engine's set order, which the existing set-order guard did not cover — refused
+  now only when a tie actually occurs, so `sorted(s, key=len)` still answers.
+- Found by a six-lens fan-out at the Rust core that returned **32 verified silent
+  wrong answers**, each adversarially re-run and minimised by a second agent.
+  Twelve fixed; the remaining twenty are enumerated in `docs/HILLCLIMB.md` rather
+  than half-done.
 - A survey of **lypning-mp** verified 34 further divergences, recorded in
   `docs/HILLCLIMB.md` rather than fixed: that tier's sort is genuinely unstable,
   `round(2.5, 0)` is `3.0`, `isinstance(True, int)` is `False`, `json.loads`

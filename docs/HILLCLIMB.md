@@ -28,6 +28,130 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 54 — twelve silent wrong answers from a fan-out hunt, and `bytes` was the hole
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded, 1307
+graded
+
+**bytes** 999,624 → **1,003,720 B**, still **8 blocks** (44,856 B to the ninth).
+**correctness** lypning 908 MATCH / 399 UNSUPPORTED / **0 MISMATCH**; lypning-mp
+11, mixture 1. **routing** IDEAL 1235, LATE 40, WASTED 28, UNSAFE 4 — unchanged.
+**tests** 991 → 1,019.
+
+A six-lens fan-out at the Rust core returned **32 verified silent wrong
+answers** — each one adversarially re-run by a second agent that minimised it and
+tested the claimed condition. Twelve are fixed here. The rest are listed at the
+end rather than half-done.
+
+### `bytes` was the hole, and it is one hole
+
+Six of the thirty-two were `bytes` methods, and that is not a coincidence: the
+`str` side has been swept repeatedly (iterations 24, 44, and the bounds grid),
+and `bytes` never had been.
+
+- **`bytes.rsplit` was `split` wearing a different name.** `from_right` reached
+  the splitter and was discarded with `let _ = from_right;`.
+  `b"path/to/file.txt".rsplit(b"/", 1)` answered `[b'path', b'to/file.txt']`.
+- **The whitespace set was missing `\x0b`.** `u8::is_ascii_whitespace` is space,
+  `\t`, `\n`, `\x0c`, `\r` — Rust leaves out the vertical tab and Python counts
+  it. **One byte value**, found by sweeping all 256 through `split` and `strip`;
+  exactly one differed. The `str` side is a *third* set again (Unicode
+  White_Space plus U+001C–U+001F) and was verified clean over 0..=0x3000. The
+  two must never be merged.
+- **Whitespace splitting with `maxsplit` was wrong at both ends.**
+  `b" a ".split(None, 0)` answered `[b' a ']` and `b"x y  z".split(None, 2)`
+  answered `[b'x', b'y', b' z']`. The rule is: leading and trailing whitespace
+  never produce an empty field, and once the budget is spent the **remainder is
+  handed back verbatim**.
+- **`find`, `startswith` and `endswith` ignored `start` and `end` entirely** —
+  arguments the caller went out of their way to pass.
+- **`hex(sep)` dropped the separator.**
+
+`rsplit` is now the forward walk over the reversed input with the pieces
+reversed back, so the rule lives in exactly one place. That matters more than it
+sounds: with whitespace the two ends are **not symmetric** — a bounded `rsplit`
+keeps the leading whitespace and drops the trailing — and a hand-written mirror
+would be a second place to get that wrong. Verified as a grid of **1,342 cells**
+over 11 receivers × 7 needles × 11 bound pairs × 4 maxsplits.
+
+The `str` side was gridded the same way afterwards (242 cells, 0 differ). It
+*refuses* `rsplit(None, positive maxsplit)` at exit 90, which is why it was never
+silently wrong — a refusal doing its job.
+
+### Six more, each its own root cause
+
+| construct | answered | CPython |
+|---|---|---|
+| `9.0 // 0.7` | `11.0` | `12.0` |
+| `True \| False` | `1` | `True` |
+| `[1,1,1].index(1, 1)` | `0` | `1` |
+| `[1,2,3].index(3, 0, 2)` | `2` | `ValueError` |
+| `zip(a, b, strict=True)` | truncates | `ValueError` |
+| `max({-1, 1}, key=abs)` | `-1` | `1` |
+
+**Float floor division** was the subtlest. CPython computes `mod` first and
+derives `div = (x - mod) / y`, which this tree already did — and then
+**corrects the floor**, which it did not: the division rounds, so a true quotient
+of 12 arrives as 11.999999999999998 and floors to 11. `floatobject.c` adds the
+value back when the discarded fraction was over half a unit. Gridded at 623
+cells across float, int and mixed operands.
+
+**`bool` overrides three bitwise operators** to return `bool`, and only when
+*both* operands are bool: `True | False` is `True`, `True | 1` is `1`. The
+shifts are not overridden. Returning an int for all of them printed `1` on an
+ordinary flag expression.
+
+**`zip(strict=True)` is the one that inverts its own purpose.** The flag exists
+to detect a length mismatch, and the runtime asked to enforce it silently
+removed the guard. It is **refused**, not implemented: `strict` needs a length
+check the lazy `Iter::Zip` does not make, and per invariant 1 a refusal the
+dispatcher routes onward beats an approximation. `zip` and `enumerate` were
+exempt from iteration 52's no-keywords table *because they really do take
+keywords* — and the exemption had become exemption from all validation. A hole
+created by the previous iteration's fix, found by this one's hunt.
+
+### The set-order guard had a second door
+
+`max({-1, 1}, key=abs)` — the keys tie, "ties keep the first element" is the
+rule, and **a set has no first element**. The existing guard covered `sum()` of
+float sets and `reversed()`, and missed `min`/`max`/`sorted` with a key
+entirely.
+
+Refused only **when a tie actually occurs**, not whenever a key is present over a
+set. `sorted(s, key=len)` over distinct lengths has exactly one answer and keeps
+giving it — pinned on both sides, so a later widening into a blanket refusal
+fails the CASES pin while a later narrowing fails the REFUSES pin.
+
+### The verifiers earned their keep again
+
+The `\x0b` finding came with a corpus count of 4. The verifier ran all four:
+three touch the vertical tab only on the `str` side or as source text, and the
+fourth exits 90 before reaching its bytes section. **Realised divergences: 0.**
+It said so, and said the evidence is the 256-value sweep rather than the corpus.
+
+A hunter also called the `zip` defect "unimplemented `strict` semantics"; the
+verifier read `builtins.rs`, found the `NO_KEYWORDS` exemption, and corrected it
+to "a missing keyword-validation gate on zip *and enumerate*" — which is what
+made the fix cover both. A correct defect with a wrong explanation sends the fix
+to the wrong place.
+
+### Not fixed, and listed so they are not re-found
+
+Twenty of the thirty-two remain, all verified, none with corpus hits:
+int↔float comparison past 2**53 (`10**16+1 == 1e16`), `int/int` division through
+f64, NaN identity in containment and equality, `list.sort` leaving the list
+visible during the sort, `round(x, -1)` half-away-from-zero, five format
+mini-language gaps (zero-pad with explicit alignment, group-aware padding,
+precision with an empty presentation type, grouping for `g` and `%`, nested
+auto-numbering), dict mutation during iteration not raising, tuple augmented
+assignment, `try/except/else` running the else clause on `break`, exception args
+truncated past the first, and `KeyError` quoting.
+
+**`try/except/else` on `break` is the one to take next** — it is control flow,
+not a formatting corner, and a wrong answer there can be arbitrarily large.
+
+---
+
 ## 2026-08-25 · iteration 53 — malformed calls were being answered, and an oracle question asked wrong
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded, 1307

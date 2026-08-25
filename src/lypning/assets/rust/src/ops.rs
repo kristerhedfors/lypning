@@ -28,7 +28,7 @@ impl Interp {
                 || matches!((x, y), (Num::I(_), Num::I(_)))
                 || matches!(op, Add | Sub | Mul | Div | FloorDiv | Mod | Pow)
             {
-                return num_binop(op, x, y);
+                return num_binop(op, x, y, matches!((a, b), (Value::Bool(_), Value::Bool(_))));
             }
         }
         Ok(match (op, a, b) {
@@ -468,7 +468,7 @@ fn missing_method_err(recv: &Value, name: &str) -> LypningError {
 
 // ---- numbers --------------------------------------------------------------
 
-fn num_binop(op: BinOp, a: Num, b: Num) -> R<Value> {
+fn num_binop(op: BinOp, a: Num, b: Num, both_bool: bool) -> R<Value> {
     use BinOp::*;
     // Bit operations are integer-only in Python.
     if matches!(op, BitAnd | BitOr | BitXor | LShift | RShift) {
@@ -478,6 +478,19 @@ fn num_binop(op: BinOp, a: Num, b: Num) -> R<Value> {
                 op_sym(op)
             )));
         };
+        // `bool` is a subclass of `int`, but its three bitwise operators are
+        // overridden to return `bool` — and ONLY when both operands are bool.
+        // `True | False` is `True`, while `True | 1` is `1`. Returning an int
+        // for both printed `1` where CPython prints `True`, at exit 0, on an
+        // ordinary flag expression. The shifts are not overridden: `True << 1`
+        // is `2` either way, so they stay out of this.
+        if both_bool && matches!(op, BitAnd | BitOr | BitXor) {
+            return Ok(Value::Bool(match op {
+                BitAnd => (x != 0) & (y != 0),
+                BitOr => (x != 0) | (y != 0),
+                _ => (x != 0) ^ (y != 0),
+            }));
+        }
         return Ok(Value::Int(match op {
             BitAnd => x & y,
             BitOr => x | y,
@@ -609,7 +622,20 @@ fn num_binop(op: BinOp, a: Num, b: Num) -> R<Value> {
                 if div == 0.0 {
                     Value::Float(if x.is_sign_negative() != y.is_sign_negative() { -0.0 } else { 0.0 })
                 } else {
-                    Value::Float(div.floor())
+                    // …and then CPython CORRECTS the floor, which this did not.
+                    // `(x - mod) / y` is exact in real arithmetic but the
+                    // division rounds, so a true quotient of 12 can arrive as
+                    // 11.999999999999998 and floor to 11. `float_floor_div` in
+                    // `floatobject.c` adds the value back when the fraction it
+                    // discarded was more than half a unit:
+                    //
+                    //     9.0 // 0.7   ->  12.0   (this answered 11.0)
+                    //
+                    // Exit 0, one off, and only for the divisors where the
+                    // rounding lands that way — which is why a handful of
+                    // examples would not have found it.
+                    let floordiv = div.floor();
+                    Value::Float(if div - floordiv > 0.5 { floordiv + 1.0 } else { floordiv })
                 }
             }
         }

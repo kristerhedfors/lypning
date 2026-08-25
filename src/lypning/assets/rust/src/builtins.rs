@@ -685,6 +685,7 @@ pub fn call_builtin(
         }
         "min" | "max" => {
             let want_max = name == "max";
+            let from_set = args.len() == 1 && matches!(args.first(), Some(Value::Set(_)));
             let items: Vec<Value> = if args.len() == 1 {
                 it.collect_unordered(args.remove(0))?
             } else {
@@ -700,6 +701,7 @@ pub fn call_builtin(
             }
             let mut best = items[0].clone();
             let mut bestk = keyed(it, &keyf, &best)?;
+            let mut tied = false;
             for x in &items[1..] {
                 let k = keyed(it, &keyf, x)?;
                 let o = ops::order(&k, &bestk)?;
@@ -709,7 +711,25 @@ pub fn call_builtin(
                 {
                     best = x.clone();
                     bestk = k;
+                    tied = false;
+                } else if o == std::cmp::Ordering::Equal {
+                    tied = true;
                 }
+            }
+            // "Ties keep the FIRST element" is only reproducible if there IS a
+            // first. Over a SET there is not: iteration order is this engine's
+            // own, so `max({-1, 1}, key=abs)` answered -1 where CPython answers
+            // 1 — same set, same key, different order, and both at exit 0.
+            //
+            // The existing set-order guard covered `sum()` of float sets and
+            // `reversed()`, and missed this path entirely. Refused only when a
+            // tie ACTUALLY occurred, not whenever a key is present over a set:
+            // `max(s, key=len)` with distinct lengths has one answer and should
+            // keep giving it.
+            if tied && from_set {
+                return Err(set_order_refused(&format!(
+                    "{name}() of a set where the key ties"
+                )));
             }
             best
         }
@@ -718,12 +738,26 @@ pub fn call_builtin(
                 .first()
                 .cloned()
                 .ok_or_else(|| type_err("sorted expected 1 argument, got 0"))?;
+            let from_set = matches!(v, Value::Set(_));
             let mut items = it.collect_unordered(v)?;
             let keyf = key_arg(&kw, "key");
             let rev = reverse_arg(&kw)?;
             let mut keys = Vec::with_capacity(items.len());
             for x in &items {
                 keys.push(keyed(it, &keyf, x)?);
+            }
+            // Same leak as `min`/`max` above: a stable sort keeps tied elements
+            // in the order it received them, and over a set that order is this
+            // engine's. Only a real tie is refused — `sorted(s, key=len)` with
+            // distinct lengths has one answer.
+            if from_set && keyf.is_some() {
+                for i in 0..keys.len() {
+                    for j in (i + 1)..keys.len() {
+                        if ops::order(&keys[i], &keys[j])? == std::cmp::Ordering::Equal {
+                            return Err(set_order_refused("sorted() of a set where the key ties"));
+                        }
+                    }
+                }
             }
             ops::sort_values(&mut items, &mut keys, rev)?;
             list(items)
@@ -803,6 +837,15 @@ pub fn call_builtin(
             Value::Bool(result)
         }
         "enumerate" => {
+            // Same exemption, same hole as `zip` above: `start` is real, and
+            // everything else was dropped rather than refused, so
+            // `enumerate(xs, strict=True)` answered at exit 0 where CPython
+            // raises TypeError.
+            if let Some((k, _)) = kw.iter().find(|(k, _)| k.as_ref() != "start") {
+                return Err(type_err(format!(
+                    "'{k}' is an invalid keyword argument for enumerate()"
+                )));
+            }
             let v = arg1(name, &args)?;
             let start = match args.get(1) {
                 Some(x) => int_val(x)?,
@@ -818,6 +861,24 @@ pub fn call_builtin(
             )
         }
         "zip" => {
+            // `zip` and `enumerate` are exempt from NO_KEYWORDS because they
+            // really do take keywords — and the exemption became exemption from
+            // ALL validation, so any keyword was dropped in silence.
+            // `zip(a, b, strict=True)` truncated to the shorter input at exit 0,
+            // which is the ONE thing the caller wrote `strict=True` to prevent:
+            // the guard was removed by the runtime that was asked to enforce it.
+            //
+            // Refused rather than implemented. `strict` needs a length check the
+            // lazy `Iter::Zip` does not currently make, and per invariant 1 a
+            // refusal the dispatcher can route onward beats an approximation.
+            if let Some((k, _)) = kw.first() {
+                if k.as_ref() == "strict" {
+                    return Err(unsupported("argument", "keyword strict"));
+                }
+                return Err(type_err(format!(
+                    "'{k}' is an invalid keyword argument for zip()"
+                )));
+            }
             let mut its = Vec::with_capacity(args.len());
             for i in 0..args.len() {
                 let a = args.take(i);

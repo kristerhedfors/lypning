@@ -1242,12 +1242,33 @@ fn list_method(
             Value::None
         }
         "index" => {
+            // `start` and `stop` were accepted and thrown away, so
+            // `[1, 1, 1].index(1, 1)` answered 0 — the caller asked to skip the
+            // first match and got it anyway — and `[1, 2, 3].index(3, 0, 2)`
+            // answered 2 for an element outside the range it named, where
+            // CPython raises. Both exit 0.
+            //
+            // The bounds are CLAMPED here, not the asymmetric `ADJUST_INDICES`
+            // the string methods use: `list.index` raises rather than returning
+            // -1, so "past the end" and "empty range" both end at the same
+            // ValueError and the two rules cannot be told apart.
             let v = args.first().cloned().unwrap_or(Value::None);
             let b = l.borrow();
-            for (i, x) in b.iter().enumerate() {
-                if eq(x, &v)? {
-                    return Ok(Value::Int(i as i64));
+            let n = b.len() as i64;
+            let lo = match args.get(1) {
+                None | Some(Value::None) => 0,
+                Some(x) => crate::eval::clamp_index(int_val(x)?, n),
+            };
+            let hi = match args.get(2) {
+                None | Some(Value::None) => n,
+                Some(x) => crate::eval::clamp_index(int_val(x)?, n),
+            };
+            let mut i = lo;
+            while i < hi {
+                if eq(&b[i as usize], &v)? {
+                    return Ok(Value::Int(i));
                 }
+                i += 1;
             }
             return Err(value_err(format!("{} is not in list", fmt::repr(&v)?)));
         }
@@ -1500,10 +1521,22 @@ fn tuple_method(t: &Rc<Vec<Value>>, name: &str, args: &mut Args) -> R<Value> {
             Ok(Value::Int(n))
         }
         "index" => {
-            for (i, v) in t.iter().enumerate() {
-                if crate::value::eq(v, needle)? {
-                    return Ok(Value::Int(i as i64));
+            // Kept in step with `list.index` above, which had the same defect.
+            let n = t.len() as i64;
+            let lo = match args.get(1) {
+                None | Some(Value::None) => 0,
+                Some(x) => crate::eval::clamp_index(int_val(x)?, n),
+            };
+            let hi = match args.get(2) {
+                None | Some(Value::None) => n,
+                Some(x) => crate::eval::clamp_index(int_val(x)?, n),
+            };
+            let mut i = lo;
+            while i < hi {
+                if crate::value::eq(&t[i as usize], needle)? {
+                    return Ok(Value::Int(i));
                 }
+                i += 1;
             }
             Err(value_err("tuple.index(x): x not in tuple"))
         }
@@ -1538,12 +1571,44 @@ fn bytes_method(
             }
             Value::Str(crate::iter::decode_utf8_rc(b)?)
         }
-        "hex" => Value::Str(
-            b.iter()
-                .map(|x| format!("{x:02x}"))
-                .collect::<String>()
-                .into(),
-        ),
+        "hex" => {
+            // `b.hex('-')` groups the output; the separator was accepted and
+            // dropped, so it answered the unseparated string at exit 0.
+            // `bytes_per_sep` counts from the RIGHT when positive and from the
+            // left when negative, which is why the grouping is computed against
+            // the distance from the end.
+            let sep = match args.first() {
+                None => None,
+                Some(Value::Str(x)) => Some(x.to_string()),
+                Some(other) => {
+                    return Err(type_err(format!(
+                        "sep must be str or bytes, not {}",
+                        type_name(other)
+                    )))
+                }
+            };
+            let per = match args.get(1) {
+                Some(v) => int_val(v)?,
+                None => 1,
+            };
+            let mut out = String::with_capacity(b.len() * 2);
+            for (i, x) in b.iter().enumerate() {
+                if let Some(sp) = &sep {
+                    if i > 0 && per != 0 {
+                        let boundary = if per > 0 {
+                            (b.len() - i) % per as usize == 0
+                        } else {
+                            i % (-per) as usize == 0
+                        };
+                        if boundary {
+                            out.push_str(sp);
+                        }
+                    }
+                }
+                out.push_str(&format!("{x:02x}"));
+            }
+            Value::Str(out.into())
+        }
         // EVERY OTHER METHOD OPERATES ON BYTES, NOT ON A DECODED COPY.
         //
         // These used to decode to UTF-8 and reuse the str implementations, on
@@ -1573,7 +1638,7 @@ fn bytes_method(
                 Some(v) => Some(as_bytes_arg(v, name)?),
             };
             let is_cut = |c: u8| match &cut {
-                None => c.is_ascii_whitespace(),
+                None => py_byte_space(c),
                 Some(set) => set.contains(&c),
             };
             let mut lo = 0usize;
@@ -1606,21 +1671,27 @@ fn bytes_method(
         }
         "find" => {
             let needle = as_bytes_or_byte(args.first(), name)?;
-            Value::Int(match find_sub(b, &needle) {
-                Some(i) => i as i64,
-                None => -1,
-            })
+            match slice_bytes(b, args.get(1), args.get(2))? {
+                None => Value::Int(-1),
+                Some((hay, off)) => Value::Int(match find_sub(hay, &needle) {
+                    Some(i) => i as i64 + off,
+                    None => -1,
+                }),
+            }
         }
         "startswith" | "endswith" => {
             let pre = as_bytes_arg(
                 args.first().ok_or_else(|| type_err(format!("{name}() takes at least 1 argument")))?,
                 name,
             )?;
-            Value::Bool(if name == "startswith" {
-                b.starts_with(&pre)
-            } else {
-                b.ends_with(&pre)
-            })
+            match slice_bytes(b, args.get(1), args.get(2))? {
+                None => Value::Bool(false),
+                Some((hay, _)) => Value::Bool(if name == "startswith" {
+                    hay.starts_with(&pre)
+                } else {
+                    hay.ends_with(&pre)
+                }),
+            }
         }
         "replace" => {
             let from = as_bytes_arg(
@@ -1756,33 +1827,121 @@ fn bytes_replace(b: &[u8], from: &[u8], to: &[u8], count: i64) -> Vec<u8> {
 /// Split on a separator, or — with no separator — on RUNS of ASCII whitespace
 /// with leading and trailing runs discarded, which is a different rule and the
 /// one `b"  a  b  ".split()` depends on.
+/// Python's ASCII whitespace for `bytes`, which is NOT Rust's.
+///
+/// `u8::is_ascii_whitespace` is space, `\t`, `\n`, `\x0c`, `\r` — it leaves out
+/// **`\x0b`, the vertical tab**, which CPython counts. One byte value, and it
+/// made `b"a\vb".split()` answer `[b'a\x0bb']` and `b"\v".strip()` answer
+/// `b'\x0b'`, both at exit 0. Found by sweeping all 256 byte values through
+/// `split` and `strip`: exactly one differed.
+///
+/// The `str` side is a different set again (`py_space` above adds U+001C–U+001F
+/// to Unicode White_Space) and was verified clean over the same sweep across
+/// 0..=0x3000. These two must not be merged.
+fn py_byte_space(c: u8) -> bool {
+    matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)
+}
+
+/// `slice_str`'s rule for `bytes`: the same asymmetric `ADJUST_INDICES`, on
+/// indices that are already byte offsets.
+///
+/// `bytes.find`, `startswith` and `endswith` took `start` and `end` and threw
+/// them away, so `b"abcabc".find(b"a", 1)` answered 0 and
+/// `b"abcabc".startswith(b"b", 1)` answered False — both exit 0, both wrong for
+/// an argument the caller went out of their way to pass.
+fn slice_bytes<'a>(b: &'a [u8], start: Option<&Value>, end: Option<&Value>) -> R<Option<(&'a [u8], i64)>> {
+    if matches!(start, None | Some(Value::None)) && matches!(end, None | Some(Value::None)) {
+        return Ok(Some((b, 0)));
+    }
+    let n = b.len() as i64;
+    let lo = match start {
+        None | Some(Value::None) => 0,
+        Some(v) => {
+            let raw = int_val(v)?;
+            if raw < 0 {
+                (n + raw).max(0)
+            } else {
+                raw
+            }
+        }
+    };
+    let hi = match end {
+        None | Some(Value::None) => n,
+        Some(v) => crate::eval::clamp_index(int_val(v)?, n),
+    };
+    if hi < lo {
+        return Ok(None);
+    }
+    if lo > n {
+        return Ok(None);
+    }
+    Ok(Some((&b[lo as usize..hi as usize], lo)))
+}
+
 fn bytes_split(b: &[u8], sep: Option<&[u8]>, maxsplit: i64, from_right: bool) -> Vec<Vec<u8>> {
     let mut out: Vec<Vec<u8>> = Vec::new();
     match sep {
         None => {
-            let mut cur: Vec<u8> = Vec::new();
-            let mut splits = 0i64;
+            // `from_right` used to be discarded, which made `rsplit` a second
+            // name for `split`. Splitting the reversed input and reversing the
+            // pieces back gives the right end without a second scanner to keep
+            // in step with this one — and with whitespace the two ends are not
+            // symmetric (a bounded `rsplit` keeps the LEADING whitespace and
+            // drops the trailing), so a hand-written mirror would be a second
+            // place to get that wrong.
+            if from_right && maxsplit >= 0 {
+                let rev: Vec<u8> = b.iter().rev().copied().collect();
+                let mut parts = bytes_split(&rev, None, maxsplit, false);
+                parts.reverse();
+                return parts
+                    .into_iter()
+                    .map(|p| p.into_iter().rev().collect())
+                    .collect();
+            }
+            // Whitespace splitting is not "split at every run": leading and
+            // trailing whitespace never produce an empty field, and a bounded
+            // `maxsplit` hands back the REMAINDER verbatim once the budget is
+            // spent. The previous loop pushed a field per run and left the
+            // remainder's leading whitespace attached, so
+            // `b"x y  z".split(None, 2)` answered `[b'x', b'y', b' z']` and
+            // `b" a ".split(None, 0)` answered `[b' a ']` — both exit 0.
+            //
+            // `rsplit` is the same walk over the reversed input (above), so
+            // this is the only place the rule lives.
+            let n = b.len();
             let mut i = 0usize;
-            // maxsplit with no separator counts from the correct end; the
-            // corpus has no such call, so the unlimited path is the one that
-            // matters and a bounded one falls back to it.
-            let _ = from_right;
-            while i < b.len() {
-                if b[i].is_ascii_whitespace() && (maxsplit < 0 || splits < maxsplit) {
-                    if !cur.is_empty() {
-                        out.push(std::mem::take(&mut cur));
-                        splits += 1;
-                    }
-                } else {
-                    cur.push(b[i]);
-                }
+            while i < n && py_byte_space(b[i]) {
                 i += 1;
             }
-            if !cur.is_empty() {
-                out.push(cur);
+            let mut splits = 0i64;
+            while i < n {
+                if maxsplit >= 0 && splits >= maxsplit {
+                    out.push(b[i..].to_vec());
+                    return out;
+                }
+                let start = i;
+                while i < n && !py_byte_space(b[i]) {
+                    i += 1;
+                }
+                out.push(b[start..i].to_vec());
+                splits += 1;
+                while i < n && py_byte_space(b[i]) {
+                    i += 1;
+                }
             }
         }
         Some(s) if s.is_empty() => out.push(b.to_vec()),
+        Some(s) if from_right && maxsplit >= 0 => {
+            // Same trick with a separator, and the separator is reversed too.
+            let rev: Vec<u8> = b.iter().rev().copied().collect();
+            let rsep: Vec<u8> = s.iter().rev().copied().collect();
+            let mut parts = bytes_split(&rev, Some(&rsep), maxsplit, false);
+            parts.reverse();
+            return parts
+                .into_iter()
+                .map(|p| p.into_iter().rev().collect())
+                .collect();
+        }
         Some(s) => {
             let mut start = 0usize;
             let mut i = 0usize;

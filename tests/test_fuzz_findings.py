@@ -271,6 +271,44 @@ CASES = [
     # in CPython, so a non-integer is a TypeError. Read for truthiness it was an
     # ascending sort at exit 0 — a wrong answer where an error was owed.
     ("sort-reverse-int", "print(sorted([3, 1, 2], reverse=1), sorted([3, 1, 2], reverse=0))"),
+    # `bytes.rsplit` was `split` wearing a different name: `from_right` reached
+    # the splitter and was discarded.
+    ("bytes-rsplit-direction", 'print(b"path/to/file.txt".rsplit(b"/", 1))'),
+    ("bytes-rsplit-ws", 'print(b"x y  z".rsplit(None, 1))'),
+    ("bytes-rsplit-unbounded", 'print(b"a/b/c".rsplit(b"/"))'),
+    # Rust's ASCII whitespace omits \x0b, which Python counts. One byte value,
+    # and it changed the answer of four methods at exit 0.
+    ("bytes-vertical-tab-strip", r'print(b"\x0b\x0chi\x0b".strip())'),
+    ("bytes-vertical-tab-split", r'print(b"a\x0bb".split())'),
+    # Whitespace splitting hands back the REMAINDER once maxsplit is spent, and
+    # never emits a leading empty field.
+    ("bytes-split-maxsplit-remainder", 'print(b"x y  z".split(None, 1))'),
+    ("bytes-split-maxsplit-zero", 'print(b" a ".split(None, 0))'),
+    # start/end were accepted and thrown away by three bytes methods.
+    ("bytes-find-start", 'print(b"abcabc".find(b"a", 1))'),
+    ("bytes-find-end", 'print(b"abcabc".find(b"c", 0, 2))'),
+    ("bytes-startswith-start", 'print(b"abcabc".startswith(b"b", 1))'),
+    ("bytes-endswith-bounds", 'print(b"abcabc".endswith(b"b", 0, 2))'),
+    ("bytes-hex-sep", 'print(b"abcd".hex("-"), b"abcd".hex("-", 2), b"abcd".hex("-", -2))'),
+    # `(x - mod) / y` is exact in real arithmetic and not in floating point, so
+    # CPython corrects the floor when the discarded fraction was over a half.
+    # This answered 11.0.
+    ("float-floordiv-correction", "print(9.0 // 0.7)"),
+    ("float-floordiv-exact", "print(1e16 // -3.0, -0.0 // 1.0, -7.0 // 2.0)"),
+    # bool overrides the three bitwise operators to return bool — and ONLY when
+    # both operands are bool. The shifts are not overridden.
+    ("bool-bitwise", "print(True | False, True & True, True ^ True)"),
+    ("bool-bitwise-mixed-stays-int", "print(True | 1, 1 | True, False | 0)"),
+    ("bool-shift-stays-int", "print(True << 1, True >> 1, ~True)"),
+    # list.index / tuple.index took start and stop and ignored them.
+    ("list-index-start", "print([1, 1, 1].index(1, 1))"),
+    ("list-index-negative-start", "print([1, 2, 1].index(1, -2))"),
+    ("tuple-index-start", "print((1, 2, 1).index(1, 1))"),
+    # The other side of the set-order guard: no tie, so there IS one answer and
+    # it must still be given. A blanket refusal would pass the REFUSES pins and
+    # fail here.
+    ("set-key-no-tie-still-answers", 'print(max({1, 2, 3}, key=lambda v: v), sorted({"a", "bb"}, key=len))'),
+    ("list-key-ties-are-fine", "print(max([-1, 1], key=abs))"),
 ]
 
 needs_engine = pytest.mark.skipif(
@@ -317,6 +355,21 @@ REFUSES = [
     # is `'Ss'` rather than `'SS'`.
     ("title-digraph", "print('ǅx'.title())"),
     ("capitalize-sharp-s", "print('ßx'.capitalize())"),
+    # A set has no first element, so "ties keep the first" has nothing to keep.
+    # `max({-1, 1}, key=abs)` answered -1 where CPython answers 1 — same set,
+    # same key, different iteration order. Refused only when a tie ACTUALLY
+    # occurs: `max(s, key=len)` over distinct lengths still answers, and is
+    # pinned in CASES above so this cannot quietly widen into a blanket refusal.
+    ("set-order-max-key-ties", "print(max({-1, 1}, key=abs))"),
+    ("set-order-min-key-ties", "print(min({-1, 1}, key=abs))"),
+    ("set-order-sorted-key-ties", "print(sorted({-1, 1}, key=abs))"),
+    # `strict=` needs a length check the lazy zip does not make. A refusal the
+    # dispatcher routes onward beats an approximation (invariant 1); what it
+    # must never do is what it used to — accept the flag and drop the guard.
+    # Equal lengths on purpose: this table requires that CPython ANSWERS the
+    # program, so the refusal is shown to be about the keyword rather than about
+    # the mismatch it guards. The unequal case is a ValueError on both tiers.
+    ("zip-strict", "print(list(zip([1, 2], [3, 4], strict=True)))"),
 ]
 
 
@@ -434,6 +487,14 @@ STDERR_CASES = [
     # error from any other TypeError.
     ("sort-reverse-none-message", "print(sorted([3, 1, 2], reverse=None))",
      "'NoneType' object cannot be interpreted as an integer"),
+    # `list.index` with a range that excludes the element must RAISE, not find
+    # it anyway. Pinned as text because the stdout pin cannot tell this
+    # ValueError from a different one.
+    ("list-index-stop-excludes", "print([1, 2, 3].index(3, 0, 2))", "3 is not in list"),
+    # `enumerate` is exempt from the no-keywords table because `start` is real,
+    # and the exemption used to mean no validation at all.
+    ("enumerate-bad-keyword", "print(list(enumerate([1], strict=True)))",
+     "'strict' is an invalid keyword argument"),
 ]
 
 
