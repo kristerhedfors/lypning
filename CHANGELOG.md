@@ -14,6 +14,28 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-25** — The classifier can see `os.path` · [#15]
+
+- **`os.path.basename` routed to CPython for a function the engine has always
+  had.** The module check in `route.rs` resolved only a bare name for a base, so
+  every dotted path one level deeper fell into the method table and was blocked
+  as `method: .basename()`. Fourteen `os.path` functions were invisible to the
+  classifier that way. `resolve_module` now walks the path a step at a time, and
+  a step counts only when it lands on a module — so `os.environ.get` stays a
+  method, which it is.
+- Measured over 1305 graded programs: **IDEAL 1190 → 1204, LATE 83 → 69**, and
+  **14 programs stopped paying a CPython spawn** (12 to lypning, 2 to
+  lypning-mp). WASTED, UNSAFE and every arm's MISMATCH count were unchanged, and
+  the binary is identical to the byte — routing is parse-time.
+- The cost this closes is not the spawn. `lypning route` is what the skill tells
+  an agent to trust, and the prompting study watched agents replace working
+  `os.path.splitext` calls with hand-rolled `rfind` to satisfy a tier that had
+  already run them.
+- `docs/LYPNING.md` §4's account of the fourth UNSAFE route was **wrong and is
+  corrected**: `py-9b16a7261b96` dies at exit 1 with a traceback on
+  `type(e).__module__`, not at exit 0 with wrong output.
+  `.github/known-mismatches.json` had it right.
+
 **2026-08-25** — `%`-formatting agrees with CPython, and the numbers are re-measured · [#14]
 
 - **The `%` conversion grid goes to zero.** A grid over conversion × flags ×
@@ -357,6 +379,7 @@ runtime exists — the number came first, and both were built for it. It is
 [#12]: https://github.com/kristerhedfors/lypning/pull/12
 [#13]: https://github.com/kristerhedfors/lypning/pull/13
 [#14]: https://github.com/kristerhedfors/lypning/pull/14
+[#15]: https://github.com/kristerhedfors/lypning/pull/15
 [ds]: https://github.com/kristerhedfors/deepresearch.se
 [u432]: https://github.com/kristerhedfors/deepresearch.se/pull/432
 [u434]: https://github.com/kristerhedfors/deepresearch.se/pull/434

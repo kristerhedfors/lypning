@@ -265,6 +265,37 @@ def test_a_syntax_error_goes_to_cpython_whose_message_is_the_expected_one(lypnin
     assert r.kind == "syntax"
 
 
+def test_a_nested_module_path_is_resolved_rather_than_read_as_a_method(lypning_bin):
+    # `os.path.basename` has an `Expr::Attr` for a base, not an `Expr::Name`, so
+    # for as long as the module check only looked one level down it fell into
+    # the method table, missed every entry and was blocked as `.basename()` —
+    # for functions the engine has implemented all along. The cost was not the
+    # spawn: `lypning route` is what the skill tells an agent to trust, and the
+    # prompting study watched agents rewrite working `os.path` calls to satisfy
+    # a tier that already ran them (docs/LYPNING.md §4).
+    for name in ("basename", "dirname", "splitext", "join", "getsize", "exists",
+                 "isfile", "isdir", "abspath", "normpath", "split", "relpath",
+                 "expanduser", "islink"):
+        program = "import os\nprint(os.path.%s('a/b.txt'))" % name
+        assert _route(program).engine == eng.LYPNING, program
+
+
+def test_an_attribute_the_nested_module_lacks_is_named_as_one(lypning_bin):
+    # The other half of resolving the path: an unknown name under a module the
+    # engine does have is a `module-attr`, not a `method`. The engine's own
+    # refusal says `module-attr` too, so the classifier and the tier agree on
+    # the words — which is what makes `--plan` a build order rather than noise.
+    r = _route("import os\nprint(os.path.nosuchfn('x'))")
+    assert (r.kind, r.detail) == ("module-attr", "os.path.nosuchfn")
+
+
+def test_resolution_stops_at_the_first_thing_that_is_not_a_module(lypning_bin):
+    # `os.environ` is a dict, so `.get` is a method and must stay one. A walk
+    # that kept going would ask `get_attr` about a dict and block a call the
+    # engine runs.
+    assert _route("import os\nprint(os.environ.get('HOME'))").engine == eng.LYPNING
+
+
 def test_constructs_no_micropython_derived_runtime_has_skip_the_middle_tier(lypning_bin):
     for program in ("@dec\ndef f(): pass", "async def f(): pass",
                     "def g():\n    yield 1\nprint(list(g()))"):

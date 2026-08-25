@@ -28,6 +28,128 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 45 — the classifier could not see `os.path`, and 14 programs paid CPython for it
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305
+graded · **commit** follows this entry
+
+**bytes** 987,336 B, 8 blocks — *identical to the byte*, before and after.
+Routing is parse-time and this added no code to any executed path.
+**correctness** lypning arm 906 MATCH / 399 UNSUPPORTED / **0 MISMATCH**,
+unchanged. lypning-mp 11 and mixture 1, both unchanged. **speed** not run: no
+evaluator path changed. **corpus** not run, same reason.
+
+### Re-aiming, and what the dial was pointed at before
+
+Iteration 44 ended by measuring that the evaluator is ~13% of what a corpus
+program costs, and concluded that the number that matters for the *stack* is how
+many programs reach a cheap tier at all. This entry acts on that. It is not a
+FOCUS change in the skill's sense — no engine feature was built — but it is the
+first iteration taken against the routing report rather than against `perf`.
+
+### The instrument that had the answer already
+
+`lypning conformance` grades routes as well as answers, and its vocabulary is
+the gradient nobody had worked from:
+
+```
+                before   after
+  IDEAL          1190     1204
+  WASTED           28       28
+  LATE             83       69
+  UNSAFE            4        4
+  NO-ENGINE         0        0
+
+  predictions   lypning=876  mp=297  cpython=132   (before)
+                lypning=888  mp=299  cpython=118   (after)
+```
+
+**LATE is the coverage gradient, and it is not the same list as `--plan`.**
+`--plan` sorts by what blocks tier 1 and puts `import re` at the top with 122
+programs — but `re` is in lypning-mp's table, so those 122 already land on a
+1.8 ms tier and cost almost nothing. LATE names the programs that pay a *second
+process*, and there were 83, not 399. Broken down by where they went versus
+where they could have gone:
+
+```
+  cpython -> lypning       42     method 20, syntax 19, module 2, exception 1
+  cpython -> lypning-mp    35
+  lypning-mp -> lypning     6
+```
+
+The `method 20` row is one defect, and `docs/LYPNING.md` §4 had already
+root-caused it in a section titled *One systematic LATE route*, sitting open.
+
+### The defect
+
+`walk_expr`'s `Expr::Attr` arm resolved a module attribute only when the base was
+a bare `Expr::Name`. `os.getenv` matched that and was answered correctly.
+`os.path.basename` did not — its base is itself an `Expr::Attr` — so it fell past
+the module check into the method table, missed every entry there, and was blocked
+as `method: .basename()`. The engine implements **fourteen** functions under
+`os.path`. The classifier could see none of them.
+
+```
+$ lypning route -c 'import os; print(os.path.basename("a/b/c.txt"))'
+cpython   method: .basename()          # before
+lypning                                # after
+
+$ lypning -c 'import os; print(os.path.basename("a/b/c.txt"))'
+c.txt                                  # the engine, all along
+```
+
+The fix is a recursive `resolve_module`: resolve a dotted expression one step at
+a time through `modules::get_attr`, and count a step only when it lands on a
+`Value::Module`. That last clause is the half worth writing down — `os.environ`
+is a dict, so the walk stops there and `.get` stays a method, which is what it
+is. A version that kept walking would have blocked a call the engine runs.
+
+### What moved
+
+Fourteen programs stopped paying a CPython spawn — twelve now answered by
+lypning, two by lypning-mp. **WASTED did not rise**, which is the number that
+would have caught an over-claim: not one program was sent to a tier that then
+refused it. UNSAFE held at its known 4 and no arm's MISMATCH count moved.
+
+A second, smaller result: an unknown name under a module the engine *does* have
+is now `module-attr: os.path.nosuchfn` instead of `method: .nosuchfn()`. That is
+the same word the engine's own refusal uses, which is what makes `--plan` a build
+order rather than a list of two names for one thing.
+
+### Why this was worth more than the spawn
+
+`lypning route` is what the skill tells an agent to trust. An agent reads
+`cpython` and rewrites working code to satisfy a tier the original already met —
+the prompting study watched two of them replace `os.path.splitext` with a
+hand-rolled `rfind`. **A classifier that under-reports its own engine teaches,
+once it is inside a prompt loop.** That is a cost no timing instrument in this
+tree can measure, and it is the reason this was a defect and not a budget line.
+
+### One correction to the docs, found by re-measuring rather than reading
+
+`docs/LYPNING.md` §4 said the fourth UNSAFE route, `py-9b16a7261b96`, "is
+answered by lypning-mp at exit 0 with the wrong output". It is not. It dies at
+**exit 1** with a MicroPython traceback on `type(e).__module__` — an attribute
+built-in types do not carry there — with eleven correct lines already streamed to
+stdout. An ordinary non-zero exit is deliberately not treated as a refusal, so
+the chain does not rescue it. `.github/known-mismatches.json` had this right and
+§4 had drifted from it; §4 is now corrected.
+
+### What the LATE list still holds
+
+`syntax 19` is next and is probably **not** a win: those programs route to
+CPython on purpose, because CPython's error message is the one the caller
+expects, and they grade LATE only because the battery compares stdout and exit
+code, where two interpreters both failing look identical. Worth confirming
+before touching — the grader's blind spot, not the router's.
+
+`cpython -> lypning-mp 35` is the larger remaining bucket and is a different
+kind of work: it is the `MICROPYTHON_MODULES` table, where the standing warning
+from `tests/test_routing.py` (`unicodedata`, 18 entries) is a trap already paid
+for once — adding it moved UNSAFE from 4 to 5.
+
+---
+
 ## 2026-08-25 · iteration 44 — where a corpus program's time actually goes, and four things that were not it
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed

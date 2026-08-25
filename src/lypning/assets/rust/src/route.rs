@@ -390,6 +390,39 @@ fn known_method(name: &str) -> bool {
         )
 }
 
+/// The module a dotted expression names, if it names one at all.
+///
+/// Recursive because module paths nest and the check that used this had no way
+/// to. `os.getenv` has a bare `Expr::Name` for a base and was always decided
+/// against `modules::MODULES`; `os.path.basename` has an `Expr::Attr` for a
+/// base, fell past that check into the method table, missed every entry there
+/// and was blocked as `method: .basename()` — for a function the engine
+/// implements, along with thirteen others under `os.path`.
+///
+/// A classifier that under-reports its own engine is worse than one spawn
+/// wasted. `lypning route` is what the skill tells an agent to trust, so an
+/// agent reads "cpython" and **rewrites working code to satisfy a tier the
+/// original already met**; the prompting study watched two of them replace
+/// `os.path.splitext` with a hand-rolled `rfind`. `docs/LYPNING.md` §4.
+///
+/// Only a `Value::Module` counts as a step. `os.environ` resolves to a dict and
+/// stops the walk here, so `os.environ.get` is still decided by the method
+/// table — which is correct, because `.get` is a method and not a module
+/// attribute.
+fn resolve_module(e: &Expr) -> Option<crate::value::Value> {
+    match e {
+        Expr::Name(n) => crate::modules::MODULES
+            .iter()
+            .find(|x| **x == n.as_ref())
+            .map(|m| crate::value::Value::Module(m)),
+        Expr::Attr(b, n) => match crate::modules::get_attr(&resolve_module(b)?, n) {
+            Ok(v @ crate::value::Value::Module(_)) => Some(v),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn walk_expr(e: &Expr, req: &mut Requirements) {
     match e {
         Expr::Name(n) => {
@@ -405,13 +438,11 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
         Expr::Attr(b, n) => {
             walk_expr(b, req);
             // A module attribute is decidable; anything else is a method name.
-            if let Expr::Name(m) = b.as_ref() {
-                if let Some(mm) = crate::modules::MODULES.iter().find(|x| **x == m.as_ref()) {
-                    if crate::modules::get_attr(&crate::value::Value::Module(mm), n).is_err() {
-                        req.block("module-attr", format!("{m}.{n}"));
-                    }
-                    return;
+            if let Some(crate::value::Value::Module(m)) = resolve_module(b) {
+                if crate::modules::get_attr(&crate::value::Value::Module(m), n).is_err() {
+                    req.block("module-attr", format!("{m}.{n}"));
                 }
+                return;
             }
             if !known_method(n) {
                 req.block("method", format!(".{n}()"));
