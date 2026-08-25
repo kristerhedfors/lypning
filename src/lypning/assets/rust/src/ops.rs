@@ -925,6 +925,7 @@ fn percent_format(f: &str, arg: &Value) -> R<String> {
     let mut out = String::with_capacity(f.len());
     // One buffer for every conversion in this format string.
     let mut spec = String::new();
+    let mut min_digits = 0usize;
     let mut ai = 0;
     let mut i = 0;
     while i < b.len() {
@@ -958,16 +959,16 @@ fn percent_format(f: &str, arg: &Value) -> R<String> {
                 .get(&Value::Str(key.into()))?
                 .ok_or_else(|| key_err(format!("'{key}'")))?;
             i = j + 1;
-            i = read_spec(f, b, i, &mut spec)?;
-            out.push_str(&fmt::format_value(&v, &spec)?);
+            i = read_spec(f, b, i, &mut spec, &mut min_digits)?;
+            out.push_str(&percent_one(&v, &spec, min_digits)?);
             continue;
         }
-        i = read_spec(f, b, i, &mut spec)?;
+        i = read_spec(f, b, i, &mut spec, &mut min_digits)?;
         let v = args
             .get(ai)
             .ok_or_else(|| type_err("not enough arguments for format string"))?;
         ai += 1;
-        out.push_str(&percent_one(v, &spec)?);
+        out.push_str(&percent_one(v, &spec, min_digits)?);
     }
     if ai < args.len() && !matches!(arg, Value::Dict(_)) {
         return Err(type_err(
@@ -984,8 +985,15 @@ fn percent_format(f: &str, arg: &Value) -> R<String> {
 /// format string itself and none of them allocates. The one place a non-ASCII
 /// character can appear is the conversion letter, and that is an error path —
 /// it is decoded there so the message can name it.
-fn read_spec(f: &str, b: &[u8], mut i: usize, spec: &mut String) -> R<usize> {
+fn read_spec(
+    f: &str,
+    b: &[u8],
+    mut i: usize,
+    spec: &mut String,
+    min_digits: &mut usize,
+) -> R<usize> {
     spec.clear();
+    *min_digits = 0;
     let flag0 = i;
     while i < b.len() && matches!(b[i], b'-' | b'+' | b' ' | b'#' | b'0') {
         i += 1;
@@ -1045,7 +1053,7 @@ fn read_spec(f: &str, b: &[u8], mut i: usize, spec: &mut String) -> R<usize> {
     let left = flags.contains('-');
     if left {
         spec.push('<');
-    } else if ty == "s" || ty == "r" {
+    } else if ty == "s" || ty == "r" || ty == "c" {
         // **The default alignment for `%s` is RIGHT**, and `format()`'s default
         // for a string is LEFT — so the translation has to say so out loud.
         // Without this `'%5s' % 'ab'` produced `'ab   '` where CPython produces
@@ -1062,11 +1070,28 @@ fn read_spec(f: &str, b: &[u8], mut i: usize, spec: &mut String) -> R<usize> {
     }
     // A `-` beats a `0`: `'%-05d' % 255` is `'255  '`, not zero-padded. And a
     // `0` never applies to a string conversion: `'%05s' % 'a'` is `'    a'`.
-    if flags.contains('0') && !left && ty != "s" && ty != "r" {
+    if flags.contains('0') && !left && ty != "s" && ty != "r" && ty != "c" {
         spec.push('0');
     }
     spec.push_str(width);
-    spec.push_str(prec);
+    // **A precision on an integer conversion is MINIMUM DIGITS**, not a
+    // `format()` precision — `'%.2d' % 1` is `'01'` and `'%.7d' % -42` is
+    // `'-0000042'`. `format()` has no such thing, and passing `.N` through to it
+    // meant the precision was silently ignored: 3,724 cells of the conversion
+    // grid answered without it, at exit 0.
+    //
+    // The DECISION is `percent_one`'s, because it needs the value: a precision
+    // that asks for no more digits than the number already has changes nothing,
+    // and refusing those would give away coverage for free (`'%.2d' % 42` is
+    // `'42'` either way). Reported here, acted on there.
+    //
+    // `%.0d` and `%.d` never reach it — zero minimum digits is what every value
+    // already has — and neither does `%.Nc`, which CPython ignores.
+    if !prec.is_empty() && !bare_dot && prec != ".0" && matches!(ty, "d" | "x" | "X" | "o" | "b") {
+        *min_digits = prec[1..].parse().unwrap_or(0);
+    } else {
+        spec.push_str(prec);
+    }
     if bare_dot {
         spec.push('0');
     }
@@ -1074,7 +1099,62 @@ fn read_spec(f: &str, b: &[u8], mut i: usize, spec: &mut String) -> R<usize> {
     Ok(i)
 }
 
-fn percent_one(v: &Value, spec: &str) -> R<String> {
+/// `min_digits` is the precision of an INTEGER conversion, which `format()` has
+/// no spelling for: `'%.2d' % 1` is `'01'` and `'%.7d' % -42` is `'-0000042'`.
+///
+/// It is honoured when the value already satisfies it and **refused** when it
+/// does not. That split is the whole point of deciding here rather than in
+/// `read_spec`: only a value knows how many digits it has, so `'%.2d' % 42`
+/// keeps working and only `'%.2d' % 1` leaves.
+///
+/// Refused rather than implemented, deliberately. It IS expressible — the body
+/// is `format(v, "0{P + 1 if signed}d")`, and the outer width composes on top,
+/// collapsing to a single call of width `max(P + signlen, W)` when the `0` flag
+/// is set. That is three composition rules to get exactly right on a construct
+/// the corpus barely contains, and this session has already shipped one bug by
+/// being clever on an error path (ledger, iteration 28). A refusal costs one
+/// spawn and CPython answers it; a wrong answer costs the caller's trust.
+fn percent_one(v: &Value, spec: &str, min_digits: usize) -> R<String> {
+    // `%c` is the one conversion that cannot be handed to `format()` wholesale:
+    // it takes an int **or a one-character string**, where `format()`'s `c`
+    // takes only an int (`format('a', 'c')` is a ValueError there). So
+    // `'%c' % 'a'` was refused where CPython answers `'a'`, and `'%c' % 1.5`
+    // refused where CPython raises a TypeError naming the conversion.
+    if spec.ends_with('c') {
+        match v {
+            Value::Int(_) | Value::Bool(_) => {}
+            Value::Str(s) if s.chars().count() == 1 => {
+                let as_str = format!("{}s", &spec[..spec.len() - 1]);
+                return fmt::format_value(v, &as_str);
+            }
+            _ => return Err(type_err("%c requires int or char")),
+        }
+    }
+    if min_digits > 0 {
+        let n = match v {
+            Value::Int(i) => *i,
+            Value::Bool(b) => *b as i64,
+            // A float or anything else here is already the `integer format code
+            // applied to …` refusal one line down; let it produce its message.
+            _ => 0,
+        };
+        let a = n.unsigned_abs();
+        let have = match spec.chars().last() {
+            Some('x') | Some('X') => format!("{a:x}").len(),
+            Some('o') => format!("{a:o}").len(),
+            Some('b') => format!("{a:b}").len(),
+            _ => a.to_string().len(),
+        };
+        if have < min_digits {
+            return Err(unsupported(
+                "percent-format",
+                &format!(
+                    "%.{min_digits}{} — a precision on an integer conversion is minimum digits",
+                    spec.chars().last().unwrap_or('d')
+                ),
+            ));
+        }
+    }
     if let Some(rest) = spec.strip_suffix('r') {
         let s = fmt::repr(v)?;
         return fmt::format_value(&Value::Str(s.into()), &format!("{rest}s"));

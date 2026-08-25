@@ -28,6 +28,82 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 38 — the conversion grid goes to zero
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 983,240 → 987,336 (+4,096; **8 blocks**) ·
+**conformance** 906 / 399 / **0 MISMATCH** ·
+**perf** flat (interleaved, below) ·
+**fuzz** seed 20260824 × 3000, 0 counterexamples ·
+**the grid** 26,280 checked, **0 DIFFERING**
+
+Iteration 37 left three defects from the conversion grid. All three are closed,
+and one of them turned out to be four.
+
+**The `0x` prefix belongs in the slot that precedes zero fill**, exactly as a
+sign does. Prepending it to the body made `format(255, '#010x')` come out
+`'00000000xff'` where CPython gives `'0x000000ff'` — and `format(-255, '#010x')`
+is `'-0x00000ff'`, which is the same rule twice over. Reachable with no `%`
+anywhere.
+
+**`#` on a float keeps the decimal point** when the precision left no digits
+after it: `'%#.0f' % 0.0` is `'0.'`, `format(1234.0, '#.0e')` is `'1.e+03'`,
+`format(0.5, '#.0%')` is `'50.%'`. The point goes after the significand, which
+is the same place for `f` and *not* the same place for `e` or `%` — so
+`keep_point` finds the first non-digit rather than appending.
+
+**`%c` was four things at once.** It raised `ValueError` where CPython raises
+**`OverflowError`** (and `format(x, 'c')` shares that path); it aligned left
+where CPython aligns right, for both `%5c` and `format(65, '5c')`; the `0` flag
+applied where CPython ignores it; and it **refused a one-character string**,
+which CPython accepts — `'%c' % 'a'` is `'a'`. That last one is the only
+conversion that cannot be handed to `format()` wholesale, because `format('a',
+'c')` is a ValueError there.
+
+### The precision defect, and where the decision goes
+
+`%.Nd` is minimum **digits**, which `format()` has no spelling for. It is
+**refused** rather than implemented: it is expressible — the body is
+`format(v, "0{P + 1 if signed}d")` and the outer width composes on top,
+collapsing to one call of width `max(P + signlen, W)` when the `0` flag is set —
+but that is three composition rules to get exactly right on a construct the
+corpus barely contains, and this session has already shipped one bug by being
+clever on an error path (iteration 28).
+
+The first cut refused it in `read_spec` and gave away **2,016 cells**, including
+ones that were already correct: `'%.2d' % 42` is `'42'` either way. Only a value
+knows how many digits it has, so the decision moved to `percent_one`, where the
+refusal covers exactly the cells where the precision adds something — 1,152, down
+from 2,016, and agreement went up 850 cells with no other change.
+
+### Three-way, and it is zero now
+
+```
+  17112  both agree with CPython
+   2664  FIXED
+      0  BROKEN
+      0  both wrong
+   3840  refused by one or both
+```
+
+Every non-refused cell of 23,616 agrees. The wider 35,400-cell sweep reports
+**26,280 checked, 0 DIFFERING**, and the 400-spec `format()` alternate-form grid
+and 23 `%c` shapes are clean too.
+
+### A regression caught by measuring the thing that changed
+
+Moving the prefix into the sign slot was written as
+`pad_signed(&format!("{signch}{alt_prefix}"), …)` — a `String` on **every**
+numeric format, for a branch only `#x` ever takes. `str-fmt-pct` went 78.1 → 85.7
+ms, non-overlapping over three interleaved rounds, so it was real. Concatenating
+only when there is a prefix put it back: 78.1 / 81.0 / 80.0 before against
+78.8 / 81.7 / 93.5 after — overlapping on the minimum, which is the reading the
+skill says to take.
+
+21 cases pinned; 14 fail on the iteration-37 binary.
+
+
 ## 2026-08-25 · iteration 37 — the format spec was built in the wrong order, and `%5s` leaned the wrong way
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed

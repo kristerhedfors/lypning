@@ -196,6 +196,40 @@ CASES = [
     ("pct-dash-beats-zero", "print(repr('%-05d' % 255), repr('%-05.1f' % 1.5))"),
     ("pct-alt-form-hex-width", "print(repr('%-#5x' % 255), repr('%#5x' % 255))"),
     ("pct-sign-and-dash", "print(repr('%+-5d' % 255), repr('% -5d' % 255))"),
+    # The `0x` prefix belongs in the slot that precedes zero fill, exactly as a
+    # sign does: prepending it to the body made `format(255, '#010x')` come out
+    # `'00000000xff'` instead of `'0x000000ff'`. Reachable with no `%` anywhere.
+    ("format-alt-hex-zero-fill", "print(repr(format(255, '#010x')))"),
+    ("format-alt-hex-negative", "print(repr(format(-255, '#010x')))"),
+    ("format-alt-oct-bin-zero-fill", "print(repr(format(8, '#010o')), repr(format(5, '#010b')))"),
+    ("format-alt-hex-sign", "print(repr(format(255, '+#010x')), repr(format(255, '#10x')))"),
+    # `#` on a float keeps the decimal point when the precision left no digits
+    # after it, and the point goes after the significand — the same place for
+    # `f`, and not the same place for `e` or `%`.
+    ("format-alt-float-keeps-point", "print(repr(format(0.0, '#.0f')), repr(format(-2.0, '#.0f')))"),
+    ("format-alt-exp-keeps-point", "print(repr(format(1234.0, '#.0e')), repr(format(0.0, '#.0e')))"),
+    ("format-alt-general-keeps-point", "print(repr(format(0.0, '#.0g')), repr(format(1.0, '#.0g')))"),
+    ("format-alt-percent-keeps-point", "print(repr(format(0.5, '#.0%')))"),
+    ("format-alt-is-a-noop-above-zero", "print(repr(format(1.0, '#.2f')), repr(format(0.0, '#g')))"),
+    ("pct-alt-float-keeps-point", "print(repr('%#.0f' % 0.0), repr('%#.0e' % 1234.0))"),
+    # `%c` takes an int OR a one-character string, aligns right by default, and
+    # raises OverflowError — not ValueError — out of range. `format()`'s `c`
+    # shares the alignment and the exception and NOT the one-character string.
+    ("pct-c-single-char-string", "print(repr('%c' % 'a'), repr('%c%c' % (72, 'i')))"),
+    ("pct-c-bad-string-is-a-type-error", "print('%c' % 'ab')"),
+    ("pct-c-float-is-a-type-error", "print('%c' % 1.5)"),
+    ("pct-c-width-right-aligns", "print(repr('%5c' % 65), repr('%-5c' % 65), repr('%05c' % 65))"),
+    ("pct-c-out-of-range-overflows", "print('%c' % -1)"),
+    ("format-c-out-of-range-overflows", "print(format(1114112, 'c'))"),
+    ("format-c-width-right-aligns", "print(repr(format(65, '5c')), repr(format(65, '<5c')))"),
+    # A precision on an integer conversion is minimum DIGITS. lypning refuses the
+    # cases where that adds digits (see the ledger) and must keep answering the
+    # ones where it does not — deciding that needs the VALUE, so these pin the
+    # boundary rather than the refusal.
+    ("pct-int-precision-already-satisfied", "print(repr('%.2d' % 42), repr('%.2d' % -42), repr('%.2x' % 255))"),
+    ("pct-int-precision-zero", "print(repr('%.0d' % 1), repr('%.d' % 1))"),
+    ("pct-precision-on-c-is-ignored", "print(repr('%.2c' % 65))"),
+    ("pct-precision-on-str-truncates", "print(repr('%.2s' % 'abc'), repr('%5.2s' % 'abc'))"),
 ]
 
 needs_engine = pytest.mark.skipif(

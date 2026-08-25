@@ -15,7 +15,7 @@
 //!      whether `repr` escapes a character. We carry a whitelist of blocks that
 //!      are unambiguously printable and REFUSE the rest rather than guess.
 
-use crate::err::{unsupported, value_err, R};
+use crate::err::{overflow_err, unsupported, value_err, R};
 use crate::value::{set_order_refused, type_name, Dict, Value};
 use std::rc::Rc;
 
@@ -551,6 +551,9 @@ pub fn format_value(v: &Value, spec_src: &str) -> R<String> {
         Value::Float(_) => 'g',
         _ => 's',
     });
+    // Filled in by the integer arm below; see there for why it is not part of
+    // the body.
+    let mut alt_prefix = "";
     let body = match ty {
         's' => {
             let mut s = to_str(v)?;
@@ -561,8 +564,20 @@ pub fn format_value(v: &Value, spec_src: &str) -> R<String> {
         }
         'c' => {
             let n = int_of(v)?;
-            let ch = char::from_u32(n as u32).ok_or_else(|| value_err("chr() arg out of range"))?;
-            return Ok(pad(&ch.to_string(), &sp, false));
+            // CPython raises **OverflowError** here, with this exact message, for
+            // both `format(x, 'c')` and `'%c' % x` — it is the same code path
+            // there and it names `%c` in both. A ValueError was the wrong type
+            // as well as the wrong sentence, and `except OverflowError` around a
+            // `chr`-ish conversion would not have caught it.
+            let ch = u32::try_from(n)
+                .ok()
+                .and_then(char::from_u32)
+                .ok_or_else(|| overflow_err("%c arg not in range(0x110000)"))?;
+            // `numeric: true` for the ALIGNMENT default only: `format(65, '5c')`
+            // is `'    A'` in CPython, right-aligned like a number, where a
+            // string would go left. The value is a character; the padding rule
+            // is the numeric one.
+            return Ok(pad(&ch.to_string(), &sp, true));
         }
         'd' => {
             let n = int_of(v)?;
@@ -579,16 +594,18 @@ pub fn format_value(v: &Value, spec_src: &str) -> R<String> {
             };
             let radix = if ty == 'b' { 4 } else { 4 };
             s = group(&s, sp.grouping, radix);
+            // The `0x` goes in the SIGN slot, not on the front of the body,
+            // because zero fill is inserted between the two: CPython's
+            // `format(255, '#010x')` is `0x000000ff` and prepending here made it
+            // `00000000xff`. Same rule the sign itself follows, and for the same
+            // reason — `format(-255, '#010x')` is `-0x00000ff`.
             if sp.alt {
-                s = format!(
-                    "{}{s}",
-                    match ty {
-                        'x' => "0x",
-                        'X' => "0X",
-                        'o' => "0o",
-                        _ => "0b",
-                    }
-                );
+                alt_prefix = match ty {
+                    'x' => "0x",
+                    'X' => "0X",
+                    'o' => "0o",
+                    _ => "0b",
+                };
             }
             s
         }
@@ -597,25 +614,29 @@ pub fn format_value(v: &Value, spec_src: &str) -> R<String> {
             if !f.is_finite() {
                 return Ok(pad_signed(nonfinite_sign(f, &sp), &nonfinite(f, ty.is_uppercase()), &sp, true));
             }
-            group_float(&format!("{:.*}", sp.precision.unwrap_or(6), f.abs()), sp.grouping)
+            let body = group_float(&format!("{:.*}", sp.precision.unwrap_or(6), f.abs()), sp.grouping);
+            keep_point(body, sp.alt)
         }
         'e' | 'E' => {
             let f = float_of(v)?;
             if !f.is_finite() {
                 return Ok(pad_signed(nonfinite_sign(f, &sp), &nonfinite(f, ty == 'E'), &sp, true));
             }
-            exp_format(f.abs(), sp.precision.unwrap_or(6), ty == 'E')
+            keep_point(exp_format(f.abs(), sp.precision.unwrap_or(6), ty == 'E'), sp.alt)
         }
         'g' | 'G' => {
             let f = float_of(v)?;
             if !f.is_finite() {
                 return Ok(pad_signed(nonfinite_sign(f, &sp), &nonfinite(f, ty == 'G'), &sp, true));
             }
-            g_format(f.abs(), sp.precision.unwrap_or(6), ty == 'G', sp.alt)
+            // `g_format` already honours `alt` for the zero-stripping half; the
+            // decimal point at precision 0 is the other half, and it is the same
+            // rule as `f` and `e`, so it lives in the same place.
+            keep_point(g_format(f.abs(), sp.precision.unwrap_or(6), ty == 'G', sp.alt), sp.alt)
         }
         '%' => {
             let f = float_of(v)? * 100.0;
-            format!("{:.*}%", sp.precision.unwrap_or(6), f.abs())
+            keep_point(format!("{:.*}%", sp.precision.unwrap_or(6), f.abs()), sp.alt)
         }
         _ => return Err(value_err(format!("Unknown format code '{ty}'"))),
     };
@@ -634,7 +655,37 @@ pub fn format_value(v: &Value, spec_src: &str) -> R<String> {
             _ => "",
         }
     };
-    Ok(pad_signed(signch, &body, &sp, true))
+    // The two are concatenated only when there IS a prefix. Building the string
+    // unconditionally cost a `String` on **every** numeric format — measured at
+    // ~9% of `str-fmt-pct`, for a branch that is taken by `#x` and nothing else.
+    if alt_prefix.is_empty() {
+        Ok(pad_signed(signch, &body, &sp, true))
+    } else {
+        Ok(pad_signed(&format!("{signch}{alt_prefix}"), &body, &sp, true))
+    }
+}
+
+/// `#` on a float means "keep the decimal point even when the precision left no
+/// digits after it": `format(0.0, '#.0f')` is `'0.'`, `format(1234.0, '#.0e')`
+/// is `'1.e+03'`, `format(0.5, '#.0%')` is `'50.%'`.
+///
+/// Inserted after the last digit of the significand rather than appended, which
+/// is the same place for `f` and not for `e` or `%`. A body that already has a
+/// point is left alone, so this is a no-op at any precision above zero.
+fn keep_point(body: String, alt: bool) -> String {
+    if !alt || body.contains('.') {
+        return body;
+    }
+    match body.find(|c: char| !c.is_ascii_digit()) {
+        None => body + ".",
+        Some(i) => {
+            let mut out = String::with_capacity(body.len() + 1);
+            out.push_str(&body[..i]);
+            out.push('.');
+            out.push_str(&body[i..]);
+            out
+        }
+    }
 }
 
 fn nonfinite(f: f64, upper: bool) -> String {
