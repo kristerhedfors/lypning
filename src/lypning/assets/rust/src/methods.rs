@@ -157,6 +157,27 @@ fn refuse_unmappable(s: &str, bad: fn(char) -> bool, method: &str) -> R<()> {
     }
 }
 
+/// A one-byte ASCII needle, or `None` for anything else.
+///
+/// `str`'s substring routines build a **two-way searcher** — a Boyer-Moore-class
+/// algorithm with a setup phase — for any `&str` pattern, however short.
+/// Callgrind on `t.count('a')` over a six-character string, 2026-08-25:
+/// `TwoWaySearcher::next` and `StrSearcher::new` together are **3.64M of
+/// 49.9M instructions retired**, 7.3%, to look for one byte.
+///
+/// A single ASCII byte cannot occur as a UTF-8 continuation byte — those are all
+/// `>= 0x80` — so finding or counting it in the bytes is exactly finding or
+/// counting it in the characters. That is what makes the shortcut sound, and it
+/// is why the guard is `< 0x80` and not `len() == 1`: a one-BYTE needle is not
+/// the same thing as a one-CHARACTER needle, and `'é'` is two bytes.
+#[inline]
+fn one_ascii_byte(needle: &str) -> Option<u8> {
+    match needle.as_bytes() {
+        [b] if *b < 0x80 => Some(*b),
+        _ => None,
+    }
+}
+
 /// Python's whitespace for `str`, which is **not** Rust's.
 ///
 /// `char::is_whitespace` is the Unicode `White_Space` property. CPython's
@@ -642,10 +663,14 @@ fn str_method(
             let found = match slice_str(s, args.get(1), args.get(2))? {
                 None => None,
                 Some((sub, start_off)) => {
-                    let byte_pos = if name.starts_with('r') {
-                        sub.rfind(needle.as_ref())
-                    } else {
-                        sub.find(needle.as_ref())
+                    // `str::find(char)` takes std's own single-character path;
+                    // `str::find(&str)` builds the two-way searcher. Same answer,
+                    // and for a one-byte needle the char form is the cheap one.
+                    let byte_pos = match (one_ascii_byte(&needle), name.starts_with('r')) {
+                        (Some(b), false) => sub.find(b as char),
+                        (Some(b), true) => sub.rfind(b as char),
+                        (None, false) => sub.find(needle.as_ref()),
+                        (None, true) => sub.rfind(needle.as_ref()),
                     };
                     byte_pos.map(|bp| start_off + sub[..bp].chars().count() as i64)
                 }
@@ -675,6 +700,8 @@ fn str_method(
                         // An empty needle matches between every pair of
                         // characters and at both ends.
                         sub.chars().count() as i64 + 1
+                    } else if let Some(b) = one_ascii_byte(&needle) {
+                        sub.as_bytes().iter().filter(|&&x| x == b).count() as i64
                     } else {
                         sub.matches(needle.as_ref()).count() as i64
                     }

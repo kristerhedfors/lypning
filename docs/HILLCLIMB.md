@@ -28,6 +28,69 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 41 — a two-way searcher to look for one byte
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 987,336 → 987,336 (**8 blocks**, unchanged) ·
+**conformance** 906 / 399 / **0 MISMATCH** ·
+**perf** `call-method` **25.7 → 22.0 ms** (−14%, min of 3 interleaved) ·
+**corpus** no change outside noise ·
+**fuzz** seed 20260824 × 3000, 0 counterexamples
+
+`call-method` is 1.90x CPython and typed by **88% of the corpus** — the
+highest-weighted row there is. Callgrind on `t.count('a')` over a six-character
+string said where it goes:
+
+```
+  memcmp                       3.77M   7.55%
+  TwoWaySearcher::next         2.66M   5.33%
+  eval + eval'2 + exec_block   8.77M  17.6%
+  StrSearcher::new             0.98M   1.96%
+```
+
+`str`'s substring routines build a **two-way searcher** — a Boyer-Moore-class
+algorithm with a setup phase — for any `&str` pattern, however short. Together
+that is **3.64M of 49.9M instructions retired, 7.3%, to look for one byte.**
+
+A single ASCII byte cannot occur as a UTF-8 continuation byte, so counting it in
+the bytes is exactly counting it in the characters. `count` scans bytes;
+`find`/`rfind`/`index`/`rindex` hand std a `char` instead of a `&str`, which
+takes its own single-character path rather than the searcher.
+
+The guard is **`< 0x80`, not `len() == 1`**, and that is the whole correctness
+argument: a one-*byte* needle is not a one-*character* needle, `'é'` is two
+bytes, and a needle that is one non-ASCII character must keep the general path.
+
+### What it is worth, and where
+
+`call-method` 25.7 → 22.0 ms, three interleaved rounds each, **bands do not
+overlap** (25.7 / 26.0 / 26.9 against 22.0 / 22.2 / 23.3). The suite TOTAL is
+flat — 1184.3 against 1180.9 on the minimum, overlapping — because this row is
+26 ms of 1,200. `corpus-time` is likewise flat: 1477 / 1628 / 1563 against
+1504 / 1494 / 1576, interleaved, overlapping.
+
+That is the expected shape and not a disappointment. `.count(`, `.find(` and
+`.startswith(` with a one-character needle are what `line.count(',')` and
+`s.find('=')` are, and 88% of the corpus makes a method call — the win is spread
+across programs the aggregate instruments cannot resolve, which is precisely what
+skill §3 says about them.
+
+975 cells against CPython — 13 haystacks (ASCII, multi-byte, embedded NUL and
+tab, 50 characters long) × 15 needles (absent, one-byte, two-byte, one non-ASCII
+character, two non-ASCII characters, empty) × the five methods — **0 differing**.
+11 pinned.
+
+### The baseline lied again, and the fix is the same one
+
+`corpus-time --baseline` reported **1.413x SLOWER**. The baseline was recorded
+this morning on a freshly booted box; the machine has since run six subagents,
+a dozen cargo builds and three benchmark passes. Interleaved, the two binaries
+are indistinguishable. That is the fourth entry in two days to record a
+`--baseline` reading against a stale machine state, and the fourth to be resolved
+by measuring both arms in the same minute.
+
+
 ## 2026-08-25 · iteration 40 — the routing table, and what "importable" does not mean
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed

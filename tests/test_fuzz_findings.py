@@ -230,6 +230,21 @@ CASES = [
     ("pct-int-precision-zero", "print(repr('%.0d' % 1), repr('%.d' % 1))"),
     ("pct-precision-on-c-is-ignored", "print(repr('%.2c' % 65))"),
     ("pct-precision-on-str-truncates", "print(repr('%.2s' % 'abc'), repr('%5.2s' % 'abc'))"),
+    # `count`/`find`/`rfind`/`index`/`rindex` take a byte-scan fast path for a
+    # one-BYTE ASCII needle (ledger, iteration 41). The guard is `< 0x80`, not
+    # `len() == 1`: a one-byte needle is not a one-character needle, and the
+    # non-ASCII cases below are what tells the two apart.
+    ("bytefind-one-char-ascii", "print('banana'.count('a'), 'banana'.find('a'), 'banana'.rfind('a'))"),
+    ("bytefind-absent-needle", "print('abcdef'.count('z'), 'abcdef'.find('z'), 'abcdef'.rfind('z'))"),
+    ("bytefind-multibyte-needle", "print('héllo é'.count('é'), 'héllo é'.find('é'), 'héllo é'.rfind('é'))"),
+    ("bytefind-multibyte-haystack", "print('日本語日'.count('日'), '日本語日'.find('日'), '日本語日'.rfind('日'))"),
+    ("bytefind-ascii-needle-in-multibyte", "print('aé日b'.count('a'), 'aé日b'.find('b'), 'aé日b'.rfind('b'))"),
+    ("bytefind-two-char-needle", "print('banana'.count('an'), 'banana'.find('an'), 'banana'.rfind('an'))"),
+    ("bytefind-overlapping", "print('aaaa'.count('aa'), 'aaaa'.count('a'))"),
+    ("bytefind-nul-and-tab", r"print('a b	c'.count(' '), 'a b	c'.find('	'))"),
+    ("bytefind-empty-haystack", "print(''.count('a'), ''.find('a'), ''.rfind('a'))"),
+    ("bytefind-index-raises", "print('abc'.index('z'))"),
+    ("bytefind-with-bounds", "print('banana'.count('a', 2), 'banana'.find('a', 2), 'banana'.rfind('a', 0, 3))"),
 ]
 
 needs_engine = pytest.mark.skipif(
