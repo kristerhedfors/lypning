@@ -28,6 +28,125 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 49 — `reverse=True` was reversing the ties, in the Rust core
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded (two
+seeds added by this entry), 1307 graded
+
+**bytes** 987,336 B, 8 blocks — unchanged; the fix moves one `reverse()` call
+earlier. **correctness** lypning 908 MATCH / 399 UNSUPPORTED / **0 MISMATCH**;
+lypning-mp 11 and mixture 1, both unchanged. **routing** IDEAL 1235, LATE 40,
+WASTED 28, UNSAFE 4. **speed** / **corpus** not run — the change is one index
+reversal on a path that already reversed once.
+
+### The defect
+
+```python
+counts = {"error": 3, "warn": 2, "info": 2, "debug": 1}
+sorted(counts, key=lambda k: counts[k], reverse=True)
+```
+
+CPython answers `['error', 'warn', 'info', 'debug']`. lypning answered
+`['error', 'info', 'warn', 'debug']` — `warn` and `info` are tied at 2, and they
+came back swapped. Exit 0, no diagnostic, plausible output.
+
+`sort_values` in `ops.rs` did a stable ascending merge sort and then, for
+`reverse=True`, called `idx.reverse()` on the finished permutation. **That
+reverses the ties along with everything else.** Python's sort is stable
+descending as well as ascending — `reverse=True` inverts the ordering, not the
+arrangement of equal elements — so the post-pass is wrong for every input that
+has a tie.
+
+CPython does not do a post-pass. `listobject.c` calls `reverse_slice` on **both
+sides** of the merge: reverse the input, sort ascending, reverse again. The
+second reversal undoes the first for equal elements and inverts the rest. The
+fix is that, and it costs one extra reversal of an index vector.
+
+### Why nothing here had caught it
+
+Three instruments were pointed at this code and all three were structurally
+blind to it:
+
+- **The corpus could not see it.** 1305 programs, MISMATCH 0, and it stayed 0
+  after the fix. The battery had been green over this bug for its whole life.
+- **`perf` could not see it.** It measures time, and the wrong answer arrives
+  just as fast.
+- **The differential fuzzer generates from the subset**, and a random keyed sort
+  over random data mostly has distinct keys.
+
+The reason is one property: **the defect is invisible without ties, and
+invisible again when a tie happens to land in the right place.**
+`sorted([5,3,1,4], reverse=True)` is correct under both implementations, and so
+is any sort of distinct keys — which is most of what anyone writes down when
+trying to think of a test case.
+
+An earlier survey of this session's corpus made the same point from the other
+side: **67 corpus programs contain a keyed sort and *none* of them diverge.**
+Forty-six use tuple keys like `key=lambda k: (-d[k], k)`, an explicit
+tiebreaker that makes the key a total order, so stability cannot matter to them
+by construction; the rest hit no ties or survived by luck. A defect can be
+common in the code and absent from the measurements.
+
+### What found it
+
+A fan-out of probe agents, each given one lens (introspection, numerics,
+str/bytes, containers, exceptions, shim stdlib) and told to hunt for constructs
+where a tier exits 0 and prints something different from CPython. It was aimed
+at **lypning-mp**, and it found sort instability there — the tier's sort is
+genuinely unstable, `sorted([1,2,3,4,5,6], key=lambda x: 0)` returns
+`[4, 6, 5, 1, 3, 2]`. Running the same probe against tier 1 to write the entry
+up is what turned up the `reverse=True` case in our own code.
+
+Worth keeping: the verifier that checked the claim **corrected it downward**.
+The hunter reported "67 corpus programs hit this"; the verifier ran all 67 on
+both interpreters and reported 0 divergences, with the tuple-key explanation
+above. The honest number made the finding *more* useful, not less — it is why
+this entry can say the corpus was blind rather than pretending it was not.
+
+### Pinned two ways
+
+Six cases in `tests/test_fuzz_findings.py`, and a grid in
+`tests/test_sort_grid.py` enumerating key functions with 1, 2, 3 and 5 distinct
+values over lengths 0–13 — run lengths on both sides of the merge width, ties
+guaranteed at every size, `sorted` and `list.sort` cross-checked against each
+other as well as against CPython.
+
+**Both were run against the broken binary before being trusted**: 5 failures
+there, 0 after. A pin that passes on the defect it names is not a pin, and this
+tree has shipped one of those before.
+
+Two seed corpus entries were added for the idiom itself, so the battery covers
+it going forward rather than by luck.
+
+### The rest of the lypning-mp survey
+
+Thirty-four divergences were verified in lypning-mp, most with zero current
+corpus hits — recorded here because they are what the classifier is risking
+whenever it routes to that tier, not because they are actionable today. The
+silent ones (exit 0, wrong answer) are the dangerous class:
+
+| construct | lypning-mp | CPython |
+|---|---|---|
+| `sorted(key=…)` stability | unstable | stable |
+| `round(2.5, 0)`, `round(0.125, 2)` | `3.0`, `0.13` | `2.0`, `0.12` |
+| `isinstance(True, int)` | `False` | `True` |
+| `json.loads(…, object_pairs_hook=f)` | hook ignored | hook applied |
+| `'{:,}'.format(1234567.0)` | `1.23457e+06` | `1,234,567.0` |
+| `'x'.encode('ascii', 'replace')` | errors= ignored | applied |
+| `Path('/a/b').parts` | `('a','b')` | `('/','a','b')` |
+| `d.items() == other.items()` | `False` | `True` |
+| `sys.maxsize` (32-bit build) | `2**31-1` | `2**63-1` |
+| `2**53+1 == 2.0**53` | `True` | `False` |
+
+`round` and `isinstance` are the two with real corpus presence (8 and 4
+programs). None of them fires through the dispatcher today — UNSAFE is still 4 —
+and **that is a fact about the corpus, not about the tier**, which is the whole
+lesson of this iteration repeated one tier down. `pathlib` is the one to watch:
+46 corpus programs import it, it is in `MICROPYTHON_MODULES`, and `.parts` is
+wrong there.
+
+---
+
 ## 2026-08-25 · iteration 48 — routing `method` to the middle tier: 14 LATE fixed, 2 UNSAFE bought, REVERTED
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305

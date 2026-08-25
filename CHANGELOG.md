@@ -14,6 +14,32 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-25** — `sorted(…, reverse=True)` was reversing the ties · [#16]
+
+- **A silent wrong answer in the Rust core, in one of the most ordinary lines an
+  agent writes.** `sorted(counts, key=lambda k: counts[k], reverse=True)` — top-N
+  by frequency — returned tied keys in the wrong order at exit 0. Python's sort
+  is stable descending as well as ascending, and `sort_values` implemented
+  `reverse=True` as `idx.reverse()` over a finished ascending sort, which
+  reverses the ties along with everything else. CPython reverses the input, sorts,
+  and reverses again; so does this now.
+- **Three instruments were blind to it.** The corpus was at MISMATCH 0 over this
+  bug for its whole life and is still at 0 after the fix; `perf` measures time,
+  and a wrong answer arrives just as fast; the fuzzer generates random keys,
+  which are mostly distinct. The defect is invisible without ties — and 67 corpus
+  programs contain a keyed sort while **none of them diverge**, because 46 use
+  tuple keys with an explicit tiebreaker.
+- Pinned as six cases and as a grid over key functions with 1, 2, 3 and 5
+  distinct values across lengths 0–13, cross-checking `sorted` against
+  `list.sort`. Both were **run against the broken binary first** — 5 failures
+  there, 0 after. Two seed corpus entries cover the idiom going forward.
+- A survey of **lypning-mp** verified 34 further divergences, recorded in
+  `docs/HILLCLIMB.md` rather than fixed: that tier's sort is genuinely unstable,
+  `round(2.5, 0)` is `3.0`, `isinstance(True, int)` is `False`, `json.loads`
+  ignores its hooks, and `Path('/a/b').parts` drops the root. None fires through
+  the dispatcher today, which is a fact about the corpus rather than about the
+  tier.
+
 **2026-08-25** — The classifier can see `os.path` · [#15]
 
 - **`os.path.basename` routed to CPython for a function the engine has always
@@ -400,6 +426,7 @@ runtime exists — the number came first, and both were built for it. It is
 [#13]: https://github.com/kristerhedfors/lypning/pull/13
 [#14]: https://github.com/kristerhedfors/lypning/pull/14
 [#15]: https://github.com/kristerhedfors/lypning/pull/15
+[#16]: https://github.com/kristerhedfors/lypning/pull/16
 [ds]: https://github.com/kristerhedfors/deepresearch.se
 [u432]: https://github.com/kristerhedfors/deepresearch.se/pull/432
 [u434]: https://github.com/kristerhedfors/deepresearch.se/pull/434

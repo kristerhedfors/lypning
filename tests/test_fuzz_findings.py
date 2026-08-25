@@ -245,6 +245,18 @@ CASES = [
     ("bytefind-empty-haystack", "print(''.count('a'), ''.find('a'), ''.rfind('a'))"),
     ("bytefind-index-raises", "print('abc'.index('z'))"),
     ("bytefind-with-bounds", "print('banana'.count('a', 2), 'banana'.find('a', 2), 'banana'.rfind('a', 0, 3))"),
+    # `reverse=True` was a post-pass `idx.reverse()` over a finished stable sort,
+    # which reverses the ties along with everything else. Python's sort is stable
+    # descending too, so `sorted(counts, key=counts.get, reverse=True)` — the most
+    # ordinary "top N by frequency" line an agent writes — silently answered with
+    # tied keys in the wrong order, at exit 0. CPython reverses the input, sorts
+    # ascending, and reverses again.
+    ("sort-reverse-ties-dict", 'c = {"b": 2, "a": 2, "c": 1}\nprint(sorted(c, key=lambda k: c[k], reverse=True))'),
+    ("sort-reverse-ties-pairs", 'print(sorted([("a", 1), ("b", 1), ("c", 2)], key=lambda t: t[1], reverse=True))'),
+    ("sort-reverse-ties-len", 'print(sorted(["bb", "aa", "c"], key=len, reverse=True))'),
+    ("sort-reverse-ties-inplace", 'L = [("a", 1), ("b", 1), ("c", 1), ("d", 0)]\nL.sort(key=lambda t: t[1], reverse=True)\nprint(L)'),
+    ("sort-reverse-no-ties", "print(sorted([5, 3, 1, 4], reverse=True))"),
+    ("sort-reverse-degenerate", "print(sorted([], reverse=True), sorted([1], reverse=True))"),
 ]
 
 needs_engine = pytest.mark.skipif(

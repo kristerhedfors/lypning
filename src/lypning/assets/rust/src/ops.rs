@@ -748,6 +748,20 @@ fn seq_order(x: &[Value], y: &[Value]) -> R<Ordering> {
 pub fn sort_values(items: &mut Vec<Value>, keys: &mut Vec<Value>, reverse: bool) -> R<()> {
     let n = items.len();
     let mut idx: Vec<usize> = (0..n).collect();
+    // `reverse=True` is NOT "sort, then reverse". Reversing the finished order
+    // reverses the ties along with everything else, and Python guarantees a sort
+    // that leaves equal elements in the order it found them — descending
+    // included. So `sorted(counts, key=counts.get, reverse=True)` must keep `b`
+    // ahead of `a` when both count 2, and reversing the result puts `a` first.
+    //
+    // CPython reverses the input, sorts ascending, and reverses again
+    // (`listobject.c`, `reverse_slice` either side of the merge). The second
+    // reversal undoes the first for equal elements and inverts everything else,
+    // which is the whole trick. Doing it here rather than after the merge costs
+    // one extra `reverse` of an index vector.
+    if reverse {
+        idx.reverse();
+    }
     let mut buf = vec![0usize; n];
     let mut width = 1;
     while width < n {
@@ -786,6 +800,8 @@ pub fn sort_values(items: &mut Vec<Value>, keys: &mut Vec<Value>, reverse: bool)
     if reverse {
         idx.reverse();
     }
+    // (see the note above the first `reverse`: this is the second half of the
+    // pair, not a lone post-pass)
     let src = std::mem::take(items);
     let mut taken: Vec<Option<Value>> = src.into_iter().map(Some).collect();
     *items = idx.iter().map(|i| taken[*i].take().unwrap()).collect();
