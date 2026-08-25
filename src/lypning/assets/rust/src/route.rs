@@ -60,7 +60,25 @@ pub struct Route {
 /// a separate binary that cannot be asked; kept HONEST by
 /// `lypning conformance`, which runs the corpus through all three
 /// engines and reports any program this table sends to the wrong one.
+///
+/// `argparse` was added 2026-08-25. `tests/test_routing.py` reported it — that
+/// test asks the tier what it can import and warns about anything the corpus
+/// uses that this table omits, because every such program takes a CPython spawn
+/// it does not need. The test **warns and never asserts**, on purpose: a test
+/// that failed until someone edited this table would demand exactly the edit
+/// CLAUDE.md invariant 1 prohibits.
+///
+/// **`unicodedata` was reported by the same test and is deliberately NOT here.**
+/// The tier imports it; it does not serve it. `unicodedata.decomposition` is
+/// absent, so a corpus program that prints a version banner and then calls it
+/// gets its banner onto stdout before the refusal — and lypning-mp streams, so
+/// those bytes are already committed (§6). Adding the module moved routing
+/// safety's fatal count from **UNSAFE 4 to 5**. That is the whole meaning of
+/// "importable is not the same as complete", and it is why this table is earned
+/// with `lypning conformance` rather than with `import x` returning 0.
+/// `docs/HILLCLIMB.md` iteration 40 has the measurement.
 const MICROPYTHON_MODULES: &[&str] = &[
+    "argparse",
     "base64",
     "binascii",
     "builtins",

@@ -28,6 +28,72 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 40 — the routing table, and what "importable" does not mean
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 987,336 → 987,336 (**8 blocks**, unchanged) ·
+**conformance** (lypning arm) 906 / 399 / **0 MISMATCH** ·
+**routing** IDEAL 1188 → **1190**, LATE 85 → **83**, WASTED 28 → 28,
+**UNSAFE 4 → 4** ·
+**mixture wall clock** not resolvable — see below
+
+Not an interpreter change. `tests/test_routing.py` warns about modules the tier
+can import that `route.rs`'s table omits, because each one sends its programs to
+a CPython spawn they do not need. It reported two: `argparse` and `unicodedata`.
+
+**`argparse` is in.** Two programs move from CPython to lypning-mp — IDEAL +2,
+LATE −2, WASTED and UNSAFE unchanged, reproduced 3/3 interleaved on each binary.
+
+### `unicodedata` is out, and that is the entry
+
+It imports. It does not *work*. `unicodedata.decomposition` is absent from the
+tier, so `py-876af0f0a956` — which prints a version banner and then calls it —
+gets the banner onto stdout **before** the refusal, and lypning-mp streams, so
+those bytes are already committed (§6). Adding the module moved routing safety's
+fatal count from **UNSAFE 4 to 5**.
+
+That is the whole meaning of the sentence the test prints, demonstrated rather
+than quoted: *importable is not the same as complete*. `import unicodedata`
+exits 0 on the tier; the table is not about imports, it is about answers. The
+check that matters is whether the corpus programs using a module AGREE on the
+tier — and the ones that cannot must **refuse** cleanly, not print first.
+
+`route.rs`'s doc now carries both halves, so the next person who reads that
+warning finds the measurement rather than repeating it.
+
+### Two numbers I got wrong on the way, both by measuring once
+
+**"+7 IDEAL, −7 LATE."** One conformance run said 1195/78 and I nearly wrote it
+down. Three interleaved runs of each binary say **1190/83 against 1188/85** —
++2, not +7. Routing looked like a deterministic instrument and is not quite: the
+*ideal* engine is the first on the ladder that MATCHED, and a handful of corpus
+entries are environment-dependent enough that the match itself can flip. The
+prediction histogram agreed with the smaller number all along (cpython 134 →
+132, exactly two programs); I had two readings that disagreed and quoted the
+flattering one.
+
+**The wall-clock win.** Two programs × the spawn difference (~18 ms CPython
+against ~1.8 ms on the tier) is about **32 ms** on a mixture total near 8,300 —
+0.4%. Interleaved, three rounds each: 8187.8 / 8435.4 / 8947.5 before against
+8259.7 / 8370.3 / 8704.4 after. Overlapping, and the *minimum* is worse after.
+The benchmark cannot resolve this change and the entry does not claim it did.
+
+So this is accepted on the routing report, which counts programs exactly, and
+explicitly not on the benchmark, which is spawn-bound and noisy at this scale.
+A 0.4% routing gain that costs no bytes and no safety is worth having; a 0.4%
+gain claimed as a measured speedup would not be.
+
+### The scouts could not run
+
+The subagent fan-out for this iteration was blocked — every tool call rejected
+before execution by a broken permission handler, the same failure that killed the
+differential sweep on 2026-08-24. All six agents reported it and refused to
+invent findings, which is the right behaviour and worth recording: the report
+that says "I measured nothing" is the one that does not cost the next iteration
+a wasted slot.
+
+
 ## 2026-08-25 · iteration 39 — the numbers, re-measured with the third tier built
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
