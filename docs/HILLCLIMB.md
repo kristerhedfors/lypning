@@ -28,6 +28,94 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 48 — routing `method` to the middle tier: 14 LATE fixed, 2 UNSAFE bought, REVERTED
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305
+graded
+
+**Nothing kept.** One line added to `engine_for`, measured, reverted. The
+baseline was restored exactly and re-measured to prove it (IDEAL 1233,
+LATE 40, WASTED 28, UNSAFE 4, mixture MISMATCH 1).
+
+### The case for it looked very strong
+
+Iteration 47's breakdown of everything routed to CPython, by blocker kind and
+grade:
+
+```
+   50  module       IDEAL
+   19  syntax       IDEAL
+   14  method       LATE     <--
+   14  module       LATE
+    5  module-attr  LATE
+    2  method       IDEAL    <--
+```
+
+**Sixteen programs blocked as `method`, and fourteen of them LATE.** A `method`
+blocker means lypning did not recognise an attribute name, which says nothing
+about lypning-mp — a far larger runtime. The trade looked one-sided: 14 programs
+save a ~15 ms CPython spawn, 2 programs pay a ~1.7 ms wasted one.
+
+It delivered exactly what it promised on those numbers:
+
+```
+              before   after
+  IDEAL        1233     1237
+  LATE           40       34
+  cpython       108       92
+  WASTED         28       28
+```
+
+### And it bought two wrong answers
+
+```
+  UNSAFE            4 -> 6
+  mixture MISMATCH  1 -> 3
+```
+
+The mixture line is the one that matters: the *dispatcher* now delivers a wrong
+answer for two programs it used to get right. Both are silent — exit 0, plausible
+output — and both are ordinary string semantics, not exotica:
+
+```
+$ echo "print('hello'.find('',6))"      mp: 5           cpython: -1
+$ echo "print(int('\x85' '42'))"        mp: ValueError  cpython: 42
+```
+
+An empty needle starting past the end of the string: MicroPython clamps the
+start, CPython returns `-1`. And `U+0085` NEL, which CPython counts as
+whitespace and strips inside `int()` and MicroPython does not.
+
+### Why this is a revert and not a tuning problem
+
+**UNSAFE is a gate and LATE is a budget, and the two do not trade.** Fourteen
+programs saving 15 ms each is about 200 ms across the whole corpus. Two programs
+returning wrong answers is unbounded — the agent that typed the one-liner does
+not check. That asymmetry is the entire reason the vocabulary in `routing.py` is
+lopsided, and this iteration is what it looks like when the numbers argue against
+it.
+
+It is also **the unicodedata lesson again** (iteration 40), one rung up. There it
+was one module that imports but does not serve; here it is a whole blocker kind
+where the tier answers most programs and quietly misses two. The shape recurs:
+*a population where the tier is usually right is not a population the classifier
+may claim.* The classifier's promise is not "usually the right answer" — it is
+"the right answer or a refusal", and a kind-level rule cannot make that promise
+on behalf of programs nobody enumerated.
+
+### What would make it safe
+
+Not a kind. The 14 winners are individually identifiable — the battery names
+them — so a rule that names *attributes* lypning-mp is known to serve correctly,
+checked by conformance the way `MICROPYTHON_MODULES` is, would keep the win and
+drop the two. That is a bigger table and a real design decision, not a one-line
+match arm, and it should not be taken on this iteration's budget.
+
+**Do not re-propose the kind-level version.** The LATE breakdown will keep
+recommending it, because LATE cannot see UNSAFE.
+
+---
+
 ## 2026-08-25 · iteration 47 — the middle tier had decorators and generators all along
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305
