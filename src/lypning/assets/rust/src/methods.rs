@@ -90,6 +90,99 @@ const BYTES_MISSING: &[&str] = &[
     "splitlines", "swapcase", "title", "translate", "zfill",
 ];
 
+/// Characters whose Unicode **full case folding** is not their lowercasing.
+///
+/// `str.casefold()` was `to_lowercase()`, which is right for every ASCII string
+/// and wrong for 297 codepoints — including the one everybody reaches for:
+/// `'ß'.casefold()` is `'ss'` in CPython and was `'ß'` here, so
+/// `'ß'.casefold() == 'ss'.casefold()` was False. Caseless comparison is the
+/// entire purpose of the method.
+///
+/// Rust's `std` has no full case folding and this refuses rather than shipping a
+/// table, because a table here would be a **second** source of Unicode truth in
+/// a runtime whose first one is whatever the toolchain shipped — and two of them
+/// drift apart silently. `docs/SUBSET.md` §7 rule 4: a method CPython has and
+/// lypning does not have *correctly* leaves by the refusal contract, and the
+/// dispatcher gets the real answer one spawn later. Over-refusing is a coverage
+/// number; answering `'ß'` is a wrong answer.
+///
+/// 41 ranges, derived by asking CPython for every codepoint where
+/// `chr(c).casefold() != chr(c).lower()` — not copied from a document.
+fn casefold_differs(c: char) -> bool {
+    matches!(c,
+        '\u{b5}' | '\u{df}' | '\u{149}' | '\u{17f}' | '\u{1f0}' | '\u{345}' | '\u{390}'
+        | '\u{3b0}' | '\u{3c2}' | '\u{3d0}'..='\u{3d1}' | '\u{3d5}'..='\u{3d6}'
+        | '\u{3f0}'..='\u{3f1}' | '\u{3f5}' | '\u{587}' | '\u{13a0}'..='\u{13f5}'
+        | '\u{13f8}'..='\u{13fd}' | '\u{1c80}'..='\u{1c88}' | '\u{1e96}'..='\u{1e9b}'
+        | '\u{1e9e}' | '\u{1f50}' | '\u{1f52}' | '\u{1f54}' | '\u{1f56}'
+        | '\u{1f80}'..='\u{1faf}' | '\u{1fb2}'..='\u{1fb4}' | '\u{1fb6}'..='\u{1fb7}'
+        | '\u{1fbc}' | '\u{1fbe}' | '\u{1fc2}'..='\u{1fc4}' | '\u{1fc6}'..='\u{1fc7}'
+        | '\u{1fcc}' | '\u{1fd2}'..='\u{1fd3}' | '\u{1fd6}'..='\u{1fd7}'
+        | '\u{1fe2}'..='\u{1fe4}' | '\u{1fe6}'..='\u{1fe7}' | '\u{1ff2}'..='\u{1ff4}'
+        | '\u{1ff6}'..='\u{1ff7}' | '\u{1ffc}' | '\u{ab70}'..='\u{abbf}'
+        | '\u{fb00}'..='\u{fb06}' | '\u{fb13}'..='\u{fb17}')
+}
+
+/// Characters whose Unicode **titlecase** is not their uppercase.
+///
+/// `title()` and `capitalize()` uppercased the leading letter of each word where
+/// CPython titlecases it. For 135 codepoints those differ, and the two families
+/// that matter are the digraphs — `'ǅ'.title()` is `'ǅ'`, not `'Ǆ'` — and the
+/// sharp s, where `'ß'.capitalize()` is `'Ss'` and not `'SS'`.
+///
+/// Refused for the same reason as `casefold_differs`: `std` has no
+/// `char::to_titlecase`, and inventing a table is inventing a second Unicode.
+/// 18 ranges, derived from CPython the same way.
+fn titlecase_differs(c: char) -> bool {
+    matches!(c,
+        '\u{df}' | '\u{1c4}'..='\u{1cc}' | '\u{1f1}'..='\u{1f3}' | '\u{587}'
+        | '\u{10d0}'..='\u{10fa}' | '\u{10fd}'..='\u{10ff}' | '\u{1f80}'..='\u{1faf}'
+        | '\u{1fb2}'..='\u{1fb4}' | '\u{1fb7}' | '\u{1fbc}' | '\u{1fc2}'..='\u{1fc4}'
+        | '\u{1fc7}' | '\u{1fcc}' | '\u{1ff2}'..='\u{1ff4}' | '\u{1ff7}' | '\u{1ffc}'
+        | '\u{fb00}'..='\u{fb06}' | '\u{fb13}'..='\u{fb17}')
+}
+
+/// Refuse the whole call if any character in the receiver is one this mapping
+/// cannot reproduce. Scanning the receiver rather than only the positions the
+/// method would map is deliberate over-refusal: it costs one linear pass on a
+/// path that already makes a copy, and it cannot be wrong the way a clever
+/// position-aware version could be.
+fn refuse_unmappable(s: &str, bad: fn(char) -> bool, method: &str) -> R<()> {
+    match s.chars().find(|&c| bad(c)) {
+        None => Ok(()),
+        Some(c) => Err(unsupported(
+            "str-method",
+            &format!("str.{method}() of U+{:04X}", c as u32),
+        )),
+    }
+}
+
+/// Python's whitespace for `str`, which is **not** Rust's.
+///
+/// `char::is_whitespace` is the Unicode `White_Space` property. CPython's
+/// `Py_UNICODE_ISSPACE` is that plus the four C0 information separators
+/// U+001C–U+001F, which Unicode gives bidirectional class B or S and does not
+/// mark as White_Space. The difference is four characters and it was five wrong
+/// answers each: `'a\x1cb'.split()` answered `['a\x1cb']` where CPython answers
+/// `['a', 'b']`, `'\x1ca\x1c'.strip()` kept both separators, and
+/// `'\x1c'.isspace()` was False. All at exit 0, all invisible to
+/// `conformance` — no corpus program contains a C0 separator, which is what
+/// makes this the shape the corpus cannot see (skill §3).
+///
+/// Deliberately scoped to `str`, and the two places it must NOT be used are
+/// worth naming because both look like they want it:
+///
+///   * **`bytes`.** `b'\x1c'.isspace()` is False in CPython and
+///     `(b'a\x1cb').split()` is one element — the bytes methods use ASCII
+///     whitespace only. The `bytes` arms below are correct as they stand.
+///   * **`int()` and `float()`.** Their leading/trailing strip uses
+///     `White_Space` — `int('\x1c5')` is a ValueError in CPython — so
+///     `builtins.rs`'s `trim()` is right and must stay a `trim()`.
+#[inline]
+fn py_space(c: char) -> bool {
+    matches!(c, '\u{1c}'..='\u{1f}') || c.is_whitespace()
+}
+
 /// `islower` / `isupper`: at least one CASED character, and every cased one
 /// passing `want`.
 ///
@@ -219,22 +312,45 @@ fn str_method(
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
     Ok(match name {
+        // `std`'s `to_uppercase` / `to_lowercase` already carry a vectorised
+        // ASCII fast path and size the output exactly. Measured on this
+        // container, 200,000 iterations over a 960-byte ASCII string:
+        // `to_lowercase` 17.3 ms against **306.6 ms** for a hand-rolled
+        // `push(b.to_ascii_lowercase() as char)` loop — 18x slower, because
+        // pushing one char at a time is exactly what the fast path exists to
+        // avoid. Do not "optimise" these.
         "upper" => Value::Str(s.to_uppercase().into()),
         "lower" => Value::Str(s.to_lowercase().into()),
-        "casefold" => Value::Str(s.to_lowercase().into()),
-        "swapcase" => Value::Str(
-            s.chars()
-                .map(|c| {
-                    if c.is_uppercase() {
-                        c.to_lowercase().next().unwrap_or(c)
-                    } else {
-                        c.to_uppercase().next().unwrap_or(c)
-                    }
-                })
-                .collect::<String>()
-                .into(),
-        ),
+        "casefold" => {
+            refuse_unmappable(s, casefold_differs, "casefold")?;
+            Value::Str(s.to_lowercase().into())
+        }
+        // `.next()` here TRUNCATED every multi-character mapping: `'ß'` swapped
+        // to `'S'` where CPython gives `'SS'`, `'İ'` to `'i'` where CPython gives
+        // `'i̇'` (two codepoints), `'ǰ'` to `'J'` where CPython gives `'J̌'`. It is
+        // `extend` now, which is the same thing `capitalize` and `title` below
+        // were already doing correctly — one arm out of three had it wrong.
+        "swapcase" => {
+            let mut out = String::new();
+            for c in s.chars() {
+                if c.is_uppercase() {
+                    out.extend(c.to_lowercase());
+                } else if c.is_lowercase() {
+                    out.extend(c.to_uppercase());
+                } else {
+                    // Neither, so CPython leaves it alone — and the `else`
+                    // that used to uppercase everything else was wrong for
+                    // every TITLECASE character: `'ǅ'.swapcase()` is `'ǅ'` in
+                    // CPython and was `'Ǆ'` here. `Lt` is not `Lu`, and
+                    // `is_uppercase()` is the Uppercase property, not "has a
+                    // lowercase mapping".
+                    out.push(c);
+                }
+            }
+            Value::Str(out.into())
+        }
         "capitalize" => {
+            refuse_unmappable(s, titlecase_differs, "capitalize")?;
             let mut out = String::new();
             for (i, c) in s.chars().enumerate() {
                 if i == 0 {
@@ -246,6 +362,7 @@ fn str_method(
             Value::Str(out.into())
         }
         "title" => {
+            refuse_unmappable(s, titlecase_differs, "title")?;
             let mut out = String::new();
             let mut prev_alpha = false;
             for c in s.chars() {
@@ -275,7 +392,7 @@ fn str_method(
                 }
             };
             let pred = |c: char| match &chars {
-                None => c.is_whitespace(),
+                None => py_space(c),
                 Some(set) => set.contains(&c),
             };
             let t = match name {
@@ -283,7 +400,14 @@ fn str_method(
                 "lstrip" => s.trim_start_matches(pred),
                 _ => s.trim_end_matches(pred),
             };
-            Value::Str(t.into())
+            // Nothing was trimmed, so the answer IS the receiver — hand back the
+            // same `Rc` instead of allocating a copy of it. `trim_matches`
+            // returns a subslice, so equal length is equal content.
+            if t.len() == s.len() {
+                Value::Str(s.clone())
+            } else {
+                Value::Str(t.into())
+            }
         }
         "split" | "rsplit" => {
             let maxsplit = match args.get(1).cloned().or_else(|| kwget(&kw, "maxsplit")).as_ref() {
@@ -310,16 +434,19 @@ fn str_method(
                 None => {
                     let mut v: Vec<Value> = Vec::new();
                     if maxsplit < 0 {
-                        v = s.split_whitespace().map(|x| Value::Str(x.into())).collect();
+                        v = s.split(py_space)
+                            .filter(|x| !x.is_empty())
+                            .map(|x| Value::Str(x.into()))
+                            .collect();
                     } else if name == "split" {
                         let mut rest: &str = s;
                         let mut n = 0;
-                        rest = rest.trim_start();
+                        rest = rest.trim_start_matches(py_space);
                         while n < maxsplit && !rest.is_empty() {
-                            match rest.find(char::is_whitespace) {
+                            match rest.find(py_space) {
                                 Some(i) => {
                                     v.push(Value::Str(rest[..i].into()));
-                                    rest = rest[i..].trim_start();
+                                    rest = rest[i..].trim_start_matches(py_space);
                                     n += 1;
                                 }
                                 None => break,
@@ -363,27 +490,53 @@ fn str_method(
                 Some(v) => truthy(v)?,
                 None => false,
             };
+            // CPython splits on ELEVEN boundaries, not two. This split on `\n`,
+            // `\r` and `\r\n` only, so `'a\x0bb'.splitlines()` answered
+            // `['a\x0bb']` where CPython answers `['a', 'b']` — and the same for
+            // `\x0c`, `\x1c`, `\x1d`, `\x1e`, `\x85` and ` `/` `,
+            // seven more silent wrong answers at exit 0. Three of them are
+            // multi-byte, which is why this walks chars rather than bytes now.
+            //
+            // NOT the same set as `py_space` above, and they are not
+            // interchangeable: a tab and a plain space are whitespace and are
+            // not line boundaries, while `\x1f` is both. Two lists, deliberately.
             let mut out = Vec::new();
-            let b = s.as_bytes();
-            let mut i = 0;
-            while i < b.len() {
-                let start = i;
-                while i < b.len() && b[i] != b'\n' && b[i] != b'\r' {
-                    i += 1;
-                }
-                let text_end = i;
-                if i < b.len() {
-                    if b[i] == b'\r' && i + 1 < b.len() && b[i + 1] == b'\n' {
-                        i += 2;
-                    } else {
-                        i += 1;
+            let mut start = 0usize;
+            let mut cs = s.char_indices().peekable();
+            while let Some((i, c)) = cs.next() {
+                let brk = match c {
+                    '\n' | '\u{0b}' | '\u{0c}' | '\u{1c}' | '\u{1d}' | '\u{1e}' | '\u{85}'
+                    | '\u{2028}' | '\u{2029}' => c.len_utf8(),
+                    // The only two-character boundary, and it must be consumed
+                    // as one or `'a\r\nb'` becomes three lines.
+                    '\r' => {
+                        if matches!(cs.peek(), Some((_, '\n'))) {
+                            cs.next();
+                            2
+                        } else {
+                            1
+                        }
                     }
-                }
-                let end = if keepends { i } else { text_end };
+                    _ => continue,
+                };
+                let end = if keepends { i + brk } else { i };
                 out.push(Value::Str(s[start..end].into()));
+                start = i + brk;
+            }
+            // A trailing boundary ends the string rather than starting an empty
+            // last line: `'a\n'.splitlines()` is `['a']`, not `['a', '']`.
+            if start < s.len() {
+                out.push(Value::Str(s[start..].into()));
             }
             list(out)
         }
+        // Two things were wasted here and the larger one is invisible in the
+        // code: `iter_collect` on a list **copies the whole list** before a
+        // single byte is joined. On `''.join(['ab'] * 600000)` that is 24 MB of
+        // `Value` moved to produce 1.2 MB of answer, and the copy is never read
+        // twice. A list and a tuple are borrowed in place now; anything else
+        // still materialises, because a generator has to be drained before it
+        // can be measured.
         "join" => {
             let v = args
                 .first()
@@ -392,21 +545,38 @@ fn str_method(
             if matches!(v, Value::Set(_)) {
                 return Err(set_order_refused("join() over a set"));
             }
-            let items = it.iter_collect(v)?;
-            let mut out = String::new();
-            for (i, x) in items.iter().enumerate() {
-                let Value::Str(xs) = x else {
-                    return Err(type_err(format!(
-                        "sequence item {i}: expected str instance, {} found",
-                        type_name(x)
-                    )));
-                };
-                if i > 0 {
-                    out.push_str(s);
+            match &v {
+                Value::List(l) => join_parts(s, &l.borrow())?,
+                Value::Tuple(t) => join_parts(s, t)?,
+                _ => {
+                    // `join` has its own message for a non-iterable and it is
+                    // not the generic one: CPython says "can only join an
+                    // iterable" where `iter_collect` produced "'int' object is
+                    // not iterable". Same exit code, different sentence, and
+                    // the sentence is what the caller reads.
+                    //
+                    // The remap is on `make_iter` ALONE and the draining loop is
+                    // written out for that reason. Wrapping `iter_collect`
+                    // instead — which is what this was for one build — swallows
+                    // every exception the sequence raises *while being drained*:
+                    // `','.join(str(1//x) for x in [1, 0])` reported "can only
+                    // join an iterable" where CPython raises ZeroDivisionError.
+                    // Turning one exception into a different one is the same
+                    // class of defect as answering the wrong number.
+                    let mut iter = it.make_iter(v).map_err(|e| {
+                        if e.is_unsupported() {
+                            e
+                        } else {
+                            type_err("can only join an iterable")
+                        }
+                    })?;
+                    let mut items = Vec::new();
+                    while let Some(x) = it.iter_next(&mut iter)? {
+                        items.push(x);
+                    }
+                    join_parts(s, &items)?
                 }
-                out.push_str(xs);
             }
-            Value::Str(out.into())
         }
         "replace" => {
             let (from, to) = (sarg(&args, 0, "replace")?, sarg(&args, 1, "replace")?);
@@ -414,11 +584,26 @@ fn str_method(
                 Some(v) => int_val(v)?,
                 None => -1,
             };
-            Value::Str(if count < 0 {
-                s.replace(from.as_ref(), &to).into()
+            // The needle is absent, so the answer IS the receiver — return the
+            // same `Rc` rather than the full copy `str::replace` would build.
+            // The corpus is full of `text.replace(old, new)` over whole files
+            // where the needle is often not there at all.
+            //
+            // `find` and not a match COUNT: counting first so the output could
+            // be presized was measured and it made `str-methods` **29% slower**
+            // — a second pass over the receiver costs more than the growth it
+            // saves at the sizes strings actually have here. `find` stops at the
+            // first match, so the case that pays for it is the case that skips
+            // an allocation entirely. (`s.find("")` is `Some(0)`, so the empty
+            // needle falls through to `std`, which handles it exactly as
+            // CPython does.)
+            if count != 0 && s.find(from.as_ref()).is_none() {
+                Value::Str(s.clone())
+            } else if count < 0 {
+                Value::Str(s.replace(from.as_ref(), &to).into())
             } else {
-                s.replacen(from.as_ref(), &to, count as usize).into()
-            })
+                Value::Str(s.replacen(from.as_ref(), &to, count as usize).into())
+            }
         }
         "startswith" | "endswith" => {
             let pats: Vec<Rc<str>> = match args.first() {
@@ -435,33 +620,38 @@ fn str_method(
                     .collect::<R<Vec<_>>>()?,
                 _ => return Err(type_err(format!("{name} first arg must be str or a tuple of str"))),
             };
-            // The optional start/end arguments slice first.
-            let sub = slice_str(s, args.get(1), args.get(2))?;
-            Value::Bool(pats.iter().any(|p| {
-                if name == "startswith" {
-                    sub.starts_with(p.as_ref())
-                } else {
-                    sub.ends_with(p.as_ref())
-                }
-            }))
+            // The optional start/end arguments slice first — and a start past
+            // the end of the string is False, not a test against the empty
+            // slice. See `slice_str`.
+            match slice_str(s, args.get(1), args.get(2))? {
+                None => Value::Bool(false),
+                Some((sub, _)) => Value::Bool(pats.iter().any(|p| {
+                    if name == "startswith" {
+                        sub.starts_with(p.as_ref())
+                    } else {
+                        sub.ends_with(p.as_ref())
+                    }
+                })),
+            }
         }
         "find" | "index" | "rfind" | "rindex" => {
             let needle = sarg(&args, 0, name)?;
-            let start_off = match args.get(1) {
-                Some(Value::None) | None => 0,
-                Some(v) => {
-                    let n = s.chars().count() as i64;
-                    crate::eval::clamp_index(int_val(v)?, n)
+            // The offset comes back from `slice_str` rather than being
+            // recomputed here: the old copy walked the string a second time to
+            // derive it, and clamped where `slice_str` now refuses.
+            let found = match slice_str(s, args.get(1), args.get(2))? {
+                None => None,
+                Some((sub, start_off)) => {
+                    let byte_pos = if name.starts_with('r') {
+                        sub.rfind(needle.as_ref())
+                    } else {
+                        sub.find(needle.as_ref())
+                    };
+                    byte_pos.map(|bp| start_off + sub[..bp].chars().count() as i64)
                 }
             };
-            let sub = slice_str(s, args.get(1), args.get(2))?;
-            let byte_pos = if name.starts_with('r') {
-                sub.rfind(needle.as_ref())
-            } else {
-                sub.find(needle.as_ref())
-            };
-            match byte_pos {
-                Some(bp) => Value::Int(start_off + sub[..bp].chars().count() as i64),
+            match found {
+                Some(at) => Value::Int(at),
                 None => {
                     if name.ends_with("index") {
                         return Err(value_err("substring not found"));
@@ -470,12 +660,25 @@ fn str_method(
                 }
             }
         }
+        // `count` took `start` and `end` and **ignored both**, which is not an
+        // edge case: `'Hello'.count('l', 3)` answered 2 where CPython answers 1,
+        // and `line.count(',', 1)` is ordinary input. It was reachable, silent,
+        // and at exit 0. It now goes through the same `slice_str` as the five
+        // scanning methods beside it, so there is one definition of what the
+        // bounds mean rather than two.
         "count" => {
             let needle = sarg(&args, 0, "count")?;
-            Value::Int(if needle.is_empty() {
-                s.chars().count() as i64 + 1
-            } else {
-                s.matches(needle.as_ref()).count() as i64
+            Value::Int(match slice_str(s, args.get(1), args.get(2))? {
+                None => 0,
+                Some((sub, _)) => {
+                    if needle.is_empty() {
+                        // An empty needle matches between every pair of
+                        // characters and at both ends.
+                        sub.chars().count() as i64 + 1
+                    } else {
+                        sub.matches(needle.as_ref()).count() as i64
+                    }
+                }
             })
         }
         "partition" | "rpartition" => {
@@ -547,7 +750,7 @@ fn str_method(
                 "isdigit" | "isnumeric" => s.chars().all(|c| c.is_numeric()),
                 "isalpha" => s.chars().all(|c| c.is_alphabetic()),
                 "isalnum" => s.chars().all(|c| c.is_alphanumeric()),
-                "isspace" => s.chars().all(|c| c.is_whitespace()),
+                "isspace" => s.chars().all(py_space),
                 "islower" => cased_all(&s, char::is_lowercase),
                 _ => cased_all(&s, char::is_uppercase),
             })
@@ -577,19 +780,112 @@ fn str_method(
     })
 }
 
-/// Apply the optional `start`/`end` arguments that several str methods take.
-fn slice_str<'a>(s: &'a Rc<str>, start: Option<&Value>, end: Option<&Value>) -> R<&'a str> {
+/// `sep.join(parts)` over an already-materialised slice: measure, then fill.
+///
+/// The first pass sums the bytes and does the type check; the second writes into
+/// a `String` that is already exactly the right size. `String::new()` doubled
+/// its way to the answer, which for a 1.2 MB result is around twenty
+/// reallocations and as many bytes copied again as the answer contains.
+///
+/// The type check staying in the FIRST pass is not incidental: CPython reports
+/// `sequence item {i}` for the first non-str and produces no output, so finding
+/// it before anything is written is what keeps the error identical.
+fn join_parts(sep: &str, items: &[Value]) -> R<Value> {
+    let mut total = 0usize;
+    for (i, x) in items.iter().enumerate() {
+        let Value::Str(xs) = x else {
+            return Err(type_err(format!(
+                "sequence item {i}: expected str instance, {} found",
+                type_name(x)
+            )));
+        };
+        total += xs.len();
+    }
+    total += sep.len() * items.len().saturating_sub(1);
+    let mut out = String::with_capacity(total);
+    for (i, x) in items.iter().enumerate() {
+        if i > 0 {
+            out.push_str(sep);
+        }
+        if let Value::Str(xs) = x {
+            out.push_str(xs);
+        }
+    }
+    Ok(Value::Str(out.into()))
+}
+
+/// Apply the optional `start`/`end` arguments that several str methods take:
+/// the slice, plus the CHARACTER offset it begins at so a caller reporting a
+/// position can translate back.
+///
+/// `Ok(None)` means **start is past the end of the string**, and that is a
+/// different answer from the empty slice — which is the bug this signature
+/// exists to make impossible to write again. `clamp_index` pinned an
+/// out-of-range start to `n`, so `'Hello'.find('', 99)` searched the empty slice
+/// at position 5, found the empty needle there, and answered **5** where CPython
+/// answers -1. The same one line was wrong in six methods:
+///
+///     'Hello'.find('', 99)         5      CPython -1
+///     'Hello'.rfind('', 99)        5      CPython -1
+///     'Hello'.startswith('', 99)   True   CPython False
+///     'Hello'.endswith('', 99)     True   CPython False
+///     'Hello'.index('', 99)        5      CPython ValueError
+///     'Hello'.count('', 99)        —      (count ignored its bounds entirely)
+///
+/// The rule is CPython's `ADJUST_INDICES` and it is not symmetric: a negative
+/// `start` is folded and floored at 0 but a positive one is **not capped at
+/// `len`**, while `end` is capped at both ends. Then `end < start` is the
+/// no-match answer and `end == start` is a real empty slice. That single
+/// asymmetry is the whole bug: `clamp_index` capped `start` at `len` too, which
+/// collapsed "past the end" onto "empty slice at the end" and made
+/// `'Hello'.find('', 99)` answer 5.
+///
+/// Both halves are load-bearing and a grid over 33,957 combinations of receiver,
+/// needle, start, end and method is what settled it — `'a'.find('', 1, -99)` is
+/// -1 (end folds to 0, which is *before* start) while `'a'.find('', 0, -99)` is
+/// 0, and no hand-picked list was going to contain that pair.
+fn slice_str<'a>(
+    s: &'a Rc<str>,
+    start: Option<&Value>,
+    end: Option<&Value>,
+) -> R<Option<(&'a str, i64)>> {
+    // No bounds, no work. Without this, `t.startswith('#')` — no `start`, no
+    // `end` — walked the receiver THREE times before looking at the needle:
+    // `chars().count()` to find `n`, then two `char_indices().nth()` walks to
+    // turn 0 and `n` back into byte offsets it already had. Measured on a
+    // 4,000-byte haystack that is ~69,000 instructions to answer an O(1)
+    // question, and `line.startswith('#')` over a long line is an ordinary
+    // one-liner.
+    //
+    // This is a scan removal, which the ledger's iteration-4 negative result
+    // says usually buys nothing. That result was about shortening a FIXED
+    // 39-entry table scan; this deletes three passes whose length is the
+    // caller's data.
+    if matches!(start, None | Some(Value::None)) && matches!(end, None | Some(Value::None)) {
+        return Ok(Some((s, 0)));
+    }
     let n = s.chars().count() as i64;
     let lo = match start {
         None | Some(Value::None) => 0,
-        Some(v) => crate::eval::clamp_index(int_val(v)?, n),
+        Some(v) => {
+            let raw = int_val(v)?;
+            // Folded and floored, never capped — see above.
+            if raw < 0 {
+                (n + raw).max(0)
+            } else {
+                raw
+            }
+        }
     };
     let hi = match end {
         None | Some(Value::None) => n,
         Some(v) => crate::eval::clamp_index(int_val(v)?, n),
     };
-    if hi <= lo {
-        return Ok("");
+    if hi < lo {
+        return Ok(None);
+    }
+    if hi == lo {
+        return Ok(Some(("", lo)));
     }
     let bl = s
         .char_indices()
@@ -601,7 +897,7 @@ fn slice_str<'a>(s: &'a Rc<str>, start: Option<&Value>, end: Option<&Value>) -> 
         .nth(hi as usize)
         .map(|(i, _)| i)
         .unwrap_or(s.len());
-    Ok(&s[bl..bh])
+    Ok(Some((&s[bl..bh], lo)))
 }
 
 /// `str.format` — the runtime twin of the f-string parser in `parse.rs`.

@@ -136,14 +136,53 @@ pub fn call_builtin(
         return Ok(Value::Exc(exception_static(name), msg.into()));
     }
     Ok(match name {
+        // `print(` is in nearly every corpus program, and this arm allocated
+        // four times to write one line: a `String` for a separator it never
+        // uses when there is one argument, a `String` for a newline, a
+        // `String` to accumulate into, and one more from `to_str`. The
+        // defaults are `&'static str` now and the single-argument case reuses
+        // the string `to_str` already built.
+        //
+        // `print-lines` was 0.27x CPython before this, so the row was never the
+        // reason — the reason is that `corpus-time` is spawn-bound and cannot
+        // see per-call allocations at all (skill §3), while `print` is the one
+        // construct nearly every program in the corpus executes.
         "print" => {
-            let sep = match kwget(&kw, "sep") {
-                Some(Value::None) | None => " ".to_string(),
-                Some(v) => fmt::to_str(&v)?,
+            // `sep` and `end` must be str or None, and CPython checks the TYPE
+            // rather than converting. `fmt::to_str` converted: `print('a',
+            // end=2)` printed `a2` and `print('a', sep=1)` printed `a` at exit
+            // 0, both where CPython raises. The first is a wrong answer on
+            // stdout; the second is worse in a way that is easy to miss — with
+            // one argument the separator is never used, so the bad keyword was
+            // accepted silently and only showed up if a second argument ever
+            // appeared.
+            let sep_owned;
+            let sep: &str = match kwget(&kw, "sep") {
+                Some(Value::None) | None => " ",
+                Some(Value::Str(v)) => {
+                    sep_owned = v;
+                    sep_owned.as_ref()
+                }
+                Some(other) => {
+                    return Err(type_err(format!(
+                        "sep must be None or a string, not {}",
+                        type_name(&other)
+                    )))
+                }
             };
-            let end = match kwget(&kw, "end") {
-                Some(Value::None) | None => "\n".to_string(),
-                Some(v) => fmt::to_str(&v)?,
+            let end_owned;
+            let end: &str = match kwget(&kw, "end") {
+                Some(Value::None) | None => "\n",
+                Some(Value::Str(v)) => {
+                    end_owned = v;
+                    end_owned.as_ref()
+                }
+                Some(other) => {
+                    return Err(type_err(format!(
+                        "end must be None or a string, not {}",
+                        type_name(&other)
+                    )))
+                }
             };
             let to_err = match kwget(&kw, "file") {
                 Some(Value::Module("sys.stderr")) => true,
@@ -162,14 +201,23 @@ pub fn call_builtin(
                     )));
                 }
             }
-            let mut out = String::new();
-            for (i, a) in args.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(&sep);
+            // One argument is the shape almost every `print` has: take the
+            // string `to_str` built rather than copying it into a second one
+            // and dropping the first.
+            let mut out = match args.first() {
+                Some(a) if args.len() == 1 => fmt::to_str(a)?,
+                _ => {
+                    let mut acc = String::new();
+                    for (i, a) in args.iter().enumerate() {
+                        if i > 0 {
+                            acc.push_str(sep);
+                        }
+                        acc.push_str(&fmt::to_str(a)?);
+                    }
+                    acc
                 }
-                out.push_str(&fmt::to_str(a)?);
-            }
-            out.push_str(&end);
+            };
+            out.push_str(end);
             if to_err {
                 mio::write_err(out.as_bytes())?;
             } else {
@@ -348,26 +396,112 @@ pub fn call_builtin(
                 _ => return Err(type_err("range expected 1 to 3 arguments")),
             }
         }
+        // `sum` DRIVES the iterator rather than draining it into a `Vec` first.
+        // Measured before the change: `sum()` of a 50,000-element int list spent
+        // 23.6 ns per element materialising and dropping a copy against 18 ns
+        // doing the additions — 57% of the call was the copy. `sum` of a
+        // generator was indistinguishable in cost from `list()` of the same
+        // generator, because the buffer was the whole job and the additions were
+        // noise beside it.
+        //
+        // Streaming is also the more faithful of the two: CPython's `sum` pulls
+        // one element at a time, so an exception from element three arrives
+        // after two additions rather than after none. Nothing observable in this
+        // subset can tell the difference today — `binop` cannot re-enter user
+        // code, there being no `__add__` to call — but the eager version was
+        // only ever accidentally right about it.
         "sum" => {
             let start = args.get(1).cloned().unwrap_or(Value::Int(0));
-            // A set is fine here only because `sum` over floats is
-            // order-sensitive; ints are not, so refuse the risky half only.
-            let items = match args.first() {
+            // CPython refuses a str or bytes START before it looks at the
+            // sequence at all — `sum([], '')` is a TypeError and so is
+            // `sum([1, 2], '')`. lypning did not, and just concatenated:
+            // `sum(['a', 'b'], '')` printed `ab` at exit 0 where CPython
+            // raises. A wrong answer, not a refusal, and invisible to every
+            // gate because no corpus program does it. Found by reading this
+            // arm for speed, which is the second time the queue has turned up a
+            // correctness bug on the way past (ledger, iteration 13).
+            //
+            // Only the start is checked, and only these two types, because that
+            // is exactly what CPython checks: a list start concatenates lists
+            // and must keep doing so. `sum(['a', 'b'])` needs no case here — the
+            // default start is `0` and `0 + 'a'` already raises the TypeError
+            // CPython raises, with CPython's message.
+            match &start {
+                Value::Str(_) => {
+                    return Err(type_err("sum() can't sum strings [use ''.join(seq) instead]"))
+                }
+                Value::Bytes(_) => {
+                    return Err(type_err("sum() can't sum bytes [use b''.join(seq) instead]"))
+                }
+                _ => {}
+            }
+            match args.first() {
+                // A set is fine here only because `sum` over floats is
+                // order-sensitive; ints are not, so refuse the risky half only.
+                // This arm stays eager: it has to read every element to decide
+                // whether to refuse at all, before it may add any of them.
                 Some(Value::Set(s)) => {
-                    let v = s.borrow().items.clone();
-                    if v.iter().any(|x| matches!(x, Value::Float(_))) {
+                    let items = s.borrow().items.clone();
+                    if items.iter().any(|x| matches!(x, Value::Float(_))) {
                         return Err(set_order_refused("sum() of a set of floats"));
                     }
-                    v
+                    let mut acc = start;
+                    for x in items {
+                        acc = it.binop(crate::ast::BinOp::Add, &acc, &x)?;
+                    }
+                    acc
                 }
-                Some(v) => it.iter_collect(v.clone())?,
+                Some(v) => {
+                    // The whole reason this row exists in the corpus at 22%:
+                    // `sum()` of a list of ints. Adding two i64s through
+                    // `binop` costs ~54 instructions — `as_num` twice, the op
+                    // match, the checked add, a `Value` built and dropped —
+                    // where the operation itself is one `add` and one `jo`.
+                    //
+                    // Bailing out mid-scan is safe because the loop has no
+                    // effects to undo: the general path below starts over from
+                    // `start` and produces whatever the mixed types or the
+                    // overflow deserve — a TypeError, or the `bigint` refusal
+                    // that sends the program to an interpreter with bignums.
+                    if let (Value::Int(a0), Value::List(l)) = (&start, v) {
+                        let fast = {
+                            let items = l.borrow();
+                            let mut acc: i64 = *a0;
+                            let mut ok = true;
+                            for x in items.iter() {
+                                match x {
+                                    Value::Int(n) => match acc.checked_add(*n) {
+                                        Some(t) => acc = t,
+                                        None => {
+                                            ok = false;
+                                            break;
+                                        }
+                                    },
+                                    _ => {
+                                        ok = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            if ok {
+                                Some(acc)
+                            } else {
+                                None
+                            }
+                        };
+                        if let Some(n) = fast {
+                            return Ok(Value::Int(n));
+                        }
+                    }
+                    let mut iter = it.make_iter(v.clone())?;
+                    let mut acc = start;
+                    while let Some(x) = it.iter_next(&mut iter)? {
+                        acc = it.binop(crate::ast::BinOp::Add, &acc, &x)?;
+                    }
+                    acc
+                }
                 None => return Err(type_err("sum() missing 1 required positional argument")),
-            };
-            let mut acc = start;
-            for x in items {
-                acc = it.binop(crate::ast::BinOp::Add, &acc, &x)?;
             }
-            acc
         }
         "min" | "max" => {
             let want_max = name == "max";

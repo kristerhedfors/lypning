@@ -86,7 +86,11 @@ pub enum HKey {
 }
 
 pub fn hkey(v: &Value) -> R<HKey> {
-    let _nest = crate::err::Nest::enter("tuple key")?;
+    // The recursion guard is taken on the ONE arm that descends, below, and not
+    // here. It is a thread_local read-modify-write in and another out, plus an
+    // `R<Nest>` built and dropped — and every dict get, every dict insert and
+    // every `in` over a dict or set paid it to hash a string or an int, neither
+    // of which can recurse at all.
     Ok(match v {
         Value::None => HKey::None,
         Value::Bool(b) => HKey::Int(*b as i64),
@@ -101,6 +105,8 @@ pub fn hkey(v: &Value) -> R<HKey> {
         Value::Str(s) => HKey::Str(s.clone()),
         Value::Bytes(b) => HKey::Bytes(b.clone()),
         Value::Tuple(t) => {
+            // The one arm that descends.
+            let _nest = crate::err::Nest::enter("tuple key")?;
             let mut out = Vec::with_capacity(t.len());
             for x in t.iter() {
                 out.push(hkey(x)?);
@@ -314,74 +320,76 @@ pub fn str_val(s: impl Into<Rc<str>>) -> Value {
 
 /// Structural equality with Python's numeric-tower rules (`1 == 1.0 == True`).
 pub fn eq(a: &Value, b: &Value) -> R<bool> {
-    // Comparison descends a structure the PROGRAM chose the depth of, exactly
-    // as `repr` and `hkey` do, and `x == y` over two deep lists overflowed the
-    // stack where `print(x)` was already refusing. Guarding here also covers
-    // `in`, `sorted`, and dict/set comparison, which all bottom out in this.
+    // The scalar cases first, and BEFORE the recursion guard: none of them can
+    // descend, and this is the hottest comparison in the interpreter.
+    match (a, b) {
+        (Value::None, Value::None) => return Ok(true),
+        (Value::Str(x), Value::Str(y)) => return Ok(x == y),
+        (Value::Bytes(x), Value::Bytes(y)) => return Ok(x == y),
+        (Value::Bool(x), Value::Bool(y)) => return Ok(x == y),
+        _ => {}
+    }
+    if let (Some(x), Some(y)) = (as_num(a), as_num(b)) {
+        return Ok(num_eq(x, y));
+    }
+    // Only the composite arms below can descend, so only they take the guard.
+    // What it is for is `x == y` over two deep lists, which was a stack
+    // overflow — and a stack overflow embedded is the HOST's SIGSEGV rather
+    // than a refusal it can route onward. That path still takes it once per
+    // level, exactly as before; what changed is that `1 == 2` no longer does.
     let _nest = crate::err::Nest::enter("comparison")?;
     Ok(match (a, b) {
-        (Value::None, Value::None) => true,
-        (Value::Str(x), Value::Str(y)) => x == y,
-        (Value::Bytes(x), Value::Bytes(y)) => x == y,
-        (Value::Bool(x), Value::Bool(y)) => x == y,
-        _ => {
-            if let (Some(x), Some(y)) = (as_num(a), as_num(b)) {
-                return Ok(num_eq(x, y));
+        (Value::List(x), Value::List(y)) => {
+            if Rc::ptr_eq(x, y) {
+                return Ok(true);
             }
-            match (a, b) {
-                (Value::List(x), Value::List(y)) => {
-                    if Rc::ptr_eq(x, y) {
-                        return Ok(true);
-                    }
-                    let (x, y) = (x.borrow(), y.borrow());
-                    seq_eq(&x, &y)?
-                }
-                (Value::Tuple(x), Value::Tuple(y)) => seq_eq(x, y)?,
-                (Value::Dict(x), Value::Dict(y)) => {
-                    if Rc::ptr_eq(x, y) {
-                        return Ok(true);
-                    }
-                    let (xd, yd) = (x.borrow(), y.borrow());
-                    if xd.len() != yd.len() {
-                        return Ok(false);
-                    }
-                    for (k, v) in xd.iter() {
-                        match yd.get(k)? {
-                            Some(other) => {
-                                if !eq(v, &other)? {
-                                    return Ok(false);
-                                }
-                            }
-                            None => return Ok(false),
-                        }
-                    }
-                    true
-                }
-                (Value::Set(x), Value::Set(y)) => {
-                    let (xs, ys) = (x.borrow(), y.borrow());
-                    if xs.len() != ys.len() {
-                        return Ok(false);
-                    }
-                    for it in xs.items.iter() {
-                        if !ys.contains(it)? {
+            let (x, y) = (x.borrow(), y.borrow());
+            seq_eq(&x, &y)?
+        }
+        (Value::Tuple(x), Value::Tuple(y)) => seq_eq(x, y)?,
+        (Value::Dict(x), Value::Dict(y)) => {
+            if Rc::ptr_eq(x, y) {
+                return Ok(true);
+            }
+            let (xd, yd) = (x.borrow(), y.borrow());
+            if xd.len() != yd.len() {
+                return Ok(false);
+            }
+            for (k, v) in xd.iter() {
+                match yd.get(k)? {
+                    Some(other) => {
+                        if !eq(v, &other)? {
                             return Ok(false);
                         }
                     }
-                    true
+                    None => return Ok(false),
                 }
-                (Value::Range(a1, b1, c1), Value::Range(a2, b2, c2)) => {
-                    a1 == a2 && b1 == b2 && c1 == c2
-                }
-                (Value::DictView(x, kx), Value::DictView(y, ky)) => {
-                    kx == ky && Rc::ptr_eq(x, y)
-                }
-                (Value::Module(x), Value::Module(y)) => x == y,
-                (Value::Builtin(x), Value::Builtin(y)) => x == y,
-                (Value::Func(x), Value::Func(y)) => Rc::ptr_eq(x, y),
-                (Value::File(x), Value::File(y)) => Rc::ptr_eq(x, y),
-                _ => false,
             }
+            true
         }
+        (Value::Set(x), Value::Set(y)) => {
+            let (xs, ys) = (x.borrow(), y.borrow());
+            if xs.len() != ys.len() {
+                return Ok(false);
+            }
+            for it in xs.items.iter() {
+                if !ys.contains(it)? {
+                    return Ok(false);
+                }
+            }
+            true
+        }
+        (Value::Range(a1, b1, c1), Value::Range(a2, b2, c2)) => {
+            a1 == a2 && b1 == b2 && c1 == c2
+        }
+        (Value::DictView(x, kx), Value::DictView(y, ky)) => {
+            kx == ky && Rc::ptr_eq(x, y)
+        }
+        (Value::Module(x), Value::Module(y)) => x == y,
+        (Value::Builtin(x), Value::Builtin(y)) => x == y,
+        (Value::Func(x), Value::Func(y)) => Rc::ptr_eq(x, y),
+        (Value::File(x), Value::File(y)) => Rc::ptr_eq(x, y),
+        _ => false,
     })
 }
 

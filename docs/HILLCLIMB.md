@@ -28,6 +28,1143 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-24 · iteration 35 — two allocations per generator element, and a reading that was the machine
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 983,240 → 987,336 (+4,096; **8 blocks**, headroom 61,240) ·
+**conformance** 906 / 399 / **0 MISMATCH** ·
+**perf** `genexpr` **22.22 → 16.92 ms** (−24%, min of 3 interleaved) ·
+**corpus** no change outside noise ·
+**fuzz** seed 20260824 × 3000, 0 counterexamples
+
+`gen_next` swaps the real `GenState` out of its `RefCell` so `eval` can re-enter,
+and filled the hole with `GenState::placeholder()` — which built
+`Rc::new(Vec::new())` and `Rc::new(Expr::None)`. **Two heap allocations and two
+frees per element yielded**: an `RcBox` around a 24-byte `Vec` header, and one
+sized to the largest `Expr` variant, both dropped a few lines later when the real
+state goes back.
+
+The stand-in borrows the real state's two `Rc`s instead. Two refcount increments
+do the same job, and neither field is ever read through it — the placeholder is
+marked `running` and `done`, and both are checked before anything else.
+
+29 generator programs against CPython — laziness (`any(1//x for x in [1, 0])` is
+`True` because the second element is never asked for), a generator that raises
+partway, closures captured by one, a generator outliving its frame, `next` with
+and without a default, partial consumption then `list()`, nested and interleaved
+generators, and 200,000 elements — 0 mismatches.
+
+### The reading that was the machine, not the code
+
+The first `--baseline` run said `genexpr` **35.25 → 16.83** and the TOTAL
+1428.74 → 901.32, a 37% improvement across **every row** — `tuple-unpack`,
+`loop-while`, `call-method`, `list-append`, all down 13–15%, none of which this
+change touches. `corpus-time` said 0.617x.
+
+None of it was real. The build had also dropped from 19 s to 12 s and `pytest`
+from 17.5 s to 11.3 s: the box had got quieter, because the ten subagents of a
+background sweep had stopped competing for four CPUs. A `--baseline` file
+recorded under load and compared against a run without it measures the load.
+
+Three interleaved rounds of both binaries, same minute:
+
+```
+                 TOTAL                    genexpr
+  before   892.14  900.60  858.34    22.22  25.18  27.21
+  after    882.03  863.34  852.91    17.68  16.92  18.91
+```
+
+`genexpr`'s bands do not overlap — −24%, real. The TOTAL's overlap completely —
+flat, and the 37% was a fiction. `perf` interleaves its two ARMS for exactly this
+reason, so the ratio inside one run is trustworthy; a recorded baseline from an
+earlier moment is not, and this is the second entry in two days to say so.
+
+
+## 2026-08-24 · iteration 34 — unpacking copied the tuple it was taking apart
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 983,240 → 983,240 (**8 blocks**, unchanged) ·
+**conformance** 906 / 399 / **0 MISMATCH** ·
+**perf** `tuple-unpack` **27.59 → 23.73 ms** (−14%), `enumerate-zip` 32.30 →
+28.06 (−13%) ·
+**corpus** 1.58 → 1.57 s, 0.993x ·
+**fuzz** seed 20260824 × 3000, 0 counterexamples
+
+`a, b = pair` went through `iter_collect`, which for a tuple is `(**t).clone()`
+— a fresh `Vec<Value>`, every element cloned into it, handed over one at a time,
+and the vector dropped. The shape is everywhere: `for k, v in d.items()`,
+`a, b = b, a`, `for i, x in enumerate(…)`.
+
+A tuple of exactly the right length with no star target now assigns straight
+from the source.
+
+**A list deliberately does not**, and that is the interesting half. CPython's
+`UNPACK_SEQUENCE` reads every element before assigning any, so a target that
+mutates the list must not be visible to the elements after it — the snapshot is
+required, and the snapshot is exactly the copy `iter_collect` already makes.
+There is nothing to win there. A tuple is immutable, so reading it in place and
+snapshotting it are the same thing. (`l[f()], l[1] = src` where `f` appends to
+`src` is pinned.)
+
+### The same message defect as `join`, in the same shape
+
+The 36-program sweep found `a, b = 5` reporting `'int' object is not iterable`
+where CPython says **`cannot unpack non-iterable int object`**. Unpacking has its
+own message, exactly as `join` does. Pre-existing on the iteration-33 binary.
+
+And the same trap: the remap goes on `make_iter` **alone**, with the drain
+written out, or every exception the sequence raises while being drained becomes
+it — `a, b = (1//x for x in [1, 0])` would report a TypeError where CPython
+raises ZeroDivisionError. That is the third time this exact shape has come up
+(`sum`, `join`, here), which is starting to look like a pattern rather than three
+accidents.
+
+### The pins that did not pin anything
+
+The message cases went into `CASES` first and **passed on the binary that had
+the bug** — because `CASES` compares stdout and the exit code, and every one of
+them exits 1 with empty stdout whether the message is right or wrong. A test
+that cannot fail is worse than no test, because it reads as coverage.
+
+They are in a new `STDERR_CASES` now, with a test that asserts the message and
+checks the oracle first, so a CPython that changed its wording fails loudly
+instead of quietly turning the assertion into a tautology. Three of them fail on
+the iteration-33 binary; the behavioural pins (nested, star, subscript targets,
+swap, the list snapshot) stay in `CASES`, where comparing stdout is exactly
+right.
+
+---
+
+## 2026-08-24 · iteration 33 — `1 == 2` paid for a recursion guard
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 983,240 → 983,240 (**8 blocks**, unchanged) ·
+**conformance** 906 / 399 / **0 MISMATCH** ·
+**perf** `membership` **127.43 → 99.52 ms** (−22%), `list-sort` 278.65 → 254.35
+(−8.7%); TOTAL 1428.74 → 1391.39 ·
+**corpus** 1.58 → 1.58 s, 1.002x ·
+**fuzz** three seeds × 2500, 0 counterexamples
+
+`err::Nest` bounds the three descents a *program* chooses the depth of — `repr`,
+`hkey`, and comparison — because each was measured overflowing the stack, and a
+stack overflow embedded is the **host's** SIGSEGV rather than a refusal it can
+route onward. It is the right guard.
+
+It was taken at the top of `eq`, `order` and `hkey`, before any dispatch. So
+`1 == 2` paid for it. So did `'a' in ['b', 'c']`, and every dict get, every dict
+insert, and every `in` over a dict or set — because each of those hashes a key
+through `hkey`. A thread_local read-modify-write in, an `R<Nest>` built, and
+another read-modify-write out, on operations that **cannot recurse at all**.
+
+The guard now sits on the arms that descend: the composite arms of `eq`, the
+`List`/`Tuple` arms of `order`, and the one `Tuple` arm of `hkey`. Scalars,
+numbers, strings and bytes go straight through.
+
+### The measurement that matters is that nothing changed
+
+A speed change to a safety guard is only worth having if the guard still works,
+and "still works" here means a specific shape: shallow answers, deep **refuses**,
+and nothing ever exits any other way — 139 is a SIGSEGV the dispatcher cannot
+route onward. Both binaries, five descents (`eq`, `order`, `in`, tuple-as-dict-key,
+`repr`), depths 10 / 100 / 400 / 490 / 600 / 2,000 / 20,000:
+
+**Every cell identical**, including the transition — 490 answers, 600 refuses,
+on both. No crash at 20,000 deep on either.
+
+`tests/test_recursion_guard.py` is that shape as a permanent test, and it
+**passes on both binaries**, which is the point and is worth saying plainly: it
+catches nothing today. It is a characterisation test for the next change to this
+code, not evidence for this one. It asserts the shape rather than the number,
+because `MAX_NEST` may move and a test pinning 500 would only ever be edited.
+
+It also could not live in `test_fuzz_findings.py`: those cases assert lypning
+**agrees** with CPython, and the whole point of these is that lypning refuses
+where CPython answers. That is the contract working.
+
+---
+
+## 2026-08-24 · iteration 32 — four allocations to write one line
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 983,240 → 983,240 (**8 blocks**, unchanged) ·
+**conformance** 906 / 399 / **0 MISMATCH** ·
+**perf** `print-lines` **14.42 → 12.24 ms** (−15%) ·
+**corpus** 1.58 → 1.53 s, 0.966x ·
+**fuzz** seed 20260824 × 3000, 0 counterexamples
+
+`print(` is the one construct nearly every corpus program executes, and the arm
+allocated four times to write one line: a `String` for a separator it never uses
+when there is one argument, a `String` for a newline, a `String` to accumulate
+into, and one more from `to_str`. The defaults are `&'static str` now, and the
+single-argument case — which is almost every `print` — takes the string `to_str`
+already built instead of copying it into a second one.
+
+`print-lines` was **0.27x** CPython before this, so the row was never the reason
+to do it. The reason is the one the instruments cannot show: `corpus-time` is
+spawn-bound and cannot see a per-call allocation at all, and this is the call
+every program makes.
+
+### And the sweep found two more silent wrong answers
+
+`sep` and `end` must be `str` or `None`, and CPython checks the **type** rather
+than converting. This converted:
+
+```
+print('a', end=2)    printed `a2`   CPython raises TypeError
+print('a', sep=1)    printed `a`    CPython raises TypeError
+```
+
+The second is the more interesting one. With a single argument the separator is
+never used, so a bad `sep=` was accepted **silently** and would only have shown
+up the day someone added a second argument. Both reproduce on the iteration-31
+binary; both now raise CPython's exact message, including the type name.
+
+35 print shapes swept against CPython — zero, one and many arguments, every
+`sep`/`end` combination including `None`, `file=` to stdout and stderr, an
+invalid keyword, `*` unpacking, non-ASCII, and a 100,000-byte line — 0
+mismatches. Eight pinned; four fail on the previous binary.
+
+---
+
+## 2026-08-24 · iteration 31 — two negative results, and a win the suite cannot see
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 983,240 → 983,240 (**8 blocks**, unchanged) ·
+**conformance** 906 / 399 / **0 MISMATCH** ·
+**perf** TOTAL 1450.20 → 1443.29 (min of 3 interleaved) — **flat** ·
+**corpus** 1.58 → 1.57 s, 0.994x
+
+`str-methods` was the top of the queue (3.18x, 36% of the corpus). Three things
+were tried. **Two of them made it slower and are the useful half of this entry.**
+
+### Negative result 1: hand-rolling the ASCII case map is 18x slower
+
+The plan was an ASCII fast path for `lower`/`upper`, on the theory that
+`to_lowercase()` pays for Unicode machinery an ASCII string does not need.
+`std` already has that fast path, and it is **vectorised**. 200,000 iterations
+over a 960-byte ASCII string:
+
+```
+s.to_lowercase()                                  17.3 ms
+push(b.to_ascii_lowercase() as char) in a loop   306.6 ms
+s.to_ascii_lowercase()                            15.3 ms
+```
+
+Pushing one char at a time is exactly what the fast path exists to avoid. The
+comment in `methods.rs` now carries those three numbers so the idea does not come
+back.
+
+### Negative result 2: counting matches to presize `replace` costs more than it saves
+
+`std`'s `str::replace` starts from `String::new()` and grows, so presizing looks
+free. It is not: knowing the size needs a **second pass over the receiver**, and
+measured that way `str-methods` came out **29% slower** (34.57 → 44.71 ms). At
+the sizes strings actually have on this path, a pass costs more than the
+reallocations it removes.
+
+### What survived: two early exits that allocate nothing
+
+* `strip`/`lstrip`/`rstrip` when nothing was trimmed — `trim_matches` returns a
+  subslice, so equal length is equal content, and the answer is the receiver.
+* `replace` when the needle is absent — found with **`find`**, which stops at the
+  first match, not with a count. The case that pays for the scan is the case
+  that skips an allocation entirely.
+
+Both also match CPython more closely than before: `s.replace('x', 'y') is s` is
+True in CPython when nothing matched, and now here too.
+
+### The suite cannot see the win, and the reason is a bias worth naming
+
+`str-methods` is flat, because its receiver is `'  Hello World  '` — a string
+where **every** method changes something. That is not what the corpus looks like:
+a line that has just come out of `splitlines()` is already stripped, and a
+`text.replace(old, new)` needle is often absent. Measured directly, min of 7:
+
+```
+                       before    after   cpython
+strip-clean-lines       21.34    20.25     19.77   −5.1%
+replace-absent           2.36     1.94     16.80  −18.0%
+mixed strip+replace     28.60    26.19     20.03   −8.5%
+strip-dirty-lines       21.71    21.45     21.18   −1.2%
+replace-present         28.33    28.08     24.55   −0.9%
+```
+
+The last two are the shapes the suite *does* measure, and they are flat — so
+this is not a trade, it is a win on half the distribution and nothing on the
+other half.
+
+**No case was added for it, deliberately.** The skill's rule is that a win moving
+no row means the suite has a hole — but the hole here is that `str-methods` uses
+an unrepresentative receiver, and adding `str-methods-noop` immediately after
+optimising the noop path is how a gradient turns into a trophy case. The honest
+fix is to decide whether `str-methods` should have a representative receiver,
+which renumbers the row and breaks comparability with every entry above. That is
+a decision for an iteration that is not also the one that benefits from it.
+
+### And a reading that was noise
+
+A single `--baseline` comparison said the change cost **+30.90 ms**, concentrated
+in `dict-set` (+7.10), `membership` (+2.76) and `str-split` (+2.40) — three rows
+with no causal path to a change in `methods.rs`. Three interleaved rounds of both
+binaries: before 1450.20 / 1483.72 / 1450.47, after 1446.80 / 1456.41 / 1443.29.
+Overlapping, and the minimum went the other way. One comparison is not a reading;
+this is the third time that sentence has earned its place in this file.
+
+1,875 replace/strip combinations against CPython — receiver, needle, replacement,
+count, and the three strip variants with and without an argument — 0 mismatches.
+
+---
+
+## 2026-08-24 · iteration 30 — three passes over the receiver to answer an O(1) question
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 983,240 → 983,240 (**8 blocks**, unchanged) ·
+**conformance** 906 / 399 / **0 MISMATCH** ·
+**perf** new row `str-scan` **101.43 → 23.66 ms, 7.79x → 1.81x**; the suite is
+32 cases now and **the TOTAL renumbered** ·
+**corpus** 1.58 → 1.60 s, 1.015x, inside the deadband
+
+`t.startswith('#')` passes no bounds, and `slice_str` walked the receiver
+**three times** before looking at the needle: `chars().count()` to find `n`, then
+two `char_indices().nth()` walks to turn 0 and `n` back into byte offsets it
+already had. On a 4,000-byte haystack that is ~69,000 instructions to answer a
+question about the first character. `line.startswith('#')` over a long line is
+an ordinary agent one-liner.
+
+The fix is four lines: no bounds, no work.
+
+### The reason this is worth an entry is the case, not the fix
+
+**No perf case reached this function.** The suite's only method row is
+`call-method`, which is `.count('a')` on a six-character string, and `count` did
+not go through `slice_str` until iteration 24 put it there. Two scouts found the
+defect independently by reading, and neither could show it moving anything —
+which the skill has a rule for: *a measured win that moves no row means the suite
+has a hole, and the case goes in the same iteration.*
+
+So `str-scan` is new: `startswith` and `find` over a **1,000-byte** haystack,
+40,000 times. The length is the point — the defect is linear in the receiver, so
+the six-character strings elsewhere in the suite would have hidden it exactly as
+they did. Measured on the iteration-29 binary it reads **7.79x**, which would
+have made it the second-worst row in the table; on this one it is **1.81x**.
+
+The suite is 32 cases and its TOTAL is not comparable with earlier entries.
+Re-recorded: **1470.00 ms against CPython's 783.71, 1.88x**.
+
+This is also a scan removal, which the ledger's iteration-4 negative result says
+usually buys nothing. That result was about shortening a **fixed** 39-entry table
+scan that was cache-resident SIMD `memcmp`; this deletes three passes whose
+length is the caller's data. The distinction is the whole reason the earlier
+result did not rule this out.
+
+### And the grid became a test
+
+`tests/test_str_bounds_grid.py` runs the 44,352-cell cross-product from
+iteration 24 as a permanent gate — the same program on both interpreters, one
+process each, 0.17 s. It is a grid rather than a list of examples because a list
+of examples is exactly what failed to find the original bug: the first fix
+passed all fourteen chosen cases and still left 609 cells wrong.
+
+On the iteration-23 binary it reports **3,409 of 44,352 cells disagree**, which
+is what a regression gate for this function should look like.
+
+---
+
+## 2026-08-24 · iteration 29 — a call built an empty hash table and then grew it
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 983,240 → 983,240 (**8 blocks**, unchanged) ·
+**conformance** 906 / 399 / **0 MISMATCH** ·
+**perf** `call-recursive` 62.55 → 55.80, `call-func` 44.44 → 39.52 (both ≈ −11%) ·
+**corpus** 1.58 → 1.57 s, 0.994x — inside the deadband, as expected ·
+**fuzz** four seeds × 2500
+
+Every call to a Python function allocated a fresh `Rc<RefCell<Map>>`, inserted
+its parameters and locals into a table that started **empty**, and dropped the
+whole thing at the end. Measured per call on this container, 200,000 iterations,
+empty-loop floor subtracted:
+
+```
+def f():          178 ns
+f(a)              261
+f(a, b)           296
+f(a, b, c, d)     564
+f(a … h)        1,109
+```
+
+The 2→4 step is +268 ns and 4→8 is +545 — those are hashbrown capacity steps on
+a table whose final size was known before the first insert. That is the
+two-phase-allocation trap CLAUDE.md and the skill both name, and it was on the
+hottest call in the interpreter.
+
+Two halves, one mechanism:
+
+* **Presize.** `assigned` is already every name the body binds, parameters
+  included, computed at definition time. A lambda's `assigned` is deliberately
+  empty, so the parameter count is the floor rather than the answer.
+* **Pool.** Spent scopes go back to `Interp::scope_pool` with their tables
+  intact, beside the chain-vector pool that was already there. `clear()` keeps
+  capacity, so a function called in a loop grows its table once for the whole
+  run instead of once per call. Capped at 64, like the chain pool, so a deep
+  recursion cannot leave the pool holding its depth.
+
+`call-method` did **not** move, which is the right answer and worth stating: it
+allocates no scope, so a change here that moved it would have been the optimiser
+rather than the code.
+
+### The way this goes wrong is silent
+
+A scope that escaped its frame must never be recycled — a closure handed a
+cleared map is a wrong answer, not a refusal. The guard is
+`Rc::strong_count == 1` on the frame's own scope, and it is exact for a specific
+reason: the chain is cloned at exactly three sites (a nested `def`, a `lambda`,
+a generator expression), each cloning every `Rc` in it, and **the crate creates
+no `Weak` anywhere**, so the strong count is the whole story. Checked by grep,
+not by memory.
+
+`try_borrow_mut` rather than `borrow_mut`: a live borrow here would mean a `Ref`
+outlived the frame, and under `panic = "abort"` finding that out by aborting is
+not a diagnosis. Declining to recycle is.
+
+Eighteen programs cover the three escape routes, including two that create
+closures and then make **300 intervening calls** — cycling the pool many times
+over — before reading them back. All 18 agree with CPython (one refuses on call
+depth, which is a refusal and not a disagreement). Ten are pinned.
+
+**One fuzz seed is red and it is the known one.** `4242` finds
+`1.7976931348623157e308 ** 0.5` off by one ULP — the musl-against-glibc `pow`
+difference recorded in iteration 20 — and it reproduces identically on the
+iteration-28 binary. Three other seeds × 2500 are clean.
+
+---
+
+## 2026-08-24 · iteration 28 — `join` copied the list it was only reading
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 983,240 → 983,240 (**8 blocks**, unchanged) ·
+**conformance** 906 / 399 / **0 MISMATCH** ·
+**perf** `str-join` **76.63 → 57.87 ms** (6.31x → ~4.8x); TOTAL 1514.87 → 1461.01 ·
+**corpus** 1.58 → 1.53 s, 0.969x ·
+**fuzz** seed 20260824 × 3000, 0 counterexamples
+
+Two wastes, and the larger one was invisible in the code. `iter_collect` on a
+list **copies the whole list**, so `''.join(['ab'] * 600000)` moved 24 MB of
+`Value` to produce 1.2 MB of answer — a copy nothing reads twice. A list and a
+tuple are borrowed in place now; anything else still materialises, because a
+generator has to be drained before it can be measured.
+
+The second: `String::new()` doubled its way to the result. `join_parts` sums the
+byte lengths in the pass that already has to type-check every element, then
+fills a `String` sized exactly. The type check staying in that **first** pass is
+not incidental — CPython reports `sequence item {i}` for the first non-str and
+produces no output, so finding it before anything is written is what keeps the
+error identical.
+
+### The bug this iteration introduced, and how it was caught
+
+The 25-case sweep turned up one difference that was pre-existing: `','.join(5)`
+said `'int' object is not iterable` where CPython says **`can only join an
+iterable`**. `join` has its own message. Fixing it by wrapping `iter_collect` in
+a `map_err` made every case pass — and **broke the generator path**:
+
+```
+','.join(str(1//x) for x in [1, 0])
+  lypning   TypeError: can only join an iterable
+  CPython   ZeroDivisionError: integer division or modulo by zero
+```
+
+Every exception the sequence raised *while being drained* became the
+not-iterable message. Turning one exception into a different one is the same
+class of defect as answering the wrong number, and the sweep did not catch it
+because the sweep had no generator that raises. Trying one by hand did.
+
+The remap is on **`make_iter` alone** now, with the draining loop written out so
+it cannot be re-collapsed by accident. That also avoids the alternative fix — a
+second list of which `Value` variants are iterable — which would have been a
+copy of `make_iter`'s own match, free to drift.
+
+Six cases pinned, including both halves of that pair.
+
+---
+
+## 2026-08-24 · iteration 27 — 32,104 syscalls for one one-liner
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1488 loaded, 1272 timed
+
+**bytes** 979,144 → 983,240 (+4,096; **8 blocks**, headroom 65,336) ·
+**conformance** 888 / 384 / **0 MISMATCH** ·
+**perf** `str-concat` **231.55 → 17.22 ms**; TOTAL 1670.99 → 1475.23 (−11.7%) ·
+**corpus** 1.69 → 1.51 s, **0.896x** ·
+**fuzz** seed 20260824 × 3000, 0 counterexamples
+
+`str-concat` has been the worst row in the table since the table existed —
+31.09x CPython at the last reading — and the standing explanation was the
+quadratic: `Value::Str(Rc<str>)` cannot grow, so `s += 'x'` copies the whole
+string every time. The standing answer was a growable string representation, the
+largest single change on the §4a list.
+
+**It was not the quadratic. It was syscalls.** `strace -c` on
+`s += 'x'` twenty thousand times:
+
+```
+16,055  mmap
+16,047  munmap
+```
+
+musl hands a medium allocation straight to `mmap` and gives it back with
+`munmap`, and this loop allocates every length from 1 to 20,000 while freeing
+the previous one. 32,104 syscalls, 0.69 s of syscall time, for one one-liner.
+The copying was never the expensive part.
+
+So `alloc.rs` grew nine more classes: powers of two from 512 B to 128 KiB, over
+`System`, cached on free exactly like the small ones. The whole run of lengths
+from 2,049 to 4,096 is now one 4 KiB block handed back and forth, so a syscall
+happens once per class transition rather than once per allocation:
+
+```
+32,104 syscalls  ->  21
+```
+
+`realloc` gained the case that falls out of it: **same class in, same class out
+returns the pointer**, so growing from 2,049 to 4,096 bytes needs no allocation
+and no copy at all. Sound because `dealloc` is later handed the *new* layout,
+which maps to the same class.
+
+The ceiling is as deliberate as the floor. Above 128 KiB an allocation goes to
+`System` untouched and `realloc` forwards to `System::realloc`, so a `Vec`
+doubling toward 8 MiB still gets `mremap` to move a page table instead of a copy
+into a block we cached. Losing that is how this change would have made things
+slower.
+
+### What it cost
+
+**Bytes:** +4,096, still 8 blocks.
+
+**Memory: nothing measurable.** Power-of-two classes waste up to 2x by
+construction and that is a proof, not a measurement — so it was measured. Peak
+RSS over five allocation-churn programs, before → after: 22.0 → 22.2 MB,
+31.0 → 31.5 MB, and three unchanged at the 8.0 MB floor. CPython is higher on
+every one.
+
+`s += 'x'` × 20,000 end to end went **236.4 ms → 18.9 ms**, which is faster than
+CPython's 21.8 ms on the same program.
+
+### This demotes the standing branch
+
+The growable string representation has been the named answer to `str-concat`
+through this whole ledger. On this evidence it is worth far less than it looked:
+the row is 17 ms now, roughly 2x CPython rather than 31x, and what is left of it
+*is* the quadratic copy. That is a real cost and a real branch, but it is no
+longer the largest single win available and should stop being described as one.
+
+Verified beyond the four gates, because an allocator change earns it: 165
+programs straddling **every** power-of-two class boundary and its neighbours
+(255/256/257 … 131,071/131,072/131,073 … 1,000,000) in four shapes each —
+`'x'*n`, `[0]*n`, `bytes` of n, and a loop growing across the boundary — 0
+mismatches; the 216-program small-boundary sweep from iteration 18, still 0; the
+44,352-cell string-bounds grid, still identical; 3,000 fuzz programs, 0
+counterexamples.
+
+---
+
+## 2026-08-24 · iteration 26 — the JSON decoder answered malformed documents
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1488 loaded, 1272 timed
+
+**bytes** 979,144 → 979,144 (**8 blocks**, unchanged) ·
+**conformance** 888 / 384 / **0 MISMATCH** ·
+**corpus** 1.69 → 1.59 s, 0.939x ·
+**fuzz** seed 20260824 × 3000, 0 counterexamples
+
+Two defects in `json.loads`, the last of the four the iteration-24 reading pass
+turned up.
+
+**A raw control character inside a string was accepted.** `json.loads('"a\tb"')`
+returned `'a\tb'` at exit 0 where CPython raises `JSONDecodeError: Invalid
+control character at: line 1 column 3 (char 2)`. It is invalid JSON by RFC 8259
+and `strict=True` is CPython's default — lypning has no `strict=False` to
+justify it either.
+
+That is the worst shape a decoder can have, and worse than a plain wrong answer:
+a **malformed document is answered**, so a program whose correct outcome is a
+`JSONDecodeError` gets a value instead, and the dispatcher never learns there was
+anything to route onward. The run-scan stopped at `"` and `\` and nothing else;
+it stops at `< 0x20` now. The bound is exact — DEL (0x7f) is legal in a JSON
+string and CPython accepts it.
+
+**"Unterminated string starting at" pointed at the end of the scan.** `'"abc'`
+reported `char 4` where CPython reports `char 0`, the opening quote. On the one
+class of document where the message *is* the answer, it named the wrong place.
+
+Swept over every control character 0x00–0x20 plus DEL, in three positions, plus
+the truncated and nested documents: **45 documents, 0 mismatches** — same message
+text, same line, same column, same char offset.
+
+**One difference that is left, and is not this:** lypning's traceback names the
+exception `JSONDecodeError` where CPython's shows `json.decoder.JSONDecodeError`.
+That is the module path of a class lypning has no module for, it is on stderr,
+and conformance grades stdout and the exit code. Faking a module path to match a
+traceback would be inventing provenance; recorded rather than fixed.
+
+Nine cases pinned, in two new tests: `CASES` asserts lypning *matches* CPython on
+stdout, and these assert on a **message on stderr at exit 1**, which is a
+different claim. Both assert the oracle still says what the test thinks it says
+before checking lypning against it. Five fail on the iteration-25 binary.
+
+---
+
+## 2026-08-24 · iteration 25 — all six case methods disagreed with CPython
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1488 loaded, 1272 timed
+
+**bytes** 979,144 → 979,144 (**8 blocks**, unchanged) ·
+**conformance** 888 / 384 / **0 MISMATCH**, coverage unchanged ·
+**corpus** 1.69 → 1.59 s, 0.942x ·
+**fuzz** seed 20260824 × 3000, 0 counterexamples
+
+The plan was to fix `casefold` and `title`. A per-codepoint sweep of the whole
+family — `upper`, `lower`, `casefold`, `title`, `capitalize`, `swapcase`, every
+one of the 1,112,064 codepoints, on both interpreters — said **all six**
+disagreed, including the two nobody suspected.
+
+Sorting the disagreements apart is the entire content of this iteration, because
+they are three different problems and only two of them are lypning's.
+
+### Three logic bugs, fixed
+
+* **`casefold` was `to_lowercase`.** Wrong for 297 codepoints, including the one
+  everyone reaches for: `'ß'.casefold()` is `'ss'` and was `'ß'`, so
+  `'ß'.casefold() == 'ss'.casefold()` was **False** — and caseless comparison is
+  the entire purpose of the method.
+* **`title` and `capitalize` uppercased where CPython titlecases.** 135
+  codepoints: `'ǅ'.title()` is `'ǅ'` and was `'Ǆ'`; `'ß'.capitalize()` is `'Ss'`
+  and was `'SS'`.
+* **`swapcase` truncated every multi-character mapping and mapped titlecase.**
+  `.next()` on the case iterator: `'ß'` swapped to `'S'` where CPython gives
+  `'SS'`, `'İ'` to `'i'` where CPython gives two codepoints, `'ǰ'` to `'J'`. And
+  the `else` arm uppercased anything not uppercase, which is wrong for every
+  titlecase character — `Lt` is not `Lu`, and `is_uppercase()` is the Uppercase
+  *property*, not "has a lowercase mapping". Both fixed exactly; `swapcase` went
+  from 217 differing codepoints to 110, and the 110 are §3 below.
+
+`casefold` and `title`/`capitalize` **refuse** rather than answer, because `std`
+has no full case folding and no `char::to_titlecase`. A table here would be a
+second source of Unicode truth in a runtime whose first one is whatever the
+toolchain shipped, and two of those drift apart silently. `docs/SUBSET.md` §7
+rule 4 already says what to do: refuse, and the dispatcher gets the real answer
+one spawn later.
+
+### The tables are checked against the oracle, not written from a document
+
+`casefold_differs` and `titlecase_differs` are 41 and 18 ranges, **derived by
+asking CPython** for every codepoint where the two mappings differ.
+`tests/test_method_tables.py` re-derives them from CPython on every run and
+compares — 297 and 135, **no missing, no extra**. The two directions get
+different messages on purpose: a missing codepoint is a wrong answer at exit 0,
+an extra one is only coverage given away.
+
+That is the same discipline `route.rs`'s capability table is held to, and for the
+same reason invariant 1 gives: a table edited to describe what someone wished the
+runtime did converts a loud failure into a silent one.
+
+### The third problem is not lypning's, and it is not fixed
+
+After both fixes, **every remaining difference in all six methods is the same 55
+codepoints**, and they are a Unicode *version* skew:
+
+```
+CPython 3.11.15  ships Unicode 14.0.0
+rustc 1.94.1     ships a later one
+```
+
+U+1C89, U+A7CB, U+A7CC, U+A7D2, U+A7DC and friends are literally **unassigned**
+in this CPython's tables and have case mappings in Rust's; U+019B and U+0264
+gained uppercase mappings after 14.0. So lypning maps them and CPython does not.
+
+This is a real MISMATCH by invariant 1's definition and it is deliberately left
+open, because the honest fix is not obvious in one mechanism:
+
+* Refusing them means embedding "the delta between rustc's tables and CPython
+  3.11's", which is exactly the thing that rots — and it rots in the **unsafe**
+  direction when the toolchain moves ahead of the list.
+* The set is a property of the *pair* of runtimes, and the CPython the dispatcher
+  falls through to is whatever is on the machine.
+* No corpus program contains one of these 55; they are in Latin Extended-D and
+  Cyrillic Extended-C.
+
+**Proposed branch: pin the Unicode version the subset claims.** Either vendor the
+case tables for one version and derive every mapping from them, or make the
+refusal set a build-time artefact generated by asking the *local* CPython. Both
+are multi-step and both change what "lypning agrees with CPython" means, which is
+a decision rather than a fix.
+
+Sweeps: 1,112,064 codepoints × 6 methods before and after; the two tables against
+CPython; 19 cases pinned in `tests/test_fuzz_findings.py`, 9 of which fail on the
+iteration-24 binary. Five of the nineteen assert a **refusal** rather than a
+match, which needed a second test — `CASES` asserts lypning agrees, and "must
+refuse" is the opposite claim.
+
+---
+
+## 2026-08-24 · iteration 24 — `'Hello'.count('l', 3)` answered 2
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1488 loaded, 1272 timed
+
+**bytes** 979,144 → 979,144 (**8 blocks**, unchanged) ·
+**conformance** 888 / 384 / **0 MISMATCH** ·
+**corpus** 1.69 → 1.61 s, 0.955x ·
+**fuzz** seed 20260824 × 3000, 0 counterexamples
+
+Two defects in the optional `start`/`end` bounds that seven `str` methods take,
+found by reading `methods.rs`. Both silent, both at exit 0.
+
+**`count` took its bounds and ignored them.** The arm read `args[0]` and nothing
+else, so `'Hello'.count('l', 3)` answered 2 where CPython answers 1. That is not
+an edge case — `line.count(',', 1)` is a thing agents type.
+
+**The other six clamped a start that CPython does not clamp.** CPython's
+`ADJUST_INDICES` is deliberately asymmetric: a negative `start` folds and floors
+at 0 but a positive one is **never capped at `len`**, while `end` is capped at
+both ends; then `end < start` is the no-match answer and `end == start` is a real
+empty slice. `clamp_index` capped `start` too, which collapsed "past the end"
+onto "the empty slice at the end" — so the empty needle was found there:
+
+```
+'Hello'.find('', 99)         5      CPython -1
+'Hello'.rfind('', 99)        5      CPython -1
+'Hello'.startswith('', 99)   True   CPython False
+'Hello'.endswith('', 99)     True   CPython False
+'Hello'.index('', 99)        5      CPython ValueError
+```
+
+`slice_str` now returns `Option<(&str, i64)>` — the slice *and* the character
+offset it starts at — where `None` is "no match" and `Some(("", lo))` is the
+empty slice. Making those two different **types** rather than the same empty
+string is the point; they were the same value, which is why one line was wrong
+in six places. `count` goes through the same function, so there is now one
+definition of what the bounds mean instead of two. The `find` arm also stops
+walking the receiver a second time to recompute the offset — it comes back from
+`slice_str`.
+
+### The grid, and the pair that needed it
+
+The first fix was `start > n ⇒ None`, which made all fourteen hand-picked cases
+pass. It was **wrong**, and a 33,957-cell grid over receiver × needle × start ×
+end × method said so: 609 cells still differed. `'a'.find('', 1, -99)` is -1 —
+`end` folds to 0, which is *before* start — while `'a'.find('', 0, -99)` is 0.
+`start > n` is just one corner of `end < start`, and no list of examples anyone
+would write by hand contains that pair.
+
+Re-run with non-ASCII receivers and needles: **44,352 cells, all identical.**
+Fourteen cases pinned in `tests/test_fuzz_findings.py`; 12 fail on the
+iteration-23 binary.
+
+Bytes did not move. `corpus-time` came in at 0.955x, outside the deadband and
+faster, which is not attributable here: the `find` arm lost a full second walk of
+the receiver, but no corpus program is bounds-heavy enough to explain 77 ms, so
+read it as the run and not the change.
+
+### Still outstanding from the same reading pass
+
+Two verified, neither fixed here, each its own iteration:
+
+* **`json.loads` accepts raw control characters inside a string.**
+  `json.loads('"a\tb"')` returns `'a\tb'` where CPython raises
+  `JSONDecodeError: Invalid control character`. A malformed document is accepted
+  and answered, so a program that should have gone to CPython gets a result.
+* **`casefold` is aliased to `to_lowercase`, and `title` uses `to_uppercase`.**
+  `'ß'.casefold()` is `'ß'` where CPython gives `'ss'` — and caseless comparison
+  is the entire purpose of `casefold`. `'ǅ'.title()` gives `'Ǆ'` where CPython
+  gives `'ǅ'`.
+
+---
+
+## 2026-08-24 · iteration 23 — spending 4 KB of the 45 that iteration 22 freed
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1488 loaded, 1272 timed
+
+**bytes** 975,048 → 979,144 (+4,096; **8 blocks**, headroom 69,432) ·
+**conformance** 888 / 384 / **0 MISMATCH** ·
+**perf** TOTAL ~1707 → ~1650 ms (−3.3%, bands below) ·
+**corpus** 1.69 → 1.65 s, 0.974x
+
+Iteration 18 set `#[inline(never)]` on the allocator's three `GlobalAlloc`
+methods and said in as many words that it was a byte decision to revisit when
+the budget allowed. Iteration 22 freed 45,056 B. This spends 4,096 of them.
+
+**The measurement is the entry.** A single A/B said −48 ms, or 2.9% — squarely
+inside the range where this profile's inlining decisions move on their own
+(iteration 15), and exactly the reading the skill says not to believe. So it was
+taken its way: **four builds of the unchanged source**, differing only by a
+comment appended to an unrelated file, against **three of the changed** one.
+
+```
+perf TOTAL, ms
+  inline(never)   1690.46   1703.90   1705.45   1726.79
+  inline          1634.44   1653.03   1662.16
+```
+
+The baseline's own spread is 36 ms — 2.1%, which is why one comparison could
+never have settled this. But the bands **do not overlap**: the worst inlined
+build beats the best non-inlined one by 28 ms. Real, and about 3.3%.
+`membership` (−14.83), `dict-set` (−9.04) and `str-repr` (−4.08) carry most of
+it; twelve rows move and none regresses.
+
+The `inline(never)` comment in `alloc.rs` also said the attribute cost "8,192
+bytes for no measurable speed". Both halves were wrong by iteration 23: it is
+4,096 bytes on this binary, and the speed is measurable when you measure it
+properly. The comment now carries the seven numbers instead of the conclusion.
+
+---
+
+## 2026-08-24 · iteration 22 — the error type was in every return value
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1488 loaded, 1272 timed
+
+**bytes** 1,020,104 → **975,048** (−45,056; 8 blocks, headroom 73,528) ·
+**conformance** 888 / 384 / **0 MISMATCH** ·
+**perf** TOTAL 1742.66 → 1656.86 ms (−4.9%), clean A/B against a HEAD build ·
+**corpus** 1.69 → 1.63 s, **0.962x** ·
+**fuzz** seed 20260824 × 3000, 0 counterexamples
+
+`R<T> = Result<T, LypningError>` is the return type of essentially every
+function here and roughly 790 `?` operators apply it. `LypningError` was an enum
+held **inline**, and its largest variant is two `String`s:
+
+```
+inline  ErrKind= 48   R<Value>= 48   R<bool>= 48   R<()>= 48
+boxed   Boxed  =  8   R<Value>= 40   R<bool>= 16   R<()>=  8
+```
+
+So twenty functions returning `R<()>` were moving 48 bytes to say nothing went
+wrong, and `R<Value>` carried a discriminant word beside a `Value` that already
+has a spare tag. Boxed, `R<()>` is one register, `R<bool>` is two, and
+`R<Value>` niche-encodes into `Value`'s own tag and costs **nothing** over a bare
+`Value` — which is the row that matters, because `eval` returns one.
+
+`LypningError` is now a newtype over `Box<ErrKind>`. All ~12 constructor helpers
+keep their signatures, so none of the ~301 `Err(...)` sites changed and the
+`Box::new` is emitted once per helper rather than once per site. Eleven places
+matched a variant directly and were rewritten to `e.kind()`.
+
+The trade is **one heap allocation per error constructed**, and it is a good
+trade here for a specific reason worth writing down: errors are not control flow
+in this runtime. Nothing raises per element; the one builtin that raises per call
+(`next()`'s `StopIteration`) raises once per call, not once per item. The 790 `?`
+sites pay on every evaluation; the allocation pays when a program is about to
+stop.
+
+The win is broad rather than deep, which is what a change to the calling
+convention should look like: `list-sort` −32.17 ms, `dict-set` −6.59,
+`call-recursive` −4.32, `tuple-unpack` −4.07, `str-of-scalar` −4.47,
+`list-append` −3.30, `call-method` −2.86, `enumerate-zip` −2.85, `str-slice`
+−2.71, `loop-range` −2.50 — twelve rows past 2 ms and nothing worse.
+
+**Measured as a clean A/B**, not against the running baseline: three iterations
+had landed since it was recorded, so HEAD was rebuilt to a separate binary and
+both were run under `LYPNING_BIN`. Attributing three changes' worth of
+improvement to one of them is the easiest number in this file to get wrong.
+
+### The gate that actually matters here
+
+Four of the eleven rewritten sites *are* the exit-90 contract — `main.rs`'s
+`finish`, `embed.rs`'s outcome mapping and `route.rs`'s two error arms. That is
+invariant 2's known silent-failure mode: a refusal that becomes a traceback
+still compiles, still links, still passes `--version`.
+
+`build --rust` asserts the contract and passed. It was also checked by hand, as a
+**differential against the HEAD binary** over 21 cases: refusals by module,
+builtin and bigint; a refusal reached after output was already staged; a syntax
+error; `sys.exit` with 3, 0, a string and nothing; `raise
+NotImplementedError`; ZeroDivisionError; NameError; `except` catching a real
+exception and *not* catching a refusal or an exit; four `route` outputs; and
+`lypning run` falling through to CPython. **All 21 byte-identical on exit code,
+stdout and stderr.**
+
+### The byte number changes what is affordable next
+
+Headroom before a 9th device block went from 28,472 B to **73,528 B**. Two
+candidates that were priced as "probably does not fit" — `#[inline]` on the
+allocator's `GlobalAlloc` methods (8,192 B, ~3% on the perf TOTAL, iteration 18)
+and the `percent_format` rewrite — are now affordable. That was not the reason
+for this step and it is the most useful thing it produced.
+
+---
+
+## 2026-08-24 · iteration 21 — thirty-six silent wrong answers about whitespace
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1488 loaded, 1272 timed
+
+**bytes** 1,020,104 → 1,020,104 (**8 blocks**, unchanged) ·
+**conformance** 888 / 384 / **0 MISMATCH** ·
+**perf** TOTAL 1779.09 → 1738.24 ms ·
+**corpus** 1.69 → 1.65 s, **0.974x** ·
+**fuzz** seed 20260824 × 2500, 0 counterexamples
+
+A reading pass over the string methods — nominally for speed — turned up a
+whitespace disagreement. Written out as a shell diff loop over fifteen candidate
+characters × seven methods, it was **36 wrong answers, every one at exit 0**:
+
+* **`str` whitespace is Unicode `White_Space` plus U+001C–U+001F.** Rust's
+  `char::is_whitespace` is `White_Space` alone, and lypning used it directly in
+  five places. `'a\x1cb'.split()` answered `['a\x1cb']` against CPython's
+  `['a', 'b']`; `'\x1ca\x1c'.strip()` kept both; `'\x1c'.isspace()` was False.
+  Four characters × five methods.
+* **`splitlines` splits on eleven boundaries and this split on three.** `\x0b`,
+  `\x0c`, `\x1c`, `\x1d`, `\x1e`, U+0085, U+2028 and U+2029 all produced one line
+  where CPython produces two. Three of those are multi-byte, which is why the
+  byte-wise scan could not have been extended in place — it walks chars now.
+
+The two sets are **not the same set**, and the fix keeps them apart on purpose: a
+tab is whitespace and not a boundary, `\x1f` is whitespace and not a boundary
+either, and U+2028 is both. Two more places that look like they want the new
+predicate and must not have it: **`bytes`**, whose whitespace is ASCII only
+(`b'\x1c'.isspace()` is False in CPython), and **`int()`/`float()`**, whose strip
+is `White_Space` (`int('\x1c5')` is a ValueError). Both verified against CPython
+rather than assumed, and both pinned.
+
+### Verified over the whole codepoint space, not over a list
+
+A hand-picked list of characters is how this bug survived in the first place, so
+the check is a program both interpreters run: for every one of the 1,112,064
+codepoints (surrogates excluded), collect the ones where `chr(c).isspace()`, then
+where `('a'+chr(c)+'b').split()` is two elements, then `strip`, then
+`splitlines`, then `splitlines(True)` — and diff the five answers.
+
+**All five agree exactly.** 29 whitespace codepoints, 10 line boundaries, same
+sets and same sums on both. That is the strongest form this verification has:
+there is no sixteenth character left to have missed.
+
+23 cases went into `tests/test_fuzz_findings.py`, which asserts against live
+CPython. 16 of them fail on the iteration-20 binary and 7 pass — the 7 being the
+controls that must NOT change, which is the half of a regression test that
+usually goes unwritten.
+
+### And it made things faster
+
+Bytes did not move. `perf` TOTAL went down 40.85 ms and `corpus-time`
+1.69 → 1.65 s, **0.974x — outside the deadband, in the good direction**, which
+was no part of the intent: `s.split(py_space).filter(non-empty)` turns out to
+beat `split_whitespace()`, and the `char_indices` line scan beats the byte scan
+it replaced. Recorded because it happened, not claimed as a reason.
+
+---
+
+## 2026-08-24 · iteration 20 — `sum()` was mostly copying, and it could not sum strings
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1488 loaded, 1272 timed
+
+**bytes** 1,020,104 → 1,020,104 (**8 blocks**, unchanged) ·
+**conformance** 888 / 384 / **0 MISMATCH**, unchanged ·
+**perf** `builtin-sum-len` **38.50 → 4.65 ms**, `list-comp` 39.99 → 32.87,
+`genexpr` 43.78 → 40.14; TOTAL 1779.09 → 1745.43 ms ·
+**corpus** 1.69 → 1.70 s, 1.005x, inside the deadband
+
+Iteration 18 emptied the allocator out of the profile, so callgrind on
+`sum(a) + len(a)` now points somewhere new: `iter_collect` at 16.9% inclusive
+over 20 calls. `Interp::iter_collect` on a list is `l.borrow().clone()` — a full
+`Vec<Value>` copy — and `sum` was calling it before adding anything.
+Decomposed: **23.6 ns per element materialising and dropping the copy against 18
+ns doing the additions.** `sum` of a generator measured the same as `list()` of
+the same generator, because the buffer *was* the job.
+
+Two layers, both in the one `"sum"` arm:
+
+* **Drive the iterator instead of draining it.** `make_iter` on a list is
+  already a live view that copies nothing (`Iter::List(Rc, usize)`); only
+  `iter_collect` materialises. This is also the more faithful of the two —
+  CPython's `sum` pulls one element at a time.
+* **An i64 loop for the case the corpus actually types**, `sum()` of a list of
+  ints: a borrowed scan with `checked_add`, bailing to the general path on the
+  first non-int or the first overflow. Bailing is free because the loop has no
+  effects to undo, and the general path then produces the TypeError or the
+  `bigint` refusal that was always the right answer.
+
+The row went **8.3x faster** and is now below CPython. `list-comp` and `genexpr`
+moved too — both feed a `sum()` — and nothing regressed. Bytes did not move at
+all, which is the pleasant surprise: the fast loop is smaller than the
+`iter_collect` call and the `Vec` drop glue it replaced.
+
+### The bug this turned up on the way past
+
+`sum(['a', 'b'], '')` printed **`ab` at exit 0**. CPython raises
+`TypeError: sum() can't sum strings [use ''.join(seq) instead]`, and checks the
+*start* argument for it before it looks at the sequence at all — `sum([1, 2],
+'')` is the same TypeError. `sum([b'x'], b'')` was the same defect in bytes.
+
+A wrong answer, not a refusal, and invisible to every gate: no corpus program
+sums with a string start, so `conformance` was green over it, and `perf` does
+not evaluate semantics. It is the second correctness bug in this ledger found by
+reading a hot path for *speed* (iteration 13 was the first), which is the
+argument for the speed queue that has nothing to do with speed.
+
+Reproduced on the iteration-19 binary, so it is not this change's. Both types
+now raise CPython's message. `sum(['a', 'b'])` needs no case — the default start
+is `0` and `0 + 'a'` already raises what CPython raises.
+
+Checked with a 41-program differential sweep of `sum`: empty, start, mixed
+int/float, bools, tuple/range/dict-values/generator/map/filter, list and tuple
+concatenation, overflow at the head, the tail and through the start, sets of
+ints and of floats, and the not-iterable and missing-argument errors. One
+disagreement left in it and it is not about `sum`: `zip.__name__` is an
+`AttributeError` at exit 1 where CPython answers, which is the shape
+`STR_MISSING` exists to catch — an attribute CPython has must **refuse**, not
+raise, because exit 1 is terminal and there is no second chance. Logged, not
+fixed here.
+
+### The fuzz gate is red, and it was red before this
+
+`lypning fuzz --seed 3 --iterations 2500` finds two counterexamples. Both
+reproduce **identically on the iteration-19 binary** (`LYPNING_BIN=… fuzz --seed
+3`), so neither belongs to this step, and seed 20260824 at 3000 iterations finds
+zero — which is the useful thing to know about a fuzzer's seed.
+
+1. `1.7976931348623157e308 ** 0.5` → `…97e+154` against CPython's `…96e+154`.
+   One ULP, and it is a **libm** difference: CPython's `pow` is glibc's, lypning
+   links musl's. Not fixable by being more careful; fixable only by shipping a
+   `pow` or by refusing non-integral float exponents, which is a design decision
+   and not a bug fix.
+2. `{}.pop(['x'])` → `TypeError: unhashable type: 'list'` against CPython's
+   `KeyError: ['x']`. CPython short-circuits an **empty** dict before it hashes
+   the key, so the same call on a non-empty dict is a TypeError on both. A
+   genuine quirk to reproduce rather than a principle.
+
+Each is its own iteration; the four gates and the sweep above are what this step
+was accepted on.
+
+---
+
+## 2026-08-24 · iteration 19 — buying the device block back, and the flag that could not
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1430 loaded, 1237 timed
+
+**bytes** 1,049,272 → 1,020,104 (**9 → 8 blocks**) ·
+**conformance** 865 / 372 / **0 MISMATCH**, unchanged ·
+**perf** TOTAL 1802.73 → 1758.77 ms (−2.4%, inside the band) ·
+**corpus** 1.45 → 1.47 s, 1.013x, inside the ±3% deadband
+
+Iteration 18 spent a device block and said the next step was `opt-level = "z"`,
+which builds at 996,024 B and would buy it back. **It was measured and rejected.**
+
+### The negative result first
+
+`"z"` against `"s"`, same source, same allocator: `perf` TOTAL **1802.73 →
+2371.69 ms, +31.6% slower**, and not concentrated anywhere — `tuple-unpack`,
+`enumerate-zip`, `str-slice`, `str-fstring`, `json-loads`, `dict-get` and
+`print-lines` each gave up a third or more. A third of the interpreter's
+throughput is not a price worth one block. `docs/LYPNING.md` §8 said `"z"`
+"buys nothing under the cost model that matters", which was a statement about
+bytes and read like a statement about the flag; it now carries the speed number
+too.
+
+### What worked instead
+
+The musl targets build a **static-PIE** by default, and the relocations that
+costs are a section: `.rela.dyn`, 33,864 B of a 1,049,272 B image. `-C
+relocation-model=static` removes it. 1,049,272 → **1,020,104 B**, nine blocks
+back to eight, and `perf` went *down* 2.4% rather than up — which is inside the
+band where this profile's inlining decisions move on their own (iteration 15) and
+is not claimed as a win.
+
+**The claim that did not survive its own measurement.** The first draft of the
+config file argued this on two grounds, bytes and startup: ~1,400 relative
+relocations processed before `main`, in a program whose whole startup is under a
+millisecond, ought to show. It does not. `-c 'pass'`, min of 60 interleaved runs:
+**0.387 ms as a PIE against 0.388 ms without.** The comment now says so, because
+a plausible mechanism stated as a measured one is how a document starts lying.
+
+### Where the flag lives, which is the whole difficulty
+
+Not in `RUSTFLAGS` inside `build.py`: cargo would then produce a different
+binary by hand than through our tooling, and — worse than aesthetics — the two
+would not share an object cache, so alternating rebuilds the world. It is
+`assets/rust/.cargo/config.toml`, read by cargo from the working directory
+upward, which works because `build.py` already runs cargo with `cwd=` the crate
+directory.
+
+That puts it in **the wheel's** hands, and the wheel is the shape nobody tests by
+accident (CLAUDE.md). Tested on purpose: `pip install` of a built wheel into a
+venv, then `LYPNING_HOME=<tmp> lypning build --rust` → **1,020,104 B, 8 blocks**,
+byte-identical to the checkout, with the config staged into
+`~/.lypning/build/rust/.cargo/`.
+
+`tests/test_packaging.py` grew the guard, and it is a different guard from the
+one already there. Every other `package-data` entry fails *loudly* when it goes
+missing — cargo cannot build without `Cargo.toml`. This one fails silently: the
+build succeeds, all four gates pass, and the binary is one device block larger
+for no reason anyone would ever look for. It also names a dot directory, which
+is exactly the kind of line a tidy-up deletes.
+
+---
+
+## 2026-08-24 · iteration 18 — the allocator was the interpreter
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1430 loaded, 1237 timed
+
+**bytes** 1,045,176 → 1,049,272 (**8 → 9 blocks**) ·
+**conformance** 865 MATCH / 372 UNSUPPORTED / **0 MISMATCH**, unchanged ·
+**perf** TOTAL 2164.77 → 1802.73 ms, 2.93x → 2.31x ·
+**corpus** 1.69 → 1.44 s, **0.850x**, outside the ±3% deadband
+
+The gradient said `str-split`. Callgrind said something else. On
+`t.split()` in a loop, **43.9% of every instruction retired was inside musl's
+mallocng** — `alloc_slot`, `nontrivial_free` and two `meta.h` helpers — against
+2.6% in `eval`. The ledger's standing answer has been "about a quarter"; on this
+program it is closer to a half, and it is not a property of `split`. It is what
+every row of the table has been measuring.
+
+So the step is `src/alloc.rs`: a size-classed free-list allocator over
+bump-allocated 64 KiB chunks, installed as the binary's `#[global_allocator]`.
+Sixteen classes of 16 bytes; a free block threads the next pointer through its
+own first word, so a live object carries no header and the class is recomputed
+from the `Layout` the caller has to hand back. Anything above 256 bytes or
+asking for more than 16-byte alignment goes to `System` unchanged — big buffers
+want `mremap` on growth, and a bump allocator's inability to return memory is
+worst exactly there.
+
+Every row moved, because every row was paying it. `json-loads` went from 4.47x
+CPython to **0.68x** — it is now faster than CPython, having been the fourth
+worst ratio in the table. `call-recursive` 13.53x → 7.47x, `str-fmt-pct`
+7.15x → 4.86x, `str-split` 7.18x → 3.70x. Nothing regressed.
+
+**It cost a device block, and that is the honest headline.** 1,049,272 B is 696
+bytes over 8 × 131,072, so cold first-touch in CheerpX now fetches a ninth block
+(`docs/LYPNING.md` §8a). The escape measured but deliberately NOT taken here,
+because it is a second mechanism: `opt-level = "z"` with this allocator builds
+at 996,024 B, back inside 8 blocks with 52 KiB to spare. That is the next
+iteration and it has its own speed question to answer.
+
+`#[inline(never)]` on the three `GlobalAlloc` methods is load-bearing for the
+byte count: with `#[inline]` the binary is **8,192 bytes larger** and the perf
+TOTAL was 1754 ms against 1807 — a 3% difference, which is inside the band where
+this profile's inlining decisions move on their own (iteration 15). Smaller won.
+Worth revisiting the moment the byte budget has room.
+
+Beyond the four gates, because an allocator is not the kind of thing conformance
+can be trusted alone on: `lypning fuzz --seed 20260824 --iterations 3000` — 3000
+generated programs, **0 counterexamples**; a hand-written sweep of 216 programs
+straddling every class boundary and the 256-byte cutoff (`'x'*n`, `[0]*n`,
+`bytes` of n, for n around 0, 16k±1, 256±1, 4096±1) against CPython — **0
+mismatches**; and peak RSS on five allocation-churn programs, which is *lower*
+than CPython's on every one (22.1 MB against 28.2 MB building 300,000 strings)
+and flat at the 8.1 MB floor on the churn cases, so the free lists are recycling
+rather than the chunks accumulating.
+
+**What this does not say.** It is one machine and one libc. The win is against
+*musl's mallocng specifically*; glibc's allocator is a different program and this
+number is not a claim about it. The i686 build that CheerpX actually loads was
+not re-measured here.
+
+---
+
 ## 2026-08-21 · iteration 17 — the dispatcher was the one giving the wrong answer
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1037 loaded, 861 timed

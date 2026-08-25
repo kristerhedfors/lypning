@@ -696,10 +696,9 @@ fn is_nan(v: &Value) -> bool {
 /// some arbitrary total order. Reproducing that exactly is what keeps `sorted`
 /// on a mixed list from silently succeeding here and failing there.
 pub fn order(a: &Value, b: &Value) -> R<Ordering> {
-    // Same descent, same guard as `value::eq`: `sorted([x, y])` over two deep
-    // lists is a stack overflow without it, and a stack overflow embedded is
-    // the host's SIGSEGV rather than a refusal it can route onward.
-    let _nest = crate::err::Nest::enter("comparison")?;
+    // The numeric and scalar paths run BEFORE the guard, because neither can
+    // descend and `sorted()` of a list of ints reaches this once per
+    // comparison. See `value::eq` for the same split and the same reasoning.
     if let (Some(x), Some(y)) = (as_num(a), as_num(b)) {
         let (x, y) = (fl(x), fl(y));
         if let (Num::I(i), Num::I(j)) = (as_num(a).unwrap(), as_num(b).unwrap()) {
@@ -712,11 +711,18 @@ pub fn order(a: &Value, b: &Value) -> R<Ordering> {
     Ok(match (a, b) {
         (Value::Str(x), Value::Str(y)) => x.as_bytes().cmp(y.as_bytes()),
         (Value::Bytes(x), Value::Bytes(y)) => x.cmp(y),
+        // The two arms that descend. `sorted([x, y])` over two deep lists is a
+        // stack overflow without this, and a stack overflow embedded is the
+        // HOST's SIGSEGV rather than a refusal it can route onward.
         (Value::List(x), Value::List(y)) => {
+            let _nest = crate::err::Nest::enter("comparison")?;
             let (x, y) = (x.borrow(), y.borrow());
             seq_order(&x, &y)?
         }
-        (Value::Tuple(x), Value::Tuple(y)) => seq_order(x, y)?,
+        (Value::Tuple(x), Value::Tuple(y)) => {
+            let _nest = crate::err::Nest::enter("comparison")?;
+            seq_order(x, y)?
+        }
         _ => {
             return Err(type_err(format!(
                 "'<' not supported between instances of '{}' and '{}'",

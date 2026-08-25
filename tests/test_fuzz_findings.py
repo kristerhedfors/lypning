@@ -41,6 +41,138 @@ CASES = [
     # Cased, not alphabetic: 日 is alphabetic and has no case at all.
     ("islower-uncased", 'print("日本".islower())'),
     ("isupper-uncased", 'print("日本".isupper())'),
+    # Python's whitespace is Unicode White_Space PLUS U+001C-U+001F, which Rust's
+    # `char::is_whitespace` excludes. Four characters, and every one of them was
+    # a wrong answer at exit 0 in `split`, `strip`, `lstrip`, `rstrip` and
+    # `isspace` at once. Pinned per-method rather than once, because the fix
+    # routes five separate call sites through one predicate and any of them
+    # could be reverted alone.
+    ("split-c0-separator", r"print('a\x1cb'.split())"),
+    ("split-c0-unit", r"print('a\x1fb'.split())"),
+    ("split-c0-maxsplit", r"print('\x1d a b'.split(None, 1))"),
+    ("strip-c0-separator", r"print(repr('\x1ca\x1c'.strip()))"),
+    ("lstrip-c0-separator", r"print(repr('\x1ea'.lstrip()))"),
+    ("rstrip-c0-separator", r"print(repr('a\x1e'.rstrip()))"),
+    ("isspace-c0-separator", r"print('\x1c'.isspace(), '\x1f'.isspace())"),
+    # …and `bytes` does NOT follow it: `b'\x1c'.isspace()` is False in CPython.
+    # Pinned so that "fix the str set" never gets copied across to the byte one.
+    ("bytes-split-c0-is-not-space", r"print(len(b'a\x1cb'.split()))"),
+    ("bytes-strip-c0-is-not-space", r"print(b'\x1ca\x1c'.strip())"),
+    # …nor does `int()`/`float()`, whose strip is White_Space only.
+    ("int-c0-separator-is-not-space", r"print(int('\x0b5'))"),
+    # `splitlines` splits on ELEVEN boundaries. This split on three, so seven
+    # characters — three of them multi-byte — silently produced one line where
+    # CPython produces two. Not the same set as the whitespace one above: a tab
+    # is whitespace and not a boundary, `\x1f` is whitespace and not a boundary
+    # either, and U+2028 is both.
+    ("splitlines-vertical-tab", r"print('a\x0bb'.splitlines())"),
+    ("splitlines-form-feed", r"print('a\x0cb'.splitlines())"),
+    ("splitlines-file-separator", r"print('a\x1cb'.splitlines())"),
+    ("splitlines-group-separator", r"print('a\x1db'.splitlines())"),
+    ("splitlines-record-separator", r"print('a\x1eb'.splitlines())"),
+    ("splitlines-unit-separator-is-not-a-break", r"print(len('a\x1fb'.splitlines()))"),
+    ("splitlines-nel", r"print(len('a\x85b'.splitlines()))"),
+    ("splitlines-line-separator", r"print(len('a\u2028b'.splitlines()))"),
+    ("splitlines-para-separator", r"print(len('a\u2029b'.splitlines()))"),
+    ("splitlines-keepends-multibyte", r"print(len('a\u2028b'.splitlines(True)))"),
+    # The two-character boundary has to be consumed as one, and the trailing one
+    # must not start an empty last line.
+    ("splitlines-crlf", r"print('a\r\nb'.splitlines())"),
+    ("splitlines-trailing", r"print('a\nb\n'.splitlines())"),
+    ("splitlines-empty", r"print(''.splitlines(), '\n'.splitlines())"),
+    # `str.count` took `start` and `end` and ignored both. Not an edge case:
+    # `line.count(',', 1)` is ordinary input, and it answered the count over the
+    # whole string at exit 0.
+    ("count-start", "print('Hello'.count('l', 3))"),
+    ("count-start-end", "print('Hello'.count('l', 0, 3))"),
+    ("count-empty-needle-bounded", "print('abc'.count('', 1, 2))"),
+    ("count-start-past-end", "print('Hello'.count('l', 99))"),
+    # `start` is folded-and-floored but NOT capped at len, while `end` is capped
+    # at both ends; then `end < start` is no-match and `end == start` is a real
+    # empty slice. Capping `start` too collapsed "past the end" onto "empty slice
+    # at the end", so the empty needle was found there — six methods, exit 0.
+    ("find-start-past-end", "print('Hello'.find('', 99))"),
+    ("rfind-start-past-end", "print('Hello'.rfind('', 99))"),
+    ("startswith-start-past-end", "print('Hello'.startswith('', 99))"),
+    ("endswith-start-past-end", "print('Hello'.endswith('', 99))"),
+    ("index-start-past-end", "print('Hello'.find('', 6), 'Hello'.find('', 5))"),
+    # The pair no hand-picked list was going to contain: `end` folding to BEFORE
+    # `start` is no-match, folding to exactly `start` is the empty slice.
+    ("find-end-before-start", "print('a'.find('', 1, -99))"),
+    ("find-end-equals-start", "print('a'.find('', 0, -99))"),
+    ("find-end-lt-start", "print('Hello'.find('', 3, 2), 'Hello'.find('', 3, 3))"),
+    # Character offsets, not byte offsets, once the receiver is not ASCII.
+    ("find-non-ascii-offset", "print('héllo é'.find('é', 2))"),
+    ("count-non-ascii-bounded", "print('日本語日'.count('日', 1))"),
+    # `swapcase` took `.next()` of the case mapping, which TRUNCATES every
+    # multi-character one, and it uppercased anything that was not uppercase —
+    # including titlecase, which CPython leaves alone.
+    ("swapcase-sharp-s", "print('ß'.swapcase())"),
+    ("swapcase-dotted-i", "print('İ'.swapcase())"),
+    ("swapcase-j-caron", "print('ǰ'.swapcase())"),
+    ("swapcase-titlecase-is-left-alone", "print('ǅ'.swapcase())"),
+    ("swapcase-ascii-unchanged", "print('aB1 c'.swapcase())"),
+    # `join` has its own message for a non-iterable, and the fix for it briefly
+    # wrapped the whole drain instead of just `make_iter` — which turned every
+    # exception the sequence raised WHILE being drained into that message.
+    # Turning one exception into a different one is the same class of defect as
+    # answering the wrong number, so both halves are pinned.
+    ("join-non-iterable-message", "print(','.join(5))"),
+    ("join-non-iterable-none", "print(','.join(None))"),
+    ("join-generator-raises-through", "print(','.join(str(1//x) for x in [1,0]))"),
+    ("join-generator-value-error", "print(','.join(str(int(x)) for x in ['1','z']))"),
+    ("join-bad-item-index", "print(','.join(x for x in ['a', 2]))"),
+    ("join-empty-and-single", "print(repr(','.join([])), repr(','.join(['a'])))"),
+    # A frame's scope map is recycled between calls (ledger, iteration 29), and
+    # a scope that ESCAPED the frame must never be. These are the three ways it
+    # escapes — a nested `def`, a `lambda`, a generator expression — each with
+    # enough intervening calls to have cycled the pool many times over. A
+    # recycled captured scope is a cleared map handed to a closure: a wrong
+    # answer, not a refusal.
+    ("scope-nested-def-escapes", "def outer():\n    x = 1\n    def inner():\n        return x\n    return inner\nprint(outer()())"),
+    ("scope-lambda-escapes", "def mk(n):\n    return lambda k: k + n\nprint(mk(10)(1), mk(20)(1))"),
+    ("scope-genexpr-outlives-frame", "def gen(n):\n    return (i * n for i in range(3))\nprint(list(gen(5)))"),
+    ("scope-closures-survive-recycling", "def mk(n):\n    return lambda: n\ndef noise(k):\n    a=k;b=k;c=k;d=k;e=k;f=k\n    return a+b+c+d+e+f\nfs=[mk(i) for i in range(10)]\nfor i in range(300):\n    noise(i)\nprint([f() for f in fs])"),
+    ("scope-genexpr-survives-recycling", "def gen(n):\n    return (i + n for i in range(3))\ndef noise(k):\n    a=k;b=k;c=k;d=k\n    return a+b+c+d\ng = gen(100)\nfor i in range(200):\n    noise(i)\nprint(list(g))"),
+    ("scope-two-closures-one-frame", "def mk(n):\n    return (lambda: n), (lambda: n * 2)\na, b = mk(7)\nprint(a(), b())"),
+    ("scope-closure-made-in-recursion", "def r(n):\n    if n == 0:\n        return []\n    f = lambda: n\n    return [f] + r(n-1)\nprint([g() for g in r(6)])"),
+    # The presized map must hold every name the body binds, not just the params.
+    ("scope-varying-local-counts", "def one(): x=1; return x\ndef four(): a=1;b=2;c=3;d=4; return a+b+c+d\ndef eight(): a=1;b=2;c=3;d=4;e=5;f=6;g=7;h=8; return a+b+c+d+e+f+g+h\nprint(sum(one()+four()+eight() for _ in range(50)))"),
+    ("scope-kwargs-eight", "def f(a,b,c,d,e,f_,g,h):\n    return a+b+c+d+e+f_+g+h\nprint(f(1,2,3,4,5,6,7,8), f(h=8,g=7,f_=6,e=5,d=4,c=3,b=2,a=1))"),
+    # `print`'s `sep` and `end` must be str or None — CPython checks the TYPE
+    # rather than converting. Converting them printed `a2` for `end=2` at exit
+    # 0, and `sep=1` was accepted silently because with one argument the
+    # separator is never used: the bad keyword only showed if a second argument
+    # ever appeared.
+    ("print-sep-int-is-a-type-error", "print('a', sep=1)"),
+    ("print-end-int-is-a-type-error", "print('a', end=2)"),
+    ("print-sep-bytes-is-a-type-error", "print('a', 'b', sep=b'x')"),
+    ("print-end-list-is-a-type-error", "print('a', end=[1])"),
+    ("print-sep-end-none-are-the-defaults", "print('a', 'b', sep=None, end=None)"),
+    ("print-sep-end-strings", "print('a', 'b', sep='|', end='#')"),
+    ("print-no-args", "print()"),
+    ("print-many-args", "print(1, 'a', None, [1, 2], (3,), {'k': 1})"),
+    # The recursion guard moved off the scalar paths of `eq`, `order` and `hkey`
+    # (ledger, iteration 33). These are the shallow structures it must still get
+    # right — the DEEP ones cannot live here because they refuse, and `CASES`
+    # asserts a match; `tests/test_recursion_guard.py` covers those.
+    ("eq-nested-lists", "print([[1, [2]]] == [[1, [2]]], [[1, [2]]] == [[1, [3]]])"),
+    ("eq-numeric-tower", "print(1 == 1.0, 1 == True, 0 == False, 1.5 == 1.5)"),
+    ("order-nested", "print(sorted([[2, 1], [1, 9], [1, 2]]))"),
+    ("hkey-tuple-nested", "d = {(1, (2, 3)): 'a'}\nprint(d[(1, (2, 3))])"),
+    ("hkey-collapses-numeric", "d = {1: 'a'}\nd[1.0] = 'b'\nd[True] = 'c'\nprint(len(d), d[1])"),
+    ("membership-mixed", "print(1 in [1.0], 'a' in ['a'], (1,) in [(1,)], None in [None])"),
+    # The tuple fast path must not change any of these. (The MESSAGE cases for
+    # unpacking are in `STDERR_CASES` below, not here: `CASES` compares stdout
+    # and the exit code, so a message case put here passes on the very binary
+    # that has the bug — which is how the first draft of these was written.)
+    ("unpack-wrong-length-few", "a, b, c = (1, 2)"),
+    ("unpack-wrong-length-many", "a, b = (1, 2, 3)"),
+    ("unpack-nested", "a, (b, (c, d)) = 1, (2, (3, 4))\nprint(a, b, c, d)"),
+    ("unpack-star-mid", "a, *b, c = (1, 2, 3, 4, 5)\nprint(a, b, c)"),
+    ("unpack-into-subscripts", "l = [0, 0, 0]\nl[0], (l[1], l[2]) = 1, (2, 3)\nprint(l)"),
+    ("unpack-swap", "a, b = 1, 2\na, b = b, a\nprint(a, b)"),
+    ("unpack-list-is-snapshotted", "src = [1, 2]\ndef f():\n    src.append(9)\n    return 0\nl = [0, 0]\nl[f()], l[1] = src\nprint(l, src)"),
 ]
 
 needs_engine = pytest.mark.skipif(
@@ -68,4 +200,160 @@ def test_matches_cpython(name: str, program: str) -> None:
     )
     assert got.stdout == ref.stdout, (
         "%s: lypning printed %r, CPython printed %r" % (name, got.stdout, ref.stdout)
+    )
+
+
+#: Case mappings lypning cannot reproduce, which must leave by the refusal
+#: contract rather than answer. They are here rather than in `CASES` because
+#: `CASES` asserts lypning MATCHES CPython, and a refusal is the opposite claim:
+#: exit 90, one line on stderr, nothing on stdout, and the dispatcher gets the
+#: real answer from CPython one spawn later.
+REFUSES = [
+    # `'ß'.casefold()` is `'ss'`; aliasing casefold to lowercasing answered `'ß'`
+    # at exit 0, so `'ß'.casefold() == 'ss'.casefold()` was False — and caseless
+    # comparison is the whole purpose of the method.
+    ("casefold-sharp-s", "print('ß'.casefold())"),
+    ("casefold-micro", "print('µ'.casefold())"),
+    ("casefold-ligature", "print('ﬁ'.casefold())"),
+    # Titlecase is not uppercase: `'ǅ'.title()` is `'ǅ'`, and `'ß'.capitalize()`
+    # is `'Ss'` rather than `'SS'`.
+    ("title-digraph", "print('ǅx'.title())"),
+    ("capitalize-sharp-s", "print('ßx'.capitalize())"),
+]
+
+
+@needs_engine
+@pytest.mark.parametrize("name,program", REFUSES, ids=[c[0] for c in REFUSES])
+def test_refuses_rather_than_answering(name: str, program: str) -> None:
+    got = engines.run(engines.LYPNING, program, timeout=30)
+    assert got.refused, (
+        "%s must REFUSE: lypning cannot reproduce this case mapping, so an "
+        "answer here is a wrong answer at exit 0. Got exit %d, stdout %r"
+        % (name, got.returncode, got.stdout)
+    )
+    assert got.stdout == "", (
+        "%s wrote to stdout before refusing (%r) — the commit barrier is what "
+        "makes the retry on the next tier safe" % (name, got.stdout)
+    )
+    # And the tier that gets it must actually answer, or the refusal has only
+    # moved the problem.
+    ref = subprocess.run(
+        [sys.executable, "-c", program], capture_output=True, text=True, timeout=30
+    )
+    assert ref.returncode == 0, "%s: CPython does not answer it either" % name
+
+
+#: `json.loads` documents that must FAIL to decode, with CPython's exact message
+#: and position. They are separate from `CASES` because both interpreters exit 1
+#: with a traceback, so the assertion is on the message rather than on stdout —
+#: and lypning names the exception `JSONDecodeError` where CPython's traceback
+#: shows `json.decoder.JSONDecodeError`, which is the module path of a class
+#: lypning does not have a module for.
+JSON_ERRORS = [
+    # Raw control characters are invalid inside a JSON string, and the decoder
+    # ACCEPTED them: `json.loads('"a\tb"')` returned `'a\tb'` at exit 0. That is
+    # the worst shape a decoder can have — a malformed document is answered, so
+    # a program that should have been routed onward to get its JSONDecodeError
+    # got a result instead. The bound is `< 0x20` exactly, per RFC 8259.
+    ("json-tab-in-string", 'chr(9)', "Invalid control character at: line 1 column 3 (char 2)"),
+    ("json-newline-in-string", 'chr(10)', "Invalid control character at: line 1 column 3 (char 2)"),
+    ("json-nul-in-string", 'chr(0)', "Invalid control character at: line 1 column 3 (char 2)"),
+    ("json-unit-sep-in-string", 'chr(31)', "Invalid control character at: line 1 column 3 (char 2)"),
+]
+
+
+@needs_engine
+@pytest.mark.parametrize(
+    "name,ch,message", JSON_ERRORS, ids=[c[0] for c in JSON_ERRORS]
+)
+def test_json_rejects_what_cpython_rejects(name: str, ch: str, message: str) -> None:
+    program = "import json\nprint(repr(json.loads('\"a' + %s + 'b\"')))" % ch
+    ref = subprocess.run(
+        [sys.executable, "-c", program], capture_output=True, text=True, timeout=30
+    )
+    assert ref.returncode == 1 and message in ref.stderr, (
+        "the oracle moved: CPython no longer reports %r for %s" % (message, name)
+    )
+    got = engines.run(engines.LYPNING, program, timeout=30)
+    assert not got.refused, (
+        "%s: a refusal is safe but wrong here — CPython raises rather than "
+        "answering, so lypning can and should raise too" % name
+    )
+    assert got.returncode == 1, (
+        "%s: exit %d — the document is invalid and must not decode. stdout %r"
+        % (name, got.returncode, got.stdout)
+    )
+    assert message in got.stderr, (
+        "%s: lypning said %r, CPython says %r — the POSITION is the answer for "
+        "a decode error" % (name, got.stderr.strip()[-120:], message)
+    )
+
+
+@needs_engine
+def test_json_unterminated_string_points_at_the_opening_quote() -> None:
+    """"starting at" means the quote, not where the scan gave up."""
+    program = "import json\nprint(json.loads('\"abc'))"
+    want = "Unterminated string starting at: line 1 column 1 (char 0)"
+    ref = subprocess.run(
+        [sys.executable, "-c", program], capture_output=True, text=True, timeout=30
+    )
+    assert want in ref.stderr, "the oracle moved: %s" % ref.stderr.strip()[-160:]
+    got = engines.run(engines.LYPNING, program, timeout=30)
+    assert want in got.stderr, (
+        "lypning reported %r; it used to point at char 4, the end of the scan"
+        % got.stderr.strip()[-120:]
+    )
+
+
+#: Cases whose whole content is the message on stderr. `CASES` cannot hold them:
+#: it compares stdout and the exit code, and every one of these exits 1 with
+#: empty stdout on both interpreters whether the message is right or wrong.
+#:
+#: Each pair is (name, program, the substring CPython must produce). The oracle
+#: is checked first on every run, so a CPython that changed its wording fails
+#: loudly here instead of silently turning the test into a tautology.
+STDERR_CASES = [
+    # Unpacking has its own message for a non-iterable, and the same trap `join`
+    # had: the remap must be on `make_iter` alone, or every exception raised
+    # while DRAINING the sequence turns into it.
+    ("unpack-non-iterable-int", "a, b = 5",
+     "cannot unpack non-iterable int object"),
+    ("unpack-non-iterable-none", "a, b = None",
+     "cannot unpack non-iterable NoneType object"),
+    ("unpack-non-iterable-float", "a, b = 1.5",
+     "cannot unpack non-iterable float object"),
+    ("unpack-generator-raises-through", "a, b = (1//x for x in [1, 0])",
+     "ZeroDivisionError"),
+    ("unpack-generator-value-error", "a, b = (int(x) for x in ['1', 'z'])",
+     "invalid literal for int()"),
+    # The same shape in `join`, kept beside it so the pair is visible.
+    ("join-non-iterable-message-text", "print(','.join(5))",
+     "can only join an iterable"),
+    ("join-generator-raises-through-text",
+     "print(','.join(str(1//x) for x in [1, 0]))", "ZeroDivisionError"),
+]
+
+
+@needs_engine
+@pytest.mark.parametrize(
+    "name,program,message", STDERR_CASES, ids=[c[0] for c in STDERR_CASES]
+)
+def test_the_message_on_stderr_matches_cpython(name, program, message) -> None:
+    ref = subprocess.run(
+        [sys.executable, "-c", program], capture_output=True, text=True, timeout=30
+    )
+    assert ref.returncode == 1 and message in ref.stderr, (
+        "the oracle moved: CPython no longer produces %r for %s — got %r"
+        % (message, name, ref.stderr.strip()[-200:])
+    )
+    got = engines.run(engines.LYPNING, program, timeout=30)
+    assert not got.refused, (
+        "%s: a refusal is safe but wrong here — CPython raises rather than "
+        "answering, so lypning can and should raise the same thing" % name
+    )
+    assert got.returncode == 1, "%s: exit %d, stdout %r" % (
+        name, got.returncode, got.stdout)
+    assert message in got.stderr, (
+        "%s: lypning said %r, CPython says %r" % (
+            name, got.stderr.strip()[-160:], message)
     )

@@ -149,11 +149,21 @@ impl<'a> P<'a> {
         Ok(list(out))
     }
     fn string(&mut self) -> R<String> {
+        // "starting at", so the position CPython reports for an unterminated
+        // string is the OPENING QUOTE, not where the scan gave up. `'"abc'` is
+        // `char 0` in CPython and was `char 4` here — an error message that
+        // points at the wrong place, on the one class of document where the
+        // message is the whole answer.
+        let opened = self.i;
         self.i += 1;
         let mut out = String::new();
         loop {
             let Some(&c) = self.b.get(self.i) else {
-                return Err(decode_err("Unterminated string starting at", self.src, self.i));
+                return Err(decode_err(
+                    "Unterminated string starting at",
+                    self.src,
+                    opened,
+                ));
             };
             match c {
                 b'"' => {
@@ -206,11 +216,30 @@ impl<'a> P<'a> {
                         _ => return Err(decode_err("Invalid \\escape", self.src, self.i - 1)),
                     }
                 }
+                // A raw control character inside a string is INVALID JSON, and
+                // `json.loads` rejects it — `strict=True` is the default and
+                // lypning has no `strict=False`. The run scan stopped only at
+                // `"` and `\`, so `json.loads('"a\tb"')` returned `'a\tb'` at
+                // exit 0 where CPython raises. That is the worst shape a decoder
+                // can have: a malformed document is ANSWERED, so a program that
+                // should have been routed onward to get its JSONDecodeError got
+                // a result instead.
+                //
+                // The bound is `< 0x20` exactly, per RFC 8259 — DEL (0x7f) is a
+                // legal character in a JSON string and CPython accepts it.
+                c if c < 0x20 => {
+                    return Err(decode_err(
+                        "Invalid control character at",
+                        self.src,
+                        self.i,
+                    ));
+                }
                 _ => {
                     let start = self.i;
                     while self.i < self.b.len()
                         && self.b[self.i] != b'"'
                         && self.b[self.i] != b'\\'
+                        && self.b[self.i] >= 0x20
                     {
                         self.i += 1;
                     }

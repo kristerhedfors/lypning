@@ -73,11 +73,25 @@ pub struct Interp {
     /// `call_func_inner`; capped at [`CHAIN_POOL_MAX`] so a deep recursion
     /// cannot leave the pool holding its whole depth for the rest of the run.
     chain_pool: Vec<Vec<Scope>>,
+    /// Spent frame scopes, kept with their hash tables intact. A function's
+    /// scope map starts EMPTY on every call and grows into hashbrown's capacity
+    /// steps as parameters and locals are bound — measured on this container,
+    /// the 2-to-4-bound-names step costs +268 ns/call and 4-to-8 costs +545,
+    /// both of them table growth on a table whose final size was known before
+    /// the first insert. That is the two-phase-allocation trap CLAUDE.md and the
+    /// skill both name. Recycling keeps the table, so a repeatedly called
+    /// function grows it once for the whole run instead of once per call.
+    scope_pool: Vec<Scope>,
 }
 
 /// How many scope-chain vectors to keep. Above the depth of any recursion this
 /// runtime allows to finish, and small enough to be nothing.
 const CHAIN_POOL_MAX: usize = 64;
+
+/// The same bound for [`Interp::scope_pool`], and for the same reason: a deep
+/// recursion must not leave the pool holding its whole depth for the rest of
+/// the run.
+const SCOPE_POOL_MAX: usize = 64;
 
 impl Interp {
     pub fn new() -> Self {
@@ -91,6 +105,7 @@ impl Interp {
             steps: 0,
             expr_depth: 0,
             chain_pool: Vec::new(),
+            scope_pool: Vec::new(),
             // Read once, here, rather than per statement. Zero — the CLI's
             // value, since a process can simply be killed — compiles the check
             // down to a comparison that is never true.
@@ -279,15 +294,9 @@ impl Interp {
                     Some(e) => self.eval(e)?,
                 };
                 return Err(match e {
-                    Value::Exc(k, m) => LypningError::Exc(Exc {
-                        kind: k,
-                        msg: m.to_string(),
-                    }),
+                    Value::Exc(k, m) => LypningError::exc(k, m.to_string()),
                     Value::Builtin(name) if crate::builtins::is_exception_name(name) => {
-                        LypningError::Exc(Exc {
-                            kind: crate::builtins::exception_static(name),
-                            msg: String::new(),
-                        })
+                        LypningError::exc(crate::builtins::exception_static(name), "")
                     }
                     other => {
                         return Err(type_err(format!(
@@ -363,7 +372,7 @@ impl Interp {
                         // `unsupported` is a runtime capability gap, not a
                         // Python exception: catching it with `except Exception`
                         // would turn a routing signal into a wrong answer.
-                        if err.is_unsupported() || matches!(err, LypningError::Exit(_)) {
+                        if err.is_unsupported() || err.is_exit().is_some() {
                             Err(err)
                         } else {
                             let kind = err_kind(&err);
@@ -481,7 +490,57 @@ impl Interp {
             Target::Name(n) => self.bind(n, v),
             Target::Tuple(parts) => {
                 let star_at = parts.iter().position(|p| matches!(p, Target::Star(_)));
-                let items = self.iter_collect(v)?;
+                // `a, b = pair` with a tuple or list of exactly the right
+                // length is the shape almost every unpack has — `for k, v in
+                // d.items()`, `a, b = b, a`, `for i, x in enumerate(…)` — and it
+                // does not need the sequence copied to be taken apart.
+                // `iter_collect` builds a fresh `Vec<Value>`, clones every
+                // element into it, hands them over one at a time and drops the
+                // vector; here the elements are cloned straight out of the
+                // source. Anything else — a star target, a generator, a string,
+                // the wrong length — falls through to the general path below,
+                // which owns every error message.
+                // A TUPLE only, and that is not an oversight. Unpacking a LIST
+                // has to snapshot it — CPython's `UNPACK_SEQUENCE` reads every
+                // element before it assigns any, so a target that mutates the
+                // list must not be seen by the elements after it — and a
+                // snapshot is exactly the copy `iter_collect` already makes.
+                // There is nothing to win there. A tuple is immutable, so
+                // reading it in place and snapshotting it are the same thing.
+                if star_at.is_none() {
+                    if let Value::Tuple(t) = &v {
+                        if t.len() == parts.len() {
+                            for (p, x) in parts.iter().zip(t.iter()) {
+                                self.assign(p, x.clone())?;
+                            }
+                            return Ok(());
+                        }
+                    }
+                }
+                // Unpacking has its OWN message for a non-iterable — `a, b = 5`
+                // is "cannot unpack non-iterable int object", where
+                // `iter_collect` produced the generic "'int' object is not
+                // iterable". Same exit code, different sentence, and the
+                // sentence is what the caller reads.
+                //
+                // As in `str.join` (ledger, iteration 28), the remap is on
+                // `make_iter` ALONE and the drain is written out for it. Wrapping
+                // the whole collect would turn every exception the sequence
+                // raises *while being drained* into this message — `a, b = (1//x
+                // for x in [1, 0])` would report a TypeError where CPython raises
+                // ZeroDivisionError.
+                let tname = type_name(&v);
+                let mut iter = self.make_iter(v).map_err(|e| {
+                    if e.is_unsupported() {
+                        e
+                    } else {
+                        type_err(format!("cannot unpack non-iterable {tname} object"))
+                    }
+                })?;
+                let mut items = Vec::new();
+                while let Some(x) = self.iter_next(&mut iter)? {
+                    items.push(x);
+                }
                 match star_at {
                     None => {
                         if items.len() != parts.len() {
@@ -1035,7 +1094,10 @@ impl Interp {
         kw: Vec<(Rc<str>, Value)>,
     ) -> R<Value> {
         let p = &f.params;
-        let scope = new_scope();
+        let scope = self.take_scope(&f);
+        // Taken BEFORE the move into the chain below: the teardown has to know
+        // which `Rc` was this frame's own, and by then it is inside the vector.
+        let scope_ptr = Rc::as_ptr(&scope);
         let npos = p.names.len()
             - p.star.map_or(0, |_| 1)
             - p.dstar.map_or(0, |_| 1);
@@ -1129,6 +1191,33 @@ impl Interp {
         // Cleared here rather than on reuse, so the frame's scopes are dropped
         // when the frame ends and not whenever the vector is next taken out.
         let mut spent = std::mem::replace(&mut self.chain, saved_chain);
+        // Recycle this frame's own scope, and ONLY if nothing captured it.
+        // A nested `def`, a `lambda` and a generator expression each clone the
+        // whole chain, which clones this `Rc` — so `strong_count == 1` is
+        // exactly the test, and it is exact because the crate creates no `Weak`
+        // anywhere. Handing a captured scope back to the pool would give a
+        // closure a cleared map: a wrong answer, not a refusal.
+        //
+        // `try_borrow_mut` rather than `borrow_mut` because a live borrow here
+        // would mean a `Ref` outlived the frame, and under `panic = "abort"`
+        // finding out by aborting is not a diagnosis. Declining to recycle is.
+        if self.scope_pool.len() < SCOPE_POOL_MAX
+            && spent
+                .last()
+                .is_some_and(|s| Rc::as_ptr(s) == scope_ptr && Rc::strong_count(s) == 1)
+        {
+            let s = spent.pop().expect("checked by last() above");
+            let emptied = match s.try_borrow_mut() {
+                Ok(mut m) => {
+                    m.clear();
+                    true
+                }
+                Err(_) => false,
+            };
+            if emptied {
+                self.scope_pool.push(s);
+            }
+        }
         spent.clear();
         if self.chain_pool.len() < CHAIN_POOL_MAX {
             self.chain_pool.push(spent);
@@ -1164,6 +1253,21 @@ impl Interp {
     /// it sits on the function-call path where a call instruction is a
     /// measurable share of the work.
     #[inline]
+    /// A frame scope from the pool, or a new one sized for what it will hold.
+    ///
+    /// `assigned` is every name the body binds, parameters included
+    /// (`assigned_names`), so the final size is known before the first insert. A
+    /// lambda's `assigned` is deliberately empty, which is why the parameters
+    /// are the floor rather than the answer.
+    #[inline]
+    fn take_scope(&mut self, f: &FuncObj) -> Scope {
+        if let Some(s) = self.scope_pool.pop() {
+            return s;
+        }
+        let n = f.assigned.len().max(f.params.names.len());
+        Rc::new(RefCell::new(crate::hash::map_with_capacity(n)))
+    }
+
     pub fn take_chain(&mut self) -> Vec<Scope> {
         self.chain_pool.pop().unwrap_or_default()
     }
@@ -1346,15 +1450,15 @@ fn collect_assigned(body: &[Stmt], out: &mut FastSet<Rc<str>>) {
 }
 
 pub fn err_kind(e: &LypningError) -> &'static str {
-    match e {
-        LypningError::Exc(x) => x.kind,
+    match e.kind() {
+        ErrKind::Exc(x) => x.kind,
         _ => "RuntimeError",
     }
 }
 pub fn err_msg(e: &LypningError) -> String {
-    match e {
-        LypningError::Exc(x) => x.msg.clone(),
-        other => other.to_string(),
+    match e.kind() {
+        ErrKind::Exc(x) => x.msg.clone(),
+        _ => e.to_string(),
     }
 }
 

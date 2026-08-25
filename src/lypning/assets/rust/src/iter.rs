@@ -60,7 +60,7 @@ pub struct GenState {
     pub clauses: Rc<Vec<CompClause>>,
     pub elt: Rc<Expr>,
     pub env: Vec<Scope>,
-    /// `None` only in a [`GenState::placeholder`], which exists to fill the
+    /// `None` only in a [`GenState::placeholder_like`], which exists to fill the
     /// `RefCell` while the real state is out and whose scope is never read —
     /// it is marked `running` and `done`, and both are checked first. An
     /// `Option` rather than a shared empty scope because a `thread_local` for
@@ -88,10 +88,21 @@ impl GenState {
             running: false,
         }
     }
-    fn placeholder() -> Self {
+    /// The stand-in that fills the `RefCell` while the real state is out.
+    ///
+    /// It borrows the real state's two `Rc`s rather than making its own, and
+    /// that is the whole function: `Rc::new(Vec::new())` and
+    /// `Rc::new(Expr::None)` were **two heap allocations and two frees per
+    /// element yielded** — an `RcBox` around a 24-byte `Vec` header, and one
+    /// sized to the largest `Expr` variant, both freed a few lines later when
+    /// the real state goes back. Two refcount increments do the same job.
+    ///
+    /// Neither field is ever read through the placeholder: it is marked
+    /// `running` and `done`, and both are checked before anything else.
+    fn placeholder_like(real: &GenState) -> Self {
         GenState {
-            clauses: Rc::new(Vec::new()),
-            elt: Rc::new(Expr::None),
+            clauses: real.clauses.clone(),
+            elt: real.elt.clone(),
             env: Vec::new(),
             scope: None,
             stack: Vec::new(),
@@ -338,7 +349,11 @@ impl Interp {
         }
         // Take the state out so `eval` below can re-enter without a RefCell
         // conflict; put it back on every exit path.
-        let mut st = std::mem::replace(&mut *g.borrow_mut(), GenState::placeholder());
+        let mut st = {
+            let mut b = g.borrow_mut();
+            let stand_in = GenState::placeholder_like(&b);
+            std::mem::replace(&mut *b, stand_in)
+        };
         st.running = true;
         // The chain vector comes from the same pool `call_func_inner` uses:
         // this runs once per element yielded, so allocating one here was a

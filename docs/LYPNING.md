@@ -471,6 +471,27 @@ blocks needs 103,096 B, which no single flag provides; the levers not yet tried
 are `build-std` with `panic_immediate_abort` (nightly) and cutting the `std`
 formatting machinery. This is the clearest open work item.
 
+**`opt-level = "z"` is not merely pointless, it is expensive — measured
+2026-08-24.** The paragraph above says it buys nothing, which was true of the
+bytes and was never a claim about speed. It is: on the 31-case `perf` suite,
+`"z"` against `"s"` on the same source cost **+31.6% on the total** (1802.73 ms
+→ 2371.69 ms), spread across nearly every row rather than concentrated in one.
+So the sentence to carry forward is that `"z"` trades a third of the
+interpreter's throughput for bytes that do not change the block count — and if
+it ever *did* change the block count, that is the price of the trade, not a free
+win. Re-measure before believing either half.
+
+**Static, not static-PIE — one block, taken 2026-08-24.** The musl targets
+default to a position-independent executable and the fixups it needs at load are
+`.rela.dyn`: 33,864 B here. `-C relocation-model=static`, wired into the crate's
+`.cargo/config.toml` so a by-hand `cargo build` and `lypning build --rust`
+produce the same artefact, took this tree from 1,049,272 B to **1,020,104 B** and
+nine blocks back to eight. Startup is *not* part of the case and it was worth
+measuring to find that out — `-c 'pass'`, min of 60 interleaved runs, 0.387 ms as
+a PIE against 0.388 ms without. What it gives up is ASLR of the executable's own
+image, which the file argues is the right trade for a short-lived interpreter
+that takes no network input.
+
 ## 8a. Measurement in a sandbox VM
 
 Every lypning figure before 2026-08-19 came from a normal Linux filesystem, with

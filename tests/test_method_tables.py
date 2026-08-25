@@ -79,3 +79,72 @@ def test_binary_search_is_still_what_reads_them(path):
     # enforcing a rule nothing depends on any more.
     assert "binary_search" in path.read_text(encoding="utf-8"), path.name
 
+
+
+# --- the case-mapping refusal tables, checked against CPython itself ----------
+#
+# `casefold_differs` and `titlecase_differs` in `methods.rs` are the codepoints
+# where Rust's `to_lowercase` / `to_uppercase` are NOT the mapping CPython
+# applies, so `str.casefold()`, `.title()` and `.capitalize()` refuse on them
+# rather than answer. They are the same shape as `route.rs`'s capability table
+# and carry the same risk: a table that describes what someone WISHED the
+# runtime did turns a loud refusal into a silent wrong answer (CLAUDE.md
+# invariant 1).
+#
+# So they are checked against the oracle rather than against a copy. The two
+# directions are not symmetric and the messages say which is which: a MISSING
+# codepoint is a wrong answer at exit 0, an EXTRA one is only over-refusal.
+
+_RANGE_RE = re.compile(r"'\\u\{([0-9a-f]+)\}'\.\.='\\u\{([0-9a-f]+)\}'")
+_SINGLE_RE = re.compile(r"'\\u\{([0-9a-f]+)\}'(?!\.\.)")
+
+
+def _predicate_set(fn: str) -> set:
+    """The codepoints a `matches!`-based predicate in methods.rs covers."""
+    src = METHODS.read_text(encoding="utf-8")
+    m = re.search(
+        r"fn %s\(c: char\) -> bool \{\s*matches!\(c,(.*?)\)\s*\}" % fn, src, re.S
+    )
+    assert m, (
+        "%s is gone from methods.rs — if the refusal was replaced by a real "
+        "implementation, delete this test with it" % fn
+    )
+    body = m.group(1)
+    out = set()
+    for lo, hi in _RANGE_RE.findall(body):
+        out |= set(range(int(lo, 16), int(hi, 16) + 1))
+    for one in _SINGLE_RE.findall(body):
+        out.add(int(one, 16))
+    return out
+
+
+def _codepoints_where(differs) -> set:
+    return {
+        c
+        for c in range(0x110000)
+        if not 0xD800 <= c <= 0xDFFF and differs(chr(c))
+    }
+
+
+@pytest.mark.parametrize(
+    "fn,differs",
+    [
+        ("casefold_differs", lambda ch: ch.casefold() != ch.lower()),
+        ("titlecase_differs", lambda ch: ch.title() != ch.upper()),
+    ],
+)
+def test_case_refusal_table_matches_cpython(fn, differs):
+    claimed = _predicate_set(fn)
+    real = _codepoints_where(differs)
+    missing = sorted(real - claimed)
+    extra = sorted(claimed - real)
+    assert not missing, (
+        "%s does not cover %d codepoint(s) CPython maps differently, so the "
+        "method ANSWERS where it should refuse — a wrong answer at exit 0. "
+        "First few: %s" % (fn, len(missing), [hex(c) for c in missing[:8]])
+    )
+    assert not extra, (
+        "%s covers %d codepoint(s) CPython maps the same way, so the method "
+        "refuses where it could answer. Safe, but it is coverage given away for "
+        "nothing. First few: %s" % (fn, len(extra), [hex(c) for c in extra[:8]])
+    )

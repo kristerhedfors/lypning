@@ -26,7 +26,7 @@
 //! below is the same predicate the dispatcher uses, exported so no host has to
 //! reinvent it.
 
-use crate::err::{LypningError, UNSUPPORTED_EXIT};
+use crate::err::{ErrKind, LypningError, UNSUPPORTED_EXIT};
 use crate::host::{self, Policy};
 use crate::io;
 use std::cell::Cell;
@@ -266,7 +266,8 @@ fn finish(r: Result<(), LypningError>) -> Outcome {
             },
             Err(e) => finish(Err(e)),
         },
-        Err(LypningError::Exit(n)) => {
+        Err(ref e) if e.is_exit().is_some() => {
+            let n = e.is_exit().unwrap_or(0);
             let committed = io::commit().is_ok();
             Outcome {
                 committed,
@@ -274,8 +275,8 @@ fn finish(r: Result<(), LypningError>) -> Outcome {
             }
         }
         Err(e) if e.is_unsupported() => {
-            let (kind, detail) = match &e {
-                LypningError::Unsupported { kind, detail } => (kind.clone(), detail.clone()),
+            let (kind, detail) = match e.kind() {
+                ErrKind::Unsupported { kind, detail } => (kind.clone(), detail.clone()),
                 _ => (String::new(), String::new()),
             };
             if io::is_committed() {

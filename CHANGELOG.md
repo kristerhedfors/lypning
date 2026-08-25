@@ -14,6 +14,28 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-24** — The allocator, and fifty silent wrong answers · [#13]
+
+- **The allocator was the workload.** Callgrind said 43.9% of instructions on a
+  hot loop were inside musl's mallocng. A size-classed free-list allocator over
+  bump-allocated chunks replaces it for the binary only — never for the C ABI,
+  which must not impose an allocator on its host. `perf` TOTAL fell by a third;
+  `str-concat`, blamed on a quadratic copy for this project's whole history, was
+  really 32,104 `mmap`/`munmap` calls and is now 13x faster.
+- **Static rather than static-PIE**, which is one CheerpX device block; boxing
+  the error payload, which is 45 KB more and made every `R<T>` return in
+  registers. The binary is smaller than it started and 8 blocks either way.
+- **About fifty wrong answers at exit 0**, none of which any gate could see:
+  Python's whitespace is not Rust's, `splitlines` splits on eleven boundaries,
+  `str.count` ignored its bounds, six methods clamped a `start` CPython does not,
+  all six case methods disagreed, and `json.loads` **answered malformed
+  documents**. Each is pinned against live CPython, and the string bounds are
+  pinned as a 44,352-cell grid rather than a list — a list is what failed to find
+  the bug the first time.
+- One MISMATCH is left open and named rather than papered over: the case methods
+  still differ on 55 codepoints because CPython 3.11 ships Unicode 14.0 and the
+  Rust toolchain ships a later one. `docs/HILLCLIMB.md` proposes the branch.
+
 **2026-08-24** — Every markdown file the docs cite opens as rendered · [#12]
 
 - `docs/PROMPTING.md` and `docs/HILLCLIMB.md` are in README §9's table and were
@@ -309,6 +331,7 @@ runtime exists — the number came first, and both were built for it. It is
 [#10]: https://github.com/kristerhedfors/lypning/pull/10
 [#11]: https://github.com/kristerhedfors/lypning/pull/11
 [#12]: https://github.com/kristerhedfors/lypning/pull/12
+[#13]: https://github.com/kristerhedfors/lypning/pull/13
 [ds]: https://github.com/kristerhedfors/deepresearch.se
 [u432]: https://github.com/kristerhedfors/deepresearch.se/pull/432
 [u434]: https://github.com/kristerhedfors/deepresearch.se/pull/434

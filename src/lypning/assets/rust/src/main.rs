@@ -27,6 +27,17 @@ use lypning::err::{LypningError, UNSUPPORTED_EXIT};
 use lypning::{eval, io, parse, route};
 use std::io::{Read, Write};
 
+/// Installed for the BINARY only, deliberately — see `alloc.rs` for what it is
+/// and why the general allocator is most of this program's instruction stream.
+///
+/// A `#[global_allocator]` is process-wide, so putting it in `lib.rs` would
+/// impose lypning's allocator on any application that merely linked the C ABI to
+/// run a one-liner. CLAUDE.md invariant 7 says nothing we write may cost a user
+/// something they had, and an application's allocator is very much something it
+/// had. A host that wants this can install it itself; the module is public.
+#[global_allocator]
+static ALLOC: lypning::alloc::Lypalloc = lypning::alloc::Lypalloc::new();
+
 fn main() {
     let argv: Vec<String> = std::env::args().collect();
     let code = run(&argv);
@@ -117,9 +128,9 @@ fn finish(r: Result<(), LypningError>, report_refusal: bool) -> i32 {
             }
             0
         }
-        Err(LypningError::Exit(n)) => {
+        Err(ref e) if e.is_exit().is_some() => {
             let _ = io::commit();
-            n
+            e.is_exit().unwrap_or(0)
         }
         Err(e) if e.is_unsupported() => {
             if io::is_committed() {

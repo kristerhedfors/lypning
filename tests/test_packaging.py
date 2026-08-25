@@ -87,6 +87,32 @@ def test_every_package_data_glob_matches_a_file() -> None:
 
 
 @needs_toml
+def test_the_wheel_carries_the_crate_cargo_config() -> None:
+    """The one crate file whose absence produces a working, WRONG binary.
+
+    Every other entry in `package-data` fails loudly when it is missing:
+    `cargo build` cannot compile without `Cargo.toml` or a `.rs`, so a `pip`
+    user gets an error and files a bug. `assets/rust/.cargo/config.toml` is not
+    like that. Without it the build succeeds, every gate passes, and the binary
+    is 29 KB larger — a whole CheerpX device block (`docs/LYPNING.md` §8) — for
+    the sole reason that cargo defaulted back to a position-independent
+    executable. Nothing downstream would ever say so.
+
+    It is also the entry most likely to be lost by accident: it names a *dot*
+    directory, which every "tidy the globs" pass treats as an editor artefact.
+    """
+    patterns = _project()["tool"]["setuptools"]["package-data"]["lypning"]
+    assert "assets/rust/.cargo/config.toml" in patterns, (
+        "the crate's cargo config is not in package-data: a wheel built from "
+        "this tree builds a PIE, one device block larger, and says nothing"
+    )
+    config = PACKAGE / "assets" / "rust" / ".cargo" / "config.toml"
+    assert "relocation-model=static" in config.read_text(encoding="utf-8"), (
+        "the flag the entry above exists to ship is not in the file"
+    )
+
+
+@needs_toml
 def test_the_python_floor_is_stated_once_and_claimed_everywhere() -> None:
     """`requires-python` and the version classifiers must agree.
 
