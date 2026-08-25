@@ -14,6 +14,30 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-25** — `%`-formatting agrees with CPython, and the numbers are re-measured · [#14]
+
+- **The `%` conversion grid goes to zero.** A grid over conversion × flags ×
+  width × precision × value reported **8,346 differing cells of 29,100**; it now
+  reports none. The spec was assembled in the wrong order (`+0f` is valid,
+  `0+f` is a ValueError, and the zero-pad flag was emitted first as if it were an
+  alignment), `%5s` leaned left where CPython leans right, the `0x` prefix landed
+  after the zero fill instead of before it, `#` dropped the decimal point it
+  exists to keep, and `%c` was wrong four ways at once — including refusing
+  `'%c' % 'a'`.
+- `%.Nd` — minimum digits, which `format()` cannot spell — is **refused**, and
+  only for the values where the precision actually adds digits. `'%.2d' % 42`
+  still answers.
+- **Every performance figure in `README.md` and `docs/LYPNING.md` §1, §2, §4 and
+  §8 was re-measured** on 2026-08-25 against a corpus of 1551 programs, with all
+  three engines built. The mixture answers 1305 of 1305 at **0.302x** of
+  CPython's cost, a 69.8% saving.
+- **The MicroPython tier was built for the first time in this tree, and it is
+  red** — 11 mismatches, four of them the known commit-barrier defect. Six of the
+  rest arrived because the *corpus* grew: last session's differential probes for
+  the Rust core were harvested into it, and they find the same defect families in
+  lypning-mp. Enumerated by identity in `.github/known-mismatches.json`, which
+  the scorer now passes.
+
 **2026-08-24** — The allocator, and fifty silent wrong answers · [#13]
 
 - **The allocator was the workload.** Callgrind said 43.9% of instructions on a
@@ -332,6 +356,7 @@ runtime exists — the number came first, and both were built for it. It is
 [#11]: https://github.com/kristerhedfors/lypning/pull/11
 [#12]: https://github.com/kristerhedfors/lypning/pull/12
 [#13]: https://github.com/kristerhedfors/lypning/pull/13
+[#14]: https://github.com/kristerhedfors/lypning/pull/14
 [ds]: https://github.com/kristerhedfors/deepresearch.se
 [u432]: https://github.com/kristerhedfors/deepresearch.se/pull/432
 [u434]: https://github.com/kristerhedfors/deepresearch.se/pull/434

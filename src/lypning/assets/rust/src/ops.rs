@@ -902,54 +902,73 @@ pub fn set_op(x: &Rc<RefCell<Set>>, y: &Rc<RefCell<Set>>, op: SetOp) -> R<Value>
 
 // ---- printf-style % formatting -------------------------------------------
 
+/// `'%d-%s' % (i, 'a')` — seven bytes of output, and this used to allocate a
+/// dozen times to produce them.
+///
+/// Three of those are gone. The format string was collected into a
+/// `Vec<char>` on **every call** — four bytes per character of a string that is
+/// almost always ASCII — where the scan can walk the bytes and copy each literal
+/// run with one `push_str`; `%` is ASCII and cannot occur inside a multi-byte
+/// sequence, so every slice boundary here is a character boundary. The
+/// translated spec was a fresh `format!` **per conversion**, and is now one
+/// buffer cleared and refilled for the whole call. And the output starts at the
+/// format string's length instead of at zero.
+///
+/// What is left per conversion is `percent_one`'s chain, which is its own
+/// problem and is documented there.
 fn percent_format(f: &str, arg: &Value) -> R<String> {
     let args: Vec<Value> = match arg {
         Value::Tuple(t) => (**t).clone(),
         other => vec![other.clone()],
     };
-    let b: Vec<char> = f.chars().collect();
-    let mut out = String::new();
+    let b = f.as_bytes();
+    let mut out = String::with_capacity(f.len());
+    // One buffer for every conversion in this format string.
+    let mut spec = String::new();
+    let mut min_digits = 0usize;
     let mut ai = 0;
     let mut i = 0;
     while i < b.len() {
-        if b[i] != '%' {
-            out.push(b[i]);
-            i += 1;
+        if b[i] != b'%' {
+            // The whole literal run in one copy rather than a push per char.
+            let start = i;
+            while i < b.len() && b[i] != b'%' {
+                i += 1;
+            }
+            out.push_str(&f[start..i]);
             continue;
         }
         i += 1;
-        if i < b.len() && b[i] == '%' {
+        if i < b.len() && b[i] == b'%' {
             out.push('%');
             i += 1;
             continue;
         }
         // Mapping key `%(name)s` — used with a dict on the right.
-        if i < b.len() && b[i] == '(' {
+        if i < b.len() && b[i] == b'(' {
             let mut j = i + 1;
-            while j < b.len() && b[j] != ')' {
+            while j < b.len() && b[j] != b')' {
                 j += 1;
             }
-            let key: String = b[i + 1..j].iter().collect();
+            let key = &f[i + 1..j];
             let Value::Dict(d) = arg else {
                 return Err(type_err("format requires a mapping"));
             };
             let v = d
                 .borrow()
-                .get(&Value::Str(key.clone().into()))?
+                .get(&Value::Str(key.into()))?
                 .ok_or_else(|| key_err(format!("'{key}'")))?;
             i = j + 1;
-            let (spec, ni) = read_spec(&b, i)?;
-            i = ni;
-            out.push_str(&fmt::format_value(&v, &spec)?);
+            i = read_spec(f, b, i, &mut spec, &mut min_digits)?;
+            out.push_str(&percent_one(&v, &spec, min_digits)?);
             continue;
         }
-        let (spec, ni) = read_spec(&b, i)?;
-        i = ni;
+        i = read_spec(f, b, i, &mut spec, &mut min_digits)?;
         let v = args
             .get(ai)
             .ok_or_else(|| type_err("not enough arguments for format string"))?;
         ai += 1;
-        out.push_str(&percent_one(v, &spec)?);
+        out.push_str(&percent_one(v, &spec, min_digits)?);
     }
     if ai < args.len() && !matches!(arg, Value::Dict(_)) {
         return Err(type_err(
@@ -959,77 +978,183 @@ fn percent_format(f: &str, arg: &Value) -> R<String> {
     Ok(out)
 }
 
-/// Read one printf conversion and translate it into a `format()` spec.
-fn read_spec(b: &[char], mut i: usize) -> R<(String, usize)> {
-    let mut flags = String::new();
-    while i < b.len() && matches!(b[i], '-' | '+' | ' ' | '#' | '0') {
-        flags.push(b[i]);
+/// Read one printf conversion and translate it into a `format()` spec, written
+/// into `spec` rather than returned. Returns the index just past the conversion.
+///
+/// Every part of a conversion is ASCII, so the pieces are byte slices of the
+/// format string itself and none of them allocates. The one place a non-ASCII
+/// character can appear is the conversion letter, and that is an error path —
+/// it is decoded there so the message can name it.
+fn read_spec(
+    f: &str,
+    b: &[u8],
+    mut i: usize,
+    spec: &mut String,
+    min_digits: &mut usize,
+) -> R<usize> {
+    spec.clear();
+    *min_digits = 0;
+    let flag0 = i;
+    while i < b.len() && matches!(b[i], b'-' | b'+' | b' ' | b'#' | b'0') {
         i += 1;
     }
-    let mut width = String::new();
+    let flags = &f[flag0..i];
+    let width0 = i;
     while i < b.len() && b[i].is_ascii_digit() {
-        width.push(b[i]);
         i += 1;
     }
-    let mut prec = String::new();
-    if i < b.len() && b[i] == '.' {
+    let width = &f[width0..i];
+    let prec0 = i;
+    let mut bare_dot = false;
+    if i < b.len() && b[i] == b'.' {
         i += 1;
-        prec.push('.');
+        let digits0 = i;
         while i < b.len() && b[i].is_ascii_digit() {
-            prec.push(b[i]);
             i += 1;
         }
-        if prec == "." {
-            prec.push('0');
-        }
+        bare_dot = i == digits0;
     }
-    while i < b.len() && matches!(b[i], 'l' | 'h' | 'L') {
+    let prec = &f[prec0..i];
+    while i < b.len() && matches!(b[i], b'l' | b'h' | b'L') {
         i += 1;
     }
     if i >= b.len() {
         return Err(value_err("incomplete format"));
     }
-    let conv = b[i];
-    i += 1;
-    let ty = match conv {
-        'd' | 'i' | 'u' => "d",
-        's' => "s",
-        'r' => "r",
-        'f' | 'F' => "f",
-        'e' => "e",
-        'E' => "E",
-        'g' => "g",
-        'G' => "G",
-        'x' => "x",
-        'X' => "X",
-        'o' => "o",
-        'c' => "c",
-        other => {
+    let ty = match b[i] {
+        b'd' | b'i' | b'u' => "d",
+        b's' => "s",
+        b'r' => "r",
+        b'f' | b'F' => "f",
+        b'e' => "e",
+        b'E' => "E",
+        b'g' => "g",
+        b'G' => "G",
+        b'x' => "x",
+        b'X' => "X",
+        b'o' => "o",
+        b'c' => "c",
+        _ => {
+            let other = f[i..].chars().next().unwrap_or('?');
             return Err(unsupported(
                 "percent-format",
                 &format!("%{other} conversion"),
-            ))
+            ));
         }
     };
-    let align = if flags.contains('-') {
-        "<"
-    } else if flags.contains('0') && ty != "s" && ty != "r" {
-        "0"
-    } else {
-        ""
-    };
-    let sign = if flags.contains('+') {
-        "+"
+    i += 1;
+    // `[align][sign][#][0][width][.prec][type]`, in that order, because that is
+    // the order `format()` parses and the pieces are NOT commutative: `+0f` is
+    // valid and `0+f` is a ValueError, `#05x` is `0x0ff` and `0#5x` is a
+    // ValueError. This used to emit the zero-pad flag as if it were an
+    // alignment, first, so every `%` conversion combining `0` with a sign or
+    // with `#` raised ValueError where CPython formats — 1,560 cells of the
+    // conversion grid.
+    let left = flags.contains('-');
+    if left {
+        spec.push('<');
+    } else if ty == "s" || ty == "r" || ty == "c" {
+        // **The default alignment for `%s` is RIGHT**, and `format()`'s default
+        // for a string is LEFT — so the translation has to say so out loud.
+        // Without this `'%5s' % 'ab'` produced `'ab   '` where CPython produces
+        // `'   ab'`, which is every `%` one-liner that lines a column up.
+        spec.push('>');
+    }
+    if flags.contains('+') {
+        spec.push('+');
     } else if flags.contains(' ') {
-        " "
+        spec.push(' ');
+    }
+    if flags.contains('#') {
+        spec.push('#');
+    }
+    // A `-` beats a `0`: `'%-05d' % 255` is `'255  '`, not zero-padded. And a
+    // `0` never applies to a string conversion: `'%05s' % 'a'` is `'    a'`.
+    if flags.contains('0') && !left && ty != "s" && ty != "r" && ty != "c" {
+        spec.push('0');
+    }
+    spec.push_str(width);
+    // **A precision on an integer conversion is MINIMUM DIGITS**, not a
+    // `format()` precision — `'%.2d' % 1` is `'01'` and `'%.7d' % -42` is
+    // `'-0000042'`. `format()` has no such thing, and passing `.N` through to it
+    // meant the precision was silently ignored: 3,724 cells of the conversion
+    // grid answered without it, at exit 0.
+    //
+    // The DECISION is `percent_one`'s, because it needs the value: a precision
+    // that asks for no more digits than the number already has changes nothing,
+    // and refusing those would give away coverage for free (`'%.2d' % 42` is
+    // `'42'` either way). Reported here, acted on there.
+    //
+    // `%.0d` and `%.d` never reach it — zero minimum digits is what every value
+    // already has — and neither does `%.Nc`, which CPython ignores.
+    if !prec.is_empty() && !bare_dot && prec != ".0" && matches!(ty, "d" | "x" | "X" | "o" | "b") {
+        *min_digits = prec[1..].parse().unwrap_or(0);
     } else {
-        ""
-    };
-    let alt = if flags.contains('#') { "#" } else { "" };
-    Ok((format!("{align}{sign}{alt}{width}{prec}{ty}"), i))
+        spec.push_str(prec);
+    }
+    if bare_dot {
+        spec.push('0');
+    }
+    spec.push_str(ty);
+    Ok(i)
 }
 
-fn percent_one(v: &Value, spec: &str) -> R<String> {
+/// `min_digits` is the precision of an INTEGER conversion, which `format()` has
+/// no spelling for: `'%.2d' % 1` is `'01'` and `'%.7d' % -42` is `'-0000042'`.
+///
+/// It is honoured when the value already satisfies it and **refused** when it
+/// does not. That split is the whole point of deciding here rather than in
+/// `read_spec`: only a value knows how many digits it has, so `'%.2d' % 42`
+/// keeps working and only `'%.2d' % 1` leaves.
+///
+/// Refused rather than implemented, deliberately. It IS expressible — the body
+/// is `format(v, "0{P + 1 if signed}d")`, and the outer width composes on top,
+/// collapsing to a single call of width `max(P + signlen, W)` when the `0` flag
+/// is set. That is three composition rules to get exactly right on a construct
+/// the corpus barely contains, and this session has already shipped one bug by
+/// being clever on an error path (ledger, iteration 28). A refusal costs one
+/// spawn and CPython answers it; a wrong answer costs the caller's trust.
+fn percent_one(v: &Value, spec: &str, min_digits: usize) -> R<String> {
+    // `%c` is the one conversion that cannot be handed to `format()` wholesale:
+    // it takes an int **or a one-character string**, where `format()`'s `c`
+    // takes only an int (`format('a', 'c')` is a ValueError there). So
+    // `'%c' % 'a'` was refused where CPython answers `'a'`, and `'%c' % 1.5`
+    // refused where CPython raises a TypeError naming the conversion.
+    if spec.ends_with('c') {
+        match v {
+            Value::Int(_) | Value::Bool(_) => {}
+            Value::Str(s) if s.chars().count() == 1 => {
+                let as_str = format!("{}s", &spec[..spec.len() - 1]);
+                return fmt::format_value(v, &as_str);
+            }
+            _ => return Err(type_err("%c requires int or char")),
+        }
+    }
+    if min_digits > 0 {
+        let n = match v {
+            Value::Int(i) => *i,
+            Value::Bool(b) => *b as i64,
+            // A float or anything else here is already the `integer format code
+            // applied to …` refusal one line down; let it produce its message.
+            _ => 0,
+        };
+        let a = n.unsigned_abs();
+        let have = match spec.chars().last() {
+            Some('x') | Some('X') => format!("{a:x}").len(),
+            Some('o') => format!("{a:o}").len(),
+            Some('b') => format!("{a:b}").len(),
+            _ => a.to_string().len(),
+        };
+        if have < min_digits {
+            return Err(unsupported(
+                "percent-format",
+                &format!(
+                    "%.{min_digits}{} — a precision on an integer conversion is minimum digits",
+                    spec.chars().last().unwrap_or('d')
+                ),
+            ));
+        }
+    }
     if let Some(rest) = spec.strip_suffix('r') {
         let s = fmt::repr(v)?;
         return fmt::format_value(&Value::Str(s.into()), &format!("{rest}s"));

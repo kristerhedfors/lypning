@@ -14,9 +14,12 @@
     "else. It is not a capability table and must never be used as one.",
     "",
     "Measured 2026-08-23 over a corpus of 1430 programs. Both numbers move every",
-    "session (invariant 3) — re-run rather than quoting these."
+    "session (invariant 3) — re-run rather than quoting these.",
+    "",
+    "Re-measured 2026-08-25 over a corpus of 1551 programs with the tier built for the first time in this tree. Six of the additions that day came from the corpus GROWING probes, not from the tier changing: the 2026-08-24 session wrote differential sweeps to find defects in the Rust core, the capture harness harvested them, and they find the same defect families in lypning-mp. They were always true of the tier; nothing could see them until a corpus entry looked.",
+    "",
+    "Pruned 2026-08-25: the three self-referential `exit` entries no longer reproduce. Two of them (py-a17250cecb37, py-ed8fafe6cdb2) now exit 90 on the tier -- a REFUSAL, which is the correct outcome and not a mismatch. The third (py-d72e3ff2ddbe) still differs when run by hand (mp exits 1 on `from lypning import engines`, CPython exits 0) but the battery does not surface it: the entry is graded on its exit code alone. Recorded because the scorer cannot tell 'fixed' from 'no longer measured', and a reader deserves the difference."
   ],
-
   "accepted": [
     {
       "engine": "lypning-mp",
@@ -39,7 +42,6 @@
       "class": "defect",
       "why": "commit barrier: refused after 693 B had reached stdout (docs/LYPNING.md §6)"
     },
-
     {
       "engine": "lypning-mp",
       "entry_id": "py-9b16a7261b96",
@@ -54,30 +56,56 @@
       "class": "defect",
       "why": "the same program through the dispatcher. The tier exits 1 with a traceback rather than 90, and an ordinary non-zero exit is deliberately NOT treated as a refusal (re-running would execute side effects twice), so the fall-through does not rescue it -- the routing gate grades it UNSAFE, not rescued. A loud crash where CPython succeeds, not a silently wrong answer: the silently-wrong half was `validate=True` being ignored, and that is fixed."
     },
-
     {
       "engine": "lypning-mp",
-      "entry_id": "py-a17250cecb37",
-      "kind": "exit",
-      "class": "corpus-artifact",
-      "why": "self-referential entry: `sys.path.insert(0,'src'); from lypning import perf`. It runs under the CPython reference only because THIS repository is importable there, and every entry runs in a temp cwd with no src/ (invariant 4). Not an engine defect; the tier is right to fail an import it cannot satisfy. A corpus tag cannot express this — `is_nondeterministic` relaxes stdout, not the exit code."
+      "entry_id": "py-b71b010fb310",
+      "kind": "contract",
+      "class": "defect",
+      "why": "commit barrier: refused after 2033 B had reached stdout (docs/LYPNING.md §6)"
     },
     {
       "engine": "lypning-mp",
-      "entry_id": "py-d72e3ff2ddbe",
-      "kind": "exit",
-      "class": "corpus-artifact",
-      "why": "self-referential entry: `from lypning import engines`, resolved from site-packages under the reference and from nowhere under the tier. Same cause as py-a17250cecb37."
+      "entry_id": "py-063898b3d561",
+      "kind": "stdout",
+      "class": "defect",
+      "why": "str.find/rfind/count/startswith/endswith with a start PAST the end answer as if it were clamped to len; CPython reports no match. The same defect the Rust core carried until docs/HILLCLIMB.md iteration 24 fixed it there"
     },
     {
       "engine": "lypning-mp",
-      "entry_id": "py-ed8fafe6cdb2",
-      "kind": "exit",
+      "entry_id": "py-fddbb3576d01",
+      "kind": "stdout",
+      "class": "defect",
+      "why": "the other half of py-063898b3d561: an `end` that folds to BEFORE `start` is no-match in CPython and an empty slice here"
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-f265db0014b6",
+      "kind": "stdout",
+      "class": "defect",
+      "why": "json.loads accepts a raw control character inside a string where CPython raises JSONDecodeError. A malformed document is ANSWERED, so nothing routes it onward. Core equivalent fixed in iteration 26"
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-a4765e762a93",
+      "kind": "stdout",
+      "class": "defect",
+      "why": "py-f265db0014b6 in one line: json.loads('[\"a\\tb\"]') returns a string here and raises in CPython"
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-72159086743e",
+      "kind": "stdout",
+      "class": "defect",
+      "why": "int() rejects a leading U+0085 that CPython strips as whitespace; the entry sweeps int()/float() over the whitespace set"
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-b5fea319d373",
+      "kind": "stdout",
       "class": "corpus-artifact",
-      "why": "self-referential entry: `from lypning import corpus` + `inspect.getsourcefile`. Same cause as py-a17250cecb37."
+      "why": "the entry branches on `import yaml`; pyyaml is importable for CPython on this machine and there is no `yaml` in the frozen shim stdlib, so the two take different branches. Environment, not a computation"
     }
   ],
-
   "_history": [
     "py-9b16a7261b96 was deliberately held OUT of this file when it was written,",
     "because base64 was then answering a validation question wrongly:",

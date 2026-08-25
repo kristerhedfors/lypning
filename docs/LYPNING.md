@@ -26,55 +26,61 @@ never remembered**. The capture harness grows the corpus every session — this
 project's first table was over 420 programs and the number was stale within the
 day. Every tool prints the count it loaded; quote that one, with its date.
 
-This tree, on **2026-08-21**: `lypning bench --startup-repeat 15 --repeat 3`,
-4 CPUs, Linux 6.18.44-fc-v21, all three engines built, **842 programs loaded and
-763 measured** (`assets/corpus/corpus.jsonl` + `assets/corpus/seed-corpus.jsonl`;
-79 skipped for naming an absolute path the per-entry temp cwd does not contain).
+This tree, on **2026-08-25**: `lypning bench --startup-repeat 15 --repeat 3`,
+4 CPUs, Linux 6.18.44-fc-v21, all three engines built, **1551 programs loaded
+and 1305 measured** (`assets/corpus/corpus.jsonl` + `assets/corpus/seed-corpus.jsonl`;
+246 skipped for naming an absolute path the per-entry temp cwd does not contain).
 
 ```
 startup — `-c 'pass'`, min of 15, arms interleaved
 
 arm         min ms   vs cpython
-cpython      10.88     1.000x
-lypning       0.70     0.064x
-lypning-mp    0.61     0.056x
-mixture       0.58     0.053x
+cpython      11.57     1.000x
+lypning       0.66     0.057x
+lypning-mp    0.61     0.053x
+mixture       0.60     0.052x
 
-shared subset — the 500 programs every arm executed, min of 3
+shared subset — the 904 programs every arm executed, min of 3
 
 arm          ran  refused   shared total   median   vs cpython
-cpython      763        0       6658.3 ms   12.03     1.000x
-lypning      500      263        486.2 ms    0.94     0.073x
-lypning-mp   714       49        407.7 ms    0.79     0.061x
-mixture      763        0        685.7 ms    0.92     0.103x
+cpython     1305        0      13093.8 ms   12.83     1.000x
+lypning      906      399       1164.3 ms    0.91     0.089x
+lypning-mp  1236       69       1336.8 ms    0.90     0.102x
+mixture     1305        0       1718.1 ms    0.92     0.131x
 
-whole corpus — what a session of 763 one-liners costs
+whole corpus — what a session of 1305 one-liners costs
 
-cpython     13428.9 ms   1.000x
-lypning       743.8 ms   0.055x   (263 unanswered)
-lypning-mp   1297.1 ms   0.097x   (49 unanswered)
-mixture      4565.2 ms   0.340x   (0 unanswered — saves 8863.7 ms, 66.0%)
+cpython     23865.0 ms   1.000x
+lypning      1638.0 ms   0.069x   (399 unanswered)
+lypning-mp   2335.8 ms   0.098x   (69 unanswered)
+mixture      7206.6 ms   0.302x   (0 unanswered — saves 16658.4 ms, 69.8%)
 ```
 
 Read it in this order:
 
-- **The mixture answers everything CPython answers** — 763 of 763, zero
-  mismatches on its own arm — at **0.340x of CPython's cost**, a 66.0% saving.
-  This is the result the design exists to produce and the one that has held on
-  every machine it has been run on.
+- **The mixture answers everything CPython answers** — 1305 of 1305 — at
+  **0.302x of CPython's cost**, a 69.8% saving. This is the result the design
+  exists to produce and the one that has held on every machine it has been run
+  on. Its own arm is no longer at zero mismatches, and that is `lypning-mp`
+  leaking through it rather than the dispatcher: see §2a.
 - **The other two arms are cheap because they refuse**, not because they are
-  faster: 263 and 49 programs unanswered, and a refusal still costs its spawn.
+  faster: 399 and 69 programs unanswered, and a refusal still costs its spawn.
   `bench` prints that sentence next to those totals for a reason.
-- **Startup is a floor the three share.** All three engines land within a tenth
-  of a millisecond of each other, 15–19x under CPython. They are static musl
-  binaries that open no files at startup; past that, the differences are the
-  machine.
+- **Startup is a floor the three share.** All three engines land within a
+  twentieth of a millisecond of each other, 17–19x under CPython. They are
+  static musl binaries that open no files at startup; past that, the differences
+  are the machine.
 - **The subset was not tuned to this corpus.** It was built against 420
   programs and has been measured against every capture since; coverage has gone
   up as the corpus grew, with mismatches on the lypning arm still at zero. That
   is a generalisation signal rather than a fit to the sample.
+- **lypning is ahead of lypning-mp on the shared subset again** — 0.089x against
+  0.102x — which is the ordering upstream reported on 2026-08-16 and which two
+  re-runs in this tree had reversed. Read the next section before believing it is
+  settled: it has now flipped twice, and both engines sit near their startup
+  floor on the programs they share.
 
-Both binary sizes move with every rebuild — 1,045,176 B and 294,788 B in this
+Both binary sizes move with every rebuild — 987,336 B and 296,100 B in this
 tree today; `lypning status` and `lypning gate` print the ones you actually
 have.
 
@@ -100,19 +106,23 @@ That run put **lypning ahead of lypning-mp on the shared subset** — 0.102x
 against 0.143x — and it was written up as the thesis: a runtime built for
 two-thirds of the distribution beats a general one on that two-thirds.
 
-**Both re-runs in this tree reversed it.** On 2026-08-20 and again on
-2026-08-21 lypning-mp came in ahead (0.061x against 0.073x above), and starts
-marginally faster too. Successive runs on one box agree on the ordering and on
-the ratios to within about a point while the absolute milliseconds move by tens
-of percent with load — which is why ratios are what get quoted, and why `bench`
-is not a CI gate.
+**Two re-runs in this tree reversed it, and a third put it back.** On
+2026-08-20 and again on 2026-08-21 lypning-mp came in ahead (0.061x against
+0.073x); on **2026-08-25**, after the allocator work in `docs/HILLCLIMB.md`
+iterations 18–38, lypning is ahead again (0.089x against 0.102x). Successive
+runs on one box agree on the ordering and on the ratios to within about a point
+while the absolute milliseconds move by tens of percent with load — which is why
+ratios are what get quoted, and why `bench` is not a CI gate.
 
-So that thesis is **upstream's result on upstream's corpus, not a property of
-the design.** The shared subset is by construction the programs lypning
-accepted — the simplest in the corpus — where both engines sit near their
-startup floor, and lypning-mp's floor is lower because its binary is a third the
-size. What survived re-measurement is the mixture result: everything CPython
-answers, for about a third of the cost.
+**So the ordering is not a property of the design, and this run does not make it
+one.** It has now moved three times, and the reason it is fragile is
+structural: the shared subset is by construction the programs lypning accepted —
+the simplest in the corpus — where both engines sit near their startup floor,
+and lypning-mp's floor is lower because its binary is a third the size. A change
+that moves lypning's compute cost moves this ordering, and the next capture that
+adds harder programs to the shared subset may move it back. What survives every
+re-measurement is the mixture result: everything CPython answers, for about a
+third of the cost.
 
 Reproduce: `lypning build --rust && lypning bench`.
 
@@ -147,21 +157,38 @@ and each engine's result is one of three things:
 | UNSUPPORTED | exit **90** with `<engine>: unsupported: <kind>: <detail>` | **no** — this is coverage, and the build order |
 | MISMATCH | anything else | **yes, always** |
 
-This tree, on **2026-08-21**, over the 763 of 842 corpus programs the battery
+This tree, on **2026-08-25**, over the 1305 of 1551 corpus programs the battery
 could run:
 
 ```
 engine      MATCH  UNSUPPORTED  MISMATCH   coverage
-lypning       500          263         0     65.5%
-lypning-mp    714           47         2     93.6%
-mixture       763            0         0    100.0%
+lypning       906          399         0     69.4%
+lypning-mp   1229           65        11     94.2%
+mixture      1305            0         1    100.0%
 ```
 
-**The gate is red, and it is red on the lypning-mp arm.** Both MISMATCHes are
-one defect and it is the contract, not a computation: MicroPython streams
-stdout, so a program that prints before it reaches an unsupported construct has
-already committed those bytes when it exits 90 (§6). It is tracked rather than
-waived — `lypning conformance` fails while it stands.
+**The gate is red, and it is red on the lypning-mp arm** — as it has been since
+the tier existed. Four of the eleven are the contract defect §6 describes:
+MicroPython streams stdout, so a program that prints before it reaches an
+unsupported construct has already committed those bytes when it exits 90. They
+are tracked rather than waived, and `lypning conformance` fails while they
+stand.
+
+**Six of the other seven arrived with the corpus, not with the tier**, and they
+are worth reading as a result rather than as breakage. The 2026-08-24 session
+that produced iterations 18–38 wrote differential probes — programs that
+enumerate a cross-product of `str.find` bounds, of `json.loads` control
+characters, of `int()` whitespace — to find defects in the *Rust* core. The
+capture harness harvested them, so they are corpus entries now, and they find
+the **same defect families in lypning-mp**: `'Hello'.find('', 6)` answers 5
+there where CPython answers -1, and `json.loads('"a\tb"')` returns a string
+where CPython raises. Those were always true of the tier. Nothing could see
+them until the corpus contained a program that looked.
+
+The mixture's single MISMATCH is `lypning-mp` leaking through it: the tier
+answers `py-9b16a7261b96` at exit 0, so the chain never falls onward. That is
+the one shape §5 exists to prevent, and it is why routing safety counts it
+separately.
 
 Upstream, on 2026-08-16, over the 472 programs the corpus then held:
 
@@ -245,26 +272,32 @@ the program text. That is the design:
   those are capability **tables** in `assets/rust/src/route.rs`, kept honest by the
   routing arm of the conformance runner.
 
-The routing score is asymmetric on purpose (this tree, 2026-08-21, same run as
+The routing score is asymmetric on purpose (this tree, 2026-08-25, same run as
 §2 — `lypning conformance` grades routes and answers together):
 
 ```
-routing over 763 programs
+routing over 1305 programs
 
-  IDEAL       695  routed to the cheapest engine that works
-  WASTED       18  engine refused; one extra spawn, right answer
-  LATE         49  worked, but a cheaper engine would have too
-  UNSAFE        1  routed to an engine that MISMATCHES
+  IDEAL      1188  routed to the cheapest engine that works
+  WASTED       28  engine refused; one extra spawn, right answer
+  LATE         85  worked, but a cheaper engine would have too
+  UNSAFE        4  routed to an engine that MISMATCHES
   NO-ENGINE     0
 
-  accuracy 91.1% ideal, 97.5% correct-on-first-try
-  predictions: lypning=489  lypning-mp=190  cpython=84
+  accuracy 91.0% ideal, 97.5% correct-on-first-try
+  predictions: lypning=876  lypning-mp=295  cpython=134
 ```
 
-The one UNSAFE is the streamed-stdout defect of §2 reached through the router:
-a program predicted for lypning-mp whose ideal tier is CPython. The dispatcher
-recovered it, and it still counts — a route that lands on an engine which
-mismatches is the one outcome that spends trust instead of milliseconds.
+**All four UNSAFE routes are lypning-mp**, and three of them are the
+streamed-stdout defect of §2 reached through the router: a program predicted for
+lypning-mp whose ideal tier is CPython. The dispatcher recovered those three,
+and they still count — a route that lands on an engine which mismatches is the
+one outcome that spends trust instead of milliseconds.
+
+The fourth is the one the dispatcher **cannot** recover: `py-9b16a7261b96` is
+answered by lypning-mp at exit 0 with the wrong output, so nothing signals the
+chain to fall onward and the caller gets it. That is the whole reason UNSAFE is
+a gate and WASTED and LATE are a budget.
 
 A wrong route costs a process spawn. A wrong *answer* costs the user's trust, so
 UNSAFE is tracked separately and the dispatcher is built to recover from it.
@@ -458,11 +491,14 @@ is a step function in CheerpX's 131,072 B device blocks.
 
 ## 8. Size
 
+Measured 2026-08-25 unless the row says otherwise; `lypning gate` prints the
+ones you actually have.
+
 | binary | bytes | CheerpX blocks |
 |---|---|---|
-| lypning-mp | 269,316 | 3 |
-| lypning (x86_64 musl) | 1,020,600 | 8 |
-| lypning (i686 musl) | 973,428 | 8 |
+| lypning-mp (i386 musl) | 296,100 | 3 |
+| lypning (x86_64 musl) | 987,336 | 8 |
+| lypning (i686 musl, 2026-08-19) | 973,428 | 8 |
 | CPython 3.11 | 6,639,992 | 51 |
 
 `opt-level = "z"` was measured at 963,256 B — 57,344 B smaller, and **still 8

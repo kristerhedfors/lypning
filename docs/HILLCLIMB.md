@@ -28,6 +28,312 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 39 — the numbers, re-measured with the third tier built
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+Not a change to the interpreter. A measurement pass, because every figure in
+`README.md` and `docs/LYPNING.md` still described the 2026-08-21 tree — a
+different binary, a corpus two-fifths smaller, and iterations 18–38 ago.
+
+**lypning-mp was built for the first time in this tree**, which needed
+`gcc-multilib` and a working archive. That matters more than it sounds: without
+it the mixture arm falls straight through to CPython on every refusal, and the
+first run of the day reported **0.541x** where the real figure is **0.302x**.
+A benchmark with a hole where a tier should be is not a slower result, it is a
+different question.
+
+```
+startup, min of 15    cpython 11.57   lypning 0.66   lypning-mp 0.61   mixture 0.60
+shared subset (904)   cpython 1.000x  lypning 0.089x lypning-mp 0.102x mixture 0.131x
+whole corpus (1305)   cpython 1.000x  lypning 0.069x lypning-mp 0.098x mixture 0.302x
+```
+
+**The mixture saves 69.8%** — 16,658 ms across 1305 programs, nothing
+unanswered. That is up from the 66.0% recorded on 2026-08-21, on a corpus that
+has since grown by 709 programs.
+
+**lypning is ahead of lypning-mp on the shared subset again**, 0.089x against
+0.102x. That ordering is now on its third reading: upstream had lypning ahead,
+this tree reversed it twice, and the allocator work has put it back. The docs say
+plainly that this is not evidence the question is settled — the shared subset is
+by construction the programs lypning accepts, where both engines sit near their
+startup floor, and a capture that adds harder shared programs can move it again.
+
+### Building the tier turned two gates red, and none of it is this session's
+
+`lypning conformance` with all three arms: **12 MISMATCH** — 11 on lypning-mp,
+1 on the mixture — and routing safety **4 UNSAFE**. The lypning arm stays at
+906 / 399 / **0**.
+
+Four of the eleven are the commit-barrier defect §6 already describes. **Six of
+the other seven arrived with the corpus, not with the tier**, and they are the
+most interesting thing in this entry: iterations 24–26 wrote differential probes
+to find defects in the *Rust core* — grids over `str.find` bounds, over
+`json.loads` control characters, over `int()` whitespace — the capture harness
+harvested them from the transcript, and they now find **the same defect families
+in lypning-mp**. `'Hello'.find('', 6)` answers 5 there; `json.loads('"a\tb"')`
+returns a string. Both were always true of the tier. Nothing could see them until
+a corpus entry looked.
+
+The mixture's single mismatch is the one shape §5 exists to prevent: lypning-mp
+answers `py-9b16a7261b96` at exit 0 with the wrong output, so the chain never
+falls onward. Three of the four UNSAFE routes the dispatcher recovered; that one
+it cannot.
+
+CI is unaffected — it does not build the tier, and the comment on the `core`
+job's conformance line already said why the mixture arm is clean only in that
+configuration.
+
+### Pruning the accept-list, and a limit in the scorer
+
+`.github/known-mismatches.json` gained 7 entries and lost 3, and the scorer now
+exits 0: every observed mismatch is named and every named one reproduces.
+
+The three removed were flagged **GOOD NEWS — no longer reproduces**. Two of them
+genuinely are: `py-a17250cecb37` and `py-ed8fafe6cdb2` now exit **90** on the
+tier, which is a refusal and the correct outcome. The third, `py-d72e3ff2ddbe`,
+**still differs when run by hand** — mp exits 1 on `from lypning import engines`
+where CPython exits 0 — and the battery simply does not surface it, because the
+entry is graded on its exit code alone.
+
+So the scorer cannot tell *fixed* from *no longer measured*, and its message
+asserts the first. That is a real gap and it is written into the ledger file
+rather than worked around, because the next person to read a GOOD NEWS line
+deserves to know it might mean neither.
+
+
+## 2026-08-25 · iteration 38 — the conversion grid goes to zero
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 983,240 → 987,336 (+4,096; **8 blocks**) ·
+**conformance** 906 / 399 / **0 MISMATCH** ·
+**perf** flat (interleaved, below) ·
+**fuzz** seed 20260824 × 3000, 0 counterexamples ·
+**the grid** 26,280 checked, **0 DIFFERING**
+
+Iteration 37 left three defects from the conversion grid. All three are closed,
+and one of them turned out to be four.
+
+**The `0x` prefix belongs in the slot that precedes zero fill**, exactly as a
+sign does. Prepending it to the body made `format(255, '#010x')` come out
+`'00000000xff'` where CPython gives `'0x000000ff'` — and `format(-255, '#010x')`
+is `'-0x00000ff'`, which is the same rule twice over. Reachable with no `%`
+anywhere.
+
+**`#` on a float keeps the decimal point** when the precision left no digits
+after it: `'%#.0f' % 0.0` is `'0.'`, `format(1234.0, '#.0e')` is `'1.e+03'`,
+`format(0.5, '#.0%')` is `'50.%'`. The point goes after the significand, which
+is the same place for `f` and *not* the same place for `e` or `%` — so
+`keep_point` finds the first non-digit rather than appending.
+
+**`%c` was four things at once.** It raised `ValueError` where CPython raises
+**`OverflowError`** (and `format(x, 'c')` shares that path); it aligned left
+where CPython aligns right, for both `%5c` and `format(65, '5c')`; the `0` flag
+applied where CPython ignores it; and it **refused a one-character string**,
+which CPython accepts — `'%c' % 'a'` is `'a'`. That last one is the only
+conversion that cannot be handed to `format()` wholesale, because `format('a',
+'c')` is a ValueError there.
+
+### The precision defect, and where the decision goes
+
+`%.Nd` is minimum **digits**, which `format()` has no spelling for. It is
+**refused** rather than implemented: it is expressible — the body is
+`format(v, "0{P + 1 if signed}d")` and the outer width composes on top,
+collapsing to one call of width `max(P + signlen, W)` when the `0` flag is set —
+but that is three composition rules to get exactly right on a construct the
+corpus barely contains, and this session has already shipped one bug by being
+clever on an error path (iteration 28).
+
+The first cut refused it in `read_spec` and gave away **2,016 cells**, including
+ones that were already correct: `'%.2d' % 42` is `'42'` either way. Only a value
+knows how many digits it has, so the decision moved to `percent_one`, where the
+refusal covers exactly the cells where the precision adds something — 1,152, down
+from 2,016, and agreement went up 850 cells with no other change.
+
+### Three-way, and it is zero now
+
+```
+  17112  both agree with CPython
+   2664  FIXED
+      0  BROKEN
+      0  both wrong
+   3840  refused by one or both
+```
+
+Every non-refused cell of 23,616 agrees. The wider 35,400-cell sweep reports
+**26,280 checked, 0 DIFFERING**, and the 400-spec `format()` alternate-form grid
+and 23 `%c` shapes are clean too.
+
+### A regression caught by measuring the thing that changed
+
+Moving the prefix into the sign slot was written as
+`pad_signed(&format!("{signch}{alt_prefix}"), …)` — a `String` on **every**
+numeric format, for a branch only `#x` ever takes. `str-fmt-pct` went 78.1 → 85.7
+ms, non-overlapping over three interleaved rounds, so it was real. Concatenating
+only when there is a prefix put it back: 78.1 / 81.0 / 80.0 before against
+78.8 / 81.7 / 93.5 after — overlapping on the minimum, which is the reading the
+skill says to take.
+
+21 cases pinned; 14 fail on the iteration-37 binary.
+
+
+## 2026-08-25 · iteration 37 — the format spec was built in the wrong order, and `%5s` leaned the wrong way
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 983,240 → 983,240 (**8 blocks**, unchanged) ·
+**conformance** 906 / 399 / **0 MISMATCH** ·
+**perf** flat (interleaved, below) ·
+**fuzz** seed 20260824 × 3000, 0 counterexamples
+
+`%`-formatting works by translating each conversion into a `format()` spec.
+Iteration 36 measured that translation and left the disagreements it found for
+this one: **8,346 differing cells of 29,100** in the conversion grid. Sorted by
+cause, they were twenty families and four defects. Two are fixed here.
+
+**`%5s` leans the wrong way.** The default alignment for a `%s` conversion is
+**right**; `format()`'s default for a string is **left**. So `'%5s' % 'ab'`
+produced `'ab   '` where CPython produces `'   ab'` — which is every `%`
+one-liner that lines a column up, and about as ordinary as input gets.
+
+**The pieces of a format spec are not commutative.** The order is
+`[align][sign][#][0][width][.prec][type]`, and this emitted the zero-pad flag
+*first, as if it were an alignment*:
+
+```
+format(1.5, '+0f')   '+1.500000'        format(255, '#05x')   '0x0ff'
+format(1.5, '0+f')   ValueError         format(255, '0#5x')   ValueError
+```
+
+So every conversion combining `0` with a sign or with `#` raised ValueError where
+CPython formats. Two smaller rules came with it, both checked against CPython
+rather than assumed: a `-` beats a `0` (`'%-05d' % 255` is `'255  '`), and a `0`
+never applies to a string conversion (`'%05s' % 'a'` is `'    a'`).
+
+### The gate for a correctness change is three-way, not two
+
+"Agrees with CPython more often" is not enough — the question is whether anything
+that agreed **stopped**. So the grid was run on three binaries at once, 23,616
+cells:
+
+```
+  14614  both agree with CPython
+   2618  FIXED
+      0  BROKEN
+   2920  both wrong, unchanged
+    776  both wrong, but changed
+   2688  refused by one or both
+```
+
+**Zero broken.** The 448 cells inside that "refused" row that are *newly* refused
+are an improvement too, and worth reading carefully: they were a **wrong
+ValueError** before and are an exit-90 refusal now, so the dispatcher hands them
+to CPython and the caller gets the real answer. `'%+0d' % 1.5` is `'+1'` in
+CPython; lypning said ValueError, and now refuses — because `%d` on a float was
+always a refusal and the bogus ValueError had been masking it.
+
+The 776 "both wrong, but changed" are the same story one step short: `'%+0.2d' %
+1` went from ValueError to `'+1'`, where CPython says `'+01'`. Closer, still
+wrong, and the reason is the next defect.
+
+### Still open, from the same grid
+
+* **`%.Nd` is minimum DIGITS, not a `format()` precision.** `'%.2d' % 1` is
+  `'01'` and `'%.7d' % -42` is `'-0000042'`; lypning passes `.N` straight through
+  to a precision, which for an integer is meaningless, so it is dropped.
+  `format(-1, '03d')` is `'-01'`, so the shape is expressible — it needs the
+  precision turned into a width around the sign, composed with the *outer* width.
+* **`#` on a float conversion.** `'%#.0f' % 0.0` is `'0.'` — the alternate form
+  keeps the decimal point — and lypning gives `'0'`. This one is not a
+  translation bug: `format(0.0, '#.0f')` is wrong in lypning's own `format()`.
+* **`format(255, '#05x')` is `'0x0ff'` and lypning says `'00xff'`.** Also
+  `format()`'s own, reachable with no `%` anywhere: the `0x` prefix has to come
+  before the zero fill.
+
+### On the numbers
+
+The machine restarted mid-iteration and the `--baseline` files predate it, so the
+absolute readings are worthless — the suite reported +489 ms and `pytest` had
+gone from 12.6 s to 21.7 s on unchanged code. Measured the only way that works,
+three interleaved rounds of both binaries in the same minute:
+
+```
+  TOTAL      before 1351.9  1403.7  1358.6      after 1338.9  1364.3  1372.6
+  str-fmt-pct       79.3    79.5    80.3              77.4    77.9    81.5
+```
+
+Overlapping on both. A correctness fix that adds three `push`es to a `String`
+costs nothing measurable, which is what it should cost.
+
+11 cases pinned; 7 fail on the iteration-36 binary.
+
+
+## 2026-08-25 · iteration 36 — twelve allocations for seven bytes
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 987,336 → **983,240** (−4,096; 8 blocks) ·
+**conformance** 906 / 399 / **0 MISMATCH** ·
+**perf** `str-fmt-pct` **85.16 → 63.36 ms** (−26%); TOTAL +0.9%, see below ·
+**corpus** 938.2 → 932.2 ms, 0.994x ·
+**fuzz** seed 20260824 × 3000, 0 counterexamples
+
+`'%d-%s' % (i, 'a')` produces seven bytes and allocated about a dozen times to
+do it. Three of those are gone:
+
+* **The format string was collected into a `Vec<char>` on every call** — four
+  bytes per character of a string that is almost always ASCII. The scan walks
+  the bytes now and copies each literal run with one `push_str`. `%` is ASCII
+  and cannot occur inside a multi-byte sequence, so every slice boundary is a
+  character boundary by construction.
+* **The translated spec was a fresh `format!` per conversion.** One buffer,
+  cleared and refilled, for the whole call.
+* The output starts at the format string's length rather than at zero.
+
+`read_spec` now writes into that buffer and returns only the index; its pieces
+are byte slices of the format string, so none of them allocates either. The one
+place a non-ASCII character can appear is the conversion letter, and that is an
+error path — decoded there so the message can still name it.
+
+### How a refactor gets accepted
+
+Nothing about this is supposed to change an answer, so the gate is not
+"agrees with CPython" — it is **"agrees with the binary before it"**, which is a
+stronger claim and a cheaper one to check. The whole conversion grid, run on
+both binaries: conversion × flags × width × precision × value.
+
+**29,100 cells identical, 0 differing.** Plus a second pass over 4,536
+spec/value pairs comparing exit code, stdout *and stderr* — including the
+conversions that refuse and the ones that raise — **0 differing**. The refusal
+set is unchanged, which is the half a value-only comparison would have missed.
+
+The `perf` TOTAL reads +0.9%, spread as +0.3 to +0.5 across a dozen rows with no
+causal path to `ops.rs`, while the row this touches moved −21.81 ms. That is the
+optimiser redistributing inlining, the shape iteration 15 documented; the byte
+count moving *down* 4,096 on a change that only deletes work is the same effect
+from the other side.
+
+### What the grid found on the way, and did not fix
+
+Run against **CPython** rather than against the previous binary, the same grid
+reports **8,346 differing cells of 29,100**, and they reproduce on the
+iteration-35 binary — pre-existing, not this change's. The first family is
+precision on an integer conversion, which in C and Python means *minimum
+digits*:
+
+```
+'%.2d' % 1     lypning '1'     CPython '01'
+'%.7d' % -42   lypning '-42'   CPython '-0000042'
+```
+
+lypning translates `.N` straight through to a `format()` precision, and
+`format(1, '.2d')` is not a thing — so the precision is silently dropped. 8,346
+cells is a multiplier over flags and widths rather than 8,346 defects, and
+sorting them into distinct causes is the next iteration, not this one.
+
+
 ## 2026-08-24 · iteration 35 — two allocations per generator element, and a reading that was the machine
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
