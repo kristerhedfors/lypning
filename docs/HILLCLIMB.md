@@ -28,6 +28,91 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 46 — a quarter of the LATE budget was the grader, not the router
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305
+graded
+
+**bytes** unchanged, 987,336 B — no Rust touched. **correctness** every arm
+unchanged: lypning 906/399/**0**, lypning-mp 11, mixture 1. **speed** and
+**corpus** not run: this is `src/lypning/routing.py`, which runs no program.
+
+Iteration 45 left a LATE list of 69 and named `syntax 19` as the next bucket,
+with the guess that it was not a win. It was not, and the reason is worth more
+than the bucket.
+
+### Nineteen programs were LATE for failing correctly
+
+The LATE grade means "a cheaper engine would have run this too". For these
+nineteen it meant nothing of the kind. They do not parse — one of them is
+literally `print($p)`, a shell template that leaked into a capture — so every
+tier produces an empty stdout and a non-zero exit. The battery compares stdout
+and the exit code, so **every tier scores MATCH for producing nothing**, and the
+ladder names the cheapest of them the ideal destination for a program none of
+them can run.
+
+```
+$ lypning     s1.py     rc=1  stdout empty   SyntaxError: invalid syntax   (line 1)
+$ python3.11  s1.py     rc=1  stdout empty   SyntaxError: invalid syntax
+                                               File ".../s1.py", line 1
+                                                 print($p)
+                                                       ^
+```
+
+Identical on everything the grader looks at. The entire difference — the file,
+the line, the column, the offending source — is on **stderr**, which it does
+not compare. The classifier sends syntax errors to CPython on purpose, because
+that message is the deliverable; the grader was calling that deliberate,
+correct decision a defect nineteen times.
+
+### The rule, and the guard that keeps it honest
+
+An engine is a destination when it **answers**, not when it fails the same way.
+So the ideal-finding walk skips a tier whose MATCH came with a non-zero exit —
+but only on a `syntax` route, and only then.
+
+The guard is the part worth defending, because without it this would be a metric
+edited to flatter itself, which is invariant 1's failure mode wearing a
+different hat. If a tier exited **0 with real output** while the classifier
+called the program a syntax error, that tier answered, the classifier was wrong,
+and it still grades LATE. And restricting it to `syntax` routes matters too: a
+program that reproduces `sys.exit(3)` exactly is a tier answering correctly, and
+a broader rule would have excused every genuine LATE that happened to exit
+non-zero. All three cases are pinned in `tests/test_routing.py`.
+
+### What moved
+
+```
+              before   after
+  IDEAL        1204     1223
+  LATE           69       50
+  WASTED         28       28
+  UNSAFE          4        4
+  ideal %      92.3     93.7
+  first-try %  97.5     97.5
+```
+
+first-try is unchanged, and that is the cross-check: those nineteen programs
+always reached a correct answer on their first spawn, because CPython was
+already where they were sent. Only the *ideal* number was wrong.
+
+### The LATE list is now 50, and every one is real work
+
+```
+  module 18   method 14   module-attr 7   decorator 7   generator 3   exception 1
+```
+
+by destination: `cpython -> lypning-mp` 33, `cpython -> lypning` 11,
+`lypning-mp -> lypning` 6. The largest bucket is the `MICROPYTHON_MODULES`
+table, where `tests/test_routing.py` already stands warning about `unicodedata`
+over 18 entries — and where adding it once moved UNSAFE from 4 to 5 (iteration
+40). That warning is the shape of the work and also the trap in it.
+
+**A quality number nobody audits drifts into decoration.** This one had 28% slack
+in it, and the slack was pointing the next iteration at `print($p)`.
+
+---
+
 ## 2026-08-25 · iteration 45 — the classifier could not see `os.path`, and 14 programs paid CPython for it
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305

@@ -115,6 +115,22 @@ def _why_of(x: Any) -> str:
     return ("%s: %s" % (kind, detail)).strip(": ")
 
 
+def _matched_by_failing(x: Any) -> bool:
+    """A MATCH that is two interpreters failing alike, rather than an answer.
+
+    The battery compares stdout and the exit code. A program that does not parse
+    has an empty stdout and a non-zero exit on *every* interpreter, so each one
+    scores MATCH for producing nothing — and the cheapest of them would be named
+    the ideal destination for a program none of them can run.
+
+    A bare verdict string carries no exit code and is never treated as one of
+    these, which keeps :func:`score_route` callable with plain strings.
+    """
+    if x is None or isinstance(x, str):
+        return False
+    return bool(getattr(x, "actual_rc", 0))
+
+
 def score_route(
     predicted: str,
     by_engine: Mapping[str, Any],
@@ -122,6 +138,7 @@ def score_route(
     *,
     entry_id: str = "",
     rescued: bool = False,
+    route_kind: str = "",
 ) -> RouteScore:
     """Grade one route, given every engine's measured verdict for that program.
 
@@ -138,9 +155,28 @@ def score_route(
     ladder = list(order) if order is not None else [e for e in eng.ENGINE_ORDER if e in by_engine]
     ideal = ""
     for name in ladder:
-        if _verdict_of(by_engine.get(name)) == conf.MATCH:
-            ideal = name
-            break
+        v = by_engine.get(name)
+        if _verdict_of(v) != conf.MATCH:
+            continue
+        if route_kind == "syntax" and name != conf.CPYTHON and _matched_by_failing(v):
+            # A syntax error is not a capability gap, and the classifier sends it
+            # to CPython on purpose: CPython's message names the file, the line
+            # and the column and prints the offending source, where lypning's
+            # says "line 1". That difference lives entirely on **stderr**, which
+            # the battery does not compare — so a cheaper tier scores MATCH for
+            # failing the same way and would be graded the ideal destination for
+            # a program it cannot run. Nineteen corpus programs read LATE for
+            # this reason alone, which is a quarter of the LATE budget spent on
+            # nothing anyone can fix.
+            #
+            # Guarded on the exit code rather than on the route kind alone, so
+            # the case actually worth catching stays visible: if the cheaper tier
+            # RAN the program — exit 0, real output — while the classifier called
+            # it a syntax error, that is a misclassification and a real defect,
+            # and it still grades LATE.
+            continue
+        ideal = name
+        break
     if not ideal:
         return RouteScore(entry_id, predicted, "", NO_ENGINE,
                           "no engine matched CPython", rescued)
@@ -267,6 +303,7 @@ def grade(report: conf.Report) -> RoutingReport:
         s = score_route(
             route.engine, verdicts, ladder, entry_id=entry_id,
             rescued=_verdict_of(mixture) == conf.MATCH,
+            route_kind=route.kind,
         )
         out.scores.append(s)
         out.counts[s.grade] = out.counts.get(s.grade, 0) + 1

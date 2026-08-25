@@ -35,6 +35,17 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   corrected**: `py-9b16a7261b96` dies at exit 1 with a traceback on
   `type(e).__module__`, not at exit 0 with wrong output.
   `.github/known-mismatches.json` had it right.
+- **LATE counted 19 programs that were routed correctly.** A program that does
+  not parse has an empty stdout and a non-zero exit on every tier, so each
+  scored MATCH for producing nothing and the cheapest was graded the ideal
+  destination for a program none of them can run — the difference is CPython's
+  message, which lives on stderr and is not compared. The grader now skips a
+  tier whose match was a shared failure, on `syntax` routes only and only when
+  that tier exited non-zero; a tier that exited 0 with real output answered, and
+  a classifier calling *that* a syntax error stays visible as LATE. Routing
+  reads **IDEAL 1223, LATE 50** over 1305 graded programs, with correct-on-first-
+  try unchanged at 97.5% — those programs always reached the right answer on the
+  first spawn.
 
 **2026-08-25** — `%`-formatting agrees with CPython, and the numbers are re-measured · [#14]
 

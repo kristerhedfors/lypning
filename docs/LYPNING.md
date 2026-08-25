@@ -278,15 +278,26 @@ The routing score is asymmetric on purpose (this tree, 2026-08-25, same run as
 ```
 routing over 1305 programs
 
-  IDEAL      1204  routed to the cheapest engine that works
+  IDEAL      1223  routed to the cheapest engine that works
   WASTED       28  engine refused; one extra spawn, right answer
-  LATE         69  worked, but a cheaper engine would have too
+  LATE         50  worked, but a cheaper engine would have too
   UNSAFE        4  routed to an engine that MISMATCHES
   NO-ENGINE     0
 
-  accuracy 92.3% ideal, 97.5% correct-on-first-try
+  accuracy 93.7% ideal, 97.5% correct-on-first-try
   predictions: lypning=888  lypning-mp=299  cpython=118
 ```
+
+**LATE counts only programs a cheaper tier would have *answered*.** It did not
+always: a program that does not parse has an empty stdout and a non-zero exit on
+every interpreter, so each one scored MATCH for producing nothing and the
+cheapest was named the ideal destination for a program none of them could run.
+Nineteen programs read LATE for that reason alone — a quarter of the budget spent
+on `print($p)`. The difference that matters is on **stderr**, which the battery
+does not compare, so the grader now skips a tier whose match was a shared
+failure. It skips it only on a `syntax` route and only when that tier exited
+non-zero: a tier that exited 0 with real output *answered*, and a classifier
+calling that a syntax error is a misclassification that must stay visible.
 
 **All four UNSAFE routes are lypning-mp**, and three of them are the
 streamed-stdout defect of §2 reached through the router: a program predicted for
@@ -348,8 +359,9 @@ got wrong. Measured over 1305 programs, on the same binary to the byte
 | routed to cpython | 132 | **118** |
 
 (Both columns are from this session's two runs over the same 1305 graded
-programs, not from the table above, which was measured on a different day — the
-counts move every session and the two must not be read against each other.)
+programs, and both were graded before the shared-failure rule above landed —
+which is why neither matches the block at the top of this section. An A/B is
+only an A/B when one thing changed.)
 
 Fourteen programs stopped paying a CPython spawn — twelve now answered by
 lypning, two by lypning-mp — and no program moved the wrong way: WASTED did not

@@ -100,6 +100,42 @@ def test_the_ladder_decides_which_match_is_ideal():
     assert routing.score_route(eng.MICROPYTHON, by, (eng.LYPNING, eng.MICROPYTHON)).grade == LATE
 
 
+def test_failing_the_same_way_is_not_a_claim_on_being_the_ideal_tier():
+    # A program that does not parse has an empty stdout and a non-zero exit on
+    # every interpreter, so each one scores MATCH for producing nothing. The
+    # difference that matters — CPython names the file, the line and the column
+    # and prints the offending source — is on stderr, which the battery does not
+    # compare. Without this rule the cheapest tier is graded the ideal
+    # destination for a program it cannot run, and 19 corpus programs read LATE
+    # for that reason alone.
+    failed = conf.Verdict(eng.LYPNING, "py-1", MATCH, actual_rc=1)
+    by = {eng.LYPNING: failed, eng.MICROPYTHON: failed, eng.CPYTHON: MATCH}
+    s = routing.score_route(eng.CPYTHON, by, LADDER, route_kind="syntax")
+    assert s.grade == IDEAL
+    assert s.ideal == eng.CPYTHON
+
+
+def test_a_tier_that_actually_ran_a_supposed_syntax_error_is_still_late():
+    # The guard on the rule above, and the case worth catching: exit 0 with real
+    # output means the tier ANSWERED, so the classifier calling it a syntax error
+    # is a misclassification and a real defect. It must stay visible.
+    answered = conf.Verdict(eng.LYPNING, "py-1", MATCH, actual_rc=0)
+    by = {eng.LYPNING: answered, eng.CPYTHON: MATCH}
+    s = routing.score_route(eng.CPYTHON, by, LADDER, route_kind="syntax")
+    assert s.grade == LATE
+    assert s.ideal == eng.LYPNING
+
+
+def test_the_shared_failure_rule_applies_only_to_syntax_routes():
+    # A tier that refuses at exit 90 and a tier that crashes are graded by the
+    # existing rules. Widening this to every route kind would excuse a genuine
+    # LATE whenever the program happened to exit non-zero — `sys.exit(3)`
+    # reproduced exactly is a tier answering correctly, not failing.
+    exited = conf.Verdict(eng.LYPNING, "py-1", MATCH, actual_rc=3)
+    by = {eng.LYPNING: exited, eng.CPYTHON: MATCH}
+    assert routing.score_route(eng.CPYTHON, by, LADDER, route_kind="module").grade == LATE
+
+
 def test_a_verdict_record_grades_the_same_as_a_bare_verdict_string():
     # The battery hands over `conformance.Verdict` objects; a test that wants to
     # pin one rule hands over strings. Both must mean the same thing, or the
