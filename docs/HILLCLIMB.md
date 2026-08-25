@@ -28,6 +28,89 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 44 — where a corpus program's time actually goes, and four things that were not it
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**Nothing committed to the engine.** Two changes were written, measured and
+reverted. The finding is the entry.
+
+### The split nobody had measured
+
+`lypning perf` times constructs in a loop, which amortises one parse to nothing
+and subtracts startup by design. So it has never been able to see what a *corpus*
+program — which runs once and exits — actually spends. Measured directly, 60
+corpus programs, min of 40 spawns each, `route -c` giving parse and `-c` giving
+parse plus eval:
+
+```
+                    run 1     run 2
+  process startup     75%       65%
+  parse               12%       22%
+  eval                13%       13%
+```
+
+Noisy between runs because the startup floor itself moves (0.288 ms against
+0.246 ms), but the shape is stable and the third row is stable to the point:
+
+**The evaluator is about 13% of what a corpus program costs.** Everything this
+session optimised — and everything the 32-case suite measures — lives inside
+that 13%. Halving it would save six percent of a one-liner.
+
+Startup is two thirds to three quarters and is close to irreducible: the binary
+is already static, non-PIE, and opens no files. The size lever is weak, too —
+lypning-mp is **3.3x smaller** and starts only **8% faster** (0.61 ms against
+0.66), so most of that time is `fork` + `exec` and not paging in the image.
+
+**What this says about where effort goes**, and it is not where this session
+spent it: for the stack, the number that matters is how many programs *reach*
+lypning at all. It answers 906 of 1305; the other 399 each pay a second process
+on top of the first. One program moved from a fall-through to an answer is worth
+more than a 20% win anywhere inside the 13%.
+
+### Four memcmp-shaped hypotheses, none of which converted
+
+`memcmp` is the largest single entry in every profile taken since iteration 41 —
+7.55% of `call-method`, 6.62% of `str-split`, 6.79% of `file-write-read`, 11.66%
+of the parser. It has now failed to convert into wall clock **four times**:
+
+| what was tried | Ir story | wall clock |
+|---|---|---|
+| binary-search the builtin/exception tables (iter 42) | `len` sits 19 compares in | **2% slower**, reverted |
+| ASCII byte-scan for whitespace split | `Map::next` + validations 7.8% | flat, reverted |
+| `bin_level` early-out when the token is not an operator | `is_op` 6.6% | flat — and only **0.13% fewer instructions**, so the model was wrong too |
+| (iteration 4, years of ledger ago) the same table scan | — | zero |
+
+The last row is the instructive one. The early-out looked like it should remove
+twenty-five string comparisons per atom parsed, and it removed **0.13% of the
+instruction stream**. Either the compiler had already hoisted the work or the
+comparisons were never where I thought. Reading a profile is not the same as
+understanding it, and a hypothesis that predicts a big Ir drop and delivers 0.13%
+was wrong about the *mechanism*, not just the payoff.
+
+**The standing rule this produces:** `memcmp` near the top of a callgrind profile
+in this tree is not, by itself, a reason to do anything. Short comparisons behind
+a length check, on cache-resident data, in perfectly predicted branches, run at
+an IPC that makes their instruction count meaningless. Five measurements now say
+so, under conditions that differ in every other respect.
+
+**One caveat kept open rather than claimed:** all of this is native x86. The
+sandbox this project targets is CheerpX, which *emulates* x86, and there
+instruction count may well be the currency. None of that is measured here and
+none of it is a reason to keep a change that is flat on the only hardware
+available.
+
+### And a net I walked around
+
+The ad-hoc harness for the split above ran corpus programs with
+`subprocess.run` from the repository root, not through the corpus runner — so
+six of them wrote `a.log`, `b.bin`, `d.json`, `n.txt`, `out.txt` and `s.txt`
+into the tree. Nothing tracked was modified and the files are removed, but
+CLAUDE.md invariant 4 exists precisely because these programs edit things, and
+the per-entry temp cwd is not optional just because the harness is a throwaway.
+`git status` caught it, which is the whole reason the invariant says to run it.
+
+
 ## 2026-08-25 · iteration 43 — the row the suite said it could not see
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
