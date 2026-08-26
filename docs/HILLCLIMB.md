@@ -28,6 +28,108 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 55 — the `else` clause ran on `break`, and `raise` could not re-raise
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded, 1307
+graded
+
+**bytes** 1,003,720 B — **identical**, all three fixes. **correctness** lypning
+908 MATCH / 399 UNSUPPORTED / **0 MISMATCH**; lypning-mp 11, mixture 1.
+**routing** IDEAL 1235, LATE 40, WASTED 28, UNSAFE 4 — unchanged. **tests**
+1,019 → 1,026.
+
+Iteration 54 ended by naming `try/except/else` on `break` as the next one to
+take, because it is control flow rather than a formatting corner. It was, and it
+was worse than reported.
+
+### The `else` clause ran on every way out, not just the normal one
+
+```python
+while True:
+    try: break
+    else: print("else")
+```
+
+printed `else`. So did a `continue`, **once per iteration**. The clause runs only
+when the body finished by *falling off the end* — `break`, `continue` and
+`return` all leave the statement without reaching it, because "no exception was
+raised" and "the body ran to completion" are different facts and `else` means
+the second.
+
+`self.exec_block(body)` returning `Ok(flow)` ran the else block for **any**
+flow. One `matches!(flow, Flow::Normal)` guard. Side effects are the ordinary
+reason to write an else clause at all, so this could execute arbitrarily much
+code CPython does not.
+
+`finally` was already right and stays right: it runs on every path, including
+these. The two clauses look adjacent and are opposite.
+
+### A bare `raise` could not re-raise
+
+```python
+except ValueError:
+    log(...)
+    raise
+```
+
+answered `RuntimeError: No active exception to reraise` — correct *outside* a
+handler, and wrong inside one, where this is the standard "record it and let it
+propagate". `Stmt::Raise { exc: None }` raised that RuntimeError unconditionally.
+
+The interpreter now carries a **stack** of the exceptions its enclosing handlers
+are handling, pushed for the handler body and popped on every path out. A stack
+rather than one slot because a handler can contain another try/except, and the
+inner one must not lose the outer's exception when it finishes:
+
+```python
+except KeyError:              # outer
+    try: raise TypeError()
+    except TypeError: pass    # inner finishes…
+    raise                     # …and this still re-raises the KeyError
+```
+
+### KeyError was quoted at one construction site and not the other
+
+```
+str(KeyError('f'))        ->  f              cpython: 'f'
+repr(lookup_keyerror)     ->  KeyError("'k'") cpython: KeyError('k')
+```
+
+A KeyError shows the **repr** of its key, so a missing `''` is distinguishable
+from a missing `' '`. Every site that raises one from a real lookup already
+stored `repr(key)`; only the constructor stored the plain string. So `str` was
+right for one and wrong for the other, and `repr` — which quoted again — was
+wrong for exactly the opposite one. Both now store the repr, and `repr()` of a
+KeyError inserts it verbatim.
+
+### The grid, and what it covers
+
+`tests/test_control_flow_grid.py`, 18 cases: `else` under each of break,
+continue, return, normal completion and a raise; an `else` that itself breaks;
+`finally` under break, return and a propagating exception; `finally` overriding a
+return; loop-`else` on for and while with and without break (a different
+construct that shares a keyword and was always correct); an else clause inside a
+handler breaking the outer loop; a bare re-raise; an exception raised *from* an
+else clause not being caught by its own handler; and `finally` with `continue`.
+
+**The well-formed paths are in the grid with the broken ones**, which is the
+point: a "fix" that simply stopped running the else clause would satisfy a test
+that only checked `break`.
+
+Run against the pre-fix binary: **5 failures**, 0 after.
+
+### On the tooling
+
+The second fan-out hunt was launched at six fresh lenses and **all six agents
+failed on a harness fault** — the same StructuredOutput validator that rejected
+schema-conforming payloads earlier, plus a permission handler stripping `command`
+from every Bash call. The agents refused to fabricate and reported BLOCKED, which
+is the right behaviour. Two rounds, two failures, one success. The lenses are
+listed in that script and are still worth sweeping **by hand**, which is how
+every defect in iterations 51, 52, 53 and this one was actually found.
+
+---
+
 ## 2026-08-25 · iteration 54 — twelve silent wrong answers from a fan-out hunt, and `bytes` was the hole
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded, 1307

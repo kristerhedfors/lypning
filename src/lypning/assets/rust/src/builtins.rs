@@ -246,6 +246,13 @@ pub fn call_builtin(
     // `raise ValueError("x")` / `except E as e` construct exception instances.
     if is_exception_name(name) {
         let msg = match args.first() {
+            // `str(KeyError('f'))` is `"'f'"`, not `"f"`: KeyError shows the
+            // REPR of its key, so that a missing `''` is distinguishable from a
+            // missing `' '`. Every site that raises one from a real lookup
+            // already stored `repr(key)`; only the constructor stored the plain
+            // string, so the two disagreed and `repr()` then quoted the lookup
+            // form a second time (`KeyError("'k'")`).
+            Some(v) if name == "KeyError" => fmt::repr(v)?,
             Some(v) => fmt::to_str(v)?,
             None => String::new(),
         };

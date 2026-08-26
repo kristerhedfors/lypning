@@ -192,6 +192,11 @@ pub fn repr(v: &Value) -> R<String> {
         Value::Exc(kind, msg) => {
             if msg.is_empty() {
                 format!("{kind}()")
+            } else if *kind == "KeyError" {
+                // The message a KeyError carries is ALREADY the repr of its key
+                // (see the constructor in `builtins.rs`), so quoting it again
+                // produced `KeyError("'k'")`.
+                format!("{kind}({msg})")
             } else {
                 format!("{kind}({})", str_repr(msg)?)
             }

@@ -69,6 +69,21 @@ pub struct Interp {
     step_limit: u64,
     /// How deep `eval` currently is, against [`MAX_EXPR_DEPTH`].
     expr_depth: u32,
+    /// The exception each enclosing `except` block is currently handling,
+    /// innermost last. A bare `raise` re-raises the top of it.
+    ///
+    /// Without this, `raise` with no argument ALWAYS answered
+    /// `RuntimeError: No active exception to reraise` — correct outside a
+    /// handler and wrong inside one, where re-raising is the whole idiom:
+    ///
+    ///     except ValueError:
+    ///         log(...)
+    ///         raise          # <- became a RuntimeError of its own
+    ///
+    /// A stack rather than one slot, because a handler can contain another
+    /// try/except and the inner one must not lose the outer's exception when it
+    /// finishes.
+    handling: Vec<(&'static str, Rc<str>)>,
     /// Spent scope-chain vectors, kept to be filled again. See
     /// `call_func_inner`; capped at [`CHAIN_POOL_MAX`] so a deep recursion
     /// cannot leave the pool holding its whole depth for the rest of the run.
@@ -104,6 +119,7 @@ impl Interp {
             depth: 0,
             steps: 0,
             expr_depth: 0,
+            handling: Vec::new(),
             chain_pool: Vec::new(),
             scope_pool: Vec::new(),
             // Read once, here, rather than per statement. Zero — the CLI's
@@ -290,7 +306,15 @@ impl Interp {
             }
             Stmt::Raise { exc } => {
                 let e = match exc {
-                    None => return Err(LypningError::exc("RuntimeError", "No active exception to reraise")),
+                    None => match self.handling.last() {
+                        Some((k, m)) => return Err(LypningError::exc(*k, m.to_string())),
+                        None => {
+                            return Err(LypningError::exc(
+                                "RuntimeError",
+                                "No active exception to reraise",
+                            ))
+                        }
+                    },
                     Some(e) => self.eval(e)?,
                 };
                 return Err(match e {
@@ -361,13 +385,31 @@ impl Interp {
             } => {
                 let r = self.exec_block(body);
                 let out = match r {
-                    Ok(flow) => {
-                        let e = self.exec_block(els);
-                        match e {
+                    // The `else` clause runs only when the body finished by
+                    // FALLING OFF THE END. `break`, `continue` and `return` all
+                    // leave the try statement without reaching it — which is the
+                    // whole point of the clause, since "no exception" and "ran
+                    // to completion" are different facts.
+                    //
+                    // Any flow at all used to run it, so
+                    //
+                    //     while True:
+                    //         try: break
+                    //         else: print("else")
+                    //
+                    // printed `else` before leaving the loop, and a `continue`
+                    // ran it once per iteration. Side effects in an `else`
+                    // clause are the ordinary reason to write one, so this could
+                    // execute arbitrarily much code that CPython does not.
+                    // `finally` is different and was already right: it runs on
+                    // every path, including these.
+                    Ok(flow) if matches!(flow, Flow::Normal) => {
+                        match self.exec_block(els) {
                             Ok(Flow::Normal) => Ok(flow),
                             other => other,
                         }
                     }
+                    Ok(flow) => Ok(flow),
                     Err(err) => {
                         // `unsupported` is a runtime capability gap, not a
                         // Python exception: catching it with `except Exception`
@@ -381,11 +423,18 @@ impl Interp {
                                 if h.kinds.is_empty()
                                     || h.kinds.iter().any(|k| exc_matches(k, kind))
                                 {
+                                    let msg: Rc<str> = err_msg(&err).into();
                                     if let Some(n) = &h.name {
-                                        let v = Value::Exc(kind, err_msg(&err).into());
-                                        self.bind(n, v);
+                                        self.bind(n, Value::Exc(kind, msg.clone()));
                                     }
+                                    // Pushed for the body only, and popped on
+                                    // every path out of it — a handler that
+                                    // returns or breaks must not leave its
+                                    // exception on the stack for whatever runs
+                                    // next.
+                                    self.handling.push((kind, msg));
                                     handled = Some(self.exec_block(&h.body));
+                                    self.handling.pop();
                                     break;
                                 }
                             }

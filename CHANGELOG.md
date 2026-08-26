@@ -86,6 +86,23 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   wrong answers**, each adversarially re-run and minimised by a second agent.
   Twelve fixed; the remaining twenty are enumerated in `docs/HILLCLIMB.md` rather
   than half-done.
+- **`try/except/else` ran the else clause on `break` and on `continue`.** The
+  clause runs only when the body falls off the end — `break`, `continue` and
+  `return` all leave without reaching it. Any flow at all used to run it, so
+  `while True: try: break / else: print(...)` printed, and a `continue` printed
+  once per iteration. Side effects are the ordinary reason to write an else
+  clause, so this executed arbitrarily much code CPython does not. `finally` was
+  already right and still runs on every path.
+- **A bare `raise` inside a handler could not re-raise** — it answered
+  `RuntimeError: No active exception to reraise`, which is correct only outside
+  one. The interpreter now keeps a stack of the exceptions its enclosing handlers
+  are handling, so a try/except nested inside a handler does not lose the outer.
+- **`KeyError` was quoted at one construction site and not the other**, so
+  `str(KeyError('f'))` was `f` while `repr()` of a lookup KeyError was
+  `KeyError("'k'")`. Both now carry the key's repr.
+- Pinned as an 18-case control-flow grid that includes the well-formed paths, so
+  a fix that simply stopped running the else clause fails it. Binary unchanged at
+  1,003,720 B.
 - A survey of **lypning-mp** verified 34 further divergences, recorded in
   `docs/HILLCLIMB.md` rather than fixed: that tier's sort is genuinely unstable,
   `round(2.5, 0)` is `3.0`, `isinstance(True, int)` is `False`, `json.loads`

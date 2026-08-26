@@ -309,6 +309,19 @@ CASES = [
     # fail here.
     ("set-key-no-tie-still-answers", 'print(max({1, 2, 3}, key=lambda v: v), sorted({"a", "bb"}, key=len))'),
     ("list-key-ties-are-fine", "print(max([-1, 1], key=abs))"),
+    # `str(KeyError('f'))` shows the REPR of the key, so a missing `''` is
+    # distinguishable from a missing `' '`. The constructor stored the plain
+    # string while every real lookup stored `repr(key)`, so the two disagreed —
+    # and `repr()` then quoted the lookup form a second time.
+    ("keyerror-str-quotes", 'print(KeyError("f"), repr(KeyError("f")))'),
+    ("keyerror-int-key", "print(str(KeyError(1)), repr(KeyError(1)))"),
+    ("keyerror-from-lookup", 'try:\n    {}["k"]\nexcept KeyError as e:\n    print(str(e), repr(e))'),
+    ("keyerror-empty", "print(repr(KeyError()), repr(ValueError()))"),
+    ("other-exceptions-unquoted", 'print(str(ValueError("v")), repr(ValueError("v")))'),
+    # A bare `raise` in a handler re-raises what that handler caught, and a
+    # nested try/except inside the handler must not lose it.
+    ("bare-raise-nested-keeps-outer",
+     'try:\n    try:\n        raise KeyError("k")\n    except KeyError:\n        try:\n            raise TypeError("t")\n        except TypeError:\n            pass\n        raise\nexcept KeyError as e:\n    print("outer kept", e)'),
 ]
 
 needs_engine = pytest.mark.skipif(
