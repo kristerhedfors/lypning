@@ -252,12 +252,16 @@ impl Interp {
                 }
             }
             Value::Bytes(b) => {
-                let i = norm_index(crate::eval::int_val(idx)?, b.len(), "bytearray")?;
+                // The receiver is `bytes`, and CPython names the type in the
+                // message: "index out of range" for bytes, not "bytearray index
+                // out of range" — which named a type this subset does not even have.
+                let i = norm_index(crate::eval::int_val(idx)?, b.len(), "")?;
                 Value::Int(b[i] as i64)
             }
             Value::Range(a, bb, st) => {
                 let n = range_len(*a, *bb, *st);
-                let i = norm_index(crate::eval::int_val(idx)?, n as usize, "range")?;
+                // CPython says "range object index out of range" here, not "range".
+                let i = norm_index(crate::eval::int_val(idx)?, n as usize, "range object")?;
                 Value::Int(a + (i as i64) * st)
             }
             other => {
@@ -381,6 +385,28 @@ impl Interp {
                     let picked = slice_indices(t.len(), lo, hi, step);
                     Value::Tuple(Rc::new(picked.into_iter().map(|i| t[i].clone()).collect()))
                 }
+            }
+            // Slicing a range yields a RANGE, not a list — `range(4)[::-1]` is
+            // `range(3, -1, -1)`. Indexing one was already here; slicing fell
+            // through to the arm below and raised
+            // `'range' object is not subscriptable`, which is exit 1 and
+            // therefore the program's own: the dispatcher does not treat it as a
+            // refusal, so nothing rescued a construct CPython answers.
+            //
+            // The picked indices give the answer without a second normalisation
+            // to keep in step with `slice_indices`: the first one names the new
+            // start, the steps multiply, and the stop is derived from the COUNT
+            // so that it holds exactly the elements picked.
+            Value::Range(a, b, st) => {
+                let n = range_len(*a, *b, *st);
+                let (start, stop) = slice_bounds(n as usize, lo, hi, step);
+                // Both endpoints map straight through the parent's own start and
+                // step. Deriving the stop from a COUNT instead gives a range with
+                // the same ELEMENTS and a different repr — `range(4)[::3]` came
+                // out as `range(0, 6, 3)` where CPython says `range(0, 4, 3)` —
+                // and a range's repr is observable, so same-elements is not
+                // good enough.
+                Value::Range(a + start * st, a + stop * st, st * step)
             }
             other => {
                 return Err(type_err(format!(
@@ -841,7 +867,14 @@ pub fn norm_index(i: i64, n: usize, what: &str) -> R<usize> {
     let n = n as i64;
     let j = if i < 0 { n + i } else { i };
     if j < 0 || j >= n {
-        return Err(index_err(format!("{what} index out of range")));
+        // An empty `what` means the caller has no type name to offer, and
+        // CPython does not invent one: `b"abcd"[9]` is "index out of range".
+        // Formatting it in unconditionally left a leading space.
+        return Err(index_err(if what.is_empty() {
+            "index out of range".to_string()
+        } else {
+            format!("{what} index out of range")
+        }));
     }
     Ok(j as usize)
 }
@@ -863,6 +896,28 @@ pub fn slice_span(n: usize, lo: Option<i64>, hi: Option<i64>) -> (usize, usize) 
     let start = lo.map_or(0, clamp);
     let stop = hi.map_or(n, clamp).max(start);
     (start as usize, stop as usize)
+}
+
+/// The normalised `(start, stop)` a slice names, in index space.
+///
+/// Split out of [`slice_indices`] so the range arm of `slice` can build a range
+/// from the same numbers the gather path uses. Two normalisations of the same
+/// rule would be two things to keep in step, and this rule already has a grid of
+/// 10,990 cells behind it.
+pub fn slice_bounds(n: usize, lo: Option<i64>, hi: Option<i64>, step: i64) -> (i64, i64) {
+    let n = n as i64;
+    let clamp = |v: i64, lodef: i64, hidef: i64| -> i64 {
+        let v = if v < 0 { n + v } else { v };
+        v.clamp(lodef, hidef)
+    };
+    if step > 0 {
+        (lo.map_or(0, |v| clamp(v, 0, n)), hi.map_or(n, |v| clamp(v, 0, n)))
+    } else {
+        (
+            lo.map_or(n - 1, |v| clamp(v, -1, n - 1)),
+            hi.map_or(-1, |v| clamp(v, -1, n - 1)),
+        )
+    }
 }
 
 pub fn slice_indices(n: usize, lo: Option<i64>, hi: Option<i64>, step: i64) -> Vec<usize> {

@@ -28,6 +28,67 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 56 — 10,990 slicing cells, zero silent wrong answers, two real gaps
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded, 1307
+graded
+
+**bytes** 1,003,720 → **1,007,816 B**, still **8 blocks** (40,760 B to the
+ninth). **correctness** lypning 908 MATCH / 399 UNSUPPORTED / **0 MISMATCH**.
+**routing** unchanged. **tests** 1,026 → 1,027.
+
+The blocked round-two hunt named slicing as a lens. Swept by hand: ten receivers
+(str, empty str, one-char str, non-ASCII str, bytes, empty bytes, list, empty
+list, tuple, range) against every combination of start, stop and step over
+negative, zero, small positive, exactly `len`, past the end, and omitted, with
+steps of both signs including some larger than the sequence. **10,990 cells.**
+
+### The headline is the clean result
+
+**Zero silent wrong answers.** On the highest-traffic surface in the subset after
+`print`, and the one where a wrong answer is least likely to look wrong, the
+existing implementation is exactly CPython. That is worth recording as loudly as
+a defect would be: after five iterations of finding one silent wrong answer after
+another, this is the first sweep that found none.
+
+Every divergence was one of two other kinds.
+
+### `range` could not be sliced
+
+Indexing a range worked. Slicing one fell through to the "not subscriptable" arm
+and raised `TypeError: 'range' object is not subscriptable` — **exit 1**, which
+is the program's own exit, so the dispatcher does not treat it as a refusal and
+nothing rescued a construct CPython answers. 1,089 of the 1,107 differing cells
+were this.
+
+Slicing a range yields a range, and both endpoints map straight through the
+parent's own start and step. The first attempt derived the stop from a **count**
+instead — which gives a range with the same ELEMENTS and a different repr:
+`range(4)[::3]` came out `range(0, 6, 3)` where CPython says `range(0, 4, 3)`.
+589 cells still differed, all of them repr. A range's repr is observable, so
+same-elements is not good enough, and the count version was the cleverer of the
+two and the wrong one.
+
+`slice_bounds` was split out of `slice_indices` so the range arm builds from the
+same numbers the gather path uses. Two normalisations of one rule would be two
+things to keep in step, and this rule now has 10,990 cells behind it.
+
+### Two error messages named types that do not exist here
+
+`bytes` indexing said **"bytearray index out of range"** — a type this subset
+does not have at all — and `range` said "range" where CPython says "range
+object". Eighteen and four cells. Neither is a wrong answer; both are a reader
+being sent to look for something that is not there.
+
+### Why the grid stays
+
+A rule with 10,990 cells behind it can be changed with confidence. The same rule
+defended by fourteen hand-picked examples is one nobody dares touch — and, as
+iteration 24 recorded when the bounds rule was last wrong, fourteen examples all
+passed while 609 cells differed.
+
+---
+
 ## 2026-08-25 · iteration 55 — the `else` clause ran on `break`, and `raise` could not re-raise
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded, 1307

@@ -103,6 +103,15 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 - Pinned as an 18-case control-flow grid that includes the well-formed paths, so
   a fix that simply stopped running the else clause fails it. Binary unchanged at
   1,003,720 B.
+- **Slicing and indexing swept as a 10,990-cell grid: zero silent wrong
+  answers.** Ten receivers against every combination of start, stop and step. On
+  the highest-traffic surface after `print`, the existing implementation is
+  exactly CPython — recorded because it is the first sweep in five iterations to
+  find none. Two real gaps did surface: `range` could not be SLICED at all
+  (indexing worked; slicing raised a TypeError at exit 1, which the dispatcher
+  does not treat as a refusal, so nothing rescued a construct CPython answers),
+  and two index-error messages named types this subset does not have —
+  `bytes` said "bytearray".
 - A survey of **lypning-mp** verified 34 further divergences, recorded in
   `docs/HILLCLIMB.md` rather than fixed: that tier's sort is genuinely unstable,
   `round(2.5, 0)` is `3.0`, `isinstance(True, int)` is `False`, `json.loads`
