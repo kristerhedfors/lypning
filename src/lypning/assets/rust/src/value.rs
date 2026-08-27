@@ -14,7 +14,7 @@
 //!     90. A dict, whose order Python *does* define as insertion order, has no
 //!     such restriction.
 
-use crate::err::{type_err, unsupported, R};
+use crate::err::{type_err, unsupported, LypningError, R};
 use std::cell::RefCell;
 use crate::hash::Map;
 use std::rc::Rc;
@@ -319,6 +319,39 @@ pub fn str_val(s: impl Into<Rc<str>>) -> Value {
 }
 
 /// Structural equality with Python's numeric-tower rules (`1 == 1.0 == True`).
+/// CPython compares container elements with `x is y or x == y` — IDENTITY
+/// first — and that shortcut is observable for exactly one value: a NaN, which
+/// is not equal to itself.
+///
+///     n = float("nan")
+///     n in [n]        # True in CPython: the same object
+///     [n] == [n]      # True, element by element, for the same reason
+///     float("nan") in [float("nan")]   # False: two different objects
+///
+/// A float here is a bare `f64` with no object identity, so those three cases
+/// are indistinguishable and every answer is wrong for one of them. Refused
+/// rather than guessed: the chain answers it correctly one spawn later, which
+/// is what the refusal contract is for.
+pub fn has_nan(v: &Value) -> bool {
+    nan_in(v)
+}
+
+fn nan_in(v: &Value) -> bool {
+    match v {
+        Value::Float(f) => f.is_nan(),
+        Value::List(l) => l.borrow().iter().any(nan_in),
+        Value::Tuple(t) => t.iter().any(nan_in),
+        _ => false,
+    }
+}
+
+fn refuse_nan_identity(what: &str) -> LypningError {
+    unsupported(
+        "nan-identity",
+        &format!("{what} over a NaN, which CPython decides by object identity"),
+    )
+}
+
 pub fn eq(a: &Value, b: &Value) -> R<bool> {
     // The scalar cases first, and BEFORE the recursion guard: none of them can
     // descend, and this is the hottest comparison in the interpreter.
@@ -344,9 +377,17 @@ pub fn eq(a: &Value, b: &Value) -> R<bool> {
                 return Ok(true);
             }
             let (x, y) = (x.borrow(), y.borrow());
+            if x.iter().any(nan_in) || y.iter().any(nan_in) {
+                return Err(refuse_nan_identity("sequence equality"));
+            }
             seq_eq(&x, &y)?
         }
-        (Value::Tuple(x), Value::Tuple(y)) => seq_eq(x, y)?,
+        (Value::Tuple(x), Value::Tuple(y)) => {
+            if x.iter().any(nan_in) || y.iter().any(nan_in) {
+                return Err(refuse_nan_identity("sequence equality"));
+            }
+            seq_eq(x, y)?
+        }
         (Value::Dict(x), Value::Dict(y)) => {
             if Rc::ptr_eq(x, y) {
                 return Ok(true);
@@ -383,7 +424,63 @@ pub fn eq(a: &Value, b: &Value) -> R<bool> {
             a1 == a2 && b1 == b2 && c1 == c2
         }
         (Value::DictView(x, kx), Value::DictView(y, ky)) => {
-            kx == ky && Rc::ptr_eq(x, y)
+            // The three views do NOT compare alike, and treating them alike was
+            // wrong in both directions at once: `d.values() == d.values()` said
+            // True where CPython says False, and `d.keys() == other.keys()` said
+            // False where CPython says True.
+            //
+            // `dict_values` has no `__eq__` at all, so two of them fall back to
+            // identity — even two views of the SAME dict are unequal, because
+            // they are different objects. `dict_keys` and `dict_items` are
+            // set-like: equal when they hold the same elements, whatever the
+            // order and whichever dict they came from.
+            if kx != ky {
+                false
+            } else if *kx == "values" {
+                // `dict_values` compares by OBJECT IDENTITY, and a view here is
+                // just `(Rc<dict>, kind)` — it has no identity of its own, so
+                // `v == v` and `d.values() == d.values()` are indistinguishable
+                // while CPython answers True and False. Refused rather than
+                // guessed: the chain answers it correctly one spawn later, and
+                // either guess is a silent wrong answer for the other case.
+                return Err(unsupported(
+                    "dict-view",
+                    "dict_values comparison, which CPython decides by object identity",
+                ));
+            } else if Rc::ptr_eq(x, y) {
+                true
+            } else {
+                // Collected into owned vectors so both borrows are released
+                // before the element comparison below, which recurses into `eq`
+                // and may borrow either dict again.
+                let (a, b) = {
+                    let (dx, dy) = (x.borrow(), y.borrow());
+                    if *kx == "keys" {
+                        (dx.keys(), dy.keys())
+                    } else {
+                        (dx.items(), dy.items())
+                    }
+                };
+                if a.len() != b.len() {
+                    false
+                } else {
+                    let mut same = true;
+                    for i in &a {
+                        let mut found = false;
+                        for j in &b {
+                            if eq(i, j)? {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if !found {
+                            same = false;
+                            break;
+                        }
+                    }
+                    same
+                }
+            }
         }
         (Value::Module(x), Value::Module(y)) => x == y,
         (Value::Builtin(x), Value::Builtin(y)) => x == y,

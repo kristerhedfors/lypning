@@ -236,6 +236,15 @@ impl Interp {
                 if let (BinOp::Add, Value::List(l)) = (op, &cur) {
                     let extra = self.iter_collect(rhs)?;
                     l.borrow_mut().extend(extra);
+                    // …and then ASSIGN IT BACK, which is not a no-op. CPython
+                    // evaluates `t[0] += [5]` as an in-place extend followed by
+                    // `t[0] = result`, so a tuple element ends up MUTATED and
+                    // the statement still raises TypeError. Returning early
+                    // skipped the second half, so `t = ([1], 2); t[0] += [5]`
+                    // quietly succeeded where CPython raises — and the surprise
+                    // in Python is that both halves happen, which a caller who
+                    // catches the TypeError can see in the list.
+                    self.assign(target, cur)?;
                     return Ok(Flow::Normal);
                 }
                 let nv = self.binop(*op, &cur, &rhs)?;

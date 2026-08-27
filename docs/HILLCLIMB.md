@@ -28,6 +28,112 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 58 — capture was inert, and 686 harvested programs took the tier-1 arm from 0 to 13
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 → **2239**
+(1,646 graded, 593 skipped for absolute paths)
+
+**bytes** 1,011,912 → **1,016,008 B**, still **8 blocks** (32,568 B to the
+ninth). **correctness** lypning **1075 MATCH / 568 UNSUPPORTED / 3 MISMATCH**;
+lypning-mp 48, mixture 12. **routing** IDEAL 1504, LATE 88, WASTED 46,
+**UNSAFE 8**.
+
+### The harness had been silent all session
+
+The Stop and PreToolUse hooks dispatch to `lypning` on PATH, then to
+`python3 -m lypning`. **In a checkout of lypning itself neither exists** — the
+package is deliberately not pip-installed and the console script is not on
+PATH — and both arms fail silently by design, because invariant 5 says a hook
+never fails a session. So capture ran inert for a full day's work in this
+repository and nothing said so, in the session most worth capturing: the one
+editing the engine.
+
+Both hooks now try the source tree first, gated on
+`$CLAUDE_PROJECT_DIR/src/lypning/__init__.py` so an unrelated project with a
+`src/lypning` cannot shadow a real installation, and ordered *ahead* of the bare
+import so a checkout never pays for a spawn whose only output is
+`No module named lypning`. Verified by firing the hook by hand rather than by
+reasoning about it: one log line, exit 0, nothing on stderr.
+
+### What the corpus growth bought
+
+`lypning harvest --transcripts` took the corpus from 1553 to 2239. The tier-1
+arm, which had been at **MISMATCH 0 all session**, went to **13**.
+
+That is not a regression. It is the round-one backlog finally being *measured*
+instead of sitting in a ledger — plus four defects nobody had found:
+
+```
+format(255, ',x')   'ff'    ->  ValueError   ',' groups in 3s, the radix types
+                                             in 4s; CPython refuses the pair
+int('1_')           1       ->  ValueError   underscores are legal only
+float('1_')         1.0     ->  ValueError   BETWEEN digits
+bytes('abc')        b'abc'  ->  TypeError    a str has no bytes until an
+                                             encoding says which
+```
+
+**`,x` exposed a flaw in my own grid method.** The format driver skipped any
+spec that refused for *any* value in its value list, and `format(0.0, ',x')`
+refuses — so the whole spec was skipped and the integer case never compared.
+**144 specs were hidden that way.** The grid now runs 1,170 and still differs on
+none. A per-spec skip is a per-spec blind spot, and the corpus found what the
+grid was built to find.
+
+Two of the four fixes were wrong on the first attempt and the grid caught both:
+`is_ascii_digit` is 0-9 only, so the group-aware padder read a hex body as a
+fractional tail and answered a 13-wide field for a 12-wide spec; and
+`int('0x_1f', 16)` is *legal*, because an underscore may follow a base prefix.
+
+### Then ten of the thirteen, closed
+
+| | was | now |
+|---|---|---|
+| `d.values() == d.values()` | `True` | refused |
+| `d.keys() == other.keys()` | `False` | `True` — views are set-like |
+| `t = ([1],2); t[0] += [5]` | no error | `TypeError`, list still mutated |
+| `json.loads(s, parse_int=f)` | hook ignored | refused |
+| `n in [n]` for a NaN | `False` | refused |
+| `9007199254740993 / 3` | `…330.5` | refused |
+
+Three of those are **refusals, not answers**, and the reason is the same each
+time: the thing CPython uses to decide is something this runtime does not have.
+`dict_values` compares by *object identity* and a view here is
+`(Rc<dict>, kind)` with no identity of its own, so `v == v` and
+`d.values() == d.values()` are indistinguishable while CPython answers True and
+False. `in` compares identity first, and a NaN is the one value where that shows.
+`int / int` is correctly rounded from the integers, and converting to `f64`
+first loses the low bits past 2**53 — the numerator became …992 before the
+divide.
+
+Each refusal is narrow: `1 in [1,2]`, `[1] == [1]`, `inf in [inf]` and `1/3` all
+still answer. A refusal reaches CPython one spawn later with the right answer;
+a guess reaches the caller as data.
+
+The augmented-assignment one is the opposite shape — a missing *error* rather
+than a missing answer. `list += iterable` mutated in place and returned early,
+skipping the assignment CPython then attempts and fails. Both halves happen in
+Python: the tuple's list really is extended *and* the statement raises.
+
+### Three left on tier 1, and why they are still open
+
+`e.__context__` (implicit exception chaining — implementable, and the `handling`
+stack added in iteration 55 is most of what it needs);
+`1.7976931348623157e308 ** 0.5`, wrong in the **last ulp**, which is a musl
+libm against glibc libm difference rather than anything this tree does; and dict
+mutation during iteration not raising `RuntimeError`, which wants a version
+counter on the dict.
+
+### The honest state of the tree
+
+`lypning conformance` **exits 1**, at MISMATCH 63 — 48 on lypning-mp, 12 on the
+mixture, 3 on tier 1. It was red at 12 before this corpus landed and it is
+redder now, because the corpus can finally see the backlog. That is the trade
+this iteration made deliberately: **a measured defect is worth more than a
+latent one**, and the alternative was a corpus that stayed comfortable by not
+looking.
+
+---
+
 ## 2026-08-25 · iteration 57 — 300 of 1,026 format specs disagreed, in six families
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded, 1307

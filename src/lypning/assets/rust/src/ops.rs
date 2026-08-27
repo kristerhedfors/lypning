@@ -157,6 +157,17 @@ impl Interp {
     }
 
     pub fn contains(&mut self, container: &Value, needle: &Value) -> R<bool> {
+        // `n in [n]` is True in CPython because `in` compares identity first,
+        // and a NaN is the one value for which that is observable — it is not
+        // equal to itself. A float here has no identity, so this cannot be
+        // answered either way without being wrong for the other case. See
+        // `value::nan_in`.
+        if crate::value::has_nan(needle) || crate::value::has_nan(container) {
+            return Err(unsupported(
+                "nan-identity",
+                "`in` over a NaN, which CPython decides by object identity",
+            ));
+        }
         Ok(match container {
             Value::Str(s) => match needle {
                 Value::Str(n) => s.contains(n.as_ref()),
@@ -559,6 +570,22 @@ fn num_binop(op: BinOp, a: Num, b: Num, both_bool: bool) -> R<Value> {
             Div => {
                 if y == 0 {
                     return Err(zero_div("division by zero"));
+                }
+                // `int / int` is CORRECTLY ROUNDED in CPython, computed from the
+                // integers themselves. Converting each to f64 first loses the
+                // low bits of anything past 2**53, and the error survives the
+                // division: `9007199254740993 / 3` answered
+                // 3002399751580330.5 where CPython answers 3002399751580331.0,
+                // because the numerator had already become …992 before the
+                // divide. Refused past the exactly-representable range rather
+                // than answered approximately — the same line every other
+                // 64-bit-range refusal in this file draws.
+                const EXACT: i64 = 1 << 53;
+                if x.unsigned_abs() > EXACT as u64 || y.unsigned_abs() > EXACT as u64 {
+                    return Err(unsupported(
+                        "bigint",
+                        "int / int where an operand is past 2**53 and the quotient needs exact rounding",
+                    ));
                 }
                 Value::Float(x as f64 / y as f64)
             }
