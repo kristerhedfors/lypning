@@ -807,6 +807,38 @@ pub fn call_builtin(
             match (&v, nd) {
                 (Value::Int(i), None) => Value::Int(*i),
                 (Value::Int(i), Some(n)) if n >= 0 => Value::Int(*i),
+                // `round(12345, -2)` is 12300, and `round(15, -1)` is 20 while
+                // `round(25, -1)` is 20 as well — half to EVEN, like everywhere
+                // else in Python. This used to refuse, which was safe but cost a
+                // CPython spawn for an ordinary "round to the nearest hundred".
+                //
+                // Done in integer arithmetic rather than by scaling through f64:
+                // an int near 2**63 has more significant digits than a double
+                // carries, so the float path would answer a rounded number that
+                // is not the rounded number.
+                (Value::Int(i), Some(n)) => {
+                    let k = (-n) as u32;
+                    let scale = match 10i64.checked_pow(k) {
+                        Some(s) => s,
+                        // Past 10**18 every i64 rounds to zero, and Python
+                        // agrees — there is nothing to refuse.
+                        None => return Ok(Value::Int(0)),
+                    };
+                    let q = i.div_euclid(scale);
+                    let rem = i.rem_euclid(scale);
+                    let half = scale / 2;
+                    let up = rem > half || (rem == half && q % 2 != 0);
+                    let out = if up { q + 1 } else { q };
+                    match out.checked_mul(scale) {
+                        Some(r) => Value::Int(r),
+                        None => {
+                            return Err(unsupported(
+                                "bigint",
+                                "round() result beyond 64-bit range",
+                            ))
+                        }
+                    }
+                }
                 (Value::Float(f), None) => Value::Int(float_to_int(round_half_even(*f, 0), "round")?),
                 (Value::Float(f), Some(n)) => Value::Float(round_half_even(*f, n)),
                 (Value::Bool(b), _) => Value::Int(*b as i64),
@@ -1218,7 +1250,22 @@ fn round_half_even(f: f64, ndigits: i64) -> f64 {
     if ndigits > 17 {
         return f;
     }
+    // NEGATIVE ndigits rounds to tens, hundreds and so on, and Rust's `round()`
+    // breaks ties AWAY FROM ZERO where Python breaks them to even. The
+    // `ndigits == 0` branch above already carried that correction and the
+    // positive branch gets it free from the formatter; only this one rounded
+    // `round(5.0, -1)` to 10.0 where CPython answers 0.0, and `round(25.0, -1)`
+    // to 30.0 where CPython answers 20.0.
     let scale = 10f64.powi(-ndigits as i32);
-    let r = (f / scale).round();
+    let q = f / scale;
+    let mut r = q.round();
+    if (q - q.trunc()).abs() == 0.5 && r % 2.0 != 0.0 {
+        r -= q.signum();
+    }
+    // And the same zero-sign restoration as above: `round(-5.0, -1)` is `-0.0`,
+    // which `repr` shows, and the correction above produces a positive zero.
+    if r == 0.0 {
+        return (0.0f64).copysign(f) * scale;
+    }
     r * scale
 }

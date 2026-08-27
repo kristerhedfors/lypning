@@ -1061,9 +1061,29 @@ fn str_format(
     args: &[Value],
     kw: &[(Rc<str>, Value)],
 ) -> R<String> {
+    let mut auto = 0usize;
+    str_format_at(it, s, args, kw, &mut auto)
+}
+
+/// The body of [`str_format`], carrying the AUTO-NUMBERING COUNTER by reference.
+///
+/// A nested replacement field inside a spec draws from the same numbering as the
+/// field it sits in: `"{:.{}f}".format(3.14159, 2)` gives the outer field
+/// argument 0 and the inner one argument 1. Recursing into a fresh `str_format`
+/// restarted the count, so the inner `{}` took argument 0 as well — the spec
+/// became `.3.14159f` and the call raised `Invalid format specifier`, while
+/// `"{:{}}".format(3.0, 5)` quietly built the spec `3.0` and answered `'3e+00'`.
+/// Explicit numbering (`"{0:.{1}f}"`) never had the bug, which is why it
+/// survived every example anyone wrote down.
+fn str_format_at(
+    it: &mut Interp,
+    s: &str,
+    args: &[Value],
+    kw: &[(Rc<str>, Value)],
+    auto: &mut usize,
+) -> R<String> {
     let b: Vec<char> = s.chars().collect();
     let mut out = String::new();
-    let mut auto = 0usize;
     let mut i = 0;
     while i < b.len() {
         match b[i] {
@@ -1100,19 +1120,16 @@ fn str_format(
                     Some(k) => (&head[..k], head[k + 1..].chars().next()),
                     None => (head, None),
                 };
-                // Nested `{}` inside a spec resolve against the same arguments.
-                let spec = if spec.contains('{') {
-                    str_format(it, &spec, args, kw)?
-                } else {
-                    spec
-                };
                 let (base, path) = match head.find(['.', '[']) {
                     Some(k) => (&head[..k], &head[k..]),
                     None => (head, ""),
                 };
+                // The FIELD takes its argument first, and only then does the
+                // spec take its own. Expanding the spec first gave the inner
+                // `{}` the number the outer field was about to claim.
                 let mut v = if base.is_empty() {
-                    let k = auto;
-                    auto += 1;
+                    let k = *auto;
+                    *auto += 1;
                     args.get(k)
                         .cloned()
                         .ok_or_else(|| index_err("Replacement index out of range"))?
@@ -1129,6 +1146,13 @@ fn str_format(
                 if !path.is_empty() {
                     v = resolve_path(it, v, path)?;
                 }
+                // Nested `{}` inside a spec resolve against the same arguments
+                // AND the same auto-numbering counter.
+                let spec = if spec.contains('{') {
+                    str_format_at(it, &spec, args, kw, auto)?
+                } else {
+                    spec
+                };
                 let text = match conv {
                     Some('r') => fmt::format_value(&Value::Str(fmt::repr(&v)?.into()), &spec)?,
                     Some('s') => fmt::format_value(&Value::Str(fmt::to_rc(&v)?), &spec)?,

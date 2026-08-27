@@ -112,6 +112,28 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   does not treat as a refusal, so nothing rescued a construct CPython answers),
   and two index-error messages named types this subset does not have —
   `bytes` said "bytearray".
+- **300 of 1,026 answerable format specs disagreed with CPython**, found by
+  gridding the whole mini-language cross-product one program per spec. Six root
+  causes: the `0` flag must set the FILL even when an alignment is given
+  (`format(5, '<04')` was `'5   '`); zero padding is group-aware
+  (`format(5, '09,')` was `'000000005'`); `,` and `_` were ignored for `g` and
+  `%`; a precision with an empty presentation type was ignored, so
+  `format(123456.789, '.4')` answered the whole repr; a precision on an integer
+  type is a ValueError and was ignored; and `#` with a zero precision and
+  grouping put the decimal point after the leading digit.
+- **The `%` operator does not share the integer-precision rule** — `'%.2d' % 5`
+  is `'05'`, a minimum digit count the mini-language cannot spell — so
+  `format_value` and `format_value_pct` are now two entry points over one body.
+  Two existing pins caught the conflation in the minute it was written.
+- **Nested replacement fields took the wrong argument.**
+  `"{:.{}f}".format(3.14159, 2)` raised and `"{:{}}".format(3.0, 5)` answered
+  `'3e+00'`: the spec was expanded before the outer field claimed its argument,
+  and the recursion restarted the auto-numbering counter. Explicit numbering was
+  always correct, which is why it survived every hand-written example.
+- **`round(5.0, -1)` answered `10.0`** — Rust breaks ties away from zero where
+  Python breaks them to even, and only the negative-ndigits branch lacked the
+  correction. `round(int, -n)` is now implemented rather than refused, in integer
+  arithmetic so that ints past 2**53 keep their digits.
 - A survey of **lypning-mp** verified 34 further divergences, recorded in
   `docs/HILLCLIMB.md` rather than fixed: that tier's sort is genuinely unstable,
   `round(2.5, 0)` is `3.0`, `isinstance(True, int)` is `False`, `json.loads`

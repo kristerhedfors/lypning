@@ -1222,7 +1222,7 @@ fn percent_one(v: &Value, spec: &str, min_digits: usize) -> R<String> {
             Value::Int(_) | Value::Bool(_) => {}
             Value::Str(s) if s.chars().count() == 1 => {
                 let as_str = format!("{}s", &spec[..spec.len() - 1]);
-                return fmt::format_value(v, &as_str);
+                return fmt::format_value_pct(v, &as_str);
             }
             _ => return Err(type_err("%c requires int or char")),
         }
@@ -1254,13 +1254,13 @@ fn percent_one(v: &Value, spec: &str, min_digits: usize) -> R<String> {
     }
     if let Some(rest) = spec.strip_suffix('r') {
         let s = fmt::repr(v)?;
-        return fmt::format_value(&Value::Str(s.into()), &format!("{rest}s"));
+        return fmt::format_value_pct(&Value::Str(s.into()), &format!("{rest}s"));
     }
     if spec.ends_with('s') {
         let s = fmt::to_str(v)?;
-        return fmt::format_value(&Value::Str(s.into()), spec);
+        return fmt::format_value_pct(&Value::Str(s.into()), spec);
     }
-    fmt::format_value(v, spec)
+    fmt::format_value_pct(v, spec)
 }
 
 // ---- the allocation ceiling ------------------------------------------------

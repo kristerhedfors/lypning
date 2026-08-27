@@ -28,6 +28,96 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 57 — 300 of 1,026 format specs disagreed, in six families
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded, 1307
+graded
+
+**bytes** 1,007,816 → **1,011,912 B**, still **8 blocks** (36,664 B to the
+ninth). **correctness** lypning 908 MATCH / 399 UNSUPPORTED / **0 MISMATCH**.
+**routing** unchanged. **tests** 1,027 → 1,030.
+
+The format mini-language, swept as a grid over the whole spec cross-product:
+fill x align x sign x `#` x `0` x width x grouping x precision x type, 1,746
+specs against fourteen values. 720 are refusals — the contract working — and of
+the **1,026 that tier 1 answers, 300 disagreed with CPython.**
+
+One program per SPEC rather than one for everything, because a refusal stops a
+program dead and would have hidden every spec after it.
+
+### Six families, six root causes
+
+**The `0` flag sets the FILL, whatever the alignment is.** It supplies the
+*alignment* only when none was given. Setting both together meant an explicit
+alignment silently lost the zero fill: `format(5, '<04')` was `'5   '` where
+CPython says `'5000'`. An explicit fill still wins — `format(5, '*<04')` is
+`'5***'`. This was most of the 300.
+
+**Zero padding is group-aware.** `format(5, '09,')` is `'0,000,005'`, not
+`'000000005'` — the pad zeros are part of the number and take separators with
+them. Only on the `=` path, which is why `format(5, '<09,')` really is
+`'500000000'`. The digit count is the smallest whose *grouped* length reaches the
+space available, which is why `format(5, '012,')` is **thirteen** characters:
+nine digits group to eleven, ten group to thirteen, and there is no way to land
+on twelve without a leading separator.
+
+**`,` and `_` were ignored for `g` and `%`.**
+
+**A precision with an EMPTY presentation type was ignored**, so
+`format(123456.789, '.4')` answered the whole repr where CPython answers
+`'1.235e+05'`. The rule took a while to see and is worth writing down: it is `g`,
+except that fixed notation always keeps a digit past the point — **and that digit
+costs a significant place**, which is what decides the notation.
+`format(12.0, '.2')` is `'1.2e+01'` because `'12.0'` needs three significant
+digits and two were allowed; `format(12.0, '.3')` is `'12.0'`.
+
+**A precision on an integer presentation type is a ValueError** and was ignored.
+
+**`#` with a zero precision and a grouping character** put the point after the
+leading digit: `format(1234.0, '#,.0f')` was `'1.,234'`. A separator is part of
+the significand and the scan for the end of the number stopped at the first one.
+Only visible with all three at once, which is how it outlived the sweep that
+added grouping.
+
+### The one that bit back
+
+The int-precision check broke two `%`-operator pins immediately: `'%.2d' % 5` is
+`'05'`, because **`%` reads a precision on an integer as a minimum digit count**
+— which the mini-language has no spelling for at all. The two share every other
+rule, so `format_value` and `format_value_pct` are now two entry points over one
+body. The pins caught it in the same minute it was written, which is the
+argument for pinning error-shaped behaviour and not only answers.
+
+A second version of that check was also wrong in a way the grid caught and no
+example would have: keyed on the *type* alone it fired for `format(0.0, '.2d')`,
+where CPython's complaint is "Unknown format code 'd' for object of type
+'float'" — a different error that comes first. 450 specs said so.
+
+### Nested fields, and `round`
+
+`"{:.{}f}".format(3.14159, 2)` raised `Invalid format specifier` and
+`"{:{}}".format(3.0, 5)` quietly answered `'3e+00'`. A nested field draws from
+the same auto-numbering as the field it sits in, and the implementation did two
+things wrong: it expanded the spec **before** the outer field claimed its
+argument, and it recursed into a **fresh counter**. Explicit numbering
+(`"{0:.{1}f}"`) never had the bug, which is why it survived every example anyone
+wrote down.
+
+`round(5.0, -1)` answered `10.0` where CPython answers `0.0`: Rust's `round()`
+breaks ties away from zero. The `ndigits == 0` branch already carried the
+half-to-even correction and the positive branch gets it free from the formatter;
+only the negative one was left. `round(int, -n)` used to refuse and is now
+implemented in **integer** arithmetic — an int near 2**63 carries more
+significant digits than a double, so scaling through f64 would answer a rounded
+number that is not the rounded number. 480 cells, clean.
+
+### Where the round-one backlog stands
+
+Six of the twenty are now closed: five format-spec gaps and `round(x, -1)`.
+Fourteen remain, all still verified and all still without corpus hits.
+
+---
+
 ## 2026-08-25 · iteration 56 — 10,990 slicing cells, zero silent wrong answers, two real gaps
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded, 1307
