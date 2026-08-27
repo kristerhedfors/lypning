@@ -77,6 +77,26 @@ done
 if command -v lypning >/dev/null 2>&1; then
   printf '%s' "$LYPNING_HOOK_PAYLOAD" | lypning hook stop >/dev/null && ok
 fi
+
+# THE SOURCE TREE, before the bare import. This arm is why the file is three
+# arms and not two: a checkout of lypning ITSELF has the package neither
+# installed nor on PATH, and that is precisely the session most worth capturing,
+# because it is the one editing the engine. Both other arms fail silently there
+# — invariant 5, a hook never fails a session — so capture ran inert for a full
+# day's work in this repository and nothing said so.
+#
+# Ahead of the bare attempt rather than after it, so a checkout never pays for a
+# spawn whose only output is "No module named lypning" on every fire. The
+# package file is checked rather than the directory added unconditionally, so an
+# unrelated project that happens to have a `src/lypning` cannot shadow a real
+# installation. `&& ok` on success, so exactly one arm ever logs.
+if [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -f "$CLAUDE_PROJECT_DIR/src/lypning/__init__.py" ] \
+   && command -v python3 >/dev/null 2>&1; then
+  printf '%s' "$LYPNING_HOOK_PAYLOAD" \
+    | PYTHONPATH="$CLAUDE_PROJECT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
+      python3 -m lypning hook stop >/dev/null && ok
+fi
+
 if command -v python3 >/dev/null 2>&1; then
   printf '%s' "$LYPNING_HOOK_PAYLOAD" | python3 -m lypning hook stop >/dev/null || true
 fi

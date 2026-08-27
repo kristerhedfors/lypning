@@ -57,6 +57,36 @@ pub fn float_to_int(f: f64, what: &str) -> R<i64> {
     Ok(f as i64)
 }
 
+/// Python's rule for underscores in a numeric literal: they may appear only
+/// BETWEEN digits.
+///
+/// `1_0` is ten; `1_`, `_1`, `1__0` and `1_0_` are all ValueErrors. The parser
+/// here stripped every underscore unconditionally before handing the digits to
+/// Rust, so all four of those answered a number where CPython refuses — and
+/// `int('1_')` answering `1` is the shape that reaches a caller as data.
+///
+/// Applied to the digit run only, after any sign and base prefix have been
+/// taken off, because `int('0x_1f', 16)` is a ValueError too: the underscore
+/// there sits between a prefix and a digit, not between two digits.
+/// `after_prefix` allows ONE leading underscore, because an underscore may also
+/// follow a base specifier: `int('0x_1f', 16)` is 31. It is only the digit run
+/// that has the between-digits rule, and the prefix has already been taken off
+/// by the time this sees the string.
+fn underscores_are_between_digits(s: &str, radix: u32, after_prefix: bool) -> bool {
+    let b = s.as_bytes();
+    for (i, c) in b.iter().enumerate() {
+        if *c != b'_' {
+            continue;
+        }
+        let before = (i == 0 && after_prefix) || (i > 0 && (b[i - 1] as char).is_digit(radix));
+        let after = i + 1 < b.len() && (b[i + 1] as char).is_digit(radix);
+        if !(before && after) {
+            return false;
+        }
+    }
+    true
+}
+
 pub const EXCEPTIONS: &[&str] = &[
     "ArithmeticError",
     "AssertionError",
@@ -441,6 +471,12 @@ pub fn call_builtin(
                     } else {
                         t
                     };
+                    if !underscores_are_between_digits(t2, base as u32, t2.len() < t.len()) {
+                        return Err(value_err(format!(
+                            "invalid literal for int() with base {reported}: {}",
+                            fmt::str_repr(s)?
+                        )));
+                    }
                     let cleaned: String = t2.chars().filter(|c| *c != '_').collect();
                     match i64::from_str_radix(&cleaned, base as u32) {
                         Ok(v) => Value::Int(if neg { -v } else { v }),
@@ -482,6 +518,20 @@ pub fn call_builtin(
                     "inf" | "+inf" | "infinity" | "+infinity" => Value::Float(f64::INFINITY),
                     "-inf" | "-infinity" => Value::Float(f64::NEG_INFINITY),
                     "nan" | "+nan" | "-nan" => Value::Float(f64::NAN),
+                    // Same underscore rule as `int()`: between digits only, so
+                    // `float('1_')` is a ValueError and not 1.0. Checked on the
+                    // sign-stripped body, since `float('-1_0')` is fine.
+                    _ if !underscores_are_between_digits(
+                        t.strip_prefix(['-', '+']).unwrap_or(t),
+                        10,
+                        false,
+                    ) =>
+                    {
+                        return Err(value_err(format!(
+                            "could not convert string to float: {}",
+                            fmt::str_repr(s)?
+                        )))
+                    }
                     _ => match t.replace('_', "").parse::<f64>() {
                         Ok(v) => Value::Float(v),
                         Err(_) => {
@@ -1141,7 +1191,17 @@ pub fn call_builtin(
         }
         "bytes" => match args.first() {
             None => Value::Bytes(Rc::new(Vec::new())),
-            Some(Value::Str(s)) => Value::Bytes(Rc::new(s.as_bytes().to_vec())),
+            // `bytes('abc')` is a TypeError: a str has no bytes until an
+            // ENCODING says which. Answering `b'abc'` silently picked UTF-8 on
+            // the caller's behalf — right for ASCII and a wrong answer the
+            // moment the text is not, which is exactly when it matters.
+            // `bytes('abc', 'utf-8')` is the spelling that works and still does.
+            Some(Value::Str(s)) => {
+                if args.get(1).is_none() && kwget(&kw, "encoding").is_none() {
+                    return Err(type_err("string argument without an encoding"));
+                }
+                Value::Bytes(Rc::new(s.as_bytes().to_vec()))
+            }
             Some(Value::Bytes(b)) => Value::Bytes(b.clone()),
             Some(Value::Int(n)) => Value::Bytes(Rc::new(vec![0u8; (*n).max(0) as usize])),
             Some(other) => {

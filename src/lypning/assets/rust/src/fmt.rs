@@ -647,6 +647,13 @@ fn format_inner(v: &Value, spec_src: &str, from_pct: bool) -> R<String> {
     // "Unknown format code 'd' for object of type 'float'", not a complaint
     // about the precision. Checking the type alone reported the second error for
     // 450 specs that never reach the precision at all.
+    // `,` groups in THREES and the radix types group in FOURS, so CPython
+    // refuses the combination outright rather than pick one:
+    // `format(255, ',x')` is "Cannot specify ',' with 'x'." while
+    // `format(255, '_x')` is `'ff'`. This answered `'ff'` for both.
+    if !from_pct && sp.grouping == Some(',') && matches!(ty, 'x' | 'X' | 'o' | 'b' | 'c') {
+        return Err(value_err(format!("Cannot specify ',' with '{ty}'.")));
+    }
     if !from_pct
         && sp.precision.is_some()
         && matches!(ty, 'd' | 'x' | 'X' | 'o' | 'b' | 'c')
@@ -945,6 +952,17 @@ fn pad(body: &str, sp: &Spec, numeric: bool) -> String {
     pad_signed("", body, sp, numeric)
 }
 
+/// The number of digits between separators: four for the radix presentation
+/// types, three everywhere else. `format(255, '012_x')` is `'00_0000_00ff'`.
+/// Hard-coding three here grouped the PAD in threes while the body was grouped
+/// in fours, so the two halves of one number disagreed with each other.
+fn group_size(sp: &Spec) -> usize {
+    match sp.ty {
+        Some('x') | Some('X') | Some('o') | Some('b') => 4,
+        _ => 3,
+    }
+}
+
 fn pad_signed(sign: &str, body: &str, sp: &Spec, numeric: bool) -> String {
     let full_len = sign.chars().count() + body.chars().count();
     let Some(w) = sp.width else {
@@ -971,15 +989,21 @@ fn pad_signed(sign: &str, body: &str, sp: &Spec, numeric: bool) -> String {
     if numeric && sp.align == Some('=') && sp.fill == Some('0') {
         if let Some(sep) = sp.grouping {
             let raw: String = body.chars().filter(|c| *c != sep).collect();
-            let cut = raw.find(|c: char| !c.is_ascii_digit()).unwrap_or(raw.len());
+            // The integer part ends at the first '.', exponent or '%' — NOT at
+            // the first non-decimal character. `is_ascii_digit` is 0-9 only, so
+            // for `'012_x'` it declared the whole body `ff` to be the fractional
+            // TAIL, padded nine zeros into a twelve-wide field and answered
+            // `'0_0000_0000ff'`, which is thirteen characters wide.
+            let cut = raw.find(['.', 'e', 'E', '%']).unwrap_or(raw.len());
             let (intpart, tail) = raw.split_at(cut);
             let avail = w.saturating_sub(sign.chars().count() + tail.chars().count());
+            let gs = group_size(sp);
             let mut n = intpart.len().max(1);
-            while n + (n - 1) / 3 < avail {
+            while n + (n - 1) / gs < avail {
                 n += 1;
             }
             let padded = format!("{:0>width$}", intpart, width = n);
-            return format!("{sign}{}{tail}", group(&padded, Some(sep), 3));
+            return format!("{sign}{}{tail}", group(&padded, Some(sep), gs));
         }
     }
     let padn = w - full_len;
