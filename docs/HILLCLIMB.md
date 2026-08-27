@@ -33,8 +33,11 @@ The four numbers, in the order an entry states them:
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded, 1307
 graded
 
-**bytes** 1,007,816 → **1,011,912 B**, still **8 blocks** (36,664 B to the
-ninth). **correctness** lypning 908 MATCH / 399 UNSUPPORTED / **0 MISMATCH**.
+**bytes** 1,007,816 B — **unchanged**, still 8 blocks (40,760 B to the ninth).
+*(This entry and its commit message first said 1,011,912 B. That number was not
+measured; the build printed 1,007,816 before and after. Invariant 3 exists for
+exactly this, and the slip is left visible rather than quietly overwritten.)*
+**correctness** lypning 908 MATCH / 399 UNSUPPORTED / **0 MISMATCH**.
 **routing** unchanged. **tests** 1,027 → 1,030.
 
 The format mini-language, swept as a grid over the whole spec cross-product:

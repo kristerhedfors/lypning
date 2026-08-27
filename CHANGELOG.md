@@ -134,6 +134,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   Python breaks them to even, and only the negative-ndigits branch lacked the
   correction. `round(int, -n)` is now implemented rather than refused, in integer
   arithmetic so that ints past 2**53 keep their digits.
+- All of the above at **1,007,816 B, 8 blocks — the binary did not grow.**
 - A survey of **lypning-mp** verified 34 further divergences, recorded in
   `docs/HILLCLIMB.md` rather than fixed: that tier's sort is genuinely unstable,
   `round(2.5, 0)` is `3.0`, `isinstance(True, int)` is `False`, `json.loads`
