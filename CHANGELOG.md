@@ -164,6 +164,15 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 - **`e.__context__` claimed not to exist**, which is a claim about Python rather
   than about the program — and AttributeError is exit 1, so a handler inspecting
   the context died instead of being answered one spawn later. Refused now.
+- **The accepted-mismatch ledger was rebuilt from measurement.**
+  `.github/known-mismatches.json` named twelve; the arms report **fifty-nine**
+  (48 lypning-mp, 10 mixture, 1 lypning), because the corpus grew 44% in a day
+  and nobody had re-derived it. Every entry now carries a root-cause **family**
+  and a reason: 59 entries, **27 families, 0 unclassified**, and the scorer exits
+  0 — every mismatch is one the ledger names and every one it names still
+  reproduces. Fifty-nine lines read as fifty-nine problems and they are
+  twenty-seven; grouping says which would close together, and makes a fixed
+  family a block of lines to delete rather than an unexplained drop in a number.
 - A survey of **lypning-mp** verified 34 further divergences, recorded in
   `docs/HILLCLIMB.md` rather than fixed: that tier's sort is genuinely unstable,
   `round(2.5, 0)` is `3.0`, `isinstance(True, int)` is `False`, `json.loads`

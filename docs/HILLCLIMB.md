@@ -28,6 +28,75 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 62 — the accepted-mismatch ledger, rebuilt from measurement
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 2239 loaded, 1646
+graded, 593 skipped
+
+**bytes** unchanged. **correctness** unchanged. **tests** 1,102.
+`.github/scripts/known-mismatches.py` now **exits 0**: every mismatch is one the
+ledger names, and every one it names still reproduces.
+
+### The ledger had drifted from twelve to fifty-nine
+
+`.github/known-mismatches.json` accepts mismatches BY IDENTITY so one CI job can
+stay red for documented defects without that red swallowing every other signal.
+It named **twelve**. The arms report **fifty-nine** — 48 on lypning-mp, 10 on the
+mixture, 1 on lypning — because the corpus grew 44% in one day and nobody had
+re-derived it since.
+
+Rebuilt from a measured run, with every entry carrying a root-cause **family**
+and a reason. 59 entries, **27 families**, **0 unclassified**.
+
+### The families
+
+```
+commit-barrier 7 · exception-message-text 4 · sort-instability 4
+printf-zero-flag 3 · nan-identity 2 · round-with-ndigits 2
+float-grouping-ignored 2 · int-underscore-accepted 2 · json-control-chars 2
+str-search-index-clamping 2 · set-and-dict-hash-order 2
+…and sixteen singletons
+```
+
+The `family` field is the point of the rewrite. **Fifty-nine lines read as
+fifty-nine problems, and they are twenty-seven** — and grouping says which ones
+would close together, and makes a fixed family visible as a block of lines to
+delete rather than as an unexplained drop in a number.
+
+Several families are the *same defect this tree already fixed in the Rust core*,
+still present one tier down: NaN identity in containers, `int('1_')` accepted,
+`round(2.5, 0)`, float grouping ignored, `str.find` index clamping, dict
+mutation during iteration, `json.loads` hooks. The Rust core **refuses** three of
+those rather than answering; MicroPython answers.
+
+### The one lypning-arm entry is not a defect in this tree
+
+`py-ab7286f43b7a` — `1.797e308 ** 0.5`, wrong in the last ulp. It is in the
+ledger because it reproduces, and the entry says plainly that nothing here can
+fix it: the library arm compiles the same source against glibc's libm and
+matches CPython exactly.
+
+### How this was produced, and what the agents got wrong
+
+The classification came from a **probe-gated fan-out** — and the probe *passed*
+this time, the second working run in eight attempts. Three agents, 72 tool
+calls, and a genuinely good root-cause grouping.
+
+Two things had to be checked rather than taken:
+
+- One pass reported **77** mismatches "run twice, deterministic". My own run
+  reports **48**, alone or alongside the other arms, and is internally
+  consistent: 1646 graded + 593 skipped = 2239 loaded. I used mine.
+- The classification itself was **sound**: all 33 entry ids it grouped are real
+  mismatches in my run, **zero fabricated**. It simply stopped at 33 of 48, and
+  I classified the remaining 15 by hand.
+
+Which is the useful shape for this harness: **the grouping was worth having and
+the headline number was not.** A fan-out that reads and reasons over output
+earns its keep; a fan-out that counts needs its counts checked.
+
+---
+
 ## 2026-08-25 · iteration 61 — the tier-1 arm is down to one, and that one is not ours
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 2239 loaded, 1646
