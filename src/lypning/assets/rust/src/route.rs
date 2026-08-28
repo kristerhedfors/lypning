@@ -245,7 +245,20 @@ const MICROPYTHON_UNSAFE: &[(&str, &str)] = &[
     // `Path('/a/b').parts` drops the root component. Guarded on `pathlib` also
     // being imported, since `.parts` is an ordinary attribute name.
     ("parts", "pathlib-parts-drops-root"),
+    // The rest are the COMMIT BARRIER, and they fail differently: lypning-mp
+    // answers correctly right up to the construct and only then refuses, with
+    // its output already streamed. A refusal is interchangeable with the next
+    // tier's answer only because it leaves nothing behind, so one that arrives
+    // late is not a refusal the chain can act on (docs/LYPNING.md §6). The tier
+    // cannot be fixed here; the classifier can decline to start there.
+    ("hashlib.algorithms_guaranteed", "commit-barrier"),
 ];
+
+//: Keyword ARGUMENT names carrying the same risk. A separate table because a
+//: keyword is a different node from an attribute, not a different policy: the
+//: entry below is a parameter lypning-mp does not accept and discovers only at
+//: the call, by which point the program has printed.
+const MICROPYTHON_UNSAFE_KWARGS: &[(&str, &str)] = &[("strict_mode", "commit-barrier")];
 
 fn engine_for(kind: &str, imports: &[String], mp_risk: &BTreeSet<&'static str>) -> Engine {
     if CPYTHON_ONLY_KINDS.contains(&kind) {
@@ -521,16 +534,19 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             //
             // `.parts` is guarded on `pathlib`, since it is an ordinary
             // attribute name and only the pathlib one is wrong; `__module__` is
-            // a dunder that means nothing else; `random.seed` is matched as a
-            // dotted path so an unrelated `.seed` does not fire it.
+            // a dunder that means nothing else; a construct spelled with a dot
+            // is matched as a dotted path, so an unrelated `.seed` on some other
+            // object does not fire `random.seed`.
             for (construct, family) in MICROPYTHON_UNSAFE {
-                let hit = match *construct {
-                    "random.seed" => {
-                        n.as_ref() == "seed"
-                            && matches!(b.as_ref(), Expr::Name(m) if m.as_ref() == "random")
+                let hit = match construct.split_once('.') {
+                    Some((module, attr)) => {
+                        n.as_ref() == attr
+                            && matches!(b.as_ref(), Expr::Name(m) if m.as_ref() == module)
                     }
-                    "parts" => n.as_ref() == "parts" && req.imports.iter().any(|m| m == "pathlib"),
-                    other => n.as_ref() == other,
+                    None if *construct == "parts" => {
+                        n.as_ref() == "parts" && req.imports.iter().any(|m| m == "pathlib")
+                    }
+                    None => n.as_ref() == *construct,
                 };
                 if hit {
                     req.mp_risk.insert(family);
@@ -558,7 +574,12 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             for a in args {
                 walk_expr(a, req);
             }
-            for (_, v) in kwargs {
+            for (name, v) in kwargs {
+                for (construct, family) in MICROPYTHON_UNSAFE_KWARGS {
+                    if name.as_ref() == *construct {
+                        req.mp_risk.insert(family);
+                    }
+                }
                 walk_expr(v, req);
             }
             for d in dstar {

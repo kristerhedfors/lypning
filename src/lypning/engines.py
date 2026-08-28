@@ -548,11 +548,31 @@ def chain_from(engine: str) -> list[str]:
 #:
 #: Measured over the corpus the run loaded (2,239 programs, 2026-08-28): tier 1
 #: refuses 569 programs, and 25 of those are then answered *wrongly* by the tier
-#: below. Every kind below is one where lypning-mp got it wrong and never got it
-#: right — so escalating costs zero spawns on this corpus and buys back the
-#: answers. A kind where MicroPython is sometimes right is deliberately NOT here:
-#: a capability gap must keep falling through, because escalating it would pay a
-#: CPython spawn on every occurrence.
+#: below.
+#:
+#: What each kind costs, on that corpus — programs tier 1 refuses with it, by
+#: what lypning-mp then did. The right-hand column is the price: a program mp
+#: would have answered correctly now pays a CPython spawn instead of a
+#: MicroPython one. It is not zero, and an earlier revision of this comment said
+#: it was:
+#:
+#:     nan-identity 0/2   percent-format 0/2   del 0/1   dict-view 0/1
+#:     exception-chaining 0/1   json 0/1   set-method 0/1     (mp right / wrong)
+#:     set-order 4/1      repr-unicode 1/1     int-div-precision 0/1
+#:
+#: So five programs get slower and nine wrong answers become right ones. The
+#: trade is deliberately asymmetric in the same direction as invariant 1: a
+#: spawn is milliseconds and a wrong answer is the thing the mixture exists to
+#: prevent.
+#:
+#: A kind where MicroPython is *usually* right is deliberately NOT here, because
+#: escalating it would pay that spawn on every occurrence. `bigint` was, and was
+#: the reason this comment needed correcting: it names eleven refusals of which
+#: MicroPython answers TEN correctly, since MicroPython has arbitrary-precision
+#: integers and this is exactly the gap. Only the eleventh — int/int past 2**53,
+#: where the quotient needs rounding neither engine can do — is a subtlety, and
+#: it now carries its own kind, `int-div-precision`. Where a kind is mixed, split
+#: it in the engine; do not escalate the whole of it from here.
 #:
 #: This is not the capability table and must not be edited like one. Adding a
 #: kind here is a claim that no reimplementation short of CPython gets the
@@ -560,7 +580,7 @@ def chain_from(engine: str) -> list[str]:
 #: `tests/test_routing.py` checks it against the battery in both directions.
 ONLY_CPYTHON_REFUSALS = frozenset({
     "nan-identity",       # `in` and `==` decide by identity first: NaN finds itself
-    "bigint",             # int/int past 2**53 — mp converts to double and loses the low bits
+    "int-div-precision",  # int/int past 2**53 — mp converts to double and loses the low bits
     "set-order",          # CPython's hash order is observable, and it is CPython's
     "set-method",         # ...including hash(-1) == -2, reserved as an error sentinel
     "dict-view",          # keys/items are set-like, values compare by identity

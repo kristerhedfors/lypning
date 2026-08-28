@@ -14,6 +14,28 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-28** — Two more constructs the classifier declines, and a refusal kind
+that was two kinds
+
+- **UNSAFE 4 → 2.** `hashlib.algorithms_guaranteed` and the `strict_mode=`
+  keyword are the two commit-barrier constructs a parser can actually see, and
+  they cost **one corpus program each** to route away. The third barrier entry
+  is a regex whose pattern is only a string until it is compiled, so it stays —
+  and stays the live reproduction in `tests/test_routing.py`. IDEAL 1509 → 1511.
+- **`bigint` was doing two jobs.** Eleven refusals share the name; ten of them
+  mean *Python would use a bignum here*, and lypning-mp **is** MicroPython,
+  which has arbitrary-precision integers — it answers all ten correctly. The
+  eleventh, `int / int` past 2\*\*53, means *the quotient needs rounding I cannot
+  do exactly*, and MicroPython does the same lossy conversion and answers
+  wrongly. Escalating the shared kind sent all eleven to CPython to rescue one.
+  It is now `unsupported: int-div-precision`, and only that one escalates.
+- **A correction.** `ONLY_CPYTHON_REFUSALS` was documented as costing "zero
+  spawns on this corpus" because every kind in it was one MicroPython never got
+  right. That was true of seven of the ten and false of three — `bigint` 10,
+  `set-order` 4, `repr-unicode` 1. The comment now carries the per-kind
+  measurement instead of the summary: five programs get slower, nine wrong
+  answers become right.
+
 **2026-08-28** — The mixture arm was scored against a reference it did not share
 an environment with
 

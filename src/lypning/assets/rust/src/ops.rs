@@ -628,8 +628,21 @@ fn num_binop(op: BinOp, a: Num, b: Num, both_bool: bool) -> R<Value> {
                 // 64-bit-range refusal in this file draws.
                 const EXACT: i64 = 1 << 53;
                 if x.unsigned_abs() > EXACT as u64 || y.unsigned_abs() > EXACT as u64 {
+                    // Its OWN kind, and not `bigint`, because the two ask
+                    // different things of the tier below. Every other `bigint`
+                    // refusal here means "Python would use a bignum" — a
+                    // capability, and MicroPython HAS arbitrary-precision
+                    // integers, so falling through gets the right answer. This
+                    // one means "the quotient needs rounding I cannot do
+                    // exactly", and MicroPython converts both operands to
+                    // double exactly as this would have: it answers, and it
+                    // answers wrongly. Measured over the corpus the run loaded
+                    // (2,239 programs, 2026-08-28): of the programs this file
+                    // refuses as `bigint`, MicroPython gets 10 right and this
+                    // one wrong. Sharing a kind with them would escalate all
+                    // eleven to CPython to rescue one.
                     return Err(unsupported(
-                        "bigint",
+                        "int-div-precision",
                         "int / int where an operand is past 2**53 and the quotient needs exact rounding",
                     ));
                 }

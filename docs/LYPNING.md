@@ -239,6 +239,14 @@ the places where lypning refuses rather than approximates:
 
 1. **Integers are i64; Python's are arbitrary precision.** Every arithmetic
    operation is checked and an overflow is `unsupported: bigint`, never a wrap.
+   One integer refusal is deliberately *not* `bigint`: `int / int` where an
+   operand is past 2\*\*53 needs a quotient rounded from the integers themselves,
+   and converting each to `f64` first loses the low bits before the divide. That
+   is `unsupported: int-div-precision`, and the separate name is load-bearing —
+   lypning-mp *has* arbitrary-precision integers, so it answers a `bigint`
+   refusal correctly and is worth falling through to, while on this one it does
+   the same lossy conversion and answers wrongly. See
+   `engines.ONLY_CPYTHON_REFUSALS`.
 2. **Set iteration order is CPython's hashing, and cannot be reproduced.** So
    order-*independent* operations on sets work (`len`, `in`, the set algebra,
    `sorted`, `min`, `max`, `any`, `all`) and anything that would expose an order

@@ -60,6 +60,12 @@ def test_the_cheapest_matching_engine_is_ideal():
     assert routing.score_route(eng.CPYTHON, by, LADDER).grade == LATE
 
 
+def _refusal_kind(program):
+    """The kind tier 1 refuses ``program`` with, or "" if it ran it."""
+    r = eng.run(eng.LYPNING, program)
+    return r.refusal[0] if r.refused else ""
+
+
 def test_a_semantic_refusal_skips_every_tier_but_cpython():
     # The chain assumes the tier below is at least as correct as the one that
     # refused. For a capability gap that holds — MicroPython has decorators.
@@ -75,6 +81,25 @@ def test_a_semantic_refusal_skips_every_tier_but_cpython():
     assert eng.chain_after_refusal(eng.LYPNING, "kind-nobody-wrote") == [eng.MICROPYTHON, eng.CPYTHON]
     # Nothing is left to skip once lypning-mp is the one refusing.
     assert eng.chain_after_refusal(eng.MICROPYTHON, "nan-identity") == [eng.CPYTHON]
+
+
+def test_the_integer_refusals_split_by_what_the_tier_below_can_do(lypning_bin, micropython_bin):
+    """One kind, two populations, and only one of them is a subtlety.
+
+    Every `bigint` refusal but one means "Python would use a bignum here" — a
+    capability, and lypning-mp IS MicroPython, which has arbitrary-precision
+    integers. Falling through gets the right answer for one cheap spawn. The
+    exception is `int / int` past 2\*\*53, where the quotient needs rounding from
+    the integers themselves: MicroPython converts both to double exactly as
+    lypning would have, so it answers, and it answers wrongly.
+
+    They shared a kind until this session, and escalating that kind sent all
+    eleven of the corpus' `bigint` refusals to CPython to rescue the one.
+    """
+    assert _refusal_kind("print(2**70)") == "bigint"
+    assert _refusal_kind("print(9007199254740993/3)") == "int-div-precision"
+    assert eng.dispatch("print(2**70)").engine == eng.MICROPYTHON
+    assert eng.dispatch("print(9007199254740993/3)").engine == eng.CPYTHON
 
 
 def test_every_escalated_refusal_kind_is_one_an_engine_actually_emits():
@@ -490,6 +515,15 @@ def test_routing_grades_a_live_battery_run(lypning_bin):
 # UNSAFE route.
 PRINT_THEN_REFUSE_MP = (
     'print("BEFORE")\n'
+    "import re\n"
+    'print(re.findall(r"(?i)ab", "AB ab"))\n'
+)
+
+#: The same defect, on the construct the CLASSIFIER now declines. This one used
+#: to be the example above; it stopped being a live UNSAFE not because the tier
+#: gained a barrier but because `route.rs` learnt to keep the construct off it.
+PRINT_THEN_REFUSE_MP_DECLINED = (
+    'print("BEFORE")\n'
     "import hashlib\n"
     "print(sorted(hashlib.algorithms_guaranteed))\n"
 )
@@ -518,6 +552,65 @@ def test_the_one_unsafe_route_is_the_tracked_barrier_defect(lypning_bin, micropy
     assert "already reached stdout" in s.detail
     assert not rp.ok, "UNSAFE is the gate; it must fail the run it appears in"
     assert s.rescued, "the dispatcher still contains the leak, so the caller is unharmed"
+
+
+def test_a_barrier_construct_the_classifier_can_see_is_kept_off_the_tier(lypning_bin):
+    """The half that is fixable here, on the program that used to be the one above.
+
+    The commit barrier is lypning-mp's and cannot be fixed in this tree — the
+    test above still reproduces it on a regex the classifier cannot screen,
+    because the pattern is only a string until it is compiled. But where the
+    construct IS visible in the source, the classifier can decline to start
+    there, and two of the corpus' three barrier entries are visible that way:
+    `hashlib.algorithms_guaranteed`, and the `strict_mode=` keyword.
+
+    Precision is the whole point, so both directions are asserted: sibling uses
+    of the same modules must still reach the cheaper tier, or the rule has
+    quietly become "route all of hashlib away" at 100x the price.
+    """
+    assert eng.route(PRINT_THEN_REFUSE_MP_DECLINED).engine == eng.CPYTHON
+    assert _route("import base64\nprint(base64.b64decode(b'aGk=', strict_mode=True))").engine == eng.CPYTHON
+    assert _route("import hashlib\nprint(hashlib.md5(b'x').hexdigest())").engine == eng.MICROPYTHON
+    assert _route("import base64\nprint(base64.b64decode(b'aGk='))").engine == eng.MICROPYTHON
+    # `algorithms_guaranteed` on something that is not hashlib is an ordinary
+    # attribute: the rule is a dotted path, not a bare name.
+    assert _route("class C:\n    algorithms_guaranteed = 1\nprint(C.algorithms_guaranteed)").engine != eng.CPYTHON
+
+
+def test_no_program_is_routed_to_the_tier_with_a_kind_the_chain_would_escalate():
+    """Two tables decide a related question, and they must not fight over one program.
+
+    `route.rs` decides STATICALLY, from a parse: "lypning would refuse this with
+    kind K, and lypning-mp has K, so start there." `ONLY_CPYTHON_REFUSALS`
+    decides at RUNTIME, from a refusal that actually happened: "kind K is a
+    subtlety no reimplementation gets right, so skip to CPython."
+
+    Six kind names appear in both, and that overlap is NOT by itself a
+    contradiction — the two describe different populations. A kind the parser
+    can see never reaches the runtime table, because lypning is never the tier
+    that runs. The kinds in the runtime table are the ones discovered by
+    running: `nan-identity` depends on a value, not a syntax.
+
+    What WOULD be a contradiction is one program caught by both: statically sent
+    to the tier under a kind the chain would have escalated away from it. That
+    measures zero, and it is what this asserts — over a slice, because the whole
+    corpus is a `lypning conformance` and this suite is seconds. The parser gets
+    better at seeing things, and the day it learns to spot one of these
+    statically is the day the static answer starts overriding the runtime one,
+    silently and in the wrong direction.
+    """
+    entries = corpus.load_default()[:CORPUS_SLICE]
+    if not entries:
+        pytest.skip("no corpus to route")
+    caught = []
+    for e in entries:
+        r = eng.route(e.program)
+        if r.engine == eng.MICROPYTHON and r.kind in eng.ONLY_CPYTHON_REFUSALS:
+            caught.append((e.id, r.kind))
+    assert not caught, (
+        "these programs are routed to lypning-mp under a kind the chain would "
+        "escalate to CPython, so the static table is overriding the runtime one: %s"
+        % caught[:5])
 
 
 # --- the capability table -----------------------------------------------------

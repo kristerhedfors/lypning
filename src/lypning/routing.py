@@ -403,6 +403,32 @@ def micropython_modules(source: Optional[Path] = None) -> List[str]:
     return _STRING_RE.findall(m.group("body"))
 
 
+#: The `match kind { … => Engine::MicroPython }` arm of `engine_for`, which is
+#: the classifier's other table: not "which modules that tier has" but "which of
+#: lypning's refusal KINDS that tier can pick up". Read from the source for the
+#: same reason as the module list — a copy kept here would be checked against
+#: itself.
+_KIND_ARM_RE = re.compile(
+    r"match kind \{(?P<body>.*?)=> Engine::MicroPython", re.S)
+
+
+def micropython_kinds(source: Optional[Path] = None) -> List[str]:
+    """The refusal kinds ``route.rs`` sends to lypning-mp, read from the source.
+
+    Empty when the arm cannot be found, which is what happens if someone
+    restructures ``engine_for``; the caller decides whether that is a skip.
+    """
+    p = Path(source) if source is not None else table_source()
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    m = _KIND_ARM_RE.search(text)
+    if not m:
+        return []
+    return _STRING_RE.findall(m.group("body"))
+
+
 # --- reporting ---------------------------------------------------------------
 
 
