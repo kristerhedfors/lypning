@@ -11,6 +11,8 @@ been seen to fire is a comment.
 
 from __future__ import annotations
 
+import pytest
+
 from lypning import conformance, corpus
 from lypning import engines as eng
 from lypning.conformance import MATCH, MISMATCH, UNSUPPORTED
@@ -237,3 +239,50 @@ def test_an_unbuilt_engine_is_an_absent_arm_not_a_failed_one(no_micropython):
     assert report.engines == {}
     assert report.mismatches == 0
     assert report.ok
+
+
+def test_every_arm_runs_in_the_same_environment_as_the_reference_it_is_scored_against():
+    """The mixture arm used to be the one exception, and it was flaky for it.
+
+    :func:`conformance._env_for` is not decoration. ``PYTHONHASHSEED=0`` is
+    there because two runs of CPython must agree with each other before either
+    can be a reference; ``LC_ALL=C.UTF-8`` because under ``LC_ALL=C`` every
+    non-ASCII byte decodes to U+FFFD, so two engines printing *different*
+    non-ASCII compare equal and a MISMATCH is scored MATCH.
+
+    Every arm was handed it except the mixture, which called
+    :func:`engines.dispatch` — a function that had no ``env`` parameter to hand
+    it to. So the one arm that measures what a user actually runs was the one
+    arm scored against a reference it did not share an environment with, and a
+    program whose output depends on set iteration order flipped between MATCH
+    and MISMATCH from run to run.
+
+    Asserted through the chain rather than by reading the source, because what
+    matters is that the value reaches the tier that finally answers — including
+    across a fall-through, which is a second child this has to survive.
+    """
+    d = eng.dispatch("import os\nprint(os.environ.get('LYPNING_ENV_PROBE'))\n",
+                     env={"LYPNING_ENV_PROBE": "reached"}, timeout=30)
+    assert d.result.stdout == "reached\n", (
+        "the environment did not reach the tier that answered (%s)" % d.engine)
+
+
+def test_the_battery_is_stable_on_a_program_whose_output_depends_on_set_order():
+    # The program this was found on, reduced: `min` over a set with tied keys
+    # returns whichever element iteration reached first, and CPython randomises
+    # that per process unless the seed is pinned. Under the fixed environment
+    # the answer is the same one every time, so the battery is comparing an
+    # answer rather than a coin flip. Ten runs, not one: a single run of a coin
+    # flip passes half the time.
+    entry = corpus.Entry(
+        id="py-set-order-through-min",
+        program='print(min({(1,"z"),(1,"a")}, key=lambda t: t[0]))\n',
+    )
+    seen = set()
+    for _ in range(10):
+        report = conformance.run([entry], engines=[conformance.MIXTURE], timeout=30)
+        arm = report.engines.get(conformance.MIXTURE)
+        if arm is None:
+            pytest.skip("no engine built to dispatch to")
+        seen.add(arm.verdicts[0].verdict)
+    assert seen == {conformance.MATCH}, "the battery disagreed with itself: %s" % sorted(seen)

@@ -867,8 +867,15 @@ def _run_entry(
             continue
         if arm == MIXTURE:
             with _Sandbox("mix") as cwd:
+                # `env=` and not the ambient environment, which is the whole
+                # point of _env_for and the one arm that used to skip it. A
+                # mixture child without PYTHONHASHSEED=0 disagrees with the
+                # reference at random on any program where set order is
+                # observable; one without LC_ALL=C.UTF-8 decodes every non-ASCII
+                # byte to U+FFFD, so two engines printing DIFFERENT non-ASCII
+                # compare equal and a MISMATCH is scored MATCH.
                 d = eng.dispatch(program, argv_tail=argv_tail, stdin=stdin, cwd=cwd,
-                                 timeout=timeout)
+                                 timeout=timeout, env=_env_for(cwd))
             got = d.result
             # End to end is what the caller pays: every refused tier plus the one
             # that answered.

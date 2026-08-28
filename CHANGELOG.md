@@ -14,6 +14,31 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-28** — The mixture arm was scored against a reference it did not share
+an environment with
+
+- **One arm skipped `_env_for`, and it was the arm that measures what a user
+  actually runs.** Every other arm — and the CPython reference itself — is
+  handed `PYTHONHASHSEED=0`, `LC_ALL=C.UTF-8` and a capture log redirected into
+  the sandbox. The mixture arm called `engines.dispatch`, which had no `env`
+  parameter to hand it to, so its children inherited the battery's own
+  environment instead.
+- **It made the battery disagree with itself.** `print(min({(1,"z"),(1,"a")},
+  key=lambda t: t[0]))` returns whichever element set iteration reached first,
+  and without the pinned seed CPython randomises that per process. The entry
+  flipped between MATCH and MISMATCH from run to run — showing up in the
+  accepted-mismatch ledger as a *regression* on one run and as *no longer
+  reproduces* on the next, which is the ledger's two loudest signals firing at
+  random. Ten battery runs on that program now give one verdict.
+- **The locale half was the more dangerous one.** Under `LC_ALL=C` every
+  non-ASCII byte decodes to U+FFFD, so two engines printing *different*
+  non-ASCII compare equal — a MISMATCH scored MATCH. `engines.run` has carried
+  that comment since the bug was found; the mixture arm was outside it.
+- **`dispatch` and `route` now take `env` and hand it to every child**,
+  including the tier reached after a fall-through. Same run, after: the mixture
+  arm is at **MISMATCH 1**, and that one is the last-ULP `pow` difference in
+  musl's libm.
+
 **2026-08-28** — A correct refusal was being turned into a wrong answer by the
 tier below it
 

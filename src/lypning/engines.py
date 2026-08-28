@@ -479,7 +479,8 @@ class Route:
         return f"{self.engine}{why}"
 
 
-def route(program: str, *, binary: Path | None = None, timeout: float | None = 30.0) -> Route:
+def route(program: str, *, binary: Path | None = None, timeout: float | None = 30.0,
+          env: dict[str, str] | None = None) -> Route:
     """Ask the Rust front end which tier should run this.
 
     Routing is a static analysis over lypning's own parser, not a heuristic over
@@ -505,7 +506,7 @@ def route(program: str, *, binary: Path | None = None, timeout: float | None = 3
             [str(b), "route", "-c", program],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             check=False, timeout=timeout,
-            env={**os.environ, "LYPNING_CAPTURE": "0"},
+            env={**os.environ, "LYPNING_CAPTURE": "0", **(env or {})},
         )
     except subprocess.TimeoutExpired:
         return Route(CPYTHON, "route-failed", "the classifier did not answer within %gs" % timeout)
@@ -607,6 +608,7 @@ def dispatch(
     stdin: str | None = None,
     cwd: Path | str | None = None,
     timeout: float | None = 30.0,
+    env: dict[str, str] | None = None,
 ) -> Dispatch:
     """Route, then run, falling through on a REFUSAL until a tier answers.
 
@@ -625,7 +627,7 @@ def dispatch(
     prints nothing. :func:`lypning.cli._replayable_stdin` is what fills it in
     for ``lypning run``.
     """
-    r = route(program, timeout=timeout)
+    r = route(program, timeout=timeout, env=env)
     attempts: list[Result] = []
     last: Result | None = None
     remaining = chain_from(r.engine)
@@ -633,7 +635,8 @@ def dispatch(
         engine, remaining = remaining[0], remaining[1:]
         if find(engine) is None:
             continue
-        res = run(engine, program, argv_tail=argv_tail, stdin=stdin, cwd=cwd, timeout=timeout)
+        res = run(engine, program, argv_tail=argv_tail, stdin=stdin, cwd=cwd,
+                  timeout=timeout, env=env)
         last = res
         if not res.refused:
             return Dispatch(res, r, attempts)
