@@ -28,6 +28,128 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 59 — startup is 80% kernel, size is free here, and `--lib` had been broken since #13
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 2239 loaded, 1646
+graded
+
+**bytes** 1,016,008 B, 8 blocks — unchanged. **correctness** lypning
+1075 MATCH / 568 UNSUPPORTED / **3 MISMATCH**; routing unchanged. **tests**
+1,030 passed / 58 skipped → **1,087 passed / 1 skipped**.
+
+The dial went back to speed. Nothing got faster; three things got *known*, and
+one build got un-broken.
+
+### Binary size costs nothing on this machine
+
+Five static musl binaries built at controlled sizes, min of 150 spawns each,
+interleaved:
+
+```
+  512,632 B   0.318 ms
+  709,240 B   0.312 ms
+1,495,672 B   0.352 ms
+2,544,248 B   0.328 ms
+4,641,400 B   0.331 ms
+```
+
+**A 9.1x size range moves startup by 0.040 ms, and not monotonically.** The
+slope is 0.0003 ms per 100 KB, so this session's +28,672 B cost about 90
+nanoseconds.
+
+I nearly reported the opposite. The first measurement said the *bigger* binary
+started 2.6–4.5% FASTER, which is impossible and was noise: a control comparing
+**two copies of the same file** produced -3.8% and +2.5% on consecutive runs.
+Base against current, once both were in the same directory, was +1.2% and -0.5%
+— inside that spread. This is the fifth false timing result this tree has
+recorded, and the first one caught by the control rather than after committing.
+
+**This does not retire the byte budget.** CheerpX's cold cost is a step function
+in 131,072 B device blocks, and that is a different machine which cannot be
+measured from here. The finding is narrower and worth stating exactly: *the byte
+budget buys nothing on native Linux; it is entirely a CheerpX guard.*
+
+### Startup is 80% kernel
+
+```
+  do-nothing static musl binary   0.270 ms
+  lypning -c 'pass'               0.337 ms   +0.067
+  lypning-mp -c 'pass'            0.328 ms   +0.058
+  /bin/true                       1.270 ms   +1.000
+  python3.11 -c 'pass'           12.777 ms  +12.507
+```
+
+**Of lypning's 0.337 ms startup, 0.270 is fork+exec that no code change can
+touch.** Its own startup work is 0.067 ms. So iteration 44's "startup is 65–75%
+of a corpus program" is 65–75% *kernel*, and the addressable share is about a
+tenth of a program — the same order as parse and eval. There is no dominant
+lever left anywhere; the three addressable buckets are all roughly equal.
+
+`/bin/true` is the control that says why: it is **dynamically linked**, and the
+loader costs a full millisecond. Being static and non-PIE is worth ~4x more than
+every other startup decision in this project combined, and it was already made.
+
+The only way to remove the 0.270 ms is to not spawn a process, which is what the
+C ABI exists for.
+
+### …which is when I found `lypning build --lib` had been broken since #13
+
+```
+rust-lld: error: relocation R_X86_64_32 cannot be used against local symbol;
+          recompile with -fPIC
+```
+
+`.cargo/config.toml` sets `relocation-model=static` under `[build]`, which
+reaches **every** target cargo builds — including the host `cdylib` the C ABI
+is, and a shared library must be position-independent by construction. It has
+failed since the file was added in #13.
+
+Nothing caught it because the library is optional and `lypning doctor` says
+`liblypning is not built — 'lypning build --lib'`, which reads as a choice
+rather than a breakage. Scoped to `[target.x86_64-unknown-linux-musl]` — the
+binary builds for musl, the library for the host — it builds, and the binary is
+byte-identical at 1,016,008 B and still `EXEC` rather than `DYN`.
+
+**57 tests had been silently skipping** for that whole time: 1,030 passed / 58
+skipped became 1,087 passed / 1 skipped.
+
+### And one of them was crashing
+
+`test_deep_programs_stay_refusals_on_a_small_host_stack` **segfaulted** —
+comparing two 20,000-deep nested lists on a 1 MB host thread.
+
+That one is mine, from earlier today. The NaN refusal I added scanned for a NaN
+with a *recursive* helper, and it ran **inside** one level of `eq`'s recursion
+guard: a second full-depth traversal that the guard could not see, overflowing
+the stack before the guard could fire. The binary never showed it because the
+main thread has 8 MB.
+
+The fix makes the scan **shallow**. `eq` already descends under its guard, and
+every level checks its own immediate elements, so a depth-1 test covers exactly
+the same ground with no recursion of its own — and does half the work.
+
+### The library arm settles an open question
+
+With the C ABI buildable, the `library` arm ran for the first time in this tree
+and disagrees with the binary on exactly one program:
+
+```
+print(1.7976931348623157e308 ** 0.5)
+  binary  (musl libm)   1.3407807929942597e+154
+  library (glibc libm)  1.3407807929942596e+154   = CPython
+```
+
+Iteration 58 recorded that last-ulp `pow` mismatch as "a musl libm against glibc
+libm difference rather than anything this tree does". That was a guess. It is
+now **measured**: same source, two C libraries, and the glibc one matches CPython
+exactly. It is not fixable in this tree's code.
+
+That is precisely what `docs/LYPNING.md` says the library arm is for — "the two
+disagreeing is the thing it is there to catch" — and it caught something the
+first time it was allowed to run.
+
+---
+
 ## 2026-08-25 · iteration 58 — capture was inert, and 686 harvested programs took the tier-1 arm from 0 to 13
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 → **2239**

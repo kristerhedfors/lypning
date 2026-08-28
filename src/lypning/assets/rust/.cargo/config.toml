@@ -13,7 +13,20 @@
 # a `pip` user actually gets and a wheel that built a 29 KB larger binary than
 # the checkout would be a difference nobody would find on purpose.
 
-[build]
+# Scoped to the MUSL TARGET, not `[build]`. Under `[build]` these flags reach
+# every target cargo builds, including the host `cdylib` the C ABI is — and a
+# shared library cannot be built with `relocation-model=static`, because a
+# `.so` must be position-independent by construction. `lypning build --lib` has
+# failed since this file was added:
+#
+#     rust-lld: error: relocation R_X86_64_32 cannot be used against local
+#     symbol; recompile with -fPIC
+#
+# Nothing caught it because the library is optional and `lypning doctor` says
+# "liblypning is not built — `lypning build --lib`", which reads as a choice
+# rather than a breakage. The binary is built for musl and the library for the
+# host, so naming the triple gives each the flags it can actually use.
+[target.x86_64-unknown-linux-musl]
 # **Static, not static-PIE.** The musl targets default to a position-independent
 # executable, and the relocations a PIE needs to fix itself up at load are
 # `.rela.dyn`: 33,864 B of a 1,049,272 B image, in a binary whose cold cost in

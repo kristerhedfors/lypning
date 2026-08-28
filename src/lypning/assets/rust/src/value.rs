@@ -330,17 +330,25 @@ pub fn str_val(s: impl Into<Rc<str>>) -> Value {
 ///
 /// A float here is a bare `f64` with no object identity, so those three cases
 /// are indistinguishable and every answer is wrong for one of them. Refused
-/// rather than guessed: the chain answers it correctly one spawn later, which
-/// is what the refusal contract is for.
-pub fn has_nan(v: &Value) -> bool {
-    nan_in(v)
+/// rather than guessed.
+///
+/// **Deliberately SHALLOW.** The first version of this recursed into nested
+/// containers, which meant a second full-depth traversal running INSIDE one
+/// level of `eq`'s recursion guard — so `x == y` over two 20,000-deep nested
+/// lists overflowed the stack before the guard could fire, and killed the
+/// process on a 1 MB host thread. `eq` already descends, guarded, and every
+/// level runs this check on its own immediate elements, so a shallow test
+/// covers the same ground with no recursion of its own.
+fn nan_here(v: &Value) -> bool {
+    matches!(v, Value::Float(f) if f.is_nan())
 }
 
-fn nan_in(v: &Value) -> bool {
+/// The immediate elements only — see [`nan_here`].
+pub fn has_nan(v: &Value) -> bool {
     match v {
         Value::Float(f) => f.is_nan(),
-        Value::List(l) => l.borrow().iter().any(nan_in),
-        Value::Tuple(t) => t.iter().any(nan_in),
+        Value::List(l) => l.borrow().iter().any(nan_here),
+        Value::Tuple(t) => t.iter().any(nan_here),
         _ => false,
     }
 }
@@ -377,13 +385,13 @@ pub fn eq(a: &Value, b: &Value) -> R<bool> {
                 return Ok(true);
             }
             let (x, y) = (x.borrow(), y.borrow());
-            if x.iter().any(nan_in) || y.iter().any(nan_in) {
+            if x.iter().any(nan_here) || y.iter().any(nan_here) {
                 return Err(refuse_nan_identity("sequence equality"));
             }
             seq_eq(&x, &y)?
         }
         (Value::Tuple(x), Value::Tuple(y)) => {
-            if x.iter().any(nan_in) || y.iter().any(nan_in) {
+            if x.iter().any(nan_here) || y.iter().any(nan_here) {
                 return Err(refuse_nan_identity("sequence equality"));
             }
             seq_eq(x, y)?
