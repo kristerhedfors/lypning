@@ -275,7 +275,12 @@ pub fn type_name(v: &Value) -> &'static str {
             "values" => "dict_values",
             _ => "dict_items",
         },
-        Value::Exc(..) => "Exception",
+        // The exception's OWN class, not the base. CPython says
+        // `'ValueError' object has no attribute 'nosuch'` and
+        // `unsupported operand type(s) for +: 'ValueError' and 'int'`; this
+        // answered "Exception" for every one of the twenty-four exception
+        // classes, so every message naming the type named the wrong type.
+        Value::Exc(kind, _) => kind,
     }
 }
 

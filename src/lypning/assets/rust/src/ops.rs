@@ -511,6 +511,27 @@ impl Interp {
         if crate::methods::missing_method(base, name) {
             return Err(missing_method_err(base, name));
         }
+        // AN EXCEPTION REALLY DOES HAVE THESE, so reporting "no such attribute"
+        // is a claim about Python rather than about this program.
+        // `__context__` is whatever was being handled when this one was raised,
+        // `__cause__` is what `raise X from Y` attached, `__traceback__` is the
+        // frame chain. `Value::Exc` is a flat `(kind, message)` pair with
+        // nowhere to put any of them, and widening it reaches every site that
+        // matches on an exception -- so this refuses, and the dispatcher hands
+        // the program to an interpreter that has them.
+        //
+        // The distinction matters because AttributeError is exit 1, the
+        // program's OWN exit, which the chain does not retry: a handler that
+        // inspects `e.__context__` died here instead of being answered one
+        // spawn later.
+        if matches!(base, Value::Exc(..))
+            && matches!(name, "__context__" | "__cause__" | "__traceback__")
+        {
+            return Err(unsupported(
+                "exception-chaining",
+                &format!("exception.{name}, which needs the chained exception object"),
+            ));
+        }
         Err(attr_err(format!(
             "'{}' object has no attribute '{name}'",
             type_name(base)

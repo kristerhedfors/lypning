@@ -322,6 +322,27 @@ CASES = [
     # tuple. Only dict was exempt here.
     ("percent-list-operand", "print(repr('ab' % [1]), repr('ab' % b'ab'), repr('ab' % {}))"),
     ("percent-leftover-still-raises", "print(repr('a%sb' % [1]))"),
+    # Mutating a dict while iterating it raises RuntimeError. The guard existed
+    # for a bare dict and the three VIEWS never reached it — they snapshotted
+    # into a plain vector and threw the dict away, so `for k in d.keys(): del
+    # d[k]` walked a frozen copy, emptied the dict and answered normally.
+    ("dict-mutate-during-keys",
+     'g = {"a": 1, "b": 2}\ntry:\n    for k in g.keys():\n        del g[k]\n    print("no-error")\nexcept RuntimeError:\n    print("RuntimeError")'),
+    ("dict-mutate-during-values",
+     'g = {"a": 1}\ntry:\n    for v in g.values():\n        g["c"] = 3\n    print("no-error")\nexcept RuntimeError:\n    print("RuntimeError")'),
+    ("dict-mutate-during-items",
+     'g = {"a": 1, "b": 2}\ntry:\n    for k, v in g.items():\n        del g[k]\n    print("no-error")\nexcept RuntimeError:\n    print("RuntimeError")'),
+    ("dict-mutate-bare", 'g = {"a": 1, "b": 2}\ntry:\n    for k in g:\n        del g[k]\n    print("no-error")\nexcept RuntimeError:\n    print("RuntimeError")'),
+    # …and the guard must not fire on the ordinary uses.
+    ("dict-views-still-iterate", 'g = {"a": 1, "b": 2}\nprint([k for k in g.keys()], list(g.values()), sorted(g.items()))'),
+    ("dict-mutate-over-a-copy-is-fine", 'g = {"a": 1}\nfor k in list(g.keys()):\n    del g[k]\nprint(g)'),
+    # An exception instance reports ITS OWN class, not the base. Every message
+    # naming the type named "Exception" for all twenty-four of them.
+    ("exception-type-name-in-attr-error",
+     'try:\n    raise ValueError("v")\nexcept ValueError as e:\n    print(e.nosuch)'),
+    ("exception-type-name-in-operand-error",
+     'try:\n    raise KeyError("k")\nexcept KeyError as e:\n    print(e + 1)'),
+    ("exception-args-still-work", 'try:\n    raise ValueError("v")\nexcept ValueError as e:\n    print(e.args, str(e))'),
     # `str(KeyError('f'))` shows the REPR of the key, so a missing `''` is
     # distinguishable from a missing `' '`. The constructor stored the plain
     # string while every real lookup stored `repr(key)`, so the two disagreed —
@@ -401,6 +422,13 @@ REFUSES = [
     # program's own exit, which the dispatcher does not treat as a refusal, so
     # `b"%d" % 5` died at exit 1 with nothing to rescue it.
     ("bytes-percent-format", 'print(b"%d" % 5)'),
+    # `__context__`, `__cause__` and `__traceback__` really do exist on a
+    # CPython exception, so answering "no such attribute" is a claim about
+    # Python rather than about the program. `Value::Exc` is a flat
+    # `(kind, message)` pair with nowhere to hold a chained exception, and
+    # AttributeError is exit 1 — the program's own — so a handler that inspects
+    # the context died here instead of being answered one spawn later.
+    ("exception-context", 'try:\n    raise ValueError("v")\nexcept ValueError as e:\n    print(e.__context__)'),
 ]
 
 

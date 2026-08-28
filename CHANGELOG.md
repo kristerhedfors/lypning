@@ -148,6 +148,22 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   `sum` eager; `any`/`all` short-circuiting identically), dict and set detail
   (33 cases including equal-key collapse), and `repr`/`str` (120 cases, 110 run,
   10 correctly refused, 0 differ).
+- **The tier-1 arm is down to one mismatch, and that one is not ours** —
+  `1.797e308 ** 0.5` off by a single ulp, measured against the library arm and
+  proved to be musl libm against glibc libm, the same source compiled twice.
+- **Dict views never reached the mutation guard that already existed.**
+  `for k in g.keys(): del g[k]` emptied the dict and answered normally where
+  CPython raises RuntimeError. A bare `for k in g` was guarded; the three views
+  snapshotted into a plain vector and threw the dict away, leaving nothing to
+  compare against. Both paths now build the same guarded iterator.
+- **Every exception reported the wrong class.** `type_name` answered
+  `"Exception"` for all twenty-four exception classes, so
+  `'Exception' object has no attribute …` and
+  `unsupported operand type(s) for +: 'Exception' and 'int'` both named a type
+  the program had not used.
+- **`e.__context__` claimed not to exist**, which is a claim about Python rather
+  than about the program — and AttributeError is exit 1, so a handler inspecting
+  the context died instead of being answered one spawn later. Refused now.
 - A survey of **lypning-mp** verified 34 further divergences, recorded in
   `docs/HILLCLIMB.md` rather than fixed: that tier's sort is genuinely unstable,
   `round(2.5, 0)` is `3.0`, `isinstance(True, int)` is `False`, `json.loads`

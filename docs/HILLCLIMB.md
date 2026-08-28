@@ -28,6 +28,85 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 61 — the tier-1 arm is down to one, and that one is not ours
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 2239 loaded, 1646
+graded
+
+**bytes** 1,016,008 B, 8 blocks — unchanged. **correctness** lypning
+**1076 MATCH / 569 UNSUPPORTED / 1 MISMATCH**; lypning-mp 48, mixture 10.
+**routing** IDEAL 1505, LATE 88, WASTED 46, **UNSAFE 7**. **tests** 1,092 →
+**1,102**.
+
+Three fixes took the tier-1 arm from 3 to 1. What is left is
+`1.7976931348623157e308 ** 0.5`, off by one ulp — and iteration 59 measured that
+against the library arm and proved it is **musl libm against glibc libm**, the
+same source compiled twice. It is not fixable in this tree's code.
+
+### Dict views never reached the guard that already existed
+
+```python
+g = {"a": 1, "b": 2, "c": 3}
+for k in g.keys():
+    del g[k]
+```
+
+answered normally and emptied the dict; CPython raises
+`RuntimeError: dictionary changed size during iteration`.
+
+The guard was **already there** — `Iter::DictKeys` carries the dict and the size
+it had, and checks on every step. A bare `for k in g` hit it. But the three
+VIEWS took a different path in `make_iter`: they snapshotted their elements into
+a plain `Iter::Vec` and **threw the dict away**, so nothing was left to compare
+against. Not a missing guard; an unreached one.
+
+Both paths now build the same `Iter::DictIter { d, items, i, n0 }`, so there is
+one mechanism instead of one mechanism and one bypass. All four mutation shapes
+raise — keys, values, items, bare — and the ordinary uses still answer, which is
+pinned alongside: a "fix" that made views un-iterable would pass a test that only
+checked the mutation.
+
+### Every exception reported the wrong class
+
+```
+e.nosuch   ->  'Exception' object has no attribute 'nosuch'
+                CPython: 'ValueError' object …
+e + 1      ->  unsupported operand type(s) for +: 'Exception' and 'int'
+                CPython: … 'ValueError' and 'int'
+```
+
+`type_name` answered `"Exception"` for **all twenty-four** exception classes, so
+every message that named the type named the wrong one. `Value::Exc` carries the
+class name in its first field; it was simply not being read.
+
+### `e.__context__` claimed not to exist
+
+`__context__`, `__cause__` and `__traceback__` really are attributes of a CPython
+exception, so `AttributeError: no attribute '__context__'` is a claim about
+*Python*, not about the program. And AttributeError is exit 1 — the program's own
+exit — so a handler that inspects the context **died here instead of being
+answered one spawn later**.
+
+`Value::Exc` is a flat `(kind, message)` pair with nowhere to hold a chained
+exception, and widening it reaches every site that matches on an exception. So
+this **refuses**, and the dispatcher hands the program to an interpreter that has
+them. That is the third time today the right fix for an unimplemented construct
+was "refuse rather than raise": the other two were `bytes % args` and slicing a
+`range`.
+
+### An edit that silently did not land
+
+The first attempt at the `__context__` refusal reported success and changed
+nothing — `git diff` was empty afterwards and `grep` found no trace of it. I only
+noticed because the behaviour did not change when I tested it.
+
+Recorded because the failure mode is invisible: a script that prints `ok` after
+`assert old in s` has proved the anchor matched, **not** that the write survived.
+The second attempt asserted the anchor was unique, then verified with `grep` and
+`git diff --stat` before building. Verify the artifact, not the intention.
+
+---
+
 ## 2026-08-25 · iteration 60 — the last five lenses, and a probe that costs six seconds
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 2239 loaded, 1646

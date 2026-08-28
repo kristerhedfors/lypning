@@ -22,11 +22,18 @@ pub enum Iter {
     Tuple(Rc<Vec<Value>>, usize),
     Chars(Vec<char>, usize),
     Bytes(Rc<Vec<u8>>, usize),
-    /// Dict keys, snapshotted, with the original size so a mutation during
-    /// iteration raises the same RuntimeError CPython raises.
-    DictKeys {
+    /// A dict traversal: the elements snapshotted, plus the dict itself and the
+    /// size it had, so a mutation during iteration raises the same RuntimeError
+    /// CPython raises.
+    ///
+    /// Used for a bare dict AND for its three VIEWS. The views used to snapshot
+    /// into a plain `Iter::Vec`, which threw the dict away — so
+    /// `for k in d.keys(): del d[k]` walked a frozen copy, emptied the dict and
+    /// answered normally where CPython raises. The guard was there; the views
+    /// simply did not reach it.
+    DictIter {
         d: Rc<RefCell<Dict>>,
-        keys: Vec<Value>,
+        items: Vec<Value>,
         i: usize,
         n0: usize,
     },
@@ -130,7 +137,7 @@ impl Interp {
                     let b = d.borrow();
                     (b.keys(), b.len())
                 };
-                Iter::DictKeys { d, keys, i: 0, n0 }
+                Iter::DictIter { d, items: keys, i: 0, n0 }
             }
             // See value.rs: reproducing CPython's set order is impossible, so
             // iterating one is refused instead of silently reordered.
@@ -142,15 +149,16 @@ impl Interp {
             // corpus is `stdin -> transform -> stdout`.
             Value::Module("sys.stdin") => Iter::Stdin,
             Value::DictView(d, kind) => {
-                let items = {
+                let (items, n0) = {
                     let b = d.borrow();
-                    match kind {
+                    let items = match kind {
                         "keys" => b.keys(),
                         "values" => b.values(),
                         _ => b.items(),
-                    }
+                    };
+                    (items, b.len())
                 };
-                Iter::Vec(items, 0)
+                Iter::DictIter { d, items, i: 0, n0 }
             }
             other => {
                 return Err(type_err(format!(
@@ -210,15 +218,15 @@ impl Interp {
                     None
                 }
             }
-            Iter::DictKeys { d, keys, i, n0 } => {
+            Iter::DictIter { d, items, i, n0 } => {
                 if d.borrow().len() != *n0 {
                     return Err(LypningError::exc(
                         "RuntimeError",
                         "dictionary changed size during iteration",
                     ));
                 }
-                if *i < keys.len() {
-                    let v = keys[*i].clone();
+                if *i < items.len() {
+                    let v = items[*i].clone();
                     *i += 1;
                     Some(v)
                 } else {
