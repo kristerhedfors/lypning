@@ -9,13 +9,19 @@ classifier can be perfectly accurate on a tier that disagrees with CPython.
 
 The vocabulary is deliberately asymmetric, and the asymmetry is the design:
 
-  ``UNSAFE``     routed to an engine that MISMATCHES. **Fatal.** The whole point
+  ``UNSAFE``     the tier that ANSWERED mismatched. **Fatal.** The whole point
                  of a three-tier mixture is that a wrong route costs a process
                  spawn and never a wrong answer; an UNSAFE route is the one
                  outcome that spends the user's trust instead of their
                  milliseconds. Must be zero, always.
+
+                 "The tier that answered" and not "the tier that was named":
+                 a refusal falls through, so the named tier can refuse
+                 correctly and the tier *below* it answer wrongly. Grading the
+                 named one reads that as a spare spawn. See :func:`_delivered`.
   ``WASTED``     routed to an engine that refuses, when a cheaper engine would
-                 have run it. Costs one spawn (~1 ms). A quality number.
+                 have run it — *and* the tier that then answered was right.
+                 Costs one spawn (~1 ms). A quality number.
   ``LATE``       routed to a more expensive engine than necessary. Costs the
                  difference. A quality number.
   ``IDEAL``      routed to the cheapest engine that matches.
@@ -131,6 +137,43 @@ def _matched_by_failing(x: Any) -> bool:
     return bool(getattr(x, "actual_rc", 0))
 
 
+def _delivered(predicted: str, by_engine: Mapping[str, Any],
+               ladder: Sequence[str]) -> tuple:
+    """The tier whose answer the user actually receives, and its verdict.
+
+    A refusal is not the end of the program: :func:`engines.dispatch` falls
+    through to the next tier down and that tier's answer is what gets printed.
+    So the tier the classifier *named* is not necessarily the tier that
+    *answered*, and grading the named one is grading a process that did not
+    produce the output.
+
+    That distinction was invisible for as long as the fall-through was assumed
+    safe. It is not: 25 corpus programs are refused by tier 1 — correctly, on
+    constructs it knows it cannot match CPython on — and then answered *wrongly*
+    by the tier below, at exit 0. Every one of them was graded WASTED, whose
+    definition ends "and the chain still produces the right answer".
+
+    Engines missing from ``by_engine`` are skipped rather than treated as an
+    answer, which mirrors the dispatcher skipping a tier that is not built.
+    """
+    if predicted not in ladder:
+        return predicted, _verdict_of(by_engine.get(predicted))
+    remaining = list(ladder[ladder.index(predicted):])
+    while remaining:
+        name, remaining = remaining[0], remaining[1:]
+        v = by_engine.get(name)
+        if v is None:
+            continue
+        if _verdict_of(v) != conf.UNSUPPORTED:
+            return name, _verdict_of(v)
+        # A refusal names its reason, and some reasons rule out every tier but
+        # CPython. Read the same table the dispatcher reads, or the grade
+        # describes a chain nothing walks.
+        allowed = eng.chain_after_refusal(name, getattr(v, "kind", "") or "")
+        remaining = [e for e in remaining if e in allowed]
+    return predicted, conf.UNSUPPORTED
+
+
 def score_route(
     predicted: str,
     by_engine: Mapping[str, Any],
@@ -190,8 +233,20 @@ def score_route(
     if predicted == ideal:
         return RouteScore(entry_id, predicted, ideal, IDEAL, "", rescued)
     if verdict == conf.UNSUPPORTED:
-        # Refused where a cheaper tier would have answered: one spawn, and the
-        # chain still produces the right answer.
+        # A refusal is not an outcome — the dispatcher falls through, and the
+        # NEXT tier's answer is the one the user sees. Grade that one. Skipping
+        # this step is how a correct refusal followed by a wrong answer came to
+        # be counted as a spawn: WASTED, whose definition ends "and the chain
+        # still produces the right answer", against 25 measured programs where
+        # it does not.
+        answered, delivered = _delivered(predicted, by_engine, ladder)
+        if delivered == conf.MISMATCH:
+            return RouteScore(entry_id, predicted, ideal, UNSAFE,
+                              "%s refused, %s answered wrongly: %s"
+                              % (predicted, answered,
+                                 _why_of(by_engine.get(answered))), rescued)
+        # Refused where a cheaper tier would have answered, and the tier that
+        # did answer was right: one spawn.
         return RouteScore(entry_id, predicted, ideal, WASTED, _why_of(got), rescued)
     return RouteScore(entry_id, predicted, ideal, LATE, "", rescued)
 

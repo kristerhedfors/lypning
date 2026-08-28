@@ -530,6 +530,63 @@ def chain_from(engine: str) -> list[str]:
     return list(ENGINE_ORDER[i:])
 
 
+#: Refusal kinds after which the chain jumps straight to CPython.
+#:
+#: Falling through assumes the next tier down is at least as correct as the one
+#: that refused, and for most refusals it is: "I have no decorators" is a
+#: capability gap, and MicroPython has decorators. But some refusals are not
+#: about a missing feature at all. They say *CPython's behaviour here is subtle
+#: and I decline to guess it* — and a second independent reimplementation is no
+#: likelier to have replicated that subtlety than the first was. It is the
+#: defining property of these constructs that reimplementations get them wrong.
+#: That is why the refusal exists.
+#:
+#: For those, falling through does not cost a spawn. It converts a correct
+#: refusal into a **silent wrong answer at exit 0**, which is the one outcome
+#: the whole three-tier design exists to prevent.
+#:
+#: Measured over the corpus the run loaded (2,239 programs, 2026-08-28): tier 1
+#: refuses 569 programs, and 25 of those are then answered *wrongly* by the tier
+#: below. Every kind below is one where lypning-mp got it wrong and never got it
+#: right — so escalating costs zero spawns on this corpus and buys back the
+#: answers. A kind where MicroPython is sometimes right is deliberately NOT here:
+#: a capability gap must keep falling through, because escalating it would pay a
+#: CPython spawn on every occurrence.
+#:
+#: This is not the capability table and must not be edited like one. Adding a
+#: kind here is a claim that no reimplementation short of CPython gets the
+#: construct right; removing one is a claim that a wrong answer was acceptable.
+#: `tests/test_routing.py` checks it against the battery in both directions.
+ONLY_CPYTHON_REFUSALS = frozenset({
+    "nan-identity",       # `in` and `==` decide by identity first: NaN finds itself
+    "bigint",             # int/int past 2**53 — mp converts to double and loses the low bits
+    "set-order",          # CPython's hash order is observable, and it is CPython's
+    "set-method",         # ...including hash(-1) == -2, reserved as an error sentinel
+    "dict-view",          # keys/items are set-like, values compare by identity
+    "exception-chaining",  # __context__/__cause__ do not exist one tier down
+    "repr-unicode",       # repr() escapes a character set nothing else reproduces
+    "percent-format",     # the '0' flag, grouping, and their interaction with '-'
+    "del",                # the ValueError text of a failed list.remove/index
+    "json",               # hooks, and control characters inside a string
+})
+
+
+def chain_after_refusal(engine: str, kind: str) -> list[str]:
+    """What is left of the chain once ``engine`` has refused with ``kind``.
+
+    Ordinarily the next tier down; for a refusal in
+    :data:`ONLY_CPYTHON_REFUSALS`, CPython and nothing in between.
+
+    :mod:`lypning.routing` reads the same table to grade a route, so the grader
+    models the chain the dispatcher actually walks. Two readers, one table —
+    the same reason :data:`_REFUSAL_RE` is spelled once.
+    """
+    rest = chain_from(engine)[1:]
+    if kind in ONLY_CPYTHON_REFUSALS:
+        return [e for e in rest if e == CPYTHON]
+    return rest
+
+
 @dataclass
 class Dispatch:
     """The result of a dispatch, plus every tier that refused on the way."""
@@ -571,7 +628,9 @@ def dispatch(
     r = route(program, timeout=timeout)
     attempts: list[Result] = []
     last: Result | None = None
-    for engine in chain_from(r.engine):
+    remaining = chain_from(r.engine)
+    while remaining:
+        engine, remaining = remaining[0], remaining[1:]
         if find(engine) is None:
             continue
         res = run(engine, program, argv_tail=argv_tail, stdin=stdin, cwd=cwd, timeout=timeout)
@@ -579,6 +638,9 @@ def dispatch(
         if not res.refused:
             return Dispatch(res, r, attempts)
         attempts.append(res)
+        # The refusal says WHY, and some reasons rule out every tier but CPython.
+        kind, _ = res.refusal
+        remaining = [e for e in chain_after_refusal(engine, kind) if e in remaining]
     if last is None:
         last = Result(CPYTHON, "", 127, "", "lypning: no engine available\n", 0)
     return Dispatch(last, r, attempts[:-1] if attempts else [])

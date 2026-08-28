@@ -14,6 +14,34 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-28** — A correct refusal was being turned into a wrong answer by the
+tier below it
+
+- **Tier 1 refuses; tier 2 answers wrongly; the user sees the wrong answer at
+  exit 0.** The fall-through assumes the next tier down is at least as correct
+  as the one that refused. Measured over the corpus the run loaded (2,239
+  programs, 2026-08-28): tier 1 refuses **569** programs and **25** of those are
+  then answered wrongly by lypning-mp. `n=float('nan'); print(n in [n])` is the
+  short one — tier 1 declines it by name (`nan-identity`), MicroPython prints
+  `False`, and CPython prints `True`.
+- **The grader called this WASTED**, whose definition ended *"and the chain
+  still produces the right answer"*. It graded the tier that was **named**, not
+  the tier that **answered**. `score_route` now walks the fall-through chain, so
+  seven routes that read as spare process spawns read as what they are. UNSAFE
+  went 4 → 11 on no code change: the number was wrong, not the router.
+- **A refusal says why, and some reasons rule out every tier but CPython.**
+  `engines.ONLY_CPYTHON_REFUSALS` names ten kinds — `nan-identity`, `bigint`,
+  `set-order`, `dict-view`, `exception-chaining`, `repr-unicode`,
+  `percent-format` among them — where the refusal exists *because* the
+  behaviour is subtle, which is the same reason a second reimplementation gets
+  it wrong. A capability gap (`decorator`, `class`, `generator`) still falls
+  through one tier at a time, because escalating one of those would pay a
+  CPython spawn on every occurrence and buy nothing.
+- **Same run, after: UNSAFE 11 → 4 and the mixture arm's MISMATCH 8 → 3.** Five
+  wrong answers gone, measured on the dispatcher and not only on the grader,
+  with IDEAL (1509), LATE (90) and WASTED (43) all unmoved. The ledger loses six
+  more `mixture` lines and keeps one.
+
 **2026-08-28** — The classifier declines the tier that would get it wrong
 
 - **UNSAFE 7 → 4, and the three it closed were closed by not routing there.**

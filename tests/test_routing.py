@@ -27,6 +27,9 @@ so this checks it in both directions and changes nothing.
 from __future__ import annotations
 
 import warnings
+from pathlib import Path
+
+import pytest
 
 from lypning import conformance as conf
 from lypning import corpus
@@ -57,11 +60,81 @@ def test_the_cheapest_matching_engine_is_ideal():
     assert routing.score_route(eng.CPYTHON, by, LADDER).grade == LATE
 
 
-def test_a_refusal_is_wasted_and_a_wrong_answer_is_unsafe():
+def test_a_semantic_refusal_skips_every_tier_but_cpython():
+    # The chain assumes the tier below is at least as correct as the one that
+    # refused. For a capability gap that holds — MicroPython has decorators.
+    # For a refusal that says "CPython's behaviour here is subtle and I decline
+    # to guess", it does not: the reason tier 1 refused is the reason a second
+    # reimplementation gets it wrong too, so falling through turns a correct
+    # refusal into a silent wrong answer.
+    assert eng.chain_after_refusal(eng.LYPNING, "decorator") == [eng.MICROPYTHON, eng.CPYTHON]
+    assert eng.chain_after_refusal(eng.LYPNING, "nan-identity") == [eng.CPYTHON]
+    # An unknown kind falls through, which is the safe default for the cost: a
+    # kind nobody classified costs a spawn, never an answer it could not have
+    # got right anyway.
+    assert eng.chain_after_refusal(eng.LYPNING, "kind-nobody-wrote") == [eng.MICROPYTHON, eng.CPYTHON]
+    # Nothing is left to skip once lypning-mp is the one refusing.
+    assert eng.chain_after_refusal(eng.MICROPYTHON, "nan-identity") == [eng.CPYTHON]
+
+
+def test_every_escalated_refusal_kind_is_one_an_engine_actually_emits():
+    # A table is only as honest as the thing that checks it, and this one fails
+    # SILENTLY: a kind misspelled here never matches a refusal, so the
+    # escalation simply never happens and the corpus goes on getting the wrong
+    # answer with a green suite. Check each name against the source that emits
+    # it. Skips rather than fails where the Rust tree did not ship.
+    src = Path(__file__).resolve().parents[1] / "src/lypning/assets/rust/src"
+    if not src.is_dir():
+        pytest.skip("no Rust source tree in this install shape")
+    text = "\n".join(p.read_text(encoding="utf-8", errors="replace")
+                     for p in sorted(src.glob("*.rs")))
+    missing = sorted(k for k in eng.ONLY_CPYTHON_REFUSALS if '"%s"' % k not in text)
+    assert not missing, (
+        "these refusal kinds are escalated to CPython but no engine emits them, "
+        "so the escalation is dead code: %s" % missing)
+
+
+def test_a_refusal_that_falls_through_to_a_wrong_answer_is_unsafe_not_wasted():
+    # The rule this file exists for, and the one that was missing. A refusal is
+    # not an outcome: the dispatcher moves down the ladder and the NEXT tier's
+    # answer is what the user sees. Here tier 1 refuses CORRECTLY — it knows it
+    # cannot match CPython on this construct — and lypning-mp then answers
+    # wrongly at exit 0. Grading the tier that was NAMED reads that as a spare
+    # process spawn; grading the tier that ANSWERED reads it as what it is.
     by = {eng.LYPNING: UNSUPPORTED, eng.MICROPYTHON: MISMATCH, eng.CPYTHON: MATCH}
+    s = routing.score_route(eng.LYPNING, by, LADDER)
+    assert s.grade == UNSAFE
+    assert eng.MICROPYTHON in s.detail, "the grade has to name the tier that actually answered"
+
+
+def test_a_refusal_that_falls_through_to_a_right_answer_is_still_only_wasted():
+    # The guard on the rule above. Falling through is the design and costs one
+    # spawn; it is only fatal when the tier that catches the fall is wrong.
+    by = {eng.LYPNING: UNSUPPORTED, eng.MICROPYTHON: MATCH, eng.CPYTHON: MATCH}
     assert routing.score_route(eng.LYPNING, by, LADDER).grade == WASTED
+
+
+def test_the_fall_through_skips_tiers_that_also_refused():
+    # Two refusals in a row is still one delivered answer, and it is CPython's.
+    by = {eng.LYPNING: UNSUPPORTED, eng.MICROPYTHON: UNSUPPORTED, eng.CPYTHON: MATCH}
+    assert routing.score_route(eng.LYPNING, by, LADDER).grade == WASTED
+    # ...and a tier that was never measured is skipped like one that is not built,
+    # rather than counted as the answer.
+    by = {eng.LYPNING: UNSUPPORTED, eng.CPYTHON: MISMATCH}
+    assert routing.score_route(eng.LYPNING, by, LADDER).grade == NO_ENGINE
+
+
+def test_a_refusal_is_wasted_and_a_wrong_answer_is_unsafe():
+    # The first line of this used to assert WASTED for the lypning route, and
+    # that assertion was the bug written down: with lypning-mp MISMATCHing, a
+    # refusal at tier 1 falls through INTO the wrong answer. It is covered as
+    # UNSAFE above; what is left here is the part that was always true.
+    by = {eng.LYPNING: UNSUPPORTED, eng.MICROPYTHON: MISMATCH, eng.CPYTHON: MATCH}
     assert routing.score_route(eng.MICROPYTHON, by, LADDER).grade == UNSAFE
     assert routing.score_route(eng.CPYTHON, by, LADDER).grade == IDEAL
+    # A refusal at the tier ABOVE the wrong one never reaches it.
+    by2 = {eng.LYPNING: MISMATCH, eng.MICROPYTHON: UNSUPPORTED, eng.CPYTHON: MATCH}
+    assert routing.score_route(eng.MICROPYTHON, by2, LADDER).grade == WASTED
 
 
 def test_a_route_that_is_both_wrong_and_ideal_is_still_unsafe():

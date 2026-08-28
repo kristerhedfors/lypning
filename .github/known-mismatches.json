@@ -454,59 +454,11 @@
     },
     {
       "engine": "mixture",
-      "entry_id": "py-a6e984f674cf",
-      "kind": "stdout",
-      "family": "exception-message-text",
-      "class": "defect",
-      "why": "Same exception class, same condition, MicroPython's own wording: int('0',1) says 'int() arg 2 must be >= 2 and <= 36' against CPython's 'int() base must be >= 2 and <= 36, or 0'. Text only; the program still fails, and fails for the right reason."
-    },
-    {
-      "engine": "mixture",
       "entry_id": "py-ab7286f43b7a",
       "kind": "stdout",
       "family": "float-pow-last-bit",
       "class": "defect",
       "why": "1.7976931348623157e308 ** 0.5 differs in the LAST ULP. Measured against the library arm on 2026-08-25: the same source compiled against glibc's libm matches CPython exactly and against musl's does not. It is a C library property, not this tree's code."
-    },
-    {
-      "engine": "mixture",
-      "entry_id": "py-3df9bcf3f159",
-      "kind": "stdout",
-      "family": "int-truediv-through-double",
-      "class": "defect",
-      "why": "int/int converts both operands to double before dividing, losing the low bits past 2**53. The Rust core refuses this case rather than answering approximately."
-    },
-    {
-      "engine": "mixture",
-      "entry_id": "py-399fd0fc233e",
-      "kind": "stdout",
-      "family": "nan-identity-in-containers",
-      "class": "defect",
-      "why": "CPython's containment and equality compare IDENTITY before equality, so a NaN finds itself: n in [n] is True. MicroPython compares by == only. The Rust core refuses this case rather than answering it either way; the MicroPython tier answers False."
-    },
-    {
-      "engine": "mixture",
-      "entry_id": "py-4c632c772042",
-      "kind": "stdout",
-      "family": "nan-identity-in-containers",
-      "class": "defect",
-      "why": "CPython's containment and equality compare IDENTITY before equality, so a NaN finds itself: n in [n] is True. MicroPython compares by == only. The Rust core refuses this case rather than answering it either way; the MicroPython tier answers False."
-    },
-    {
-      "engine": "mixture",
-      "entry_id": "py-67abeedd083b",
-      "kind": "stdout",
-      "family": "repr-escaping",
-      "class": "defect",
-      "why": "repr() does not escape every non-printable character CPython escapes: repr of a string holding U+00A0 comes back with the raw byte where CPython writes '\\xa0'."
-    },
-    {
-      "engine": "mixture",
-      "entry_id": "py-ac5fe06a4d1f",
-      "kind": "stdout",
-      "family": "set-and-dict-hash-order",
-      "class": "defect",
-      "why": "The hash tables iterate in a different order from CPython's, and set/frozenset auto-conversion is absent ({frozenset([1,2])} membership raises). Iteration order is implementation-defined in the language, but it is a real disagreement for anything printing a set without sorting."
     }
   ]
 }
