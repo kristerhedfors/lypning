@@ -309,6 +309,19 @@ CASES = [
     # fail here.
     ("set-key-no-tie-still-answers", 'print(max({1, 2, 3}, key=lambda v: v), sorted({"a", "bb"}, key=len))'),
     ("list-key-ties-are-fine", "print(max([-1, 1], key=abs))"),
+    # `bool` is a subclass of `int`, so `True in b"ab"` is the same byte-value
+    # test as `1 in b"ab"`. Matching only `Value::Int` raised "a bytes-like
+    # object is required" — the same subclass slip already pinned for
+    # `bytes.find(False)`, fixed there and not in `in`.
+    ("bool-in-bytes", 'print(True in b"ab", False in b"ab", 97 in b"ab")'),
+    # CPython converts an unhashable set to a frozenset for the membership test
+    # rather than raising: `{1} in {1}` is False, not a TypeError.
+    ("set-in-set", "print({1} in {1}, {1} in {2}, 1 in {1})"),
+    # The leftover-argument check is skipped for anything CPython calls a
+    # mapping — dict, list and bytes all subscript — and fires for int, str and
+    # tuple. Only dict was exempt here.
+    ("percent-list-operand", "print(repr('ab' % [1]), repr('ab' % b'ab'), repr('ab' % {}))"),
+    ("percent-leftover-still-raises", "print(repr('a%sb' % [1]))"),
     # `str(KeyError('f'))` shows the REPR of the key, so a missing `''` is
     # distinguishable from a missing `' '`. The constructor stored the plain
     # string while every real lookup stored `repr(key)`, so the two disagreed —
@@ -383,6 +396,11 @@ REFUSES = [
     # program, so the refusal is shown to be about the keyword rather than about
     # the mismatch it guards. The unequal case is a ValueError on both tiers.
     ("zip-strict", "print(list(zip([1, 2], [3, 4], strict=True)))"),
+    # `bytes % args` is real Python (PEP 461) and is not implemented here.
+    # Falling through to the generic binary-op arm made it a TypeError — the
+    # program's own exit, which the dispatcher does not treat as a refusal, so
+    # `b"%d" % 5` died at exit 1 with nothing to rescue it.
+    ("bytes-percent-format", 'print(b"%d" % 5)'),
 ]
 
 

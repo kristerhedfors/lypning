@@ -28,6 +28,93 @@ The four numbers, in the order an entry states them:
 
 ---
 
+## 2026-08-25 · iteration 60 — the last five lenses, and a probe that costs six seconds
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 2239 loaded, 1646
+graded
+
+**bytes** 1,016,008 B, 8 blocks — unchanged. **correctness** lypning
+1075 MATCH / 568 UNSUPPORTED / **3 MISMATCH**; routing IDEAL 1504, UNSAFE 8.
+**tests** 1,087 → **1,092**.
+
+The five lenses the blocked fan-outs never reached, swept by hand. Three came
+back clean; two did not.
+
+### Three clean sweeps, recorded because clean is a result
+
+**Laziness and side-effect ordering** — identical. Generator expressions, `map`,
+`filter`, `zip` and `enumerate` are all lazy here exactly as in CPython, `sum` is
+eager, and `any`/`all` short-circuit at the same element. Eager evaluation where
+CPython is lazy would reorder every side effect in a program; it does not
+happen.
+
+**dict and set detail** — 33 cases, 0 differ, including the ones most likely to
+diverge: `{1: 'a', 1.0: 'b', True: 'c'}` collapses to one entry with the FIRST
+key object surviving, `setdefault` returns the existing value, and set
+*operators* reject a non-set while the *methods* accept any iterable.
+
+**repr and str** — 120 cases, 110 run, 10 refused, **0 differ**. Every escape
+form, bytes with high bytes, floats across the exponent boundaries and the
+17-digit cases, nested containers, the 1-tuple comma. The ten refusals are
+`repr()` of characters whose printability needs CPython's Unicode tables, which
+this project refuses by design rather than guessing.
+
+That last one was run **one program per case**, which is the method fix from
+iteration 58: a single refusal kills a whole grid program and silently unmeasures
+everything after it. The first attempt at this grid died on `\x85` at case 13 of
+120.
+
+### The operator matrix found four
+
+2,040 cells — ten operand types against thirteen operators plus `in` and the two
+unary forms:
+
+```
+True in b"ab"      TypeError        ->  False
+{1} in {1}         TypeError        ->  False
+'ab' % [1]         TypeError        ->  'ab'
+b"%d" % 5          TypeError        ->  b'5'
+```
+
+**`True in b"ab"`** is the `bool`-is-a-subclass-of-`int` slip *again*. The ledger
+already records it for `bytes.find(False)`, fixed there — and `in` was never
+looked at. Same defect, second site, four months apart.
+
+**`{1} in {1}`** — CPython converts an unhashable set to a frozenset for the
+membership test rather than raising. This subset has no frozenset and its sets
+cannot contain one, so the answer is always False, which is what CPython gives
+for every set this runtime can build.
+
+**`'ab' % [1]`** — the leftover-argument check is skipped for anything CPython
+calls a mapping. `PyMapping_Check` is true for dict, list and bytes, because each
+has `mp_subscript`; false for int, str and tuple. Only `Dict` was exempt here, so
+the two ordinary sequence cases raised where CPython answers.
+
+**`b"%d" % 5`** is PEP 461 bytes formatting, not implemented — and it fell
+through to the generic binary-op arm and became a **TypeError**, the program's
+own exit, which the dispatcher does not treat as a refusal. Valid Python died at
+exit 1 with nothing to rescue it. It is a refusal now, and the chain answers it.
+
+After: **2,040 cells, 2,028 run, 12 refused, 0 differ.**
+
+### The probe gate
+
+Six runs of the subagent fan-out have hit a harness fault that strips every tool
+call's required parameter. Rounds two and three burned 300K and 223K tokens
+producing nothing.
+
+This run spent **one agent, two tool calls, six seconds** finding out — a probe
+that runs `echo PROBE_OK` and answers `TOOLS_WORK` or `TOOLS_BLOCKED`, with the
+five expensive lens agents gated behind it. It came back `TOOLS_BLOCKED` and the
+sweep never spawned.
+
+Worth keeping as a pattern: **when a dependency fails intermittently, gate the
+expensive fan-out behind the cheapest possible probe of that dependency.** The
+cost of discovering a blocked session drops from five agent lifetimes to one
+`echo`.
+
+---
+
 ## 2026-08-25 · iteration 59 — startup is 80% kernel, size is free here, and `--lib` had been broken since #13
 
 **host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 2239 loaded, 1646

@@ -135,6 +135,19 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   correction. `round(int, -n)` is now implemented rather than refused, in integer
   arithmetic so that ints past 2**53 keep their digits.
 - All of the above at **1,007,816 B, 8 blocks — the binary did not grow.**
+- **The operator matrix found four more.** `True in b"ab"` raised where CPython
+  answers False — the `bool`-is-a-subclass-of-`int` slip already pinned for
+  `bytes.find(False)` and never looked at for `in`; `{1} in {1}` raised where
+  CPython converts the set to a frozenset and answers False; `'ab' % [1]` raised
+  because the leftover-argument check exempted only `dict`, where CPython exempts
+  anything that subscripts; and `b"%d" % 5` — PEP 461 bytes formatting, not
+  implemented — became a **TypeError** rather than a refusal, so valid Python died
+  at exit 1 with nothing to rescue it. 2,040 cells, now 0 differ.
+- **Three lenses swept clean and recorded as such**: laziness and side-effect
+  ordering (generator expressions, `map`, `filter`, `zip`, `enumerate` all lazy;
+  `sum` eager; `any`/`all` short-circuiting identically), dict and set detail
+  (33 cases including equal-key collapse), and `repr`/`str` (120 cases, 110 run,
+  10 correctly refused, 0 differ).
 - A survey of **lypning-mp** verified 34 further divergences, recorded in
   `docs/HILLCLIMB.md` rather than fixed: that tier's sort is genuinely unstable,
   `round(2.5, 0)` is `3.0`, `isinstance(True, int)` is `False`, `json.loads`

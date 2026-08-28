@@ -91,6 +91,17 @@ impl Interp {
                 }
                 Value::Dict(Rc::new(RefCell::new(d)))
             }
+            // `bytes % args` is real Python (PEP 461) and is not implemented
+            // here. Falling into the arm below made it a TypeError — the
+            // program's own exit, which the dispatcher does not treat as a
+            // refusal, so a valid `b"%d" % 5` died at exit 1 with nothing to
+            // rescue it. A refusal routes it onward instead.
+            (Mod, Value::Bytes(_), _) => {
+                return Err(unsupported(
+                    "percent-format",
+                    "bytes % args (PEP 461 formatting)",
+                ))
+            }
             _ => {
                 return Err(type_err(format!(
                     "unsupported operand type(s) for {}: '{}' and '{}'",
@@ -180,7 +191,13 @@ impl Interp {
             },
             Value::Bytes(b) => match needle {
                 Value::Bytes(n) => b.windows(n.len().max(1)).any(|w| w == n.as_slice()) || n.is_empty(),
+                // `bool` is a SUBCLASS of int, so `True in b"ab"` is the same
+                // byte-value test as `1 in b"ab"` and answers False. Matching
+                // only `Value::Int` raised "a bytes-like object is required"
+                // for the bool — the same subclass slip the ledger records for
+                // `bytes.find(False)`, which was fixed there and not here.
                 Value::Int(i) => b.contains(&(*i as u8)),
+                Value::Bool(t) => b.contains(&(*t as u8)),
                 _ => return Err(type_err("a bytes-like object is required")),
             },
             Value::List(l) => {
@@ -206,7 +223,15 @@ impl Interp {
                 false
             }
             Value::Dict(d) => d.borrow().contains(needle)?,
-            Value::Set(s) => s.borrow().contains(needle)?,
+            // CPython converts an unhashable SET to a frozenset for the
+            // membership test rather than raising: `{1} in {1}` is False, not a
+            // TypeError. This subset has no frozenset and its sets cannot hold
+            // one, so the answer is always False — which is the answer CPython
+            // gives for every set this runtime can build.
+            Value::Set(s) => match needle {
+                Value::Set(_) => false,
+                _ => s.borrow().contains(needle)?,
+            },
             Value::Range(a, b, st) => match needle {
                 Value::Int(i) => {
                     let inrange = if *st > 0 { *i >= *a && *i < *b } else { *i <= *a && *i > *b };
@@ -1094,7 +1119,15 @@ fn percent_format(f: &str, arg: &Value) -> R<String> {
         ai += 1;
         out.push_str(&percent_one(v, &spec, min_digits)?);
     }
-    if ai < args.len() && !matches!(arg, Value::Dict(_)) {
+    // The leftover-argument check is skipped for anything CPython considers a
+    // MAPPING in the C sense — `PyMapping_Check`, which is true for dict, list
+    // and bytes because each has `mp_subscript`, and false for int, str, tuple
+    // and None. So `'ab' % [1]` is `'ab'` while `'ab' % 5` and `'ab' % (1,)`
+    // both raise. Only `Dict` was exempt here, so the two ordinary sequence
+    // cases raised where CPython answers.
+    if ai < args.len()
+        && !matches!(arg, Value::Dict(_) | Value::List(_) | Value::Bytes(_))
+    {
         return Err(type_err(
             "not all arguments converted during string formatting",
         ));
