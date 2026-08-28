@@ -454,14 +454,6 @@
     },
     {
       "engine": "mixture",
-      "entry_id": "py-9b16a7261b96",
-      "kind": "stdout",
-      "family": "dunder-missing-on-builtins",
-      "class": "defect",
-      "why": "Built-in types carry no __module__, so the ordinary 'format an exception like CPython does' idiom (type(e).__module__ + '.' + type(e).__name__) dies at exit 1 with eleven correct lines already on stdout. Not fixable from a shim -- it is a few lines in objtype.c."
-    },
-    {
-      "engine": "mixture",
       "entry_id": "py-a6e984f674cf",
       "kind": "stdout",
       "family": "exception-message-text",
@@ -499,22 +491,6 @@
       "family": "nan-identity-in-containers",
       "class": "defect",
       "why": "CPython's containment and equality compare IDENTITY before equality, so a NaN finds itself: n in [n] is True. MicroPython compares by == only. The Rust core refuses this case rather than answering it either way; the MicroPython tier answers False."
-    },
-    {
-      "engine": "mixture",
-      "entry_id": "py-750c245572a9",
-      "kind": "stdout",
-      "family": "pathlib-parts-drops-root",
-      "class": "defect",
-      "why": "Path('/a/b/c.txt').parts drops the root component, giving ('a','b','c.txt') where CPython gives ('/','a','b','c.txt'). 46 corpus programs import pathlib and this tier serves them."
-    },
-    {
-      "engine": "mixture",
-      "entry_id": "py-e5796cbe9f62",
-      "kind": "exit",
-      "family": "random-seeded-stream",
-      "class": "defect",
-      "why": "A seeded random stream is not reproducible across implementations -- MicroPython does not implement the Mersenne Twister. This entry exits 1 where CPython exits 0."
     },
     {
       "engine": "mixture",

@@ -332,6 +332,30 @@ def test_resolution_stops_at_the_first_thing_that_is_not_a_module(lypning_bin):
     assert _route("import os\nprint(os.environ.get('HOME'))").engine == eng.LYPNING
 
 
+def test_a_construct_the_middle_tier_gets_wrong_keeps_a_program_off_it(lypning_bin):
+    # UNSAFE is the one routing outcome that spends trust instead of
+    # milliseconds, and six of the seven routed to lypning-mp. That tier is
+    # third-party and its defects cannot be fixed here — but the classifier can
+    # decline to send a program there when the SOURCE shows it would trip on
+    # one. Each of these is a family in `.github/known-mismatches.json`.
+    assert _route("import random\nrandom.seed(7)\nprint(random.random())").engine == eng.CPYTHON
+    assert _route("from pathlib import Path\nprint(Path('/a/b').parts)").engine == eng.CPYTHON
+    assert _route("try:\n    1/0\nexcept Exception as e:\n    print(type(e).__module__)").engine == eng.CPYTHON
+
+
+def test_the_unsafe_construct_rules_are_precise_and_not_whole_modules(lypning_bin):
+    # The cost of this table is spawns, so it must fire on the construct and not
+    # on its module: `random` without a seed is reproducible, `Path.name` is
+    # correct there, and `.parts` on an unrelated object is an ordinary
+    # attribute. Routing all of `pathlib` away instead would cost 133 corpus
+    # programs against 25 for the three constructs together.
+    assert _route("import random\nprint(random.random())").engine == eng.MICROPYTHON
+    assert _route("from pathlib import Path\nprint(Path('/a/b').name)").engine == eng.MICROPYTHON
+    assert _route("import base64\nprint(base64.b64encode(b'hi'))").engine == eng.MICROPYTHON
+    # `.parts` with no pathlib in sight is not the pathlib defect.
+    assert _route("class C:\n    parts = 1\nprint(C.parts)").engine != eng.CPYTHON
+
+
 def test_constructs_no_micropython_derived_runtime_has_skip_the_middle_tier(lypning_bin):
     # `async` alone, and not because the syntax is rejected there — `async def`
     # parses on lypning-mp. `asyncio` is absent, and the program needs it to do

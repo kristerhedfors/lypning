@@ -14,6 +14,27 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-28** — The classifier declines the tier that would get it wrong
+
+- **UNSAFE 7 → 4, and the three it closed were closed by not routing there.**
+  lypning-mp is a third-party binary whose defects cannot be fixed in this tree,
+  so the only lever left is the classifier: when the *source* shows a program
+  would trip on a known one, send it to CPython. `route.rs` gained a
+  `MICROPYTHON_UNSAFE` table naming three constructs — `random.seed(`,
+  `.__module__`, and `pathlib`'s `.parts` — each a family in
+  `.github/known-mismatches.json`.
+- **Construct-level, not module-level, and that is the whole design.** `random`
+  without a seed is reproducible, `Path.name` is right on that tier, and `.parts`
+  on an unrelated object is an ordinary attribute. Measured over the corpus the
+  run loaded (2,239 programs, 2026-08-28): the three constructs move **25**
+  programs to CPython, against 133 for routing all of `pathlib` away. Twenty-five
+  extra spawns buys three UNSAFE, and UNSAFE is a gate where LATE is a budget.
+- **It cost nothing it was supposed to cost.** Same run: IDEAL 1505 → 1509 and
+  WASTED 46 → 43, because those programs' cheapest *matching* tier was CPython
+  all along; LATE 88 → 90. The ledger lost its three `mixture` lines and
+  `known-mismatches.py` still exits 0 — 56 observed, 56 accepted. The
+  `lypning-mp` lines stay: the tier is still wrong, it is just no longer asked.
+
 **2026-08-25** — `sorted(…, reverse=True)` was reversing the ties · [#16]
 
 - **A silent wrong answer in the Rust core, in one of the most ordinary lines an

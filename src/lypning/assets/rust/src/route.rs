@@ -160,7 +160,7 @@ pub fn route(src: &str) -> Route {
             // the source for them: the import line is what usually decides the
             // tier, and it is cheap and unambiguous to find.
             imports = scan_imports(src);
-            let engine = engine_for(&kind, &imports);
+            let engine = engine_for(&kind, &imports, &BTreeSet::new());
             Route {
                 engine,
                 kind,
@@ -200,7 +200,7 @@ pub fn route(src: &str) -> Route {
                     imports,
                 },
                 Some((kind, detail)) => {
-                    let engine = engine_for(&kind, &imports);
+                    let engine = engine_for(&kind, &imports, &req.mp_risk);
                     Route {
                         engine,
                         kind,
@@ -213,8 +213,48 @@ pub fn route(src: &str) -> Route {
     }
 }
 
-fn engine_for(kind: &str, imports: &[String]) -> Engine {
+/// Constructs lypning-mp is KNOWN to answer WRONGLY, each named by its family in
+/// `.github/known-mismatches.json`.
+///
+/// This is the inverse of `MICROPYTHON_MODULES` and it exists for one number:
+/// **UNSAFE**, a program routed to a tier that gives the wrong answer. Six of
+/// the seven route to lypning-mp, and lypning-mp is a third-party runtime whose
+/// defects cannot be fixed here — but the CLASSIFIER can decline to send a
+/// program there when the source shows it would trip on one.
+///
+/// Deliberately CONSTRUCT-level and not KIND-level. Iteration 48 widened a whole
+/// blocker kind toward lypning-mp on the strength of a LATE improvement and
+/// bought two UNSAFE; the lesson recorded there is that a population where the
+/// tier is usually right is not a population the classifier may claim. A named
+/// construct with a measured cost is a different claim, and each entry here
+/// carries both.
+///
+/// Measured 2026-08-28 over a corpus of 2239 programs: `random.seed` 19,
+/// `__module__` 5, `.parts` 1 — 25 in total, against 133 for routing all of
+/// `pathlib` away and 15 for all of `base64`. Twenty-five extra CPython spawns
+/// buys three UNSAFE, and UNSAFE is a gate where LATE is a budget.
+const MICROPYTHON_UNSAFE: &[(&str, &str)] = &[
+    // A seeded stream is not reproducible across implementations: MicroPython
+    // has no Mersenne Twister, so `random.seed(7)` produces a different sequence
+    // and the program answers, plausibly and wrongly.
+    ("random.seed", "random-seeded-stream"),
+    // Built-in types carry no `__module__` there, so the ordinary
+    // `type(e).__module__ + '.' + type(e).__name__` idiom dies mid-program with
+    // output already committed.
+    ("__module__", "dunder-missing-on-builtins"),
+    // `Path('/a/b').parts` drops the root component. Guarded on `pathlib` also
+    // being imported, since `.parts` is an ordinary attribute name.
+    ("parts", "pathlib-parts-drops-root"),
+];
+
+fn engine_for(kind: &str, imports: &[String], mp_risk: &BTreeSet<&'static str>) -> Engine {
     if CPYTHON_ONLY_KINDS.contains(&kind) {
+        return Engine::CPython;
+    }
+    // A construct lypning-mp gets wrong decides before anything else does: the
+    // whole point is that this program must not reach that tier, whatever else
+    // would have sent it there.
+    if !mp_risk.is_empty() {
         return Engine::CPython;
     }
     // Any import outside lypning-mp's stdlib decides for CPython regardless of what
@@ -247,6 +287,9 @@ fn engine_for(kind: &str, imports: &[String]) -> Engine {
 struct Requirements {
     imports: BTreeSet<String>,
     blocker: Option<(String, String)>,
+    /// Families from `.github/known-mismatches.json` this program's SOURCE
+    /// shows it would trip on lypning-mp. See [`MICROPYTHON_UNSAFE`].
+    mp_risk: BTreeSet<&'static str>,
 }
 
 impl Requirements {
@@ -472,6 +515,27 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
         }
         Expr::Attr(b, n) => {
             walk_expr(b, req);
+            // Record any construct lypning-mp is known to answer wrongly. This
+            // runs BEFORE the module/method resolution below, because the point
+            // is where the program must not GO, not what stops lypning.
+            //
+            // `.parts` is guarded on `pathlib`, since it is an ordinary
+            // attribute name and only the pathlib one is wrong; `__module__` is
+            // a dunder that means nothing else; `random.seed` is matched as a
+            // dotted path so an unrelated `.seed` does not fire it.
+            for (construct, family) in MICROPYTHON_UNSAFE {
+                let hit = match *construct {
+                    "random.seed" => {
+                        n.as_ref() == "seed"
+                            && matches!(b.as_ref(), Expr::Name(m) if m.as_ref() == "random")
+                    }
+                    "parts" => n.as_ref() == "parts" && req.imports.iter().any(|m| m == "pathlib"),
+                    other => n.as_ref() == other,
+                };
+                if hit {
+                    req.mp_risk.insert(family);
+                }
+            }
             // A module attribute is decidable; anything else is a method name.
             if let Some(crate::value::Value::Module(m)) = resolve_module(b) {
                 if crate::modules::get_attr(&crate::value::Value::Module(m), n).is_err() {
