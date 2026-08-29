@@ -14,6 +14,29 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-28** — The session-start hook reported that capture was dead while it
+was running
+
+- **It was the third hook to lose the same arm.** A hook finds the package one
+  of three ways: the `lypning` console script, the source tree via
+  `$CLAUDE_PROJECT_DIR/src`, or a bare `python3 -m lypning`. In a checkout of
+  lypning *itself* only the middle one works — and that is the session most
+  worth capturing, because it is the one editing the engine. The capture and
+  harvest hooks were given that arm earlier this session; `lypning-session-start.sh`
+  never had it.
+- **So it announced the opposite of the truth.** Its `additionalContext` read
+  *"hooks are installed but the package is not importable. Capture and routing
+  are inert this session"* — into a session where capture had already logged
+  **457 invocations and 334 sightings**. Invariant 5 is why nobody noticed: a
+  hook never fails a session, so a broken one goes quiet rather than loud. Its
+  shim refresh had been failing silently the same way, which is the half that
+  actually stops the feed when a container is recycled.
+- **Two tests, because the arm has now been lost three times.** One asserts every
+  shipped hook carries it; the other asserts `.claude/hooks/` still matches
+  `assets/claude/hooks/`, since the tree carries the hooks twice and a fix
+  applied to one copy is a fix this repository runs and no user gets, or the
+  reverse.
+
 **2026-08-28** — Two more constructs the classifier declines, and a refusal kind
 that was two kinds
 

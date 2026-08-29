@@ -40,17 +40,36 @@ ok() {
 # event carries nothing this hook needs.
 
 if [ "${LYPNING_CAPTURE:-1}" != "0" ]; then
-  # Same two-arm dispatch as the other hooks: the console script first, and
-  # `python3 -m lypning` when the name `lypning` was the Rust core rather than
-  # the CLI (the core reads `shim` as a script path and exits non-zero).
+  # The same THREE-arm dispatch as the other hooks: the console script first;
+  # then the source tree, which is the arm a checkout of lypning itself needs
+  # and the one this hook was missing; then `python3 -m lypning`, for when the
+  # name `lypning` was the Rust core rather than the CLI (the core reads
+  # `shim` as a script path and exits non-zero).
   if command -v lypning >/dev/null 2>&1; then
     lypning shim install >&2 2>&1 || true
+  elif [ -n "${CLAUDE_PROJECT_DIR:-}" ] \
+       && [ -f "$CLAUDE_PROJECT_DIR/src/lypning/__init__.py" ] \
+       && command -v python3 >/dev/null 2>&1; then
+    PYTHONPATH="$CLAUDE_PROJECT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
+      python3 -m lypning shim install >&2 2>&1 || true
   elif command -v python3 >/dev/null 2>&1; then
     python3 -m lypning shim install >&2 2>&1 || true
   fi
 fi
 
 command -v python3 >/dev/null 2>&1 || ok
+
+# The SAME source-tree arm as the shim refresh above and as the other two hooks.
+# Without it this hook reports "the package is not importable ... capture and
+# routing are inert" in a checkout of lypning itself — where the capture hook's
+# own third arm means capture is in fact RUNNING. A status line that says a live
+# harness is dead is worse than no status line: it is the one input the session
+# has about its own instruments, and it was wrong in the session most worth
+# measuring.
+if [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -f "$CLAUDE_PROJECT_DIR/src/lypning/__init__.py" ]; then
+  PYTHONPATH="$CLAUDE_PROJECT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+  export PYTHONPATH
+fi
 
 # The report is composed and SERIALISED by python, not by the shell: engine
 # paths are attacker-adjacent strings (they come from $PATH and $LYPNING_BIN)

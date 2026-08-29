@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import json
+from pathlib import Path
 
 import pytest
 
@@ -143,3 +144,62 @@ def test_an_unwritable_log_does_not_reach_the_tool_call(monkeypatch, tmp_path):
     rc, out = _fire(capture.hook_pre_tool_use, BASH_EVENT)
     assert rc == 0
     assert out == capture.OK_RESPONSE + "\n"
+
+
+def test_every_hook_can_reach_the_package_from_a_source_checkout():
+    """The arm three hooks have now lost, one at a time, for the same reason.
+
+    A hook finds the package one of three ways: the ``lypning`` console script,
+    the source tree via ``$CLAUDE_PROJECT_DIR/src``, or a bare
+    ``python3 -m lypning``. In a *checkout of lypning itself* — a session with
+    the package neither installed nor on PATH — only the middle arm works, and
+    that is precisely the session most worth capturing, because it is the one
+    editing the engine.
+
+    Both other arms fail SILENTLY there, because invariant 5 says a hook never
+    fails a session: it prints ``{"continue":true}`` and exits 0 on every path,
+    including its own failures. So a hook missing this arm does not break, it
+    goes quiet — capture ran inert for a full session before anyone noticed, and
+    the session-start hook went on *reporting* that capture was inert while the
+    capture hook's own third arm had it running.
+
+    Checked by grep rather than by running the hooks, because what fails here is
+    a path that only exists in an environment the suite cannot conjure: the
+    thing to assert is that the arm is present in the file at all.
+    """
+    hooks = sorted(paths.HOOKS_SRC.glob("lypning-*.sh"))
+    assert hooks, "no hook scripts found in %s" % paths.HOOKS_SRC
+    missing = []
+    for h in hooks:
+        text = h.read_text(encoding="utf-8")
+        if "$CLAUDE_PROJECT_DIR/src/lypning/__init__.py" not in text:
+            missing.append(h.name)
+        elif 'PYTHONPATH="$CLAUDE_PROJECT_DIR/src' not in text:
+            missing.append(h.name + " (guards on the source tree but never adds it)")
+    assert not missing, (
+        "these hooks cannot reach the package from a checkout of lypning itself, "
+        "and will go quiet rather than fail: %s" % missing)
+
+
+def test_the_committed_hooks_match_the_ones_the_installer_ships():
+    """``.claude/hooks/`` is a copy, and a copy drifts.
+
+    The tree carries the hooks twice: ``assets/claude/hooks/`` is what
+    ``lypning install`` writes into someone else's project, and ``.claude/hooks/``
+    is this repository running its own harness on itself. Dogfooding is the
+    point — it is how the inert-capture bug was found — but it only works while
+    the two are the same file. A fix applied to one and not the other means this
+    session is testing something no user gets, or shipping something nobody ran.
+    """
+    shipped = paths.HOOKS_SRC
+    local = Path(__file__).resolve().parents[1] / ".claude" / "hooks"
+    if not local.is_dir():
+        pytest.skip("no .claude/hooks in this install shape")
+    drifted = []
+    for h in sorted(shipped.glob("lypning-*.sh")):
+        mine = local / h.name
+        if not mine.is_file():
+            drifted.append(h.name + " (not installed here)")
+        elif mine.read_text(encoding="utf-8") != h.read_text(encoding="utf-8"):
+            drifted.append(h.name + " (differs)")
+    assert not drifted, "the committed hooks have drifted from the shipped ones: %s" % drifted
