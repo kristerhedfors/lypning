@@ -532,6 +532,35 @@ impl Interp {
                 &format!("exception.{name}, which needs the chained exception object"),
             ));
         }
+        // ...and the same argument, made once for every dunder instead of three
+        // times for three names. A DUNDER IS PART OF THE DATA MODEL: Python
+        // defines what `__name__`, `__class__`, `__doc__`, `__dict__` mean and
+        // every object CPython builds carries the ones its type declares. So
+        // answering `AttributeError` for one is not a fact about this program,
+        // it is a claim about Python — and a false one:
+        //
+        //     print(type(2).__name__)          CPython: int    this: AttributeError
+        //     print(e.__class__.__name__)      CPython: ...    this: AttributeError
+        //     print(len.__doc__ is not None)   CPython: True   this: AttributeError
+        //
+        // Three MISMATCHes on the tier-1 arm, measured, and invariant 1 says a
+        // MISMATCH is always a bug. Worse than the count: AttributeError is
+        // exit 1, the PROGRAM's own exit, which the chain does not retry — so
+        // unlike a refusal it cannot be answered one spawn later. The program
+        // simply dies.
+        //
+        // Deliberately a wildcard and not a list of the dunders CPython has.
+        // A list is incomplete the moment someone uses the next one, and being
+        // incomplete here means a silent wrong answer; being over-broad means a
+        // process spawn on `o.__notathing__`, which CPython then raises
+        // AttributeError for anyway. That is the asymmetry invariant 1 is
+        // about, and it only points one way.
+        if name.starts_with("__") && name.ends_with("__") && name.len() > 4 {
+            return Err(unsupported(
+                "dunder-attr",
+                &format!("{}.{name}, which is part of Python's data model", type_name(base)),
+            ));
+        }
         Err(attr_err(format!(
             "'{}' object has no attribute '{name}'",
             type_name(base)
@@ -707,16 +736,31 @@ fn num_binop(op: BinOp, a: Num, b: Num, both_bool: bool) -> R<Value> {
             if y == 0.0 {
                 return Err(zero_div("float floor division by zero"));
             }
-            // inf // 2.5 is nan in CPython, not inf: the floor of an infinite
-            // quotient has no value, and math.floor(inf) is an error. Rust's
-            // (inf/2.5).floor() is inf, so this needed saying.
-            let q = x / y;
-            if !q.is_finite() {
-                // inf // 2.5 is nan in CPython, not inf: the floor of an
-                // infinite quotient has no value. Rust's (inf/2.5).floor() is
-                // inf, so this needed saying.
-                Value::Float(f64::NAN)
-            } else {
+            {
+                // There USED to be a guard here: `if !(x / y).is_finite() { NAN }`,
+                // put there because `inf // 2.5` is nan in CPython where Rust's
+                // `(inf / 2.5).floor()` is inf. It was right about that case and
+                // wrong about the one that looks identical from the quotient
+                // alone — an OVERFLOW, where both operands are finite and only
+                // the quotient is not:
+                //
+                //     7.0 // 1e-308   ->  inf      (this answered nan)
+                //
+                // CPython does not test the quotient at all. It computes
+                // `fmod` first, and the two cases separate themselves there:
+                // `fmod(inf, 2.5)` is nan and poisons everything after it, while
+                // `fmod(7.0, 1e-308)` is an ordinary small number and the
+                // overflow happens in the division that follows, where inf is
+                // the right answer. Rust's `f64::floor` is total — `floor(inf)`
+                // is inf, `floor(nan)` is nan — so the code below needs no guard
+                // to produce either, and `div - floordiv > 0.5` is false for
+                // both (inf - inf and nan - nan are both nan).
+                //
+                // Measured over a 390-program grid of the overflow
+                // neighbourhood: 98 divergences, all of them this, all at exit 0.
+                // The guard could not have been found by testing `inf` operands,
+                // which is what it was written for.
+                //
                 // CPython computes fmod first and derives the quotient from it,
                 // which is exact where flooring the rounded quotient is not:
                 // 1e16 // -3.0 is -3333333333333335.0, and (1e16 / -3.0).floor()

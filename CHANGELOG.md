@@ -14,6 +14,40 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-28** — Two silent wrong answers in the Rust core, from one grid and
+one guard
+
+- **`7.0 // 1e-308` answered `nan`; CPython answers `inf`.** The float
+  floor-division path guarded on `(x / y).is_finite()` and returned `nan` when
+  it was not. That is right for `float('inf') // 2.5`, which *is* `nan`, and
+  wrong for a finite pair whose quotient merely overflows. CPython never looks
+  at the quotient — it takes `fmod` first, and the two cases separate
+  themselves there, because `fmod(inf, y)` is `nan` while `fmod(7.0, 1e-308)`
+  is an ordinary small number. Removing the guard is the whole fix: Rust's
+  `f64::floor` is total, so the code below it already produced both answers. A
+  390-program grid over the overflow neighbourhood: **98 divergences → 0**.
+- **`type(2).__name__` raised AttributeError; CPython says `int`.** A dunder is
+  part of the data model, so `AttributeError` for one is not a fact about the
+  program — it is a false claim about Python. And it arrives at **exit 1, the
+  program's own exit, which the chain does not retry**: unlike a refusal it
+  cannot be answered one spawn later, so the program simply died.
+  `e.__class__.__name__` and `len.__doc__` failed the same way — three measured
+  MISMATCHes on the tier-1 arm. An unimplemented `__x__` is now
+  `unsupported: dunder-attr`.
+- **Deliberately a wildcard, not a list.** A list of the dunders CPython has is
+  incomplete the moment someone uses the next one, and incomplete here means a
+  silent wrong answer where over-broad means a process spawn. `(2).__dict__`
+  refuses even though CPython raises `AttributeError` for it too — one spawn,
+  and then the same error the program would have got.
+- **`dunder-attr` is not escalated to CPython.** MicroPython gets `__name__`
+  and `__class__` right, so this is a mixed kind, and the rule set last change
+  holds: where a kind is mixed, split it in the engine rather than escalate the
+  whole of it.
+- Same run after both: the corpus is unmoved — UNSAFE 2, IDEAL 1511, LATE 90,
+  WASTED 43, mixture MISMATCH 1. Every affected program already routed to
+  CPython on an unrelated blocker, which is exactly why the corpus could not
+  have found either defect.
+
 **2026-08-28** — The session-start hook reported that capture was dead while it
 was running
 

@@ -20,6 +20,38 @@ import pytest
 from lypning import engines
 
 CASES = [
+    # A 390-program grid over the float floor-division OVERFLOW neighbourhood:
+    # 98 divergences, every one of them this, every one at exit 0. `//` guarded
+    # on `(x / y).is_finite()` and answered nan when it was not — right for
+    # `inf // 2.5`, which IS nan, and wrong for a finite pair whose quotient
+    # merely overflows, which CPython answers with an infinity. CPython never
+    # looks at the quotient: it takes `fmod` first, and the two cases separate
+    # there, because `fmod(inf, y)` is nan and `fmod(7.0, 1e-308)` is an
+    # ordinary small number. The guard could not have been found by testing the
+    # infinity it was written for.
+    ("floordiv-overflow", "print(7.0 // 1e-308)"),
+    ("floordiv-overflow-neg", "print(7.0 // -1e-308)"),
+    ("floordiv-overflow-subnormal", "print(7.0 // 5e-324)"),
+    ("floordiv-overflow-divmod", "print(divmod(7.0, 1e-308))"),
+    ("floordiv-overflow-wide", "print(1e308 // 1e-308)"),
+    # The cases the guard existed for, which must still hold: an INFINITE
+    # DIVIDEND has no floor and stays nan, and a finite one over an infinity
+    # floors to 0.0 or -1.0 by sign.
+    ("floordiv-inf-dividend", "print(float('inf') // 2.5)"),
+    ("floordiv-inf-dividend-neg", "print(float('-inf') // 2.5)"),
+    ("floordiv-inf-divisor", "print(2.5 // float('inf'))"),
+    ("floordiv-inf-divisor-neg", "print(-2.5 // float('inf'))"),
+    ("floordiv-inf-both", "print(float('inf') // float('inf'))"),
+    # The two corrections this expression already carried, re-pinned beside the
+    # new one because all three share one line of code: the exact quotient
+    # derived from fmod, and the sign of a zero result.
+    ("floordiv-exact-quotient", "print(1e16 // -3.0)"),
+    ("floordiv-half-correction", "print(9.0 // 0.7)"),
+    ("floordiv-negative-zero", "print(repr(-0.0 // 1.0), repr(0.0 // -1.0))"),
+    # An attribute CPython does not have either: still AttributeError, still
+    # exit 1, still agreeing with CPython. The dunder refusal must not swallow
+    # this one — a refusal here would be a spawn spent on nothing.
+    ("attr-really-absent", "print((2).nosuchthing)"),
     # seed 1223909964. Exactly -699300699300699.25; one ulp is 0.125, so both
     # …699.2 and …699.3 are 17 digits and both round-trip. CPython resolves the
     # tie to EVEN, Rust's `{:e}` rounded away, and the answer was silently wrong.
@@ -392,6 +424,24 @@ def test_matches_cpython(name: str, program: str) -> None:
 #: exit 90, one line on stderr, nothing on stdout, and the dispatcher gets the
 #: real answer from CPython one spawn later.
 REFUSES = [
+    # A DUNDER IS PART OF THE DATA MODEL, so `AttributeError` for one is not a
+    # fact about this program — it is a claim about Python, and a false one.
+    # `type(2).__name__` is `int` in CPython and was an AttributeError here.
+    # Three measured MISMATCHes on the tier-1 arm, and worse than the count:
+    # AttributeError is exit 1, the PROGRAM's own exit, which the chain does not
+    # retry. Unlike a refusal, none of them could be answered one spawn later.
+    # The rule is a wildcard over `__x__` rather than a list of the dunders
+    # CPython has, because a list is incomplete the moment someone uses the next
+    # one — and incomplete here means a silent wrong answer, where over-broad
+    # means a spawn.
+    ("dunder-name", "print(type(2).__name__)"),
+    ("dunder-class", "try:\n    1/0\nexcept Exception as e:\n    print(e.__class__.__name__)"),
+    ("dunder-doc", "print(len.__doc__ is not None)"),
+    # `(2).__dict__` is deliberately NOT here: an int has no `__dict__` in
+    # CPython either, so refusing it is the over-broad half of the wildcard —
+    # one spawn, after which CPython raises the same AttributeError the program
+    # would have got anyway. That is the cost side of the trade, and it is the
+    # side worth paying.
     # `'ß'.casefold()` is `'ss'`; aliasing casefold to lowercasing answered `'ß'`
     # at exit 0, so `'ß'.casefold() == 'ss'.casefold()` was False — and caseless
     # comparison is the whole purpose of the method.
