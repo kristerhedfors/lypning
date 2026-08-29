@@ -588,35 +588,21 @@ fn str_method(
             let parts: Vec<Value> = match sep {
                 // Whitespace splitting collapses runs and drops leading and
                 // trailing empties; separator splitting does neither.
+                // The same rule the bytes twin uses — see `split_ws_ranges`.
+                // It lived twice, and this copy was the one missing a case:
+                // `'a b  c'.rsplit(None, 2)` refused here and answered there.
                 None => {
                     let mut v: Vec<Value> = Vec::new();
-                    if maxsplit < 0 {
-                        v = s.split(py_space)
-                            .filter(|x| !x.is_empty())
-                            .map(|x| Value::Str(x.into()))
-                            .collect();
-                    } else if name == "split" {
-                        let mut rest: &str = s;
-                        let mut n = 0;
-                        rest = rest.trim_start_matches(py_space);
-                        while n < maxsplit && !rest.is_empty() {
-                            match rest.find(py_space) {
-                                Some(i) => {
-                                    v.push(Value::Str(rest[..i].into()));
-                                    rest = rest[i..].trim_start_matches(py_space);
-                                    n += 1;
-                                }
-                                None => break,
-                            }
-                        }
-                        if !rest.is_empty() {
-                            v.push(Value::Str(rest.into()));
-                        }
-                    } else {
-                        return Err(unsupported(
-                            "str-method",
-                            "rsplit(None, maxsplit) with a positive maxsplit",
-                        ));
+                    split_ws_each(
+                        s.len(),
+                        |i| str_unit_at(s, i),
+                        |j| str_unit_before(s, j),
+                        maxsplit,
+                        name == "rsplit",
+                        |lo, hi| v.push(Value::Str(s[lo..hi].into())),
+                    );
+                    if name == "rsplit" {
+                        v.reverse();
                     }
                     v
                 }
@@ -1968,59 +1954,177 @@ fn slice_bytes<'a>(b: &'a [u8], start: Option<&Value>, end: Option<&Value>) -> R
     Ok(Some((&b[lo as usize..hi as usize], lo)))
 }
 
+/// The whitespace-split RULE, in one place for `str` and for `bytes`.
+///
+/// Fields are HANDED TO THE CALLER as they are found rather than returned in a
+/// `Vec`: this replaced `str::split(py_space)`, which built the answer in one
+/// pass, and an intermediate vector of ranges was measurably most of what was
+/// left of a 21% regression. `from_right` emits right-to-left, so a caller that
+/// asked for it reverses its own output once at the end.
+///
+/// It lived in two: `bytes_split`'s `None` arm and the `str.split` arm, and the
+/// bytes copy's own comment said "this is the only place the rule lives". It was
+/// not, and the str copy was the incomplete one — `'a b  c'.rsplit(None, 2)`
+/// answered `unsupported: str-method` where the bytes twin answers
+/// `[b'a', b'b', b'c']`. Two implementations of one rule, one of them missing a
+/// case, and nothing making them agree: the same shape as the five drifts a grid
+/// campaign found between these two functions this session.
+///
+/// Fields come back as **byte ranges**, so each caller slices its own type. A
+/// `&str` range is always on a character boundary because `space_at` and
+/// `space_before` report whole characters — which is also why this is not just
+/// `bytes_split` called on `s.as_bytes()`: the two whitespace sets genuinely
+/// differ. `str` splits on U+00A0, U+2000, U+3000, `\x1c` and `\x85`; `bytes`
+/// splits on ASCII only, so `'a\xa0b'.split()` is `['a', 'b']` and
+/// `b'a\xc2\xa0b'.split()` is one field.
+///
+/// The rule itself, which is not "split at every run":
+///
+///   * leading and trailing whitespace never produce an empty field;
+///   * once `maxsplit` is spent the REMAINDER comes back verbatim, whitespace
+///     and all — from the far end, so a bounded `rsplit` keeps the leading
+///     whitespace and drops the trailing;
+///   * `maxsplit < 0` means unbounded.
+///
+/// `from_right` walks backwards rather than reversing the input. The bytes
+/// version built a reversed copy and reversed every field back, because a
+/// hand-written mirror would have been "a second place to get that wrong" — but
+/// with one implementation serving both types the mirror IS the one place, and
+/// it costs no allocation.
+/// The unit at an index: `(is_space, width_in_bytes)`. The WIDTH IS THE POINT —
+/// a first version returned only "is this a space" and advanced the non-space
+/// scan one byte at a time, which walks into the middle of a multi-byte
+/// character and makes `&str` slicing panic. `'café'.split()` aborted the
+/// process with a SIGABRT, and a 602-program grid missed it because every
+/// subject in it was either ASCII or whitespace: there was no non-space
+/// multi-byte character anywhere. Returning the width makes the mistake
+/// unrepresentable — every advance is by a whole unit.
+type Unit = (bool, usize);
+
+fn split_ws_each(
+    len: usize,
+    at: impl Fn(usize) -> Unit,
+    before: impl Fn(usize) -> Unit,
+    maxsplit: i64,
+    from_right: bool,
+    mut emit: impl FnMut(usize, usize),
+) {
+    if !from_right {
+        let mut i = 0usize;
+        while i < len {
+            let (sp, w) = at(i);
+            if !sp {
+                break;
+            }
+            i += w;
+        }
+        let mut splits = 0i64;
+        while i < len {
+            if maxsplit >= 0 && splits >= maxsplit {
+                emit(i, len);
+                return;
+            }
+            let start = i;
+            while i < len {
+                let (sp, w) = at(i);
+                if sp {
+                    break;
+                }
+                i += w;
+            }
+            emit(start, i);
+            splits += 1;
+            while i < len {
+                let (sp, w) = at(i);
+                if !sp {
+                    break;
+                }
+                i += w;
+            }
+        }
+        return;
+    }
+    let mut j = len;
+    while j > 0 {
+        let (sp, w) = before(j);
+        if !sp {
+            break;
+        }
+        j -= w;
+    }
+    let mut splits = 0i64;
+    while j > 0 {
+        if maxsplit >= 0 && splits >= maxsplit {
+            emit(0, j);
+            return;
+        }
+        let end = j;
+        while j > 0 {
+            let (sp, w) = before(j);
+            if sp {
+                break;
+            }
+            j -= w;
+        }
+        emit(j, end);
+        splits += 1;
+        while j > 0 {
+            let (sp, w) = before(j);
+            if !sp {
+                break;
+            }
+            j -= w;
+        }
+    }
+}
+
+/// The `str` unit readers: one character, forwards or backwards.
+///
+/// The ASCII branch is not premature: this replaced `str::split(py_space)`, a
+/// tuned iterator, and decoding a character per position to ask one question
+/// cost **21%** on a whitespace-split microbenchmark — measured A/B against the
+/// pre-refactor binary, against a ±5% noise floor. A byte below 0x80 IS its own
+/// character and is one byte wide, which is the whole string for most programs;
+/// the decode is kept for the case that actually needs it.
+fn str_unit_at(s: &str, i: usize) -> Unit {
+    let b = s.as_bytes()[i];
+    if b < 0x80 {
+        return (matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c | 0x1c..=0x1f), 1);
+    }
+    match s[i..].chars().next() {
+        Some(c) => (py_space(c), c.len_utf8()),
+        None => (false, 1),
+    }
+}
+
+fn str_unit_before(s: &str, j: usize) -> Unit {
+    let b = s.as_bytes()[j - 1];
+    if b < 0x80 {
+        return (matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c | 0x1c..=0x1f), 1);
+    }
+    match s[..j].chars().next_back() {
+        Some(c) => (py_space(c), c.len_utf8()),
+        None => (false, 1),
+    }
+}
+
 fn bytes_split(b: &[u8], sep: Option<&[u8]>, maxsplit: i64, from_right: bool) -> Vec<Vec<u8>> {
     let mut out: Vec<Vec<u8>> = Vec::new();
     match sep {
+        // The rule lives in `split_ws_ranges`, which `str.split` uses too.
         None => {
-            // `from_right` used to be discarded, which made `rsplit` a second
-            // name for `split`. Splitting the reversed input and reversing the
-            // pieces back gives the right end without a second scanner to keep
-            // in step with this one — and with whitespace the two ends are not
-            // symmetric (a bounded `rsplit` keeps the LEADING whitespace and
-            // drops the trailing), so a hand-written mirror would be a second
-            // place to get that wrong.
-            if from_right && maxsplit >= 0 {
-                let rev: Vec<u8> = b.iter().rev().copied().collect();
-                let mut parts = bytes_split(&rev, None, maxsplit, false);
-                parts.reverse();
-                return parts
-                    .into_iter()
-                    .map(|p| p.into_iter().rev().collect())
-                    .collect();
-            }
-            // Whitespace splitting is not "split at every run": leading and
-            // trailing whitespace never produce an empty field, and a bounded
-            // `maxsplit` hands back the REMAINDER verbatim once the budget is
-            // spent. The previous loop pushed a field per run and left the
-            // remainder's leading whitespace attached, so
-            // `b"x y  z".split(None, 2)` answered `[b'x', b'y', b' z']` and
-            // `b" a ".split(None, 0)` answered `[b' a ']` — both exit 0.
-            //
-            // `rsplit` is the same walk over the reversed input (above), so
-            // this is the only place the rule lives.
-            let n = b.len();
-            let mut i = 0usize;
-            while i < n && py_byte_space(b[i]) {
-                i += 1;
-            }
-            let mut splits = 0i64;
-            while i < n {
-                if maxsplit >= 0 && splits >= maxsplit {
-                    out.push(b[i..].to_vec());
-                    return out;
-                }
-                let start = i;
-                while i < n && !py_byte_space(b[i]) {
-                    i += 1;
-                }
-                out.push(b[start..i].to_vec());
-                splits += 1;
-                while i < n && py_byte_space(b[i]) {
-                    i += 1;
-                }
+            split_ws_each(
+                b.len(),
+                |i| (py_byte_space(b[i]), 1),
+                |j| (py_byte_space(b[j - 1]), 1),
+                maxsplit,
+                from_right,
+                |lo, hi| out.push(b[lo..hi].to_vec()),
+            );
+            if from_right {
+                out.reverse();
             }
         }
-        Some(s) if s.is_empty() => out.push(b.to_vec()),
         Some(s) if from_right && maxsplit >= 0 => {
             // Same trick with a separator, and the separator is reversed too.
             let rev: Vec<u8> = b.iter().rev().copied().collect();

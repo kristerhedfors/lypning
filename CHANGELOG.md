@@ -14,6 +14,41 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-28** — The whitespace-split rule lived twice, and the copy that said
+otherwise was the complete one
+
+- **`str.rsplit(None, 2)` refused; `bytes.rsplit(None, 2)` answered.** The rule
+  — leading and trailing whitespace never make an empty field, a spent
+  `maxsplit` hands back the remainder verbatim, and from the far end a bounded
+  `rsplit` keeps the *leading* whitespace — was implemented twice. The bytes
+  copy's own comment read *"this is the only place the rule lives"*. It was not,
+  and the str copy was missing a case.
+- **One implementation now, `split_ws_each`, used by both.** Not `bytes_split`
+  called on `s.as_bytes()`: the two whitespace sets genuinely differ — `str`
+  splits on U+00A0, U+2000, U+3000, `\x1c` and `\x85`, `bytes` on ASCII only —
+  so the rule is shared and the predicate is not. `rsplit` walks backwards
+  instead of building a reversed copy, which the bytes version had needed.
+- **Measured: bytes exactly unchanged at 1,024,208, and the corpus gained.**
+  Tier-1 MATCH 1076 → **1077**, refusals 569 → **568**, IDEAL 1511 → **1512**.
+  The string-methods grid went from 325 refusals to **261** — 64 programs that
+  used to refuse now answer.
+- **Performance, A/B against the pre-refactor binary, 25 interleaved rounds:**
+  +3% on a microbenchmark that does nothing but whitespace-split, +2% on a mixed
+  method workload, against a same-binary control reading −2%. Getting there took
+  two attempts: decoding a character per position to ask one question cost
+  **21%**, and an intermediate vector of ranges cost most of what was left.
+- **It aborted the process before it did any of that.** The first version
+  advanced the scan one *byte* at a time, walked into the middle of a multi-byte
+  character and made `&str` slicing panic — `'café'.split()` exited 134 on a
+  SIGABRT. A 728-program grid had passed it, because every subject was ASCII or
+  whitespace and none held a non-space multi-byte character. The unit readers
+  now return a width, which makes the mistake unrepresentable; the grid and the
+  pins carry the missing characters.
+- **And the forcing function the twins never had.** A parametrised differential
+  runs all twelve shared method names against both `str` and `bytes` and
+  requires each to match CPython — proven load-bearing by reintroducing one of
+  the five drifts in a scratch build and watching it fail.
+
 **2026-08-28** — An unused import was enough to reach a tier that answers wrongly
 
 - **The two escalation tables did not cover the same ground.**

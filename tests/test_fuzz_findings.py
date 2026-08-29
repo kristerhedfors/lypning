@@ -20,6 +20,29 @@ import pytest
 from lypning import engines
 
 CASES = [
+    # `str.rsplit(None, maxsplit)` REFUSED and its bytes twin answered. The
+    # whitespace-split rule lived in two implementations — and the bytes copy's
+    # own comment said "this is the only place the rule lives". One rule, two
+    # copies, and the str one was missing a case.
+    ("ws-rsplit-maxsplit", "print('a b  c'.rsplit(None, 2))"),
+    ("ws-rsplit-zero", "print(' a '.rsplit(None, 0))"),
+    ("ws-rsplit-keeps-leading", "print('  a  b  '.rsplit(None, 1))"),
+    ("ws-rsplit-long", "print('one two three four'.rsplit(None, 2))"),
+    # A NON-SPACE MULTI-BYTE CHARACTER. Unifying the rule introduced a SIGABRT
+    # here and a 602-program grid missed it, because every subject in that grid
+    # was ASCII or whitespace: the scan advanced one BYTE at a time and sliced
+    # into the middle of a character. `'café'.split()` aborted the process.
+    ("ws-multibyte-nonspace", "print('caf\u00e9'.split())"),
+    ("ws-multibyte-fields", "print('h\u00e9llo w\u00f6rld'.split())"),
+    ("ws-multibyte-cjk", "print('\u65e5\u672c \u8a9e'.split())"),
+    ("ws-multibyte-maxsplit", "print('caf\u00e9 au lait'.split(None, 1))"),
+    ("ws-multibyte-rsplit", "print('\u65e5\u672c\u8a9e'.rsplit(None, 1))"),
+    ("ws-astral", "print('\U0001f600 x'.split())"),
+    # The two whitespace SETS still differ, which is why the rule is shared and
+    # the predicate is not: str splits on these, bytes does not.
+    ("ws-unicode-space-str", "print('a\xa0b'.split(), 'a\u2000b'.split(), 'a\x85b'.split())"),
+    ("ws-unicode-space-bytes",
+     "print(bytes([97,194,160,98]).split(), bytes([97,194,133,98]).split())"),
     # A TRAILING COMMA AFTER ONE NAME MAKES A ONE-ELEMENT TUPLE TARGET, and
     # dropping it dropped the unpacking with it — along with the ARITY CHECK.
     # `[v for v, in [(1, 2)]]` is a ValueError in CPython and answered
