@@ -14,6 +14,40 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-28** — An unused import was enough to reach a tier that answers wrongly
+
+- **The two escalation tables did not cover the same ground.**
+  `engines.ONLY_CPYTHON_REFUSALS` is the *runtime* half: it fires on a refusal
+  tier 1 actually emitted. But tier 1 only runs when the classifier sends the
+  program there, so a program whose **first** blocker is an ordinary capability
+  gap goes straight to lypning-mp — tier 1 never refuses, the runtime table
+  never sees the kind, and the tier answers at exit 0:
+
+  ```
+  import math                      # an unused import is enough
+  x = float("nan")
+  print(x in [x])                  # CPython True, lypning-mp False
+  ```
+
+  Same shape for `import math` plus `print(9007199254740993 / 3)`:
+  `3002399751580331.0` against `3002399751580330.5`.
+- **Both are visible in the source, so the static half can catch what the
+  runtime half cannot.** `route.rs` now marks a `float("nan")` literal and a
+  division whose literal operand is past 2\*\*53.
+- **Measured cost: zero corpus programs.** The rules match the *AST*, not the
+  text — and the only two corpus entries carrying that text hold it inside a
+  string, a regex pattern in one and a literal being string-replaced in the
+  other. A regex estimate over the source said "one program each"; it was
+  counting strings.
+- Found by an adversarial review of this session's diff. Its rebuttal agent was
+  right that the escalation fires for the population it was built for, right
+  that the routing gate would flag a corpus program of this shape as UNSAFE, and
+  right that one of the three examples was invalid (a set-order comparison run
+  without `PYTHONHASHSEED` pinned). The other two reproduce, and they are why
+  this is a change and not a note.
+- Routing unmoved: 1056 lypning / 388 lypning-mp / 202 cpython, UNSAFE 2,
+  IDEAL 1511, mixture MISMATCH 1.
+
 **2026-08-28** — A vanished arity check, and five ways a `range` was not a range
 
 From a 39-agent grid campaign over comprehension scope, slicing, conversions,

@@ -83,6 +83,48 @@ def test_a_semantic_refusal_skips_every_tier_but_cpython():
     assert eng.chain_after_refusal(eng.MICROPYTHON, "nan-identity") == [eng.CPYTHON]
 
 
+def test_a_construct_the_runtime_table_would_escalate_is_kept_off_the_tier_statically(lypning_bin):
+    """The hole between the two tables, and the shape that gets through it.
+
+    `engines.ONLY_CPYTHON_REFUSALS` is the RUNTIME half: it fires on a refusal
+    tier 1 actually emitted. But tier 1 only runs when the classifier sends the
+    program there, and a program whose FIRST blocker is an ordinary capability
+    gap goes straight to lypning-mp — so tier 1 never refuses, the runtime table
+    never sees the kind, and the tier answers wrongly at exit 0.
+
+    An unused import is enough to open it::
+
+        import math
+        x = float("nan")
+        print(x in [x])      # CPython True, lypning-mp False
+
+    A NaN literal and an oversized division operand are both visible in the
+    SOURCE, so the static half can catch what the runtime half cannot.
+    """
+    assert _route("import math\nx = float('nan')\nprint(x in [x])").engine == eng.CPYTHON
+    assert _route("import math\nprint(9007199254740993 / 3)").engine == eng.CPYTHON
+
+
+def test_the_static_markers_are_narrow_enough_to_be_worth_their_spawns(lypning_bin):
+    """Both directions, because every rule here is paid for in process spawns.
+
+    `float('inf')` and `float('1.5')` are ordinary calls; a large literal that is
+    never divided cannot lose precision; and `//` is exact whatever the operands.
+    None of them may fire. Measured over the corpus the run loaded (2,239
+    programs, 2026-08-28) the two rules move ZERO programs off lypning-mp: the
+    only corpus entries carrying that text hold it inside a string — a regex
+    pattern in one, a literal being string-replaced in the other — which is
+    exactly the difference between matching the AST and matching the text.
+    """
+    assert _route("import math\nprint(float('inf'))").engine == eng.MICROPYTHON
+    assert _route("import math\nprint(float('1.5'))").engine == eng.MICROPYTHON
+    assert _route("import math\nprint(9007199254740993 // 3)").engine == eng.MICROPYTHON
+    assert _route("import math\nprint(9007199254740993)").engine == eng.MICROPYTHON
+    assert _route("import math\nprint(7 / 3)").engine == eng.MICROPYTHON
+    # The text is in a string, not a call: the AST rule must not see it.
+    assert _route("import math\nprint('float(\\'nan\\')')").engine == eng.MICROPYTHON
+
+
 def test_the_integer_refusals_split_by_what_the_tier_below_can_do(lypning_bin, micropython_bin):
     """One kind, two populations, and only one of them is a subtlety.
 

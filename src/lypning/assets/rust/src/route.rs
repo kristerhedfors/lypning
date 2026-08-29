@@ -570,6 +570,32 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             dstar,
             ..
         } => {
+            // THE TWO TABLES HAVE TO COVER THE SAME GROUND, and this is where
+            // they did not. `engines.ONLY_CPYTHON_REFUSALS` is the RUNTIME half:
+            // it fires on a refusal tier 1 actually emitted. But tier 1 only
+            // runs when the classifier sends the program there, and a program
+            // whose FIRST blocker is an ordinary capability gap goes straight to
+            // lypning-mp — so tier 1 never refuses, the runtime table never
+            // sees the kind, and the tier answers wrongly at exit 0:
+            //
+            //     import math                      (an unused import is enough)
+            //     x = float("nan")
+            //     print(x in [x])     CPython True   lypning-mp False
+            //
+            // A NaN literal is visible in the SOURCE, so the static half can
+            // catch what the runtime half cannot. Measured over the corpus the
+            // run loaded (2,239 programs, 2026-08-28): 8 programs contain
+            // `float("nan")` and exactly ONE routes to lypning-mp today, so the
+            // rule costs one spawn.
+            if let Expr::Name(f) = func.as_ref() {
+                if f.as_ref() == "float" && args.len() == 1 {
+                    if let Expr::Str(v) = &args[0] {
+                        if v.eq_ignore_ascii_case("nan") {
+                            req.mp_risk.insert("nan-identity");
+                        }
+                    }
+                }
+            }
             walk_expr(func, req);
             for a in args {
                 walk_expr(a, req);
@@ -586,7 +612,36 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
                 walk_expr(d, req);
             }
         }
-        Expr::Bin(_, a, b) | Expr::Index(a, b) => {
+        Expr::Bin(op, a, b) => {
+            // The same hole as the NaN literal above, for the kind this session
+            // split out of `bigint`. `int / int` where an operand is past 2**53
+            // needs a quotient rounded from the integers themselves, and
+            // lypning-mp converts both to double exactly as tier 1 would have —
+            // so it answers, and it answers wrongly:
+            //
+            //     import math                  (an unused import is enough)
+            //     print(9007199254740993 / 3)
+            //     CPython 3002399751580331.0   lypning-mp 3002399751580330.5
+            //
+            // Narrow on purpose: the DIVISION operator with a literal operand
+            // past the exactly-representable range, not "a big literal anywhere".
+            // Measured over the corpus the run loaded (2,239 programs,
+            // 2026-08-28): 10 programs hold a literal that large and exactly ONE
+            // routes to lypning-mp, so the rule costs one spawn.
+            const EXACT: i64 = 1 << 53;
+            if matches!(op, BinOp::Div) {
+                for side in [a.as_ref(), b.as_ref()] {
+                    if let Expr::Int(n) = side {
+                        if n.unsigned_abs() > EXACT as u64 {
+                            req.mp_risk.insert("int-div-precision");
+                        }
+                    }
+                }
+            }
+            walk_expr(a, req);
+            walk_expr(b, req);
+        }
+        Expr::Index(a, b) => {
             walk_expr(a, req);
             walk_expr(b, req);
         }
