@@ -14,6 +14,36 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-28** — The bytes methods are a copy of the str methods, and the copy
+had drifted in five places
+
+A 1,938-program grid over six subjects, seventeen argument shapes and seventeen
+methods. The str original is correct in every one of these; only the twin is
+wrong.
+
+- **162 divergences were a suffix nothing in CPython prints.** Every bytes
+  `TypeError` read *"a bytes-like object is required, not 'str' (in
+  bytes.split())"*. `str(e)` is what a program prints, so the annotation is the
+  whole message as far as the caller is concerned.
+- **`find`/`rfind`/`index`/`rindex`/`count` have their own wording**, because
+  those five also accept a single integer byte value: *"argument should be
+  integer or bytes-like object, not 'str'"*.
+- **`startswith` and `endswith` did not take a tuple of prefixes** — the point
+  of the method. `b'abc'.startswith((b'a',))` is `True` in CPython and was a
+  `TypeError` here; `str.startswith` has taken one since it was written.
+- **`b''.join(1)`** said *"'int' object is not iterable"* where CPython — and
+  `str.join` four hundred lines up, with the same `map_err` — say *"can only
+  join an iterable"*. `join` also now names the failing item's index and type.
+- **Two were answers, not messages.** `b'abc'.split(b'')` returned `[b'abc']`
+  where CPython raises `ValueError: empty separator` (`str.split('')` already
+  raised it). And `in` converted with `as u8`, which **truncates**: `300 in
+  b'abc'` tested byte 44 and answered `False`, `-1` tested 255. Both are a
+  `ValueError` in CPython.
+- Grid after: **1,938 programs, 0 divergences, 816 refusals** — the refusals are
+  `bytes.count`, `.index`, `.partition` and friends, which are not implemented,
+  which is a coverage number and never a defect. Corpus unmoved: UNSAFE 2,
+  IDEAL 1511, mixture MISMATCH 1.
+
 **2026-08-28** — A keyword argument could silently refill a parameter the
 positionals had already filled
 

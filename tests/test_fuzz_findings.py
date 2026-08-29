@@ -20,6 +20,44 @@ import pytest
 from lypning import engines
 
 CASES = [
+    # The bytes methods were written as a second copy of the str ones, and the
+    # copy drifted in five places. A 1,938-program grid over six subjects, 17
+    # argument shapes and 17 methods found all five; the str originals are
+    # right in every one of them.
+    #
+    # 1. A message suffix nothing in CPython prints. 162 divergences: every
+    #    bytes TypeError read "a bytes-like object is required, not 'str' (in
+    #    bytes.split())", and str(e) is what a program prints.
+    ("bytes-msg-split", "try:\n    b'a'.split(1)\nexcept TypeError as e:\n    print(e)"),
+    ("bytes-msg-strip", "try:\n    b'a'.strip('x')\nexcept TypeError as e:\n    print(e)"),
+    ("bytes-msg-replace", "try:\n    b'a'.replace(1, b'x')\nexcept TypeError as e:\n    print(e)"),
+    ("bytes-msg-contains", "try:\n    'a' in b'abc'\nexcept TypeError as e:\n    print(e)"),
+    # 2. find/rfind/index/rindex/count have their OWN wording, because those
+    #    five also accept a single integer byte value.
+    ("bytes-msg-find", "try:\n    b'a'.find('a')\nexcept TypeError as e:\n    print(e)"),
+    ("bytes-msg-find-none", "try:\n    b'a'.find(None)\nexcept TypeError as e:\n    print(e)"),
+    # `bytes.count`, `.index`, `.partition` and friends are not implemented and
+    # REFUSE, which is never a defect — a coverage number, and the reason this
+    # grid reports 816 refusals against 1,938 programs.
+    # 3. startswith/endswith take A TUPLE OF PREFIXES — the point of the method,
+    #    and not accepted at all. str.startswith has taken one since it was
+    #    written. Their first-argument message is CPython's own, with the type
+    #    name UNQUOTED; a bad tuple ELEMENT falls back to the shared message.
+    ("bytes-startswith-tuple", "print(b'abc'.startswith((b'x', b'a')), b'abc'.endswith((b'c',)))"),
+    ("bytes-startswith-empty-tuple", "print(b'abc'.startswith(()))"),
+    ("bytes-msg-startswith", "try:\n    b'a'.startswith(1)\nexcept TypeError as e:\n    print(e)"),
+    ("bytes-msg-startswith-elem", "try:\n    b'a'.startswith((97,))\nexcept TypeError as e:\n    print(e)"),
+    # 4. join names the item's INDEX and type, and a non-iterable argument is
+    #    "can only join an iterable" — which str.join says right beside it.
+    ("bytes-msg-join-item", "try:\n    b''.join([b'a', 1])\nexcept TypeError as e:\n    print(e)"),
+    ("bytes-msg-join-noniter", "try:\n    b''.join(1)\nexcept TypeError as e:\n    print(e)"),
+    # 5. Two answers, not messages. An empty separator is a ValueError, not a
+    #    one-element list; and `in` truncated with `as u8`, so `300 in b'abc'`
+    #    tested byte 44 and answered False where CPython raises.
+    ("bytes-split-empty-sep", "try:\n    b'abc'.split(b'')\nexcept ValueError as e:\n    print(e)"),
+    ("bytes-in-out-of-range", "try:\n    300 in b'abc'\nexcept ValueError as e:\n    print(e)"),
+    ("bytes-in-negative", "try:\n    -1 in b'abc'\nexcept ValueError as e:\n    print(e)"),
+    ("bytes-in-ok", "print(1 in b'abc', 97 in b'abc', True in b'abc')"),
     # A KEYWORD SILENTLY REFILLED A PARAMETER THE POSITIONALS HAD FILLED. The
     # binder looked the name up and inserted over the top, so `f(1, a=2)` ran
     # with a=2 where CPython raises, and `f(1, 2, a=9)` ran with a=9 AND b=2 —

@@ -175,9 +175,23 @@ impl Interp {
                 // only `Value::Int` raised "a bytes-like object is required"
                 // for the bool — the same subclass slip the ledger records for
                 // `bytes.find(False)`, which was fixed there and not here.
-                Value::Int(i) => b.contains(&(*i as u8)),
+                // `as u8` TRUNCATES, so `300 in b"abc"` tested byte 44 and
+                // answered False where CPython raises, and `-1 in b"ab"` tested
+                // 255. A byte value outside range(0, 256) is a ValueError there.
+                Value::Int(i) => {
+                    if !(0..=255).contains(i) {
+                        return Err(value_err("byte must be in range(0, 256)"));
+                    }
+                    b.contains(&(*i as u8))
+                }
                 Value::Bool(t) => b.contains(&(*t as u8)),
-                _ => return Err(type_err("a bytes-like object is required")),
+                // ...and the message names the type, as everywhere else.
+                other => {
+                    return Err(type_err(format!(
+                        "a bytes-like object is required, not '{}'",
+                        type_name(other)
+                    )))
+                }
             },
             Value::List(l) => {
                 // The borrow is held across the loop rather than snapshotted:

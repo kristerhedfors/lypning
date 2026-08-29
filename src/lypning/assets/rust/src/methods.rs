@@ -1686,6 +1686,12 @@ fn bytes_method(
                 None | Some(Value::None) => None,
                 Some(v) => Some(as_bytes_arg(v, name)?),
             };
+            // `b"abc".split(b"")` is a ValueError in CPython, not a one-element
+            // list. `str.split("")` already raised it; the bytes twin returned
+            // the subject unsplit, at exit 0.
+            if sep.as_deref() == Some(&[][..]) {
+                return Err(value_err("empty separator"));
+            }
             let maxsplit = match args.get(1).cloned().or_else(|| kwget(&kw, "maxsplit")) {
                 Some(v) => crate::eval::int_val(&v)?,
                 None => -1,
@@ -1704,17 +1710,40 @@ fn bytes_method(
             }
         }
         "startswith" | "endswith" => {
-            let pre = as_bytes_arg(
-                args.first().ok_or_else(|| type_err(format!("{name}() takes at least 1 argument")))?,
-                name,
-            )?;
+            // A TUPLE OF PREFIXES IS THE POINT OF THIS METHOD and it was not
+            // accepted: `b"abc".startswith((b"a",))` is True in CPython and was
+            // a TypeError here. `str.startswith` has taken a tuple since it was
+            // written; the bytes twin never did.
+            //
+            // The wording is CPython's own and is NOT the shared bytes-like
+            // message — note the unquoted type name. A tuple whose ELEMENTS are
+            // wrong falls back to the shared one, because by then CPython is
+            // checking an element rather than the first argument.
+            let arg = args
+                .first()
+                .ok_or_else(|| type_err(format!("{name}() takes at least 1 argument")))?;
+            let pats: Vec<Vec<u8>> = match arg {
+                Value::Bytes(x) => vec![(**x).clone()],
+                Value::Tuple(t) => t
+                    .iter()
+                    .map(|x| as_bytes_arg(x, name))
+                    .collect::<R<Vec<_>>>()?,
+                other => {
+                    return Err(type_err(format!(
+                        "{name} first arg must be bytes or a tuple of bytes, not {}",
+                        crate::value::type_name(other)
+                    )))
+                }
+            };
             match slice_bytes(b, args.get(1), args.get(2))? {
                 None => Value::Bool(false),
-                Some((hay, _)) => Value::Bool(if name == "startswith" {
-                    hay.starts_with(&pre)
-                } else {
-                    hay.ends_with(&pre)
-                }),
+                Some((hay, _)) => Value::Bool(pats.iter().any(|p| {
+                    if name == "startswith" {
+                        hay.starts_with(p)
+                    } else {
+                        hay.ends_with(p)
+                    }
+                })),
             }
         }
         "replace" => {
@@ -1733,19 +1762,35 @@ fn bytes_method(
             Value::Bytes(Rc::new(bytes_replace(b, &from, &to, count)))
         }
         "join" => {
-            let items = it.iter_collect(
-                if args.is_empty() {
-                    return Err(type_err("join() takes exactly one argument"));
+            // The same map_err as `str.join` above, and the fourth place the
+            // bytes twin had drifted from the str original: `b"".join(1)` said
+            // "'int' object is not iterable" where CPython — and str.join right
+            // here — say "can only join an iterable". A refusal from inside is
+            // passed through untouched; only a real TypeError is reworded.
+            let arg = if args.is_empty() {
+                return Err(type_err("join() takes exactly one argument"));
+            } else {
+                args.take(0)
+            };
+            let items = it.iter_collect(arg).map_err(|e| {
+                if e.is_unsupported() {
+                    e
                 } else {
-                    args.take(0)
-                },
-            )?;
+                    type_err("can only join an iterable")
+                }
+            })?;
             let mut out: Vec<u8> = Vec::new();
             for (i, v) in items.iter().enumerate() {
                 if i > 0 {
                     out.extend_from_slice(b);
                 }
-                out.extend_from_slice(&as_bytes_arg(v, "join")?);
+                let Value::Bytes(part) = v else {
+                    return Err(type_err(format!(
+                        "sequence item {i}: expected a bytes-like object, {} found",
+                        crate::value::type_name(v)
+                    )));
+                };
+                out.extend_from_slice(part);
             }
             Value::Bytes(Rc::new(out))
         }
@@ -1763,17 +1808,28 @@ fn bytes_method(
 /// `b"x".find("a")` is a TypeError in CPython, not a match on the decoded
 /// text — the two types do not mix, and lypning silently returning -1 for it was
 /// its own small divergence.
-fn as_bytes_arg(v: &Value, method: &str) -> R<Vec<u8>> {
+fn as_bytes_arg(v: &Value, _method: &str) -> R<Vec<u8>> {
     match v {
         Value::Bytes(x) => Ok((**x).clone()),
-        Value::Str(_) => Err(type_err(format!(
-            "a bytes-like object is required, not 'str' (in bytes.{method}())"
-        ))),
+        // CPython's message, EXACTLY. This used to append " (in bytes.split())"
+        // — an annotation nothing in CPython prints, and 162 divergences in a
+        // 642-program grid over the bytes methods, every one of them a message
+        // an agent prints with str(e).
         other => Err(type_err(format!(
-            "a bytes-like object is required, not '{}' (in bytes.{method}())",
+            "a bytes-like object is required, not '{}'",
             crate::value::type_name(other)
         ))),
     }
+}
+
+/// The message `find`, `rfind`, `index`, `rindex` and `count` use, which is not
+/// the one every other bytes method uses: those five accept a single INTEGER
+/// byte value as well as a bytes-like, and CPython's wording says so.
+fn bytes_search_arg_err(v: &Value) -> LypningError {
+    type_err(format!(
+        "argument should be integer or bytes-like object, not '{}'",
+        crate::value::type_name(v)
+    ))
 }
 
 /// `bytes.find` uniquely also accepts an INTEGER, meaning one byte value.
@@ -1805,7 +1861,8 @@ fn as_bytes_or_byte(v: Option<&Value>, method: &str) -> R<Vec<u8>> {
             }
             Ok(vec![*n as u8])
         }
-        Some(other) => as_bytes_arg(other, method),
+        Some(Value::Bytes(x)) => Ok((**x).clone()),
+        Some(other) => Err(bytes_search_arg_err(other)),
         None => Err(type_err(format!("{method}() takes at least 1 argument"))),
     }
 }
