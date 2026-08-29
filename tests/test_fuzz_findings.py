@@ -20,6 +20,36 @@ import pytest
 from lypning import engines
 
 CASES = [
+    # A 5,460-program grid over every ordering operator across 26 operand
+    # values: 1,611 divergences in three shapes, all at exit 0.
+    #
+    # 1,461 of them were THE OPERATOR'S OWN NAME in the TypeError. Every
+    # ordering comparison derived its answer from one `Ordering`, so every one
+    # of them reported `'<'`. CPython names the operator you wrote, at every
+    # depth — a sequence compares element-wise and hands the ORIGINAL operator
+    # to the first differing pair — and `str(e)` is printed by a great many
+    # corpus programs.
+    ("cmp-typeerror-le", "try:\n    0 <= ''\nexcept TypeError as e:\n    print(e)"),
+    ("cmp-typeerror-ge", "try:\n    0 >= ''\nexcept TypeError as e:\n    print(e)"),
+    ("cmp-typeerror-gt", "try:\n    0 > ''\nexcept TypeError as e:\n    print(e)"),
+    ("cmp-typeerror-nested-le", "try:\n    [1] <= ['a']\nexcept TypeError as e:\n    print(e)"),
+    ("cmp-typeerror-nested-gt", "try:\n    (1,) > ('a',)\nexcept TypeError as e:\n    print(e)"),
+    # ...and sort still says `'<'`, because that is the comparison sort makes.
+    ("sort-typeerror-stays-lt", "try:\n    sorted([1, 'a'])\nexcept TypeError as e:\n    print(e)"),
+    # 120 more were a NaN SHORT-CIRCUIT THAT RAN BEFORE THE TYPE CHECK. An
+    # ordering over a NaN is False because IEEE 754 says the relation does not
+    # hold — but only between values that have an ordering to fail. A str and a
+    # float do not, and CPython raises there.
+    ("nan-order-number", "print(float('nan') < 1, float('nan') >= float('nan'))"),
+    ("nan-order-typeerror", "try:\n    '' < float('nan')\nexcept TypeError as e:\n    print(e)"),
+    ("nan-order-nested", "print([float('nan')] < [1.0])"),
+    # The same rule reached sort, min and max, where raising "cannot order NaN"
+    # turned three values CPython computes into exceptions. A NaN compares False
+    # to everything, and sort only ever asks `b < a`, so the answer is "do not
+    # reorder".
+    ("nan-sorted", "print(sorted([float('nan'), 1.0]))"),
+    ("nan-max", "print(max(float('nan'), 1.0))"),
+    ("nan-min", "print(min(float('nan'), 1.0))"),
     # A 390-program grid over the float floor-division OVERFLOW neighbourhood:
     # 98 divergences, every one of them this, every one at exit 0. `//` guarded
     # on `(x / y).is_finite()` and answered nan when it was not — right for
@@ -424,6 +454,17 @@ def test_matches_cpython(name: str, program: str) -> None:
 #: exit 90, one line on stderr, nothing on stdout, and the dispatcher gets the
 #: real answer from CPython one spawn later.
 REFUSES = [
+    # The last 30 of that grid, and the one that cannot be fixed by computing
+    # harder. `is` is object identity, and for an immutable value CPython
+    # answers it from INTERNING: `0 is 0` and `'ab' is 'ab'` are True because
+    # the compiler folded the two constants into one object, while
+    # `int('1000') is 1000` is False for the same values. The answer depends on
+    # where the value came from, which nothing in a value can tell you — so
+    # answering either way is wrong for the other half.
+    ("is-equal-ints", "print(0 is 0)"),
+    ("is-equal-strs", "print('ab' is 'ab')"),
+    ("is-equal-tuples", "print((1,) is (1,))"),
+    ("is-not-equal-floats", "print(2.5 is not 2.5)"),
     # A DUNDER IS PART OF THE DATA MODEL, so `AttributeError` for one is not a
     # fact about this program — it is a claim about Python, and a false one.
     # `type(2).__name__` is `int` in CPython and was an AttributeError here.

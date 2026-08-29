@@ -17,6 +17,7 @@ from __future__ import annotations
 import pytest
 
 from lypning import UNSUPPORTED_EXIT, engines
+from lypning import engines as eng
 
 #: ``(id, program)``. Each prints everything it compares, so a failure names the
 #: value rather than just the case.
@@ -321,3 +322,33 @@ def test_an_attribute_neither_has_keeps_cpythons_error(lypning_bin):
     r = engines.run(engines.LYPNING, 'print("x".nosuch())', binary=lypning_bin)
     assert r.returncode == 1
     assert "AttributeError" in r.stderr
+
+
+def test_identity_still_answers_where_it_is_a_fact_and_not_an_interning_question(lypning_bin):
+    """The other half of the `is` refusal, and the half that bounds its cost.
+
+    Refusing more than necessary is not free — every refusal is a process
+    spawn — so the refusal is narrowed to the case that genuinely cannot be
+    answered: two values that are EQUAL, IMMUTABLE, and not provably the same
+    object. Everything else still answers:
+
+    * the singletons, where identity has one possible answer;
+    * two values that are not equal, which are never the same object either;
+    * ``x is x`` wherever the value carries an ``Rc`` to compare — every str,
+      tuple, list, dict and set;
+    * two mutable displays, which CPython never folds: ``[1] is [1]`` is False
+      in both.
+    """
+    def out(program):
+        r = eng.run(eng.LYPNING, program)
+        assert not r.refused, "refused where it should answer: %s" % r.stderr.strip()
+        return r.stdout.strip()
+
+    assert out("x = None\nprint(x is None, x is not None)") == "True False"
+    assert out("x = 5\nprint(x is None)") == "False"
+    assert out("print(True is True, False is False, True is False)") == "True True False"
+    assert out("print([1] is [1], {} is {})") == "False False"
+    assert out("x = [1]\nprint(x is x)") == "True"
+    assert out("x = 'ab'\nprint(x is x)") == "True"
+    assert out("x = (1, 2)\nprint(x is x)") == "True"
+    assert out("print(1 is 'a', 1000 is 1001)") == "False False"

@@ -14,6 +14,39 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-28** — 1,611 divergences in the comparison operators, in three shapes
+
+A 5,460-program grid over every ordering operator across 26 operand values. All
+three shapes were silent — exit 0, a plausible answer, a wrong one.
+
+- **1,461 named the wrong operator.** Every ordering comparison derived its
+  answer from a single `Ordering`, so every one of them reported `'<'`:
+  `0 <= ''` said *"`'<'` not supported between instances of `'int'` and
+  `'str'`"*. CPython names the operator you wrote, at every depth — a sequence
+  compares element-wise and hands the *original* operator to the first
+  differing pair, so `[1] <= ['a']` says `'<='`. Rewritten as CPython's
+  `list_richcompare` rather than an `Ordering` plus a mapping. `sorted` still
+  says `'<'`, because that is the comparison sort makes.
+- **120 were a NaN short-circuit that ran before the type check.** An ordering
+  over a NaN is False because IEEE 754 says the relation does not hold — but
+  only between values that *have* an ordering to fail. `'' < float('nan')` is a
+  TypeError in CPython and was `False` here: an exception silently turned into
+  a value. The same root cause reached the other direction, where
+  `sorted([nan, 1.0])`, `min` and `max` raised *"cannot order NaN"* for three
+  results CPython computes.
+- **30 were `is`, and no amount of computing fixes those.** CPython answers
+  identity on immutables from *interning*: `0 is 0` and `'ab' is 'ab'` are True
+  because the compiler folded two constants into one object, while
+  `int('1000') is 1000` is False for the same values. The answer depends on
+  where the value came from. Now `unsupported: identity` — and `value.rs` has
+  carried the comment *"refusing beats guessing either way"* since it was
+  written, while returning `false`.
+- **The refusal is narrowed to the question that cannot be answered.**
+  `x is None`, `is True`, `is False`, two unequal values, `[1] is [1]`, and
+  `x is x` for anything carrying an `Rc` all still answer.
+- Grid after: **5,460 programs, 0 divergences, 48 refusals.** The corpus is
+  unmoved — 569 tier-1 refusals before and after, UNSAFE 2, mixture MISMATCH 1.
+
 **2026-08-28** — Two silent wrong answers in the Rust core, from one grid and
 one guard
 

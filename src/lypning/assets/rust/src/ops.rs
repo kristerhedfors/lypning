@@ -117,8 +117,8 @@ impl Interp {
         Ok(match op {
             CmpOp::Eq => eq(a, b)?,
             CmpOp::Ne => !eq(a, b)?,
-            CmpOp::Is => is_same(a, b),
-            CmpOp::IsNot => !is_same(a, b),
+            CmpOp::Is => return identity(a, b),
+            CmpOp::IsNot => return Ok(!identity(a, b)?),
             CmpOp::In => self.contains(b, a)?,
             CmpOp::NotIn => !self.contains(b, a)?,
             _ => {
@@ -141,28 +141,7 @@ impl Interp {
                         _ => unreachable!(),
                     });
                 }
-                // NaN IS UNORDERED, AND THAT IS AN ANSWER, NOT AN ERROR.
-                //
-                // Every ordering comparison involving a NaN is False in Python
-                // — `nan > 99.0`, `nan < 99.0` and `nan >= nan` alike — because
-                // IEEE 754 says the relation does not hold, not because the
-                // operands cannot be compared. lypning raised TypeError("cannot
-                // order NaN") instead, turning a value CPython computes into an
-                // exception. Found by scripts/lypning-fuzz.mjs.
-                //
-                // Equality already behaves correctly through eq() above, where
-                // `nan == nan` is False for the same reason.
-                if is_nan(a) || is_nan(b) {
-                    return Ok(false);
-                }
-                let o = order(a, b)?;
-                match op {
-                    CmpOp::Lt => o == Ordering::Less,
-                    CmpOp::Le => o != Ordering::Greater,
-                    CmpOp::Gt => o == Ordering::Greater,
-                    CmpOp::Ge => o != Ordering::Less,
-                    _ => unreachable!(),
-                }
+                return order_cmp(op, a, b);
             }
         })
     }
@@ -874,10 +853,132 @@ fn is_nan(v: &Value) -> bool {
 
 // ---- ordering -------------------------------------------------------------
 
+/// `a is b`, refusing the question CPython answers from INTERNING.
+///
+/// `is` is object identity, and for a mutable value that is a fact this engine
+/// has: `[1] is [1]` is False here and in CPython, because two list displays
+/// build two objects. For an immutable one it is not a fact about the program
+/// at all. CPython folds equal constants in a code object into one object, so
+/// `0 is 0`, `'ab' is 'ab'` and `(1,) is (1,)` are True — while
+/// `int('1000') is 1000` is False for the same values. The answer depends on
+/// where the value CAME FROM, which nothing in a value can tell you.
+///
+/// Answering False was wrong 30 times in a 5,460-program grid over the
+/// comparison operators, and answering True would be wrong for the
+/// runtime-built half. `is_same` has carried the comment "refusing beats
+/// guessing either way" since it was written; it returned `false`.
+///
+/// Note what still answers, because refusing more than necessary is its own
+/// cost: the singletons (`x is None`, `is True`, `is False`) are identity
+/// questions with one possible answer; two values that are not EQUAL are never
+/// the same object either; and `x is x` still holds wherever the value carries
+/// an `Rc` to compare, which is every str, tuple, list, dict and set.
+fn identity(a: &Value, b: &Value) -> R<bool> {
+    if is_same(a, b) {
+        return Ok(true);
+    }
+    let foldable = |v: &Value| {
+        matches!(
+            v,
+            Value::Int(_) | Value::Float(_) | Value::Str(_) | Value::Bytes(_) | Value::Tuple(_)
+        )
+    };
+    if foldable(a) && foldable(b) && eq(a, b)? {
+        return Err(unsupported(
+            "identity",
+            "`is` between two equal immutable values, which CPython answers from interning",
+        ));
+    }
+    Ok(false)
+}
+
+/// The symbol an ordering operator puts in its TypeError.
+fn cmp_symbol(op: CmpOp) -> &'static str {
+    match op {
+        CmpOp::Lt => "<",
+        CmpOp::Le => "<=",
+        CmpOp::Gt => ">",
+        CmpOp::Ge => ">=",
+        _ => "<",
+    }
+}
+
+/// `a op b` for the four ordering operators — CPython's `list_richcompare`,
+/// which is not [`order`] plus a mapping from `Ordering`.
+///
+/// Two things fall out of the difference, and both were wrong before:
+///
+/// * **The operator's own name reaches the error, at every depth.** CPython
+///   compares a sequence element-wise and then hands the ORIGINAL operator to
+///   the first differing pair, so `[1] <= ['a']` reports `'<='`. Deriving the
+///   answer from an `Ordering` cannot do that: it has only one comparison to
+///   name, and it named `'<'` for all four. 1,461 divergences in a grid over
+///   the comparison operators, every one of them the wrong symbol in a message
+///   an agent prints with `str(e)`.
+///
+/// * **A NaN makes an ordering False only between values that are ORDERABLE.**
+///   `nan < 1.0` is False because IEEE 754 says the relation does not hold.
+///   `'' < nan` is a TypeError, because a str and a float have no ordering to
+///   fail. Short-circuiting on `is_nan` before the type check answered False to
+///   both, which is 120 more divergences and the more dangerous kind: an
+///   exception CPython raises, silently turned into a value.
+///
+/// [`order`] stays as it is and keeps naming `'<'`, because that is what sort
+/// asks and what CPython's sort reports.
+pub fn order_cmp(op: CmpOp, a: &Value, b: &Value) -> R<bool> {
+    let len_cmp = |x: usize, y: usize| match op {
+        CmpOp::Lt => x < y,
+        CmpOp::Le => x <= y,
+        CmpOp::Gt => x > y,
+        _ => x >= y,
+    };
+    match (a, b) {
+        (Value::List(x), Value::List(y)) => {
+            let _nest = crate::err::Nest::enter("comparison")?;
+            let (x, y) = (x.borrow(), y.borrow());
+            for (p, q) in x.iter().zip(y.iter()) {
+                if !eq(p, q)? {
+                    return order_cmp(op, p, q);
+                }
+            }
+            return Ok(len_cmp(x.len(), y.len()));
+        }
+        (Value::Tuple(x), Value::Tuple(y)) => {
+            let _nest = crate::err::Nest::enter("comparison")?;
+            for (p, q) in x.iter().zip(y.iter()) {
+                if !eq(p, q)? {
+                    return order_cmp(op, p, q);
+                }
+            }
+            return Ok(len_cmp(x.len(), y.len()));
+        }
+        _ => {}
+    }
+    // NaN IS UNORDERED, AND THAT IS AN ANSWER, NOT AN ERROR — between numbers.
+    // `nan > 99.0`, `nan < 99.0` and `nan >= nan` are all False in Python
+    // because IEEE 754 says the relation does not hold, not because the
+    // operands cannot be compared. Equality already behaves correctly through
+    // eq(), where `nan == nan` is False for the same reason.
+    if (is_nan(a) || is_nan(b)) && as_num(a).is_some() && as_num(b).is_some() {
+        return Ok(false);
+    }
+    let o = order_as(cmp_symbol(op), a, b)?;
+    Ok(match op {
+        CmpOp::Lt => o == Ordering::Less,
+        CmpOp::Le => o != Ordering::Greater,
+        CmpOp::Gt => o == Ordering::Greater,
+        _ => o != Ordering::Less,
+    })
+}
+
 /// Python's `<` on values of different types is a TypeError, not a fallback to
 /// some arbitrary total order. Reproducing that exactly is what keeps `sorted`
 /// on a mixed list from silently succeeding here and failing there.
 pub fn order(a: &Value, b: &Value) -> R<Ordering> {
+    order_as("<", a, b)
+}
+
+fn order_as(sym: &str, a: &Value, b: &Value) -> R<Ordering> {
     // The numeric and scalar paths run BEFORE the guard, because neither can
     // descend and `sorted()` of a list of ints reaches this once per
     // comparison. See `value::eq` for the same split and the same reasoning.
@@ -886,9 +987,14 @@ pub fn order(a: &Value, b: &Value) -> R<Ordering> {
         if let (Num::I(i), Num::I(j)) = (as_num(a).unwrap(), as_num(b).unwrap()) {
             return Ok(i.cmp(&j));
         }
-        return x
-            .partial_cmp(&y)
-            .ok_or_else(|| type_err("cannot order NaN"));
+        // A NaN COMPARES FALSE TO EVERYTHING, and sort only ever asks `b < a`,
+        // so "neither less nor greater" is what reproduces CPython here:
+        // `sorted([nan, 1.0])` is `[nan, 1.0]` and `max(nan, 1.0)` is `nan`,
+        // because in both cases the test that would move the NaN is False.
+        // Raising TypeError("cannot order NaN") instead turned three values
+        // CPython computes into exceptions — sorted(), min() and max() over any
+        // list containing one.
+        return Ok(x.partial_cmp(&y).unwrap_or(Ordering::Equal));
     }
     Ok(match (a, b) {
         (Value::Str(x), Value::Str(y)) => x.as_bytes().cmp(y.as_bytes()),
@@ -899,15 +1005,15 @@ pub fn order(a: &Value, b: &Value) -> R<Ordering> {
         (Value::List(x), Value::List(y)) => {
             let _nest = crate::err::Nest::enter("comparison")?;
             let (x, y) = (x.borrow(), y.borrow());
-            seq_order(&x, &y)?
+            seq_order(sym, &x, &y)?
         }
         (Value::Tuple(x), Value::Tuple(y)) => {
             let _nest = crate::err::Nest::enter("comparison")?;
-            seq_order(x, y)?
+            seq_order(sym, x, y)?
         }
         _ => {
             return Err(type_err(format!(
-                "'<' not supported between instances of '{}' and '{}'",
+                "'{sym}' not supported between instances of '{}' and '{}'",
                 type_name(a),
                 type_name(b)
             )))
@@ -915,10 +1021,10 @@ pub fn order(a: &Value, b: &Value) -> R<Ordering> {
     })
 }
 
-fn seq_order(x: &[Value], y: &[Value]) -> R<Ordering> {
+fn seq_order(sym: &str, x: &[Value], y: &[Value]) -> R<Ordering> {
     for (a, b) in x.iter().zip(y.iter()) {
         if !eq(a, b)? {
-            return order(a, b);
+            return order_as(sym, a, b);
         }
     }
     Ok(x.len().cmp(&y.len()))
