@@ -26,6 +26,7 @@ so this checks it in both directions and changes nothing.
 
 from __future__ import annotations
 
+import os
 import warnings
 from pathlib import Path
 
@@ -81,6 +82,77 @@ def test_a_semantic_refusal_skips_every_tier_but_cpython():
     assert eng.chain_after_refusal(eng.LYPNING, "kind-nobody-wrote") == [eng.MICROPYTHON, eng.CPYTHON]
     # Nothing is left to skip once lypning-mp is the one refusing.
     assert eng.chain_after_refusal(eng.MICROPYTHON, "nan-identity") == [eng.CPYTHON]
+
+
+def test_both_dispatchers_read_the_same_escalation_table():
+    """There are TWO dispatchers, and the rule was added to one of them.
+
+    `engines.dispatch` is the Python one — the one `lypning conformance`
+    measures through its `mixture` arm. `main.rs::dispatch` is the Rust one,
+    which is what `lypning run` executes and what `lypning bench` times. The
+    escalation rule went into the Python half only, so the correctness gate
+    tested a dispatcher users do not run and the cost gate ran a dispatcher
+    nothing checked. Measured through the binary at the time:
+
+        lypning run -c 'print({3,1,2})'      {3, 1, 2}   CPython {1, 2, 3}
+
+    `route.rs` now owns the table and the Rust dispatcher reads it. This holds
+    the Python copy to it, read out of the source the way
+    `micropython_modules()` is — a copy that cannot drift silently rather than a
+    copy that already had.
+    """
+    rust = routing.only_cpython_kinds()
+    if not rust:
+        pytest.skip("ONLY_CPYTHON_KINDS was not found in %s" % routing.table_source())
+    assert rust == sorted(rust), "the table is read by eye; keep it sorted"
+    assert set(rust) == set(eng.ONLY_CPYTHON_REFUSALS), (
+        "the two dispatchers disagree about which refusals skip lypning-mp: "
+        "route.rs has %s, engines.py has %s"
+        % (sorted(set(rust) - set(eng.ONLY_CPYTHON_REFUSALS)),
+           sorted(set(eng.ONLY_CPYTHON_REFUSALS) - set(rust)))
+    )
+
+
+@pytest.mark.parametrize("program,want", [
+    ("print({3,1,2})", "{1, 2, 3}"),
+    ("x = float('nan')\nprint(x in [x])", "True"),
+    ("print(9007199254740993 / 3)", "3002399751580331.0"),
+])
+def test_the_rust_dispatcher_escalates_too(program, want, lypning_bin, micropython_bin):
+    """The gate that was missing, run through the binary rather than the battery.
+
+    Every one of these is refused by tier 1 by name, and every kind is in the
+    escalation table. Before `route.rs` owned it, the Rust dispatcher handed all
+    three to lypning-mp and printed a wrong answer at exit 0 — while the Python
+    dispatcher, which is the only one conformance exercises, printed the right
+    one. A gate that measures the wrong dispatcher is not a gate.
+    """
+    import subprocess
+    got = subprocess.run(
+        [str(lypning_bin), "run", "-c", program],
+        capture_output=True, text=True, timeout=60,
+        env={**os.environ, "LYPNING_MP_BIN": str(micropython_bin), "LYPNING_CAPTURE": "0"},
+    )
+    assert got.returncode == 0, got.stderr[-300:]
+    assert got.stdout.strip() == want, (
+        "the Rust dispatcher answered %r; CPython answers %r" % (got.stdout.strip(), want))
+
+
+def test_the_rust_dispatcher_still_falls_through_for_a_capability_gap(lypning_bin, micropython_bin):
+    """The other direction, which bounds what the table may cost.
+
+    A `bigint` refusal is a capability gap and MicroPython HAS arbitrary-precision
+    integers, so it must still reach the cheaper tier rather than paying a CPython
+    spawn. Escalating everything would be safe and slow; the table's whole value
+    is that it does not.
+    """
+    import subprocess
+    got = subprocess.run(
+        [str(lypning_bin), "run", "-c", "print(2**70)"],
+        capture_output=True, text=True, timeout=60,
+        env={**os.environ, "LYPNING_MP_BIN": str(micropython_bin), "LYPNING_CAPTURE": "0"},
+    )
+    assert got.stdout.strip() == "1180591620717411303424"
 
 
 def test_a_construct_the_runtime_table_would_escalate_is_kept_off_the_tier_statically(lypning_bin):

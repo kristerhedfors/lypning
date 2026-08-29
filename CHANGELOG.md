@@ -14,6 +14,35 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-28** — There are two dispatchers, and the escalation rule was in one
+of them
+
+- **`lypning run -c 'print({3,1,2})'` answered `{3, 1, 2}`** where CPython
+  answers `{1, 2, 3}` — at exit 0, through the binary. So did
+  `x = float('nan'); print(x in [x])` (`False` against `True`) and
+  `print(9007199254740993 / 3)` (`…330.5` against `…331.0`). All three are
+  refused by tier 1 by name, and every kind was already in the escalation table.
+- **The table was only in `engines.py`.** `engines.dispatch` is the Python
+  dispatcher, which is what `lypning conformance` measures through its `mixture`
+  arm. `main.rs::dispatch` is the Rust one — what `lypning run` executes and what
+  `lypning bench` times — and it handed every tier-1 refusal to lypning-mp
+  without looking at the kind. **The correctness gate tested a dispatcher users
+  do not run, and the cost gate ran a dispatcher nothing checked.**
+- **`route.rs` now owns `ONLY_CPYTHON_KINDS` and the Rust dispatcher reads it.**
+  `finish` surfaces the refusal kind it already had in hand, so the chain can
+  choose the next tier instead of assuming it. The Python copy is held to the
+  Rust table by a test that reads it out of the source, the way
+  `micropython_modules()` already does.
+- **A capability gap still falls through.** `print(2**70)` is a `bigint`
+  refusal and MicroPython has arbitrary-precision integers, so it must still
+  reach the cheaper tier — escalating everything would be safe and slow, and the
+  table's whole value is that it does not. Pinned.
+- Bytes exactly unchanged at 1,024,208. Suite 1,232 → **1,261**. Corpus
+  unmoved: UNSAFE 2, IDEAL 1512, mixture MISMATCH 1.
+- Found by a survey workflow whose first run produced nothing — five agents did
+  the analysis and all five failed a nested output schema five times over. The
+  same three axes returned it on a flat one.
+
 **2026-08-28** — The whitespace-split rule lived twice, and the copy that said
 otherwise was the complete one
 

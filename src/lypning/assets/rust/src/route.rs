@@ -110,6 +110,52 @@ const MICROPYTHON_MODULES: &[&str] = &[
     "zlib",
 ];
 
+/// Refusal kinds after which the chain jumps straight to CPython, skipping
+/// lypning-mp entirely.
+///
+/// Falling through assumes the tier below is at least as correct as the one that
+/// refused, and for a capability gap it is — "I have no decorators", and
+/// MicroPython has decorators. These are not capability gaps. Each names a
+/// behaviour CPython has that is subtle enough that the refusal exists BECAUSE a
+/// reimplementation gets it wrong, so the tier below gets it wrong too and
+/// answers at exit 0 rather than refusing.
+///
+/// **This table is read by both dispatchers.** It was not: the rule was added to
+/// `engines.dispatch` (the Python one, which `lypning conformance` measures) and
+/// not to `dispatch` below (the Rust one, which is what `lypning run` actually
+/// executes and what `lypning bench` times). So the correctness gate tested a
+/// dispatcher users do not run, the cost gate ran a dispatcher nothing checked,
+/// and three measured programs answered wrongly at exit 0 through the binary
+/// while answering correctly through the battery:
+///
+/// ```text
+/// lypning run -c 'print({3,1,2})'                 {3, 1, 2}   CPython {1, 2, 3}
+/// lypning run -c 'x=float("nan")\nprint(x in [x])'  False     CPython True
+/// lypning run -c 'print(9007199254740993 / 3)'    …330.5      CPython …331.0
+/// ```
+///
+/// `engines.ONLY_CPYTHON_REFUSALS` is now held to this list by
+/// `tests/test_routing.py`, which reads it out of this file the way
+/// `routing.micropython_modules()` reads `MICROPYTHON_MODULES` — a copy that
+/// cannot drift silently rather than a copy that already had.
+pub const ONLY_CPYTHON_KINDS: &[&str] = &[
+    "del",
+    "dict-view",
+    "exception-chaining",
+    "int-div-precision",
+    "json",
+    "nan-identity",
+    "percent-format",
+    "repr-unicode",
+    "set-method",
+    "set-order",
+];
+
+/// Does this refusal kind rule out every tier but CPython? See [`ONLY_CPYTHON_KINDS`].
+pub fn only_cpython(kind: &str) -> bool {
+    ONLY_CPYTHON_KINDS.contains(&kind)
+}
+
 /// Constructs no MicroPython-derived runtime has, so a program using one goes
 /// straight to CPython rather than paying a lypning-mp spawn to be told no.
 ///

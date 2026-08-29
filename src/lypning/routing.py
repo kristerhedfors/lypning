@@ -429,6 +429,33 @@ def micropython_kinds(source: Optional[Path] = None) -> List[str]:
     return _STRING_RE.findall(m.group("body"))
 
 
+#: `ONLY_CPYTHON_KINDS` in route.rs — the refusal kinds that skip every tier but
+#: CPython. Read from the source because there are two dispatchers and they must
+#: agree: the Rust binary reads the table directly, and
+#: `engines.ONLY_CPYTHON_REFUSALS` is the Python half, held to this one by
+#: `tests/test_routing.py`. They did not agree — the rule was added to the Python
+#: dispatcher only, and `lypning run -c 'print({3,1,2})'` answered `{3, 1, 2}`.
+_ONLY_CPYTHON_RE = re.compile(
+    r"pub const ONLY_CPYTHON_KINDS: &\[&str\] = &\[(?P<body>.*?)\];", re.S)
+
+
+def only_cpython_kinds(source: Optional[Path] = None) -> List[str]:
+    """The refusal kinds ``route.rs`` escalates straight to CPython.
+
+    Empty when the table cannot be found, which is what happens if someone
+    renames it; the caller decides whether that is a skip or a failure.
+    """
+    p = Path(source) if source is not None else table_source()
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    m = _ONLY_CPYTHON_RE.search(text)
+    if not m:
+        return []
+    return _STRING_RE.findall(m.group("body"))
+
+
 # --- reporting ---------------------------------------------------------------
 
 
