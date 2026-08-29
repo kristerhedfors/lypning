@@ -772,6 +772,23 @@ impl Parser {
     }
 
     pub fn expr(&mut self) -> R<Expr> {
+        // A CONSTRUCT THIS PARSER DOES NOT KNOW IS A CAPABILITY GAP, NOT A
+        // SYNTAX ERROR, and the difference is the exit code. docs/HILLCLIMB.md
+        // iteration 14 draws the line: a SyntaxError is terminal, so `$p` — which
+        // cannot begin a token in ANY Python program — exits 1 rather than
+        // spending a spawn to be told by CPython what lypning already knew.
+        //
+        // The converse had no such care. `print((n := 1))` is a valid program,
+        // and it exited 1 with `SyntaxError: expected ')', found ':='` — the
+        // PROGRAM's own exit, which the chain does not retry, so a program
+        // CPython runs fine simply died. The classifier contains it today
+        // (`route` reports `syntax` and sends it to CPython), but the binary is
+        // an interpreter someone runs directly and the conformance arm scores
+        // it as a MISMATCH.
+        //
+        // So: syntax this parser can RECOGNISE AND NAME refuses, like `async`,
+        // `kwonly` and `nonlocal` already do. Genuinely invalid syntax keeps
+        // exiting 1, which is the decision iteration 14 made on purpose.
         if self.is_kw("lambda") {
             self.bump();
             let mut p = Params::default();
@@ -830,6 +847,13 @@ impl Parser {
 
     fn or_test(&mut self) -> R<Expr> {
         let mut items = vec![self.and_test()?];
+        // `x := 1` — see the note on `expr`. The check sits after the left-hand
+        // side because the walrus FOLLOWS its target, so the token is not seen
+        // until the name has been parsed. Anywhere earlier and the parser has
+        // already reported "expected ')'" instead of naming the construct.
+        if self.is_op(":=") {
+            return Err(unsupported("walrus", "assignment expression (:=)"));
+        }
         while self.is_kw("or") {
             self.bump();
             items.push(self.and_test()?);
@@ -1086,6 +1110,17 @@ impl Parser {
             } else {
                 None
             };
+            // `x[0:1, 2]` is a TUPLE holding a slice, which CPython builds and
+            // hands to the container — a list then raises "list indices must be
+            // integers or slices, not tuple". This parser has no slice VALUE to
+            // put in a tuple, so it used to run off the end of the slice and
+            // report `expected ']', found ','` at exit 1: a valid program, dead.
+            if self.is_op(",") {
+                return Err(unsupported(
+                    "subscript",
+                    "a tuple subscript containing a slice, e.g. x[0:1, 2]",
+                ));
+            }
             self.expect_op("]")?;
             return Ok(Expr::Slice {
                 base: Box::new(base),
@@ -1225,6 +1260,11 @@ impl Parser {
                 if self.eat_op("]") {
                     return Ok(Expr::List(Vec::new()));
                 }
+                // The parenthesized twin of this is refused twenty lines down;
+                // the list one raised `invalid syntax: unexpected '*'` at exit 1.
+                if self.is_op("*") {
+                    return Err(unsupported("unpack", "* in a list display"));
+                }
                 let first = self.expr()?;
                 if self.is_kw("for") {
                     let clauses = self.comp_clauses()?;
@@ -1248,6 +1288,12 @@ impl Parser {
             }
             Tok::Op("{") => {
                 self.bump();
+                // The list and parenthesized twins of this are refused above.
+                // `**` is NOT refused: `{**d, 'b': 2}` is dict merging and it
+                // already works — only the `*` set-unpacking form does not.
+                if self.is_op("*") {
+                    return Err(unsupported("unpack", "* in a set display"));
+                }
                 if self.eat_op("}") {
                     return Ok(Expr::Dict(Vec::new()));
                 }

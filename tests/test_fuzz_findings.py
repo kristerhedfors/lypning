@@ -20,6 +20,15 @@ import pytest
 from lypning import engines
 
 CASES = [
+    # The other side of the line, which docs/HILLCLIMB.md iteration 14 drew on
+    # purpose: a SyntaxError is TERMINAL, so syntax that cannot be a Python
+    # program keeps exiting 1 rather than spending a spawn to be told by CPython
+    # what lypning already knew.
+    ("syntax-really-invalid", "print(1 +"),
+    ("syntax-impossible-byte", "print($p)"),
+    # ...and `**` in a dict display is dict MERGING, which works and must not be
+    # swept up with the `*` set-unpacking form beside it.
+    ("dict-merge-display", "d = {'a': 1}\nprint({**d, 'b': 2})"),
     # The bytes methods were written as a second copy of the str ones, and the
     # copy drifted in five places. A 1,938-program grid over six subjects, 17
     # argument shapes and 17 methods found all five; the str originals are
@@ -522,6 +531,17 @@ def test_matches_cpython(name: str, program: str) -> None:
 #: exit 90, one line on stderr, nothing on stdout, and the dispatcher gets the
 #: real answer from CPython one spawn later.
 REFUSES = [
+    # VALID PYTHON THE PARSER DOES NOT KNOW IS A CAPABILITY GAP, NOT A SYNTAX
+    # ERROR, and the difference is the exit code. These four exited 1 with a
+    # SyntaxError — the PROGRAM's own exit, which the chain does not retry — so
+    # a program CPython runs fine simply died. `async`, `kwonly` and `nonlocal`
+    # were already refused by name; these were not.
+    ("syntax-walrus", "print((n := 1))"),
+    ("syntax-walrus-if", "n = 0\nif (n := 5) > 3:\n    print(n)"),
+    ("syntax-list-unpack", "print([*[1, 2], 3])"),
+    ("syntax-set-unpack", "print({*{1, 2}, 3})"),
+    ("syntax-tuple-slice-subscript",
+     "x = [1]\ntry:\n    x[0:1, 2]\nexcept TypeError as e:\n    print(e)"),
     # A CORRECTION, made the same day. Earlier this session `order` was changed
     # to treat a NaN as "neither less nor greater" instead of raising, and
     # `sorted([nan, 1.0])` was pinned as matching CPython. It did — for TWO

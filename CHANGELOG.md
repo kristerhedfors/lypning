@@ -14,6 +14,29 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-28** — Valid Python the parser does not know is a capability gap, not
+a syntax error
+
+- **`print((n := 1))` exited 1 with a `SyntaxError`.** So did `[*xs, 3]`,
+  `{*s, 3}` and `x[0:1, 2]` — all four valid programs CPython runs. Exit 1 is
+  the *program's* own exit, which the chain does not retry, so each simply died
+  where a refusal would have been answered one spawn later.
+- **The line was already drawn, in the other direction.**
+  `docs/HILLCLIMB.md` iteration 14 deliberately turned `unsupported: token` into
+  an exit-1 `SyntaxError` for bytes like `$` that cannot begin a token in *any*
+  Python program — a SyntaxError is terminal, so spending a spawn to be told by
+  CPython what lypning already knew was waste. The converse had no such care.
+  Syntax the parser can **recognise and name** now refuses, exactly as `async`,
+  `kwonly` and `nonlocal` already did; genuinely invalid syntax still exits 1.
+- **`**` in a dict display is not swept up with it.** `{**d, 'b': 2}` is dict
+  merging, and it already worked — only the `*` set-unpacking form beside it
+  does not. Pinned both ways, along with `print(1 +` and `print($p)` still
+  exiting 1.
+- The classifier already contained all four (`route` reports `syntax` and sends
+  them to CPython), so no dispatch outcome changes. What changes is the binary
+  run directly, and what the conformance tier-1 arm would score if a corpus
+  program ever hit one — a MISMATCH under invariant 1.
+
 **2026-08-28** — A SIGABRT on a large range, and a correction to this morning's
 NaN sort
 
