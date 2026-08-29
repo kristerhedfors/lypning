@@ -1005,8 +1005,46 @@ pub fn call_builtin(
         }
         "reversed" => {
             let v = arg1(name, &args)?;
-            if matches!(v, Value::Set(_)) {
-                return Err(set_order_refused("reversed() of a set"));
+            // REVERSING AN ITERATOR IS NOT A THING, and this used to do it.
+            // CPython needs `__reversed__`, or `__len__` and `__getitem__`
+            // together, so a sequence reverses and a one-pass iterator raises.
+            // `list(reversed(iter([1, 2])))` answered `[2, 1]` here and is a
+            // TypeError there — a divergence in the rarer direction, where the
+            // engine SUCCEEDS and CPython refuses, which no amount of trusting
+            // the engine's own errors would have caught.
+            //
+            // A set is not reversible either, and this refused it as a
+            // set-order exposure. That was a spawn spent on nothing: CPython
+            // never gets far enough to iterate, so the TypeError below is
+            // exact and the refusal is not needed.
+            match &v {
+                Value::Str(_)
+                | Value::Bytes(_)
+                | Value::List(_)
+                | Value::Tuple(_)
+                | Value::Range(..)
+                | Value::Dict(_)
+                | Value::DictView(..) => {}
+                // The message names the type, and an iterator's type name is
+                // one this engine cannot spell: CPython has a family of them
+                // (`list_iterator`, `tuple_iterator`, `str_ascii_iterator` —
+                // which is `str_iterator` for a non-ASCII string, an internal
+                // representation detail). So this refuses for the same reason
+                // `repr()` of an iterator refuses: the answer contains
+                // something not reproducible.
+                Value::IterObj(..) | Value::Gen(_) => {
+                    return Err(unsupported(
+                        "iterator-type-name",
+                        "reversed() of an iterator, whose CPython TypeError names one of a \
+                         family of iterator types this engine does not distinguish",
+                    ))
+                }
+                other => {
+                    return Err(type_err(format!(
+                        "'{}' object is not reversible",
+                        type_name(other)
+                    )))
+                }
             }
             let mut items = it.iter_collect(v)?;
             items.reverse();
@@ -1270,6 +1308,17 @@ pub fn length(v: &Value) -> R<usize> {
         Value::Set(s) => s.borrow().len(),
         Value::DictView(d, _) => d.borrow().len(),
         Value::Range(a, b, st) => range_len(*a, *b, *st).max(0) as usize,
+        // Same argument as `reversed` above and as `repr`: the message names
+        // the type, and CPython spells an iterator's type name in a way this
+        // engine cannot reproduce, so it refuses rather than print a name that
+        // is merely plausible.
+        Value::IterObj(..) | Value::Gen(_) => {
+            return Err(unsupported(
+                "iterator-type-name",
+                "len() of an iterator, whose CPython TypeError names one of a family of \
+                 iterator types this engine does not distinguish",
+            ))
+        }
         other => {
             return Err(type_err(format!(
                 "object of type '{}' has no len()",

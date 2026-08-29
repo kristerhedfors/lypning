@@ -1187,6 +1187,18 @@ impl Interp {
             for (k, v) in kw {
                 match p.names[..npos].iter().position(|n| *n == k) {
                     Some(i) => {
+                        // A KEYWORD CANNOT REFILL A PARAMETER THE POSITIONAL
+                        // ARGUMENTS ALREADY FILLED. Without this check the
+                        // keyword silently overwrote it, so `f(1, a=2)` ran
+                        // with a=2 where CPython raises, and `f(1, 2, a=9)`
+                        // ran with a=9 AND b=2 — the function executing on
+                        // data the caller never passed together, at exit 0.
+                        if used.get(i) {
+                            return Err(type_err(format!(
+                                "{}() got multiple values for argument '{k}'",
+                                f.name
+                            )));
+                        }
                         s.insert(p.names[i].clone(), v);
                         used.set(i);
                     }

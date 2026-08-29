@@ -14,6 +14,38 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-28** — A keyword argument could silently refill a parameter the
+positionals had already filled
+
+- **`f(1, 2, a=9)` ran the function with `a=9` and `b=2`.** CPython raises
+  *"got multiple values for argument 'a'"*; the binder looked the name up and
+  inserted over the top, so the body executed on data the caller never passed
+  together — at exit 0, with a plausible answer. Found by a 116-program grid
+  over eight signatures against fourteen call shapes. The check is on the
+  parameter's *used* bit, so every legal way of filling the same parameters
+  still works.
+- **`def f(a, *c, d)` is the same feature as `def f(a, *, d)`, which is
+  refused.** This spelling fell through and recorded `d` as an ordinary
+  positional parameter, which the binder cannot represent — it derives the
+  positional count as `names.len() - star - dstar` and then slices
+  `names[..npos]` from the *front*, which only holds while `*args` and `**kw`
+  come last. `f(1, 2, d=3)` said *"unexpected keyword argument 'd'"* and
+  `f(1, 2, 3)` raised `UnboundLocalError`. Neither was a refusal, so neither
+  could be answered one spawn later. Now both spellings refuse.
+- **`reversed()` reversed an iterator.** CPython needs `__reversed__`, or
+  `__len__` and `__getitem__` together, so `list(reversed(iter([1, 2])))` is a
+  TypeError there and answered `[2, 1]` here — the rarer divergence, where the
+  engine *succeeds* and CPython refuses. `reversed({1, 2})` had been refused as
+  a set-order exposure, which was a spawn spent on nothing: CPython never gets
+  far enough to iterate, so it now gives CPython's exact TypeError.
+- **An iterator's type name is not reproducible, so messages that would print
+  one refuse.** CPython has a family — `list_iterator`, `tuple_iterator`, and
+  `str_ascii_iterator`, which is `str_iterator` for a non-ASCII string. Same
+  reason `repr()` of an iterator already refuses.
+- Grids after: arg-binding 116 programs, dict-ops 350, iteration 458,
+  string-methods 1,547, unpacking 198, control-flow 103 — **0 divergences**.
+  Corpus unmoved: UNSAFE 2, IDEAL 1511, mixture MISMATCH 1.
+
 **2026-08-28** — 1,611 divergences in the comparison operators, in three shapes
 
 A 5,460-program grid over every ordering operator across 26 operand values. All

@@ -20,6 +20,30 @@ import pytest
 from lypning import engines
 
 CASES = [
+    # A KEYWORD SILENTLY REFILLED A PARAMETER THE POSITIONALS HAD FILLED. The
+    # binder looked the name up and inserted over the top, so `f(1, a=2)` ran
+    # with a=2 where CPython raises, and `f(1, 2, a=9)` ran with a=9 AND b=2 —
+    # a function executing on data the caller never passed together, at exit 0.
+    ("dup-arg-single", "def f(a):\n    return a\ntry:\n    print(f(1, a=2))\nexcept TypeError as e:\n    print(e)"),
+    ("dup-arg-two", "def f(a, b):\n    return (a, b)\ntry:\n    print(f(1, 2, a=9))\nexcept TypeError as e:\n    print(e)"),
+    ("dup-arg-default", "def f(a, b=5):\n    return (a, b)\ntry:\n    print(f(1, 2, b=9))\nexcept TypeError as e:\n    print(e)"),
+    ("dup-arg-star", "def f(a, *b):\n    return (a, b)\ntry:\n    print(f(1, 2, a=9))\nexcept TypeError as e:\n    print(e)"),
+    # ...and every legal way of filling the same parameters still works, because
+    # the check is on the USED bit and not on the name appearing twice.
+    ("bind-ok-defaults", "def f(a, b=2):\n    return (a, b)\nprint(f(1), f(1, 3), f(a=1), f(1, b=9), f(b=9, a=1))"),
+    ("bind-ok-varargs", "def f(a, *b, **k):\n    return (a, b, k)\nprint(f(1, 2, 3, x=4))"),
+    ("bind-ok-unpacked", "def f(a):\n    return a\nprint(f(*[5]), f(**{'a': 6}))"),
+    # REVERSING AN ITERATOR IS NOT A THING. CPython needs __reversed__, or
+    # __len__ and __getitem__ together, so a sequence reverses and a one-pass
+    # iterator raises — the rarer divergence, where the engine SUCCEEDS and
+    # CPython refuses. A set is not reversible either, and refusing it as a
+    # set-order exposure was a spawn spent on nothing: CPython never gets far
+    # enough to iterate, so this message is exact.
+    ("reversed-set", "try:\n    list(reversed({1, 2}))\nexcept TypeError as e:\n    print(e)"),
+    ("reversed-int", "try:\n    list(reversed(1))\nexcept TypeError as e:\n    print(e)"),
+    ("reversed-seqs", "print(list(reversed([1,2])), list(reversed((1,2))), list(reversed('ab')))"),
+    ("reversed-bytes", "print(list(reversed(b'ab')), list(reversed(range(3))))"),
+    ("reversed-dict", "print(list(reversed({'a':1})), list(reversed({'a':1}.items())))"),
     # A 5,460-program grid over every ordering operator across 26 operand
     # values: 1,611 divergences in three shapes, all at exit 0.
     #
@@ -454,6 +478,25 @@ def test_matches_cpython(name: str, program: str) -> None:
 #: exit 90, one line on stderr, nothing on stdout, and the dispatcher gets the
 #: real answer from CPython one spawn later.
 REFUSES = [
+    # `def f(a, *c, d)` is the same feature as `def f(a, *, d)`, which is
+    # refused. This spelling fell through and recorded `d` as an ordinary
+    # positional parameter, which the binder cannot represent: it computes the
+    # positional count as `names.len() - star - dstar` and then slices
+    # `names[..npos]` from the FRONT, which is only right while `*args` and
+    # `**kw` come last. `f(1, 2, d=3)` said "unexpected keyword 'd'" and
+    # `f(1, 2, 3)` raised UnboundLocalError — neither a refusal, so neither
+    # could be answered one spawn later.
+    ("kwonly-after-star", "def f(a, *c, d):\n    return (a, c, d)\nprint(f(1, 2, d=3))"),
+    ("kwonly-after-star-full", "def f(a, b=2, *c, d, e=5, **k):\n    return (a, b, c, d, e, k)\nprint(f(1, 2, 3, d=4))"),
+    # An iterator's type name is one CPython spells from a family this engine
+    # does not distinguish (`list_iterator`, `tuple_iterator`, and
+    # `str_ascii_iterator`, which is `str_iterator` for a non-ASCII string).
+    # Any message that would name one refuses, for the same reason `repr()` of
+    # an iterator refuses: the answer contains something not reproducible.
+    ("reversed-iterator",
+     "try:\n    list(reversed(iter([1, 2])))\nexcept TypeError as e:\n    print(e)"),
+    ("len-iterator",
+     "try:\n    len(iter([1, 2]))\nexcept TypeError as e:\n    print(e)"),
     # The last 30 of that grid, and the one that cannot be fixed by computing
     # harder. `is` is object identity, and for an immutable value CPython
     # answers it from INTERNING: `0 is 0` and `'ab' is 'ab'` are True because

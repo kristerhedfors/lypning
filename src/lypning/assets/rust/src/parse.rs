@@ -458,6 +458,25 @@ impl Parser {
                 p.names.push(self.ident()?);
                 p.defaults.push(None);
             } else {
+                // A NAME AFTER `*args` IS KEYWORD-ONLY, exactly as one after a
+                // bare `*` is, and the bare form is refused four lines up. This
+                // one used to fall through and be recorded as an ordinary
+                // positional parameter — which the binder cannot represent,
+                // because it computes the positional count as
+                // `names.len() - star - dstar` and then slices `names[..npos]`
+                // FROM THE FRONT. That is only the positional parameters while
+                // `*args` and `**kw` come last.
+                //
+                //     def f(a, *c, d): return (a, c, d)
+                //     f(1, 2, d=3)   CPython (1, (2,), 3)   this: unexpected keyword 'd'
+                //     f(1, 2, 3)     CPython TypeError       this: UnboundLocalError
+                //
+                // Neither is a refusal, so neither could be answered one spawn
+                // later. Refusing here makes the two spellings of the same
+                // feature behave the same way.
+                if p.star.is_some() {
+                    return Err(unsupported("kwonly", "keyword-only parameters"));
+                }
                 let n = self.ident()?;
                 if self.eat_op(":") {
                     self.expr()?; // annotation, discarded
