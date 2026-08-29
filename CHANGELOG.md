@@ -14,6 +14,39 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-28** — A SIGABRT on a large range, and a correction to this morning's
+NaN sort
+
+- **`range(-2**62, 2**62)[:1]` aborted the process.** That range has 2\*\*63
+  elements and the length was computed in i64, so the subtraction wrapped to
+  `i64::MIN` and `slice_span`'s `clamp(0, n)` panicked on *min > max*. Exit 134,
+  a SIGABRT — the one outcome the dispatcher cannot route onward, and one that
+  takes an embedding host's process with it. `range_len` now computes in i128,
+  which holds every length an i64 range can have.
+- **Three quieter faults fell out of the same overflow.** `len()` of such a
+  range answered `0` (the wrapped count, tidied by a `.max(0)`) and now raises
+  CPython's own `OverflowError: Python int too large to convert to C ssize_t`.
+  Indexing raised a spurious `IndexError`, and slicing built a range from
+  `st * step` that had wrapped to a *negative* step, so
+  `list(range(0, 4, 2)[::2**62])` answered `[]` where CPython answers `[0]`.
+  Both refuse now: a range holds three i64s and cannot represent CPython's
+  answer, which is `range(0, 4, 9223372036854775808)`.
+- **A correction to a change made this morning.** `order` was changed to treat
+  a NaN as *neither less nor greater* rather than raising, and
+  `sorted([nan, 1.0])` was pinned as matching CPython. It did — for two
+  elements, which is one comparison, where any consistent comparator agrees.
+  It does not in general: `sorted([3, 1, float('nan'), 2])` is `[1, 2, 3, nan]`
+  in CPython and was `[1, 3, nan, 2]` here.
+- **Because a NaN stops the comparator being an order at all.** Every
+  comparison against one is false, so *not less* holds in both directions and
+  which element moves depends on the sequence of questions the algorithm asks.
+  CPython's answer is timsort's, and no fix to the comparison can close that —
+  so a sort over a NaN is now `unsupported: nan-order`. Answering wrongly at
+  exit 0 is worse than the TypeError it used to raise, which is why this could
+  not be left as it was. `min` and `max` are unaffected and stay correct: they
+  are linear scans asking one question per element.
+- Corpus unmoved: UNSAFE 2, IDEAL 1511, mixture MISMATCH 1.
+
 **2026-08-28** — The bytes methods are a copy of the str methods, and the copy
 had drifted in five places
 

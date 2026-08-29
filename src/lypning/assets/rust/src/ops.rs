@@ -289,6 +289,18 @@ impl Interp {
             }
             Value::Range(a, bb, st) => {
                 let n = range_len(*a, *bb, *st);
+                // A range can be longer than i64 can count. CPython indexes one
+                // fine — its arithmetic is arbitrary precision — and this cannot,
+                // so it refuses rather than truncating the count and answering
+                // out of a range that is the wrong size. Before the width fix
+                // the count wrapped NEGATIVE and `range(-2**62, 2**62)[0]`
+                // raised a spurious IndexError.
+                if n > i64::MAX as i128 {
+                    return Err(unsupported(
+                        "bigint",
+                        "index into a range longer than 2**63 - 1, whose length is a bignum",
+                    ));
+                }
                 // CPython says "range object index out of range" here, not "range".
                 let i = norm_index(crate::eval::int_val(idx)?, n as usize, "range object")?;
                 Value::Int(a + (i as i64) * st)
@@ -428,6 +440,15 @@ impl Interp {
             // so that it holds exactly the elements picked.
             Value::Range(a, b, st) => {
                 let n = range_len(*a, *b, *st);
+                // Same reason as indexing, and this is where the SIGABRT was:
+                // the wrapped negative count reached `slice_span`, whose
+                // `clamp(0, n)` panicked on `min > max`.
+                if n > i64::MAX as i128 {
+                    return Err(unsupported(
+                        "bigint",
+                        "slice of a range longer than 2**63 - 1, whose length is a bignum",
+                    ));
+                }
                 let (start, stop) = slice_bounds(n as usize, lo, hi, step);
                 // Both endpoints map straight through the parent's own start and
                 // step. Deriving the stop from a COUNT instead gives a range with
@@ -435,7 +456,28 @@ impl Interp {
                 // out as `range(0, 6, 3)` where CPython says `range(0, 4, 3)` —
                 // and a range's repr is observable, so same-elements is not
                 // good enough.
-                Value::Range(a + start * st, a + stop * st, st * step)
+                // ...and the arithmetic that builds it can overflow too. A
+                // range holds three i64s, so a slice whose combined step does
+                // not fit one cannot be represented: `range(0, 4, 2)[::2**62]`
+                // is `range(0, 4, 9223372036854775808)` in CPython, and
+                // `st * step` wrapped to i64::MIN here — a NEGATIVE step, so
+                // `list(...)` answered `[]` where CPython answers `[0]`.
+                // Checked in i128 and refused, like every other place an i64
+                // cannot hold Python's answer.
+                let fits = |v: i128| -> R<i64> {
+                    i64::try_from(v).map_err(|_| {
+                        unsupported(
+                            "bigint",
+                            "slice of a range whose start, stop or step falls outside 64 bits",
+                        )
+                    })
+                };
+                let (a128, st128, step128) = (*a as i128, *st as i128, step as i128);
+                Value::Range(
+                    fits(a128 + start as i128 * st128)?,
+                    fits(a128 + stop as i128 * st128)?,
+                    fits(st128 * step128)?,
+                )
             }
             other => {
                 return Err(type_err(format!(
@@ -1073,6 +1115,34 @@ pub fn sort_values(items: &mut Vec<Value>, keys: &mut Vec<Value>, reverse: bool)
             let end = (i + 2 * width).min(n);
             let (mut l, mut r, mut k) = (i, mid, i);
             while l < mid && r < end {
+                // A NaN MAKES THE COMPARATOR STOP BEING AN ORDER, and a sort
+                // over one is then the ALGORITHM's answer rather than Python's.
+                // Every comparison against a NaN is false, so "not less" holds
+                // in both directions and which element moves depends entirely
+                // on the order the sort asks its questions in. CPython's answer
+                // is timsort's:
+                //
+                //     sorted([3, 1, float('nan'), 2])
+                //     CPython  [1, 2, 3, nan]      this merge sort  [1, 3, nan, 2]
+                //
+                // Both are stable and deterministic, and they disagree because
+                // the two algorithms differ — which no amount of fixing the
+                // comparison can close. `min` and `max` are unaffected and stay
+                // on `order`: they are linear scans asking one question per
+                // element, so "neither less nor greater" gives CPython's answer
+                // exactly.
+                //
+                // The guard is `has_nan`, which sees one level into a list or
+                // tuple key and no deeper — the same reach as the guard on `in`,
+                // and for the same reason (a recursive scan overflowed the host
+                // stack when it was tried).
+                if crate::value::has_nan(&keys[idx[r]]) || crate::value::has_nan(&keys[idx[l]]) {
+                    return Err(unsupported(
+                        "nan-order",
+                        "sort over a NaN, whose comparisons are all false — so the result \
+                         is the sort algorithm's and not Python's",
+                    ));
+                }
                 // `<=` on the left keeps the sort stable.
                 let o = order(&keys[idx[r]], &keys[idx[l]])?;
                 if o == Ordering::Less {

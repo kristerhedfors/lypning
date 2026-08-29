@@ -1307,7 +1307,16 @@ pub fn length(v: &Value) -> R<usize> {
         Value::Dict(d) => d.borrow().len(),
         Value::Set(s) => s.borrow().len(),
         Value::DictView(d, _) => d.borrow().len(),
-        Value::Range(a, b, st) => range_len(*a, *b, *st).max(0) as usize,
+        Value::Range(a, b, st) => {
+            // CPython's `len()` returns a C ssize_t, so a range longer than one
+            // raises rather than truncating — and this answered 0, because the
+            // i64 length had wrapped negative and `.max(0)` tidied it away.
+            let n = range_len(*a, *b, *st);
+            if n > i64::MAX as i128 {
+                return Err(overflow_err("Python int too large to convert to C ssize_t"));
+            }
+            n.max(0) as usize
+        }
         // Same argument as `reversed` above and as `repr`: the message names
         // the type, and CPython spells an iterator's type name in a way this
         // engine cannot reproduce, so it refuses rather than print a name that

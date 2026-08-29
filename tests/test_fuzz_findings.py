@@ -109,9 +109,15 @@ CASES = [
     # turned three values CPython computes into exceptions. A NaN compares False
     # to everything, and sort only ever asks `b < a`, so the answer is "do not
     # reorder".
-    ("nan-sorted", "print(sorted([float('nan'), 1.0]))"),
+    # `min` and `max` stay here and are genuinely correct: they are linear scans
+    # asking one question per element, so "neither less nor greater" gives
+    # CPython's answer exactly. `sorted` does NOT — see nan-order below.
+    ("range-huge-len", "try:\n    len(range(-2**62, 2**62))\nexcept OverflowError as e:\n    print(e)"),
+    ("range-ordinary", "print(range(10)[2:8:3], list(range(10)[::3]), len(range(10)), range(10)[::-1])"),
     ("nan-max", "print(max(float('nan'), 1.0))"),
     ("nan-min", "print(min(float('nan'), 1.0))"),
+    ("nan-max-mid", "print(max([3, 1, float('nan'), 2]))"),
+    ("nan-min-mid", "print(min([3, 1, float('nan'), 2]))"),
     # A 390-program grid over the float floor-division OVERFLOW neighbourhood:
     # 98 divergences, every one of them this, every one at exit 0. `//` guarded
     # on `(x / y).is_finite()` and answered nan when it was not — right for
@@ -516,6 +522,36 @@ def test_matches_cpython(name: str, program: str) -> None:
 #: exit 90, one line on stderr, nothing on stdout, and the dispatcher gets the
 #: real answer from CPython one spawn later.
 REFUSES = [
+    # A CORRECTION, made the same day. Earlier this session `order` was changed
+    # to treat a NaN as "neither less nor greater" instead of raising, and
+    # `sorted([nan, 1.0])` was pinned as matching CPython. It did — for TWO
+    # elements, which is one comparison, where any consistent comparator agrees.
+    # It does not in general:
+    #
+    #     sorted([3, 1, float('nan'), 2])
+    #     CPython [1, 2, 3, nan]        this merge sort [1, 3, nan, 2]
+    #
+    # Every comparison against a NaN is false, so "not less" holds in BOTH
+    # directions and the comparator stops being an order. Which element moves
+    # then depends entirely on the sequence of questions the algorithm asks, and
+    # CPython's answer is timsort's. No fix to the comparison can close that, so
+    # the sort refuses. Answering wrongly at exit 0 is worse than the TypeError
+    # it used to raise, which is why this could not be left.
+    ("nan-order-sorted", "print(sorted([3, 1, float('nan'), 2]))"),
+    ("nan-order-two", "print(sorted([float('nan'), 1.0]))"),
+    ("nan-order-method", "x = [3, 1, float('nan')]\nx.sort()\nprint(x)"),
+    # A RANGE CAN BE LONGER THAN i64 CAN COUNT, and the length was computed in
+    # i64: `range(-2**62, 2**62)` has 2**63 elements, the subtraction wrapped to
+    # i64::MIN, and `slice_span`'s `clamp(0, n)` PANICKED on min > max. Exit 134,
+    # a SIGABRT — the one outcome the dispatcher cannot route onward, and one
+    # that aborts an embedding host's process outright.
+    ("range-huge-slice", "print(range(-2**62, 2**62)[:1])"),
+    ("range-huge-index", "print(range(-2**62, 2**62)[0])"),
+    ("range-huge-reversed", "print(range(-2**62, 2**62)[::-1][:1])"),
+    # ...and the arithmetic that builds the sliced range overflows too: this is
+    # `range(0, 4, 9223372036854775808)` in CPython, and `st * step` wrapped to
+    # a NEGATIVE step, so `list(...)` answered [] where CPython answers [0].
+    ("range-step-overflow", "print(list(range(0, 4, 2)[::2**62]))"),
     # `def f(a, *c, d)` is the same feature as `def f(a, *, d)`, which is
     # refused. This spelling fell through and recorded `d` as an ordinary
     # positional parameter, which the binder cannot represent: it computes the

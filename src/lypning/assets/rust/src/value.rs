@@ -302,7 +302,22 @@ pub fn truthy(v: &Value) -> R<bool> {
     })
 }
 
-pub fn range_len(start: i64, stop: i64, step: i64) -> i64 {
+/// How many elements a range holds — in **i128**, because it does not fit i64.
+///
+/// `range(-2**62, 2**62)` has 2**63 elements, one more than i64 can hold. This
+/// computed `(stop - start - 1) / step + 1` in i64, which OVERFLOWED and wrapped
+/// to i64::MIN — and the caller then handed that to `slice_span`, whose
+/// `clamp(0, n)` panicked on `min > max`. A panic is the one outcome the
+/// dispatcher cannot route onward, and embedded it aborts the host's process:
+/// `range(-2**62, 2**62)[:1]` exited 134 on a SIGABRT.
+///
+/// CPython has no such limit — a range's length is an ordinary Python int, and
+/// only `len()` (which must return a C ssize_t) raises. So the width is the
+/// fix, not a clamp: i128 holds every length an i64 range can have, and the
+/// callers that need a machine-sized count decide for themselves what to do
+/// when it does not fit.
+pub fn range_len(start: i64, stop: i64, step: i64) -> i128 {
+    let (start, stop, step) = (start as i128, stop as i128, step as i128);
     if step > 0 {
         if stop > start {
             (stop - start - 1) / step + 1
