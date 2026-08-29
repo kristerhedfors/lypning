@@ -225,13 +225,34 @@ impl Interp {
                 Value::Set(_) => false,
                 _ => s.borrow().contains(needle)?,
             },
-            Value::Range(a, b, st) => match needle {
-                Value::Int(i) => {
-                    let inrange = if *st > 0 { *i >= *a && *i < *b } else { *i <= *a && *i > *b };
-                    inrange && (*i - *a).rem_euclid(*st) == 0
+            Value::Range(a, b, st) => {
+                // A RANGE HOLDS INTEGERS, BUT `in` ASKS ABOUT VALUES. CPython
+                // compares by equality, so `1.0 in range(5)` and
+                // `True in range(5)` are both True — `1.0 == 1` and `True == 1`.
+                // Matching only `Value::Int` answered False to both, at exit 0.
+                // A non-integral float is still False, which is why the test is
+                // on the VALUE and not on the type.
+                let want = match needle {
+                    Value::Int(i) => Some(*i),
+                    Value::Bool(t) => Some(*t as i64),
+                    Value::Float(f) => {
+                        if f.fract() == 0.0 && f.is_finite() && *f >= -(2f64.powi(63)) && *f < 2f64.powi(63) {
+                            Some(*f as i64)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+                match want {
+                    None => false,
+                    Some(i) => {
+                        let inrange =
+                            if *st > 0 { i >= *a && i < *b } else { i <= *a && i > *b };
+                        inrange && (i - *a).rem_euclid(*st) == 0
+                    }
                 }
-                _ => false,
-            },
+            }
             Value::Gen(_) => {
                 let mut it = self.make_iter(container.clone())?;
                 while let Some(x) = self.iter_next(&mut it)? {
@@ -514,6 +535,18 @@ impl Interp {
                 if crate::methods::missing_method(&p, name) {
                     return Err(missing_method_err(&p, name));
                 }
+            }
+        }
+        // `range.start`, `.stop` and `.step` are ordinary attributes CPython
+        // exposes, and this raised AttributeError for them — exit 1, the
+        // program's own exit, which the chain does not retry, so a program
+        // CPython answers simply died.
+        if let Value::Range(a, b, st) = base {
+            match name {
+                "start" => return Ok(Value::Int(*a)),
+                "stop" => return Ok(Value::Int(*b)),
+                "step" => return Ok(Value::Int(*st)),
+                _ => {}
             }
         }
         if let Value::Exc(_, msg) = base {

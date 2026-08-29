@@ -673,6 +673,21 @@ impl Parser {
     /// Parse a target list up to `stop` (a keyword), e.g. the `for` target.
     fn target_list(&mut self, stop: &str) -> R<Target> {
         let mut items = Vec::new();
+        // A TRAILING COMMA AFTER ONE NAME MAKES A ONE-ELEMENT TUPLE TARGET, and
+        // dropping it dropped the unpacking with it. `for v, in [(1,)]` bound
+        // the whole tuple — `(1,)` rather than `1` — and, worse, the ARITY
+        // CHECK vanished entirely:
+        //
+        //     [v for v, in [(1, 2)]]
+        //     CPython  ValueError: too many values to unpack (expected 1)
+        //     this     [(1, 2)]        exit 0
+        //
+        // A program CPython stops with an exception ran to completion and
+        // printed plausible wrong data. The parenthesized spelling `(v,)` was
+        // always right and two names `a, b,` were always right, which is what
+        // kept this quiet: only the unparenthesized single name loses its comma.
+        // It reached statement for-loops and all four comprehension forms.
+        let mut saw_comma = false;
         loop {
             if self.eat_op("*") {
                 items.push(Target::Star(Box::new(self.target_atom()?)));
@@ -682,11 +697,12 @@ impl Parser {
             if !self.eat_op(",") {
                 break;
             }
+            saw_comma = true;
             if self.is_kw(stop) {
                 break;
             }
         }
-        Ok(if items.len() == 1 {
+        Ok(if items.len() == 1 && !saw_comma {
             items.pop().unwrap()
         } else {
             Target::Tuple(items)

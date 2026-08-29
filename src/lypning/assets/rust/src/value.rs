@@ -104,6 +104,24 @@ pub fn hkey(v: &Value) -> R<HKey> {
         }
         Value::Str(s) => HKey::Str(s.clone()),
         Value::Bytes(b) => HKey::Bytes(b.clone()),
+        // A RANGE IS HASHABLE — `{range(2)}` is a set of one in CPython and was
+        // `TypeError: unhashable type: 'range'` here, at exit 1, the program's
+        // own exit. The key is built from the NORMALISED form so that it agrees
+        // with `eq` above: equal ranges must hash equal, and two ranges are
+        // equal when they describe the same sequence rather than when their
+        // three fields match. The length is carried as two halves because it is
+        // an i128 and does not fit one.
+        Value::Range(a, b, st) => {
+            let n = range_len(*a, *b, *st);
+            let mut parts = vec![HKey::Int((n >> 64) as i64), HKey::Int(n as i64)];
+            if n != 0 {
+                parts.push(HKey::Int(*a));
+            }
+            if n > 1 {
+                parts.push(HKey::Int(*st));
+            }
+            HKey::Tuple(parts)
+        }
         Value::Tuple(t) => {
             // The one arm that descends.
             let _nest = crate::err::Nest::enter("tuple key")?;
@@ -449,7 +467,13 @@ pub fn eq(a: &Value, b: &Value) -> R<bool> {
             true
         }
         (Value::Range(a1, b1, c1), Value::Range(a2, b2, c2)) => {
-            a1 == a2 && b1 == b2 && c1 == c2
+            // TWO RANGES ARE EQUAL WHEN THEY DESCRIBE THE SAME SEQUENCE, not
+            // when their three fields match. `range(0) == range(1, 1)` is True —
+            // both are empty — and `range(1) == range(0, 1, 2)` is True, because
+            // a one-element range's step is not observable. Comparing the
+            // fields answered False to both, at exit 0.
+            let (n1, n2) = (range_len(*a1, *b1, *c1), range_len(*a2, *b2, *c2));
+            n1 == n2 && (n1 == 0 || (a1 == a2 && (n1 == 1 || c1 == c2)))
         }
         (Value::DictView(x, kx), Value::DictView(y, ky)) => {
             // The three views do NOT compare alike, and treating them alike was

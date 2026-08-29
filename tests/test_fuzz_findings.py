@@ -20,6 +20,43 @@ import pytest
 from lypning import engines
 
 CASES = [
+    # A TRAILING COMMA AFTER ONE NAME MAKES A ONE-ELEMENT TUPLE TARGET, and
+    # dropping it dropped the unpacking with it — along with the ARITY CHECK.
+    # `[v for v, in [(1, 2)]]` is a ValueError in CPython and answered
+    # `[(1, 2)]` here, at exit 0: a program CPython stops ran to completion and
+    # printed plausible wrong data. The parenthesized spelling `(v,)` and two
+    # names `a, b,` were always right, which is what kept it quiet. It reached
+    # statement for-loops and all four comprehension forms.
+    ("target-one-tuple-list", "print([v for v, in [(1,)]])"),
+    ("target-one-tuple-arity", "try:\n    [v for v, in [(1, 2)]]\nexcept ValueError as e:\n    print(e)"),
+    ("target-one-tuple-stmt", "for v, in [(5,)]:\n    print(v)"),
+    ("target-one-tuple-dict", "print({v: 1 for v, in [(8,)]})"),
+    ("target-one-tuple-gen", "print(list(v for v, in [(4,)]))"),
+    ("target-parenthesised-still-ok", "print([v for (v,) in [(9,)]], [a for a, b in [(1, 2)]])"),
+    ("target-two-names-trailing-comma", "for a, b, in [(1, 2)]:\n    print(a, b)"),
+    # A RANGE HOLDS INTEGERS, BUT `in` ASKS ABOUT VALUES. `1.0 == 1` and
+    # `True == 1`, so both are in range(5); matching only Value::Int answered
+    # False to both at exit 0. A non-integral float is still False.
+    ("range-in-float", "print(1.0 in range(5), 1.5 in range(5))"),
+    ("range-in-bool", "print(True in range(5), False in range(5))"),
+    ("range-in-str", "print('a' in range(5))"),
+    # TWO RANGES ARE EQUAL WHEN THEY DESCRIBE THE SAME SEQUENCE, not when their
+    # three fields match: two empty ranges are equal whatever their bounds, and
+    # a one-element range's step is not observable.
+    ("range-eq-empty", "print(range(0) == range(1, 1))"),
+    ("range-eq-single", "print(range(1) == range(0, 1, 2))"),
+    ("range-eq-normalised", "print(range(0, 10, 2) == range(0, 9, 2), range(3) == range(4))"),
+    # ...and a range is HASHABLE, keyed on that same normalised form so equal
+    # ranges collapse. This was `TypeError: unhashable type: 'range'` at exit 1.
+    ("range-hashable", "print({range(2)}, len({range(0), range(1, 1)}), len({range(2), range(3)}))"),
+    ("range-dict-key", "d = {range(2): 'a'}\nprint(d[range(0, 2)])"),
+    # `.start`, `.stop` and `.step` are ordinary attributes CPython exposes and
+    # this raised AttributeError for them, at exit 1 — the program's own exit,
+    # which the chain does not retry.
+    ("range-attrs", "print(range(5).start, range(5).stop, range(5).step)"),
+    ("range-attrs-stepped", "r = range(2, 9, 3)\nprint(r.start, r.stop, r.step)"),
+    # An attribute a range really does not have still matches CPython.
+    ("range-attr-absent", "print(range(5).nosuch)"),
     # The other side of the line, which docs/HILLCLIMB.md iteration 14 drew on
     # purpose: a SyntaxError is TERMINAL, so syntax that cannot be a Python
     # program keeps exiting 1 rather than spending a spawn to be told by CPython
@@ -531,6 +568,11 @@ def test_matches_cpython(name: str, program: str) -> None:
 #: exit 90, one line on stderr, nothing on stdout, and the dispatcher gets the
 #: real answer from CPython one spawn later.
 REFUSES = [
+    # `range.index` and `range.count` are real CPython methods this engine does
+    # not implement. They answered AttributeError at exit 1 — unroutable —
+    # where every other unimplemented method refuses.
+    ("range-method-index", "print(range(5).index(1))"),
+    ("range-method-count", "print(range(5).count(1))"),
     # VALID PYTHON THE PARSER DOES NOT KNOW IS A CAPABILITY GAP, NOT A SYNTAX
     # ERROR, and the difference is the exit code. These four exited 1 with a
     # SyntaxError — the PROGRAM's own exit, which the chain does not retry — so

@@ -230,12 +230,21 @@ fn cased_all(s: &str, want: fn(char) -> bool) -> bool {
 ///
 /// Asked only after :func:`method_name` has said no, so it can never shadow
 /// something lypning implements.
+/// Methods `range` has in CPython and this engine does not implement. Sorted,
+/// like every other table here (`tests/test_method_tables.py` holds them to it).
+const RANGE_MISSING: &[&str] = &["count", "index"];
+
 pub fn missing_method(recv: &Value, name: &str) -> bool {
     let table: &[&str] = match recv {
         Value::Str(_) => STR_MISSING,
         Value::Dict(_) => DICT_MISSING,
         Value::Set(_) => SET_MISSING,
         Value::Bytes(_) => BYTES_MISSING,
+        // `range.index` and `range.count` are real methods CPython has, and
+        // this answered AttributeError for them — exit 1, the program's own
+        // exit, which the chain does not retry. A refusal is answered one spawn
+        // later; that error was not.
+        Value::Range(..) => RANGE_MISSING,
         _ => return false,
     };
     table.contains(&name)

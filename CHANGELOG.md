@@ -14,6 +14,39 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-28** — A vanished arity check, and five ways a `range` was not a range
+
+From a 39-agent grid campaign over comprehension scope, slicing, conversions,
+`print`/`repr` and `range` — every finding independently reproduced before it
+was acted on.
+
+- **`[v for v, in [(1, 2)]]` printed `[(1, 2)]`; CPython raises
+  `ValueError: too many values to unpack (expected 1)`.** A trailing comma after
+  a *single* name makes a one-element tuple target, and `target_list` collapsed
+  a one-item list back to a bare name — so no unpacking happened and the arity
+  check vanished with it. A program CPython stops with an exception ran to
+  completion and printed plausible wrong data. The parenthesized `(v,)` and two
+  names `a, b,` were always right, which is what kept it quiet; it reached
+  statement for-loops and all four comprehension forms.
+- **`1.0 in range(5)` and `True in range(5)` answered `False`.** A range holds
+  integers but `in` asks about *values*, and `1.0 == 1`. Matching only
+  `Value::Int` missed both; a non-integral float is still `False`.
+- **`range(0) == range(1, 1)` answered `False`.** Two ranges are equal when they
+  describe the same *sequence*, not when their three fields match — both are
+  empty, and a one-element range's step is not observable
+  (`range(1) == range(0, 1, 2)`).
+- **A range is hashable**, keyed on that same normalised form so equal ranges
+  collapse in a set. This was `TypeError: unhashable type: 'range'` at exit 1.
+- **`.start`, `.stop` and `.step`** are ordinary attributes CPython exposes and
+  raised `AttributeError`; `.index` and `.count` are real methods this engine
+  does not implement and raised it too. Exit 1 is the program's own exit, which
+  the chain does not retry — so all five died where a refusal would have been
+  answered one spawn later. The attributes now answer; the two methods refuse,
+  as every other unimplemented method does. An attribute a range genuinely does
+  not have still matches CPython's `AttributeError`.
+- Corpus unmoved: UNSAFE 2, IDEAL 1511, mixture MISMATCH 1. 6,000 fuzz programs,
+  one counterexample, and it is the known musl `libm` `pow` difference.
+
 **2026-08-28** — Valid Python the parser does not know is a capability gap, not
 a syntax error
 
