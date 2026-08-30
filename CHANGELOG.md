@@ -14,6 +14,29 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-30** — Measured against ADK-Rust CodeAct + Monty, on one instrument
+
+- **`docs/COMPARISON.md` is new, and its numbers are runs, not vibes.** Both
+  systems graded by the same harness over the same 1,990 corpus programs
+  (2,906 loaded, absolute-path and nondeterministic entries excluded), CPython
+  as the oracle with a pinned hash seed, 2026-08-30, pydantic-monty 0.0.21:
+  lypning tier 1 answers 64.4% of the CPython-clean subset with **1** silent
+  divergence (the ledgered musl `pow` ULP); Monty answers 36.9% with **23**.
+  The identical both-fail counts (1,245) are the one-instrument sanity check.
+- **Every published divergence was independently re-verified first** — three
+  CPython runs each — and the verification *refuted two candidates*: Monty
+  reproduces `hash(-1) == -2` correctly, and one set-order case agreed under a
+  pinned seed. Both were dropped; the doc says so.
+- **The framing is honest about the different jobs.** Monty + ADK-Rust CodeAct
+  is a sandboxed in-process substrate for LLM-written tool-calling code, with
+  snapshots and resource limits — nothing lypning does. lypning makes a
+  harness's real `python3` spawns cheaper under a never-wrong-at-exit-0
+  contract with CPython fall-through. Startup is a wash shape-for-shape
+  (0.05 ms vs 0.04 ms in-process); coverage and fidelity are the axes that
+  separate them.
+- The grading harness ships at `study/monty/`, so the table is re-runnable —
+  and re-run is the instruction, per invariant 3.
+
 **2026-08-30** — lypning is the Coding Harness Interpreter Optimizer
 
 - **The identity changes; the architecture keeps its name.** The headline in
