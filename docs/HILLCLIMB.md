@@ -26,6 +26,58 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-08-30 · iteration 63 — the answer the user actually receives
+
+**commits** `e044642..HEAD` (14, one stretch) · **host** 4 cpus, Linux
+6.18.44-fc-v22, x86_64 · **corpus** 2239 programs loaded
+
+Iteration 62 rebuilt the ledger; this stretch asked what the ledger's numbers
+were *about* and found they graded the wrong process twice over. A refusal is
+not an outcome — the chain falls through and the next tier's answer is what the
+user sees — and there are TWO chains: `engines.dispatch`, which the battery
+measures, and the Rust binary's own, which users run and which `bench` times.
+The grader scored the tier that was *named*, and the escalation table that
+fixed it went into the dispatcher the battery measures and not the one users
+run. Both are now on one table (`ONLY_CPYTHON_KINDS` in `route.rs`), and the
+grader walks the chain the dispatcher actually walks.
+
+The rest of the stretch was grid enumeration — one construct per program,
+cross products, edges — which found what the corpus cannot: the corpus routes
+every affected program to CPython on an unrelated blocker, so every one of
+these was invisible to MISMATCH 0. In the Rust core: a float floor-division
+guard that answered `nan` where CPython answers `inf` (98 grid divergences,
+one deleted guard); 1,611 comparison divergences in three shapes (the
+operator's own name in the TypeError, a NaN short-circuit ahead of the type
+check, and `is` on equal immutables, which now refuses — interning is
+CPython's to know); a keyword argument silently refilling a positional; a
+SIGABRT on `range(-2**62, 2**62)[:1]` (i64 length overflow, now i128); a
+trailing comma after one for-target dropping the unpack *and* its arity check;
+five drifts between the str methods and the bytes methods copied from them,
+now held together by a shared whitespace-split rule and a twin differential
+test; and the element test rewritten as CPython's `x is y or x == y` with the
+NaN-identity check on the *unequal exit*, where it costs nothing — callgrind:
+−12.8% instructions on list equality, −3.2% on scans, the old whole-sequence
+prescan having cost more than the rule now does.
+
+| | |
+|---|---|
+| bytes | 1,024,208 (8 blocks; 24,368 headroom) — net zero across the stretch |
+| conformance | tier-1 1077 MATCH / 568 UNSUPPORTED / **1 MISMATCH** (musl libm pow, ledgered); mixture **1 MISMATCH** (same program) |
+| routing | UNSAFE **7 → 2** · IDEAL 1505 → 1512 · ledger 59 → 50 accepted, scorer exit 0 |
+| suite | 1,102 → 1,272 passing; grids: comparisons 5,460, bytes 1,938, whitespace 728, hash-keys 1,788 — all 0 diverged |
+
+Wall-clock A/B on this host swings ±8% on identical binaries (same-binary
+control), which burned two tuning rounds before callgrind settled it. The
+instrument note for next time: instruction counts are exact and free; use them
+first for anything under 20%.
+
+The two dispatchers sharing one table is the entry's one transferable rule:
+**a gate that measures a different code path than users run is not a gate**,
+and both halves of that mistake were found here — conformance measuring the
+Python chain while `lypning run` executes the Rust one, and `bench` timing the
+Rust one while nothing checked its answers.
+
+
 ---
 
 ## 2026-08-25 · iteration 62 — the accepted-mismatch ledger, rebuilt from measurement
