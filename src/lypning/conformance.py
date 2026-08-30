@@ -127,6 +127,15 @@ _RUN_SPECIFIC = tuple(re.compile(p) for p in (
     r"\btime\s*\.\s*(?:time|time_ns|monotonic|monotonic_ns|perf_counter|perf_counter_ns"
     r"|process_time|process_time_ns|ctime|asctime|localtime|gmtime)\b",
     r"\bos\s*\.\s*(?:getpid|getppid|urandom|times|fstat|cpu_count|getcwd|getlogin)\b",
+    # The size or timestamps of an ambient file are the RUN's, not the
+    # interpreter's: a program printing the capture log's own size can never
+    # match a reference taken a moment earlier — the log grew in between.
+    r"\bos\.path\s*\.\s*(?:getsize|getmtime|getatime|getctime)\b",
+    # A subprocess's output belongs to the environment it ran in. The corpus
+    # holds a probe that spawns python3 three hundred times with
+    # PYTHONHASHSEED deliberately REMOVED to count both set orders — its own
+    # reference drifts run to run, which is the definition of this list.
+    r"\bsubprocess\s*\.\s*(?:run|Popen|check_output|check_call|call)\b",
     r"\bst_(?:ino|dev|mtime|atime|ctime|nlink)\b",
     # A seeded stream is reproducible in principle, but only against the same
     # generator; an engine is not required to reproduce CPython's Mersenne

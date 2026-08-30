@@ -14,6 +14,43 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-30** — The loop gathered 667 of its own programs, and the tree now
+ships the instructions for pointing it at yours
+
+- **`lypning harvest` folded one session's captures into the corpus: 2,239 →
+  2,906 programs** (counts printed by the tools, 2026-08-30). The new entries —
+  including the session's *own* probe programs — immediately surfaced five
+  tier-1 defects, all fixed same-day: dict-view set algebra (`d.keys() | {"c"}`)
+  raised where CPython computes the union, and now refuses as the escalated
+  `dict-view` kind; `bytes(str, encoding)` never read the encoding's *value*,
+  so `bytes('a', 'bogus')` answered `b'a'` where CPython raises `LookupError`
+  and `latin-1` came back as UTF-8 bytes; `sorted([3,1], strict_mode=True)`
+  silently ignored the unknown keyword where CPython raises.
+- **Four more kinds join the escalation table, each measured on the mp binary
+  first**: `nan-order`, `identity`, `iterator-type-name`, `encoding`, and a
+  split `dunder-missing` (`__module__`/`__doc__`, which mp lacks) out of
+  `dunder-attr` (`__name__`/`__class__`, which mp answers). `import random as
+  r` defeated the `random.seed` marker — aliases now resolve, and
+  `from random import seed` is caught at the import line.
+- **The battery's nondeterminism screens grew two patterns the harvest
+  demanded**: `os.path.getsize`-family (a program printing the live capture
+  log's size can never match a reference taken a moment earlier) and
+  `subprocess.*` (one probe spawns python3 300× with `PYTHONHASHSEED`
+  deliberately removed — its own reference drifts).
+- **The ledger was regenerated: 87 entries in 34 families, scorer exit 0.** The
+  37 additions are the harvest re-capturing the session's documented mp
+  defects on the arm that cannot be fixed here; seven new families
+  (`encoding-arguments-ignored`, `iterator-type-names`, `dict-key-collapse`,
+  `reversed-dict-absent`, `str-unicode-whitespace`, `repr-quote-choice`,
+  `dict-view-set-algebra`) name defects the grids found this week.
+- **`docs/FORKING.md` is the new deliverable**: the capture→harvest→gate→step
+  loop documented as the project's standing feature — including the `/loop`
+  invocation — plus complete fork-and-specialize instructions and every
+  optimization in the tree classified as *universal* (keep byte for byte),
+  *workload-general* (keep the mechanism, re-derive the contents with the
+  named tool), or *corpus-specific* (re-measure or discard). Tier-1 arm over
+  the grown corpus: **1 MISMATCH** (the ledgered musl-libm pow ULP).
+
 **2026-08-30** — 23 of the 40 kinds in the classifier's MicroPython arm could
 never reach it
 

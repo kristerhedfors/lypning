@@ -78,363 +78,11 @@
     },
     {
       "engine": "lypning-mp",
-      "entry_id": "py-6b89efce16c1",
-      "kind": "contract",
-      "family": "commit-barrier",
-      "class": "defect",
-      "why": "The tier streams stdout and only discovers the unsupported construct at the point of use, so it exits 90 AFTER bytes are already committed (32 to 2033 of them). docs/LYPNING.md section 6. The dispatcher contains it, which is a weaker guarantee than the engine's own barrier because it holds only while the dispatcher is the one running it."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-876af0f0a956",
-      "kind": "contract",
-      "family": "commit-barrier",
-      "class": "defect",
-      "why": "The tier streams stdout and only discovers the unsupported construct at the point of use, so it exits 90 AFTER bytes are already committed (32 to 2033 of them). docs/LYPNING.md section 6. The dispatcher contains it, which is a weaker guarantee than the engine's own barrier because it holds only while the dispatcher is the one running it."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-a30d2db36018",
-      "kind": "contract",
-      "family": "commit-barrier",
-      "class": "defect",
-      "why": "The tier streams stdout and only discovers the unsupported construct at the point of use, so it exits 90 AFTER bytes are already committed (32 to 2033 of them). docs/LYPNING.md section 6. The dispatcher contains it, which is a weaker guarantee than the engine's own barrier because it holds only while the dispatcher is the one running it."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-b2a043f241f1",
-      "kind": "contract",
-      "family": "commit-barrier",
-      "class": "defect",
-      "why": "The tier streams stdout and only discovers the unsupported construct at the point of use, so it exits 90 AFTER bytes are already committed (32 to 2033 of them). docs/LYPNING.md section 6. The dispatcher contains it, which is a weaker guarantee than the engine's own barrier because it holds only while the dispatcher is the one running it."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-b71b010fb310",
-      "kind": "contract",
-      "family": "commit-barrier",
-      "class": "defect",
-      "why": "The tier streams stdout and only discovers the unsupported construct at the point of use, so it exits 90 AFTER bytes are already committed (32 to 2033 of them). docs/LYPNING.md section 6. The dispatcher contains it, which is a weaker guarantee than the engine's own barrier because it holds only while the dispatcher is the one running it."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-d47e7737aa13",
-      "kind": "contract",
-      "family": "commit-barrier",
-      "class": "defect",
-      "why": "The tier streams stdout and only discovers the unsupported construct at the point of use, so it exits 90 AFTER bytes are already committed (32 to 2033 of them). docs/LYPNING.md section 6. The dispatcher contains it, which is a weaker guarantee than the engine's own barrier because it holds only while the dispatcher is the one running it."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-ecab756f1da8",
-      "kind": "contract",
-      "family": "commit-barrier",
-      "class": "defect",
-      "why": "The tier streams stdout and only discovers the unsupported construct at the point of use, so it exits 90 AFTER bytes are already committed (32 to 2033 of them). docs/LYPNING.md section 6. The dispatcher contains it, which is a weaker guarantee than the engine's own barrier because it holds only while the dispatcher is the one running it."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-f54e53979e7f",
+      "entry_id": "py-0623abf66527",
       "kind": "stdout",
-      "family": "dict-mutation-not-detected",
+      "family": "dict-view-set-algebra",
       "class": "defect",
-      "why": "Mutating a dict while iterating it does not raise RuntimeError, so the loop walks a partially-emptied dict and answers. The Rust core detects this; this tier does not."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-b40bb545753b",
-      "kind": "stdout",
-      "family": "dict-view-equality",
-      "class": "defect",
-      "why": "dict view comparison: keys and items are set-like and values compare by object identity. This tier answers False where CPython answers True."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-9b16a7261b96",
-      "kind": "stdout",
-      "family": "dunder-missing-on-builtins",
-      "class": "defect",
-      "why": "Built-in types carry no __module__, so the ordinary 'format an exception like CPython does' idiom (type(e).__module__ + '.' + type(e).__name__) dies at exit 1 with eleven correct lines already on stdout. Not fixable from a shim -- it is a few lines in objtype.c."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-a50bd4538548",
-      "kind": "stdout",
-      "family": "exception-chaining-absent",
-      "class": "defect",
-      "why": "Exception instances carry no __context__/__cause__, so implicit chaining is unobservable. The Rust core refuses these attributes; this tier answers with an empty line."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-6f4d0f0952b2",
-      "kind": "stdout",
-      "family": "exception-message-text",
-      "class": "defect",
-      "why": "Same exception class, same condition, MicroPython's own wording: int('0',1) says 'int() arg 2 must be >= 2 and <= 36' against CPython's 'int() base must be >= 2 and <= 36, or 0'. Text only; the program still fails, and fails for the right reason."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-7528eaaf90d7",
-      "kind": "stdout",
-      "family": "exception-message-text",
-      "class": "defect",
-      "why": "Same exception class, same condition, MicroPython's own wording: int('0',1) says 'int() arg 2 must be >= 2 and <= 36' against CPython's 'int() base must be >= 2 and <= 36, or 0'. Text only; the program still fails, and fails for the right reason."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-807e987158e3",
-      "kind": "stdout",
-      "family": "exception-message-text",
-      "class": "defect",
-      "why": "Same exception class, same condition, MicroPython's own wording: int('0',1) says 'int() arg 2 must be >= 2 and <= 36' against CPython's 'int() base must be >= 2 and <= 36, or 0'. Text only; the program still fails, and fails for the right reason."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-a6e984f674cf",
-      "kind": "stdout",
-      "family": "exception-message-text",
-      "class": "defect",
-      "why": "Same exception class, same condition, MicroPython's own wording: int('0',1) says 'int() arg 2 must be >= 2 and <= 36' against CPython's 'int() base must be >= 2 and <= 36, or 0'. Text only; the program still fails, and fails for the right reason."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-5426338d76f7",
-      "kind": "stdout",
-      "family": "float-floordiv",
-      "class": "defect",
-      "why": "float // float and the matching % disagree across a grid of signed operands; CPython corrects the floor after the division rounds."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-6c03737365fe",
-      "kind": "stdout",
-      "family": "float-grouping-ignored",
-      "class": "defect",
-      "why": "The ',' and '_' grouping options are honoured for ints and silently dropped for floats: f'{1234.5:,}' is '1234.5' where CPython gives '1,234.5'."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-a1b9e78d2a35",
-      "kind": "stdout",
-      "family": "float-grouping-ignored",
-      "class": "defect",
-      "why": "The ',' and '_' grouping options are honoured for ints and silently dropped for floats: f'{1234.5:,}' is '1234.5' where CPython gives '1,234.5'."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-ab7286f43b7a",
-      "kind": "stdout",
-      "family": "float-pow-last-bit",
-      "class": "defect",
-      "why": "1.7976931348623157e308 ** 0.5 differs in the LAST ULP. Measured against the library arm on 2026-08-25: the same source compiled against glibc's libm matches CPython exactly and against musl's does not. It is a C library property, not this tree's code."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-1b924b8b8ccd",
-      "kind": "stdout",
-      "family": "format-nested-fields",
-      "class": "defect",
-      "why": "Nested replacement fields in a format spec ('{:{}}', '{:.{}f}') are not supported."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-31ab8e6dbaa3",
-      "kind": "stdout",
-      "family": "hash-of-minus-one",
-      "class": "defect",
-      "why": "hash(-1) differs. CPython reserves -1 as its error sentinel and maps hash(-1) to -2; MicroPython does not."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-3df9bcf3f159",
-      "kind": "stdout",
-      "family": "int-truediv-through-double",
-      "class": "defect",
-      "why": "int/int converts both operands to double before dividing, losing the low bits past 2**53. The Rust core refuses this case rather than answering approximately."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-191ce4eb3e28",
-      "kind": "stdout",
-      "family": "int-underscore-accepted",
-      "class": "defect",
-      "why": "int() strips underscores anywhere instead of enforcing Python's between-digits rule, so int('1_') answers 1 where CPython raises. For py-32e92fc743e4 a WRONG ANSWER replaces an error: CPython exits 1, the tier exits 0 printing 1."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-32e92fc743e4",
-      "kind": "stdout",
-      "family": "int-underscore-accepted",
-      "class": "defect",
-      "why": "int() strips underscores anywhere instead of enforcing Python's between-digits rule, so int('1_') answers 1 where CPython raises. For py-32e92fc743e4 a WRONG ANSWER replaces an error: CPython exits 1, the tier exits 0 printing 1."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-72159086743e",
-      "kind": "stdout",
-      "family": "int-whitespace-set",
-      "class": "defect",
-      "why": "int() accepts a different leading-whitespace set: int('\\x85' '5') raises here and answers 5 in CPython, which counts U+0085 as whitespace for this conversion."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-a4765e762a93",
-      "kind": "stdout",
-      "family": "json-control-chars",
-      "class": "defect",
-      "why": "The C json parser accepts a raw control character inside a string where CPython raises JSONDecodeError. A malformed document is ANSWERED, so nothing routes onward."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-f265db0014b6",
-      "kind": "stdout",
-      "family": "json-control-chars",
-      "class": "defect",
-      "why": "The C json parser accepts a raw control character inside a string where CPython raises JSONDecodeError. A malformed document is ANSWERED, so nothing routes onward."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-d73354ba17aa",
-      "kind": "stdout",
-      "family": "json-hooks-ignored",
-      "class": "defect",
-      "why": "json.loads silently ignores object_hook, object_pairs_hook, parse_float and parse_int, so a document decodes to the wrong SHAPE. The Rust core refuses these keywords."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-b5fea319d373",
-      "kind": "stdout",
-      "family": "module-availability",
-      "class": "defect",
-      "why": "The tier has no pyyaml, so the program takes its ImportError branch and prints where CPython does not. An ENVIRONMENT difference rather than a defect in the tier."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-399fd0fc233e",
-      "kind": "stdout",
-      "family": "nan-identity-in-containers",
-      "class": "defect",
-      "why": "CPython's containment and equality compare IDENTITY before equality, so a NaN finds itself: n in [n] is True. MicroPython compares by == only. The Rust core refuses this case rather than answering it either way; the MicroPython tier answers False."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-4c632c772042",
-      "kind": "stdout",
-      "family": "nan-identity-in-containers",
-      "class": "defect",
-      "why": "CPython's containment and equality compare IDENTITY before equality, so a NaN finds itself: n in [n] is True. MicroPython compares by == only. The Rust core refuses this case rather than answering it either way; the MicroPython tier answers False."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-750c245572a9",
-      "kind": "stdout",
-      "family": "pathlib-parts-drops-root",
-      "class": "defect",
-      "why": "Path('/a/b/c.txt').parts drops the root component, giving ('a','b','c.txt') where CPython gives ('/','a','b','c.txt'). 46 corpus programs import pathlib and this tier serves them."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-5bd4bf979ac1",
-      "kind": "stdout",
-      "family": "printf-zero-flag",
-      "class": "defect",
-      "why": "The %-format '0' flag pads on the WRONG SIDE when combined with '-' ('%-05d' % 255 is '25500', not '255  ') and truncates when combined with a precision ('%05.7d' % -1 loses a digit). '%.7d' alone is correct, so it is the zero flag specifically."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-723301ffc7fd",
-      "kind": "stdout",
-      "family": "printf-zero-flag",
-      "class": "defect",
-      "why": "The %-format '0' flag pads on the WRONG SIDE when combined with '-' ('%-05d' % 255 is '25500', not '255  ') and truncates when combined with a precision ('%05.7d' % -1 loses a digit). '%.7d' alone is correct, so it is the zero flag specifically."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-8ccdf9fd5b0c",
-      "kind": "stdout",
-      "family": "printf-zero-flag",
-      "class": "defect",
-      "why": "The %-format '0' flag pads on the WRONG SIDE when combined with '-' ('%-05d' % 255 is '25500', not '255  ') and truncates when combined with a precision ('%05.7d' % -1 loses a digit). '%.7d' alone is correct, so it is the zero flag specifically."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-e5796cbe9f62",
-      "kind": "exit",
-      "family": "random-seeded-stream",
-      "class": "defect",
-      "why": "A seeded random stream is not reproducible across implementations -- MicroPython does not implement the Mersenne Twister. This entry exits 1 where CPython exits 0."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-67abeedd083b",
-      "kind": "stdout",
-      "family": "repr-escaping",
-      "class": "defect",
-      "why": "repr() does not escape every non-printable character CPython escapes: repr of a string holding U+00A0 comes back with the raw byte where CPython writes '\\xa0'."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-34ac35eb0a12",
-      "kind": "stdout",
-      "family": "round-with-ndigits",
-      "class": "defect",
-      "why": "round(x, n) rounds half AWAY FROM ZERO instead of half to even: round(2.5,0) is 3.0 and round(0.125,2) is 0.13. The one-argument round() is correct on both, so it is the ndigits path only."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-471342fb7c73",
-      "kind": "stdout",
-      "family": "round-with-ndigits",
-      "class": "defect",
-      "why": "round(x, n) rounds half AWAY FROM ZERO instead of half to even: round(2.5,0) is 3.0 and round(0.125,2) is 0.13. The one-argument round() is correct on both, so it is the ndigits path only."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-a345900bc25c",
-      "kind": "stdout",
-      "family": "set-and-dict-hash-order",
-      "class": "defect",
-      "why": "The hash tables iterate in a different order from CPython's, and set/frozenset auto-conversion is absent ({frozenset([1,2])} membership raises). Iteration order is implementation-defined in the language, but it is a real disagreement for anything printing a set without sorting."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-ac5fe06a4d1f",
-      "kind": "stdout",
-      "family": "set-and-dict-hash-order",
-      "class": "defect",
-      "why": "The hash tables iterate in a different order from CPython's, and set/frozenset auto-conversion is absent ({frozenset([1,2])} membership raises). Iteration order is implementation-defined in the language, but it is a real disagreement for anything printing a set without sorting."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-112b1adce6b4",
-      "kind": "stdout",
-      "family": "sort-instability",
-      "class": "defect",
-      "why": "MicroPython's sort is NOT STABLE, and not merely reversed: sorted([1,2,3,4,5,6], key=lambda x: 0) returns [4,6,5,1,3,2]. Python guarantees stability as a language property, so every one-liner that sorts records by one field and prints them is exposed."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-5423745163df",
-      "kind": "stdout",
-      "family": "sort-instability",
-      "class": "defect",
-      "why": "MicroPython's sort is NOT STABLE, and not merely reversed: sorted([1,2,3,4,5,6], key=lambda x: 0) returns [4,6,5,1,3,2]. Python guarantees stability as a language property, so every one-liner that sorts records by one field and prints them is exposed."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-ba95c2529d46",
-      "kind": "stdout",
-      "family": "sort-instability",
-      "class": "defect",
-      "why": "MicroPython's sort is NOT STABLE, and not merely reversed: sorted([1,2,3,4,5,6], key=lambda x: 0) returns [4,6,5,1,3,2]. Python guarantees stability as a language property, so every one-liner that sorts records by one field and prints them is exposed."
-    },
-    {
-      "engine": "lypning-mp",
-      "entry_id": "py-e8bad9cc7a8e",
-      "kind": "stdout",
-      "family": "sort-instability",
-      "class": "defect",
-      "why": "MicroPython's sort is NOT STABLE, and not merely reversed: sorted([1,2,3,4,5,6], key=lambda x: 0) returns [4,6,5,1,3,2]. Python guarantees stability as a language property, so every one-liner that sorts records by one field and prints them is exposed."
+      "why": "d.keys() | {'c'} is set algebra in CPython; the tier raises on it, so the program dies (or its except branch prints the tier's own message) where CPython prints the union."
     },
     {
       "engine": "lypning-mp",
@@ -446,11 +94,659 @@
     },
     {
       "engine": "lypning-mp",
+      "entry_id": "py-070022740163",
+      "kind": "stdout",
+      "family": "float-floordiv",
+      "class": "defect",
+      "why": "float // float and the matching % disagree across a grid of signed operands; CPython corrects the floor after the division rounds."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-0e241643581e",
+      "kind": "stdout",
+      "family": "random-seeded-stream",
+      "class": "defect",
+      "why": "A seeded random stream is not reproducible across implementations -- MicroPython does not implement the Mersenne Twister. This entry exits 1 where CPython exits 0."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-1073569e4f7f",
+      "kind": "stdout",
+      "family": "encoding-arguments-ignored",
+      "class": "defect",
+      "why": "Every encoding argument that is not UTF-8 is silently ignored: bytes('a','bogus') answers b'a' where CPython raises LookupError, and latin-1/utf-16/ascii all come back as the UTF-8 bytes. Measured 2026-08-30; the chain now escalates the `encoding` refusal kind for exactly this reason."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-112b1adce6b4",
+      "kind": "stdout",
+      "family": "sort-instability",
+      "class": "defect",
+      "why": "MicroPython's sort is NOT STABLE, and not merely reversed: sorted([1,2,3,4,5,6], key=lambda x: 0) returns [4,6,5,1,3,2]. Python guarantees stability as a language property, so every one-liner that sorts records by one field and prints them is exposed."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-12c6dfc0273a",
+      "kind": "stdout",
+      "family": "nan-identity-in-containers",
+      "class": "defect",
+      "why": "CPython's containment and equality compare IDENTITY before equality, so a NaN finds itself: n in [n] is True. MicroPython compares by == only. The Rust core refuses this case rather than answering it either way; the MicroPython tier answers False."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-191ce4eb3e28",
+      "kind": "stdout",
+      "family": "int-underscore-accepted",
+      "class": "defect",
+      "why": "int() strips underscores anywhere instead of enforcing Python's between-digits rule, so int('1_') answers 1 where CPython raises. For py-32e92fc743e4 a WRONG ANSWER replaces an error: CPython exits 1, the tier exits 0 printing 1."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-1b924b8b8ccd",
+      "kind": "stdout",
+      "family": "format-nested-fields",
+      "class": "defect",
+      "why": "Nested replacement fields in a format spec ('{:{}}', '{:.{}f}') are not supported."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-204cd9709f79",
+      "kind": "stdout",
+      "family": "reversed-dict-absent",
+      "class": "defect",
+      "why": "reversed() of a dict (guaranteed since Python 3.8) raises on the tier, so a program printing reversed({'a':1}) shows the exception text where CPython shows ['a']."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-20ff921835af",
+      "kind": "stdout",
+      "family": "float-floordiv",
+      "class": "defect",
+      "why": "float // float and the matching % disagree across a grid of signed operands; CPython corrects the floor after the division rounds."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-29aa2766c53b",
+      "kind": "stdout",
+      "family": "nan-identity-in-containers",
+      "class": "defect",
+      "why": "CPython's containment and equality compare IDENTITY before equality, so a NaN finds itself: n in [n] is True. MicroPython compares by == only. The Rust core refuses this case rather than answering it either way; the MicroPython tier answers False."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-2cb62574b944",
+      "kind": "stdout",
+      "family": "exception-message-text",
+      "class": "defect",
+      "why": "Same exception class, same condition, MicroPython's own wording: int('0',1) says 'int() arg 2 must be >= 2 and <= 36' against CPython's 'int() base must be >= 2 and <= 36, or 0'. Text only; the program still fails, and fails for the right reason."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-31ab8e6dbaa3",
+      "kind": "stdout",
+      "family": "hash-of-minus-one",
+      "class": "defect",
+      "why": "hash(-1) differs. CPython reserves -1 as its error sentinel and maps hash(-1) to -2; MicroPython does not."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-32e92fc743e4",
+      "kind": "stdout",
+      "family": "int-underscore-accepted",
+      "class": "defect",
+      "why": "int() strips underscores anywhere instead of enforcing Python's between-digits rule, so int('1_') answers 1 where CPython raises. For py-32e92fc743e4 a WRONG ANSWER replaces an error: CPython exits 1, the tier exits 0 printing 1."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-34ac35eb0a12",
+      "kind": "stdout",
+      "family": "round-with-ndigits",
+      "class": "defect",
+      "why": "round(x, n) rounds half AWAY FROM ZERO instead of half to even: round(2.5,0) is 3.0 and round(0.125,2) is 0.13. The one-argument round() is correct on both, so it is the ndigits path only."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-399fd0fc233e",
+      "kind": "stdout",
+      "family": "nan-identity-in-containers",
+      "class": "defect",
+      "why": "CPython's containment and equality compare IDENTITY before equality, so a NaN finds itself: n in [n] is True. MicroPython compares by == only. The Rust core refuses this case rather than answering it either way; the MicroPython tier answers False."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-3c5a6bf7dbae",
+      "kind": "stdout",
+      "family": "random-seeded-stream",
+      "class": "defect",
+      "why": "A seeded random stream is not reproducible across implementations -- MicroPython does not implement the Mersenne Twister. This entry exits 1 where CPython exits 0."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-3df9bcf3f159",
+      "kind": "stdout",
+      "family": "int-truediv-through-double",
+      "class": "defect",
+      "why": "int/int converts both operands to double before dividing, losing the low bits past 2**53. The Rust core refuses this case rather than answering approximately."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-3f8691aaf3eb",
+      "kind": "stdout",
+      "family": "sort-instability",
+      "class": "defect",
+      "why": "MicroPython's sort is NOT STABLE, and not merely reversed: sorted([1,2,3,4,5,6], key=lambda x: 0) returns [4,6,5,1,3,2]. Python guarantees stability as a language property, so every one-liner that sorts records by one field and prints them is exposed."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-3fab6afe7c8a",
+      "kind": "stdout",
+      "family": "str-unicode-whitespace",
+      "class": "defect",
+      "why": "str.split() with no separator splits on ASCII whitespace only: 'a\\xa0b'.split() is one field there and ['a','b'] in CPython, and the same for U+2000, U+1C and U+85."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-41cfb86e99b4",
+      "kind": "stdout",
+      "family": "random-seeded-stream",
+      "class": "defect",
+      "why": "A seeded random stream is not reproducible across implementations -- MicroPython does not implement the Mersenne Twister. This entry exits 1 where CPython exits 0."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-447a56755296",
+      "kind": "stdout",
+      "family": "repr-quote-choice",
+      "class": "defect",
+      "why": "repr() of a string containing quotes picks the quote character differently from CPython's prefer-single-unless-it-contains-one rule, so the escaping of mixed-quote strings prints differently at exit 0."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-471342fb7c73",
+      "kind": "stdout",
+      "family": "round-with-ndigits",
+      "class": "defect",
+      "why": "round(x, n) rounds half AWAY FROM ZERO instead of half to even: round(2.5,0) is 3.0 and round(0.125,2) is 0.13. The one-argument round() is correct on both, so it is the ndigits path only."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-4b36c19d5925",
+      "kind": "stdout",
+      "family": "int-truediv-through-double",
+      "class": "defect",
+      "why": "int/int converts both operands to double before dividing, losing the low bits past 2**53. The Rust core refuses this case rather than answering approximately."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-4c632c772042",
+      "kind": "stdout",
+      "family": "nan-identity-in-containers",
+      "class": "defect",
+      "why": "CPython's containment and equality compare IDENTITY before equality, so a NaN finds itself: n in [n] is True. MicroPython compares by == only. The Rust core refuses this case rather than answering it either way; the MicroPython tier answers False."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-5423745163df",
+      "kind": "stdout",
+      "family": "sort-instability",
+      "class": "defect",
+      "why": "MicroPython's sort is NOT STABLE, and not merely reversed: sorted([1,2,3,4,5,6], key=lambda x: 0) returns [4,6,5,1,3,2]. Python guarantees stability as a language property, so every one-liner that sorts records by one field and prints them is exposed."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-5426338d76f7",
+      "kind": "stdout",
+      "family": "float-floordiv",
+      "class": "defect",
+      "why": "float // float and the matching % disagree across a grid of signed operands; CPython corrects the floor after the division rounds."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-5bd4bf979ac1",
+      "kind": "stdout",
+      "family": "printf-zero-flag",
+      "class": "defect",
+      "why": "The %-format '0' flag pads on the WRONG SIDE when combined with '-' ('%-05d' % 255 is '25500', not '255  ') and truncates when combined with a precision ('%05.7d' % -1 loses a digit). '%.7d' alone is correct, so it is the zero flag specifically."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-5c2bc3cab2c0",
+      "kind": "stdout",
+      "family": "set-and-dict-hash-order",
+      "class": "defect",
+      "why": "The hash tables iterate in a different order from CPython's, and set/frozenset auto-conversion is absent ({frozenset([1,2])} membership raises). Iteration order is implementation-defined in the language, but it is a real disagreement for anything printing a set without sorting."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-5d2bb16507e0",
+      "kind": "stdout",
+      "family": "iterator-type-names",
+      "class": "defect",
+      "why": "Every iterator's type name is 'iterator'; CPython has a family (list_iterator, tuple_iterator, str_ascii_iterator, ...), so any program printing type(iter(x)).__name__ differs."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-5d481be2d805",
+      "kind": "stdout",
+      "family": "exception-message-text",
+      "class": "defect",
+      "why": "Same exception class, same condition, MicroPython's own wording: int('0',1) says 'int() arg 2 must be >= 2 and <= 36' against CPython's 'int() base must be >= 2 and <= 36, or 0'. Text only; the program still fails, and fails for the right reason."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-5e5d98871a17",
+      "kind": "stdout",
+      "family": "dict-view-set-algebra",
+      "class": "defect",
+      "why": "d.keys() | {'c'} is set algebra in CPython; the tier raises on it, so the program dies (or its except branch prints the tier's own message) where CPython prints the union."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-62481086d448",
+      "kind": "stdout",
+      "family": "dunder-missing-on-builtins",
+      "class": "defect",
+      "why": "Built-in types carry no __module__, so the ordinary 'format an exception like CPython does' idiom (type(e).__module__ + '.' + type(e).__name__) dies at exit 1 with eleven correct lines already on stdout. Not fixable from a shim -- it is a few lines in objtype.c."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-67abeedd083b",
+      "kind": "stdout",
+      "family": "repr-escaping",
+      "class": "defect",
+      "why": "repr() does not escape every non-printable character CPython escapes: repr of a string holding U+00A0 comes back with the raw byte where CPython writes '\\xa0'."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-6b89efce16c1",
+      "kind": "contract",
+      "family": "commit-barrier",
+      "class": "defect",
+      "why": "The tier streams stdout and only discovers the unsupported construct at the point of use, so it exits 90 AFTER bytes are already committed (32 to 2033 of them). docs/LYPNING.md section 6. The dispatcher contains it, which is a weaker guarantee than the engine's own barrier because it holds only while the dispatcher is the one running it."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-6c03737365fe",
+      "kind": "stdout",
+      "family": "float-grouping-ignored",
+      "class": "defect",
+      "why": "The ',' and '_' grouping options are honoured for ints and silently dropped for floats: f'{1234.5:,}' is '1234.5' where CPython gives '1,234.5'."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-6f4d0f0952b2",
+      "kind": "stdout",
+      "family": "exception-message-text",
+      "class": "defect",
+      "why": "Same exception class, same condition, MicroPython's own wording: int('0',1) says 'int() arg 2 must be >= 2 and <= 36' against CPython's 'int() base must be >= 2 and <= 36, or 0'. Text only; the program still fails, and fails for the right reason."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-72159086743e",
+      "kind": "stdout",
+      "family": "int-whitespace-set",
+      "class": "defect",
+      "why": "int() accepts a different leading-whitespace set: int('\\x85' '5') raises here and answers 5 in CPython, which counts U+0085 as whitespace for this conversion."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-723301ffc7fd",
+      "kind": "stdout",
+      "family": "printf-zero-flag",
+      "class": "defect",
+      "why": "The %-format '0' flag pads on the WRONG SIDE when combined with '-' ('%-05d' % 255 is '25500', not '255  ') and truncates when combined with a precision ('%05.7d' % -1 loses a digit). '%.7d' alone is correct, so it is the zero flag specifically."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-735cfabcacf5",
+      "kind": "stdout",
+      "family": "dict-key-collapse",
+      "class": "defect",
+      "why": "When equal keys of different types collapse ({1:'a', 1.0:'b', True:'c'}), CPython keeps the FIRST key object and the LAST value; the tier keeps a different combination, so the surviving key's repr differs."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-750c245572a9",
+      "kind": "stdout",
+      "family": "pathlib-parts-drops-root",
+      "class": "defect",
+      "why": "Path('/a/b/c.txt').parts drops the root component, giving ('a','b','c.txt') where CPython gives ('/','a','b','c.txt'). 46 corpus programs import pathlib and this tier serves them."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-7528eaaf90d7",
+      "kind": "stdout",
+      "family": "exception-message-text",
+      "class": "defect",
+      "why": "Same exception class, same condition, MicroPython's own wording: int('0',1) says 'int() arg 2 must be >= 2 and <= 36' against CPython's 'int() base must be >= 2 and <= 36, or 0'. Text only; the program still fails, and fails for the right reason."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-7f590f33f918",
+      "kind": "stdout",
+      "family": "bool-not-int-subclass",
+      "class": "defect",
+      "why": "MicroPython's bool does not inherit from int: isinstance(True, int) is False, so a numeric filter silently drops booleans. Arithmetic still works, so only the TYPE RELATIONSHIP is missing -- exactly the half a filter or a dispatch table relies on."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-807e987158e3",
+      "kind": "stdout",
+      "family": "exception-message-text",
+      "class": "defect",
+      "why": "Same exception class, same condition, MicroPython's own wording: int('0',1) says 'int() arg 2 must be >= 2 and <= 36' against CPython's 'int() base must be >= 2 and <= 36, or 0'. Text only; the program still fails, and fails for the right reason."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-87397d74221f",
+      "kind": "stdout",
+      "family": "float-pow-last-bit",
+      "class": "defect",
+      "why": "1.7976931348623157e308 ** 0.5 differs in the LAST ULP. Measured against the library arm on 2026-08-25: the same source compiled against glibc's libm matches CPython exactly and against musl's does not. It is a C library property, not this tree's code."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-876af0f0a956",
+      "kind": "contract",
+      "family": "commit-barrier",
+      "class": "defect",
+      "why": "The tier streams stdout and only discovers the unsupported construct at the point of use, so it exits 90 AFTER bytes are already committed (32 to 2033 of them). docs/LYPNING.md section 6. The dispatcher contains it, which is a weaker guarantee than the engine's own barrier because it holds only while the dispatcher is the one running it."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-8ccdf9fd5b0c",
+      "kind": "stdout",
+      "family": "printf-zero-flag",
+      "class": "defect",
+      "why": "The %-format '0' flag pads on the WRONG SIDE when combined with '-' ('%-05d' % 255 is '25500', not '255  ') and truncates when combined with a precision ('%05.7d' % -1 loses a digit). '%.7d' alone is correct, so it is the zero flag specifically."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-99435c3cd370",
+      "kind": "contract",
+      "family": "commit-barrier",
+      "class": "defect",
+      "why": "The tier streams stdout and only discovers the unsupported construct at the point of use, so it exits 90 AFTER bytes are already committed (32 to 2033 of them). docs/LYPNING.md section 6. The dispatcher contains it, which is a weaker guarantee than the engine's own barrier because it holds only while the dispatcher is the one running it."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-9b16a7261b96",
+      "kind": "stdout",
+      "family": "dunder-missing-on-builtins",
+      "class": "defect",
+      "why": "Built-in types carry no __module__, so the ordinary 'format an exception like CPython does' idiom (type(e).__module__ + '.' + type(e).__name__) dies at exit 1 with eleven correct lines already on stdout. Not fixable from a shim -- it is a few lines in objtype.c."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-9c200811fe56",
+      "kind": "stdout",
+      "family": "float-grouping-ignored",
+      "class": "defect",
+      "why": "The ',' and '_' grouping options are honoured for ints and silently dropped for floats: f'{1234.5:,}' is '1234.5' where CPython gives '1,234.5'."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-9c8ce4eb8949",
+      "kind": "stdout",
+      "family": "dict-view-equality",
+      "class": "defect",
+      "why": "dict view comparison: keys and items are set-like and values compare by object identity. This tier answers False where CPython answers True."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-a1b9e78d2a35",
+      "kind": "stdout",
+      "family": "float-grouping-ignored",
+      "class": "defect",
+      "why": "The ',' and '_' grouping options are honoured for ints and silently dropped for floats: f'{1234.5:,}' is '1234.5' where CPython gives '1,234.5'."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-a30d2db36018",
+      "kind": "contract",
+      "family": "commit-barrier",
+      "class": "defect",
+      "why": "The tier streams stdout and only discovers the unsupported construct at the point of use, so it exits 90 AFTER bytes are already committed (32 to 2033 of them). docs/LYPNING.md section 6. The dispatcher contains it, which is a weaker guarantee than the engine's own barrier because it holds only while the dispatcher is the one running it."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-a345900bc25c",
+      "kind": "stdout",
+      "family": "set-and-dict-hash-order",
+      "class": "defect",
+      "why": "The hash tables iterate in a different order from CPython's, and set/frozenset auto-conversion is absent ({frozenset([1,2])} membership raises). Iteration order is implementation-defined in the language, but it is a real disagreement for anything printing a set without sorting."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-a4765e762a93",
+      "kind": "stdout",
+      "family": "json-control-chars",
+      "class": "defect",
+      "why": "The C json parser accepts a raw control character inside a string where CPython raises JSONDecodeError. A malformed document is ANSWERED, so nothing routes onward."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-a50bd4538548",
+      "kind": "stdout",
+      "family": "exception-chaining-absent",
+      "class": "defect",
+      "why": "Exception instances carry no __context__/__cause__, so implicit chaining is unobservable. The Rust core refuses these attributes; this tier answers with an empty line."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-a6e984f674cf",
+      "kind": "stdout",
+      "family": "exception-message-text",
+      "class": "defect",
+      "why": "Same exception class, same condition, MicroPython's own wording: int('0',1) says 'int() arg 2 must be >= 2 and <= 36' against CPython's 'int() base must be >= 2 and <= 36, or 0'. Text only; the program still fails, and fails for the right reason."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-ab7286f43b7a",
+      "kind": "stdout",
+      "family": "float-pow-last-bit",
+      "class": "defect",
+      "why": "1.7976931348623157e308 ** 0.5 differs in the LAST ULP. Measured against the library arm on 2026-08-25: the same source compiled against glibc's libm matches CPython exactly and against musl's does not. It is a C library property, not this tree's code."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-ac5fe06a4d1f",
+      "kind": "stdout",
+      "family": "set-and-dict-hash-order",
+      "class": "defect",
+      "why": "The hash tables iterate in a different order from CPython's, and set/frozenset auto-conversion is absent ({frozenset([1,2])} membership raises). Iteration order is implementation-defined in the language, but it is a real disagreement for anything printing a set without sorting."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-b1c4cdd2eb2f",
+      "kind": "stdout",
+      "family": "nan-identity-in-containers",
+      "class": "defect",
+      "why": "CPython's containment and equality compare IDENTITY before equality, so a NaN finds itself: n in [n] is True. MicroPython compares by == only. The Rust core refuses this case rather than answering it either way; the MicroPython tier answers False."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-b2a043f241f1",
+      "kind": "contract",
+      "family": "commit-barrier",
+      "class": "defect",
+      "why": "The tier streams stdout and only discovers the unsupported construct at the point of use, so it exits 90 AFTER bytes are already committed (32 to 2033 of them). docs/LYPNING.md section 6. The dispatcher contains it, which is a weaker guarantee than the engine's own barrier because it holds only while the dispatcher is the one running it."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-b40bb545753b",
+      "kind": "stdout",
+      "family": "dict-view-equality",
+      "class": "defect",
+      "why": "dict view comparison: keys and items are set-like and values compare by object identity. This tier answers False where CPython answers True."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-b5fea319d373",
+      "kind": "stdout",
+      "family": "module-availability",
+      "class": "defect",
+      "why": "The tier has no pyyaml, so the program takes its ImportError branch and prints where CPython does not. An ENVIRONMENT difference rather than a defect in the tier."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-b71b010fb310",
+      "kind": "contract",
+      "family": "commit-barrier",
+      "class": "defect",
+      "why": "The tier streams stdout and only discovers the unsupported construct at the point of use, so it exits 90 AFTER bytes are already committed (32 to 2033 of them). docs/LYPNING.md section 6. The dispatcher contains it, which is a weaker guarantee than the engine's own barrier because it holds only while the dispatcher is the one running it."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-ba95c2529d46",
+      "kind": "stdout",
+      "family": "sort-instability",
+      "class": "defect",
+      "why": "MicroPython's sort is NOT STABLE, and not merely reversed: sorted([1,2,3,4,5,6], key=lambda x: 0) returns [4,6,5,1,3,2]. Python guarantees stability as a language property, so every one-liner that sorts records by one field and prints them is exposed."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-d47e7737aa13",
+      "kind": "contract",
+      "family": "commit-barrier",
+      "class": "defect",
+      "why": "The tier streams stdout and only discovers the unsupported construct at the point of use, so it exits 90 AFTER bytes are already committed (32 to 2033 of them). docs/LYPNING.md section 6. The dispatcher contains it, which is a weaker guarantee than the engine's own barrier because it holds only while the dispatcher is the one running it."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-d73354ba17aa",
+      "kind": "stdout",
+      "family": "json-hooks-ignored",
+      "class": "defect",
+      "why": "json.loads silently ignores object_hook, object_pairs_hook, parse_float and parse_int, so a document decodes to the wrong SHAPE. The Rust core refuses these keywords."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-e5796cbe9f62",
+      "kind": "exit",
+      "family": "random-seeded-stream",
+      "class": "defect",
+      "why": "A seeded random stream is not reproducible across implementations -- MicroPython does not implement the Mersenne Twister. This entry exits 1 where CPython exits 0."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-e7ae95ba7652",
+      "kind": "stdout",
+      "family": "int-underscore-accepted",
+      "class": "defect",
+      "why": "int() strips underscores anywhere instead of enforcing Python's between-digits rule, so int('1_') answers 1 where CPython raises. For py-32e92fc743e4 a WRONG ANSWER replaces an error: CPython exits 1, the tier exits 0 printing 1."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-e8bad9cc7a8e",
+      "kind": "stdout",
+      "family": "sort-instability",
+      "class": "defect",
+      "why": "MicroPython's sort is NOT STABLE, and not merely reversed: sorted([1,2,3,4,5,6], key=lambda x: 0) returns [4,6,5,1,3,2]. Python guarantees stability as a language property, so every one-liner that sorts records by one field and prints them is exposed."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-ea69ae97eb09",
+      "kind": "stdout",
+      "family": "int-truediv-through-double",
+      "class": "defect",
+      "why": "int/int converts both operands to double before dividing, losing the low bits past 2**53. The Rust core refuses this case rather than answering approximately."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-ecab756f1da8",
+      "kind": "contract",
+      "family": "commit-barrier",
+      "class": "defect",
+      "why": "The tier streams stdout and only discovers the unsupported construct at the point of use, so it exits 90 AFTER bytes are already committed (32 to 2033 of them). docs/LYPNING.md section 6. The dispatcher contains it, which is a weaker guarantee than the engine's own barrier because it holds only while the dispatcher is the one running it."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-edd9304d7085",
+      "kind": "stdout",
+      "family": "round-with-ndigits",
+      "class": "defect",
+      "why": "round(x, n) rounds half AWAY FROM ZERO instead of half to even: round(2.5,0) is 3.0 and round(0.125,2) is 0.13. The one-argument round() is correct on both, so it is the ndigits path only."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-ee4f9e198f63",
+      "kind": "stdout",
+      "family": "round-with-ndigits",
+      "class": "defect",
+      "why": "round(x, n) rounds half AWAY FROM ZERO instead of half to even: round(2.5,0) is 3.0 and round(0.125,2) is 0.13. The one-argument round() is correct on both, so it is the ndigits path only."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-f265db0014b6",
+      "kind": "stdout",
+      "family": "json-control-chars",
+      "class": "defect",
+      "why": "The C json parser accepts a raw control character inside a string where CPython raises JSONDecodeError. A malformed document is ANSWERED, so nothing routes onward."
+    },
+    {
+      "engine": "lypning-mp",
+      "entry_id": "py-f54e53979e7f",
+      "kind": "stdout",
+      "family": "dict-mutation-not-detected",
+      "class": "defect",
+      "why": "Mutating a dict while iterating it does not raise RuntimeError, so the loop walks a partially-emptied dict and answers. The Rust core detects this; this tier does not."
+    },
+    {
+      "engine": "lypning-mp",
       "entry_id": "py-fddbb3576d01",
       "kind": "stdout",
       "family": "str-search-index-clamping",
       "class": "defect",
       "why": "find/rfind/count/startswith/endswith/index clamp a start past the end to len(s), so the empty needle matches where CPython reports none: 'Hello'.find('',6) is 5, not -1. This is CPython's ADJUST_INDICES asymmetry, which the Rust core implements and this tier does not."
+    },
+    {
+      "engine": "mixture",
+      "entry_id": "py-204cd9709f79",
+      "kind": "stdout",
+      "family": "reversed-dict-absent",
+      "class": "defect",
+      "why": "reversed() of a dict (guaranteed since Python 3.8) raises on the tier, so a program printing reversed({'a':1}) shows the exception text where CPython shows ['a']."
+    },
+    {
+      "engine": "mixture",
+      "entry_id": "py-20ff921835af",
+      "kind": "stdout",
+      "family": "float-floordiv",
+      "class": "defect",
+      "why": "float // float and the matching % disagree across a grid of signed operands; CPython corrects the floor after the division rounds."
+    },
+    {
+      "engine": "mixture",
+      "entry_id": "py-5d2bb16507e0",
+      "kind": "stdout",
+      "family": "iterator-type-names",
+      "class": "defect",
+      "why": "Every iterator's type name is 'iterator'; CPython has a family (list_iterator, tuple_iterator, str_ascii_iterator, ...), so any program printing type(iter(x)).__name__ differs."
+    },
+    {
+      "engine": "mixture",
+      "entry_id": "py-62481086d448",
+      "kind": "stdout",
+      "family": "dunder-missing-on-builtins",
+      "class": "defect",
+      "why": "Built-in types carry no __module__, so the ordinary 'format an exception like CPython does' idiom (type(e).__module__ + '.' + type(e).__name__) dies at exit 1 with eleven correct lines already on stdout. Not fixable from a shim -- it is a few lines in objtype.c."
+    },
+    {
+      "engine": "mixture",
+      "entry_id": "py-735cfabcacf5",
+      "kind": "stdout",
+      "family": "dict-key-collapse",
+      "class": "defect",
+      "why": "When equal keys of different types collapse ({1:'a', 1.0:'b', True:'c'}), CPython keeps the FIRST key object and the LAST value; the tier keeps a different combination, so the surviving key's repr differs."
+    },
+    {
+      "engine": "mixture",
+      "entry_id": "py-87397d74221f",
+      "kind": "stdout",
+      "family": "float-pow-last-bit",
+      "class": "defect",
+      "why": "1.7976931348623157e308 ** 0.5 differs in the LAST ULP. Measured against the library arm on 2026-08-25: the same source compiled against glibc's libm matches CPython exactly and against musl's does not. It is a C library property, not this tree's code."
     },
     {
       "engine": "mixture",

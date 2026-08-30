@@ -579,7 +579,12 @@ def chain_from(engine: str) -> list[str]:
 #: construct right; removing one is a claim that a wrong answer was acceptable.
 #: `tests/test_routing.py` checks it against the battery in both directions.
 ONLY_CPYTHON_REFUSALS = frozenset({
+    "dunder-missing",     # mp builtins carry no __module__/__doc__; the getattr default wins
+    "encoding",           # mp ignores every non-UTF-8 codec and answers the UTF-8 bytes
     "nan-identity",       # `in` and `==` decide by identity first: NaN finds itself
+    "nan-order",          # a sort over a NaN is the algorithm's answer, and mp's differs
+    "identity",           # `is` on equal immutables — mp's small-int boxing answers True
+    "iterator-type-name",  # mp spells every iterator type `iterator`; CPython has a family
     "int-div-precision",  # int/int past 2**53 — mp converts to double and loses the low bits
     "set-order",          # CPython's hash order is observable, and it is CPython's
     "set-method",         # ...including hash(-1) == -2, reserved as an error sentinel

@@ -141,10 +141,32 @@ const MICROPYTHON_MODULES: &[&str] = &[
 pub const ONLY_CPYTHON_KINDS: &[&str] = &[
     "del",
     "dict-view",
+    // Built-in types on lypning-mp carry no `__module__`/`__doc__`, so the
+    // getattr-with-default idiom prints the default at exit 0. `dunder-attr`
+    // (the names mp answers, `__name__`/`__class__`) still falls through.
+    "dunder-missing",
+    // lypning-mp ignores every encoding argument that is not UTF-8: measured
+    // 2026-08-30, `bytes('a', 'bogus')` answers b'a' where CPython raises
+    // LookupError, and latin-1/utf-16/ascii all come back as the UTF-8 bytes.
+    "encoding",
     "exception-chaining",
+    // `is` between two equal immutables not provably the same object. The kind
+    // only fires on that ambiguous case, and it is exactly where lypning-mp
+    // answers wrongly: its small-int boxing makes `int('1000') is 1000` True
+    // where CPython says False. Measured 2026-08-30 on lypning-mp-i386.
+    "identity",
     "int-div-precision",
+    // The message names an iterator type CPython spells from a family
+    // (`list_iterator`, …) and lypning-mp spells as `iterator` — measured, so
+    // its answer is the same wrong text this engine refused to print.
+    "iterator-type-name",
     "json",
     "nan-identity",
+    // A sort over a NaN is the sort algorithm's answer, not Python's, and
+    // lypning-mp's algorithm differs from timsort: `sorted([3,1,nan,2])` is
+    // `[1, nan, 2, 3]` there and `[1, 2, 3, nan]` in CPython. Measured
+    // 2026-08-30.
+    "nan-order",
     "percent-format",
     "repr-unicode",
     "set-method",
@@ -357,6 +379,11 @@ struct Requirements {
     imports: BTreeSet<String>,
     blocker: Option<(String, String)>,
     /// Families from `.github/known-mismatches.json` this program's SOURCE
+    /// `import random as r` — bound name to module, so the construct matchers
+    /// below can see through the alias. `r.seed(7)` defeated both the dotted
+    /// `random.seed` marker and the battery's own source regex: py-0e241643581e
+    /// reached lypning-mp and printed a different stream at exit 0.
+    aliases: Vec<(String, String)>,
     /// shows it would trip on lypning-mp. See [`MICROPYTHON_UNSAFE`]. The
     /// labels come from two namespaces — ledger family names for the construct
     /// table, refusal kinds for the AST markers — and only EMPTINESS is ever
@@ -381,8 +408,11 @@ fn walk_block(body: &[Stmt], req: &mut Requirements) {
 fn walk_stmt(s: &Stmt, req: &mut Requirements) {
     match s {
         Stmt::Import { names } => {
-            for (path, _) in names {
+            for (path, bound) in names {
                 req.imports.insert(path.to_string());
+                if bound.as_ref() != path.as_ref() {
+                    req.aliases.push((bound.to_string(), path.to_string()));
+                }
                 if !crate::modules::MODULES.contains(&path.as_ref()) {
                     req.block("module", format!("import {path}"));
                 }
@@ -390,6 +420,12 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
         }
         Stmt::FromImport { module, names } => {
             req.imports.insert(module.to_string());
+            // The third spelling of `random.seed`: the bare name import. The
+            // dotted matcher cannot see a call to plain `seed(...)`, but the
+            // import line names the construct exactly.
+            if module.as_ref() == "random" && names.iter().any(|(n, _)| n.as_ref() == "seed") {
+                req.mp_risk.insert("random-seeded-stream");
+            }
             if !crate::modules::MODULES.contains(&module.as_ref()) {
                 req.block("module", format!("from {module} import …"));
             } else {
@@ -600,7 +636,8 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
                 let hit = match construct.split_once('.') {
                     Some((module, attr)) => {
                         n.as_ref() == attr
-                            && matches!(b.as_ref(), Expr::Name(m) if m.as_ref() == module)
+                            && matches!(b.as_ref(), Expr::Name(m) if m.as_ref() == module
+                                || req.aliases.iter().any(|(a, p)| a == m.as_ref() && p == module))
                     }
                     None if *construct == "parts" => {
                         n.as_ref() == "parts" && req.imports.iter().any(|m| m == "pathlib")
@@ -647,6 +684,18 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             // `float("nan")` and exactly ONE routes to lypning-mp today, so the
             // rule costs one spawn.
             if let Expr::Name(f) = func.as_ref() {
+                // The third spelling of `__module__`: `getattr(x, "__module__",
+                // default)`. The attribute marker sees only `Expr::Attr`, and a
+                // harvested probe reached lypning-mp this way and printed the
+                // DEFAULT — mp has no `__module__` on builtins — where CPython
+                // prints the module name.
+                if f.as_ref() == "getattr" && args.len() >= 2 {
+                    if let Expr::Str(a) = &args[1] {
+                        if a.as_ref() == "__module__" {
+                            req.mp_risk.insert("dunder-missing-on-builtins");
+                        }
+                    }
+                }
                 if f.as_ref() == "float" && args.len() == 1 {
                     if let Expr::Str(v) = &args[0] {
                         if v.eq_ignore_ascii_case("nan") {

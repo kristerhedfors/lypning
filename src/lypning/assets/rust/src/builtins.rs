@@ -151,6 +151,21 @@ fn kwget(kw: &[(Rc<str>, Value)], name: &str) -> Option<Value> {
 /// exit 1, and an ordinary non-zero exit is the program's own, so the
 /// dispatcher does not fall through — the caller got that error for valid
 /// Python instead of the answer.
+/// CPython's exact complaint for a keyword a function does not take. `sorted`
+/// says `sort()` in its message, which is why the reported name is a parameter.
+/// `sorted([3, 1], strict_mode=True)` answered `[1, 3]` — the caller asked for
+/// a stricter mode and silently got the default one.
+fn reject_unknown_kw(func: &str, kw: &[(Rc<str>, Value)], allowed: &[&str]) -> R<()> {
+    for (k, _) in kw {
+        if !allowed.contains(&k.as_ref()) {
+            return Err(type_err(format!(
+                "'{k}' is an invalid keyword argument for {func}()"
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub fn key_arg(kw: &[(Rc<str>, Value)], name: &str) -> Option<Value> {
     match kwget(kw, name) {
         Some(Value::None) | None => None,
@@ -741,6 +756,7 @@ pub fn call_builtin(
             }
         }
         "min" | "max" => {
+            reject_unknown_kw(name, &kw, &["key", "default"])?;
             let want_max = name == "max";
             let from_set = args.len() == 1 && matches!(args.first(), Some(Value::Set(_)));
             let items: Vec<Value> = if args.len() == 1 {
@@ -791,6 +807,7 @@ pub fn call_builtin(
             best
         }
         "sorted" => {
+            reject_unknown_kw("sort", &kw, &["key", "reverse"])?;
             let v = args
                 .first()
                 .cloned()
@@ -1235,8 +1252,24 @@ pub fn call_builtin(
             // moment the text is not, which is exactly when it matters.
             // `bytes('abc', 'utf-8')` is the spelling that works and still does.
             Some(Value::Str(s)) => {
-                if args.get(1).is_none() && kwget(&kw, "encoding").is_none() {
+                // The encoding argument's VALUE was never read: `bytes('a',
+                // 'bogus')` answered b'a' where CPython raises LookupError, and
+                // `bytes('héllo', 'latin-1')` answered the UTF-8 bytes — data
+                // corruption at exit 0. Same rule as `str.encode` above: UTF-8
+                // spellings pass, ASCII validates, anything else refuses.
+                let enc = args.get(1).cloned().or_else(|| kwget(&kw, "encoding"));
+                let Some(e) = enc else {
                     return Err(type_err("string argument without an encoding"));
+                };
+                let e = fmt::to_str(&e)?.to_ascii_lowercase().replace('_', "-");
+                if !matches!(e.as_str(), "utf-8" | "utf8" | "ascii") {
+                    return Err(unsupported("encoding", &format!("bytes(str, '{e}')")));
+                }
+                if e == "ascii" && !s.is_ascii() {
+                    return Err(LypningError::exc(
+                        "UnicodeEncodeError",
+                        "'ascii' codec can't encode character",
+                    ));
                 }
                 Value::Bytes(Rc::new(s.as_bytes().to_vec()))
             }

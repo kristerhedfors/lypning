@@ -91,6 +91,31 @@ impl Interp {
                 }
                 Value::Dict(Rc::new(RefCell::new(d)))
             }
+            // `d.keys() | {"c"}` is SET ALGEBRA in CPython — keys and items
+            // views are set-like — and it fell through to the generic TypeError
+            // here, so a valid program died at exit 1 with a message CPython
+            // never prints. The result is a SET whose iteration order this
+            // engine refuses to expose anyway, so the whole family refuses as
+            // `dict-view`, which the chain escalates to CPython. A VALUES view
+            // is not set-like and falls through: the generic message below is
+            // CPython's own for it.
+            (BitOr | BitAnd | Sub | BitXor, Value::DictView(_, k), Value::Set(_))
+            | (BitOr | BitAnd | Sub | BitXor, Value::Set(_), Value::DictView(_, k))
+                if *k != "values" =>
+            {
+                return Err(unsupported(
+                    "dict-view",
+                    "set algebra over a dict view, whose result is a set with CPython's order",
+                ))
+            }
+            (BitOr | BitAnd | Sub | BitXor, Value::DictView(_, k1), Value::DictView(_, k2))
+                if *k1 != "values" && *k2 != "values" =>
+            {
+                return Err(unsupported(
+                    "dict-view",
+                    "set algebra over a dict view, whose result is a set with CPython's order",
+                ))
+            }
             // `bytes % args` is real Python (PEP 461) and is not implemented
             // here. Falling into the arm below made it a TypeError — the
             // program's own exit, which the dispatcher does not treat as a
@@ -627,6 +652,19 @@ impl Interp {
         // AttributeError for anyway. That is the asymmetry invariant 1 is
         // about, and it only points one way.
         if name.starts_with("__") && name.ends_with("__") && name.len() > 4 {
+            // TWO KINDS, because the tier below splits exactly here — measured
+            // 2026-08-30 on lypning-mp-i386: it answers `__name__` and
+            // `__class__` correctly and gets `__module__` and `__doc__` wrong
+            // (built-in types carry neither there, so the ordinary
+            // format-an-exception idiom prints the getattr DEFAULT at exit 0).
+            // `dunder-missing` is in ONLY_CPYTHON_KINDS; `dunder-attr` falls
+            // through to the tier that answers it.
+            if matches!(name, "__module__" | "__doc__") {
+                return Err(unsupported(
+                    "dunder-missing",
+                    &format!("{}.{name}, which the middle tier's builtins do not carry", type_name(base)),
+                ));
+            }
             return Err(unsupported(
                 "dunder-attr",
                 &format!("{}.{name}, which is part of Python's data model", type_name(base)),

@@ -838,6 +838,7 @@ Makefile               thin wrappers: build test check conformance fuzz bench ga
 | `docs/PROMPTING.md` | can an agent be *asked* into the subset? 884 generated programs across nine prompt treatments, and what each one bought |
 | `docs/BENCH-LEDGER.md` | append-only measurement history, including the losses |
 | `docs/HILLCLIMB.md` | append-only ledger of improvement steps — the four numbers each moved, and the ones that moved nothing |
+| `docs/FORKING.md` | fork it and tune it to YOUR programs: the capture→harvest→gate→step loop as a standing feature, and every optimization classified by whether it transfers, re-derives, or must be re-measured |
 
 Working on this repository? Read `CLAUDE.md` first, and
 `.claude/skills/hillclimb/SKILL.md` for the loop that improves it — what to
