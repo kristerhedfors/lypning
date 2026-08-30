@@ -147,17 +147,10 @@ impl Interp {
     }
 
     pub fn contains(&mut self, container: &Value, needle: &Value) -> R<bool> {
-        // `n in [n]` is True in CPython because `in` compares identity first,
-        // and a NaN is the one value for which that is observable — it is not
-        // equal to itself. A float here has no identity, so this cannot be
-        // answered either way without being wrong for the other case. See
-        // `value::nan_in`.
-        if crate::value::has_nan(needle) || crate::value::has_nan(container) {
-            return Err(unsupported(
-                "nan-identity",
-                "`in` over a NaN, which CPython decides by object identity",
-            ));
-        }
+        // `in` compares identity first (`x is y or x == y`), and a NaN is the
+        // one value for which that is observable. The rule lives in
+        // `value::elem_eq`, once, at the element level — a blanket refusal here
+        // used to reject `n in [1, 2]`, which has exactly one answer.
         Ok(match container {
             Value::Str(s) => match needle {
                 Value::Str(n) => s.contains(n.as_ref()),
@@ -200,17 +193,27 @@ impl Interp {
                 // replaces cost a Vec allocation and a refcount bump per element
                 // on every `x in xs`.
                 let items = l.borrow();
+                // The needle is fixed, so the NaN half of `elem_eq`'s question
+                // is hoisted: one bool, tested only on the miss path.
+                let needle_nan = crate::value::nan_here(needle);
                 for x in items.iter() {
                     if eq(x, needle)? {
                         return Ok(true);
+                    }
+                    if needle_nan && crate::value::nan_here(x) {
+                        return Err(crate::value::refuse_nan_elem());
                     }
                 }
                 false
             }
             Value::Tuple(t) => {
+                let needle_nan = crate::value::nan_here(needle);
                 for x in t.iter() {
                     if eq(x, needle)? {
                         return Ok(true);
+                    }
+                    if needle_nan && crate::value::nan_here(x) {
+                        return Err(crate::value::refuse_nan_elem());
                     }
                 }
                 false
@@ -256,7 +259,7 @@ impl Interp {
             Value::Gen(_) => {
                 let mut it = self.make_iter(container.clone())?;
                 while let Some(x) = self.iter_next(&mut it)? {
-                    if eq(&x, needle)? {
+                    if crate::value::elem_eq(&x, needle)? {
                         return Ok(true);
                     }
                 }
@@ -1026,7 +1029,7 @@ pub fn order_cmp(op: CmpOp, a: &Value, b: &Value) -> R<bool> {
             let _nest = crate::err::Nest::enter("comparison")?;
             let (x, y) = (x.borrow(), y.borrow());
             for (p, q) in x.iter().zip(y.iter()) {
-                if !eq(p, q)? {
+                if !crate::value::elem_eq(p, q)? {
                     return order_cmp(op, p, q);
                 }
             }
@@ -1035,7 +1038,7 @@ pub fn order_cmp(op: CmpOp, a: &Value, b: &Value) -> R<bool> {
         (Value::Tuple(x), Value::Tuple(y)) => {
             let _nest = crate::err::Nest::enter("comparison")?;
             for (p, q) in x.iter().zip(y.iter()) {
-                if !eq(p, q)? {
+                if !crate::value::elem_eq(p, q)? {
                     return order_cmp(op, p, q);
                 }
             }
@@ -1112,7 +1115,7 @@ fn order_as(sym: &str, a: &Value, b: &Value) -> R<Ordering> {
 
 fn seq_order(sym: &str, x: &[Value], y: &[Value]) -> R<Ordering> {
     for (a, b) in x.iter().zip(y.iter()) {
-        if !eq(a, b)? {
+        if !crate::value::elem_eq(a, b)? {
             return order_as(sym, a, b);
         }
     }

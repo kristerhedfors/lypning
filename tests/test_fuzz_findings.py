@@ -20,6 +20,16 @@ import pytest
 from lypning import engines
 
 CASES = [
+    # THE ELEMENT TEST IS `x is y or x == y`, NOT `==`. CPython's container
+    # protocols compare identity first, and a NaN is the one value for which
+    # that is observable. The old rule refused whole sequences whenever a NaN
+    # was anywhere in them — but "only one side is a NaN" has exactly one
+    # answer: they cannot be the same object AND they are not equal. These four
+    # were refusals and are now CPython's own answers.
+    ("nan-one-sided-eq", "n = float('nan')\nprint([n] == [1])"),
+    ("nan-one-sided-in", "n = float('nan')\nprint(n in [1, 2])"),
+    ("nan-one-sided-count", "n = float('nan')\nprint([1, 2].count(n))"),
+    ("nan-one-sided-tuple", "n = float('nan')\nprint((1,) == (n,))"),
     # `str.rsplit(None, maxsplit)` REFUSED and its bytes twin answered. The
     # whitespace-split rule lived in two implementations — and the bytes copy's
     # own comment said "this is the only place the rule lives". One rule, two
@@ -591,6 +601,17 @@ def test_matches_cpython(name: str, program: str) -> None:
 #: exit 90, one line on stderr, nothing on stdout, and the dispatcher gets the
 #: real answer from CPython one spawn later.
 REFUSES = [
+    # ...and when BOTH sides are a NaN the question is identity, which a bare
+    # f64 cannot carry. These seven used to ANSWER, all wrongly: `[n] <= [n]`
+    # said False where CPython says True, `[n].count(n)` said 0 where CPython
+    # says 1, `[n].index(n)` raised ValueError at exit 1 (unroutable), and two
+    # distinct NaNs collapsed to one set element because their bits matched.
+    ("nan-both-sides-le", "n = float('nan')\nprint([n] <= [n])"),
+    ("nan-both-sides-count", "n = float('nan')\nprint([n].count(n))"),
+    ("nan-both-sides-index", "n = float('nan')\nprint([n].index(n))"),
+    ("nan-both-sides-in", "n = float('nan')\nprint(n in [n])"),
+    ("nan-set-two", "n = float('nan')\nm = float('nan')\nprint(len({n, m}))"),
+    ("nan-dict-key", "n = float('nan')\nprint({n: 1}[n])"),
     # `range.index` and `range.count` are real CPython methods this engine does
     # not implement. They answered AttributeError at exit 1 — unroutable —
     # where every other unimplemented method refuses.

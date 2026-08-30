@@ -1241,13 +1241,17 @@ fn list_method(
         }
         "remove" => {
             let v = args.first().cloned().unwrap_or(Value::None);
+            let vn = crate::value::nan_here(&v);
             let pos = {
                 let b = l.borrow();
                 let mut found = None;
                 for (i, x) in b.iter().enumerate() {
-                    if eq(x, &v)? {
+                    if crate::value::eq(x, &v)? {
                         found = Some(i);
                         break;
+                    }
+                    if vn && crate::value::nan_here(x) {
+                        return Err(crate::value::refuse_nan_elem());
                     }
                 }
                 found
@@ -1282,10 +1286,14 @@ fn list_method(
                 None | Some(Value::None) => n,
                 Some(x) => crate::eval::clamp_index(int_val(x)?, n),
             };
+            let vn = crate::value::nan_here(&v);
             let mut i = lo;
             while i < hi {
-                if eq(&b[i as usize], &v)? {
+                if crate::value::eq(&b[i as usize], &v)? {
                     return Ok(Value::Int(i));
+                }
+                if vn && crate::value::nan_here(&b[i as usize]) {
+                    return Err(crate::value::refuse_nan_elem());
                 }
                 i += 1;
             }
@@ -1294,10 +1302,13 @@ fn list_method(
         "count" => {
             let v = args.first().cloned().unwrap_or(Value::None);
             let b = l.borrow();
+            let vn = crate::value::nan_here(&v);
             let mut n = 0;
             for x in b.iter() {
-                if eq(x, &v)? {
+                if crate::value::eq(x, &v)? {
                     n += 1;
+                } else if vn && crate::value::nan_here(x) {
+                    return Err(crate::value::refuse_nan_elem());
                 }
             }
             Value::Int(n)
@@ -1531,10 +1542,13 @@ fn tuple_method(t: &Rc<Vec<Value>>, name: &str, args: &mut Args) -> R<Value> {
         .ok_or_else(|| type_err(format!("{name}() takes exactly one argument")))?;
     match name {
         "count" => {
+            let vn = crate::value::nan_here(needle);
             let mut n = 0i64;
             for v in t.iter() {
                 if crate::value::eq(v, needle)? {
                     n += 1;
+                } else if vn && crate::value::nan_here(v) {
+                    return Err(crate::value::refuse_nan_elem());
                 }
             }
             Ok(Value::Int(n))
@@ -1550,10 +1564,14 @@ fn tuple_method(t: &Rc<Vec<Value>>, name: &str, args: &mut Args) -> R<Value> {
                 None | Some(Value::None) => n,
                 Some(x) => crate::eval::clamp_index(int_val(x)?, n),
             };
+            let vn = crate::value::nan_here(needle);
             let mut i = lo;
             while i < hi {
                 if crate::value::eq(&t[i as usize], needle)? {
                     return Ok(Value::Int(i));
+                }
+                if vn && crate::value::nan_here(&t[i as usize]) {
+                    return Err(crate::value::refuse_nan_elem());
                 }
                 i += 1;
             }

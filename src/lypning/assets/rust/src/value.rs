@@ -98,6 +98,13 @@ pub fn hkey(v: &Value) -> R<HKey> {
         Value::Float(f) => {
             if f.is_finite() && f.fract() == 0.0 && *f >= -(2f64.powi(63)) && *f < 2f64.powi(63) {
                 HKey::Int(*f as i64)
+            } else if f.is_nan() {
+                // Two distinct NaNs are DIFFERENT dict keys in CPython — lookup
+                // uses the identity-first rule, so each NaN finds only itself.
+                // Keying on the bit pattern collapsed them: `{n, m}` had one
+                // element where CPython has two, at exit 0. Identity is the one
+                // thing a bare f64 cannot carry, so this refuses.
+                return Err(refuse_nan_identity("a dict or set lookup"));
             } else {
                 HKey::Float(f.to_bits())
             }
@@ -377,7 +384,7 @@ pub fn str_val(s: impl Into<Rc<str>>) -> Value {
 /// process on a 1 MB host thread. `eq` already descends, guarded, and every
 /// level runs this check on its own immediate elements, so a shallow test
 /// covers the same ground with no recursion of its own.
-fn nan_here(v: &Value) -> bool {
+pub(crate) fn nan_here(v: &Value) -> bool {
     matches!(v, Value::Float(f) if f.is_nan())
 }
 
@@ -391,6 +398,55 @@ pub fn has_nan(v: &Value) -> bool {
     }
 }
 
+/// CPython's element test, which is NOT `==`: `PyObject_RichCompareBool` asks
+/// `x is y or x == y` — identity FIRST. That shortcut is observable for exactly
+/// one value, a NaN, which is unequal to itself but identical to itself. A bare
+/// `f64` carries no identity, so when BOTH sides are NaN the question has no
+/// answer here and is refused; when only one side is, they cannot be the same
+/// object AND they are not equal, so `false` is CPython's own answer.
+///
+/// Every sequence scan must use this and not `eq`. Before they did, seven
+/// measured programs answered wrongly at exit 0 — `[n] <= [n]` was False where
+/// CPython says True, `[n].count(n)` was 0 where CPython says 1, `max` between
+/// nested lists picked the wrong element — and `eq`'s own whole-sequence
+/// prescan refused `[n] == [1]` and `n in [1, 2]`, both of which have one
+/// answer (False) that this now gives. Containers are not tested here: the
+/// recursion reaches their elements and the rule fires at the level where the
+/// NaN actually sits.
+/// The test sits on the UNEQUAL exit, and that placement is the whole cost
+/// story. A both-NaN pair always compares unequal — `nan == nan` is False — so
+/// the only comparisons that can need the identity refusal are the ones `eq`
+/// already rejected. Equal elements therefore cost exactly nothing extra, and
+/// an unequal one costs a single short-circuited discriminant test on a path
+/// that just ran a full `eq`. Two earlier shapes were measured and discarded:
+/// the test in FRONT of every comparison cost 15–23% on scan loops, and a
+/// whole-sequence prescan still cost 6–7%.
+#[inline]
+pub fn elem_eq(a: &Value, b: &Value) -> R<bool> {
+    if eq(a, b)? {
+        return Ok(true);
+    }
+    if nan_here(a) && nan_here(b) {
+        return Err(refuse_nan_identity("sequence element comparison"));
+    }
+    Ok(false)
+}
+
+/// `#[cold]` + `#[inline(never)]`: this is called from inside `elem_eq`, which
+/// is itself inlined into every sequence-scan loop. Without the attributes the
+/// `format!` machinery here is inlined into those loops too, and a needle scan
+/// with misses measured 15% slower for code it never executes.
+/// The refusal for a needle scan that found a both-NaN pair — see `elem_eq`.
+/// Crate-visible so scan sites can hoist `nan_here(needle)` out of their loops
+/// and test it only on the miss path, where it is one predicted register test.
+#[cold]
+#[inline(never)]
+pub(crate) fn refuse_nan_elem() -> LypningError {
+    refuse_nan_identity("sequence element comparison")
+}
+
+#[cold]
+#[inline(never)]
 fn refuse_nan_identity(what: &str) -> LypningError {
     unsupported(
         "nan-identity",
@@ -423,17 +479,9 @@ pub fn eq(a: &Value, b: &Value) -> R<bool> {
                 return Ok(true);
             }
             let (x, y) = (x.borrow(), y.borrow());
-            if x.iter().any(nan_here) || y.iter().any(nan_here) {
-                return Err(refuse_nan_identity("sequence equality"));
-            }
             seq_eq(&x, &y)?
         }
-        (Value::Tuple(x), Value::Tuple(y)) => {
-            if x.iter().any(nan_here) || y.iter().any(nan_here) {
-                return Err(refuse_nan_identity("sequence equality"));
-            }
-            seq_eq(x, y)?
-        }
+        (Value::Tuple(x), Value::Tuple(y)) => seq_eq(x, y)?,
         (Value::Dict(x), Value::Dict(y)) => {
             if Rc::ptr_eq(x, y) {
                 return Ok(true);
@@ -547,7 +595,7 @@ fn seq_eq(x: &[Value], y: &[Value]) -> R<bool> {
         return Ok(false);
     }
     for (a, b) in x.iter().zip(y.iter()) {
-        if !eq(a, b)? {
+        if !elem_eq(a, b)? {
             return Ok(false);
         }
     }

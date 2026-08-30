@@ -14,6 +14,49 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-30** — The element test is `x is y or x == y`, and every sequence
+scan now uses it
+
+- **`[n].count(n)` answered `0`; CPython answers `1`.** CPython's container
+  protocols compare identity *before* equality, and a NaN is the one value for
+  which the shortcut is observable. The rule was implemented once — as a
+  whole-sequence prescan in `eq` that refused whenever a NaN was anywhere —
+  while the ordering descent, `in` over lists and tuples, `min`/`max`, and the
+  five scan methods (`list.count`/`.index`/`.remove`, `tuple.count`/`.index`)
+  each called bare `eq` and skipped it. Seven measured programs answered
+  wrongly at exit 0: `[n] <= [n]` was `False` against `True`,
+  `max([[n],[n,1]])` picked the wrong element, `[n].index(n)` raised
+  `ValueError` at exit 1 — the program's own exit, which the chain does not
+  retry — and two *distinct* NaNs collapsed to one set element because the hash
+  key was their bit pattern.
+- **The rule now lives once, in `value::elem_eq`, and it is exactly as narrow
+  as the ambiguity.** Both sides NaN → the question is identity, which a bare
+  `f64` cannot carry → exit 90. One side NaN → they cannot be the same object
+  *and* they are not equal, so `False` is CPython's own answer — which
+  **recovers coverage**: `[n] == [1]`, `n in [1, 2]` and `[1, 2].count(n)` were
+  refused by the old prescan and now answer. `hkey` refuses a NaN dict key or
+  set member for the same reason, instead of collapsing by bits.
+- **The test sits on the *unequal* exit, and that placement is the performance
+  story.** A both-NaN pair always compares unequal, so only comparisons `eq`
+  already rejected can need the refusal — equal elements cost nothing. Two
+  earlier shapes were measured and discarded (the test in front of every
+  comparison, then a whole-sequence prescan), but the wall clock on this host
+  swings ±8% on identical binaries, so the deciding instrument was callgrind:
+  instruction counts, which are exact. Against the pre-change build:
+  list equality **−12.8%**, needle scans **−3.2%**, an equality-heavy composite
+  **−3.8%**, mixed-method and whitespace workloads ±0.01% — the old
+  whole-sequence NaN prescan cost more than the identity rule now does.
+  Needle scans hoist the NaN half out of the loop (the needle is fixed) and
+  test it only on a miss; `refuse_nan_identity` is `#[cold]` so its `format!`
+  machinery stays out of the inlined loops.
+- **Docs updated to match the tree.** `docs/LYPNING.md` gains the NaN-identity
+  rule as the fourth deliberate refusal and describes the escalation the chain
+  now performs (`ONLY_CPYTHON_KINDS`, read by both dispatchers); the README's
+  dispatch diagram shows the skip. Found by a survey agent that measured 30
+  divergences across a 400-cell NaN ordering grid.
+- Corpus unmoved: UNSAFE 2, IDEAL 1512, tier-1 MISMATCH 1 (musl libm),
+  mixture MISMATCH 1. Suite 1,261 → 1,271.
+
 **2026-08-28** — There are two dispatchers, and the escalation rule was in one
 of them
 

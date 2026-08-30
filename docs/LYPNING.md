@@ -255,6 +255,17 @@ the places where lypning refuses rather than approximates:
 3. **`repr` of a non-ASCII character** needs CPython's Unicode category tables
    to decide whether to escape it. lypning carries a whitelist of blocks that are
    unambiguously printable and refuses the rest.
+4. **A NaN inside a container is compared by object identity, which a bare
+   `f64` cannot carry.** CPython's element test is `x is y or x == y` —
+   identity *first* — and a NaN is the one value for which the shortcut is
+   observable: `n in [n]` is True there and `[n].count(n)` is 1. The rule is
+   exactly as narrow as the ambiguity: when **both** sides of one element
+   comparison are NaN the question is identity and lypning exits 90; when only
+   one side is, they cannot be the same object *and* they are not equal, so
+   False is CPython's own answer and lypning gives it — `[n] == [1]`,
+   `n in [1, 2]` and `[1, 2].count(n)` all answer. The same rule keys dicts and
+   sets: two *distinct* NaNs are two different keys in CPython, so a NaN as a
+   dict key or set member is refused rather than collapsed by bit pattern.
 
 Everything CPython specifies exactly is implemented exactly, including the ones
 that look like they should fall out of the host language and do not: floor
@@ -439,6 +450,20 @@ and a traceback with exit 0 (which no conforming Python produces). An ordinary
 non-zero exit with a traceback is deliberately *not* one of them — that is very
 often the program's own correct answer, and re-running it would execute its side
 effects twice.
+
+**Where the chain moves *to* depends on why the tier refused.** Falling through
+assumes the tier below is at least as correct as the one that refused, and for
+a capability gap it is — "I have no decorators", and MicroPython has
+decorators. Some refusals are not capability gaps: they name a behaviour subtle
+enough that the refusal exists *because* a reimplementation gets it wrong, so
+the tier below answers wrongly at exit 0 instead of refusing —
+`nan-identity`, `set-order` and `int-div-precision` among them. For those kinds
+the chain skips lypning-mp and goes straight to CPython. The table is
+`ONLY_CPYTHON_KINDS` in `route.rs`, read by **both** dispatchers — the Rust
+binary's own `run` and `engines.dispatch` — because it briefly lived in only
+one of them, and `lypning run -c 'print({3,1,2})'` printed `{3, 1, 2}` through
+the binary while the battery, which exercises the Python dispatcher, stayed
+green. `tests/test_routing.py` holds the two to the one table.
 
 ## 6. The commit barrier
 

@@ -69,6 +69,8 @@ reproduce.
   └───┬───────────────────────────────┘ │              │
       │ exit 90 · one line on stderr,   │              │
       │ and stdout never written        │              │
+      │ (a kind in ONLY_CPYTHON_KINDS   │              │
+      │  skips 2 and goes straight to 3)│              │
       ▼                                 │              │
   ┌───────────────────────────────────┐ │              │
   │ 2  lypning-mp · MicroPython       │◀┘              │
