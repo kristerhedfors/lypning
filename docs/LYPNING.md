@@ -239,6 +239,14 @@ the places where lypning refuses rather than approximates:
 
 1. **Integers are i64; Python's are arbitrary precision.** Every arithmetic
    operation is checked and an overflow is `unsupported: bigint`, never a wrap.
+   One integer refusal is deliberately *not* `bigint`: `int / int` where an
+   operand is past 2\*\*53 needs a quotient rounded from the integers themselves,
+   and converting each to `f64` first loses the low bits before the divide. That
+   is `unsupported: int-div-precision`, and the separate name is load-bearing —
+   lypning-mp *has* arbitrary-precision integers, so it answers a `bigint`
+   refusal correctly and is worth falling through to, while on this one it does
+   the same lossy conversion and answers wrongly. See
+   `engines.ONLY_CPYTHON_REFUSALS`.
 2. **Set iteration order is CPython's hashing, and cannot be reproduced.** So
    order-*independent* operations on sets work (`len`, `in`, the set algebra,
    `sorted`, `min`, `max`, `any`, `all`) and anything that would expose an order
@@ -247,6 +255,17 @@ the places where lypning refuses rather than approximates:
 3. **`repr` of a non-ASCII character** needs CPython's Unicode category tables
    to decide whether to escape it. lypning carries a whitelist of blocks that are
    unambiguously printable and refuses the rest.
+4. **A NaN inside a container is compared by object identity, which a bare
+   `f64` cannot carry.** CPython's element test is `x is y or x == y` —
+   identity *first* — and a NaN is the one value for which the shortcut is
+   observable: `n in [n]` is True there and `[n].count(n)` is 1. The rule is
+   exactly as narrow as the ambiguity: when **both** sides of one element
+   comparison are NaN the question is identity and lypning exits 90; when only
+   one side is, they cannot be the same object *and* they are not equal, so
+   False is CPython's own answer and lypning gives it — `[n] == [1]`,
+   `n in [1, 2]` and `[1, 2].count(n)` all answer. The same rule keys dicts and
+   sets: two *distinct* NaNs are two different keys in CPython, so a NaN as a
+   dict key or set member is refused rather than collapsed by bit pattern.
 
 Everything CPython specifies exactly is implemented exactly, including the ones
 that look like they should fall out of the host language and do not: floor
@@ -278,15 +297,26 @@ The routing score is asymmetric on purpose (this tree, 2026-08-25, same run as
 ```
 routing over 1305 programs
 
-  IDEAL      1188  routed to the cheapest engine that works
+  IDEAL      1233  routed to the cheapest engine that works
   WASTED       28  engine refused; one extra spawn, right answer
-  LATE         85  worked, but a cheaper engine would have too
+  LATE         40  worked, but a cheaper engine would have too
   UNSAFE        4  routed to an engine that MISMATCHES
   NO-ENGINE     0
 
-  accuracy 91.0% ideal, 97.5% correct-on-first-try
-  predictions: lypning=876  lypning-mp=295  cpython=134
+  accuracy 94.5% ideal, 97.5% correct-on-first-try
+  predictions: lypning=888  lypning-mp=309  cpython=108
 ```
+
+**LATE counts only programs a cheaper tier would have *answered*.** It did not
+always: a program that does not parse has an empty stdout and a non-zero exit on
+every interpreter, so each one scored MATCH for producing nothing and the
+cheapest was named the ideal destination for a program none of them could run.
+Nineteen programs read LATE for that reason alone — a quarter of the budget spent
+on `print($p)`. The difference that matters is on **stderr**, which the battery
+does not compare, so the grader now skips a tier whose match was a shared
+failure. It skips it only on a `syntax` route and only when that tier exited
+non-zero: a tier that exited 0 with real output *answered*, and a classifier
+calling that a syntax error is a misclassification that must stay visible.
 
 **All four UNSAFE routes are lypning-mp**, and three of them are the
 streamed-stdout defect of §2 reached through the router: a program predicted for
@@ -294,15 +324,21 @@ lypning-mp whose ideal tier is CPython. The dispatcher recovered those three,
 and they still count — a route that lands on an engine which mismatches is the
 one outcome that spends trust instead of milliseconds.
 
-The fourth is the one the dispatcher **cannot** recover: `py-9b16a7261b96` is
-answered by lypning-mp at exit 0 with the wrong output, so nothing signals the
-chain to fall onward and the caller gets it. That is the whole reason UNSAFE is
-a gate and WASTED and LATE are a budget.
+The fourth is the one the dispatcher **cannot** recover, and not for the reason
+this paragraph gave until it was re-measured. `py-9b16a7261b96` does not answer
+at exit 0 with the wrong output; it dies at **exit 1** with a MicroPython
+traceback, eleven correct lines already on stdout, on `type(e).__module__` —
+which built-in types do not carry there. An ordinary non-zero exit is
+deliberately not a refusal (re-running would execute side effects twice), so the
+chain does not rescue it and the caller keeps the fragment. The distinction
+matters to a reader deciding what to fix: this is a loud crash where CPython
+succeeds, not a silent wrong answer. `.github/known-mismatches.json` carries the
+same account, and had it right first.
 
 A wrong route costs a process spawn. A wrong *answer* costs the user's trust, so
 UNSAFE is tracked separately and the dispatcher is built to recover from it.
 
-### One systematic LATE route: `os.path`
+### One systematic LATE route: `os.path`, and what closing it moved
 
 The prompting study ([PROMPTING.md](PROMPTING.md) §6) put 884 agent-written
 programs through the classifier and then through the engine, and found that
@@ -311,20 +347,47 @@ programs sent past tier 1 that tier 1 then ran correctly, of which
 `os.path.getsize()` was 16, `os.path.splitext()` 15 and `os.path.basename()` 4,
 and nothing else.
 
-`walk_expr`'s `Expr::Attr` arm in `route.rs` resolves a module attribute only
-when the base is a bare `Expr::Name`. So `os.getenv` is decided against
+`walk_expr`'s `Expr::Attr` arm in `route.rs` resolved a module attribute only
+when the base was a bare `Expr::Name`. So `os.getenv` was decided against
 `modules::MODULES` and answered correctly, while `os.path.basename` — whose base
-is itself an `Expr::Attr` — falls past that check into the method table, misses
-every entry there, and is blocked as `method: .basename()`. The engine
-implements all three; the classifier has no way to see that it does.
+is itself an `Expr::Attr` — fell past that check into the method table, missed
+every entry there, and was blocked as `method: .basename()`. The engine
+implements fourteen functions under `os.path`; the classifier could see none of
+them.
 
-It is a LATE route, so it is a budget rather than a gate, and it is already
-inside the LATE the run above reports. What the study adds is that the cost is
-no longer only a spawn: an agent told to trust `lypning route` — which is what
-the skill tells it to do — will *rewrite working code to satisfy a tier the
-original already met*. Two of the study's agents replaced `os.path.splitext`
-with a hand-rolled `rfind` for exactly that reason. A classifier that
-under-reports its own engine teaches once it is inside a prompt loop.
+The cost was never only a spawn, which is why this was worth closing rather than
+budgeting. `lypning route` is what the skill tells an agent to trust, so an agent
+reads `cpython` and *rewrites working code to satisfy a tier the original already
+met*. Two of the study's agents replaced `os.path.splitext` with a hand-rolled
+`rfind` for exactly that reason. **A classifier that under-reports its own engine
+teaches, once it is inside a prompt loop.**
+
+The fix is a recursive `resolve_module`: a dotted expression resolves one step at
+a time through `modules::get_attr`, and a step counts only when it lands on a
+`Value::Module`. `os.environ` is a dict, so the walk stops there and `.get` stays
+a method — which is correct, and is the half a non-recursive rewrite would have
+got wrong. Measured over 1305 programs, on the same binary to the byte
+(987,336 B, 8 blocks — routing is parse-time and costs no code):
+
+| | before | after |
+|---|---|---|
+| IDEAL | 1190 | **1204** |
+| LATE | 83 | **69** |
+| WASTED | 28 | 28 |
+| UNSAFE | 4 | 4 |
+| routed to cpython | 132 | **118** |
+
+(Both columns are from this session's two runs over the same 1305 graded
+programs, and both were graded before the shared-failure rule above landed —
+which is why neither matches the block at the top of this section. An A/B is
+only an A/B when one thing changed.)
+
+Fourteen programs stopped paying a CPython spawn — twelve now answered by
+lypning, two by lypning-mp — and no program moved the wrong way: WASTED did not
+rise, so nothing was sent to a tier that then refused it. An unknown name under a
+module the engine does have is now reported as `module-attr: os.path.nosuchfn`
+rather than `method: .nosuchfn()`, which is the same word the engine's own
+refusal uses.
 
 ## 5. The dispatcher
 
@@ -387,6 +450,20 @@ and a traceback with exit 0 (which no conforming Python produces). An ordinary
 non-zero exit with a traceback is deliberately *not* one of them — that is very
 often the program's own correct answer, and re-running it would execute its side
 effects twice.
+
+**Where the chain moves *to* depends on why the tier refused.** Falling through
+assumes the tier below is at least as correct as the one that refused, and for
+a capability gap it is — "I have no decorators", and MicroPython has
+decorators. Some refusals are not capability gaps: they name a behaviour subtle
+enough that the refusal exists *because* a reimplementation gets it wrong, so
+the tier below answers wrongly at exit 0 instead of refusing —
+`nan-identity`, `set-order` and `int-div-precision` among them. For those kinds
+the chain skips lypning-mp and goes straight to CPython. The table is
+`ONLY_CPYTHON_KINDS` in `route.rs`, read by **both** dispatchers — the Rust
+binary's own `run` and `engines.dispatch` — because it briefly lived in only
+one of them, and `lypning run -c 'print({3,1,2})'` printed `{3, 1, 2}` through
+the binary while the battery, which exercises the Python dispatcher, stayed
+green. `tests/test_routing.py` holds the two to the one table.
 
 ## 6. The commit barrier
 

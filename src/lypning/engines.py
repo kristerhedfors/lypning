@@ -479,7 +479,8 @@ class Route:
         return f"{self.engine}{why}"
 
 
-def route(program: str, *, binary: Path | None = None, timeout: float | None = 30.0) -> Route:
+def route(program: str, *, binary: Path | None = None, timeout: float | None = 30.0,
+          env: dict[str, str] | None = None) -> Route:
     """Ask the Rust front end which tier should run this.
 
     Routing is a static analysis over lypning's own parser, not a heuristic over
@@ -505,7 +506,7 @@ def route(program: str, *, binary: Path | None = None, timeout: float | None = 3
             [str(b), "route", "-c", program],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             check=False, timeout=timeout,
-            env={**os.environ, "LYPNING_CAPTURE": "0"},
+            env={**os.environ, "LYPNING_CAPTURE": "0", **(env or {})},
         )
     except subprocess.TimeoutExpired:
         return Route(CPYTHON, "route-failed", "the classifier did not answer within %gs" % timeout)
@@ -530,6 +531,88 @@ def chain_from(engine: str) -> list[str]:
     return list(ENGINE_ORDER[i:])
 
 
+#: Refusal kinds after which the chain jumps straight to CPython.
+#:
+#: Falling through assumes the next tier down is at least as correct as the one
+#: that refused, and for most refusals it is: "I have no decorators" is a
+#: capability gap, and MicroPython has decorators. But some refusals are not
+#: about a missing feature at all. They say *CPython's behaviour here is subtle
+#: and I decline to guess it* — and a second independent reimplementation is no
+#: likelier to have replicated that subtlety than the first was. It is the
+#: defining property of these constructs that reimplementations get them wrong.
+#: That is why the refusal exists.
+#:
+#: For those, falling through does not cost a spawn. It converts a correct
+#: refusal into a **silent wrong answer at exit 0**, which is the one outcome
+#: the whole three-tier design exists to prevent.
+#:
+#: Measured over the corpus the run loaded (2,239 programs, 2026-08-28): tier 1
+#: refuses 569 programs, and 25 of those are then answered *wrongly* by the tier
+#: below.
+#:
+#: What each kind costs, on that corpus — programs tier 1 refuses with it, by
+#: what lypning-mp then did. The right-hand column is the price: a program mp
+#: would have answered correctly now pays a CPython spawn instead of a
+#: MicroPython one. It is not zero, and an earlier revision of this comment said
+#: it was:
+#:
+#:     nan-identity 0/2   percent-format 0/2   del 0/1   dict-view 0/1
+#:     exception-chaining 0/1   json 0/1   set-method 0/1     (mp right / wrong)
+#:     set-order 4/1      repr-unicode 1/1     int-div-precision 0/1
+#:
+#: So five programs get slower and nine wrong answers become right ones. The
+#: trade is deliberately asymmetric in the same direction as invariant 1: a
+#: spawn is milliseconds and a wrong answer is the thing the mixture exists to
+#: prevent.
+#:
+#: A kind where MicroPython is *usually* right is deliberately NOT here, because
+#: escalating it would pay that spawn on every occurrence. `bigint` was, and was
+#: the reason this comment needed correcting: it names eleven refusals of which
+#: MicroPython answers TEN correctly, since MicroPython has arbitrary-precision
+#: integers and this is exactly the gap. Only the eleventh — int/int past 2**53,
+#: where the quotient needs rounding neither engine can do — is a subtlety, and
+#: it now carries its own kind, `int-div-precision`. Where a kind is mixed, split
+#: it in the engine; do not escalate the whole of it from here.
+#:
+#: This is not the capability table and must not be edited like one. Adding a
+#: kind here is a claim that no reimplementation short of CPython gets the
+#: construct right; removing one is a claim that a wrong answer was acceptable.
+#: `tests/test_routing.py` checks it against the battery in both directions.
+ONLY_CPYTHON_REFUSALS = frozenset({
+    "dunder-missing",     # mp builtins carry no __module__/__doc__; the getattr default wins
+    "encoding",           # mp ignores every non-UTF-8 codec and answers the UTF-8 bytes
+    "nan-identity",       # `in` and `==` decide by identity first: NaN finds itself
+    "nan-order",          # a sort over a NaN is the algorithm's answer, and mp's differs
+    "identity",           # `is` on equal immutables — mp's small-int boxing answers True
+    "iterator-type-name",  # mp spells every iterator type `iterator`; CPython has a family
+    "int-div-precision",  # int/int past 2**53 — mp converts to double and loses the low bits
+    "set-order",          # CPython's hash order is observable, and it is CPython's
+    "set-method",         # ...including hash(-1) == -2, reserved as an error sentinel
+    "dict-view",          # keys/items are set-like, values compare by identity
+    "exception-chaining",  # __context__/__cause__ do not exist one tier down
+    "repr-unicode",       # repr() escapes a character set nothing else reproduces
+    "percent-format",     # the '0' flag, grouping, and their interaction with '-'
+    "del",                # the ValueError text of a failed list.remove/index
+    "json",               # hooks, and control characters inside a string
+})
+
+
+def chain_after_refusal(engine: str, kind: str) -> list[str]:
+    """What is left of the chain once ``engine`` has refused with ``kind``.
+
+    Ordinarily the next tier down; for a refusal in
+    :data:`ONLY_CPYTHON_REFUSALS`, CPython and nothing in between.
+
+    :mod:`lypning.routing` reads the same table to grade a route, so the grader
+    models the chain the dispatcher actually walks. Two readers, one table —
+    the same reason :data:`_REFUSAL_RE` is spelled once.
+    """
+    rest = chain_from(engine)[1:]
+    if kind in ONLY_CPYTHON_REFUSALS:
+        return [e for e in rest if e == CPYTHON]
+    return rest
+
+
 @dataclass
 class Dispatch:
     """The result of a dispatch, plus every tier that refused on the way."""
@@ -550,6 +633,7 @@ def dispatch(
     stdin: str | None = None,
     cwd: Path | str | None = None,
     timeout: float | None = 30.0,
+    env: dict[str, str] | None = None,
 ) -> Dispatch:
     """Route, then run, falling through on a REFUSAL until a tier answers.
 
@@ -568,17 +652,23 @@ def dispatch(
     prints nothing. :func:`lypning.cli._replayable_stdin` is what fills it in
     for ``lypning run``.
     """
-    r = route(program, timeout=timeout)
+    r = route(program, timeout=timeout, env=env)
     attempts: list[Result] = []
     last: Result | None = None
-    for engine in chain_from(r.engine):
+    remaining = chain_from(r.engine)
+    while remaining:
+        engine, remaining = remaining[0], remaining[1:]
         if find(engine) is None:
             continue
-        res = run(engine, program, argv_tail=argv_tail, stdin=stdin, cwd=cwd, timeout=timeout)
+        res = run(engine, program, argv_tail=argv_tail, stdin=stdin, cwd=cwd,
+                  timeout=timeout, env=env)
         last = res
         if not res.refused:
             return Dispatch(res, r, attempts)
         attempts.append(res)
+        # The refusal says WHY, and some reasons rule out every tier but CPython.
+        kind, _ = res.refusal
+        remaining = [e for e in chain_after_refusal(engine, kind) if e in remaining]
     if last is None:
         last = Result(CPYTHON, "", 127, "", "lypning: no engine available\n", 0)
     return Dispatch(last, r, attempts[:-1] if attempts else [])

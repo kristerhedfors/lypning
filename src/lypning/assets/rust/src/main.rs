@@ -23,7 +23,7 @@
 //! `embed`/`io` code so the refusal contract has exactly one implementation.
 
 use lypning::embed::fall_onward;
-use lypning::err::{LypningError, UNSUPPORTED_EXIT};
+use lypning::err::{ErrKind, LypningError, UNSUPPORTED_EXIT};
 use lypning::{eval, io, parse, route};
 use std::io::{Read, Write};
 
@@ -104,27 +104,30 @@ fn run(argv: &[String]) -> i32 {
 }
 
 fn execute(src: &str) -> i32 {
-    execute_inner(src, true)
+    execute_inner(src, true, &mut String::new())
 }
 
-fn execute_inner(src: &str, report_refusal: bool) -> i32 {
+/// `kind` comes back holding the refusal's kind when one fired, so the caller
+/// can choose the next tier instead of assuming it — see `route::only_cpython`.
+/// It is left untouched on any other outcome.
+fn execute_inner(src: &str, report_refusal: bool, kind: &mut String) -> i32 {
     let body = match parse::parse(src) {
         Ok(b) => b,
-        Err(e) => return finish(Err(e), report_refusal),
+        Err(e) => return finish(Err(e), report_refusal, kind),
     };
     let mut interp = eval::Interp::new();
     let r = interp.run(&body);
-    finish(r, report_refusal)
+    finish(r, report_refusal, kind)
 }
 
 /// The exit path, and the other half of the commit barrier (`io.rs`): output
 /// staged during the run is written exactly once, on success, and discarded on
 /// a capability refusal so the retry on the next tier sees a clean slate.
-fn finish(r: Result<(), LypningError>, report_refusal: bool) -> i32 {
+fn finish(r: Result<(), LypningError>, report_refusal: bool, kind: &mut String) -> i32 {
     match r {
         Ok(()) => {
             if let Err(e) = io::commit() {
-                return finish(Err(e), report_refusal);
+                return finish(Err(e), report_refusal, kind);
             }
             0
         }
@@ -133,6 +136,10 @@ fn finish(r: Result<(), LypningError>, report_refusal: bool) -> i32 {
             e.is_exit().unwrap_or(0)
         }
         Err(e) if e.is_unsupported() => {
+            if let ErrKind::Unsupported { kind: k, .. } = e.kind() {
+                kind.clear();
+                kind.push_str(k);
+            }
             if io::is_committed() {
                 // Output already left the process, so this cannot be retried.
                 // Say so plainly rather than emitting a 90 the dispatcher would
@@ -256,13 +263,24 @@ fn dispatch(args: &[String]) -> i32 {
     if r.engine == route::Engine::Lypning {
         // Running in-process also means stdin is still unread at this point,
         // which a spawned child could not be given back.
-        let code = execute_inner(&src, false);
+        let mut kind = String::new();
+        let code = execute_inner(&src, false, &mut kind);
         if code != UNSUPPORTED_EXIT {
             return code;
         }
         // The route was optimistic and a value-dependent refusal fired: an
-        // integer outgrew 64 bits, or a set's order was asked for. Fall onward.
-        return exec_engine(engine_path(route::Engine::MicroPython), &src, &tail, &is_file, true);
+        // integer outgrew 64 bits, or a set's order was asked for. Fall onward
+        // — but ASK THE KIND WHERE TO. Some refusals rule out every tier but
+        // CPython, because the refusal exists precisely because the behaviour is
+        // subtle and a reimplementation gets it wrong; handing those to
+        // lypning-mp turns a correct refusal into a silent wrong answer at exit
+        // 0. This binary used to hand every refusal to lypning-mp.
+        let next = if route::only_cpython(&kind) {
+            route::Engine::CPython
+        } else {
+            route::Engine::MicroPython
+        };
+        return exec_engine(engine_path(next), &src, &tail, &is_file, next == route::Engine::MicroPython);
     }
     let onward = r.engine == route::Engine::MicroPython;
     exec_engine(engine_path(r.engine), &src, &tail, &is_file, onward)

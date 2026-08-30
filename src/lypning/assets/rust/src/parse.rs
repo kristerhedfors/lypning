@@ -458,6 +458,25 @@ impl Parser {
                 p.names.push(self.ident()?);
                 p.defaults.push(None);
             } else {
+                // A NAME AFTER `*args` IS KEYWORD-ONLY, exactly as one after a
+                // bare `*` is, and the bare form is refused four lines up. This
+                // one used to fall through and be recorded as an ordinary
+                // positional parameter — which the binder cannot represent,
+                // because it computes the positional count as
+                // `names.len() - star - dstar` and then slices `names[..npos]`
+                // FROM THE FRONT. That is only the positional parameters while
+                // `*args` and `**kw` come last.
+                //
+                //     def f(a, *c, d): return (a, c, d)
+                //     f(1, 2, d=3)   CPython (1, (2,), 3)   this: unexpected keyword 'd'
+                //     f(1, 2, 3)     CPython TypeError       this: UnboundLocalError
+                //
+                // Neither is a refusal, so neither could be answered one spawn
+                // later. Refusing here makes the two spellings of the same
+                // feature behave the same way.
+                if p.star.is_some() {
+                    return Err(unsupported("kwonly", "keyword-only parameters"));
+                }
                 let n = self.ident()?;
                 if self.eat_op(":") {
                     self.expr()?; // annotation, discarded
@@ -654,6 +673,21 @@ impl Parser {
     /// Parse a target list up to `stop` (a keyword), e.g. the `for` target.
     fn target_list(&mut self, stop: &str) -> R<Target> {
         let mut items = Vec::new();
+        // A TRAILING COMMA AFTER ONE NAME MAKES A ONE-ELEMENT TUPLE TARGET, and
+        // dropping it dropped the unpacking with it. `for v, in [(1,)]` bound
+        // the whole tuple — `(1,)` rather than `1` — and, worse, the ARITY
+        // CHECK vanished entirely:
+        //
+        //     [v for v, in [(1, 2)]]
+        //     CPython  ValueError: too many values to unpack (expected 1)
+        //     this     [(1, 2)]        exit 0
+        //
+        // A program CPython stops with an exception ran to completion and
+        // printed plausible wrong data. The parenthesized spelling `(v,)` was
+        // always right and two names `a, b,` were always right, which is what
+        // kept this quiet: only the unparenthesized single name loses its comma.
+        // It reached statement for-loops and all four comprehension forms.
+        let mut saw_comma = false;
         loop {
             if self.eat_op("*") {
                 items.push(Target::Star(Box::new(self.target_atom()?)));
@@ -663,11 +697,12 @@ impl Parser {
             if !self.eat_op(",") {
                 break;
             }
+            saw_comma = true;
             if self.is_kw(stop) {
                 break;
             }
         }
-        Ok(if items.len() == 1 {
+        Ok(if items.len() == 1 && !saw_comma {
             items.pop().unwrap()
         } else {
             Target::Tuple(items)
@@ -753,6 +788,23 @@ impl Parser {
     }
 
     pub fn expr(&mut self) -> R<Expr> {
+        // A CONSTRUCT THIS PARSER DOES NOT KNOW IS A CAPABILITY GAP, NOT A
+        // SYNTAX ERROR, and the difference is the exit code. docs/HILLCLIMB.md
+        // iteration 14 draws the line: a SyntaxError is terminal, so `$p` — which
+        // cannot begin a token in ANY Python program — exits 1 rather than
+        // spending a spawn to be told by CPython what lypning already knew.
+        //
+        // The converse had no such care. `print((n := 1))` is a valid program,
+        // and it exited 1 with `SyntaxError: expected ')', found ':='` — the
+        // PROGRAM's own exit, which the chain does not retry, so a program
+        // CPython runs fine simply died. The classifier contains it today
+        // (`route` reports `syntax` and sends it to CPython), but the binary is
+        // an interpreter someone runs directly and the conformance arm scores
+        // it as a MISMATCH.
+        //
+        // So: syntax this parser can RECOGNISE AND NAME refuses, like `async`,
+        // `kwonly` and `nonlocal` already do. Genuinely invalid syntax keeps
+        // exiting 1, which is the decision iteration 14 made on purpose.
         if self.is_kw("lambda") {
             self.bump();
             let mut p = Params::default();
@@ -811,6 +863,13 @@ impl Parser {
 
     fn or_test(&mut self) -> R<Expr> {
         let mut items = vec![self.and_test()?];
+        // `x := 1` — see the note on `expr`. The check sits after the left-hand
+        // side because the walrus FOLLOWS its target, so the token is not seen
+        // until the name has been parsed. Anywhere earlier and the parser has
+        // already reported "expected ')'" instead of naming the construct.
+        if self.is_op(":=") {
+            return Err(unsupported("walrus", "assignment expression (:=)"));
+        }
         while self.is_kw("or") {
             self.bump();
             items.push(self.and_test()?);
@@ -1067,6 +1126,17 @@ impl Parser {
             } else {
                 None
             };
+            // `x[0:1, 2]` is a TUPLE holding a slice, which CPython builds and
+            // hands to the container — a list then raises "list indices must be
+            // integers or slices, not tuple". This parser has no slice VALUE to
+            // put in a tuple, so it used to run off the end of the slice and
+            // report `expected ']', found ','` at exit 1: a valid program, dead.
+            if self.is_op(",") {
+                return Err(unsupported(
+                    "subscript",
+                    "a tuple subscript containing a slice, e.g. x[0:1, 2]",
+                ));
+            }
             self.expect_op("]")?;
             return Ok(Expr::Slice {
                 base: Box::new(base),
@@ -1206,6 +1276,11 @@ impl Parser {
                 if self.eat_op("]") {
                     return Ok(Expr::List(Vec::new()));
                 }
+                // The parenthesized twin of this is refused twenty lines down;
+                // the list one raised `invalid syntax: unexpected '*'` at exit 1.
+                if self.is_op("*") {
+                    return Err(unsupported("unpack", "* in a list display"));
+                }
                 let first = self.expr()?;
                 if self.is_kw("for") {
                     let clauses = self.comp_clauses()?;
@@ -1229,6 +1304,12 @@ impl Parser {
             }
             Tok::Op("{") => {
                 self.bump();
+                // The list and parenthesized twins of this are refused above.
+                // `**` is NOT refused: `{**d, 'b': 2}` is dict merging and it
+                // already works — only the `*` set-unpacking form does not.
+                if self.is_op("*") {
+                    return Err(unsupported("unpack", "* in a set display"));
+                }
                 if self.eat_op("}") {
                     return Ok(Expr::Dict(Vec::new()));
                 }

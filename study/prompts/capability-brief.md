@@ -73,6 +73,6 @@ These are decided at run time, not by the imports, and they are deliberate:
 ## The tier below, for reference
 
 If a program leaves the subset above but only needs one of these modules, it
-lands on a second small interpreter rather than on CPython: `base64`, `binascii`, `builtins`, `cmath`, `collections`, `contextlib`, `csv`, `datetime`, `errno`, `glob`, `hashlib`, `io`, `json`, `math`, `os`, `os.path`, `pathlib`, `random`, `re`, `shutil`, `statistics`, `struct`, `sys`, `tempfile`, `textwrap`, `time`, `urllib`, `urllib.parse`, `zlib`. That is still
+lands on a second small interpreter rather than on CPython: `argparse`, `base64`, `binascii`, `builtins`, `cmath`, `collections`, `contextlib`, `csv`, `datetime`, `errno`, `glob`, `hashlib`, `io`, `json`, `math`, `os`, `os.path`, `pathlib`, `random`, `re`, `shutil`, `statistics`, `struct`, `sys`, `tempfile`, `textwrap`, `time`, `urllib`, `urllib.parse`, `zlib`. That is still
 much cheaper than CPython, so preferring `re` over `subprocess` is a real win
 even when the subset proper is out of reach.

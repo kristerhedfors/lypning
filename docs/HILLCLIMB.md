@@ -26,7 +26,2063 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-08-30 · iteration 63 — the answer the user actually receives
+
+**commits** `e044642..HEAD` (14, one stretch) · **host** 4 cpus, Linux
+6.18.44-fc-v22, x86_64 · **corpus** 2239 programs loaded
+
+Iteration 62 rebuilt the ledger; this stretch asked what the ledger's numbers
+were *about* and found they graded the wrong process twice over. A refusal is
+not an outcome — the chain falls through and the next tier's answer is what the
+user sees — and there are TWO chains: `engines.dispatch`, which the battery
+measures, and the Rust binary's own, which users run and which `bench` times.
+The grader scored the tier that was *named*, and the escalation table that
+fixed it went into the dispatcher the battery measures and not the one users
+run. Both are now on one table (`ONLY_CPYTHON_KINDS` in `route.rs`), and the
+grader walks the chain the dispatcher actually walks.
+
+The rest of the stretch was grid enumeration — one construct per program,
+cross products, edges — which found what the corpus cannot: the corpus routes
+every affected program to CPython on an unrelated blocker, so every one of
+these was invisible to MISMATCH 0. In the Rust core: a float floor-division
+guard that answered `nan` where CPython answers `inf` (98 grid divergences,
+one deleted guard); 1,611 comparison divergences in three shapes (the
+operator's own name in the TypeError, a NaN short-circuit ahead of the type
+check, and `is` on equal immutables, which now refuses — interning is
+CPython's to know); a keyword argument silently refilling a positional; a
+SIGABRT on `range(-2**62, 2**62)[:1]` (i64 length overflow, now i128); a
+trailing comma after one for-target dropping the unpack *and* its arity check;
+five drifts between the str methods and the bytes methods copied from them,
+now held together by a shared whitespace-split rule and a twin differential
+test; and the element test rewritten as CPython's `x is y or x == y` with the
+NaN-identity check on the *unequal exit*, where it costs nothing — callgrind:
+−12.8% instructions on list equality, −3.2% on scans, the old whole-sequence
+prescan having cost more than the rule now does.
+
+| | |
+|---|---|
+| bytes | 1,024,208 (8 blocks; 24,368 headroom) — net zero across the stretch |
+| conformance | tier-1 1077 MATCH / 568 UNSUPPORTED / **1 MISMATCH** (musl libm pow, ledgered); mixture **1 MISMATCH** (same program) |
+| routing | UNSAFE **7 → 2** · IDEAL 1505 → 1512 · ledger 59 → 50 accepted, scorer exit 0 |
+| suite | 1,102 → 1,272 passing; grids: comparisons 5,460, bytes 1,938, whitespace 728, hash-keys 1,788 — all 0 diverged |
+
+Wall-clock A/B on this host swings ±8% on identical binaries (same-binary
+control), which burned two tuning rounds before callgrind settled it. The
+instrument note for next time: instruction counts are exact and free; use them
+first for anything under 20%.
+
+The two dispatchers sharing one table is the entry's one transferable rule:
+**a gate that measures a different code path than users run is not a gate**,
+and both halves of that mistake were found here — conformance measuring the
+Python chain while `lypning run` executes the Rust one, and `bench` timing the
+Rust one while nothing checked its answers.
+
+
 ---
+
+## 2026-08-25 · iteration 62 — the accepted-mismatch ledger, rebuilt from measurement
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 2239 loaded, 1646
+graded, 593 skipped
+
+**bytes** unchanged. **correctness** unchanged. **tests** 1,102.
+`.github/scripts/known-mismatches.py` now **exits 0**: every mismatch is one the
+ledger names, and every one it names still reproduces.
+
+### The ledger had drifted from twelve to fifty-nine
+
+`.github/known-mismatches.json` accepts mismatches BY IDENTITY so one CI job can
+stay red for documented defects without that red swallowing every other signal.
+It named **twelve**. The arms report **fifty-nine** — 48 on lypning-mp, 10 on the
+mixture, 1 on lypning — because the corpus grew 44% in one day and nobody had
+re-derived it since.
+
+Rebuilt from a measured run, with every entry carrying a root-cause **family**
+and a reason. 59 entries, **27 families**, **0 unclassified**.
+
+### The families
+
+```
+commit-barrier 7 · exception-message-text 4 · sort-instability 4
+printf-zero-flag 3 · nan-identity 2 · round-with-ndigits 2
+float-grouping-ignored 2 · int-underscore-accepted 2 · json-control-chars 2
+str-search-index-clamping 2 · set-and-dict-hash-order 2
+…and sixteen singletons
+```
+
+The `family` field is the point of the rewrite. **Fifty-nine lines read as
+fifty-nine problems, and they are twenty-seven** — and grouping says which ones
+would close together, and makes a fixed family visible as a block of lines to
+delete rather than as an unexplained drop in a number.
+
+Several families are the *same defect this tree already fixed in the Rust core*,
+still present one tier down: NaN identity in containers, `int('1_')` accepted,
+`round(2.5, 0)`, float grouping ignored, `str.find` index clamping, dict
+mutation during iteration, `json.loads` hooks. The Rust core **refuses** three of
+those rather than answering; MicroPython answers.
+
+### The one lypning-arm entry is not a defect in this tree
+
+`py-ab7286f43b7a` — `1.797e308 ** 0.5`, wrong in the last ulp. It is in the
+ledger because it reproduces, and the entry says plainly that nothing here can
+fix it: the library arm compiles the same source against glibc's libm and
+matches CPython exactly.
+
+### How this was produced, and what the agents got wrong
+
+The classification came from a **probe-gated fan-out** — and the probe *passed*
+this time, the second working run in eight attempts. Three agents, 72 tool
+calls, and a genuinely good root-cause grouping.
+
+Two things had to be checked rather than taken:
+
+- One pass reported **77** mismatches "run twice, deterministic". My own run
+  reports **48**, alone or alongside the other arms, and is internally
+  consistent: 1646 graded + 593 skipped = 2239 loaded. I used mine.
+- The classification itself was **sound**: all 33 entry ids it grouped are real
+  mismatches in my run, **zero fabricated**. It simply stopped at 33 of 48, and
+  I classified the remaining 15 by hand.
+
+Which is the useful shape for this harness: **the grouping was worth having and
+the headline number was not.** A fan-out that reads and reasons over output
+earns its keep; a fan-out that counts needs its counts checked.
+
+---
+
+## 2026-08-25 · iteration 61 — the tier-1 arm is down to one, and that one is not ours
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 2239 loaded, 1646
+graded
+
+**bytes** 1,016,008 B, 8 blocks — unchanged. **correctness** lypning
+**1076 MATCH / 569 UNSUPPORTED / 1 MISMATCH**; lypning-mp 48, mixture 10.
+**routing** IDEAL 1505, LATE 88, WASTED 46, **UNSAFE 7**. **tests** 1,092 →
+**1,102**.
+
+Three fixes took the tier-1 arm from 3 to 1. What is left is
+`1.7976931348623157e308 ** 0.5`, off by one ulp — and iteration 59 measured that
+against the library arm and proved it is **musl libm against glibc libm**, the
+same source compiled twice. It is not fixable in this tree's code.
+
+### Dict views never reached the guard that already existed
+
+```python
+g = {"a": 1, "b": 2, "c": 3}
+for k in g.keys():
+    del g[k]
+```
+
+answered normally and emptied the dict; CPython raises
+`RuntimeError: dictionary changed size during iteration`.
+
+The guard was **already there** — `Iter::DictKeys` carries the dict and the size
+it had, and checks on every step. A bare `for k in g` hit it. But the three
+VIEWS took a different path in `make_iter`: they snapshotted their elements into
+a plain `Iter::Vec` and **threw the dict away**, so nothing was left to compare
+against. Not a missing guard; an unreached one.
+
+Both paths now build the same `Iter::DictIter { d, items, i, n0 }`, so there is
+one mechanism instead of one mechanism and one bypass. All four mutation shapes
+raise — keys, values, items, bare — and the ordinary uses still answer, which is
+pinned alongside: a "fix" that made views un-iterable would pass a test that only
+checked the mutation.
+
+### Every exception reported the wrong class
+
+```
+e.nosuch   ->  'Exception' object has no attribute 'nosuch'
+                CPython: 'ValueError' object …
+e + 1      ->  unsupported operand type(s) for +: 'Exception' and 'int'
+                CPython: … 'ValueError' and 'int'
+```
+
+`type_name` answered `"Exception"` for **all twenty-four** exception classes, so
+every message that named the type named the wrong one. `Value::Exc` carries the
+class name in its first field; it was simply not being read.
+
+### `e.__context__` claimed not to exist
+
+`__context__`, `__cause__` and `__traceback__` really are attributes of a CPython
+exception, so `AttributeError: no attribute '__context__'` is a claim about
+*Python*, not about the program. And AttributeError is exit 1 — the program's own
+exit — so a handler that inspects the context **died here instead of being
+answered one spawn later**.
+
+`Value::Exc` is a flat `(kind, message)` pair with nowhere to hold a chained
+exception, and widening it reaches every site that matches on an exception. So
+this **refuses**, and the dispatcher hands the program to an interpreter that has
+them. That is the third time today the right fix for an unimplemented construct
+was "refuse rather than raise": the other two were `bytes % args` and slicing a
+`range`.
+
+### An edit that silently did not land
+
+The first attempt at the `__context__` refusal reported success and changed
+nothing — `git diff` was empty afterwards and `grep` found no trace of it. I only
+noticed because the behaviour did not change when I tested it.
+
+Recorded because the failure mode is invisible: a script that prints `ok` after
+`assert old in s` has proved the anchor matched, **not** that the write survived.
+The second attempt asserted the anchor was unique, then verified with `grep` and
+`git diff --stat` before building. Verify the artifact, not the intention.
+
+---
+
+## 2026-08-25 · iteration 60 — the last five lenses, and a probe that costs six seconds
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 2239 loaded, 1646
+graded
+
+**bytes** 1,016,008 B, 8 blocks — unchanged. **correctness** lypning
+1075 MATCH / 568 UNSUPPORTED / **3 MISMATCH**; routing IDEAL 1504, UNSAFE 8.
+**tests** 1,087 → **1,092**.
+
+The five lenses the blocked fan-outs never reached, swept by hand. Three came
+back clean; two did not.
+
+### Three clean sweeps, recorded because clean is a result
+
+**Laziness and side-effect ordering** — identical. Generator expressions, `map`,
+`filter`, `zip` and `enumerate` are all lazy here exactly as in CPython, `sum` is
+eager, and `any`/`all` short-circuit at the same element. Eager evaluation where
+CPython is lazy would reorder every side effect in a program; it does not
+happen.
+
+**dict and set detail** — 33 cases, 0 differ, including the ones most likely to
+diverge: `{1: 'a', 1.0: 'b', True: 'c'}` collapses to one entry with the FIRST
+key object surviving, `setdefault` returns the existing value, and set
+*operators* reject a non-set while the *methods* accept any iterable.
+
+**repr and str** — 120 cases, 110 run, 10 refused, **0 differ**. Every escape
+form, bytes with high bytes, floats across the exponent boundaries and the
+17-digit cases, nested containers, the 1-tuple comma. The ten refusals are
+`repr()` of characters whose printability needs CPython's Unicode tables, which
+this project refuses by design rather than guessing.
+
+That last one was run **one program per case**, which is the method fix from
+iteration 58: a single refusal kills a whole grid program and silently unmeasures
+everything after it. The first attempt at this grid died on `\x85` at case 13 of
+120.
+
+### The operator matrix found four
+
+2,040 cells — ten operand types against thirteen operators plus `in` and the two
+unary forms:
+
+```
+True in b"ab"      TypeError        ->  False
+{1} in {1}         TypeError        ->  False
+'ab' % [1]         TypeError        ->  'ab'
+b"%d" % 5          TypeError        ->  b'5'
+```
+
+**`True in b"ab"`** is the `bool`-is-a-subclass-of-`int` slip *again*. The ledger
+already records it for `bytes.find(False)`, fixed there — and `in` was never
+looked at. Same defect, second site, four months apart.
+
+**`{1} in {1}`** — CPython converts an unhashable set to a frozenset for the
+membership test rather than raising. This subset has no frozenset and its sets
+cannot contain one, so the answer is always False, which is what CPython gives
+for every set this runtime can build.
+
+**`'ab' % [1]`** — the leftover-argument check is skipped for anything CPython
+calls a mapping. `PyMapping_Check` is true for dict, list and bytes, because each
+has `mp_subscript`; false for int, str and tuple. Only `Dict` was exempt here, so
+the two ordinary sequence cases raised where CPython answers.
+
+**`b"%d" % 5`** is PEP 461 bytes formatting, not implemented — and it fell
+through to the generic binary-op arm and became a **TypeError**, the program's
+own exit, which the dispatcher does not treat as a refusal. Valid Python died at
+exit 1 with nothing to rescue it. It is a refusal now, and the chain answers it.
+
+After: **2,040 cells, 2,028 run, 12 refused, 0 differ.**
+
+### The probe gate
+
+Six runs of the subagent fan-out have hit a harness fault that strips every tool
+call's required parameter. Rounds two and three burned 300K and 223K tokens
+producing nothing.
+
+This run spent **one agent, two tool calls, six seconds** finding out — a probe
+that runs `echo PROBE_OK` and answers `TOOLS_WORK` or `TOOLS_BLOCKED`, with the
+five expensive lens agents gated behind it. It came back `TOOLS_BLOCKED` and the
+sweep never spawned.
+
+Worth keeping as a pattern: **when a dependency fails intermittently, gate the
+expensive fan-out behind the cheapest possible probe of that dependency.** The
+cost of discovering a blocked session drops from five agent lifetimes to one
+`echo`.
+
+---
+
+## 2026-08-25 · iteration 59 — startup is 80% kernel, size is free here, and `--lib` had been broken since #13
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 2239 loaded, 1646
+graded
+
+**bytes** 1,016,008 B, 8 blocks — unchanged. **correctness** lypning
+1075 MATCH / 568 UNSUPPORTED / **3 MISMATCH**; routing unchanged. **tests**
+1,030 passed / 58 skipped → **1,087 passed / 1 skipped**.
+
+The dial went back to speed. Nothing got faster; three things got *known*, and
+one build got un-broken.
+
+### Binary size costs nothing on this machine
+
+Five static musl binaries built at controlled sizes, min of 150 spawns each,
+interleaved:
+
+```
+  512,632 B   0.318 ms
+  709,240 B   0.312 ms
+1,495,672 B   0.352 ms
+2,544,248 B   0.328 ms
+4,641,400 B   0.331 ms
+```
+
+**A 9.1x size range moves startup by 0.040 ms, and not monotonically.** The
+slope is 0.0003 ms per 100 KB, so this session's +28,672 B cost about 90
+nanoseconds.
+
+I nearly reported the opposite. The first measurement said the *bigger* binary
+started 2.6–4.5% FASTER, which is impossible and was noise: a control comparing
+**two copies of the same file** produced -3.8% and +2.5% on consecutive runs.
+Base against current, once both were in the same directory, was +1.2% and -0.5%
+— inside that spread. This is the fifth false timing result this tree has
+recorded, and the first one caught by the control rather than after committing.
+
+**This does not retire the byte budget.** CheerpX's cold cost is a step function
+in 131,072 B device blocks, and that is a different machine which cannot be
+measured from here. The finding is narrower and worth stating exactly: *the byte
+budget buys nothing on native Linux; it is entirely a CheerpX guard.*
+
+### Startup is 80% kernel
+
+```
+  do-nothing static musl binary   0.270 ms
+  lypning -c 'pass'               0.337 ms   +0.067
+  lypning-mp -c 'pass'            0.328 ms   +0.058
+  /bin/true                       1.270 ms   +1.000
+  python3.11 -c 'pass'           12.777 ms  +12.507
+```
+
+**Of lypning's 0.337 ms startup, 0.270 is fork+exec that no code change can
+touch.** Its own startup work is 0.067 ms. So iteration 44's "startup is 65–75%
+of a corpus program" is 65–75% *kernel*, and the addressable share is about a
+tenth of a program — the same order as parse and eval. There is no dominant
+lever left anywhere; the three addressable buckets are all roughly equal.
+
+`/bin/true` is the control that says why: it is **dynamically linked**, and the
+loader costs a full millisecond. Being static and non-PIE is worth ~4x more than
+every other startup decision in this project combined, and it was already made.
+
+The only way to remove the 0.270 ms is to not spawn a process, which is what the
+C ABI exists for.
+
+### …which is when I found `lypning build --lib` had been broken since #13
+
+```
+rust-lld: error: relocation R_X86_64_32 cannot be used against local symbol;
+          recompile with -fPIC
+```
+
+`.cargo/config.toml` sets `relocation-model=static` under `[build]`, which
+reaches **every** target cargo builds — including the host `cdylib` the C ABI
+is, and a shared library must be position-independent by construction. It has
+failed since the file was added in #13.
+
+Nothing caught it because the library is optional and `lypning doctor` says
+`liblypning is not built — 'lypning build --lib'`, which reads as a choice
+rather than a breakage. Scoped to `[target.x86_64-unknown-linux-musl]` — the
+binary builds for musl, the library for the host — it builds, and the binary is
+byte-identical at 1,016,008 B and still `EXEC` rather than `DYN`.
+
+**57 tests had been silently skipping** for that whole time: 1,030 passed / 58
+skipped became 1,087 passed / 1 skipped.
+
+### And one of them was crashing
+
+`test_deep_programs_stay_refusals_on_a_small_host_stack` **segfaulted** —
+comparing two 20,000-deep nested lists on a 1 MB host thread.
+
+That one is mine, from earlier today. The NaN refusal I added scanned for a NaN
+with a *recursive* helper, and it ran **inside** one level of `eq`'s recursion
+guard: a second full-depth traversal that the guard could not see, overflowing
+the stack before the guard could fire. The binary never showed it because the
+main thread has 8 MB.
+
+The fix makes the scan **shallow**. `eq` already descends under its guard, and
+every level checks its own immediate elements, so a depth-1 test covers exactly
+the same ground with no recursion of its own — and does half the work.
+
+### The library arm settles an open question
+
+With the C ABI buildable, the `library` arm ran for the first time in this tree
+and disagrees with the binary on exactly one program:
+
+```
+print(1.7976931348623157e308 ** 0.5)
+  binary  (musl libm)   1.3407807929942597e+154
+  library (glibc libm)  1.3407807929942596e+154   = CPython
+```
+
+Iteration 58 recorded that last-ulp `pow` mismatch as "a musl libm against glibc
+libm difference rather than anything this tree does". That was a guess. It is
+now **measured**: same source, two C libraries, and the glibc one matches CPython
+exactly. It is not fixable in this tree's code.
+
+That is precisely what `docs/LYPNING.md` says the library arm is for — "the two
+disagreeing is the thing it is there to catch" — and it caught something the
+first time it was allowed to run.
+
+---
+
+## 2026-08-25 · iteration 58 — capture was inert, and 686 harvested programs took the tier-1 arm from 0 to 13
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 → **2239**
+(1,646 graded, 593 skipped for absolute paths)
+
+**bytes** 1,011,912 → **1,016,008 B**, still **8 blocks** (32,568 B to the
+ninth). **correctness** lypning **1075 MATCH / 568 UNSUPPORTED / 3 MISMATCH**;
+lypning-mp 48, mixture 12. **routing** IDEAL 1504, LATE 88, WASTED 46,
+**UNSAFE 8**.
+
+### The harness had been silent all session
+
+The Stop and PreToolUse hooks dispatch to `lypning` on PATH, then to
+`python3 -m lypning`. **In a checkout of lypning itself neither exists** — the
+package is deliberately not pip-installed and the console script is not on
+PATH — and both arms fail silently by design, because invariant 5 says a hook
+never fails a session. So capture ran inert for a full day's work in this
+repository and nothing said so, in the session most worth capturing: the one
+editing the engine.
+
+Both hooks now try the source tree first, gated on
+`$CLAUDE_PROJECT_DIR/src/lypning/__init__.py` so an unrelated project with a
+`src/lypning` cannot shadow a real installation, and ordered *ahead* of the bare
+import so a checkout never pays for a spawn whose only output is
+`No module named lypning`. Verified by firing the hook by hand rather than by
+reasoning about it: one log line, exit 0, nothing on stderr.
+
+### What the corpus growth bought
+
+`lypning harvest --transcripts` took the corpus from 1553 to 2239. The tier-1
+arm, which had been at **MISMATCH 0 all session**, went to **13**.
+
+That is not a regression. It is the round-one backlog finally being *measured*
+instead of sitting in a ledger — plus four defects nobody had found:
+
+```
+format(255, ',x')   'ff'    ->  ValueError   ',' groups in 3s, the radix types
+                                             in 4s; CPython refuses the pair
+int('1_')           1       ->  ValueError   underscores are legal only
+float('1_')         1.0     ->  ValueError   BETWEEN digits
+bytes('abc')        b'abc'  ->  TypeError    a str has no bytes until an
+                                             encoding says which
+```
+
+**`,x` exposed a flaw in my own grid method.** The format driver skipped any
+spec that refused for *any* value in its value list, and `format(0.0, ',x')`
+refuses — so the whole spec was skipped and the integer case never compared.
+**144 specs were hidden that way.** The grid now runs 1,170 and still differs on
+none. A per-spec skip is a per-spec blind spot, and the corpus found what the
+grid was built to find.
+
+Two of the four fixes were wrong on the first attempt and the grid caught both:
+`is_ascii_digit` is 0-9 only, so the group-aware padder read a hex body as a
+fractional tail and answered a 13-wide field for a 12-wide spec; and
+`int('0x_1f', 16)` is *legal*, because an underscore may follow a base prefix.
+
+### Then ten of the thirteen, closed
+
+| | was | now |
+|---|---|---|
+| `d.values() == d.values()` | `True` | refused |
+| `d.keys() == other.keys()` | `False` | `True` — views are set-like |
+| `t = ([1],2); t[0] += [5]` | no error | `TypeError`, list still mutated |
+| `json.loads(s, parse_int=f)` | hook ignored | refused |
+| `n in [n]` for a NaN | `False` | refused |
+| `9007199254740993 / 3` | `…330.5` | refused |
+
+Three of those are **refusals, not answers**, and the reason is the same each
+time: the thing CPython uses to decide is something this runtime does not have.
+`dict_values` compares by *object identity* and a view here is
+`(Rc<dict>, kind)` with no identity of its own, so `v == v` and
+`d.values() == d.values()` are indistinguishable while CPython answers True and
+False. `in` compares identity first, and a NaN is the one value where that shows.
+`int / int` is correctly rounded from the integers, and converting to `f64`
+first loses the low bits past 2**53 — the numerator became …992 before the
+divide.
+
+Each refusal is narrow: `1 in [1,2]`, `[1] == [1]`, `inf in [inf]` and `1/3` all
+still answer. A refusal reaches CPython one spawn later with the right answer;
+a guess reaches the caller as data.
+
+The augmented-assignment one is the opposite shape — a missing *error* rather
+than a missing answer. `list += iterable` mutated in place and returned early,
+skipping the assignment CPython then attempts and fails. Both halves happen in
+Python: the tuple's list really is extended *and* the statement raises.
+
+### Three left on tier 1, and why they are still open
+
+`e.__context__` (implicit exception chaining — implementable, and the `handling`
+stack added in iteration 55 is most of what it needs);
+`1.7976931348623157e308 ** 0.5`, wrong in the **last ulp**, which is a musl
+libm against glibc libm difference rather than anything this tree does; and dict
+mutation during iteration not raising `RuntimeError`, which wants a version
+counter on the dict.
+
+### The honest state of the tree
+
+`lypning conformance` **exits 1**, at MISMATCH 63 — 48 on lypning-mp, 12 on the
+mixture, 3 on tier 1. It was red at 12 before this corpus landed and it is
+redder now, because the corpus can finally see the backlog. That is the trade
+this iteration made deliberately: **a measured defect is worth more than a
+latent one**, and the alternative was a corpus that stayed comfortable by not
+looking.
+
+---
+
+## 2026-08-25 · iteration 57 — 300 of 1,026 format specs disagreed, in six families
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded, 1307
+graded
+
+**bytes** 1,007,816 B — **unchanged**, still 8 blocks (40,760 B to the ninth).
+*(This entry and its commit message first said 1,011,912 B. That number was not
+measured; the build printed 1,007,816 before and after. Invariant 3 exists for
+exactly this, and the slip is left visible rather than quietly overwritten.)*
+**correctness** lypning 908 MATCH / 399 UNSUPPORTED / **0 MISMATCH**.
+**routing** unchanged. **tests** 1,027 → 1,030.
+
+The format mini-language, swept as a grid over the whole spec cross-product:
+fill x align x sign x `#` x `0` x width x grouping x precision x type, 1,746
+specs against fourteen values. 720 are refusals — the contract working — and of
+the **1,026 that tier 1 answers, 300 disagreed with CPython.**
+
+One program per SPEC rather than one for everything, because a refusal stops a
+program dead and would have hidden every spec after it.
+
+### Six families, six root causes
+
+**The `0` flag sets the FILL, whatever the alignment is.** It supplies the
+*alignment* only when none was given. Setting both together meant an explicit
+alignment silently lost the zero fill: `format(5, '<04')` was `'5   '` where
+CPython says `'5000'`. An explicit fill still wins — `format(5, '*<04')` is
+`'5***'`. This was most of the 300.
+
+**Zero padding is group-aware.** `format(5, '09,')` is `'0,000,005'`, not
+`'000000005'` — the pad zeros are part of the number and take separators with
+them. Only on the `=` path, which is why `format(5, '<09,')` really is
+`'500000000'`. The digit count is the smallest whose *grouped* length reaches the
+space available, which is why `format(5, '012,')` is **thirteen** characters:
+nine digits group to eleven, ten group to thirteen, and there is no way to land
+on twelve without a leading separator.
+
+**`,` and `_` were ignored for `g` and `%`.**
+
+**A precision with an EMPTY presentation type was ignored**, so
+`format(123456.789, '.4')` answered the whole repr where CPython answers
+`'1.235e+05'`. The rule took a while to see and is worth writing down: it is `g`,
+except that fixed notation always keeps a digit past the point — **and that digit
+costs a significant place**, which is what decides the notation.
+`format(12.0, '.2')` is `'1.2e+01'` because `'12.0'` needs three significant
+digits and two were allowed; `format(12.0, '.3')` is `'12.0'`.
+
+**A precision on an integer presentation type is a ValueError** and was ignored.
+
+**`#` with a zero precision and a grouping character** put the point after the
+leading digit: `format(1234.0, '#,.0f')` was `'1.,234'`. A separator is part of
+the significand and the scan for the end of the number stopped at the first one.
+Only visible with all three at once, which is how it outlived the sweep that
+added grouping.
+
+### The one that bit back
+
+The int-precision check broke two `%`-operator pins immediately: `'%.2d' % 5` is
+`'05'`, because **`%` reads a precision on an integer as a minimum digit count**
+— which the mini-language has no spelling for at all. The two share every other
+rule, so `format_value` and `format_value_pct` are now two entry points over one
+body. The pins caught it in the same minute it was written, which is the
+argument for pinning error-shaped behaviour and not only answers.
+
+A second version of that check was also wrong in a way the grid caught and no
+example would have: keyed on the *type* alone it fired for `format(0.0, '.2d')`,
+where CPython's complaint is "Unknown format code 'd' for object of type
+'float'" — a different error that comes first. 450 specs said so.
+
+### Nested fields, and `round`
+
+`"{:.{}f}".format(3.14159, 2)` raised `Invalid format specifier` and
+`"{:{}}".format(3.0, 5)` quietly answered `'3e+00'`. A nested field draws from
+the same auto-numbering as the field it sits in, and the implementation did two
+things wrong: it expanded the spec **before** the outer field claimed its
+argument, and it recursed into a **fresh counter**. Explicit numbering
+(`"{0:.{1}f}"`) never had the bug, which is why it survived every example anyone
+wrote down.
+
+`round(5.0, -1)` answered `10.0` where CPython answers `0.0`: Rust's `round()`
+breaks ties away from zero. The `ndigits == 0` branch already carried the
+half-to-even correction and the positive branch gets it free from the formatter;
+only the negative one was left. `round(int, -n)` used to refuse and is now
+implemented in **integer** arithmetic — an int near 2**63 carries more
+significant digits than a double, so scaling through f64 would answer a rounded
+number that is not the rounded number. 480 cells, clean.
+
+### Where the round-one backlog stands
+
+Six of the twenty are now closed: five format-spec gaps and `round(x, -1)`.
+Fourteen remain, all still verified and all still without corpus hits.
+
+---
+
+## 2026-08-25 · iteration 56 — 10,990 slicing cells, zero silent wrong answers, two real gaps
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded, 1307
+graded
+
+**bytes** 1,003,720 → **1,007,816 B**, still **8 blocks** (40,760 B to the
+ninth). **correctness** lypning 908 MATCH / 399 UNSUPPORTED / **0 MISMATCH**.
+**routing** unchanged. **tests** 1,026 → 1,027.
+
+The blocked round-two hunt named slicing as a lens. Swept by hand: ten receivers
+(str, empty str, one-char str, non-ASCII str, bytes, empty bytes, list, empty
+list, tuple, range) against every combination of start, stop and step over
+negative, zero, small positive, exactly `len`, past the end, and omitted, with
+steps of both signs including some larger than the sequence. **10,990 cells.**
+
+### The headline is the clean result
+
+**Zero silent wrong answers.** On the highest-traffic surface in the subset after
+`print`, and the one where a wrong answer is least likely to look wrong, the
+existing implementation is exactly CPython. That is worth recording as loudly as
+a defect would be: after five iterations of finding one silent wrong answer after
+another, this is the first sweep that found none.
+
+Every divergence was one of two other kinds.
+
+### `range` could not be sliced
+
+Indexing a range worked. Slicing one fell through to the "not subscriptable" arm
+and raised `TypeError: 'range' object is not subscriptable` — **exit 1**, which
+is the program's own exit, so the dispatcher does not treat it as a refusal and
+nothing rescued a construct CPython answers. 1,089 of the 1,107 differing cells
+were this.
+
+Slicing a range yields a range, and both endpoints map straight through the
+parent's own start and step. The first attempt derived the stop from a **count**
+instead — which gives a range with the same ELEMENTS and a different repr:
+`range(4)[::3]` came out `range(0, 6, 3)` where CPython says `range(0, 4, 3)`.
+589 cells still differed, all of them repr. A range's repr is observable, so
+same-elements is not good enough, and the count version was the cleverer of the
+two and the wrong one.
+
+`slice_bounds` was split out of `slice_indices` so the range arm builds from the
+same numbers the gather path uses. Two normalisations of one rule would be two
+things to keep in step, and this rule now has 10,990 cells behind it.
+
+### Two error messages named types that do not exist here
+
+`bytes` indexing said **"bytearray index out of range"** — a type this subset
+does not have at all — and `range` said "range" where CPython says "range
+object". Eighteen and four cells. Neither is a wrong answer; both are a reader
+being sent to look for something that is not there.
+
+### Why the grid stays
+
+A rule with 10,990 cells behind it can be changed with confidence. The same rule
+defended by fourteen hand-picked examples is one nobody dares touch — and, as
+iteration 24 recorded when the bounds rule was last wrong, fourteen examples all
+passed while 609 cells differed.
+
+---
+
+## 2026-08-25 · iteration 55 — the `else` clause ran on `break`, and `raise` could not re-raise
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded, 1307
+graded
+
+**bytes** 1,003,720 B — **identical**, all three fixes. **correctness** lypning
+908 MATCH / 399 UNSUPPORTED / **0 MISMATCH**; lypning-mp 11, mixture 1.
+**routing** IDEAL 1235, LATE 40, WASTED 28, UNSAFE 4 — unchanged. **tests**
+1,019 → 1,026.
+
+Iteration 54 ended by naming `try/except/else` on `break` as the next one to
+take, because it is control flow rather than a formatting corner. It was, and it
+was worse than reported.
+
+### The `else` clause ran on every way out, not just the normal one
+
+```python
+while True:
+    try: break
+    else: print("else")
+```
+
+printed `else`. So did a `continue`, **once per iteration**. The clause runs only
+when the body finished by *falling off the end* — `break`, `continue` and
+`return` all leave the statement without reaching it, because "no exception was
+raised" and "the body ran to completion" are different facts and `else` means
+the second.
+
+`self.exec_block(body)` returning `Ok(flow)` ran the else block for **any**
+flow. One `matches!(flow, Flow::Normal)` guard. Side effects are the ordinary
+reason to write an else clause at all, so this could execute arbitrarily much
+code CPython does not.
+
+`finally` was already right and stays right: it runs on every path, including
+these. The two clauses look adjacent and are opposite.
+
+### A bare `raise` could not re-raise
+
+```python
+except ValueError:
+    log(...)
+    raise
+```
+
+answered `RuntimeError: No active exception to reraise` — correct *outside* a
+handler, and wrong inside one, where this is the standard "record it and let it
+propagate". `Stmt::Raise { exc: None }` raised that RuntimeError unconditionally.
+
+The interpreter now carries a **stack** of the exceptions its enclosing handlers
+are handling, pushed for the handler body and popped on every path out. A stack
+rather than one slot because a handler can contain another try/except, and the
+inner one must not lose the outer's exception when it finishes:
+
+```python
+except KeyError:              # outer
+    try: raise TypeError()
+    except TypeError: pass    # inner finishes…
+    raise                     # …and this still re-raises the KeyError
+```
+
+### KeyError was quoted at one construction site and not the other
+
+```
+str(KeyError('f'))        ->  f              cpython: 'f'
+repr(lookup_keyerror)     ->  KeyError("'k'") cpython: KeyError('k')
+```
+
+A KeyError shows the **repr** of its key, so a missing `''` is distinguishable
+from a missing `' '`. Every site that raises one from a real lookup already
+stored `repr(key)`; only the constructor stored the plain string. So `str` was
+right for one and wrong for the other, and `repr` — which quoted again — was
+wrong for exactly the opposite one. Both now store the repr, and `repr()` of a
+KeyError inserts it verbatim.
+
+### The grid, and what it covers
+
+`tests/test_control_flow_grid.py`, 18 cases: `else` under each of break,
+continue, return, normal completion and a raise; an `else` that itself breaks;
+`finally` under break, return and a propagating exception; `finally` overriding a
+return; loop-`else` on for and while with and without break (a different
+construct that shares a keyword and was always correct); an else clause inside a
+handler breaking the outer loop; a bare re-raise; an exception raised *from* an
+else clause not being caught by its own handler; and `finally` with `continue`.
+
+**The well-formed paths are in the grid with the broken ones**, which is the
+point: a "fix" that simply stopped running the else clause would satisfy a test
+that only checked `break`.
+
+Run against the pre-fix binary: **5 failures**, 0 after.
+
+### On the tooling
+
+The second fan-out hunt was launched at six fresh lenses and **all six agents
+failed on a harness fault** — the same StructuredOutput validator that rejected
+schema-conforming payloads earlier, plus a permission handler stripping `command`
+from every Bash call. The agents refused to fabricate and reported BLOCKED, which
+is the right behaviour. Two rounds, two failures, one success. The lenses are
+listed in that script and are still worth sweeping **by hand**, which is how
+every defect in iterations 51, 52, 53 and this one was actually found.
+
+---
+
+## 2026-08-25 · iteration 54 — twelve silent wrong answers from a fan-out hunt, and `bytes` was the hole
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded, 1307
+graded
+
+**bytes** 999,624 → **1,003,720 B**, still **8 blocks** (44,856 B to the ninth).
+**correctness** lypning 908 MATCH / 399 UNSUPPORTED / **0 MISMATCH**; lypning-mp
+11, mixture 1. **routing** IDEAL 1235, LATE 40, WASTED 28, UNSAFE 4 — unchanged.
+**tests** 991 → 1,019.
+
+A six-lens fan-out at the Rust core returned **32 verified silent wrong
+answers** — each one adversarially re-run by a second agent that minimised it and
+tested the claimed condition. Twelve are fixed here. The rest are listed at the
+end rather than half-done.
+
+### `bytes` was the hole, and it is one hole
+
+Six of the thirty-two were `bytes` methods, and that is not a coincidence: the
+`str` side has been swept repeatedly (iterations 24, 44, and the bounds grid),
+and `bytes` never had been.
+
+- **`bytes.rsplit` was `split` wearing a different name.** `from_right` reached
+  the splitter and was discarded with `let _ = from_right;`.
+  `b"path/to/file.txt".rsplit(b"/", 1)` answered `[b'path', b'to/file.txt']`.
+- **The whitespace set was missing `\x0b`.** `u8::is_ascii_whitespace` is space,
+  `\t`, `\n`, `\x0c`, `\r` — Rust leaves out the vertical tab and Python counts
+  it. **One byte value**, found by sweeping all 256 through `split` and `strip`;
+  exactly one differed. The `str` side is a *third* set again (Unicode
+  White_Space plus U+001C–U+001F) and was verified clean over 0..=0x3000. The
+  two must never be merged.
+- **Whitespace splitting with `maxsplit` was wrong at both ends.**
+  `b" a ".split(None, 0)` answered `[b' a ']` and `b"x y  z".split(None, 2)`
+  answered `[b'x', b'y', b' z']`. The rule is: leading and trailing whitespace
+  never produce an empty field, and once the budget is spent the **remainder is
+  handed back verbatim**.
+- **`find`, `startswith` and `endswith` ignored `start` and `end` entirely** —
+  arguments the caller went out of their way to pass.
+- **`hex(sep)` dropped the separator.**
+
+`rsplit` is now the forward walk over the reversed input with the pieces
+reversed back, so the rule lives in exactly one place. That matters more than it
+sounds: with whitespace the two ends are **not symmetric** — a bounded `rsplit`
+keeps the leading whitespace and drops the trailing — and a hand-written mirror
+would be a second place to get that wrong. Verified as a grid of **1,342 cells**
+over 11 receivers × 7 needles × 11 bound pairs × 4 maxsplits.
+
+The `str` side was gridded the same way afterwards (242 cells, 0 differ). It
+*refuses* `rsplit(None, positive maxsplit)` at exit 90, which is why it was never
+silently wrong — a refusal doing its job.
+
+### Six more, each its own root cause
+
+| construct | answered | CPython |
+|---|---|---|
+| `9.0 // 0.7` | `11.0` | `12.0` |
+| `True \| False` | `1` | `True` |
+| `[1,1,1].index(1, 1)` | `0` | `1` |
+| `[1,2,3].index(3, 0, 2)` | `2` | `ValueError` |
+| `zip(a, b, strict=True)` | truncates | `ValueError` |
+| `max({-1, 1}, key=abs)` | `-1` | `1` |
+
+**Float floor division** was the subtlest. CPython computes `mod` first and
+derives `div = (x - mod) / y`, which this tree already did — and then
+**corrects the floor**, which it did not: the division rounds, so a true quotient
+of 12 arrives as 11.999999999999998 and floors to 11. `floatobject.c` adds the
+value back when the discarded fraction was over half a unit. Gridded at 623
+cells across float, int and mixed operands.
+
+**`bool` overrides three bitwise operators** to return `bool`, and only when
+*both* operands are bool: `True | False` is `True`, `True | 1` is `1`. The
+shifts are not overridden. Returning an int for all of them printed `1` on an
+ordinary flag expression.
+
+**`zip(strict=True)` is the one that inverts its own purpose.** The flag exists
+to detect a length mismatch, and the runtime asked to enforce it silently
+removed the guard. It is **refused**, not implemented: `strict` needs a length
+check the lazy `Iter::Zip` does not make, and per invariant 1 a refusal the
+dispatcher routes onward beats an approximation. `zip` and `enumerate` were
+exempt from iteration 52's no-keywords table *because they really do take
+keywords* — and the exemption had become exemption from all validation. A hole
+created by the previous iteration's fix, found by this one's hunt.
+
+### The set-order guard had a second door
+
+`max({-1, 1}, key=abs)` — the keys tie, "ties keep the first element" is the
+rule, and **a set has no first element**. The existing guard covered `sum()` of
+float sets and `reversed()`, and missed `min`/`max`/`sorted` with a key
+entirely.
+
+Refused only **when a tie actually occurs**, not whenever a key is present over a
+set. `sorted(s, key=len)` over distinct lengths has exactly one answer and keeps
+giving it — pinned on both sides, so a later widening into a blanket refusal
+fails the CASES pin while a later narrowing fails the REFUSES pin.
+
+### The verifiers earned their keep again
+
+The `\x0b` finding came with a corpus count of 4. The verifier ran all four:
+three touch the vertical tab only on the `str` side or as source text, and the
+fourth exits 90 before reaching its bytes section. **Realised divergences: 0.**
+It said so, and said the evidence is the 256-value sweep rather than the corpus.
+
+A hunter also called the `zip` defect "unimplemented `strict` semantics"; the
+verifier read `builtins.rs`, found the `NO_KEYWORDS` exemption, and corrected it
+to "a missing keyword-validation gate on zip *and enumerate*" — which is what
+made the fix cover both. A correct defect with a wrong explanation sends the fix
+to the wrong place.
+
+### Not fixed, and listed so they are not re-found
+
+Twenty of the thirty-two remain, all verified, none with corpus hits:
+int↔float comparison past 2**53 (`10**16+1 == 1e16`), `int/int` division through
+f64, NaN identity in containment and equality, `list.sort` leaving the list
+visible during the sort, `round(x, -1)` half-away-from-zero, five format
+mini-language gaps (zero-pad with explicit alignment, group-aware padding,
+precision with an empty presentation type, grouping for `g` and `%`, nested
+auto-numbering), dict mutation during iteration not raising, tuple augmented
+assignment, `try/except/else` running the else clause on `break`, exception args
+truncated past the first, and `KeyError` quoting.
+
+**`try/except/else` on `break` is the one to take next** — it is control flow,
+not a formatting corner, and a wrong answer there can be arbitrarily large.
+
+---
+
+## 2026-08-25 · iteration 53 — malformed calls were being answered, and an oracle question asked wrong
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded, 1307
+graded
+
+**bytes** 995,528 → **999,624 B**, still **8 blocks** (48,952 B to the ninth).
+**correctness** lypning 908 MATCH / 399 UNSUPPORTED / **0 MISMATCH**;
+lypning-mp 11, mixture 1. **routing** IDEAL 1235, LATE 40, WASTED 28, UNSAFE 4 —
+all unchanged, on a change that constrains every call in the language.
+
+The axis next to iteration 52's keywords: **argument counts**. 74 probes over
+malformed calls, and the same shape of defect — an extra argument was dropped in
+silence and a missing one defaulted, so the call answered instead of raising.
+
+```
+'ab'.strip('a','b')  ->  'b'          [1].insert(0)   ->  inserts None
+[1].append(1,2)      ->  appends 1    {}.get()        ->  None
+len([1],[2])         ->  1            abs(1,2)        ->  1
+chr(65,66)           ->  'A'          divmod(1,2,3)   ->  (0, 1)
+repr(1,2)            ->  '1'          sorted([1],[2]) ->  [1]
+```
+
+Nineteen of them, every one exit 0. `[1].insert(0)` is the one that is not
+merely a wrong answer: it puts a `None` **into the list** and carries on.
+
+Arity tables in `builtins.rs` and `methods.rs` now bound both ends. Afterwards:
+**0 silent wrong answers over the same 74 probes.**
+
+### The floor counts positionals only
+
+`round(number=2.5)` has no positional arguments and is a complete call, so the
+minimum applies only when nothing was passed by name. The ceiling always
+applies — a keyword never makes an extra positional legal. Caught by the
+iteration-52 grid, which is the argument for keeping old grids running.
+
+### The mistake worth recording: the oracle answered a different question
+
+The tables were derived by calling CPython with 0..6 arguments and recording
+which counts it accepted. The first derivation put `format` at **(1, 1)**. It
+takes two.
+
+The probe had called `format(1, 1)`, which raises
+`TypeError: format() argument 2 must be str, not int` — a **type** error whose
+text contains the word "argument", and the classifier keyed on that word. So a
+type failure was recorded as an arity limit, and the table then rejected
+`format(3.5, '.1f')`. **17 tests failed**, which is the only reason it was
+caught before the commit.
+
+Deriving a table from an oracle is the right method and it is what made the rest
+of this correct. But an oracle only answers the question actually asked, and
+"does this raise" is not "is this too many arguments". The second pass used
+type-correct fillers per call. `type` came back (1, 3) — the three-argument class
+form — and is left out of the table entirely rather than guessed at.
+
+### What is deliberately NOT fixed
+
+**Fifty-five message-text differences remain**, measured and left:
+
+```
+lypning:  str.strip() takes at most 1 argument (2 given)
+cpython:  strip expected at most 1 argument, got 2
+```
+
+Both raise, both at the same exit code; only the wording differs. That is a real
+gap and a much smaller one — the caller gets an error either way and learns the
+same thing — and matching CPython's per-function phrasing across fifty-five
+messages is a large change for it. So the pin in `tests/test_call_shape.py`
+asserts the **outcome shape and not the message**: whether an error happened at
+all is what must never differ. Pinning the text would freeze fifty-five strings
+that are allowed to be wrong.
+
+It asserts both directions. A check that simply refused everything would pass a
+one-sided test, so 22 **well-formed** calls sit in the same grid, and the failure
+message names which side broke.
+
+---
+
+## 2026-08-25 · iteration 52 — keyword arguments were being ignored, and one of them aborted the process
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded, 1307
+graded
+
+**bytes** 991,432 → **995,528 B**, still **8 blocks** (52,048 B of headroom to
+the ninth). **correctness** lypning 908 MATCH / 399 UNSUPPORTED / **0
+MISMATCH**; lypning-mp 11 and mixture 1, unchanged. **routing** IDEAL 1235,
+LATE 40, WASTED 28, UNSAFE 4 — unchanged, and worth stating: this touched every
+method dispatcher and **no corpus program moved**.
+
+Iteration 51 found two defects in keyword handling. This entry sweeps that
+class properly: 129 probes over every keyword-able parameter of the builtins and
+container methods the subset implements. **Sixteen divergences**, and they are
+not sixteen bugs — they are one bug with sixteen faces.
+
+### The bug: an unread keyword was silently dropped
+
+```
+'xax'.strip(chars='x')        ->  'xax'    cpython: TypeError
+'a'.ljust(width=5)            ->  'a'      cpython: TypeError
+{'a':1}.get('b', default=2)   ->  None     cpython: TypeError
+bool(x=1)                     ->  False    cpython: TypeError
+int(x='5')                    ->  0        cpython: TypeError
+```
+
+Every one is exit 0 with a plausible answer. Naming an argument is an ordinary
+way to be slightly wrong, CPython says so immediately, and here it produced the
+default-shaped result instead — `bool()` with no argument, `strip()` with no
+`chars`, `get()` with no default.
+
+Almost none of CPython's builtins and container methods take keywords at all:
+they are C functions with positional-only parameters. The allow-lists are now
+**enumerated by asking CPython 3.11**, not by reading the manual —
+
+```
+str    split rsplit splitlines encode expandtabs format format_map
+bytes  decode split rsplit splitlines hex
+list   sort
+dict   update
+set    (none)
+```
+
+— and everything else answers `TypeError: str.strip() takes no keyword
+arguments`, in CPython's exact wording. The existing `no_kw` helper had the
+wrong wording too: it appended `(got 'x')`, which is the shape CPython uses for
+Python-level functions and not for these.
+
+### The half-wired half, which is worse
+
+`str.split` read `maxsplit=` as a keyword and **not** `sep=`. So:
+
+```
+'a,b'.split(sep=',')   ->  ['a,b']     cpython: ['a', 'b']
+```
+
+It split on whitespace and answered at exit 0. That is not an exotic spelling —
+and the finished-looking keyword handling one line above it is exactly why
+nobody looked. `sum(xs, start=10)` had the same shape: the start was ignored and
+the sum came back short, silently. `round(2.5, None)` and `round(number=2.5)`
+raised at exit 1, the same `None`-is-the-default family as iteration 51's
+`key=None`.
+
+### And one that aborted the interpreter
+
+```
+$ lypning -c "print(int('0x1f', 0))"
+        (exit 134 — SIGABRT, a Rust panic)
+$ python3.11 -c "print(int('0x1f', 0))"
+31
+```
+
+`i64::from_str_radix` **panics** outside radix 2..=36, and every out-of-range
+base reached it: `int(s, 0)`, `int(s, 1)`, `int(s, 37)`, `int(s, -1)`. Exit 134
+is neither 0 nor 90, so the dispatcher hands it straight back and the caller
+reads a Rust abort message for valid Python. `int(s, 0)` — take the base from
+the prefix — is ordinary code for anything parsing hex.
+
+Base 0 is now implemented, including the rule that only exists there: a leading
+zero on a *decimal* literal is invalid, so `int('010', 0)` raises while
+`int('00', 0)` is 0. The failure message keeps the caller's base, because CPython
+says "with base 0" even after resolving the prefix to 16 — a message naming the
+detected base would send a reader looking for an argument nobody wrote. Verified
+as a grid: **252 cells over 28 literals × 9 bases, all identical.**
+
+### Why no gate saw any of it
+
+Same reason as iterations 49 and 51, stated once more because it is now a
+pattern rather than an anecdote. The corpus measures **what agents typed**; the
+fuzzer generates from the **grammar**. Keyword arguments are in neither: agents
+overwhelmingly write the positional form, and a grammar-driven generator emits
+calls, not argument-naming variations. The gap between what the subset *claims*
+and what anything *checks* is where this whole class lived.
+
+### Pinned
+
+`tests/test_keyword_grid.py`, 60 cells, comparing values **and messages** —
+"takes no keyword arguments" is the point, and a bare TypeError would pass
+whatever raised it. Plus the 252-cell `int()` base grid.
+
+Run against the pre-fix binary: it **fails**, though by refusing rather than by
+differing, and that is worth knowing. Dropping `sep=` turns
+`rsplit(sep=',', maxsplit=1)` into `rsplit(None, 1)`, which the subset genuinely
+refuses — so the regression arrives disguised as a coverage problem. The failure
+message says both, because a future reader who trims the grid to make it run has
+deleted the pin instead of fixing the bug.
+
+---
+
+## 2026-08-25 · iteration 51 — `key=None` and `reverse=None`, wrong in opposite directions
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded, 1307
+graded
+
+**bytes** 987,336 B, 8 blocks — unchanged. **correctness** lypning 908 MATCH /
+399 UNSUPPORTED / **0 MISMATCH**; lypning-mp 11 and mixture 1, unchanged.
+**routing** IDEAL 1235, LATE 40, WASTED 28, UNSAFE 4 — all unchanged.
+
+Found by probing the neighbourhood of iteration 49's defect on the theory that
+defects cluster. They did: thirteen ordering probes, one file, two bugs, and
+they fail in opposite directions from the same three call sites.
+
+### `key=None` was called
+
+```
+$ lypning -c 'print(sorted([3,1,2], key=None))'
+TypeError: 'NoneType' object is not callable      (exit 1)
+$ python3.11 -c '(same)'
+[1, 2, 3]
+```
+
+`None` is the *default* for `key=`, not a callable. It is also how an optional
+key gets spelled — `sorted(xs, key=chooser)` where `chooser` may be `None` — so
+this is ordinary code, not a corner. All four call sites had it: `sorted`,
+`list.sort`, `min`, `max`.
+
+Exit 1 is the program's own exit, so **the dispatcher does not fall through**.
+The caller got a TypeError for valid Python instead of the answer, with no tier
+below to rescue it. Loud rather than silent, which is the better half of bad.
+
+### `reverse=None` was obeyed
+
+```
+$ lypning -c 'print(sorted([3,1,2], reverse=None))'
+[1, 2, 3]                                         (exit 0)
+$ python3.11 -c '(same)'
+TypeError: 'NoneType' object cannot be interpreted as an integer
+```
+
+The worse half. `reverse=` goes through `__index__` in CPython, so a non-integer
+is a TypeError; read for truthiness it became an ascending sort at exit 0 — a
+**wrong answer where an error was owed**, and nothing to notice it by.
+
+The two are the same mistake seen from both sides: one keyword was assumed to be
+a callable and the other was assumed to be a truth value, and neither assumption
+was checked against what CPython does with it. `key_arg` and `reverse_arg` now
+carry both rules once, for all four call sites.
+
+### Pinned, and checked against the defect
+
+Six cases plus one stderr-text case — the message matters here, because the
+stdout pin cannot tell this TypeError from any other. **Run against the broken
+binary first: 6 failures there, 0 after.**
+
+That check is not ceremony. This tree has shipped a pin that passed on the
+defect it named, and a pin nobody has seen fail is a pin nobody has tested.
+
+### The method, restated
+
+Iteration 49's defect was found by an adversarial probe, not by any of the four
+gates. This one was found by asking what *else* lives next to it. Two defects
+from thirteen probes in one afternoon, in code that has been at MISMATCH 0 over
+1,305 corpus programs the whole time.
+
+**The corpus measures what agents typed. It cannot measure what the subset
+claims.** That is the fuzzer's job and it generates from the grammar, so
+keyword-argument edge cases — `key=None`, `reverse=None` — are outside what it
+reaches too. The gap between "what we ship" and "what anything checks" is where
+both of these lived.
+
+---
+
+## 2026-08-25 · iteration 50 — generalising the shared-failure rule made LATE 614, REVERTED
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded, 1307
+graded
+
+**Nothing kept**, and this entry also **corrects iteration 46's reasoning**,
+which is the more useful half.
+
+### The idea
+
+Iteration 46 stopped crediting a tier whose MATCH was a shared failure, but only
+on `syntax` routes. Iteration 47's leftover LATE list looked like the same thing
+wearing different labels — programs routed `lypning-mp -> lypning` on
+`module: import re`, where the "ideal" tier had exited 1 with empty stdout.
+Measured over the 40 remaining LATE routes, **28 had exactly that shape.**
+
+The obvious move was to drop the `syntax` condition and key on the failure
+instead: skip a cheaper tier when it exited non-zero, printed nothing, *and the
+reference failed too*.
+
+### It produced this
+
+```
+              before   after
+  IDEAL        1235      661
+  LATE           40      614
+```
+
+1,139 tier-verdicts across the corpus met the condition, not 28.
+
+### Why, and why the first reading was wrong
+
+The 28 are programs like `s = open('src/main.rs').read()` — an agent's edit
+history. The battery gives every entry a **fresh temp cwd** (invariant 4), so the
+file is not there, and the program dies on line 1 on every tier before reaching
+anything a tier would refuse.
+
+The mistake was calling that a grader artifact. It is not. For a program that
+fails identically everywhere, the cheapest tier really is the cheapest way to get
+that answer, so `predicted=cpython, ideal=lypning` is a **truthful** LATE: it did
+cost more for the same result. What it is not is *actionable* — no feature work
+changes it, because the failure is environmental. Truthful and unactionable are
+different complaints, and only the second one applies.
+
+And the rule cannot be keyed on the failure, because it then fires on the far
+larger population where the route is **correct**: a program routed to lypning,
+which reproduces CPython's exception exactly, has its own destination struck off
+the ladder, ideal moves to CPython, and a right answer at the cheapest tier is
+graded LATE. That is the 614.
+
+### What still stands, and on what grounds
+
+Iteration 46's `syntax`-only rule is unaffected, but the reasoning that survives
+is narrower than the one it was committed with. It is **not** "agreement on a
+failure is not an answer" — that is the general claim, and the general claim is
+false. It is specifically that for a syntax error **CPython's stderr is the
+deliverable**: it names the file, the line and the column and prints the
+offending source, and lypning's says "line 1". The classifier routes there on
+purpose for that reason, and the battery compares stdout, which cannot see it.
+That argument is about diagnostics and does not extend past them.
+
+### The honest reading of LATE 40
+
+Twelve are capability gaps. Twenty-eight are programs that die on a missing file
+in the battery's sandbox — real cost differences in the battery, silent about
+capability, and quite possibly correctly routed in the cwd the agent actually
+had, where the file exists and the tier would refuse for real. **The next
+iteration should work the twelve and not re-derive the twenty-eight**, which is
+what this entry is for.
+
+---
+
+## 2026-08-25 · iteration 49 — `reverse=True` was reversing the ties, in the Rust core
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1553 loaded (two
+seeds added by this entry), 1307 graded
+
+**bytes** 987,336 B, 8 blocks — unchanged; the fix moves one `reverse()` call
+earlier. **correctness** lypning 908 MATCH / 399 UNSUPPORTED / **0 MISMATCH**;
+lypning-mp 11 and mixture 1, both unchanged. **routing** IDEAL 1235, LATE 40,
+WASTED 28, UNSAFE 4. **speed** / **corpus** not run — the change is one index
+reversal on a path that already reversed once.
+
+### The defect
+
+```python
+counts = {"error": 3, "warn": 2, "info": 2, "debug": 1}
+sorted(counts, key=lambda k: counts[k], reverse=True)
+```
+
+CPython answers `['error', 'warn', 'info', 'debug']`. lypning answered
+`['error', 'info', 'warn', 'debug']` — `warn` and `info` are tied at 2, and they
+came back swapped. Exit 0, no diagnostic, plausible output.
+
+`sort_values` in `ops.rs` did a stable ascending merge sort and then, for
+`reverse=True`, called `idx.reverse()` on the finished permutation. **That
+reverses the ties along with everything else.** Python's sort is stable
+descending as well as ascending — `reverse=True` inverts the ordering, not the
+arrangement of equal elements — so the post-pass is wrong for every input that
+has a tie.
+
+CPython does not do a post-pass. `listobject.c` calls `reverse_slice` on **both
+sides** of the merge: reverse the input, sort ascending, reverse again. The
+second reversal undoes the first for equal elements and inverts the rest. The
+fix is that, and it costs one extra reversal of an index vector.
+
+### Why nothing here had caught it
+
+Three instruments were pointed at this code and all three were structurally
+blind to it:
+
+- **The corpus could not see it.** 1305 programs, MISMATCH 0, and it stayed 0
+  after the fix. The battery had been green over this bug for its whole life.
+- **`perf` could not see it.** It measures time, and the wrong answer arrives
+  just as fast.
+- **The differential fuzzer generates from the subset**, and a random keyed sort
+  over random data mostly has distinct keys.
+
+The reason is one property: **the defect is invisible without ties, and
+invisible again when a tie happens to land in the right place.**
+`sorted([5,3,1,4], reverse=True)` is correct under both implementations, and so
+is any sort of distinct keys — which is most of what anyone writes down when
+trying to think of a test case.
+
+An earlier survey of this session's corpus made the same point from the other
+side: **67 corpus programs contain a keyed sort and *none* of them diverge.**
+Forty-six use tuple keys like `key=lambda k: (-d[k], k)`, an explicit
+tiebreaker that makes the key a total order, so stability cannot matter to them
+by construction; the rest hit no ties or survived by luck. A defect can be
+common in the code and absent from the measurements.
+
+### What found it
+
+A fan-out of probe agents, each given one lens (introspection, numerics,
+str/bytes, containers, exceptions, shim stdlib) and told to hunt for constructs
+where a tier exits 0 and prints something different from CPython. It was aimed
+at **lypning-mp**, and it found sort instability there — the tier's sort is
+genuinely unstable, `sorted([1,2,3,4,5,6], key=lambda x: 0)` returns
+`[4, 6, 5, 1, 3, 2]`. Running the same probe against tier 1 to write the entry
+up is what turned up the `reverse=True` case in our own code.
+
+Worth keeping: the verifier that checked the claim **corrected it downward**.
+The hunter reported "67 corpus programs hit this"; the verifier ran all 67 on
+both interpreters and reported 0 divergences, with the tuple-key explanation
+above. The honest number made the finding *more* useful, not less — it is why
+this entry can say the corpus was blind rather than pretending it was not.
+
+### Pinned two ways
+
+Six cases in `tests/test_fuzz_findings.py`, and a grid in
+`tests/test_sort_grid.py` enumerating key functions with 1, 2, 3 and 5 distinct
+values over lengths 0–13 — run lengths on both sides of the merge width, ties
+guaranteed at every size, `sorted` and `list.sort` cross-checked against each
+other as well as against CPython.
+
+**Both were run against the broken binary before being trusted**: 5 failures
+there, 0 after. A pin that passes on the defect it names is not a pin, and this
+tree has shipped one of those before.
+
+Two seed corpus entries were added for the idiom itself, so the battery covers
+it going forward rather than by luck.
+
+### The rest of the lypning-mp survey
+
+Thirty-four divergences were verified in lypning-mp, most with zero current
+corpus hits — recorded here because they are what the classifier is risking
+whenever it routes to that tier, not because they are actionable today. The
+silent ones (exit 0, wrong answer) are the dangerous class:
+
+| construct | lypning-mp | CPython |
+|---|---|---|
+| `sorted(key=…)` stability | unstable | stable |
+| `round(2.5, 0)`, `round(0.125, 2)` | `3.0`, `0.13` | `2.0`, `0.12` |
+| `isinstance(True, int)` | `False` | `True` |
+| `json.loads(…, object_pairs_hook=f)` | hook ignored | hook applied |
+| `'{:,}'.format(1234567.0)` | `1.23457e+06` | `1,234,567.0` |
+| `'x'.encode('ascii', 'replace')` | errors= ignored | applied |
+| `Path('/a/b').parts` | `('a','b')` | `('/','a','b')` |
+| `d.items() == other.items()` | `False` | `True` |
+| `sys.maxsize` (32-bit build) | `2**31-1` | `2**63-1` |
+| `2**53+1 == 2.0**53` | `True` | `False` |
+
+`round` and `isinstance` are the two with real corpus presence (8 and 4
+programs). None of them fires through the dispatcher today — UNSAFE is still 4 —
+and **that is a fact about the corpus, not about the tier**, which is the whole
+lesson of this iteration repeated one tier down. `pathlib` is the one to watch:
+46 corpus programs import it, it is in `MICROPYTHON_MODULES`, and `.parts` is
+wrong there.
+
+---
+
+## 2026-08-25 · iteration 48 — routing `method` to the middle tier: 14 LATE fixed, 2 UNSAFE bought, REVERTED
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305
+graded
+
+**Nothing kept.** One line added to `engine_for`, measured, reverted. The
+baseline was restored exactly and re-measured to prove it (IDEAL 1233,
+LATE 40, WASTED 28, UNSAFE 4, mixture MISMATCH 1).
+
+### The case for it looked very strong
+
+Iteration 47's breakdown of everything routed to CPython, by blocker kind and
+grade:
+
+```
+   50  module       IDEAL
+   19  syntax       IDEAL
+   14  method       LATE     <--
+   14  module       LATE
+    5  module-attr  LATE
+    2  method       IDEAL    <--
+```
+
+**Sixteen programs blocked as `method`, and fourteen of them LATE.** A `method`
+blocker means lypning did not recognise an attribute name, which says nothing
+about lypning-mp — a far larger runtime. The trade looked one-sided: 14 programs
+save a ~15 ms CPython spawn, 2 programs pay a ~1.7 ms wasted one.
+
+It delivered exactly what it promised on those numbers:
+
+```
+              before   after
+  IDEAL        1233     1237
+  LATE           40       34
+  cpython       108       92
+  WASTED         28       28
+```
+
+### And it bought two wrong answers
+
+```
+  UNSAFE            4 -> 6
+  mixture MISMATCH  1 -> 3
+```
+
+The mixture line is the one that matters: the *dispatcher* now delivers a wrong
+answer for two programs it used to get right. Both are silent — exit 0, plausible
+output — and both are ordinary string semantics, not exotica:
+
+```
+$ echo "print('hello'.find('',6))"      mp: 5           cpython: -1
+$ echo "print(int('\x85' '42'))"        mp: ValueError  cpython: 42
+```
+
+An empty needle starting past the end of the string: MicroPython clamps the
+start, CPython returns `-1`. And `U+0085` NEL, which CPython counts as
+whitespace and strips inside `int()` and MicroPython does not.
+
+### Why this is a revert and not a tuning problem
+
+**UNSAFE is a gate and LATE is a budget, and the two do not trade.** Fourteen
+programs saving 15 ms each is about 200 ms across the whole corpus. Two programs
+returning wrong answers is unbounded — the agent that typed the one-liner does
+not check. That asymmetry is the entire reason the vocabulary in `routing.py` is
+lopsided, and this iteration is what it looks like when the numbers argue against
+it.
+
+It is also **the unicodedata lesson again** (iteration 40), one rung up. There it
+was one module that imports but does not serve; here it is a whole blocker kind
+where the tier answers most programs and quietly misses two. The shape recurs:
+*a population where the tier is usually right is not a population the classifier
+may claim.* The classifier's promise is not "usually the right answer" — it is
+"the right answer or a refusal", and a kind-level rule cannot make that promise
+on behalf of programs nobody enumerated.
+
+### What would make it safe
+
+Not a kind. The 14 winners are individually identifiable — the battery names
+them — so a rule that names *attributes* lypning-mp is known to serve correctly,
+checked by conformance the way `MICROPYTHON_MODULES` is, would keep the win and
+drop the two. That is a bigger table and a real design decision, not a one-line
+match arm, and it should not be taken on this iteration's budget.
+
+**Do not re-propose the kind-level version.** The LATE breakdown will keep
+recommending it, because LATE cannot see UNSAFE.
+
+---
+
+## 2026-08-25 · iteration 47 — the middle tier had decorators and generators all along
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305
+graded
+
+**bytes** 987,336 B, 8 blocks — identical again; this is two table entries.
+**correctness** lypning 906/399/**0**, lypning-mp 11, mixture 1, all unchanged.
+**speed** / **corpus** not run: nothing on an executed path changed.
+
+### The comment was the bug
+
+```rust
+/// Constructs no MicroPython-derived runtime has, so a program using one goes
+/// straight to CPython rather than paying a lypning-mp spawn to be told no.
+const CPYTHON_ONLY_KINDS: &[&str] = &["async", "decorator", "generator"];
+```
+
+Two of those three are language features MicroPython implements. Asked rather
+than assumed:
+
+```
+$ lypning-mp -c 'def d(f):
+      def w(*a): return f(*a)*2
+      return w
+  @d
+  def g(x): return x+1
+  print(g(3))'
+8
+$ lypning-mp -c 'def g():
+      yield 1
+  gen = g(); print(next(gen)); gen.close(); print("closed")'
+1
+closed
+```
+
+Ten corpus programs were routed past a tier that runs them — seven decorators
+and three generators, every one of them LATE in iteration 46's cleaned-up list.
+
+### `async` stays, and why it is the interesting one
+
+`async def f(): return 1` **parses** on lypning-mp and exits 0. The syntax is
+not the problem; `asyncio` is absent, and a program that says `async` needs it.
+The refusal is clean — exit 90, empty stdout — so routing there would buy a
+spawn and still land on CPython.
+
+That is the distinction this list is actually for: **where a program ends up,
+not what a parser accepts.** Both halves of the old entry were wrong in that
+frame — decorator and generator were listed as absent syntax that is present,
+and `async` is present syntax that goes nowhere.
+
+### What moved
+
+```
+              before   after
+  IDEAL        1223     1233
+  LATE           50       40
+  WASTED         28       28
+  UNSAFE          4        4
+  cpython       118      108
+```
+
+**WASTED did not move by one.** That was the number at risk — relaxing a
+CPython-only kind should, in principle, start sending programs to a tier that
+then refuses them. It did not, and not by luck: `engine_for` checks the imports
+*before* it reaches the kind match, so `@functools.lru_cache` is decided by
+`import functools` and still goes straight to CPython. Pinned in
+`tests/test_routing.py`, because that ordering is what makes this change free
+and a later edit could quietly reverse it.
+
+### Three iterations, one dial
+
+45, 46 and 47 were all routing, no engine:
+
+```
+  IDEAL   1190 -> 1233      LATE  83 -> 40      routed to cpython  132 -> 108
+```
+
+**Twenty-four programs stopped paying a CPython spawn**, at zero bytes and zero
+risk to any arm's MISMATCH count. For comparison, iteration 44 measured the
+evaluator at ~13% of a corpus program's cost — the whole surface the previous
+forty-odd iterations were optimising. A CPython spawn is roughly ten times a
+lypning one. This dial was cheaper than the last one by a wide margin, and it
+was cheaper because the instrument had been printing the answer for weeks.
+
+---
+
+## 2026-08-25 · iteration 46 — a quarter of the LATE budget was the grader, not the router
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305
+graded
+
+**bytes** unchanged, 987,336 B — no Rust touched. **correctness** every arm
+unchanged: lypning 906/399/**0**, lypning-mp 11, mixture 1. **speed** and
+**corpus** not run: this is `src/lypning/routing.py`, which runs no program.
+
+Iteration 45 left a LATE list of 69 and named `syntax 19` as the next bucket,
+with the guess that it was not a win. It was not, and the reason is worth more
+than the bucket.
+
+### Nineteen programs were LATE for failing correctly
+
+The LATE grade means "a cheaper engine would have run this too". For these
+nineteen it meant nothing of the kind. They do not parse — one of them is
+literally `print($p)`, a shell template that leaked into a capture — so every
+tier produces an empty stdout and a non-zero exit. The battery compares stdout
+and the exit code, so **every tier scores MATCH for producing nothing**, and the
+ladder names the cheapest of them the ideal destination for a program none of
+them can run.
+
+```
+$ lypning     s1.py     rc=1  stdout empty   SyntaxError: invalid syntax   (line 1)
+$ python3.11  s1.py     rc=1  stdout empty   SyntaxError: invalid syntax
+                                               File ".../s1.py", line 1
+                                                 print($p)
+                                                       ^
+```
+
+Identical on everything the grader looks at. The entire difference — the file,
+the line, the column, the offending source — is on **stderr**, which it does
+not compare. The classifier sends syntax errors to CPython on purpose, because
+that message is the deliverable; the grader was calling that deliberate,
+correct decision a defect nineteen times.
+
+### The rule, and the guard that keeps it honest
+
+An engine is a destination when it **answers**, not when it fails the same way.
+So the ideal-finding walk skips a tier whose MATCH came with a non-zero exit —
+but only on a `syntax` route, and only then.
+
+The guard is the part worth defending, because without it this would be a metric
+edited to flatter itself, which is invariant 1's failure mode wearing a
+different hat. If a tier exited **0 with real output** while the classifier
+called the program a syntax error, that tier answered, the classifier was wrong,
+and it still grades LATE. And restricting it to `syntax` routes matters too: a
+program that reproduces `sys.exit(3)` exactly is a tier answering correctly, and
+a broader rule would have excused every genuine LATE that happened to exit
+non-zero. All three cases are pinned in `tests/test_routing.py`.
+
+### What moved
+
+```
+              before   after
+  IDEAL        1204     1223
+  LATE           69       50
+  WASTED         28       28
+  UNSAFE          4        4
+  ideal %      92.3     93.7
+  first-try %  97.5     97.5
+```
+
+first-try is unchanged, and that is the cross-check: those nineteen programs
+always reached a correct answer on their first spawn, because CPython was
+already where they were sent. Only the *ideal* number was wrong.
+
+### The LATE list is now 50, and every one is real work
+
+```
+  module 18   method 14   module-attr 7   decorator 7   generator 3   exception 1
+```
+
+by destination: `cpython -> lypning-mp` 33, `cpython -> lypning` 11,
+`lypning-mp -> lypning` 6. The largest bucket is the `MICROPYTHON_MODULES`
+table, where `tests/test_routing.py` already stands warning about `unicodedata`
+over 18 entries — and where adding it once moved UNSAFE from 4 to 5 (iteration
+40). That warning is the shape of the work and also the trap in it.
+
+**A quality number nobody audits drifts into decoration.** This one had 28% slack
+in it, and the slack was pointing the next iteration at `print($p)`.
+
+---
+
+## 2026-08-25 · iteration 45 — the classifier could not see `os.path`, and 14 programs paid CPython for it
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305
+graded · **commit** follows this entry
+
+**bytes** 987,336 B, 8 blocks — *identical to the byte*, before and after.
+Routing is parse-time and this added no code to any executed path.
+**correctness** lypning arm 906 MATCH / 399 UNSUPPORTED / **0 MISMATCH**,
+unchanged. lypning-mp 11 and mixture 1, both unchanged. **speed** not run: no
+evaluator path changed. **corpus** not run, same reason.
+
+### Re-aiming, and what the dial was pointed at before
+
+Iteration 44 ended by measuring that the evaluator is ~13% of what a corpus
+program costs, and concluded that the number that matters for the *stack* is how
+many programs reach a cheap tier at all. This entry acts on that. It is not a
+FOCUS change in the skill's sense — no engine feature was built — but it is the
+first iteration taken against the routing report rather than against `perf`.
+
+### The instrument that had the answer already
+
+`lypning conformance` grades routes as well as answers, and its vocabulary is
+the gradient nobody had worked from:
+
+```
+                before   after
+  IDEAL          1190     1204
+  WASTED           28       28
+  LATE             83       69
+  UNSAFE            4        4
+  NO-ENGINE         0        0
+
+  predictions   lypning=876  mp=297  cpython=132   (before)
+                lypning=888  mp=299  cpython=118   (after)
+```
+
+**LATE is the coverage gradient, and it is not the same list as `--plan`.**
+`--plan` sorts by what blocks tier 1 and puts `import re` at the top with 122
+programs — but `re` is in lypning-mp's table, so those 122 already land on a
+1.8 ms tier and cost almost nothing. LATE names the programs that pay a *second
+process*, and there were 83, not 399. Broken down by where they went versus
+where they could have gone:
+
+```
+  cpython -> lypning       42     method 20, syntax 19, module 2, exception 1
+  cpython -> lypning-mp    35
+  lypning-mp -> lypning     6
+```
+
+The `method 20` row is one defect, and `docs/LYPNING.md` §4 had already
+root-caused it in a section titled *One systematic LATE route*, sitting open.
+
+### The defect
+
+`walk_expr`'s `Expr::Attr` arm resolved a module attribute only when the base was
+a bare `Expr::Name`. `os.getenv` matched that and was answered correctly.
+`os.path.basename` did not — its base is itself an `Expr::Attr` — so it fell past
+the module check into the method table, missed every entry there, and was blocked
+as `method: .basename()`. The engine implements **fourteen** functions under
+`os.path`. The classifier could see none of them.
+
+```
+$ lypning route -c 'import os; print(os.path.basename("a/b/c.txt"))'
+cpython   method: .basename()          # before
+lypning                                # after
+
+$ lypning -c 'import os; print(os.path.basename("a/b/c.txt"))'
+c.txt                                  # the engine, all along
+```
+
+The fix is a recursive `resolve_module`: resolve a dotted expression one step at
+a time through `modules::get_attr`, and count a step only when it lands on a
+`Value::Module`. That last clause is the half worth writing down — `os.environ`
+is a dict, so the walk stops there and `.get` stays a method, which is what it
+is. A version that kept walking would have blocked a call the engine runs.
+
+### What moved
+
+Fourteen programs stopped paying a CPython spawn — twelve now answered by
+lypning, two by lypning-mp. **WASTED did not rise**, which is the number that
+would have caught an over-claim: not one program was sent to a tier that then
+refused it. UNSAFE held at its known 4 and no arm's MISMATCH count moved.
+
+A second, smaller result: an unknown name under a module the engine *does* have
+is now `module-attr: os.path.nosuchfn` instead of `method: .nosuchfn()`. That is
+the same word the engine's own refusal uses, which is what makes `--plan` a build
+order rather than a list of two names for one thing.
+
+### Why this was worth more than the spawn
+
+`lypning route` is what the skill tells an agent to trust. An agent reads
+`cpython` and rewrites working code to satisfy a tier the original already met —
+the prompting study watched two of them replace `os.path.splitext` with a
+hand-rolled `rfind`. **A classifier that under-reports its own engine teaches,
+once it is inside a prompt loop.** That is a cost no timing instrument in this
+tree can measure, and it is the reason this was a defect and not a budget line.
+
+### One correction to the docs, found by re-measuring rather than reading
+
+`docs/LYPNING.md` §4 said the fourth UNSAFE route, `py-9b16a7261b96`, "is
+answered by lypning-mp at exit 0 with the wrong output". It is not. It dies at
+**exit 1** with a MicroPython traceback on `type(e).__module__` — an attribute
+built-in types do not carry there — with eleven correct lines already streamed to
+stdout. An ordinary non-zero exit is deliberately not treated as a refusal, so
+the chain does not rescue it. `.github/known-mismatches.json` had this right and
+§4 had drifted from it; §4 is now corrected.
+
+### What the LATE list still holds
+
+`syntax 19` is next and is probably **not** a win: those programs route to
+CPython on purpose, because CPython's error message is the one the caller
+expects, and they grade LATE only because the battery compares stdout and exit
+code, where two interpreters both failing look identical. Worth confirming
+before touching — the grader's blind spot, not the router's.
+
+`cpython -> lypning-mp 35` is the larger remaining bucket and is a different
+kind of work: it is the `MICROPYTHON_MODULES` table, where the standing warning
+from `tests/test_routing.py` (`unicodedata`, 18 entries) is a trap already paid
+for once — adding it moved UNSAFE from 4 to 5.
+
+---
+
+## 2026-08-25 · iteration 44 — where a corpus program's time actually goes, and four things that were not it
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**Nothing committed to the engine.** Two changes were written, measured and
+reverted. The finding is the entry.
+
+### The split nobody had measured
+
+`lypning perf` times constructs in a loop, which amortises one parse to nothing
+and subtracts startup by design. So it has never been able to see what a *corpus*
+program — which runs once and exits — actually spends. Measured directly, 60
+corpus programs, min of 40 spawns each, `route -c` giving parse and `-c` giving
+parse plus eval:
+
+```
+                    run 1     run 2
+  process startup     75%       65%
+  parse               12%       22%
+  eval                13%       13%
+```
+
+Noisy between runs because the startup floor itself moves (0.288 ms against
+0.246 ms), but the shape is stable and the third row is stable to the point:
+
+**The evaluator is about 13% of what a corpus program costs.** Everything this
+session optimised — and everything the 32-case suite measures — lives inside
+that 13%. Halving it would save six percent of a one-liner.
+
+Startup is two thirds to three quarters and is close to irreducible: the binary
+is already static, non-PIE, and opens no files. The size lever is weak, too —
+lypning-mp is **3.3x smaller** and starts only **8% faster** (0.61 ms against
+0.66), so most of that time is `fork` + `exec` and not paging in the image.
+
+**What this says about where effort goes**, and it is not where this session
+spent it: for the stack, the number that matters is how many programs *reach*
+lypning at all. It answers 906 of 1305; the other 399 each pay a second process
+on top of the first. One program moved from a fall-through to an answer is worth
+more than a 20% win anywhere inside the 13%.
+
+### Four memcmp-shaped hypotheses, none of which converted
+
+`memcmp` is the largest single entry in every profile taken since iteration 41 —
+7.55% of `call-method`, 6.62% of `str-split`, 6.79% of `file-write-read`, 11.66%
+of the parser. It has now failed to convert into wall clock **four times**:
+
+| what was tried | Ir story | wall clock |
+|---|---|---|
+| binary-search the builtin/exception tables (iter 42) | `len` sits 19 compares in | **2% slower**, reverted |
+| ASCII byte-scan for whitespace split | `Map::next` + validations 7.8% | flat, reverted |
+| `bin_level` early-out when the token is not an operator | `is_op` 6.6% | flat — and only **0.13% fewer instructions**, so the model was wrong too |
+| (iteration 4, years of ledger ago) the same table scan | — | zero |
+
+The last row is the instructive one. The early-out looked like it should remove
+twenty-five string comparisons per atom parsed, and it removed **0.13% of the
+instruction stream**. Either the compiler had already hoisted the work or the
+comparisons were never where I thought. Reading a profile is not the same as
+understanding it, and a hypothesis that predicts a big Ir drop and delivers 0.13%
+was wrong about the *mechanism*, not just the payoff.
+
+**The standing rule this produces:** `memcmp` near the top of a callgrind profile
+in this tree is not, by itself, a reason to do anything. Short comparisons behind
+a length check, on cache-resident data, in perfectly predicted branches, run at
+an IPC that makes their instruction count meaningless. Five measurements now say
+so, under conditions that differ in every other respect.
+
+**One caveat kept open rather than claimed:** all of this is native x86. The
+sandbox this project targets is CheerpX, which *emulates* x86, and there
+instruction count may well be the currency. None of that is measured here and
+none of it is a reason to keep a change that is flat on the only hardware
+available.
+
+### And a net I walked around
+
+The ad-hoc harness for the split above ran corpus programs with
+`subprocess.run` from the repository root, not through the corpus runner — so
+six of them wrote `a.log`, `b.bin`, `d.json`, `n.txt`, `out.txt` and `s.txt`
+into the tree. Nothing tracked was modified and the files are removed, but
+CLAUDE.md invariant 4 exists precisely because these programs edit things, and
+the per-entry temp cwd is not optional just because the harness is a throwaway.
+`git status` caught it, which is the whole reason the invariant says to run it.
+
+
+## 2026-08-25 · iteration 43 — the row the suite said it could not see
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 987,336 → 987,336 · **conformance** 906 / 399 / **0 MISMATCH** ·
+**perf** `file-write-read` **1.98x → 2.40x**, weight 0.41 → **0.59** — and the
+TOTAL renumbered
+
+`lypning perf` had started printing its own warning on this row:
+
+> ! too small to trust — the reference arm spent under 2 ms of work on
+> file-write-read, so its ratio is mostly the startup subtraction. Grow the case.
+
+`file-write-read` is typed by **42% of the corpus** — the second-highest
+prevalence in the suite — and the instrument was saying out loud that it could
+not measure it. So this iteration grew the case rather than optimising anything.
+
+**It was not merely imprecise, it was hiding a gap.** The net ratio *grows* with
+the size:
+
+```
+  lines     lypning net   cpython net   ratio
+  20,000       8.7 ms        4.8 ms     1.82x
+  50,000      20.5           9.7        2.12x
+ 100,000      40.1          17.0        2.36x
+ 200,000      81.3          33.2        2.45x
+```
+
+A per-byte cost higher than CPython's does not show at a size where both arms
+are mostly startup. The case is 100,000 lines now — the reference arm does 17 ms
+of work, comfortably clear of the 2 ms floor — and the row reads **2.40x**
+instead of 1.98x. Resizing renumbers the row and the TOTAL; entries above this
+one are not comparable across it.
+
+Unlike iteration 31's `str-methods` bias, there is no trophy-case problem here:
+nothing was optimised in this iteration, so the resize cannot flatter anything I
+did.
+
+### What the case now shows, for whoever takes it
+
+With a row that can see I/O, callgrind and `strace` say the gap is **not** I/O:
+
+* **Syscalls are already right.** The whole file is read in **2 `read` calls**;
+  there is no per-line syscall to remove.
+* `core::str::converts::from_utf8` is 3.90% — each line revalidated as UTF-8.
+* The interpreter loop is **22%**: `exec_block` 4.73, `eval` 4.00, `eval'2` 3.86,
+  `lookup` 3.09, `assign` 2.45, and `memcmp` 6.79 on top of it.
+
+So `file-write-read` at 2.40x is mostly 100,000 iterations of a Python loop, not
+100,000 lines of file handling. That is the same answer the last three profiles
+gave, and it is the finding this iteration ends on — see below.
+
+### The gradient under the current dial is flat
+
+Iterations 41–43: one win (`call-method` −14%, real), **two reverted negative
+results** (binary-searched name tables, ASCII byte-scan split), and a suite fix.
+Every profile taken since iteration 41 — `call-method`, `str-split`,
+`file-write-read` — puts the same thing on top: `memcmp` from name resolution,
+and then `eval`/`exec_block`/`lookup`/`assign`, which together are 18–22% of
+every run.
+
+The leaf operations are done. What is left is the **tree-walking evaluator
+itself**, and making that cheaper is not an iteration — it is the
+slot-resolved-frames branch the skill already names: resolve local names to
+indices at definition time, so `lookup` stops hashing a string and `builtin()`
+stops being reached at all on a miss. `assigned_names` already computes the set
+that branch needs.
+
+Recording it here rather than starting it: it is a multi-step change to the
+calling convention, and the skill's rule is to name a branch and take a smaller
+step meanwhile.
+
+
+## 2026-08-25 · iteration 42 — the same negative result, re-run with the reason for doubting it
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **REVERTED, nothing committed to the engine**
+
+`memcmp` is the **largest single entry** in the profile of both rows at the top
+of the queue — 7.55% of `call-method`, 6.62% of `str-split` — and a good part of
+it is name resolution scanning tables:
+
+* `builtin()` walked `BUILTINS` with `.iter().find()`. `len` sits **19 compares**
+  in, and a name that is *not* a builtin — the common case on a scope miss —
+  walked all 39 and then all 24 exceptions before answering `None`.
+* `is_exception_name()` is asked by `call_builtin` before **every** builtin call
+  and scanned 24 unsorted entries to do it.
+
+Iteration 4 already tried binary search here and measured zero. The reason to
+re-run it was specific and, I thought, good: **that reading was taken when a
+quarter to a half of the instruction stream was inside musl's allocator.**
+Iterations 18 and 27 removed the allocator. The surroundings had changed
+completely, so the result might have too.
+
+**It had not.** `EXCEPTIONS` sorted, all three readers switched to
+`binary_search`, three interleaved rounds against the unchanged binary:
+
+```
+            TOTAL     str-split  name-lookup  call-method
+  scan     1172.8       35.1        20.1         21.9      (minima)
+  bsearch  1195.8       35.6        20.3         22.0
+```
+
+Every individual row is flat, and the **TOTAL is 2% WORSE with
+non-overlapping bands**. Reverted in full — the engine is unchanged.
+
+The mechanism is the one iteration 4 named and it survives the allocator's
+removal intact: a linear walk of a small, sorted, cache-resident table is
+perfectly branch-predicted and its `memcmp`s are two or three bytes long, while
+a binary search over 39 entries is five or six *unpredictable* branches. High Ir
+at high IPC beats low Ir at low IPC. **Ir is not time**, and this is the second
+time this table has proved it.
+
+What this actually rules out is broader than the change: `memcmp` sitting at the
+top of a callgrind profile is not, by itself, a reason to do anything. The next
+person to see 7.55% there now has two measurements saying so, taken under
+opposite conditions.
+
+
+## 2026-08-25 · iteration 41 — a two-way searcher to look for one byte
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 987,336 → 987,336 (**8 blocks**, unchanged) ·
+**conformance** 906 / 399 / **0 MISMATCH** ·
+**perf** `call-method` **25.7 → 22.0 ms** (−14%, min of 3 interleaved) ·
+**corpus** no change outside noise ·
+**fuzz** seed 20260824 × 3000, 0 counterexamples
+
+`call-method` is 1.90x CPython and typed by **88% of the corpus** — the
+highest-weighted row there is. Callgrind on `t.count('a')` over a six-character
+string said where it goes:
+
+```
+  memcmp                       3.77M   7.55%
+  TwoWaySearcher::next         2.66M   5.33%
+  eval + eval'2 + exec_block   8.77M  17.6%
+  StrSearcher::new             0.98M   1.96%
+```
+
+`str`'s substring routines build a **two-way searcher** — a Boyer-Moore-class
+algorithm with a setup phase — for any `&str` pattern, however short. Together
+that is **3.64M of 49.9M instructions retired, 7.3%, to look for one byte.**
+
+A single ASCII byte cannot occur as a UTF-8 continuation byte, so counting it in
+the bytes is exactly counting it in the characters. `count` scans bytes;
+`find`/`rfind`/`index`/`rindex` hand std a `char` instead of a `&str`, which
+takes its own single-character path rather than the searcher.
+
+The guard is **`< 0x80`, not `len() == 1`**, and that is the whole correctness
+argument: a one-*byte* needle is not a one-*character* needle, `'é'` is two
+bytes, and a needle that is one non-ASCII character must keep the general path.
+
+### What it is worth, and where
+
+`call-method` 25.7 → 22.0 ms, three interleaved rounds each, **bands do not
+overlap** (25.7 / 26.0 / 26.9 against 22.0 / 22.2 / 23.3). The suite TOTAL is
+flat — 1184.3 against 1180.9 on the minimum, overlapping — because this row is
+26 ms of 1,200. `corpus-time` is likewise flat: 1477 / 1628 / 1563 against
+1504 / 1494 / 1576, interleaved, overlapping.
+
+That is the expected shape and not a disappointment. `.count(`, `.find(` and
+`.startswith(` with a one-character needle are what `line.count(',')` and
+`s.find('=')` are, and 88% of the corpus makes a method call — the win is spread
+across programs the aggregate instruments cannot resolve, which is precisely what
+skill §3 says about them.
+
+975 cells against CPython — 13 haystacks (ASCII, multi-byte, embedded NUL and
+tab, 50 characters long) × 15 needles (absent, one-byte, two-byte, one non-ASCII
+character, two non-ASCII characters, empty) × the five methods — **0 differing**.
+11 pinned.
+
+### The baseline lied again, and the fix is the same one
+
+`corpus-time --baseline` reported **1.413x SLOWER**. The baseline was recorded
+this morning on a freshly booted box; the machine has since run six subagents,
+a dozen cargo builds and three benchmark passes. Interleaved, the two binaries
+are indistinguishable. That is the fourth entry in two days to record a
+`--baseline` reading against a stale machine state, and the fourth to be resolved
+by measuring both arms in the same minute.
+
+
+## 2026-08-25 · iteration 40 — the routing table, and what "importable" does not mean
+
+**host** 4 cpus, Linux 6.18.44-fc-v21, x86_64 · **corpus** 1551 loaded, 1305 timed
+
+**bytes** 987,336 → 987,336 (**8 blocks**, unchanged) ·
+**conformance** (lypning arm) 906 / 399 / **0 MISMATCH** ·
+**routing** IDEAL 1188 → **1190**, LATE 85 → **83**, WASTED 28 → 28,
+**UNSAFE 4 → 4** ·
+**mixture wall clock** not resolvable — see below
+
+Not an interpreter change. `tests/test_routing.py` warns about modules the tier
+can import that `route.rs`'s table omits, because each one sends its programs to
+a CPython spawn they do not need. It reported two: `argparse` and `unicodedata`.
+
+**`argparse` is in.** Two programs move from CPython to lypning-mp — IDEAL +2,
+LATE −2, WASTED and UNSAFE unchanged, reproduced 3/3 interleaved on each binary.
+
+### `unicodedata` is out, and that is the entry
+
+It imports. It does not *work*. `unicodedata.decomposition` is absent from the
+tier, so `py-876af0f0a956` — which prints a version banner and then calls it —
+gets the banner onto stdout **before** the refusal, and lypning-mp streams, so
+those bytes are already committed (§6). Adding the module moved routing safety's
+fatal count from **UNSAFE 4 to 5**.
+
+That is the whole meaning of the sentence the test prints, demonstrated rather
+than quoted: *importable is not the same as complete*. `import unicodedata`
+exits 0 on the tier; the table is not about imports, it is about answers. The
+check that matters is whether the corpus programs using a module AGREE on the
+tier — and the ones that cannot must **refuse** cleanly, not print first.
+
+`route.rs`'s doc now carries both halves, so the next person who reads that
+warning finds the measurement rather than repeating it.
+
+### Two numbers I got wrong on the way, both by measuring once
+
+**"+7 IDEAL, −7 LATE."** One conformance run said 1195/78 and I nearly wrote it
+down. Three interleaved runs of each binary say **1190/83 against 1188/85** —
++2, not +7. Routing looked like a deterministic instrument and is not quite: the
+*ideal* engine is the first on the ladder that MATCHED, and a handful of corpus
+entries are environment-dependent enough that the match itself can flip. The
+prediction histogram agreed with the smaller number all along (cpython 134 →
+132, exactly two programs); I had two readings that disagreed and quoted the
+flattering one.
+
+**The wall-clock win.** Two programs × the spawn difference (~18 ms CPython
+against ~1.8 ms on the tier) is about **32 ms** on a mixture total near 8,300 —
+0.4%. Interleaved, three rounds each: 8187.8 / 8435.4 / 8947.5 before against
+8259.7 / 8370.3 / 8704.4 after. Overlapping, and the *minimum* is worse after.
+The benchmark cannot resolve this change and the entry does not claim it did.
+
+So this is accepted on the routing report, which counts programs exactly, and
+explicitly not on the benchmark, which is spawn-bound and noisy at this scale.
+A 0.4% routing gain that costs no bytes and no safety is worth having; a 0.4%
+gain claimed as a measured speedup would not be.
+
+### The scouts could not run
+
+The subagent fan-out for this iteration was blocked — every tool call rejected
+before execution by a broken permission handler, the same failure that killed the
+differential sweep on 2026-08-24. All six agents reported it and refused to
+invent findings, which is the right behaviour and worth recording: the report
+that says "I measured nothing" is the one that does not cost the next iteration
+a wasted slot.
+
 
 ## 2026-08-25 · iteration 39 — the numbers, re-measured with the third tier built
 

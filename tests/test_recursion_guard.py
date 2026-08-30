@@ -32,9 +32,28 @@ needs_engine = pytest.mark.skipif(
 _LISTS = "a = []\nfor i in range(%d):\n    a = [a]\nb = []\nfor i in range(%d):\n    b = [b]\n"
 _TUPLES = "a = ()\nfor i in range(%d):\n    a = (a,)\n"
 
+#: Two tuples that differ only at the LEAF, so every descent runs the whole way
+#: down before it can answer. Unequal on purpose: `is` between two EQUAL
+#: immutables refuses on its own terms (interning is CPython's to know, not
+#: ours), and this table needs a case the shallow half can still answer.
+_TUPLE_PAIR = (
+    "a = (1,)\nfor i in range(%d):\n    a = (a,)\n"
+    "b = (2,)\nfor i in range(%d):\n    b = (b,)\n"
+)
+
 DESCENTS = [
     ("eq", lambda n: (_LISTS % (n, n)) + "print(a == b)"),
     ("order", lambda n: (_LISTS % (n, n)) + "print(sorted([a, b]) is not None)"),
+    # A COMPARISON OPERATOR IS NOT THE SORT PATH, and it stopped being one when
+    # `a < b` was rewritten as CPython's list_richcompare so the operator's own
+    # name could reach the TypeError. `sorted` above still exercises
+    # `order`/`seq_order`; this descends through `order_cmp`, which recurses
+    # separately and would otherwise be covered by nothing.
+    ("compare-op", lambda n: (_LISTS % (n, n)) + "print(a < b)"),
+    # `is` between two immutables that are not the same object has to ask
+    # whether they are EQUAL before it can answer, so it descends too — a
+    # descent `is` did not have until it stopped guessing at interning.
+    ("identity", lambda n: (_TUPLE_PAIR % (n, n)) + "print(a is b)"),
     ("membership", lambda n: (_LISTS % (n, n)) + "print(a in [b])"),
     ("hkey", lambda n: (_TUPLES % n) + "d = {}\nd[a] = 1\nprint(len(d))"),
     ("repr", lambda n: (_LISTS % (n, 1)) + "print(len(repr(a)))"),

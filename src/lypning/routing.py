@@ -9,13 +9,19 @@ classifier can be perfectly accurate on a tier that disagrees with CPython.
 
 The vocabulary is deliberately asymmetric, and the asymmetry is the design:
 
-  ``UNSAFE``     routed to an engine that MISMATCHES. **Fatal.** The whole point
+  ``UNSAFE``     the tier that ANSWERED mismatched. **Fatal.** The whole point
                  of a three-tier mixture is that a wrong route costs a process
                  spawn and never a wrong answer; an UNSAFE route is the one
                  outcome that spends the user's trust instead of their
                  milliseconds. Must be zero, always.
+
+                 "The tier that answered" and not "the tier that was named":
+                 a refusal falls through, so the named tier can refuse
+                 correctly and the tier *below* it answer wrongly. Grading the
+                 named one reads that as a spare spawn. See :func:`_delivered`.
   ``WASTED``     routed to an engine that refuses, when a cheaper engine would
-                 have run it. Costs one spawn (~1 ms). A quality number.
+                 have run it — *and* the tier that then answered was right.
+                 Costs one spawn (~1 ms). A quality number.
   ``LATE``       routed to a more expensive engine than necessary. Costs the
                  difference. A quality number.
   ``IDEAL``      routed to the cheapest engine that matches.
@@ -115,6 +121,59 @@ def _why_of(x: Any) -> str:
     return ("%s: %s" % (kind, detail)).strip(": ")
 
 
+def _matched_by_failing(x: Any) -> bool:
+    """A MATCH that is two interpreters failing alike, rather than an answer.
+
+    The battery compares stdout and the exit code. A program that does not parse
+    has an empty stdout and a non-zero exit on *every* interpreter, so each one
+    scores MATCH for producing nothing — and the cheapest of them would be named
+    the ideal destination for a program none of them can run.
+
+    A bare verdict string carries no exit code and is never treated as one of
+    these, which keeps :func:`score_route` callable with plain strings.
+    """
+    if x is None or isinstance(x, str):
+        return False
+    return bool(getattr(x, "actual_rc", 0))
+
+
+def _delivered(predicted: str, by_engine: Mapping[str, Any],
+               ladder: Sequence[str]) -> tuple:
+    """The tier whose answer the user actually receives, and its verdict.
+
+    A refusal is not the end of the program: :func:`engines.dispatch` falls
+    through to the next tier down and that tier's answer is what gets printed.
+    So the tier the classifier *named* is not necessarily the tier that
+    *answered*, and grading the named one is grading a process that did not
+    produce the output.
+
+    That distinction was invisible for as long as the fall-through was assumed
+    safe. It is not: 25 corpus programs are refused by tier 1 — correctly, on
+    constructs it knows it cannot match CPython on — and then answered *wrongly*
+    by the tier below, at exit 0. Every one of them was graded WASTED, whose
+    definition ends "and the chain still produces the right answer".
+
+    Engines missing from ``by_engine`` are skipped rather than treated as an
+    answer, which mirrors the dispatcher skipping a tier that is not built.
+    """
+    if predicted not in ladder:
+        return predicted, _verdict_of(by_engine.get(predicted))
+    remaining = list(ladder[ladder.index(predicted):])
+    while remaining:
+        name, remaining = remaining[0], remaining[1:]
+        v = by_engine.get(name)
+        if v is None:
+            continue
+        if _verdict_of(v) != conf.UNSUPPORTED:
+            return name, _verdict_of(v)
+        # A refusal names its reason, and some reasons rule out every tier but
+        # CPython. Read the same table the dispatcher reads, or the grade
+        # describes a chain nothing walks.
+        allowed = eng.chain_after_refusal(name, getattr(v, "kind", "") or "")
+        remaining = [e for e in remaining if e in allowed]
+    return predicted, conf.UNSUPPORTED
+
+
 def score_route(
     predicted: str,
     by_engine: Mapping[str, Any],
@@ -122,6 +181,7 @@ def score_route(
     *,
     entry_id: str = "",
     rescued: bool = False,
+    route_kind: str = "",
 ) -> RouteScore:
     """Grade one route, given every engine's measured verdict for that program.
 
@@ -138,9 +198,28 @@ def score_route(
     ladder = list(order) if order is not None else [e for e in eng.ENGINE_ORDER if e in by_engine]
     ideal = ""
     for name in ladder:
-        if _verdict_of(by_engine.get(name)) == conf.MATCH:
-            ideal = name
-            break
+        v = by_engine.get(name)
+        if _verdict_of(v) != conf.MATCH:
+            continue
+        if route_kind == "syntax" and name != conf.CPYTHON and _matched_by_failing(v):
+            # A syntax error is not a capability gap, and the classifier sends it
+            # to CPython on purpose: CPython's message names the file, the line
+            # and the column and prints the offending source, where lypning's
+            # says "line 1". That difference lives entirely on **stderr**, which
+            # the battery does not compare — so a cheaper tier scores MATCH for
+            # failing the same way and would be graded the ideal destination for
+            # a program it cannot run. Nineteen corpus programs read LATE for
+            # this reason alone, which is a quarter of the LATE budget spent on
+            # nothing anyone can fix.
+            #
+            # Guarded on the exit code rather than on the route kind alone, so
+            # the case actually worth catching stays visible: if the cheaper tier
+            # RAN the program — exit 0, real output — while the classifier called
+            # it a syntax error, that is a misclassification and a real defect,
+            # and it still grades LATE.
+            continue
+        ideal = name
+        break
     if not ideal:
         return RouteScore(entry_id, predicted, "", NO_ENGINE,
                           "no engine matched CPython", rescued)
@@ -154,8 +233,20 @@ def score_route(
     if predicted == ideal:
         return RouteScore(entry_id, predicted, ideal, IDEAL, "", rescued)
     if verdict == conf.UNSUPPORTED:
-        # Refused where a cheaper tier would have answered: one spawn, and the
-        # chain still produces the right answer.
+        # A refusal is not an outcome — the dispatcher falls through, and the
+        # NEXT tier's answer is the one the user sees. Grade that one. Skipping
+        # this step is how a correct refusal followed by a wrong answer came to
+        # be counted as a spawn: WASTED, whose definition ends "and the chain
+        # still produces the right answer", against 25 measured programs where
+        # it does not.
+        answered, delivered = _delivered(predicted, by_engine, ladder)
+        if delivered == conf.MISMATCH:
+            return RouteScore(entry_id, predicted, ideal, UNSAFE,
+                              "%s refused, %s answered wrongly: %s"
+                              % (predicted, answered,
+                                 _why_of(by_engine.get(answered))), rescued)
+        # Refused where a cheaper tier would have answered, and the tier that
+        # did answer was right: one spawn.
         return RouteScore(entry_id, predicted, ideal, WASTED, _why_of(got), rescued)
     return RouteScore(entry_id, predicted, ideal, LATE, "", rescued)
 
@@ -267,6 +358,7 @@ def grade(report: conf.Report) -> RoutingReport:
         s = score_route(
             route.engine, verdicts, ladder, entry_id=entry_id,
             rescued=_verdict_of(mixture) == conf.MATCH,
+            route_kind=route.kind,
         )
         out.scores.append(s)
         out.counts[s.grade] = out.counts.get(s.grade, 0) + 1
@@ -309,6 +401,89 @@ def micropython_modules(source: Optional[Path] = None) -> List[str]:
     if not m:
         return []
     return _STRING_RE.findall(m.group("body"))
+
+
+#: The `match kind { … => Engine::MicroPython }` arm of `engine_for`, which is
+#: the classifier's other table: not "which modules that tier has" but "which of
+#: lypning's refusal KINDS that tier can pick up". Read from the source for the
+#: same reason as the module list — a copy kept here would be checked against
+#: itself.
+_KIND_ARM_RE = re.compile(
+    r"match kind \{(?P<body>.*?)=> Engine::MicroPython", re.S)
+
+
+def micropython_kinds(source: Optional[Path] = None) -> List[str]:
+    """The refusal kinds ``route.rs`` sends to lypning-mp, read from the source.
+
+    Empty when the arm cannot be found, which is what happens if someone
+    restructures ``engine_for``; the caller decides whether that is a skip.
+    """
+    p = Path(source) if source is not None else table_source()
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    m = _KIND_ARM_RE.search(text)
+    if not m:
+        return []
+    return _STRING_RE.findall(m.group("body"))
+
+
+#: `ONLY_CPYTHON_KINDS` in route.rs — the refusal kinds that skip every tier but
+#: CPython. Read from the source because there are two dispatchers and they must
+#: agree: the Rust binary reads the table directly, and
+#: `engines.ONLY_CPYTHON_REFUSALS` is the Python half, held to this one by
+#: `tests/test_routing.py`. They did not agree — the rule was added to the Python
+#: dispatcher only, and `lypning run -c 'print({3,1,2})'` answered `{3, 1, 2}`.
+_ONLY_CPYTHON_RE = re.compile(
+    r"pub const ONLY_CPYTHON_KINDS: &\[&str\] = &\[(?P<body>.*?)\];", re.S)
+
+
+def only_cpython_kinds(source: Optional[Path] = None) -> List[str]:
+    """The refusal kinds ``route.rs`` escalates straight to CPython.
+
+    Empty when the table cannot be found, which is what happens if someone
+    renames it; the caller decides whether that is a skip or a failure.
+    """
+    p = Path(source) if source is not None else table_source()
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    m = _ONLY_CPYTHON_RE.search(text)
+    if not m:
+        return []
+    return _STRING_RE.findall(m.group("body"))
+
+
+#: `unsupported("<kind>"` across a Rust source file, multi-line calls included.
+_UNSUPPORTED_KIND_RE = re.compile(r'unsupported\(\s*"([a-z-]+)"')
+_BLOCK_KIND_RE = re.compile(r'\bblock\("([a-z-]+)"')
+
+
+def classifier_kinds() -> List[str]:
+    """Every refusal kind the CLASSIFIER can hand to ``engine_for``.
+
+    A kind reaches routing from exactly three places: a parse-time refusal
+    (``parse.rs``), a lex-time one (``lex.rs``), or ``Requirements::block`` in
+    ``route.rs``. Everything else — ``set-order``, ``del``, ``json`` and the
+    rest of the evaluator's vocabulary — is discovered by *running*, after
+    routing has already finished. The distinction is what
+    :func:`micropython_kinds` is held to: an arm entry outside this set is dead
+    code today and a landmine the day the parser learns to see the construct.
+    """
+    src = table_source().parent
+    kinds: set = set()
+    for name in ("parse.rs", "lex.rs"):
+        try:
+            kinds |= set(_UNSUPPORTED_KIND_RE.findall((src / name).read_text(encoding="utf-8")))
+        except OSError:
+            return []
+    try:
+        kinds |= set(_BLOCK_KIND_RE.findall(table_source().read_text(encoding="utf-8")))
+    except OSError:
+        return []
+    return sorted(kinds)
 
 
 # --- reporting ---------------------------------------------------------------

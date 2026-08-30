@@ -157,6 +157,27 @@ fn refuse_unmappable(s: &str, bad: fn(char) -> bool, method: &str) -> R<()> {
     }
 }
 
+/// A one-byte ASCII needle, or `None` for anything else.
+///
+/// `str`'s substring routines build a **two-way searcher** — a Boyer-Moore-class
+/// algorithm with a setup phase — for any `&str` pattern, however short.
+/// Callgrind on `t.count('a')` over a six-character string, 2026-08-25:
+/// `TwoWaySearcher::next` and `StrSearcher::new` together are **3.64M of
+/// 49.9M instructions retired**, 7.3%, to look for one byte.
+///
+/// A single ASCII byte cannot occur as a UTF-8 continuation byte — those are all
+/// `>= 0x80` — so finding or counting it in the bytes is exactly finding or
+/// counting it in the characters. That is what makes the shortcut sound, and it
+/// is why the guard is `< 0x80` and not `len() == 1`: a one-BYTE needle is not
+/// the same thing as a one-CHARACTER needle, and `'é'` is two bytes.
+#[inline]
+fn one_ascii_byte(needle: &str) -> Option<u8> {
+    match needle.as_bytes() {
+        [b] if *b < 0x80 => Some(*b),
+        _ => None,
+    }
+}
+
 /// Python's whitespace for `str`, which is **not** Rust's.
 ///
 /// `char::is_whitespace` is the Unicode `White_Space` property. CPython's
@@ -209,12 +230,21 @@ fn cased_all(s: &str, want: fn(char) -> bool) -> bool {
 ///
 /// Asked only after :func:`method_name` has said no, so it can never shadow
 /// something lypning implements.
+/// Methods `range` has in CPython and this engine does not implement. Sorted,
+/// like every other table here (`tests/test_method_tables.py` holds them to it).
+const RANGE_MISSING: &[&str] = &["count", "index"];
+
 pub fn missing_method(recv: &Value, name: &str) -> bool {
     let table: &[&str] = match recv {
         Value::Str(_) => STR_MISSING,
         Value::Dict(_) => DICT_MISSING,
         Value::Set(_) => SET_MISSING,
         Value::Bytes(_) => BYTES_MISSING,
+        // `range.index` and `range.count` are real methods CPython has, and
+        // this answered AttributeError for them — exit 1, the program's own
+        // exit, which the chain does not retry. A refusal is answered one spawn
+        // later; that error was not.
+        Value::Range(..) => RANGE_MISSING,
         _ => return false,
     };
     table.contains(&name)
@@ -245,6 +275,126 @@ pub fn method_name(recv: &Value, name: &str) -> Option<&'static str> {
 
 fn kwget(kw: &[(Rc<str>, Value)], name: &str) -> Option<Value> {
     kw.iter().find(|(k, _)| k.as_ref() == name).map(|(_, v)| v.clone())
+}
+
+/// The methods that accept keyword arguments at all, by receiver type.
+///
+/// Almost none do. `str.replace`, `str.strip`, `dict.get` and their neighbours
+/// are C functions with positional-only parameters, so CPython answers
+/// `TypeError: str.strip() takes no keyword arguments` — and lypning **silently
+/// ignored** the keyword and answered without it. `'xax'.strip(chars='x')`
+/// returned `'xax'` at exit 0, `'a'.ljust(width=5)` returned `'a'`, and
+/// `d.get('b', default=2)` returned `None`. Every one of those is a plausible
+/// spelling that CPython refuses and this accepted with the wrong answer.
+///
+/// Enumerated by asking CPython 3.11 rather than by reading the manual: each
+/// name below was called with a keyword and kept only if it did not raise.
+/// `str.format` and `dict.update` take arbitrary keywords by design and are the
+/// reason this is a per-method allow-list and not a per-type flag.
+fn accepts_kw(ty: &str, name: &str) -> bool {
+    match ty {
+        "str" => matches!(
+            name,
+            "split" | "rsplit" | "splitlines" | "encode" | "expandtabs" | "format" | "format_map"
+        ),
+        "bytes" => matches!(name, "decode" | "split" | "rsplit" | "splitlines" | "hex"),
+        "list" => name == "sort",
+        "dict" => name == "update",
+        _ => false,
+    }
+}
+
+/// CPython's own wording, and the check every dispatcher below runs first.
+fn reject_kw(ty: &str, name: &str, kw: &[(Rc<str>, Value)]) -> R<()> {
+    if kw.is_empty() || accepts_kw(ty, name) {
+        return Ok(());
+    }
+    Err(type_err(format!("{ty}.{name}() takes no keyword arguments")))
+}
+
+/// How many POSITIONAL arguments each method takes, as `(min, max)`.
+///
+/// Extra arguments were silently dropped and missing ones silently defaulted,
+/// so a malformed call answered instead of raising:
+///
+/// ```text
+/// 'ab'.strip('a', 'b')   ->  'b'    cpython: TypeError   (the second arg won)
+/// [1].insert(0)          ->  inserts None
+/// [1].append(1, 2)       ->  appends 1, drops 2
+/// {}.get()               ->  None
+/// {}.get('a', 1, 2)      ->  1
+/// [1].pop(0, 1)          ->  1
+/// ```
+///
+/// Every one is exit 0 with a plausible-looking result, which is the shape this
+/// project treats as always a bug: CPython tells the caller immediately and this
+/// did something else quietly. `[1].insert(0)` is the worst of them — it does
+/// not merely answer wrongly, it corrupts the list with a `None`.
+///
+/// Derived by calling CPython 3.11 with 0..6 arguments and recording which
+/// counts it accepted, not by reading the manual. A name absent from this table
+/// is unchecked, so adding a method does not silently acquire a wrong limit —
+/// the arm's own argument handling stays the fallback. `str.format` and the
+/// variadic set operations are deliberately absent for that reason.
+fn arity(ty: &str, name: &str) -> Option<(usize, usize)> {
+    let n = match (ty, name) {
+        ("str", "replace") => (2, 3),
+        ("str", "find" | "rfind" | "index" | "rindex" | "count" | "startswith" | "endswith") => (1, 3),
+        ("str", "split" | "rsplit") => (0, 2),
+        ("str", "strip" | "lstrip" | "rstrip") => (0, 1),
+        ("str", "join" | "partition" | "rpartition" | "removeprefix" | "removesuffix" | "zfill") => (1, 1),
+        ("str", "splitlines" | "expandtabs") => (0, 1),
+        ("str", "encode") => (0, 2),
+        ("str", "ljust" | "rjust" | "center") => (1, 2),
+        ("str", "upper" | "lower" | "title" | "capitalize" | "swapcase" | "casefold") => (0, 0),
+        ("bytes", "replace") => (2, 3),
+        ("bytes", "find" | "rfind" | "index" | "rindex" | "count" | "startswith" | "endswith") => (1, 3),
+        ("bytes", "split" | "rsplit") => (0, 2),
+        ("bytes", "strip" | "lstrip" | "rstrip") => (0, 1),
+        ("bytes", "join" | "partition" | "rpartition") => (1, 1),
+        ("bytes", "splitlines") => (0, 1),
+        ("bytes", "decode") => (0, 2),
+        ("list", "append" | "remove" | "extend" | "count") => (1, 1),
+        ("list", "insert") => (2, 2),
+        ("list", "pop") => (0, 1),
+        ("list", "index") => (1, 3),
+        ("list", "sort" | "reverse" | "clear" | "copy") => (0, 0),
+        ("dict", "get" | "pop" | "setdefault") => (1, 2),
+        ("dict", "update") => (0, 1),
+        ("dict", "keys" | "values" | "items" | "clear" | "copy") => (0, 0),
+        ("set", "add" | "discard" | "remove") => (1, 1),
+        ("set", "clear" | "copy" | "pop") => (0, 0),
+        _ => return None,
+    };
+    Some(n)
+}
+
+/// CPython's wording, which distinguishes an exact count from a range.
+fn plural(n: usize) -> &'static str {
+    if n == 1 {
+        "argument"
+    } else {
+        "arguments"
+    }
+}
+
+fn check_arity(ty: &str, name: &str, args: &Args, kw: &[(Rc<str>, Value)]) -> R<()> {
+    let Some((lo, hi)) = arity(ty, name) else { return Ok(()) };
+    let n = args.len();
+    // The floor counts POSITIONAL arguments, so it only applies when nothing was
+    // passed by name: `round(number=2.5)` has none and is still a complete call.
+    // The ceiling always applies — a keyword never makes an extra positional
+    // legal.
+    if n <= hi && (n >= lo || !kw.is_empty()) {
+        return Ok(());
+    }
+    Err(type_err(if lo == hi {
+        format!("{ty}.{name}() takes exactly {lo} {} ({n} given)", plural(lo))
+    } else if n > hi {
+        format!("{ty}.{name}() takes at most {hi} {} ({n} given)", plural(hi))
+    } else {
+        format!("{ty}.{name}() takes at least {lo} {} ({n} given)", plural(lo))
+    }))
 }
 
 pub fn call_method(
@@ -311,6 +461,8 @@ fn str_method(
     args: &mut Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
+    reject_kw("str", name, &kw)?;
+    check_arity("str", name, args, &kw)?;
     Ok(match name {
         // `std`'s `to_uppercase` / `to_lowercase` already carry a vectorised
         // ASCII fast path and size the output exactly. Measured on this
@@ -414,7 +566,12 @@ fn str_method(
                 Some(v) => int_val(v)?,
                 None => -1,
             };
-            let sep = match args.first() {
+            // `maxsplit=` was read as a keyword and `sep=` was not, so
+            // `'a,b'.split(sep=',')` split on WHITESPACE and answered `['a,b']`
+            // at exit 0 — a wrong answer for an ordinary spelling, and one the
+            // half-finished keyword handling right above it made easy to miss.
+            let sep_arg = args.first().cloned().or_else(|| kwget(&kw, "sep"));
+            let sep = match sep_arg.as_ref() {
                 None | Some(Value::None) => None,
                 Some(Value::Str(x)) => Some(x.clone()),
                 Some(other) => {
@@ -431,35 +588,21 @@ fn str_method(
             let parts: Vec<Value> = match sep {
                 // Whitespace splitting collapses runs and drops leading and
                 // trailing empties; separator splitting does neither.
+                // The same rule the bytes twin uses — see `split_ws_ranges`.
+                // It lived twice, and this copy was the one missing a case:
+                // `'a b  c'.rsplit(None, 2)` refused here and answered there.
                 None => {
                     let mut v: Vec<Value> = Vec::new();
-                    if maxsplit < 0 {
-                        v = s.split(py_space)
-                            .filter(|x| !x.is_empty())
-                            .map(|x| Value::Str(x.into()))
-                            .collect();
-                    } else if name == "split" {
-                        let mut rest: &str = s;
-                        let mut n = 0;
-                        rest = rest.trim_start_matches(py_space);
-                        while n < maxsplit && !rest.is_empty() {
-                            match rest.find(py_space) {
-                                Some(i) => {
-                                    v.push(Value::Str(rest[..i].into()));
-                                    rest = rest[i..].trim_start_matches(py_space);
-                                    n += 1;
-                                }
-                                None => break,
-                            }
-                        }
-                        if !rest.is_empty() {
-                            v.push(Value::Str(rest.into()));
-                        }
-                    } else {
-                        return Err(unsupported(
-                            "str-method",
-                            "rsplit(None, maxsplit) with a positive maxsplit",
-                        ));
+                    split_ws_each(
+                        s.len(),
+                        |i| str_unit_at(s, i),
+                        |j| str_unit_before(s, j),
+                        maxsplit,
+                        name == "rsplit",
+                        |lo, hi| v.push(Value::Str(s[lo..hi].into())),
+                    );
+                    if name == "rsplit" {
+                        v.reverse();
                     }
                     v
                 }
@@ -642,10 +785,14 @@ fn str_method(
             let found = match slice_str(s, args.get(1), args.get(2))? {
                 None => None,
                 Some((sub, start_off)) => {
-                    let byte_pos = if name.starts_with('r') {
-                        sub.rfind(needle.as_ref())
-                    } else {
-                        sub.find(needle.as_ref())
+                    // `str::find(char)` takes std's own single-character path;
+                    // `str::find(&str)` builds the two-way searcher. Same answer,
+                    // and for a one-byte needle the char form is the cheap one.
+                    let byte_pos = match (one_ascii_byte(&needle), name.starts_with('r')) {
+                        (Some(b), false) => sub.find(b as char),
+                        (Some(b), true) => sub.rfind(b as char),
+                        (None, false) => sub.find(needle.as_ref()),
+                        (None, true) => sub.rfind(needle.as_ref()),
                     };
                     byte_pos.map(|bp| start_off + sub[..bp].chars().count() as i64)
                 }
@@ -675,6 +822,8 @@ fn str_method(
                         // An empty needle matches between every pair of
                         // characters and at both ends.
                         sub.chars().count() as i64 + 1
+                    } else if let Some(b) = one_ascii_byte(&needle) {
+                        sub.as_bytes().iter().filter(|&&x| x == b).count() as i64
                     } else {
                         sub.matches(needle.as_ref()).count() as i64
                     }
@@ -907,9 +1056,29 @@ fn str_format(
     args: &[Value],
     kw: &[(Rc<str>, Value)],
 ) -> R<String> {
+    let mut auto = 0usize;
+    str_format_at(it, s, args, kw, &mut auto)
+}
+
+/// The body of [`str_format`], carrying the AUTO-NUMBERING COUNTER by reference.
+///
+/// A nested replacement field inside a spec draws from the same numbering as the
+/// field it sits in: `"{:.{}f}".format(3.14159, 2)` gives the outer field
+/// argument 0 and the inner one argument 1. Recursing into a fresh `str_format`
+/// restarted the count, so the inner `{}` took argument 0 as well — the spec
+/// became `.3.14159f` and the call raised `Invalid format specifier`, while
+/// `"{:{}}".format(3.0, 5)` quietly built the spec `3.0` and answered `'3e+00'`.
+/// Explicit numbering (`"{0:.{1}f}"`) never had the bug, which is why it
+/// survived every example anyone wrote down.
+fn str_format_at(
+    it: &mut Interp,
+    s: &str,
+    args: &[Value],
+    kw: &[(Rc<str>, Value)],
+    auto: &mut usize,
+) -> R<String> {
     let b: Vec<char> = s.chars().collect();
     let mut out = String::new();
-    let mut auto = 0usize;
     let mut i = 0;
     while i < b.len() {
         match b[i] {
@@ -946,19 +1115,16 @@ fn str_format(
                     Some(k) => (&head[..k], head[k + 1..].chars().next()),
                     None => (head, None),
                 };
-                // Nested `{}` inside a spec resolve against the same arguments.
-                let spec = if spec.contains('{') {
-                    str_format(it, &spec, args, kw)?
-                } else {
-                    spec
-                };
                 let (base, path) = match head.find(['.', '[']) {
                     Some(k) => (&head[..k], &head[k..]),
                     None => (head, ""),
                 };
+                // The FIELD takes its argument first, and only then does the
+                // spec take its own. Expanding the spec first gave the inner
+                // `{}` the number the outer field was about to claim.
                 let mut v = if base.is_empty() {
-                    let k = auto;
-                    auto += 1;
+                    let k = *auto;
+                    *auto += 1;
                     args.get(k)
                         .cloned()
                         .ok_or_else(|| index_err("Replacement index out of range"))?
@@ -975,6 +1141,13 @@ fn str_format(
                 if !path.is_empty() {
                     v = resolve_path(it, v, path)?;
                 }
+                // Nested `{}` inside a spec resolve against the same arguments
+                // AND the same auto-numbering counter.
+                let spec = if spec.contains('{') {
+                    str_format_at(it, &spec, args, kw, auto)?
+                } else {
+                    spec
+                };
                 let text = match conv {
                     Some('r') => fmt::format_value(&Value::Str(fmt::repr(&v)?.into()), &spec)?,
                     Some('s') => fmt::format_value(&Value::Str(fmt::to_rc(&v)?), &spec)?,
@@ -1027,6 +1200,8 @@ fn list_method(
     args: &mut Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
+    reject_kw("list", name, &kw)?;
+    check_arity("list", name, args, &kw)?;
     Ok(match name {
         "append" => {
             let v = args
@@ -1066,13 +1241,17 @@ fn list_method(
         }
         "remove" => {
             let v = args.first().cloned().unwrap_or(Value::None);
+            let vn = crate::value::nan_here(&v);
             let pos = {
                 let b = l.borrow();
                 let mut found = None;
                 for (i, x) in b.iter().enumerate() {
-                    if eq(x, &v)? {
+                    if crate::value::eq(x, &v)? {
                         found = Some(i);
                         break;
+                    }
+                    if vn && crate::value::nan_here(x) {
+                        return Err(crate::value::refuse_nan_elem());
                     }
                 }
                 found
@@ -1086,22 +1265,50 @@ fn list_method(
             Value::None
         }
         "index" => {
+            // `start` and `stop` were accepted and thrown away, so
+            // `[1, 1, 1].index(1, 1)` answered 0 — the caller asked to skip the
+            // first match and got it anyway — and `[1, 2, 3].index(3, 0, 2)`
+            // answered 2 for an element outside the range it named, where
+            // CPython raises. Both exit 0.
+            //
+            // The bounds are CLAMPED here, not the asymmetric `ADJUST_INDICES`
+            // the string methods use: `list.index` raises rather than returning
+            // -1, so "past the end" and "empty range" both end at the same
+            // ValueError and the two rules cannot be told apart.
             let v = args.first().cloned().unwrap_or(Value::None);
             let b = l.borrow();
-            for (i, x) in b.iter().enumerate() {
-                if eq(x, &v)? {
-                    return Ok(Value::Int(i as i64));
+            let n = b.len() as i64;
+            let lo = match args.get(1) {
+                None | Some(Value::None) => 0,
+                Some(x) => crate::eval::clamp_index(int_val(x)?, n),
+            };
+            let hi = match args.get(2) {
+                None | Some(Value::None) => n,
+                Some(x) => crate::eval::clamp_index(int_val(x)?, n),
+            };
+            let vn = crate::value::nan_here(&v);
+            let mut i = lo;
+            while i < hi {
+                if crate::value::eq(&b[i as usize], &v)? {
+                    return Ok(Value::Int(i));
                 }
+                if vn && crate::value::nan_here(&b[i as usize]) {
+                    return Err(crate::value::refuse_nan_elem());
+                }
+                i += 1;
             }
             return Err(value_err(format!("{} is not in list", fmt::repr(&v)?)));
         }
         "count" => {
             let v = args.first().cloned().unwrap_or(Value::None);
             let b = l.borrow();
+            let vn = crate::value::nan_here(&v);
             let mut n = 0;
             for x in b.iter() {
-                if eq(x, &v)? {
+                if crate::value::eq(x, &v)? {
                     n += 1;
+                } else if vn && crate::value::nan_here(x) {
+                    return Err(crate::value::refuse_nan_elem());
                 }
             }
             Value::Int(n)
@@ -1116,11 +1323,8 @@ fn list_method(
         }
         "copy" => list(l.borrow().clone()),
         "sort" => {
-            let keyf = kwget(&kw, "key");
-            let rev = match kwget(&kw, "reverse") {
-                Some(v) => truthy(&v)?,
-                None => false,
-            };
+            let keyf = crate::builtins::key_arg(&kw, "key");
+            let rev = crate::builtins::reverse_arg(&kw)?;
             let mut items = l.borrow().clone();
             let mut keys = Vec::with_capacity(items.len());
             for x in &items {
@@ -1144,8 +1348,10 @@ fn dict_method(
     d: &Rc<RefCell<Dict>>,
     name: &str,
     args: &mut Args,
-    _kw: Vec<(Rc<str>, Value)>,
+    kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
+    reject_kw("dict", name, &kw)?;
+    check_arity("dict", name, args, &kw)?;
     Ok(match name {
         "get" => match d.borrow().get(args.first().unwrap_or(&Value::None))? {
             Some(v) => v,
@@ -1209,7 +1415,7 @@ fn dict_method(
                     }
                 }
             }
-            for (k, v) in _kw {
+            for (k, v) in kw {
                 d.borrow_mut().insert(Value::Str(k), v)?;
             }
             Value::None
@@ -1236,8 +1442,10 @@ fn set_method(
     s: &Rc<RefCell<Set>>,
     name: &str,
     args: &mut Args,
-    _kw: Vec<(Rc<str>, Value)>,
+    kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
+    reject_kw("set", name, &kw)?;
+    check_arity("set", name, args, &kw)?;
     let other_set = |it: &mut Interp, v: &Value| -> R<Rc<RefCell<Set>>> {
         match v {
             Value::Set(o) => Ok(o.clone()),
@@ -1334,19 +1542,38 @@ fn tuple_method(t: &Rc<Vec<Value>>, name: &str, args: &mut Args) -> R<Value> {
         .ok_or_else(|| type_err(format!("{name}() takes exactly one argument")))?;
     match name {
         "count" => {
+            let vn = crate::value::nan_here(needle);
             let mut n = 0i64;
             for v in t.iter() {
                 if crate::value::eq(v, needle)? {
                     n += 1;
+                } else if vn && crate::value::nan_here(v) {
+                    return Err(crate::value::refuse_nan_elem());
                 }
             }
             Ok(Value::Int(n))
         }
         "index" => {
-            for (i, v) in t.iter().enumerate() {
-                if crate::value::eq(v, needle)? {
-                    return Ok(Value::Int(i as i64));
+            // Kept in step with `list.index` above, which had the same defect.
+            let n = t.len() as i64;
+            let lo = match args.get(1) {
+                None | Some(Value::None) => 0,
+                Some(x) => crate::eval::clamp_index(int_val(x)?, n),
+            };
+            let hi = match args.get(2) {
+                None | Some(Value::None) => n,
+                Some(x) => crate::eval::clamp_index(int_val(x)?, n),
+            };
+            let vn = crate::value::nan_here(needle);
+            let mut i = lo;
+            while i < hi {
+                if crate::value::eq(&t[i as usize], needle)? {
+                    return Ok(Value::Int(i));
                 }
+                if vn && crate::value::nan_here(&t[i as usize]) {
+                    return Err(crate::value::refuse_nan_elem());
+                }
+                i += 1;
             }
             Err(value_err("tuple.index(x): x not in tuple"))
         }
@@ -1361,6 +1588,8 @@ fn bytes_method(
     args: &mut Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
+    reject_kw("bytes", name, &kw)?;
+    check_arity("bytes", name, args, &kw)?;
     Ok(match name {
         "decode" => {
             if let Some(e) = args.first().cloned().or_else(|| kwget(&kw, "encoding")).as_ref() {
@@ -1379,12 +1608,44 @@ fn bytes_method(
             }
             Value::Str(crate::iter::decode_utf8_rc(b)?)
         }
-        "hex" => Value::Str(
-            b.iter()
-                .map(|x| format!("{x:02x}"))
-                .collect::<String>()
-                .into(),
-        ),
+        "hex" => {
+            // `b.hex('-')` groups the output; the separator was accepted and
+            // dropped, so it answered the unseparated string at exit 0.
+            // `bytes_per_sep` counts from the RIGHT when positive and from the
+            // left when negative, which is why the grouping is computed against
+            // the distance from the end.
+            let sep = match args.first() {
+                None => None,
+                Some(Value::Str(x)) => Some(x.to_string()),
+                Some(other) => {
+                    return Err(type_err(format!(
+                        "sep must be str or bytes, not {}",
+                        type_name(other)
+                    )))
+                }
+            };
+            let per = match args.get(1) {
+                Some(v) => int_val(v)?,
+                None => 1,
+            };
+            let mut out = String::with_capacity(b.len() * 2);
+            for (i, x) in b.iter().enumerate() {
+                if let Some(sp) = &sep {
+                    if i > 0 && per != 0 {
+                        let boundary = if per > 0 {
+                            (b.len() - i) % per as usize == 0
+                        } else {
+                            i % (-per) as usize == 0
+                        };
+                        if boundary {
+                            out.push_str(sp);
+                        }
+                    }
+                }
+                out.push_str(&format!("{x:02x}"));
+            }
+            Value::Str(out.into())
+        }
         // EVERY OTHER METHOD OPERATES ON BYTES, NOT ON A DECODED COPY.
         //
         // These used to decode to UTF-8 and reuse the str implementations, on
@@ -1414,7 +1675,7 @@ fn bytes_method(
                 Some(v) => Some(as_bytes_arg(v, name)?),
             };
             let is_cut = |c: u8| match &cut {
-                None => c.is_ascii_whitespace(),
+                None => py_byte_space(c),
                 Some(set) => set.contains(&c),
             };
             let mut lo = 0usize;
@@ -1432,10 +1693,18 @@ fn bytes_method(
             Value::Bytes(Rc::new(b[lo..hi].to_vec()))
         }
         "split" | "rsplit" => {
-            let sep = match args.first() {
+            // Same keyword gap as `str.split` above, kept in step with it.
+            let sep_arg = args.first().cloned().or_else(|| kwget(&kw, "sep"));
+            let sep = match sep_arg.as_ref() {
                 None | Some(Value::None) => None,
                 Some(v) => Some(as_bytes_arg(v, name)?),
             };
+            // `b"abc".split(b"")` is a ValueError in CPython, not a one-element
+            // list. `str.split("")` already raised it; the bytes twin returned
+            // the subject unsplit, at exit 0.
+            if sep.as_deref() == Some(&[][..]) {
+                return Err(value_err("empty separator"));
+            }
             let maxsplit = match args.get(1).cloned().or_else(|| kwget(&kw, "maxsplit")) {
                 Some(v) => crate::eval::int_val(&v)?,
                 None => -1,
@@ -1445,21 +1714,50 @@ fn bytes_method(
         }
         "find" => {
             let needle = as_bytes_or_byte(args.first(), name)?;
-            Value::Int(match find_sub(b, &needle) {
-                Some(i) => i as i64,
-                None => -1,
-            })
+            match slice_bytes(b, args.get(1), args.get(2))? {
+                None => Value::Int(-1),
+                Some((hay, off)) => Value::Int(match find_sub(hay, &needle) {
+                    Some(i) => i as i64 + off,
+                    None => -1,
+                }),
+            }
         }
         "startswith" | "endswith" => {
-            let pre = as_bytes_arg(
-                args.first().ok_or_else(|| type_err(format!("{name}() takes at least 1 argument")))?,
-                name,
-            )?;
-            Value::Bool(if name == "startswith" {
-                b.starts_with(&pre)
-            } else {
-                b.ends_with(&pre)
-            })
+            // A TUPLE OF PREFIXES IS THE POINT OF THIS METHOD and it was not
+            // accepted: `b"abc".startswith((b"a",))` is True in CPython and was
+            // a TypeError here. `str.startswith` has taken a tuple since it was
+            // written; the bytes twin never did.
+            //
+            // The wording is CPython's own and is NOT the shared bytes-like
+            // message — note the unquoted type name. A tuple whose ELEMENTS are
+            // wrong falls back to the shared one, because by then CPython is
+            // checking an element rather than the first argument.
+            let arg = args
+                .first()
+                .ok_or_else(|| type_err(format!("{name}() takes at least 1 argument")))?;
+            let pats: Vec<Vec<u8>> = match arg {
+                Value::Bytes(x) => vec![(**x).clone()],
+                Value::Tuple(t) => t
+                    .iter()
+                    .map(|x| as_bytes_arg(x, name))
+                    .collect::<R<Vec<_>>>()?,
+                other => {
+                    return Err(type_err(format!(
+                        "{name} first arg must be bytes or a tuple of bytes, not {}",
+                        crate::value::type_name(other)
+                    )))
+                }
+            };
+            match slice_bytes(b, args.get(1), args.get(2))? {
+                None => Value::Bool(false),
+                Some((hay, _)) => Value::Bool(pats.iter().any(|p| {
+                    if name == "startswith" {
+                        hay.starts_with(p)
+                    } else {
+                        hay.ends_with(p)
+                    }
+                })),
+            }
         }
         "replace" => {
             let from = as_bytes_arg(
@@ -1477,19 +1775,35 @@ fn bytes_method(
             Value::Bytes(Rc::new(bytes_replace(b, &from, &to, count)))
         }
         "join" => {
-            let items = it.iter_collect(
-                if args.is_empty() {
-                    return Err(type_err("join() takes exactly one argument"));
+            // The same map_err as `str.join` above, and the fourth place the
+            // bytes twin had drifted from the str original: `b"".join(1)` said
+            // "'int' object is not iterable" where CPython — and str.join right
+            // here — say "can only join an iterable". A refusal from inside is
+            // passed through untouched; only a real TypeError is reworded.
+            let arg = if args.is_empty() {
+                return Err(type_err("join() takes exactly one argument"));
+            } else {
+                args.take(0)
+            };
+            let items = it.iter_collect(arg).map_err(|e| {
+                if e.is_unsupported() {
+                    e
                 } else {
-                    args.take(0)
-                },
-            )?;
+                    type_err("can only join an iterable")
+                }
+            })?;
             let mut out: Vec<u8> = Vec::new();
             for (i, v) in items.iter().enumerate() {
                 if i > 0 {
                     out.extend_from_slice(b);
                 }
-                out.extend_from_slice(&as_bytes_arg(v, "join")?);
+                let Value::Bytes(part) = v else {
+                    return Err(type_err(format!(
+                        "sequence item {i}: expected a bytes-like object, {} found",
+                        crate::value::type_name(v)
+                    )));
+                };
+                out.extend_from_slice(part);
             }
             Value::Bytes(Rc::new(out))
         }
@@ -1507,17 +1821,28 @@ fn bytes_method(
 /// `b"x".find("a")` is a TypeError in CPython, not a match on the decoded
 /// text — the two types do not mix, and lypning silently returning -1 for it was
 /// its own small divergence.
-fn as_bytes_arg(v: &Value, method: &str) -> R<Vec<u8>> {
+fn as_bytes_arg(v: &Value, _method: &str) -> R<Vec<u8>> {
     match v {
         Value::Bytes(x) => Ok((**x).clone()),
-        Value::Str(_) => Err(type_err(format!(
-            "a bytes-like object is required, not 'str' (in bytes.{method}())"
-        ))),
+        // CPython's message, EXACTLY. This used to append " (in bytes.split())"
+        // — an annotation nothing in CPython prints, and 162 divergences in a
+        // 642-program grid over the bytes methods, every one of them a message
+        // an agent prints with str(e).
         other => Err(type_err(format!(
-            "a bytes-like object is required, not '{}' (in bytes.{method}())",
+            "a bytes-like object is required, not '{}'",
             crate::value::type_name(other)
         ))),
     }
+}
+
+/// The message `find`, `rfind`, `index`, `rindex` and `count` use, which is not
+/// the one every other bytes method uses: those five accept a single INTEGER
+/// byte value as well as a bytes-like, and CPython's wording says so.
+fn bytes_search_arg_err(v: &Value) -> LypningError {
+    type_err(format!(
+        "argument should be integer or bytes-like object, not '{}'",
+        crate::value::type_name(v)
+    ))
 }
 
 /// `bytes.find` uniquely also accepts an INTEGER, meaning one byte value.
@@ -1549,7 +1874,8 @@ fn as_bytes_or_byte(v: Option<&Value>, method: &str) -> R<Vec<u8>> {
             }
             Ok(vec![*n as u8])
         }
-        Some(other) => as_bytes_arg(other, method),
+        Some(Value::Bytes(x)) => Ok((**x).clone()),
+        Some(other) => Err(bytes_search_arg_err(other)),
         None => Err(type_err(format!("{method}() takes at least 1 argument"))),
     }
 }
@@ -1595,33 +1921,239 @@ fn bytes_replace(b: &[u8], from: &[u8], to: &[u8], count: i64) -> Vec<u8> {
 /// Split on a separator, or — with no separator — on RUNS of ASCII whitespace
 /// with leading and trailing runs discarded, which is a different rule and the
 /// one `b"  a  b  ".split()` depends on.
+/// Python's ASCII whitespace for `bytes`, which is NOT Rust's.
+///
+/// `u8::is_ascii_whitespace` is space, `\t`, `\n`, `\x0c`, `\r` — it leaves out
+/// **`\x0b`, the vertical tab**, which CPython counts. One byte value, and it
+/// made `b"a\vb".split()` answer `[b'a\x0bb']` and `b"\v".strip()` answer
+/// `b'\x0b'`, both at exit 0. Found by sweeping all 256 byte values through
+/// `split` and `strip`: exactly one differed.
+///
+/// The `str` side is a different set again (`py_space` above adds U+001C–U+001F
+/// to Unicode White_Space) and was verified clean over the same sweep across
+/// 0..=0x3000. These two must not be merged.
+fn py_byte_space(c: u8) -> bool {
+    matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)
+}
+
+/// `slice_str`'s rule for `bytes`: the same asymmetric `ADJUST_INDICES`, on
+/// indices that are already byte offsets.
+///
+/// `bytes.find`, `startswith` and `endswith` took `start` and `end` and threw
+/// them away, so `b"abcabc".find(b"a", 1)` answered 0 and
+/// `b"abcabc".startswith(b"b", 1)` answered False — both exit 0, both wrong for
+/// an argument the caller went out of their way to pass.
+fn slice_bytes<'a>(b: &'a [u8], start: Option<&Value>, end: Option<&Value>) -> R<Option<(&'a [u8], i64)>> {
+    if matches!(start, None | Some(Value::None)) && matches!(end, None | Some(Value::None)) {
+        return Ok(Some((b, 0)));
+    }
+    let n = b.len() as i64;
+    let lo = match start {
+        None | Some(Value::None) => 0,
+        Some(v) => {
+            let raw = int_val(v)?;
+            if raw < 0 {
+                (n + raw).max(0)
+            } else {
+                raw
+            }
+        }
+    };
+    let hi = match end {
+        None | Some(Value::None) => n,
+        Some(v) => crate::eval::clamp_index(int_val(v)?, n),
+    };
+    if hi < lo {
+        return Ok(None);
+    }
+    if lo > n {
+        return Ok(None);
+    }
+    Ok(Some((&b[lo as usize..hi as usize], lo)))
+}
+
+/// The whitespace-split RULE, in one place for `str` and for `bytes`.
+///
+/// Fields are HANDED TO THE CALLER as they are found rather than returned in a
+/// `Vec`: this replaced `str::split(py_space)`, which built the answer in one
+/// pass, and an intermediate vector of ranges was measurably most of what was
+/// left of a 21% regression. `from_right` emits right-to-left, so a caller that
+/// asked for it reverses its own output once at the end.
+///
+/// It lived in two: `bytes_split`'s `None` arm and the `str.split` arm, and the
+/// bytes copy's own comment said "this is the only place the rule lives". It was
+/// not, and the str copy was the incomplete one — `'a b  c'.rsplit(None, 2)`
+/// answered `unsupported: str-method` where the bytes twin answers
+/// `[b'a', b'b', b'c']`. Two implementations of one rule, one of them missing a
+/// case, and nothing making them agree: the same shape as the five drifts a grid
+/// campaign found between these two functions this session.
+///
+/// Fields come back as **byte ranges**, so each caller slices its own type. A
+/// `&str` range is always on a character boundary because `space_at` and
+/// `space_before` report whole characters — which is also why this is not just
+/// `bytes_split` called on `s.as_bytes()`: the two whitespace sets genuinely
+/// differ. `str` splits on U+00A0, U+2000, U+3000, `\x1c` and `\x85`; `bytes`
+/// splits on ASCII only, so `'a\xa0b'.split()` is `['a', 'b']` and
+/// `b'a\xc2\xa0b'.split()` is one field.
+///
+/// The rule itself, which is not "split at every run":
+///
+///   * leading and trailing whitespace never produce an empty field;
+///   * once `maxsplit` is spent the REMAINDER comes back verbatim, whitespace
+///     and all — from the far end, so a bounded `rsplit` keeps the leading
+///     whitespace and drops the trailing;
+///   * `maxsplit < 0` means unbounded.
+///
+/// `from_right` walks backwards rather than reversing the input. The bytes
+/// version built a reversed copy and reversed every field back, because a
+/// hand-written mirror would have been "a second place to get that wrong" — but
+/// with one implementation serving both types the mirror IS the one place, and
+/// it costs no allocation.
+/// The unit at an index: `(is_space, width_in_bytes)`. The WIDTH IS THE POINT —
+/// a first version returned only "is this a space" and advanced the non-space
+/// scan one byte at a time, which walks into the middle of a multi-byte
+/// character and makes `&str` slicing panic. `'café'.split()` aborted the
+/// process with a SIGABRT, and a 602-program grid missed it because every
+/// subject in it was either ASCII or whitespace: there was no non-space
+/// multi-byte character anywhere. Returning the width makes the mistake
+/// unrepresentable — every advance is by a whole unit.
+type Unit = (bool, usize);
+
+fn split_ws_each(
+    len: usize,
+    at: impl Fn(usize) -> Unit,
+    before: impl Fn(usize) -> Unit,
+    maxsplit: i64,
+    from_right: bool,
+    mut emit: impl FnMut(usize, usize),
+) {
+    if !from_right {
+        let mut i = 0usize;
+        while i < len {
+            let (sp, w) = at(i);
+            if !sp {
+                break;
+            }
+            i += w;
+        }
+        let mut splits = 0i64;
+        while i < len {
+            if maxsplit >= 0 && splits >= maxsplit {
+                emit(i, len);
+                return;
+            }
+            let start = i;
+            while i < len {
+                let (sp, w) = at(i);
+                if sp {
+                    break;
+                }
+                i += w;
+            }
+            emit(start, i);
+            splits += 1;
+            while i < len {
+                let (sp, w) = at(i);
+                if !sp {
+                    break;
+                }
+                i += w;
+            }
+        }
+        return;
+    }
+    let mut j = len;
+    while j > 0 {
+        let (sp, w) = before(j);
+        if !sp {
+            break;
+        }
+        j -= w;
+    }
+    let mut splits = 0i64;
+    while j > 0 {
+        if maxsplit >= 0 && splits >= maxsplit {
+            emit(0, j);
+            return;
+        }
+        let end = j;
+        while j > 0 {
+            let (sp, w) = before(j);
+            if sp {
+                break;
+            }
+            j -= w;
+        }
+        emit(j, end);
+        splits += 1;
+        while j > 0 {
+            let (sp, w) = before(j);
+            if !sp {
+                break;
+            }
+            j -= w;
+        }
+    }
+}
+
+/// The `str` unit readers: one character, forwards or backwards.
+///
+/// The ASCII branch is not premature: this replaced `str::split(py_space)`, a
+/// tuned iterator, and decoding a character per position to ask one question
+/// cost **21%** on a whitespace-split microbenchmark — measured A/B against the
+/// pre-refactor binary, against a ±5% noise floor. A byte below 0x80 IS its own
+/// character and is one byte wide, which is the whole string for most programs;
+/// the decode is kept for the case that actually needs it.
+fn str_unit_at(s: &str, i: usize) -> Unit {
+    let b = s.as_bytes()[i];
+    if b < 0x80 {
+        return (matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c | 0x1c..=0x1f), 1);
+    }
+    match s[i..].chars().next() {
+        Some(c) => (py_space(c), c.len_utf8()),
+        None => (false, 1),
+    }
+}
+
+fn str_unit_before(s: &str, j: usize) -> Unit {
+    let b = s.as_bytes()[j - 1];
+    if b < 0x80 {
+        return (matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c | 0x1c..=0x1f), 1);
+    }
+    match s[..j].chars().next_back() {
+        Some(c) => (py_space(c), c.len_utf8()),
+        None => (false, 1),
+    }
+}
+
 fn bytes_split(b: &[u8], sep: Option<&[u8]>, maxsplit: i64, from_right: bool) -> Vec<Vec<u8>> {
     let mut out: Vec<Vec<u8>> = Vec::new();
     match sep {
+        // The rule lives in `split_ws_ranges`, which `str.split` uses too.
         None => {
-            let mut cur: Vec<u8> = Vec::new();
-            let mut splits = 0i64;
-            let mut i = 0usize;
-            // maxsplit with no separator counts from the correct end; the
-            // corpus has no such call, so the unlimited path is the one that
-            // matters and a bounded one falls back to it.
-            let _ = from_right;
-            while i < b.len() {
-                if b[i].is_ascii_whitespace() && (maxsplit < 0 || splits < maxsplit) {
-                    if !cur.is_empty() {
-                        out.push(std::mem::take(&mut cur));
-                        splits += 1;
-                    }
-                } else {
-                    cur.push(b[i]);
-                }
-                i += 1;
-            }
-            if !cur.is_empty() {
-                out.push(cur);
+            split_ws_each(
+                b.len(),
+                |i| (py_byte_space(b[i]), 1),
+                |j| (py_byte_space(b[j - 1]), 1),
+                maxsplit,
+                from_right,
+                |lo, hi| out.push(b[lo..hi].to_vec()),
+            );
+            if from_right {
+                out.reverse();
             }
         }
-        Some(s) if s.is_empty() => out.push(b.to_vec()),
+        Some(s) if from_right && maxsplit >= 0 => {
+            // Same trick with a separator, and the separator is reversed too.
+            let rev: Vec<u8> = b.iter().rev().copied().collect();
+            let rsep: Vec<u8> = s.iter().rev().copied().collect();
+            let mut parts = bytes_split(&rev, Some(&rsep), maxsplit, false);
+            parts.reverse();
+            return parts
+                .into_iter()
+                .map(|p| p.into_iter().rev().collect())
+                .collect();
+        }
         Some(s) => {
             let mut start = 0usize;
             let mut i = 0usize;

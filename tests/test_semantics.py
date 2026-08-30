@@ -17,6 +17,7 @@ from __future__ import annotations
 import pytest
 
 from lypning import UNSUPPORTED_EXIT, engines
+from lypning import engines as eng
 
 #: ``(id, program)``. Each prints everything it compares, so a failure names the
 #: value rather than just the case.
@@ -321,3 +322,96 @@ def test_an_attribute_neither_has_keeps_cpythons_error(lypning_bin):
     r = engines.run(engines.LYPNING, 'print("x".nosuch())', binary=lypning_bin)
     assert r.returncode == 1
     assert "AttributeError" in r.stderr
+
+
+def test_identity_still_answers_where_it_is_a_fact_and_not_an_interning_question(lypning_bin):
+    """The other half of the `is` refusal, and the half that bounds its cost.
+
+    Refusing more than necessary is not free — every refusal is a process
+    spawn — so the refusal is narrowed to the case that genuinely cannot be
+    answered: two values that are EQUAL, IMMUTABLE, and not provably the same
+    object. Everything else still answers:
+
+    * the singletons, where identity has one possible answer;
+    * two values that are not equal, which are never the same object either;
+    * ``x is x`` wherever the value carries an ``Rc`` to compare — every str,
+      tuple, list, dict and set;
+    * two mutable displays, which CPython never folds: ``[1] is [1]`` is False
+      in both.
+    """
+    def out(program):
+        r = eng.run(eng.LYPNING, program)
+        assert not r.refused, "refused where it should answer: %s" % r.stderr.strip()
+        return r.stdout.strip()
+
+    assert out("x = None\nprint(x is None, x is not None)") == "True False"
+    assert out("x = 5\nprint(x is None)") == "False"
+    assert out("print(True is True, False is False, True is False)") == "True True False"
+    assert out("print([1] is [1], {} is {})") == "False False"
+    assert out("x = [1]\nprint(x is x)") == "True"
+    assert out("x = 'ab'\nprint(x is x)") == "True"
+    assert out("x = (1, 2)\nprint(x is x)") == "True"
+    assert out("print(1 is 'a', 1000 is 1001)") == "False False"
+
+
+#: Every method name `str` and `bytes` both implement. All five drifts a grid
+#: campaign found this session were among these twelve, and the arity/keyword
+#: layer they already share is exactly the one place that never drifted.
+SHARED_METHODS = [
+    "endswith", "find", "join", "lower", "lstrip", "replace",
+    "rsplit", "rstrip", "split", "startswith", "strip", "upper",
+]
+
+
+@pytest.mark.parametrize("method", SHARED_METHODS)
+def test_the_str_and_bytes_twins_answer_the_same_shape(method, lypning_bin):
+    """The forcing function the two implementations did not have.
+
+    `bytes_method` is a copy of `str_method`, and over this session the copy was
+    found to have drifted in five independent places — a message suffix CPython
+    never prints, the search methods' own wording, `startswith` not taking a
+    tuple of prefixes, `join`'s non-iterable message, and `split` with an empty
+    separator returning the subject where CPython raises. Every one was a silent
+    wrong answer, and the str original was right in all five.
+
+    Nothing made them agree. This does: it runs the same call against both types
+    and requires each to match CPython. It cannot assert that the two ANSWERS are
+    equal — they are not, and should not be, since `str` splits on Unicode
+    whitespace where `bytes` splits on ASCII, and `b'ab'[0]` is an int. What it
+    can require is that neither twin is the one that is wrong.
+
+    A refusal on either side is fine and is skipped: an unimplemented method is
+    coverage, never a defect (invariant 1).
+    """
+    calls = {
+        # `(EMPTY)` is not padding: `b'abc'.split(b'')` returned the subject
+        # where CPython raises ValueError, and that was one of the five drifts.
+        "split": ["()", "(SEP)", "(EMPTY)", "(None, 1)", "(SEP, 1)", "(None, 0)"],
+        "rsplit": ["()", "(SEP)", "(EMPTY)", "(None, 1)", "(SEP, 1)", "(None, 0)"],
+        "strip": ["()", "(SEP)"],
+        "lstrip": ["()", "(SEP)"],
+        "rstrip": ["()", "(SEP)"],
+        "find": ["(SEP)", "(SEP, 1)", "(EMPTY)"],
+        "replace": ["(SEP, EMPTY)", "(EMPTY, SEP)"],
+        "startswith": ["(SEP)", "((SEP,))", "(EMPTY)"],
+        "endswith": ["(SEP)", "((SEP,))"],
+        "join": ["([SUBJ, SUBJ])", "([])"],
+        "lower": ["()"],
+        "upper": ["()"],
+    }[method]
+    for shape in calls:
+        for subj, sep, empty in (("'a b a'", "'a'", "''"), ("b'a b a'", "b'a'", "b''")):
+            call = shape.replace("SEP", sep).replace("EMPTY", empty).replace("SUBJ", subj)
+            program = (
+                "try:\n    print(repr((%s).%s%s))\nexcept Exception as e:\n    print(repr(e))\n"
+                % (subj, method, call)
+            )
+            got = eng.run(eng.LYPNING, program)
+            if got.refused:
+                continue
+            ref = eng.run(eng.CPYTHON, program)
+            assert got.stdout == ref.stdout, (
+                "the %s twin of .%s%s disagrees with CPython: %r vs %r"
+                % ("bytes" if subj.startswith("b") else "str", method, call,
+                   got.stdout, ref.stdout)
+            )

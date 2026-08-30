@@ -192,6 +192,11 @@ pub fn repr(v: &Value) -> R<String> {
         Value::Exc(kind, msg) => {
             if msg.is_empty() {
                 format!("{kind}()")
+            } else if *kind == "KeyError" {
+                // The message a KeyError carries is ALREADY the repr of its key
+                // (see the constructor in `builtins.rs`), so quoting it again
+                // produced `KeyError("'k'")`.
+                format!("{kind}({msg})")
             } else {
                 format!("{kind}({})", str_repr(msg)?)
             }
@@ -447,9 +452,19 @@ pub fn parse_spec(s: &str) -> R<Spec> {
     if i < c.len() && c[i] == '0' {
         sp.zero = true;
         i += 1;
+        // The `0` flag sets the FILL whatever the alignment is, and supplies the
+        // alignment only when none was given. Setting both together meant an
+        // explicit alignment silently lost the zero fill: `format(5, '<04')` is
+        // `'5000'` in CPython and was `'5   '` here — 300 of 1,026 runnable
+        // format specs differed, and this was most of them.
+        //
+        // An explicit fill wins: `format(5, '*<04')` is `'5***'`, because the
+        // `*` was named and the `0` only supplies a default.
+        if sp.fill.is_none() {
+            sp.fill = Some('0');
+        }
         if sp.align.is_none() {
             sp.align = Some('=');
-            sp.fill = Some('0');
         }
     }
     let ws = i;
@@ -506,7 +521,73 @@ pub fn parse_spec(s: &str) -> R<Spec> {
     Ok(sp)
 }
 
+/// The empty presentation type WITH an explicit precision.
+///
+/// "Like `g`, except that when fixed-point notation is used it always includes
+/// at least one digit past the decimal point" — and **that digit costs a
+/// significant place**, which is the half that is easy to miss and the half
+/// that decides the notation:
+///
+/// ```text
+/// format(12.0, '.2')  ->  '1.2e+01'   '12.0' needs three significant digits
+/// format(12.0, '.3')  ->  '12.0'      and three were allowed
+/// format(2.0,  '.1')  ->  '2e+00'
+/// ```
+///
+/// The precision was IGNORED here, so `format(123456.789, '.4')` answered
+/// `123456.789` — the whole repr — where CPython answers `1.235e+05`. A silent
+/// wrong answer on every `f"{x:.4}"` an agent writes meaning `.4g`.
+fn g_with_point(f: f64, prec: usize, upper: bool, alt: bool) -> String {
+    let p = prec.max(1);
+    let s = g_format(f, p, upper, alt);
+    if s.contains('.') || s.contains('e') || s.contains('E') {
+        // `#` still owes a point even here: `g` can choose exponent form and
+        // leave the mantissa a bare digit, and `format(1234.5, '#.0')` is
+        // `'1.e+03'`. `keep_point` is a no-op when there already is one.
+        return keep_point(s, alt);
+    }
+    // A bare integer body. Appending `.0` needs one significant digit more than
+    // the body already spent; when there is none to spare, the value goes to
+    // exponent form, where the mantissa carries the point instead.
+    let used = s.trim_start_matches('0').len().max(1);
+    if used < p {
+        return format!("{s}.0");
+    }
+    let e = exp_format(f, p - 1, upper);
+    // `#` means keep the point, so the exponent form keeps its zeros AND gains
+    // a point when the precision left none: `format(0.0, '#.0')` is `'0.e+00'`.
+    if alt {
+        return keep_point(e, true);
+    }
+    // `g` strips trailing zeros from the mantissa, and this is still `g`:
+    // `format(100.0, '.3')` is `1e+02`, not `1.00e+02`.
+    let cut = e.find(['e', 'E']).unwrap_or(e.len());
+    let (mant, tail) = e.split_at(cut);
+    if mant.contains('.') {
+        format!("{}{}", strip_zeros(mant), tail)
+    } else {
+        e
+    }
+}
+
+/// `format()`, an f-string replacement field, and `str.format`.
+///
+/// Separate from [`format_value_pct`] for one rule: `format(5, '.2')` is a
+/// ValueError while `'%.2d' % 5` is `'05'`. The `%` operator reads a precision on
+/// an integer conversion as a MINIMUM DIGIT COUNT, which the mini-language has
+/// no spelling for at all — so the two share every other rule and must not share
+/// this one.
 pub fn format_value(v: &Value, spec_src: &str) -> R<String> {
+    format_inner(v, spec_src, false)
+}
+
+/// The same, reached from the `%` operator, where a precision on an integer is
+/// legal and means minimum digits.
+pub fn format_value_pct(v: &Value, spec_src: &str) -> R<String> {
+    format_inner(v, spec_src, true)
+}
+
+fn format_inner(v: &Value, spec_src: &str, from_pct: bool) -> R<String> {
     if spec_src.is_empty() {
         return to_str(v);
     }
@@ -528,7 +609,12 @@ pub fn format_value(v: &Value, spec_src: &str) -> R<String> {
     if sp.ty.is_none() {
         if let Value::Float(f) = v {
             let body = if f.is_finite() {
-                let s = to_str(&Value::Float(f.abs()))?;
+                let s = match sp.precision {
+                    // With no precision the default is "as many digits as the
+                    // value needs", which is exactly `str(float)`.
+                    None => to_str(&Value::Float(f.abs()))?,
+                    Some(p) => g_with_point(f.abs(), p, false, sp.alt),
+                };
                 group_float(&s, sp.grouping)
             } else {
                 return Ok(pad_signed(nonfinite_sign(*f, &sp), &nonfinite(*f, false), &sp, true));
@@ -551,6 +637,30 @@ pub fn format_value(v: &Value, spec_src: &str) -> R<String> {
         Value::Float(_) => 'g',
         _ => 's',
     });
+    // A precision is meaningless for an integer PRESENTATION TYPE, and CPython
+    // says so rather than ignoring it. The check is on the type and not on the
+    // value, because `format(5, '.2f')` is a perfectly good `'5.00'`; it is
+    // `format(5, '.2')` and `format(5, '.2x')` that are errors. An int with no
+    // type resolves to `'d'` just above, so it is covered here.
+    // Gated on the VALUE being an integer as well as the type being one,
+    // because CPython checks compatibility first: `format(0.0, '.2d')` is
+    // "Unknown format code 'd' for object of type 'float'", not a complaint
+    // about the precision. Checking the type alone reported the second error for
+    // 450 specs that never reach the precision at all.
+    // `,` groups in THREES and the radix types group in FOURS, so CPython
+    // refuses the combination outright rather than pick one:
+    // `format(255, ',x')` is "Cannot specify ',' with 'x'." while
+    // `format(255, '_x')` is `'ff'`. This answered `'ff'` for both.
+    if !from_pct && sp.grouping == Some(',') && matches!(ty, 'x' | 'X' | 'o' | 'b' | 'c') {
+        return Err(value_err(format!("Cannot specify ',' with '{ty}'.")));
+    }
+    if !from_pct
+        && sp.precision.is_some()
+        && matches!(ty, 'd' | 'x' | 'X' | 'o' | 'b' | 'c')
+        && matches!(v, Value::Int(_) | Value::Bool(_))
+    {
+        return Err(value_err("Precision not allowed in integer format specifier"));
+    }
     // Filled in by the integer arm below; see there for why it is not part of
     // the body.
     let mut alt_prefix = "";
@@ -632,11 +742,21 @@ pub fn format_value(v: &Value, spec_src: &str) -> R<String> {
             // `g_format` already honours `alt` for the zero-stripping half; the
             // decimal point at precision 0 is the other half, and it is the same
             // rule as `f` and `e`, so it lives in the same place.
-            keep_point(g_format(f.abs(), sp.precision.unwrap_or(6), ty == 'G', sp.alt), sp.alt)
+            // `,` and `_` group the integer part of the FIXED form, exactly as
+            // for `f`. This arm never grouped, so `format(1234.5, ',g')` answered
+            // `1234.5`. `group_float` leaves an exponent body alone, which is
+            // why `format(1234567.0, ',g')` is `1.23457e+06` on both.
+            let g = g_format(f.abs(), sp.precision.unwrap_or(6), ty == 'G', sp.alt);
+            keep_point(group_float(&g, sp.grouping), sp.alt)
         }
         '%' => {
+            // The percent form is a fixed-point number with a suffix, so it
+            // groups like `f`. Grouping the whole string would put a separator
+            // in front of the `%`, so the body is grouped before the suffix goes
+            // on.
             let f = float_of(v)? * 100.0;
-            keep_point(format!("{:.*}%", sp.precision.unwrap_or(6), f.abs()), sp.alt)
+            let digits = group_float(&format!("{:.*}", sp.precision.unwrap_or(6), f.abs()), sp.grouping);
+            keep_point(format!("{digits}%"), sp.alt)
         }
         _ => return Err(value_err(format!("Unknown format code '{ty}'"))),
     };
@@ -676,7 +796,13 @@ fn keep_point(body: String, alt: bool) -> String {
     if !alt || body.contains('.') {
         return body;
     }
-    match body.find(|c: char| !c.is_ascii_digit()) {
+    // A GROUPING SEPARATOR IS PART OF THE SIGNIFICAND. Scanning for the first
+    // non-digit found the separator instead of the end of the number, so
+    // `format(1234.0, '#,.0f')` put the point after the leading `1` —
+    // `'1.,234'` where CPython says `'1,234.'`. Only visible with `#`, a zero
+    // precision and a grouping character all at once, which is why it outlived
+    // the sweep that added grouping.
+    match body.find(|c: char| !(c.is_ascii_digit() || c == ',' || c == '_')) {
         None => body + ".",
         Some(i) => {
             let mut out = String::with_capacity(body.len() + 1);
@@ -826,6 +952,17 @@ fn pad(body: &str, sp: &Spec, numeric: bool) -> String {
     pad_signed("", body, sp, numeric)
 }
 
+/// The number of digits between separators: four for the radix presentation
+/// types, three everywhere else. `format(255, '012_x')` is `'00_0000_00ff'`.
+/// Hard-coding three here grouped the PAD in threes while the body was grouped
+/// in fours, so the two halves of one number disagreed with each other.
+fn group_size(sp: &Spec) -> usize {
+    match sp.ty {
+        Some('x') | Some('X') | Some('o') | Some('b') => 4,
+        _ => 3,
+    }
+}
+
 fn pad_signed(sign: &str, body: &str, sp: &Spec, numeric: bool) -> String {
     let full_len = sign.chars().count() + body.chars().count();
     let Some(w) = sp.width else {
@@ -833,6 +970,41 @@ fn pad_signed(sign: &str, body: &str, sp: &Spec, numeric: bool) -> String {
     };
     if full_len >= w {
         return format!("{sign}{body}");
+    }
+    // GROUP-AWARE ZERO PADDING. `format(5, '09,')` is `'0,000,005'`, not
+    // `'000000005'`: the pad zeros are part of the number and take separators
+    // with them. Only on the `=` path, which is where the fill goes between the
+    // sign and the digits — with an explicit alignment CPython pads plainly,
+    // so `format(5, '<09,')` really is `'500000000'`.
+    //
+    // The digit count is the smallest `n` whose GROUPED length reaches the
+    // space available, which is why the result can exceed the width:
+    // `format(5, '012,')` is 13 characters, because 9 digits group to 11 and 10
+    // group to 13, and there is no way to land on 12 without a leading
+    // separator.
+    // Keyed on the RESULT (fill '0' aligned '='), not on how it was spelled:
+    // `'0=9,'` names the same thing as `'09,'` and reaches here with `sp.zero`
+    // false, because the fill+align pair consumed the zero before the flag
+    // could see it.
+    if numeric && sp.align == Some('=') && sp.fill == Some('0') {
+        if let Some(sep) = sp.grouping {
+            let raw: String = body.chars().filter(|c| *c != sep).collect();
+            // The integer part ends at the first '.', exponent or '%' — NOT at
+            // the first non-decimal character. `is_ascii_digit` is 0-9 only, so
+            // for `'012_x'` it declared the whole body `ff` to be the fractional
+            // TAIL, padded nine zeros into a twelve-wide field and answered
+            // `'0_0000_0000ff'`, which is thirteen characters wide.
+            let cut = raw.find(['.', 'e', 'E', '%']).unwrap_or(raw.len());
+            let (intpart, tail) = raw.split_at(cut);
+            let avail = w.saturating_sub(sign.chars().count() + tail.chars().count());
+            let gs = group_size(sp);
+            let mut n = intpart.len().max(1);
+            while n + (n - 1) / gs < avail {
+                n += 1;
+            }
+            let padded = format!("{:0>width$}", intpart, width = n);
+            return format!("{sign}{}{tail}", group(&padded, Some(sep), gs));
+        }
     }
     let padn = w - full_len;
     let fill = sp.fill.unwrap_or(' ');

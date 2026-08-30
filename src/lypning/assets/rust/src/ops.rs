@@ -28,7 +28,7 @@ impl Interp {
                 || matches!((x, y), (Num::I(_), Num::I(_)))
                 || matches!(op, Add | Sub | Mul | Div | FloorDiv | Mod | Pow)
             {
-                return num_binop(op, x, y);
+                return num_binop(op, x, y, matches!((a, b), (Value::Bool(_), Value::Bool(_))));
             }
         }
         Ok(match (op, a, b) {
@@ -91,6 +91,42 @@ impl Interp {
                 }
                 Value::Dict(Rc::new(RefCell::new(d)))
             }
+            // `d.keys() | {"c"}` is SET ALGEBRA in CPython — keys and items
+            // views are set-like — and it fell through to the generic TypeError
+            // here, so a valid program died at exit 1 with a message CPython
+            // never prints. The result is a SET whose iteration order this
+            // engine refuses to expose anyway, so the whole family refuses as
+            // `dict-view`, which the chain escalates to CPython. A VALUES view
+            // is not set-like and falls through: the generic message below is
+            // CPython's own for it.
+            (BitOr | BitAnd | Sub | BitXor, Value::DictView(_, k), Value::Set(_))
+            | (BitOr | BitAnd | Sub | BitXor, Value::Set(_), Value::DictView(_, k))
+                if *k != "values" =>
+            {
+                return Err(unsupported(
+                    "dict-view",
+                    "set algebra over a dict view, whose result is a set with CPython's order",
+                ))
+            }
+            (BitOr | BitAnd | Sub | BitXor, Value::DictView(_, k1), Value::DictView(_, k2))
+                if *k1 != "values" && *k2 != "values" =>
+            {
+                return Err(unsupported(
+                    "dict-view",
+                    "set algebra over a dict view, whose result is a set with CPython's order",
+                ))
+            }
+            // `bytes % args` is real Python (PEP 461) and is not implemented
+            // here. Falling into the arm below made it a TypeError — the
+            // program's own exit, which the dispatcher does not treat as a
+            // refusal, so a valid `b"%d" % 5` died at exit 1 with nothing to
+            // rescue it. A refusal routes it onward instead.
+            (Mod, Value::Bytes(_), _) => {
+                return Err(unsupported(
+                    "percent-format",
+                    "bytes % args (PEP 461 formatting)",
+                ))
+            }
             _ => {
                 return Err(type_err(format!(
                     "unsupported operand type(s) for {}: '{}' and '{}'",
@@ -106,8 +142,8 @@ impl Interp {
         Ok(match op {
             CmpOp::Eq => eq(a, b)?,
             CmpOp::Ne => !eq(a, b)?,
-            CmpOp::Is => is_same(a, b),
-            CmpOp::IsNot => !is_same(a, b),
+            CmpOp::Is => return identity(a, b),
+            CmpOp::IsNot => return Ok(!identity(a, b)?),
             CmpOp::In => self.contains(b, a)?,
             CmpOp::NotIn => !self.contains(b, a)?,
             _ => {
@@ -130,33 +166,16 @@ impl Interp {
                         _ => unreachable!(),
                     });
                 }
-                // NaN IS UNORDERED, AND THAT IS AN ANSWER, NOT AN ERROR.
-                //
-                // Every ordering comparison involving a NaN is False in Python
-                // — `nan > 99.0`, `nan < 99.0` and `nan >= nan` alike — because
-                // IEEE 754 says the relation does not hold, not because the
-                // operands cannot be compared. lypning raised TypeError("cannot
-                // order NaN") instead, turning a value CPython computes into an
-                // exception. Found by scripts/lypning-fuzz.mjs.
-                //
-                // Equality already behaves correctly through eq() above, where
-                // `nan == nan` is False for the same reason.
-                if is_nan(a) || is_nan(b) {
-                    return Ok(false);
-                }
-                let o = order(a, b)?;
-                match op {
-                    CmpOp::Lt => o == Ordering::Less,
-                    CmpOp::Le => o != Ordering::Greater,
-                    CmpOp::Gt => o == Ordering::Greater,
-                    CmpOp::Ge => o != Ordering::Less,
-                    _ => unreachable!(),
-                }
+                return order_cmp(op, a, b);
             }
         })
     }
 
     pub fn contains(&mut self, container: &Value, needle: &Value) -> R<bool> {
+        // `in` compares identity first (`x is y or x == y`), and a NaN is the
+        // one value for which that is observable. The rule lives in
+        // `value::elem_eq`, once, at the element level — a blanket refusal here
+        // used to reject `n in [1, 2]`, which has exactly one answer.
         Ok(match container {
             Value::Str(s) => match needle {
                 Value::Str(n) => s.contains(n.as_ref()),
@@ -169,8 +188,28 @@ impl Interp {
             },
             Value::Bytes(b) => match needle {
                 Value::Bytes(n) => b.windows(n.len().max(1)).any(|w| w == n.as_slice()) || n.is_empty(),
-                Value::Int(i) => b.contains(&(*i as u8)),
-                _ => return Err(type_err("a bytes-like object is required")),
+                // `bool` is a SUBCLASS of int, so `True in b"ab"` is the same
+                // byte-value test as `1 in b"ab"` and answers False. Matching
+                // only `Value::Int` raised "a bytes-like object is required"
+                // for the bool — the same subclass slip the ledger records for
+                // `bytes.find(False)`, which was fixed there and not here.
+                // `as u8` TRUNCATES, so `300 in b"abc"` tested byte 44 and
+                // answered False where CPython raises, and `-1 in b"ab"` tested
+                // 255. A byte value outside range(0, 256) is a ValueError there.
+                Value::Int(i) => {
+                    if !(0..=255).contains(i) {
+                        return Err(value_err("byte must be in range(0, 256)"));
+                    }
+                    b.contains(&(*i as u8))
+                }
+                Value::Bool(t) => b.contains(&(*t as u8)),
+                // ...and the message names the type, as everywhere else.
+                other => {
+                    return Err(type_err(format!(
+                        "a bytes-like object is required, not '{}'",
+                        type_name(other)
+                    )))
+                }
             },
             Value::List(l) => {
                 // The borrow is held across the loop rather than snapshotted:
@@ -179,34 +218,73 @@ impl Interp {
                 // replaces cost a Vec allocation and a refcount bump per element
                 // on every `x in xs`.
                 let items = l.borrow();
+                // The needle is fixed, so the NaN half of `elem_eq`'s question
+                // is hoisted: one bool, tested only on the miss path.
+                let needle_nan = crate::value::nan_here(needle);
                 for x in items.iter() {
                     if eq(x, needle)? {
                         return Ok(true);
+                    }
+                    if needle_nan && crate::value::nan_here(x) {
+                        return Err(crate::value::refuse_nan_elem());
                     }
                 }
                 false
             }
             Value::Tuple(t) => {
+                let needle_nan = crate::value::nan_here(needle);
                 for x in t.iter() {
                     if eq(x, needle)? {
                         return Ok(true);
+                    }
+                    if needle_nan && crate::value::nan_here(x) {
+                        return Err(crate::value::refuse_nan_elem());
                     }
                 }
                 false
             }
             Value::Dict(d) => d.borrow().contains(needle)?,
-            Value::Set(s) => s.borrow().contains(needle)?,
-            Value::Range(a, b, st) => match needle {
-                Value::Int(i) => {
-                    let inrange = if *st > 0 { *i >= *a && *i < *b } else { *i <= *a && *i > *b };
-                    inrange && (*i - *a).rem_euclid(*st) == 0
-                }
-                _ => false,
+            // CPython converts an unhashable SET to a frozenset for the
+            // membership test rather than raising: `{1} in {1}` is False, not a
+            // TypeError. This subset has no frozenset and its sets cannot hold
+            // one, so the answer is always False — which is the answer CPython
+            // gives for every set this runtime can build.
+            Value::Set(s) => match needle {
+                Value::Set(_) => false,
+                _ => s.borrow().contains(needle)?,
             },
+            Value::Range(a, b, st) => {
+                // A RANGE HOLDS INTEGERS, BUT `in` ASKS ABOUT VALUES. CPython
+                // compares by equality, so `1.0 in range(5)` and
+                // `True in range(5)` are both True — `1.0 == 1` and `True == 1`.
+                // Matching only `Value::Int` answered False to both, at exit 0.
+                // A non-integral float is still False, which is why the test is
+                // on the VALUE and not on the type.
+                let want = match needle {
+                    Value::Int(i) => Some(*i),
+                    Value::Bool(t) => Some(*t as i64),
+                    Value::Float(f) => {
+                        if f.fract() == 0.0 && f.is_finite() && *f >= -(2f64.powi(63)) && *f < 2f64.powi(63) {
+                            Some(*f as i64)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+                match want {
+                    None => false,
+                    Some(i) => {
+                        let inrange =
+                            if *st > 0 { i >= *a && i < *b } else { i <= *a && i > *b };
+                        inrange && (i - *a).rem_euclid(*st) == 0
+                    }
+                }
+            }
             Value::Gen(_) => {
                 let mut it = self.make_iter(container.clone())?;
                 while let Some(x) = self.iter_next(&mut it)? {
-                    if eq(&x, needle)? {
+                    if crate::value::elem_eq(&x, needle)? {
                         return Ok(true);
                     }
                 }
@@ -252,12 +330,28 @@ impl Interp {
                 }
             }
             Value::Bytes(b) => {
-                let i = norm_index(crate::eval::int_val(idx)?, b.len(), "bytearray")?;
+                // The receiver is `bytes`, and CPython names the type in the
+                // message: "index out of range" for bytes, not "bytearray index
+                // out of range" — which named a type this subset does not even have.
+                let i = norm_index(crate::eval::int_val(idx)?, b.len(), "")?;
                 Value::Int(b[i] as i64)
             }
             Value::Range(a, bb, st) => {
                 let n = range_len(*a, *bb, *st);
-                let i = norm_index(crate::eval::int_val(idx)?, n as usize, "range")?;
+                // A range can be longer than i64 can count. CPython indexes one
+                // fine — its arithmetic is arbitrary precision — and this cannot,
+                // so it refuses rather than truncating the count and answering
+                // out of a range that is the wrong size. Before the width fix
+                // the count wrapped NEGATIVE and `range(-2**62, 2**62)[0]`
+                // raised a spurious IndexError.
+                if n > i64::MAX as i128 {
+                    return Err(unsupported(
+                        "bigint",
+                        "index into a range longer than 2**63 - 1, whose length is a bignum",
+                    ));
+                }
+                // CPython says "range object index out of range" here, not "range".
+                let i = norm_index(crate::eval::int_val(idx)?, n as usize, "range object")?;
                 Value::Int(a + (i as i64) * st)
             }
             other => {
@@ -382,6 +476,58 @@ impl Interp {
                     Value::Tuple(Rc::new(picked.into_iter().map(|i| t[i].clone()).collect()))
                 }
             }
+            // Slicing a range yields a RANGE, not a list — `range(4)[::-1]` is
+            // `range(3, -1, -1)`. Indexing one was already here; slicing fell
+            // through to the arm below and raised
+            // `'range' object is not subscriptable`, which is exit 1 and
+            // therefore the program's own: the dispatcher does not treat it as a
+            // refusal, so nothing rescued a construct CPython answers.
+            //
+            // The picked indices give the answer without a second normalisation
+            // to keep in step with `slice_indices`: the first one names the new
+            // start, the steps multiply, and the stop is derived from the COUNT
+            // so that it holds exactly the elements picked.
+            Value::Range(a, b, st) => {
+                let n = range_len(*a, *b, *st);
+                // Same reason as indexing, and this is where the SIGABRT was:
+                // the wrapped negative count reached `slice_span`, whose
+                // `clamp(0, n)` panicked on `min > max`.
+                if n > i64::MAX as i128 {
+                    return Err(unsupported(
+                        "bigint",
+                        "slice of a range longer than 2**63 - 1, whose length is a bignum",
+                    ));
+                }
+                let (start, stop) = slice_bounds(n as usize, lo, hi, step);
+                // Both endpoints map straight through the parent's own start and
+                // step. Deriving the stop from a COUNT instead gives a range with
+                // the same ELEMENTS and a different repr — `range(4)[::3]` came
+                // out as `range(0, 6, 3)` where CPython says `range(0, 4, 3)` —
+                // and a range's repr is observable, so same-elements is not
+                // good enough.
+                // ...and the arithmetic that builds it can overflow too. A
+                // range holds three i64s, so a slice whose combined step does
+                // not fit one cannot be represented: `range(0, 4, 2)[::2**62]`
+                // is `range(0, 4, 9223372036854775808)` in CPython, and
+                // `st * step` wrapped to i64::MIN here — a NEGATIVE step, so
+                // `list(...)` answered `[]` where CPython answers `[0]`.
+                // Checked in i128 and refused, like every other place an i64
+                // cannot hold Python's answer.
+                let fits = |v: i128| -> R<i64> {
+                    i64::try_from(v).map_err(|_| {
+                        unsupported(
+                            "bigint",
+                            "slice of a range whose start, stop or step falls outside 64 bits",
+                        )
+                    })
+                };
+                let (a128, st128, step128) = (*a as i128, *st as i128, step as i128);
+                Value::Range(
+                    fits(a128 + start as i128 * st128)?,
+                    fits(a128 + stop as i128 * st128)?,
+                    fits(st128 * step128)?,
+                )
+            }
             other => {
                 return Err(type_err(format!(
                     "'{}' object is not subscriptable",
@@ -419,6 +565,18 @@ impl Interp {
                 }
             }
         }
+        // `range.start`, `.stop` and `.step` are ordinary attributes CPython
+        // exposes, and this raised AttributeError for them — exit 1, the
+        // program's own exit, which the chain does not retry, so a program
+        // CPython answers simply died.
+        if let Value::Range(a, b, st) = base {
+            match name {
+                "start" => return Ok(Value::Int(*a)),
+                "stop" => return Ok(Value::Int(*b)),
+                "step" => return Ok(Value::Int(*st)),
+                _ => {}
+            }
+        }
         if let Value::Exc(_, msg) = base {
             match name {
                 "args" => return Ok(Value::Tuple(Rc::new(vec![Value::Str(msg.clone())]))),
@@ -449,6 +607,69 @@ impl Interp {
         if crate::methods::missing_method(base, name) {
             return Err(missing_method_err(base, name));
         }
+        // AN EXCEPTION REALLY DOES HAVE THESE, so reporting "no such attribute"
+        // is a claim about Python rather than about this program.
+        // `__context__` is whatever was being handled when this one was raised,
+        // `__cause__` is what `raise X from Y` attached, `__traceback__` is the
+        // frame chain. `Value::Exc` is a flat `(kind, message)` pair with
+        // nowhere to put any of them, and widening it reaches every site that
+        // matches on an exception -- so this refuses, and the dispatcher hands
+        // the program to an interpreter that has them.
+        //
+        // The distinction matters because AttributeError is exit 1, the
+        // program's OWN exit, which the chain does not retry: a handler that
+        // inspects `e.__context__` died here instead of being answered one
+        // spawn later.
+        if matches!(base, Value::Exc(..))
+            && matches!(name, "__context__" | "__cause__" | "__traceback__")
+        {
+            return Err(unsupported(
+                "exception-chaining",
+                &format!("exception.{name}, which needs the chained exception object"),
+            ));
+        }
+        // ...and the same argument, made once for every dunder instead of three
+        // times for three names. A DUNDER IS PART OF THE DATA MODEL: Python
+        // defines what `__name__`, `__class__`, `__doc__`, `__dict__` mean and
+        // every object CPython builds carries the ones its type declares. So
+        // answering `AttributeError` for one is not a fact about this program,
+        // it is a claim about Python — and a false one:
+        //
+        //     print(type(2).__name__)          CPython: int    this: AttributeError
+        //     print(e.__class__.__name__)      CPython: ...    this: AttributeError
+        //     print(len.__doc__ is not None)   CPython: True   this: AttributeError
+        //
+        // Three MISMATCHes on the tier-1 arm, measured, and invariant 1 says a
+        // MISMATCH is always a bug. Worse than the count: AttributeError is
+        // exit 1, the PROGRAM's own exit, which the chain does not retry — so
+        // unlike a refusal it cannot be answered one spawn later. The program
+        // simply dies.
+        //
+        // Deliberately a wildcard and not a list of the dunders CPython has.
+        // A list is incomplete the moment someone uses the next one, and being
+        // incomplete here means a silent wrong answer; being over-broad means a
+        // process spawn on `o.__notathing__`, which CPython then raises
+        // AttributeError for anyway. That is the asymmetry invariant 1 is
+        // about, and it only points one way.
+        if name.starts_with("__") && name.ends_with("__") && name.len() > 4 {
+            // TWO KINDS, because the tier below splits exactly here — measured
+            // 2026-08-30 on lypning-mp-i386: it answers `__name__` and
+            // `__class__` correctly and gets `__module__` and `__doc__` wrong
+            // (built-in types carry neither there, so the ordinary
+            // format-an-exception idiom prints the getattr DEFAULT at exit 0).
+            // `dunder-missing` is in ONLY_CPYTHON_KINDS; `dunder-attr` falls
+            // through to the tier that answers it.
+            if matches!(name, "__module__" | "__doc__") {
+                return Err(unsupported(
+                    "dunder-missing",
+                    &format!("{}.{name}, which the middle tier's builtins do not carry", type_name(base)),
+                ));
+            }
+            return Err(unsupported(
+                "dunder-attr",
+                &format!("{}.{name}, which is part of Python's data model", type_name(base)),
+            ));
+        }
         Err(attr_err(format!(
             "'{}' object has no attribute '{name}'",
             type_name(base)
@@ -468,7 +689,7 @@ fn missing_method_err(recv: &Value, name: &str) -> LypningError {
 
 // ---- numbers --------------------------------------------------------------
 
-fn num_binop(op: BinOp, a: Num, b: Num) -> R<Value> {
+fn num_binop(op: BinOp, a: Num, b: Num, both_bool: bool) -> R<Value> {
     use BinOp::*;
     // Bit operations are integer-only in Python.
     if matches!(op, BitAnd | BitOr | BitXor | LShift | RShift) {
@@ -478,6 +699,19 @@ fn num_binop(op: BinOp, a: Num, b: Num) -> R<Value> {
                 op_sym(op)
             )));
         };
+        // `bool` is a subclass of `int`, but its three bitwise operators are
+        // overridden to return `bool` — and ONLY when both operands are bool.
+        // `True | False` is `True`, while `True | 1` is `1`. Returning an int
+        // for both printed `1` where CPython prints `True`, at exit 0, on an
+        // ordinary flag expression. The shifts are not overridden: `True << 1`
+        // is `2` either way, so they stay out of this.
+        if both_bool && matches!(op, BitAnd | BitOr | BitXor) {
+            return Ok(Value::Bool(match op {
+                BitAnd => (x != 0) & (y != 0),
+                BitOr => (x != 0) | (y != 0),
+                _ => (x != 0) ^ (y != 0),
+            }));
+        }
         return Ok(Value::Int(match op {
             BitAnd => x & y,
             BitOr => x | y,
@@ -520,6 +754,35 @@ fn num_binop(op: BinOp, a: Num, b: Num) -> R<Value> {
             Div => {
                 if y == 0 {
                     return Err(zero_div("division by zero"));
+                }
+                // `int / int` is CORRECTLY ROUNDED in CPython, computed from the
+                // integers themselves. Converting each to f64 first loses the
+                // low bits of anything past 2**53, and the error survives the
+                // division: `9007199254740993 / 3` answered
+                // 3002399751580330.5 where CPython answers 3002399751580331.0,
+                // because the numerator had already become …992 before the
+                // divide. Refused past the exactly-representable range rather
+                // than answered approximately — the same line every other
+                // 64-bit-range refusal in this file draws.
+                const EXACT: i64 = 1 << 53;
+                if x.unsigned_abs() > EXACT as u64 || y.unsigned_abs() > EXACT as u64 {
+                    // Its OWN kind, and not `bigint`, because the two ask
+                    // different things of the tier below. Every other `bigint`
+                    // refusal here means "Python would use a bignum" — a
+                    // capability, and MicroPython HAS arbitrary-precision
+                    // integers, so falling through gets the right answer. This
+                    // one means "the quotient needs rounding I cannot do
+                    // exactly", and MicroPython converts both operands to
+                    // double exactly as this would have: it answers, and it
+                    // answers wrongly. Measured over the corpus the run loaded
+                    // (2,239 programs, 2026-08-28): of the programs this file
+                    // refuses as `bigint`, MicroPython gets 10 right and this
+                    // one wrong. Sharing a kind with them would escalate all
+                    // eleven to CPython to rescue one.
+                    return Err(unsupported(
+                        "int-div-precision",
+                        "int / int where an operand is past 2**53 and the quotient needs exact rounding",
+                    ));
                 }
                 Value::Float(x as f64 / y as f64)
             }
@@ -582,16 +845,31 @@ fn num_binop(op: BinOp, a: Num, b: Num) -> R<Value> {
             if y == 0.0 {
                 return Err(zero_div("float floor division by zero"));
             }
-            // inf // 2.5 is nan in CPython, not inf: the floor of an infinite
-            // quotient has no value, and math.floor(inf) is an error. Rust's
-            // (inf/2.5).floor() is inf, so this needed saying.
-            let q = x / y;
-            if !q.is_finite() {
-                // inf // 2.5 is nan in CPython, not inf: the floor of an
-                // infinite quotient has no value. Rust's (inf/2.5).floor() is
-                // inf, so this needed saying.
-                Value::Float(f64::NAN)
-            } else {
+            {
+                // There USED to be a guard here: `if !(x / y).is_finite() { NAN }`,
+                // put there because `inf // 2.5` is nan in CPython where Rust's
+                // `(inf / 2.5).floor()` is inf. It was right about that case and
+                // wrong about the one that looks identical from the quotient
+                // alone — an OVERFLOW, where both operands are finite and only
+                // the quotient is not:
+                //
+                //     7.0 // 1e-308   ->  inf      (this answered nan)
+                //
+                // CPython does not test the quotient at all. It computes
+                // `fmod` first, and the two cases separate themselves there:
+                // `fmod(inf, 2.5)` is nan and poisons everything after it, while
+                // `fmod(7.0, 1e-308)` is an ordinary small number and the
+                // overflow happens in the division that follows, where inf is
+                // the right answer. Rust's `f64::floor` is total — `floor(inf)`
+                // is inf, `floor(nan)` is nan — so the code below needs no guard
+                // to produce either, and `div - floordiv > 0.5` is false for
+                // both (inf - inf and nan - nan are both nan).
+                //
+                // Measured over a 390-program grid of the overflow
+                // neighbourhood: 98 divergences, all of them this, all at exit 0.
+                // The guard could not have been found by testing `inf` operands,
+                // which is what it was written for.
+                //
                 // CPython computes fmod first and derives the quotient from it,
                 // which is exact where flooring the rounded quotient is not:
                 // 1e16 // -3.0 is -3333333333333335.0, and (1e16 / -3.0).floor()
@@ -609,7 +887,20 @@ fn num_binop(op: BinOp, a: Num, b: Num) -> R<Value> {
                 if div == 0.0 {
                     Value::Float(if x.is_sign_negative() != y.is_sign_negative() { -0.0 } else { 0.0 })
                 } else {
-                    Value::Float(div.floor())
+                    // …and then CPython CORRECTS the floor, which this did not.
+                    // `(x - mod) / y` is exact in real arithmetic but the
+                    // division rounds, so a true quotient of 12 can arrive as
+                    // 11.999999999999998 and floor to 11. `float_floor_div` in
+                    // `floatobject.c` adds the value back when the fraction it
+                    // discarded was more than half a unit:
+                    //
+                    //     9.0 // 0.7   ->  12.0   (this answered 11.0)
+                    //
+                    // Exit 0, one off, and only for the divisors where the
+                    // rounding lands that way — which is why a handful of
+                    // examples would not have found it.
+                    let floordiv = div.floor();
+                    Value::Float(if div - floordiv > 0.5 { floordiv + 1.0 } else { floordiv })
                 }
             }
         }
@@ -692,10 +983,132 @@ fn is_nan(v: &Value) -> bool {
 
 // ---- ordering -------------------------------------------------------------
 
+/// `a is b`, refusing the question CPython answers from INTERNING.
+///
+/// `is` is object identity, and for a mutable value that is a fact this engine
+/// has: `[1] is [1]` is False here and in CPython, because two list displays
+/// build two objects. For an immutable one it is not a fact about the program
+/// at all. CPython folds equal constants in a code object into one object, so
+/// `0 is 0`, `'ab' is 'ab'` and `(1,) is (1,)` are True — while
+/// `int('1000') is 1000` is False for the same values. The answer depends on
+/// where the value CAME FROM, which nothing in a value can tell you.
+///
+/// Answering False was wrong 30 times in a 5,460-program grid over the
+/// comparison operators, and answering True would be wrong for the
+/// runtime-built half. `is_same` has carried the comment "refusing beats
+/// guessing either way" since it was written; it returned `false`.
+///
+/// Note what still answers, because refusing more than necessary is its own
+/// cost: the singletons (`x is None`, `is True`, `is False`) are identity
+/// questions with one possible answer; two values that are not EQUAL are never
+/// the same object either; and `x is x` still holds wherever the value carries
+/// an `Rc` to compare, which is every str, tuple, list, dict and set.
+fn identity(a: &Value, b: &Value) -> R<bool> {
+    if is_same(a, b) {
+        return Ok(true);
+    }
+    let foldable = |v: &Value| {
+        matches!(
+            v,
+            Value::Int(_) | Value::Float(_) | Value::Str(_) | Value::Bytes(_) | Value::Tuple(_)
+        )
+    };
+    if foldable(a) && foldable(b) && eq(a, b)? {
+        return Err(unsupported(
+            "identity",
+            "`is` between two equal immutable values, which CPython answers from interning",
+        ));
+    }
+    Ok(false)
+}
+
+/// The symbol an ordering operator puts in its TypeError.
+fn cmp_symbol(op: CmpOp) -> &'static str {
+    match op {
+        CmpOp::Lt => "<",
+        CmpOp::Le => "<=",
+        CmpOp::Gt => ">",
+        CmpOp::Ge => ">=",
+        _ => "<",
+    }
+}
+
+/// `a op b` for the four ordering operators — CPython's `list_richcompare`,
+/// which is not [`order`] plus a mapping from `Ordering`.
+///
+/// Two things fall out of the difference, and both were wrong before:
+///
+/// * **The operator's own name reaches the error, at every depth.** CPython
+///   compares a sequence element-wise and then hands the ORIGINAL operator to
+///   the first differing pair, so `[1] <= ['a']` reports `'<='`. Deriving the
+///   answer from an `Ordering` cannot do that: it has only one comparison to
+///   name, and it named `'<'` for all four. 1,461 divergences in a grid over
+///   the comparison operators, every one of them the wrong symbol in a message
+///   an agent prints with `str(e)`.
+///
+/// * **A NaN makes an ordering False only between values that are ORDERABLE.**
+///   `nan < 1.0` is False because IEEE 754 says the relation does not hold.
+///   `'' < nan` is a TypeError, because a str and a float have no ordering to
+///   fail. Short-circuiting on `is_nan` before the type check answered False to
+///   both, which is 120 more divergences and the more dangerous kind: an
+///   exception CPython raises, silently turned into a value.
+///
+/// [`order`] stays as it is and keeps naming `'<'`, because that is what sort
+/// asks and what CPython's sort reports.
+pub fn order_cmp(op: CmpOp, a: &Value, b: &Value) -> R<bool> {
+    let len_cmp = |x: usize, y: usize| match op {
+        CmpOp::Lt => x < y,
+        CmpOp::Le => x <= y,
+        CmpOp::Gt => x > y,
+        _ => x >= y,
+    };
+    match (a, b) {
+        (Value::List(x), Value::List(y)) => {
+            let _nest = crate::err::Nest::enter("comparison")?;
+            let (x, y) = (x.borrow(), y.borrow());
+            for (p, q) in x.iter().zip(y.iter()) {
+                if !crate::value::elem_eq(p, q)? {
+                    return order_cmp(op, p, q);
+                }
+            }
+            return Ok(len_cmp(x.len(), y.len()));
+        }
+        (Value::Tuple(x), Value::Tuple(y)) => {
+            let _nest = crate::err::Nest::enter("comparison")?;
+            for (p, q) in x.iter().zip(y.iter()) {
+                if !crate::value::elem_eq(p, q)? {
+                    return order_cmp(op, p, q);
+                }
+            }
+            return Ok(len_cmp(x.len(), y.len()));
+        }
+        _ => {}
+    }
+    // NaN IS UNORDERED, AND THAT IS AN ANSWER, NOT AN ERROR — between numbers.
+    // `nan > 99.0`, `nan < 99.0` and `nan >= nan` are all False in Python
+    // because IEEE 754 says the relation does not hold, not because the
+    // operands cannot be compared. Equality already behaves correctly through
+    // eq(), where `nan == nan` is False for the same reason.
+    if (is_nan(a) || is_nan(b)) && as_num(a).is_some() && as_num(b).is_some() {
+        return Ok(false);
+    }
+    let o = order_as(cmp_symbol(op), a, b)?;
+    Ok(match op {
+        CmpOp::Lt => o == Ordering::Less,
+        CmpOp::Le => o != Ordering::Greater,
+        CmpOp::Gt => o == Ordering::Greater,
+        _ => o != Ordering::Less,
+    })
+}
+
 /// Python's `<` on values of different types is a TypeError, not a fallback to
 /// some arbitrary total order. Reproducing that exactly is what keeps `sorted`
 /// on a mixed list from silently succeeding here and failing there.
 pub fn order(a: &Value, b: &Value) -> R<Ordering> {
+    order_as("<", a, b)
+}
+
+fn order_as(sym: &str, a: &Value, b: &Value) -> R<Ordering> {
     // The numeric and scalar paths run BEFORE the guard, because neither can
     // descend and `sorted()` of a list of ints reaches this once per
     // comparison. See `value::eq` for the same split and the same reasoning.
@@ -704,9 +1117,14 @@ pub fn order(a: &Value, b: &Value) -> R<Ordering> {
         if let (Num::I(i), Num::I(j)) = (as_num(a).unwrap(), as_num(b).unwrap()) {
             return Ok(i.cmp(&j));
         }
-        return x
-            .partial_cmp(&y)
-            .ok_or_else(|| type_err("cannot order NaN"));
+        // A NaN COMPARES FALSE TO EVERYTHING, and sort only ever asks `b < a`,
+        // so "neither less nor greater" is what reproduces CPython here:
+        // `sorted([nan, 1.0])` is `[nan, 1.0]` and `max(nan, 1.0)` is `nan`,
+        // because in both cases the test that would move the NaN is False.
+        // Raising TypeError("cannot order NaN") instead turned three values
+        // CPython computes into exceptions — sorted(), min() and max() over any
+        // list containing one.
+        return Ok(x.partial_cmp(&y).unwrap_or(Ordering::Equal));
     }
     Ok(match (a, b) {
         (Value::Str(x), Value::Str(y)) => x.as_bytes().cmp(y.as_bytes()),
@@ -717,15 +1135,15 @@ pub fn order(a: &Value, b: &Value) -> R<Ordering> {
         (Value::List(x), Value::List(y)) => {
             let _nest = crate::err::Nest::enter("comparison")?;
             let (x, y) = (x.borrow(), y.borrow());
-            seq_order(&x, &y)?
+            seq_order(sym, &x, &y)?
         }
         (Value::Tuple(x), Value::Tuple(y)) => {
             let _nest = crate::err::Nest::enter("comparison")?;
-            seq_order(x, y)?
+            seq_order(sym, x, y)?
         }
         _ => {
             return Err(type_err(format!(
-                "'<' not supported between instances of '{}' and '{}'",
+                "'{sym}' not supported between instances of '{}' and '{}'",
                 type_name(a),
                 type_name(b)
             )))
@@ -733,10 +1151,10 @@ pub fn order(a: &Value, b: &Value) -> R<Ordering> {
     })
 }
 
-fn seq_order(x: &[Value], y: &[Value]) -> R<Ordering> {
+fn seq_order(sym: &str, x: &[Value], y: &[Value]) -> R<Ordering> {
     for (a, b) in x.iter().zip(y.iter()) {
-        if !eq(a, b)? {
-            return order(a, b);
+        if !crate::value::elem_eq(a, b)? {
+            return order_as(sym, a, b);
         }
     }
     Ok(x.len().cmp(&y.len()))
@@ -748,6 +1166,20 @@ fn seq_order(x: &[Value], y: &[Value]) -> R<Ordering> {
 pub fn sort_values(items: &mut Vec<Value>, keys: &mut Vec<Value>, reverse: bool) -> R<()> {
     let n = items.len();
     let mut idx: Vec<usize> = (0..n).collect();
+    // `reverse=True` is NOT "sort, then reverse". Reversing the finished order
+    // reverses the ties along with everything else, and Python guarantees a sort
+    // that leaves equal elements in the order it found them — descending
+    // included. So `sorted(counts, key=counts.get, reverse=True)` must keep `b`
+    // ahead of `a` when both count 2, and reversing the result puts `a` first.
+    //
+    // CPython reverses the input, sorts ascending, and reverses again
+    // (`listobject.c`, `reverse_slice` either side of the merge). The second
+    // reversal undoes the first for equal elements and inverts everything else,
+    // which is the whole trick. Doing it here rather than after the merge costs
+    // one extra `reverse` of an index vector.
+    if reverse {
+        idx.reverse();
+    }
     let mut buf = vec![0usize; n];
     let mut width = 1;
     while width < n {
@@ -757,6 +1189,34 @@ pub fn sort_values(items: &mut Vec<Value>, keys: &mut Vec<Value>, reverse: bool)
             let end = (i + 2 * width).min(n);
             let (mut l, mut r, mut k) = (i, mid, i);
             while l < mid && r < end {
+                // A NaN MAKES THE COMPARATOR STOP BEING AN ORDER, and a sort
+                // over one is then the ALGORITHM's answer rather than Python's.
+                // Every comparison against a NaN is false, so "not less" holds
+                // in both directions and which element moves depends entirely
+                // on the order the sort asks its questions in. CPython's answer
+                // is timsort's:
+                //
+                //     sorted([3, 1, float('nan'), 2])
+                //     CPython  [1, 2, 3, nan]      this merge sort  [1, 3, nan, 2]
+                //
+                // Both are stable and deterministic, and they disagree because
+                // the two algorithms differ — which no amount of fixing the
+                // comparison can close. `min` and `max` are unaffected and stay
+                // on `order`: they are linear scans asking one question per
+                // element, so "neither less nor greater" gives CPython's answer
+                // exactly.
+                //
+                // The guard is `has_nan`, which sees one level into a list or
+                // tuple key and no deeper — the same reach as the guard on `in`,
+                // and for the same reason (a recursive scan overflowed the host
+                // stack when it was tried).
+                if crate::value::has_nan(&keys[idx[r]]) || crate::value::has_nan(&keys[idx[l]]) {
+                    return Err(unsupported(
+                        "nan-order",
+                        "sort over a NaN, whose comparisons are all false — so the result \
+                         is the sort algorithm's and not Python's",
+                    ));
+                }
                 // `<=` on the left keeps the sort stable.
                 let o = order(&keys[idx[r]], &keys[idx[l]])?;
                 if o == Ordering::Less {
@@ -786,6 +1246,8 @@ pub fn sort_values(items: &mut Vec<Value>, keys: &mut Vec<Value>, reverse: bool)
     if reverse {
         idx.reverse();
     }
+    // (see the note above the first `reverse`: this is the second half of the
+    // pair, not a lone post-pass)
     let src = std::mem::take(items);
     let mut taken: Vec<Option<Value>> = src.into_iter().map(Some).collect();
     *items = idx.iter().map(|i| taken[*i].take().unwrap()).collect();
@@ -799,7 +1261,14 @@ pub fn norm_index(i: i64, n: usize, what: &str) -> R<usize> {
     let n = n as i64;
     let j = if i < 0 { n + i } else { i };
     if j < 0 || j >= n {
-        return Err(index_err(format!("{what} index out of range")));
+        // An empty `what` means the caller has no type name to offer, and
+        // CPython does not invent one: `b"abcd"[9]` is "index out of range".
+        // Formatting it in unconditionally left a leading space.
+        return Err(index_err(if what.is_empty() {
+            "index out of range".to_string()
+        } else {
+            format!("{what} index out of range")
+        }));
     }
     Ok(j as usize)
 }
@@ -821,6 +1290,28 @@ pub fn slice_span(n: usize, lo: Option<i64>, hi: Option<i64>) -> (usize, usize) 
     let start = lo.map_or(0, clamp);
     let stop = hi.map_or(n, clamp).max(start);
     (start as usize, stop as usize)
+}
+
+/// The normalised `(start, stop)` a slice names, in index space.
+///
+/// Split out of [`slice_indices`] so the range arm of `slice` can build a range
+/// from the same numbers the gather path uses. Two normalisations of the same
+/// rule would be two things to keep in step, and this rule already has a grid of
+/// 10,990 cells behind it.
+pub fn slice_bounds(n: usize, lo: Option<i64>, hi: Option<i64>, step: i64) -> (i64, i64) {
+    let n = n as i64;
+    let clamp = |v: i64, lodef: i64, hidef: i64| -> i64 {
+        let v = if v < 0 { n + v } else { v };
+        v.clamp(lodef, hidef)
+    };
+    if step > 0 {
+        (lo.map_or(0, |v| clamp(v, 0, n)), hi.map_or(n, |v| clamp(v, 0, n)))
+    } else {
+        (
+            lo.map_or(n - 1, |v| clamp(v, -1, n - 1)),
+            hi.map_or(-1, |v| clamp(v, -1, n - 1)),
+        )
+    }
 }
 
 pub fn slice_indices(n: usize, lo: Option<i64>, hi: Option<i64>, step: i64) -> Vec<usize> {
@@ -970,7 +1461,15 @@ fn percent_format(f: &str, arg: &Value) -> R<String> {
         ai += 1;
         out.push_str(&percent_one(v, &spec, min_digits)?);
     }
-    if ai < args.len() && !matches!(arg, Value::Dict(_)) {
+    // The leftover-argument check is skipped for anything CPython considers a
+    // MAPPING in the C sense — `PyMapping_Check`, which is true for dict, list
+    // and bytes because each has `mp_subscript`, and false for int, str, tuple
+    // and None. So `'ab' % [1]` is `'ab'` while `'ab' % 5` and `'ab' % (1,)`
+    // both raise. Only `Dict` was exempt here, so the two ordinary sequence
+    // cases raised where CPython answers.
+    if ai < args.len()
+        && !matches!(arg, Value::Dict(_) | Value::List(_) | Value::Bytes(_))
+    {
         return Err(type_err(
             "not all arguments converted during string formatting",
         ));
@@ -1125,7 +1624,7 @@ fn percent_one(v: &Value, spec: &str, min_digits: usize) -> R<String> {
             Value::Int(_) | Value::Bool(_) => {}
             Value::Str(s) if s.chars().count() == 1 => {
                 let as_str = format!("{}s", &spec[..spec.len() - 1]);
-                return fmt::format_value(v, &as_str);
+                return fmt::format_value_pct(v, &as_str);
             }
             _ => return Err(type_err("%c requires int or char")),
         }
@@ -1157,13 +1656,13 @@ fn percent_one(v: &Value, spec: &str, min_digits: usize) -> R<String> {
     }
     if let Some(rest) = spec.strip_suffix('r') {
         let s = fmt::repr(v)?;
-        return fmt::format_value(&Value::Str(s.into()), &format!("{rest}s"));
+        return fmt::format_value_pct(&Value::Str(s.into()), &format!("{rest}s"));
     }
     if spec.ends_with('s') {
         let s = fmt::to_str(v)?;
-        return fmt::format_value(&Value::Str(s.into()), spec);
+        return fmt::format_value_pct(&Value::Str(s.into()), spec);
     }
-    fmt::format_value(v, spec)
+    fmt::format_value_pct(v, spec)
 }
 
 // ---- the allocation ceiling ------------------------------------------------

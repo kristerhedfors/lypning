@@ -414,6 +414,19 @@ pub fn call_module_method(
                 _ => p.into(),
             })
         }
+        // `object_hook`, `object_pairs_hook`, `parse_float`, `parse_int` and
+        // `parse_constant` change what a document DECODES TO, and this parser
+        // ignored every one of them — `json.loads(s, object_pairs_hook=list)`
+        // answered a dict. Refused rather than implemented: honouring them means
+        // calling back into the interpreter from the parser, and a refusal the
+        // dispatcher routes onward beats an approximation (invariant 1).
+        ("json", "loads" | "load") if !kw.is_empty() => {
+            let named: Vec<&str> = kw.iter().map(|(k, _)| k.as_ref()).collect();
+            return Err(unsupported(
+                "json",
+                &format!("json.{name}({}=…)", named.join("=…, ")),
+            ));
+        }
         ("json", "loads") => {
             let text = match args.first() {
                 Some(Value::Bytes(b)) => crate::iter::decode_utf8(b)?,

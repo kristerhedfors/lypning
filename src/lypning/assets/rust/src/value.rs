@@ -14,7 +14,7 @@
 //!     90. A dict, whose order Python *does* define as insertion order, has no
 //!     such restriction.
 
-use crate::err::{type_err, unsupported, R};
+use crate::err::{type_err, unsupported, LypningError, R};
 use std::cell::RefCell;
 use crate::hash::Map;
 use std::rc::Rc;
@@ -98,12 +98,37 @@ pub fn hkey(v: &Value) -> R<HKey> {
         Value::Float(f) => {
             if f.is_finite() && f.fract() == 0.0 && *f >= -(2f64.powi(63)) && *f < 2f64.powi(63) {
                 HKey::Int(*f as i64)
+            } else if f.is_nan() {
+                // Two distinct NaNs are DIFFERENT dict keys in CPython — lookup
+                // uses the identity-first rule, so each NaN finds only itself.
+                // Keying on the bit pattern collapsed them: `{n, m}` had one
+                // element where CPython has two, at exit 0. Identity is the one
+                // thing a bare f64 cannot carry, so this refuses.
+                return Err(refuse_nan_identity("a dict or set lookup"));
             } else {
                 HKey::Float(f.to_bits())
             }
         }
         Value::Str(s) => HKey::Str(s.clone()),
         Value::Bytes(b) => HKey::Bytes(b.clone()),
+        // A RANGE IS HASHABLE — `{range(2)}` is a set of one in CPython and was
+        // `TypeError: unhashable type: 'range'` here, at exit 1, the program's
+        // own exit. The key is built from the NORMALISED form so that it agrees
+        // with `eq` above: equal ranges must hash equal, and two ranges are
+        // equal when they describe the same sequence rather than when their
+        // three fields match. The length is carried as two halves because it is
+        // an i128 and does not fit one.
+        Value::Range(a, b, st) => {
+            let n = range_len(*a, *b, *st);
+            let mut parts = vec![HKey::Int((n >> 64) as i64), HKey::Int(n as i64)];
+            if n != 0 {
+                parts.push(HKey::Int(*a));
+            }
+            if n > 1 {
+                parts.push(HKey::Int(*st));
+            }
+            HKey::Tuple(parts)
+        }
         Value::Tuple(t) => {
             // The one arm that descends.
             let _nest = crate::err::Nest::enter("tuple key")?;
@@ -275,7 +300,12 @@ pub fn type_name(v: &Value) -> &'static str {
             "values" => "dict_values",
             _ => "dict_items",
         },
-        Value::Exc(..) => "Exception",
+        // The exception's OWN class, not the base. CPython says
+        // `'ValueError' object has no attribute 'nosuch'` and
+        // `unsupported operand type(s) for +: 'ValueError' and 'int'`; this
+        // answered "Exception" for every one of the twenty-four exception
+        // classes, so every message naming the type named the wrong type.
+        Value::Exc(kind, _) => kind,
     }
 }
 
@@ -297,7 +327,22 @@ pub fn truthy(v: &Value) -> R<bool> {
     })
 }
 
-pub fn range_len(start: i64, stop: i64, step: i64) -> i64 {
+/// How many elements a range holds — in **i128**, because it does not fit i64.
+///
+/// `range(-2**62, 2**62)` has 2**63 elements, one more than i64 can hold. This
+/// computed `(stop - start - 1) / step + 1` in i64, which OVERFLOWED and wrapped
+/// to i64::MIN — and the caller then handed that to `slice_span`, whose
+/// `clamp(0, n)` panicked on `min > max`. A panic is the one outcome the
+/// dispatcher cannot route onward, and embedded it aborts the host's process:
+/// `range(-2**62, 2**62)[:1]` exited 134 on a SIGABRT.
+///
+/// CPython has no such limit — a range's length is an ordinary Python int, and
+/// only `len()` (which must return a C ssize_t) raises. So the width is the
+/// fix, not a clamp: i128 holds every length an i64 range can have, and the
+/// callers that need a machine-sized count decide for themselves what to do
+/// when it does not fit.
+pub fn range_len(start: i64, stop: i64, step: i64) -> i128 {
+    let (start, stop, step) = (start as i128, stop as i128, step as i128);
     if step > 0 {
         if stop > start {
             (stop - start - 1) / step + 1
@@ -319,6 +364,96 @@ pub fn str_val(s: impl Into<Rc<str>>) -> Value {
 }
 
 /// Structural equality with Python's numeric-tower rules (`1 == 1.0 == True`).
+/// CPython compares container elements with `x is y or x == y` — IDENTITY
+/// first — and that shortcut is observable for exactly one value: a NaN, which
+/// is not equal to itself.
+///
+///     n = float("nan")
+///     n in [n]        # True in CPython: the same object
+///     [n] == [n]      # True, element by element, for the same reason
+///     float("nan") in [float("nan")]   # False: two different objects
+///
+/// A float here is a bare `f64` with no object identity, so those three cases
+/// are indistinguishable and every answer is wrong for one of them. Refused
+/// rather than guessed.
+///
+/// **Deliberately SHALLOW.** The first version of this recursed into nested
+/// containers, which meant a second full-depth traversal running INSIDE one
+/// level of `eq`'s recursion guard — so `x == y` over two 20,000-deep nested
+/// lists overflowed the stack before the guard could fire, and killed the
+/// process on a 1 MB host thread. `eq` already descends, guarded, and every
+/// level runs this check on its own immediate elements, so a shallow test
+/// covers the same ground with no recursion of its own.
+pub(crate) fn nan_here(v: &Value) -> bool {
+    matches!(v, Value::Float(f) if f.is_nan())
+}
+
+/// The immediate elements only — see [`nan_here`].
+pub fn has_nan(v: &Value) -> bool {
+    match v {
+        Value::Float(f) => f.is_nan(),
+        Value::List(l) => l.borrow().iter().any(nan_here),
+        Value::Tuple(t) => t.iter().any(nan_here),
+        _ => false,
+    }
+}
+
+/// CPython's element test, which is NOT `==`: `PyObject_RichCompareBool` asks
+/// `x is y or x == y` — identity FIRST. That shortcut is observable for exactly
+/// one value, a NaN, which is unequal to itself but identical to itself. A bare
+/// `f64` carries no identity, so when BOTH sides are NaN the question has no
+/// answer here and is refused; when only one side is, they cannot be the same
+/// object AND they are not equal, so `false` is CPython's own answer.
+///
+/// Every sequence scan must use this and not `eq`. Before they did, seven
+/// measured programs answered wrongly at exit 0 — `[n] <= [n]` was False where
+/// CPython says True, `[n].count(n)` was 0 where CPython says 1, `max` between
+/// nested lists picked the wrong element — and `eq`'s own whole-sequence
+/// prescan refused `[n] == [1]` and `n in [1, 2]`, both of which have one
+/// answer (False) that this now gives. Containers are not tested here: the
+/// recursion reaches their elements and the rule fires at the level where the
+/// NaN actually sits.
+/// The test sits on the UNEQUAL exit, and that placement is the whole cost
+/// story. A both-NaN pair always compares unequal — `nan == nan` is False — so
+/// the only comparisons that can need the identity refusal are the ones `eq`
+/// already rejected. Equal elements therefore cost exactly nothing extra, and
+/// an unequal one costs a single short-circuited discriminant test on a path
+/// that just ran a full `eq`. Two earlier shapes were measured and discarded:
+/// the test in FRONT of every comparison cost 15–23% on scan loops, and a
+/// whole-sequence prescan still cost 6–7%.
+#[inline]
+pub fn elem_eq(a: &Value, b: &Value) -> R<bool> {
+    if eq(a, b)? {
+        return Ok(true);
+    }
+    if nan_here(a) && nan_here(b) {
+        return Err(refuse_nan_identity("sequence element comparison"));
+    }
+    Ok(false)
+}
+
+/// `#[cold]` + `#[inline(never)]`: this is called from inside `elem_eq`, which
+/// is itself inlined into every sequence-scan loop. Without the attributes the
+/// `format!` machinery here is inlined into those loops too, and a needle scan
+/// with misses measured 15% slower for code it never executes.
+/// The refusal for a needle scan that found a both-NaN pair — see `elem_eq`.
+/// Crate-visible so scan sites can hoist `nan_here(needle)` out of their loops
+/// and test it only on the miss path, where it is one predicted register test.
+#[cold]
+#[inline(never)]
+pub(crate) fn refuse_nan_elem() -> LypningError {
+    refuse_nan_identity("sequence element comparison")
+}
+
+#[cold]
+#[inline(never)]
+fn refuse_nan_identity(what: &str) -> LypningError {
+    unsupported(
+        "nan-identity",
+        &format!("{what} over a NaN, which CPython decides by object identity"),
+    )
+}
+
 pub fn eq(a: &Value, b: &Value) -> R<bool> {
     // The scalar cases first, and BEFORE the recursion guard: none of them can
     // descend, and this is the hottest comparison in the interpreter.
@@ -380,10 +515,72 @@ pub fn eq(a: &Value, b: &Value) -> R<bool> {
             true
         }
         (Value::Range(a1, b1, c1), Value::Range(a2, b2, c2)) => {
-            a1 == a2 && b1 == b2 && c1 == c2
+            // TWO RANGES ARE EQUAL WHEN THEY DESCRIBE THE SAME SEQUENCE, not
+            // when their three fields match. `range(0) == range(1, 1)` is True —
+            // both are empty — and `range(1) == range(0, 1, 2)` is True, because
+            // a one-element range's step is not observable. Comparing the
+            // fields answered False to both, at exit 0.
+            let (n1, n2) = (range_len(*a1, *b1, *c1), range_len(*a2, *b2, *c2));
+            n1 == n2 && (n1 == 0 || (a1 == a2 && (n1 == 1 || c1 == c2)))
         }
         (Value::DictView(x, kx), Value::DictView(y, ky)) => {
-            kx == ky && Rc::ptr_eq(x, y)
+            // The three views do NOT compare alike, and treating them alike was
+            // wrong in both directions at once: `d.values() == d.values()` said
+            // True where CPython says False, and `d.keys() == other.keys()` said
+            // False where CPython says True.
+            //
+            // `dict_values` has no `__eq__` at all, so two of them fall back to
+            // identity — even two views of the SAME dict are unequal, because
+            // they are different objects. `dict_keys` and `dict_items` are
+            // set-like: equal when they hold the same elements, whatever the
+            // order and whichever dict they came from.
+            if kx != ky {
+                false
+            } else if *kx == "values" {
+                // `dict_values` compares by OBJECT IDENTITY, and a view here is
+                // just `(Rc<dict>, kind)` — it has no identity of its own, so
+                // `v == v` and `d.values() == d.values()` are indistinguishable
+                // while CPython answers True and False. Refused rather than
+                // guessed: the chain answers it correctly one spawn later, and
+                // either guess is a silent wrong answer for the other case.
+                return Err(unsupported(
+                    "dict-view",
+                    "dict_values comparison, which CPython decides by object identity",
+                ));
+            } else if Rc::ptr_eq(x, y) {
+                true
+            } else {
+                // Collected into owned vectors so both borrows are released
+                // before the element comparison below, which recurses into `eq`
+                // and may borrow either dict again.
+                let (a, b) = {
+                    let (dx, dy) = (x.borrow(), y.borrow());
+                    if *kx == "keys" {
+                        (dx.keys(), dy.keys())
+                    } else {
+                        (dx.items(), dy.items())
+                    }
+                };
+                if a.len() != b.len() {
+                    false
+                } else {
+                    let mut same = true;
+                    for i in &a {
+                        let mut found = false;
+                        for j in &b {
+                            if eq(i, j)? {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if !found {
+                            same = false;
+                            break;
+                        }
+                    }
+                    same
+                }
+            }
         }
         (Value::Module(x), Value::Module(y)) => x == y,
         (Value::Builtin(x), Value::Builtin(y)) => x == y,
@@ -398,7 +595,7 @@ fn seq_eq(x: &[Value], y: &[Value]) -> R<bool> {
         return Ok(false);
     }
     for (a, b) in x.iter().zip(y.iter()) {
-        if !eq(a, b)? {
+        if !elem_eq(a, b)? {
             return Ok(false);
         }
     }

@@ -57,6 +57,36 @@ pub fn float_to_int(f: f64, what: &str) -> R<i64> {
     Ok(f as i64)
 }
 
+/// Python's rule for underscores in a numeric literal: they may appear only
+/// BETWEEN digits.
+///
+/// `1_0` is ten; `1_`, `_1`, `1__0` and `1_0_` are all ValueErrors. The parser
+/// here stripped every underscore unconditionally before handing the digits to
+/// Rust, so all four of those answered a number where CPython refuses — and
+/// `int('1_')` answering `1` is the shape that reaches a caller as data.
+///
+/// Applied to the digit run only, after any sign and base prefix have been
+/// taken off, because `int('0x_1f', 16)` is a ValueError too: the underscore
+/// there sits between a prefix and a digit, not between two digits.
+/// `after_prefix` allows ONE leading underscore, because an underscore may also
+/// follow a base specifier: `int('0x_1f', 16)` is 31. It is only the digit run
+/// that has the between-digits rule, and the prefix has already been taken off
+/// by the time this sees the string.
+fn underscores_are_between_digits(s: &str, radix: u32, after_prefix: bool) -> bool {
+    let b = s.as_bytes();
+    for (i, c) in b.iter().enumerate() {
+        if *c != b'_' {
+            continue;
+        }
+        let before = (i == 0 && after_prefix) || (i > 0 && (b[i - 1] as char).is_digit(radix));
+        let after = i + 1 < b.len() && (b[i + 1] as char).is_digit(radix);
+        if !(before && after) {
+            return false;
+        }
+    }
+    true
+}
+
 pub const EXCEPTIONS: &[&str] = &[
     "ArithmeticError",
     "AssertionError",
@@ -112,13 +142,140 @@ fn kwget(kw: &[(Rc<str>, Value)], name: &str) -> Option<Value> {
     kw.iter().find(|(k, _)| k.as_ref() == name).map(|(_, v)| v.clone())
 }
 
+/// The `key=` argument of `sorted`, `list.sort`, `min` and `max`.
+///
+/// `None` is the DEFAULT, not a callable, and passing it explicitly means "no
+/// key" — which matters because `key=None` is how an optional key is spelled:
+/// `sorted(xs, key=chooser)` where `chooser` may be `None`. Reading it as a
+/// value to call raised `TypeError: 'NoneType' object is not callable` at
+/// exit 1, and an ordinary non-zero exit is the program's own, so the
+/// dispatcher does not fall through — the caller got that error for valid
+/// Python instead of the answer.
+/// CPython's exact complaint for a keyword a function does not take. `sorted`
+/// says `sort()` in its message, which is why the reported name is a parameter.
+/// `sorted([3, 1], strict_mode=True)` answered `[1, 3]` — the caller asked for
+/// a stricter mode and silently got the default one.
+fn reject_unknown_kw(func: &str, kw: &[(Rc<str>, Value)], allowed: &[&str]) -> R<()> {
+    for (k, _) in kw {
+        if !allowed.contains(&k.as_ref()) {
+            return Err(type_err(format!(
+                "'{k}' is an invalid keyword argument for {func}()"
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub fn key_arg(kw: &[(Rc<str>, Value)], name: &str) -> Option<Value> {
+    match kwget(kw, name) {
+        Some(Value::None) | None => None,
+        Some(v) => Some(v),
+    }
+}
+
+/// The `reverse=` argument, which CPython reads through `__index__` rather than
+/// for truthiness. `sorted(xs, reverse=None)` is a TypeError there and was an
+/// ascending sort here — a wrong answer at exit 0, which is worse than the
+/// error it should have been. Only `bool` and `int` have `__index__` in this
+/// subset, so anything else is refused with CPython's own wording.
+pub fn reverse_arg(kw: &[(Rc<str>, Value)]) -> R<bool> {
+    match kwget(kw, "reverse") {
+        None => Ok(false),
+        Some(Value::Bool(b)) => Ok(b),
+        Some(Value::Int(i)) => Ok(i != 0),
+        Some(other) => Err(type_err(format!(
+            "'{}' object cannot be interpreted as an integer",
+            type_name(&other)
+        ))),
+    }
+}
+
+/// Builtins whose parameters are positional-only, so naming one is a TypeError.
+///
+/// Almost all of them, and lypning **silently ignored** the keyword instead:
+/// `bool(x=1)` answered `False` — the no-argument result — at exit 0. Naming an
+/// argument is an ordinary way to be wrong, and CPython says so; answering the
+/// wrong thing without a word is the one outcome this project treats as always
+/// a bug.
+///
+/// Enumerated by asking CPython 3.11, not by reading the manual. The builtins
+/// deliberately absent from this list are the ones that really do take
+/// keywords: `print`, `int`, `round`, `sorted`, `min`, `max`, `sum`, `open`,
+/// `str`, `bytes`, `enumerate`, `zip` and `dict`.
+const NO_KEYWORDS: &[&str] = &[
+    "abs", "all", "any", "bin", "bool", "chr", "divmod", "filter", "float", "format", "hex",
+    "isinstance", "iter", "len", "list", "map", "next", "oct", "ord", "range", "repr", "set",
+    "tuple",
+];
+
 fn no_kw(name: &str, kw: &[(Rc<str>, Value)]) -> R<()> {
     match kw.first() {
         None => Ok(()),
-        Some((k, _)) => Err(type_err(format!(
-            "{name}() takes no keyword arguments (got '{k}')"
-        ))),
+        // CPython's exact wording for a C builtin: no "(got 'x')" tail, which
+        // is the shape used for Python-level functions and not for these.
+        Some(_) => Err(type_err(format!("{name}() takes no keyword arguments"))),
     }
+}
+
+/// How many POSITIONAL arguments each builtin takes, as `(min, max)`.
+///
+/// The same defect as the method table in `methods.rs`: extras were dropped in
+/// silence, so `abs(1, 2)` answered `1`, `chr(65, 66)` answered `'A'`,
+/// `len([1], [2])` answered `1`, `repr(1, 2)` answered `'1'` and
+/// `divmod(1, 2, 3)` answered `(0, 1)` — every one at exit 0 where CPython
+/// raises. Derived by calling CPython 3.11 with 0..6 arguments.
+///
+/// `min`, `max`, `print` and `zip` are variadic and absent. `str`, `bytes` and
+/// `open` are absent because their upper bound depends on which overload the
+/// caller reached, and a wrong ceiling here would refuse working code — those
+/// arms keep their own handling.
+fn arity(name: &str) -> Option<(usize, usize)> {
+    Some(match name {
+        "len" | "abs" | "chr" | "ord" | "hex" | "oct" | "bin" | "repr" | "sorted" | "all"
+        | "any" => (1, 1),
+        // `format(value, format_spec)` takes two, and the first derivation of
+        // this table said one. The probe had called `format(1, 1)`, which fails
+        // with "argument 2 must be str, not int" — a TYPE error whose text
+        // contains the word "argument", so it was scored as an arity limit.
+        // Deriving a table by asking the oracle only works if the question is
+        // asked with type-correct values; `type` came back (1, 3) for the
+        // three-argument class form and is left out entirely rather than
+        // guessed at.
+        "format" => (1, 2),
+        "bool" | "float" | "list" | "tuple" | "set" => (0, 1),
+        "divmod" | "isinstance" => (2, 2),
+        "int" => (0, 2),
+        "round" | "sum" | "next" | "iter" => (1, 2),
+        "range" => (1, 3),
+        _ => return None,
+    })
+}
+
+fn plural(n: usize) -> &'static str {
+    if n == 1 {
+        "argument"
+    } else {
+        "arguments"
+    }
+}
+
+fn check_arity(name: &str, args: &Args, kw: &[(Rc<str>, Value)]) -> R<()> {
+    let Some((lo, hi)) = arity(name) else { return Ok(()) };
+    let n = args.len();
+    // The floor counts POSITIONAL arguments, so it only applies when nothing was
+    // passed by name: `round(number=2.5)` has none and is still a complete call.
+    // The ceiling always applies — a keyword never makes an extra positional
+    // legal.
+    if n <= hi && (n >= lo || !kw.is_empty()) {
+        return Ok(());
+    }
+    Err(type_err(if lo == hi {
+        format!("{name}() takes exactly {lo} {} ({n} given)", plural(lo))
+    } else if n > hi {
+        format!("{name}() takes at most {hi} {} ({n} given)", plural(hi))
+    } else {
+        format!("{name}() takes at least {lo} {} ({n} given)", plural(lo))
+    }))
 }
 
 pub fn call_builtin(
@@ -127,9 +284,20 @@ pub fn call_builtin(
     args: &mut Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
+    if !kw.is_empty() && NO_KEYWORDS.contains(&name) {
+        return Err(type_err(format!("{name}() takes no keyword arguments")));
+    }
+    check_arity(name, args, &kw)?;
     // `raise ValueError("x")` / `except E as e` construct exception instances.
     if is_exception_name(name) {
         let msg = match args.first() {
+            // `str(KeyError('f'))` is `"'f'"`, not `"f"`: KeyError shows the
+            // REPR of its key, so that a missing `''` is distinguishable from a
+            // missing `' '`. Every site that raises one from a real lookup
+            // already stored `repr(key)`; only the constructor stored the plain
+            // string, so the two disagreed and `repr()` then quoted the lookup
+            // form a second time (`KeyError("'k'")`).
+            Some(v) if name == "KeyError" => fmt::repr(v)?,
             Some(v) => fmt::to_str(v)?,
             None => String::new(),
         };
@@ -245,6 +413,15 @@ pub fn call_builtin(
             }
         },
         "int" => {
+            // `x` is positional-only in CPython, so naming it is a TypeError —
+            // and this arm used to IGNORE the keyword and fall through to the
+            // no-argument case, so `int(x='5')` answered **0** at exit 0.
+            if let Some((k, _)) = kw.iter().find(|(k, _)| k.as_ref() != "base") {
+                return Err(type_err(format!(
+                    "'{k}' is an invalid keyword argument for int()"
+                )));
+            }
+            let explicit_base = args.get(1).is_some() || kwget(&kw, "base").is_some();
             let base = match args.get(1) {
                 Some(v) => int_val(v)?,
                 None => match kwget(&kw, "base") {
@@ -252,6 +429,17 @@ pub fn call_builtin(
                     None => 10,
                 },
             };
+            // `i64::from_str_radix` PANICS outside 2..=36, and a panic is exit
+            // 134 — not 0, not 90, so the dispatcher hands it straight back and
+            // the caller reads a Rust abort. `int(s, 0)` is ordinary Python
+            // (detect the base from the prefix) and aborted the interpreter.
+            if base != 0 && !(2..=36).contains(&base) {
+                return Err(value_err("int() base must be >= 2 and <= 36, or 0"));
+            }
+            if explicit_base && !matches!(args.first(), Some(Value::Str(_)) | Some(Value::Bytes(_)))
+            {
+                return Err(type_err("int() can't convert non-string with explicit base"));
+            }
             match args.first() {
                 None => Value::Int(0),
                 Some(Value::Str(s)) => {
@@ -260,7 +448,36 @@ pub fn call_builtin(
                         Some(r) => (r, true),
                         None => (t.strip_prefix('+').unwrap_or(t), false),
                     };
-                    let t2 = if base == 16 {
+                    // Base 0 reads the prefix and then holds the literal to
+                    // Python's *source* rules, where a leading zero on a decimal
+                    // is not allowed: `int('010', 0)` is a ValueError while
+                    // `int('00', 0)` is 0. That asymmetry only exists for base 0.
+                    //
+                    // `reported` stays at what the CALLER passed: CPython says
+                    // "with base 0" even after it has resolved the prefix to 16,
+                    // and a message naming the detected base would send a reader
+                    // looking for an argument nobody wrote.
+                    let reported = base;
+                    let mut base = base;
+                    let t2 = if base == 0 {
+                        let (rest, detected) = match t.get(..2) {
+                            Some("0x") | Some("0X") => (&t[2..], 16),
+                            Some("0o") | Some("0O") => (&t[2..], 8),
+                            Some("0b") | Some("0B") => (&t[2..], 2),
+                            _ => (t, 10),
+                        };
+                        base = detected;
+                        if detected == 10 {
+                            let digits: String = rest.chars().filter(|c| *c != '_').collect();
+                            if digits.starts_with('0') && digits.chars().any(|c| c != '0') {
+                                return Err(value_err(format!(
+                                    "invalid literal for int() with base 0: {}",
+                                    fmt::str_repr(s)?
+                                )));
+                            }
+                        }
+                        rest
+                    } else if base == 16 {
                         t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")).unwrap_or(t)
                     } else if base == 8 {
                         t.strip_prefix("0o").or_else(|| t.strip_prefix("0O")).unwrap_or(t)
@@ -269,6 +486,12 @@ pub fn call_builtin(
                     } else {
                         t
                     };
+                    if !underscores_are_between_digits(t2, base as u32, t2.len() < t.len()) {
+                        return Err(value_err(format!(
+                            "invalid literal for int() with base {reported}: {}",
+                            fmt::str_repr(s)?
+                        )));
+                    }
                     let cleaned: String = t2.chars().filter(|c| *c != '_').collect();
                     match i64::from_str_radix(&cleaned, base as u32) {
                         Ok(v) => Value::Int(if neg { -v } else { v }),
@@ -280,7 +503,7 @@ pub fn call_builtin(
                         }
                         Err(_) => {
                             return Err(value_err(format!(
-                                "invalid literal for int() with base {base}: {}",
+                                "invalid literal for int() with base {reported}: {}",
                                 fmt::str_repr(s)?
                             )))
                         }
@@ -310,6 +533,20 @@ pub fn call_builtin(
                     "inf" | "+inf" | "infinity" | "+infinity" => Value::Float(f64::INFINITY),
                     "-inf" | "-infinity" => Value::Float(f64::NEG_INFINITY),
                     "nan" | "+nan" | "-nan" => Value::Float(f64::NAN),
+                    // Same underscore rule as `int()`: between digits only, so
+                    // `float('1_')` is a ValueError and not 1.0. Checked on the
+                    // sign-stripped body, since `float('-1_0')` is fine.
+                    _ if !underscores_are_between_digits(
+                        t.strip_prefix(['-', '+']).unwrap_or(t),
+                        10,
+                        false,
+                    ) =>
+                    {
+                        return Err(value_err(format!(
+                            "could not convert string to float: {}",
+                            fmt::str_repr(s)?
+                        )))
+                    }
                     _ => match t.replace('_', "").parse::<f64>() {
                         Ok(v) => Value::Float(v),
                         Err(_) => {
@@ -411,7 +648,22 @@ pub fn call_builtin(
         // code, there being no `__add__` to call — but the eager version was
         // only ever accidentally right about it.
         "sum" => {
-            let start = args.get(1).cloned().unwrap_or(Value::Int(0));
+            // `start` is positional-OR-keyword since 3.8. Reading only the
+            // positional slot did not refuse `sum(xs, start=10)` — it ignored
+            // the keyword and summed from 0, so the answer was silently short
+            // by the start value at exit 0. The type check below then never saw
+            // a keyword start either, so `sum([], start='')` answered 0 where
+            // CPython raises.
+            if let Some((k, _)) = kw.iter().find(|(k, _)| k.as_ref() != "start") {
+                return Err(type_err(format!(
+                    "sum() takes no keyword arguments (got '{k}')"
+                )));
+            }
+            let start = args
+                .get(1)
+                .cloned()
+                .or_else(|| kwget(&kw, "start"))
+                .unwrap_or(Value::Int(0));
             // CPython refuses a str or bytes START before it looks at the
             // sequence at all — `sum([], '')` is a TypeError and so is
             // `sum([1, 2], '')`. lypning did not, and just concatenated:
@@ -504,13 +756,15 @@ pub fn call_builtin(
             }
         }
         "min" | "max" => {
+            reject_unknown_kw(name, &kw, &["key", "default"])?;
             let want_max = name == "max";
+            let from_set = args.len() == 1 && matches!(args.first(), Some(Value::Set(_)));
             let items: Vec<Value> = if args.len() == 1 {
                 it.collect_unordered(args.remove(0))?
             } else {
                 args.to_vec()
             };
-            let keyf = kwget(&kw, "key");
+            let keyf = key_arg(&kw, "key");
             let default = kwget(&kw, "default");
             if items.is_empty() {
                 return match default {
@@ -520,6 +774,7 @@ pub fn call_builtin(
             }
             let mut best = items[0].clone();
             let mut bestk = keyed(it, &keyf, &best)?;
+            let mut tied = false;
             for x in &items[1..] {
                 let k = keyed(it, &keyf, x)?;
                 let o = ops::order(&k, &bestk)?;
@@ -529,24 +784,54 @@ pub fn call_builtin(
                 {
                     best = x.clone();
                     bestk = k;
+                    tied = false;
+                } else if o == std::cmp::Ordering::Equal {
+                    tied = true;
                 }
+            }
+            // "Ties keep the FIRST element" is only reproducible if there IS a
+            // first. Over a SET there is not: iteration order is this engine's
+            // own, so `max({-1, 1}, key=abs)` answered -1 where CPython answers
+            // 1 — same set, same key, different order, and both at exit 0.
+            //
+            // The existing set-order guard covered `sum()` of float sets and
+            // `reversed()`, and missed this path entirely. Refused only when a
+            // tie ACTUALLY occurred, not whenever a key is present over a set:
+            // `max(s, key=len)` with distinct lengths has one answer and should
+            // keep giving it.
+            if tied && from_set {
+                return Err(set_order_refused(&format!(
+                    "{name}() of a set where the key ties"
+                )));
             }
             best
         }
         "sorted" => {
+            reject_unknown_kw("sort", &kw, &["key", "reverse"])?;
             let v = args
                 .first()
                 .cloned()
                 .ok_or_else(|| type_err("sorted expected 1 argument, got 0"))?;
+            let from_set = matches!(v, Value::Set(_));
             let mut items = it.collect_unordered(v)?;
-            let keyf = kwget(&kw, "key");
-            let rev = match kwget(&kw, "reverse") {
-                Some(v) => truthy(&v)?,
-                None => false,
-            };
+            let keyf = key_arg(&kw, "key");
+            let rev = reverse_arg(&kw)?;
             let mut keys = Vec::with_capacity(items.len());
             for x in &items {
                 keys.push(keyed(it, &keyf, x)?);
+            }
+            // Same leak as `min`/`max` above: a stable sort keeps tied elements
+            // in the order it received them, and over a set that order is this
+            // engine's. Only a real tie is refused — `sorted(s, key=len)` with
+            // distinct lengths has one answer.
+            if from_set && keyf.is_some() {
+                for i in 0..keys.len() {
+                    for j in (i + 1)..keys.len() {
+                        if ops::order(&keys[i], &keys[j])? == std::cmp::Ordering::Equal {
+                            return Err(set_order_refused("sorted() of a set where the key ties"));
+                        }
+                    }
+                }
             }
             ops::sort_values(&mut items, &mut keys, rev)?;
             list(items)
@@ -565,17 +850,62 @@ pub fn call_builtin(
             }
         },
         "round" => {
-            let v = arg1(name, &args)?;
-            let nd = match args.get(1) {
-                Some(x) => Some(int_val(x)?),
-                None => match kwget(&kw, "ndigits") {
-                    Some(x) => Some(int_val(&x)?),
-                    None => None,
-                },
+            if let Some((k, _)) = kw
+                .iter()
+                .find(|(k, _)| !matches!(k.as_ref(), "number" | "ndigits"))
+            {
+                return Err(type_err(format!(
+                    "'{k}' is an invalid keyword argument for round()"
+                )));
+            }
+            let v = match args.first() {
+                Some(v) => v.clone(),
+                None => kwget(&kw, "number")
+                    .ok_or_else(|| type_err("round() missing required argument 'number' (pos 1)"))?,
+            };
+            // `ndigits=None` is the DEFAULT and means "round to an integer", the
+            // same family as `key=None` (iteration 51). Passed through
+            // `int_val` it raised at exit 1, so `round(x, None)` — which is what
+            // an optional precision looks like — failed on valid Python.
+            let nd = match args.get(1).cloned().or_else(|| kwget(&kw, "ndigits")) {
+                None | Some(Value::None) => None,
+                Some(x) => Some(int_val(&x)?),
             };
             match (&v, nd) {
                 (Value::Int(i), None) => Value::Int(*i),
                 (Value::Int(i), Some(n)) if n >= 0 => Value::Int(*i),
+                // `round(12345, -2)` is 12300, and `round(15, -1)` is 20 while
+                // `round(25, -1)` is 20 as well — half to EVEN, like everywhere
+                // else in Python. This used to refuse, which was safe but cost a
+                // CPython spawn for an ordinary "round to the nearest hundred".
+                //
+                // Done in integer arithmetic rather than by scaling through f64:
+                // an int near 2**63 has more significant digits than a double
+                // carries, so the float path would answer a rounded number that
+                // is not the rounded number.
+                (Value::Int(i), Some(n)) => {
+                    let k = (-n) as u32;
+                    let scale = match 10i64.checked_pow(k) {
+                        Some(s) => s,
+                        // Past 10**18 every i64 rounds to zero, and Python
+                        // agrees — there is nothing to refuse.
+                        None => return Ok(Value::Int(0)),
+                    };
+                    let q = i.div_euclid(scale);
+                    let rem = i.rem_euclid(scale);
+                    let half = scale / 2;
+                    let up = rem > half || (rem == half && q % 2 != 0);
+                    let out = if up { q + 1 } else { q };
+                    match out.checked_mul(scale) {
+                        Some(r) => Value::Int(r),
+                        None => {
+                            return Err(unsupported(
+                                "bigint",
+                                "round() result beyond 64-bit range",
+                            ))
+                        }
+                    }
+                }
                 (Value::Float(f), None) => Value::Int(float_to_int(round_half_even(*f, 0), "round")?),
                 (Value::Float(f), Some(n)) => Value::Float(round_half_even(*f, n)),
                 (Value::Bool(b), _) => Value::Int(*b as i64),
@@ -613,6 +943,15 @@ pub fn call_builtin(
             Value::Bool(result)
         }
         "enumerate" => {
+            // Same exemption, same hole as `zip` above: `start` is real, and
+            // everything else was dropped rather than refused, so
+            // `enumerate(xs, strict=True)` answered at exit 0 where CPython
+            // raises TypeError.
+            if let Some((k, _)) = kw.iter().find(|(k, _)| k.as_ref() != "start") {
+                return Err(type_err(format!(
+                    "'{k}' is an invalid keyword argument for enumerate()"
+                )));
+            }
             let v = arg1(name, &args)?;
             let start = match args.get(1) {
                 Some(x) => int_val(x)?,
@@ -628,6 +967,24 @@ pub fn call_builtin(
             )
         }
         "zip" => {
+            // `zip` and `enumerate` are exempt from NO_KEYWORDS because they
+            // really do take keywords — and the exemption became exemption from
+            // ALL validation, so any keyword was dropped in silence.
+            // `zip(a, b, strict=True)` truncated to the shorter input at exit 0,
+            // which is the ONE thing the caller wrote `strict=True` to prevent:
+            // the guard was removed by the runtime that was asked to enforce it.
+            //
+            // Refused rather than implemented. `strict` needs a length check the
+            // lazy `Iter::Zip` does not currently make, and per invariant 1 a
+            // refusal the dispatcher can route onward beats an approximation.
+            if let Some((k, _)) = kw.first() {
+                if k.as_ref() == "strict" {
+                    return Err(unsupported("argument", "keyword strict"));
+                }
+                return Err(type_err(format!(
+                    "'{k}' is an invalid keyword argument for zip()"
+                )));
+            }
             let mut its = Vec::with_capacity(args.len());
             for i in 0..args.len() {
                 let a = args.take(i);
@@ -665,8 +1022,46 @@ pub fn call_builtin(
         }
         "reversed" => {
             let v = arg1(name, &args)?;
-            if matches!(v, Value::Set(_)) {
-                return Err(set_order_refused("reversed() of a set"));
+            // REVERSING AN ITERATOR IS NOT A THING, and this used to do it.
+            // CPython needs `__reversed__`, or `__len__` and `__getitem__`
+            // together, so a sequence reverses and a one-pass iterator raises.
+            // `list(reversed(iter([1, 2])))` answered `[2, 1]` here and is a
+            // TypeError there — a divergence in the rarer direction, where the
+            // engine SUCCEEDS and CPython refuses, which no amount of trusting
+            // the engine's own errors would have caught.
+            //
+            // A set is not reversible either, and this refused it as a
+            // set-order exposure. That was a spawn spent on nothing: CPython
+            // never gets far enough to iterate, so the TypeError below is
+            // exact and the refusal is not needed.
+            match &v {
+                Value::Str(_)
+                | Value::Bytes(_)
+                | Value::List(_)
+                | Value::Tuple(_)
+                | Value::Range(..)
+                | Value::Dict(_)
+                | Value::DictView(..) => {}
+                // The message names the type, and an iterator's type name is
+                // one this engine cannot spell: CPython has a family of them
+                // (`list_iterator`, `tuple_iterator`, `str_ascii_iterator` —
+                // which is `str_iterator` for a non-ASCII string, an internal
+                // representation detail). So this refuses for the same reason
+                // `repr()` of an iterator refuses: the answer contains
+                // something not reproducible.
+                Value::IterObj(..) | Value::Gen(_) => {
+                    return Err(unsupported(
+                        "iterator-type-name",
+                        "reversed() of an iterator, whose CPython TypeError names one of a \
+                         family of iterator types this engine does not distinguish",
+                    ))
+                }
+                other => {
+                    return Err(type_err(format!(
+                        "'{}' object is not reversible",
+                        type_name(other)
+                    )))
+                }
             }
             let mut items = it.iter_collect(v)?;
             items.reverse();
@@ -851,7 +1246,33 @@ pub fn call_builtin(
         }
         "bytes" => match args.first() {
             None => Value::Bytes(Rc::new(Vec::new())),
-            Some(Value::Str(s)) => Value::Bytes(Rc::new(s.as_bytes().to_vec())),
+            // `bytes('abc')` is a TypeError: a str has no bytes until an
+            // ENCODING says which. Answering `b'abc'` silently picked UTF-8 on
+            // the caller's behalf — right for ASCII and a wrong answer the
+            // moment the text is not, which is exactly when it matters.
+            // `bytes('abc', 'utf-8')` is the spelling that works and still does.
+            Some(Value::Str(s)) => {
+                // The encoding argument's VALUE was never read: `bytes('a',
+                // 'bogus')` answered b'a' where CPython raises LookupError, and
+                // `bytes('héllo', 'latin-1')` answered the UTF-8 bytes — data
+                // corruption at exit 0. Same rule as `str.encode` above: UTF-8
+                // spellings pass, ASCII validates, anything else refuses.
+                let enc = args.get(1).cloned().or_else(|| kwget(&kw, "encoding"));
+                let Some(e) = enc else {
+                    return Err(type_err("string argument without an encoding"));
+                };
+                let e = fmt::to_str(&e)?.to_ascii_lowercase().replace('_', "-");
+                if !matches!(e.as_str(), "utf-8" | "utf8" | "ascii") {
+                    return Err(unsupported("encoding", &format!("bytes(str, '{e}')")));
+                }
+                if e == "ascii" && !s.is_ascii() {
+                    return Err(LypningError::exc(
+                        "UnicodeEncodeError",
+                        "'ascii' codec can't encode character",
+                    ));
+                }
+                Value::Bytes(Rc::new(s.as_bytes().to_vec()))
+            }
             Some(Value::Bytes(b)) => Value::Bytes(b.clone()),
             Some(Value::Int(n)) => Value::Bytes(Rc::new(vec![0u8; (*n).max(0) as usize])),
             Some(other) => {
@@ -919,7 +1340,27 @@ pub fn length(v: &Value) -> R<usize> {
         Value::Dict(d) => d.borrow().len(),
         Value::Set(s) => s.borrow().len(),
         Value::DictView(d, _) => d.borrow().len(),
-        Value::Range(a, b, st) => range_len(*a, *b, *st).max(0) as usize,
+        Value::Range(a, b, st) => {
+            // CPython's `len()` returns a C ssize_t, so a range longer than one
+            // raises rather than truncating — and this answered 0, because the
+            // i64 length had wrapped negative and `.max(0)` tidied it away.
+            let n = range_len(*a, *b, *st);
+            if n > i64::MAX as i128 {
+                return Err(overflow_err("Python int too large to convert to C ssize_t"));
+            }
+            n.max(0) as usize
+        }
+        // Same argument as `reversed` above and as `repr`: the message names
+        // the type, and CPython spells an iterator's type name in a way this
+        // engine cannot reproduce, so it refuses rather than print a name that
+        // is merely plausible.
+        Value::IterObj(..) | Value::Gen(_) => {
+            return Err(unsupported(
+                "iterator-type-name",
+                "len() of an iterator, whose CPython TypeError names one of a family of \
+                 iterator types this engine does not distinguish",
+            ))
+        }
         other => {
             return Err(type_err(format!(
                 "object of type '{}' has no len()",
@@ -960,7 +1401,22 @@ fn round_half_even(f: f64, ndigits: i64) -> f64 {
     if ndigits > 17 {
         return f;
     }
+    // NEGATIVE ndigits rounds to tens, hundreds and so on, and Rust's `round()`
+    // breaks ties AWAY FROM ZERO where Python breaks them to even. The
+    // `ndigits == 0` branch above already carried that correction and the
+    // positive branch gets it free from the formatter; only this one rounded
+    // `round(5.0, -1)` to 10.0 where CPython answers 0.0, and `round(25.0, -1)`
+    // to 30.0 where CPython answers 20.0.
     let scale = 10f64.powi(-ndigits as i32);
-    let r = (f / scale).round();
+    let q = f / scale;
+    let mut r = q.round();
+    if (q - q.trunc()).abs() == 0.5 && r % 2.0 != 0.0 {
+        r -= q.signum();
+    }
+    // And the same zero-sign restoration as above: `round(-5.0, -1)` is `-0.0`,
+    // which `repr` shows, and the correction above produces a positive zero.
+    if r == 0.0 {
+        return (0.0f64).copysign(f) * scale;
+    }
     r * scale
 }

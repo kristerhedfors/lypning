@@ -127,6 +127,15 @@ _RUN_SPECIFIC = tuple(re.compile(p) for p in (
     r"\btime\s*\.\s*(?:time|time_ns|monotonic|monotonic_ns|perf_counter|perf_counter_ns"
     r"|process_time|process_time_ns|ctime|asctime|localtime|gmtime)\b",
     r"\bos\s*\.\s*(?:getpid|getppid|urandom|times|fstat|cpu_count|getcwd|getlogin)\b",
+    # The size or timestamps of an ambient file are the RUN's, not the
+    # interpreter's: a program printing the capture log's own size can never
+    # match a reference taken a moment earlier — the log grew in between.
+    r"\bos\.path\s*\.\s*(?:getsize|getmtime|getatime|getctime)\b",
+    # A subprocess's output belongs to the environment it ran in. The corpus
+    # holds a probe that spawns python3 three hundred times with
+    # PYTHONHASHSEED deliberately REMOVED to count both set orders — its own
+    # reference drifts run to run, which is the definition of this list.
+    r"\bsubprocess\s*\.\s*(?:run|Popen|check_output|check_call|call)\b",
     r"\bst_(?:ino|dev|mtime|atime|ctime|nlink)\b",
     # A seeded stream is reproducible in principle, but only against the same
     # generator; an engine is not required to reproduce CPython's Mersenne
@@ -867,8 +876,15 @@ def _run_entry(
             continue
         if arm == MIXTURE:
             with _Sandbox("mix") as cwd:
+                # `env=` and not the ambient environment, which is the whole
+                # point of _env_for and the one arm that used to skip it. A
+                # mixture child without PYTHONHASHSEED=0 disagrees with the
+                # reference at random on any program where set order is
+                # observable; one without LC_ALL=C.UTF-8 decodes every non-ASCII
+                # byte to U+FFFD, so two engines printing DIFFERENT non-ASCII
+                # compare equal and a MISMATCH is scored MATCH.
                 d = eng.dispatch(program, argv_tail=argv_tail, stdin=stdin, cwd=cwd,
-                                 timeout=timeout)
+                                 timeout=timeout, env=_env_for(cwd))
             got = d.result
             # End to end is what the caller pays: every refused tier plus the one
             # that answered.
