@@ -89,20 +89,75 @@ quirk correctly, and one candidate set-order divergence did **not** reproduce
 under a pinned hash seed — both claims were dropped from this table for exactly
 that reason.
 
-## Startup and footprint
+## Performance
+
+Four instruments, because no single one can see everything: startup (where the
+corpus population actually lives), sustained compute (where none of these
+systems was designed to live), the end-to-end corpus wall (the deployment
+number), and memory. All measured on this container, 2026-08-30.
+
+### Startup and footprint
 
 Both projects claim fast startup and both are right — *in the same shape*. The
-fair comparison is shape-to-shape (60 runs each, this container):
+fair comparison is shape-to-shape (60 runs each):
 
 | shape | lypning | Monty 0.0.21 | CPython 3.11 |
 |---|---:|---:|---:|
 | in-process, warm (`liblypning` C ABI / warm pool checkout+feed) | **0.05 ms** median | **0.04 ms** median | — |
-| process spawn, `print(1)` | **0.64 ms** median | — (not its shape) | 10.33 ms median |
+| process spawn, `print(1)` | **0.64 ms** median | ~100 µs execution + runtime start (CLI shape) | 10.33 ms median |
 | cold pool / first load | one `dlopen` | 15.6 ms pool construction | — |
 | on-disk runtime | 1,024,208 B (one static binary, 8 CheerpX blocks) | 22,064,856 B runtime binary (9.2 MB wheel payload) | — |
+| peak RSS (hello / dict-heavy) | at the ~8.6 MB measurement floor | floor +0.2 MB / +1.0 MB | at the floor |
 
 In-process to in-process they are the same order of magnitude; startup does not
-separate these systems. Coverage and fidelity do.
+separate these systems.
+
+### Sustained compute — where nobody beats CPython
+
+Six compute-bound workloads (integer and float loops, string methods, list and
+dict churn, recursive calls), each first validated to produce **byte-identical
+stdout on every engine**, then timed as the median of 5 interleaved rounds so
+machine load hits all arms alike. Ratios are against CPython's wall clock:
+
+| workload | CPython | lypning | liblypning | lypning-mp | Monty (warm feed) | Monty (CLI) |
+|---|---:|---:|---:|---:|---:|---:|
+| int loop (3M) | 218 ms | 1.85× | 2.08× | **0.78×** | 1.91× | 1.98× |
+| float loop (2M) | 135 ms | 2.31× | 2.51× | 1.36× | 2.36× | 2.33× |
+| str methods (120k) | 83 ms | 2.82× | 3.41× | 5.88× | **2.13×** | 2.61× |
+| list churn (400k) | 60 ms | 2.92× | 3.24× | **1.00×** | 2.12× | 2.13× |
+| dict churn (600k) | 122 ms | **2.12×** | 2.48× | 23.41× | 4.42× | 4.52× |
+| recursive calls (fib) | 29 ms | 4.51× | 5.15× | **1.05×** | 2.31× | 2.37× |
+
+The honest headline: **on sustained loops, nothing here beats CPython** —
+lypning runs 1.9–4.5× slower, Monty 1.9–4.5× slower (consistent with its own
+"5× faster to 5× slower" claim), and MicroPython is bimodal (fastest on
+ints and lists, 23× slower on dict churn, which is why the classifier exists).
+Instruction counts (callgrind, exact) partially reorder the wall ranks — on
+the int loop Monty *executes* 0.84× CPython's instructions and lypning-mp
+0.62×, yet both lose or tie on wall — so the wall costs are memory- and
+dispatch-bound, not instruction-bound. None of these engines is a compute
+accelerator; they are startup and safety plays.
+
+### End to end — the number an agent session pays
+
+The corpus population is one-liners, so the deployment metric is spawn-bound
+by construction: total wall to run all **745 CPython-clean corpus programs**,
+each in a fresh temp cwd, in each system's natural shape (best of 2 rounds):
+
+| system, its own shape | total | per program | and it answers |
+|---|---:|---:|---|
+| CPython, spawned per program | 12,687 ms | 17.0 ms | 100% (it is the oracle) |
+| **lypning chain** (`lypning run`) | **8,569 ms** | **11.5 ms** | **100%, never silently wrong** (1 ledgered ULP) |
+| lypning tier 1 alone | 2,029 ms | 2.7 ms | 64.4% (the chain covers the rest) |
+| Monty, warm pool | 6,812 ms | 9.1 ms | 36.9% correct; 60% error back to the LLM |
+
+Read the last column with the middle ones: Monty's pool completes the sweep
+faster than the chain, but on this population it hands 6 of 10 programs back
+to the model as errors — and a model turn costs three to six orders of
+magnitude more time and money than any interpreter in this table. The chain is
+32% faster than spawning CPython *while returning CPython's answer for
+everything*. And when a workload is dominated by programs tier 1 can take, the
+ceiling is the tier-1 row: 6.3× faster than CPython end to end.
 
 ## Feature-by-feature
 
@@ -141,8 +196,10 @@ separate these systems. Coverage and fidelity do.
 
 ```bash
 pip install pydantic-monty            # 0.0.21 at time of measurement
-python3 study/monty/grade_monty.py    # Monty column   (~40 s)
-python3 study/monty/grade_lypning.py  # lypning column (~50 s)
+python3 study/monty/grade_monty.py    # fidelity: Monty column   (~40 s)
+python3 study/monty/grade_lypning.py  # fidelity: lypning column (~50 s)
+python3 study/monty/perf_matrix.py    # compute matrix, 6 workloads x 6 arms
+python3 study/monty/perf_endtoend.py  # the 745-program deployment sweep
 ```
 
 Both scripts print the counts they graded; quote those, from your run, with

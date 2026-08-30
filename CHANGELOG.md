@@ -34,8 +34,24 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   contract with CPython fall-through. Startup is a wash shape-for-shape
   (0.05 ms vs 0.04 ms in-process); coverage and fidelity are the axes that
   separate them.
-- The grading harness ships at `study/monty/`, so the table is re-runnable —
-  and re-run is the instruction, per invariant 3.
+- **Completed with the full performance picture, four instruments** (all
+  2026-08-30): *startup* shape-for-shape (in-process 0.05 ms vs 0.04 ms — a
+  wash; spawn 0.64 ms vs CPython's 10.33 ms); *sustained compute* over six
+  workloads first validated byte-identical on every engine (nothing beats
+  CPython on loops — lypning 1.9–4.5×, Monty 1.9–4.5×, MicroPython bimodal
+  0.78×–23×, with callgrind instruction counts showing the wall costs are
+  dispatch- and memory-bound, not instruction-bound); *end-to-end* over the 745
+  CPython-clean corpus programs (chain 8.6 s and never silently wrong, CPython
+  12.7 s, tier 1 alone 2.0 s at 64% coverage, Monty pool 6.8 s at 37% correct
+  with 60% handed back to the model — and a model turn dwarfs every number in
+  the table); *memory* (all at the ~8.6 MB spawn floor; Monty +1 MB on
+  dict-heavy work). Headline claims were re-measured a second time before
+  publication; the verification workflow's agents hit the harness
+  parameter-stripping fault and honestly reported measuring nothing, so the
+  re-check ran inline.
+- The grading and performance harnesses ship at `study/monty/` (with the six
+  workloads), so every table is re-runnable — and re-run is the instruction,
+  per invariant 3.
 
 **2026-08-30** — lypning is the Coding Harness Interpreter Optimizer
 
