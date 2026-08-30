@@ -2,7 +2,7 @@
 name = "lypning"
 version = "0.1.0"
 edition = "2021"
-description = "Mixture of Pythons — a from-scratch Rust runtime for the bottom slice of agent-typed Python one-liners"
+description = "The Coding Harness Interpreter Optimizer — a from-scratch Rust runtime (the bottom tier of a mixture of Pythons) for agent-typed Python one-liners"
 license = "MIT"
 
 # ZERO runtime dependencies, on purpose. CLAUDE.md invariant 5 governs src/;

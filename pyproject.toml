@@ -11,7 +11,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lypning"
 version = "0.1.0"
-description = "A tiny Python subset in Rust, a frozen-stdlib MicroPython, and the router that picks between them — for the one-liners coding agents actually type."
+description = "The Coding Harness Interpreter Optimizer: a tiny Python subset in Rust, a frozen-stdlib MicroPython, and the router that picks between them — for the one-liners coding agents actually type."
 readme = "README.md"
 requires-python = ">=3.9"
 # PEP 639, not the deprecated `{ file = "LICENSE" }` table — that form inlines

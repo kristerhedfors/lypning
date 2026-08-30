@@ -1,15 +1,23 @@
-# lypning — a mixture of Pythons
+# lypning — the Coding Harness Interpreter Optimizer
 
 <img src="docs/logo.svg" alt="" width="72" height="72">
 
-`lypning` runs a Python program on the cheapest of three interpreters that can
-actually run it: a from-scratch Python subset written in Rust, a MicroPython
-variant with a frozen shim stdlib, and the real CPython for everything the
-first two refuse. A classifier decides which one, per program, by asking the
-Rust core's own parser rather than guessing at the text. The subset is not
-sized to Python — it is sized to the one-liners a coding agent actually types,
-which is a much narrower target and is the only reason any of this is
-affordable.
+`lypning` optimizes the interpreter layer underneath a coding harness: it runs
+a Python program on the cheapest of three interpreters that can actually run
+it. The architecture is a *mixture of Pythons* — a from-scratch Python subset
+written in Rust, a MicroPython variant with a frozen shim stdlib, and the real
+CPython for everything the first two refuse — with a classifier that decides
+which one, per program, by asking the Rust core's own parser rather than
+guessing at the text. The subset is not sized to Python — it is sized to the
+one-liners a coding agent actually types, which is a much narrower target and
+is the only reason any of this is affordable.
+
+**And "the one-liners a coding agent actually types" is a moving target, which
+is the point of the name.** The corpus is captured from live sessions, the
+loop re-derives the tables from it, and the whole thing is built to be forked
+and re-tuned to *your* harness, *your* agent, *your* programs — models drift,
+and this optimizer drifts with them. [`docs/FORKING.md`](docs/FORKING.md) is
+the complete path.
 
 Every tier refuses the same way: exit `90`, one line on stderr, nothing on
 stdout. That is what makes the three interchangeable, and what makes a wrong

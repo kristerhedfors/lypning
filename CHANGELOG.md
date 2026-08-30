@@ -14,6 +14,22 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-30** — lypning is the Coding Harness Interpreter Optimizer
+
+- **The identity changes; the architecture keeps its name.** The headline in
+  the README, `docs/LYPNING.md`, the CLI description, the package and crate
+  docstrings, the site title and footer, and the shipped skill now read
+  *"lypning — the Coding Harness Interpreter Optimizer"*. *Mixture of Pythons*
+  stays everywhere it explains the design — it is what the architecture *is* —
+  including the classifier's own module doc and the *Before the name* history.
+- **The new name is a claim about adaptability, and the docs now say so up
+  front.** The README and `docs/LYPNING.md` intros state it directly: the
+  corpus is captured from live sessions, every table is derived from it and
+  re-derivable from yours, and `docs/FORKING.md` is the manual for pointing
+  the optimizer at your own harness, agent and programs.
+- Nothing load-bearing moves (invariant 9): engine strings, `LYPNING_*` env
+  vars, `~/.lypning`, hook names and the CLI surface are all unchanged.
+
 **2026-08-30** — The loop gathered 667 of its own programs, and the tree now
 ships the instructions for pointing it at yours
 

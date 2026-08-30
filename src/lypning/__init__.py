@@ -1,6 +1,7 @@
-"""lypning — Mixture of Pythons.
+"""lypning — the Coding Harness Interpreter Optimizer.
 
-Three interpreters, cheapest first, and a classifier that picks one per program:
+A mixture of Pythons: three interpreters, cheapest first, and a classifier
+that picks one per program:
 
   ``lypning``     a from-scratch Python subset in Rust, ~10k lines, no crates
   ``lypning-mp``  a MicroPython variant with a frozen shim stdlib

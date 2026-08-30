@@ -1,4 +1,7 @@
-//! lypning — Mixture of Pythons.
+//! lypning — the Coding Harness Interpreter Optimizer.
+//!
+//! (The architecture is a mixture of Pythons; this crate is its bottom tier
+//! and its classifier.)
 //!
 //! A from-scratch Python subset in Rust, sized to the BOTTOM of the
 //! distribution of one-liners an agentic CLI actually types (harvested in

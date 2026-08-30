@@ -1393,11 +1393,12 @@ def build_parser() -> argparse.ArgumentParser:
         prog=PROG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description="""
-lypning — a mixture of Pythons.
+lypning — the Coding Harness Interpreter Optimizer.
 
-Three interpreters, cheapest first, and a classifier that picks one per
-program: a Python subset in Rust, a MicroPython variant with a frozen shim
-stdlib, and the real CPython for everything the first two refuse.
+A mixture of Pythons: three interpreters, cheapest first, and a classifier
+that picks one per program — a Python subset in Rust, a MicroPython variant
+with a frozen shim stdlib, and the real CPython for everything the first two
+refuse.
 
 Used as an interpreter it IS one — `lypning -c PROG`, `lypning FILE` and
 `lypning -` exec straight into the Rust core, so anything that calls python3
