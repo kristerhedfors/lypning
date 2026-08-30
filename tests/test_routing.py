@@ -84,6 +84,39 @@ def test_a_semantic_refusal_skips_every_tier_but_cpython():
     assert eng.chain_after_refusal(eng.MICROPYTHON, "nan-identity") == [eng.CPYTHON]
 
 
+def test_the_mp_kind_arm_lists_only_kinds_the_classifier_can_emit():
+    """The arm is not a list of the engine's refusal vocabulary, and it was.
+
+    `engine_for` runs at ROUTING time, so the only kinds that can reach it come
+    from a parse-time refusal, a lex-time one, or `Requirements::block`. The
+    match arm nonetheless listed 23 kinds only the evaluator emits — dead names,
+    six of which (`set-order`, `set-method`, `repr-unicode`, `percent-format`,
+    `del`, `json`) `ONLY_CPYTHON_KINDS` says must skip lypning-mp entirely.
+    Dead, the contradiction was inert. The day the parser learns to spot one of
+    those constructs statically, a listed name starts routing programs to
+    exactly the tier the escalation table exists to keep them off — with no
+    gate looking, because the conformance battery only measures kinds that
+    actually fire.
+
+    `micropython_kinds()` was written to read this arm and had zero callers.
+    This is its job.
+    """
+    arm = routing.micropython_kinds()
+    if not arm:
+        pytest.skip("engine_for's match arm was not found in %s" % routing.table_source())
+    emittable = routing.classifier_kinds()
+    if not emittable:
+        pytest.skip("could not read the classifier's refusal kinds")
+    dead = sorted(set(arm) - set(emittable))
+    assert not dead, (
+        "these kinds are routed to lypning-mp but nothing at parse/lex/block "
+        "time can emit them — dead today, a silent routing change the day the "
+        "parser learns to see them: %s" % dead)
+    both = sorted(set(arm) & set(eng.ONLY_CPYTHON_REFUSALS))
+    assert not both, (
+        "the mp arm and ONLY_CPYTHON_KINDS disagree about: %s" % both)
+
+
 def test_both_dispatchers_read_the_same_escalation_table():
     """There are TWO dispatchers, and the rule was added to one of them.
 

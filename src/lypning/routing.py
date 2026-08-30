@@ -456,6 +456,36 @@ def only_cpython_kinds(source: Optional[Path] = None) -> List[str]:
     return _STRING_RE.findall(m.group("body"))
 
 
+#: `unsupported("<kind>"` across a Rust source file, multi-line calls included.
+_UNSUPPORTED_KIND_RE = re.compile(r'unsupported\(\s*"([a-z-]+)"')
+_BLOCK_KIND_RE = re.compile(r'\bblock\("([a-z-]+)"')
+
+
+def classifier_kinds() -> List[str]:
+    """Every refusal kind the CLASSIFIER can hand to ``engine_for``.
+
+    A kind reaches routing from exactly three places: a parse-time refusal
+    (``parse.rs``), a lex-time one (``lex.rs``), or ``Requirements::block`` in
+    ``route.rs``. Everything else — ``set-order``, ``del``, ``json`` and the
+    rest of the evaluator's vocabulary — is discovered by *running*, after
+    routing has already finished. The distinction is what
+    :func:`micropython_kinds` is held to: an arm entry outside this set is dead
+    code today and a landmine the day the parser learns to see the construct.
+    """
+    src = table_source().parent
+    kinds: set = set()
+    for name in ("parse.rs", "lex.rs"):
+        try:
+            kinds |= set(_UNSUPPORTED_KIND_RE.findall((src / name).read_text(encoding="utf-8")))
+        except OSError:
+            return []
+    try:
+        kinds |= set(_BLOCK_KIND_RE.findall(table_source().read_text(encoding="utf-8")))
+    except OSError:
+        return []
+    return sorted(kinds)
+
+
 # --- reporting ---------------------------------------------------------------
 
 

@@ -324,15 +324,25 @@ fn engine_for(kind: &str, imports: &[String], mp_risk: &BTreeSet<&'static str>) 
         }
     }
     match kind {
-        // lypning-mp is MicroPython: it has arbitrary-precision integers, a regex
-        // engine, and a set type whose order it defines for itself. Each of
-        // these is exactly a gap lypning refuses.
-        "bigint" | "module" | "module-attr" | "set-order" | "builtin" | "str-method"
-        | "list-method" | "dict-method" | "set-method" | "file-method" | "encoding" | "repr"
-        | "repr-unicode" | "class" | "recursion" | "with" | "format" | "percent-format"
-        | "os-listdir" | "type" | "json" | "open-mode" | "fstring" | "print-file" | "round"
-        | "setattr" | "del" | "augassign" | "slice-assign" | "unpack" | "kwonly" | "nonlocal"
-        | "import" | "file-seek" | "open-newline" | "escape" | "ellipsis" | "complex"
+        // lypning-mp is MicroPython: it has arbitrary-precision integers, a
+        // class system, decorators and generators. Each of these is exactly a
+        // gap lypning refuses — AT PARSE TIME, which is the only time this
+        // match runs. The classifier sees a kind from exactly three sources:
+        // a parse-time refusal (parse.rs), a lex-time one (lex.rs), or
+        // `Requirements::block` in this file. This arm listed 23 more kinds
+        // that only the EVALUATOR emits (`set-order`, `del`, `json`,
+        // `percent-format`, `round`, …) — names that can never reach it, six of
+        // which `ONLY_CPYTHON_KINDS` says must skip lypning-mp entirely. Dead,
+        // the contradiction was inert; the day someone taught the parser to
+        // spot one of those constructs statically, this arm would have started
+        // routing programs to the tier the other table exists to keep them off,
+        // with no gate looking. The unlisted kinds fall to `_ => CPython`,
+        // which is the safe direction: a spare spawn, never a wrong answer.
+        // `tests/test_routing.py` now holds this arm to the kinds the
+        // classifier can actually emit, read out of the source.
+        "bigint" | "module" | "module-attr" | "class" | "recursion" | "fstring"
+        | "setattr" | "slice-assign" | "unpack" | "kwonly" | "nonlocal"
+        | "import" | "escape" | "ellipsis" | "complex"
         // Both are language features there, not library ones. See
         // CPYTHON_ONLY_KINDS, which listed them as absent until it was measured.
         | "decorator" | "generator" => Engine::MicroPython,
@@ -347,7 +357,10 @@ struct Requirements {
     imports: BTreeSet<String>,
     blocker: Option<(String, String)>,
     /// Families from `.github/known-mismatches.json` this program's SOURCE
-    /// shows it would trip on lypning-mp. See [`MICROPYTHON_UNSAFE`].
+    /// shows it would trip on lypning-mp. See [`MICROPYTHON_UNSAFE`]. The
+    /// labels come from two namespaces — ledger family names for the construct
+    /// table, refusal kinds for the AST markers — and only EMPTINESS is ever
+    /// read; a label is a breadcrumb for the next reader, not a join key.
     mp_risk: BTreeSet<&'static str>,
 }
 

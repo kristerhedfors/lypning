@@ -14,6 +14,29 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-30** — 23 of the 40 kinds in the classifier's MicroPython arm could
+never reach it
+
+- **`engine_for` runs at routing time, so the only refusal kinds that can reach
+  it come from the parser, the lexer, or `Requirements::block`.** The match arm
+  nonetheless listed 23 kinds only the *evaluator* emits — `set-order`, `del`,
+  `json`, `round`, `percent-format` and the rest of the runtime vocabulary.
+  Verified two ways: by scraping every `unsupported("…")` the parse/lex sources
+  can produce, and by the routing table being bit-identical after the deletion
+  (388 / 1,056 / 202, unchanged).
+- **Six of the dead names contradicted `ONLY_CPYTHON_KINDS`** — one table said
+  "send to lypning-mp" about kinds the other says only CPython gets right.
+  Inert while dead; the day the parser learned to spot one of those constructs
+  statically, the arm would have routed programs to exactly the tier the
+  escalation table exists to keep them off, with no gate looking.
+- **`micropython_kinds()` was written to read this arm and had zero callers.**
+  It now has its job: a test holds the arm to the kinds the classifier can
+  actually emit (`routing.classifier_kinds()`, scraped from the source) and to
+  disjointness from the escalation table.
+- Deleting the 23 string literals bought back exactly the 4,096 B the
+  identity-rule work had added: the binary is back to **1,024,208 B**, 8 blocks,
+  24,368 B headroom. Suite 1,271 → 1,272; battery identical.
+
 **2026-08-30** — The element test is `x is y or x == y`, and every sequence
 scan now uses it
 
