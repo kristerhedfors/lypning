@@ -1,4 +1,4 @@
-//! The classifier — the "mixture" in Mixture of Pythons.
+//! The classifier — the "mixture" in the mixture of Pythons.
 //!
 //! Routing is a STATIC analysis over lypning's own front end, not a heuristic over
 //! the program text. That choice is the whole design:

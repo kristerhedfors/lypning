@@ -3,7 +3,7 @@ name: lypning
 description: Route Python one-liners through lypning instead of python3, and understand what it refuses. Load when about to run python from Bash in a repo where lypning is installed (`lypning -c`, `lypning run -c`, `lypning route -c`), when a command exited 90 or printed "unsupported:", when python startup cost matters, or when asked why a program went to CPython rather than the subset. Also load when working ON this package — the Rust subset, the MicroPython tier, the classifier, the conformance battery, the differential fuzzer, the benchmarks (`lypning bench`, `lypning corpus-time`), the capture harness that grows the corpus, or anything under src/lypning/ or assets/rust/.
 ---
 
-# lypning — Mixture of Pythons
+# lypning — the Coding Harness Interpreter Optimizer (a mixture of Pythons)
 
 Reference: `MICROPYTHON.md` next to this file (the second tier's charter) is the
 only one that ships with the skill. The rest — `docs/LYPNING.md` (design),

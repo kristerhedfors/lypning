@@ -1,10 +1,14 @@
-# lypning — Mixture of Pythons
+# lypning — the Coding Harness Interpreter Optimizer
 
 **Status: experimental, measured, not wired into the sandbox yet.**
 
-lypning is a Python subset written from scratch in Rust, sized to the *bottom* of
-the distribution of one-liners an agentic CLI actually types — plus a classifier
-that decides, per program, which of three interpreters should run it.
+lypning optimizes the interpreter layer under a coding harness. Its
+architecture is a **mixture of Pythons**: a Python subset written from scratch
+in Rust, sized to the *bottom* of the distribution of one-liners an agentic
+CLI actually types — plus a classifier that decides, per program, which of
+three interpreters should run it. Every table in this design is derived from a
+captured corpus and re-derivable from yours: the adaptability is the product,
+and [`FORKING.md`](FORKING.md) is its manual.
 
 The three interpreters are the mixture:
 

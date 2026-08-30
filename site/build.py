@@ -195,7 +195,7 @@ def shell(*, title: str, body: str, current: str, depth: int, description: str,
 </main>
 </div>
 <footer class="foot">
-  <p><strong>lypning</strong> — a mixture of Pythons. MIT licensed.</p>
+  <p><strong>lypning</strong> — the Coding Harness Interpreter Optimizer, a mixture of Pythons underneath. MIT licensed.</p>
   <p>Extracted from <a href="https://github.com/kristerhedfors/deepresearch.se" rel="noopener">deepresearch.se</a>,
      where the two runtimes were developed. Every page here is rendered from the
      markdown in the repository, so the site cannot claim something the tree does not.</p>
@@ -405,7 +405,7 @@ def build(out_dir: Path) -> int:
                        .replace('href="../', 'href="'))
     (out_dir / "index.html").write_text(
         shell(
-            title="lypning — a mixture of Pythons",
+            title="lypning — the Coding Harness Interpreter Optimizer",
             body=body,
             current="index.html",
             depth=0,

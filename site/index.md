@@ -3,7 +3,8 @@
 <div class="hero">
 <img class="hero-logo" src="docs/logo.svg" alt="" width="72" height="72">
 <h1>lypning</h1>
-<p class="tagline">Run a Python one-liner on the cheapest of three interpreters that can
+<p class="tagline">The Coding Harness Interpreter Optimizer.
+Run a Python one-liner on the cheapest of three interpreters that can
 actually run it — a subset written in Rust, a frozen-stdlib MicroPython, and CPython for
 everything the first two refuse.</p>
 <p class="cta">
