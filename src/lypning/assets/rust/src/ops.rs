@@ -651,6 +651,26 @@ impl Interp {
         // process spawn on `o.__notathing__`, which CPython then raises
         // AttributeError for anyway. That is the asymmetry invariant 1 is
         // about, and it only points one way.
+        // ONE dunder is answered, and only on the one receiver where its value
+        // is not a guess: a `Value::Builtin` carries its own name, and CPython's
+        // `__name__` for both a builtin TYPE and a builtin FUNCTION is exactly
+        // that name (`int.__name__ == 'int'`, `len.__name__ == 'len'`). So this
+        // is not a partial data model — it is the whole answer for this
+        // receiver, which is what the wildcard argument above demands before an
+        // exception is carved out of it.
+        //
+        // It earns its place by routing, not by speed. `type(e).__name__` is the
+        // ordinary format-an-exception idiom and appeared in 22 corpus programs;
+        // refusing it sent them out of the tier that is CPython-exact. Rerouting
+        // them instead was tried first and REVERTED (docs/HILLCLIMB.md, this
+        // date): letting them fall to the middle tier exposed four programs to
+        // defects that tier has elsewhere, and the block had been shielding them
+        // by accident. Answering here keeps them where the answer is right.
+        if name == "__name__" {
+            if let Value::Builtin(b) = base {
+                return Ok(Value::Str((*b).into()));
+            }
+        }
         if name.starts_with("__") && name.ends_with("__") && name.len() > 4 {
             // TWO KINDS, because the tier below splits exactly here — measured
             // 2026-08-30 on lypning-mp-i386: it answers `__name__` and

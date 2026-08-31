@@ -20,6 +20,20 @@ import pytest
 from lypning import engines
 
 CASES = [
+    # `type(2).__name__` lived in REFUSES until 2026-08-31, when tier 1 learned
+    # to answer `__name__` on a `Value::Builtin` — the one receiver whose name
+    # is not a guess, because a builtin carries it (`int.__name__ == "int"`,
+    # `len.__name__ == "len"`). Moved rather than deleted: the finding is still
+    # live and the assertion here is the STRONGER one, that the answer equals
+    # CPython's. Every other dunder, and `__name__` on every other receiver,
+    # still refuses — `dunder-class` and `dunder-doc` remain in REFUSES below,
+    # and `type(e).__name__` on an exception instance refuses too, because
+    # answering it needs `type()` of an exception and that exposed a separate
+    # pre-existing defect in how `Value::Exc` stores its argument (see the
+    # ledger entry for this date).
+    ("dunder-name-builtin", "print(type(2).__name__)"),
+    ("dunder-name-func", "print(len.__name__)"),
+    ("dunder-name-exc-class", "print(ValueError.__name__)"),
     # THE ELEMENT TEST IS `x is y or x == y`, NOT `==`. CPython's container
     # protocols compare identity first, and a NaN is the one value for which
     # that is observable. The old rule refused whole sequences whenever a NaN
@@ -698,7 +712,6 @@ REFUSES = [
     # CPython has, because a list is incomplete the moment someone uses the next
     # one — and incomplete here means a silent wrong answer, where over-broad
     # means a spawn.
-    ("dunder-name", "print(type(2).__name__)"),
     ("dunder-class", "try:\n    1/0\nexcept Exception as e:\n    print(e.__class__.__name__)"),
     ("dunder-doc", "print(len.__doc__ is not None)"),
     # `(2).__dict__` is deliberately NOT here: an int has no `__dict__` in
