@@ -363,6 +363,54 @@ pub fn str_val(s: impl Into<Rc<str>>) -> Value {
     Value::Str(s.into())
 }
 
+thread_local! {
+    /// The 128 ASCII one-character strings, interned. Splitting, indexing and
+    /// iterating a string each materialize single characters by the thousand,
+    /// and every one was a fresh `Rc<str>` — a malloc and a free on an
+    /// allocator that is a quarter of the hot instruction stream. CPython
+    /// interns exactly these (its latin-1 singletons), and lypning REFUSES
+    /// `is` between equal immutables, so sharing them is unobservable here and
+    /// convergent there.
+    static ASCII1: std::cell::RefCell<[Option<Rc<str>>; 128]> =
+        std::cell::RefCell::new(std::array::from_fn(|_| None));
+}
+
+/// A one-character string, interned when ASCII.
+pub fn char_str(c: char) -> Rc<str> {
+    let mut buf = [0u8; 4];
+    let s: &str = c.encode_utf8(&mut buf);
+    if s.len() == 1 {
+        return ascii1(s.as_bytes()[0]);
+    }
+    Rc::from(s)
+}
+
+/// A substring materialized as a value's backing string, interned when it is a
+/// single ASCII byte. The common producers — `split()`, `s[i]`, `for c in s` —
+/// all funnel here so the singleton table has one home.
+pub fn substr(sub: &str) -> Rc<str> {
+    if sub.len() == 1 {
+        let b = sub.as_bytes()[0];
+        if b < 0x80 {
+            return ascii1(b);
+        }
+    }
+    Rc::from(sub)
+}
+
+fn ascii1(b: u8) -> Rc<str> {
+    ASCII1.with(|t| {
+        let mut t = t.borrow_mut();
+        let slot = &mut t[b as usize];
+        if let Some(rc) = slot {
+            return rc.clone();
+        }
+        let rc: Rc<str> = Rc::from(std::str::from_utf8(&[b]).unwrap());
+        *slot = Some(rc.clone());
+        rc
+    })
+}
+
 /// Structural equality with Python's numeric-tower rules (`1 == 1.0 == True`).
 /// CPython compares container elements with `x is y or x == y` — IDENTITY
 /// first — and that shortcut is observable for exactly one value: a NaN, which

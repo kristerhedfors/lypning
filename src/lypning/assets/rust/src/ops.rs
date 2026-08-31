@@ -322,11 +322,11 @@ impl Interp {
                 // them, which is O(n) in the string for an O(1) question.
                 if s.is_ascii() {
                     let i = norm_index(crate::eval::int_val(idx)?, s.len(), "string")?;
-                    Value::Str(s[i..i + 1].into())
+                    Value::Str(crate::value::substr(&s[i..i + 1]))
                 } else {
                     let chars: Vec<char> = s.chars().collect();
                     let i = norm_index(crate::eval::int_val(idx)?, chars.len(), "string")?;
-                    Value::Str(chars[i].to_string().into())
+                    Value::Str(crate::value::char_str(chars[i]))
                 }
             }
             Value::Bytes(b) => {

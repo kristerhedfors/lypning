@@ -26,6 +26,35 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-08-31 · iteration 65 — the 128 ASCII one-character strings are singletons
+
+Focus: raw performance. Queue row taken: `str-split` at 8.21x, 18% of the
+2,906 corpus programs loaded this run — and the mechanism reaches every other
+place a single character is materialized: `s[i]`, `for c in s`, `chr()`, and
+both split paths.
+
+One mechanism: a thread-local table of 128 interned `Rc<str>` singletons for
+the ASCII one-character strings, consulted by two new funnels in `value.rs`
+(`char_str` for a `char`, `substr` for a slice) that six call sites now route
+through. Two of those sites were allocating TWICE per character
+(`c.to_string().into()` — a String and then an Rc); all are now a refcount
+bump for ASCII and a single allocation otherwise. Safety was checked before
+the first line was written: lypning refuses `is` between equal immutables, so
+interning is unobservable in any answered program — and CPython interns exactly
+these (its latin-1 singletons), so the sharing converges with the reference
+rather than diverging from it.
+
+- bytes: 1,028,304 → 1,032,400 (+4,096; still 8 blocks, 16,176 B headroom)
+- conformance: 1325 / 800 / 1 MISMATCH (the ledgered musl `pow` ULP, unchanged)
+- perf: `str-split` 8.21x → **4.41x**; `str-slice` 4.68x → 3.83x;
+  `str-methods` 4.61x → 4.74x (noise on an untouched path);
+  TOTAL 2.31x → 2.25x
+- corpus-time: 3.42 s → 3.05 s over 2,126 programs (0.890x vs the iteration-63
+  baseline; both iterations 64+65 included)
+- twelve split/index/iterate/chr shapes diffed against CPython by hand,
+  ASCII and non-ASCII both: no divergence
+
+
 ## 2026-08-31 · iteration 64 — percent-format stops allocating per conversion
 
 Focus: raw performance. Queue row taken: `str-fmt-pct` at 8.09x, present in 18%

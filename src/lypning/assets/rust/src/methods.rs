@@ -599,7 +599,7 @@ fn str_method(
                         |j| str_unit_before(s, j),
                         maxsplit,
                         name == "rsplit",
-                        |lo, hi| v.push(Value::Str(s[lo..hi].into())),
+                        |lo, hi| v.push(Value::Str(crate::value::substr(&s[lo..hi]))),
                     );
                     if name == "rsplit" {
                         v.reverse();
@@ -611,15 +611,15 @@ fn str_method(
                         return Err(value_err("empty separator"));
                     }
                     if maxsplit < 0 {
-                        s.split(sep.as_ref()).map(|x| Value::Str(x.into())).collect()
+                        s.split(sep.as_ref()).map(|x| Value::Str(crate::value::substr(x))).collect()
                     } else if name == "split" {
                         s.splitn(maxsplit as usize + 1, sep.as_ref())
-                            .map(|x| Value::Str(x.into()))
+                            .map(|x| Value::Str(crate::value::substr(x)))
                             .collect()
                     } else {
                         let mut v: Vec<Value> = s
                             .rsplitn(maxsplit as usize + 1, sep.as_ref())
-                            .map(|x| Value::Str(x.into()))
+                            .map(|x| Value::Str(crate::value::substr(x)))
                             .collect();
                         v.reverse();
                         v
