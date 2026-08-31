@@ -26,6 +26,101 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-08-31 · iteration 68 — builtin dispatch: REVERTED, and the gradient is flat
+
+Profiling `file-write-read` (2.77x, 49% of corpus — the highest-weight row not
+already worked) showed it is **not I/O-bound**: the top costs are the
+interpreter loop (`exec_block`/`eval`/`lookup` ≈ 15% of Ir), builtin dispatch
+(≈ 7.5%), and per-line UTF-8 validation (3.8%). Inside a loop whose only call
+is `len()`, `is_exception_name` was burning 1.66% — it linearly scans 24
+exception names on **every** builtin call and, for `len`, scans all of them to
+answer false.
+
+The tables are disjoint by first byte, and not by luck: every builtin
+exception is CapWords and every other builtin is lowercase (verified: 24/24 and
+39/39). One byte test can replace the scan. Two variants were built and
+measured against **four unchanged-source probe builds** (skill §3):
+
+| case | perturbation band | wide variant | narrow variant |
+|---|---:|---:|---:|
+| `builtin-sum-len` | 5.1% | **+15.0%** | +2.5% |
+| `file-write-read` | 5.9% | −7.5% | −2.4% |
+| `raise/except` | 5.5% | −6.3% | **+15.2%** |
+| `call-method` | 9.4% | +1.9% | +5.4% |
+
+Every variant regresses something outside its band, and the narrow variant —
+which adds *one byte test* on the capitalized path — moved `raise/except` by
+15.2%, which is not mechanically possible as work. It is inlining. Reverted.
+A comment recording the 15% measurement is left on `builtin()` so the
+first-byte split is not re-attempted there.
+
+### The finding: three consecutive reverts, and the dial should move
+
+Iterations 66, 67 and 68 were each measured, each regressed, each reverted.
+That is the skill's own stop condition (§6: *three consecutive iterations move
+no gate outside noise — the gradient is flat under the current focus*), and the
+three failures share one cause worth stating plainly:
+
+**At `opt-level = "s"` with LTO and one codegen unit, the perturbation band on
+these hot paths is 5–9%, and the wins still available on them are smaller than
+that.** Iterations 64 and 65 took the last allocations that could be removed
+*without adding work*; what remains costs a pass to eliminate (67), or costs
+nothing but moves inlining more than it moves the work (66, 68). The
+instrument can no longer resolve the effect from the noise, and the honest
+response is to stop pushing on this curve rather than to keep rolling dice
+until one comes up green.
+
+**Where the value actually is, and it is not close.** `conformance --plan` this
+run: 800 UNSUPPORTED programs over 2,126 graded. Each one is an ~11 ms CPython
+spawn in the mixture, so the refusals are worth about **8.8 s** — against a
+whole-corpus lypning total of **3.05 s**. Fifteen blockers account for 619 of
+the 800, and the top three are `re` (185), `lypning` itself (131) and `pathlib`
+(90). The skill already says this ("for the corpus total, coverage beats
+interpreter speed by an order of magnitude"); three reverts is what it looks
+like when the speed curve runs out first.
+
+The FOCUS block at the top of `.claude/skills/hillclimb/SKILL.md` is re-aimed
+to coverage in the same commit, with these numbers as the reason.
+
+
+## 2026-08-31 · iteration 67 — shared case buffer for ASCII upper/lower: REVERTED, no win
+
+`to_lowercase()` returns a `String` and `Rc<str>: From<String>` cannot take
+that buffer — it allocates again and copies — so every `.lower()` is two
+mallocs for one answer. Filling a thread-local buffer and building the `Rc`
+from it once removes one of them. Measured, interleaved, min-of-12 per arm:
+
+| case | before | after | |
+|---|---:|---:|---|
+| `str-methods` composite ×10 | 276.9 ms | 271.4 ms | −2.0% |
+| `.lower()` alone ×400k | 141.1 ms | 146.9 ms | **+4.1%** |
+| `.upper()` alone ×400k | 131.2 ms | 139.1 ms | **+6.0%** |
+| non-ASCII `.lower()` (untouched path) | 77.8 ms | 80.7 ms | +3.8% |
+
+Reverted. The saved malloc is paid for twice over by an extra pass: `push_str`
+copies, `make_ascii_lowercase` walks it again, `Rc::from` copies once more —
+three passes where `to_lowercase()` + `into()` does two. And the **untouched**
+non-ASCII arm moving 3.8% puts the noise floor here at about 4%, which is most
+of what the targeted cases showed.
+
+**The finding that outlives the change, and it is the reason to re-aim (skill
+§1):** this is the second consecutive revert whose reasoning was "remove an
+allocation" (iteration 66 was the first). Iterations 64 and 65 took the
+allocations that were free to remove; what is left on these paths are
+allocations whose removal costs a pass over the data, and at the string
+lengths agent programs actually use, a pass costs more than a malloc. The
+standing "allocation count is the lever" answer in the skill is now
+**qualified**: it holds while the allocation can be removed without adding
+work, and these two reverts are where that stopped being true.
+
+The tree already knew two neighbouring versions of this. `str.replace` carries
+a comment recording that counting matches to presize the output measured 29%
+slower, and `upper`/`lower` carry one recording that a hand-rolled per-char
+loop measured 18x slower. Both are the same shape as this result. The next
+iteration should take a row that is not allocation-bound — `file-write-read`
+(2.77x, 49% of corpus) is untouched I/O and the highest-weight such row.
+
+
 ## 2026-08-31 · iteration 66 — exact-capacity two-pass split: REVERTED, 15.6% slower
 
 The textbook next move after iteration 65 — count the tokens first, allocate

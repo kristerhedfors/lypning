@@ -16,11 +16,18 @@ description: >-
 
 # hillclimb — one measured step at a time
 
-> **FOCUS: raw performance of functionality the Rust core already supports.**
+> **FOCUS: coverage — the refusals in `conformance --plan`, top-down.**
 >
-> That is the dial's current setting. Coverage is taken only when it is nearly
-> free; size is a constraint, not a target. §1 says how to re-aim it, and
-> nothing else in this file changes when you do.
+> Re-aimed 2026-08-31 after iterations 66, 67 and 68 were each measured and
+> each reverted: at `opt-level = "s"` the perturbation band on the remaining
+> hot paths is 5–9% and the available wins are smaller than that, so the speed
+> curve can no longer be climbed with this instrument. Coverage is worth more
+> anyway and the gap is not close — 800 UNSUPPORTED programs at an ~11 ms
+> CPython spawn each is ~8.8 s of avoidable work against a whole-corpus
+> lypning total of 3.05 s (measured this date; re-run before quoting).
+> Hold the byte budget: state what each feature cost. Speed is now taken only
+> when a row is BOTH high-weight and outside the perturbation band, which
+> `docs/HILLCLIMB.md` iterations 66–68 show is rare. §1 says how to re-aim.
 
 Read `CLAUDE.md` first — its nine invariants are binding and this loop does not
 repeat them. Read `README.md` §4 for what each command is. This file is only
