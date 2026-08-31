@@ -14,6 +14,29 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-31** — The Monty stack warm-for-warm, and the executive verdict
+
+- **The warm-shape asymmetry is closed** (`study/paper/warm_parity.py`, paper
+  §5.5): both substrates warm, same 745 programs, same per-program temp cwd.
+  liblypning sweeps at 2.23 ms/program against the Monty pool's 9.41 —
+  ≈3.5 vs ≈25 ms per *answered* program, since lypning declines 262 cheaply
+  while Monty attempts everything — with 480 matches / 1 silent divergence
+  against 275 / 23. Stated with equal care: the all-answering warm chain
+  (12.60 ms) is still slower on wall than Monty's pool; the extra 3.2 ms buys
+  742 correct answers instead of 275 correct plus 447 errors.
+- **The parity instrument caught a lypning defect**: the in-process library arm
+  errs on 2 programs the spawned binary correctly refuses (480/262/2/1 vs
+  480/264/0/1). Unresolved, reported in every affected table, and now the warm
+  chain's correctness line reads 742/2/1 rather than borrowing the binary's.
+- **`docs/EXECUTIVE-SUMMARY.md` is new**: does lypning improve, and where — as
+  objective as the data allows. It was adversarially reviewed for bias in both
+  directions before publication; the pro-lypning pass caught a buried loss and
+  an order-of-magnitude flourish, the anti-lypning pass caught the warm-pool
+  loss overweighted past what the data says and the topline framing our best
+  result as a cost. Both sets of corrections are in the published text, and the
+  verdict table now states its denominators and weightings per row.
+- pydantic-monty 0.0.21 confirmed the current PyPI release at review time.
+
 **2026-08-31** — The overarching review: gaps closed by measurement, and one claim revised down
 
 - **Six new measurements landed in `docs/PAPER.md`, run because reviews demanded

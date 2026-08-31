@@ -185,6 +185,19 @@ ms/program** (2026-08-31, `study/paper/measure_all.py`) — faster than the chai
 and correct by construction. The paper reports that loss and what the pool costs
 (a resident daemon) in its §5.4.
 
+The warm-shape asymmetry this document used to carry — Monty measured warm,
+lypning only cold — is closed by the parity run of 2026-08-31
+(`study/paper/warm_parity.py`, paper §5.5): warm substrate against warm
+substrate over the same 745 programs, liblypning serves the sweep at 2.23
+ms/program against Monty's 9.41, with 480 matches against 275 and 1 silent
+divergence against 23. The concession above ("Monty's pool completes the sweep
+faster than the chain") stands even warm-for-warm at the whole-chain level —
+the all-answering warm chain (12.60 ms/program) is still slower on wall than
+Monty's pool, buying 742 correct answers instead of 275 correct plus 447
+errors — but reverses at the substrate level, and part of the substrate gap is
+Monty's checkout/feed dispatch rather than interpreter speed. The same run caught a lypning defect: the
+in-process library arm errs on 2 programs the spawned binary correctly refuses.
+
 ## Feature-by-feature
 
 | | lypning (mixture chain) | ADK-Rust CodeAct + Monty |
