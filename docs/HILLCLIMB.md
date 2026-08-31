@@ -26,6 +26,27 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-08-31 · iteration 66 — exact-capacity two-pass split: REVERTED, 15.6% slower
+
+The textbook next move after iteration 65 — count the tokens first, allocate
+the output Vec at exact size, fill on a second pass — measured **+15.6%** on
+the split microbenchmark in a direct interleaved A/B (241.2 ms one-pass grow
+vs 278.9 ms two-pass exact, min-of-12 each), and the perf suite agreed
+(`str-split` 4.41x → 5.84x). Reverted.
+
+Why it lost, best reading: with the tokens now interned (iteration 65), the
+growth realloc it removes copies eight 16-byte Values — nearly free — while
+the counting pass it adds walks the string through two more monomorphized
+closure instantiations of `split_ws_each`, which at `opt-level = "s"` also
+perturbs inlining (the suite's reference arm moved 13% in the same run, the
+usual tell). The allocation-count lever only pays when the allocation being
+removed is not already the cheapest thing on the path.
+
+Kept because this is the file's purpose: the idea reads as obviously right,
+and the measurement says it is not. bytes/conformance were clean before the
+revert (1325/800/1); no numbers moved on the tree itself.
+
+
 ## 2026-08-31 · iteration 65 — the 128 ASCII one-character strings are singletons
 
 Focus: raw performance. Queue row taken: `str-split` at 8.21x, 18% of the
