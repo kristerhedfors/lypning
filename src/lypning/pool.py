@@ -241,8 +241,20 @@ class Server:
                     # randomization, and a fork cannot undo it. A pool must
                     # therefore be started with the hash seed its callers
                     # expect -- see the module docstring.
-                    os.environ.clear()
-                    os.environ.update(caller_env)
+                    #
+                    # Applied as a DIFF, not clear()+update(): every assignment
+                    # to os.environ is a libc putenv and every delete an
+                    # unsetenv, so replacing ~136 inherited variables costs two
+                    # hundred-odd C calls per request -- measured at ~1.1 ms of
+                    # a 4.3 ms round-trip. The caller's environment is almost
+                    # always the pool's plus a handful of changes; touching
+                    # only those is the same result for microseconds.
+                    cur = os.environ
+                    for key in [k for k in cur if k not in caller_env]:
+                        del cur[key]
+                    for key, val in caller_env.items():
+                        if cur.get(key) != val:
+                            cur[key] = val
                 os.chdir(cwd)
                 # Rebind the Python-level streams onto the descriptors we just
                 # dup'd. Inheriting the parent's sys.stdout is not enough: a
