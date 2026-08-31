@@ -571,6 +571,61 @@ nobody deploys alone, and quoting it as the headline would be dishonest.
 
 ---
 
+### 5.5 The Monty stack, warm shape for warm shape
+
+A review of an earlier draft flagged one asymmetry: we had measured Monty in its
+warm in-process shape but lypning only as a cold-spawned process, although a
+warm lypning arm — the `liblypning` C ABI — exists and had been timed two tables
+up. The parity run closes it (2026-08-31, `study/paper/warm_parity.py`): four
+deployment shapes over the same 745 clean programs, each program in a fresh temp
+cwd, graded and timed by one instrument, best of two interleaved rounds.
+
+| deployment shape | per program | vs cold CPython | match | silent-diff | loud/refused |
+|---|---:|---:|---:|---:|---|
+| **liblypning, warm in-process** | **2.23 ms** | **8.05×** | 480 | 1 | 262 refused, 2 errored |
+| Monty 0.0.21, warm pool | 9.41 ms | 1.91× | 275 | 23 | 447 errored |
+| warm chain (liblypning → cold CPython on refusal) | 12.60 ms | 1.43× | **742** | 1 | 2 errored |
+| CPython, cold spawn | 17.96 ms | 1.00× | 745 | 0 | — |
+
+Read the table with its asymmetries named, because the arms do different work.
+Substrate against substrate, liblypning completes the sweep in 2.23 ms/program
+against the Monty pool's 9.41 — but lypning's average is earned partly by
+*declining* 262 programs cheaply while Monty attempts everything, so the honest
+per-answered-program bound is ≈3.5 ms against ≈25 ms (attributing each arm's
+entire wall to its answers). On correctness the gap needs no qualification:
+480 matches with 1 silent divergence against 275 with 23. And the earlier
+concession does **not** fully reverse: the only warm lypning shape that answers
+*every* program — the warm chain, 12.60 ms — is still slower on wall than
+Monty's pool (9.41 ms). What the extra 3.2 ms per program buys is 742 correct
+answers instead of 275 correct plus 447 errors and 23 silent wrongs; whether
+that trade wins depends on what an error costs the caller. One further shape
+caveat: "warm pool" for Monty means its client/worker checkout-and-feed, which
+carries dispatch cost the C-ABI call does not, so part of the substrate gap is
+harness shape rather than interpreter speed.
+
+The instrument also caught a defect of ours, which we report rather than
+absorb: the library arm turns **2 programs** into loud errors that the spawned
+tier-1 binary correctly *refuses* (its spawn-shape verdict on the same subset is
+480/264/0/1). An in-process embedding that disagrees with its own binary on 2 of
+745 programs has a bug on one side or the other, and until it is root-caused the
+library arm's correctness must be quoted as 480/262/**2**/1, not the binary's
+cleaner line. Those 2 errors also propagate into the warm chain (742 rather than
+744 matches), because an error — unlike a refusal — does not fall through.
+
+What the table cannot show is the two stacks' failure economics, and here we
+must be careful about what is measured and what is not. Measured: the error
+*count* each substrate hands its caller on this population — 447 for Monty,
+0 for the cold chain, 2 for the warm chain. Not measured: what an error costs
+the caller. In the CodeAct deployment an error returns to the language model,
+and a model turn is a modeled cost (we did not drive ADK-Rust with a live
+model); in the lypning deployment a refusal is answered inside the stack in
+tens of milliseconds. That advantage also belongs to the *chain architecture*
+rather than to the interpreter — nothing prevents a Monty deployment from
+adding its own CPython fallback on error, at which point the comparison
+collapses to the substrate rows above. The two systems also remain different products:
+Monty's sandbox, resource limits and snapshot/resume are capabilities lypning
+does not have and does not claim; `docs/COMPARISON.md` treats that side fully.
+
 ## 6. The design point: tiers that cannot deoptimize
 
 Every tiered execution system we are aware of makes its tiering decision the same
