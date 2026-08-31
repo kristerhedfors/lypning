@@ -14,6 +14,52 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-31** — The pool-backstopped chain, built: 1.77x and 745/745 correct
+
+- **`lypning pool serve` is new** (`src/lypning/pool.py`): a pre-warmed CPython
+  that forks per program, wired in as the chain's CPython tier via
+  `LYPNING_POOL`. Opt-in, off by default, and it degrades to a cold spawn if the
+  pool is down, wedged or unreachable — the backstop may be faster than CPython,
+  never a new way for CPython to be unavailable.
+- **The composition the measurements pointed at, measured instead of estimated**
+  (`study/paper/pool_chain.py`, best-of-3 over the 745 clean programs):
+  pool-backstopped chain **14.85 ms/prog, 1.77x, 745/745 correct** (481 answers
+  from tier 1, 264 from the pool) against the cold chain's 17.41 ms / 1.51x /
+  744, the pool alone at 18.76 ms / 1.40x, and cold CPython at 26.27 ms. It is
+  the fastest arm and the only fast arm that answers everything.
+- **Our own arithmetic was wrong by 40% and the paper says so.** The projection
+  was ~3x; it ignored that the tier-1 pass is paid on all 745 programs including
+  the 264 it refuses, and that the pool leg pays a socket round-trip.
+- **A published claim is retracted: a warm pool is NOT correct by construction.**
+  It freezes its environment at start. Forwarding the caller's `os.environ` per
+  request took divergences from 6 to 3; the residual 3 were set/dict-view
+  orderings, which a fork cannot fix because `PYTHONHASHSEED` is consumed at
+  interpreter start. Starting the pool under the caller's seed took 3 to 0.
+  **Start the pool as the interpreter its callers think they are getting.**
+- **Two fidelity bugs in the pool, found by the corpus and not by hand.** The
+  forked child must rebind `sys.stdout`/`stderr`/`stdin` onto its dup'd
+  descriptors with CPython's own `surrogateescape`/`write_through` settings —
+  inheriting the parent's objects silently drops all output whenever the host
+  has replaced them (every hand-written smoke test passed; the test suite
+  caught it immediately). And the pool arm needed the universal-newline
+  translation the spawned arms get from `text=True`, or a `csv.writer` program
+  grades as a divergence against its own reference.
+- **The "2-program library defect" reported yesterday was build hygiene, not a
+  bug.** `liblypning.so` had last been built a day before the binary, so the two
+  artifacts answered from different subsets — the library still raised on
+  `dict.keys() | {...}` the binary had learned to refuse, and refused an
+  `rsplit` the binary had learned to answer. Rebuilding took frontier-probe
+  disagreements from 4 to 1 (a musl-vs-glibc `pow` ULP, expected between a
+  static binary and a host library).
+- **`lypning doctor` now fails when the two artifacts disagree.** Seven
+  constructs chosen to sit on the refusal frontier are run through both the C
+  ABI and the spawned binary; nothing else in the package would have noticed,
+  since both pass their own contract assertion and both report the same version.
+- 26 new tests pin the pool to CPython byte-for-byte: traceback text with no
+  pool frame, non-integer `SystemExit`, signalled children, state isolation
+  between programs, large output through the pipe, and a socket that is not
+  world-readable.
+
 **2026-08-31** — The Monty stack warm-for-warm, and the executive verdict
 
 - **The warm-shape asymmetry is closed** (`study/paper/warm_parity.py`, paper

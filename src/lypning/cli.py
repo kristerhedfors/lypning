@@ -43,7 +43,7 @@ PROG = "lypning"
 #: Everything argparse owns. ``argv[1]`` in here is a subcommand; anything else
 #: that could plausibly be a program is the interpreter's.
 COMMANDS = (
-    "run", "route", "build", "lib", "status", "doctor", "install", "uninstall",
+    "run", "route", "build", "lib", "pool", "status", "doctor", "install", "uninstall",
     "shim", "hook", "conformance", "fuzz", "bench", "corpus-time", "perf", "gate",
     "harvest", "corpus",
 )
@@ -657,6 +657,59 @@ def cmd_status(ns: argparse.Namespace) -> int:
     return 0
 
 
+# --- pool --------------------------------------------------------------------
+
+
+def cmd_pool(ns: argparse.Namespace) -> int:
+    """Serve, ping or stop a warm CPython backstop for the chain.
+
+    The pool is opt-in and off by default: a resident daemon is a deployment
+    decision, and this project's whole shape is a drop-in binary that needs no
+    supervision. What it buys is measured in `docs/PAPER.md` -- the chain's
+    fallback tier stops paying interpreter startup per refused program.
+    """
+    poolmod = _mod("pool")
+    sock = ns.socket or str(paths.state_dir() / poolmod.DEFAULT_SOCKET)
+
+    if ns.action == "ping":
+        try:
+            reply = poolmod.Client(sock).ping()
+        except poolmod.PoolError as e:
+            return _fail(str(e))
+        if ns.json:
+            _json(reply)
+        else:
+            _out("pool at %s: pid %s, %d served" % (sock, reply.get("pid"),
+                                                    reply.get("served", 0)))
+        return 0
+
+    if ns.action == "stop":
+        poolmod.Client(sock).shutdown()
+        if ns.json:
+            _json({"stopped": sock})
+        else:
+            _out("stopped %s" % sock)
+        return 0
+
+    server = poolmod.Server(sock)
+    failed = server.warm()
+    server.open()
+    if not ns.quiet:
+        _out("pool listening on %s (pid %d)" % (sock, os.getpid()))
+        _out("export LYPNING_POOL=%s   # then `lypning run` uses it as the backstop" % sock)
+        if failed:
+            _out("preload unavailable: %s" % ", ".join(failed))
+    try:
+        served = server.serve_forever(max_requests=ns.max_requests)
+    except KeyboardInterrupt:
+        served = server.served
+    finally:
+        server.close()
+    if not ns.quiet:
+        _out("served %d program(s)" % served)
+    return 0
+
+
 # --- doctor ------------------------------------------------------------------
 
 #: NOTE is the fourth level and it is neither good news nor bad: an optional
@@ -870,6 +923,26 @@ def _doctor_checks() -> List[Tuple[str, str, str]]:
                            "%d programs from %s" % (n, paths.CORPUS_FILE)))
     except Failure as e:
         checks.append((WARN, "corpus", str(e)))
+
+    # The two artifacts are built from one tree and installed independently, so
+    # `build --rust` without `--lib` leaves a library answering from an older
+    # subset. Both still pass their own contract assertion and both report the
+    # same version, so nothing else here would notice.
+    try:
+        drift = engines.library_binary_drift()
+        if drift:
+            checks.append((FAIL, "core/library agreement",
+                           "%d of %d probes disagree — the C ABI and the binary were built "
+                           "from different trees; run `lypning build --rust --lib`. First: "
+                           "%s -> binary %s, library %s"
+                           % (len(drift), len(engines.DRIFT_PROBES), drift[0][0],
+                              drift[0][1], drift[0][2])))
+        else:
+            checks.append((OK, "core/library agreement",
+                           "%d frontier probes answer alike in both artifacts"
+                           % len(engines.DRIFT_PROBES)))
+    except Exception as e:                      # never let a probe fail the doctor
+        checks.append((WARN, "core/library agreement", str(e)))
 
     return checks
 
@@ -1567,6 +1640,31 @@ examples:
                    help="the directory holding lypning.h and lypning.hpp")
     s.add_argument("--json", action="store_true", help="machine-readable")
     s.set_defaults(func=cmd_lib)
+
+    # pool
+    s = _sub(subs, "pool", "a warm CPython backstop for the chain", """
+Serves a pre-warmed CPython that forks per program, so the chain's fallback
+tier stops paying interpreter startup on every program the faster tiers refuse.
+
+    lypning pool serve &                 # in one shell
+    export LYPNING_POOL=~/.lypning/lypning-pool.sock
+    lypning run -c 'print(1)'            # refusals now land in the pool
+
+Opt-in and off by default: it is a resident daemon, which is exactly what the
+rest of this project avoids being. It is NOT a sandbox -- children inherit the
+credentials and namespace the pool was started with -- and it answers only
+programs the faster tiers have already refused. If the pool is down, wedged or
+unreachable, `lypning run` spawns a cold interpreter instead: the backstop may
+be faster than CPython, never a new way for CPython to be unavailable.
+""")
+    s.add_argument("action", nargs="?", default="serve",
+                   choices=("serve", "ping", "stop"), help="default: serve")
+    s.add_argument("--socket", metavar="PATH", help="default: $LYPNING_HOME/lypning-pool.sock")
+    s.add_argument("--max-requests", type=int, default=0, metavar="N",
+                   help="exit after serving N programs (0 = forever)")
+    s.add_argument("--quiet", action="store_true", help="no chatter on stdout")
+    s.add_argument("--json", action="store_true", help="machine-readable")
+    s.set_defaults(func=cmd_pool)
 
     # status
     s = _sub(subs, "status", "what is built, wired and captured", """

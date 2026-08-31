@@ -44,16 +44,21 @@ per-program penalty is **majority fixed startup, not unamortized warmup** — it
 pays +16.22 ms over CPython on `print(1)`, before any JIT can warm. And the honest competitor to a new engine
 is not another interpreter but a **warm pool** — a pre-warmed CPython forking per
 program — which we measure rather than dismiss, and which **beats our own deployed
-chain** (2.04× vs 1.50× over cold CPython) while being correct by construction.
+chain** (2.04× vs 1.50× over cold CPython). We then *build* the composition
+those numbers point at — tier 1 with the pool as its backstop — and measure it
+at **1.77× with 745 of 745 programs correct**, the best arm on both axes, while
+reporting that our own arithmetic had projected ≈3× and was wrong.
 
 Our own contribution is narrower than "a faster Python" and we state it as such:
 a characterization of a workload we are not aware of being measured at this
 granularity before, and the design point that
 workload forces — **tiers that are separate processes cannot deoptimize**, so
 tier selection must be a static admission test, and the refusal channel becomes
-the system's principal interface rather than an internal signal. The measurement
-that beat us also points past us: tier 1 serves its share at 2.67 ms against the
-pool's 8.39 ms, so a chain whose *backstop* is a warm pool should beat both.
+the system's principal interface rather than an internal signal. The measurement that beat us pointed past us, so we followed it: the
+pool-backstopped chain is built (§5.6) and is the fastest correct arm we have.
+Building it also refuted a claim we had published — a warm pool is *not*
+correct by construction, because it freezes the environment at start and a fork
+cannot re-seed hash randomization.
 
 ---
 
@@ -74,7 +79,7 @@ enough to repay the cost of observing it. If the programs an agent actually runs
 finish in microseconds, that assumption is not merely weak — it inverts, and the
 optimization becomes a regression. We show that it does.
 
-The paper makes four claims, in decreasing order of confidence:
+The paper makes five claims, in decreasing order of confidence:
 
 1. **An empirical characterization** of Python emitted by a coding agent at
    *execution* granularity — captured as the interpreter receives it, not as
@@ -95,6 +100,9 @@ The paper makes four claims, in decreasing order of confidence:
    faster end to end, not an order of magnitude**; and **a pre-warmed CPython
    fork pool beats it** (2.04×) while being correct by construction. We report
    the modest number and the loss because they are what a user would find. (§5.4)
+5. **The composition, built rather than projected**: a chain whose backstop is
+   the warm pool measures 1.77× with 745/745 correct — best on both axes — and
+   the arithmetic estimate that motivated it (≈3×) was too high by 40%. (§5.6)
 
 None of the underlying mechanisms are new, and §7 concedes the prior art before
 positioning against it.
@@ -625,6 +633,66 @@ adding its own CPython fallback on error, at which point the comparison
 collapses to the substrate rows above. The two systems also remain different products:
 Monty's sandbox, resource limits and snapshot/resume are capabilities lypning
 does not have and does not claim; `docs/COMPARISON.md` treats that side fully.
+
+### 5.6 The pool-backstopped chain, built and measured
+
+Two sections of this paper projected a composition and declined to claim it:
+tier 1 serves its share far below the warm pool's per-program cost, so a chain
+whose *backstop* is the pool rather than a cold CPython spawn should beat both.
+It is now built (`src/lypning/pool.py`, `lypning pool serve`, opt-in via
+`LYPNING_POOL`) and measured rather than estimated (2026-08-31,
+`study/paper/pool_chain.py`, best of 3 interleaved rounds over the same 745
+clean programs, each in a fresh temp cwd, graded against a per-program CPython
+reference):
+
+| arm | per program | vs cold CPython | correct |
+|---|---:|---:|---:|
+| **pool-backstopped chain** | **14.85 ms** | **1.77×** | **745 / 745** |
+| cold-spawned chain (what we ship) | 17.41 ms | 1.51× | 744 / 745 |
+| warm CPython fork pool alone | 18.76 ms | 1.40× | 745 / 745 |
+| CPython, cold spawn | 26.27 ms | 1.00× | reference |
+
+The composition is the best arm on both axes in the same run: fastest, and the
+only fast arm that answers every program. Of its 745 answers, 481 come from
+tier 1 in-process and 264 from the pool. It has no silent divergence at all —
+not even the ledgered musl `pow` ULP, because tier 1 here is the host-linked
+library rather than the musl-static binary, so the one difference the shipped
+cold chain carries is absent by construction from this shape.
+
+**The arithmetic estimate was too optimistic, and by a lot.** §5.4 projected
+≈3× from (1,993 + 264 × 8.39)/745; the measurement says 1.77×. Three things the
+arithmetic ignored: the tier-1 pass is paid on *all* 745 programs including the
+264 it refuses, the pool leg now also pays socket round-trip and environment
+forwarding, and this run's machine was more loaded than §5.4's (its cold-CPython
+baseline is 26.27 ms/program against 17.10 there — which is exactly why this
+paper reports ratios and quotes absolute walls only with their run). The
+qualitative claim survives; the magnitude does not, and an estimate that
+survives contact with a measurement at 60% of its projected value should be
+reported as the miss it is.
+
+**What building it cost in fidelity, and what that taught.** A warm pool is not
+correct by construction, which an earlier draft of `docs/EXECUTIVE-SUMMARY.md`
+asserted and this measurement refuted. Differential testing against the corpus
+found three classes of divergence in our own pool before any of them reached a
+number we published:
+
+* *Streams.* The forked child must rebind `sys.stdout`/`stderr`/`stdin` onto
+  its dup'd descriptors with CPython's own settings (`surrogateescape`,
+  `write_through`); inheriting the parent's objects silently drops all output
+  whenever the host has replaced them, and `errors="replace"` corrupts bytes a
+  program meant to round-trip.
+* *Environment.* A pool freezes the environment at start. Forwarding the
+  caller's `os.environ` per request fixes everything read at run time and took
+  the divergence count from 6 to 3.
+* *Hash seed.* The residual 3 are set and dict-view orderings, and a fork
+  cannot fix them: `PYTHONHASHSEED` is consumed at interpreter start. Starting
+  the pool under the caller's seed took 3 to 0. **This is a deployment rule,
+  not a bug**, and it is the sharpest practical finding of the whole exercise —
+  a warm pool inherits the identity of the interpreter that started it, so it
+  must be started as the interpreter its callers think they are getting.
+
+None of these were visible in a hand-written smoke test; all three came from
+running the corpus differentially, which is the method this paper argues for.
 
 ## 6. The design point: tiers that cannot deoptimize
 
