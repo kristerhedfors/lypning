@@ -14,6 +14,48 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-31** — The paper: an agent-Python profile, and five engines measured against it
+
+- **`docs/PAPER.md` is new.** It asks what coding agents actually hand to an
+  interpreter, answers it by measurement, and benchmarks CPython 3.11, PyPy
+  7.3.20, MicroPython, Monty 0.0.21 and both lypning configurations on that
+  corpus with one instrument. Harnesses ship in `study/paper/`.
+- **The profile is the finding.** Over the corpus as loaded on 2026-08-30 (2,906
+  entries, 2,869 parsed): the median program is 384 bytes, 10 lines, 74 AST
+  nodes; 0.3% define a class; `match`, walrus and `async` do not appear at all;
+  and 49.0% contain an `open(` call site. Decomposed inside the child over 765
+  CPython-clean programs, the median program spends **0.019 ms executing against
+  16.83 ms of interpreter startup** — 88.4% execute in under a millisecond.
+- **PyPy is the slowest engine on this workload** (3.0–3.1× CPython's wall in two
+  sweeps) and returns **39 silent divergences**. All three divergence families
+  are ones PyPy documents: non-prompt file finalization, ordered sets, and
+  keyword arguments CPython rejects. The contribution is the blast radius, not
+  the discovery. The cause is also now measured rather than assumed — PyPy pays
+  **+16.22 ms over CPython on `print(1)`**, so the penalty is majority fixed
+  startup, not unamortized warmup.
+- **We lose to the obvious baseline and say so.** A pre-warmed CPython forking
+  per program serves the 745 clean programs at 8.39 ms each (2.04× cold CPython)
+  against our chain's 11.38 ms (1.50×), and it is correct by construction. The
+  same table points past both: tier 1 alone serves its share at 2.67 ms, so a
+  chain whose backstop is a warm pool should beat either.
+- **Two reviewer objections answered with measurement, not prose.** The
+  absolute-path exclusion really does remove the harder half — skipped programs
+  loop at 75.1% against 38.2% retained, and define functions 3.6× as often — so
+  the coverage rate is optimistic by an amount we now bound. And the
+  self-hosting worry is a null on the evaluation: **none of the 745 clean
+  programs import lypning**, so dropping them changes nothing (480/264/1 either
+  way); the contamination lands on the profile, not the benchmark.
+- **A real irreproducibility was found and fixed:** corpus programs calling
+  `sys.stdin.read()` blocked on the harness's inherited stdin. Every child now
+  gets an explicit EOF. Re-running the whole sweep afterwards reproduced every
+  correctness count exactly, while wall clock moved with machine load — which is
+  why timings are reported as ratios.
+- **The bibliography was rebuilt after the survey agents turned out to have no
+  network access.** Twelve references are now checked against primary sources;
+  one recalled author list was confirmed fabricated (the POPL 2018 sourir paper's
+  third author is Ming-Ho Yee). Attributions still resting on recall are marked
+  `[unverified]` inline rather than quietly kept.
+
 **2026-08-30** — Measured against ADK-Rust CodeAct + Monty, on one instrument
 
 - **`docs/COMPARISON.md` is new, and its numbers are runs, not vibes.** Both

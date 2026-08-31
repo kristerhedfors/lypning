@@ -848,6 +848,7 @@ Makefile               thin wrappers: build test check conformance fuzz bench ga
 | `docs/HILLCLIMB.md` | append-only ledger of improvement steps — the four numbers each moved, and the ones that moved nothing |
 | `docs/FORKING.md` | fork it and tune it to YOUR programs: the capture→harvest→gate→step loop as a standing feature, and every optimization classified by whether it transfers, re-derives, or must be re-measured |
 | `docs/COMPARISON.md` | against ADK-Rust CodeAct + Monty: one instrument over the corpus, both columns measured, and when to choose which |
+| `docs/PAPER.md` | the write-up: what coding agents actually emit, profiled; and CPython / PyPy / MicroPython / Monty / lypning benchmarked on it — startup, parse, execute, memory, compatibility, and total wall clock |
 
 Working on this repository? Read `CLAUDE.md` first, and
 `.claude/skills/hillclimb/SKILL.md` for the loop that improves it — what to
