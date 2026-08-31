@@ -202,7 +202,7 @@ impl Interp {
             }
             Iter::Chars(c, i) => {
                 if *i < c.len() {
-                    let v = Value::Str(c[*i].to_string().into());
+                    let v = Value::Str(crate::value::char_str(c[*i]));
                     *i += 1;
                     Some(v)
                 } else {

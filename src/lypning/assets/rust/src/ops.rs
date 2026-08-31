@@ -322,11 +322,11 @@ impl Interp {
                 // them, which is O(n) in the string for an O(1) question.
                 if s.is_ascii() {
                     let i = norm_index(crate::eval::int_val(idx)?, s.len(), "string")?;
-                    Value::Str(s[i..i + 1].into())
+                    Value::Str(crate::value::substr(&s[i..i + 1]))
                 } else {
                     let chars: Vec<char> = s.chars().collect();
                     let i = norm_index(crate::eval::int_val(idx)?, chars.len(), "string")?;
-                    Value::Str(chars[i].to_string().into())
+                    Value::Str(crate::value::char_str(chars[i]))
                 }
             }
             Value::Bytes(b) => {
@@ -1408,12 +1408,20 @@ pub fn set_op(x: &Rc<RefCell<Set>>, y: &Rc<RefCell<Set>>, op: SetOp) -> R<Value>
 /// What is left per conversion is `percent_one`'s chain, which is its own
 /// problem and is documented there.
 fn percent_format(f: &str, arg: &Value) -> R<String> {
-    let args: Vec<Value> = match arg {
-        Value::Tuple(t) => (**t).clone(),
-        other => vec![other.clone()],
+    // Borrowed, never cloned: the values are only ever read through `get`, so
+    // copying the tuple bought one Vec and one refcount bump per element per
+    // call on an allocator where the allocation count is the lever.
+    let args: &[Value] = match arg {
+        Value::Tuple(t) => t,
+        other => std::slice::from_ref(other),
     };
     let b = f.as_bytes();
-    let mut out = String::with_capacity(f.len());
+    // Reserved past the growth cliff: `f.len()` under-reserves whenever any
+    // conversion expands (the normal case), so nearly every call paid a
+    // mallocng grow-copy-free. Eight bytes per conversion covers every i64 an
+    // agent one-liner prints; an overshoot inside the same size class is free.
+    let pct = b.iter().filter(|&&c| c == b'%').count();
+    let mut out = String::with_capacity(f.len() + 8 * pct);
     // One buffer for every conversion in this format string.
     let mut spec = String::new();
     let mut min_digits = 0usize;
@@ -1459,7 +1467,18 @@ fn percent_format(f: &str, arg: &Value) -> R<String> {
             .get(ai)
             .ok_or_else(|| type_err("not enough arguments for format string"))?;
         ai += 1;
-        out.push_str(&percent_one(v, &spec, min_digits)?);
+        // The two bare conversions agent programs actually type, written into
+        // `out` directly instead of through `percent_one`'s temporary String —
+        // one malloc, one memcpy and one free per conversion, gone. Anything
+        // with a width, a flag or another type takes the full path unchanged.
+        match (spec.as_str(), v) {
+            ("s", Value::Str(sv)) => out.push_str(sv),
+            ("d", Value::Int(n)) if min_digits == 0 => {
+                use std::fmt::Write;
+                let _ = write!(out, "{n}");
+            }
+            _ => out.push_str(&percent_one(v, &spec, min_digits)?),
+        }
     }
     // The leftover-argument check is skipped for anything CPython considers a
     // MAPPING in the C sense — `PyMapping_Check`, which is true for dict, list

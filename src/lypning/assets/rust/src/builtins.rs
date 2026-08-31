@@ -1120,7 +1120,7 @@ pub fn call_builtin(
         "chr" => {
             let n = int_val(&arg1(name, &args)?)?;
             match u32::try_from(n).ok().and_then(char::from_u32) {
-                Some(c) => Value::Str(c.to_string().into()),
+                Some(c) => Value::Str(crate::value::char_str(c)),
                 None => return Err(value_err("chr() arg not in range(0x110000)")),
             }
         }

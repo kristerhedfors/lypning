@@ -14,6 +14,34 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-31** — Hillclimb iterations 64–66: two allocation kills, one measured revert
+
+- **`str-fmt-pct` 8.09x → 5.49x** (iteration 64): `percent_format` stops
+  allocating per conversion — the argument tuple is borrowed instead of cloned,
+  the output is reserved past the growth cliff, and bare `%s`-on-str /
+  `%d`-on-int write into the output directly. Sixteen shapes diffed against
+  CPython; byte-identical binary.
+- **`str-split` 8.21x → 4.41x** (iteration 65): the 128 ASCII one-character
+  strings are interned singletons, consulted by every site that materializes a
+  single character — both split paths, `s[i]`, `for c in s`, `chr()`. Two sites
+  were allocating twice per character. Safe by construction here (`is` between
+  equal immutables refuses) and convergent with CPython (its latin-1
+  singletons). +4,096 B, still 8 blocks.
+- **Iteration 66 measured, lost, reverted, ledgered**: exact-capacity two-pass
+  splitting was +15.6% in a direct A/B — with tokens interned, the realloc it
+  removes is cheaper than the second scan it adds. The failure is in
+  `docs/HILLCLIMB.md` so it is not re-proposed.
+- Suite TOTAL 2.52x → 2.25x across the two accepted steps; whole-corpus
+  `corpus-time` 3.42 s → 3.05 s over 2,126 programs; conformance unchanged at
+  1325/800/1 (the ledgered musl `pow` ULP).
+- **Pool round-trip −0.37 ms/request**: the child applies the caller's
+  environment as a diff instead of `clear()+update()` (~272 libc calls → a
+  handful), semantics verified in both directions.
+- Method-name id-dispatch was priced and retired: nulling the whole arity
+  string-match pass bought 2.7% of wall on a scaled `str-methods` loop, so the
+  ~20% of instructions in name matching does not convert (the ledger's
+  binary-search lesson, again).
+
 **2026-08-31** — The pool-backstopped chain, built: 1.77x and 745/745 correct
 
 - **`lypning pool serve` is new** (`src/lypning/pool.py`): a pre-warmed CPython

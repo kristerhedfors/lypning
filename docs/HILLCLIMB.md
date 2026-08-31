@@ -26,6 +26,92 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-08-31 · iteration 66 — exact-capacity two-pass split: REVERTED, 15.6% slower
+
+The textbook next move after iteration 65 — count the tokens first, allocate
+the output Vec at exact size, fill on a second pass — measured **+15.6%** on
+the split microbenchmark in a direct interleaved A/B (241.2 ms one-pass grow
+vs 278.9 ms two-pass exact, min-of-12 each), and the perf suite agreed
+(`str-split` 4.41x → 5.84x). Reverted.
+
+Why it lost, best reading: with the tokens now interned (iteration 65), the
+growth realloc it removes copies eight 16-byte Values — nearly free — while
+the counting pass it adds walks the string through two more monomorphized
+closure instantiations of `split_ws_each`, which at `opt-level = "s"` also
+perturbs inlining (the suite's reference arm moved 13% in the same run, the
+usual tell). The allocation-count lever only pays when the allocation being
+removed is not already the cheapest thing on the path.
+
+Kept because this is the file's purpose: the idea reads as obviously right,
+and the measurement says it is not. bytes/conformance were clean before the
+revert (1325/800/1); no numbers moved on the tree itself.
+
+
+## 2026-08-31 · iteration 65 — the 128 ASCII one-character strings are singletons
+
+Focus: raw performance. Queue row taken: `str-split` at 8.21x, 18% of the
+2,906 corpus programs loaded this run — and the mechanism reaches every other
+place a single character is materialized: `s[i]`, `for c in s`, `chr()`, and
+both split paths.
+
+One mechanism: a thread-local table of 128 interned `Rc<str>` singletons for
+the ASCII one-character strings, consulted by two new funnels in `value.rs`
+(`char_str` for a `char`, `substr` for a slice) that six call sites now route
+through. Two of those sites were allocating TWICE per character
+(`c.to_string().into()` — a String and then an Rc); all are now a refcount
+bump for ASCII and a single allocation otherwise. Safety was checked before
+the first line was written: lypning refuses `is` between equal immutables, so
+interning is unobservable in any answered program — and CPython interns exactly
+these (its latin-1 singletons), so the sharing converges with the reference
+rather than diverging from it.
+
+- bytes: 1,028,304 → 1,032,400 (+4,096; still 8 blocks, 16,176 B headroom)
+- conformance: 1325 / 800 / 1 MISMATCH (the ledgered musl `pow` ULP, unchanged)
+- perf: `str-split` 8.21x → **4.41x**; `str-slice` 4.68x → 3.83x;
+  `str-methods` 4.61x → 4.74x (noise on an untouched path);
+  TOTAL 2.31x → 2.25x
+- corpus-time: 3.42 s → 3.05 s over 2,126 programs (0.890x vs the iteration-63
+  baseline; both iterations 64+65 included)
+- twelve split/index/iterate/chr shapes diffed against CPython by hand,
+  ASCII and non-ASCII both: no divergence
+
+
+## 2026-08-31 · iteration 64 — percent-format stops allocating per conversion
+
+Focus: raw performance. Queue row taken: `str-fmt-pct` at 8.09x, present in 18%
+of the 2,906 corpus programs loaded this run. Candidate mechanisms were fanned
+out to three source-reading agents first; the `percent_format` allocation
+census survived contact with the real code, and the call-path census did not —
+chain pooling, scope pooling, the `Used` bitmask and lazy global-decl sets were
+already in place from earlier iterations. The ledger did its job: those
+proposals were retired by reading it, not re-implemented.
+
+One mechanism, three cuts in one function (`ops.rs::percent_format`): the
+argument tuple is borrowed instead of cloned (`std::slice::from_ref` for the
+scalar case); `out` is reserved at `f.len() + 8 * count('%')` so the mallocng
+grow-copy-free on expansion is gone; and the two bare conversions agents
+actually type — `%s` on str, `%d` on int with no minimum digits — write into
+`out` directly instead of through `percent_one`'s temporary String. Width,
+flags, mapping keys and every other type take the old path byte-for-byte.
+
+- bytes: 1,028,304 → 1,028,304 — identical, 8 blocks
+- conformance: 1325 / 800 / 1 MISMATCH (the ledgered musl `pow` ULP, unchanged)
+- perf: `str-fmt-pct` 8.09x → **5.49x**; `str-of-scalar` 4.40x → 3.93x;
+  TOTAL 2.52x → 2.31x
+- corpus-time: 3.42 s → 3.21 s over 2,126 programs (0.938x — outside the 3%
+  deadband, on the good side; read per skill §3, this is not the reward)
+- sixteen %-format shapes diffed against CPython by hand: no divergence, no
+  new refusal
+
+Same commit, Python side: the pool child applies the caller's environment as a
+DIFF instead of `clear()+update()` — ~272 libc putenv/unsetenv calls per
+request became a handful — measured 4.286 → 3.920 ms median on the `print(1)`
+round-trip, with delta semantics verified in both directions. A probe also
+priced the arity string-match pass at 2.7% of wall on a 10x-scaled
+`str-methods` loop, which retires "id-dispatch of method names" as a
+low-priority mechanism: the Ir it removes does not convert (skill §2b, again).
+
+
 ## 2026-08-30 · iteration 63 — the answer the user actually receives
 
 **commits** `e044642..HEAD` (14, one stretch) · **host** 4 cpus, Linux
