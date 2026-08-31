@@ -26,6 +26,44 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-08-31 · iteration 67 — shared case buffer for ASCII upper/lower: REVERTED, no win
+
+`to_lowercase()` returns a `String` and `Rc<str>: From<String>` cannot take
+that buffer — it allocates again and copies — so every `.lower()` is two
+mallocs for one answer. Filling a thread-local buffer and building the `Rc`
+from it once removes one of them. Measured, interleaved, min-of-12 per arm:
+
+| case | before | after | |
+|---|---:|---:|---|
+| `str-methods` composite ×10 | 276.9 ms | 271.4 ms | −2.0% |
+| `.lower()` alone ×400k | 141.1 ms | 146.9 ms | **+4.1%** |
+| `.upper()` alone ×400k | 131.2 ms | 139.1 ms | **+6.0%** |
+| non-ASCII `.lower()` (untouched path) | 77.8 ms | 80.7 ms | +3.8% |
+
+Reverted. The saved malloc is paid for twice over by an extra pass: `push_str`
+copies, `make_ascii_lowercase` walks it again, `Rc::from` copies once more —
+three passes where `to_lowercase()` + `into()` does two. And the **untouched**
+non-ASCII arm moving 3.8% puts the noise floor here at about 4%, which is most
+of what the targeted cases showed.
+
+**The finding that outlives the change, and it is the reason to re-aim (skill
+§1):** this is the second consecutive revert whose reasoning was "remove an
+allocation" (iteration 66 was the first). Iterations 64 and 65 took the
+allocations that were free to remove; what is left on these paths are
+allocations whose removal costs a pass over the data, and at the string
+lengths agent programs actually use, a pass costs more than a malloc. The
+standing "allocation count is the lever" answer in the skill is now
+**qualified**: it holds while the allocation can be removed without adding
+work, and these two reverts are where that stopped being true.
+
+The tree already knew two neighbouring versions of this. `str.replace` carries
+a comment recording that counting matches to presize the output measured 29%
+slower, and `upper`/`lower` carry one recording that a hand-rolled per-char
+loop measured 18x slower. Both are the same shape as this result. The next
+iteration should take a row that is not allocation-bound — `file-write-read`
+(2.77x, 49% of corpus) is untouched I/O and the highest-weight such row.
+
+
 ## 2026-08-31 · iteration 66 — exact-capacity two-pass split: REVERTED, 15.6% slower
 
 The textbook next move after iteration 65 — count the tokens first, allocate
