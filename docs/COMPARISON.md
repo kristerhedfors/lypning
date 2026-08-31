@@ -8,6 +8,12 @@ binary built the same day (1,024,208 B); the harness is committed at
 `study/monty/` so a fork can re-run it. Per CLAUDE.md invariant 3, do not quote
 these numbers without re-running them — both projects move.
 
+A wider five-engine evaluation over the same corpus — adding PyPy, standalone
+MicroPython, CPython 3.13, and a warm CPython fork pool, re-run 2026-08-31 with
+a hardened harness — is `docs/PAPER.md` with harnesses in `study/paper/`. Where
+a number here differs from that document, the difference is run date; each is
+quoted with its own.
+
 ## The two designs, honestly stated
 
 **[Monty](https://github.com/pydantic/monty)** (Pydantic, MIT) is a minimal
@@ -50,6 +56,10 @@ with `PYTHONHASHSEED=0` and `LC_ALL=C.UTF-8`. Monty runs with no OS access
 | both failed (program fails in an empty sandbox on both) | 1,245 (62.6%) | 1,245 (62.6%) |
 | refused / unsupported, loudly | 264 (13.3%) | 340 (17.1%) |
 | errored where CPython succeeds | 0 | 107 (5.4%) |
+
+(The paper's sweep reports all 447 Monty failures as one LOUD-ERROR class,
+because Monty has no exit-90 refusal channel a dispatcher could act on; this
+table subdivides by whether the error names an unimplemented construct.)
 | **answered wrongly at exit-success** | **1** (0.05%) | **23** (1.2%) |
 
 The identical both-fail counts are the sanity check that one instrument graded
@@ -68,7 +78,12 @@ difference (`1.7976931348623157e308 ** 0.5`), tracked by identity in
 is: with the fall-through, the full mixture answers **2,119 of 2,906** corpus
 programs identically to CPython with 7 ledgered exceptions (`lypning
 conformance`, 2026-08-30), because a refusal is answered by the next tier
-rather than surfaced to the model. CodeAct has no equivalent — a Monty error
+rather than surfaced to the model. (The two instruments differ: the conformance
+battery grades all 2,906 entries including matching-failure outcomes and its
+ledger spans the whole corpus, which is how it reports 7 exceptions where the
+paper's 1,990-program sweep, grading stdout on success only, finds 1 on its 745
+clean programs. Neither number is wrong; they answer different questions.)
+CodeAct has no equivalent — a Monty error
 returns to the LLM, which spends a model turn recovering.
 
 ### Where Monty's 23 silent divergences live
@@ -110,7 +125,11 @@ fair comparison is shape-to-shape (60 runs each):
 | peak RSS (hello / dict-heavy) | at the ~8.6 MB measurement floor | floor +0.2 MB / +1.0 MB | at the floor |
 
 In-process to in-process they are the same order of magnitude; startup does not
-separate these systems.
+separate these systems. (A 2026-08-31 re-run of the spawn row printed 0.553 ms /
+10.663 ms — run-to-run spread on a shared container; quote either only with its
+date. The 08-30 end-to-end walls below likewise predate the stdin-EOF harness
+hardening of 08-31, which changed no correctness count and moved walls a few
+percent.)
 
 ### Sustained compute — where nobody beats CPython
 
@@ -147,7 +166,7 @@ each in a fresh temp cwd, in each system's natural shape (best of 2 rounds):
 | system, its own shape | total | per program | and it answers |
 |---|---:|---:|---|
 | CPython, spawned per program | 12,687 ms | 17.0 ms | 100% (it is the oracle) |
-| **lypning chain** (`lypning run`) | **8,569 ms** | **11.5 ms** | **100%, never silently wrong** (1 ledgered ULP) |
+| **lypning chain** (`lypning run`) | **8,569 ms** | **11.5 ms** | matches CPython or refuses; 1 ledgered ULP divergence |
 | lypning tier 1 alone | 2,029 ms | 2.7 ms | 64.4% (the chain covers the rest) |
 | Monty, warm pool | 6,812 ms | 9.1 ms | 36.9% correct; 60% error back to the LLM |
 
@@ -155,9 +174,16 @@ Read the last column with the middle ones: Monty's pool completes the sweep
 faster than the chain, but on this population it hands 6 of 10 programs back
 to the model as errors — and a model turn costs three to six orders of
 magnitude more time and money than any interpreter in this table. The chain is
-32% faster than spawning CPython *while returning CPython's answer for
-everything*. And when a workload is dominated by programs tier 1 can take, the
-ceiling is the tier-1 row: 6.3× faster than CPython end to end.
+32% faster than spawning CPython while returning CPython's answer for
+everything it grades (744 of 745, plus the one ledgered ULP below). An earlier
+version of this paragraph called the tier-1 row a "ceiling" of 6.3×; the paper
+retracts that splice — 2.7 ms/program averages 480 answers with 264 cheap
+refusals, so it is not the cost of serving a program — and this document follows
+it. One arm measured later belongs in this table's company: a **pre-warmed
+CPython that forks per program** serves the same clean subset at **8.39
+ms/program** (2026-08-31, `study/paper/measure_all.py`) — faster than the chain,
+and correct by construction. The paper reports that loss and what the pool costs
+(a resident daemon) in its §5.4.
 
 ## Feature-by-feature
 

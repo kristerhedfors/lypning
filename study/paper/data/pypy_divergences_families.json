@@ -1,0 +1,18 @@
+{
+ "classified": "2026-08-31, by hand from pypy_divergences_raw.json",
+ "families": {
+  "file-finalization": {"count": 10, "note": "bare open() write not flushed before a later read; includes 4 near-duplicate program texts",
+   "ids": ["csv-read-fil","file-append-","file-readlin","hashlib-md5-","py-197c23966","py-3934f7d86","py-8d37b6863","py-948621112","py-cc9f211dd","shutil-copy"]},
+  "set-iteration-order": {"count": 7,
+   "ids": ["py-03e0312fa","py-0623abf66","py-6be000a62","py-ac5fe06a4","py-e6d1774f8","py-9e3ad5221","py-d59cf21fc"]},
+  "call-signature": {"count": 4, "note": "kwargs/arity PyPy accepts where CPython rejects",
+   "ids": ["py-010970cb9","py-195eb187c","py-2f4a65c86","py-7c8697bf4"]},
+  "error-message-detail": {"count": 4,
+   "ids": ["py-36889824b","py-6f4d0f095","py-2ac402738","py-f265db001"]},
+  "singletons": {"count": 4, "note": "NaN identity across distinct literals; iterator type names; dict-view op; stdlib source text",
+   "ids": ["py-b1c4cdd2e","py-5d2bb1650","py-b40bb5457","py-bb27f62fd"]},
+  "probe-grid-beyond-window": {"count": 10, "note": "large differential probe grids; first divergence past the 200-char capture window",
+   "ids": ["py-0e60f3bf2","py-2cb62574b","py-471342fb7","py-819d2f1bc","py-a345900bc","py-a6e984f67","py-204cd9709","py-e1f826297","py-07b6fdeca","py-3fab6afe7"]}
+ },
+ "total": 39
+}

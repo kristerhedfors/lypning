@@ -14,6 +14,40 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-31** — The overarching review: gaps closed by measurement, and one claim revised down
+
+- **Six new measurements landed in `docs/PAPER.md`, run because reviews demanded
+  them.** The `-S` ablation (CPython starts in 8.67 ms with site disabled — the
+  one-flag baseline recovers a quarter of its startup). CPython 3.13 as a sixth
+  arm: it starts *slower* than 3.11 on this container (13.8 vs 11.6 ms,
+  back-to-back), carries no experimental JIT — and as an engine against the 3.11
+  reference it produces **9 silent divergences of its own**, so tier 1 (1) tracks
+  CPython 3.11 more closely than CPython 3.13 does. A false-refusal sweep: zero
+  exit-90s in 1,990 CPython runs. The tier-2 ablation: correctness identical
+  without MicroPython (744/1), so the classifier's routing is demonstrated, not
+  asserted. The per-program price list: the chain is slower than cold CPython on
+  216 of 745 programs (29.0%), median delta −10.56 ms, worst +173 ms. And the
+  invocation-weighted wall: weighting each program by its 6,171 capture-log
+  invocations lifts the chain from 1.77× to **2.35×** — sessions re-run the
+  simple programs, so for once the unrun measurement was hiding a number in our
+  favour.
+- **One of the paper's own claims is revised down.** Hand-classifying all 39
+  PyPy divergences (shipped at `study/paper/data/`) splits them six ways:
+  file-finalization 10, set order 7, call-signature 4, error-text 4, singletons
+  4, probe-grids-beyond-window 10. The largest family is the one the profile
+  predicts, but "dominant" was too strong a word and the paper now says so.
+- **The prospective holdout is registered, not promised.**
+  `study/paper/holdout_registration.json` pins the freeze commit, the date, and
+  all 2,906 in-sample entry ids; anything captured later is out-of-sample by
+  construction.
+- **The documents now agree with each other.** COMPARISON.md drops the retracted
+  tier-1 "ceiling" splice, gains the warm-pool loss and a cross-reference to the
+  paper, and explains its 7-vs-1 and 340-vs-447 differences as instrument
+  differences. The README's 0.302x headline is date-scoped and points at the
+  paper's current ratios and the baseline that beats us; the paper is surfaced
+  at the top of the doc table. Stale phrasings in this changelog's own earlier
+  entries were corrected in place.
+
 **2026-08-31** — The paper: an agent-Python profile, and five engines measured against it
 
 - **`docs/PAPER.md` is new.** It asks what coding agents actually hand to an
@@ -23,9 +57,9 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 - **The profile is the finding.** Over the corpus as loaded on 2026-08-30 (2,906
   entries, 2,869 parsed): the median program is 384 bytes, 10 lines, 74 AST
   nodes; 0.3% define a class; `match`, walrus and `async` do not appear at all;
-  and 49.0% contain an `open(` call site. Decomposed inside the child over 765
+  and 45.8% call `open()` (AST-counted). Decomposed inside the child over 765
   CPython-clean programs, the median program spends **0.019 ms executing against
-  16.83 ms of interpreter startup** — 88.4% execute in under a millisecond.
+  16.83 ms of spawn, interpreter startup and imports** — 88.4% execute in under a millisecond.
 - **PyPy is the slowest engine on this workload** (3.0–3.1× CPython's wall in two
   sweeps) and returns **39 silent divergences**. All three divergence families
   are ones PyPy documents: non-prompt file finalization, ordered sets, and
@@ -106,7 +140,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   CPython on loops — lypning 1.9–4.5×, Monty 1.9–4.5×, MicroPython bimodal
   0.78×–23×, with callgrind instruction counts showing the wall costs are
   dispatch- and memory-bound, not instruction-bound); *end-to-end* over the 745
-  CPython-clean corpus programs (chain 8.6 s and never silently wrong, CPython
+  CPython-clean corpus programs (chain 8.6 s with 744/745 identical and 1 ledgered ULP, CPython
   12.7 s, tier 1 alone 2.0 s at 64% coverage, Monty pool 6.8 s at 37% correct
   with 60% handed back to the model — and a model turn dwarfs every number in
   the table); *memory* (all at the ~8.6 MB spawn floor; Monty +1 MB on

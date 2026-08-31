@@ -32,11 +32,12 @@ and essentially none of the median program's.
 We then benchmark five implementations — CPython 3.11, PyPy 7.3.20, MicroPython,
 Monty 0.0.21, and our own tiered engine — on this corpus with one instrument,
 measuring cold start, parse, execute, process overhead, memory, compatibility
-rate, and end-to-end wall clock. Two results stand out. **PyPy, the fastest
-Python by conventional benchmarks, is the slowest engine on this workload**
+rate, and end-to-end wall clock. Two results stand out. **PyPy — widely reported as the
+fastest Python on conventional benchmarks, though we ran no such sweep
+ourselves — is the slowest engine on this workload**
 (3.0–3.1× CPython's wall over 1,990 programs, across two sweeps) and
-produces **39 silent divergences** from CPython, dominated by one cause the
-profile predicts: without refcounting, `open(f,"w").write(...)` is not promptly
+produces **39 silent divergences** from CPython, its largest family (10 of 39)
+being the one the profile predicts: without refcounting, `open(f,"w").write(...)` is not promptly
 flushed — and 45.8% of these programs call `open()`, **96.0% of them via the
 bare, refcount-dependent idiom**. PyPy's
 per-program penalty is **majority fixed startup, not unamortized warmup** — it
@@ -46,7 +47,8 @@ program — which we measure rather than dismiss, and which **beats our own depl
 chain** (2.04× vs 1.50× over cold CPython) while being correct by construction.
 
 Our own contribution is narrower than "a faster Python" and we state it as such:
-a characterization of an under-measured workload, and the design point that
+a characterization of a workload we are not aware of being measured at this
+granularity before, and the design point that
 workload forces — **tiers that are separate processes cannot deoptimize**, so
 tier selection must be a static admission test, and the refusal channel becomes
 the system's principal interface rather than an internal signal. The measurement
@@ -152,7 +154,11 @@ Feature presence, as a percentage of the 2,869 parsed programs:
 | function definition | 10.3 | **class definition** | **0.3** |
 | `try`/`except` | 6.9 | `yield` | 0.2 |
 | `lambda` | 5.7 | `global`/`nonlocal` | 0.1 |
-| f-string | 5.2 | `match`, walrus, `async` | **0.0** |
+| f-string | 5.2 | `match`, walrus, `async` | **0** (exact) |
+
+The zeros are exact, not rounded: a direct AST count over all 2,906 entries
+(2026-08-31) finds no `match` statement, no walrus operator, and no `async`
+construct anywhere in the corpus.
 
 The distribution is the design document. Half of these programs loop, but only
 one in ten defines a function and three in a thousand define a class. An engine
@@ -261,7 +267,10 @@ We should be precise about one thing the contract does not give us. Exit 90 is n
 reserved by POSIX, and a corpus program could in principle exit 90 and write a
 matching line to stderr. The conjunction (exit 90 ∧ exactly one matching stderr
 line ∧ empty stdout) makes collision unlikely, not impossible. It is a
-low-collision encoding, and we have not measured a false-refusal rate.
+low-collision encoding — and the rate is now measured rather than waved at:
+across all 1,990 graded programs run under plain CPython (2026-08-31), **zero**
+exited 90 at all, and zero produced the full refusal signature. On this corpus
+the collision rate is 0/1,990; the encoding remains fallible in principle.
 
 ---
 
@@ -309,6 +318,17 @@ succeeds and CPython does not. We count these separately rather than as matches.
 On the 745-program clean subset: the chain answers 744 identically to CPython;
 tier 1 alone answers 480 (64.4%) and refuses 264 (35.4%).
 
+**Calibration: CPython disagrees with itself.** To scale the divergence counts,
+we ran CPython 3.13.7 as an *engine* against the 3.11 reference over the same
+1,990 programs (2026-08-31): **736 MATCH, 9 SILENT-DIFF**, 0 loud errors, 1
+case succeeding where 3.11 fails. Two minor versions of the reference
+implementation itself diverge silently on 9 programs — mostly changed error
+messages and formatting details. On this instrument, lypning tier 1 (1
+divergence) tracks CPython 3.11 more closely than CPython 3.13 does; PyPy's 39
+is ~4× the same-language version drift, MicroPython's 64 ~7×. This is the
+fairest yardstick we have for what "compatible" can even mean across
+implementations.
+
 **Reproducibility.** This sweep was run twice on the same machine with the same
 instrument, on 2026-08-30 and 2026-08-31, the second after a harness change —
 that is repetition, not independence that gives every child an explicit
@@ -334,7 +354,24 @@ a guarantee, and we would rather say so than define the exception away.
 
 ### 5.2 Where the competition breaks — and why the profile predicted it
 
-**PyPy's 39 divergences have one dominant root cause.** PyPy does not refcount, so
+**PyPy's 39 divergences, classified by hand (2026-08-31), revise our own first
+framing down.** An early draft called one root cause "dominant"; the full
+classification does not support that word. The split: **10** file-finalization
+(including four near-duplicate program texts), **7** set iteration order, **4**
+call-signature differences (keyword arguments and arity PyPy accepts where
+CPython rejects), **4** error-message detail, **4** singletons (NaN identity
+across distinct literals, iterator type names, a dict-view operation, stdlib
+source introspection), and **10** large differential probe grids whose first
+divergence sits beyond our 200-character capture window — most themselves
+signature-, order- or error-text probes. File finalization is the *largest*
+family at 26%, and the only one that corrupts **data** rather than presentation
+or introspection detail; "dominant" it is not. A caveat that cuts both ways:
+many probe-grid programs are this project's own conformance probes, exquisitely
+sensitive to any implementation difference — a corpus without them would show
+fewer divergences in every family.
+
+The file-finalization mechanism itself stands exactly as documented: PyPy does
+not refcount, so
 a file object is not finalized at the moment its last reference drops. The idiom
 `open(f,"w").write(...)` — which CPython flushes and closes immediately — leaves
 data unwritten under PyPy, and a subsequent read in the same program sees an
@@ -392,8 +429,18 @@ measurement floor of the spawning parent and therefore separates nothing:
 | Monty (warm in-process) | 0.04 ms | 22,064,856 B | floor + ~1 MB |
 | lypning (in-process lib) | 0.05 ms | — | — |
 
-40 spawns each, 2026-08-31. This table carries the paper's cleanest causal
-result: **PyPy costs +16.22 ms more than CPython to run `print(1)`** — a program
+40 spawns each, 2026-08-31. Ablations run after review (same day, 40 spawns
+each): `python3 -S` starts in **8.67 ms** — the one-flag baseline recovers ~25%
+of CPython's startup, and every ratio in this paper shrinks accordingly against
+a user willing to forgo site-packages; we did not sweep the corpus under `-S`,
+where programs needing site-packages would fail. And the "newer CPython is
+faster" worry inverts on this container: the system **CPython 3.13.12 starts in
+13.8 ms — slower than 3.11's 11.6 ms** measured back-to-back (a standalone
+3.13.7 build: 13.1 ms), and neither 3.13 build has the experimental JIT compiled
+in (`PY_ENABLE_EXPERIMENTAL_JIT` unset). Our 3.11 reference is the *faster*
+CPython available on this machine.
+
+This table also carries the paper's cleanest causal result: **PyPy costs +16.22 ms more than CPython to run `print(1)`** — a program
 with no loop to trace and nothing to compile. That is fixed interpreter startup,
 and it is present before any JIT question arises. PyPy's per-program penalty depends on which
 arm you take it from, and we give the range rather than the flattering end:
@@ -447,6 +494,15 @@ every cold-spawn arm pays the import each time. (`json` appears in 711 import
 statements corpus-wide and `re` in 415 — occurrence counts over all 2,906
 entries, not program counts over the 745 measured here.)
 
+**Where the chain loses, program by program (2026-08-31).** A mean win can hide
+regressions a user feels one at a time, so we paired each program's chain wall
+against its cold-CPython wall in the same sweep: the chain is *slower* on **216
+of 745 programs (29.0%)** — median paired delta **−10.56 ms** (a win), p90
+**+1.70 ms**, worst single regression **+173 ms**. The shape is the expected
+one: admitted programs win big, refused programs lose small — but a user whose
+workload happens to be refusal-heavy will feel the 29%, and this table is the
+honest price list.
+
 What the pool costs is not visible in this table. It is a resident daemon: memory
 held between invocations, a lifecycle to supervise, crash recovery, and a harness
 change to route through it. Our chain is a drop-in binary that requires no daemon
@@ -470,6 +526,17 @@ refused program pays the tier-1 spawn it already paid, *then* the tier-2
 MicroPython spawn, *then* CPython — three spawns, not one. §4 declares three
 tiers and this is where the third one shows up in the wall clock.
 
+**The tier-2 ablation a reviewer asked for, run (2026-08-31).** With the
+MicroPython binary moved aside — the degrade-to-not-built path the chain must
+survive anyway — the chain over the same 745 programs answers **exactly as
+correctly: 744 matches, 1 ledgered divergence**, at 13.46 ms/program in a single
+round against 11.38 best-of-2 with tier 2 present. On this subset tier 2
+contributes speed only (it serves many refusals at a 0.36 ms spawn instead of
+CPython's 17 ms), and none of its own 64 known divergences reach the chain's
+output — the classifier routes around them, which this ablation now demonstrates
+rather than asserts. The wall comparison is single-round and should be read as
+"same order, tier 2 pays for itself", not to three figures.
+
 With those corrected, the composition estimate is still favourable and now
 honest: a chain whose backstop is the warm pool would pay the tier-1 pass on
 every program plus the pool on the refused ones,
@@ -478,10 +545,27 @@ pool's 2.04× and the chain's 1.50×, and worse than the 3.6× the naive splice
 implied. We have not built it, so this is arithmetic on measured arms and not a
 measurement; the experiment is the obvious next one.
 
-The number we measured on what we actually ship is the **chain: 1.50× on this
-subset, 1.76–1.77× across the two full-sweep runs** — in-sample, on a subset
-selected for still running with its repository removed (§8), which is the
-direction that flatters us — with 744 of 745 clean
+**Invocation weighting, computed after a reviewer demanded it.** The
+distinct-program sweeps under-state what a session pays, and §8's dedup analysis
+says in which direction: sessions re-run the simple programs. Weighting each
+graded program's measured wall (08-31 sweep) by its capture-log invocation count
+— 6,171 invocations over the 1,990 graded entries — moves every arm:
+
+| engine | distinct-weighted | invocation-weighted |
+|---|---:|---:|
+| **lypning chain** | 1.77× | **2.35×** |
+| lypning tier 1 | 8.95× | 11.74× |
+| Monty 0.0.21 | 3.65× | 6.90× |
+| PyPy 7.3.20 | 0.32× | 0.32× |
+
+"The number an agent session pays" is the right-hand column, and it is *better*
+for us than the number we had been quoting: the programs agents repeat are
+disproportionately the ones tier 1 serves. For once the omission ran against us.
+
+The number we measured on what we actually ship is otherwise the **chain: 1.50×
+on the clean subset, 1.76–1.77× distinct-weighted across the two full sweeps** —
+in-sample, on a subset selected for still running with its repository removed
+(§8), which is the direction that flatters us — with 744 of 745 clean
 programs answered identically to CPython. Tier 1's 6.39× is a configuration
 nobody deploys alone, and quoting it as the headline would be dishonest.
 
@@ -535,9 +619,13 @@ population whose median program computes for 0.019 ms, regardless of its JIT. We
 have not swept program duration, so we cannot say where the crossover lies, only
 that this workload sits far below it.
 
-We also acknowledge what we did not measure. GraalPy and CPython 3.13's tier-2
-interpreter are in the family we position against and are absent from our sweep;
-a complete evaluation would include them.
+We also acknowledge what we did not measure. GraalPy is in the family we
+position against and absent from our sweep for no reason better than container
+constraints; a complete evaluation would include it. CPython 3.13, by contrast,
+is now measured (§5.1, §5.3): it starts *slower* than 3.11 on this container,
+neither available build carries the experimental JIT, and as an engine against
+the 3.11 reference it produces 9 silent divergences of its own — which
+recalibrates what cross-implementation "compatibility" can even mean.
 
 Once tiering reduces to a static admission test with re-execution as its only
 recovery, the refusal signal stops being an internal control-flow event and
@@ -571,8 +659,11 @@ boundary.
 **Fail-stop as the correctness criterion.** "Never silently wrong" is not new.
 Schlichting and Schneider define a fail-stop processor as one that "automatically
 halts in response to any internal failure and does so *before the effects of that
-failure become visible*" [5] — which is exactly the pairing of our refusal
-contract with the commit barrier that discards staged effects. Our design is an
+failure become visible*" [5] — which is the pairing of our refusal contract
+with the commit barrier, *over the effects the barrier covers*. A halt that
+leaves a spawned child, a sent packet or a delivered signal visible is not
+fail-stop under that definition, so we claim the property over this process's
+stdout and file writes, not in general (§4). Our design is an
 instance of a class named in 1983, and saying so costs a novelty claim and buys a
 correctness vocabulary.
 
@@ -657,8 +748,12 @@ corpus-fitted as the coverage number. The correct claim is narrow: fitting canno
 manufacture within-sample agreement for a table entry that this corpus exercises,
 and **the out-of-sample silent-divergence rate is exactly what is unmeasured.**
 A prospective holdout — freeze the tables, grade only entries captured
-afterwards — is the right experiment and is a standing one, not a result we can
-report today.
+afterwards — is the right experiment, and it is now registered rather than
+promised: `study/paper/holdout_registration.json` pins the freeze commit, the
+date (2026-08-31), and the identity of every in-sample entry, with the grading
+procedure spelled out. Any entry captured after that commit is out-of-sample by
+construction. The out-of-sample silent-divergence rate remains a number this
+draft does not have; the registration is what makes the eventual number honest.
 
 **The sampling frame.** n=1 in every dimension: one harness, one model family,
 one user's task mix, 20 capture dates ending 2026-08-30. The population is
@@ -689,7 +784,9 @@ confirmed with a number rather than talked around: **the exclusion removes the
 harder half of the workload, and our coverage rate is correspondingly optimistic.**
 We cannot say by how much without running them, which needs a real sandbox we did
 not build. Note the one bound available: the retained set is far from I/O-free —
-PyPy's 39 file-finalization divergences were all found *inside* it.
+PyPy's file-finalization divergences — the largest of its six families, per the
+hand classification shipped at `study/paper/data/pypy_divergences_families.json`
+(§5.2) — were all found *inside* it.
 
 **A larger selection effect than the exclusions.** Only 745 of the 1,990 graded
 candidates run cleanly enough to be graded on output — 25.6% of the 2,906 entries
@@ -724,8 +821,10 @@ time, and that is exactly the quantity most perturbed by environment size and
 link order — the hazard Mytkowicz et al. describe [1],
 and it lands on our headline quantity rather than adjacent to it. Our hygiene
 (`PYTHONHASHSEED=0`, `LC_ALL=C.UTF-8`, fresh temp cwd, one instrument, interleaved
-rounds, best-of-N) controls semantic determinism and machine load; it does **not**
-control layout. We did not randomize layout, and a reader who suspects layout
+rounds, best-of-N) controls semantic determinism; it does **not** control machine load — CPython's
+own sweep wall moved 26.8 → 30.8 s between our two dates (§5.1) — and it does
+**not** control layout. Interleaving and best-of-N expose load rather than
+remove it, which is why we report ratios. We did not randomize layout, and a reader who suspects layout
 artefacts should weigh §5.4's warm-pool comparison, which is a different shape of
 measurement, more heavily than the cold-spawn ratios.
 
@@ -748,12 +847,13 @@ wanted and not one we could have predicted.
 
 ## 9. Conclusion
 
-Coding agents have created a Python workload with no established benchmark and
-properties that invert the assumptions of mainstream implementation work: 384-byte
-programs, no classes, and 19 microseconds of computation behind 16.83 ms of spawn,
-interpreter startup and imports. Measured against that workload, the fastest Python
-implementation is the slowest, and it is silently wrong on the single most common
-thing these programs do — write a file and read it back.
+Coding agents have created a Python workload with no benchmark suite we are
+aware of, and properties that invert the assumptions of mainstream
+implementation work: 384-byte programs, no classes, and 19 microseconds of
+computation behind 16.83 ms of spawn, interpreter startup and imports. Measured
+against that workload, the implementation usually reported as the fastest is
+the slowest, and it is silently wrong on a class of program that touches almost
+half the corpus by static call site: writing a file and reading it back.
 
 Our own engine's honest headline is 1.50× on the clean subset and 1.76–1.77×
 across two full sweeps, with 744 of 745 programs answered identically to CPython.

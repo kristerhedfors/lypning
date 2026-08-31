@@ -1,0 +1,290 @@
+[
+ {
+  "id": "csv-read-fil",
+  "program": "import csv\nopen(\"data.csv\", \"w\").write(\"name,qty\\na,2\\nb,40\\n\")\nwith open(\"data.csv\") as f:\n    total = sum(int(row[\"qty\"]) for row in csv.DictReader(f))\nprint(total)",
+  "cpy": "42\n",
+  "pypy": "0\n"
+ },
+ {
+  "id": "file-append-",
+  "program": "open(\"a.log\", \"w\").write(\"x\\n\")\nwith open(\"a.log\", \"a\") as f:\n    f.write(\"y\\n\")\nprint(open(\"a.log\").read().split())",
+  "cpy": "['x', 'y']\n",
+  "pypy": "['y']\n"
+ },
+ {
+  "id": "file-readlin",
+  "program": "open(\"n.txt\", \"w\").write(\"alpha\\nbeta\\ngamma\\n\")\nfor i, line in enumerate(open(\"n.txt\"), 1):\n    print(i, line.rstrip())",
+  "cpy": "1 alpha\n2 beta\n3 gamma\n",
+  "pypy": ""
+ },
+ {
+  "id": "hashlib-md5-",
+  "program": "import hashlib\nopen(\"f.bin\", \"wb\").write(b\"abc\" * 10)\nprint(hashlib.md5(open(\"f.bin\", \"rb\").read()).hexdigest())",
+  "cpy": "1b66558be2b2cd898ebc3383623a3677\n",
+  "pypy": "d41d8cd98f00b204e9800998ecf8427e\n"
+ },
+ {
+  "id": "py-010970cb9",
+  "program": "CASES = [\n    (\"str.strip\", lambda: \" a \".strip(chars=None)),\n    (\"str.strip-arg\", lambda: \"xax\".strip(chars=\"x\")),\n    (\"str.ljust\", lambda: \"a\".ljust(width=5, fillchar=\".\")),\n    (\"str.zfill\", lambda: \"7\".zfill(width=3)),\n    (\"str.replace\", lambda: \"a-b\".replace(\"-\", \"+\", count=1)),\n    (\"str.index\", lambda: \"abc\".index(\"b\", start=0)),\n    (\"str.find\", lambda: \"abc\".find(sub=\"b\")),\n    (\"str.c",
+  "cpy": "62\nstr.strip=!str.strip() takes no keyword arguments|str.strip-arg=!str.strip() takes no keyword arguments|str.ljust=!str.ljust() takes no keyword arguments|str.zfill=!str.zfill() takes no keyword arg",
+  "pypy": "62\nstr.strip='a'|str.strip-arg='a'|str.ljust='a....'|str.zfill='007'|str.replace='a+b'|str.index=1|str.find=1|str.count=1|str.center='  a  '|str.startswith=True|str.endswith=True|str.partition=!str.pa"
+ },
+ {
+  "id": "313-py-010970c",
+  "program": "CASES = [\n    (\"str.strip\", lambda: \" a \".strip(chars=None)),\n    (\"str.strip-arg\", lambda: \"xax\".strip(chars=\"x\")),\n    (\"str.ljust\", lambda: \"a\".ljust(width=5, fillchar=\".\")),\n    (\"str.zfill\", lambda: \"7\".zfill(width=3)),\n    (\"str.replace\", lambda: \"a-b\".replace(\"-\", \"+\", count=1)),\n    (\"str.index\", lambda: \"abc\".index(\"b\", start=0)),\n    (\"str.find\", lambda: \"abc\".find(sub=\"b\")),\n    (\"str.c",
+  "cpy": "62\nstr.strip=!str.strip() takes no keyword arguments|str.strip-arg=!str.strip() takes no keyword arguments|str.ljust=!str.ljust() takes no keyword arguments|str.zfill=!str.zfill() takes no keyword arg",
+  "pypy": "[3.13] 62\nstr.strip=!str.strip() takes no keyword arguments|str.strip-arg=!str.strip() takes no keyword arguments|str.ljust=!str.ljust() takes no keyword arguments|str.zfill=!str.zfill() takes no keyword arg"
+ },
+ {
+  "id": "py-03e0312fa",
+  "program": "print({3,1,2})",
+  "cpy": "{1, 2, 3}\n",
+  "pypy": "{3, 1, 2}\n"
+ },
+ {
+  "id": "py-0623abf66",
+  "program": "d={\"a\":1,\"b\":2}; print(d.keys() | {\"c\"})",
+  "cpy": "{'c', 'a', 'b'}\n",
+  "pypy": "{'a', 'b', 'c'}\n"
+ },
+ {
+  "id": "py-07b6fdeca",
+  "program": "d = {'a': 1, 'b': 2}\nprint('R1', repr(d.keys()))\nprint('R2', repr(d.values()))\nprint('R3', repr(d.items()))\nprint('R4', type(d.keys()).__name__, type(d.values()).__name__, type(d.items()).__name__)\nprint('R5', str(d.keys()), '%s' % (d.keys(),))\nprint('R6', repr({}.keys()), repr({}.values()), repr({}.items()))\nprint('R7', type(iter(d)).__name__, type(iter(d.values())).__name__, type(iter(d.items())",
+  "cpy": "R1 dict_keys(['a', 'b'])\nR2 dict_values([1, 2])\nR3 dict_items([('a', 1), ('b', 2)])\nR4 dict_keys dict_values dict_items\nR5 dict_keys(['a', 'b']) dict_keys(['a', 'b'])\nR6 dict_keys([]) dict_values([]) ",
+  "pypy": "R1 dict_keys(['a', 'b'])\nR2 dict_values([1, 2])\nR3 dict_items([('a', 1), ('b', 2)])\nR4 dict_keys dict_values dict_items\nR5 dict_keys(['a', 'b']) dict_keys(['a', 'b'])\nR6 dict_keys([]) dict_values([]) "
+ },
+ {
+  "id": "py-0e60f3bf2",
+  "program": "HAYS = [\"\", \"a\", \" a \", \"x y  z\", \"\\x0b\\x0chi\\x0b\", \"a b c d\", \"  \", \"\\ta\\tb\\t\",\n        \"ab ab ab\", \"\\x1c a b\", \"\u00e9 \u00fc  \u00f6\"]\nrows = []\nfor h in HAYS:\n    for m in (-1, 0, 1, 2, 3):\n        rows.append(\"s%r%d=%r|r=%r\" % (h, m, h.split(None, m), h.rsplit(None, m)))\n    for sep in (\" \", \"b\", \"ab\", \"\\x0b\"):\n        for m in (-1, 0, 1, 2):\n            rows.append(\"x%r%r%d=%r|r=%r\" % (h, sep, m, h.split(s",
+  "cpy": "231\ns''-1=[]|r=[]|s''0=[]|r=[]|s''1=[]|r=[]|s''2=[]|r=[]|s''3=[]|r=[]|x''' '-1=['']|r=['']|x''' '0=['']|r=['']|x''' '1=['']|r=['']|x''' '2=['']|r=['']|x'''b'-1=['']|r=['']|x'''b'0=['']|r=['']|x'''b'1=",
+  "pypy": "231\ns''-1=[]|r=[]|s''0=[]|r=[]|s''1=[]|r=[]|s''2=[]|r=[]|s''3=[]|r=[]|x''' '-1=['']|r=['']|x''' '0=['']|r=['']|x''' '1=['']|r=['']|x''' '2=['']|r=['']|x'''b'-1=['']|r=['']|x'''b'0=['']|r=['']|x'''b'1="
+ },
+ {
+  "id": "py-195eb187c",
+  "program": "import inspect\ndef probe(obj, label, cases):\n    accept=[]; reject=[]\n    for meth, call in cases:\n        try:\n            call(); accept.append(meth)\n        except TypeError as e:\n            if \"keyword\" in str(e): reject.append(meth)\n            else: accept.append(meth+\"?\")\n        except Exception: accept.append(meth+\"~\")\n    print(f\"{label} ACCEPTS kw: {accept}\")\n    print(f\"{label} REJECT",
+  "cpy": "str ACCEPTS kw: ['split', 'rsplit', 'splitlines', 'encode', 'expandtabs']\nstr REJECTS kw: ['replace', 'find', 'index', 'count', 'startswith', 'endswith', 'strip', 'lstrip', 'rstrip', 'center', 'ljust'",
+  "pypy": "str ACCEPTS kw: ['split', 'rsplit', 'splitlines', 'encode', 'expandtabs', 'replace', 'find', 'index', 'count', 'startswith', 'endswith', 'strip', 'lstrip', 'rstrip', 'center', 'ljust', 'rjust', 'zfill"
+ },
+ {
+  "id": "313-py-195eb18",
+  "program": "import inspect\ndef probe(obj, label, cases):\n    accept=[]; reject=[]\n    for meth, call in cases:\n        try:\n            call(); accept.append(meth)\n        except TypeError as e:\n            if \"keyword\" in str(e): reject.append(meth)\n            else: accept.append(meth+\"?\")\n        except Exception: accept.append(meth+\"~\")\n    print(f\"{label} ACCEPTS kw: {accept}\")\n    print(f\"{label} REJECT",
+  "cpy": "str ACCEPTS kw: ['split', 'rsplit', 'splitlines', 'encode', 'expandtabs']\nstr REJECTS kw: ['replace', 'find', 'index', 'count', 'startswith', 'endswith', 'strip', 'lstrip', 'rstrip', 'center', 'ljust'",
+  "pypy": "[3.13] str ACCEPTS kw: ['split', 'rsplit', 'splitlines', 'encode', 'expandtabs', 'replace']\nstr REJECTS kw: ['find', 'index', 'count', 'startswith', 'endswith', 'strip', 'lstrip', 'rstrip', 'center', 'ljust'"
+ },
+ {
+  "id": "py-197c23966",
+  "program": "open(\"a.log\", \"w\").write(\"x\\n\")\nwith open(\"a.log\", \"a\") as f:\n    f.write(\"y\\n\")\nprint(open(\"a.log\").read().split())",
+  "cpy": "['x', 'y']\n",
+  "pypy": "['y']\n"
+ },
+ {
+  "id": "py-204cd9709",
+  "program": "def g():\n    yield 1\nCASES = [\"reversed([1,2])\",\"reversed((1,2))\",\"reversed('ab')\",\"reversed(b'ab')\",\n         \"reversed(range(3))\",\"reversed({'a':1})\",\"reversed({'a':1}.keys())\",\n         \"reversed({'a':1}.values())\",\"reversed({'a':1}.items())\",\"reversed({1,2})\",\n         \"reversed(frozenset([1]))\",\"reversed(iter([1]))\",\"reversed(g())\",\n         \"reversed(enumerate([1]))\",\"reversed(map(str,[1]))\"",
+  "cpy": "reversed([1,2])                  -> [2, 1]\nreversed((1,2))                  -> [2, 1]\nreversed('ab')                   -> ['b', 'a']\nreversed(b'ab')                  -> [98, 97]\nreversed(range(3))    ",
+  "pypy": "reversed([1,2])                  -> [2, 1]\nreversed((1,2))                  -> [2, 1]\nreversed('ab')                   -> ['b', 'a']\nreversed(b'ab')                  -> [98, 97]\nreversed(range(3))    "
+ },
+ {
+  "id": "py-2ac402738",
+  "program": "\nfor v in [65, -1, 1114112, True]:\n    try: r=repr(format(v,'c'))\n    except Exception as e: r='%s: %s' % (type(e).__name__, str(e)[:50])\n    print('  format(%-8r, \\'c\\') -> %s' % (v, r))\ntry: print(repr(format('a','c')))\nexcept Exception as e: print('  format(\\'a\\',\\'c\\') ->', type(e).__name__, str(e)[:50])\n",
+  "cpy": "  format(65      , 'c') -> 'A'\n  format(-1      , 'c') -> OverflowError: %c arg not in range(0x110000)\n  format(1114112 , 'c') -> OverflowError: %c arg not in range(0x110000)\n  format(True    , 'c') -",
+  "pypy": "  format(65      , 'c') -> 'A'\n  format(-1      , 'c') -> OverflowError: %c arg not in range(0x10ffff)\n  format(1114112 , 'c') -> OverflowError: %c arg not in range(0x10ffff)\n  format(True    , 'c') -"
+ },
+ {
+  "id": "py-2cb62574b",
+  "program": "CASES = [\n \"0 <= ''\", \"0 > ''\", \"[1] < ['a']\", \"[1] <= ['a']\", \"[1] >= ['a']\", \"[1] > ['a']\",\n \"(1,) > ('a',)\", \"[float('nan')] < [1.0]\", \"[float('nan')] <= [1.0]\",\n \"[1.0] < [float('nan')]\", \"float('nan') < 1\", \"float('nan') <= 1\",\n \"'' < float('nan')\", \"float('nan') < ''\", \"[float('nan')] == [float('nan')]\",\n \"sorted([1,'a'])\", \"sorted([float('nan'), 1.0])\", \"{1} < {1,2}\", \"None < 1\",\n]\nfor c in",
+  "cpy": "0 <= ''                          -> TypeError: '<=' not supported between instances of 'int' and 'str'\n0 > ''                           -> TypeError: '>' not supported between instances of 'int' and '",
+  "pypy": "0 <= ''                          -> TypeError: '<=' not supported between instances of 'int' and 'str'\n0 > ''                           -> TypeError: '>' not supported between instances of 'int' and '"
+ },
+ {
+  "id": "py-2f4a65c86",
+  "program": "cases = [\n (\"bool\", lambda: bool(x=1)), (\"len\", lambda: len(obj=[1])), (\"abs\", lambda: abs(x=-1)),\n (\"chr\", lambda: chr(i=65)), (\"ord\", lambda: ord(c=\"A\")), (\"hex\", lambda: hex(number=255)),\n (\"oct\", lambda: oct(number=8)), (\"bin\", lambda: bin(number=5)), (\"repr\", lambda: repr(obj=1)),\n (\"list\", lambda: list(iterable=[1])), (\"tuple\", lambda: tuple(iterable=[1])),\n (\"set\", lambda: set(iterable=[1])",
+  "cpy": "ACCEPTS kw: ['type?', 'str', 'bytes', 'enumerate', 'zip', 'dict']\nREJECTS kw: ['bool', 'len', 'abs', 'chr', 'ord', 'hex', 'oct', 'bin', 'repr', 'list', 'tuple', 'set', 'divmod', 'isinstance', 'next', ",
+  "pypy": "ACCEPTS kw: ['len', 'type?', 'divmod', 'next', 'str', 'bytes', 'enumerate', 'zip', 'range', 'dict']\nREJECTS kw: ['bool', 'abs', 'chr', 'ord', 'hex', 'oct', 'bin', 'repr', 'list', 'tuple', 'set', 'isin"
+ },
+ {
+  "id": "py-36889824b",
+  "program": "METHODS = [\"find\",\"rfind\",\"index\",\"rindex\",\"count\",\"split\",\"rsplit\",\"startswith\",\n           \"endswith\",\"join\",\"partition\",\"rpartition\",\"strip\",\"lstrip\",\"rstrip\",\n           \"replace\",\"removeprefix\",\"removesuffix\"]\nBADS = [\"1\",\"'a'\",\"[97]\",\"(97,)\",\"None\",\"97\"]\nseen = {}\nfor m in METHODS:\n    for b in BADS:\n        expr = \"b'abc'.%s(%s)\" % (m, b)\n        try:\n            eval(expr); r = \"(no error)",
+  "cpy": "count          TypeError: argument should be integer or bytes-like object, not 'NoneType'\ncount          TypeError: argument should be integer or bytes-like object, not 'list'\ncount          TypeError",
+  "pypy": "count          TypeError: a bytes-like object is required, not 'NoneType'\ncount          TypeError: a bytes-like object is required, not 'list'\ncount          TypeError: a bytes-like object is require"
+ },
+ {
+  "id": "py-3934f7d86",
+  "program": "import shutil\nopen(\"src.txt\", \"w\").write(\"hi\")\nshutil.copy(\"src.txt\", \"dst.txt\")\nprint(open(\"dst.txt\").read())",
+  "cpy": "hi\n",
+  "pypy": "\n"
+ },
+ {
+  "id": "py-3fab6afe7",
+  "program": "\ntests = ['a\\xa0b', 'a\u2000b', 'a\u3000b', 'a\\x0bb', 'a\\x1cb', 'a\\x85b']\nfor t in tests:\n    print('%-14r split -> %r   bytes-equiv %r' % (t, t.split(), t.encode().split()))",
+  "cpy": "'a\\xa0b'       split -> ['a', 'b']   bytes-equiv [b'a\\xc2\\xa0b']\n'a\\u2000b'     split -> ['a', 'b']   bytes-equiv [b'a\\xe2\\x80\\x80b']\n'a\\u3000b'     split -> ['a', 'b']   bytes-equiv [b'a\\xe3\\x80\\x80b",
+  "pypy": "'a\\xa0b'       split -> ['a', 'b']   bytes-equiv [b'a\\xc2\\xa0b']\n'a\\u2000b'     split -> ['a', 'b']   bytes-equiv [b'a\\xe2\\x80\\x80b']\n'a\\u3000b'     split -> ['a', 'b']   bytes-equiv [b'a\\xe3\\x80\\x80b"
+ },
+ {
+  "id": "py-471342fb7",
+  "program": "VALS = [0.0, -0.0, 0.5, -0.5, 1.5, -1.5, 2.5, -2.5, 5.0, -5.0, 15.0, -15.0,\n        25.0, -25.0, 35.0, 45.0, 50.0, 150.0, 250.0, 1234.5678, -1234.5678,\n        0.125, 2.675, 1e16, -1e16, 99.5, 100.5, 0.05, 1e-8, 123456789.0]\nNDS = [None, 0, 1, 2, 3, -1, -2, -3, -5, 17, 18, -18]\nrows = []\nfor v in VALS:\n    for nd in NDS:\n        try:\n            r = repr(round(v) if nd is None else round(v, nd))\n ",
+  "cpy": "480\n0.0/None=0|0.0/0=0.0|0.0/1=0.0|0.0/2=0.0|0.0/3=0.0|0.0/-1=0.0|0.0/-2=0.0|0.0/-3=0.0|0.0/-5=0.0|0.0/17=0.0|0.0/18=0.0|0.0/-18=0.0|-0.0/None=0|-0.0/0=-0.0|-0.0/1=-0.0|-0.0/2=-0.0|-0.0/3=-0.0|-0.0/-1",
+  "pypy": "480\n0.0/None=0|0.0/0=0.0|0.0/1=0.0|0.0/2=0.0|0.0/3=0.0|0.0/-1=0.0|0.0/-2=0.0|0.0/-3=0.0|0.0/-5=0.0|0.0/17=0.0|0.0/18=0.0|0.0/-18=0.0|-0.0/None=0|-0.0/0=-0.0|-0.0/1=0.0|-0.0/2=0.0|-0.0/3=0.0|-0.0/-1=0."
+ },
+ {
+  "id": "py-5d2bb1650",
+  "program": "def g():\n    yield 1\nCASES = [\"iter([1])\",\"iter((1,))\",\"iter('a')\",\"iter(b'a')\",\"iter({1})\",\"iter({'a':1})\",\n         \"iter({'a':1}.keys())\",\"iter({'a':1}.values())\",\"iter({'a':1}.items())\",\n         \"iter(range(3))\",\"enumerate([1])\",\"zip([1])\",\"map(str,[1])\",\"filter(None,[1])\",\n         \"reversed([1])\",\"reversed((1,))\",\"reversed('ab')\",\"reversed(range(3))\",\"g()\",\n         \"iter(iter([1]))\"]\nfor c",
+  "cpy": "iter([1])                    -> list_iterator\niter((1,))                   -> tuple_iterator\niter('a')                    -> str_ascii_iterator\niter(b'a')                   -> bytes_iterator\niter({1})",
+  "pypy": "iter([1])                    -> sequenceiterator\niter((1,))                   -> sequenceiterator\niter('a')                    -> sequenceiterator\niter(b'a')                   -> sequenceiterator\niter"
+ },
+ {
+  "id": "313-py-69d2fe5",
+  "program": "\nimport argparse, inspect\nfor n in ['_parse_optional','_get_option_tuples','_match_arguments_partial','parse_known_args','parse_args','add_argument','_add_action','_get_positional_actions']:\n    print('==== '+n)\n    print(inspect.getsource(getattr(argparse.ArgumentParser,n)))\nprint('==== _StoreAction'); print(inspect.getsource(argparse._StoreAction))\nprint('==== _AppendAction'); print(inspect.gets",
+  "cpy": "==== _parse_optional\n    def _parse_optional(self, arg_string):\n        # if it's an empty string, it was meant to be a positional\n        if not arg_string:\n            return None\n\n        # if it d",
+  "pypy": "[3.13] ==== _parse_optional\n    def _parse_optional(self, arg_string):\n        # if it's an empty string, it was meant to be a positional\n        if not arg_string:\n            return None\n\n        # if it d"
+ },
+ {
+  "id": "py-6be000a62",
+  "program": "print({\"b\",\"a\",\"c\"}, {1,2,3})",
+  "cpy": "{'c', 'a', 'b'} {1, 2, 3}\n",
+  "pypy": "{'b', 'a', 'c'} {1, 2, 3}\n"
+ },
+ {
+  "id": "py-6f4d0f095",
+  "program": "\nfor v in [1, 1.5, None, [1], b'x', True]:\n    for k in ['sep','end']:\n        try:\n            print('a', **{k: v}); r='ok'\n        except TypeError as e: r=str(e)\n        print('  %s=%r -> %s' % (k, v, r))",
+  "cpy": "  sep=1 -> sep must be None or a string, not int\n  end=1 -> end must be None or a string, not int\n  sep=1.5 -> sep must be None or a string, not float\n  end=1.5 -> end must be None or a string, not fl",
+  "pypy": "  sep=1 -> sep must be None or a string\n  end=1 -> end must be None or a string\n  sep=1.5 -> sep must be None or a string\n  end=1.5 -> end must be None or a string\na\n  sep=None -> ok\na\n  end=None -> o"
+ },
+ {
+  "id": "py-7c8697bf4",
+  "program": "# Re-derive with TYPE-CORRECT fillers, and classify only true arity errors.\nimport re\nARITY_RE = re.compile(r\"takes (exactly|at least|at most) |expected (at least |at most )?\\d+ argument|takes no arguments|missing \\d+ required|takes \\d+ positional\")\ndef probe(label, calls):\n    ok = []\n    for n, c in calls:\n        try:\n            c(); ok.append(n)\n        except TypeError as e:\n            if A",
+  "cpy": "BUILTINS (type-correct fillers):\n   format         (1, 2)\n   sorted         (1, 1)\n   round          (0, 2)\n   int            (0, 2)\n   sum            (1, 2)\n   next           (1, 2)\n   iter          ",
+  "pypy": "BUILTINS (type-correct fillers):\n   format         (1, 3)\n   sorted         (1, 1)\n   round          (1, 3)\n   int            (0, 3)\n   sum            (1, 3)\n   next           (1, 3)\n   iter          "
+ },
+ {
+  "id": "py-819d2f1bc",
+  "program": "IDX = [None, 0, 1, 2, -1, -2, -5, 3, 4, 99, -99]\nSTEPS = [None, 1, 2, 3, -1, -2, -3, 99, -99]\nSEQS = [(\"s\", \"abcd\"), (\"s0\", \"\"), (\"s1\", \"a\"), (\"u\", \"h\u00e9llo\"),\n        (\"b\", b\"abcd\"), (\"b0\", b\"\"), (\"l\", [1, 2, 3, 4]), (\"l0\", []),\n        (\"t\", (1, 2, 3, 4)), (\"r\", range(4))]\nrows = []\nfor name, seq in SEQS:\n    for a in IDX:\n        for b in IDX:\n            for st in STEPS:\n                try:\n   ",
+  "cpy": "10990\ns[None:None:None]='abcd'|s[None:None:1]='abcd'|s[None:None:2]='ac'|s[None:None:3]='ad'|s[None:None:-1]='dcba'|s[None:None:-2]='db'|s[None:None:-3]='da'|s[None:None:99]='a'|s[None:None:-99]='d'|s",
+  "pypy": "10990\ns[None:None:None]='abcd'|s[None:None:1]='abcd'|s[None:None:2]='ac'|s[None:None:3]='ad'|s[None:None:-1]='dcba'|s[None:None:-2]='db'|s[None:None:-3]='da'|s[None:None:99]='a'|s[None:None:-99]='d'|s"
+ },
+ {
+  "id": "py-8d37b6863",
+  "program": "import csv\nopen(\"data.csv\", \"w\").write(\"name,qty\\na,2\\nb,40\\n\")\nwith open(\"data.csv\") as f:\n    total = sum(int(row[\"qty\"]) for row in csv.DictReader(f))\nprint(total)",
+  "cpy": "42\n",
+  "pypy": "0\n"
+ },
+ {
+  "id": "py-948621112",
+  "program": "open(\"n.txt\", \"w\").write(\"alpha\\nbeta\\ngamma\\n\")\nfor i, line in enumerate(open(\"n.txt\"), 1):\n    print(i, line.rstrip())",
+  "cpy": "1 alpha\n2 beta\n3 gamma\n",
+  "pypy": ""
+ },
+ {
+  "id": "py-9e3ad5221",
+  "program": "print(max({-1,1},key=abs))",
+  "cpy": "1\n",
+  "pypy": "-1\n"
+ },
+ {
+  "id": "313-py-a20faf8",
+  "program": "import unicodedata as u\nMARKS={0x300,0x301,0x302,0x303,0x304,0x306,0x307,0x308,0x30a,0x30b,0x30c,0x327,0x328}\nOURS=set(MARKS)\nfor cp in range(0xC0,0x180):\n    d=u.decomposition(chr(cp))\n    if d and not d.startswith('<'): OURS.add(cp)\nsecond=set(); risky=set()\nfor cp in range(0x110000):\n    if 0xD800<=cp<0xE000: continue\n    ch=chr(cp); d=u.decomposition(ch)\n    if d and not d.startswith('<'):\n   ",
+  "cpy": "gap=0 ranges=408 encoded_chars=959\ngap=1 ranges=303 encoded_chars=752\ngap=2 ranges=258 encoded_chars=662\ngap=4 ranges=213 encoded_chars=570\ngap=8 ranges=189 encoded_chars=525\ngap=16 ranges=144 encoded",
+  "pypy": "[3.13] gap=0 ranges=412 encoded_chars=970\ngap=1 ranges=307 encoded_chars=763\ngap=2 ranges=262 encoded_chars=673\ngap=4 ranges=217 encoded_chars=581\ngap=8 ranges=193 encoded_chars=536\ngap=16 ranges=148 encoded"
+ },
+ {
+  "id": "313-py-a317a65",
+  "program": "import unicodedata as u\nMAX=0x110000\nMARKS={0x300,0x301,0x302,0x303,0x304,0x306,0x307,0x308,0x30a,0x30b,0x30c,0x327,0x328}\nOURS=set()\nfor cp in range(0xC0,0x180):\n    d=u.decomposition(chr(cp))\n    if d and not d.startswith('<'): OURS.add(cp)\nOURS|=MARKS\n# second elements of primary composition pairs: derive from all canonical decompositions\nsecond=set(); risky=set()\nndec=0\nfor cp in range(MAX):\n ",
+  "cpy": "canonical-decomp chars: 2061 second-elems: 85 risky: 13993\nranges: 408\nmax cp: 0x2fa1d\n[[416, 417], [431, 432], [461, 476], [478, 483], [486, 496], [500, 501], [504, 539], [542, 543], [550, 563], [773",
+  "pypy": "[3.13] canonical-decomp chars: 2061 second-elems: 85 risky: 14003\nranges: 412\nmax cp: 0x2fa1d\n[[416, 417], [431, 432], [461, 476], [478, 483], [486, 496], [500, 501], [504, 539], [542, 543], [550, 563], [773"
+ },
+ {
+  "id": "py-a345900bc",
+  "program": "def t(tag, fn):\n    pass\n# the set/frozenset auto-conversion quirk\ns = {frozenset([1,2])}\ntry:\n    print('Q1', {1,2} in s)\nexcept Exception as e:\n    print('Q1 EXC', type(e).__name__, str(e))\ntry:\n    print('Q2', [1,2] in s)\nexcept Exception as e:\n    print('Q2 EXC', type(e).__name__, str(e))\ns2 = {frozenset([1,2]), frozenset([3])}\ntry:\n    s2.discard({1,2})\n    print('Q3', len(s2))\nexcept Excepti",
+  "cpy": "Q1 True\nQ2 EXC TypeError unhashable type: 'list'\nQ3 1\nQ4 0\nQ5 EXC TypeError unhashable type: 'set'\nQ6 EXC TypeError unhashable type: 'set'\nQ7 False\nU1 EXC TypeError unhashable type: 'list'\nU2 EXC Type",
+  "pypy": "Q1 True\nQ2 EXC TypeError unhashable type: 'list'\nQ3 1\nQ4 0\nQ5 EXC TypeError unhashable type: 'set'\nQ6 EXC TypeError unhashable type: 'set'\nQ7 False\nU1 EXC TypeError unhashable type: 'list'\nU2 EXC Type"
+ },
+ {
+  "id": "313-py-a345900",
+  "program": "def t(tag, fn):\n    pass\n# the set/frozenset auto-conversion quirk\ns = {frozenset([1,2])}\ntry:\n    print('Q1', {1,2} in s)\nexcept Exception as e:\n    print('Q1 EXC', type(e).__name__, str(e))\ntry:\n    print('Q2', [1,2] in s)\nexcept Exception as e:\n    print('Q2 EXC', type(e).__name__, str(e))\ns2 = {frozenset([1,2]), frozenset([3])}\ntry:\n    s2.discard({1,2})\n    print('Q3', len(s2))\nexcept Excepti",
+  "cpy": "Q1 True\nQ2 EXC TypeError unhashable type: 'list'\nQ3 1\nQ4 0\nQ5 EXC TypeError unhashable type: 'set'\nQ6 EXC TypeError unhashable type: 'set'\nQ7 False\nU1 EXC TypeError unhashable type: 'list'\nU2 EXC Type",
+  "pypy": "[3.13] Q1 True\nQ2 EXC TypeError unhashable type: 'list'\nQ3 1\nQ4 0\nQ5 EXC TypeError unhashable type: 'set'\nQ6 EXC TypeError unhashable type: 'set'\nQ7 False\nU1 EXC TypeError unhashable type: 'list'\nU2 EXC Type"
+ },
+ {
+  "id": "py-a6e984f67",
+  "program": "def cp(b):\n    r = []\n    for x in b:\n        r.append(x)\n    return r\n\nbases = [[], [1], [1,2,3], [1,1,2,1], [5,4,3,2,1], [0,0,0], [7,8]]\nidxs = [-1000, -6, -4, -3, -2, -1, 0, 1, 2, 3, 5, 1000]\nops = [\"insert\", \"pop\", \"index\", \"index_s\", \"index_se\", \"index_neg\", \"remove\", \"del\", \"count\", \"getitem\", \"setitem\", \"delslice\"]\nn = 0\nfor bi in range(len(bases)):\n    for ii in range(len(idxs)):\n        f",
+  "cpy": "0/-1000/insert => [99]\n0/-1000/pop => E IndexError: pop from empty list\n0/-1000/index => E ValueError: 1 is not in list\n0/-1000/index_s => E ValueError: 1 is not in list\n0/-1000/index_se => E ValueErr",
+  "pypy": "0/-1000/insert => [99]\n0/-1000/pop => E IndexError: pop from empty list\n0/-1000/index => E ValueError: 1 is not in list\n0/-1000/index_s => E ValueError: 1 is not in list\n0/-1000/index_se => E ValueErr"
+ },
+ {
+  "id": "py-ac5fe06a4",
+  "program": "print('A1', list({3,1,2}))\nprint('A2', repr({3,1,2}))\nprint('A3', list({8,16,24,1}))\nprint('A4', list(set(range(10))))\nprint('A5', list({10,2,7,5}))\nprint('A6', repr({1.5, 2.5, 0.5}))\nprint('A7', list({True, 2, 3}))\nprint('A8', list(frozenset([5,3,1])))\ns = {1,2,3}\ns.remove(2)\ns.add(9)\nprint('A9', list(s))\nprint('A10', {1,2,3}.pop(), {'x'}.pop())\nprint('A11', next(iter({4,2,8})))",
+  "cpy": "A1 [1, 2, 3]\nA2 {1, 2, 3}\nA3 [8, 16, 24, 1]\nA4 [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]\nA5 [10, 2, 5, 7]\nA6 {0.5, 1.5, 2.5}\nA7 [True, 2, 3]\nA8 [1, 3, 5]\nA9 [1, 3, 9]\nA10 1 x\nA11 8\n",
+  "pypy": "A1 [3, 1, 2]\nA2 {3, 1, 2}\nA3 [8, 16, 24, 1]\nA4 [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]\nA5 [10, 2, 7, 5]\nA6 {1.5, 2.5, 0.5}\nA7 [True, 2, 3]\nA8 [5, 3, 1]\nA9 [1, 3, 9]\nA10 3 x\nA11 4\n"
+ },
+ {
+  "id": "py-b1c4cdd2e",
+  "program": "n=float(\"nan\"); print(n in [n]); print([n]==[n]); print(float(\"nan\") in [float(\"nan\")])",
+  "cpy": "True\nTrue\nFalse\n",
+  "pypy": "True\nTrue\nTrue\n"
+ },
+ {
+  "id": "py-b40bb5457",
+  "program": "def show(tag, fn):\n    pass\nsnips = 0\n# views: values() identity equality\nprint('V1', {'a':1}.values() == {'a':1}.values())\nd = {'a':1}\nprint('V2', d.values() == d.values())\nprint('V3', d.keys() == {'a'}, d.keys() == ['a'], d.items() == {('a',1)})\nprint('V4', sorted({'a':1,'b':2}.items() - {('a',1)}), type({'a':1}.items() - set()).__name__)\nprint('V5', sorted({'a':1,'b':2}.items() & {('a',1),('z',",
+  "cpy": "V1 False\nV2 False\nV3 True False True\nV4 [('b', 2)] set\nV5 [('a', 1)]\nV6 set()\nV7 EXC TypeError unsupported operand type(s) for |: 'dict_values' and 'set'\nV8 {'a'} set\nV9 1 True True True\nV10 False ski",
+  "pypy": "V1 False\nV2 False\nV3 True False True\nV4 [('b', 2)] set\nV5 [('a', 1)]\nV6 EXC TypeError unhashable type: 'list'\nV7 EXC TypeError unsupported operand type(s) for |: 'dict_values' and 'set'\nV8 {'a'} set\nV"
+ },
+ {
+  "id": "py-bb27f62fd",
+  "program": "\nimport argparse, inspect\nfor n in ['_get_values','_get_value','_check_value','_get_positional_kwargs','_get_optional_kwargs','_parse_known_args','_match_argument']:\n    print('==== '+n)\n    print(inspect.getsource(getattr(argparse.ArgumentParser,n)))\n",
+  "cpy": "==== _get_values\n    def _get_values(self, action, arg_strings):\n        # for everything but PARSER, REMAINDER args, strip out first '--'\n        if not action.option_strings and action.nargs not in ",
+  "pypy": "==== _get_values\n    def _get_values(self, action, arg_strings):\n        # for everything but PARSER, REMAINDER args, strip out first '--'\n        if not action.option_strings and action.nargs not in "
+ },
+ {
+  "id": "313-py-bb27f62",
+  "program": "\nimport argparse, inspect\nfor n in ['_get_values','_get_value','_check_value','_get_positional_kwargs','_get_optional_kwargs','_parse_known_args','_match_argument']:\n    print('==== '+n)\n    print(inspect.getsource(getattr(argparse.ArgumentParser,n)))\n",
+  "cpy": "==== _get_values\n    def _get_values(self, action, arg_strings):\n        # for everything but PARSER, REMAINDER args, strip out first '--'\n        if not action.option_strings and action.nargs not in ",
+  "pypy": "[3.13] ==== _get_values\n    def _get_values(self, action, arg_strings):\n        # optional argument produces a default when not present\n        if not arg_strings and action.nargs == OPTIONAL:\n            if"
+ },
+ {
+  "id": "py-cc9f211dd",
+  "program": "import hashlib\nopen(\"f.bin\", \"wb\").write(b\"abc\" * 10)\nprint(hashlib.md5(open(\"f.bin\", \"rb\").read()).hexdigest())",
+  "cpy": "1b66558be2b2cd898ebc3383623a3677\n",
+  "pypy": "d41d8cd98f00b204e9800998ecf8427e\n"
+ },
+ {
+  "id": "313-py-d2409f0",
+  "program": "import unicodedata as u\nMARKS={0x300,0x301,0x302,0x303,0x304,0x306,0x307,0x308,0x30a,0x30b,0x30c,0x327,0x328}\nOURS=set(MARKS)\nfor cp in range(0xC0,0x180):\n    d=u.decomposition(chr(cp))\n    if d and not d.startswith('<'): OURS.add(cp)\nsecond=set(); risky=set()\nfor cp in range(0x110000):\n    if 0xD800<=cp<0xE000: continue\n    ch=chr(cp); d=u.decomposition(ch)\n    if d and not d.startswith('<'):\n   ",
+  "cpy": "gap=   0 ranges= 408 extra_refused=0\ngap=   1 ranges= 303 extra_refused=105\ngap=   2 ranges= 258 extra_refused=195\ngap=   3 ranges= 237 extra_refused=258\ngap=   4 ranges= 213 extra_refused=354\ngap=   ",
+  "pypy": "[3.13] gap=   0 ranges= 412 extra_refused=0\ngap=   1 ranges= 307 extra_refused=105\ngap=   2 ranges= 262 extra_refused=195\ngap=   3 ranges= 241 extra_refused=258\ngap=   4 ranges= 217 extra_refused=354\ngap=   "
+ },
+ {
+  "id": "313-py-d47e773",
+  "program": "import re\ncases = [\n (\"escape bang\", lambda: re.escape(\"a!b\")),\n (\"escape space\", lambda: re.escape(\"a b\")),\n (\"escape hash\", lambda: re.escape(\"a#b\")),\n (\"escape tilde\", lambda: re.escape(\"~\")),\n (\"i-fold long-s\", lambda: re.findall(r'(?i)s', '\u017f')),\n (\"i-fold kelvin\", lambda: re.findall(r'(?i)k', 'K')),\n (\"i-fold dotted I\", lambda: re.findall(r'(?i)i', '\u0130')),\n (\"i-fold sigma\", lambda: re.findall(",
+  "cpy": "escape bang            'a!b'\nescape space           'a\\\\ b'\nescape hash            'a\\\\#b'\nescape tilde           '\\\\~'\ni-fold long-s          ['\u017f']\ni-fold kelvin          ['K']\ni-fold dotted I       ",
+  "pypy": "[3.13] escape bang            'a!b'\nescape space           'a\\\\ b'\nescape hash            'a\\\\#b'\nescape tilde           '\\\\~'\ni-fold long-s          ['\u017f']\ni-fold kelvin          ['K']\ni-fold dotted I       "
+ },
+ {
+  "id": "py-d59cf21fc",
+  "program": "print(max(set([-1,1]), key=abs))",
+  "cpy": "1\n",
+  "pypy": "-1\n"
+ },
+ {
+  "id": "py-e1f826297",
+  "program": "import itertools\ndef maxargs(call, upto=6):\n    ok=[]\n    for n in range(0, upto+1):\n        try:\n            call(n); ok.append(n)\n        except TypeError as e:\n            m=str(e)\n            if any(w in m for w in (\"argument\",\"arguments\",\"positional\")): pass\n            else: ok.append(n)\n        except Exception: ok.append(n)\n    return (min(ok) if ok else None, max(ok) if ok else None)\n\nS=\"",
+  "cpy": "STR:\n   replace        (2, 3)\n   find           (1, 3)\n   index          (1, 3)\n   count          (1, 3)\n   startswith     (1, 3)\n   endswith       (1, 3)\n   split          (0, 2)\n   rsplit         (0",
+  "pypy": "STR:\n   replace        (2, 3)\n   find           (1, 3)\n   index          (1, 3)\n   count          (1, 3)\n   startswith     (1, 3)\n   endswith       (1, 3)\n   split          (0, 2)\n   rsplit         (0"
+ },
+ {
+  "id": "py-e6d1774f8",
+  "program": "print({1,2}); print({'b','a','c'})",
+  "cpy": "{1, 2}\n{'c', 'a', 'b'}\n",
+  "pypy": "{1, 2}\n{'b', 'a', 'c'}\n"
+ },
+ {
+  "id": "py-f265db001",
+  "program": "\nimport json\nfor doc in ['\"a\\tb\"', '\"a\\nb\"', '\"a\\x01b\"', '\"a\\x1fb\"', '\"abc', '{\"a\": \"x\\ty\"}', '[1, \"a\\tb\"]', '\"a\\x7fb\"', '\"a b\"']:\n    try:\n        r = repr(json.loads(doc))\n    except json.JSONDecodeError as e:\n        r = 'JSONDecodeError: %s' % e\n    print('%-18r -> %s' % (doc, r))\n",
+  "cpy": "'\"a\\tb\"'           -> JSONDecodeError: Invalid control character at: line 1 column 3 (char 2)\n'\"a\\nb\"'           -> JSONDecodeError: Invalid control character at: line 1 column 3 (char 2)\n'\"a\\x01b\"'  ",
+  "pypy": "'\"a\\tb\"'           -> JSONDecodeError: Invalid control character at: line 1 column 2 (char 1)\n'\"a\\nb\"'           -> JSONDecodeError: Invalid control character at: line 1 column 2 (char 1)\n'\"a\\x01b\"'  "
+ },
+ {
+  "id": "shutil-copy",
+  "program": "import shutil\nopen(\"src.txt\", \"w\").write(\"hi\")\nshutil.copy(\"src.txt\", \"dst.txt\")\nprint(open(\"dst.txt\").read())",
+  "cpy": "hi\n",
+  "pypy": "\n"
+ }
+]
