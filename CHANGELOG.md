@@ -55,6 +55,29 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   one recalled author list was confirmed fabricated (the POPL 2018 sourir paper's
   third author is Ming-Ho Yee). Attributions still resting on recall are marked
   `[unverified]` inline rather than quietly kept.
+- **A hostile review of the finished draft found two arithmetic errors in our own
+  favour, and both are corrected in place.** The composed "chain with a warm-pool
+  backstop" estimate had spliced a blended average (2.67 ms covers 480 answers
+  *and* 264 refusals) against the pool's per-program cost; done correctly it is
+  5.65 ms and 3.03×, not the ~3.6× implied. And the chain's fallback is not one
+  cold CPython spawn — 1,993 + 264 x 17.10 = 6,507 ms against a measured 8,476 ms,
+  so a refused program costs 24.6 ms because it pays three tier spawns, not one.
+  Every remaining arithmetic claim in the paper was then machine-checked.
+- **Two further corrections of our own numbers.** `open(` by substring said 49.0%
+  of programs; AST-counted `open()` calls give 1,314 of 2,869 parsed (45.8%), and
+  that is the figure now used. And PyPy's fixed-startup share was reported as
+  "roughly half" — the most flattering of three available denominators; the range
+  is 49-78%, and on the clean-subset arm it is closer to four fifths.
+- **The deduplication threat is answered with data rather than a caveat.** The
+  capture log carries invocation counts: 2,906 distinct entries were seen 7,406
+  times (mean 2.55, max 45, 63.5% seen once). Re-weighting by invocation moves the
+  profile *away* from complexity - comprehensions 23.8% to 15.7%, loops 48.6% to
+  44.7% - so the programs agents re-run are simpler than the ones they run once,
+  and our coverage numbers are computed on the harder population.
+- **The finding sharpened to its causal core.** 96.0% of the 1,314 file-touching
+  programs use a bare `open()` rather than `with open(...)`; only 4.6% use the
+  context manager. That is precisely the idiom PyPy documents as unsafe, which is
+  why a documented difference becomes 39 silent wrong answers here.
 
 **2026-08-30** — Measured against ADK-Rust CodeAct + Monty, on one instrument
 

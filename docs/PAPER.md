@@ -25,18 +25,20 @@ point of interpreter invocation and captured **2,906 programs** (loaded
 extreme in a way that determines implementation strategy: the median program is
 **384 bytes and 74 AST nodes**, 0.3% define a class, `match`, walrus and `async`
 are absent entirely — and the median program spends **0.019 ms executing** against
-**16.83 ms of interpreter startup**. Execution is 17.3% of aggregate wall time and
-essentially none of the median program's.
+**16.83 ms of process spawn, interpreter startup and its own imports** — of which
+10.66 ms is bare interpreter startup. Execution is 17.3% of aggregate wall time
+and essentially none of the median program's.
 
 We then benchmark five implementations — CPython 3.11, PyPy 7.3.20, MicroPython,
 Monty 0.0.21, and our own tiered engine — on this corpus with one instrument,
 measuring cold start, parse, execute, process overhead, memory, compatibility
 rate, and end-to-end wall clock. Two results stand out. **PyPy, the fastest
 Python by conventional benchmarks, is the slowest engine on this workload**
-(3.0–3.1× CPython's wall over 1,990 programs, across two independent sweeps) and
+(3.0–3.1× CPython's wall over 1,990 programs, across two sweeps) and
 produces **39 silent divergences** from CPython, dominated by one cause the
 profile predicts: without refcounting, `open(f,"w").write(...)` is not promptly
-flushed, and 49.0% of corpus programs contain an `open(` call site. PyPy's
+flushed — and 45.8% of these programs call `open()`, **96.0% of them via the
+bare, refcount-dependent idiom**. PyPy's
 per-program penalty is **majority fixed startup, not unamortized warmup** — it
 pays +16.22 ms over CPython on `print(1)`, before any JIT can warm. And the honest competitor to a new engine
 is not another interpreter but a **warm pool** — a pre-warmed CPython forking per
@@ -85,8 +87,9 @@ The paper makes four claims, in decreasing order of confidence:
    are all unavailable, so admission must be a static test decided before
    execution, and the refusal signal must become a machine-checked external
    contract. (§6)
-4. **Two negative results worth the space**: on this workload nothing beats
-   CPython at sustained compute; our deployed configuration is **1.50–1.77×
+4. **Two negative results worth the space**: on five of six sustained-compute
+   workloads nothing beats CPython, and the one engine that wins one loses the
+   next by 23×; our deployed configuration is **1.50–1.77×
    faster end to end, not an order of magnitude**; and **a pre-warmed CPython
    fork pool beats it** (2.04×) while being correct by construction. We report
    the modest number and the loss because they are what a user would find. (§5.4)
@@ -158,14 +161,26 @@ classes, generators and `async` — is not a crippled Python; on this population
 is most of one.
 
 Top imports (occurrence counts): `json` 711, `sys` 680, `re` 415, `lypning` 242,
-`subprocess` 234, `os` 148, `pathlib` 136, `io` 131, `collections` 129.
+`subprocess` 234, `os` 148, `pathlib` 136, `io` 131, `collections` 129. These
+count import *statements*, not programs, and the two differ: `lypning` occurs 242
+times across 235 distinct programs (§8). We do not substitute one for the other
+anywhere below.
 
 Top call sites, counted statically — these are **call sites, not dynamic call
 counts**, which we did not measure: `print` 5,126, `open` 2,041, `len` 1,388,
 `isinstance` 760, `repr` 436, `sorted` 407, `range` 372. Put differently,
-**1,423 of 2,906 programs (49.0%) contain at least one `open(` call site.** Agent
-Python is I/O code with a little computation attached, and §5.2 shows that this
-single fact predicts where a competing implementation breaks.
+**1,314 of the 2,869 parsed programs (45.8%) call `open()`.** (An earlier draft
+said 49.0%, from a substring search for `open(`; that over-counts `.open(` and
+`reopen(`. The AST-counted figure is the correct one and we report it in place of
+our own first number.) Agent Python is I/O code with a little computation
+attached — and §5.2 shows this single fact predicts where a competing
+implementation breaks.
+
+One refinement matters more than the headline count. Of those 1,314 programs,
+only **61 (4.6%) use `with open(...)`**; **1,262 (96.0%) contain at least one
+bare `open()`** whose file object is closed by refcounting rather than by a
+context manager. That idiom is the one CPython makes safe and no other
+implementation is obliged to.
 
 ### 3.2 Where the time goes
 
@@ -175,7 +190,7 @@ parent's spawn-to-reap wall. Over **765 programs** (2026-08-30):
 
 | component | median per program | share of summed wall |
 |---|---:|---:|
-| interpreter startup + spawn | **16.83 ms** | **78.9%** |
+| process spawn + interpreter startup + the program's own imports | **16.83 ms** | **78.9%** |
 | parse (`compile()`) | 0.773 ms | 3.8% |
 | **execute (`exec()`)** | **0.019 ms** | 17.3% |
 | total wall | 17.84 ms | 100% |
@@ -188,6 +203,19 @@ paper needs both: the median says optimizing the interpreter loop is pointless
 for a typical program, the aggregate says a minority of programs is where all
 the actual computation lives. **676 of 765 (88.4%) execute in under 1 ms; 96.3%
 in under 10 ms.**
+
+*What that first row is not.* It is spawn-to-reap minus in-child `compile()` and
+`exec()`, so it carries process spawn **and each program's own imports** — not
+bare interpreter startup, which §5.3 measures directly at 10.663 ms for
+`python3 -c 'print(1)'`. The ~6.2 ms difference is per-program import cost, which
+is precisely what §5.4's warm pool later amortizes away. Where this paper says
+"startup" against 16.83 ms it means the whole pre-execution cost; where it needs
+bare interpreter startup it uses §5.3's number.
+
+*The median column does not sum, and is not meant to.* 16.83 + 0.773 + 0.019 =
+17.62 against a reported total of 17.84: each cell is an independent median over
+the same 765 programs, and the total row is the median of the summed wall, not
+the sum of the medians.
 
 *Denominator note.* This subset is 765, while the sweep in §5 uses 745. The
 difference is the invocation shape: here programs run as a file (`prog.py`), so
@@ -216,7 +244,11 @@ abandoned attempt must leave no trace. Tier 1 stages this process's stdout and
 file writes and discards them on refusal, so a refused run is a no-op *with
 respect to what the barrier covers*. It covers this process's writes and standard
 output. It does **not** unwind a child process, a network call, or a signal — and
-234 corpus programs import `subprocess`, so that gap is not hypothetical. The
+`import subprocess` occurs 234 times in the corpus, so the gap is not
+hypothetical — though note that tier 1 refuses `subprocess` at admission, so
+those programs are not themselves the exposure. The exposure is an uncoverable
+effect reachable from what tier 1 *does* admit, and we have not measured how
+often a refusal follows one. The
 barrier makes refusal safe, not omnipotent.
 
 **The contract is asserted, not assumed.** A change that turns a refusal into a
@@ -241,6 +273,14 @@ Engines: **CPython 3.11**, **PyPy 7.3.20** (Python 3.11.13), **MicroPython**
 (32-bit), **Monty 0.0.21** (in-process, its native shape), and **lypning** in two
 configurations — tier 1 alone, and the full chain, which is what a user runs.
 
+Two disclosures about the reference arm, since we beat it. The CPython arms
+invoke the interpreter binary directly (`sys.executable`), **not** through the
+`python3` shim of §2, so the baseline carries none of our overhead; each arm's
+exact command line is in `study/paper/`. And we did **not** ablate CPython's
+startup — no `-S`, `-I` or `-X importtime` breakdown of the 10.663 ms — and a
+`-S` baseline would move our headline ratio. CPython 3.11 is also several releases behind on
+precisely the axis we measure.
+
 ### 5.1 Compatibility
 
 One sweep, one reference run per program, all engines graded against it. Of 1,990
@@ -248,7 +288,9 @@ graded programs, **745 run cleanly** under CPython in the sandbox; the other 1,2
 fail for both reference and engine (they need a real repository, real arguments,
 or the network). We grade BOTH-FAIL on the coarse criterion that both sides
 failed — we do **not** require that they failed the same way, which is a
-limitation of the instrument.
+limitation of the instrument. For calibration: an engine that unconditionally
+exited 1 would score 1,245 BOTH-FAIL and zero divergences here. The BOTH-FAIL
+column measures what the grader cannot see, not agreement.
 
 Correctness counts are identical in both sweeps; wall clock is given for each.
 
@@ -267,11 +309,14 @@ succeeds and CPython does not. We count these separately rather than as matches.
 On the 745-program clean subset: the chain answers 744 identically to CPython;
 tier 1 alone answers 480 (64.4%) and refuses 264 (35.4%).
 
-**Reproducibility.** This sweep was run twice, independently, on 2026-08-30 and
-2026-08-31, the second after a harness change that gives every child an explicit
+**Reproducibility.** This sweep was run twice on the same machine with the same
+instrument, on 2026-08-30 and 2026-08-31, the second after a harness change —
+that is repetition, not independence that gives every child an explicit
 EOF on stdin (without it, corpus programs calling `sys.stdin.read()` block on the
 harness's inherited stdin — a real irreproducibility we found and fixed). **Every
-correctness count above was identical across both runs.** The wall-clock column
+correctness count above was identical across both runs.** No graded outcome moved
+across that fix — the affected programs were already failing on both sides — so
+it removed a class of harness hang and wall-clock noise, not a grading error. The wall-clock column
 was not: CPython's sweep moved from 26.8 s to 30.8 s under different machine
 load. We therefore report timing as ratios, which were stable — the chain came
 out at 1.76× and 1.77× CPython on the two runs — and treat absolute walls as
@@ -301,9 +346,28 @@ empty or stale file. Observed, verbatim:
 | write `x`, append `y`, read lines back | `['x', 'y']` | `['y']` |
 | `hashlib.md5(open("f.bin","rb").read())` | hash of the content | hash of an **empty file** |
 
-This is not an obscure corner. §3.1 measured that 49.0% of corpus programs contain
-an `open(` call site; the profile said this class of program dominates, and the
-divergence lands exactly there. The remaining PyPy divergences are set and
+This is not an obscure corner, and the profile predicted the exact shape of it.
+§3.1 measured that 45.8% of parsed programs call `open()` and that **96.0% of
+those use the bare idiom** rather than `with open(...)`. PyPy's documentation
+states the consequence plainly: because its collector is not refcounting, "files
+(and sockets, etc) are not promptly closed", and for files opened for writing
+"data can be left sitting in their output buffers for a while, making the on-disk
+file appear empty or truncated" [10]. The workload is 96% composed of the idiom
+that triggers it.
+
+The minimal reproduction is four lines, and the repair is the line an agent
+would have to already know to write (2026-08-31):
+
+```python
+open("data.csv", "w").write("name,qty\na,2\nb,40\n")     # CPython: sum: 42
+with open("data.csv") as f: rows = [l.strip().split(",") for l in f][1:]
+print("sum:", sum(int(r[1]) for r in rows if len(r) > 1))  # PyPy:    sum: 0
+```
+
+Rewriting only the first line as `with open("data.csv","w") as f: f.write(...)`
+makes PyPy agree. So this is not a PyPy defect to be fixed but a documented
+design consequence — and the finding is that the population of programs coding
+agents emit is almost entirely composed of the idiom it punishes. The remaining PyPy divergences are set and
 dict-view iteration order, and PyPy accepting keyword arguments CPython rejects
 (`" a ".strip(chars=None)`).
 
@@ -331,16 +395,22 @@ measurement floor of the spawning parent and therefore separates nothing:
 40 spawns each, 2026-08-31. This table carries the paper's cleanest causal
 result: **PyPy costs +16.22 ms more than CPython to run `print(1)`** — a program
 with no loop to trace and nothing to compile. That is fixed interpreter startup,
-and it is present before any JIT question arises. PyPy's per-program penalty over
-the sweep is ≈33 ms, so roughly half is this constant and the remainder is
-warmup and slower short-program execution. We report the split rather than
-attributing the whole gap to warmup, which is what the wall-clock numbers alone
-would have let us claim.
+and it is present before any JIT question arises. PyPy's per-program penalty depends on which
+arm you take it from, and we give the range rather than the flattering end:
+32.9 ms from the 2026-08-31 sweep, 26.4 ms from 2026-08-30, and **20.9 ms** from
+§5.4's clean-subset table (38.03 − 17.10). The fixed 16.22 ms is therefore
+between **49% and 78%** of the penalty depending on the arm. "Roughly half" —
+which an earlier draft wrote — is the single most favourable reading available,
+and it is the one that leaves the most room for a warmup story. On the
+clean-subset arm, which is the one where every program actually runs, fixed
+startup is closer to four fifths of it.
 
 On **sustained compute**, over six workloads first validated to produce
-byte-identical output on every engine (medians of 5 interleaved rounds), nothing
-here beats CPython: lypning runs 1.9–4.5× slower, Monty 1.9–4.5× slower,
-MicroPython bimodal (0.78× on integer loops, 23× slower on dict churn).
+byte-identical output on every engine (medians of 5 interleaved rounds,
+2026-08-30, reported in full in `docs/COMPARISON.md`), nothing beats CPython on
+five of the six: lypning 1.9–4.5× slower, Monty 1.9–4.5× slower. MicroPython is
+the exception and is bimodal — 1.28× *faster* on integer loops, 23× slower on
+dict churn.
 Callgrind instruction counts partially reorder the wall ranks — Monty executes
 0.84× CPython's instructions on an integer loop and still loses on wall — so
 these costs are dispatch- and memory-bound. **None of these engines is a compute
@@ -361,7 +431,7 @@ in one process on one machine:
 
 | configuration | total | per program | vs cold CPython | answers |
 |---|---:|---:|---:|---|
-| lypning tier 1, cold spawn | 1,993 ms | **2.67 ms** | **6.39×** | 64.4%; refuses the rest |
+| lypning tier 1, cold spawn | 1,993 ms | **2.67 ms** | **6.39×** | 64.4%; refuses 35.4%, 1 wrong |
 | **CPython warm fork pool** | 6,248 ms | **8.39 ms** | **2.04×** | 100% — it *is* CPython |
 | lypning chain, cold spawn | 8,476 ms | 11.38 ms | 1.50× | 100%, 744/745 identical |
 | CPython, cold spawn | 12,740 ms | 17.10 ms | 1.00× | reference |
@@ -372,9 +442,10 @@ A pre-warmed CPython that forks per program serves this corpus at 8.39 ms agains
 the chain's 11.38 ms, and it answers every program correctly *because it is
 CPython*. On both axes a reader should care about, it wins. Part of its advantage
 is structural and worth naming: the forked child inherits the parent's
-`sys.modules`, so a program that does `import json` — 711 corpus programs import
-`json`, 415 `re` — pays nothing for it, while every cold-spawn arm pays the import
-each time.
+`sys.modules`, so a program that does `import json` pays nothing for it while
+every cold-spawn arm pays the import each time. (`json` appears in 711 import
+statements corpus-wide and `re` in 415 — occurrence counts over all 2,906
+entries, not program counts over the 745 measured here.)
 
 What the pool costs is not visible in this table. It is a resident daemon: memory
 held between invocations, a lifecycle to supervise, crash recovery, and a harness
@@ -384,18 +455,33 @@ each invocation is independent, in a different container, or under a different
 user. That is a real engineering trade, not a performance win, and we present it
 as one.
 
-The measurement also points somewhere better than either arm, and this is the
-most useful thing in the paper for a practitioner. Tier 1 alone serves its 64.4%
-at **2.67 ms**, three times faster than the warm pool — but its fallback is a
-cold CPython spawn at 17.10 ms, which is what drags the chain to 11.38 ms.
-**The two designs compose: a chain whose backstop tier is a warm CPython pool
-rather than a cold spawn should beat both**, since it pays 2.67 ms on the
-programs tier 1 admits and ~8.39 ms on the rest. We have not built it, so we do
-not report a number for it; the arithmetic is visible in the table and the
-experiment is the obvious next one.
+The measurement also points somewhere better than either arm, and an earlier
+draft of this paragraph got the arithmetic wrong in our own favour. Two
+corrections, both from the table above.
 
-The number a user gets from what we actually ship is the **chain: 1.50× on this
-subset, 1.76–1.77× across the two full-sweep runs**, with 744 of 745 clean
+First, **2.67 ms is not the cost of serving a program.** It is 1,993 ms / 745,
+an average over 480 answers *and* 264 cheap refusals, so it understates the cost
+of an answered program and cannot be spliced against the pool's 8.39 ms.
+
+Second, the chain's fallback is not a single cold CPython spawn. If it were,
+the chain would cost 1,993 + 264 × 17.10 = **6,507 ms**; it measured **8,476 ms**.
+The true per-refused-program cost is (8,476 − 1,993)/264 = **24.6 ms**, because a
+refused program pays the tier-1 spawn it already paid, *then* the tier-2
+MicroPython spawn, *then* CPython — three spawns, not one. §4 declares three
+tiers and this is where the third one shows up in the wall clock.
+
+With those corrected, the composition estimate is still favourable and now
+honest: a chain whose backstop is the warm pool would pay the tier-1 pass on
+every program plus the pool on the refused ones,
+(1,993 + 264 × 8.39)/745 ≈ **5.65 ms**, or 3.03× cold CPython — better than the
+pool's 2.04× and the chain's 1.50×, and worse than the 3.6× the naive splice
+implied. We have not built it, so this is arithmetic on measured arms and not a
+measurement; the experiment is the obvious next one.
+
+The number we measured on what we actually ship is the **chain: 1.50× on this
+subset, 1.76–1.77× across the two full-sweep runs** — in-sample, on a subset
+selected for still running with its repository removed (§8), which is the
+direction that flatters us — with 744 of 745 clean
 programs answered identically to CPython. Tier 1's 6.39× is a configuration
 nobody deploys alone, and quoting it as the headline would be dishonest.
 
@@ -533,8 +619,9 @@ sitting in their output buffers for a while, making the on-disk file appear empt
 or truncated"; that PyPy's sets are ordered where CPython's are not; and that
 PyPy's builtins accept keyword arguments CPython's reject. Our contribution here
 is not the discovery but the **blast radius**: on agent-emitted Python, where
-49.0% of programs contain an `open(` call site, these documented differences
-silently change the answer for 39 of 745 runnable programs (5.2%).
+45.8% of parsed programs call `open()` and 96.0% of those use the bare,
+refcount-dependent idiom, these documented differences silently change the answer
+for 39 of 745 runnable programs (5.2%).
 
 **Code execution inside agent loops.** Two recent studies bound the behaviour from
 outside the interpreter. Analysis of 7,745 agent traces from SWE-bench submissions
@@ -546,9 +633,8 @@ and dependency drift rather than interpreter semantics, and motivates our
 zero-dependency constraint. Neither instruments the interpreter invocation itself.
 
 **Still unverified.** Claims marked `[unverified]` above — Truffle's
-`transferToInterpreter`, PyPy's blackhole interpreter, V8's tier history, the
-RPython translator's subset, JavaScriptCore's tier count, and Meta's Cinder and
-Skybison — are from model recall and were not checked against primary sources
+`transferToInterpreter`, PyPy's blackhole interpreter, V8's tier history, and the
+RPython translator's subset — are from model recall and were not checked against primary sources
 before this draft. They are attributions we believe correct in substance, and
 each must be verified before submission. Everything in the numbered references
 below was checked against a primary source on 2026-08-31.
@@ -590,7 +676,7 @@ measured it. Profiling the skipped set against the retained set (2026-08-31;
 
 | | skipped (absolute path) | retained | ratio |
 |---|---:|---:|---:|
-| `open(` sites per program | 0.856 | 0.680 | 1.26× |
+| `open()` call sites per program | 0.856 | 0.680 | 1.26× |
 | contains a loop | **75.1%** | 38.2% | 1.97× |
 | contains a comprehension | **46.7%** | 14.6% | 3.20× |
 | defines a function | **20.3%** | 5.6% | 3.63× |
@@ -605,18 +691,37 @@ We cannot say by how much without running them, which needs a real sandbox we di
 not build. Note the one bound available: the retained set is far from I/O-free —
 PyPy's 39 file-finalization divergences were all found *inside* it.
 
-**A larger selection effect than the exclusions.** Only 745 of 2,906 entries
-(25.6%) run cleanly enough to be graded on output. The other 1,245 graded
-candidates fail because the temp-cwd net strips the repository state they were
+**A larger selection effect than the exclusions.** Only 745 of the 1,990 graded
+candidates run cleanly enough to be graded on output — 25.6% of the 2,906 entries
+loaded. The other 1,245 candidates fail because the temp-cwd net strips the repository state they were
 written against. The evaluated set is therefore selected on "still works with its
 context removed," which plausibly skews toward shorter, more self-contained, and
 faster programs — precisely the ones a subset engine handles. This is the
 sampling threat we consider most serious after the first, and it is not fully
 addressable without a real sandbox that can reproduce repository state.
 
+**Deduplication removes the weighting a user actually pays — measured.** The
+corpus content-addresses entries, so every count above is over distinct program
+*texts*. What an agent's wall clock is weighted by is *invocations*. The capture
+log carries both: the 2,906 distinct entries were seen **7,406 times**, a mean of
+2.55 and a maximum of 45, with 1,845 (63.5%) seen exactly once. Re-weighting the
+profile by invocation count moves it, and moves it *away* from complexity
+(2026-08-31):
+
+| feature | by distinct program | by invocation |
+|---|---:|---:|
+| contains a loop | 48.6% | 44.7% |
+| contains a comprehension | 23.8% | **15.7%** |
+| defines a class | 0.3% | 0.4% |
+
+The programs agents re-run are simpler than the ones they run once, so the
+workload an interpreter actually faces is *easier* than §3.1 suggests. This runs
+in our favour and we would rather report it than let a reviewer find it: our
+coverage numbers are computed on the harder, distinct-text population.
+
 **Measurement bias in a spawn-dominated regime.** Startup is 78.9% of summed wall
 time, and that is exactly the quantity most perturbed by environment size and
-link order — the hazard Mytkowicz et al. describe `[unverified: ASPLOS 2009]`,
+link order — the hazard Mytkowicz et al. describe [1],
 and it lands on our headline quantity rather than adjacent to it. Our hygiene
 (`PYTHONHASHSEED=0`, `LC_ALL=C.UTF-8`, fresh temp cwd, one instrument, interleaved
 rounds, best-of-N) controls semantic determinism and machine load; it does **not**
@@ -645,8 +750,8 @@ wanted and not one we could have predicted.
 
 Coding agents have created a Python workload with no established benchmark and
 properties that invert the assumptions of mainstream implementation work: 384-byte
-programs, no classes, and 19 microseconds of computation behind 16.83 ms of
-interpreter startup. Measured against that workload, the fastest Python
+programs, no classes, and 19 microseconds of computation behind 16.83 ms of spawn,
+interpreter startup and imports. Measured against that workload, the fastest Python
 implementation is the slowest, and it is silently wrong on the single most common
 thing these programs do — write a file and read it back.
 
