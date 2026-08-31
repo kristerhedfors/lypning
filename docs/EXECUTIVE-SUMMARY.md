@@ -12,9 +12,19 @@ The one-line answer: **on the measured workload, lypning improves end-to-end
 latency (1.50× distinct-weighted, 2.35× weighted by real invocation counts)
 while diverging from CPython on one ledgered program — fewer than CPython 3.13
 scores against 3.11 on the same instrument. A pre-warmed CPython fork pool
-beats every shipped lypning configuration on the distinct-weighted measure
-(2.04× vs 1.50×) and is correct by definition; it was not measured
-invocation-weighted, and the two designs compose rather than compete.**
+beats the shipped cold chain on the distinct-weighted measure (2.04× vs 1.50×);
+it was not measured invocation-weighted. The two designs compose rather than
+compete, and that composition is now built and measured: a chain backstopped by
+the pool runs at 1.77× with 745 of 745 programs correct — the fastest arm that
+is also the most correct.**
+
+*One correction to an earlier version of this document, which called the pool
+"correct by definition". It is not.* A warm pool freezes its environment at
+start, and a fork cannot re-seed hash randomization: measured 2026-08-31, a pool
+started without the caller's `PYTHONHASHSEED` diverged from a cold `python3` on
+3 of 745 programs; started with it, 0 of 745. The pool is correct when it is
+started as the interpreter its callers think they are getting — a deployment
+rule, not a free property.
 
 ---
 
@@ -47,8 +57,18 @@ with tables tuned in-sample to refuse what it cannot match, while the others
 answer everything they can and diverge in the open. Within that framing the
 result stands: the cold-spawned chain answered 744 of 745 with the one ledgered
 exception and zero errors CPython would not also produce. The warm chain
-currently produces **2** such errors, from an unresolved defect in which the
-in-process library arm errs on 2 programs the binary correctly refuses.
+produced 2 such errors when measured against a stale C ABI; with the library
+rebuilt from the same tree as the binary, the pool-backstopped chain answers
+**745 of 745** with no divergence and no error at all — the musl `pow` case
+included, because that shape's tier 1 is the host-linked library rather than
+the musl-static binary.
+
+**4a. The composition, built.** A chain whose backstop is the pool rather than
+a cold CPython spawn measures **1.77× with 745/745 correct** (2026-08-31,
+`study/paper/pool_chain.py`) — 481 answers from tier 1 in-process, 264 from the
+pool. It is the fastest arm and the only fast arm that answers everything.
+Shipped as `lypning pool serve` and opt-in via `LYPNING_POOL`; it is a resident
+daemon, off by default, and must be started under the caller's hash seed.
 
 **4. Against the Monty substrate, both warm.** Over the same 745 programs with
 identical per-program temp-cwd churn, the liblypning arm completes the sweep at
@@ -85,16 +105,19 @@ biggest threat (paper §8).
 
 **1. Against a warm CPython pool, per distinct program.** A pre-warmed CPython
 forking per program serves the same 745 at 8.39 ms each — 2.04× cold CPython
-against the shipped chain's 1.50×, correct by construction. The pool was not
+against the shipped chain's 1.50×, and correct once started under the caller's
+hash seed (see the correction above). The pool was not
 measured invocation-weighted (the weighting that lifts the chain to 2.35×
 would plausibly lift the pool too). The pool's costs are operational — a
 resident daemon, memory, lifecycle, a harness change — and it is slower than
 warm tier 1 on admitted programs (8.39 vs ≈3.5 ms), which is why the
-measurements point at composing the two: tier 1 with the pool as backstop,
-arithmetic estimate ≈3× (unbuilt, and sensitive to which baseline is used).
-The fair statement: **where a resident daemon is acceptable, the pool is the
-stronger baseline today and lypning's remaining edge is the admitted-program
-path; where it is not, lypning's shipped chain is the best measured option.**
+measurements pointed at composing the two — and that composition is now built
+and measured at **1.77×, 745/745 correct**, beating both the pool alone (1.40×)
+and the cold chain (1.51×) in the same run. Our arithmetic had projected ≈3×;
+it was wrong by 40%, because it ignored that the tier-1 pass is paid on every
+program including the ones it refuses. The fair statement: **where a resident
+daemon is acceptable, the composition is the best measured configuration; where
+it is not, lypning's shipped cold chain is.**
 
 **2. Sustained compute.** On six compute-bound workloads lypning runs 1.9–4.5×
 *slower* than CPython (2026-08-30, `docs/COMPARISON.md`). The entire speedup is
@@ -106,10 +129,15 @@ startup and dispatch; long-running programs get only overhead.
 payoff.
 
 **4. Moving parts (observation, not measurement).** lypning adds a binary, a
-dispatcher, hooks, a shim and a battery to what was one interpreter. The 2
-programs on which our own library arm disagrees with our own binary — found
-2026-08-31, unresolved — illustrate that the added machinery is a place for
-bugs to live.
+dispatcher, hooks, a shim, a battery and now an optional daemon to what was one
+interpreter. The 2 programs on which the library arm disagreed with the binary,
+reported in an earlier version as an unresolved defect, turned out to be **build
+hygiene**: the C ABI had last been built a day before the binary, so the two
+artifacts answered from different subsets. Rebuilding took the disagreement from
+4 frontier probes to 1 (a musl-vs-glibc `pow` ULP, expected between a static
+binary and a host library), and `lypning doctor` now fails when the two
+artifacts disagree. The lesson stands even though the bug did not: more
+artifacts is more that can drift, silently.
 
 ## Where the comparison is not apples-to-apples
 
@@ -150,11 +178,14 @@ none of them (checked). All quantified in `docs/PAPER.md` §8.
 | vs Monty substrate, both warm | ≈3.5 vs ≈25 ms per answered program; 480/1 vs 275/23 correctness; but the all-answering warm chain is slower on wall than Monty's pool (12.60 vs 9.41 ms) | **improves on correctness-per-cost; wall depends on what an error costs** |
 | failure economics in an agent loop | error counts measured (447 vs 0–2); per-error cost modeled only | **plausible, unmeasured** |
 | sustained compute | 1.9–4.5× slower | **regresses** |
-| operational simplicity | more moving parts; 1 live cross-arm defect | **regresses** |
+| operational simplicity | more moving parts; the pool adds a daemon and a hash-seed deployment rule | **regresses** |
+| the composition (tier 1 + pool backstop) | 1.77×, 745/745 correct — beats the cold chain (1.51×) and the pool alone (1.40×) in the same run | **improves; now built** |
 
 If the question is "should a coding harness route `python3` through lypning
 rather than doing nothing" — on this evidence, for this workload shape: yes.
 If the question is "is lypning the best possible use of this engineering
-effort" — the warm-pool result says a resident kernel pool is the stronger
-baseline where a daemon is acceptable, and the strongest measured configuration
-is likely the unbuilt composition of the two.
+effort" — where a daemon is acceptable, the strongest measured configuration is
+the composition of the two, and it is no longer unbuilt: `lypning pool serve`
+plus `LYPNING_POOL`, measured at 1.77× with nothing answered wrongly. Where a
+daemon is not acceptable, the shipped cold chain at 1.50× is the best option
+measured here.

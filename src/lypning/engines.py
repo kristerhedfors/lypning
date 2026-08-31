@@ -400,6 +400,49 @@ def _argv_for(engine: str, binary: Path, program: str, script: Path | None) -> l
     return [str(binary), "-c", program]
 
 
+def _pool_socket(env: dict[str, str] | None = None) -> str:
+    """The pool a CPython run should use, or "" for none.
+
+    Opt-in and env-driven on purpose: a resident daemon is a deployment
+    decision, not a default. ``LYPNING_POOL`` names the socket; the pool is
+    used only for the CPython tier, only when it answers a ping, and any
+    failure falls back to a cold spawn rather than failing the run.
+    """
+    source = env if env is not None else os.environ
+    return source.get("LYPNING_POOL", "") or ""
+
+
+def _run_via_pool(program: str, socket_path: str, *, argv_tail: Sequence[str] = (),
+                  stdin: str | None = None, cwd: Path | str | None = None) -> Result | None:
+    """Answer from the warm pool, or return None so the caller spawns instead."""
+    from . import pool as _pool
+    child_env = dict(os.environ)
+    child_env["LYPNING_CAPTURE"] = "0"
+    if env:
+        child_env.update(env)
+    t0 = time.perf_counter_ns()
+    try:
+        reply = _pool.Client(socket_path).run(program, cwd=cwd, argv_tail=argv_tail,
+                                              stdin=stdin, env=child_env)
+    except Exception:
+        # A pool that is down, wedged or speaking nonsense must cost a caller
+        # nothing but a cold spawn: this tier exists to be faster than CPython,
+        # never to be a new way for CPython to be unavailable.
+        return None
+    if not reply.get("ok"):
+        return None
+    wall = time.perf_counter_ns() - t0
+    # The spawned arms decode with `text=True`, which applies universal-newline
+    # translation; the pool hands back exactly what the program wrote. Without
+    # this the two Result kinds are not comparable and a CRLF-emitting program
+    # (csv.writer, say) grades as a divergence against its own reference.
+    def _universal(text: str) -> str:
+        return text.replace("\r\n", "\n").replace("\r", "\n")
+    return Result(CPYTHON, "pool:" + socket_path, int(reply.get("returncode", 1)),
+                  _universal(reply.get("stdout", "")),
+                  _universal(reply.get("stderr", "")), wall)
+
+
 def run(
     engine: str,
     program: str = "",
@@ -413,6 +456,12 @@ def run(
     env: dict[str, str] | None = None,
 ) -> Result:
     """Run ``program`` on one engine. Never raises for a program's own failure."""
+    if engine == CPYTHON and script is None:
+        sock = _pool_socket(env)
+        if sock:
+            served = _run_via_pool(program, sock, argv_tail=argv_tail, stdin=stdin, cwd=cwd)
+            if served is not None:
+                return served
     b = binary or find(engine)
     if b is None:
         return Result(engine, "", 127, "", f"lypning: engine not built: {engine}\n", 0)
@@ -672,3 +721,63 @@ def dispatch(
     if last is None:
         last = Result(CPYTHON, "", 127, "", "lypning: no engine available\n", 0)
     return Dispatch(last, r, attempts[:-1] if attempts else [])
+
+
+#: Constructs chosen to sit ON the refusal frontier, where the subset's answer
+#: is most likely to change between builds. A drift probe is only as good as
+#: its probes: these are not a proof of agreement, they are a smoke test that
+#: has already caught one real drift (2026-08-31, a library a day behind its
+#: binary answered dict-view set algebra the binary had learned to refuse).
+DRIFT_PROBES: tuple[str, ...] = (
+    'print(1)',
+    'd={"a":1}; print(d.keys() | {"b"})',
+    'print(" a b ".rsplit(None, 1))',
+    'print({3,1,2})',
+    'print(9007199254740993 / 3)',
+    'print(1.5 // 0.5)',
+    'import json; print(json.dumps({"a": 1}))',
+)
+
+
+def _verdict(res: "Result") -> tuple[str, str]:
+    """Collapse a run to (class, detail) so two engines can be compared.
+
+    A refusal compares by KIND, not by message: the detail after the kind is
+    prose and may legitimately be reworded between builds. Everything else
+    compares by exit class and stdout, because that is what a caller sees.
+    """
+    if res.refused:
+        kind, _ = res.refusal
+        return ("refused", kind)
+    if res.returncode == 0:
+        return ("ok", res.stdout)
+    return ("failed", str(res.returncode))
+
+
+def library_binary_drift(programs: Sequence[str] = DRIFT_PROBES,
+                         *, timeout: float = 10.0) -> list[tuple[str, str, str]]:
+    """Return the probes on which the C ABI and the spawned binary disagree.
+
+    The two artifacts are built from one tree but installed independently, so
+    ``lypning build --rust`` without ``--lib`` leaves a library that answers
+    from an older subset. Nothing else in this package would notice: both pass
+    their own contract assertion, both report the same version string, and the
+    disagreement only shows up as a wrong answer in whichever arm a caller
+    happens to use.
+
+    Each element is ``(program, binary_verdict, library_verdict)``. An empty
+    list means the probes agree; it does not mean the artifacts are identical.
+    A host-linked library and a musl-static binary can legitimately differ in
+    the last ULP of a libm result, so float-sensitive probes stay out of the
+    default set.
+    """
+    if find(LYPNING) is None or run_library("").returncode == 127:
+        return []
+    out: list[tuple[str, str, str]] = []
+    for program in programs:
+        binary = run(LYPNING, program, timeout=timeout)
+        library = run_library(program)
+        b, l = _verdict(binary), _verdict(library)
+        if b != l:
+            out.append((program, "%s: %s" % b, "%s: %s" % l))
+    return out

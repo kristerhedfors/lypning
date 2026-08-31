@@ -527,6 +527,7 @@ Interpreter mode is decided before argument parsing, so anything that calls
 | `lypning corpus-time [--engine E] [--baseline F] [--record F]` | time the corpus on ONE binary, and diff two runs of it |
 | `lypning perf [--only CASE] [--baseline F] [--record F]` | one construct at a time against CPython — where the interpreter's time goes |
 | `lypning lib [--cflags\|--libs\|--path\|--static\|--include] [--json]` | where the embeddable C ABI is, and the line to compile against it |
+| `lypning pool [serve\|ping\|stop] [--socket P] [--max-requests N]` | a warm CPython backstop for the chain: opt-in, off by default, `LYPNING_POOL` points at it |
 | `lypning gate [BIN] [--compare]` | static? how many bytes? how many file opens? |
 | `lypning harvest [--export]` | captured invocations → sightings → corpus |
 | `lypning corpus [--stats] [--list]` | inspect the harvested programs |
@@ -561,6 +562,7 @@ Environment:
 | `LYPNING_LOG` | capture log path (default `$LYPNING_HOME/invocations.jsonl`) |
 | `LYPNING_BIN`, `LYPNING_MP_BIN` | override the engine binary that gets used |
 | `LYPNING_LIB` | override the embeddable C ABI library (`lypning lib`, `lypning.embed`) |
+| `LYPNING_POOL` | socket of a warm CPython pool (`lypning pool serve`); the chain's CPython tier uses it, and falls back to a cold spawn if it is unreachable |
 | `LYPNING_CPYTHON` | override the reference CPython |
 | `LYPNING_CAPTURE=0` | disable the whole capture harness |
 | `LYPNING_HARVEST=0` | keep capturing, stop the Stop hook publishing |
