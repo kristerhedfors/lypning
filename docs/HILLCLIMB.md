@@ -26,6 +26,42 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-08-31 · iteration 64 — percent-format stops allocating per conversion
+
+Focus: raw performance. Queue row taken: `str-fmt-pct` at 8.09x, present in 18%
+of the 2,906 corpus programs loaded this run. Candidate mechanisms were fanned
+out to three source-reading agents first; the `percent_format` allocation
+census survived contact with the real code, and the call-path census did not —
+chain pooling, scope pooling, the `Used` bitmask and lazy global-decl sets were
+already in place from earlier iterations. The ledger did its job: those
+proposals were retired by reading it, not re-implemented.
+
+One mechanism, three cuts in one function (`ops.rs::percent_format`): the
+argument tuple is borrowed instead of cloned (`std::slice::from_ref` for the
+scalar case); `out` is reserved at `f.len() + 8 * count('%')` so the mallocng
+grow-copy-free on expansion is gone; and the two bare conversions agents
+actually type — `%s` on str, `%d` on int with no minimum digits — write into
+`out` directly instead of through `percent_one`'s temporary String. Width,
+flags, mapping keys and every other type take the old path byte-for-byte.
+
+- bytes: 1,028,304 → 1,028,304 — identical, 8 blocks
+- conformance: 1325 / 800 / 1 MISMATCH (the ledgered musl `pow` ULP, unchanged)
+- perf: `str-fmt-pct` 8.09x → **5.49x**; `str-of-scalar` 4.40x → 3.93x;
+  TOTAL 2.52x → 2.31x
+- corpus-time: 3.42 s → 3.21 s over 2,126 programs (0.938x — outside the 3%
+  deadband, on the good side; read per skill §3, this is not the reward)
+- sixteen %-format shapes diffed against CPython by hand: no divergence, no
+  new refusal
+
+Same commit, Python side: the pool child applies the caller's environment as a
+DIFF instead of `clear()+update()` — ~272 libc putenv/unsetenv calls per
+request became a handful — measured 4.286 → 3.920 ms median on the `print(1)`
+round-trip, with delta semantics verified in both directions. A probe also
+priced the arity string-match pass at 2.7% of wall on a 10x-scaled
+`str-methods` loop, which retires "id-dispatch of method names" as a
+low-priority mechanism: the Ir it removes does not convert (skill §2b, again).
+
+
 ## 2026-08-30 · iteration 63 — the answer the user actually receives
 
 **commits** `e044642..HEAD` (14, one stretch) · **host** 4 cpus, Linux
