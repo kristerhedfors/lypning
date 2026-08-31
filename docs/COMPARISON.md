@@ -56,11 +56,11 @@ with `PYTHONHASHSEED=0` and `LC_ALL=C.UTF-8`. Monty runs with no OS access
 | both failed (program fails in an empty sandbox on both) | 1,245 (62.6%) | 1,245 (62.6%) |
 | refused / unsupported, loudly | 264 (13.3%) | 340 (17.1%) |
 | errored where CPython succeeds | 0 | 107 (5.4%) |
+| **answered wrongly at exit-success** | **1** (0.05%) | **23** (1.2%) |
 
 (The paper's sweep reports all 447 Monty failures as one LOUD-ERROR class,
 because Monty has no exit-90 refusal channel a dispatcher could act on; this
 table subdivides by whether the error names an unimplemented construct.)
-| **answered wrongly at exit-success** | **1** (0.05%) | **23** (1.2%) |
 
 The identical both-fail counts are the sanity check that one instrument graded
 both columns. On the **CPython-clean subset** (745 programs that run cleanly in
