@@ -26,6 +26,84 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-08-31 · iteration 69 — `re` was the wrong row, and `--plan` is why
+
+First iteration under the coverage focus. `conformance --plan` ranks `re` first
+at 185 programs, so the plan was a bounded regex engine: the corpus needs only a
+core (≈90% of its 245 literal patterns use classes, groups, alternation,
+quantifiers, anchors, dot and `\d\w\s`; only 10.2% need lookaround,
+backreferences, named groups or inline flags), and everything outside it would
+refuse at parse time.
+
+**It was the wrong row, and `modules.rs` had said so in a comment since before
+this session:** *"`re` is deliberately ABSENT ... lypning-mp already has one, so
+`import re` is a routing decision rather than a gap to fill here."* Verified
+rather than taken on faith — `lypning run -c 'import re; …'` answers findall,
+sub, split and search identically to CPython today, from **lypning-mp**.
+
+### `--plan` optimises the wrong objective, and the correction is large
+
+`--plan` ranks TIER-1 blockers. What costs anything is a tier-1 refusal that
+lands on **CPython**, because that is the 11 ms spawn; a refusal that lands on
+lypning-mp costs 0.36 ms. Routing all 1,990 graded programs (2026-08-31):
+
+| destination | programs | share |
+|---|---:|---:|
+| lypning (tier 1) | 1,309 | 65.8% |
+| lypning-mp | 410 | 20.6% |
+| **cpython** | **271** | **13.6%** |
+
+So the corpus's avoidable-spawn cost is **271 × 11 ms ≈ 2.98 s**, not the
+`800 × 11 ms ≈ 8.8 s` this ledger claimed one entry ago. That earlier figure
+was wrong and is retracted here: it counted every tier-1 refusal as a CPython
+spawn.
+
+And the CPython-bound list is mostly irreducible: **111 of the 271 are
+`from lypning import …`** — this project's own development one-liners, which
+need the real package and can never be served by tier 1 or tier 2 — plus 27
+syntax errors, which CPython is *supposed* to raise. The genuinely actionable
+remainder is ~133 programs across many small blockers, led by `.__name__` (22).
+
+### The step actually taken, and the one reverted on the way
+
+**Reverted first:** letting `__name__`/`__class__` through the router's
+unknown-method marker, so those 22 programs would fall to lypning-mp instead of
+CPython. Routing improved (271 → 252 CPython) and **the mixture gained four
+MISMATCHes**: programs that had been reaching CPython only because of this
+block, and whose other constructs lypning-mp gets wrong. The block was an
+accidental shield. Invariant 1 is absolute and the ledger is not a place to
+park new wrong answers, so it was reverted whole.
+
+**The general lesson, which is the mirror of one already here:** the ledger
+records that *adding* a refusal creates a new fall-through path nobody tests.
+*Removing* one is exactly as dangerous, because it changes which tier answers —
+and a refusal can be load-bearing for reasons unrelated to why it was written.
+
+**Shipped instead:** tier 1 answers `__name__` on a `Value::Builtin` receiver.
+That is the one receiver whose name is not a guess — a builtin carries it, and
+CPython agrees for both types and functions (`int.__name__` is `'int'`,
+`len.__name__` is `'len'`). The wildcard that refuses every other dunder is
+intact, and a 20-case grid confirms every other spelling still refuses or
+matches.
+
+**Also tried and reverted:** teaching `type()` to answer for an exception
+instance, which would have unlocked the dominant `type(e).__name__` idiom.
+Conformance went to 1329 MATCH but **tier 1 gained 2 MISMATCHes** — unblocking
+`type(e)` let those programs run further and hit a separate, pre-existing
+defect: `Value::Exc` stores its argument as a message string, so `OSError(2)`
+reports `('2',)` where CPython keeps `(2,)`. That defect is real and worth its
+own step; it is not worth shipping a wrong answer to reach.
+
+- bytes: 1,032,400 → 1,032,400 (identical, 8 blocks)
+- conformance: 1325 / 800 / 1; mixture 2119 / 0 / 7 — ledger scorer clean at
+  87 observed, 87 accepted
+- corpus-time: 3.42 s → 3.03 s over 2,126 programs against the iteration-63
+  baseline
+- `study/re/SEMANTICS.md` is new: ~300 input/output pairs run against real
+  CPython 3.11, the differential spec a tier-1 `re` would have to meet. Kept
+  because the measurement that retired the row does not retire the knowledge.
+
+
 ## 2026-08-31 · iteration 68 — builtin dispatch: REVERTED, and the gradient is flat
 
 Profiling `file-write-read` (2.77x, 49% of corpus — the highest-weight row not

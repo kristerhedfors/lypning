@@ -14,6 +14,33 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-31** — `re` was the wrong row: `--plan` optimises the wrong objective
+
+- **Retracting a number from the previous entry.** It claimed 800 tier-1
+  refusals × ~11 ms of CPython spawn ≈ 8.8 s. Routing all 1,990 graded programs
+  shows only **271 reach CPython** (13.6%); 410 are served by lypning-mp at
+  0.36 ms. The avoidable cost is ≈**2.98 s**, and 111 of the 271 are this
+  project's own `from lypning import …` development one-liners, which no tier
+  can serve.
+- **`conformance --plan` ranks tier-1 blockers, not cost.** Its top row, `re`
+  at 185 programs, is already answered correctly by lypning-mp — as
+  `modules.rs` has said in a comment all along. Verified before writing an
+  engine, not after.
+- **Tier 1 now answers `__name__` on a builtin receiver** (`int.__name__`,
+  `len.__name__`, `ValueError.__name__`) — the one receiver whose name is not a
+  guess. The wildcard refusing every other dunder is intact; a 20-case grid
+  confirms it.
+- **Two changes measured and reverted, both for invariant 1.** Rerouting
+  `__name__` to lypning-mp gained 4 mixture MISMATCHes — the block had been an
+  accidental shield against defects that tier has elsewhere. Teaching `type()`
+  to answer for an exception instance gained 2 tier-1 MISMATCHes by unblocking
+  programs into a separate pre-existing defect (`Value::Exc` stores its
+  argument as a string, so `OSError(2)` reports `('2',)`).
+- **`study/re/SEMANTICS.md` is new**: ~300 `re` input/output pairs run against
+  real CPython 3.11 — the differential spec a future tier-1 engine must meet.
+- Bytes unchanged at 1,032,400 (8 blocks); conformance 1325/800/1 with the
+  ledger clean at 87/87; corpus-time 3.42 → 3.03 s; 1313 tests green.
+
 **2026-08-31** — Iterations 66–68 all reverted; the speed gradient is flat and the dial is re-aimed
 
 - **Three measured failures, three reverts, all kept in `docs/HILLCLIMB.md`.**
