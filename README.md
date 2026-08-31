@@ -25,6 +25,11 @@ route cost one wasted process spawn instead of a wrong answer.
 
 ---
 
+
+> **The write-up:** `docs/PAPER.md` profiles what coding agents actually
+> execute and benchmarks CPython, PyPy, MicroPython, Monty and lypning on
+> that corpus with one instrument — including the baselines that beat us.
+
 ## Measured performance
 
 `lypning bench --startup-repeat 15 --repeat 3`, run on **2026-08-25** on this
@@ -42,8 +47,13 @@ corpus capture that had grown to **1551 programs, 1305 of them measurable**:
 
 **The mixture answers all 1305 programs for 0.302x of CPython's cost** — 16.7
 seconds saved across one session's worth of one-liners, with nothing left
-unanswered. The two subset arms are cheaper than the mixture only because they
-refuse work, and a refusal still costs its spawn.
+unanswered (that run: 2026-08-25, 1305-program corpus; the corpus has since
+grown, and the 2026-08-31 sweeps in `docs/PAPER.md` put the chain at 1.50–1.77×
+distinct-weighted and 2.35× invocation-weighted over a 2,906-entry corpus). The
+two subset arms are cheaper than the mixture only because they refuse work, and
+a refusal still costs its spawn. The paper also reports the baseline that beats
+us — a pre-warmed CPython fork pool at 2.04×, correct by construction — and what
+that pool costs; read its §5.4 before quoting any single ratio from this table.
 
 Correctness on the same tree, from `lypning conformance`: `lypning` 906 MATCH ·
 399 UNSUPPORTED · **0 MISMATCH**; `lypning-mp` 1229 · 65 · **11**; the mixture
@@ -847,6 +857,8 @@ Makefile               thin wrappers: build test check conformance fuzz bench ga
 | `docs/BENCH-LEDGER.md` | append-only measurement history, including the losses |
 | `docs/HILLCLIMB.md` | append-only ledger of improvement steps — the four numbers each moved, and the ones that moved nothing |
 | `docs/FORKING.md` | fork it and tune it to YOUR programs: the capture→harvest→gate→step loop as a standing feature, and every optimization classified by whether it transfers, re-derives, or must be re-measured |
+| `docs/COMPARISON.md` | against ADK-Rust CodeAct + Monty: one instrument over the corpus, both columns measured, and when to choose which |
+| `docs/PAPER.md` | the write-up: what coding agents actually emit, profiled; and CPython / PyPy / MicroPython / Monty / lypning benchmarked on it — startup, parse, execute, memory, compatibility, and total wall clock |
 
 Working on this repository? Read `CLAUDE.md` first, and
 `.claude/skills/hillclimb/SKILL.md` for the loop that improves it — what to

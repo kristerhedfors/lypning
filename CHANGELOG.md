@@ -14,6 +14,144 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-31** — The overarching review: gaps closed by measurement, and one claim revised down
+
+- **Six new measurements landed in `docs/PAPER.md`, run because reviews demanded
+  them.** The `-S` ablation (CPython starts in 8.67 ms with site disabled — the
+  one-flag baseline recovers a quarter of its startup). CPython 3.13 as a sixth
+  arm: it starts *slower* than 3.11 on this container (13.8 vs 11.6 ms,
+  back-to-back), carries no experimental JIT — and as an engine against the 3.11
+  reference it produces **9 silent divergences of its own**, so tier 1 (1) tracks
+  CPython 3.11 more closely than CPython 3.13 does. A false-refusal sweep: zero
+  exit-90s in 1,990 CPython runs. The tier-2 ablation: correctness identical
+  without MicroPython (744/1), so the classifier's routing is demonstrated, not
+  asserted. The per-program price list: the chain is slower than cold CPython on
+  216 of 745 programs (29.0%), median delta −10.56 ms, worst +173 ms. And the
+  invocation-weighted wall: weighting each program by its 6,171 capture-log
+  invocations lifts the chain from 1.77× to **2.35×** — sessions re-run the
+  simple programs, so for once the unrun measurement was hiding a number in our
+  favour.
+- **One of the paper's own claims is revised down.** Hand-classifying all 39
+  PyPy divergences (shipped at `study/paper/data/`) splits them six ways:
+  file-finalization 10, set order 7, call-signature 4, error-text 4, singletons
+  4, probe-grids-beyond-window 10. The largest family is the one the profile
+  predicts, but "dominant" was too strong a word and the paper now says so.
+- **The prospective holdout is registered, not promised.**
+  `study/paper/holdout_registration.json` pins the freeze commit, the date, and
+  all 2,906 in-sample entry ids; anything captured later is out-of-sample by
+  construction.
+- **The documents now agree with each other.** COMPARISON.md drops the retracted
+  tier-1 "ceiling" splice, gains the warm-pool loss and a cross-reference to the
+  paper, and explains its 7-vs-1 and 340-vs-447 differences as instrument
+  differences. The README's 0.302x headline is date-scoped and points at the
+  paper's current ratios and the baseline that beats us; the paper is surfaced
+  at the top of the doc table. Stale phrasings in this changelog's own earlier
+  entries were corrected in place.
+
+**2026-08-31** — The paper: an agent-Python profile, and five engines measured against it
+
+- **`docs/PAPER.md` is new.** It asks what coding agents actually hand to an
+  interpreter, answers it by measurement, and benchmarks CPython 3.11, PyPy
+  7.3.20, MicroPython, Monty 0.0.21 and both lypning configurations on that
+  corpus with one instrument. Harnesses ship in `study/paper/`.
+- **The profile is the finding.** Over the corpus as loaded on 2026-08-30 (2,906
+  entries, 2,869 parsed): the median program is 384 bytes, 10 lines, 74 AST
+  nodes; 0.3% define a class; `match`, walrus and `async` do not appear at all;
+  and 45.8% call `open()` (AST-counted). Decomposed inside the child over 765
+  CPython-clean programs, the median program spends **0.019 ms executing against
+  16.83 ms of spawn, interpreter startup and imports** — 88.4% execute in under a millisecond.
+- **PyPy is the slowest engine on this workload** (3.0–3.1× CPython's wall in two
+  sweeps) and returns **39 silent divergences**. All three divergence families
+  are ones PyPy documents: non-prompt file finalization, ordered sets, and
+  keyword arguments CPython rejects. The contribution is the blast radius, not
+  the discovery. The cause is also now measured rather than assumed — PyPy pays
+  **+16.22 ms over CPython on `print(1)`**, so the penalty is majority fixed
+  startup, not unamortized warmup.
+- **We lose to the obvious baseline and say so.** A pre-warmed CPython forking
+  per program serves the 745 clean programs at 8.39 ms each (2.04× cold CPython)
+  against our chain's 11.38 ms (1.50×), and it is correct by construction. The
+  same table points past both: tier 1 alone serves its share at 2.67 ms, so a
+  chain whose backstop is a warm pool should beat either.
+- **Two reviewer objections answered with measurement, not prose.** The
+  absolute-path exclusion really does remove the harder half — skipped programs
+  loop at 75.1% against 38.2% retained, and define functions 3.6× as often — so
+  the coverage rate is optimistic by an amount we now bound. And the
+  self-hosting worry is a null on the evaluation: **none of the 745 clean
+  programs import lypning**, so dropping them changes nothing (480/264/1 either
+  way); the contamination lands on the profile, not the benchmark.
+- **A real irreproducibility was found and fixed:** corpus programs calling
+  `sys.stdin.read()` blocked on the harness's inherited stdin. Every child now
+  gets an explicit EOF. Re-running the whole sweep afterwards reproduced every
+  correctness count exactly, while wall clock moved with machine load — which is
+  why timings are reported as ratios.
+- **The bibliography was rebuilt after the survey agents turned out to have no
+  network access.** Twelve references are now checked against primary sources;
+  one recalled author list was confirmed fabricated (the POPL 2018 sourir paper's
+  third author is Ming-Ho Yee). Attributions still resting on recall are marked
+  `[unverified]` inline rather than quietly kept.
+- **A hostile review of the finished draft found two arithmetic errors in our own
+  favour, and both are corrected in place.** The composed "chain with a warm-pool
+  backstop" estimate had spliced a blended average (2.67 ms covers 480 answers
+  *and* 264 refusals) against the pool's per-program cost; done correctly it is
+  5.65 ms and 3.03×, not the ~3.6× implied. And the chain's fallback is not one
+  cold CPython spawn — 1,993 + 264 x 17.10 = 6,507 ms against a measured 8,476 ms,
+  so a refused program costs 24.6 ms because it pays three tier spawns, not one.
+  Every remaining arithmetic claim in the paper was then machine-checked.
+- **Two further corrections of our own numbers.** `open(` by substring said 49.0%
+  of programs; AST-counted `open()` calls give 1,314 of 2,869 parsed (45.8%), and
+  that is the figure now used. And PyPy's fixed-startup share was reported as
+  "roughly half" — the most flattering of three available denominators; the range
+  is 49-78%, and on the clean-subset arm it is closer to four fifths.
+- **The deduplication threat is answered with data rather than a caveat.** The
+  capture log carries invocation counts: 2,906 distinct entries were seen 7,406
+  times (mean 2.55, max 45, 63.5% seen once). Re-weighting by invocation moves the
+  profile *away* from complexity - comprehensions 23.8% to 15.7%, loops 48.6% to
+  44.7% - so the programs agents re-run are simpler than the ones they run once,
+  and our coverage numbers are computed on the harder population.
+- **The finding sharpened to its causal core.** 96.0% of the 1,314 file-touching
+  programs use a bare `open()` rather than `with open(...)`; only 4.6% use the
+  context manager. That is precisely the idiom PyPy documents as unsafe, which is
+  why a documented difference becomes 39 silent wrong answers here.
+
+**2026-08-30** — Measured against ADK-Rust CodeAct + Monty, on one instrument
+
+- **`docs/COMPARISON.md` is new, and its numbers are runs, not vibes.** Both
+  systems graded by the same harness over the same 1,990 corpus programs
+  (2,906 loaded, absolute-path and nondeterministic entries excluded), CPython
+  as the oracle with a pinned hash seed, 2026-08-30, pydantic-monty 0.0.21:
+  lypning tier 1 answers 64.4% of the CPython-clean subset with **1** silent
+  divergence (the ledgered musl `pow` ULP); Monty answers 36.9% with **23**.
+  The identical both-fail counts (1,245) are the one-instrument sanity check.
+- **Every published divergence was independently re-verified first** — three
+  CPython runs each — and the verification *refuted two candidates*: Monty
+  reproduces `hash(-1) == -2` correctly, and one set-order case agreed under a
+  pinned seed. Both were dropped; the doc says so.
+- **The framing is honest about the different jobs.** Monty + ADK-Rust CodeAct
+  is a sandboxed in-process substrate for LLM-written tool-calling code, with
+  snapshots and resource limits — nothing lypning does. lypning makes a
+  harness's real `python3` spawns cheaper under a never-wrong-at-exit-0
+  contract with CPython fall-through. Startup is a wash shape-for-shape
+  (0.05 ms vs 0.04 ms in-process); coverage and fidelity are the axes that
+  separate them.
+- **Completed with the full performance picture, four instruments** (all
+  2026-08-30): *startup* shape-for-shape (in-process 0.05 ms vs 0.04 ms — a
+  wash; spawn 0.64 ms vs CPython's 10.33 ms); *sustained compute* over six
+  workloads first validated byte-identical on every engine (nothing beats
+  CPython on loops — lypning 1.9–4.5×, Monty 1.9–4.5×, MicroPython bimodal
+  0.78×–23×, with callgrind instruction counts showing the wall costs are
+  dispatch- and memory-bound, not instruction-bound); *end-to-end* over the 745
+  CPython-clean corpus programs (chain 8.6 s with 744/745 identical and 1 ledgered ULP, CPython
+  12.7 s, tier 1 alone 2.0 s at 64% coverage, Monty pool 6.8 s at 37% correct
+  with 60% handed back to the model — and a model turn dwarfs every number in
+  the table); *memory* (all at the ~8.6 MB spawn floor; Monty +1 MB on
+  dict-heavy work). Headline claims were re-measured a second time before
+  publication; the verification workflow's agents hit the harness
+  parameter-stripping fault and honestly reported measuring nothing, so the
+  re-check ran inline.
+- The grading and performance harnesses ship at `study/monty/` (with the six
+  workloads), so every table is re-runnable — and re-run is the instruction,
+  per invariant 3.
+
 **2026-08-30** — lypning is the Coding Harness Interpreter Optimizer
 
 - **The identity changes; the architecture keeps its name.** The headline in
