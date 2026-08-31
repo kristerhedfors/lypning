@@ -14,6 +14,30 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-31** — Iterations 66–68 all reverted; the speed gradient is flat and the dial is re-aimed
+
+- **Three measured failures, three reverts, all kept in `docs/HILLCLIMB.md`.**
+  Exact-capacity split (+15.6%), a shared ASCII case buffer (+4–6% on the very
+  cases it targeted), and a first-byte pre-filter on builtin dispatch (+15.0%
+  wide, +15.2% narrow). Each was A/B'd interleaved against **four
+  unchanged-source probe builds**, which put the perturbation band at 5–9% on
+  these paths.
+- **The finding is the deliverable.** At `opt-level = "s"` with LTO and one
+  codegen unit, the wins still available on the hot paths are smaller than the
+  band the build itself moves them by. Iterations 64–65 took the allocations
+  that were free to remove; what remains costs a pass to eliminate, or moves
+  inlining more than it moves work. `builtin()` now carries a comment recording
+  the 15% measurement so the idea is not re-attempted there.
+- **The focus dial in `.claude/skills/hillclimb/SKILL.md` is re-aimed from raw
+  performance to coverage**, which is the skill's own stop condition after
+  three flat iterations — and the arithmetic is not close: 800 UNSUPPORTED
+  programs at an ~11 ms CPython spawn each is ~8.8 s of avoidable work against
+  a whole-corpus lypning total of 3.05 s. Fifteen blockers account for 619 of
+  the 800; the top three are `re` (185), `lypning` itself (131) and `pathlib`
+  (90).
+- No engine behaviour changed: conformance 1325 / 800 / 1, binary 1,032,400 B
+  at 8 blocks, 1311 tests green.
+
 **2026-08-31** — Hillclimb iterations 64–66: two allocation kills, one measured revert
 
 - **`str-fmt-pct` 8.09x → 5.49x** (iteration 64): `percent_format` stops
