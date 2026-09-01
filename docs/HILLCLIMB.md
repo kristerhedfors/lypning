@@ -26,6 +26,61 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-08-31 · iteration 70 — pathlib costs nothing, and `--plan` is now ranked by cost
+
+`pathlib` is `--plan`'s third row at 83 programs. Routing was measured **before**
+anything was built, which is the lesson iteration 69 paid for: **85 of the 87
+graded pathlib programs already route to lypning-mp, and 2 reach CPython** — one
+of those being the irreducible `from lypning import …`. Implementing pathlib in
+tier 1 would save about 0.03 s and spend bytes against 16 KB of headroom. Not
+taken, and the measurement is the deliverable.
+
+### Two rows in a row means the instrument is wrong, not the rows
+
+Measuring every blocker the same way makes it systematic rather than
+coincidental (2026-08-31, over the 1,990 graded programs):
+
+| `--plan` rank | blocker | blocks | reach CPython | cost |
+|---:|---|---:|---:|---:|
+| 1 | `import re` | 182 | 6 | 0.07 s |
+| 2 | `from lypning import …` | 111 | **111** | **1.22 s** |
+| 3 | `import pathlib` | 83 | **0** | **0.00 s** |
+| 6 | `.__name__()` | 22 | 22 | 0.24 s |
+
+`--plan` ranked tier-1 *blockers*. What costs anything is a refusal that reaches
+**CPython** at ~11 ms; one that lands on lypning-mp costs ~0.36 ms, thirty times
+less. So its first and third rows were worth 0.07 s and nothing, while a row it
+ranked sixth was worth more than both together — and this loop spent two
+iterations proposing the top rows before anyone measured the destination.
+
+### The step: fix the steering wheel
+
+`conformance.plan()` now ranks by CPython reach and reports both columns, with
+`plan_cost()` beside it for the key. It falls back to block count when the
+mixture arm did not run, because then there is no destination to rank by and a
+count is still a truthful lower bound. `tests/test_conformance.py` pins the
+ordering with a case where the two orderings genuinely disagree.
+
+The re-ranked head of the build order is a different document:
+
+```
+ ->cpy  blocks blocker
+   131     131 module: import lypning        (irreducible: this project's own dev one-liners)
+    26      26 module: import subprocess     (correctly refused: needs a real process)
+    21      21 module-attr: sys.path
+    14      16 module: import random
+    13      13 module: import unicodedata
+    12     185 module: import re             (185 blocked, 12 costing)
+    11      43 module: import collections
+    11      13 builtin: exec
+```
+
+Nothing in the engine changed: bytes 1,032,400 (8 blocks), conformance
+1325 / 800 / 1, mixture 2119 / 0 / 7, 1313 tests green. The next row worth
+taking is `.__name__()` — half-shipped in iteration 69, and blocked on the
+`Value::Exc` defect that stores an exception's argument as a message string.
+
+
 ## 2026-08-31 · iteration 69 — `re` was the wrong row, and `--plan` is why
 
 First iteration under the coverage focus. `conformance --plan` ranks `re` first

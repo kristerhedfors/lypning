@@ -286,3 +286,51 @@ def test_the_battery_is_stable_on_a_program_whose_output_depends_on_set_order():
             pytest.skip("no engine built to dispatch to")
         seen.add(arm.verdicts[0].verdict)
     assert seen == {conformance.MATCH}, "the battery disagreed with itself: %s" % sorted(seen)
+
+
+def test_plan_ranks_by_cpython_reach_not_by_block_count() -> None:
+    """The build order's key is cost, and the two orderings genuinely differ.
+
+    Ranking by block count is what sent two iterations of the improvement loop
+    at `import re` (185 blocks, 12 of them reaching CPython) and `import
+    pathlib` (83 blocks, none reaching CPython, so worth nothing at all). The
+    ordering is the steering wheel, so it is pinned here rather than left to
+    whoever reads the table next.
+    """
+    from lypning import conformance as conf
+    from lypning import engines as eng
+
+    def verdict(entry_id, kind):
+        v = conf.Verdict.__new__(conf.Verdict)
+        object.__setattr__(v, "entry_id", entry_id)
+        object.__setattr__(v, "verdict", conf.UNSUPPORTED)
+        object.__setattr__(v, "kind", "module")
+        object.__setattr__(v, "detail", kind)
+        return v
+
+    # `cheap` blocks three programs and none of them reach CPython; `dear`
+    # blocks one and it does. Count says cheap-first, cost says dear-first.
+    verdicts = [verdict("a", "cheap"), verdict("b", "cheap"), verdict("c", "cheap"),
+                verdict("d", "dear")]
+    arm = conf.EngineReport.__new__(conf.EngineReport)
+    object.__setattr__(arm, "verdicts", verdicts)
+    object.__setattr__(arm, "total", 4)
+    report = conf.Report.__new__(conf.Report)
+    object.__setattr__(report, "engines", {conf.LYPNING: arm})
+    object.__setattr__(report, "total", 4)
+    object.__setattr__(report, "routes", {
+        "a": eng.Route(eng.MICROPYTHON, "module", "cheap"),
+        "b": eng.Route(eng.MICROPYTHON, "module", "cheap"),
+        "c": eng.Route(eng.MICROPYTHON, "module", "cheap"),
+        "d": eng.Route(eng.CPYTHON, "module", "dear"),
+    })
+
+    rows = conf.plan(report)
+    assert [r[0] for r in rows] == ["module: dear", "module: cheap"], rows
+    assert conf.plan_cost(report) == {"module: dear": 1}
+
+    # With no routes — the mixture arm did not run — there is nothing to rank
+    # by, and the honest fallback is the block count.
+    object.__setattr__(report, "routes", {})
+    assert [r[0] for r in conf.plan(report)] == ["module: cheap", "module: dear"]
+    assert conf.plan_cost(report) == {}

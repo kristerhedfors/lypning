@@ -1792,8 +1792,16 @@ passed. Each program runs in a temp cwd and the repository is checked for
 collateral damage afterwards; the corpus is harvested from real sessions and is
 full of programs that rewrite src/.
 
---plan turns the refusals into a build order: which unimplemented feature
-blocks the most programs.
+--plan turns the refusals into a build order, ranked by what a feature COSTS
+rather than by how many programs it blocks. A tier-1 refusal the classifier
+sends to lypning-mp is answered at that tier's spawn; one that reaches CPython
+costs roughly thirty times as much, so the `->cpy` column is the ranking key and
+`blocks` is shown beside it. The two disagree sharply: measured 2026-08-31,
+`import re` blocks 185 programs and only 12 of them reach CPython, and
+`import pathlib` blocks 83 and costs nothing at all, because lypning-mp answers
+every one. Ranking by block count sent two iterations of the improvement loop at
+rows worth ~0.07 s and 0.00 s. With the mixture arm absent there is no
+destination to rank by, and the counts are shown alone.
 
 The same run grades ROUTING SAFETY, which is a different question: not whether
 an engine agreed with CPython, but whether the classifier SENT each program to

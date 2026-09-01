@@ -1074,11 +1074,26 @@ def _routing_errors(scored: Sequence[_EntryResult], arms: Sequence[str]) -> List
 
 
 def plan(report: Report) -> List[Tuple[str, int, List[str]]]:
-    """The build order: refusal features ranked by how much they unblock.
+    """The build order: refusal features ranked by what they COST.
 
-    ``(feature, blocks, example_ids)``, most blocking first. A program is blocked
+    ``(feature, blocks, example_ids)``, most costly first. A program is blocked
     by the FIRST thing it hits, so the counts are a lower bound that shifts as
     features land — which is the point. Re-run after each one.
+
+    **Ranked by CPython reach, not by block count, and the difference is the
+    whole value of this function.** A tier-1 refusal that the classifier sends
+    to lypning-mp costs that tier's spawn; one that reaches CPython costs
+    roughly thirty times as much. Ranking by block count alone put `import re`
+    first at 182 programs — of which 176 are answered by lypning-mp and 6 reach
+    CPython — and `import pathlib` third at 83 programs, of which **none** reach
+    CPython at all. Measured 2026-08-31: those two rows are worth 0.07 s and
+    0.00 s, while `.__name__()` at 22 programs, ranked sixth by count, is worth
+    0.24 s. Two iterations of this loop were spent proposing the top rows before
+    the routing was measured, which is what this ordering exists to prevent.
+
+    Falls back to block count when :attr:`Report.routes` is empty — the mixture
+    arm did not run, so there is nothing to say about destinations, and a count
+    is still a truthful lower bound on what a feature unblocks.
 
     Taken from the Rust core's arm when it is present: it is the tier the corpus
     is a build order *for*. The mixture arm never appears here, because a
@@ -1092,16 +1107,48 @@ def plan(report: Report) -> List[Tuple[str, int, List[str]]]:
     if source is None:
         return []
     blocks: Dict[str, int] = {}
+    reaching_cpython: Dict[str, int] = {}
     ids: Dict[str, List[str]] = {}
     for v in source.verdicts:
         if v.verdict != UNSUPPORTED:
             continue
         key = "%s: %s" % (v.kind, v.detail)
         blocks[key] = blocks.get(key, 0) + 1
+        route = report.routes.get(v.entry_id)
+        if route is not None and route.engine == eng.CPYTHON:
+            reaching_cpython[key] = reaching_cpython.get(key, 0) + 1
         bucket = ids.setdefault(key, [])
         if len(bucket) < 4:
             bucket.append(v.entry_id)
-    return [(k, blocks[k], ids[k]) for k in sorted(blocks, key=lambda k: (-blocks[k], k))]
+    if report.routes:
+        order = sorted(blocks, key=lambda k: (-reaching_cpython.get(k, 0), -blocks[k], k))
+    else:
+        order = sorted(blocks, key=lambda k: (-blocks[k], k))
+    return [(k, blocks[k], ids[k]) for k in order]
+
+
+def plan_cost(report: Report) -> Dict[str, int]:
+    """``{feature: programs that reach CPython}`` — the ranking key of :func:`plan`.
+
+    Separate from :func:`plan` so its return shape stays a three-tuple that
+    existing callers can keep unpacking. Empty when the mixture arm did not run.
+    """
+    source = None
+    for name in (LYPNING, MICROPYTHON):
+        if name in report.engines:
+            source = report.engines[name]
+            break
+    if source is None or not report.routes:
+        return {}
+    out: Dict[str, int] = {}
+    for v in source.verdicts:
+        if v.verdict != UNSUPPORTED:
+            continue
+        route = report.routes.get(v.entry_id)
+        if route is not None and route.engine == eng.CPYTHON:
+            key = "%s: %s" % (v.kind, v.detail)
+            out[key] = out.get(key, 0) + 1
+    return out
 
 
 # `render(report, plan=True)` shadows the name inside that function, so the
@@ -1119,14 +1166,30 @@ def render(report: Report, plan: bool = False) -> str:
     out: List[str] = []
     if plan:
         rows = _plan_rows(report)
+        cost = plan_cost(report)
         total = max((r.total for r in report.engines.values()), default=report.total)
         out.append("build order — %d distinct blockers over %d programs" % (len(rows), total))
         out.append("(a program is blocked by the FIRST thing it hits, so counts shift"
                    " as features land)")
-        out.append("")
+        if cost:
+            out.append("ranked by ->cpy: the refusals that reach CPython, which is the only")
+            out.append("column that costs anything — a refusal the classifier sends to the")
+            out.append("middle tier is answered at that tier's spawn, roughly 30x cheaper.")
+            out.append("")
+            out.append("%s %s %s  %s" % ("->cpy".rjust(6), "blocks".rjust(7),
+                                         _pad("blocker", 44), "e.g."))
+        else:
+            out.append("(the mixture arm did not run, so there is no destination to rank"
+                       " by; these are block counts)")
+            out.append("")
         for feature, blocks, ids in rows[:40]:
-            out.append("%s  %s  e.g. %s" % (str(blocks).rjust(4), _pad(feature, 46),
-                                            ", ".join(ids[:3])))
+            if cost:
+                out.append("%s %s %s  %s" % (str(cost.get(feature, 0)).rjust(6),
+                                             str(blocks).rjust(7), _pad(feature, 44),
+                                             ", ".join(ids[:2])))
+            else:
+                out.append("%s  %s  e.g. %s" % (str(blocks).rjust(4), _pad(feature, 46),
+                                                ", ".join(ids[:3])))
         if len(rows) > 40:
             # The tail is one or two programs each, but a list that stops
             # without saying so reads as the whole list.
