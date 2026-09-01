@@ -680,6 +680,21 @@ def _clip(s: str) -> str:
 
 _UNSUPPORTED_RE = re.compile(r"^([\w.-]+): unsupported: ([\w-]+): (.+)$", re.M)
 
+#: One CPython warning as it lands on stderr: ``<file>:<line>: <Kind>Warning:
+#: <message>``, then — when the file is readable, so never for ``-c`` — the
+#: offending source line echoed under it with a two-space indent. Advisory
+#: only: the interpreter carries on and exits 0, so it is not a failure the
+#: engine was expected to reproduce (see :func:`classify`). Python 3.14 added
+#: one for ``return`` inside ``finally`` (PEP 765), which is how a corpus program
+#: with identical stdout and exit code came to be scored MISMATCH.
+_WARNING_RE = re.compile(r"^[^\n:]+:\d+: \w+Warning: .*\n(?:  .*\n)?", re.M)
+
+
+def _without_warnings(stderr: str) -> str:
+    """``stderr`` with CPython's warning blocks removed, so what is left is
+    the part that meant something went wrong."""
+    return _WARNING_RE.sub("", stderr or "")
+
 
 #: An in-process run cannot be killed, so the library arm's stand-in for the
 #: battery's timeout is a step budget: a program that will not stop refuses
@@ -717,7 +732,12 @@ def classify(ref: eng.Result, got: eng.Result, engine: str, entry: Any) -> Verdi
     text carries file paths, line numbers and interpreter internals that a
     subset runtime has no business reproducing byte for byte. What matters is
     that a program that fails under CPython also fails under the engine, and the
-    exit code already says that.
+    exit code already says that. A CPython *warning* is not a failure — the
+    interpreter prints it and carries on — so warning blocks are stripped from
+    the reference's stderr before deciding whether it "reported an error";
+    otherwise a new advisory in the reference interpreter (3.14's PEP 765
+    ``SyntaxWarning``) would score an engine that agreed byte-for-byte on
+    stdout and exit code as a MISMATCH.
     """
     entry_id = getattr(entry, "id", "")
 
@@ -769,7 +789,7 @@ def classify(ref: eng.Result, got: eng.Result, engine: str, entry: Any) -> Verdi
     if got.returncode != ref.returncode:
         return v(MISMATCH, "exit",
                  "exit %d, CPython gave %d" % (got.returncode, ref.returncode), evidence=True)
-    if ref.stderr and not got.stderr:
+    if _without_warnings(ref.stderr) and not got.stderr:
         return v(MISMATCH, "stderr", "CPython reported an error, this engine was silent",
                  evidence=True)
     return v(MATCH, "", "stdout uncompared" if skip_stdout else "")

@@ -110,6 +110,28 @@ def test_a_silent_engine_where_cpython_reported_an_error():
     assert v.kind == "stderr"
 
 
+def test_a_cpython_warning_is_not_an_error_the_engine_had_to_reproduce():
+    # Python 3.14 warns on `return` inside `finally` (PEP 765) and carries on.
+    # stdout and exit code agree, so an engine that says nothing is right, not
+    # silent about a failure.
+    ref = _res(stderr="/tmp/p.py:109: SyntaxWarning: 'return' in a 'finally' block\n"
+                      "  return \"b\"\n", engine=eng.CPYTHON)
+    assert _classify(_res(), ref=ref).verdict == MATCH
+    # The -c shape has no source echo under it.
+    ref = _res(stderr="<string>:1: SyntaxWarning: \"\\d\" is an invalid escape sequence.\n",
+               engine=eng.CPYTHON)
+    assert _classify(_res(), ref=ref).verdict == MATCH
+
+
+def test_a_warning_does_not_hide_the_error_beside_it():
+    ref = _res(rc=1, stdout="",
+               stderr="<string>:1: SyntaxWarning: x\nTraceback (most recent call last):\n",
+               engine=eng.CPYTHON)
+    v = _classify(_res(rc=1, stdout="", stderr=""), ref=ref)
+    assert v.verdict == MISMATCH
+    assert v.kind == "stderr"
+
+
 def test_stderr_text_itself_is_not_compared():
     # Traceback text carries paths, line numbers and interpreter internals a
     # subset runtime has no business reproducing; the exit code is the contract.
