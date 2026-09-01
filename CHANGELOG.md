@@ -14,6 +14,19 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-01** — A CPython warning is not an error the engine had to reproduce · [#24]
+
+- **`conformance` no longer scores a MISMATCH on a reference warning.** Python
+  3.14 warns on `return` inside `finally` (PEP 765) and exits 0; the grader's
+  stderr guard read any reference stderr as "CPython reported an error". Warning
+  blocks are now stripped from the reference's stderr before that guard — an
+  error beside a warning still counts, and stdout and exit code are compared as
+  before. Grader-side, not `PYTHONWARNINGS=ignore`, so the reference stays
+  CPython as the agent runs it.
+- The ledgered `1325 / 800 / 1` was two different programs on two hosts: the
+  musl `pow` ULP on the container, this one under 3.14 on macOS. Here it is now
+  `1325 / 800 / 0` over 2126 graded (2026-09-01). No engine change.
+
 **2026-08-31** — pathlib costs nothing; `conformance --plan` is now ranked by cost
 
 - **pathlib was measured before it was built, and not built.** 85 of the 87
@@ -1428,6 +1441,7 @@ runtime exists — the number came first, and both were built for it. It is
 [#14]: https://github.com/kristerhedfors/lypning/pull/14
 [#15]: https://github.com/kristerhedfors/lypning/pull/15
 [#16]: https://github.com/kristerhedfors/lypning/pull/16
+[#24]: https://github.com/kristerhedfors/lypning/pull/24
 [ds]: https://github.com/kristerhedfors/deepresearch.se
 [u432]: https://github.com/kristerhedfors/deepresearch.se/pull/432
 [u434]: https://github.com/kristerhedfors/deepresearch.se/pull/434

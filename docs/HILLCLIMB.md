@@ -26,6 +26,59 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-09-01 · iteration 71 — the ledgered MISMATCH 1 was two different programs, and one was the grader
+
+First iteration on a macOS host (arm64, CPython 3.14, host build — no rustup,
+so the byte count below is not the musl one and is not comparable to the rows
+above). The baseline came back `1325 / 800 / 1`, the same three numbers as
+iterations 69 and 70, and the `1` was **a different program**: those entries
+attribute it to the musl `pow` ULP, which passes here, while `py-3ce68bde91f6`
+— eighteen try/except/else/finally shapes with byte-identical stdout and exit
+code on both interpreters — failed on `stderr: CPython reported an error, this
+engine was silent`. The only stderr was 3.14's new `SyntaxWarning: 'return' in
+a 'finally' block` (PEP 765). A count that stays at 1 while the program under
+it changes is not "unchanged"; the ledger should name the program, and this
+entry does.
+
+### The step: narrow the stderr guard to what its docstring already says
+
+`classify()` fired on `ref.stderr and not got.stderr`. Its own docstring scopes
+that guard to "a program that fails under CPython also fails under the engine";
+a warning is the interpreter carrying on, exit 0. Warning blocks —
+`<file>:<line>: <Kind>Warning: …` plus the two-space source echo when there is
+a file to read — are now stripped from the reference's stderr before the guard,
+and nothing else changes: an error beside a warning still counts, a program's
+own `sys.stderr` writes still count, stdout and exit code are compared as
+before. Grader-side rather than `PYTHONWARNINGS=ignore` on the reference,
+because a filter changes what the *program* sees (`catch_warnings(record=True)`
+would record nothing) and the reference is meant to be CPython as the agent
+runs it. Not a capability-table edit: the engine's answer was already right.
+
+This will matter beyond one program. `"\d"` in a non-raw string is a
+`SyntaxWarning` since 3.12 and is exactly what `re` one-liners are made of;
+today those sit behind `import re` as UNSUPPORTED, and the day `re` lands they
+would have surfaced as a column of stderr MISMATCHes with nothing wrong.
+
+- bytes: 817,968 (7 blocks) **host build**, unchanged — no engine change
+- conformance: 1325 / 800 / **1 → 0** over 2126 graded of 2906 loaded
+  (780 skipped for absolute paths); the musl `pow` row is untouched and is
+  still expected wherever the reference runs against musl's libm
+- perf: not run — no engine change
+- corpus-time: 4.77 s over 2126 programs, median 2.0 ms, recorded as this
+  host's baseline; not re-run, same reason
+- pytest: 1124 passed, 164 skipped; **6 failed + 23 errors that all reproduce
+  with the change stashed** — `AF_UNIX path too long` for every `test_pool`
+  case under uv's temp dir, and 3.14/macOS message-text drift in
+  `test_fuzz_findings` (`sort-reverse-none-message`, `list-index-stop-excludes`,
+  `target-one-tuple-arity`), `test_keyword_grid`, `test_shim`, plus
+  `test_socket_is_not_world_readable`. Host artifacts; not this step's, and a
+  candidate row for a later one
+- doctor: 13 checks, 0 FAIL, 4 WARN (shim dir not on PATH, etc.)
+- harvest `--transcripts --dry-run`: 1361 sightings pending; not written, so
+  the denominator above is the one every number here was graded against
+
+PR [#24](https://github.com/kristerhedfors/lypning/pull/24).
+
 ## 2026-08-31 · iteration 70 — pathlib costs nothing, and `--plan` is now ranked by cost
 
 `pathlib` is `--plan`'s third row at 83 programs. Routing was measured **before**
