@@ -14,6 +14,27 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-08-31** — pathlib costs nothing; `conformance --plan` is now ranked by cost
+
+- **pathlib was measured before it was built, and not built.** 85 of the 87
+  graded programs importing `pathlib` already route to lypning-mp; **2 reach
+  CPython**, one of them the irreducible `from lypning import …`. Implementing
+  it in tier 1 would have saved ~0.03 s and spent bytes against 16 KB of
+  headroom.
+- **`conformance --plan` now ranks by what a feature COSTS, not by how many
+  programs it blocks.** A refusal the classifier sends to lypning-mp is answered
+  at that tier's spawn; one reaching CPython costs ~30× more. The two orderings
+  disagree sharply — `import re` blocks 185 and 12 of them cost anything;
+  `import pathlib` blocks 83 and costs **nothing**; `.__name__()` blocks 22 and
+  costs more than both. The table now prints `->cpy` beside `blocks`, and
+  `plan_cost()` exposes the key. Falls back to block count when the mixture arm
+  did not run.
+- This loop spent two iterations proposing `--plan`'s top rows before the
+  destination was measured. The ordering is the steering wheel, so it is now
+  pinned by a test with a case where cost and count disagree.
+- No engine change: bytes 1,032,400 (8 blocks), conformance 1325/800/1, mixture
+  2119/0/7, 1314 tests green.
+
 **2026-08-31** — `re` was the wrong row: `--plan` optimises the wrong objective
 
 - **Retracting a number from the previous entry.** It claimed 800 tier-1
