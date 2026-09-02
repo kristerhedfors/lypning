@@ -184,7 +184,15 @@ def record_command(
     ``harvest`` reads four fields (``kind``, ``command``, ``session``, ``ts``)
     and ignores the rest, so the extras here cost nothing downstream:
     :func:`harvest.host_counts` reads ``host``, and ``run``/``exit_code`` are
-    ground truth a harness volunteered which the corpus path never sees.
+    ground truth a harness volunteered. ``transcript`` and the Claude mapper's
+    ``tool_use_id`` are the exceptions — the corpus path does read those, to
+    resolve which model issued the command.
+
+    ``run`` and that ``tool_use_id`` are the same concept in two namespaces: a
+    per-tool-call id. They are deliberately NOT unified. Only the Claude one has
+    a transcript carrying ``message.model`` to join against, and feeding an
+    opencode ``callID`` into a Claude transcript index would find nothing while
+    claiming in the code that it might.
     """
     if not isinstance(command, str) or not looks_pythonish(command):
         return None
@@ -211,6 +219,21 @@ def from_claude_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     Every other tool's input is someone else's data, and capturing it would put
     file contents the session never ran into a log that gets published.
+
+    ``tool_use_id`` is copied out because it is the ONLY join key back to the
+    model that issued this command: the payload carries no model field and no
+    ``CLAUDE_*`` variable exposes one, but the transcript record that holds this
+    same id also holds ``message.model``. Reading that transcript here is out of
+    the question — this runs before every Bash call in the session — so the id
+    is written down and the join is done at harvest time
+    (:mod:`lypning.harvest`). ``agent_id`` and ``agent_type`` are present only
+    when the call came from a subagent, so they are written only when present,
+    and their presence is itself the flag that says so.
+
+    All three are set HERE rather than in :func:`record_command`, because all
+    three are Claude Code's: a harness whose events carry no such id would get a
+    permanent ``"tool_use_id": null`` in every record it writes, naming a join
+    that does not exist for it.
     """
     if not isinstance(event, dict):
         return None
@@ -222,7 +245,7 @@ def from_claude_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         tool_input = event.get("toolInput")
     if not isinstance(tool_input, dict):
         return None
-    return record_command(
+    record = record_command(
         _str(tool_input.get("command")),
         host="claude",
         tool=tool,
@@ -232,6 +255,16 @@ def from_claude_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         transcript=(_str(event.get("transcript_path"))
                     or _str(event.get("transcriptPath"))),
     )
+    if record is None:
+        return None
+    record["tool_use_id"] = (
+        _str(event.get("tool_use_id")) or _str(event.get("toolUseId"))
+    )
+    for key, alias in (("agent_id", "agentId"), ("agent_type", "agentType")):
+        value = _str(event.get(key)) or _str(event.get(alias))
+        if value:
+            record[key] = value
+    return record
 
 
 def from_openhands_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:

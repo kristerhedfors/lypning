@@ -114,6 +114,68 @@ def test_hook_logs_a_python_bash_command():
     assert rec["ts"].endswith("Z")
 
 
+# The PreToolUse payload the CLI actually sends for a SUBAGENT's Bash call:
+# the same shape plus `agent_id`/`agent_type`, and a `tool_use_id` whose block
+# lives in the subagent's own transcript rather than the session's.
+SUBAGENT_EVENT = dict(BASH_EVENT, tool_use_id="toolu_01abc",
+                      agent_id="a5228b5e71af7dc5f", agent_type="general-purpose")
+
+
+def test_the_hook_records_the_tool_use_id_that_names_the_model():
+    """The id is the only join key back to the model that typed the command.
+
+    Nothing in the payload names a model and no CLAUDE_* variable exposes one,
+    so if this id is not written down here the attribution cannot be recovered
+    later at all — the command string alone does not identify a turn. The join
+    itself is deliberately NOT done here: this runs before every Bash call in
+    the session.
+    """
+    rc, out = _fire(capture.hook_pre_tool_use, SUBAGENT_EVENT)
+    assert rc == 0 and out == capture.OK_RESPONSE + "\n"
+    assert "permissionDecision" not in out
+    rec = json.loads(paths.log_path().read_text(encoding="utf-8").splitlines()[0])
+    assert rec["tool_use_id"] == "toolu_01abc"
+    assert rec["agent_type"] == "general-purpose"
+    assert rec["agent_id"] == "a5228b5e71af7dc5f"
+
+
+def test_a_main_loop_call_carries_no_agent_keys():
+    # `agent_id` is absent from the payload for a main-loop call, and its
+    # presence is what says "this was a subagent" — so a null would be a claim
+    # the payload never made.
+    rec = capture.record_bash_command(BASH_EVENT)
+    assert rec["tool_use_id"] is None
+    assert "agent_id" not in rec and "agent_type" not in rec
+
+
+def test_only_the_claude_mapper_writes_a_join_key_no_other_harness_has():
+    """`tool_use_id` belongs to `from_claude_event`, not to `record_command`.
+
+    It is a key into a Claude Code transcript and nothing else has one. Set in
+    the shared builder it would put a permanent `"tool_use_id": null` into every
+    opencode and OpenHands record, naming a join those harnesses do not have —
+    and opencode's `run` (its `callID`) is the same concept in another
+    namespace, deliberately not unified with it for the same reason.
+    """
+    neutral = capture.record_command("python3 -c 1", host="opencode", tool="bash",
+                                     run="call_1")
+    assert "tool_use_id" not in neutral
+    assert neutral["run"] == "call_1"
+    for mapper, event in (
+        (capture.from_opencode_event,
+         {"tool": "bash", "args": {"command": "python3 -c 1"}, "callID": "call_1"}),
+        (capture.from_openhands_event,
+         {"tool_name": "terminal", "tool_input": {"command": "python3 -c 1"},
+          "session_id": "s", "working_dir": "/w"}),
+    ):
+        rec = mapper(event)
+        assert rec is not None
+        assert "tool_use_id" not in rec
+        assert "agent_id" not in rec and "agent_type" not in rec
+    # And the Claude mapper still writes it, always, possibly null.
+    assert "tool_use_id" in capture.from_claude_event(BASH_EVENT)
+
+
 def test_capture_disabled_still_answers_but_writes_nothing(monkeypatch):
     monkeypatch.setenv("LYPNING_CAPTURE", "0")
     assert not capture.capture_enabled()

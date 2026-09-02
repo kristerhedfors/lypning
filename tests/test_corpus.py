@@ -182,3 +182,111 @@ def test_an_unreadable_file_is_a_problem(tmp_path):
     problems = []
     assert corpus.load(d, problems=problems) == []
     assert len(problems) == 1 and "not readable" in problems[0]
+
+
+# --- which model issued it ----------------------------------------------------
+
+
+def test_models_are_omitted_when_empty_and_written_as_an_object_when_not():
+    # Omitted, not `{}`: almost the whole shipped corpus was captured before
+    # anything recorded a model, and writing an empty object would rewrite every
+    # one of those lines the first time a harvest ran.
+    assert "models" not in _entry().to_obj()
+    obj = _entry(models=(("claude-fable-5-1", 9), ("claude-opus-5", 3))).to_obj()
+    assert obj["models"] == {"claude-fable-5-1": 9, "claude-opus-5": 3}
+    assert list(obj)[-1] == "models"  # last, so the existing key order is intact
+
+
+def test_models_round_trip_through_a_file(tmp_path):
+    p = tmp_path / "c.jsonl"
+    written = _entry(models=(("claude-fable-5-1", 2),))
+    corpus.write([written], p)
+    reloaded = corpus.load(p)[0]
+    assert reloaded.models == written.models
+    assert reloaded.to_obj() == written.to_obj()
+
+
+def test_models_is_a_field_and_not_an_extra(tmp_path):
+    # `extra` is compare=False and _combine does replace(winner, …), which
+    # discards the loser's extra outright — so a models field smuggled in there
+    # would be dropped by the merge and would not distinguish two records.
+    p = tmp_path / "c.jsonl"
+    p.write_text(json.dumps({"id": "py-a", "program": "pass",
+                             "models": {"claude-opus-5": 1}}) + "\n", encoding="utf-8")
+    e = corpus.load(p)[0]
+    assert e.models == (("claude-opus-5", 1),)
+    assert e.extra == {}
+
+
+def test_a_malformed_models_object_degrades_to_nothing_known(tmp_path):
+    # This field is written by whatever version last touched the file, and a
+    # histogram that arrives malformed must not raise inside a Stop hook.
+    p = tmp_path / "c.jsonl"
+    p.write_text(json.dumps({"id": "py-a", "program": "pass",
+                             "models": ["claude-opus-5"]}) + "\n" +
+                 json.dumps({"id": "py-b", "program": "pass2",
+                             "models": {"": 3, "m": 0, "n": "x", "ok": 2}}) + "\n",
+                 encoding="utf-8")
+    a, b = corpus.load(p)
+    assert a.models == ()
+    assert b.models == (("ok", 2),)
+
+
+def test_two_records_differing_only_by_model_are_two_sightings():
+    # If models were not compared, these would collapse as "the same record seen
+    # twice" and both a model and a count would be lost.
+    a = _entry(count=1, models=(("claude-fable-5-1", 1),))
+    b = _entry(count=1, models=(("claude-opus-5", 1),))
+    merged = corpus.merge([a], [b])[0]
+    assert merged.count == 2
+    assert merged.models == (("claude-fable-5-1", 1), ("claude-opus-5", 1))
+
+
+def test_merging_models_is_commutative_and_idempotent():
+    a = _entry(first_seen=EARLY, count=2, models=(("claude-opus-5", 2),))
+    b = _entry(first_seen=LATE, count=1, source="hook", models=(("claude-fable-5-1", 1),))
+    assert _objs(corpus.merge([a], [b])) == _objs(corpus.merge([b], [a]))
+    once = corpus.merge([a], [b])
+    assert _objs(corpus.merge(once)) == _objs(once)
+    assert _objs(corpus.merge(once, once)) == _objs(once)
+
+
+def test_stats_counts_entries_per_model_and_names_the_hole():
+    entries = [_entry(id="py-1", models=(("claude-fable-5-1", 9),)),
+               _entry(id="py-2", program="print(2)",
+                      models=(("claude-fable-5-1", 1), ("claude-opus-5", 4))),
+               _entry(id="py-3", program="print(3)")]
+    s = corpus.stats(entries)
+    # Entries, not invocations: py-1 ran nine times and still counts once, or
+    # one hot one-liner would decide who the corpus belongs to.
+    assert s.by_model == {"claude-fable-5-1": 2, "claude-opus-5": 1}
+    assert s.attributed == 2 and s.total == 3
+    rendered = corpus.render_stats(s)
+    # The hole is named in the rendering even though it is absent from the
+    # record — a silent zero here is how a regression that stops resolving
+    # models at all would look like nothing at all.
+    assert "unattributed" in rendered
+    assert "claude-fable-5-1" in rendered
+
+
+def test_a_filtered_report_names_the_slice_and_the_whole():
+    entries = [_entry(id="py-1", models=(("claude-fable-5-1", 1),))]
+    s = corpus.stats(entries, model="claude-fable-5-1", population=17)
+    line = [l for l in corpus.render_stats(s).splitlines() if l.startswith("entries")][0]
+    assert "1 of 17" in line and "model: claude-fable-5-1" in line
+
+
+def test_an_empty_model_is_no_filter_rather_than_a_filter_on_nothing():
+    """`--model ""` is the one spelling where the filter and the header could
+    disagree: the caller skips a falsy filter, so a header rendered on `is not
+    None` would announce a slice over an unfiltered corpus — "N of N (model: )".
+    No entry can carry an empty model name, so there is only one honest reading
+    of a falsy one, and it is made here so every caller gets it.
+    """
+    entries = [_entry(id="py-1", models=(("claude-fable-5-1", 1),)),
+               _entry(id="py-2", program="print(2)")]
+    s = corpus.stats(entries, model="", population=len(entries))
+    assert s.filter_model is None
+    line = [l for l in corpus.render_stats(s).splitlines() if l.startswith("entries")][0]
+    assert "model:" not in line
+    assert corpus.stats(entries, model=None).filter_model is None

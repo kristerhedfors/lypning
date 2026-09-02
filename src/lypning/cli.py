@@ -1541,7 +1541,10 @@ def cmd_gate(ns: argparse.Namespace) -> int:
 def cmd_harvest(ns: argparse.Namespace) -> int:
     harvest = _mod("harvest")
     if ns.dry_run:
-        sightings = harvest.collect(transcripts=ns.transcripts)
+        # persist=False, because --dry-run writes nothing and the transcript
+        # index cache is a write. It is still READ, so the report is the same
+        # report a real run would produce.
+        sightings = harvest.collect(transcripts=ns.transcripts, persist=False)
         if ns.json:
             _json({"mode": "dry-run", "sightings": len(sightings),
                    "corpus": str(paths.corpus_write_file())})
@@ -1580,8 +1583,17 @@ def cmd_corpus(ns: argparse.Namespace) -> int:
     # to type. Loud enough to notice, out of the way of the data.
     for problem in problems:
         sys.stderr.write("lypning: corpus: %s\n" % problem)
+    # The slice applies to every output shape, not just --stats: a --list that
+    # ignored --model would print the whole corpus under a filtered heading.
+    population = len(entries)
+    if ns.model:
+        entries = [e for e in entries if corpus.matches_model(e, ns.model)]
+
+    def described(top: int):
+        return corpus.stats(entries, top=top, model=ns.model, population=population)
+
     if ns.stats:
-        s = corpus.stats(entries, top=ns.top)
+        s = described(ns.top)
         _json(_plain(s)) if ns.json else _out(corpus.render_stats(s))
         return 0
     if ns.json:
@@ -1596,7 +1608,7 @@ def cmd_corpus(ns: argparse.Namespace) -> int:
             head = (e.program.splitlines() or [""])[0]
             _out("%-*s %-11s %4d  %s" % (width, e.id, e.source, e.lines, head[:100]))
         return 0
-    _out(corpus.render_stats(corpus.stats(entries, top=ns.top)))
+    _out(corpus.render_stats(described(ns.top)))
     return 0
 
 
@@ -2231,15 +2243,22 @@ builtins appear most, which is the same thing as the implementation order.
 
 --list prints one line per program. --json prints the records themselves, in
 the on-disk normal form.
+
+--model NAME keeps only the programs a given model was seen to issue, and the
+header then names the slice and the whole it came from. Attribution is resolved
+at harvest time, so a program captured before the model was recorded — or by a
+feed with nothing to join on — counts as unattributed rather than as anyone's.
 """, """
 examples:
   lypning corpus --stats
+  lypning corpus --stats --model claude-fable-5-1
   lypning corpus --list | head
   lypning corpus --json | jq -r .[].id
 """)
     s.add_argument("--stats", action="store_true", help="the distribution and the top modules/builtins")
     s.add_argument("--list", action="store_true", help="one line per program")
     s.add_argument("--top", type=int, default=12, metavar="N", help="how many modules/builtins to rank (default 12)")
+    s.add_argument("--model", metavar="NAME", help="only programs this model was seen to issue")
     s.add_argument("--json", action="store_true", help="machine-readable")
     s.set_defaults(func=cmd_corpus)
 
