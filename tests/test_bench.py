@@ -52,6 +52,18 @@ def test_nothing_is_shared_when_there_are_no_arms(no_micropython):
     assert report.arms == {}
 
 
+def test_a_battery_running_program_is_taken_out_of_the_timing():
+    # Timing a program that runs the whole battery would fork-bomb the host and
+    # measure the fork bomb. Same net as the absolute-path skip.
+    entries = [corpus.Entry(id="py-a", program="print(1)"),
+               corpus.Entry(id="py-fork", program="from lypning import conformance as conf\nconf.run()")]
+    assert bench.skip_reason(entries[0]) == ""
+    assert bench.skip_reason(entries[1])
+    report = bench.corpus_time(entries, arms=[])
+    assert report.corpus_size == 1
+    assert list(report.skipped) == ["py-fork"]
+
+
 def test_an_absolute_path_takes_an_entry_out_of_the_corpus_size():
     entries = [corpus.Entry(id="py-a", program="print(1)"),
                corpus.Entry(id="py-b", program="open('/etc/hosts').read()"),

@@ -391,6 +391,11 @@ def skip_reason(entry: corpus.Entry) -> str:
         # No argv can carry a NUL, so nothing can be spawned for this entry and
         # there is no time to take. Conformance's rule, again.
         return "NUL byte in the program or its argv: unspawnable"
+    battery = conformance.spawns_a_battery(entry.program)
+    if battery:
+        # Timing a program that runs the whole battery would fork-bomb the host
+        # and measure the fork bomb. Conformance's rule, again.
+        return battery
     outside = conformance.absolute_paths(entry.program)
     for a in entry.argv_tail:
         outside.extend(p for p in conformance.absolute_paths(a) if p not in outside)
