@@ -64,14 +64,19 @@ pub fn float_to_int(f: f64, what: &str) -> R<i64> {
 /// sign. 3.11 returns `f` as it stands. Answer only when the two are the same
 /// bits; otherwise the program's output depends on which CPython the caller
 /// has, and that is a refusal, not a guess.
-fn float_sum_agreed(f: f64, c: f64) -> R<f64> {
-    let compensated = if c != 0.0 && c.is_finite() { f + c } else { f };
-    if compensated.to_bits() == f.to_bits() {
+fn float_sum_agreed(f: f64, c12: f64, c14: f64) -> R<f64> {
+    // Three eras, one loop: 3.11 returns `f`; 3.12 and 3.13 fold in a
+    // Neumaier correction accumulated over the FLOAT items only (an int met in
+    // the float loop is `f_result += (double)value`, uncorrected); 3.14 runs
+    // every item, ints included, through the same `cs_add`. The engine answers
+    // only where all three land on the same bits.
+    let fold = |c: f64| if c != 0.0 && c.is_finite() { f + c } else { f };
+    if fold(c12).to_bits() == f.to_bits() && fold(c14).to_bits() == f.to_bits() {
         Ok(f)
     } else {
         Err(unsupported(
             "float-sum",
-            "sum() over floats where CPython 3.12+ compensates the rounding and 3.11 does not; the two answers differ",
+            "sum() over floats where CPython 3.11, 3.12 and 3.14 round differently (3.12+ compensates floats, 3.14 compensates ints in the float loop too); the answers differ",
         ))
     }
 }
@@ -776,6 +781,13 @@ pub fn call_builtin(
                     if items.iter().any(|x| matches!(x, Value::Float(_))) {
                         return Err(set_order_refused("sum() of a set of floats"));
                     }
+                    // A float START puts every int through the float loop,
+                    // which 3.14 compensates — and compensation is only
+                    // nearly order-independent. `sum({1, 2**53, -2**53}, 0.0)`
+                    // answered 0.0 here against CPython's 1.0.
+                    if matches!(start, Value::Float(_)) {
+                        return Err(set_order_refused("sum() of a set with a float start"));
+                    }
                     let mut acc = start;
                     for x in items {
                         acc = it.binop(crate::ast::BinOp::Add, &acc, &x)?;
@@ -843,9 +855,10 @@ pub fn call_builtin(
                     // returns, and what 3.12+ holds before the correction), `c`
                     // is the correction only 3.12+ adds. `float_sum_agreed`
                     // answers when `f + c` and `f` are the same bits and
-                    // refuses otherwise. Nothing is widened by this: an int met
-                    // in the float loop is `(double)value` added naively, which
-                    // both versions do, and a `bool` is an int there.
+                    // refuses otherwise. An int met in the float loop is where
+                    // a THIRD era appears: `(double)value` added naively on
+                    // 3.11-3.13, compensated on 3.14 — so two corrections ride
+                    // along, and a `bool` is an int there on every version.
                     //
                     // Which loop CPython is in is tracked explicitly rather
                     // than read off `acc`'s type, because the transitions are
@@ -857,25 +870,33 @@ pub fn call_builtin(
                     let mut iter = it.make_iter(v.clone())?;
                     let mut acc = start;
                     let mut int_loop = matches!(acc, Value::Int(_));
-                    // `Some((f, c))` while CPython would be in its float loop.
+                    // `Some((f, c12, c14))` while CPython would be in its float loop.
                     let mut float_loop = match acc {
-                        Value::Float(f) => Some((f, 0.0f64)),
+                        Value::Float(f) => Some((f, 0.0f64, 0.0f64)),
                         _ => None,
                     };
                     while let Some(x) = it.iter_next(&mut iter)? {
-                        if let Some((f, c)) = float_loop.as_mut() {
+                        if let Some((f, c12, c14)) = float_loop.as_mut() {
                             match x {
                                 Value::Float(x) => {
                                     let t = *f + x;
-                                    if f.abs() >= x.abs() {
-                                        *c += (*f - t) + x;
-                                    } else {
-                                        *c += (x - t) + *f;
-                                    }
+                                    let d = if f.abs() >= x.abs() { (*f - t) + x } else { (x - t) + *f };
+                                    *c12 += d;
+                                    *c14 += d;
                                     *f = t;
                                 }
-                                Value::Int(n) => *f += n as f64,
-                                Value::Bool(b) => *f += b as i64 as f64,
+                                // An int here is naive on 3.11-3.13 and
+                                // compensated on 3.14: it moves `c14` only.
+                                Value::Int(_) | Value::Bool(_) => {
+                                    let x = match x {
+                                        Value::Int(n) => n as f64,
+                                        Value::Bool(b) => b as i64 as f64,
+                                        _ => unreachable!(),
+                                    };
+                                    let t = *f + x;
+                                    *c14 += if f.abs() >= x.abs() { (*f - t) + x } else { (x - t) + *f };
+                                    *f = t;
+                                }
                                 other => {
                                     // 3.12+ folds `c` in before handing the
                                     // pair to `PyNumber_Add`. Nothing in this
@@ -884,7 +905,7 @@ pub fn call_builtin(
                                     // own TypeError — but the fold is checked
                                     // first, so a sum that already disagreed
                                     // cannot answer by erroring.
-                                    acc = Value::Float(float_sum_agreed(*f, *c)?);
+                                    acc = Value::Float(float_sum_agreed(*f, *c12, *c14)?);
                                     float_loop = None;
                                     acc = it.binop(crate::ast::BinOp::Add, &acc, &other)?;
                                 }
@@ -896,12 +917,12 @@ pub fn call_builtin(
                         acc = it.binop(crate::ast::BinOp::Add, &acc, &x)?;
                         if was_int_loop && !int_loop {
                             if let Value::Float(f) = acc {
-                                float_loop = Some((f, 0.0));
+                                float_loop = Some((f, 0.0, 0.0));
                             }
                         }
                     }
                     match float_loop {
-                        Some((f, c)) => Value::Float(float_sum_agreed(f, c)?),
+                        Some((f, c12, c14)) => Value::Float(float_sum_agreed(f, c12, c14)?),
                         None => acc,
                     }
                 }
