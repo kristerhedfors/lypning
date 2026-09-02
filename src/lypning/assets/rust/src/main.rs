@@ -275,7 +275,11 @@ fn dispatch(args: &[String]) -> i32 {
         // which a spawned child could not be given back.
         let mut kind = String::new();
         let code = execute_inner(&src, false, &mut kind);
-        if code != UNSUPPORTED_EXIT {
+        // Exit 90 is a refusal only when a refusal FIRED — `kind` is filled
+        // by the refusal path and by nothing else. `sys.exit(90)` is the
+        // program's own number, its output is already committed, and running
+        // it again on CPython is the double run invariant 2 forbids.
+        if code != UNSUPPORTED_EXIT || kind.is_empty() {
             return code;
         }
         // The route was optimistic and a value-dependent refusal fired: an
