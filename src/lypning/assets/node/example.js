@@ -109,6 +109,10 @@ console.log('stderr    ', text(sandboxed.stderr));
 console.log('-> our policy said no, so we do NOT fall onward here. We drop it.');
 
 // --- 6. the branch a harness must write -------------------------------------
+//
+// This is quickstart.js applied to three programs. The `if (r.fallOnward)` is
+// the same one, with the same stepLimit reasoning; what is added is only the
+// bookkeeping that lets the three lines print side by side.
 
 rule('fall onward to CPython');
 

@@ -7,20 +7,24 @@
   "license": "MIT",
   "private": true,
   "engines": {
-    "node": ">=12"
+    "node": ">=14"
   },
   "dependencies": {},
   "files": [
     "index.js",
     "index.d.ts",
+    "quickstart.js",
     "example.js",
     "README.md",
     "Cargo.toml",
     "Cargo.lock",
+    "build.rs",
     "src"
   ],
   "scripts": {
     "build": "cargo build --release --manifest-path Cargo.toml",
-    "example": "node example.js"
+    "quickstart": "node quickstart.js",
+    "example": "node example.js",
+    "test": "node quickstart.js 'print(sum(range(10)))' && node quickstart.js 'import subprocess; print(1)' && node example.js"
   }
 }

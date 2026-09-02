@@ -15,6 +15,12 @@
 name = "lypning-embed-example"
 version = "0.1.0"
 edition = "2021"
+# The floor is the runtime crate's, not this file's, and it is set by the
+# committed Cargo.lock (format 4, unreadable before cargo 1.78) rather than by
+# the source (`Option::is_some_and`, 1.70). The let-else on the quickstart's one
+# branch needs only 1.65 and sits under both. Stated so that an older cargo says
+# "requires rustc 1.78" instead of failing on a lockfile it has never heard of.
+rust-version = "1.78"
 license = "MIT"
 publish = false
 

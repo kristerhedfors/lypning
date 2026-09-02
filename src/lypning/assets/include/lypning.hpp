@@ -188,8 +188,11 @@ inline const char *to_string(Status s) noexcept {
         return "busy";
     case Status::Panic:
         return "panic";
+    default:
+        // Reachable only through a cast from an integer this header does not
+        // number; spelled out so -Wswitch-default has nothing to say.
+        return "unknown";
     }
-    return "unknown";
 }
 
 /* --- version ------------------------------------------------------------- */
@@ -286,8 +289,9 @@ public:
     const std::string &detail() const noexcept { return detail_; }
 
     /// Did the run pass the point where its effects stop being reversible?
-    /// True for any run that finished, whether or not it touched a file. A refusal with `false` here is observably a
-    /// no-op, which is the entire basis of the retry.
+    /// True for any run that finished, whether or not it touched a file. A
+    /// refusal with `false` here is observably a no-op, which is the entire
+    /// basis of the retry.
     bool committed() const noexcept { return committed_; }
 
     /// **The call to branch on.** True exactly when lypning refused and left
@@ -318,6 +322,9 @@ private:
             break;
         case LYPNING_BUSY:
             status_ = Status::Busy;
+            break;
+        case LYPNING_PANIC:
+            status_ = Status::Panic;
             break;
         default:
             // A status this header does not know means a library newer than it.

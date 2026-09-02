@@ -180,3 +180,57 @@ def test_section_cross_references_land_on_a_heading(doc):
             bad.append("%s (no such file)" % target)
     assert not bad, "%s points at a section that is not there: %s" % (
         doc.relative_to(ROOT), ", ".join(sorted(set(bad))))
+
+
+ASSETS = ROOT / "src" / "lypning" / "assets"
+EMBEDDING = ROOT / "docs" / "EMBEDDING.md"
+
+
+def _embedding_section_4() -> str:
+    text = EMBEDDING.read_text(encoding="utf-8")
+    start = text.index("\n## 4.")
+    end = text.index("\n## 5.", start)
+    return text[start:end]
+
+
+def _quickstarts_on_disk() -> set:
+    """Every ``quickstart.<ext>`` (or ``quickstart/main.<ext>``) under assets,
+    as ``assets/...`` paths. Build products have no source extension and drop
+    out; ``.o``/``.d`` are excluded by name so a stray object cannot count."""
+    found = set()
+    for pattern in ("examples/*/quickstart.*", "examples/*/examples/quickstart.*",
+                    "*/quickstart.*", "*/quickstart/main.*", "*/Sources/quickstart/main.*"):
+        for p in ASSETS.glob(pattern):
+            if p.is_file() and p.suffix not in (".o", ".d", ".pyc"):
+                found.add("assets/" + p.relative_to(ASSETS).as_posix())
+    return found
+
+
+def test_every_host_quickstart_is_documented():
+    """``docs/EMBEDDING.md`` section 4 is the one place the hosts are counted
+    (CLAUDE.md: the number of hosts is stated once). So it must name every
+    quickstart that exists, and every quickstart it names must exist -- a ninth
+    binding that lands without its row is a binding nobody finds, and a row
+    for a directory that was deleted sends the reader to a 404. The second
+    half: a host directory without a quickstart is a host without the one file
+    every other host has, and :file:`tests/test_hosts.py` cannot drive it.
+    """
+    section = _embedding_section_4()
+    named = {m.group(0) for m in re.finditer(r"assets/[\w./-]+", section)}
+    documented = {p for p in named if re.search(r"quickstart(\.\w+|/main\.\w+)$", p)}
+    on_disk = _quickstarts_on_disk()
+    assert documented == on_disk, (
+        "docs/EMBEDDING.md section 4 and src/lypning/assets disagree on the quickstarts "
+        "-- only in the table: %s; only on disk: %s"
+        % (sorted(documented - on_disk) or "none", sorted(on_disk - documented) or "none"))
+    # Every host directory has one: the example dirs by construction, and every
+    # top-level assets directory the table names (the header dir is the ABI,
+    # not a host).
+    host_dirs = {"assets/examples/%s" % d.name for d in (ASSETS / "examples").iterdir() if d.is_dir()}
+    host_dirs |= {"assets/" + p.split("/")[1] for p in named
+                  if p.count("/") >= 1 and p.split("/")[1] not in ("include", "examples")}
+    without = sorted(d for d in host_dirs
+                     if not any(q.startswith(d + "/") for q in on_disk))
+    assert not without, (
+        "host directories with no quickstart: %s -- every host has one, and it is "
+        "the file tests/test_hosts.py drives" % ", ".join(without))

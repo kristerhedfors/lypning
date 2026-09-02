@@ -187,7 +187,7 @@ Uninstall is the exact inverse and never deletes the capture log.
 <a class="doclink" href="docs/research.html"><strong>Research</strong><span>How the runtime was chosen, including what was measured and rejected.</span></a>
 <a class="doclink" href="docs/capture.html"><strong>Capture</strong><span>The hooks and shim that grow the corpus.</span></a>
 <a class="doclink" href="docs/prompting.html"><strong>Prompting</strong><span>Can an agent be asked into the subset? 884 generated programs, nine treatments.</span></a>
-<a class="doclink" href="docs/embedding.html"><strong>Embedding</strong><span>The C ABI, the five hosts over it, and what a refusal means with no exit code.</span></a>
+<a class="doclink" href="docs/embedding.html"><strong>Embedding</strong><span>The C ABI, the hosts over it, and what a refusal means with no exit code.</span></a>
 <a class="doclink" href="docs/bench-ledger.html"><strong>Bench ledger</strong><span>Append-only history, including the runs where the subset lost.</span></a>
 <a class="doclink" href="docs/hillclimb.html"><strong>Hillclimb ledger</strong><span>Every improvement step, the four numbers it moved, and the ones that moved nothing.</span></a>
 <a class="doclink" href="docs/sandbox-performance.html"><strong>Sandbox cost</strong><span>The measurements the whole project is downstream of.</span></a>

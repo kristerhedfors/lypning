@@ -464,7 +464,7 @@ def _render_lib(info: Dict[str, Any]) -> str:
                                      else "present, but it does not load"), ""]
     lines.append(row("shared", "%s  (%s B)" % (info["path"], format(info["bytes"], ","))))
     lines.append(row("static", "%s  (%s B)" % (info["static"], format(info["static_bytes"] or 0, ","))
-                     if info["static"] else "not built — it installs beside the shared object"))
+                     if info["static"] else "not built — it installs beside the shared library"))
     lines.append(row("headers", info["include"]))
     if info["error"]:
         lines.append(row("abi", "UNREADABLE: %s" % info["error"]))
@@ -788,10 +788,16 @@ def _pip_scripts_dirs() -> List[Path]:
     return list(seen.values())
 
 
-def _is_elf(p: Path) -> bool:
+#: ELF, then Mach-O 64-bit in both byte orders, then a universal ("fat") image.
+#: A compiled engine is one of these on every platform this package runs on.
+_NATIVE_MAGICS = (b"\x7fELF", b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xca\xfe\xba\xbe")
+
+
+def _is_native_binary(p: Path) -> bool:
+    """Is this a compiled image (ELF or Mach-O) rather than a script?"""
     try:
         with open(str(p), "rb") as fh:
-            return fh.read(4) == b"\x7fELF"
+            return fh.read(4) in _NATIVE_MAGICS
     except OSError:
         return False
 
@@ -817,7 +823,7 @@ def _check_cli_collision() -> Tuple[str, str, str]:
         return (WARN, "lypning on PATH",
                 "not on PATH — pip put the console script in %s; add it to $PATH"
                 % (scripts[0] if scripts else "the scripts directory"))
-    if _is_elf(Path(which)):
+    if _is_native_binary(Path(which)):
         return (FAIL, "lypning on PATH",
                 "%s is the Rust core, not this CLI — `lypning status` reaches the "
                 "interpreter, which looks for a file called `status` and refuses "
@@ -1012,7 +1018,14 @@ def _doctor_checks() -> List[Tuple[str, str, str]]:
     # same version, so nothing else here would notice.
     try:
         drift = engines.library_binary_drift()
-        if drift:
+        if drift is None:
+            # A hole, never an OK: with no usable library there is nothing to
+            # compare the binary against, and "agree" about a comparison that
+            # was not made is the silent kind of wrong this row exists to catch.
+            checks.append((NOTE, "core/library agreement",
+                           "not compared — the C ABI or the Rust core is not built, so "
+                           "the frontier probes had one artifact to ask"))
+        elif drift:
             checks.append((FAIL, "core/library agreement",
                            "%d of %d probes disagree — the C ABI and the binary were built "
                            "from different trees; run `lypning build --rust --lib`. First: "
@@ -1706,10 +1719,10 @@ examples:
     s.add_argument("--all", action="store_true",
                    help="both tiers and the library (the default when none is named is both tiers)")
     s.add_argument("--lib", action="store_true",
-                   help="build the embeddable C ABI (liblypning.so, liblypning.a and the "
-                        "headers) into ~/.lypning/lib and ~/.lypning/include — for C, C++, "
-                        "Rust and Node hosts that run programs in-process instead of "
-                        "spawning them")
+                   help="build the embeddable C ABI (the shared library, liblypning.a and "
+                        "the headers) into ~/.lypning/lib and ~/.lypning/include — for every "
+                        "host that runs programs in-process instead of spawning them "
+                        "(the table in docs/EMBEDDING.md section 4)")
     s.add_argument("--stock", action="store_true",
                    help="build the benchmark CONTROL: upstream MicroPython, unpatched, no "
                         "frozen stdlib, same pinned commit and toolchain. Not an engine and "
@@ -1745,12 +1758,12 @@ would not have: nothing runs ldconfig over ~/.lypning/lib, so a host linked
 without it compiles and links cleanly and then dies at exec with "cannot open
 shared object file".
 
-With no flag it prints the summary — where the shared object, the archive and
+With no flag it prints the summary — where the shared library, the archive and
 the headers are, how big they are, the ABI the library itself answers with, the
 runtime version, and the gcc line to paste. With no library at all it is exit 2
 and one line on stderr and nothing on stdout, because an empty -I is a compile
 against whatever header was already on the include path. A flag this build
-cannot answer — no archive beside the shared object, or a library that will not
+cannot answer — no archive beside the shared library, or a library that will not
 load — is the same: one line on stderr, nothing on stdout, and never a partial
 flag list. The summary and --json still describe it, because a person reads
 those and a compiler does not.
@@ -1769,9 +1782,10 @@ examples:
     s.add_argument("--cflags", action="store_true", help="-I<include dir>")
     s.add_argument("--libs", action="store_true",
                    help="-L<lib dir> -llypning -Wl,-rpath,<lib dir>")
-    s.add_argument("--path", action="store_true", help="the shared object itself")
+    s.add_argument("--path", action="store_true", help="the shared library itself")
     s.add_argument("--static", action="store_true",
-                   help="the archive, for a host that will not ship a .so beside its binary")
+                   help="the archive, for a host that will not ship a shared library beside "
+                        "its binary")
     s.add_argument("--include", action="store_true",
                    help="the directory holding lypning.h and lypning.hpp")
     s.add_argument("--json", action="store_true", help="machine-readable")

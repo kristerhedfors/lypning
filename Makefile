@@ -100,7 +100,7 @@ dist-check:
 	rm -rf dist
 	$(MAKE) dist
 	$(PYTHON) -m twine check dist/*
-	@$(PYTHON) -c "import glob, zipfile; bad = sorted(n for w in glob.glob('dist/*.whl') for n in zipfile.ZipFile(w).namelist() if '__pycache__' in n or '/target/' in n or '/build/' in n or n.endswith(('.pyc', '.o', '.a', '.rlib'))); print('wheel: no build output' if not bad else 'wheel CONTAMINATED with build output: ' + ', '.join(bad[:5])); raise SystemExit(bool(bad))"
+	@$(PYTHON) -c "import glob, zipfile; bad = sorted(n for w in glob.glob('dist/*.whl') for n in zipfile.ZipFile(w).namelist() if '__pycache__' in n or '/target/' in n or '/build/' in n or '/.build/' in n or '/.swiftpm/' in n or '/node_modules/' in n or n.endswith(('.pyc', '.o', '.a', '.rlib', '.so', '.dylib', '.node', '.class'))); print('wheel: no build output' if not bad else 'wheel CONTAMINATED with build output: ' + ', '.join(bad[:5])); raise SystemExit(bool(bad))"
 
 # Engine builds are NOT removed here: assets/rust/target is minutes of cargo and
 # assets/micropython/build is a toolchain plus a network away. Drop those with

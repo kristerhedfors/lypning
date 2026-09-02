@@ -12,12 +12,13 @@
 // $LYPNING_NODE_ADDON is "I know where it is, use that one" — an instruction,
 // so when it is set it is the only candidate and a bad value is an error, never
 // a fallback onto some other addon the user did not name. With it unset there
-// are two places, and they answer two different questions: ~/.lypning/lib is
-// where `lypning build` installs it, which is the wheel-install case where this
-// directory is read-only; the crate's own target/ is the source checkout, where
-// `cargo build --release` here shares an object cache with the rest of the
-// tree. A checkout that has both prefers the deliberate one over the
-// incidental one.
+// are two places, and they answer two different questions. The crate's own
+// target/ is where `cargo build --release` here puts it, which is how the addon
+// is built today — nothing else builds it, `lypning build` included. ~/.lypning/lib
+// ($LYPNING_HOME/lib) is where a copy goes when this directory is read-only,
+// the wheel-install case: build the crate somewhere writable and copy the
+// cdylib there by hand. A checkout that has both prefers the copy that was
+// placed on purpose over the one a build left behind.
 
 const fs = require('fs');
 const os = require('os');
@@ -42,10 +43,11 @@ function candidates() {
   out.push(path.join(home, 'lib', 'lypning.node'));
   for (const name of cdylibNames()) out.push(path.join(home, 'lib', name));
 
-  // `release-lib` is the profile the rest of the tree builds the library with;
-  // it is checked so a developer who used it out of habit is not told the
-  // addon is missing while it sits one directory over.
-  for (const profile of ['release', 'release-lib', 'debug']) {
+  // `release` is what the build line above produces; `debug` is what a bare
+  // `cargo build` does, checked so a developer is not told the addon is
+  // missing while it sits one directory over. No `release-lib`: that profile
+  // belongs to the runtime crate, and this one does not define it.
+  for (const profile of ['release', 'debug']) {
     for (const name of cdylibNames()) {
       out.push(path.join(__dirname, 'target', profile, name));
     }

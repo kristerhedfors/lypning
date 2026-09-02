@@ -89,10 +89,17 @@ CPython spawn, plus a few microseconds to be told so.
 ## 3. Building and linking
 
 ```bash
-lypning build --lib          # liblypning.so, liblypning.a, and the headers
-lypning lib                  # where they went, and the exact gcc line
-gcc $(lypning lib --cflags) my_harness.c $(lypning lib --libs)
+lypning build --lib          # the shared library, liblypning.a, and the headers
+lypning lib                  # where they went, and the exact cc line
+cc $(lypning lib --cflags) my_harness.c $(lypning lib --libs)
 ```
+
+The artefacts are the shared library (`liblypning.so` on Linux,
+`liblypning.dylib` on macOS), the static archive `liblypning.a`, and the two
+headers, `lypning.h` and `lypning.hpp`. On macOS the shared library is built
+with an `@rpath` install name (`assets/rust/build.rs` says why), so the
+`-rpath` a host links with is what decides where it is found at load time, and
+the `-Wl,-rpath` in `lypning lib --libs` is not decoration.
 
 The library is built for the **host** target, not the static-musl target the
 binary uses: a shared object has to match the libc of the process that loads it,
@@ -110,35 +117,175 @@ refuses to compile under `abort` rather than trusting a comment.
 `-fno-exceptions`, you take that guard away again — the strategy is chosen by
 the final link, not by our crate. The shared object is the supported artefact.
 
-## 4. Five hosts, one ABI
+## 4. The hosts, one ABI
 
-| host | where | how it binds |
-|---|---|---|
-| C | `assets/include/lypning.h`, `assets/examples/c/` | the ABI itself |
-| C++ | `assets/include/lypning.hpp`, `assets/examples/cpp/` | header-only RAII over the ABI |
-| Rust | `assets/examples/rust/` | the crate directly — no FFI |
-| Node | `assets/node/` | a Node-API addon, no npm dependencies |
-| Python | `lypning.embed` | `ctypes`, stdlib only |
+This table is the one place the hosts are counted. Everything else in the
+repository says "every host" and points here, so the next binding is one row
+and not fifteen edits. Paths are under `src/lypning/` in a checkout and under
+the package's `assets/` in a wheel; the run column is written from the
+repository root, after `lypning build --lib`. Every row finds a checkout's
+library by itself; the Python row imports the package, so in a checkout that
+has not been `pip install`ed it wants `PYTHONPATH=src` in front.
 
-The C ABI is the real API; four of the five are conveniences over it. Add a
-capability there and it exists everywhere; add it anywhere else and the five
+| host | binding | quickstart | contract test | build and run |
+|---|---|---|---|---|
+| C | `assets/include/lypning.h`, the ABI itself | `assets/examples/c/quickstart.c` | `assets/examples/c/embed.c` (`make -C src/lypning/assets/examples/c run`) | `make -C src/lypning/assets/examples/c quickstart && src/lypning/assets/examples/c/quickstart "print(sum(range(10)))"` |
+| C++ | `assets/include/lypning.hpp`, header-only RAII over the ABI | `assets/examples/cpp/quickstart.cpp` | `assets/examples/cpp/embed.cpp` (`make -C src/lypning/assets/examples/cpp run`) | `make -C src/lypning/assets/examples/cpp quickstart && src/lypning/assets/examples/cpp/quickstart "print(sum(range(10)))"` |
+| Rust | the crate directly, no FFI: `lypning::run`, `Request::new`, `Outcome::should_fall_onward` | `assets/examples/rust/examples/quickstart.rs` | `assets/examples/rust/src/main.rs` (`cargo run --release`) | `cargo run --release --manifest-path src/lypning/assets/examples/rust/Cargo.toml --example quickstart -- "print(sum(range(10)))"` |
+| Node | `assets/node/`, a Node-API addon with no npm dependencies | `assets/node/quickstart.js` | `assets/node/example.js` (`npm test`) | `cd src/lypning/assets/node && cargo build --release && node quickstart.js "print(sum(range(10)))"` |
+| Python | `lypning.embed`, `ctypes`, stdlib only | `assets/examples/python/quickstart.py` | `tests/test_embed.py` | `python3 src/lypning/assets/examples/python/quickstart.py "print(sum(range(10)))"` |
+| Go | `assets/go/`, cgo over the unchanged header, zero modules | `assets/go/quickstart/main.go` | `assets/go/lypning_test.go` (`go test`) | `cd src/lypning/assets/go && go run ./quickstart "print(sum(range(10)))"` |
+| Swift | `assets/swift/`, a Clang module map over the header (SwiftPM, or plain `swiftc` via its Makefile) | `assets/swift/Sources/quickstart/main.swift` | `assets/swift/Tests/LypningTests` (`swift test`) | `swift build -c release --package-path src/lypning/assets/swift && src/lypning/assets/swift/.build/release/quickstart "print(sum(range(10)))"` |
+| LuaJIT | `assets/lua/lypning.lua`, LuaJIT `ffi` over the header, read at load; no build step | `assets/lua/quickstart.lua` | `assets/lua/test.lua` (`luajit test.lua`) | `luajit src/lypning/assets/lua/quickstart.lua "print(sum(range(10)))"` |
+
+The C ABI is the real API; every other row is a convenience over it. Add a
+capability there and it exists everywhere; add it anywhere else and the hosts
 quietly disagree.
 
-**They have now been run against each other rather than assumed to agree.** The
-prompting study ([PROMPTING.md](PROMPTING.md) §7) drove all five hosts over one
-shared set of 393 agent-written programs, each host with its own copy of the set
-and each program with its own working directory, and all five answered
-identically — 341 ran, 52 refused, 0 other — **including on the refusal path**,
-which is the half that has only ever broken silently. Re-run it with
-`sh study/hosts/run_all.sh`; a disagreement there is a binding bug and nothing
-else in the project would notice one.
+**The quickstart contract.** Every quickstart is `quickstart "<python source>"
+[args...]`: it runs the program in-process with a 10M step limit, and the
+arguments become `sys.argv[1:]`. If `should_fall_onward` is true it runs
+`python3 -c` exactly once and exits with CPython's code. Otherwise it writes the
+program's stdout and stderr bytes and exits with the program's own code, so a
+traceback is exit 1 and is never retried. Five probes cover the contract, and
+every host answers them byte for byte the same:
+
+```
+quickstart "print(sum(range(10)))"                 45
+quickstart "import subprocess; print(1)"           1, via CPython, once
+quickstart "import sys; print(sys.argv[1:])" a b   ['a', 'b']
+quickstart "print(1/0)"                            traceback on stderr, exit 1, not retried
+quickstart "import sys; sys.exit(3)"               exit 3
+```
+
+Where a host differs from the rest, it is for one reason each:
+
+*Rust* has no FFI to cross. The example crate compiles the runtime from source
+and links no library, so `lypning build --lib` is not a prerequisite and the
+`Outcome` it branches on is the same struct the C ABI wraps.
+
+*Node* is a separate `cargo build` in `assets/node/`: the addon links the
+runtime statically, so `lypning build --lib` does not produce it and does not
+have to have run.
+
+*Go* finds a checkout's library through the binding's own `#cgo` directives.
+Against an installed library it needs `CGO_LDFLAGS="$(lypning lib --libs)"`,
+which carries the `-rpath` the binary will need at load time. `go run` is fine
+for the first probe and wrong for the last two: it reports every non-zero exit
+as 1 with an `exit status N` line of its own, so the contract test and CI
+`go build` the binary and run that.
+
+*Swift* passes the library path as `unsafeFlags`, which SwiftPM refuses in a
+dependency, so the package is consumed in-tree or by `.package(path:)`. The
+Makefile beside it is the same binding through plain `swiftc`, and writes no `.build` directory.
+
+*LuaJIT* reads `lypning.h` at load and hands it to `ffi.cdef`, so there is one
+source of truth for the prototypes and no build step. PUC Lua has no `ffi` and
+is refused with a message that says so.
+
+**They have been run against each other rather than assumed to agree.** The
+prompting study ([PROMPTING.md](PROMPTING.md) §7) drove every host of that date
+(C, C++, Rust, Node, Python) over one shared set of 393 agent-written programs
+on 2026-08-23, each host with its own copy of the set and each program with its
+own working directory, and all of them answered identically: 341 ran, 52
+refused, 0 other. On **2026-09-02**, on macOS arm64 (clang, cargo, node 26, go 1.26,
+swift 6.3, luajit 2.1), the same battery over every row of the table above
+printed:
+
+```
+c-embed      393 programs: 341 ran, 52 refused, 0 other
+cpp-embed    393 programs: 341 ran, 52 refused, 0 other
+rust-embed   393 programs: 341 ran, 52 refused, 0 other
+node-embed   393 programs: 341 ran, 52 refused, 0 other
+python-embed 393 programs: 341 ran, 52 refused, 0 other
+go-embed     393 programs: 341 ran, 52 refused, 0 other
+swift-embed  393 programs: 341 ran, 52 refused, 0 other
+lua-embed    393 programs: 341 ran, 52 refused, 0 other
+```
+
+3144 capture records, 393 per host, and `git status` unchanged afterwards. That
+includes the refusal path, which is the half that has only ever broken
+silently; a disagreement there is a binding bug and nothing else in the project
+would notice one. The recipe, from a checkout with the toolchains on `PATH`:
+
+```bash
+lypning build --lib                               # the library every driver but Rust and Node loads
+export LYPNING_LOG=/tmp/lypning-study-log.jsonl   # the drivers append the capture record themselves
+python3 study/hosts/prepare.py                    # lay out the shared program set
+make -C study/hosts                               # C, C++, Rust, Go, Swift drivers and the Node addon
+sh study/hosts/run_all.sh                         # every host, one summary line each
+git status                                        # the programs ran behind a net; check anyway
+```
 
 **What the ABI does not have is a capture hook.** A `lypning_run()` spawns no
 interpreter, so neither of the capture feeds in [CAPTURE.md](CAPTURE.md) can see
 it, and a harness that wants its programs to reach the corpus has to write the
 record itself. `study/hosts/capture.h` is a working example in about forty lines
-of C and argues that the right home for it is here, where all five hosts would
+of C and argues that the right home for it is here, where every host would
 inherit it at once.
+
+### The branch, per host
+
+The same four lines in each quickstart, copied from the files rather than
+paraphrased, C first. What they share is the shape: test `should_fall_onward`,
+hand a refusal to `python3 -c` once, and otherwise return the program's own
+bytes and code.
+
+```c
+    if (r == NULL || lypning_result_should_fall_onward(r)) {
+        /* A refusal is not an error: lypning ran none of it and wrote nothing, so CPython runs it once. */
+        /* ... */
+        execvp("python3", py);
+```
+
+```cpp
+    if (r.should_fall_onward()) {
+        // A refusal is not an error: lypning ran none of it and wrote nothing,
+        // so CPython runs it once, on the same empty stdin lypning was given.
+        // ...
+        execvp(python3, cargv.data());
+```
+
+```rust
+    if r.should_fall_onward() {
+        // A refusal is not an error: lypning ran none of it and wrote nothing, so CPython runs it once.
+        let _ = std::io::stdout().flush();
+        let status = Command::new("python3")
+```
+
+```js
+if (r.fallOnward) {
+  // A refusal is not an error: lypning ran none of it and wrote nothing, so CPython runs it once.
+  const p = spawnSync('python3', ['-c', src, ...args], { stdio: ['ignore', 'inherit', 'inherit'] });
+  process.exit(p.status ?? 1);
+```
+
+```python
+    if out.fall_onward:
+        # A refusal is not an error: lypning ran none of it and wrote nothing, so CPython runs it once.
+        sys.stdout.flush()
+        return subprocess.run([sys.executable, "-c", src, *rest], stdin=subprocess.DEVNULL).returncode
+```
+
+```go
+    if r.FallOnward {
+        // A refusal is not an error: lypning ran none of it and wrote nothing, so CPython runs it once.
+        cmd := exec.Command("python3", append([]string{"-c", src}, args...)...)
+```
+
+```swift
+if r.fallOnward {
+    // A refusal is not an error: lypning ran none of it and wrote nothing, so CPython runs it once.
+    // ...
+    execvp("python3", cargv)
+```
+
+```lua
+if r.fall_onward then
+  -- A refusal is not an error: lypning ran none of it and wrote nothing, so CPython runs it once.
+  -- ...
+  local status, how, code = os.execute(cmd .. " </dev/null")
+```
 
 ## 5. Rules of the API surface
 
@@ -229,5 +376,10 @@ that has only ever broken silently. So:
   the main thread and once on a 1 MB one. The last row of that table is the
   exception and is honest about it: no program is known that panics the
   interpreter, so what the suite pins there is the routing, not a crash.
+* `tests/test_hosts.py` drives every quickstart in §4 through the five probes
+  and compares the bytes per host, per probe, so the bindings are checked
+  against each other and not only against the header; CI runs the same
+  quickstarts on Linux and macOS. A host missing its toolchain is skipped and
+  named, never failed.
 
 `lypning doctor` reports the first of those on whatever library is installed.

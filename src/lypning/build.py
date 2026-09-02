@@ -35,12 +35,14 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Sequence
 
 from . import UNSUPPORTED_EXIT
+from . import embed
 from . import engines
 from . import paths
 
@@ -508,11 +510,14 @@ def build_rust(target: str = "musl", jobs: int | None = None,
 # --- the C ABI library -------------------------------------------------------
 
 #: What ``--lib`` produces, and the two rules that shape the list. The shared
-#: object is what a harness dlopens or links; the static archive is for a host
+#: library is what a harness dlopens or links; the static archive is for a host
 #: that would rather ship one file; the headers are the contract both compile
 #: against, so they are installed BESIDE the library and never left in the
-#: package tree, which a wheel makes read-only.
-LIB_SHARED = "liblypning.so"
+#: package tree, which a wheel makes read-only. The shared library's name is
+#: the platform's (``.dylib`` on macOS) and is decided once, in :mod:`embed`,
+#: because the build, the installer and discovery must agree on it or the
+#: build reports ``ok`` about a file discovery never finds.
+LIB_SHARED = embed.LIB_NAME
 LIB_STATIC = "liblypning.a"
 LIB_HEADERS = ("lypning.h", "lypning.hpp")
 
@@ -613,8 +618,7 @@ def build_lib(target: str = "host", jobs: int | None = None,
         shape.append("%s — %d bytes" % (static, _size(static)))
     shape.append("exported symbols: %d" % _lib_symbols(shared))
 
-    from . import embed as lib_embed
-    ok, why = lib_embed.check_refusal_contract(shared)
+    ok, why = embed.check_refusal_contract(shared)
     shape.append("unsupported contract (in-process): %s" % ("held" if ok else "BROKEN — " + why))
 
     return BuildResult(
@@ -629,6 +633,37 @@ def build_lib(target: str = "host", jobs: int | None = None,
     )
 
 
+def exported_symbols(shared: Path | str) -> set[str]:
+    """The names a shared library exports, as C sees them.
+
+    ``nm`` in the platform's dialect: ``-gU`` on macOS, where Mach-O prefixes
+    every C symbol with an underscore that is stripped here so the names match
+    the header; ``-D --defined-only`` elsewhere, where the dynamic symbol table
+    is the one a host links against. Raises :class:`OSError` naming what
+    failed — no ``nm``, or one that would not read the file — rather than
+    answering an empty set, because "exports nothing" and "could not look" are
+    different facts and a test skipping on the second must say so.
+    """
+    nm = shutil.which("nm")
+    if not nm:
+        raise OSError("nm is not on PATH")
+    macho = sys.platform == "darwin"
+    cmd = [nm, "-gU", str(shared)] if macho else [nm, "-D", "--defined-only", str(shared)]
+    rc, out = _run(cmd, timeout=60.0)
+    if rc != 0:
+        raise OSError("%s exited %d: %s" % (" ".join(cmd[:2]), rc, out.strip()[-200:]))
+    names: set[str] = set()
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        name = parts[-1]
+        if macho and name.startswith("_"):
+            name = name[1:]
+        names.add(name)
+    return names
+
+
 def _lib_symbols(shared: Path) -> int:
     """How many ``lypning_*`` symbols the library exports.
 
@@ -637,23 +672,18 @@ def _lib_symbols(shared: Path) -> int:
     before anyone's host fails to find a symbol. ``nm`` is not required to be
     present, and 0 means "could not tell", never "none".
     """
-    nm = shutil.which("nm")
-    if not nm:
+    try:
+        return sum(1 for name in exported_symbols(shared) if name.startswith("lypning_"))
+    except OSError:
         return 0
-    rc, out = _run([nm, "-D", "--defined-only", str(shared)], timeout=60.0)
-    if rc != 0:
-        return 0
-    return sum(1 for line in out.splitlines() if " lypning_" in line)
 
 
 def _lib_dir() -> Path:
-    from . import embed as lib_embed
-    return lib_embed.lib_dir()
+    return embed.lib_dir()
 
 
 def _include_dir() -> Path:
-    from . import embed as lib_embed
-    return lib_embed.include_dir()
+    return embed.include_dir()
 
 
 def install_library(result: BuildResult) -> list[Path]:
@@ -1017,9 +1047,9 @@ def install_binaries(results: Iterable[BuildResult]) -> list[Path]:
             continue
         if r.artifact:
             # Not an engine. The C ABI library goes to `lib/` and its headers to
-            # `include/` (:func:`install_library`); dropping a `.so` into the
-            # directory the engine finders read would make `find_lypning` offer
-            # a shared object to `os.execv`.
+            # `include/` (:func:`install_library`); dropping a shared library
+            # into the directory the engine finders read would make
+            # `find_lypning` offer it to `os.execv`.
             continue
         if r.engine == STOCK_BINARY:
             # The control stays in the build tree. This directory is where the

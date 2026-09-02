@@ -1,9 +1,12 @@
 #!/bin/sh
 # Every host, over the same program set, into the same capture log.
 #
-# The five hosts are five bindings over one C ABI, so they must agree on which
-# programs the subset takes; running them one after the other over an identical
-# directory is what makes a disagreement visible instead of theoretical.
+# Every host is a binding over one C ABI (docs/EMBEDDING.md section 4 is the
+# list), so they must agree on which programs the subset takes; running them one
+# after the other over an identical directory is what makes a disagreement
+# visible instead of theoretical. A host missing here is a host the study never
+# checked, which is why this script runs all of them and skips none: build every
+# driver first with `make -C study/hosts`.
 #
 # Each run happens in its own scratch cwd. These programs came from agents that
 # were asked to write and list files, and an in-process run reaches the host's
@@ -40,3 +43,6 @@ run_in_scratch "$here/run_cpp"
 run_in_scratch "$here/run_rust/target/release/lypning-study-host"
 run_in_scratch node "$here/run_node.js"
 run_in_scratch "${STUDY_PYTHON:-python3}" "$here/run_py.py"
+run_in_scratch "$here/run_go/run_go"
+run_in_scratch "$here/run_swift/run_swift"
+run_in_scratch luajit "$here/run_lua.lua"

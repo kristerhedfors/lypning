@@ -1,5 +1,21 @@
 //! main.rs — lypning embedded in a Rust host, through the native API.
 //!
+//! ## What you copy
+//!
+//! Four identifiers and one branch. `lypning::run` takes the `Request::new(src)`
+//! you built (set `args`, `stdin`, `step_limit` on it) and returns an
+//! [`lypning::Outcome`]; branch on `Outcome::should_fall_onward()` — true means
+//! run the program on CPython, and nothing else — otherwise `exit_code`,
+//! `stdout` and `stderr` are the program's own answer. `examples/quickstart.rs`
+//! is exactly that branch in about forty lines, and the file to start from:
+//!
+//!     cargo run --release --example quickstart -- "print(sum(range(10)))"
+//!
+//! This file is the long form: every outcome a harness meets on day one, with
+//! the contract `assert!`ed rather than described. Run it with `cargo run`. It
+//! builds the crate as an rlib; nothing under `assets/rust/target` is read or
+//! written.
+//!
 //! The one invariant this file holds: **`Status::Unsupported` is a route, not
 //! an error**, and it is asserted against the crate that was just compiled
 //! rather than described in a comment. The refusal path is the only part of
@@ -9,10 +25,9 @@
 //! empty stdout, `should_fall_onward()`) are `assert!`ed here, and this
 //! program exits non-zero the moment one of them stops being true.
 //!
-//! It is also the file a Rust harness author copies, so it does not stop at
-//! the refusal: it implements the other half of the mixture, the
-//! `std::process::Command("python3")` fall-onward, because a demo that prints
-//! "would fall onward" and stops has demonstrated the easy half.
+//! It does not stop at the refusal: it implements the other half of the
+//! mixture, the `std::process::Command("python3")` fall-onward, because a demo
+//! that prints "would fall onward" and stops has demonstrated the easy half.
 //!
 //! No C ABI anywhere below. `capi.rs` exists to hand `embed::run` to languages
 //! that cannot call it; a Rust program can. Going through FFI would cost this
@@ -25,14 +40,14 @@
 //!
 //! **The panic guard is yours, not the crate's.**
 //!
-//! A C host links `liblypning.so`, and that artifact was built by the crate's
-//! own `Cargo.toml` under `--profile release-lib`, which pins `panic =
-//! "unwind"` and makes `capi.rs` refuse to compile without it. The guard is
-//! baked into the object file the C host receives. The C host cannot spoil it,
-//! and cannot extend it either: an unwind across an `extern "C"` frame is
-//! undefined behaviour, so `capi.rs` catches at the boundary and hands back
-//! `LYPNING_PANIC` — a status code standing in for the unwinding C has no way
-//! to hold.
+//! A C host links the shared library (`liblypning.so`, `liblypning.dylib`), and
+//! that artifact was built by the crate's own `Cargo.toml` under `--profile
+//! release-lib`, which pins `panic = "unwind"` and makes `capi.rs` refuse to
+//! compile without it. The guard is baked into the object file the C host
+//! receives. The C host cannot spoil it, and cannot extend it either: an unwind
+//! across an `extern "C"` frame is undefined behaviour, so `capi.rs` catches at
+//! the boundary and hands back `LYPNING_PANIC` — a status code standing in for
+//! the unwinding C has no way to hold.
 //!
 //! A Rust host does not link that artifact. It compiles the crate **from
 //! source, under its own profile**, and profile settings apply from the
@@ -59,9 +74,6 @@
 //!     it is the host's choice, made in the host's manifest, and no
 //!     `compile_error!` will mention it, because the guard that would is
 //!     inside the `capi` feature this example deliberately leaves off.
-//!
-//! Run it: `cargo run`. It builds the crate as an rlib; nothing under
-//! `assets/rust/target` is read or written.
 //!
 //! In a wheel this directory is read-only and cargo cannot create a `target/`
 //! in it, so it has to be copied somewhere writable first. The C and C++

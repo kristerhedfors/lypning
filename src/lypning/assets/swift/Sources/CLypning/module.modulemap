@@ -1,0 +1,9 @@
+// CLypning: the C ABI, exposed to Swift unchanged. `[system]` so that clang
+// treats the header as a system header and its warnings stay clang's own, not
+// this package's; `link "lypning"` so that importing the module is enough to
+// pull the library into the final link.
+module CLypning [system] {
+    header "shim.h"
+    link "lypning"
+    export *
+}

@@ -18,7 +18,11 @@ export interface Route {
   kind: string;
   /** That construct's detail (`'import re'`), or `''`. */
   detail: string;
-  /** Every module the program imports, in source order. */
+  /**
+   * Every module the program imports. SORTED AND DEDUPLICATED, not in source
+   * order: the question is which modules a program needs, which has no order.
+   * For the one import that decided the tier, read `detail`.
+   */
   imports: string[];
 }
 
@@ -70,11 +74,20 @@ export interface RunResult {
   /** The refusal's two halves: `'module'` / `'import re'`. `''` when it ran. */
   kind: string;
   detail: string;
-  /** Did anything reach the disk? A refusal with `false` here is observably a no-op. */
+  /**
+   * Did the run pass the commit point — where staged output and staged file
+   * writes are flushed and the run stops being reversible? `true` for any run
+   * that finished, whether or not it touched a file; `false` for a refusal,
+   * which is what makes the program safe to hand to CPython. Branch on
+   * `fallOnward`, which already folds this in.
+   */
   committed: boolean;
   /**
-   * Run this program on CPython now. True exactly when lypning refused and left
-   * nothing behind. **This is the field to branch on.**
+   * Run this program on CPython now. True for every outcome that is not the
+   * program's own answer and left nothing behind: a refusal, a `busy` that ran
+   * nothing, and a `panic` before the commit point. Never true for `ok` or
+   * `error` — a traceback is as much of an answer as a printed line.
+   * **This is the field to branch on.**
    */
   fallOnward: boolean;
 }
@@ -91,9 +104,9 @@ export function route(source: string): Route;
 /**
  * Run it here, in this thread, with its output captured. Never spawns anything.
  *
- * Throws only for a caller type error (source that is not a string, an option
- * of the wrong type). A program outside the subset comes back with
- * `fallOnward === true` and is not an error.
+ * Throws only for a caller type error (source that is not a string, `opts`
+ * that is not an object, an option of the wrong type). A program outside the
+ * subset comes back with `fallOnward === true` and is not an error.
  *
  * If reading `opts` throws — an accessor of yours, a `Proxy` trap — that
  * exception propagates and the program is NOT run, so a `catch` that falls

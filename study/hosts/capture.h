@@ -4,7 +4,7 @@
  * lypning's capture harness has two feeds and both watch for a PROCESS: the
  * shim on $PATH catches an exec of python3, and the PreToolUse hook catches a
  * Bash command that mentions one. A host that links liblypning and calls
- * lypning_run() spawns nothing, so it is invisible to both — five hosts can run
+ * lypning_run() spawns nothing, so it is invisible to both — a host can run
  * ten thousand programs and the corpus will not grow by one.
  *
  * So the host logs. The record below is the shim's own record shape, which is

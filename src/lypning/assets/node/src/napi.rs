@@ -35,9 +35,10 @@ pub type Value = *mut c_void;
 pub type CbInfo = *mut c_void;
 pub type Callback = unsafe extern "C" fn(Env, CbInfo) -> Value;
 
-/// `napi_valuetype`. Only the two we branch on are named.
+/// `napi_valuetype`. Only the three we branch on are named.
 pub const TYPE_UNDEFINED: c_int = 0;
 pub const TYPE_NULL: c_int = 1;
+pub const TYPE_OBJECT: c_int = 6;
 
 /// `napi_typedarray_type`, the three whose element is one byte.
 ///
@@ -215,6 +216,25 @@ pub unsafe fn is_undefined(env: Env, v: Value) -> bool {
     let mut t: c_int = 0;
     napi_typeof(env, v, &mut t);
     t == TYPE_UNDEFINED || t == TYPE_NULL
+}
+
+/// Is this a plain object — the only shape an options bag can have?
+///
+/// `napi_typeof` answers `object` for an array too (JS's `typeof []` does), so
+/// arrays are asked about separately. A function is `function`, not `object`,
+/// and is out for the same reason a number is: reading `.stepLimit` off any of
+/// them answers `undefined` for every option, which would make `run(src, 42)`
+/// and `run(src, [10])` silently run with NO step limit — the one option a
+/// caller must never lose by accident.
+pub unsafe fn is_object(env: Env, v: Value) -> bool {
+    let mut t: c_int = 0;
+    napi_typeof(env, v, &mut t);
+    if t != TYPE_OBJECT {
+        return false;
+    }
+    let mut is_array = false;
+    napi_is_array(env, v, &mut is_array);
+    !is_array
 }
 
 /// A JS string as UTF-8, or `None` if it is not a string. Never coerces: a
