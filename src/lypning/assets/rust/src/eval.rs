@@ -428,7 +428,10 @@ impl Interp {
                         // `unsupported` is a runtime capability gap, not a
                         // Python exception: catching it with `except Exception`
                         // would turn a routing signal into a wrong answer.
-                        if err.is_unsupported() || err.is_exit().is_some() {
+                        // `SystemExit` is NOT exempt: it is an ordinary
+                        // exception until the end of the run (`err.rs`), and
+                        // `exc_matches` already knows which clauses catch it.
+                        if err.is_unsupported() {
                             Err(err)
                         } else {
                             let kind = err_kind(&err);

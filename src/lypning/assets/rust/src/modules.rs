@@ -187,18 +187,14 @@ pub fn call_module_method(
     };
     Ok(match (m, name) {
         ("random", _) => return crate::random::call(it, name, args, &kw),
+        // `sys.exit(x)` is `raise SystemExit(x)`, and it is the SAME exception
+        // here — one an `except SystemExit` catches and a `finally` runs for.
+        // Reading the status back out of it is `LypningError::is_exit`.
         ("sys", "exit") => {
-            let code = match args.first() {
-                None | Some(Value::None) => 0,
-                Some(Value::Int(i)) => *i as i32,
-                Some(Value::Bool(b)) => *b as i32,
-                Some(other) => {
-                    mio::write_err(fmt::to_str(other)?.as_bytes())?;
-                    mio::write_err(b"\n")?;
-                    1
-                }
-            };
-            return Err(LypningError::exit(code));
+            return Err(LypningError::exc(
+                "SystemExit",
+                crate::builtins::system_exit_msg(args)?,
+            ));
         }
         ("sys.stdin", "read") => Value::Str(crate::iter::decode_text(&mio::stdin_rest()?, "non-UTF-8 bytes on stdin (CPython decodes it with surrogateescape)")?),
         ("sys.stdin", "readline") => match mio::stdin_line()? {

@@ -297,6 +297,60 @@ fn check_arity(name: &str, args: &Args, kw: &[(Rc<str>, Value)]) -> R<()> {
     }))
 }
 
+/// The message a `SystemExit` carries, chosen so that [`system_exit_code`] can
+/// read the code back out of it EXACTLY. `SystemExit(arg)` and `sys.exit(arg)`
+/// both come through here, so they raise one and the same exception and a
+/// handler that catches one catches the other.
+///
+/// `Value::Exc` is a flat `(kind, message)` pair, and for every other
+/// exception that is enough: the message is what gets printed. `SystemExit`
+/// is different — its argument is the process's exit status, and what it
+/// MEANS depends on its type. `SystemExit(4)` exits 4 in silence;
+/// `SystemExit("4")` prints `4` and exits 1. Both would store the message
+/// `"4"`, so the runtime refuses the second: any str whose text the decoder
+/// would read as a different code (an integer, `None`, `True`, `False`, or
+/// the empty string that means "no argument"), and any argument that is not
+/// an int, a bool, `None` or a str at all, since `e.code` must then be a
+/// value this pair has nowhere to keep. Two or more arguments make `.code`
+/// the tuple, which is the same problem.
+pub fn system_exit_msg(args: &Args) -> R<String> {
+    if args.len() > 1 {
+        return Err(unsupported("exception", "SystemExit with more than one argument"));
+    }
+    match args.first() {
+        None => Ok(String::new()),
+        Some(v @ (Value::None | Value::Int(_) | Value::Bool(_))) => fmt::to_str(v),
+        Some(Value::Str(s))
+            if !s.is_empty()
+                && !matches!(&**s, "None" | "True" | "False")
+                && s.parse::<i64>().is_err() =>
+        {
+            Ok(s.to_string())
+        }
+        Some(other) => Err(unsupported(
+            "exception",
+            &format!(
+                "SystemExit({}), whose code cannot be carried exactly",
+                fmt::repr(other)?
+            ),
+        )),
+    }
+}
+
+/// `SystemExit(...).code`, read back from the message [`system_exit_msg`]
+/// stored. The constructor's refusals are what make every arm here exact.
+pub fn system_exit_code(msg: &str) -> Value {
+    match msg {
+        "" | "None" => Value::None,
+        "True" => Value::Bool(true),
+        "False" => Value::Bool(false),
+        _ => match msg.parse::<i64>() {
+            Ok(i) => Value::Int(i),
+            Err(_) => Value::Str(msg.into()),
+        },
+    }
+}
+
 pub fn call_builtin(
     it: &mut Interp,
     name: &str,
@@ -309,6 +363,12 @@ pub fn call_builtin(
     check_arity(name, args, &kw)?;
     // `raise ValueError("x")` / `except E as e` construct exception instances.
     if is_exception_name(name) {
+        // `BaseException` takes no keywords, so `SystemExit(code=4)` is a
+        // TypeError in CPython — and was `SystemExit()` here, exit 0.
+        no_kw(name, &kw)?;
+        if name == "SystemExit" {
+            return Ok(Value::Exc("SystemExit", system_exit_msg(args)?.into()));
+        }
         let msg = match args.first() {
             // `str(KeyError('f'))` is `"'f'"`, not `"f"`: KeyError shows the
             // REPR of its key, so that a missing `''` is distinguishable from a

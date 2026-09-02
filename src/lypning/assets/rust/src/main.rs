@@ -135,8 +135,15 @@ fn finish(r: Result<(), LypningError>, report_refusal: bool, kind: &mut String) 
             0
         }
         Err(ref e) if e.is_exit().is_some() => {
+            // An uncaught SystemExit: the status is the code, and a non-integer
+            // code is printed — after the commit, so the program's own stderr
+            // comes first, as it does under CPython. No traceback.
+            let (code, msg) = e.is_exit().unwrap_or((0, None));
             let _ = io::commit();
-            e.is_exit().unwrap_or(0)
+            if let Some(m) = msg {
+                let _ = writeln!(std::io::stderr(), "{m}");
+            }
+            code
         }
         Err(e) if e.is_unsupported() => {
             if let ErrKind::Unsupported { kind: k, .. } = e.kind() {
