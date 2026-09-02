@@ -137,10 +137,9 @@ _RUN_SPECIFIC = tuple(re.compile(p) for p in (
     # reference drifts run to run, which is the definition of this list.
     r"\bsubprocess\s*\.\s*(?:run|Popen|check_output|check_call|call)\b",
     r"\bst_(?:ino|dev|mtime|atime|ctime|nlink)\b",
-    # A seeded stream is reproducible in principle, but only against the same
-    # generator; an engine is not required to reproduce CPython's Mersenne
-    # Twister, and the corpus tags both cases the same way.
-    r"\b(?:random|secrets)\s*\.\s*\w+",
+    # `random` is handled in `is_run_specific` — unseeded it belongs here,
+    # seeded it is CPython's Mersenne Twister and tier 1 reproduces it.
+    r"\bsecrets\s*\.\s*\w+",
     r"\buuid\s*\.\s*uuid[14]\b",
     r"\btempfile\s*\.\s*(?:mkdtemp|mkstemp|NamedTemporaryFile|TemporaryDirectory|gettempdir)\b",
     # The address in a default repr, and the identity it comes from.
@@ -168,20 +167,45 @@ def _tags(entry: Any) -> Tuple[str, ...]:
 def is_nondeterministic(entry: Any) -> bool:
     """True when stdout cannot be compared at all, only the exit code.
 
-    A wall clock and a seeded PRNG stream differ between two runs of the *same*
-    interpreter, so demanding a match would fail these forever and bury the real
-    signal. They are still worth running: the exit code proves the program
-    executed.
+    A wall clock and an unseeded PRNG stream differ between two runs of the
+    *same* interpreter, so demanding a match would fail these forever and bury
+    the real signal. They are still worth running: the exit code proves the
+    program executed. A *seeded* stream is not this — see
+    :func:`is_seeded_stream`, which is per engine rather than per program.
     """
-    tags = _tags(entry)
-    if "nondeterministic" in tags or "seeded" in tags:
+    if "nondeterministic" in _tags(entry):
         return True
     return is_run_specific(entry) or is_interpreter_specific(entry)
 
 
 def is_run_specific(entry: Any) -> bool:
     src = getattr(entry, "program", "") or ""
+    if _IMPORTS_RANDOM.search(src) and not is_seeded_stream(entry):
+        return True
     return any(p.search(src) for p in _RUN_SPECIFIC)
+
+
+_IMPORTS_RANDOM = re.compile(r"^\s*(?:import\s+random\b|from\s+random\s+import\b)", re.M)
+#: A `seed(...)` call with a real argument, under any spelling — `random.seed(7)`,
+#: `r.seed(7)`, bare `seed(7)` after `from random import seed`. `seed()` and
+#: `seed(None)` draw from the OS and are not this.
+_SEEDS = re.compile(r"\bseed\s*\(\s*(?!\)|None\b)")
+
+
+def is_seeded_stream(entry: Any) -> bool:
+    """A `random` program whose stream is fixed by an explicit seed.
+
+    Reproducible — but only by an engine running CPython's Mersenne Twister.
+    Tier 1 does (`random.rs`), so its stdout is compared like any other
+    program's; MicroPython's generator is a different algorithm, so for the
+    `lypning-mp` arm stdout is not compared and the exit code stands alone.
+    The router never sends a seeded program there anyway (`random-seeded-stream`
+    in `route.rs`), which is why that arm's answer is not a routing risk.
+    """
+    src = getattr(entry, "program", "") or ""
+    if "seeded" in _tags(entry):
+        return True
+    return bool(_IMPORTS_RANDOM.search(src) and _SEEDS.search(src))
 
 
 def is_interpreter_specific(entry: Any) -> bool:
@@ -783,7 +807,8 @@ def classify(ref: eng.Result, got: eng.Result, engine: str, entry: Any) -> Verdi
         # as a broken contract accuses an engine of a bug for agreeing with the
         # reference. Fall through and compare it like any other exit code.
 
-    skip_stdout = is_nondeterministic(entry)
+    skip_stdout = is_nondeterministic(entry) or (
+        engine == eng.MICROPYTHON and is_seeded_stream(entry))
     if not skip_stdout and got.stdout != ref.stdout and not only_set_order_differs(ref.stdout, got.stdout):
         return v(MISMATCH, "stdout", first_diff(ref.stdout, got.stdout), evidence=True)
     if got.returncode != ref.returncode:

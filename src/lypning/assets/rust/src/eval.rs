@@ -60,6 +60,10 @@ pub struct Interp {
     /// Names assigned somewhere in the current function body.
     assigned: Vec<Rc<FastSet<Rc<str>>>>,
     pub modules: Map<Rc<str>, Value>,
+    /// The `random` module's generator, `None` until `random.seed(int)`
+    /// runs — an unseeded stream is a refusal (`random.rs`). Boxed: the
+    /// state is 2.5 KB and almost no program has one.
+    pub rng: Option<Box<crate::random::Mt>>,
     depth: usize,
     /// Statements executed and loop iterations taken, against the host's
     /// budget. Two plain fields rather than a thread_local read per statement:
@@ -116,6 +120,7 @@ impl Interp {
             global_decls: Vec::new(),
             assigned: Vec::new(),
             modules: crate::hash::map(),
+            rng: None,
             depth: 0,
             steps: 0,
             expr_depth: 0,

@@ -63,9 +63,15 @@ fallback.
 Only these: %s.
 
 Nothing else. In particular there is **no** `re`, `collections`, `math`,
-`csv`, `pathlib`, `hashlib`, `datetime`, `random`, `struct`, `base64`,
-`itertools`, `functools`, `textwrap`, `glob`, `statistics`, `subprocess`,
-`urllib`, `shutil`, `tempfile`, `time` or `argparse`.
+`csv`, `pathlib`, `hashlib`, `datetime`, `struct`, `base64`, `itertools`,
+`functools`, `textwrap`, `glob`, `statistics`, `subprocess`, `urllib`,
+`shutil`, `tempfile`, `time` or `argparse`.
+
+`random` is the seeded-integer subset only: `seed(<int>)` first, then
+`random()`, `randint(a, b)`, `randrange(n)` / `randrange(a, b)`, `choice(<list,
+tuple or str>)` and `getrandbits(k)` for `k <= 63`. No `shuffle`, `sample`,
+`choices`, `uniform`, `gauss`, `Random(...)`, no `randrange` step, no keyword
+arguments, and no stream without an integer seed — each of those falls back.
 
 ## Builtins you may call
 

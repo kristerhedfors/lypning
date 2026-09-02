@@ -229,7 +229,8 @@ assert     19.9%      re.       10.2%      def        3.2%
 So: expressions, statements, comprehensions (list/dict/set/generator),
 f-strings, `%` formatting, `.format()`, functions with closures, `try`/`except`,
 `with`, slicing, unpacking — and the modules `sys`, `os`, `os.path`, `io`,
-`json`.
+`json`, plus the seeded-integer subset of `random` (CPython's Mersenne Twister,
+bit for bit; `random.rs`).
 
 `re` is the largest single gap (66 programs, 14.0%) and is **deliberately not
 implemented**: lypning-mp already has a regex engine, so `import re` is a routing
@@ -685,7 +686,7 @@ runtime's FIRST probe; a later one's byte count is not a size.
 | `assets/rust/src/fmt.rs` | `str`/`repr`, float repr, the format-spec mini-language |
 | `assets/rust/src/builtins.rs` | the builtin functions, chosen by corpus frequency |
 | `assets/rust/src/methods.rs` | str/list/dict/set/bytes/file methods; the tables the router reads |
-| `assets/rust/src/modules.rs` | `sys`, `os`, `os.path`, `io`, `json` |
+| `assets/rust/src/modules.rs` | `sys`, `os`, `os.path`, `io`, `json`; `random.rs` for the seeded subset of `random` |
 | `assets/rust/src/json.rs` | JSON parse + dump, written against CPython's exact output |
 | `assets/rust/src/io.rs` | files, streams, and the commit barrier |
 | `assets/rust/src/route.rs` | the classifier |

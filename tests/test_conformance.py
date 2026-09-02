@@ -149,6 +149,41 @@ def test_stdout_is_not_compared_for_a_run_specific_program():
     assert v.detail == "stdout uncompared"
 
 
+def test_a_seeded_random_stream_is_compared_except_on_micropython():
+    # Tier 1 runs CPython's Mersenne Twister, so a wrong number there is a
+    # MISMATCH like any other. MicroPython's generator is a different
+    # algorithm and the router never sends a seeded program to it, so that arm
+    # keeps only its exit code compared.
+    entry = corpus.Entry(id="py-seeded", program="import random\nrandom.seed(7)\nprint(random.random())")
+    assert conformance.is_seeded_stream(entry)
+    assert not conformance.is_nondeterministic(entry)
+    ref = _res(stdout="0.32383276483316237\n", engine=eng.CPYTHON)
+    assert _classify(_res(stdout="0.5\n"), ref=ref, entry=entry).verdict == MISMATCH
+    assert _classify(_res(stdout="0.32383276483316237\n"), ref=ref, entry=entry).verdict == MATCH
+    mp = _classify(_res(stdout="0.5\n", engine=eng.MICROPYTHON), ref=ref,
+                   engine=eng.MICROPYTHON, entry=entry)
+    assert mp.verdict == MATCH and mp.detail == "stdout uncompared"
+
+
+@pytest.mark.parametrize("program", [
+    "import random\nprint(random.random())",
+    "import random\nrandom.seed()\nprint(random.random())",
+    "import random\nrandom.seed(None)\nprint(random.random())",
+])
+def test_an_unseeded_random_stream_is_run_specific(program):
+    entry = corpus.Entry(id="py-unseeded", program=program)
+    assert not conformance.is_seeded_stream(entry)
+    assert conformance.is_nondeterministic(entry)
+
+
+@pytest.mark.parametrize("program", [
+    "import random as r\nr.seed(7)\nprint(r.random())",
+    "from random import seed, random\nseed(7)\nprint(random())",
+])
+def test_every_spelling_of_a_seed_counts(program):
+    assert conformance.is_seeded_stream(corpus.Entry(id="py-s", program=program))
+
+
 def test_a_run_specific_program_still_has_its_exit_code_compared():
     entry = corpus.Entry(id="py-clock", program="import time; print(time.time())")
     assert _classify(_res(rc=2, stdout="x\n"), entry=entry).verdict == MISMATCH

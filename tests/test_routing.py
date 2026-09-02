@@ -583,7 +583,13 @@ def test_a_construct_the_middle_tier_gets_wrong_keeps_a_program_off_it(lypning_b
     # third-party and its defects cannot be fixed here — but the classifier can
     # decline to send a program there when the SOURCE shows it would trip on
     # one. Each of these is a family in `.github/known-mismatches.json`.
-    assert _route("import random\nrandom.seed(7)\nprint(random.random())").engine == eng.CPYTHON
+    # A seeded stream is tier 1's own now (`random.rs` runs CPython's Mersenne
+    # Twister), so the marker's job is what happens when tier 1 refuses part
+    # of the program: the fall-through skips lypning-mp.
+    assert _route("import random\nrandom.seed(7)\nprint(random.random())").engine == eng.LYPNING
+    assert _route("import random as r\nr.seed(7)\nprint(r.random())").engine == eng.LYPNING
+    assert _route("from random import seed, random\nseed(7)\nprint(random())").engine == eng.LYPNING
+    assert _route("import random\nrandom.seed(7)\nrandom.shuffle([1])").engine == eng.CPYTHON
     assert _route("from pathlib import Path\nprint(Path('/a/b').parts)").engine == eng.CPYTHON
     assert _route("try:\n    1/0\nexcept Exception as e:\n    print(type(e).__module__)").engine == eng.CPYTHON
 
@@ -594,7 +600,10 @@ def test_the_unsafe_construct_rules_are_precise_and_not_whole_modules(lypning_bi
     # correct there, and `.parts` on an unrelated object is an ordinary
     # attribute. Routing all of `pathlib` away instead would cost 133 corpus
     # programs against 25 for the three constructs together.
-    assert _route("import random\nprint(random.random())").engine == eng.MICROPYTHON
+    # Unseeded, the router blocks it statically rather than spending a tier-1
+    # spawn to be refused at the first draw.
+    r = _route("import random\nprint(random.random())")
+    assert (r.engine, r.kind) == (eng.MICROPYTHON, "random")
     assert _route("from pathlib import Path\nprint(Path('/a/b').name)").engine == eng.MICROPYTHON
     assert _route("import base64\nprint(base64.b64encode(b'hi'))").engine == eng.MICROPYTHON
     # `.parts` with no pathlib in sight is not the pathlib defect.

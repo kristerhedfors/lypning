@@ -19,7 +19,7 @@ use std::rc::Rc;
 
 /// Modules lypning can serve. `route.rs` reads this to decide whether a program's
 /// imports are within reach before anything is executed.
-pub const MODULES: &[&str] = &["sys", "os", "os.path", "io", "json", "posixpath"];
+pub const MODULES: &[&str] = &["sys", "os", "os.path", "io", "json", "posixpath", "random"];
 
 pub fn import(path: &str) -> R<Value> {
     match MODULES.iter().find(|m| **m == path) {
@@ -115,6 +115,10 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
             | "isdir" | "getsize" | "expanduser" | "split" | "relpath" | "normpath" | "islink",
         ) => Value::Bound(Rc::new(Value::Module("os.path")), interned(name)?),
         ("io", "open") => Value::Builtin("open"),
+        // The seeded-integer subset; every other name refuses below.
+        ("random", "seed" | "random" | "randint" | "randrange" | "choice" | "getrandbits") => {
+            Value::Bound(Rc::new(m.clone()), interned(name)?)
+        }
         ("json", "loads" | "dumps" | "load" | "dump") => {
             Value::Bound(Rc::new(m.clone()), interned(name)?)
         }
@@ -136,6 +140,7 @@ fn interned(name: &str) -> R<&'static str> {
         "mkdir", "remove", "unlink", "rename", "replace", "rmdir", "getenv", "join", "exists",
         "basename", "dirname", "splitext", "abspath", "isfile", "isdir", "getsize", "expanduser",
         "split", "relpath", "normpath", "islink", "loads", "dumps", "load", "dump", "buffer",
+        "seed", "random", "randint", "randrange", "choice", "getrandbits",
     ];
     NAMES
         .iter()
@@ -181,6 +186,7 @@ pub fn call_module_method(
         }
     };
     Ok(match (m, name) {
+        ("random", _) => return crate::random::call(it, name, args, &kw),
         ("sys", "exit") => {
             let code = match args.first() {
                 None | Some(Value::None) => 0,

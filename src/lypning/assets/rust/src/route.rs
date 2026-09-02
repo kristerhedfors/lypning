@@ -259,6 +259,15 @@ pub fn route(src: &str) -> Route {
         Ok(body) => {
             let mut req = Requirements::default();
             walk_block(&body, &mut req);
+            // `random` with no seed anywhere is a stream the OS starts, which
+            // tier 1 refuses at the first draw (`random.rs`). Refusing here
+            // instead saves that spawn: the program goes straight to the middle
+            // tier, whose own generator is as good as any for a stream nobody
+            // can reproduce. The seed marker is the same one that keeps a
+            // SEEDED program off that tier (`MICROPYTHON_UNSAFE`).
+            if req.imports.contains("random") && !req.mp_risk.contains("random-seeded-stream") {
+                req.block("random", "unseeded stream — CPython seeds it from the OS, which is not reproducible".into());
+            }
             imports = req.imports.iter().cloned().collect();
             match req.blocker {
                 None => Route {
@@ -367,7 +376,11 @@ fn engine_for(kind: &str, imports: &[String], mp_risk: &BTreeSet<&'static str>) 
         | "import" | "escape" | "ellipsis" | "complex"
         // Both are language features there, not library ones. See
         // CPYTHON_ONLY_KINDS, which listed them as absent until it was measured.
-        | "decorator" | "generator" => Engine::MicroPython,
+        | "decorator" | "generator"
+        // An unseeded stream: MicroPython's own generator serves it, since no
+        // interpreter can reproduce what the OS started. A SEEDED one never
+        // reaches this arm — `random-seeded-stream` above decided already.
+        | "random" => Engine::MicroPython,
         // A construct nobody named yet: send it to the most capable tier rather
         // than guess, and let the conformance run reclassify it with evidence.
         _ => Engine::CPython,
@@ -595,13 +608,23 @@ fn known_method(name: &str) -> bool {
 /// stops the walk here, so `os.environ.get` is still decided by the method
 /// table — which is correct, because `.get` is a method and not a module
 /// attribute.
-fn resolve_module(e: &Expr) -> Option<crate::value::Value> {
+/// `aliases` is `import x as y`, so `r.seed(7)` after `import random as r`
+/// resolves to the module and its attributes are decided, not guessed at as
+/// method names — the third spelling in the ledger (`py-0e241643581e`).
+fn resolve_module(e: &Expr, aliases: &[(String, String)]) -> Option<crate::value::Value> {
     match e {
-        Expr::Name(n) => crate::modules::MODULES
-            .iter()
-            .find(|x| **x == n.as_ref())
-            .map(|m| crate::value::Value::Module(m)),
-        Expr::Attr(b, n) => match crate::modules::get_attr(&resolve_module(b)?, n) {
+        Expr::Name(n) => {
+            let name = aliases
+                .iter()
+                .find(|(a, _)| a == n.as_ref())
+                .map(|(_, p)| p.as_str())
+                .unwrap_or(n.as_ref());
+            crate::modules::MODULES
+                .iter()
+                .find(|x| **x == name)
+                .map(|m| crate::value::Value::Module(m))
+        }
+        Expr::Attr(b, n) => match crate::modules::get_attr(&resolve_module(b, aliases)?, n) {
             Ok(v @ crate::value::Value::Module(_)) => Some(v),
             _ => None,
         },
@@ -649,7 +672,7 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
                 }
             }
             // A module attribute is decidable; anything else is a method name.
-            if let Some(crate::value::Value::Module(m)) = resolve_module(b) {
+            if let Some(crate::value::Value::Module(m)) = resolve_module(b, &req.aliases) {
                 if crate::modules::get_attr(&crate::value::Value::Module(m), n).is_err() {
                     req.block("module-attr", format!("{m}.{n}"));
                 }
