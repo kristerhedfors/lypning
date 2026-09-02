@@ -90,7 +90,11 @@ jobs:
   core:
     name: rust core — contract, gate, conformance
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # The corpus grows every session and the battery grows with it: 21 min at
+    # 2,906 entries (2026-09-01), timed out at 25 with 3,688 (2026-09-02). A
+    # timed-out job is reported "cancelled", which reads as somebody's hand
+    # rather than a budget — so the budget is stated here, with its history.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
