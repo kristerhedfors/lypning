@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-02** — Three more hosts over the one ABI: Go, Swift, LuaJIT; and a quickstart for every host
+**2026-09-02** — Three more hosts over the one ABI: Go, Swift, LuaJIT; and a quickstart for every host · [#25]
 
 - **Go** (`assets/go/`, cgo over the unchanged header, zero modules), **Swift**
   (`assets/swift/`, a Clang module map over the header, SwiftPM or plain
@@ -1482,6 +1482,7 @@ runtime exists — the number came first, and both were built for it. It is
 
 ---
 
+[#25]: https://github.com/kristerhedfors/lypning/pull/25
 [#1]: https://github.com/kristerhedfors/lypning/pull/1
 [#2]: https://github.com/kristerhedfors/lypning/pull/2
 [#3]: https://github.com/kristerhedfors/lypning/pull/3
