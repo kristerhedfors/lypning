@@ -22,10 +22,10 @@
 //! - `shuffle`, `sample`, `choices`, `uniform`, `gauss`, `Random(…)` and every
 //!   other name are refused at `modules::get_attr`, before any call.
 //!
-//! The router already marks a seeded program `random-seeded-stream` so it is
-//! never handed to MicroPython, whose generator is not MT19937 (`route.rs`).
-//! That marker stays: it describes the middle tier, and this module changes
-//! only what the first one answers.
+//! Every refusal raised here carries the kind `random`, which `route.rs` lists
+//! as only-CPython: MicroPython's generator is not MT19937, so a seeded stream
+//! that falls one tier instead of two would be answered plausibly and wrongly.
+//! The module is off that tier's import table for the same reason.
 
 use std::rc::Rc;
 
@@ -168,7 +168,7 @@ impl Mt {
 fn key_of(n: i64) -> R<Vec<u32>> {
     let a = n
         .checked_abs()
-        .ok_or_else(|| unsupported("bigint", "random.seed(-2**63)"))? as u64;
+        .ok_or_else(|| unsupported("random", "random.seed(-2**63) needs a bignum"))? as u64;
     if a == 0 {
         return Ok(vec![0]);
     }
@@ -218,7 +218,7 @@ pub fn call(it: &mut Interp, name: &str, args: &mut Args, kw: &[(Rc<str>, Value)
         ));
     }
     let empty = || unsupported("random", &format!("random.{name}() over an empty range"));
-    let big = || unsupported("bigint", &format!("random.{name}() past 64-bit range"));
+    let big = || unsupported("random", &format!("random.{name}() past 64-bit range"));
     Ok(match name {
         "random" => {
             arity(0, 0)?;

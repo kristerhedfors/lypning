@@ -278,7 +278,10 @@ fn dispatch(args: &[String]) -> i32 {
         // subtle and a reimplementation gets it wrong; handing those to
         // lypning-mp turns a correct refusal into a silent wrong answer at exit
         // 0. This binary used to hand every refusal to lypning-mp.
-        let next = if route::only_cpython(&kind) {
+        // ...and ask the IMPORTS too: the static route sent this program to
+        // tier 1 on the strength of them, and the middle tier may not have
+        // one of them (`random`, whose generator is not MT19937).
+        let next = if route::only_cpython(&kind) || !route::micropython_imports(&r.imports) {
             route::Engine::CPython
         } else {
             route::Engine::MicroPython

@@ -180,12 +180,17 @@ def is_nondeterministic(entry: Any) -> bool:
 
 def is_run_specific(entry: Any) -> bool:
     src = getattr(entry, "program", "") or ""
-    if _IMPORTS_RANDOM.search(src) and not is_seeded_stream(entry):
+    if _USES_RANDOM.search(src) and not is_seeded_stream(entry):
         return True
     return any(p.search(src) for p in _RUN_SPECIFIC)
 
 
-_IMPORTS_RANDOM = re.compile(r"^\s*(?:import\s+random\b|from\s+random\s+import\b)", re.M)
+#: A program that DRAWS from `random`, under the three spellings: dotted,
+#: `from random import …`, `import random as r`. An `import random` that is
+#: never used is not this — its stdout is compared like anyone else's, so a
+#: wrong answer elsewhere in the program is not hidden behind the import.
+_USES_RANDOM = re.compile(
+    r"\brandom\s*\.\s*\w+|^\s*from\s+random\s+import\b|\bimport\s+random\s+as\s+\w+", re.M)
 #: A `seed(...)` call with a real argument, under any spelling — `random.seed(7)`,
 #: `r.seed(7)`, bare `seed(7)` after `from random import seed`. `seed()` and
 #: `seed(None)` draw from the OS and are not this.
@@ -199,13 +204,22 @@ def is_seeded_stream(entry: Any) -> bool:
     Tier 1 does (`random.rs`), so its stdout is compared like any other
     program's; MicroPython's generator is a different algorithm, so for the
     `lypning-mp` arm stdout is not compared and the exit code stands alone.
-    The router never sends a seeded program there anyway (`random-seeded-stream`
-    in `route.rs`), which is why that arm's answer is not a routing risk.
+    That arm is graded on a program it is never given: `random` is not in the
+    middle tier's import table (`route.rs`), and both dispatchers re-read that
+    table when a runtime refusal falls onward, so no spelling of a seed —
+    star import, `getattr`, a bound name, a parse-time blocker beside it —
+    reaches it. The exemption describes a tier the chain skips, not one it
+    trusts.
+
+    The seed regex is a heuristic and errs loud: `seed(x)` with `x = None`
+    counts as seeded, and such a program is compared and may MISMATCH against
+    its own unseeded reference — a false alarm somebody reads, never a wrong
+    answer nobody does.
     """
     src = getattr(entry, "program", "") or ""
     if "seeded" in _tags(entry):
         return True
-    return bool(_IMPORTS_RANDOM.search(src) and _SEEDS.search(src))
+    return bool(_USES_RANDOM.search(src) and _SEEDS.search(src))
 
 
 def is_interpreter_specific(entry: Any) -> bool:

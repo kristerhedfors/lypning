@@ -77,6 +77,17 @@ pub struct Route {
 /// "importable is not the same as complete", and it is why this table is earned
 /// with `lypning conformance` rather than with `import x` returning 0.
 /// `docs/HILLCLIMB.md` iteration 40 has the measurement.
+///
+/// **`random` left this table on 2026-09-02, and is deliberately NOT here.**
+/// MicroPython's generator is not MT19937, so any *seeded* stream it answers
+/// is a plausible wrong number at exit 0 — and whether a program is seeded
+/// cannot be decided statically. A `random.seed` marker was tried and defeated
+/// by every spelling it could not see: `from random import *`,
+/// `getattr(random, "seed")`, a bound name `s = random.seed`, and any
+/// parse-time blocker (`class C: pass` beside the seed), which stops the walker
+/// before a marker is set. Tier 1 serves the seeded-integer subset
+/// (`random.rs`) and CPython serves the rest; an unseeded stream costs one
+/// CPython spawn more than it did, which is the price of never being wrong.
 const MICROPYTHON_MODULES: &[&str] = &[
     "argparse",
     "base64",
@@ -96,7 +107,6 @@ const MICROPYTHON_MODULES: &[&str] = &[
     "os",
     "os.path",
     "pathlib",
-    "random",
     "re",
     "shutil",
     "statistics",
@@ -168,6 +178,11 @@ pub const ONLY_CPYTHON_KINDS: &[&str] = &[
     // 2026-08-30.
     "nan-order",
     "percent-format",
+    // Every refusal `random.rs` raises — an unseeded stream, a step, a seed
+    // that is not an int, a count past 64 bits. The module is off lypning-mp's
+    // table because its generator is not MT19937; a RUNTIME refusal must not
+    // undo that by falling one tier instead of two.
+    "random",
     "repr-unicode",
     "set-method",
     "set-order",
@@ -176,6 +191,15 @@ pub const ONLY_CPYTHON_KINDS: &[&str] = &[
 /// Does this refusal kind rule out every tier but CPython? See [`ONLY_CPYTHON_KINDS`].
 pub fn only_cpython(kind: &str) -> bool {
     ONLY_CPYTHON_KINDS.contains(&kind)
+}
+
+/// Can lypning-mp import everything this program imports? The static router
+/// asks this before naming the tier (`engine_for`); the dispatcher must ask it
+/// again when a RUNTIME refusal falls onward, or a program routed to tier 1
+/// on its imports lands on a tier those imports had already ruled out — a
+/// seeded `random` stream that hits `bigint` in its own arithmetic, say.
+pub fn micropython_imports(imports: &[String]) -> bool {
+    imports.iter().all(|m| MICROPYTHON_MODULES.contains(&m.as_str()))
 }
 
 /// Constructs no MicroPython-derived runtime has, so a program using one goes
@@ -259,15 +283,6 @@ pub fn route(src: &str) -> Route {
         Ok(body) => {
             let mut req = Requirements::default();
             walk_block(&body, &mut req);
-            // `random` with no seed anywhere is a stream the OS starts, which
-            // tier 1 refuses at the first draw (`random.rs`). Refusing here
-            // instead saves that spawn: the program goes straight to the middle
-            // tier, whose own generator is as good as any for a stream nobody
-            // can reproduce. The seed marker is the same one that keeps a
-            // SEEDED program off that tier (`MICROPYTHON_UNSAFE`).
-            if req.imports.contains("random") && !req.mp_risk.contains("random-seeded-stream") {
-                req.block("random", "unseeded stream — CPython seeds it from the OS, which is not reproducible".into());
-            }
             imports = req.imports.iter().cloned().collect();
             match req.blocker {
                 None => Route {
@@ -310,11 +325,13 @@ pub fn route(src: &str) -> Route {
 /// `__module__` 5, `.parts` 1 — 25 in total, against 133 for routing all of
 /// `pathlib` away and 15 for all of `base64`. Twenty-five extra CPython spawns
 /// buys three UNSAFE, and UNSAFE is a gate where LATE is a budget.
+///
+/// `random.seed` was the first entry and is gone: a construct-level marker was
+/// the wrong instrument for it, because seededness has spellings the walker
+/// cannot see and stages it never reaches (see `MICROPYTHON_MODULES`). The
+/// whole module is routed past the tier instead — the one case where the
+/// module-level rule is the precise one.
 const MICROPYTHON_UNSAFE: &[(&str, &str)] = &[
-    // A seeded stream is not reproducible across implementations: MicroPython
-    // has no Mersenne Twister, so `random.seed(7)` produces a different sequence
-    // and the program answers, plausibly and wrongly.
-    ("random.seed", "random-seeded-stream"),
     // Built-in types carry no `__module__` there, so the ordinary
     // `type(e).__module__ + '.' + type(e).__name__` idiom dies mid-program with
     // output already committed.
@@ -376,11 +393,7 @@ fn engine_for(kind: &str, imports: &[String], mp_risk: &BTreeSet<&'static str>) 
         | "import" | "escape" | "ellipsis" | "complex"
         // Both are language features there, not library ones. See
         // CPYTHON_ONLY_KINDS, which listed them as absent until it was measured.
-        | "decorator" | "generator"
-        // An unseeded stream: MicroPython's own generator serves it, since no
-        // interpreter can reproduce what the OS started. A SEEDED one never
-        // reaches this arm — `random-seeded-stream` above decided already.
-        | "random" => Engine::MicroPython,
+        | "decorator" | "generator" => Engine::MicroPython,
         // A construct nobody named yet: send it to the most capable tier rather
         // than guess, and let the conformance run reclassify it with evidence.
         _ => Engine::CPython,
@@ -433,12 +446,6 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
         }
         Stmt::FromImport { module, names } => {
             req.imports.insert(module.to_string());
-            // The third spelling of `random.seed`: the bare name import. The
-            // dotted matcher cannot see a call to plain `seed(...)`, but the
-            // import line names the construct exactly.
-            if module.as_ref() == "random" && names.iter().any(|(n, _)| n.as_ref() == "seed") {
-                req.mp_risk.insert("random-seeded-stream");
-            }
             if !crate::modules::MODULES.contains(&module.as_ref()) {
                 req.block("module", format!("from {module} import …"));
             } else {

@@ -179,9 +179,28 @@ def test_an_unseeded_random_stream_is_run_specific(program):
 @pytest.mark.parametrize("program", [
     "import random as r\nr.seed(7)\nprint(r.random())",
     "from random import seed, random\nseed(7)\nprint(random())",
+    "import os, random\nrandom.seed(7)\nprint(random.random())",
+    "from random import *\nseed(7)\nprint(random())",
 ])
 def test_every_spelling_of_a_seed_counts(program):
     assert conformance.is_seeded_stream(corpus.Entry(id="py-s", program=program))
+
+
+@pytest.mark.parametrize("program", [
+    "import os, random\nprint(random.random())",
+    "x = 1; import random\nprint(random.random())",
+])
+def test_an_unseeded_draw_is_run_specific_under_every_import_spelling(program):
+    assert conformance.is_nondeterministic(corpus.Entry(id="py-u", program=program))
+
+
+def test_an_unused_random_import_does_not_hide_the_rest_of_the_program():
+    # `import random` and no draw: stdout is compared like anyone else's, or a
+    # wrong answer elsewhere in the program would be graded MATCH behind it.
+    entry = corpus.Entry(id="py-x", program="import random\nprint(sum([0.1] * 10))")
+    assert not conformance.is_nondeterministic(entry)
+    ref = _res(stdout="1.0\n", engine=eng.CPYTHON)
+    assert _classify(_res(stdout="0.9999999999999999\n"), ref=ref, entry=entry).verdict == MISMATCH
 
 
 def test_a_run_specific_program_still_has_its_exit_code_compared():
