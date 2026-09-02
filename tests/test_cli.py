@@ -95,6 +95,17 @@ def test_corpus_model_slice_applies_to_the_records_too(capsys):
     assert json.loads(capsys.readouterr().out) == []
 
 
+def test_an_empty_model_prints_the_corpus_and_does_not_claim_a_slice(capsys):
+    # The filter is skipped for a falsy name, so the header must not claim one:
+    # "N of N (model: )" over an unfiltered corpus is exactly the reading that
+    # naming the population was added to prevent.
+    assert cli.main(["corpus", "--stats", "--model", ""]) == 0
+    line = [l for l in capsys.readouterr().out.splitlines() if l.startswith("entries")][0]
+    assert "model:" not in line
+    assert cli.main(["corpus", "--stats", "--json", "--model", ""]) == 0
+    assert json.loads(capsys.readouterr().out)["filter_model"] is None
+
+
 def test_the_population_a_slice_names_is_the_whole_and_not_the_slice(capsys):
     """`N of M`: M has to be measured BEFORE the filter runs.
 
@@ -297,3 +308,36 @@ def test_run_does_not_lose_stdin_when_the_first_tier_answers(tmp_path, lypning_b
     p = _cli("run", "-c", program, home=str(tmp_path), stdin="1\n2\n3\n",
              env={"LYPNING_BIN": str(lypning_bin)})
     assert (p.returncode, p.stdout.strip()) == (0, "6"), p.stderr
+
+
+def test_harvest_dry_run_writes_nothing_under_the_state_dir(capsys):
+    """Invariant 7: `--dry-run` is real — it opens files and writes none.
+
+    The transcript index cache is a write, it lives under `$LYPNING_HOME`, and
+    the model join reaches it through `collect()`. Before this was threaded, a
+    dry run left `model-index.json` behind.
+    """
+    from lypning import harvest, paths
+
+    root = Path(str(paths.state_dir())) / "projects" / "-tmp-p"
+    root.mkdir(parents=True, exist_ok=True)
+    main = root / "sess.jsonl"
+    main.write_text(json.dumps({
+        "type": "assistant", "timestamp": "2026-09-02T10:00:00.000Z",
+        "message": {"model": "claude-fable-5-1", "content": [
+            {"type": "tool_use", "id": "toolu_a", "name": "Bash",
+             "input": {"command": "python3 -c 'print(1)'"}}]}}) + "\n", encoding="utf-8")
+    log = paths.log_path()
+    paths.ensure_dir(log.parent)
+    log.write_text(json.dumps({
+        "kind": "bash_command", "session": "sess", "ts": "2026-09-02T10:00:00.500Z",
+        "command": "python3 -c 'print(1)'", "transcript": str(main),
+        "tool_use_id": "toolu_a"}) + "\n", encoding="utf-8")
+
+    state = paths.state_dir()
+    before = sorted(p.name for p in state.rglob("*"))
+    assert cli.main(["harvest", "--dry-run", "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["mode"] == "dry-run" and report["sightings"] >= 1
+    assert sorted(p.name for p in state.rglob("*")) == before
+    assert not harvest._index_cache_path().exists()

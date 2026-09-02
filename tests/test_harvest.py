@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 import os
 
+import pytest
+
 
 from lypning import corpus, harvest, paths
 
@@ -671,7 +673,7 @@ def test_a_transcript_rewritten_in_place_is_indexed_again_rather_than_resumed(tm
     Append-only is a property of the writer, not of the filesystem: a restored
     backup or a copied-over path breaks it, and resuming at the stored offset
     would then splice one file's records onto another's and keep answering with
-    ids that are no longer in it. The head digest is what notices.
+    ids that are no longer in it. The prefix digest is what notices.
     """
     main = _transcripts(tmp_path, [
         _assistant("2026-09-02T10:00:00.000Z", "claude-opus-5", "toolu_a"),
@@ -696,29 +698,33 @@ def test_every_way_the_cache_can_be_wrong_costs_time_and_not_a_model(tmp_path):
     cache = harvest._index_cache_path()
     assert cache.is_file()
 
+    # Read from the module, not spelled 1: a bumped version would otherwise
+    # reject every case below on the version alone and pass this test without
+    # ever exercising the shape it is about.
+    v = harvest._CACHE_VERSION
     for corrupt in (
         "",                                             # a zero-length write
         "{not json",                                    # a half-written file
         json.dumps({"version": 999, "files": {}}),      # a schema we do not read
-        json.dumps({"version": 1, "files": "nope"}),
-        json.dumps({"version": 1, "files": {str(main): {"offset": "far"}}}),
-        json.dumps({"version": 1, "files": {str(main): {
-            "offset": 10, "ino": 1, "dev": 1, "head": "x",
+        json.dumps({"version": v, "files": "nope"}),
+        json.dumps({"version": v, "files": {str(main): {"offset": "far"}}}),
+        json.dumps({"version": v, "files": {str(main): {
+            "offset": 10, "ino": 1, "dev": 1, "digest": "x",
             "ids": {"toolu_a": 3}, "timeline": []}}}),  # a model that is not a name
-        json.dumps({"version": 1, "files": {str(main): {
-            "offset": 10, "ino": 1, "dev": 1, "head": "x",
+        json.dumps({"version": v, "files": {str(main): {
+            "offset": 10, "ino": 1, "dev": 1, "digest": "x",
             "ids": {}, "timeline": [[1, "m"]]}}}),      # a stamp bisect cannot compare
         # Well-formed and STALE, which is the dangerous one: it names a model,
         # and believing it would be the silent wrong answer rather than a slow
         # one. The inode it claims is not this file's.
-        json.dumps({"version": 1, "files": {str(main): {
-            "offset": 10, "ino": 1, "dev": 1, "head": "x",
+        json.dumps({"version": v, "files": {str(main): {
+            "offset": 10, "ino": 1, "dev": 1, "digest": "x",
             "ids": {"toolu_a": "claude-not-this-one"}, "timeline": []}}}),
-        # Well-formed, right inode, and the head of the file has moved: same
+        # Well-formed, right inode, and the consumed prefix has moved: same
         # path, different bytes. Only re-reading can tell.
-        json.dumps({"version": 1, "files": {str(main): {
+        json.dumps({"version": v, "files": {str(main): {
             "offset": 10, "ino": os.stat(str(main)).st_ino,
-            "dev": os.stat(str(main)).st_dev, "head": "0" * 32,
+            "dev": os.stat(str(main)).st_dev, "digest": "0" * 32,
             "ids": {"toolu_a": "claude-not-this-one"}, "timeline": []}}}),
     ):
         cache.write_text(corrupt, encoding="utf-8")
@@ -759,3 +765,310 @@ def test_the_cache_forgets_transcripts_that_are_gone(tmp_path):
     stored = json.loads(harvest._index_cache_path().read_text(encoding="utf-8"))
     assert str(main) not in stored["files"]
     assert str(other) in stored["files"]
+
+
+def test_a_truncated_transcript_is_re_read_rather_than_resumed(tmp_path):
+    """Truncated in place, with more prefix left than the digest window covers.
+
+    The three staleness signals are `(dev, ino)`, `size >= offset`, and a digest
+    of the last `_CACHE_DIGEST_BYTES` consumed bytes. This is the case that
+    needs at least two of them to have been thought about: same inode, and a
+    surviving prefix LONGER than the digest window, so a digest of the head of
+    that prefix — which is what this used to hash — would still match. Believing
+    the cache here serves ids the file no longer contains, which is the silent
+    wrong answer, not a slow one.
+    """
+    keep = [_assistant("2026-09-02T10:00:0%d.000Z" % i, "claude-opus-5", "toolu_a",
+                       "python3 -c 'print(1)'   # %s" % ("p" * 900))
+            for i in range(6)]
+    rest = [_assistant("2026-09-02T10:01:00.000Z", "claude-fable-5-1", "toolu_b"),
+            _assistant("2026-09-02T10:01:01.000Z", "claude-fable-5-1", "toolu_c")]
+    main = _transcripts(tmp_path, keep + rest)
+    surviving = len("".join(r + "\n" for r in keep).encode("utf-8"))
+    assert surviving > harvest._CACHE_DIGEST_BYTES, surviving
+    assert main.stat().st_size > surviving
+
+    log = _write_log(tmp_path, [
+        _hook("python3 -c 'print(1)'", "toolu_a", main),
+        _hook("python3 -c 'print(2)'", "toolu_b", main),
+        _hook("python3 -c 'print(3)'", "toolu_c", main),
+    ])
+    by_program = {s.program: s for s in harvest.parse_log(log)}
+    assert by_program["print(2)"].models == (("claude-fable-5-1", 1),)
+
+    # Truncate in place: same path, same inode, and `toolu_b`/`toolu_c` are gone.
+    with open(str(main), "r+b") as fh:
+        fh.truncate(surviving)
+    by_program = {s.program: s for s in harvest.parse_log(log)}
+    assert by_program["print(1)"].models == (("claude-opus-5", 1),)
+    assert by_program["print(2)"].models == ()
+    assert by_program["print(3)"].models == ()
+
+
+def test_a_shrunk_file_is_stale_even_when_the_stored_digest_says_nothing(tmp_path):
+    """The one shrink the digest cannot see, which is why the size check stays.
+
+    `_tail_digest` returns `""` when it cannot read its window, and an entry
+    carrying `""` beside a non-zero offset is a shape `_cache_entry_ok` accepts
+    — from an older writer, a transient read failure, or anyone with an editor,
+    since this file is on disk and outlives the version that wrote it. Then the
+    digests compare equal whatever the file now holds, and `st.st_size <
+    entry["offset"]` is the only signal left that the bytes the offset claims
+    are not there.
+    """
+    main = _transcripts(tmp_path, [
+        _assistant("2026-09-02T10:00:00.000Z", "claude-opus-5", "toolu_a"),
+        _assistant("2026-09-02T10:00:01.000Z", "claude-opus-5", "toolu_b"),
+    ])
+    log = _write_log(tmp_path, [_hook("python3 -c 'print(1)'", "toolu_b", main)])
+    assert harvest.parse_log(log)[0].models == (("claude-opus-5", 1),)
+
+    st = os.stat(str(main))
+    cache = harvest._index_cache_path()
+    cache.write_text(json.dumps({"version": harvest._CACHE_VERSION, "files": {str(main): {
+        "offset": st.st_size, "ino": st.st_ino, "dev": st.st_dev, "digest": "",
+        "ids": {"toolu_b": "claude-opus-5"}, "timeline": []}}}), encoding="utf-8")
+    with open(str(main), "w", encoding="utf-8") as fh:
+        fh.write(_assistant("2026-09-02T11:00:00.000Z", "claude-fable-5-1", "toolu_z") + "\n")
+    # `toolu_b` is not in this file any more. The cache still claims it.
+    assert harvest.parse_log(log)[0].models == ()
+
+
+def test_the_time_join_includes_the_instant_it_was_asked_about(tmp_path):
+    """"At or before", not "strictly before" — and the tie is the likely case.
+
+    The shim's stamp is second-precision on this host, so a spawn that happens
+    in the same second an assistant record was written lands on exactly its
+    canonical key. `bisect_right(timeline, (key, high)) - 1` includes that
+    record; `bisect_left(timeline, (key, "")) - 1` would skip it and hand back
+    whoever spoke before — a different model, silently, on the commonest shape
+    of tie there is.
+    """
+    at = "2026-09-02T01:05:24.000000"
+    index = harvest._ModelIndex({}, [("2026-09-02T01:05:20.100000", "claude-sonnet-5"),
+                                     (at, "claude-fable-5-1")])
+    assert index.at("2026-09-02T01:05:24Z") == "claude-fable-5-1"
+    assert index.at("2026-09-02T01:05:24.000Z") == "claude-fable-5-1"
+    # And one instant earlier is still the earlier model, so this is a boundary
+    # and not a test that any answer would satisfy.
+    assert index.at("2026-09-02T01:05:23.999Z") == "claude-sonnet-5"
+    assert index.at("2026-09-02T01:05:20.000Z") is None
+
+    # The same tie through the whole pipeline: the transcript writes the model
+    # at :24.000 and the shim spawns in that second.
+    main = _transcripts(tmp_path, [
+        _assistant("2026-09-02T01:05:20.100Z", "claude-sonnet-5", "toolu_main"),
+        _assistant("2026-09-02T01:05:24.000Z", "claude-fable-5-1"),
+    ])
+    log = _write_log(tmp_path, [
+        _hook("python3 -c 'print(1)'", "toolu_main", main),
+        {"kind": "python_invocation", "session": SESSION,
+         "ts": "2026-09-02T01:05:24Z", "program": UNIQUE, "argv_tail": []},
+    ])
+    by_program = {s.program: s for s in harvest.parse_log(log)}
+    assert by_program[UNIQUE].models == (("claude-fable-5-1", 1),)
+
+
+# --- one bad record must not cost every session its export --------------------
+
+
+def test_one_poisoned_transcript_path_does_not_stop_the_export(project, tmp_path):
+    """`parse_log` says it never raises, and the Stop hook is why it must not.
+
+    A `transcript` string comes out of the log — some other program wrote it,
+    this one only read it back — and `os.walk` on one holding a NUL raises
+    ValueError, not OSError. Unguarded, one such line stops the export of EVERY
+    session, on every Stop, silently (the hook still prints its contract line
+    and exits 0), and forever, because the log is append-only.
+    """
+    main = _transcripts(tmp_path, [
+        _assistant("2026-09-02T10:00:00.000Z", "claude-opus-5", "toolu_ok"),
+    ])
+    _log([
+        {"kind": "bash_command", "session": "poisoned", "ts": "2026-09-02T10:00:00.500Z",
+         "command": "python3 -c %r" % UNIQUE_HEREDOC, "transcript": "/tmp/tr\x00ans.jsonl",
+         "tool_use_id": "toolu_bad"},
+        {"kind": "bash_command", "session": SESSION, "ts": "2026-09-02T10:00:01.500Z",
+         "command": "python3 -c %r" % UNIQUE, "transcript": str(main),
+         "tool_use_id": "toolu_ok"},
+    ])
+    result = harvest._export()
+    published = {}
+    for path, _added, _total, _changed in result.files:
+        for s in harvest.read_sightings(path):
+            published[s.program] = s
+    # The good record is published AND attributed...
+    assert published[UNIQUE].models == (("claude-opus-5", 1),)
+    # ...and the poisoned one costs itself a model and nothing else.
+    assert published[UNIQUE_HEREDOC].models == ()
+
+
+def test_a_lone_surrogate_in_a_transcript_path_is_the_same_non_event(tmp_path):
+    """The other exception `os.walk` raises for a string this module did not
+    choose: UnicodeEncodeError, a subclass of ValueError, out of the filesystem
+    encoder.
+
+    ``U+D800``, not one of the ``U+DC80``-``U+DCFF`` surrogates: those are what
+    `surrogateescape` produces for undecodable BYTES and they encode straight
+    back, so a path built from one raises nothing at all. Only a surrogate with
+    no byte behind it does — asserted here rather than assumed, because a test
+    aimed at the wrong half of the range is a test that passes on any code.
+    """
+    bad = "/tmp/\ud800/x.jsonl"
+    with pytest.raises(UnicodeEncodeError):
+        list(os.walk(bad))
+    log = _write_log(tmp_path, [
+        {"kind": "bash_command", "session": SESSION, "ts": "2026-09-02T10:00:00.500Z",
+         "command": "python3 -c 'print(1)'", "transcript": bad,
+         "tool_use_id": "toolu_bad"},
+    ])
+    assert harvest.parse_log(log)[0].models == ()
+
+
+# --- the other harnesses are unattributed, and cost the join nothing ----------
+#
+# opencode's tool hooks (`tool.execute.before/after`, `shell.env`) carry
+# sessionID and callID and no model; OpenHands' PostToolUse payload carries
+# `session_id`, `tool_name`, `tool_input`, `tool_response` and no model, and its
+# hook subprocess env names no model either. Neither has a transcript on disk to
+# join against. So both are unattributed by construction, which is exactly what
+# the hole in `models` is for — and what must not quietly become a WRONG model
+# the day one of them starts writing a field this module reads.
+
+
+def _opencode_bash(command, run="call_1", ts="2026-09-02T10:00:00.500Z"):
+    return {"kind": "bash_command", "ts": ts, "session": "ses_opencode_1",
+            "cwd": "/tmp/p", "tool": "bash", "command": command,
+            "description": None, "transcript": None, "host": "opencode",
+            "run": run}
+
+
+def _openhands_bash(command, ts="2026-09-02T10:00:00.500Z"):
+    return {"kind": "bash_command", "ts": ts, "session": "oh-session-1",
+            "cwd": "/tmp/p", "tool": "terminal", "command": command,
+            "description": None, "transcript": None, "host": "openhands",
+            "exit_code": 0}
+
+
+def test_an_opencode_or_openhands_record_is_unattributed_and_never_wrong(tmp_path):
+    main = _transcripts(tmp_path, [
+        _assistant("2026-09-02T10:00:00.000Z", "claude-opus-5", "toolu_claude",
+                   "python3 -c 'print(0)'"),
+    ])
+    log = _write_log(tmp_path, [
+        _hook("python3 -c 'print(0)'", "toolu_claude", main),
+        _opencode_bash("python3 -c 'print(1)'"),
+        _openhands_bash("python3 -c 'print(2)'"),
+    ])
+    by_program = {s.program: s for s in harvest.parse_log(log)}
+    assert by_program["print(0)"].models == (("claude-opus-5", 1),)
+    assert by_program["print(1)"].models == ()
+    assert by_program["print(2)"].models == ()
+
+
+def test_a_non_claude_record_naming_a_transcript_is_still_not_joined(tmp_path):
+    """Neither harness writes `transcript` today. This is the guard for the day
+    one does: its path must not be walked as a Claude transcript, and its ids
+    must not be looked up in one."""
+    main = _transcripts(tmp_path, [
+        _assistant("2026-09-02T10:00:00.000Z", "claude-opus-5", "toolu_x",
+                   "python3 -c 'print(1)'"),
+    ])
+    rec = _opencode_bash("python3 -c 'print(1)'")
+    rec["transcript"] = str(main)
+    rec["tool_use_id"] = "toolu_x"          # the same id, in another namespace
+    log = _write_log(tmp_path, [rec])
+    assert harvest.parse_log(log)[0].models == ()
+
+    # And a shim spawn under that session cannot borrow the path either.
+    log = _write_log(tmp_path, [
+        rec,
+        {"kind": "python_invocation", "session": rec["session"],
+         "ts": "2026-09-02T10:00:01Z", "program": UNIQUE, "argv_tail": []},
+    ])
+    by_program = {s.program: s for s in harvest.parse_log(log)}
+    assert by_program[UNIQUE].models == ()
+
+
+def test_the_records_that_carry_no_program_read_no_transcript(tmp_path, monkeypatch):
+    """opencode's `{"kind":"note"}` and `{"kind":"exit"}` records, and the
+    opt-in `{"kind":"tool_call"}`, flow through the same prepass the join is
+    built in. None of them names a program, none should reach the index, and
+    none should make the harvest open a transcript."""
+    log = _write_log(tmp_path, [
+        {"kind": "note", "ts": "2026-09-02T10:00:00.000Z", "session": "ses_1",
+         "host": "opencode", "detail": "shim not on PATH"},
+        {"kind": "exit", "ts": "2026-09-02T10:00:01.000Z", "session": "ses_1",
+         "host": "opencode", "run": "call_1", "exit_code": 0},
+        {"kind": "tool_call", "ts": "2026-09-02T10:00:02.000Z", "session": "ses_1",
+         "host": "opencode", "tool": "bash"},
+    ])
+    indexed = []
+    monkeypatch.setattr(harvest, "_model_index",
+                        lambda t, cache=None: indexed.append(t) or harvest._EMPTY_INDEX)
+    assert harvest.parse_log(log) == []
+    assert indexed == []
+    assert not harvest._index_cache_path().exists()
+
+
+# --- --dry-run is real: it opens files and writes none ------------------------
+
+
+def test_a_dry_run_harvest_writes_nothing_at_all(tmp_path):
+    """Invariant 7. The index cache is the only write on the collect path, and
+    it is under $LYPNING_HOME — where a --dry-run must leave no trace."""
+    main = _transcripts(tmp_path, [
+        _assistant("2026-09-02T10:00:00.000Z", "claude-opus-5", "toolu_a",
+                   "python3 -c 'print(1)'"),
+    ])
+    _log([_hook("python3 -c 'print(1)'", "toolu_a", main)])
+    state = paths.state_dir()
+    before = sorted(p.name for p in state.iterdir()) if state.is_dir() else []
+
+    dry = harvest.collect(persist=False)
+    assert [s.models for s in dry] == [(("claude-opus-5", 1),)]
+    after = sorted(p.name for p in state.iterdir()) if state.is_dir() else []
+    assert after == before
+    assert not harvest._index_cache_path().exists()
+
+    # And the same call that is allowed to write does, so this is a test of the
+    # flag rather than of a join that never happened.
+    harvest.collect()
+    assert harvest._index_cache_path().is_file()
+
+
+def test_a_rewrite_that_keeps_the_opening_bytes_is_still_noticed(tmp_path):
+    """Same inode, same first bytes, no shorter — the shape a `cp` over the path,
+    an `rsync --inplace` or a restored backup actually has.
+
+    This is why the digest covers the TAIL of the consumed prefix and not its
+    head. A transcript opens with the same session and the same first turns
+    however many times it is rewritten, so a head digest is the one window such
+    a rewrite is most likely to reproduce exactly; move the window back to the
+    head and this test is the one that goes red.
+    """
+    opening = [_assistant("2026-09-02T10:00:0%d.000Z" % (i % 10), "claude-opus-5",
+                          "toolu_h%d" % i, "python3 -c 'print(0)'  # %s" % ("q" * 400))
+               for i in range(14)]
+    shared = "".join(r + "\n" for r in opening)
+    assert len(shared.encode("utf-8")) > harvest._CACHE_DIGEST_BYTES
+
+    main = _transcripts(tmp_path, opening + [
+        _assistant("2026-09-02T10:05:00.000Z", "claude-opus-5", "toolu_b",
+                   "python3 -c 'print(1)'"),
+    ])
+    log = _write_log(tmp_path, [_hook("python3 -c 'print(1)'", "toolu_b", main)])
+    assert harvest.parse_log(log)[0].models == (("claude-opus-5", 1),)
+    st = os.stat(str(main))
+
+    # Rewritten in place: byte-identical opening, and `toolu_b` gone from the
+    # part a head digest never looks at. Longer, so the size check is silent.
+    with open(str(main), "w", encoding="utf-8") as fh:
+        fh.write(shared)
+        for i in range(3):
+            fh.write(_assistant("2026-09-02T11:00:0%d.000Z" % i, "claude-fable-5-1",
+                                "toolu_z%d" % i) + "\n")
+    after = os.stat(str(main))
+    assert after.st_ino == st.st_ino and after.st_size >= st.st_size
+    assert main.read_text(encoding="utf-8").startswith(shared)
+    assert harvest.parse_log(log)[0].models == ()

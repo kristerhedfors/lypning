@@ -111,6 +111,15 @@ and `lypning harvest --json` reports counts per host. Run it, read the number
 off your own sessions, and quote it with its date and its model id — never a
 remembered one (invariant 3).
 
+The model id has to come from you here, not from the tool. `lypning corpus
+--model NAME` slices the corpus by the model that issued each program, but that
+attribution is resolved by joining a Claude Code transcript, and neither of
+these harnesses writes one: an opencode tool hook and an OpenHands `PostToolUse`
+payload carry no model and no key to join one on. Their records are
+unattributed by construction, which `corpus --stats` reports as its
+`unattributed` row rather than hiding. See `docs/CAPTURE.md`, *Which model
+issued it*.
+
 One structural point in lypning's favour, for OpenHands specifically: in its v0
 design Python ran in a long-lived Jupyter kernel, where lypning had nothing to
 offer. That is gone. In v1 every Python invocation is a fresh `execve` out of

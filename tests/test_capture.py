@@ -148,6 +148,34 @@ def test_a_main_loop_call_carries_no_agent_keys():
     assert "agent_id" not in rec and "agent_type" not in rec
 
 
+def test_only_the_claude_mapper_writes_a_join_key_no_other_harness_has():
+    """`tool_use_id` belongs to `from_claude_event`, not to `record_command`.
+
+    It is a key into a Claude Code transcript and nothing else has one. Set in
+    the shared builder it would put a permanent `"tool_use_id": null` into every
+    opencode and OpenHands record, naming a join those harnesses do not have —
+    and opencode's `run` (its `callID`) is the same concept in another
+    namespace, deliberately not unified with it for the same reason.
+    """
+    neutral = capture.record_command("python3 -c 1", host="opencode", tool="bash",
+                                     run="call_1")
+    assert "tool_use_id" not in neutral
+    assert neutral["run"] == "call_1"
+    for mapper, event in (
+        (capture.from_opencode_event,
+         {"tool": "bash", "args": {"command": "python3 -c 1"}, "callID": "call_1"}),
+        (capture.from_openhands_event,
+         {"tool_name": "terminal", "tool_input": {"command": "python3 -c 1"},
+          "session_id": "s", "working_dir": "/w"}),
+    ):
+        rec = mapper(event)
+        assert rec is not None
+        assert "tool_use_id" not in rec
+        assert "agent_id" not in rec and "agent_type" not in rec
+    # And the Claude mapper still writes it, always, possibly null.
+    assert "tool_use_id" in capture.from_claude_event(BASH_EVENT)
+
+
 def test_capture_disabled_still_answers_but_writes_nothing(monkeypatch):
     monkeypatch.setenv("LYPNING_CAPTURE", "0")
     assert not capture.capture_enabled()

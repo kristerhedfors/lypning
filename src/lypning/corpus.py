@@ -586,8 +586,15 @@ def stats(entries: Sequence[Entry], *, top: int = 12,
     because the caller is the only one that still has the unfiltered list, and a
     filtered report that did not name its whole would read exactly like a corpus
     that had shrunk.
+
+    An EMPTY ``model`` is no filter, not a filter on the empty name. It has to
+    be, because the caller that does the filtering reads it the same way: no
+    entry can carry an empty model name, so filtering on one would leave
+    nothing, and a caller that skipped the filter while this rendered a slice
+    header would print the whole corpus under "of N (model: )". One reading of
+    a falsy name, in one place, and every spelling of ``--model`` agrees.
     """
-    s = Stats(total=len(entries), filter_model=model,
+    s = Stats(total=len(entries), filter_model=model or None,
               population=len(entries) if population is None else population)
     lengths: List[int] = []
     imports: Dict[str, int] = {}

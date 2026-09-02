@@ -293,19 +293,42 @@ The join happens in `harvest.py`, once per harvest, on the cold path:
 * `message.model == "<synthetic>"` is the CLI's own spelling for a record it
   wrote without asking a model. It is treated as no model, not as one.
 
+**Attribution is Claude Code's only, and by construction.** opencode's tool
+hooks (`tool.execute.before`/`after`, `shell.env`) carry `sessionID` and
+`callID` and no model; the OpenHands SDK's `PostToolUse` payload carries
+`session_id`, `tool_name`, `tool_input` and `tool_response` and no model, and
+its hook subprocess environment names none either. Neither has a transcript on
+disk to join against. So a record whose `host` is not `claude` is skipped by the
+join entirely — it never contributes a transcript path to index and never has an
+id looked up — and it stays unattributed, which is precisely what the hole in
+`models` is for. Extending attribution to opencode is possible via a second,
+differently shaped mechanism (a `chat.params` hook accumulating model-per-session
+in the plugin closure, an inference rather than a join); it is deliberately not
+done here, because a reader of `models` could not then tell which of the two
+produced a name.
+
+The residual, named rather than closed: the **shim** record carries no `host`.
+Its session tag falls back to `$CLAUDE_CODE_SESSION_ID` from the ambient
+environment, so another harness's agent run from inside a Claude Code session's
+shell has its nested python spawns tagged with the Claude session and time-joined
+to the Claude model. Closing that needs a `host` field on the shim's own record,
+which is a change to the shim wire format.
+
 Only the transcripts something asks about are read: a log line with no
 `tool_use_id` and no shim invocation to place in time asks nothing, so a log
 written before any of this existed costs a harvest exactly what it cost before.
 
 `transcript_path` in the payload always names the MAIN session file, but a Bash
 call issued by a **subagent** has its `tool_use` block only under
-`<session>/subagents/**/agent-*.jsonl`. Measured on one machine on 2026-09-02,
-most of this project's captured python is issued by subagents, so the index is
-built from the main transcript **and** that tree; a `tool_use` id is unique
-across every transcript on disk, so the union cannot collide. Indexing only the
-main file would leave the majority unattributed, and time-joining over it would
-be worse — it would file a subagent's program under the parent loop's model,
-which is precisely the silent wrong answer the id join exists to avoid.
+`<session>/subagents/**/agent-*.jsonl`. Measured on one machine on 2026-09-02 —
+194 transcript files, 895 python-ish Bash `tool_use` blocks, 716 of them (80.0%)
+in a subagent file — most of this project's captured python is issued by
+subagents, so the index is built from the main transcript **and** that tree; a
+`tool_use` id is unique across every transcript on disk (4301 distinct ids over
+those same files, none of them in two), so the union cannot collide. Indexing
+only the main file would leave four fifths unattributed, and time-joining over
+it would be worse — it would file a subagent's program under the parent loop's
+model, which is precisely the silent wrong answer the id join exists to avoid.
 
 The transcripts are indexed **incrementally**. The join runs on the cold path,
 but the cold path is not a free path: the export fires on every Stop, the
@@ -316,13 +339,32 @@ Since a transcript is append-only JSONL, a byte offset is a complete
 description of what has already been read, and only the bytes appended since
 the last harvest are parsed. The offsets and what they yielded live in
 `$LYPNING_HOME/model-index.json`, which is a **cache and never a source of
-truth**: missing, unreadable, corrupt, truncated, replaced or written by
-another version, every one of those falls back to reading the file from byte
-zero. It is never committed, deleting it is always safe, and its absence costs
-only time. Measured on this machine on 2026-09-02, on a copy of the real
-capture log (750 records, 4 sessions, 39.1 MB of transcript trees, best of 9
-interleaved runs): 1859 ms per harvest re-indexing every time, 974 ms with the
-cache warm, against 704 ms for the same log with nothing to join at all.
+truth**: missing, unreadable, corrupt, written by another version, describing a
+file on another device or inode, one that has shrunk, or one whose last
+consumed bytes have changed — every one of those falls back to reading the file
+from byte zero. It is never committed, deleting it is always safe, and its
+absence costs only time.
+
+The cost is quoted in bytes rather than seconds on purpose: this machine is
+shared with other agent sessions and its load average reaches the hundreds, so a
+wall clock here measures the machine. Measured on 2026-09-02, on a copy of the
+real capture log with every hook record carrying an id (892 records, 4 sessions
+naming a transcript, whose trees are 180 files and 45,642,644 B): a cold harvest
+scans all 45,642,644 B; every harvest after it scans 0 B and reads 734,678 B of
+staleness digests. Measured the same day, the real log **unmodified** — no
+record in it carries an id, because none was written before this existed — reads
+0 transcript bytes and does not create the cache file at all.
+
+What the staleness check proves is worth stating exactly, because it is not
+"the file is unchanged". It is `(device, inode)`, `size >= offset`, and a digest
+of the last 4096 consumed bytes. A rewrite that keeps the inode, keeps the size,
+and reproduces those 4096 bytes verbatim while altering the prefix before them
+is **not** detected. Reaching it takes a deliberate rewrite; an append cannot,
+and that is the only thing that happens to these files in normal operation. The
+digest covers the TAIL of the consumed prefix rather than its head for exactly
+this reason: a copy, a restored backup or an `rsync --inplace` reproduces a
+transcript's opening records every time, so a head digest would have been the
+one window such a rewrite is most likely to leave alone.
 
 The two merges are **not** the same function, and this is the trap:
 `harvest._combine` and `fold_into_corpus` take the per-model **max**, because
@@ -446,7 +488,11 @@ Covers dedup, normalization, redaction, command extraction (quoting, heredocs,
 runners), re-run idempotency, and the durability path — per-session export,
 key namespacing, and the no-double-count property of the fold. Model
 attribution is pinned there too: the id join across the subagent tree, the
-time join for the shim feed, and the max-versus-sum asymmetry between
-`harvest._combine` and `corpus._combine`.
+time join for the shim feed — including the exact-timestamp tie, which
+second-precision shim stamps make the common case — the max-versus-sum
+asymmetry between `harvest._combine` and `corpus._combine`, every way the index
+cache can be stale, that an opencode or OpenHands record never acquires a model,
+and that one unwalkable transcript path costs its own session's attribution and
+not every session's export.
 
 `pytest` picks this file up from `tests/`.

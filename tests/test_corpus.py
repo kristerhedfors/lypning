@@ -274,3 +274,19 @@ def test_a_filtered_report_names_the_slice_and_the_whole():
     s = corpus.stats(entries, model="claude-fable-5-1", population=17)
     line = [l for l in corpus.render_stats(s).splitlines() if l.startswith("entries")][0]
     assert "1 of 17" in line and "model: claude-fable-5-1" in line
+
+
+def test_an_empty_model_is_no_filter_rather_than_a_filter_on_nothing():
+    """`--model ""` is the one spelling where the filter and the header could
+    disagree: the caller skips a falsy filter, so a header rendered on `is not
+    None` would announce a slice over an unfiltered corpus — "N of N (model: )".
+    No entry can carry an empty model name, so there is only one honest reading
+    of a falsy one, and it is made here so every caller gets it.
+    """
+    entries = [_entry(id="py-1", models=(("claude-fable-5-1", 1),)),
+               _entry(id="py-2", program="print(2)")]
+    s = corpus.stats(entries, model="", population=len(entries))
+    assert s.filter_model is None
+    line = [l for l in corpus.render_stats(s).splitlines() if l.startswith("entries")][0]
+    assert "model:" not in line
+    assert corpus.stats(entries, model=None).filter_model is None

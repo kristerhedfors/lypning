@@ -1541,7 +1541,10 @@ def cmd_gate(ns: argparse.Namespace) -> int:
 def cmd_harvest(ns: argparse.Namespace) -> int:
     harvest = _mod("harvest")
     if ns.dry_run:
-        sightings = harvest.collect(transcripts=ns.transcripts)
+        # persist=False, because --dry-run writes nothing and the transcript
+        # index cache is a write. It is still READ, so the report is the same
+        # report a real run would produce.
+        sightings = harvest.collect(transcripts=ns.transcripts, persist=False)
         if ns.json:
             _json({"mode": "dry-run", "sightings": len(sightings),
                    "corpus": str(paths.corpus_write_file())})
