@@ -856,8 +856,12 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
 /// can only move a program toward a MORE capable tier.
 pub fn scan_imports(src: &str) -> Vec<String> {
     let mut out = Vec::new();
-    for line in src.lines() {
-        let t = line.trim_start();
+    // Per STATEMENT, not per line: `x = 1; import random` is how a one-liner
+    // imports, and this scan is the router's only sight of the imports when a
+    // parse-time blocker has stopped the walker — missing one here sent a
+    // seeded `random` program to the tier whose generator is not MT19937.
+    for stmt in src.lines().flat_map(|l| l.split(';')) {
+        let t = stmt.trim_start();
         let rest = if let Some(r) = t.strip_prefix("import ") {
             r
         } else if let Some(r) = t.strip_prefix("from ") {
