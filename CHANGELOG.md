@@ -14,18 +14,27 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-01** — A CPython warning is not an error the engine had to reproduce · [#24]
+**2026-09-02** — Tier 1 serves seeded `random`, bit for bit; four silent wrong answers found on the way · [#24]
 
-- **`conformance` no longer scores a MISMATCH on a reference warning.** Python
-  3.14 warns on `return` inside `finally` (PEP 765) and exits 0; the grader's
-  stderr guard read any reference stderr as "CPython reported an error". Warning
-  blocks are now stripped from the reference's stderr before that guard — an
-  error beside a warning still counts, and stdout and exit code are compared as
-  before. Grader-side, not `PYTHONWARNINGS=ignore`, so the reference stays
-  CPython as the agent runs it.
-- The ledgered `1325 / 800 / 1` was two different programs on two hosts: the
-  musl `pow` ULP on the container, this one under 3.14 on macOS. Here it is now
-  `1325 / 800 / 0` over 2126 graded (2026-09-01). No engine change.
+- **`random`, the seeded-integer subset, on tier 1.** `seed(int)`,
+  `random()`, `randint`, `randrange(a, b)`, `choice`, `getrandbits` are
+  CPython's MT19937 exactly; everything else refuses. `random` leaves the
+  middle tier's module table — its generator is not MT19937 and seededness
+  cannot be decided statically — and both dispatchers now re-read a program's
+  imports when a runtime refusal falls onward. Conformance 1325 → 1336 MATCH
+  over 2125 graded (2026-09-02), MISMATCH 0, UNSAFE 0; `__text` +8.1 KB for
+  everything below too.
+- **`sum()` over floats answers only where CPython 3.11, 3.12 and 3.14
+  agree**, else refuses `float-sum`. It was a naive fold — `sum([0.1]*10)`
+  printed 0.9999999999999999 where 3.14 prints 1.0.
+- **`raise SystemExit(n)` exits `n`.** It exited 1 with a traceback.
+  SystemExit is one exception shared with `sys.exit()`, caught and `finally`'d
+  as CPython does; ambiguous arguments refuse.
+- **`lypning run` no longer re-runs a program that exits 90 on its own.**
+  `print(1); sys.exit(90)` printed 1 twice — invariant 2's double run.
+- The grader compares seeded streams (they were blanket-uncompared, which
+  would have graded a wrong Mersenne Twister as MATCH); CPython warnings on
+  stderr are no longer "an error the engine was silent about".
 
 **2026-08-31** — pathlib costs nothing; `conformance --plan` is now ranked by cost
 

@@ -26,6 +26,106 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-09-02 · iteration 72 — tier 1 serves seeded `random`, and the adversarial pass paid for itself four times
+
+Coverage focus, `--plan` read by cost: after the irreducible rows (`import
+lypning` 131, `subprocess` 26, `sys.path` 21) the first actionable one was
+`random` at 14 of 16 blocked programs reaching CPython, and **25 of the 26
+corpus programs that import it call `seed(…)`** — a reproducible stream with a
+tight surface: `seed(int)`, `random()`, `randint`, `randrange(a, b)`,
+`choice`, `getrandbits`. `exec` (11) was measured first and is a stack, not a
+feature: every one is `exec(open('an.py').read())` whose file then needs `ast`
+or `re`.
+
+### The step: MT19937, bit for bit, or a refusal
+
+`random.rs` is `_randommodule.c`'s generator — `init_by_array` over the seed's
+32-bit words, the same tempering, the 53-bit `random()`, little-endian
+`getrandbits()` — with `_randbelow_with_getrandbits` on top. No libm anywhere,
+which is what keeps it out of the trap `math` sits in. Everything else refuses
+and each refusal names a real CPython difference: an unseeded stream (the OS),
+`seed(str)` (SHA-512), every error path (message text drifts by version),
+every other name. 22 shapes diffed by hand, then 168 by the workflow: every
+answered one byte-identical, including 5,000-draw regenerations and every
+`getrandbits` width.
+
+### The pass: five lenses, twenty findings, four of them in this step
+
+An adversarial workflow (six refute lenses, two skeptics per finding) found
+the seed marker guarding MicroPython **could not see every seed**: `from
+random import *`, `getattr(random, "seed")`, a bound name, and any parse-time
+blocker beside the seed, which stops the walker before a marker is set — plus
+any *runtime* refusal of an unrelated kind (`randint(1,10)**30` → `bigint`)
+fell one tier, onto a generator that is not MT19937. And the grader change
+that compared seeded streams then **hid** that arm's wrong number. Corpus
+entry `py-9f43d50050e7` (`seed(7)` beside a `class`) was the live case.
+
+The structural answer, rather than a longer marker: `random` leaves
+`MICROPYTHON_MODULES`; every refusal `random.rs` raises is kind `random`, an
+only-CPython kind; and **both** dispatchers re-read the program's imports
+against that table when a runtime refusal falls onward (`Route` now carries
+them, from `route --json`), with the routing grader modelling the same chain.
+`test_routing.py` pins every spelling: seeded → tier 1; star/parse-time/
+runtime → CPython; the middle tier never.
+
+Three pre-existing silent wrong answers the lenses surfaced, each fixed in its
+own commit and each skeptic-reviewed in turn:
+
+- **`sum()` over floats** was a naive fold; 3.12+ compensates, and 3.14
+  compensates *ints met in the float loop* too — three eras. The loop carries
+  two corrections and answers only where all three land on the same bits,
+  else refuses `float-sum` (`sum([0.1]*10)`: 0.9999999999999999 on 3.11, 1.0
+  on 3.14). A set with a float start is refused as `set-order`.
+- **`raise SystemExit(4)`** exited 1 with a traceback. SystemExit is now one
+  ordinary exception shared with `sys.exit()`: caught by `except SystemExit`
+  / `BaseException` / bare, not by `Exception`, runs `finally`, exits with the
+  code; every argument the flat `Value::Exc` cannot carry exactly refuses.
+  Second pass: `sys.exit(code=3)` had ignored the keyword (silent exit 0),
+  and `sys.exit(None)` is a bare `SystemExit()`.
+- **The Rust dispatcher treated any exit 90 as a refusal**: `print(1);
+  sys.exit(90)` printed 1 twice — invariant 2's double run, guarded in the
+  Python dispatcher and not the Rust one. An empty refusal kind at exit 90 is
+  now the program's own number.
+
+Also: `scan_imports` reads per statement (`x = 1; import random` beside a
+`class` had imports `[]`); `__import__` and the dunder builtins refuse instead
+of `NameError`; and the grader's "random program" is one that *draws* under
+any spelling — an unused `import random as r` had blanked stdout, hiding
+`sum([0.1]*10)` behind it.
+
+**Known, not fixed, for the next rows:** `9007199254740992.0 ==
+9007199254740993` is True (int→f64 in comparison); a caught exception is a
+copy (`x is e` False); `except … as e` is not unbound after the handler;
+`json.dumps is json.dumps` is False (the identity worktree was refused by
+the harness); `secrets`/`uuid` from-import spellings are not run-specific.
+
+**A lesson the net taught, twice:** the first ledger draft of this entry was
+written while the battery ran, and the net restored it — correctly, the
+snapshot predated the edit. Write the ledger after the last run, not during.
+
+- bytes: `__text` 630,836 → 638,952 (**+8,116**), constants +764 — host
+  arm64 build, no rustup; against 16,176 B of block-8 headroom last measured
+  on musl (iteration 70). Per feature: random ≈ +5.1 KB, SystemExit ≈ +1.9 KB,
+  sum ≈ +0.7 KB
+- conformance: 1325 / 800 / 0 → **1336 / 789 / 0** over 2125 graded (one
+  reference timeout under load; 780 skipped for absolute paths); mixture
+  2125 / 0 / 0; routing errors 0; IDEAL 1609, WASTED 52, LATE 18, **UNSAFE 0**
+- corpus-time: **4.77 → 4.72 s** over 2126 programs (0.990x, inside the
+  deadband) for the `random` commit alone, 2026-09-01 at normal load. The
+  later commits are **unmeasured**: every run after that saw a host load of
+  95–186 from other sessions on this machine, and the one reading taken
+  (133 s, 28x) is the scheduler, not the change
+- perf: no suite case refuses on the final binary; timings not quoted, same
+  reason
+- pytest: 1236 passed, 164 skipped, 3 xfailed; **6 failed + 23 errors, all
+  reproduced with every change stashed** (3.14/macOS message drift in
+  `test_fuzz_findings` ×3, `test_keyword_grid`, `test_shim`, the pool socket
+  permission test, and `AF_UNIX path too long` under uv's temp dir for every
+  `test_pool` case) — host artifacts, unchanged since iteration 71's baseline
+- doctor: 13 checks, 0 FAIL, 4 WARN
+
+PR [#24](https://github.com/kristerhedfors/lypning/pull/24), with iteration 71.
+
 ## 2026-09-01 · iteration 71 — the ledgered MISMATCH 1 was two different programs, and one was the grader
 
 First iteration on a macOS host (arm64, CPython 3.14, host build — no rustup,
