@@ -583,18 +583,36 @@ def test_a_construct_the_middle_tier_gets_wrong_keeps_a_program_off_it(lypning_b
     # third-party and its defects cannot be fixed here — but the classifier can
     # decline to send a program there when the SOURCE shows it would trip on
     # one. Each of these is a family in `.github/known-mismatches.json`.
-    assert _route("import random\nrandom.seed(7)\nprint(random.random())").engine == eng.CPYTHON
+    # A seeded stream is tier 1's own (`random.rs` runs CPython's Mersenne
+    # Twister). What must never happen is the middle tier answering one, and
+    # the seed marker that used to guard that had spellings it could not see —
+    # so the whole module is off that tier's table and every path past tier 1
+    # ends at CPython: a static blocker, a parse-time one beside the seed, and
+    # a runtime refusal, whatever its kind.
+    assert _route("import random\nrandom.seed(7)\nprint(random.random())").engine == eng.LYPNING
+    assert _route("import random as r\nr.seed(7)\nprint(r.random())").engine == eng.LYPNING
+    assert _route("from random import seed, random\nseed(7)\nprint(random())").engine == eng.LYPNING
+    assert _route("import random\nrandom.seed(7)\nrandom.shuffle([1])").engine == eng.CPYTHON
+    assert _route("from random import *\nseed(7)\nprint(random())").engine == eng.CPYTHON
+    assert _route("import random\nrandom.seed(7)\nprint(random.random())\nclass C: pass").engine == eng.CPYTHON
+    r = _route("import os, random\nrandom.seed(7)\nprint(random.randint(1, 10) ** 30)")
+    assert r.engine == eng.LYPNING and r.imports == ("os", "random")
+    assert eng.chain_after_refusal(eng.LYPNING, "bigint", r.imports) == [eng.CPYTHON]
+    assert eng.chain_after_refusal(eng.LYPNING, "random") == [eng.CPYTHON]
+    assert eng.chain_after_refusal(eng.LYPNING, "bigint", ("os",)) == [eng.MICROPYTHON, eng.CPYTHON]
     assert _route("from pathlib import Path\nprint(Path('/a/b').parts)").engine == eng.CPYTHON
     assert _route("try:\n    1/0\nexcept Exception as e:\n    print(type(e).__module__)").engine == eng.CPYTHON
 
 
 def test_the_unsafe_construct_rules_are_precise_and_not_whole_modules(lypning_bin):
     # The cost of this table is spawns, so it must fire on the construct and not
-    # on its module: `random` without a seed is reproducible, `Path.name` is
-    # correct there, and `.parts` on an unrelated object is an ordinary
-    # attribute. Routing all of `pathlib` away instead would cost 133 corpus
-    # programs against 25 for the three constructs together.
-    assert _route("import random\nprint(random.random())").engine == eng.MICROPYTHON
+    # on its module: `Path.name` is correct there, and `.parts` on an unrelated
+    # object is an ordinary attribute. Routing all of `pathlib` away instead
+    # would cost 133 corpus programs against 25 for the constructs together.
+    # (`random` is the exception, and a measured one: no construct-level rule
+    # can see every seed, so the module left the table — see route.rs.)
+    r = _route("import random\nprint(random.random())")
+    assert r.engine == eng.LYPNING  # refused at the first draw, then CPython
     assert _route("from pathlib import Path\nprint(Path('/a/b').name)").engine == eng.MICROPYTHON
     assert _route("import base64\nprint(base64.b64encode(b'hi'))").engine == eng.MICROPYTHON
     # `.parts` with no pathlib in sight is not the pathlib defect.

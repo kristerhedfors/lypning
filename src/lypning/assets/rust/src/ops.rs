@@ -577,8 +577,21 @@ impl Interp {
                 _ => {}
             }
         }
-        if let Value::Exc(_, msg) = base {
+        if let Value::Exc(kind, msg) = base {
             match name {
+                // `SystemExit.code` is the exit status, typed — the message is
+                // its `str()`, and the constructor kept the two reversible.
+                "code" if *kind == "SystemExit" => {
+                    return Ok(crate::builtins::system_exit_code(msg))
+                }
+                "args" if *kind == "SystemExit" => {
+                    let a = if msg.is_empty() {
+                        vec![]
+                    } else {
+                        vec![crate::builtins::system_exit_code(msg)]
+                    };
+                    return Ok(Value::Tuple(Rc::new(a)));
+                }
                 "args" => return Ok(Value::Tuple(Rc::new(vec![Value::Str(msg.clone())]))),
                 // OSError-family exceptions carry `.errno`/`.strerror`/
                 // `.filename`, and the message we build always has the shape

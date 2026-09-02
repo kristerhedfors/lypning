@@ -60,6 +60,10 @@ pub struct Interp {
     /// Names assigned somewhere in the current function body.
     assigned: Vec<Rc<FastSet<Rc<str>>>>,
     pub modules: Map<Rc<str>, Value>,
+    /// The `random` module's generator, `None` until `random.seed(int)`
+    /// runs — an unseeded stream is a refusal (`random.rs`). Boxed: the
+    /// state is 2.5 KB and almost no program has one.
+    pub rng: Option<Box<crate::random::Mt>>,
     depth: usize,
     /// Statements executed and loop iterations taken, against the host's
     /// budget. Two plain fields rather than a thread_local read per statement:
@@ -116,6 +120,7 @@ impl Interp {
             global_decls: Vec::new(),
             assigned: Vec::new(),
             modules: crate::hash::map(),
+            rng: None,
             depth: 0,
             steps: 0,
             expr_depth: 0,
@@ -423,7 +428,10 @@ impl Interp {
                         // `unsupported` is a runtime capability gap, not a
                         // Python exception: catching it with `except Exception`
                         // would turn a routing signal into a wrong answer.
-                        if err.is_unsupported() || err.is_exit().is_some() {
+                        // `SystemExit` is NOT exempt: it is an ordinary
+                        // exception until the end of the run (`err.rs`), and
+                        // `exc_matches` already knows which clauses catch it.
+                        if err.is_unsupported() {
                             Err(err)
                         } else {
                             let kind = err_kind(&err);

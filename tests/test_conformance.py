@@ -110,6 +110,28 @@ def test_a_silent_engine_where_cpython_reported_an_error():
     assert v.kind == "stderr"
 
 
+def test_a_cpython_warning_is_not_an_error_the_engine_had_to_reproduce():
+    # Python 3.14 warns on `return` inside `finally` (PEP 765) and carries on.
+    # stdout and exit code agree, so an engine that says nothing is right, not
+    # silent about a failure.
+    ref = _res(stderr="/tmp/p.py:109: SyntaxWarning: 'return' in a 'finally' block\n"
+                      "  return \"b\"\n", engine=eng.CPYTHON)
+    assert _classify(_res(), ref=ref).verdict == MATCH
+    # The -c shape has no source echo under it.
+    ref = _res(stderr="<string>:1: SyntaxWarning: \"\\d\" is an invalid escape sequence.\n",
+               engine=eng.CPYTHON)
+    assert _classify(_res(), ref=ref).verdict == MATCH
+
+
+def test_a_warning_does_not_hide_the_error_beside_it():
+    ref = _res(rc=1, stdout="",
+               stderr="<string>:1: SyntaxWarning: x\nTraceback (most recent call last):\n",
+               engine=eng.CPYTHON)
+    v = _classify(_res(rc=1, stdout="", stderr=""), ref=ref)
+    assert v.verdict == MISMATCH
+    assert v.kind == "stderr"
+
+
 def test_stderr_text_itself_is_not_compared():
     # Traceback text carries paths, line numbers and interpreter internals a
     # subset runtime has no business reproducing; the exit code is the contract.
@@ -125,6 +147,69 @@ def test_stdout_is_not_compared_for_a_run_specific_program():
                   ref=_res(stdout="1755000001.5\n", engine=eng.CPYTHON), entry=entry)
     assert v.verdict == MATCH
     assert v.detail == "stdout uncompared"
+
+
+def test_a_seeded_random_stream_is_compared_except_on_micropython():
+    # Tier 1 runs CPython's Mersenne Twister, so a wrong number there is a
+    # MISMATCH like any other. MicroPython's generator is a different
+    # algorithm and the router never sends a seeded program to it, so that arm
+    # keeps only its exit code compared.
+    entry = corpus.Entry(id="py-seeded", program="import random\nrandom.seed(7)\nprint(random.random())")
+    assert conformance.is_seeded_stream(entry)
+    assert not conformance.is_nondeterministic(entry)
+    ref = _res(stdout="0.32383276483316237\n", engine=eng.CPYTHON)
+    assert _classify(_res(stdout="0.5\n"), ref=ref, entry=entry).verdict == MISMATCH
+    assert _classify(_res(stdout="0.32383276483316237\n"), ref=ref, entry=entry).verdict == MATCH
+    mp = _classify(_res(stdout="0.5\n", engine=eng.MICROPYTHON), ref=ref,
+                   engine=eng.MICROPYTHON, entry=entry)
+    assert mp.verdict == MATCH and mp.detail == "stdout uncompared"
+
+
+@pytest.mark.parametrize("program", [
+    "import random\nprint(random.random())",
+    "import random\nrandom.seed()\nprint(random.random())",
+    "import random\nrandom.seed(None)\nprint(random.random())",
+])
+def test_an_unseeded_random_stream_is_run_specific(program):
+    entry = corpus.Entry(id="py-unseeded", program=program)
+    assert not conformance.is_seeded_stream(entry)
+    assert conformance.is_nondeterministic(entry)
+
+
+@pytest.mark.parametrize("program", [
+    "import random as r\nr.seed(7)\nprint(r.random())",
+    "from random import seed, random\nseed(7)\nprint(random())",
+    "import os, random\nrandom.seed(7)\nprint(random.random())",
+    "from random import *\nseed(7)\nprint(random())",
+])
+def test_every_spelling_of_a_seed_counts(program):
+    assert conformance.is_seeded_stream(corpus.Entry(id="py-s", program=program))
+
+
+@pytest.mark.parametrize("program", [
+    "import os, random\nprint(random.random())",
+    "x = 1; import random\nprint(random.random())",
+    "import random as r\nprint(r.random())",
+    "from random import randint\nprint(randint(1, 6))",
+    "from random import (seed,\n    randint)\nprint(randint(1, 6))",
+    "from random import *\nprint(random())",
+])
+def test_an_unseeded_draw_is_run_specific_under_every_import_spelling(program):
+    assert conformance.is_nondeterministic(corpus.Entry(id="py-u", program=program))
+
+
+@pytest.mark.parametrize("program", [
+    "import random\nprint(sum([0.1] * 10))",
+    "import random as r\nprint(2 + 2)",
+    "from random import randint\nprint(2 + 2)",
+])
+def test_an_unused_random_import_does_not_hide_the_rest_of_the_program(program):
+    # An import and no draw: stdout is compared like anyone else's, or a wrong
+    # answer elsewhere in the program would be graded MATCH behind it.
+    entry = corpus.Entry(id="py-x", program=program)
+    assert not conformance.is_nondeterministic(entry)
+    ref = _res(stdout="1.0\n", engine=eng.CPYTHON)
+    assert _classify(_res(stdout="0.9999999999999999\n"), ref=ref, entry=entry).verdict == MISMATCH
 
 
 def test_a_run_specific_program_still_has_its_exit_code_compared():

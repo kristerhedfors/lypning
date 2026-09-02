@@ -77,6 +77,17 @@ pub struct Route {
 /// "importable is not the same as complete", and it is why this table is earned
 /// with `lypning conformance` rather than with `import x` returning 0.
 /// `docs/HILLCLIMB.md` iteration 40 has the measurement.
+///
+/// **`random` left this table on 2026-09-02, and is deliberately NOT here.**
+/// MicroPython's generator is not MT19937, so any *seeded* stream it answers
+/// is a plausible wrong number at exit 0 — and whether a program is seeded
+/// cannot be decided statically. A `random.seed` marker was tried and defeated
+/// by every spelling it could not see: `from random import *`,
+/// `getattr(random, "seed")`, a bound name `s = random.seed`, and any
+/// parse-time blocker (`class C: pass` beside the seed), which stops the walker
+/// before a marker is set. Tier 1 serves the seeded-integer subset
+/// (`random.rs`) and CPython serves the rest; an unseeded stream costs one
+/// CPython spawn more than it did, which is the price of never being wrong.
 const MICROPYTHON_MODULES: &[&str] = &[
     "argparse",
     "base64",
@@ -96,7 +107,6 @@ const MICROPYTHON_MODULES: &[&str] = &[
     "os",
     "os.path",
     "pathlib",
-    "random",
     "re",
     "shutil",
     "statistics",
@@ -168,6 +178,11 @@ pub const ONLY_CPYTHON_KINDS: &[&str] = &[
     // 2026-08-30.
     "nan-order",
     "percent-format",
+    // Every refusal `random.rs` raises — an unseeded stream, a step, a seed
+    // that is not an int, a count past 64 bits. The module is off lypning-mp's
+    // table because its generator is not MT19937; a RUNTIME refusal must not
+    // undo that by falling one tier instead of two.
+    "random",
     "repr-unicode",
     "set-method",
     "set-order",
@@ -176,6 +191,15 @@ pub const ONLY_CPYTHON_KINDS: &[&str] = &[
 /// Does this refusal kind rule out every tier but CPython? See [`ONLY_CPYTHON_KINDS`].
 pub fn only_cpython(kind: &str) -> bool {
     ONLY_CPYTHON_KINDS.contains(&kind)
+}
+
+/// Can lypning-mp import everything this program imports? The static router
+/// asks this before naming the tier (`engine_for`); the dispatcher must ask it
+/// again when a RUNTIME refusal falls onward, or a program routed to tier 1
+/// on its imports lands on a tier those imports had already ruled out — a
+/// seeded `random` stream that hits `bigint` in its own arithmetic, say.
+pub fn micropython_imports(imports: &[String]) -> bool {
+    imports.iter().all(|m| MICROPYTHON_MODULES.contains(&m.as_str()))
 }
 
 /// Constructs no MicroPython-derived runtime has, so a program using one goes
@@ -301,11 +325,13 @@ pub fn route(src: &str) -> Route {
 /// `__module__` 5, `.parts` 1 — 25 in total, against 133 for routing all of
 /// `pathlib` away and 15 for all of `base64`. Twenty-five extra CPython spawns
 /// buys three UNSAFE, and UNSAFE is a gate where LATE is a budget.
+///
+/// `random.seed` was the first entry and is gone: a construct-level marker was
+/// the wrong instrument for it, because seededness has spellings the walker
+/// cannot see and stages it never reaches (see `MICROPYTHON_MODULES`). The
+/// whole module is routed past the tier instead — the one case where the
+/// module-level rule is the precise one.
 const MICROPYTHON_UNSAFE: &[(&str, &str)] = &[
-    // A seeded stream is not reproducible across implementations: MicroPython
-    // has no Mersenne Twister, so `random.seed(7)` produces a different sequence
-    // and the program answers, plausibly and wrongly.
-    ("random.seed", "random-seeded-stream"),
     // Built-in types carry no `__module__` there, so the ordinary
     // `type(e).__module__ + '.' + type(e).__name__` idiom dies mid-program with
     // output already committed.
@@ -420,12 +446,6 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
         }
         Stmt::FromImport { module, names } => {
             req.imports.insert(module.to_string());
-            // The third spelling of `random.seed`: the bare name import. The
-            // dotted matcher cannot see a call to plain `seed(...)`, but the
-            // import line names the construct exactly.
-            if module.as_ref() == "random" && names.iter().any(|(n, _)| n.as_ref() == "seed") {
-                req.mp_risk.insert("random-seeded-stream");
-            }
             if !crate::modules::MODULES.contains(&module.as_ref()) {
                 req.block("module", format!("from {module} import …"));
             } else {
@@ -595,13 +615,23 @@ fn known_method(name: &str) -> bool {
 /// stops the walk here, so `os.environ.get` is still decided by the method
 /// table — which is correct, because `.get` is a method and not a module
 /// attribute.
-fn resolve_module(e: &Expr) -> Option<crate::value::Value> {
+/// `aliases` is `import x as y`, so `r.seed(7)` after `import random as r`
+/// resolves to the module and its attributes are decided, not guessed at as
+/// method names — the third spelling in the ledger (`py-0e241643581e`).
+fn resolve_module(e: &Expr, aliases: &[(String, String)]) -> Option<crate::value::Value> {
     match e {
-        Expr::Name(n) => crate::modules::MODULES
-            .iter()
-            .find(|x| **x == n.as_ref())
-            .map(|m| crate::value::Value::Module(m)),
-        Expr::Attr(b, n) => match crate::modules::get_attr(&resolve_module(b)?, n) {
+        Expr::Name(n) => {
+            let name = aliases
+                .iter()
+                .find(|(a, _)| a == n.as_ref())
+                .map(|(_, p)| p.as_str())
+                .unwrap_or(n.as_ref());
+            crate::modules::MODULES
+                .iter()
+                .find(|x| **x == name)
+                .map(|m| crate::value::Value::Module(m))
+        }
+        Expr::Attr(b, n) => match crate::modules::get_attr(&resolve_module(b, aliases)?, n) {
             Ok(v @ crate::value::Value::Module(_)) => Some(v),
             _ => None,
         },
@@ -649,7 +679,7 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
                 }
             }
             // A module attribute is decidable; anything else is a method name.
-            if let Some(crate::value::Value::Module(m)) = resolve_module(b) {
+            if let Some(crate::value::Value::Module(m)) = resolve_module(b, &req.aliases) {
                 if crate::modules::get_attr(&crate::value::Value::Module(m), n).is_err() {
                     req.block("module-attr", format!("{m}.{n}"));
                 }
@@ -826,8 +856,12 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
 /// can only move a program toward a MORE capable tier.
 pub fn scan_imports(src: &str) -> Vec<String> {
     let mut out = Vec::new();
-    for line in src.lines() {
-        let t = line.trim_start();
+    // Per STATEMENT, not per line: `x = 1; import random` is how a one-liner
+    // imports, and this scan is the router's only sight of the imports when a
+    // parse-time blocker has stopped the walker — missing one here sent a
+    // seeded `random` program to the tier whose generator is not MT19937.
+    for stmt in src.lines().flat_map(|l| l.split(';')) {
+        let t = stmt.trim_start();
         let rest = if let Some(r) = t.strip_prefix("import ") {
             r
         } else if let Some(r) = t.strip_prefix("from ") {

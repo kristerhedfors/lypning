@@ -137,10 +137,9 @@ _RUN_SPECIFIC = tuple(re.compile(p) for p in (
     # reference drifts run to run, which is the definition of this list.
     r"\bsubprocess\s*\.\s*(?:run|Popen|check_output|check_call|call)\b",
     r"\bst_(?:ino|dev|mtime|atime|ctime|nlink)\b",
-    # A seeded stream is reproducible in principle, but only against the same
-    # generator; an engine is not required to reproduce CPython's Mersenne
-    # Twister, and the corpus tags both cases the same way.
-    r"\b(?:random|secrets)\s*\.\s*\w+",
+    # `random` is handled in `is_run_specific` — unseeded it belongs here,
+    # seeded it is CPython's Mersenne Twister and tier 1 reproduces it.
+    r"\bsecrets\s*\.\s*\w+",
     r"\buuid\s*\.\s*uuid[14]\b",
     r"\btempfile\s*\.\s*(?:mkdtemp|mkstemp|NamedTemporaryFile|TemporaryDirectory|gettempdir)\b",
     # The address in a default repr, and the identity it comes from.
@@ -168,20 +167,83 @@ def _tags(entry: Any) -> Tuple[str, ...]:
 def is_nondeterministic(entry: Any) -> bool:
     """True when stdout cannot be compared at all, only the exit code.
 
-    A wall clock and a seeded PRNG stream differ between two runs of the *same*
-    interpreter, so demanding a match would fail these forever and bury the real
-    signal. They are still worth running: the exit code proves the program
-    executed.
+    A wall clock and an unseeded PRNG stream differ between two runs of the
+    *same* interpreter, so demanding a match would fail these forever and bury
+    the real signal. They are still worth running: the exit code proves the
+    program executed. A *seeded* stream is not this — see
+    :func:`is_seeded_stream`, which is per engine rather than per program.
     """
-    tags = _tags(entry)
-    if "nondeterministic" in tags or "seeded" in tags:
+    if "nondeterministic" in _tags(entry):
         return True
     return is_run_specific(entry) or is_interpreter_specific(entry)
 
 
 def is_run_specific(entry: Any) -> bool:
     src = getattr(entry, "program", "") or ""
+    if draws_from_random(src) and not is_seeded_stream(entry):
+        return True
     return any(p.search(src) for p in _RUN_SPECIFIC)
+
+
+_RANDOM_DOTTED = re.compile(r"\brandom\s*\.\s*\w+")
+_RANDOM_ALIAS = re.compile(r"^\s*import\s+random\s+as\s+(\w+)", re.M)
+#: The names on the import line: inside its parentheses when it has them,
+#: otherwise to the end of the line — never across it.
+_RANDOM_FROM = re.compile(r"^\s*from\s+random\s+import\s+(?:\(([^)]*)\)|([^\n]*))", re.M)
+
+
+def draws_from_random(src: str) -> bool:
+    """Does the program DRAW from `random` — call something of it?
+
+    An import alone is not a draw: `import random as r` followed by `print(2 +
+    2)` has a stdout the battery must compare, or a wrong answer in the rest of
+    the program hides behind an unused import. So the alias and the imported
+    names are read out of the import line and looked for as a call. A star
+    import names nothing and counts as a draw, because it could be one.
+    """
+    if _RANDOM_DOTTED.search(src):
+        return True
+    for m in _RANDOM_ALIAS.finditer(src):
+        if re.search(r"\b%s\s*\.\s*\w+" % re.escape(m.group(1)), src):
+            return True
+    for m in _RANDOM_FROM.finditer(src):
+        names = m.group(1) if m.group(1) is not None else m.group(2)
+        if names.strip() == "*":
+            return True
+        for raw in names.split(","):
+            name = raw.strip().split()[-1] if raw.strip() else ""  # `x as y` binds y
+            if name and re.search(r"\b%s\s*\(" % re.escape(name), src):
+                return True
+    return False
+#: A `seed(...)` call with a real argument, under any spelling — `random.seed(7)`,
+#: `r.seed(7)`, bare `seed(7)` after `from random import seed`. `seed()` and
+#: `seed(None)` draw from the OS and are not this.
+_SEEDS = re.compile(r"\bseed\s*\(\s*(?!\)|None\b)")
+
+
+def is_seeded_stream(entry: Any) -> bool:
+    """A `random` program whose stream is fixed by an explicit seed.
+
+    Reproducible — but only by an engine running CPython's Mersenne Twister.
+    Tier 1 does (`random.rs`), so its stdout is compared like any other
+    program's; MicroPython's generator is a different algorithm, so for the
+    `lypning-mp` arm stdout is not compared and the exit code stands alone.
+    That arm is graded on a program it is never given: `random` is not in the
+    middle tier's import table (`route.rs`), and both dispatchers re-read that
+    table when a runtime refusal falls onward, so no spelling of a seed —
+    star import, `getattr`, a bound name, a parse-time blocker beside it —
+    reaches it. The exemption describes a tier the chain skips, not one it
+    trusts.
+
+    The seed regex is a heuristic and errs loud: `seed(x)` with `x = None`
+    counts as seeded, and such a program is compared and may MISMATCH against
+    its own unseeded reference — a false alarm somebody reads, never a wrong
+    answer nobody does.
+    """
+    src = getattr(entry, "program", "") or ""
+    if "seeded" in _tags(entry):
+        return True
+    return bool(draws_from_random(src) and _SEEDS.search(src))
 
 
 def is_interpreter_specific(entry: Any) -> bool:
@@ -680,6 +742,21 @@ def _clip(s: str) -> str:
 
 _UNSUPPORTED_RE = re.compile(r"^([\w.-]+): unsupported: ([\w-]+): (.+)$", re.M)
 
+#: One CPython warning as it lands on stderr: ``<file>:<line>: <Kind>Warning:
+#: <message>``, then — when the file is readable, so never for ``-c`` — the
+#: offending source line echoed under it with a two-space indent. Advisory
+#: only: the interpreter carries on and exits 0, so it is not a failure the
+#: engine was expected to reproduce (see :func:`classify`). Python 3.14 added
+#: one for ``return`` inside ``finally`` (PEP 765), which is how a corpus program
+#: with identical stdout and exit code came to be scored MISMATCH.
+_WARNING_RE = re.compile(r"^[^\n:]+:\d+: \w+Warning: .*\n(?:  .*\n)?", re.M)
+
+
+def _without_warnings(stderr: str) -> str:
+    """``stderr`` with CPython's warning blocks removed, so what is left is
+    the part that meant something went wrong."""
+    return _WARNING_RE.sub("", stderr or "")
+
 
 #: An in-process run cannot be killed, so the library arm's stand-in for the
 #: battery's timeout is a step budget: a program that will not stop refuses
@@ -717,7 +794,12 @@ def classify(ref: eng.Result, got: eng.Result, engine: str, entry: Any) -> Verdi
     text carries file paths, line numbers and interpreter internals that a
     subset runtime has no business reproducing byte for byte. What matters is
     that a program that fails under CPython also fails under the engine, and the
-    exit code already says that.
+    exit code already says that. A CPython *warning* is not a failure — the
+    interpreter prints it and carries on — so warning blocks are stripped from
+    the reference's stderr before deciding whether it "reported an error";
+    otherwise a new advisory in the reference interpreter (3.14's PEP 765
+    ``SyntaxWarning``) would score an engine that agreed byte-for-byte on
+    stdout and exit code as a MISMATCH.
     """
     entry_id = getattr(entry, "id", "")
 
@@ -763,13 +845,14 @@ def classify(ref: eng.Result, got: eng.Result, engine: str, entry: Any) -> Verdi
         # as a broken contract accuses an engine of a bug for agreeing with the
         # reference. Fall through and compare it like any other exit code.
 
-    skip_stdout = is_nondeterministic(entry)
+    skip_stdout = is_nondeterministic(entry) or (
+        engine == eng.MICROPYTHON and is_seeded_stream(entry))
     if not skip_stdout and got.stdout != ref.stdout and not only_set_order_differs(ref.stdout, got.stdout):
         return v(MISMATCH, "stdout", first_diff(ref.stdout, got.stdout), evidence=True)
     if got.returncode != ref.returncode:
         return v(MISMATCH, "exit",
                  "exit %d, CPython gave %d" % (got.returncode, ref.returncode), evidence=True)
-    if ref.stderr and not got.stderr:
+    if _without_warnings(ref.stderr) and not got.stderr:
         return v(MISMATCH, "stderr", "CPython reported an error, this engine was silent",
                  evidence=True)
     return v(MATCH, "", "stdout uncompared" if skip_stdout else "")

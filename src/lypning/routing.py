@@ -138,7 +138,7 @@ def _matched_by_failing(x: Any) -> bool:
 
 
 def _delivered(predicted: str, by_engine: Mapping[str, Any],
-               ladder: Sequence[str]) -> tuple:
+               ladder: Sequence[str], imports: Sequence[str] = ()) -> tuple:
     """The tier whose answer the user actually receives, and its verdict.
 
     A refusal is not the end of the program: :func:`engines.dispatch` falls
@@ -169,7 +169,7 @@ def _delivered(predicted: str, by_engine: Mapping[str, Any],
         # A refusal names its reason, and some reasons rule out every tier but
         # CPython. Read the same table the dispatcher reads, or the grade
         # describes a chain nothing walks.
-        allowed = eng.chain_after_refusal(name, getattr(v, "kind", "") or "")
+        allowed = eng.chain_after_refusal(name, getattr(v, "kind", "") or "", imports)
         remaining = [e for e in remaining if e in allowed]
     return predicted, conf.UNSUPPORTED
 
@@ -182,6 +182,7 @@ def score_route(
     entry_id: str = "",
     rescued: bool = False,
     route_kind: str = "",
+    route_imports: Sequence[str] = (),
 ) -> RouteScore:
     """Grade one route, given every engine's measured verdict for that program.
 
@@ -239,7 +240,7 @@ def score_route(
         # be counted as a spawn: WASTED, whose definition ends "and the chain
         # still produces the right answer", against 25 measured programs where
         # it does not.
-        answered, delivered = _delivered(predicted, by_engine, ladder)
+        answered, delivered = _delivered(predicted, by_engine, ladder, route_imports)
         if delivered == conf.MISMATCH:
             return RouteScore(entry_id, predicted, ideal, UNSAFE,
                               "%s refused, %s answered wrongly: %s"
@@ -359,6 +360,7 @@ def grade(report: conf.Report) -> RoutingReport:
             route.engine, verdicts, ladder, entry_id=entry_id,
             rescued=_verdict_of(mixture) == conf.MATCH,
             route_kind=route.kind,
+            route_imports=getattr(route, "imports", ()),
         )
         out.scores.append(s)
         out.counts[s.grade] = out.counts.get(s.grade, 0) + 1

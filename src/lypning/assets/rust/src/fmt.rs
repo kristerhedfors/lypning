@@ -197,6 +197,11 @@ pub fn repr(v: &Value) -> R<String> {
                 // (see the constructor in `builtins.rs`), so quoting it again
                 // produced `KeyError("'k'")`.
                 format!("{kind}({msg})")
+            } else if *kind == "SystemExit"
+                && !matches!(crate::builtins::system_exit_code(msg), Value::Str(_))
+            {
+                // An int, bool or None code: `SystemExit(4)`, not `SystemExit('4')`.
+                format!("{kind}({msg})")
             } else {
                 format!("{kind}({})", str_repr(msg)?)
             }

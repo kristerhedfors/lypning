@@ -135,8 +135,15 @@ fn finish(r: Result<(), LypningError>, report_refusal: bool, kind: &mut String) 
             0
         }
         Err(ref e) if e.is_exit().is_some() => {
+            // An uncaught SystemExit: the status is the code, and a non-integer
+            // code is printed — after the commit, so the program's own stderr
+            // comes first, as it does under CPython. No traceback.
+            let (code, msg) = e.is_exit().unwrap_or((0, None));
             let _ = io::commit();
-            e.is_exit().unwrap_or(0)
+            if let Some(m) = msg {
+                let _ = writeln!(std::io::stderr(), "{m}");
+            }
+            code
         }
         Err(e) if e.is_unsupported() => {
             if let ErrKind::Unsupported { kind: k, .. } = e.kind() {
@@ -268,7 +275,11 @@ fn dispatch(args: &[String]) -> i32 {
         // which a spawned child could not be given back.
         let mut kind = String::new();
         let code = execute_inner(&src, false, &mut kind);
-        if code != UNSUPPORTED_EXIT {
+        // Exit 90 is a refusal only when a refusal FIRED — `kind` is filled
+        // by the refusal path and by nothing else. `sys.exit(90)` is the
+        // program's own number, its output is already committed, and running
+        // it again on CPython is the double run invariant 2 forbids.
+        if code != UNSUPPORTED_EXIT || kind.is_empty() {
             return code;
         }
         // The route was optimistic and a value-dependent refusal fired: an
@@ -278,7 +289,10 @@ fn dispatch(args: &[String]) -> i32 {
         // subtle and a reimplementation gets it wrong; handing those to
         // lypning-mp turns a correct refusal into a silent wrong answer at exit
         // 0. This binary used to hand every refusal to lypning-mp.
-        let next = if route::only_cpython(&kind) {
+        // ...and ask the IMPORTS too: the static route sent this program to
+        // tier 1 on the strength of them, and the middle tier may not have
+        // one of them (`random`, whose generator is not MT19937).
+        let next = if route::only_cpython(&kind) || !route::micropython_imports(&r.imports) {
             route::Engine::CPython
         } else {
             route::Engine::MicroPython

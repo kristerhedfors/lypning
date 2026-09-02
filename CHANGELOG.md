@@ -14,6 +14,28 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-02** — Tier 1 serves seeded `random`, bit for bit; four silent wrong answers found on the way · [#24]
+
+- **`random`, the seeded-integer subset, on tier 1.** `seed(int)`,
+  `random()`, `randint`, `randrange(a, b)`, `choice`, `getrandbits` are
+  CPython's MT19937 exactly; everything else refuses. `random` leaves the
+  middle tier's module table — its generator is not MT19937 and seededness
+  cannot be decided statically — and both dispatchers now re-read a program's
+  imports when a runtime refusal falls onward. Conformance 1325 → 1336 MATCH
+  over 2125 graded (2026-09-02), MISMATCH 0, UNSAFE 0; `__text` +8.1 KB for
+  everything below too.
+- **`sum()` over floats answers only where CPython 3.11, 3.12 and 3.14
+  agree**, else refuses `float-sum`. It was a naive fold — `sum([0.1]*10)`
+  printed 0.9999999999999999 where 3.14 prints 1.0.
+- **`raise SystemExit(n)` exits `n`.** It exited 1 with a traceback.
+  SystemExit is one exception shared with `sys.exit()`, caught and `finally`'d
+  as CPython does; ambiguous arguments refuse.
+- **`lypning run` no longer re-runs a program that exits 90 on its own.**
+  `print(1); sys.exit(90)` printed 1 twice — invariant 2's double run.
+- The grader compares seeded streams (they were blanket-uncompared, which
+  would have graded a wrong Mersenne Twister as MATCH); CPython warnings on
+  stderr are no longer "an error the engine was silent about".
+
 **2026-09-02** — the capture loop runs under opencode and the OpenHands SDK ([#26](https://github.com/kristerhedfors/lypning/pull/26))
 
 - Two harness adapters, both MIT-licensed hosts, installed with
@@ -1444,6 +1466,7 @@ runtime exists — the number came first, and both were built for it. It is
 [#14]: https://github.com/kristerhedfors/lypning/pull/14
 [#15]: https://github.com/kristerhedfors/lypning/pull/15
 [#16]: https://github.com/kristerhedfors/lypning/pull/16
+[#24]: https://github.com/kristerhedfors/lypning/pull/24
 [ds]: https://github.com/kristerhedfors/deepresearch.se
 [u432]: https://github.com/kristerhedfors/deepresearch.se/pull/432
 [u434]: https://github.com/kristerhedfors/deepresearch.se/pull/434

@@ -267,9 +267,10 @@ fn finish(r: Result<(), LypningError>) -> Outcome {
             Err(e) => finish(Err(e)),
         },
         Err(ref e) if e.is_exit().is_some() => {
-            let n = e.is_exit().unwrap_or(0);
+            let (n, msg) = e.is_exit().unwrap_or((0, None));
             let committed = io::commit().is_ok();
             Outcome {
+                stderr: msg.map(|m| format!("{m}\n").into_bytes()).unwrap_or_default(),
                 committed,
                 ..Outcome::empty(Status::Ok, n)
             }

@@ -57,6 +57,30 @@ pub fn float_to_int(f: f64, what: &str) -> R<i64> {
     Ok(f as i64)
 }
 
+/// The end of CPython's float `sum` loop, on both versions at once. `f` is the
+/// naive running sum every CPython holds; `c` is the Neumaier correction that
+/// 3.12+ adds — only when it is non-zero and finite, so an overflowed or `nan`
+/// correction never turns an `inf` sum into `nan`, and a `-0.0` sum keeps its
+/// sign. 3.11 returns `f` as it stands. Answer only when the two are the same
+/// bits; otherwise the program's output depends on which CPython the caller
+/// has, and that is a refusal, not a guess.
+fn float_sum_agreed(f: f64, c12: f64, c14: f64) -> R<f64> {
+    // Three eras, one loop: 3.11 returns `f`; 3.12 and 3.13 fold in a
+    // Neumaier correction accumulated over the FLOAT items only (an int met in
+    // the float loop is `f_result += (double)value`, uncorrected); 3.14 runs
+    // every item, ints included, through the same `cs_add`. The engine answers
+    // only where all three land on the same bits.
+    let fold = |c: f64| if c != 0.0 && c.is_finite() { f + c } else { f };
+    if fold(c12).to_bits() == f.to_bits() && fold(c14).to_bits() == f.to_bits() {
+        Ok(f)
+    } else {
+        Err(unsupported(
+            "float-sum",
+            "sum() over floats where CPython 3.11, 3.12 and 3.14 round differently (3.12+ compensates floats, 3.14 compensates ints in the float loop too); the answers differ",
+        ))
+    }
+}
+
 /// Python's rule for underscores in a numeric literal: they may appear only
 /// BETWEEN digits.
 ///
@@ -278,6 +302,60 @@ fn check_arity(name: &str, args: &Args, kw: &[(Rc<str>, Value)]) -> R<()> {
     }))
 }
 
+/// The message a `SystemExit` carries, chosen so that [`system_exit_code`] can
+/// read the code back out of it EXACTLY. `SystemExit(arg)` and `sys.exit(arg)`
+/// both come through here, so they raise one and the same exception and a
+/// handler that catches one catches the other.
+///
+/// `Value::Exc` is a flat `(kind, message)` pair, and for every other
+/// exception that is enough: the message is what gets printed. `SystemExit`
+/// is different — its argument is the process's exit status, and what it
+/// MEANS depends on its type. `SystemExit(4)` exits 4 in silence;
+/// `SystemExit("4")` prints `4` and exits 1. Both would store the message
+/// `"4"`, so the runtime refuses the second: any str whose text the decoder
+/// would read as a different code (an integer, `None`, `True`, `False`, or
+/// the empty string that means "no argument"), and any argument that is not
+/// an int, a bool, `None` or a str at all, since `e.code` must then be a
+/// value this pair has nowhere to keep. Two or more arguments make `.code`
+/// the tuple, which is the same problem.
+pub fn system_exit_msg(args: &Args) -> R<String> {
+    if args.len() > 1 {
+        return Err(unsupported("exception", "SystemExit with more than one argument"));
+    }
+    match args.first() {
+        None => Ok(String::new()),
+        Some(v @ (Value::None | Value::Int(_) | Value::Bool(_))) => fmt::to_str(v),
+        Some(Value::Str(s))
+            if !s.is_empty()
+                && !matches!(&**s, "None" | "True" | "False")
+                && s.parse::<i64>().is_err() =>
+        {
+            Ok(s.to_string())
+        }
+        Some(other) => Err(unsupported(
+            "exception",
+            &format!(
+                "SystemExit({}), whose code cannot be carried exactly",
+                fmt::repr(other)?
+            ),
+        )),
+    }
+}
+
+/// `SystemExit(...).code`, read back from the message [`system_exit_msg`]
+/// stored. The constructor's refusals are what make every arm here exact.
+pub fn system_exit_code(msg: &str) -> Value {
+    match msg {
+        "" | "None" => Value::None,
+        "True" => Value::Bool(true),
+        "False" => Value::Bool(false),
+        _ => match msg.parse::<i64>() {
+            Ok(i) => Value::Int(i),
+            Err(_) => Value::Str(msg.into()),
+        },
+    }
+}
+
 pub fn call_builtin(
     it: &mut Interp,
     name: &str,
@@ -290,6 +368,12 @@ pub fn call_builtin(
     check_arity(name, args, &kw)?;
     // `raise ValueError("x")` / `except E as e` construct exception instances.
     if is_exception_name(name) {
+        // `BaseException` takes no keywords, so `SystemExit(code=4)` is a
+        // TypeError in CPython — and was `SystemExit()` here, exit 0.
+        no_kw(name, &kw)?;
+        if name == "SystemExit" {
+            return Ok(Value::Exc("SystemExit", system_exit_msg(args)?.into()));
+        }
         let msg = match args.first() {
             // `str(KeyError('f'))` is `"'f'"`, not `"f"`: KeyError shows the
             // REPR of its key, so that a missing `''` is distinguishable from a
@@ -697,6 +781,13 @@ pub fn call_builtin(
                     if items.iter().any(|x| matches!(x, Value::Float(_))) {
                         return Err(set_order_refused("sum() of a set of floats"));
                     }
+                    // A float START puts every int through the float loop,
+                    // which 3.14 compensates — and compensation is only
+                    // nearly order-independent. `sum({1, 2**53, -2**53}, 0.0)`
+                    // answered 0.0 here against CPython's 1.0.
+                    if matches!(start, Value::Float(_)) {
+                        return Err(set_order_refused("sum() of a set with a float start"));
+                    }
                     let mut acc = start;
                     for x in items {
                         acc = it.binop(crate::ast::BinOp::Add, &acc, &x)?;
@@ -745,12 +836,95 @@ pub fn call_builtin(
                             return Ok(Value::Int(n));
                         }
                     }
+                    // CPython's `sum` is three loops, not one: an exact-int
+                    // loop on a C long, a float loop on a C double, and the
+                    // generic `PyNumber_Add` loop for everything else. The
+                    // float loop is where the two CPython versions this tree
+                    // targets disagree. 3.12+ (`builtin_sum_impl`) runs
+                    // Neumaier compensated summation there — it keeps the naive
+                    // running sum `f` and a correction `c`, and adds `c` once,
+                    // at the end or on leaving the loop. 3.11 has no `c`. So
+                    // `sum([0.1] * 10)` is `1.0` on 3.14 and
+                    // `0.9999999999999999` on 3.11, and the naive fold that
+                    // stood here matched 3.11 silently: a MISMATCH against the
+                    // reference, and a wrong answer for whichever interpreter
+                    // the caller meant.
+                    //
+                    // The engine may only answer where both agree, so the loop
+                    // carries both: `f` is the naive sum (bit-for-bit what 3.11
+                    // returns, and what 3.12+ holds before the correction), `c`
+                    // is the correction only 3.12+ adds. `float_sum_agreed`
+                    // answers when `f + c` and `f` are the same bits and
+                    // refuses otherwise. An int met in the float loop is where
+                    // a THIRD era appears: `(double)value` added naively on
+                    // 3.11-3.13, compensated on 3.14 — so two corrections ride
+                    // along, and a `bool` is an int there on every version.
+                    //
+                    // Which loop CPython is in is tracked explicitly rather
+                    // than read off `acc`'s type, because the transitions are
+                    // one-way and depend on the *start*, not the running value:
+                    // only an exact `int` start begins in the int loop, only
+                    // leaving it on a float enters the float loop, and a `bool`
+                    // start (`sum(xs, True)`) is generic from the first element
+                    // — naive on every version, so answered naively here.
                     let mut iter = it.make_iter(v.clone())?;
                     let mut acc = start;
+                    let mut int_loop = matches!(acc, Value::Int(_));
+                    // `Some((f, c12, c14))` while CPython would be in its float loop.
+                    let mut float_loop = match acc {
+                        Value::Float(f) => Some((f, 0.0f64, 0.0f64)),
+                        _ => None,
+                    };
                     while let Some(x) = it.iter_next(&mut iter)? {
+                        if let Some((f, c12, c14)) = float_loop.as_mut() {
+                            match x {
+                                Value::Float(x) => {
+                                    let t = *f + x;
+                                    let d = if f.abs() >= x.abs() { (*f - t) + x } else { (x - t) + *f };
+                                    *c12 += d;
+                                    *c14 += d;
+                                    *f = t;
+                                }
+                                // An int here is naive on 3.11-3.13 and
+                                // compensated on 3.14: it moves `c14` only.
+                                Value::Int(_) | Value::Bool(_) => {
+                                    let x = match x {
+                                        Value::Int(n) => n as f64,
+                                        Value::Bool(b) => b as i64 as f64,
+                                        _ => unreachable!(),
+                                    };
+                                    let t = *f + x;
+                                    *c14 += if f.abs() >= x.abs() { (*f - t) + x } else { (x - t) + *f };
+                                    *f = t;
+                                }
+                                other => {
+                                    // 3.12+ folds `c` in before handing the
+                                    // pair to `PyNumber_Add`. Nothing in this
+                                    // subset adds to a float except the three
+                                    // arms above, so what follows is CPython's
+                                    // own TypeError — but the fold is checked
+                                    // first, so a sum that already disagreed
+                                    // cannot answer by erroring.
+                                    acc = Value::Float(float_sum_agreed(*f, *c12, *c14)?);
+                                    float_loop = None;
+                                    acc = it.binop(crate::ast::BinOp::Add, &acc, &other)?;
+                                }
+                            }
+                            continue;
+                        }
+                        let was_int_loop = int_loop;
+                        int_loop = int_loop && matches!(x, Value::Int(_) | Value::Bool(_));
                         acc = it.binop(crate::ast::BinOp::Add, &acc, &x)?;
+                        if was_int_loop && !int_loop {
+                            if let Value::Float(f) = acc {
+                                float_loop = Some((f, 0.0, 0.0));
+                            }
+                        }
                     }
-                    acc
+                    match float_loop {
+                        Some((f, c12, c14)) => Value::Float(float_sum_agreed(f, c12, c14)?),
+                        None => acc,
+                    }
                 }
                 None => return Err(type_err("sum() missing 1 required positional argument")),
             }

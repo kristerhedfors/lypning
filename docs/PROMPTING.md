@@ -29,6 +29,14 @@ programs**, 375 of them distinct.
 > `tier1_win`, on every one. The tier-1 surface the treatments describe did not
 > move either — `study/gen_brief.py` regenerates `capability-brief.md`
 > byte-identically. The table below is therefore a measurement of both engines.
+>
+> **2026-09-01:** the tier-1 surface moved for the first time since — the
+> seeded-integer subset of `random` landed (`random.rs`), and
+> `capability-brief.md` regenerated with one module added and one paragraph
+> saying what of it is in reach. Every number in the table below was measured
+> against the brief **before** that paragraph and describes the engine before
+> `random`; the treatments have not been re-run. Nothing in the 26 tasks
+> imports `random`, so the change is to the prompt's length, not its truth.
 
 | id | treatment | n | routes tier 1 | **runs on tier 1** | of the 23 feasible | correct | MISMATCH |
 |---|---|---:|---:|---:|---:|---:|---:|

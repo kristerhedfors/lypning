@@ -21,6 +21,7 @@ marker.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -522,6 +523,10 @@ class Route:
     engine: str
     kind: str = ""
     detail: str = ""
+    #: What the program imports, as the parser saw it. Read again when a
+    #: RUNTIME refusal falls onward: a tier that cannot import one of these was
+    #: ruled out before the program ran and stays ruled out after it refuses.
+    imports: tuple = ()
 
     def __str__(self) -> str:
         why = f"\t{self.kind}: {self.detail}" if self.kind else ""
@@ -552,7 +557,7 @@ def route(program: str, *, binary: Path | None = None, timeout: float | None = 3
     # instead of going through run().
     try:
         proc = subprocess.run(
-            [str(b), "route", "-c", program],
+            [str(b), "route", "--json", "-c", program],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             check=False, timeout=timeout,
             env={**os.environ, "LYPNING_CAPTURE": "0", **(env or {})},
@@ -564,11 +569,13 @@ def route(program: str, *, binary: Path | None = None, timeout: float | None = 3
     line = proc.stdout.strip()
     if proc.returncode != 0 or not line:
         return Route(CPYTHON, "route-failed", proc.stderr.strip()[:200])
-    parts = line.split("\t")
-    engine = parts[0].strip() or CPYTHON
-    why = parts[1] if len(parts) > 1 else ""
-    kind, _, detail = why.partition(": ")
-    return Route(engine, kind.strip(), detail.strip())
+    try:
+        d = json.loads(line)
+    except ValueError:
+        return Route(CPYTHON, "route-failed", "unreadable route: %s" % line[:200])
+    engine = str(d.get("engine") or CPYTHON)
+    imports = tuple(str(m) for m in d.get("imports") or ())
+    return Route(engine, str(d.get("kind") or ""), str(d.get("detail") or ""), imports)
 
 
 def chain_from(engine: str) -> list[str]:
@@ -643,21 +650,48 @@ ONLY_CPYTHON_REFUSALS = frozenset({
     "percent-format",     # the '0' flag, grouping, and their interaction with '-'
     "del",                # the ValueError text of a failed list.remove/index
     "json",               # hooks, and control characters inside a string
+    "random",             # mp's generator is not MT19937; a seeded stream there is a plausible wrong number
 })
 
 
-def chain_after_refusal(engine: str, kind: str) -> list[str]:
+_MP_MODULES: "frozenset[str] | None" = None
+
+
+def micropython_can_import(imports: Iterable[str]) -> bool:
+    """Can lypning-mp import everything in ``imports``?
+
+    The static router asks this before naming a tier; the dispatcher asks it
+    again in :func:`chain_after_refusal`, or a program sent to tier 1 on its
+    imports would fall onto a tier those imports had ruled out. Read from
+    ``route.rs`` (through :mod:`lypning.routing`, the one reader of that table)
+    so the two dispatchers cannot disagree; an unreadable table answers ``True``,
+    which is the pre-existing behaviour and never narrower than the binary's own.
+    """
+    global _MP_MODULES
+    if _MP_MODULES is None:
+        from . import routing  # a cycle at import time, not at call time
+        try:
+            _MP_MODULES = frozenset(routing.micropython_modules())
+        except Exception:
+            _MP_MODULES = frozenset()
+    if not _MP_MODULES:
+        return True
+    return all(m in _MP_MODULES for m in imports)
+
+
+def chain_after_refusal(engine: str, kind: str, imports: Iterable[str] = ()) -> list[str]:
     """What is left of the chain once ``engine`` has refused with ``kind``.
 
     Ordinarily the next tier down; for a refusal in
-    :data:`ONLY_CPYTHON_REFUSALS`, CPython and nothing in between.
+    :data:`ONLY_CPYTHON_REFUSALS`, or a program whose ``imports`` lypning-mp
+    cannot all serve, CPython and nothing in between.
 
     :mod:`lypning.routing` reads the same table to grade a route, so the grader
     models the chain the dispatcher actually walks. Two readers, one table —
     the same reason :data:`_REFUSAL_RE` is spelled once.
     """
     rest = chain_from(engine)[1:]
-    if kind in ONLY_CPYTHON_REFUSALS:
+    if kind in ONLY_CPYTHON_REFUSALS or not micropython_can_import(imports):
         return [e for e in rest if e == CPYTHON]
     return rest
 
@@ -717,7 +751,7 @@ def dispatch(
         attempts.append(res)
         # The refusal says WHY, and some reasons rule out every tier but CPython.
         kind, _ = res.refusal
-        remaining = [e for e in chain_after_refusal(engine, kind) if e in remaining]
+        remaining = [e for e in chain_after_refusal(engine, kind, r.imports) if e in remaining]
     if last is None:
         last = Result(CPYTHON, "", 127, "", "lypning: no engine available\n", 0)
     return Dispatch(last, r, attempts[:-1] if attempts else [])

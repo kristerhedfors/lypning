@@ -43,6 +43,7 @@ pub mod methods;
 pub mod modules;
 pub mod ops;
 pub mod parse;
+pub mod random;
 pub mod route;
 pub mod value;
 

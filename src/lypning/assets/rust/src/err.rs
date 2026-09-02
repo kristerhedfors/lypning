@@ -28,10 +28,10 @@ pub enum ErrKind {
     /// A syntax error. CPython would also fail, so this is NOT routed onward
     /// as a capability gap — but it is reported the way CPython reports it.
     Syntax { line: u32, msg: String },
-    /// A Python-level exception the program could have caught.
+    /// A Python-level exception the program could have caught — `SystemExit`
+    /// included, which is why there is no separate exit variant. See
+    /// [`LypningError::is_exit`].
     Exc(Exc),
-    /// `sys.exit(n)` / SystemExit.
-    Exit(i32),
 }
 
 /// One pointer, and the size is the whole point.
@@ -84,15 +84,32 @@ impl LypningError {
             msg: msg.into(),
         }))
     }
-    pub fn exit(code: i32) -> Self {
-        Self::new(ErrKind::Exit(code))
-    }
     pub fn is_unsupported(&self) -> bool {
         matches!(*self.0, ErrKind::Unsupported { .. })
     }
-    pub fn is_exit(&self) -> Option<i32> {
-        match *self.0 {
-            ErrKind::Exit(n) => Some(n),
+    /// An uncaught `SystemExit`, read the way CPython's `handle_system_exit`
+    /// reads `.code`: the process status, and the text that goes on stderr
+    /// when the code was not an integer. `None` for any other error.
+    ///
+    /// `SystemExit` used to be its own variant, raised by `sys.exit` alone and
+    /// invisible to `except`. That was two silent disagreements with CPython:
+    /// `raise SystemExit(4)` was an ordinary exception — traceback, exit 1 —
+    /// and `try: sys.exit(1) / except SystemExit:` never ran its handler. So
+    /// it is one exception now, built the same way by both, caught by the same
+    /// clauses as in CPython (`BaseException`, bare `except`, not `Exception`),
+    /// and recognised HERE, at the end, by its kind. What `Value::Exc` cannot
+    /// carry — the type of the code — the constructor refuses instead; see
+    /// `builtins::system_exit_code`.
+    pub fn is_exit(&self) -> Option<(i32, Option<&str>)> {
+        match &*self.0 {
+            ErrKind::Exc(e) if e.kind == "SystemExit" => {
+                Some(match crate::builtins::system_exit_code(&e.msg) {
+                    crate::value::Value::None => (0, None),
+                    crate::value::Value::Bool(b) => (b as i32, None),
+                    crate::value::Value::Int(i) => (i as i32, None),
+                    _ => (1, Some(e.msg.as_str())),
+                })
+            }
             _ => None,
         }
     }
@@ -112,7 +129,6 @@ impl fmt::Display for LypningError {
                     write!(f, "{}: {}", e.kind, e.msg)
                 }
             }
-            ErrKind::Exit(n) => write!(f, "SystemExit: {n}"),
         }
     }
 }
@@ -167,7 +183,9 @@ static CPYTHON_BUILTINS: &[&str] = &[
     "SystemExit", "TabError", "TimeoutError", "True", "TypeError",
     "UnboundLocalError", "UnicodeDecodeError", "UnicodeEncodeError",
     "UnicodeError", "UnicodeTranslateError", "UnicodeWarning", "UserWarning",
-    "ValueError", "Warning", "ZeroDivisionError", "abs", "aiter", "all",
+    "ValueError", "Warning", "ZeroDivisionError", "__build_class__",
+    "__debug__", "__doc__", "__import__", "__loader__", "__package__",
+    "__spec__", "abs", "aiter", "all",
     "anext", "any", "ascii", "bin", "bool", "breakpoint", "bytearray", "bytes",
     "callable", "chr", "classmethod", "compile", "complex", "copyright",
     "credits", "delattr", "dict", "dir", "divmod", "enumerate", "eval", "exec",
