@@ -247,6 +247,97 @@ One record per DISTINCT program:
 | `first_seen` | earliest timestamp across all sightings |
 | `count` | number of distinct sightings, never decreasing |
 | `stdin_sample` | `null` unless known — the shim must not read stdin, so only hand-curated (`manual`) records ever carry one |
+| `models` | which model issued it, as `{"<model-id>": n}` — **absent** when nothing could be attributed |
+
+## Which model issued it
+
+`models` is a histogram over the same occurrences `count` counts, and it is a
+SUBSET of them: `sum(models.values()) <= count`, and the difference is the
+unattributed hole. An occurrence that could not be joined to a model
+contributes to `count` and to nothing else. There is deliberately no `unknown`
+bucket in the record — a hole named in a committed file is a hole the next
+reader treats as data — so the size of it is reported rather than stored, as the
+`unattributed` row of `lypning corpus --stats`. The key is omitted entirely when
+the histogram is empty, which is what lets records captured before any of this
+existed keep the bytes they have.
+
+```sh
+lypning corpus --stats --model claude-fable-5-1   # the slice, and the whole it came from
+```
+
+**The hook does not resolve it, and must not.** The PreToolUse payload carries
+no model field, and no `CLAUDE_*` variable exposes one, so the only way to know
+is to read the session transcript — before every Bash call in the session, on
+the path invariant 5 says must never block. What the hook does instead is write
+down the payload's `tool_use_id` (plus `agent_id`/`agent_type`, which are
+present only for a subagent's call). That costs no fork and no file open. The
+`.claude/hooks/lypning-capture.sh` wrapper needs no change at all: it passes the
+payload through untouched.
+
+The join happens in `harvest.py`, once per harvest, on the cold path:
+
+* A Claude Code transcript's `assistant` record carries `message.model` on the
+  same record whose `message.content` holds the `tool_use` block, so a **hook**
+  occurrence joins on the id EXACTLY — no heuristic, and a log line written
+  before the id was captured simply stays unattributed.
+* A **transcript** occurrence needs no join at all; the scan already has the
+  model in hand on the line it parses.
+* A **shim** occurrence — a nested spawn the hook never saw — has no id. It
+  joins on time: the latest assistant record at or before its timestamp. Both
+  stamps are normalised to one fixed width first, and that is not a detail —
+  the transcript writes milliseconds and the shim writes whole seconds on any
+  host whose `date` has no `%3N`, and compared raw `…:24Z` sorts AFTER
+  `…:24.900Z`, so the search would return the model that started speaking after
+  the spawn. This is the weaker of the two joins and is used only where there
+  is no id.
+* `message.model == "<synthetic>"` is the CLI's own spelling for a record it
+  wrote without asking a model. It is treated as no model, not as one.
+
+Only the transcripts something asks about are read: a log line with no
+`tool_use_id` and no shim invocation to place in time asks nothing, so a log
+written before any of this existed costs a harvest exactly what it cost before.
+
+`transcript_path` in the payload always names the MAIN session file, but a Bash
+call issued by a **subagent** has its `tool_use` block only under
+`<session>/subagents/**/agent-*.jsonl`. Measured on one machine on 2026-09-02,
+most of this project's captured python is issued by subagents, so the index is
+built from the main transcript **and** that tree; a `tool_use` id is unique
+across every transcript on disk, so the union cannot collide. Indexing only the
+main file would leave the majority unattributed, and time-joining over it would
+be worse — it would file a subagent's program under the parent loop's model,
+which is precisely the silent wrong answer the id join exists to avoid.
+
+The transcripts are indexed **incrementally**. The join runs on the cold path,
+but the cold path is not a free path: the export fires on every Stop, the
+capture log is append-only, and so the set of transcripts a harvest asks about
+grows for as long as the log lives. Re-reading all of them each time is a cost
+that rises with the age of the log rather than with the work the turn did.
+Since a transcript is append-only JSONL, a byte offset is a complete
+description of what has already been read, and only the bytes appended since
+the last harvest are parsed. The offsets and what they yielded live in
+`$LYPNING_HOME/model-index.json`, which is a **cache and never a source of
+truth**: missing, unreadable, corrupt, truncated, replaced or written by
+another version, every one of those falls back to reading the file from byte
+zero. It is never committed, deleting it is always safe, and its absence costs
+only time. Measured on this machine on 2026-09-02, on a copy of the real
+capture log (750 records, 4 sessions, 39.1 MB of transcript trees, best of 9
+interleaved runs): 1859 ms per harvest re-indexing every time, 974 ms with the
+cache warm, against 704 ms for the same log with nothing to join at all.
+
+The two merges are **not** the same function, and this is the trap:
+`harvest._combine` and `fold_into_corpus` take the per-model **max**, because
+both sides count the same occurrence keys and a sum would double the record on
+every export; `corpus._combine` **sums**, because a corpus merge is summation,
+protected from double counting by its identical-record collapse. Copying one
+call site onto the other leaves the counts plausible and slowly wrong.
+
+A per-model max is bounded by a scalar max of the counts only when both sides
+carry the **same** model keys, and two sessions that ran one program under two
+different models do not. Where the histogram accounts for more occurrences than
+`count` does, `count` is raised to meet it — the disjoint keys mean the two
+sides saw disjoint runs, so the scalar max was undercounting and the histogram
+is the better evidence. That is what keeps `sum(models) <= count` true of a
+record that was merged rather than only of one that was derived.
 
 Normalization for the dedup hash unifies line endings, strips per-line trailing
 whitespace, and drops surrounding blank lines. It does **not** touch
@@ -277,6 +368,10 @@ paths, occasionally a token pasted into a one-liner.
   be committed, pasted into an issue, or attached to a PR. The published
   `tests/corpus/sightings/*.jsonl` files ARE committed, and go through the same
   redaction and seed guard as the corpus before they are written.
+* `~/.lypning/model-index.json` stays local for the same reason and is never
+  committed, but it is a much smaller thing: byte offsets, `tool_use` ids,
+  model names and timestamps, and no program text at all. It is a cache of what
+  the transcripts already say, and deleting it costs one slow harvest.
 * **A live credential is redacted by VALUE, not only by shape.** The patterns
   below catch a secret that announces itself with a prefix; the most dangerous
   ones here do not (a Cloudflare API token is 53 characters of unprefixed
@@ -308,8 +403,8 @@ paths, occasionally a token pasted into a one-liner.
 | `LYPNING_CAPTURE_EXIT=1` | shim waits for the child instead of exec-ing it, adding an `{"kind":"exit"}` record with `exit_code` and `wall_ms` |
 | `LYPNING_HARVEST=0` | keep capturing; stop the Stop hook publishing sightings |
 | `LYPNING_SESSION_ID` | the session tag, ours and harness-independent. Read first, ahead of whatever id the host harness exports; both feeds consult the same list, so one session's records cannot split across two tags |
-| `LYPNING_HOME` | state directory (default `~/.lypning`) — the shim's bin dir, the log, the build trees |
-| `LYPNING_TRANSCRIPTS` | transcript root for the harvest (default `~/.claude/projects`) |
+| `LYPNING_HOME` | state directory (default `~/.lypning`) — the shim's bin dir, the log, the build trees, the transcript index cache |
+| `LYPNING_TRANSCRIPTS` | transcript root for the harvest (default `~/.claude/projects`) — the third feed's root; the model join instead follows the transcript path each hook record already carries |
 
 ## Shim guarantees
 
@@ -349,6 +444,9 @@ python3 -m pytest tests/test_harvest.py
 
 Covers dedup, normalization, redaction, command extraction (quoting, heredocs,
 runners), re-run idempotency, and the durability path — per-session export,
-key namespacing, and the no-double-count property of the fold.
+key namespacing, and the no-double-count property of the fold. Model
+attribution is pinned there too: the id join across the subagent tree, the
+time join for the shim feed, and the max-versus-sum asymmetry between
+`harvest._combine` and `corpus._combine`.
 
 `pytest` picks this file up from `tests/`.

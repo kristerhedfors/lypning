@@ -543,7 +543,7 @@ Interpreter mode is decided before argument parsing, so anything that calls
 | `lypning pool [serve\|ping\|stop] [--socket P] [--max-requests N]` | a warm CPython backstop for the chain: opt-in, off by default, `LYPNING_POOL` points at it |
 | `lypning gate [BIN] [--compare]` | static? how many bytes? how many file opens? |
 | `lypning harvest [--export]` | captured invocations → sightings → corpus |
-| `lypning corpus [--stats] [--list]` | inspect the harvested programs |
+| `lypning corpus [--stats] [--list] [--model NAME]` | inspect the harvested programs, whole or sliced by the model that issued them |
 
 Every subcommand that reports something takes `--json` (all of them except
 `run` and `hook`, which have a caller-defined output already). Exit codes: `0` ok, `1` the command failed (a

@@ -11,6 +11,7 @@ traceback.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -69,7 +70,46 @@ def test_status_reports_an_unbuilt_engine_as_not_built(capsys, no_micropython):
 
 def test_corpus_stats_render(capsys):
     assert cli.main(["corpus", "--stats"]) == 0
-    assert "entries" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "entries" in out
+    # The hole is always named, never a silent absence: with nothing attributed
+    # this line is the only thing that says so.
+    assert "unattributed" in out
+
+
+def test_corpus_model_slice_names_the_whole_it_came_from(capsys):
+    """A filtered header that printed a bare count would read as the corpus.
+
+    The number is not pinned — the corpus grows every session, and quoting a
+    remembered size is how this repository lies to itself.
+    """
+    assert cli.main(["corpus", "--stats", "--model", "claude-fable-5-1"]) == 0
+    line = [l for l in capsys.readouterr().out.splitlines() if l.startswith("entries")][0]
+    assert re.search(r"entries\s+\d+ of \d+ \(model: claude-fable-5-1\)", line)
+
+
+def test_corpus_model_slice_applies_to_the_records_too(capsys):
+    # A --list or --json that ignored the filter would print the whole corpus
+    # under a filtered heading.
+    assert cli.main(["corpus", "--json", "--model", "no-such-model"]) == 0
+    assert json.loads(capsys.readouterr().out) == []
+
+
+def test_the_population_a_slice_names_is_the_whole_and_not_the_slice(capsys):
+    """`N of M`: M has to be measured BEFORE the filter runs.
+
+    Measured after it, M is the size of the slice and the header reads "N of N"
+    for every model that ever existed — a slice reporting itself as the entire
+    corpus, which is the one thing naming the population was added to prevent.
+    No number is written down here; both come from this run.
+    """
+    assert cli.main(["corpus", "--stats", "--json"]) == 0
+    whole = json.loads(capsys.readouterr().out)
+    assert whole["total"] > 0
+    assert cli.main(["corpus", "--stats", "--json", "--model", "no-such-model"]) == 0
+    sliced = json.loads(capsys.readouterr().out)
+    assert sliced["total"] == 0
+    assert sliced["population"] == whole["total"]
 
 
 def _cli(*args, **kw):

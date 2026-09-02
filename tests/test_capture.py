@@ -114,6 +114,40 @@ def test_hook_logs_a_python_bash_command():
     assert rec["ts"].endswith("Z")
 
 
+# The PreToolUse payload the CLI actually sends for a SUBAGENT's Bash call:
+# the same shape plus `agent_id`/`agent_type`, and a `tool_use_id` whose block
+# lives in the subagent's own transcript rather than the session's.
+SUBAGENT_EVENT = dict(BASH_EVENT, tool_use_id="toolu_01abc",
+                      agent_id="a5228b5e71af7dc5f", agent_type="general-purpose")
+
+
+def test_the_hook_records_the_tool_use_id_that_names_the_model():
+    """The id is the only join key back to the model that typed the command.
+
+    Nothing in the payload names a model and no CLAUDE_* variable exposes one,
+    so if this id is not written down here the attribution cannot be recovered
+    later at all — the command string alone does not identify a turn. The join
+    itself is deliberately NOT done here: this runs before every Bash call in
+    the session.
+    """
+    rc, out = _fire(capture.hook_pre_tool_use, SUBAGENT_EVENT)
+    assert rc == 0 and out == capture.OK_RESPONSE + "\n"
+    assert "permissionDecision" not in out
+    rec = json.loads(paths.log_path().read_text(encoding="utf-8").splitlines()[0])
+    assert rec["tool_use_id"] == "toolu_01abc"
+    assert rec["agent_type"] == "general-purpose"
+    assert rec["agent_id"] == "a5228b5e71af7dc5f"
+
+
+def test_a_main_loop_call_carries_no_agent_keys():
+    # `agent_id` is absent from the payload for a main-loop call, and its
+    # presence is what says "this was a subagent" — so a null would be a claim
+    # the payload never made.
+    rec = capture.record_bash_command(BASH_EVENT)
+    assert rec["tool_use_id"] is None
+    assert "agent_id" not in rec and "agent_type" not in rec
+
+
 def test_capture_disabled_still_answers_but_writes_nothing(monkeypatch):
     monkeypatch.setenv("LYPNING_CAPTURE", "0")
     assert not capture.capture_enabled()

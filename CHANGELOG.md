@@ -84,6 +84,33 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   were verified against a real install and which were not.
 ||||||| parent of 9eac506 (Three more hosts over the one ABI: Go, Swift, LuaJIT; a quickstart for every host)
 
+**2026-09-02** — the corpus can be sliced by the model that issued the program
+
+- **A new `models` field** on sightings and corpus records: a per-model
+  histogram of the occurrences behind `count`. It is a subset of them, never a
+  partition — an occurrence that cannot be attributed contributes to `count` and
+  to nothing else, so `count - sum(models)` is the unattributed hole and a merge
+  raises `count` rather than let that go negative. The key is omitted entirely
+  when nothing is known, so records captured before this existed keep the bytes
+  they have.
+- **The hook stays on the hot path it was on.** Nothing in the PreToolUse
+  payload names a model, so the hook writes down the `tool_use_id` it already
+  receives and the join is done at harvest time, against the session transcript
+  and its subagent tree. No new fork, no new file open, no change to the shell
+  hook.
+- **The harvest-time join reads only what was appended.** Transcripts are
+  append-only, so the index is incremental and its offsets are cached under
+  `$LYPNING_HOME` — a cache that is never a source of truth and whose every
+  failure is a full re-read. Measured on this machine on 2026-09-02 over a copy
+  of the real capture log (750 records, 4 sessions, 39.1 MB of transcript
+  trees, best of 9): 1859 ms per harvest without it, 974 ms with it warm.
+- `lypning corpus --stats` now reports entries per model with an explicit
+  `unattributed` row, and `--model NAME` slices the corpus, naming the whole the
+  slice came from.
+- Sightings records now carry unknown keys through, the way corpus records
+  already did — an older harvest was silently stripping fields a newer one had
+  written.
+
 **2026-08-31** — pathlib costs nothing; `conformance --plan` is now ranked by cost
 
 - **pathlib was measured before it was built, and not built.** 85 of the 87

@@ -28,10 +28,11 @@ import warnings
 import builtins
 import hashlib
 import json
+import operator
 import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from . import paths
 
@@ -45,6 +46,7 @@ FIELD_ORDER = (
     "first_seen",
     "count",
     "stdin_sample",
+    "models",
 )
 
 # `stdin` is the seed corpus' spelling of `stdin_sample`; `key` is the sightings'
@@ -71,6 +73,74 @@ def program_id(program: str) -> str:
     return "py-" + hashlib.sha256(program.encode("utf-8")).hexdigest()[:12]
 
 
+# --- which model issued it ---------------------------------------------------
+#
+# A per-model histogram: `{"claude-fable-5-1": 9}`. Stored as a SORTED TUPLE of
+# pairs rather than a dict, because the records that carry it are frozen and go
+# into a set — `merge` uses record equality itself as the "same sighting" test —
+# and a dict field would make them unhashable. Sorted, so two records folded
+# from the same occurrences are equal and serialise to the same bytes.
+#
+# It is written only when it is non-empty. Emitting `{}` unconditionally would
+# rewrite every committed corpus record and every committed sightings line the
+# first time anything called `write`, which is the one thing this module exists
+# to prevent.
+
+#: A per-model histogram, sorted by model name.
+Models = Tuple[Tuple[str, int], ...]
+
+
+def models_from_obj(value: Any) -> Models:
+    """A ``{"model": n}`` object as the stored form. Anything else is empty.
+
+    Defensive in both directions: this field is written by whichever version of
+    the package last touched the file, and a histogram that arrives malformed
+    has to degrade to "nothing is known about which model ran this" rather than
+    to an exception inside a Stop hook.
+    """
+    if not isinstance(value, dict):
+        return ()
+    out: List[Tuple[str, int]] = []
+    for name, n in value.items():
+        if not isinstance(name, str) or not name:
+            continue
+        if not isinstance(n, int) or isinstance(n, bool) or n <= 0:
+            continue
+        out.append((name, n))
+    return tuple(sorted(out))
+
+
+def models_to_obj(models: Models) -> Dict[str, int]:
+    """The histogram as the JSON object it is written as."""
+    return {name: n for name, n in models}
+
+
+def merge_models(a: Models, b: Models, combine: Callable[[int, int], int]) -> Models:
+    """Merge two histograms key by key with ``combine``.
+
+    ``combine`` is named at every call site and has NO DEFAULT on purpose,
+    because the right answer differs by module and the wrong one is silent.
+    Sightings merge with ``max`` (:func:`harvest._combine`): both sides are
+    derived from the same occurrence keys, so summing them would double the
+    record every time the export ran — the exact bug ``count=max`` exists to
+    stop. Corpus records merge with ``operator.add`` (:func:`_combine`) because
+    :func:`merge` IS summation, protected from double counting by the
+    identical-record collapse instead. Copying one call site onto the other is
+    how this field goes quietly wrong, and no gate can see it.
+
+    Neither combiner is responsible for keeping the histogram inside the
+    ``count`` beside it. A per-key max over two disjoint key sets can out-count
+    a scalar max of the counts, and the max sites reconcile that themselves —
+    see :func:`harvest._count_at_least_the_models`, which raises the count
+    rather than trim the evidence.
+    """
+    merged: Dict[str, int] = dict(a)
+    for name, n in b:
+        cur = merged.get(name)
+        merged[name] = n if cur is None else combine(cur, n)
+    return tuple(sorted(merged.items()))
+
+
 @dataclass(frozen=True)
 class Entry:
     """One captured program.
@@ -80,6 +150,11 @@ class Entry:
     therefore a tuple, and ``extra`` — the keys this version of the schema does
     not know about — is excluded from equality: it is carried for the writer's
     benefit, not part of the record's identity.
+
+    ``models`` is COMPARED, unlike ``extra``. Two records of one program that
+    differ only by which model ran it are two sightings, not one seen twice: if
+    they compared equal the collapse in :func:`merge` would drop one of them,
+    and a model and a count would both be lost.
     """
 
     id: str
@@ -89,6 +164,7 @@ class Entry:
     first_seen: str = ""
     count: int = 1
     stdin_sample: str | None = None
+    models: Models = ()
     extra: Dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
 
     @property
@@ -150,6 +226,7 @@ class Entry:
             first_seen=known.get("first_seen") if isinstance(known.get("first_seen"), str) else "",
             count=count if isinstance(count, int) and not isinstance(count, bool) else 1,
             stdin_sample=stdin if isinstance(stdin, str) else None,
+            models=models_from_obj(known.get("models")),
             extra=extra,
         )
 
@@ -164,6 +241,11 @@ class Entry:
             "count": self.count,
             "stdin_sample": self.stdin_sample,
         }
+        # Omitted when empty rather than written as `{}`: most of this corpus
+        # was captured before anything recorded a model, and those records must
+        # keep the bytes they already have.
+        if self.models:
+            obj["models"] = models_to_obj(self.models)
         for k, v in self.extra.items():
             if k not in obj:
                 obj[k] = v
@@ -289,6 +371,12 @@ def _combine(a: Entry, b: Entry) -> Entry:
     return replace(
         winner,
         count=a.count + b.count,
+        # SUM, and deliberately not the `max` :func:`harvest._combine` uses on
+        # the same-looking field: two distinct records for one id here are two
+        # different sets of sightings, and the identical-record collapse above
+        # is what stops the same one being added twice. The models follow the
+        # count exactly, or the two would disagree about the same occurrences.
+        models=merge_models(a.models, b.models, operator.add),
         first_seen="" if first == _NEVER else first,
     )
 
@@ -443,6 +531,16 @@ class Stats:
 
     total: int = 0
     by_source: Dict[str, int] = field(default_factory=dict)
+    #: Entries carrying each model. An entry seen under two models counts in
+    #: both, so this does not sum to ``total`` — ``attributed`` is the number of
+    #: entries that carry any model at all, and ``total - attributed`` is the
+    #: hole the renderer names.
+    by_model: Dict[str, int] = field(default_factory=dict)
+    attributed: int = 0
+    #: What ``--model`` sliced on, and the population it was sliced from, so a
+    #: filtered report can never be mistaken for the whole corpus.
+    filter_model: Optional[str] = None
+    population: int = 0
     oneliners: int = 0
     multiline: int = 0
     median_len: int = 0
@@ -472,16 +570,37 @@ def _rank_counts(counter: Dict[str, int], top: int) -> List[Tuple[str, int]]:
     return items[:top] if top > 0 else items
 
 
-def stats(entries: Sequence[Entry], *, top: int = 12) -> Stats:
+def matches_model(entry: Entry, model: str) -> bool:
+    """Was this program ever issued by ``model``? The ``--model`` slice."""
+    return any(name == model for name, _ in entry.models)
+
+
+def stats(entries: Sequence[Entry], *, top: int = 12,
+          model: Optional[str] = None, population: Optional[int] = None) -> Stats:
     """Describe a corpus. Occurrence counts, not program counts: a program that
     imports ``os`` twice contributes two, which is what a coverage question about
-    the parser wants to know."""
-    s = Stats(total=len(entries))
+    the parser wants to know.
+
+    ``model`` and ``population`` describe a SLICE: what it was sliced on and how
+    many entries it was sliced from. They are carried rather than recomputed
+    because the caller is the only one that still has the unfiltered list, and a
+    filtered report that did not name its whole would read exactly like a corpus
+    that had shrunk.
+    """
+    s = Stats(total=len(entries), filter_model=model,
+              population=len(entries) if population is None else population)
     lengths: List[int] = []
     imports: Dict[str, int] = {}
     names: Dict[str, int] = {}
     for e in entries:
         s.by_source[e.source] = s.by_source.get(e.source, 0) + 1
+        # Entries, not invocations: `count` says how often a program was RUN,
+        # and one hot one-liner would otherwise decide which model the corpus
+        # "belongs to".
+        for name, _ in e.models:
+            s.by_model[name] = s.by_model.get(name, 0) + 1
+        if e.models:
+            s.attributed += 1
         if e.is_oneliner:
             s.oneliners += 1
         else:
@@ -505,6 +624,7 @@ def stats(entries: Sequence[Entry], *, top: int = 12) -> Stats:
     s.p90_len = _pct(lengths, 0.9)
     s.max_len = lengths[-1] if lengths else 0
     s.by_source = dict(sorted(s.by_source.items(), key=lambda kv: (-kv[1], kv[0])))
+    s.by_model = dict(sorted(s.by_model.items(), key=lambda kv: (-kv[1], kv[0])))
     s.top_imports = _rank_counts(imports, top)
     s.top_builtins = _rank_counts(names, top)
     return s
@@ -521,9 +641,23 @@ def render_stats(s: Stats) -> str:
     def num(n: int, pct: bool = False) -> str:
         return "{:>6}{}".format(n, "  " + _pct_of(n, s.total) if pct else "")
 
-    rows: List[Tuple[str, str]] = [("entries", num(s.total))]
+    entries = num(s.total)
+    if s.filter_model is not None:
+        # The slice AND the whole it came from. A bare count here would read as
+        # the size of the corpus.
+        entries = "{:>6} of {} (model: {})".format(s.total, s.population, s.filter_model)
+    rows: List[Tuple[str, str]] = [("entries", entries)]
     for src, n in s.by_source.items():
         rows.append(("  " + src, num(n, True)))
+    rows.append(("by model", ""))
+    for name, n in s.by_model.items():
+        rows.append(("  " + name, num(n, True)))
+    # Never omitted and never a silent zero. The stored record carries no
+    # "unknown" bucket — an occurrence whose model could not be resolved is
+    # simply absent from it — so this line is the only place the size of that
+    # hole is visible, and a regression that stopped resolving models at all
+    # would show up here as everything and nowhere else.
+    rows.append(("  unattributed", num(s.total - s.attributed, True)))
     rows.extend([
         ("one-liners", num(s.oneliners, True)),
         ("multi-line", num(s.multiline, True)),
