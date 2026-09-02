@@ -191,10 +191,20 @@ pub fn call_module_method(
         // here — one an `except SystemExit` catches and a `finally` runs for.
         // Reading the status back out of it is `LypningError::is_exit`.
         ("sys", "exit") => {
-            return Err(LypningError::exc(
-                "SystemExit",
-                crate::builtins::system_exit_msg(args)?,
-            ));
+            if !kw.is_empty() {
+                // CPython: TypeError "sys.exit() takes no keyword arguments".
+                // Refused rather than raised: the text is version-shaped.
+                return Err(unsupported("exception", "sys.exit() with keyword arguments"));
+            }
+            // `sys.exit(None)` raises a BARE `SystemExit()` — `PyErr_SetObject`
+            // with a None value calls the class with no arguments — so
+            // `e.args == ()`, where `raise SystemExit(None)` carries `(None,)`.
+            let msg = if args.len() == 1 && matches!(args.first(), Some(Value::None)) {
+                String::new()
+            } else {
+                crate::builtins::system_exit_msg(args)?
+            };
+            return Err(LypningError::exc("SystemExit", msg));
         }
         ("sys.stdin", "read") => Value::Str(crate::iter::decode_text(&mio::stdin_rest()?, "non-UTF-8 bytes on stdin (CPython decodes it with surrogateescape)")?),
         ("sys.stdin", "readline") => match mio::stdin_line()? {
