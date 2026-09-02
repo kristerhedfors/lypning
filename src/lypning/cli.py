@@ -33,6 +33,7 @@ import os
 import shutil
 import sys
 from dataclasses import asdict, is_dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -719,6 +720,50 @@ def cmd_pool(ns: argparse.Namespace) -> int:
 OK, WARN, FAIL, NOTE = "OK", "WARN", "FAIL", "NOTE"
 
 
+def _recent_capture_note(log_path: Optional[str], *, days: int = 7,
+                         tail: int = 200) -> Optional[str]:
+    """The newest ``{"kind":"note"}`` a harness plugin wrote, if it is recent.
+
+    The opencode plugin runs in Bun, so nothing in Python can observe it
+    failing. It writes a note into the capture log instead when its PATH
+    self-assertion comes back wrong, and this is what carries that across into
+    `lypning doctor`. Only the tail is read: the log is append-only and can be
+    large, and a note older than a week is a fixed problem, not a live one.
+    """
+    if not log_path:
+        return None
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as fh:
+            lines = fh.readlines()[-tail:]
+    except OSError:
+        return None
+    # Both sides are UTC in the shim's format, so the first 19 characters —
+    # `YYYY-MM-DDTHH:MM:SS` — compare lexicographically as dates. Comparing the
+    # strings avoids parsing a timestamp that a plugin in another language
+    # wrote, which is a thing that can fail; a note with an unreadable ts is
+    # simply not recent enough to report.
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
+        "%Y-%m-%dT%H:%M:%S")
+    newest = None
+    for line in lines:
+        line = line.strip()
+        if not line or '"note"' not in line:
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(rec, dict) or rec.get("kind") != "note":
+            continue
+        ts = rec.get("ts")
+        if not isinstance(ts, str) or ts[:19] < cutoff:
+            continue
+        detail = rec.get("detail")
+        if isinstance(detail, str) and detail:
+            newest = "%s: %s" % (rec.get("host") or "harness", detail)
+    return newest
+
+
 def _pip_scripts_dirs() -> List[Path]:
     """Where the console script named ``lypning`` plausibly lives."""
     out: List[Path] = []
@@ -904,6 +949,43 @@ def _doctor_checks() -> List[Tuple[str, str, str]]:
         else:
             checks.append((OK, "log", "%s%s" % (log.get("path"), "" if log.get("exists")
                                                 else " (not created yet)")))
+
+        # The harnesses. An unwired one is a status line, never an error — the
+        # same rule the absent MicroPython tier has, and for the same reason:
+        # nobody has to use all three.
+        harnesses = st.get("harnesses") or {}
+        for name in sorted(harnesses):
+            info = harnesses[name] or {}
+            if info.get("error"):
+                checks.append((WARN, "harness %s" % name, info["error"]))
+                continue
+            scopes = info.get("scopes") or {}
+            on = [sc for sc, v in sorted(scopes.items()) if (v or {}).get("installed")]
+            foreign = [sc for sc, v in sorted(scopes.items()) if (v or {}).get("foreign")]
+            if foreign:
+                # Our filename, somebody else's file. We will not overwrite it,
+                # so capture is silently doing nothing for that harness.
+                checks.append((WARN, "harness %s" % name,
+                               "a file we do not own occupies our name in %s scope — "
+                               "`--force` moves it aside" % ", ".join(foreign)))
+            checks.append((OK if on else NOTE, "harness %s" % name,
+                           "wired in %s scope" % ", ".join(on) if on
+                           else "not wired — `lypning install --harness %s`" % name))
+            # Every hook this package installs for the two newer harnesses is a
+            # PATH-resolved console script. Off PATH, they run, do nothing, and
+            # report success — which is correct behaviour and invisible without
+            # this line.
+            if on and name != "claude" and not info.get("cli_on_path"):
+                checks.append((WARN, "harness %s" % name,
+                               "wired, but `lypning` is not on PATH — its hooks "
+                               "will run and silently do nothing"))
+
+        # The opencode plugin runs inside Bun, where no Python gate can see it.
+        # It writes a note back into the log when its PATH self-assertion fails;
+        # this is the only path by which that reaches the gates.
+        note = _recent_capture_note(log.get("path"))
+        if note:
+            checks.append((WARN, "harness note", note))
     except Failure as e:
         checks.append((WARN, "install module", str(e)))
 
@@ -965,70 +1047,107 @@ def cmd_doctor(ns: argparse.Namespace) -> int:
 # --- install / uninstall / shim ----------------------------------------------
 
 
+def _harnesses(ns: argparse.Namespace) -> Tuple[str, ...]:
+    """The harnesses this invocation names. A typo is a usage error, not a
+    silent no-op that looks exactly like a successful install."""
+    harness = _mod("harness")
+    try:
+        return harness.resolve(getattr(ns, "harness", None) or harness.DEFAULT)
+    except ValueError as e:
+        raise Usage(str(e))
+
+
 def cmd_install(ns: argparse.Namespace) -> int:
     install = _mod("install")
+    harness = _mod("harness")
     scope = "user" if ns.user else "project"
-    plan = install.plan_install(ns.project, scope=scope, shim=not ns.no_shim,
-                                hooks=not ns.no_hooks, skill=not ns.no_skill)
+    names = _harnesses(ns)
+
+    plans = []
+    for name in names:
+        mod = harness.load(name)
+        if scope not in mod.SCOPES:
+            continue
+        plans.append((name, mod, mod.plan(ns.project, scope=scope,
+                                          shim=not ns.no_shim,
+                                          hooks=not ns.no_hooks,
+                                          prompt=not ns.no_skill)))
     if ns.dry_run:
         if ns.json:
-            _json(plan.as_dict())
+            _json({"scope": scope,
+                   "harnesses": [{"harness": n, "plan": pl.as_dict()}
+                                 for n, _m, pl in plans]})
         else:
-            _out(install.render_plan(plan))
+            _out("\n\n".join(
+                "harness: %s\n%s" % (m.TITLE, install.render_plan(pl))
+                for _n, m, pl in plans))
         return 0
-    actions = install.apply(plan, force=ns.force)
-    failed = [a for a in actions if a.kind == "skip" and a.note.startswith("FAILED")]
+
+    done = []
+    failed = []
+    for name, mod, pl in plans:
+        actions = install.apply(pl, force=ns.force)
+        failed.extend(a for a in actions
+                      if a.kind == "skip" and a.note.startswith("FAILED"))
+        done.append((name, mod, actions))
     if ns.json:
-        _json({"project": str(plan.project), "scope": scope,
-               "actions": [a.as_dict() for a in actions], "ok": not failed})
+        _json({"scope": scope,
+               "harnesses": [{"harness": n,
+                              "actions": [a.as_dict() for a in acts]}
+                             for n, _m, acts in done],
+               "ok": not failed})
     else:
-        _out(install.render_actions(actions))
+        _out("\n\n".join("harness: %s\n%s" % (m.TITLE, install.render_actions(acts))
+                          for _n, m, acts in done))
     return 1 if failed else 0
 
 
-def _uninstall_preview(install, project: Optional[str], scope: str) -> List[str]:
-    """What :func:`install.uninstall` would remove, computed by looking.
+def _uninstall_preview(install, project: Optional[str], scope: str,
+                       names: Sequence[str] = ()) -> List[str]:
+    """What an uninstall would remove, computed by looking.
 
     There is no plan object for the removal side, and inventing one in this
     file would put a second definition of "what we installed" next to the real
     one. This lists what is *there* instead, which is the same question asked
     of the disk rather than of a model of it.
     """
-    root = install.claude_dir(project, scope)
+    harness = _mod("harness")
     out: List[str] = []
-    skill = root / "skills" / "lypning"
-    if skill.is_dir():
-        out.append("- %s  (skill)" % skill)
-    hooks = root / "hooks"
-    if hooks.is_dir():
-        for p in sorted(hooks.glob("*.sh")):
-            if p.name.startswith("lypning"):
-                out.append("- %s  (hook script)" % p)
-    st = install.status(project)
-    present = (st.get("scopes", {}).get(scope, {}) or {}).get("hooks") or {}
-    for event, cmds in sorted(present.items()):
-        out.append("- %s  (%d hook entr%s under %s)"
-                   % (root / "settings.json", len(cmds), "y" if len(cmds) == 1 else "ies", event))
+    for name in (names or (harness.DEFAULT,)):
+        mod = harness.load(name)
+        if scope not in mod.SCOPES:
+            continue
+        lines = mod.uninstall_preview(project, scope=scope)
+        if lines:
+            out.append("harness: %s" % mod.TITLE)
+            out.extend(lines)
     shim = _mod("shim")
-    for s in shim.status():
-        if s.installed:
-            out.append("- %s  (shim)" % s.path)
-        if s.backup:
-            out.append("+ %s  (restored from %s)" % (s.path, s.backup.name))
+    for st in shim.status():
+        if st.installed:
+            out.append("- %s  (shim)" % st.path)
+        if st.backup:
+            out.append("+ %s  (restored from %s)" % (st.path, st.backup.name))
     return out or ["nothing installed for this scope"]
 
 
 def cmd_uninstall(ns: argparse.Namespace) -> int:
     install = _mod("install")
+    harness = _mod("harness")
     scope = "user" if ns.user else "project"
+    names = _harnesses(ns)
     if ns.dry_run:
-        lines = _uninstall_preview(install, ns.project, scope)
+        lines = _uninstall_preview(install, ns.project, scope, names)
         if ns.json:
             _json({"scope": scope, "would_remove": lines})
         else:
             _out("\n".join(lines))
         return 0
-    actions = install.uninstall(ns.project, scope=scope)
+    actions = []
+    for name in names:
+        mod = harness.load(name)
+        if scope not in mod.SCOPES:
+            continue
+        actions.extend(mod.uninstall(ns.project, scope=scope))
     if ns.json:
         _json({"scope": scope, "actions": [a.as_dict() for a in actions]})
     else:
@@ -1060,12 +1179,29 @@ def cmd_shim(ns: argparse.Namespace) -> int:
     return 0
 
 
+#: Hook event name -> the :mod:`lypning.capture` entry point that answers it.
+#: `pre-tool-use` and `stop` keep the names they have always had: a
+#: .claude/settings.json installed months ago names them, and that file is in
+#: somebody's repository, not ours to rename.
+_HOOK_EVENTS = {
+    "pre-tool-use": "hook_pre_tool_use",                    # Claude Code
+    "stop": "hook_stop",                                    # Claude Code
+    "openhands-post-tool-use": "hook_openhands_post_tool_use",
+    "openhands-session-start": "hook_openhands_session_start",
+    "openhands-session-end": "hook_openhands_session_end",
+    "opencode-context": "hook_opencode_context",
+}
+
+
 def cmd_hook(ns: argparse.Namespace) -> int:
-    """Hook entry points. Stdout carries a protocol response — nothing else."""
+    """Hook entry points. Stdout carries a protocol response — nothing else.
+
+    Every one of these returns 0 on every path, including its own failures.
+    That is not politeness: OpenHands reads exit code 2 as *block the agent*,
+    so a non-zero return from here is a refused tool call.
+    """
     capture = _mod("capture")
-    if ns.event == "pre-tool-use":
-        return int(capture.hook_pre_tool_use())
-    return int(capture.hook_stop())
+    return int(getattr(capture, _HOOK_EVENTS[ns.event])())
 
 
 # --- conformance -------------------------------------------------------------
@@ -1697,14 +1833,25 @@ it as an unsupported CLI option.
     s.set_defaults(func=cmd_doctor)
 
     # install
-    s = _sub(subs, "install", "wire capture into a project's .claude/", """
+    s = _sub(subs, "install", "wire capture into a coding harness", """
 Installs three things, any of which can be turned off: the shim (`python` and
-`python3` in the bin dir, which log what an agent runs), the Claude Code hooks
-that publish those sightings, and the skill that documents the whole thing.
+`python3` in the bin dir, which log what an agent runs), the harness hooks that
+publish those sightings, and the documentation that tells the agent to route.
 
-Settings are MERGED, never overwritten, and backed up first. Nothing outside
-.claude/ and the bin dir is touched. `--dry-run` prints the plan and the exact
-settings.json diff without writing a byte — read it first.
+--harness picks which harness, and defaults to `claude`. It is NOT auto-detected:
+installing into a harness you did not name, because a config directory happened
+to exist, is exactly the surprise this package will not spring on you.
+
+  claude     .claude/ — settings are MERGED, never overwritten, and backed up
+             first; somebody else's hooks and their order survive.
+  opencode   one auto-discovered plugin file at .opencode/plugin/lypning.js.
+             Nothing is merged, because there is nothing to merge into.
+  openhands  one plugin directory that the SDK discovers ambiently. It never
+             writes .openhands/hooks.json: that file is first-match-wins and
+             not merged, so writing it would HIDE yours rather than join it.
+
+`--dry-run` prints the plan and the exact settings.json diff without writing a
+byte — read it first.
 
 The shim refuses to overwrite a file it did not write unless you pass --force,
 in which case the original is moved aside and restored on uninstall.
@@ -1713,6 +1860,8 @@ examples:
   lypning install --dry-run
   lypning install --project /path/to/repo
   lypning install --user --no-shim
+  lypning install --harness opencode --dry-run
+  lypning install --harness opencode,openhands --user
 """)
     s.add_argument("--project", metavar="DIR",
                    help="project root (default: $CLAUDE_PROJECT_DIR, else the git "
@@ -1721,6 +1870,9 @@ examples:
     s.add_argument("--no-shim", action="store_true", help="skip the python/python3 shim")
     s.add_argument("--no-hooks", action="store_true", help="skip the Claude Code hooks")
     s.add_argument("--no-skill", action="store_true", help="skip the skill documentation")
+    s.add_argument("--harness", metavar="NAMES", default=None,
+                   help="comma list of claude,opencode,openhands (or `all`); "
+                        "default claude, never auto-detected")
     s.add_argument("--force", action="store_true", help="move a foreign python/python3 aside instead of refusing")
     s.add_argument("--dry-run", action="store_true", help="print the plan and the settings diff; write nothing")
     s.add_argument("--json", action="store_true", help="machine-readable")
@@ -1737,6 +1889,8 @@ captured them, and deleting them here would be unrecoverable.
 """, "examples:\n  lypning uninstall --dry-run\n  lypning uninstall --user")
     s.add_argument("--project", metavar="DIR", help="project root")
     s.add_argument("--user", action="store_true", help="uninstall from ~/.claude")
+    s.add_argument("--harness", metavar="NAMES", default=None,
+                   help="comma list of claude,opencode,openhands (or `all`); default claude")
     s.add_argument("--dry-run", action="store_true", help="list what would go; remove nothing")
     s.add_argument("--json", action="store_true", help="machine-readable")
     s.set_defaults(func=cmd_uninstall)
@@ -1763,21 +1917,31 @@ examples:
     s.set_defaults(func=cmd_shim)
 
     # hook
-    s = _sub(subs, "hook", "Claude Code hook entry points (event JSON on stdin)", """
-Not for typing. Claude Code runs these with the hook event on stdin and reads a
+    s = _sub(subs, "hook", "harness hook entry points (event JSON on stdin)", """
+Not for typing. A harness runs these with the hook event on stdin and reads a
 protocol response from stdout, so stdout carries that response and nothing
 else — every diagnostic goes to stderr.
 
-  pre-tool-use  screen a Bash command and log it if it is python
-  stop          publish this session's sightings to tests/corpus/sightings/
+Claude Code:
+  pre-tool-use             screen a Bash command and log it if it is python
+  stop                     publish this session's sightings
 
-Both exit 0 whatever happens. A capture failure must never fail the tool call
-it was watching.
+OpenHands:
+  openhands-post-tool-use  log a `terminal` command and what it exited with
+  openhands-session-start  hand the agent the routing paragraph and engine state
+  openhands-session-end    publish this session's sightings
+
+opencode:
+  opencode-context         the routing paragraph and engine state, as plain text
+
+Every one exits 0 whatever happens. A capture failure must never fail the tool
+call it was watching — and under OpenHands, exit code 2 means *block the agent*,
+so a non-zero exit here would refuse the user's command.
 """, "examples:\n"
      "  echo '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"python3 -c 1\"}}' |\n"
      "      lypning hook pre-tool-use\n"
      "  (only tool_name \"Bash\" is recorded; every other tool is answered and dropped)")
-    s.add_argument("event", choices=("pre-tool-use", "stop"))
+    s.add_argument("event", choices=tuple(_HOOK_EVENTS))
     s.set_defaults(func=cmd_hook)
 
     # conformance

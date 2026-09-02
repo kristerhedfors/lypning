@@ -853,6 +853,7 @@ Makefile               thin wrappers: build test check conformance fuzz bench ga
 | `docs/SUBSET.md` | what the subset must execute, entry by entry |
 | `docs/RESEARCH.md` | what the second tier should have been built from, and why MicroPython won |
 | `docs/CAPTURE.md` | the two capture feeds, the harvest, and the privacy rules |
+| `docs/HARNESSES.md` | wiring the loop into opencode and the OpenHands SDK: what each install writes, what it refuses to write and why, and what is verified against a real install versus merely documented |
 | `docs/COOKBOOK.md` | unsupported Python, rewritten — what to type when a tier refuses |
 | `docs/EMBEDDING.md` | linking the runtime into a harness: the C ABI, the five hosts over it, and what a refusal means when there is no exit code |
 | `docs/PROMPTING.md` | can an agent be *asked* into the subset? 884 generated programs across nine prompt treatments, and what each one bought |

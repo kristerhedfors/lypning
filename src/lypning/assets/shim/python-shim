@@ -23,6 +23,10 @@
 #                        and $HOME/.lypning/invocations.jsonl when that is unset)
 #   LYPNING_CAPTURE=0    disable logging entirely (still execs python)
 #   LYPNING_CAPTURE_EXIT=1  wait-and-log-exit mode (see above)
+#   LYPNING_SESSION_ID   the session tag, ours and harness-independent; falls
+#                        back to the id the host harness exported. Must stay in
+#                        step with capture.SESSION_ENV or one session's records
+#                        split across two tags and `count` stops being stable.
 
 self_name=${0##*/}
 case "$self_name" in
@@ -243,7 +247,7 @@ run_id="$$-$start_ns"
 if [ -n "$lypning_log" ]; then
   line=$(
     awk "$LYPNING_AWK" \
-      "$PG_TS" "${PWD:-.}" "${CLAUDE_CODE_SESSION_ID:-}" \
+      "$PG_TS" "${PWD:-.}" "${LYPNING_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${OPENHANDS_SESSION_ID:-}}}" \
       "$stdin_pipe" "$stdin_kind" "$self_name" "$real" "$$" "$run_id" \
       "python_invocation" "" "" "$@" 2>/dev/null
   ) || line=""
@@ -268,7 +272,7 @@ if [ "${LYPNING_CAPTURE_EXIT:-0}" = "1" ] && [ -n "$lypning_log" ]; then
   esac
   line=$(
     awk "$LYPNING_AWK" \
-      "$PG_TS" "${PWD:-.}" "${CLAUDE_CODE_SESSION_ID:-}" \
+      "$PG_TS" "${PWD:-.}" "${LYPNING_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${OPENHANDS_SESSION_ID:-}}}" \
       "$stdin_pipe" "$stdin_kind" "$self_name" "$real" "$$" "$run_id" \
       "exit" "$rc" "$wall_ms" 2>/dev/null
   ) || line=""

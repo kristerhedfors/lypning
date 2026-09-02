@@ -498,6 +498,27 @@ lypning harvest --export && lypning harvest       # sightings, then the corpus
 `study/hosts/run_all.sh` gives each host its own copy of the program set in a
 temp directory. Run `git status` afterwards anyway.
 
+## The paragraph the harness adapters actually inject
+
+`src/lypning/assets/prompt/routing.md` is one asset used by all three harness
+adapters (`docs/HARNESSES.md` §5), so the text cannot drift into three variants.
+It is T2 — the 744-byte motive-only treatment that saturated this battery — plus
+two things T2 did not contain: an instruction to *type* `lypning -c`, and a
+sentence naming the exit-90 refusal so the agent does not treat one as a failure
+to work around.
+
+**It is unmeasured, and the numbers above do not transfer to it.** T2's 88.5%
+was obtained under *automatic* routing, where the agent had to type nothing at
+all; this paragraph asks it to type something, which is a different ask and
+could plausibly cost coverage. Nothing here says what it costs. Measure it
+before quoting a rate for it.
+
+What does carry over from this battery is the shape, and it is why `SKILL.md` is
+not what gets injected: handed over verbatim, the skill scored 81.7%, seven
+points behind the bare paragraph, because it is a document about working *on*
+lypning rather than a motive for using it. The two clauses that must survive any
+edit are *correctness outranks the tier* and *a fall-back is free*.
+
 **Files.**
 
 | path | what |

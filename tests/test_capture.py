@@ -203,3 +203,124 @@ def test_the_committed_hooks_match_the_ones_the_installer_ships():
         elif mine.read_text(encoding="utf-8") != h.read_text(encoding="utf-8"):
             drifted.append(h.name + " (differs)")
     assert not drifted, "the committed hooks have drifted from the shipped ones: %s" % drifted
+
+
+# --- the harness mappers -----------------------------------------------------
+#
+# One record builder, three field mappings. What is pinned here is the literals:
+# every one of these tool names was verified against a real install, and each of
+# them fails the same silent way if it drifts — the hook runs, matches nothing,
+# logs nothing, and reports success.
+
+HOST_EVENTS = [
+    ("claude", capture.from_claude_event,
+     {"tool_name": "Bash", "tool_input": {"command": "python3 -c 'print(1)'"}},
+     "python3 -c 'print(1)'"),
+    ("claude rejects another tool", capture.from_claude_event,
+     {"tool_name": "Write", "tool_input": {"command": "python3 -c 'x'"}}, None),
+    ("openhands", capture.from_openhands_event,
+     {"tool_name": "terminal", "tool_input": {"command": "python3 -c 'print(1)'"},
+      "tool_response": {"exit_code": 0}, "session_id": "s", "working_dir": "/w"},
+     "python3 -c 'print(1)'"),
+    ("openhands rejects another tool", capture.from_openhands_event,
+     {"tool_name": "file_editor", "tool_input": {"command": "python3 -c 'x'"}}, None),
+    ("opencode", capture.from_opencode_event,
+     {"tool": "bash", "args": {"command": "python3 -c 'print(1)'"},
+      "sessionID": "s", "callID": "c"},
+     "python3 -c 'print(1)'"),
+    ("opencode rejects another tool", capture.from_opencode_event,
+     {"tool": "read", "args": {"command": "python3 -c 'x'"}}, None),
+]
+
+
+@pytest.mark.parametrize("label,mapper,event,expected", HOST_EVENTS,
+                         ids=[n for n, _m, _e, _x in HOST_EVENTS])
+def test_each_mapper_reads_its_own_harness(label, mapper, event, expected):
+    rec = mapper(event)
+    if expected is None:
+        assert rec is None
+    else:
+        assert rec is not None and rec["command"] == expected
+
+
+def test_the_tool_name_literals_are_the_verified_ones():
+    """The specific trap, pinned.
+
+    ``terminal`` is the registry key the OpenHands SDK derives; ``TerminalTool``
+    is the class name, is stale in the SDK's own docstring examples, and matches
+    nothing. ``bash`` is the tool id opencode exposes and pins for plugin
+    compatibility; a mapper written against ``shell`` alone would observe
+    nothing, forever, and say nothing about it.
+    """
+    ok = {"tool_input": {"command": "python3 -c 1"}}
+    assert capture.from_openhands_event(dict(ok, tool_name="terminal")) is not None
+    assert capture.from_openhands_event(dict(ok, tool_name="TerminalTool")) is None
+
+    args = {"args": {"command": "python3 -c 1"}}
+    assert capture.from_opencode_event(dict(args, tool="bash")) is not None
+    # `shell` is a forward alias only: it can over-match, never under-match.
+    assert capture.from_opencode_event(dict(args, tool="shell")) is not None
+    assert capture.from_opencode_event(dict(args, tool="read")) is None
+
+
+@pytest.mark.parametrize("host", capture.HOSTS)
+def test_a_record_carries_its_host(host):
+    rec = capture.record_command("python3 -c 1", host=host, tool="t")
+    assert rec is not None and rec["host"] == host
+
+
+NEW_HOOKS = [
+    ("openhands-post-tool-use", capture.hook_openhands_post_tool_use),
+    ("openhands-session-end", capture.hook_openhands_session_end),
+]
+
+
+@pytest.mark.parametrize("name,hook", NEW_HOOKS, ids=[n for n, _ in NEW_HOOKS])
+@pytest.mark.parametrize("label,text", NOISE, ids=[n for n, _ in NOISE])
+def test_the_new_hooks_answer_the_protocol_and_exit_zero(name, hook, label, text):
+    rc, out = _fire(hook, None, text)
+    assert rc == 0
+    assert out == capture.OK_RESPONSE + "\n"
+    assert "permissionDecision" not in out
+    # OpenHands HONOURS a `decision` key. That is exactly why we never send one.
+    assert '"decision"' not in out
+    assert not paths.log_path().exists()
+
+
+def test_no_hook_entry_point_can_return_two():
+    """In OpenHands, 2 is *block the agent*.
+
+    Every entry point in the table, driven with every kind of noise, must come
+    back 0 — including the paths where the hook's own work failed.
+    """
+    from lypning import cli
+
+    for name, attr in cli._HOOK_EVENTS.items():
+        hook = getattr(capture, attr)
+        for _label, text in NOISE:
+            rc, _out = _fire(hook, None, text)
+            assert rc == 0, "%s returned %r" % (name, rc)
+
+
+def test_the_openhands_hook_records_the_exit_code_it_was_given():
+    event = {"tool_name": "terminal",
+             "tool_input": {"command": "python3 -c 'print(1)'"},
+             "tool_response": {"output": "1\n", "exit_code": 0},
+             "session_id": "sess-1", "working_dir": "/w"}
+    rc, out = _fire(capture.hook_openhands_post_tool_use, event)
+    assert rc == 0 and out == capture.OK_RESPONSE + "\n"
+    rec = json.loads(paths.log_path().read_text().strip())
+    assert rec["host"] == "openhands"
+    assert rec["session"] == "sess-1"
+    assert rec["exit_code"] == 0
+    assert rec["kind"] == "bash_command"
+
+
+def test_the_routing_prompt_ships_and_says_the_two_load_bearing_things():
+    text = capture.routing_prompt()
+    assert text, "the routing paragraph did not ship"
+    # Without this clause an agent reads the subset as a challenge — one wrote
+    # 54 lines of SHA-256 to avoid importing hashlib (docs/PROMPTING.md).
+    assert "Correctness comes first" in text
+    # And without this one it treats a refusal as a failure to work around.
+    assert "90" in text

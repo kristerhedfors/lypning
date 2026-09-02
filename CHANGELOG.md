@@ -14,6 +14,22 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-02** — the capture loop runs under opencode and the OpenHands SDK ([#24](https://github.com/kristerhedfors/lypning/pull/24))
+
+- Two harness adapters, both MIT-licensed hosts, installed with
+  `lypning install --harness opencode,openhands`. Neither merges into a file the
+  user owns: opencode auto-discovers a plugin file, OpenHands discovers a plugin
+  directory. opencode is what Berget Code's agents are built on.
+- `capture.py` grows one neutral record builder and one small mapper per
+  harness; every record now carries a `host`, and `lypning harvest --json`
+  counts by it. The corpus schema is unchanged.
+- Deliberately not shipped: automatic routing under either harness, and any
+  write to `.openhands/hooks.json` — that file is first-match-wins and unmerged,
+  so writing it would hide the user's rather than join it.
+- How many python one-liners either harness actually types is **unmeasured**,
+  as is the injected routing paragraph. `docs/HARNESSES.md` says which claims
+  were verified against a real install and which were not.
+
 **2026-08-31** — pathlib costs nothing; `conformance --plan` is now ranked by cost
 
 - **pathlib was measured before it was built, and not built.** 85 of the 87

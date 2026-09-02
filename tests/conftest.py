@@ -61,8 +61,20 @@ def isolated_env(tmp_path, monkeypatch):
     # Set, not unset: with no CLAUDE_PROJECT_DIR the git fallback finds the real
     # checkout, and `conformance.run` would then arm its restore net on it.
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(project))
+    # And for the same reason, DELETED rather than left alone: paths.project_dir
+    # consults $OPENHANDS_PROJECT_DIR too, so a developer who happens to have it
+    # exported would get the battery aimed at whatever it names — which is the
+    # real checkout often enough to matter (invariant 4). The rest are cleared so
+    # a harness the developer actually runs cannot leak a session id or a config
+    # root into a test's answers.
+    for name in ("OPENHANDS_PROJECT_DIR", "OPENHANDS_SESSION_ID",
+                 "OPENCODE_CONFIG_DIR", "XDG_CONFIG_HOME",
+                 "LYPNING_SESSION_ID", "CLAUDE_CODE_SESSION_ID",
+                 "CLAUDE_SESSION_ID"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv("LYPNING_CAPTURE", raising=False)
     monkeypatch.delenv("LYPNING_HARVEST", raising=False)
+    monkeypatch.delenv("LYPNING_CAPTURE_CALLS", raising=False)
     for name in _ENGINE_OVERRIDES:
         monkeypatch.delenv(name, raising=False)
     return project
