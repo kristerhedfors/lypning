@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-02** — the capture loop runs under opencode and the OpenHands SDK ([#24](https://github.com/kristerhedfors/lypning/pull/24))
+**2026-09-02** — the capture loop runs under opencode and the OpenHands SDK ([#26](https://github.com/kristerhedfors/lypning/pull/26))
 
 - Two harness adapters, both MIT-licensed hosts, installed with
   `lypning install --harness opencode,openhands`. Neither merges into a file the
