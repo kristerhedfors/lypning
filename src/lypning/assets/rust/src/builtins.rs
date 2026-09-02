@@ -57,6 +57,25 @@ pub fn float_to_int(f: f64, what: &str) -> R<i64> {
     Ok(f as i64)
 }
 
+/// The end of CPython's float `sum` loop, on both versions at once. `f` is the
+/// naive running sum every CPython holds; `c` is the Neumaier correction that
+/// 3.12+ adds — only when it is non-zero and finite, so an overflowed or `nan`
+/// correction never turns an `inf` sum into `nan`, and a `-0.0` sum keeps its
+/// sign. 3.11 returns `f` as it stands. Answer only when the two are the same
+/// bits; otherwise the program's output depends on which CPython the caller
+/// has, and that is a refusal, not a guess.
+fn float_sum_agreed(f: f64, c: f64) -> R<f64> {
+    let compensated = if c != 0.0 && c.is_finite() { f + c } else { f };
+    if compensated.to_bits() == f.to_bits() {
+        Ok(f)
+    } else {
+        Err(unsupported(
+            "float-sum",
+            "sum() over floats where CPython 3.12+ compensates the rounding and 3.11 does not; the two answers differ",
+        ))
+    }
+}
+
 /// Python's rule for underscores in a numeric literal: they may appear only
 /// BETWEEN digits.
 ///
@@ -745,12 +764,86 @@ pub fn call_builtin(
                             return Ok(Value::Int(n));
                         }
                     }
+                    // CPython's `sum` is three loops, not one: an exact-int
+                    // loop on a C long, a float loop on a C double, and the
+                    // generic `PyNumber_Add` loop for everything else. The
+                    // float loop is where the two CPython versions this tree
+                    // targets disagree. 3.12+ (`builtin_sum_impl`) runs
+                    // Neumaier compensated summation there — it keeps the naive
+                    // running sum `f` and a correction `c`, and adds `c` once,
+                    // at the end or on leaving the loop. 3.11 has no `c`. So
+                    // `sum([0.1] * 10)` is `1.0` on 3.14 and
+                    // `0.9999999999999999` on 3.11, and the naive fold that
+                    // stood here matched 3.11 silently: a MISMATCH against the
+                    // reference, and a wrong answer for whichever interpreter
+                    // the caller meant.
+                    //
+                    // The engine may only answer where both agree, so the loop
+                    // carries both: `f` is the naive sum (bit-for-bit what 3.11
+                    // returns, and what 3.12+ holds before the correction), `c`
+                    // is the correction only 3.12+ adds. `float_sum_agreed`
+                    // answers when `f + c` and `f` are the same bits and
+                    // refuses otherwise. Nothing is widened by this: an int met
+                    // in the float loop is `(double)value` added naively, which
+                    // both versions do, and a `bool` is an int there.
+                    //
+                    // Which loop CPython is in is tracked explicitly rather
+                    // than read off `acc`'s type, because the transitions are
+                    // one-way and depend on the *start*, not the running value:
+                    // only an exact `int` start begins in the int loop, only
+                    // leaving it on a float enters the float loop, and a `bool`
+                    // start (`sum(xs, True)`) is generic from the first element
+                    // — naive on every version, so answered naively here.
                     let mut iter = it.make_iter(v.clone())?;
                     let mut acc = start;
+                    let mut int_loop = matches!(acc, Value::Int(_));
+                    // `Some((f, c))` while CPython would be in its float loop.
+                    let mut float_loop = match acc {
+                        Value::Float(f) => Some((f, 0.0f64)),
+                        _ => None,
+                    };
                     while let Some(x) = it.iter_next(&mut iter)? {
+                        if let Some((f, c)) = float_loop.as_mut() {
+                            match x {
+                                Value::Float(x) => {
+                                    let t = *f + x;
+                                    if f.abs() >= x.abs() {
+                                        *c += (*f - t) + x;
+                                    } else {
+                                        *c += (x - t) + *f;
+                                    }
+                                    *f = t;
+                                }
+                                Value::Int(n) => *f += n as f64,
+                                Value::Bool(b) => *f += b as i64 as f64,
+                                other => {
+                                    // 3.12+ folds `c` in before handing the
+                                    // pair to `PyNumber_Add`. Nothing in this
+                                    // subset adds to a float except the three
+                                    // arms above, so what follows is CPython's
+                                    // own TypeError — but the fold is checked
+                                    // first, so a sum that already disagreed
+                                    // cannot answer by erroring.
+                                    acc = Value::Float(float_sum_agreed(*f, *c)?);
+                                    float_loop = None;
+                                    acc = it.binop(crate::ast::BinOp::Add, &acc, &other)?;
+                                }
+                            }
+                            continue;
+                        }
+                        let was_int_loop = int_loop;
+                        int_loop = int_loop && matches!(x, Value::Int(_) | Value::Bool(_));
                         acc = it.binop(crate::ast::BinOp::Add, &acc, &x)?;
+                        if was_int_loop && !int_loop {
+                            if let Value::Float(f) = acc {
+                                float_loop = Some((f, 0.0));
+                            }
+                        }
                     }
-                    acc
+                    match float_loop {
+                        Some((f, c)) => Value::Float(float_sum_agreed(f, c)?),
+                        None => acc,
+                    }
                 }
                 None => return Err(type_err("sum() missing 1 required positional argument")),
             }
