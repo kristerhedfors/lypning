@@ -225,6 +225,117 @@ jobs:
         # AND agree with the `lypning` arm program for program: the two
         # disagreeing is the drift this arm exists to catch.
         run: lypning conformance --engine lypning --engine library
+      # --- every host over the ABI, each held to the one quickstart contract --
+      #
+      # docs/EMBEDDING.md section 4 is the table of hosts; the steps below are
+      # that table, executed, for every host a Linux runner can build. Each
+      # gates on its own toolchain rather than on the runner image: a tool that
+      # is not there is not a red host, it is a host that says so and exits 0,
+      # because the image changes under us and a missing compiler is not a
+      # wrong answer. What is asserted is the same five probes for every
+      # quickstart: an answer in-process, a refusal answered ONCE by CPython,
+      # argv passed through, a traceback that is exit 1 and NOT retried, and
+      # sys.exit carried unchanged. They are written once, as a shell function,
+      # so no host can pass by having skipped one. ZeroDivisionError is COUNTED
+      # rather than grepped for: a host that fell onward after a traceback
+      # would print it twice, and that is the retry the contract forbids.
+      - name: the quickstart contract, as one function every host is run through
+        run: |
+          cat >"$RUNNER_TEMP/probes.sh" <<'EOF'
+          probes() {
+            # $@ is the host's quickstart command; each line below is one probe.
+            test "$("$@" 'print(sum(range(10)))')" = 45
+            test "$("$@" 'import subprocess; print(1)')" = 1
+            test "$("$@" 'import sys; print(sys.argv[1:])' a b)" = "['a', 'b']"
+            rc=0; "$@" 'print(1/0)' >/dev/null 2>"$RUNNER_TEMP/probe.err" || rc=$?
+            test "$rc" -eq 1
+            test "$(grep -c ZeroDivisionError "$RUNNER_TEMP/probe.err")" -eq 1
+            rc=0; "$@" 'import sys; sys.exit(3)' >/dev/null || rc=$?
+            test "$rc" -eq 3
+            echo "$1: 45 in-process; refusal answered once by CPython; argv; traceback exit 1, not retried; exit 3"
+          }
+          EOF
+      - name: C — the contract example, then the file a host author copies
+        # The Makefile picks the checkout's freshly built library and fails
+        # naming `lypning build --lib` if it is absent. The fallback branch is
+        # execvp("python3"), so the runner's python3 is the second tier.
+        run: |
+          command -v cc >/dev/null || { echo "no C compiler: C host not built"; exit 0; }
+          . "$RUNNER_TEMP/probes.sh"
+          make -C src/lypning/assets/examples/c run
+          make -C src/lypning/assets/examples/c quickstart
+          probes src/lypning/assets/examples/c/quickstart
+      - name: C++ — header-only RAII over the same ABI
+        run: |
+          command -v c++ >/dev/null || { echo "no c++: C++ host not built"; exit 0; }
+          . "$RUNNER_TEMP/probes.sh"
+          make -C src/lypning/assets/examples/cpp run
+          make -C src/lypning/assets/examples/cpp quickstart
+          probes src/lypning/assets/examples/cpp/quickstart
+      - name: Rust — the crate by path, no ABI in between
+        # Nothing to link: this host compiles ../../rust from source, so it is
+        # the one host `build --lib` does nothing for. `cargo run` passes the
+        # example's exit status through, which the sys.exit probe relies on.
+        run: |
+          command -v cargo >/dev/null || { echo "no cargo: Rust host not built"; exit 0; }
+          . "$RUNNER_TEMP/probes.sh"
+          M=src/lypning/assets/examples/rust/Cargo.toml
+          cargo run --release --manifest-path "$M"
+          probes cargo run -q --release --manifest-path "$M" --example quickstart --
+      - name: Node — a plain cargo build links the addon, node loads it
+        # No npm dependencies, no node-gyp: cargo and node are all it needs.
+        # Loading the addon is the assertion build.rs exists for: the Node-API
+        # symbols resolve from the node process at dlopen, or not at all.
+        run: |
+          { command -v cargo && command -v node; } >/dev/null || { echo "no cargo or no node: Node host not built"; exit 0; }
+          . "$RUNNER_TEMP/probes.sh"
+          cd src/lypning/assets/node
+          cargo build --release
+          probes node quickstart.js
+          npm test
+      - name: Python — ctypes over the library, stdlib only
+        # No compiler in the loop: the only thing this host needs is the
+        # library `build --lib` produced above, which is why it has no gate.
+        run: |
+          . "$RUNNER_TEMP/probes.sh"
+          probes python src/lypning/assets/examples/python/quickstart.py
+      - uses: actions/setup-go@v5
+        id: go
+        # A setup failure (a download outage, a retired version string) is a
+        # missing toolchain, and the step below treats it as one: skipped and
+        # said so, not red. The same rule as every other host's gate.
+        continue-on-error: true
+        with:
+          go-version: stable
+          cache: false   # no go.sum to key on: the module has zero dependencies
+      - name: Go — cgo over the unchanged header
+        # Built, then run: `go run` reports every non-zero exit as 1 with an
+        # "exit status N" line of its own, so the sys.exit probe cannot pass
+        # through it. CGO_LDFLAGS is what `lypning lib --libs` printed, the
+        # flags a Go module outside the checkout would use, so this links the
+        # INSTALLED library and not only the one the #cgo directives find.
+        if: steps.go.outcome == 'success'
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          command -v go >/dev/null || { echo "no go: Go host not built"; exit 0; }
+          . "$RUNNER_TEMP/probes.sh"
+          export CGO_LDFLAGS="$(lypning lib --libs)"
+          cd src/lypning/assets/go
+          go vet ./...
+          go test ./...
+          go build -o "$RUNNER_TEMP/go-quickstart" ./quickstart
+          probes "$RUNNER_TEMP/go-quickstart"
+      - name: LuaJIT — the ffi over the header, read at load, no build step
+        # PUC Lua has no ffi, so it is luajit or nothing. An apt outage is a
+        # missing toolchain and not a red host, hence the tolerated install.
+        run: |
+          sudo apt-get install -y -qq luajit >/dev/null 2>&1 || echo "apt could not install luajit"
+          command -v luajit >/dev/null || { echo "no luajit: Lua host not run"; exit 0; }
+          . "$RUNNER_TEMP/probes.sh"
+          cd src/lypning/assets/lua
+          luajit test.lua
+          probes luajit quickstart.lua
       - name: the corpus rewrites repositories; check the net held
         # conformance runs every entry in its own temp cwd and brackets the
         # battery with a git snapshot, but that is a net and not a sandbox: it
@@ -233,6 +344,94 @@ jobs:
         run: |
           dirty=$(git status --porcelain)
           test -z "$dirty" || { echo "$dirty"; echo "the battery changed tracked files"; exit 1; }
+
+  # --- the library tier on the other operating system the wheel claims -----
+  #
+  # pyproject.toml carries `Operating System :: MacOS`, and this job is what
+  # makes that a fact rather than a classifier. It is not a mirror of `core`:
+  # the static-musl core, its gate and its conformance battery are Linux
+  # artefacts, and `build --rust` on a Mac builds for the host and says so.
+  # What a Mac adds is the host Linux cannot run at all (Swift) and the one
+  # link detail Linux never sees: the library's install name must be
+  # `@rpath/liblypning.dylib`, or every host linked with `lypning lib --libs`
+  # links clean and fails at load. The hosts that need only cc, cargo or node
+  # are proven on ubuntu above and not repeated here.
+  hosts-macos:
+    name: macos — library tier, C, Python and Swift hosts
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: build the core, then the library
+        # Both refuse to report ok until the refusal contract holds on what
+        # they just produced; `lib` and `status` print what was installed and
+        # where, which is the line to read when a host step below fails.
+        run: |
+          lypning build --rust
+          lypning build --lib
+          lypning lib
+          lypning status
+      - name: pytest, on a Mac
+        run: python -m pytest tests -q
+      - name: the quickstart contract, as one function every host is run through
+        # The same function the core job defines, and for the same reason:
+        # the five probes are the contract, and a host passes all of them or
+        # none. See the comment there.
+        run: |
+          cat >"$RUNNER_TEMP/probes.sh" <<'EOF'
+          probes() {
+            # $@ is the host's quickstart command; each line below is one probe.
+            test "$("$@" 'print(sum(range(10)))')" = 45
+            test "$("$@" 'import subprocess; print(1)')" = 1
+            test "$("$@" 'import sys; print(sys.argv[1:])' a b)" = "['a', 'b']"
+            rc=0; "$@" 'print(1/0)' >/dev/null 2>"$RUNNER_TEMP/probe.err" || rc=$?
+            test "$rc" -eq 1
+            test "$(grep -c ZeroDivisionError "$RUNNER_TEMP/probe.err")" -eq 1
+            rc=0; "$@" 'import sys; sys.exit(3)' >/dev/null || rc=$?
+            test "$rc" -eq 3
+            echo "$1: 45 in-process; refusal answered once by CPython; argv; traceback exit 1, not retried; exit 3"
+          }
+          EOF
+      - name: C — compiled against what `lypning lib` printed, run from outside the tree
+        # From $RUNNER_TEMP so nothing can resolve back to the checkout: this
+        # is a user's host, linked with the flags the CLI hands out. `otool`
+        # pins the install name those flags depend on.
+        run: |
+          gcc $(lypning lib --cflags) src/lypning/assets/examples/c/quickstart.c \
+              -o "$RUNNER_TEMP/quickstart" $(lypning lib --libs)
+          otool -L "$RUNNER_TEMP/quickstart" | grep -q '@rpath/liblypning.dylib'
+          . "$RUNNER_TEMP/probes.sh"
+          cd "$RUNNER_TEMP" && probes ./quickstart
+      - name: Python — ctypes, which dlopens by absolute path and needs no rpath
+        run: |
+          . "$RUNNER_TEMP/probes.sh"
+          probes python src/lypning/assets/examples/python/quickstart.py
+      - name: Swift — the module map over the header, its tests, then the quickstart
+        # Package.swift decides the library directory when it is first
+        # evaluated and SwiftPM caches the decision, which is why the library
+        # is built before this step and the README says to do the same.
+        # macos-latest ships a toolchain; a runner without one says so.
+        run: |
+          command -v swift >/dev/null || { echo "no swift toolchain: Swift host not built"; exit 0; }
+          . "$RUNNER_TEMP/probes.sh"
+          P=src/lypning/assets/swift
+          swift build -c release --package-path "$P" -Xswiftc -warnings-as-errors
+          swift test --package-path "$P"
+          probes "$P/.build/release/quickstart"
+      - name: nothing above wrote into the tree
+        # Every build here writes to an ignored path or to $RUNNER_TEMP; an
+        # untracked file is a build artefact .gitignore does not know about,
+        # which is the same file that would ride into the next wheel.
+        run: |
+          dirty=$(git status --porcelain)
+          test -z "$dirty" || { echo "$dirty"; echo "a host build left files in the tree"; exit 1; }
 
   # --- can the tier be built at all -----------------------------------------
   #
