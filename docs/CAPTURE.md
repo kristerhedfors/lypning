@@ -11,14 +11,32 @@ recording.
 
 Everything below is wired by one command — `lypning install`, which merges the
 hooks into `.claude/settings.json` and installs the shim (`README.md` §3). This
-document is what that command wires, and why.
+document is what that command wires, and why. `--harness` wires the same two
+feeds into opencode or the OpenHands SDK instead;
+[HARNESSES.md](HARNESSES.md) is what differs there.
 
 ## The two feeds
 
 | Feed | Catches | Misses |
 | --- | --- | --- |
 | `python-shim` on `$PATH` | every process that actually reached an interpreter, including nested ones, subshells, pipelines, Makefiles, `uv run`, and anything a script spawns | programs that never ran (typed then abandoned), and program text held in a `.py` file rather than on the command line |
-| `.claude/hooks/lypning-capture.sh` (PreToolUse, Bash) | the full command STRING before it runs — heredocs, `Write`-then-run patterns, commands that fail before exec | anything not issued through the Bash tool |
+| the command-string hook | the full command STRING — heredocs, `Write`-then-run patterns, and (under Claude Code) commands that fail before exec | anything not issued through the harness's shell tool |
+
+The second feed is spelled once per harness, and the differences matter:
+
+| Host | Where | Fires |
+| --- | --- | --- |
+| `claude` | `.claude/hooks/lypning-capture.sh` (PreToolUse, `Bash`) | **before** the command runs — so it catches programs typed and then denied, which are still evidence of what the model reaches for |
+| `openhands` | `hooks/hooks.json` in an ambiently-loaded plugin (PostToolUse, `terminal`) | **after** — so denied commands are lost, and the exit code and output are gained |
+| `opencode` | `plugin/lypning.js` (`tool.execute.before`, `bash`) | **before**, in-process in Bun, so there is no fork per tool call at all |
+
+Every record carries a `host` field naming which of those wrote it, and
+`lypning harvest --json` counts by it. That field is the only instrument this
+package has for the question it refuses to answer from priors: how many python
+one-liners a given harness actually types. It is deliberately not part of the
+corpus path — the harvester does not read it and a sighting does not carry it —
+because a measurement that changed what got published would be one nobody could
+trust.
 
 **Both feeds watch for a PROCESS, and that is their shared blind spot.** A host
 that links `liblypning` and calls `lypning_run()` — any of the five in
@@ -289,6 +307,7 @@ paths, occasionally a token pasted into a one-liner.
 | `LYPNING_CAPTURE=0` | disable capture entirely; the shim still execs python |
 | `LYPNING_CAPTURE_EXIT=1` | shim waits for the child instead of exec-ing it, adding an `{"kind":"exit"}` record with `exit_code` and `wall_ms` |
 | `LYPNING_HARVEST=0` | keep capturing; stop the Stop hook publishing sightings |
+| `LYPNING_SESSION_ID` | the session tag, ours and harness-independent. Read first, ahead of whatever id the host harness exports; both feeds consult the same list, so one session's records cannot split across two tags |
 | `LYPNING_HOME` | state directory (default `~/.lypning`) — the shim's bin dir, the log, the build trees |
 | `LYPNING_TRANSCRIPTS` | transcript root for the harvest (default `~/.claude/projects`) |
 

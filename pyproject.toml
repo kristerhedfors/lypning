@@ -118,6 +118,11 @@ lypning = [
   "assets/claude/skills/lypning/*.md",
   "assets/claude/hooks/*.sh",
   "assets/claude/*.json",
+  "assets/opencode/*.js",
+  "assets/opencode/*.md",
+  "assets/openhands/*.json",
+  "assets/openhands/*.md",
+  "assets/prompt/*.md",
 ]
 
 [tool.pytest.ini_options]

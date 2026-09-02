@@ -1,0 +1,41 @@
+{
+  "$comment": [
+    "The OpenHands hooks wiring for lypning, as a standalone fragment.",
+    "`lypning install --harness openhands` does NOT write this file, and will not write it for you. It installs a plugin directory instead — ~/.openhands/plugins/lypning/ — which OpenHands discovers ambiently and merges into every conversation, so no file the user owns is edited at all. This copy is for the other case: someone who would rather wire the hooks themselves.",
+    "MERGE, DO NOT REPLACE — and understand that this file is the one place where that is not enough. HookConfig.load() is FIRST-MATCH-WINS AND NOT MERGED: it reads <working_dir>/.openhands/hooks.json, and only if that is absent, ~/.openhands/hooks.json. So a second hooks.json does not add to the first, it HIDES it. If you already have one of these files, add the three entries below to it by hand; do not drop this file over the top of it, and do not create a project-level one while relying on a user-level one.",
+    "That asymmetry is exactly why the installer declines this route. There is no per-entry ownership marker in this format, so lypning could not later remove only its own entries the way it can in .claude/settings.json — and an uninstall that cannot be exact is an uninstall that costs the user something they had.",
+    "SessionEnd is deliberately NOT async. The SDK's AsyncProcessManager terminates outstanding async hook processes at session end, so an async harvest is one that gets killed partway through writing.",
+    "PostToolUse IS async: fire-and-forget, stdout and stderr to DEVNULL, off the agent's critical path entirely. It is structurally incapable of blocking the tool call, which is the strongest form of the rule that a capture harness never blocks.",
+    "PostToolUse rather than PreToolUse, and never both: two hooks on one tool would write two records per call, and since the harvester counts distinct occurrence keys, that would silently double the count that `lypning conformance --plan` steers by. The cost of choosing PostToolUse is real — commands typed and then denied never reach it, and those are evidence of what the model types. What it buys is the observation: exit code and output, from a CPython run you paid for anyway.",
+    "The matcher is exactly \"terminal\" — the registry key, derived by ToolDefinition.__init_subclass__ from the class name. \"TerminalTool\" appears in the SDK's own docstring examples and is stale; a matcher spelled that way matches nothing, forever, and says nothing about it.",
+    "The commands are PATH-resolved console-script names on purpose. There is no plugin-root variable expansion in the SDK, and the hook executor sets cwd to the WORKSPACE — so a relative path would resolve against your repository, not against wherever this file lives.",
+    "Every one of these exits 0 on every path, including its own failures, and emits no \"decision\" key. OpenHands treats exit code 2 as BLOCK and honours a \"decision\" of \"allow\" or \"deny\" in stdout JSON; lypning sends neither, for the same reason its Claude Code hook sends no permissionDecision — bypassing a permission prompt is far more than a capture harness may do.",
+    "Off switches, no edit required: LYPNING_CAPTURE=0 disables the whole harness, LYPNING_HARVEST=0 keeps capturing but stops the SessionEnd hook publishing."
+  ],
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "lypning hook openhands-session-start", "timeout": 20 }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "terminal",
+        "hooks": [
+          { "type": "command", "command": "lypning hook openhands-post-tool-use", "timeout": 10, "async": true }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "lypning hook openhands-session-end", "timeout": 120 }
+        ]
+      }
+    ]
+  }
+}

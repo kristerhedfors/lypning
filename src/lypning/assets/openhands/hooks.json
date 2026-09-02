@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "lypning hook openhands-session-start", "timeout": 20 }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "terminal",
+        "hooks": [
+          { "type": "command", "command": "lypning hook openhands-post-tool-use", "timeout": 10, "async": true }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "lypning hook openhands-session-end", "timeout": 120 }
+        ]
+      }
+    ]
+  }
+}

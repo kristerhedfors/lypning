@@ -39,6 +39,10 @@ NODE_DIR = ASSETS / "node"
 SCRIPTS_DIR = ASSETS / "scripts"
 SHIM_SRC = ASSETS / "shim" / "python-shim"
 CLAUDE_ASSETS = ASSETS / "claude"
+OPENCODE_ASSETS = ASSETS / "opencode"
+OPENHANDS_ASSETS = ASSETS / "openhands"
+PROMPT_DIR = ASSETS / "prompt"
+ROUTING_PROMPT = PROMPT_DIR / "routing.md"
 SKILL_SRC = CLAUDE_ASSETS / "skills" / "lypning"
 HOOKS_SRC = CLAUDE_ASSETS / "hooks"
 
@@ -121,13 +125,20 @@ def log_path() -> Path:
 def project_dir(start: Path | str | None = None) -> Path:
     """The repository the session is working in.
 
-    ``$CLAUDE_PROJECT_DIR`` when Claude Code sets it, else the enclosing git
-    work tree, else the current directory. Sightings and the project-local
-    ``.claude/`` wiring are written relative to this.
+    The harness's own answer when it has one — ``$CLAUDE_PROJECT_DIR``, then
+    ``$OPENHANDS_PROJECT_DIR``, both of which the respective hook executor sets
+    for us — else the enclosing git work tree, else the current directory.
+    Sightings and the project-local harness wiring are written relative to this.
+
+    This is also what arms the conformance restore net (invariant 4), which is
+    why ``tests/conftest.py`` must clear every one of these names: a developer
+    with one exported would otherwise get the battery pointed at their real
+    checkout.
     """
-    env = os.environ.get("CLAUDE_PROJECT_DIR", "").strip()
-    if env and Path(env).is_dir():
-        return Path(env).resolve()
+    for name in ("CLAUDE_PROJECT_DIR", "OPENHANDS_PROJECT_DIR"):
+        env = os.environ.get(name, "").strip()
+        if env and Path(env).is_dir():
+            return Path(env).resolve()
     base = Path(start).resolve() if start else Path.cwd().resolve()
     try:
         out = subprocess.run(

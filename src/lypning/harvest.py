@@ -840,12 +840,56 @@ def scan_transcripts(paths: Any = None) -> List[Sighting]:
     return _aggregate(raws)
 
 
+def host_counts(log: Optional[Path] = None) -> Dict[str, Dict[str, int]]:
+    """How many records each harness put in the log, by record kind.
+
+    The numerator of the question this package cannot answer from priors: how
+    many python one-liners a given harness actually types. It is deliberately
+    NOT part of the corpus path — :func:`_raws_from_log` does not read ``host``
+    and :class:`Sighting` does not carry it — because a measurement that
+    changed what gets published would be a measurement nobody could trust.
+
+    The denominator is not here either. Logging every tool call would put shell
+    history with nothing to do with python into a log that gets published; the
+    opt-in ``LYPNING_CAPTURE_CALLS=1`` records a bare ``tool_call`` with no
+    command text for anyone who wants a rate.
+    """
+    path = Path(log) if log is not None else paths.log_path()
+    out = {}  # type: Dict[str, Dict[str, int]]
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return out
+    for line in text.split("\n"):
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue  # a half-written append is a lost sighting, not a crash
+        if not isinstance(rec, dict):
+            continue
+        host = rec.get("host")
+        host = host if isinstance(host, str) and host else "unknown"
+        kind = rec.get("kind")
+        kind = kind if isinstance(kind, str) and kind else "unknown"
+        out.setdefault(host, {})
+        out[host][kind] = out[host].get(kind, 0) + 1
+    return out
+
+
 # --- publishing --------------------------------------------------------------
 
 
 def session_id() -> str:
-    """This session, as far as the environment will say."""
-    return (os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CLAUDE_SESSION_ID") or "").strip()
+    """This session, as far as the environment will say.
+
+    Reads :data:`lypning.capture.SESSION_ENV` so the export tags a session the
+    same way both feeds did — one list, one answer, whichever harness is host.
+    """
+    from . import capture
+
+    return (capture.session_env() or "").strip()
 
 
 def session_filename(session: Optional[str]) -> str:

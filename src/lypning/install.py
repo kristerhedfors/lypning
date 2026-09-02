@@ -429,24 +429,37 @@ def plan_install(
                 diff = settings_diff(before, after, settings_path)
 
     if want_shim:
-        for st in shim_module.status():
-            if st.state == "current":
-                actions.append(Action("skip", st.path, "shim already current", "shim", present=True))
-            elif st.state == "stale":
-                actions.append(Action("write", st.path, "refresh stale shim", "shim",
-                                      paths.SHIM_SRC))
-            elif st.state == "absent":
-                actions.append(Action("write", st.path, "install shim", "shim", paths.SHIM_SRC))
-            else:
-                actions.append(Action(
-                    "backup", st.path,
-                    "NOT a lypning shim — needs --force, which moves it to %s%s"
-                    % (st.path.name, shim_module.BACKUP_SUFFIX), "shim", paths.SHIM_SRC))
-        warning = _path_warning()
-        if warning is not None:
-            actions.append(warning)
+        actions.extend(shim_actions())
 
     return Plan(actions, proj, scope, settings_path, diff)
+
+
+def shim_actions() -> List[Action]:
+    """The shim half of an install, which is the same for every harness.
+
+    Extracted so the harness modules call it rather than each restating what a
+    stale shim, an absent one and a foreign one respectively mean. The shim is
+    the one piece of wiring that was already harness-agnostic: it is a file on
+    ``$PATH``, and nothing about it knows who asked.
+    """
+    actions: List[Action] = []
+    for st in shim_module.status():
+        if st.state == "current":
+            actions.append(Action("skip", st.path, "shim already current", "shim", present=True))
+        elif st.state == "stale":
+            actions.append(Action("write", st.path, "refresh stale shim", "shim",
+                                  paths.SHIM_SRC))
+        elif st.state == "absent":
+            actions.append(Action("write", st.path, "install shim", "shim", paths.SHIM_SRC))
+        else:
+            actions.append(Action(
+                "backup", st.path,
+                "NOT a lypning shim — needs --force, which moves it to %s%s"
+                % (st.path.name, shim_module.BACKUP_SUFFIX), "shim", paths.SHIM_SRC))
+    warning = _path_warning()
+    if warning is not None:
+        actions.append(warning)
+    return actions
 
 
 
@@ -592,8 +605,34 @@ def uninstall(project: Path | str | None = None, *, scope: str = "project") -> L
 # --- status ------------------------------------------------------------------
 
 
+def harness_status(project: Path | str | None = None) -> Dict[str, Any]:
+    """Every harness's wiring, one entry per name in :data:`harness.NAMES`.
+
+    Each module is called behind its own try/except: a harness module that
+    raises is a status line that says so, never a `lypning status` that fails.
+    """
+    from . import harness
+
+    out: Dict[str, Any] = {}
+    for name in harness.NAMES:
+        try:
+            out[name] = harness.load(name).status(project)
+        except Exception as e:  # a broken module must not take down status
+            out[name] = {"name": name, "error": str(e)}
+    return out
+
+
 def status(project: Path | str | None = None) -> dict:
-    """Everything a `lypning status` needs, JSON-serialisable, read-only."""
+    """Everything a `lypning status` needs, JSON-serialisable, read-only.
+
+    ``out["scopes"]`` is **frozen as the Claude view** and stays that way. Both
+    `cli._uninstall_preview` and `cli._doctor_checks` index
+    ``scopes[scope]["hooks"]`` and ``["settings_error"]``, as does every
+    `--json` consumer outside this tree, so the harness dimension is a sibling
+    key — ``out["harnesses"]`` — rather than a reshape of that one. The Claude
+    entry there restates what ``scopes`` already says; the duplication is the
+    price of not breaking readers, and is cheaper than the break.
+    """
     from . import engines  # imported here: status is the only caller and it is cold
 
     proj = _project(project)
@@ -638,6 +677,7 @@ def status(project: Path | str | None = None) -> dict:
     out["log"] = {"path": str(log), "exists": log.is_file(),
                   "error": log_error,
                   "bytes": log.stat().st_size if log.is_file() else 0}
+    out["harnesses"] = harness_status(proj)
     out["shim"] = {
         "bin_dir": str(paths.bin_dir()),
         "source": str(paths.SHIM_SRC),
@@ -661,7 +701,14 @@ def render_plan(plan: Plan) -> str:
         "project : %s%s" % (plan.project, "" if _is_git_worktree(plan.project)
                             else "  (not a git work tree — this is just the "
                                  "current directory; --project names another)"),
-        "scope   : %s (%s)" % (plan.scope, claude_dir(plan.project, plan.scope)),
+        # The config root is the settings file's directory for Claude, and for
+        # the harnesses that have no settings file it is not this module's to
+        # know — so it is named only when there is one to name. Printing
+        # `.claude` under an opencode plan told the reader the install was
+        # going somewhere it was not.
+        "scope   : %s%s" % (plan.scope,
+                            " (%s)" % plan.settings_path.parent
+                            if plan.settings_path is not None else ""),
         "",
     ]
     if not plan.actions:
