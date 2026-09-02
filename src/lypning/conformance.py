@@ -180,17 +180,41 @@ def is_nondeterministic(entry: Any) -> bool:
 
 def is_run_specific(entry: Any) -> bool:
     src = getattr(entry, "program", "") or ""
-    if _USES_RANDOM.search(src) and not is_seeded_stream(entry):
+    if draws_from_random(src) and not is_seeded_stream(entry):
         return True
     return any(p.search(src) for p in _RUN_SPECIFIC)
 
 
-#: A program that DRAWS from `random`, under the three spellings: dotted,
-#: `from random import …`, `import random as r`. An `import random` that is
-#: never used is not this — its stdout is compared like anyone else's, so a
-#: wrong answer elsewhere in the program is not hidden behind the import.
-_USES_RANDOM = re.compile(
-    r"\brandom\s*\.\s*\w+|^\s*from\s+random\s+import\b|\bimport\s+random\s+as\s+\w+", re.M)
+_RANDOM_DOTTED = re.compile(r"\brandom\s*\.\s*\w+")
+_RANDOM_ALIAS = re.compile(r"^\s*import\s+random\s+as\s+(\w+)", re.M)
+#: The names on the import line: inside its parentheses when it has them,
+#: otherwise to the end of the line — never across it.
+_RANDOM_FROM = re.compile(r"^\s*from\s+random\s+import\s+(?:\(([^)]*)\)|([^\n]*))", re.M)
+
+
+def draws_from_random(src: str) -> bool:
+    """Does the program DRAW from `random` — call something of it?
+
+    An import alone is not a draw: `import random as r` followed by `print(2 +
+    2)` has a stdout the battery must compare, or a wrong answer in the rest of
+    the program hides behind an unused import. So the alias and the imported
+    names are read out of the import line and looked for as a call. A star
+    import names nothing and counts as a draw, because it could be one.
+    """
+    if _RANDOM_DOTTED.search(src):
+        return True
+    for m in _RANDOM_ALIAS.finditer(src):
+        if re.search(r"\b%s\s*\.\s*\w+" % re.escape(m.group(1)), src):
+            return True
+    for m in _RANDOM_FROM.finditer(src):
+        names = m.group(1) if m.group(1) is not None else m.group(2)
+        if names.strip() == "*":
+            return True
+        for raw in names.split(","):
+            name = raw.strip().split()[-1] if raw.strip() else ""  # `x as y` binds y
+            if name and re.search(r"\b%s\s*\(" % re.escape(name), src):
+                return True
+    return False
 #: A `seed(...)` call with a real argument, under any spelling — `random.seed(7)`,
 #: `r.seed(7)`, bare `seed(7)` after `from random import seed`. `seed()` and
 #: `seed(None)` draw from the OS and are not this.
@@ -219,7 +243,7 @@ def is_seeded_stream(entry: Any) -> bool:
     src = getattr(entry, "program", "") or ""
     if "seeded" in _tags(entry):
         return True
-    return bool(_USES_RANDOM.search(src) and _SEEDS.search(src))
+    return bool(draws_from_random(src) and _SEEDS.search(src))
 
 
 def is_interpreter_specific(entry: Any) -> bool:
