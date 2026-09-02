@@ -32,6 +32,12 @@ classifiers = [
   "Environment :: Console",
   "Intended Audience :: Developers",
   "Operating System :: POSIX :: Linux",
+  # Claimed 2026-09-02, the day `lypning build --lib`, the library's own tests
+  # (tests/test_embed.py) and every host quickstart passed on an arm64 Mac,
+  # and the day the macos job in ci.yml started running the whole suite there.
+  # The Rust core's static-musl gate is Linux-only; on a Mac the CLI, the
+  # library tier and the hosts over it are what this line promises.
+  "Operating System :: MacOS",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
@@ -82,12 +88,16 @@ lypning = [
   # larger than the checkout's — a whole CheerpX device block — and nothing in
   # any gate would say so, because both binaries pass everything. See the file.
   "assets/rust/.cargo/config.toml",
-  # The C ABI's contract and its four hosts. Headers and example sources are
-  # SOURCE, not build output — a wheel that shipped the library but not the
-  # header would ship something no one can compile against. Named by extension
-  # rather than by directory for the reason the MANIFEST states at length:
-  # `include-package-data` means a careless glob here puts cargo's `target/` in
-  # everyone's wheel.
+  # The C ABI's contract and every host over it (the table in
+  # docs/EMBEDDING.md section 4 is the one place that counts them). Headers,
+  # bindings and example sources are SOURCE, not build output — a wheel that
+  # shipped the library but not the header would ship something no one can
+  # compile against. Named by extension rather than by directory for the reason
+  # the MANIFEST states at length: `include-package-data` means a careless glob
+  # here puts cargo's `target/`, SwiftPM's `.build/` or npm's `node_modules/`
+  # in everyone's wheel. tests/test_packaging.py holds every glob to matching
+  # at least one file, so a renamed asset fails there and not in a `pip` user's
+  # `lypning build`.
   "assets/include/*.h",
   "assets/include/*.hpp",
   "assets/examples/c/Makefile",
@@ -98,6 +108,8 @@ lypning = [
   "assets/examples/rust/Cargo.lock",
   "assets/examples/rust/.gitignore",
   "assets/examples/rust/src/*.rs",
+  "assets/examples/rust/examples/*.rs",
+  "assets/examples/python/*.py",
   "assets/node/*.js",
   "assets/node/*.ts",
   "assets/node/*.json",
@@ -105,6 +117,30 @@ lypning = [
   "assets/node/src/*.rs",
   "assets/node/Cargo.toml",
   "assets/node/Cargo.lock",
+  # build.rs is a crate file like Cargo.toml: without it the addon links on
+  # Linux and fails to link on macOS, where ld64 must be told the Node-API
+  # symbols resolve at dlopen. The core crate's build.rs is the same story
+  # for the library's @rpath install name.
+  "assets/node/build.rs",
+  "assets/rust/build.rs",
+  # The Go module has zero dependencies, hence no go.sum to ship; the
+  # `quickstart/` main package is source too.
+  "assets/go/*.go",
+  "assets/go/go.mod",
+  "assets/go/README.md",
+  "assets/go/quickstart/*.go",
+  # SwiftPM: manifest, the swiftc Makefile for people without it, and the
+  # module map, shim header, sources and tests one level under Sources/ and
+  # Tests/. `*/*` is deliberate over `**`: a recursive glob would follow a
+  # `.build/` that a user's `swift build` left behind.
+  "assets/swift/Package.swift",
+  "assets/swift/Makefile",
+  "assets/swift/README.md",
+  "assets/swift/Sources/*/*",
+  "assets/swift/Tests/*/*",
+  # LuaJIT: no build step, so nothing here is ever output.
+  "assets/lua/*.lua",
+  "assets/lua/README.md",
   "assets/micropython/Makefile",
   "assets/micropython/README.md",
   "assets/micropython/variant/*",

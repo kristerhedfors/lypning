@@ -1,6 +1,6 @@
 // run_cpp.cpp — the C++ host, over the header-only RAII wrapper.
 //
-// Same walk as run_c.c and deliberately so: the point of five hosts over one
+// Same walk as run_c.c and deliberately so: the point of every host over one
 // ABI is that they agree, and two hosts that disagreed about which programs
 // the subset takes would be reporting a binding bug rather than a coverage
 // number. The only thing that differs here is who frees the handles.

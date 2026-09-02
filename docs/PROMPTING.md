@@ -318,21 +318,22 @@ of 88.5%.
 
 Both capture feeds watch for a **process**: the shim on `$PATH` catches an exec
 of `python3`, and the `PreToolUse` hook catches a Bash command that mentions one.
-A host that links `liblypning` and calls `lypning_run()` spawns nothing. Five
-hosts can run ten thousand programs and the corpus will not grow by one — and
+A host that links `liblypning` and calls `lypning_run()` spawns nothing. A
+host can run ten thousand programs and the corpus will not grow by one — and
 the Python host is the worst case, because it *is* a python process, so the shim
 logs the driver script and none of the hundreds of programs it ran. One sighting
 where there should be hundreds reads as a working feed.
 
 §7 is what this study did about it. The durable fix belongs in the C ABI, where
-all five hosts would inherit it at once.
+every host would inherit it at once.
 
 ---
 
-## 7. The five hosts, and the capture loop
+## 7. Every host, and the capture loop
 
-The study's programs were then run through **every host the C ABI has** — C,
-C++, Rust, Node and Python — over one shared program set, with each host given
+The study's programs were then run through **every host the C ABI had on
+2026-08-23** — C, C++, Rust, Node and Python; the table in
+[EMBEDDING.md](EMBEDDING.md) §4 has grown since — over one shared program set, with each host given
 its own copy of the set and each program run with its own entry directory as the
 working directory. Drivers are in `study/hosts/`; none of them falls onward to
 CPython, because the question they answer is what the subset itself takes.
@@ -346,10 +347,27 @@ node-embed         393   341        52       0
 python-embed       393   341        52       0
 ```
 
-**Five bindings, one ABI, byte-identical answers** — including on the refusal
-path, which is the half that has only ever broken silently. That agreement is
-the point of having one ABI and four conveniences over it, and it is asserted
-here rather than assumed.
+**One ABI, byte-identical answers from every binding** — including on the
+refusal path, which is the half that has only ever broken silently. That
+agreement is the point of having one ABI and conveniences over it, and it is
+asserted here rather than assumed.
+
+Re-run on **2026-09-02**, on macOS arm64 (clang, cargo, node 26, go 1.26,
+swift 6.3, luajit 2.1), over every host EMBEDDING.md §4 lists by then:
+
+```
+host          programs   ran   refused   other
+c-embed            393   341        52       0
+cpp-embed          393   341        52       0
+rust-embed         393   341        52       0
+node-embed         393   341        52       0
+python-embed       393   341        52       0
+go-embed           393   341        52       0
+swift-embed        393   341        52       0
+lua-embed          393   341        52       0
+```
+
+3144 records in the log, 393 per host, and `git status` unchanged afterwards.
 
 Each driver appends the shim's own record shape to `$LYPNING_LOG`, with `shim`
 naming the host instead of an interpreter, which is what makes `lypning harvest`
@@ -498,8 +516,8 @@ lypning install                                   # hooks, skill and the python3
 export LYPNING_LOG=~/.lypning/invocations.jsonl
 python3 study/capture_pass.py                     # every program through the shim
 python3 study/hosts/prepare.py                    # lay out the shared program set
-make -C study/hosts && (cd study/hosts/run_rust && cargo build --release)
-sh study/hosts/run_all.sh                         # all five hosts, into the same log
+make -C study/hosts                               # every driver with a build step, and the Node addon
+sh study/hosts/run_all.sh                         # every host, into the same log
 lypning harvest --export && lypning harvest       # sightings, then the corpus
 ```
 
@@ -540,5 +558,5 @@ edit are *correctness outranks the tier* and *a fall-back is free*.
 | `study/data/timing.json` | §5's milliseconds |
 | `study/data/baseline.json` | §9's field baseline |
 | `study/harness.py` | running and grading, behind the net |
-| `study/hosts/` | the five host drivers and the capture record they write |
+| `study/hosts/` | one driver per host in EMBEDDING.md §4, and the capture record each writes |
 | `tests/test_study.py` | that the artifacts above stay consistent with each other and with the engine |

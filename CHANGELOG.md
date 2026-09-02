@@ -14,6 +14,37 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-02** — Three more hosts over the one ABI: Go, Swift, LuaJIT; and a quickstart for every host
+
+- **Go** (`assets/go/`, cgo over the unchanged header, zero modules), **Swift**
+  (`assets/swift/`, a Clang module map over the header, SwiftPM or plain
+  `swiftc`) and **LuaJIT** (`assets/lua/lypning.lua`, `ffi` over the header read
+  at load, no build step) join C, C++, Rust, Node and Python. The table in
+  `docs/EMBEDDING.md` §4 is now the one place the hosts are counted; every other
+  document says "every host" and points there.
+- **One quickstart contract, eight files.** Every host has a
+  `quickstart "<python source>" [args...]` that runs in-process under a step
+  limit, hands a refusal to `python3 -c` once, and otherwise returns the
+  program's own bytes and exit code. `tests/test_hosts.py` drives all of them
+  through the same five probes and counts the traceback on stderr exactly once,
+  which is the retry-a-failed-program drift no per-host test can see; CI runs
+  the same five probes as one shell function per host, on Linux and on a new
+  macOS job.
+- **macOS is a first-class library platform.** `lypning build --lib` writes
+  `liblypning.dylib` with an `@rpath` install name (a `build.rs` in the core
+  crate, macOS only, and byte-identical `lypning` binary with or without it);
+  the truncation check reads Mach-O the Mach-O way; `doctor` and `status`
+  report a missing library as a hole, not a zero. `pyproject.toml` now claims
+  `Operating System :: MacOS` on that basis.
+- **Run against each other, not assumed to agree.** On 2026-09-02 (macOS arm64;
+  clang, cargo, node 26, go 1.26, swift 6.3, luajit 2.1) `study/hosts/run_all.sh`
+  drove every host over the 393-program study set: each of the eight reported
+  341 ran, 52 refused, 0 other; 3144 capture records; `git status` unchanged.
+- **Packaging.** The wheel ships every binding and quickstart as source (40
+  files under `assets/{examples,go,lua,node,swift}` on 2026-09-02) and no build
+  output; `dist-check` also rejects `.build/`, `.swiftpm/`, `node_modules/` and
+  `.so`/`.dylib`/`.node`/`.class`. Both crates declare `rust-version = "1.78"`,
+  the floor the committed lockfile format actually imposes.
 **2026-09-02** — Tier 1 serves seeded `random`, bit for bit; four silent wrong answers found on the way · [#24]
 
 - **`random`, the seeded-integer subset, on tier 1.** `seed(int)`,
@@ -51,6 +82,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 - How many python one-liners either harness actually types is **unmeasured**,
   as is the injected routing paragraph. `docs/HARNESSES.md` says which claims
   were verified against a real install and which were not.
+||||||| parent of 9eac506 (Three more hosts over the one ABI: Go, Swift, LuaJIT; a quickstart for every host)
 
 **2026-08-31** — pathlib costs nothing; `conformance --plan` is now ranked by cost
 

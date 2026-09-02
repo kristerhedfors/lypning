@@ -477,6 +477,7 @@ pipe. On the programs lypning accepts, the process was 96% of the cost.
 ```bash
 lypning build --lib                       # the C ABI, into ~/.lypning/lib
 gcc $(lypning lib --cflags) h.c $(lypning lib --libs)
+python3 src/lypning/assets/examples/python/quickstart.py "print(sum(range(10)))"   # no compiler needed
 ```
 
 ```c
@@ -491,10 +492,22 @@ subset, that lypning ran none of it, and that CPython should answer now. A
 harness that reports it as a failure has turned a speedup into a bug — silently,
 because the program was fine.
 
-Five hosts, one ABI: C and C++ headers in `assets/include/`, a Node addon with
-no npm dependencies in `assets/node/`, the Rust crate directly, and
-`lypning.embed` for Python via `ctypes`. Runnable examples for each live in
-`assets/examples/`.
+One ABI, and a host for every language a harness is likely to be written in.
+Each has a quickstart that is the file to copy, and every quickstart obeys the
+same contract, `quickstart "<python source>" [args...]`. The count, the binding
+for each, and its contract test live in one place, the table in
+`docs/EMBEDDING.md` §4; this is the run line for each, from the repository root:
+
+| host | quickstart | run |
+|---|---|---|
+| C | `src/lypning/assets/examples/c/quickstart.c` | `make -C src/lypning/assets/examples/c quickstart && src/lypning/assets/examples/c/quickstart "print(sum(range(10)))"` |
+| C++ | `src/lypning/assets/examples/cpp/quickstart.cpp` | `make -C src/lypning/assets/examples/cpp quickstart && src/lypning/assets/examples/cpp/quickstart "print(sum(range(10)))"` |
+| Rust | `src/lypning/assets/examples/rust/examples/quickstart.rs` | `cargo run --release --manifest-path src/lypning/assets/examples/rust/Cargo.toml --example quickstart -- "print(sum(range(10)))"` |
+| Node | `src/lypning/assets/node/quickstart.js` | `cd src/lypning/assets/node && cargo build --release && node quickstart.js "print(sum(range(10)))"` |
+| Python | `src/lypning/assets/examples/python/quickstart.py` | `python3 src/lypning/assets/examples/python/quickstart.py "print(sum(range(10)))"` |
+| Go | `src/lypning/assets/go/quickstart/main.go` | `cd src/lypning/assets/go && go run ./quickstart "print(sum(range(10)))"` |
+| Swift | `src/lypning/assets/swift/Sources/quickstart/main.swift` | `swift build -c release --package-path src/lypning/assets/swift && src/lypning/assets/swift/.build/release/quickstart "print(sum(range(10)))"` |
+| LuaJIT | `src/lypning/assets/lua/quickstart.lua` | `luajit src/lypning/assets/lua/quickstart.lua "print(sum(range(10)))"` |
 
 Because there is no process to kill, an embedded run takes a **step limit**
 instead of a timeout, and a refusal is how it reports one. `docs/EMBEDDING.md`
@@ -826,13 +839,22 @@ src/lypning/
   routing.py           IDEAL / LATE / WASTED / UNSAFE — did the classifier pick right
   fuzz.py              generate from the subset's own grammar, diff, shrink
   bench.py             four arms, interleaved, min of repeats, two totals — and corpus-time
+  perf.py              one construct at a time against CPython — where the interpreter's time goes
+  pool.py              the warm CPython backstop: opt-in, off by default
   gate.py              static? how many bytes? how many file opens?
   corpus.py            load, merge, describe — the one module that is pure data
   capture.py           the hook entry points
   harvest.py           log → sightings → corpus, with redaction before the hash
   install.py           merging into someone else's .claude/settings.json
   shim.py              python/python3 on PATH, and when to refuse to install it
+  embed.py             the library tier from Python: liblypning over ctypes, and its contract check
   assets/rust/         the Rust core — zero crates, size-tuned release profile
+  assets/include/      lypning.h, the C ABI, and lypning.hpp over it
+  assets/examples/     the C, C++, Rust and Python hosts: each a quickstart and a contract test
+  assets/node/         the Node-API addon, its own cargo build, no npm dependencies
+  assets/go/           the Go binding, cgo over the header, zero modules
+  assets/swift/        the Swift binding, a module map over the header (SwiftPM or swiftc)
+  assets/lua/          the LuaJIT binding, ffi over the header read at load
   assets/micropython/  the MicroPython variant, its patches and frozen shim stdlib
   assets/corpus/       corpus.jsonl + seed-corpus.jsonl
   assets/claude/       the skill, the hook scripts, the settings.json fragment
@@ -840,6 +862,7 @@ src/lypning/
   assets/scripts/      build-rust.sh, build-micropython.sh
 docs/                  see below, plus logo.svg — the thundercloud in the name
 site/                  the GitHub Pages generator: build.py, index.md, style.css
+study/                 the prompting study: tasks, prompts, scoring, and hosts/ (every host, one battery)
 tests/
 Makefile               thin wrappers: build test check conformance fuzz bench gate
                        doctor install dist dist-check clean  (`make help`)
@@ -855,7 +878,7 @@ Makefile               thin wrappers: build test check conformance fuzz bench ga
 | `docs/CAPTURE.md` | the two capture feeds, the harvest, and the privacy rules |
 | `docs/HARNESSES.md` | wiring the loop into opencode and the OpenHands SDK: what each install writes, what it refuses to write and why, and what is verified against a real install versus merely documented |
 | `docs/COOKBOOK.md` | unsupported Python, rewritten — what to type when a tier refuses |
-| `docs/EMBEDDING.md` | linking the runtime into a harness: the C ABI, the five hosts over it, and what a refusal means when there is no exit code |
+| `docs/EMBEDDING.md` | linking the runtime into a harness: the C ABI, the hosts over it, and what a refusal means when there is no exit code |
 | `docs/PROMPTING.md` | can an agent be *asked* into the subset? 884 generated programs across nine prompt treatments, and what each one bought |
 | `docs/BENCH-LEDGER.md` | append-only measurement history, including the losses |
 | `docs/HILLCLIMB.md` | append-only ledger of improvement steps — the four numbers each moved, and the ones that moved nothing |

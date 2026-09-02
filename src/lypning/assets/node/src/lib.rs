@@ -24,7 +24,7 @@
 //!
 //! Everything here goes through the C ABI in `capi.rs` rather than through
 //! `lypning::embed` directly, even though both are in this process and the
-//! direct call would be shorter. There are four hosts and one contract; a
+//! direct call would be shorter. There is one contract for every host; a
 //! second path to `embed::run` is a second place for the refusal contract to
 //! drift, and it would drift silently, in the host nobody builds by accident.
 
@@ -103,6 +103,15 @@ unsafe extern "C" fn js_route(env: Env, info: napi::CbInfo) -> Value {
 unsafe fn apply_opts(env: Env, q: *mut c::lypning_request, opts: Value) -> Result<(), String> {
     if napi::is_undefined(env, opts) {
         return Ok(());
+    }
+    // A number, a string, an array where the options object belongs is a
+    // caller bug, and the cheap reading of it — every property lookup answers
+    // `undefined`, so every option is "unset" — is the expensive one: a
+    // `stepLimit` the caller believes is in force is not, and `while True:
+    // pass` hangs the event loop. So it is a TypeError, like every other wrong
+    // type here, and nothing runs.
+    if !napi::is_object(env, opts) {
+        return Err("opts must be an object".to_string());
     }
 
     if let Some(v) = napi::get(env, opts, "filename") {

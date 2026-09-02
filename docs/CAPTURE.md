@@ -39,9 +39,9 @@ because a measurement that changed what got published would be one nobody could
 trust.
 
 **Both feeds watch for a PROCESS, and that is their shared blind spot.** A host
-that links `liblypning` and calls `lypning_run()` — any of the five in
-[EMBEDDING.md](EMBEDDING.md) — spawns nothing, so neither feed sees it: five
-hosts can run ten thousand programs and the corpus will not grow by one. The
+that links `liblypning` and calls `lypning_run()` — any host in the table in
+[EMBEDDING.md](EMBEDDING.md) §4 — spawns nothing, so neither feed sees it: a
+host can run ten thousand programs and the corpus will not grow by one. The
 Python host is the worst case, because it *is* a python process, so the shim
 logs the driver script and none of the programs it ran, and one sighting where
 there should be hundreds reads as a working feed. Until the C ABI grows a

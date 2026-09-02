@@ -17,6 +17,7 @@ Three questions, and they are not the same question:
 
 from __future__ import annotations
 
+import struct
 import subprocess
 import threading
 from pathlib import Path
@@ -25,14 +26,19 @@ import pytest
 
 from typing import List
 
-from lypning import embed, engines, paths
+from lypning import build, embed, engines, paths
 from conftest import _INSTALLED_LIBRARY
 
 
 def _INSTALLED_LIBRARY_OR_SKIP() -> embed.Library:
     if _INSTALLED_LIBRARY is None:
         pytest.skip("the C ABI is not built (`lypning build --lib`)")
-    return embed.Library(_INSTALLED_LIBRARY)
+    try:
+        return embed.Library(_INSTALLED_LIBRARY)
+    except embed.LibraryError as e:
+        # The same rule the `lypning_lib` fixture holds: a stale build is a
+        # skip with a reason, not a failure reported against the runtime.
+        pytest.skip("the C ABI at %s is not usable: %s" % (_INSTALLED_LIBRARY, e))
 
 
 # --- the contract ------------------------------------------------------------
@@ -412,12 +418,12 @@ def test_every_exported_symbol_is_in_the_header(lypning_lib):
     symbol the library exports and the header omits is a capability no host can
     reach; one the header promises and the library lacks is a link error in
     somebody else's build."""
-    nm = subprocess.run(["nm", "-D", "--defined-only", str(lypning_lib.path)],
-                        capture_output=True, text=True, check=False)
-    if nm.returncode != 0:
-        pytest.skip("nm is not available")
-    exported = {line.split()[-1] for line in nm.stdout.splitlines()
-                if " lypning_" in line}
+    try:
+        exported = {n for n in build.exported_symbols(lypning_lib.path)
+                    if n.startswith("lypning_")}
+    except OSError as e:
+        pytest.skip("cannot list the library's exported symbols: %s" % e)
+    assert exported, "nm listed no lypning_ symbols at all, which is not a C ABI"
     header = (paths.INCLUDE_DIR / "lypning.h").read_text(encoding="utf-8")
     declared = {name for name in exported if name + "(" in header}
     assert exported == declared, "not declared in lypning.h: %s" % sorted(exported - declared)
@@ -446,7 +452,7 @@ def test_a_truncated_library_is_reported_not_dlopened(monkeypatch, tmp_path, lyp
     """A link killed halfway through leaves one of these in a build tree, and
     `dlopen` maps it: the first call then reads a page past the end of the file
     and takes SIGBUS, which no `except` can see."""
-    half = tmp_path / "liblypning.so"
+    half = tmp_path / embed.LIB_NAME
     half.write_bytes(lypning_lib.path.read_bytes()[:200_000])
     monkeypatch.setenv("LYPNING_LIB", str(half))
     usable, why = engines.library_ready()
@@ -455,9 +461,14 @@ def test_a_truncated_library_is_reported_not_dlopened(monkeypatch, tmp_path, lyp
 
 
 def test_a_foreign_library_is_named_as_such(monkeypatch, tmp_path):
-    other = Path("/lib/x86_64-linux-gnu/libm.so.6")
-    if not other.is_file():
-        pytest.skip("no other shared library to point at")
+    """A shared object that loads and is not ours must be reported as not
+    ours, not as a crash on the first missing symbol. ``_ctypes`` is the one
+    shared object every CPython that can run this suite is guaranteed to have,
+    on every platform."""
+    import _ctypes
+    other = Path(getattr(_ctypes, "__file__", "") or "")
+    if not other.is_file() or other.suffix not in (".so", ".dylib", ".pyd"):
+        pytest.skip("_ctypes is built into this interpreter; no other shared library to point at")
     monkeypatch.setenv("LYPNING_LIB", str(other))
     usable, why = engines.library_ready()
     assert usable is False
@@ -465,9 +476,65 @@ def test_a_foreign_library_is_named_as_such(monkeypatch, tmp_path):
 
 
 def test_engines_reports_an_unusable_library_rather_than_failing_runs(monkeypatch, tmp_path):
-    fake = tmp_path / "liblypning.so"
+    fake = tmp_path / embed.LIB_NAME
     fake.write_bytes(b"not an elf file")
     monkeypatch.setenv("LYPNING_LIB", str(fake))
     usable, why = engines.library_ready()
     assert usable is False
     assert why
+
+
+# --- the shallow format check, without a compiler --------------------------
+
+
+def _macho_dylib(linkedit_end: int) -> bytes:
+    """A minimal Mach-O 64 image: a header and one LC_SEGMENT_64 for
+    ``__LINKEDIT`` whose file extent ends at ``linkedit_end``."""
+    seg = struct.pack("<II16sQQQQIIII", 0x19, 72, b"__LINKEDIT", 0, 0,
+                      0, linkedit_end, 0, 0, 0, 0)
+    header = struct.pack("<IiiIIIII", 0xFEEDFACF, 0x0100000C, 0, 6, 1, len(seg), 0, 0)
+    return header + seg
+
+
+def test_the_format_check_reads_mach_o_the_mach_o_way(tmp_path):
+    """The check is not "starts with the right bytes": a Mach-O image ends
+    with its ``__LINKEDIT`` segment, so that is the extent it asks about, the
+    way it asks ELF about the section table."""
+    whole = tmp_path / embed.LIB_NAME
+    image = _macho_dylib(linkedit_end=4096)
+    whole.write_bytes(image + b"\0" * (4096 - len(image)))
+    assert embed._looks_like_a_library(whole) == ""
+
+    short = tmp_path / ("short-" + embed.LIB_NAME)
+    short.write_bytes(image + b"\0" * 100)
+    why = embed._looks_like_a_library(short)
+    assert "truncated" in why and "4096" in why
+
+    headerless = tmp_path / ("headerless-" + embed.LIB_NAME)
+    headerless.write_bytes(image[:40])
+    assert "truncated" in embed._looks_like_a_library(headerless)
+
+
+def test_the_format_check_still_reads_elf(tmp_path):
+    """The ELF path is untouched by the Mach-O one: a header whose section
+    table lies past the end of the file is the truncation it always caught."""
+    head = bytearray(64)
+    head[:4] = b"\x7fELF"
+    head[4] = 2          # 64-bit
+    head[5] = 1          # little-endian
+    head[0x28:0x30] = (1 << 20).to_bytes(8, "little")   # e_shoff
+    head[0x3A:0x3C] = (64).to_bytes(2, "little")         # e_shentsize
+    head[0x3C:0x3E] = (4).to_bytes(2, "little")          # e_shnum
+    elf = tmp_path / "liblypning.so"
+    elf.write_bytes(bytes(head))
+    assert "truncated" in embed._looks_like_a_library(elf)
+
+
+def test_the_shared_library_name_is_decided_once():
+    """The build, the installer and discovery must agree on the file name, or
+    a build reports ok about a file discovery never finds."""
+    assert build.LIB_SHARED == embed.LIB_NAME
+    assert embed.shared_library_name("darwin") == "liblypning.dylib"
+    assert embed.shared_library_name("linux") == "liblypning.so"
+    assert embed.find_library.__doc__  # the candidates below read LIB_NAME
+    assert (embed.lib_dir() / embed.LIB_NAME).name == embed.LIB_NAME

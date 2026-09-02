@@ -22,7 +22,16 @@ _site/
 src/lypning/assets/examples/rust/target/
 src/lypning/assets/node/target/
 src/lypning/assets/examples/*/embed
+src/lypning/assets/examples/*/quickstart
 src/lypning/assets/examples/*/*.o
+# Go drops a binary next to its main package when built without -o; SwiftPM
+# writes .build/ (and .swiftpm/ when an IDE opens it), the swiftc Makefiles
+# write build/ and a bare binary. The study's Go and Swift hosts do the same.
+src/lypning/assets/go/quickstart/quickstart
+src/lypning/assets/swift/.build/
+src/lypning/assets/swift/.swiftpm/
+src/lypning/assets/swift/build/
+src/lypning/assets/swift/quickstart
 
 # hillclimb baselines — throwaway, per-machine, never committed
 .hillclimb/
@@ -33,4 +42,7 @@ src/lypning/assets/examples/*/*.o
 study/hosts/run_c
 study/hosts/run_cpp
 study/hosts/run_rust/target/
+study/hosts/run_go/run_go
+study/hosts/run_swift/build/
+study/hosts/run_swift/run_swift
 study/data/hostset/

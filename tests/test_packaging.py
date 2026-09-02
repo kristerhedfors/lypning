@@ -141,14 +141,31 @@ def test_manifest_ships_a_runnable_test_suite() -> None:
 def test_manifest_prunes_every_build_directory() -> None:
     """`include_package_data = true` makes MANIFEST.in a wheel-contents file.
 
-    These three directories are where cargo and the MicroPython make put their
-    object files. Nothing names them today; the prunes are what keeps a future
-    `graft src` from putting a gigabyte inside `pip install lypning`.
+    These directories are where cargo, the MicroPython make, npm and SwiftPM
+    put their object files: the core crate, the MicroPython tree, and one per
+    host over the C ABI that has a build step (the Rust example and the Node
+    addon each grow a cargo `target/`, npm a `node_modules/`, SwiftPM a
+    `.build/` plus the `.swiftpm/` an IDE adds, the swiftc Makefile a
+    `build/`). Go writes only to GOCACHE and LuaJIT has no build step, so
+    neither has a prune and neither is missing one.
+
+    Nothing in MANIFEST.in names any of them today; the prunes are what keeps
+    a future `graft src` from putting a gigabyte inside `pip install lypning`.
+    Every prune the file has is pinned here, so dropping one is a deliberate
+    edit in two places rather than a line lost in a tidy-up: the failure it
+    guards against is invisible in the checkout and visible only in the size
+    of a wheel nobody weighs.
     """
     text = MANIFEST.read_text()
     for d in ("src/lypning/assets/rust/target",
               "src/lypning/assets/micropython/build",
-              "src/lypning/assets/micropython/.build"):
+              "src/lypning/assets/micropython/.build",
+              "src/lypning/assets/examples/rust/target",
+              "src/lypning/assets/node/target",
+              "src/lypning/assets/node/node_modules",
+              "src/lypning/assets/swift/.build",
+              "src/lypning/assets/swift/.swiftpm",
+              "src/lypning/assets/swift/build"):
         assert re.search(r"^prune %s$" % re.escape(d), text, re.M), d
 
 

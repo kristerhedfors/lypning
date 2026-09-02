@@ -33,11 +33,18 @@ recursive-include tests/corpus *.jsonl
 # files. Nothing above names them today; these lines are what stops a future
 # `graft src` from shipping a gigabyte to everyone who types `pip install`.
 prune src/lypning/assets/rust/target
-# The same defence for the three build trees the C ABI's hosts create: a cargo
+# The same defence for every build tree the C ABI's hosts create: a cargo
 # `target/` under an example or under the Node addon is the same gigabyte by
-# another name, and `pip install` must not carry it.
+# another name, and `pip install` must not carry it. SwiftPM writes `.build/`
+# (and `.swiftpm/` for an IDE that opened the package); the Swift Makefile's
+# swiftc path writes `build/`. Go and LuaJIT create no tree here: `go build`
+# writes to GOCACHE and the Lua host has no build step. tests/test_packaging.py
+# pins every prune below, so removing one is a deliberate edit there too.
 prune src/lypning/assets/examples/rust/target
 prune src/lypning/assets/node/target
 prune src/lypning/assets/node/node_modules
+prune src/lypning/assets/swift/.build
+prune src/lypning/assets/swift/.swiftpm
+prune src/lypning/assets/swift/build
 prune src/lypning/assets/micropython/build
 prune src/lypning/assets/micropython/.build

@@ -1,5 +1,7 @@
 /*
- * embed.c — the C ABI, executable.
+ * embed.c — the contract test for the C ABI. This is NOT the file to copy:
+ * that is quickstart.c, next to it, which is the whole host in fifty lines.
+ * This one is long because it is a test first and a demonstration second.
  *
  * The one invariant this file holds: **a refusal is a route, not an error**,
  * and it is asserted against the library that was just built rather than
@@ -10,20 +12,21 @@
  * should_fall_onward) are assert()ed here, and this program exits non-zero the
  * moment one of them stops being true.
  *
- * It is also the file a harness author copies. So it does not stop at the
- * refusal: it implements the other half of the mixture, the fork/execvp onto
- * python3, because a demo that prints "would fall onward" and stops has
- * demonstrated the easy half. Six programs go in. Three are run here; one is
- * refused and answered by CPython; two are refused and this host declines to
- * route them onward, for two different reasons it prints. Declining is a
- * decision the ABI leaves to the host, and both of those are cases where
- * routing onward would be the mistake.
+ * It does not stop at the refusal: it implements the other half of the
+ * mixture, the fork/execvp onto python3 with stdin forwarded as bytes,
+ * because a test that prints "would fall onward" and stops has tested the
+ * easy half. Six programs go in. Three are run here; one is refused and
+ * answered by CPython; two are refused and this host declines to route them
+ * onward, for two different reasons it prints. Declining is a decision the
+ * ABI leaves to the host, and both of those are cases where routing onward
+ * would be the mistake.
  *
  * If the fallback tier cannot be started at all, that is reported and this
  * program exits non-zero: a run in which a program went unanswered has not
  * demonstrated a mixture, whatever the assertions say.
  *
- * Build: make. Read the Makefile for which library it picked.
+ * Build and run: make run. Read the Makefile for which library it picked, and
+ * for why it runs this from a temp directory rather than from the checkout.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -431,8 +434,14 @@ static int cpython_run(const program *p, blob *out, blob *err, int *start_errno)
             /* A program is entitled to ignore its stdin, and the one above that
              * sums sys.argv does. That closes the pipe under us: with SIGPIPE
              * ignored in main() the write returns EPIPE and we simply stop
-             * writing, rather than dying of the program's success. */
-            if (k <= 0 || sent == p->stdin_len) {
+             * writing, rather than dying of the program's success.
+             *
+             * EINTR and EAGAIN are not that. The pipe is still open and poll()
+             * will say when it takes more; closing on them would hand the
+             * program a stdin cut off mid-stream, and the two engines would
+             * then disagree on an input that was never the same. */
+            if ((k < 0 && errno != EINTR && errno != EAGAIN)
+                || sent == p->stdin_len) {
                 close(w);
                 w = -1;
             }

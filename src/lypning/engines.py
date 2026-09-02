@@ -152,7 +152,7 @@ def _is_shim(p: Path) -> bool:
     except OSError:
         return False
     if head[:2] != b"#!":
-        return False  # a real interpreter is ELF, not a script
+        return False  # a real interpreter is a native image (ELF or Mach-O), not a script
     return SHIM_MARKER.encode() in head
 
 
@@ -789,7 +789,7 @@ def _verdict(res: "Result") -> tuple[str, str]:
 
 
 def library_binary_drift(programs: Sequence[str] = DRIFT_PROBES,
-                         *, timeout: float = 10.0) -> list[tuple[str, str, str]]:
+                         *, timeout: float = 10.0) -> list[tuple[str, str, str]] | None:
     """Return the probes on which the C ABI and the spawned binary disagree.
 
     The two artifacts are built from one tree but installed independently, so
@@ -804,9 +804,15 @@ def library_binary_drift(programs: Sequence[str] = DRIFT_PROBES,
     A host-linked library and a musl-static binary can legitimately differ in
     the last ULP of a libm result, so float-sensitive probes stay out of the
     default set.
+
+    ``None`` means NOT MEASURED — the binary or a usable library is absent, so
+    there was one artifact to ask. It is not an empty list on purpose: "agree"
+    and "could not compare" are different facts, and a caller that rendered the
+    second as the first would report a comparison nobody made (a hole, never a
+    zero — the rule every unbuilt tier in this package follows).
     """
     if find(LYPNING) is None or run_library("").returncode == 127:
-        return []
+        return None
     out: list[tuple[str, str, str]] = []
     for program in programs:
         binary = run(LYPNING, program, timeout=timeout)

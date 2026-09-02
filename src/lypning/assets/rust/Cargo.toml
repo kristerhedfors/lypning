@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2021"
 description = "The Coding Harness Interpreter Optimizer — a from-scratch Rust runtime (the bottom tier of a mixture of Pythons) for agent-typed Python one-liners"
 license = "MIT"
+# The floor is the committed Cargo.lock, which the wheel ships and `lypning
+# build` hands to cargo: it is lockfile format 4, which cargo before 1.78
+# refuses to read. The source itself needs only `Option::is_some_and` (1.70),
+# measured by grep rather than by a compile under 1.70, but a floor a user
+# cannot actually build at is a claim, not a floor.
+rust-version = "1.78"
 
 # ZERO runtime dependencies, on purpose. CLAUDE.md invariant 5 governs src/;
 # the same discipline applies here for a second reason: every crate linked in

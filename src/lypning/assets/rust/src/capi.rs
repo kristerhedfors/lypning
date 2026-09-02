@@ -1,11 +1,12 @@
 //! The C ABI — the surface every other language binds to.
 //!
-//! There are four hosts in this repository (C, C++, Rust, Node) and only one of
-//! them speaks Rust. So this file is the real API, and everything else is a
-//! convenience over it: a C header, a header-only C++ wrapper, a Node addon and
-//! a ctypes module all call exactly these symbols. Adding a capability here
-//! adds it everywhere; adding it anywhere else adds it in one place and quietly
-//! makes the four disagree.
+//! Every host in this repository binds to it (the table in docs/EMBEDDING.md
+//! section 4 is the list) and only one of them speaks Rust. So this file is the
+//! real API, and everything else is a convenience over it: a C header, a
+//! header-only C++ wrapper, a Node addon, a ctypes module and every binding
+//! after them call exactly these symbols. Adding a capability here adds it
+//! everywhere; adding it anywhere else adds it in one place and quietly makes
+//! the hosts disagree.
 //!
 //! Five rules, and they are what make the surface safe to hand to a stranger:
 //!
@@ -65,6 +66,20 @@ fn status_code(s: Status) -> i32 {
 /// this, and none of them contain one.
 fn cstr(s: &str) -> CString {
     CString::new(s.replace('\0', "")).unwrap_or_default()
+}
+
+/// One readable NUL, so the pointer returned for an empty buffer or a NULL
+/// handle is a real address and C code that treats it as a string finds it
+/// terminated.
+static EMPTY: [u8; 1] = [0];
+
+/// `""` for every `const char *` accessor handed a NULL handle. A host that
+/// forgot the NULL check and did `strcmp(lypning_route_kind(r), "module")`
+/// would otherwise crash inside libc, far from the line that was wrong; an
+/// empty string is the answer a live handle gives when there is nothing to
+/// say, and the same answer is safe here.
+fn empty_cstr() -> *const c_char {
+    EMPTY.as_ptr() as *const c_char
 }
 
 /// Borrow `len` bytes as `&str`, or `None` if they are not UTF-8.
@@ -132,11 +147,14 @@ pub unsafe extern "C" fn lypning_route_new(src: *const c_char, len: usize) -> *m
 }
 
 /// `"lypning"`, `"lypning-mp"` or `"cpython"` — the tier that should run it.
+/// `""` for a NULL handle, as for every string accessor here: a route the host
+/// never got names no tier, and a host that failed to check must not crash in
+/// `strcmp` for it.
 #[no_mangle]
 pub unsafe extern "C" fn lypning_route_engine(r: *const lypning_route) -> *const c_char {
     match r.as_ref() {
         Some(r) => r.engine.as_ptr(),
-        None => ptr::null(),
+        None => empty_cstr(),
     }
 }
 
@@ -146,7 +164,7 @@ pub unsafe extern "C" fn lypning_route_engine(r: *const lypning_route) -> *const
 pub unsafe extern "C" fn lypning_route_kind(r: *const lypning_route) -> *const c_char {
     match r.as_ref() {
         Some(r) => r.kind.as_ptr(),
-        None => ptr::null(),
+        None => empty_cstr(),
     }
 }
 
@@ -155,7 +173,7 @@ pub unsafe extern "C" fn lypning_route_kind(r: *const lypning_route) -> *const c
 pub unsafe extern "C" fn lypning_route_detail(r: *const lypning_route) -> *const c_char {
     match r.as_ref() {
         Some(r) => r.detail.as_ptr(),
-        None => ptr::null(),
+        None => empty_cstr(),
     }
 }
 
@@ -168,14 +186,21 @@ pub unsafe extern "C" fn lypning_route_import_count(r: *const lypning_route) -> 
 /// The `i`th import — **sorted and deduplicated**, not in source order — or
 /// NULL when `i` is out of range. Use `lypning_route_detail` for the one import
 /// that actually decided the tier.
+///
+/// NULL is the loop terminator and only that: a NULL *handle* answers `""`
+/// like every other string accessor, so a host that indexes a route it never
+/// got does not read a NULL it was not testing for.
 #[no_mangle]
 pub unsafe extern "C" fn lypning_route_import(
     r: *const lypning_route,
     i: usize,
 ) -> *const c_char {
-    match r.as_ref().and_then(|r| r.imports.get(i)) {
-        Some(s) => s.as_ptr(),
-        None => ptr::null(),
+    match r.as_ref() {
+        Some(r) => match r.imports.get(i) {
+            Some(s) => s.as_ptr(),
+            None => ptr::null(),
+        },
+        None => empty_cstr(),
     }
 }
 
@@ -375,10 +400,6 @@ pub unsafe extern "C" fn lypning_result_stderr(
     bytes(r.as_ref().map(|r| &r.out.stderr), len)
 }
 
-/// One readable NUL, so the pointer returned for an empty buffer is a real
-/// address and C code that treats output as a string finds it terminated.
-static EMPTY: [u8; 1] = [0];
-
 unsafe fn bytes(b: Option<&Vec<u8>>, len: *mut usize) -> *const u8 {
     match b {
         Some(b) => {
@@ -412,7 +433,7 @@ unsafe fn bytes(b: Option<&Vec<u8>>, len: *mut usize) -> *const u8 {
 pub unsafe extern "C" fn lypning_result_kind(r: *const lypning_result) -> *const c_char {
     match r.as_ref() {
         Some(r) => r.kind.as_ptr(),
-        None => ptr::null(),
+        None => empty_cstr(),
     }
 }
 
@@ -421,7 +442,7 @@ pub unsafe extern "C" fn lypning_result_kind(r: *const lypning_result) -> *const
 pub unsafe extern "C" fn lypning_result_detail(r: *const lypning_result) -> *const c_char {
     match r.as_ref() {
         Some(r) => r.detail.as_ptr(),
-        None => ptr::null(),
+        None => empty_cstr(),
     }
 }
 

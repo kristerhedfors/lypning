@@ -1,6 +1,11 @@
 /*
- * embed.cpp — the whole integration, in one file: route, run in-process, and
- * on a refusal fall onward to CPython.
+ * embed.cpp — the contract test for the C++ header: route, run in-process, and
+ * on a refusal fall onward to CPython, with every refusal checked against the
+ * properties a host branches on.
+ *
+ * This is the file that fails when the header stops being right. The file to
+ * COPY is quickstart.cpp beside it: the same branch in forty lines, with
+ * nothing else on the page.
  *
  * The one thing this example exists to show: THE REFUSAL PATH IS ORDINARY
  * CODE. There is no try/catch anywhere below, nothing is logged as an error,
@@ -17,7 +22,7 @@
  * python3 with three pipes. That is what a host already has, and lypning is
  * only worth linking if it can be dropped in front of it unchanged.
  *
- * Build:  make        (see the Makefile beside this file)
+ * Build and run:  make run        (see the Makefile beside this file)
  */
 
 #include "lypning.hpp"
@@ -276,7 +281,7 @@ int main() {
         {"print(1/0)", {}, "", true, "the program's own failure"},
         {"import re;print(re.findall(r'\\d+','a1b22'))", {}, "", true, "outside the subset"},
         {"print(f\"{3*7=}\")", {}, "", true, "outside the subset"},
-        {"print(open('/etc/hostname').read().strip())", {}, "", false, "filesystem denied"},
+        {"print(open('/etc/hosts').read().strip())", {}, "", false, "filesystem denied"},
         {"while True: pass", {}, "", true, "runaway, stopped by the step limit"},
     };
 

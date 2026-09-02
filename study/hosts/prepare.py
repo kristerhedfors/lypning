@@ -1,10 +1,10 @@
 """Lay out the program set every host driver reads.
 
 A JSON parser is a dependency, and the C host has none — so the set is a
-directory of plain files rather than a JSONL the five hosts would each have to
-parse differently. One directory per program: the program itself, its stdin,
-and its arguments one per line. Every host walks it the same way, which is the
-only reason the five results are comparable.
+directory of plain files rather than a JSONL every host would have to parse
+its own way. One directory per program: the program itself, its stdin, and its
+arguments one per line. Every host walks it the same way, which is the only
+reason the results are comparable across hosts.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ def main() -> int:
                                 encoding="utf-8")
         # The task's fixtures, so a host that chdir's into this directory gives
         # the program the working directory it was written against. Without
-        # them every file-reading program raises, and five hosts agree on a
+        # them every file-reading program raises, and every host agrees on a
         # FileNotFoundError instead of on what the subset takes.
         for name, content in (t.get("files") or {}).items():
             f = d / name

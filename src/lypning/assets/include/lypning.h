@@ -16,14 +16,24 @@
  * a speedup into a bug. The whole design rests on this: lypning is allowed to
  * be small precisely because refusing is free and always safe.
  *
+ * The complete minimal host. Nothing in it is optional, and there is nothing
+ * else to it (assets/examples/c/quickstart.c is this, buildable):
+ *
+ *     lypning_request *q = lypning_request_new(src, len);
+ *     if (q == NULL) {                        // not UTF-8: that is CPython's
+ *         return run_it_on_python3(src);      // to reject, not ours to report
+ *     }
+ *     lypning_request_set_step_limit(q, 10000000);   // no process to kill
  *     lypning_result *r = lypning_run(q);
  *     if (lypning_result_should_fall_onward(r)) {
- *         run_it_on_python3(src);          // your existing path, unchanged
+ *         run_it_on_python3(src);              // your existing path, unchanged
  *     } else {
- *         use(lypning_result_stdout(r, &n),
- *             lypning_result_exit_code(r));
+ *         use(lypning_result_stdout(r, &n),    // bytes, with a length
+ *             lypning_result_stderr(r, &m),
+ *             lypning_result_exit_code(r));    // a traceback IS the answer: 1
  *     }
  *     lypning_result_free(r);
+ *     lypning_request_free(q);
  *
  * What makes that safe is the commit barrier: a refused run has written no
  * output, touched no file, and consumed no input, so running the program again
@@ -38,7 +48,10 @@
  * ---------------------------------------------------------------------------
  *
  *   * Every handle is opaque and is freed with its own _free. Freeing NULL is
- *     fine; every accessor tolerates NULL and answers 0, "" or NULL.
+ *     fine, and every accessor tolerates a NULL handle: integers answer 0 (or
+ *     -1 where the comment says so), every `const char *` answers "" and
+ *     NEVER NULL, and the two byte buffers answer NULL with a length of 0.
+ *     So a host that forgot a check reads an empty string, not a fault.
  *   * Returned pointers belong to the handle and die with it. Copy anything you
  *     need to outlive it.
  *   * Returned strings are NUL-terminated. Program OUTPUT is bytes with a
@@ -105,7 +118,7 @@ enum {
 /* --- version ------------------------------------------------------------- */
 
 uint32_t lypning_abi_version(void);
-/* The runtime version, e.g. "0.1.0". Static storage; do not free. */
+/* The runtime version, e.g. "0.1.0". Static storage, never NULL; do not free. */
 const char *lypning_version(void);
 
 /* --- routing: which interpreter should run this? ------------------------- */
@@ -121,17 +134,22 @@ const char *lypning_version(void);
 
 typedef struct lypning_route lypning_route;
 
+/* NULL if `src` is not UTF-8 or is NULL itself. */
 lypning_route *lypning_route_new(const char *src, size_t len);
-/* "lypning", "lypning-mp" or "cpython". */
+/* "lypning", "lypning-mp" or "cpython". "" for a NULL handle. */
 const char *lypning_route_engine(const lypning_route *r);
-/* The construct that pushed it past lypning ("module", "async", …), or "". */
+/* The construct that pushed it past lypning ("module", "async", …), or "".
+ * Also "" for a NULL handle. */
 const char *lypning_route_kind(const lypning_route *r);
-/* Its detail ("import re"), or "". */
+/* Its detail ("import re"), or "". Also "" for a NULL handle. */
 const char *lypning_route_detail(const lypning_route *r);
+/* 0 for a NULL handle. */
 size_t lypning_route_import_count(const lypning_route *r);
 /* The i'th import, or NULL when i is out of range. SORTED AND DEDUPLICATED, not
  * in source order: the question is which modules a program needs, which has no
- * order. For the one import that decided the tier, read lypning_route_detail. */
+ * order. For the one import that decided the tier, read lypning_route_detail.
+ * NULL is the loop terminator and only that: a NULL handle answers "", like
+ * every other string accessor, and has an import count of 0. */
 const char *lypning_route_import(const lypning_route *r, size_t i);
 void lypning_route_free(lypning_route *r);
 
@@ -139,12 +157,20 @@ void lypning_route_free(lypning_route *r);
 
 typedef struct lypning_request lypning_request;
 
-/* `src` is UTF-8 Python source, `len` bytes. NULL if it is not UTF-8. */
+/* `src` is UTF-8 Python source, `len` bytes. NULL if it is not UTF-8.
+ *
+ * A NULL here MUST BE ROUTED ONWARD, exactly like a refusal: lypning has run
+ * none of it and has nothing to say about it, and whether the bytes are a
+ * program at all is CPython's to decide with its own message. It is not an
+ * error to report, and not a reason to stop. The snippet at the top of this
+ * file shows the branch. */
 lypning_request *lypning_request_new(const char *src, size_t len);
 /* sys.argv[0]. Unset gives CPython's `-c` shape, which is what a one-liner is.
  * Returns 0 on success, -1 on bad arguments. */
 int lypning_request_set_filename(lypning_request *q, const char *name, size_t len);
-/* Append one entry to sys.argv[1:]. 0 on success, -1 on bad arguments. */
+/* Append one entry to sys.argv[1:]. 0 on success, -1 on bad arguments: `q`
+ * NULL, or `arg` not UTF-8 — which is routed onward like a NULL request, not
+ * dropped, because CPython would have seen that argument and lypning did not. */
 int lypning_request_add_arg(lypning_request *q, const char *arg, size_t len);
 /* The program's stdin, as bytes. Unset is an empty stream — the library never
  * reads your fd 0. 0 on success, -1 on bad arguments. */
@@ -188,13 +214,15 @@ int32_t lypning_result_status(const lypning_result *r);
  * for an uncaught exception, 90 for a refusal, -1 for a NULL result. */
 int32_t lypning_result_exit_code(const lypning_result *r);
 /* The program's stdout. Empty after a refusal, by the commit barrier. The
- * pointer is non-NULL even when the length is 0. `len` may be NULL. */
+ * pointer is non-NULL even when the length is 0; NULL, with `*len` set to 0,
+ * only for a NULL result. `len` may be NULL. */
 const uint8_t *lypning_result_stdout(const lypning_result *r, size_t *len);
 /* The program's stderr: its traceback, or after a refusal exactly the one
  * `lypning: unsupported: <kind>: <detail>` line the binary would have printed. */
 const uint8_t *lypning_result_stderr(const lypning_result *r, size_t *len);
 /* The refusal's two halves, so you can branch on the kind without parsing the
- * line apart: "module" / "import re". "" when the run was not a refusal. */
+ * line apart: "module" / "import re". "" when the run was not a refusal, and
+ * "" for a NULL result. */
 const char *lypning_result_kind(const lypning_result *r);
 const char *lypning_result_detail(const lypning_result *r);
 /* Did the run pass the commit point — where staged output and staged file

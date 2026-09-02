@@ -52,7 +52,7 @@ PAGES = [
     ("docs/RESEARCH.md", "docs/research.html", "Research", "How the runtime was chosen and built, including what was measured and rejected."),
     ("docs/CAPTURE.md", "docs/capture.html", "Capture", "The hooks and shim that grow the corpus, and what they do and do not record."),
     ("docs/PROMPTING.md", "docs/prompting.html", "Prompting", "Can an agent be asked into the subset? 884 generated programs across nine treatments."),
-    ("docs/EMBEDDING.md", "docs/embedding.html", "Embedding", "Linking the runtime into a harness: the C ABI, the five bindings, and what a refusal means with no exit code."),
+    ("docs/EMBEDDING.md", "docs/embedding.html", "Embedding", "Linking the runtime into a harness: the C ABI, the bindings over it, and what a refusal means with no exit code."),
     ("docs/BENCH-LEDGER.md", "docs/bench-ledger.html", "Bench ledger", "Append-only measurement history, including the runs where the subset lost."),
     ("docs/HILLCLIMB.md", "docs/hillclimb.html", "Hillclimb ledger", "Append-only history of improvement steps — the four numbers each moved, and the ones that moved nothing."),
     ("docs/SANDBOX-PERFORMANCE.md", "docs/sandbox-performance.html", "Sandbox cost", "The measurements the whole project is downstream of."),

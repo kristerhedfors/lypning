@@ -4,9 +4,10 @@ Everything else in this package reaches an engine by spawning it. This module
 is the exception, and it exists for three reasons that are worth keeping
 straight:
 
-  * It is the **fourth binding**. C, C++, Rust and Node all call the same
-    symbols; a Python one written against the same header is what lets the test
-    suite exercise the ABI without a compiler in the loop.
+  * It is **one of the hosts**. Every host in the table in ``docs/EMBEDDING.md``
+    section 4 calls the same symbols; a Python one written against the same
+    header is what lets the test suite exercise the ABI without a compiler in
+    the loop.
   * It is what **asserts the library's refusal contract**. A shared object has
     no exit code, so the pinned check that :mod:`lypning.build` runs on the
     binary has no meaning here until something calls into the ABI and looks at
@@ -30,6 +31,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Sequence
@@ -55,7 +57,20 @@ STATUS_NAMES = {OK: "ok", ERROR: "error", UNSUPPORTED: "unsupported",
 REFUSAL_PROGRAM = "import subprocess"
 REFUSAL_LINE = b"lypning: unsupported: module: import subprocess\n"
 
-LIB_NAME = "liblypning.so"
+
+def shared_library_name(platform: str = sys.platform) -> str:
+    """``liblypning.dylib`` on macOS, ``liblypning.so`` everywhere else.
+
+    The ONE place the file name is decided. Every other spelling in the package
+    — the build's output, the installer's destination, discovery, the help text
+    — reads :data:`LIB_NAME`, because two spellings is a build that succeeds on
+    one platform and installs a file nothing will ever find on the other.
+    """
+    return "liblypning.dylib" if platform == "darwin" else "liblypning.so"
+
+
+#: The shared library's file name on THIS platform.
+LIB_NAME = shared_library_name()
 
 
 class LibraryError(Exception):
@@ -105,22 +120,52 @@ def include_dir() -> Path:
     return paths.state_dir() / "include"
 
 
+_ELF_MAGIC = b"\x7fELF"
+#: MH_MAGIC_64 as it sits on disk (little-endian), and its byte-swapped twin.
+_MACHO_64_MAGICS = (b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf")
+#: A universal ("fat") image: several Mach-O slices behind one big-endian table.
+_FAT_MAGIC = b"\xca\xfe\xba\xbe"
+_LC_SEGMENT_64 = 0x19
+_MACHO_64_HEADER = 32
+
+
 def _looks_like_a_library(path: Path) -> str:
     """``""`` if the file can be handed to ``dlopen``, else the reason it cannot.
 
-    Deliberately shallow: the ELF magic and the size the file's own headers
-    imply. It cannot prove a library is loadable — only the loader can — but it
-    catches the case that would otherwise be fatal rather than reportable, a
-    file truncated mid-write.
+    Deliberately shallow: the ELF or Mach-O magic and the size the file's own
+    headers imply. It cannot prove a library is loadable — only the loader can
+    — but it catches the case that would otherwise be fatal rather than
+    reportable, a file truncated mid-write.
+
+    Each format says where its last byte is in its own way. ELF puts the
+    section table last, so its end is the file's end. A Mach-O image ends with
+    its ``__LINKEDIT`` segment (symbol and relocation tables), so the check
+    walks the load commands to that segment and asks whether it fits. A fat
+    image is a table of slices, and every slice has to fit.
     """
     try:
         size = path.stat().st_size
         with open(path, "rb") as fh:
             head = fh.read(64)
+            if head[:4] in _MACHO_64_MAGICS or head[:4] == _FAT_MAGIC:
+                # The load commands sit right after the 32-byte header, and
+                # `sizeofcmds` (offset 20) says how far they run.
+                order = "little" if head[:4] == _MACHO_64_MAGICS[0] else "big"
+                want = 8 + 20 * 64 if head[:4] == _FAT_MAGIC else \
+                    _MACHO_64_HEADER + int.from_bytes(head[20:24], order)
+                head += fh.read(max(0, want - len(head)))
     except OSError as e:
         return str(e)
-    if head[:4] != b"\x7fELF":
-        return "not an ELF file"
+    if head[:4] == _ELF_MAGIC:
+        return _elf_truncation(head, size)
+    if head[:4] in _MACHO_64_MAGICS:
+        return _macho_truncation(head, size)
+    if head[:4] == _FAT_MAGIC:
+        return _fat_truncation(head, size)
+    return "not an ELF or Mach-O file"
+
+
+def _elf_truncation(head: bytes, size: int) -> str:
     if len(head) < 64:
         return "the ELF header is truncated (%d bytes)" % len(head)
     if head[4] != 2:
@@ -135,6 +180,53 @@ def _looks_like_a_library(path: Path) -> str:
     end = shoff + shentsize * shnum
     if end > size:
         return "truncated — its headers describe %d bytes and the file is %d" % (end, size)
+    return ""
+
+
+def _macho_truncation(head: bytes, size: int) -> str:
+    order = "little" if head[:4] == _MACHO_64_MAGICS[0] else "big"
+    if len(head) < _MACHO_64_HEADER:
+        return "the Mach-O header is truncated (%d bytes)" % len(head)
+    ncmds = int.from_bytes(head[16:20], order)
+    sizeofcmds = int.from_bytes(head[20:24], order)
+    if _MACHO_64_HEADER + sizeofcmds > size:
+        return "truncated — its load commands run to byte %d and the file is %d" % (
+            _MACHO_64_HEADER + sizeofcmds, size)
+    off = _MACHO_64_HEADER
+    for _ in range(ncmds):
+        if off + 8 > len(head):
+            return "truncated — the load commands end before %d were read" % ncmds
+        cmd = int.from_bytes(head[off:off + 4], order)
+        cmdsize = int.from_bytes(head[off + 4:off + 8], order)
+        if cmdsize < 8 or off + cmdsize > len(head):
+            return "a load command at byte %d claims %d bytes the file lacks" % (off, cmdsize)
+        # segment_command_64: cmd, cmdsize, segname[16], vmaddr, vmsize,
+        # fileoff, filesize, …  — the last segment in the file is __LINKEDIT.
+        if cmd == _LC_SEGMENT_64 and head[off + 8:off + 24].rstrip(b"\0") == b"__LINKEDIT":
+            fileoff = int.from_bytes(head[off + 40:off + 48], order)
+            filesize = int.from_bytes(head[off + 48:off + 56], order)
+            end = fileoff + filesize
+            if end > size:
+                return "truncated — its headers describe %d bytes and the file is %d" % (end, size)
+            return ""
+        off += cmdsize
+    return "no __LINKEDIT segment — not a linked Mach-O image"
+
+
+def _fat_truncation(head: bytes, size: int) -> str:
+    nfat = int.from_bytes(head[4:8], "big")
+    if nfat == 0 or nfat > 64:
+        return "a fat header naming %d slices is not a library" % nfat
+    for i in range(nfat):
+        # fat_arch: cputype, cpusubtype, offset, size, align — five big-endian u32.
+        entry = head[8 + 20 * i:8 + 20 * (i + 1)]
+        if len(entry) < 20:
+            return "the fat header is truncated (%d bytes)" % len(head)
+        offset = int.from_bytes(entry[8:12], "big")
+        length = int.from_bytes(entry[12:16], "big")
+        if offset + length > size:
+            return "truncated — slice %d ends at byte %d and the file is %d" % (
+                i, offset + length, size)
     return ""
 
 
@@ -166,7 +258,15 @@ class Outcome:
 
     @property
     def refused(self) -> bool:
-        """A refusal is not a failure: it means run it on CPython."""
+        """Was this run a refusal? Informational — branch on :attr:`fall_onward`.
+
+        A refusal is not a failure: it means run it on CPython. But it is not
+        the only outcome that means that. A :data:`BUSY` that executed nothing
+        and a :data:`PANIC` that reached no commit want the same treatment, and
+        :attr:`fall_onward` is the one predicate that folds all three in, so it
+        is the one a host branches on. This property answers the narrower
+        question, for a host that wants to log why.
+        """
         return self.status == UNSUPPORTED
 
     @property
@@ -197,8 +297,8 @@ class Library:
         resolved = Path(path) if path else find_library()
         if resolved is None:
             raise LibraryError(
-                "liblypning not found — run `lypning build --lib` "
-                "(or point $LYPNING_LIB at a built library)")
+                "%s not found — run `lypning build --lib` "
+                "(or point $LYPNING_LIB at a built library)" % LIB_NAME)
         if not Path(resolved).is_file():
             raise LibraryError("%s does not exist" % resolved)
         self.path = Path(resolved).resolve()
