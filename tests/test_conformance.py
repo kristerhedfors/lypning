@@ -229,6 +229,32 @@ def test_dict_order_is_specified_so_reordering_one_is_a_divergence():
     assert v.verdict == MISMATCH
 
 
+def test_a_program_that_runs_the_battery_is_skipped_not_replayed():
+    # The corpus is harvested from real sessions, and this project's own
+    # development sessions type these constantly. Run inside the battery, each
+    # would spawn a battery over the whole corpus again — a fork bomb whose
+    # fan-out is the corpus size squared. Recorded like any one-liner, never
+    # replayed. This is the guard against load average 340.
+    spawns = conformance.spawns_a_battery
+    assert spawns("import os\nos.system('lypning conformance')")
+    assert spawns("import subprocess\nsubprocess.run(['python','-m','lypning','bench'])")
+    assert spawns("from lypning import conformance as conf\nconf.run(engines=['lypning'])")
+    assert spawns("from lypning import engines as eng\neng.dispatch('print(1)')")
+    assert spawns("from lypning import engines as eng\neng.run('lypning', 'print(1)')")
+    assert spawns("from lypning import corpus\nfor e in corpus.load_default(): pass")
+    # Safe: a single route/run of one program is representative agent usage, and
+    # reading the corpus data or a source file spawns nothing.
+    assert not spawns("import os\nos.system('lypning run -c \\'print(1)\\'')")
+    assert not spawns("from lypning import corpus, harvest\nss = corpus.load_sightings()")
+    assert not spawns("from lypning import conformance as c\nprint(c.is_nondeterministic(e))")
+    assert not spawns("print(1)")
+    # It comes out of the battery as a skip, with the reason, not a MISMATCH.
+    entry = corpus.Entry(id="py-fork", program="from lypning import conformance as conf\nconf.run()")
+    report = conformance.run([entry], engines=[], timeout=30)
+    assert [s.entry_id for s in report.skipped] == ["py-fork"]
+    assert not report.mismatches
+
+
 def test_absolute_paths_are_what_keeps_a_program_out_of_the_battery():
     assert conformance.absolute_paths("open('/etc/passwd').read()") == ["/etc/passwd"]
     # A URL route and a regex fragment are not filesystem paths, and skipping

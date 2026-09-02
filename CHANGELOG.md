@@ -14,6 +14,19 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-02** — The corpus can no longer fork-bomb its own battery · [#28]
+
+- **`lypning conformance` and `lypning bench` now skip a corpus program that
+  would launch a battery** — a CLI battery subcommand, or the runner modules
+  driven from Python (`conf.run`, `engines.dispatch`, `bench.corpus_time`,
+  loading the whole corpus). This project's own dev sessions type these, so
+  they are harvested into the corpus like any one-liner (235 of 3,688); run
+  inside the battery each spawned a battery over the whole corpus again, a fork
+  bomb that reached load average 340 on a shared host. A net, not a sandbox
+  (invariant 4): capture still records them, the runner refuses to replay them,
+  exactly as an absolute-path program is recorded and skipped. `lypning
+  route`/`run` over one program stay representative usage and are not skipped.
+
 **2026-09-02** — the corpus can be sliced by the model that issued the program ([#27](https://github.com/kristerhedfors/lypning/pull/27))
 
 - **A new `models` field** on sightings and corpus records: a per-model

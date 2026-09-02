@@ -366,6 +366,48 @@ def absolute_paths(program: str) -> List[str]:
     return out
 
 
+#: A program that would launch one of lypning's own batteries — the CLI
+#: subcommands that run the whole corpus, or the runner modules driven from
+#: Python. The corpus is harvested from real sessions, and this project's own
+#: development sessions type `lypning conformance`, `conf.run(...)`,
+#: `eng.dispatch(...)` constantly; those land in the corpus like any other
+#: one-liner. Left to run, each such entry spawns a battery *inside* the battery
+#: that is running it — a fork bomb whose fan-out is the corpus size squared,
+#: which is exactly how a shared machine reached load average 340.
+_SPAWNS_BATTERY_CLI = re.compile(
+    # `lypning` and a battery subcommand as adjacent shell tokens, whether a
+    # string (`lypning conformance`) or an argv list (`'lypning','bench'`) —
+    # only quotes, commas and spaces may sit between, never other words, so
+    # `from lypning import bench` is not a match.
+    r"\blypning\b[\s'\",)\]]{0,8}(?:conformance|bench|corpus-time|perf)\b")
+_IMPORTS_LYPNING = re.compile(r"(?:^|\n|;)\s*(?:from\s+lypning\b|import\s+lypning\b)")
+_DRIVES_A_BATTERY = re.compile(
+    r"\b(?:conf|conformance|bench|perf)\.run\s*\("      # a battery run()
+    r"|\bbench\.corpus_time\s*\("                        # the bench battery
+    r"|\.run\s*\(\s*engines"                             # .run(engines=…)
+    r"|\b(?:eng|engines)\.(?:run|dispatch)\s*\("         # an engine spawn
+    r"|\bcorpus\.load(?:_default)?\s*\(")                # the whole corpus
+
+
+def spawns_a_battery(program: str) -> str:
+    """Why running ``program`` would recursively launch a battery, or ``""``.
+
+    A net, not a sandbox (CLAUDE.md invariant 4): capture still records these —
+    an agent that typed `lypning conformance` is real usage worth knowing — but
+    the runner refuses to *replay* them, exactly as it records an absolute-path
+    program and skips it. `lypning route`/`run` over a single program are safe
+    and deliberately not matched; only the batteries and the engine-driving APIs
+    are, plus loading the whole corpus to iterate over.
+    """
+    program = program or ""
+    if _SPAWNS_BATTERY_CLI.search(program):
+        return "would spawn a lypning battery (conformance/bench/corpus-time/perf)"
+    if _IMPORTS_LYPNING.search(program) and _DRIVES_A_BATTERY.search(program):
+        m = _DRIVES_A_BATTERY.search(program)
+        return "imports lypning and drives a battery: %s…" % m.group(0).strip()
+    return ""
+
+
 # --- records -----------------------------------------------------------------
 
 
@@ -929,6 +971,13 @@ def _run_entry(
         # between two runs that did not happen. The shim captures argv verbatim,
         # which is where such a record comes from.
         out.skip = Skip(out.entry_id, "NUL byte in the program or its argv: unspawnable")
+        return out
+
+    battery = spawns_a_battery(program)
+    if battery:
+        # A fork bomb, not a divergence: this program runs the whole battery
+        # again. Skipped like an absolute path — recorded, never replayed.
+        out.skip = Skip(out.entry_id, battery)
         return out
 
     outside = absolute_paths(program)
