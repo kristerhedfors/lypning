@@ -14,6 +14,15 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-03** — Timing tools report host load, and refuse to call a loaded reading a measurement · [#32]
+
+- `lypning bench`, `corpus-time` and `perf` print the 1-minute load average in
+  their host header; when it exceeds the CPU count the header says so, and a
+  `corpus-time --baseline` verdict is printed with `UNRELIABLE, host loaded`
+  appended rather than as FASTER/SLOWER. Every one of these tools is
+  spawn-bound, so an oversubscribed host measures the scheduler — one session
+  quoted a 28x regression that was a load average of 340.
+
 **2026-09-02** — The corpus can no longer fork-bomb its own battery · [#28]
 
 - **`lypning conformance` and `lypning bench` now skip a corpus program that

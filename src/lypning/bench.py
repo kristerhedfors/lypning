@@ -482,13 +482,37 @@ def host_info(arms: Optional[Sequence[Arm]] = None) -> Dict[str, object]:
         except OSError:
             size = 0
         eng[name] = {"path": str(p), "size": size}
+    cpus = os.cpu_count() or 0
+    # The 1-minute load average, and whether it exceeds the CPU count. Every
+    # timing tool here is spawn-bound, so on a host that is oversubscribed the
+    # reading is the scheduler's queue, not the change under test — one session
+    # spent an evening quoting 28x "regressions" that were a load average of
+    # 340 from a dozen concurrent batteries. Recorded so the header can say so
+    # and the baseline verdict can refuse to call it a measurement.
+    try:
+        load1 = round(os.getloadavg()[0], 1)
+    except (AttributeError, OSError):
+        load1 = None
     return {
-        "cpu_count": os.cpu_count() or 0,
+        "cpu_count": cpus,
         "kernel": "{0} {1}".format(platform.system(), platform.release()),
         "machine": platform.machine(),
         "engines": eng,
         "ci": is_ci(),
+        "load": load1,
+        "loaded": bool(load1 is not None and cpus and load1 > cpus),
     }
+
+
+def host_load_line(host: Dict[str, object]) -> str:
+    """The load fragment for a header, and the warning when it disqualifies the run."""
+    load = host.get("load")
+    frag = ", load %s" % load if load is not None else ""
+    if host.get("loaded"):
+        frag += ("\n  ! host loaded: load %s over %s cpus — a spawn-bound timing here "
+                 "measures the scheduler, not the change; do not quote it"
+                 % (load, host.get("cpu_count", "?")))
+    return frag
 
 
 def corpus_time(
@@ -650,8 +674,9 @@ def render(report: BenchReport) -> str:
         out.append("")
 
     host = report.host
-    out.append("host: {0} cpus, {1} ({2})".format(
-        host.get("cpu_count", "?"), host.get("kernel", "?"), host.get("machine", "?")))
+    out.append("host: {0} cpus, {1} ({2}){3}".format(
+        host.get("cpu_count", "?"), host.get("kernel", "?"), host.get("machine", "?"),
+        host_load_line(host)))
     eng = host.get("engines") or {}
     if isinstance(eng, dict):
         for name in engines.ENGINE_ORDER:
@@ -1135,8 +1160,9 @@ def render_corpus_time(timing: Optional[CorpusTiming],
 
     out.append("corpus-time — %s   %s" % (timing.engine, timing.binary))
     host = timing.host or {}
-    out.append("host: %s cpus, %s (%s)" % (host.get("cpu_count", "?"),
-                                           host.get("kernel", "?"), host.get("machine", "?")))
+    out.append("host: %s cpus, %s (%s)%s" % (host.get("cpu_count", "?"),
+                                             host.get("kernel", "?"), host.get("machine", "?"),
+                                             host_load_line(host)))
     out.append("")
     out.append("%d programs loaded, %d timed, min of %d, one temp cwd per entry" % (
         timing.loaded, timing.timed, timing.repeat))
@@ -1176,6 +1202,10 @@ def render_corpus_time(timing: Optional[CorpusTiming],
         verdict = "no change"
         if ratio is not None:
             verdict = "FASTER" if ratio < 0.995 else ("SLOWER" if ratio > 1.005 else "no change")
+        if (timing.host or {}).get("loaded"):
+            # The number is printed — hiding it would be its own lie — but it
+            # is not a reading and must not be recorded as one.
+            verdict += " — UNRELIABLE, host loaded"
         out.append("  before %s  ->  after %s   %s   %s (%s on the total)" % (
             _fmt_ms(diff.before_ms), _fmt_ms(diff.after_ms),
             "%.3fx" % ratio if ratio is not None else "—",
