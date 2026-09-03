@@ -159,6 +159,25 @@ def test_a_record_round_trips(tmp_path, lypning_bin):
     assert set(record["entries"]) == {"py-a"}
 
 
+def test_a_loaded_host_disqualifies_the_timing_and_says_so():
+    # Every timing tool here is spawn-bound: on an oversubscribed host the
+    # reading is the scheduler's queue. One session quoted a 28x "regression"
+    # that was a load average of 340. The header carries the load, and a
+    # baseline verdict on a loaded host is printed but refuses the word.
+    h = bench.host_info({})
+    assert "load" in h and "loaded" in h
+    assert bench.host_load_line({"cpu_count": 10, "load": 1.2, "loaded": False}) == ", load 1.2"
+    warn = bench.host_load_line({"cpu_count": 10, "load": 340.0, "loaded": True})
+    assert "host loaded" in warn and "do not quote" in warn
+    assert bench.host_load_line({"cpu_count": 10}) == ""   # no getloadavg: silent, not wrong
+    baseline = bench.timing_record(_timing({"py-a": bench.EntryTime(10.0, RAN, 0)}))
+    now = _timing({"py-a": bench.EntryTime(8.0, RAN, 0)})
+    now.host = dict(now.host or {}, cpu_count=10, load=340.0, loaded=True)
+    text = bench.render_corpus_time(now, bench.diff_record(baseline, now))
+    assert "FASTER — UNRELIABLE, host loaded" in text
+    assert "! host loaded" in text
+
+
 def test_a_baseline_that_is_not_a_record_is_refused_by_name(tmp_path):
     # Refused rather than half-read: a diff over an empty intersection renders
     # as "no change", which is the most expensive possible way to be wrong.

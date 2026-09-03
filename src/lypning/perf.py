@@ -566,7 +566,8 @@ def render(report: PerfReport, *, top: int = 0) -> str:
     out.append("")
     if report.host.get("ci"):
         out.append("  ! CI detected — a wall clock on a shared runner measures the runner.")
-    out.append("host: %s cpus, %s" % (cpus, report.host.get("kernel", "?")))
+    out.append("host: %s cpus, %s%s" % (cpus, report.host.get("kernel", "?"),
+                                          bench.host_load_line(report.host)))
     for name in report.arms:
         s = report.startup.get(name)
         out.append("  %-12s startup %s ms  (subtracted from every row below)"
