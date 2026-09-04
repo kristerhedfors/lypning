@@ -1044,8 +1044,15 @@ def _run_entry(
                 # observable; one without LC_ALL=C.UTF-8 decodes every non-ASCII
                 # byte to U+FFFD, so two engines printing DIFFERENT non-ASCII
                 # compare equal and a MISMATCH is scored MATCH.
+                # `ledger=False` for the reason `_env_for` redirects the capture
+                # log: the route ledger records what REAL sessions hit, and a
+                # battery run would fold the shipped corpus into it — after
+                # which `lypning routes` and `conformance --plan` would rank the
+                # same programs and the second signal would be the first one
+                # again. It changes no verdict either way; the store is never
+                # read while routing.
                 d = eng.dispatch(program, argv_tail=argv_tail, stdin=stdin, cwd=cwd,
-                                 timeout=timeout, env=_env_for(cwd))
+                                 timeout=timeout, env=_env_for(cwd), ledger=False)
             got = d.result
             # End to end is what the caller pays: every refused tier plus the one
             # that answered.
