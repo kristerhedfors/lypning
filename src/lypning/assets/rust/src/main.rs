@@ -107,30 +107,30 @@ fn run(argv: &[String]) -> i32 {
 }
 
 fn execute(src: &str) -> i32 {
-    execute_inner(src, true, &mut String::new())
+    execute_inner(src, true, &mut String::new(), &mut String::new())
 }
 
-/// `kind` comes back holding the refusal's kind when one fired, so the caller
-/// can choose the next tier instead of assuming it — see `route::only_cpython`.
-/// It is left untouched on any other outcome.
-fn execute_inner(src: &str, report_refusal: bool, kind: &mut String) -> i32 {
+/// `kind` and `detail` come back holding the refusal when one fired, so the
+/// caller can compute the chain to walk next (`route::chain_after`) instead of
+/// assuming it. Both are left untouched on any other outcome.
+fn execute_inner(src: &str, report_refusal: bool, kind: &mut String, detail: &mut String) -> i32 {
     let body = match parse::parse(src) {
         Ok(b) => b,
-        Err(e) => return finish(Err(e), report_refusal, kind),
+        Err(e) => return finish(Err(e), report_refusal, kind, detail),
     };
     let mut interp = eval::Interp::new();
     let r = interp.run(&body);
-    finish(r, report_refusal, kind)
+    finish(r, report_refusal, kind, detail)
 }
 
 /// The exit path, and the other half of the commit barrier (`io.rs`): output
 /// staged during the run is written exactly once, on success, and discarded on
 /// a capability refusal so the retry on the next tier sees a clean slate.
-fn finish(r: Result<(), LypningError>, report_refusal: bool, kind: &mut String) -> i32 {
+fn finish(r: Result<(), LypningError>, report_refusal: bool, kind: &mut String, detail: &mut String) -> i32 {
     match r {
         Ok(()) => {
             if let Err(e) = io::commit() {
-                return finish(Err(e), report_refusal, kind);
+                return finish(Err(e), report_refusal, kind, detail);
             }
             0
         }
@@ -146,9 +146,11 @@ fn finish(r: Result<(), LypningError>, report_refusal: bool, kind: &mut String) 
             code
         }
         Err(e) if e.is_unsupported() => {
-            if let ErrKind::Unsupported { kind: k, .. } = e.kind() {
+            if let ErrKind::Unsupported { kind: k, detail: d } = e.kind() {
                 kind.clear();
                 kind.push_str(k);
+                detail.clear();
+                detail.push_str(d);
             }
             if io::is_committed() {
                 // Output already left the process, so this cannot be retried.
@@ -184,9 +186,34 @@ fn finish(r: Result<(), LypningError>, report_refusal: bool, kind: &mut String) 
 fn route_cmd(args: &[String]) -> i32 {
     let mut src = String::new();
     let mut as_json = false;
+    // `--next --after E --kind K [--detail D]`: the chain this dispatcher would
+    // walk after E refused K at runtime — printed so the Python dispatcher can
+    // be held to the same answer over a cross product, and can ask instead of
+    // reimplementing.
+    let mut next_after: Option<String> = None;
+    let mut next_kind = String::new();
+    let mut next_detail = String::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--next" => {
+                if next_after.is_none() {
+                    next_after = Some(String::new());
+                }
+                i += 1;
+            }
+            "--after" => {
+                next_after = Some(args.get(i + 1).cloned().unwrap_or_default());
+                i += 2;
+            }
+            "--kind" => {
+                next_kind = args.get(i + 1).cloned().unwrap_or_default();
+                i += 2;
+            }
+            "--detail" => {
+                next_detail = args.get(i + 1).cloned().unwrap_or_default();
+                i += 2;
+            }
             // The spectrum table this binary carries, and which row it is.
             // `lypning build` asserts this on every binary it produces; the
             // Python side pins its copy of the table to it.
@@ -215,9 +242,21 @@ fn route_cmd(args: &[String]) -> i32 {
         }
     }
     let r = route::route(&src);
+    if let Some(after) = next_after {
+        let _ = next_detail;
+        let after = if after.is_empty() { route::SELF.to_string() } else { after };
+        let chain = route::chain_after(&after, &next_kind, &r.imports, &r.verdicts);
+        println!("[{}]", chain.iter().map(|s| jstr(s)).collect::<Vec<_>>().join(","));
+        return 0;
+    }
     if as_json {
+        let verdicts: Vec<String> = r
+            .verdicts
+            .iter()
+            .map(|v| format!("{{\"engine\":{},\"kind\":{},\"detail\":{}}}", jstr(v.engine), jstr(&v.kind), jstr(&v.detail)))
+            .collect();
         println!(
-            "{{\"engine\":{},\"kind\":{},\"detail\":{},\"imports\":[{}]}}",
+            "{{\"engine\":{},\"kind\":{},\"detail\":{},\"imports\":[{}],\"verdicts\":[{}]}}",
             jstr(r.engine.as_str()),
             jstr(&r.kind),
             jstr(&r.detail),
@@ -225,7 +264,8 @@ fn route_cmd(args: &[String]) -> i32 {
                 .iter()
                 .map(|s| jstr(s))
                 .collect::<Vec<_>>()
-                .join(",")
+                .join(","),
+            verdicts.join(",")
         );
     } else if r.kind.is_empty() {
         println!("{}", r.engine.as_str());
@@ -281,7 +321,8 @@ fn dispatch(args: &[String]) -> i32 {
         // Running in-process also means stdin is still unread at this point,
         // which a spawned child could not be given back.
         let mut kind = String::new();
-        let code = execute_inner(&src, false, &mut kind);
+        let mut detail = String::new();
+        let code = execute_inner(&src, false, &mut kind, &mut detail);
         // Exit 90 is a refusal only when a refusal FIRED — `kind` is filled
         // by the refusal path and by nothing else. `sys.exit(90)` is the
         // program's own number, its output is already committed, and running
@@ -291,23 +332,34 @@ fn dispatch(args: &[String]) -> i32 {
         }
         // The route was optimistic and a value-dependent refusal fired: an
         // integer outgrew 64 bits, or a set's order was asked for. Fall onward
-        // — but ASK THE KIND WHERE TO. Some refusals rule out every tier but
-        // CPython, because the refusal exists precisely because the behaviour is
-        // subtle and a reimplementation gets it wrong; handing those to
-        // lypning-mp turns a correct refusal into a silent wrong answer at exit
-        // 0. This binary used to hand every refusal to lypning-mp.
-        // ...and ask the IMPORTS too: the static route sent this program to
-        // tier 1 on the strength of them, and the middle tier may not have
-        // one of them (`random`, whose generator is not MT19937).
-        let next = if route::only_cpython(&kind) || !route::micropython_imports(&r.imports) {
-            route::Engine::CPython
-        } else {
-            route::Engine::MicroPython
-        };
-        return exec_engine(engine_path(next), &src, &tail, &is_file, next == route::Engine::MicroPython);
+        // — along the chain the KIND, the IMPORTS and the siblings' verdicts
+        // decide (`route::chain_after`): a semantic refusal rules out every
+        // reimplementation, an import outside a tier's table rules that tier
+        // out, and a larger sibling that could run the whole program comes
+        // before both. The Python dispatcher walks the same function's answer.
+        let chain = route::chain_after(route::SELF, &kind, &r.imports, &r.verdicts);
+        return walk_chain(&chain, &src, &tail, &is_file);
     }
-    let onward = r.engine == route::Engine::MicroPython;
-    exec_engine(engine_path(r.engine), &src, &tail, &is_file, onward)
+    // A static route names the first rung; what follows it is the rest of
+    // the same ladder, so a refusal there still falls onward.
+    let chain: Vec<&'static str> = {
+        let order = route::engine_order();
+        let name = r.engine.as_str();
+        let at = order.iter().position(|e| *e == name).unwrap_or(order.len() - 1);
+        order[at..].to_vec()
+    };
+    walk_chain(&chain, &src, &tail, &is_file)
+}
+
+/// Run the program on the first rung of `chain`, with the rest as what to try
+/// when that rung refuses or is not installed. Empty is impossible by
+/// construction (every chain ends at CPython); treated as CPython if it were.
+fn walk_chain(chain: &[&'static str], src: &str, tail: &[String], is_file: &Option<String>) -> i32 {
+    let (first, rest) = match chain.split_first() {
+        Some((f, r)) => (*f, r),
+        None => (route::CPYTHON_NAME, &[][..]),
+    };
+    exec_engine(engine_path_named(first), src, tail, is_file, rest)
 }
 
 /// Parse the tail of `lypning run ...` into (program source, program args, file?).
@@ -344,12 +396,42 @@ fn parse_run_args(args: &[String]) -> Result<(String, Vec<String>, Option<String
     Err(2)
 }
 
-fn engine_path(e: route::Engine) -> String {
-    match e {
-        route::Engine::MicroPython => std::env::var("LYPNING_MP_BIN").unwrap_or_else(|_| "lypning-mp".into()),
-        route::Engine::CPython => std::env::var("LYPNING_CPYTHON").unwrap_or_else(|_| "python3".into()),
-        route::Engine::Lypning => std::env::args().next().unwrap_or_else(|| "lypning".into()),
+/// Where a rung's binary is, by engine name. The two historical tiers keep
+/// their env vars; this binary is `argv[0]`; a sibling variant is looked for
+/// the way the Python side's `find` looks: `$LYPNING_<V>_BIN`, next to this
+/// binary, the state bin dir, then PATH by name — the same order, so the two
+/// dispatchers find the same sibling or the same nothing.
+fn engine_path_named(name: &str) -> String {
+    if name == route::MICROPYTHON_NAME {
+        return std::env::var("LYPNING_MP_BIN").unwrap_or_else(|_| "lypning-mp".into());
     }
+    if name == route::CPYTHON_NAME {
+        return std::env::var("LYPNING_CPYTHON").unwrap_or_else(|_| "python3".into());
+    }
+    if name == route::SELF {
+        return std::env::args().next().unwrap_or_else(|| name.into());
+    }
+    let suffix = name.strip_prefix("lypning-").unwrap_or("");
+    let var = if suffix.is_empty() { "LYPNING_BIN".to_string() } else { format!("LYPNING_{}_BIN", suffix.to_uppercase()) };
+    if let Ok(p) = std::env::var(&var) {
+        return p;
+    }
+    if let Ok(me) = std::env::current_exe() {
+        if let Some(dir) = me.parent() {
+            let p = dir.join(name);
+            if p.is_file() {
+                return p.to_string_lossy().into_owned();
+            }
+        }
+    }
+    let home = std::env::var("LYPNING_HOME").ok().or_else(|| std::env::var("HOME").ok().map(|h| format!("{h}/.lypning")));
+    if let Some(h) = home {
+        let p = std::path::Path::new(&h).join("bin").join(name);
+        if p.is_file() {
+            return p.to_string_lossy().into_owned();
+        }
+    }
+    name.to_string()
 }
 
 /// Hand the program to `bin`.
@@ -369,9 +451,18 @@ fn exec_engine(
     src: &str,
     tail: &[String],
     is_file: &Option<String>,
-    retry_cpython: bool,
+    onward: &[&'static str],
 ) -> i32 {
     use std::os::unix::process::CommandExt;
+    // An intermediate rung is one with something after it: it is forked so an
+    // exit-90 can fall to the next name in `onward`. The last rung is exec'd.
+    let retry_cpython = !onward.is_empty();
+    let next = |src: &str, tail: &[String], is_file: &Option<String>| -> i32 {
+        match onward.split_first() {
+            Some((n, rest)) => exec_engine(engine_path_named(n), src, tail, is_file, rest),
+            None => 127,
+        }
+    };
     let mut cmd = std::process::Command::new(&bin);
     match is_file {
         Some(p) => {
@@ -408,20 +499,14 @@ fn exec_engine(
                     Err(_) => 1,
                 };
                 if fall_onward(code, &errbuf) && retry_cpython {
-                    let cp = engine_path(route::Engine::CPython);
-                    if cp != bin {
-                        return exec_engine(cp, src, tail, is_file, false);
-                    }
+                    return next(src, tail, is_file);
                 }
                 let _ = std::io::stderr().write_all(&errbuf);
                 return code;
             }
             Err(e) => {
                 if retry_cpython {
-                    let cp = engine_path(route::Engine::CPython);
-                    if cp != bin {
-                        return exec_engine(cp, src, tail, is_file, false);
-                    }
+                    return next(src, tail, is_file);
                 }
                 eprintln!("lypning: cannot run {bin}: {e}");
                 return 127;
@@ -447,10 +532,7 @@ fn exec_engine(
                 return code;
             }
         }
-        let cp = engine_path(route::Engine::CPython);
-        if cp != bin {
-            return exec_engine(cp, src, tail, is_file, false);
-        }
+        return next(src, tail, is_file);
     }
     let err = cmd.exec();
     eprintln!("lypning: cannot run {bin}: {err}");

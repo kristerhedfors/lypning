@@ -14,6 +14,29 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-04** — The spectrum, step 3: one routing rule in both dispatchers (no behaviour change) · [#35]
+
+- `route.rs` now decides by a **verdict vector** — every rung's yes/no on the
+  program, in cost order — and picks the first "can run" at or above the
+  running binary (the floor rule). `lypning route --json` carries the vector;
+  `route --next --after E --kind K` prints the chain the Rust dispatcher walks
+  after a runtime refusal, from the same function `lypning run` uses.
+- `lypning run` walks that chain (a sibling that could run the program, then
+  lypning-mp if it can import everything, then CPython; a semantic refusal
+  skips everything), falling to the next rung when one is not installed; a
+  sibling variant is found the way Python's `find` finds it.
+- Python's `chain_after_refusal` is the same rule over the same verdicts, and a
+  cross-product test (`tests/test_routing.py`) holds the two dispatchers to each
+  other. A binary that names a variant this copy of the table lacks now routes
+  with kind `route-unknown-engine` — loud, never silent.
+- `lypning conformance --mixture rust|both`: the Rust dispatcher as its own arm
+  (`mixture-rust`), and with `both` the report prints `dispatchers agree N/N`
+  and a disagreement fails the run. Until now the battery graded a dispatcher
+  nobody execs and the benchmark timed one nothing graded.
+- Zero behaviour change: `route --json` over all 3,688 corpus programs is
+  identical before and after (engine, kind, detail, imports); conformance
+  counts unchanged; bytes unchanged.
+
 **2026-09-04** — The spectrum, step 2: the binary learns its own name (no behaviour change) · [#34]
 
 - Exactly one `variant-*` cargo feature is on in any build (`variant-m`, today's

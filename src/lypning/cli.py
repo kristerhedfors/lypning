@@ -1224,6 +1224,13 @@ def cmd_conformance(ns: argparse.Namespace) -> int:
     conf = _mod("conformance")
     routing = _mod("routing")
     arms = list(ns.engine) if ns.engine else None
+    if ns.mixture != "python":
+        base = arms if arms is not None else list(conf.DEFAULT_ARMS)
+        if ns.mixture == "rust":
+            base = [conf.MIXTURE_RUST if a == conf.MIXTURE else a for a in base]
+        elif conf.MIXTURE_RUST not in base:
+            base = base + [conf.MIXTURE_RUST]
+        arms = base
     report = conf.run(engines=arms, limit=ns.limit, timeout=ns.timeout,
                       progress=_progress("conformance"))
     # Two gates over one battery, and they fail for different reasons: an engine
@@ -2005,8 +2012,13 @@ examples:
   lypning conformance --engine library          the embedded tier, against CPython
   lypning conformance --json > conformance.json
 """)
+    s.add_argument("--mixture", choices=("python", "rust", "both"), default="python",
+                   help="which dispatcher the mixture arm walks: the Python one (default), "
+                        "the Rust one (`lypning run`, what the shim execs), or both — "
+                        "in which case the report holds them to each other and a "
+                        "disagreement fails the run")
     s.add_argument("--engine", action="append", metavar="E",
-                   help="arm to measure: lypning, lypning-mp, mixture, library "
+                   help="arm to measure: lypning, lypning-mp, mixture, mixture-rust, library "
                         "(repeatable). `library` is the same lypning reached through "
                         "the C ABI in this process — it shares the interpreter with the "
                         "`lypning` arm but not the exit path, so the two disagreeing is "

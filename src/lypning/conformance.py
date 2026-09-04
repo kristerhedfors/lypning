@@ -66,6 +66,11 @@ MISMATCH = "MISMATCH"
 #: a tier — it *uses* the tiers — but it is the arm a caller of ``lypning run``
 #: actually experiences, so it is the arm CI gates on.
 MIXTURE = "mixture"
+#: The same chain walked by the OTHER dispatcher — `lypning run`, the Rust one
+#: users actually exec — measured as its own arm so the two can be held to each
+#: other over the corpus. Until this arm existed the battery graded a dispatcher
+#: nobody runs and the benchmark timed one nothing graded.
+MIXTURE_RUST = "mixture-rust"
 
 #: The same lypning, reached through the C ABI in this process instead of
 #: through a spawn. It is measured as its own arm for one reason: the
@@ -425,6 +430,9 @@ class Verdict:
     expected_rc: int = 0
     actual_rc: int = 0
     wall_ns: int = 0
+    #: A digest of the whole stdout, kept for every verdict so two arms can be
+    #: compared for agreement without carrying the bytes (`dispatchers agree`).
+    stdout_digest: str = ""
 
     @property
     def failed(self) -> bool:
@@ -498,6 +506,10 @@ class Report:
     unbuilt_why: Dict[str, str] = field(default_factory=dict)
     reference: str = ""
     total: int = 0
+    #: ``(agreed, compared)`` over the entries both dispatcher arms ran, and the
+    #: entries where they did not agree. Only when both arms were requested.
+    dispatchers: Optional[Tuple[int, int]] = None
+    disagreements: List[str] = field(default_factory=list)
 
     @property
     def mismatches(self) -> int:
@@ -821,7 +833,7 @@ def _refusal(engine: str, stderr: str) -> Optional[Tuple[str, str]]:
         # The library writes lypning's own line, because it IS lypning — the
         # arm name is ours, for the report, and never reaches the runtime.
         if (who == engine
-                or (engine == MIXTURE and who in eng.ENGINE_ORDER)
+                or (engine in (MIXTURE, MIXTURE_RUST) and who in eng.ENGINE_ORDER)
                 or (engine == LIBRARY and who == LYPNING)):
             return m.group(2), m.group(3)
     return None
@@ -851,6 +863,7 @@ def classify(ref: eng.Result, got: eng.Result, engine: str, entry: Any) -> Verdi
             expected_stdout=_clip(ref.stdout) if evidence else "",
             actual_stdout=_clip(got.stdout) if evidence else "",
             expected_rc=ref.returncode, actual_rc=got.returncode, wall_ns=got.wall_ns,
+            stdout_digest=hashlib.sha256(got.stdout.encode("utf-8", "replace")).hexdigest()[:16],
         )
 
     if got.timed_out:
@@ -1025,6 +1038,23 @@ def _run_entry(
                 d.route.engine, d.route.kind, d.route.detail)
             out.verdicts[arm] = classify(ref, got, MIXTURE, entry)
             continue
+        if arm == MIXTURE_RUST:
+            # `lypning run`: the binary routes and falls onward itself. Its
+            # siblings and the other tiers are pinned the way the Python
+            # dispatcher's are, so the two walk the same ladder over the same
+            # binaries — a disagreement is then the dispatcher, never the build.
+            with _Sandbox("mixr") as cwd:
+                env = _env_for(cwd)
+                if ref_bin:
+                    env[eng.env_var_for(CPYTHON)] = str(ref_bin)
+                for name in eng.ENGINE_ORDER:
+                    if name != CPYTHON and name != LYPNING and binaries.get(name):
+                        env[eng.env_var_for(name)] = str(binaries[name])
+                got = eng.run(LYPNING, program, binary=binaries.get(LYPNING), argv_tail=argv_tail,
+                              stdin=stdin, cwd=cwd, timeout=timeout, env=env, prefix=("run",))
+            got.engine = MIXTURE_RUST
+            out.verdicts[arm] = classify(ref, got, MIXTURE_RUST, entry)
+            continue
         if arm == LIBRARY:
             # In-process, so there is no child to give a cwd to: `run_library`
             # chdirs under a lock instead, which is why this arm serialises
@@ -1109,6 +1139,8 @@ def run(
                     unbuilt_why[a] = why
             elif a in (MIXTURE, CPYTHON) or binaries.get(a) is not None:
                 arms.append(a)
+            elif a == MIXTURE_RUST and binaries.get(LYPNING) is not None:
+                arms.append(a)
             else:
                 unbuilt.append(a)
 
@@ -1149,6 +1181,25 @@ def run(
             )
 
         routing_errors = _routing_errors(scored, arms)
+        dispatchers = None
+        disagreements: List[str] = []
+        if MIXTURE in arms and MIXTURE_RUST in arms:
+            compared = 0
+            for r in scored:
+                a, b = r.verdicts.get(MIXTURE), r.verdicts.get(MIXTURE_RUST)
+                if a is None or b is None:
+                    continue
+                compared += 1
+                # stdout is part of the comparison only where the grader
+                # compared it: a clock or a pid differs between two runs of the
+                # SAME dispatcher, and that is not a disagreement.
+                uncompared = "stdout uncompared" in (a.detail, b.detail)
+                same = (a.verdict, a.actual_rc) == (b.verdict, b.actual_rc) and (
+                    uncompared or a.stdout_digest == b.stdout_digest)
+                if not same:
+                    disagreements.append("%s: python %s rc=%s, rust %s rc=%s"
+                                         % (r.entry_id, a.verdict, a.actual_rc, b.verdict, b.actual_rc))
+            dispatchers = (compared - len(disagreements), compared)
         routes = {r.entry_id: eng.Route(r.predicted, r.route_kind, r.route_detail)
                   for r in scored if r.predicted}
     finally:
@@ -1157,6 +1208,8 @@ def run(
     return Report(
         engines=reports,
         routing_errors=routing_errors,
+        dispatchers=dispatchers,
+        disagreements=disagreements,
         skipped=skipped,
         seconds=time.perf_counter() - started,
         routes=routes,
@@ -1381,6 +1434,15 @@ def render(report: Report, plan: bool = False) -> str:
         for e in report.routing_errors[:10]:
             out.append("  %s: predicted %s, ideal %s — %s"
                        % (e.entry_id, e.predicted, e.ideal or "none", e.detail))
+
+    if report.dispatchers is not None:
+        agreed, compared = report.dispatchers
+        out.append("")
+        out.append("dispatchers agree %d/%d — the Python dispatcher (`mixture`) and the "
+                   "Rust one (`mixture-rust`, what `lypning run` execs) over the same "
+                   "binaries%s" % (agreed, compared, "" if agreed == compared else ":  FAIL"))
+        for d in report.disagreements[:10]:
+            out.append("  %s" % d)
 
     if report.damage:
         out.append("")

@@ -132,6 +132,39 @@ def test_no_engine_name_is_spelled_by_hand_outside_engines_py():
     assert not offenders, offenders
 
 
+def test_chain_after_refusal_walks_siblings_that_could_run_then_mp_then_cpython(monkeypatch):
+    # The rule route.rs spells in chain_after, mirrored here: a later Rust
+    # sibling whose STATIC verdict was "can run" comes first, then lypning-mp
+    # if it can import everything, then CPython. With one row today there is
+    # never a sibling, so this pins the rule on a two-row spectrum.
+    monkeypatch.setattr(engines, "SPECTRUM", ("lypning", "lypning-l"))
+    monkeypatch.setattr(engines, "ENGINE_ORDER", ("lypning", "lypning-l", "lypning-mp", "cpython"))
+    ok_l = (("lypning", "module", "import re"), ("lypning-l", "", ""), ("lypning-mp", "", ""), ("cpython", "", ""))
+    assert engines.chain_after_refusal("lypning", "bigint", ("os",), ok_l) == ["lypning-l", "lypning-mp", "cpython"]
+    assert engines.chain_after_refusal("lypning", "bigint", ("random",), ok_l) == ["lypning-l", "cpython"]
+    no_l = (("lypning", "", ""), ("lypning-l", "module", "import subprocess"), ("lypning-mp", "", ""), ("cpython", "", ""))
+    assert engines.chain_after_refusal("lypning", "bigint", ("os",), no_l) == ["lypning-mp", "cpython"]
+    assert engines.chain_after_refusal("lypning", "set-order", ("os",), ok_l) == ["cpython"]
+    assert engines.chain_after_refusal("lypning-l", "bigint", ("os",), ok_l) == ["lypning-mp", "cpython"]
+    # today's three-name answers, unchanged
+    monkeypatch.setattr(engines, "SPECTRUM", ("lypning",))
+    monkeypatch.setattr(engines, "ENGINE_ORDER", ("lypning", "lypning-mp", "cpython"))
+    assert engines.chain_after_refusal("lypning", "bigint", ("os",)) == ["lypning-mp", "cpython"]
+    assert engines.chain_after_refusal("lypning", "bigint", ("random",)) == ["cpython"]
+
+
+def test_a_route_naming_an_engine_we_do_not_list_is_loud_not_silent():
+    # A newer binary naming a variant this copy of the table lacks used to
+    # route the program to CPython with nothing said; now the kind says so and
+    # the grader counts it as ungraded rather than LATE.
+    r = engines._route_from_json({"engine": "lypning-q", "kind": "", "detail": "", "imports": ["os"],
+                                  "verdicts": [{"engine": "lypning", "kind": "", "detail": ""}]})
+    assert (r.engine, r.kind, r.detail) == (engines.CPYTHON, engines.ROUTE_UNKNOWN_ENGINE, "lypning-q")
+    assert r.imports == ("os",) and r.verdicts == (("lypning", "", ""),)
+    r = engines._route_from_json({"engine": "lypning", "kind": "module", "detail": "import re"})
+    assert (r.engine, r.kind, r.verdicts) == ("lypning", "module", ())
+
+
 def test_chain_from_an_unknown_engine_ends_at_cpython():
     # A classifier that names something that is not a tier must still produce a
     # runnable chain; CPython runs everything.
