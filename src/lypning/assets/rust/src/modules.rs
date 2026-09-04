@@ -24,11 +24,18 @@ use std::rc::Rc;
 /// same bytes it always was: a capability that added an entry at runtime would
 /// still have compiled the branch that adds it. `route::CAPS` carries the same
 /// claim for the ROUTER, which has to answer for a sibling it is not.
-#[cfg(not(feature = "cap-collections"))]
+#[cfg(not(any(feature = "cap-collections", feature = "cap-pathlib")))]
 pub const MODULES: &[&str] = &["sys", "os", "os.path", "io", "json", "posixpath", "random"];
-#[cfg(feature = "cap-collections")]
+#[cfg(all(feature = "cap-collections", not(feature = "cap-pathlib")))]
 pub const MODULES: &[&str] =
     &["sys", "os", "os.path", "io", "json", "posixpath", "random", "collections"];
+#[cfg(all(feature = "cap-pathlib", not(feature = "cap-collections")))]
+pub const MODULES: &[&str] =
+    &["sys", "os", "os.path", "io", "json", "posixpath", "random", "pathlib"];
+#[cfg(all(feature = "cap-collections", feature = "cap-pathlib"))]
+pub const MODULES: &[&str] = &[
+    "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib",
+];
 
 pub fn import(path: &str) -> R<Value> {
     match MODULES.iter().find(|m| **m == path) {
@@ -142,6 +149,15 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
         ("collections", "Counter") => Value::Builtin("Counter"),
         #[cfg(feature = "cap-collections")]
         ("collections", "defaultdict") => Value::Builtin("defaultdict"),
+        // `Path` is a TYPE, so it is the `Value::Builtin` every type object is
+        // here — which is what makes `isinstance(p, Path)` a name comparison
+        // rather than a second spelling. `PosixPath` is the SAME class on POSIX,
+        // repr included, so it is the same value; `PurePosixPath` and `PurePath`
+        // are not — they repr as `PurePosixPath('a')`, and aliasing them would
+        // print `PosixPath('a')` at exit 0 — so they refuse below along with
+        // `WindowsPath`, `Path.home` and the rest.
+        #[cfg(feature = "cap-pathlib")]
+        ("pathlib", "Path" | "PosixPath") => Value::Builtin("Path"),
         _ => {
             return Err(unsupported(
                 "module-attr",
@@ -179,6 +195,7 @@ fn interned(name: &str) -> R<&'static str> {
 fn touches_disk(m: &str, name: &str) -> bool {
     match (m, name) {
         ("os.path", "join" | "basename" | "dirname" | "splitext" | "split" | "normpath") => false,
+        ("pathlib", "cwd") => true,
         ("os", "getenv") => false,
         ("os", _) | ("os.path", _) => true,
         _ => false,
@@ -206,6 +223,12 @@ pub fn call_module_method(
     };
     Ok(match (m, name) {
         ("random", _) => return crate::random::call(it, name, args, &kw),
+        // `Path.cwd()`. A classmethod on the type object, reached through
+        // `ops::get_attr`, which spells it as a method on the module so that
+        // the one `filesystem_allowed` gate above covers it exactly as it
+        // covers `os.getcwd`.
+        #[cfg(feature = "cap-pathlib")]
+        ("pathlib", "cwd") => return crate::pathlib::cwd(),
         // `sys.exit(x)` is `raise SystemExit(x)`, and it is the SAME exception
         // here — one an `except SystemExit` catches and a `finally` runs for.
         // Reading the status back out of it is `LypningError::is_exit`.

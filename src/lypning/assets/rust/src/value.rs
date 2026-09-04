@@ -56,6 +56,12 @@ pub enum Value {
     DictView(Rc<RefCell<Dict>>, &'static str),
     /// An exception instance, as produced by `except E as e`.
     Exc(&'static str, Rc<str>),
+    /// A `pathlib.Path` — the NORMALISED path text, which is exactly what
+    /// `str(p)` returns, and a flag saying whether this value is the path or
+    /// the `.parents` view of it. One `Rc<str>` is the whole representation;
+    /// `pathlib.rs` says why that is the point rather than a shortcut.
+    #[cfg(feature = "cap-pathlib")]
+    Path(Rc<str>, bool),
 }
 
 pub struct FuncObj {
@@ -83,6 +89,12 @@ pub enum HKey {
     Str(Rc<str>),
     Bytes(Rc<Vec<u8>>),
     Tuple(Vec<HKey>),
+    /// A `pathlib.Path`. NOT an `HKey::Str` of the same text: `Path('a')` and
+    /// `'a'` hash equal in CPython and are still two different dict keys,
+    /// because equality — not the hash — decides, and a path is never equal to
+    /// the string that spells it.
+    #[cfg(feature = "cap-pathlib")]
+    Path(Rc<str>),
 }
 
 pub fn hkey(v: &Value) -> R<HKey> {
@@ -111,6 +123,18 @@ pub fn hkey(v: &Value) -> R<HKey> {
         }
         Value::Str(s) => HKey::Str(s.clone()),
         Value::Bytes(b) => HKey::Bytes(b.clone()),
+        // The `.parents` view is hashable in CPython (it inherits object
+        // identity) and this value carries no identity to hash, so it refuses
+        // rather than collapse two views of the same path into one key.
+        #[cfg(feature = "cap-pathlib")]
+        Value::Path(s, view) => {
+            if *view {
+                return Err(crate::pathlib::refuse(
+                    "a .parents view as a dict or set key, which CPython hashes by object identity",
+                ));
+            }
+            HKey::Path(s.clone())
+        }
         // A RANGE IS HASHABLE — `{range(2)}` is a set of one in CPython and was
         // `TypeError: unhashable type: 'range'` here, at exit 1, the program's
         // own exit. The key is built from the NORMALISED form so that it agrees
@@ -317,6 +341,16 @@ pub fn type_name(v: &Value) -> &'static str {
             "values" => "dict_values",
             _ => "dict_items",
         },
+        // `PosixPath` on POSIX, which is the name CPython prints in every
+        // message that names the type and the name its `repr` is spelled with.
+        #[cfg(feature = "cap-pathlib")]
+        Value::Path(_, view) => {
+            if *view {
+                "_PathParents"
+            } else {
+                "PosixPath"
+            }
+        }
         // The exception's OWN class, not the base. CPython says
         // `'ValueError' object has no attribute 'nosuch'` and
         // `unsupported operand type(s) for +: 'ValueError' and 'int'`; this
@@ -340,6 +374,12 @@ pub fn truthy(v: &Value) -> R<bool> {
         Value::Set(s) => s.borrow().len() != 0,
         Value::Range(a, b, st) => range_len(*a, *b, *st) > 0,
         Value::DictView(d, _) => d.borrow().len() != 0,
+        // A path is always true (it defines no `__bool__` and no `__len__`),
+        // but the `.parents` view is a Sequence, so an EMPTY one is FALSE:
+        // `bool(Path('.').parents)` is False in CPython, and the fallback below
+        // would answer True for it.
+        #[cfg(feature = "cap-pathlib")]
+        Value::Path(s, view) => !*view || crate::pathlib::view_len(s) != 0,
         _ => true,
     })
 }
@@ -531,6 +571,13 @@ pub fn eq(a: &Value, b: &Value) -> R<bool> {
     }
     if let (Some(x), Some(y)) = (as_num(a), as_num(b)) {
         return Ok(num_eq(x, y));
+    }
+    // A path compares only against a path — never against the `str` that
+    // spells it — and the `.parents` view refuses, because CPython compares one
+    // by object identity.
+    #[cfg(feature = "cap-pathlib")]
+    if let Some(r) = crate::pathlib::eq(a, b)? {
+        return Ok(r);
     }
     // Only the composite arms below can descend, so only they take the guard.
     // What it is for is `x == y` over two deep lists, which was a stack

@@ -47,6 +47,10 @@ pub mod methods;
 pub mod modules;
 pub mod ops;
 pub mod parse;
+/// `pathlib.Path` — the `cap-pathlib` capability. Absent from the smaller
+/// variant entirely, not merely unreachable in it.
+#[cfg(feature = "cap-pathlib")]
+pub mod pathlib;
 pub mod random;
 pub mod route;
 pub mod value;

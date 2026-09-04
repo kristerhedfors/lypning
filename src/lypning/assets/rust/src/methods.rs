@@ -450,6 +450,8 @@ pub fn call_method(
             }
             dict_method(it, d, name, args, kw)
         }
+        #[cfg(feature = "cap-pathlib")]
+        Value::Path(s, view) => crate::pathlib::method(it, s, *view, name, args, kw),
         Value::Set(s) => set_method(it, s, name, args, kw),
         Value::Bytes(b) => bytes_method(it, b, name, args, kw),
         Value::Tuple(t) => tuple_method(t, name, args),

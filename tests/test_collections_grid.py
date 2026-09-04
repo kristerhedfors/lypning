@@ -287,11 +287,13 @@ def _current(engine: str) -> Path | None:
     target dir — where the file is called ``lypning`` for both variants (that
     is the cargo bin name; the ENGINE name is what the binary says).
 
-    A candidate is taken only if it names itself ``engine`` **and** its
-    compiled `route::CAPS` knows `cap-collections`. That second condition is
-    the point: an installed binary from before this capability landed answers
-    every grid row with a refusal, which would turn the whole file into a
-    hundred green skips measuring nothing. Skipping loudly is the honest
+    A candidate is taken only if it names itself ``engine``, its compiled
+    `route::CAPS` knows `cap-collections`, and the capability set it was BUILT
+    with is this tree's. Those last two are the point: an installed binary from
+    before this capability landed answers every grid row with a refusal, which
+    would turn the whole file into a hundred green skips measuring nothing, and
+    one from before a LATER capability landed would fail the table pin below for
+    being out of date rather than for being wrong. Skipping loudly is the honest
     failure; passing quietly is not.
     """
     target = {engines.LYPNING: paths.RUST_DIR / "target" / "release" / "lypning",
@@ -302,6 +304,8 @@ def _current(engine: str) -> Path | None:
             continue
         table = _spectrum(cand)
         if table is None or table.get("self") != engine:
+            continue
+        if table.get("self_caps") != list(engines.VARIANT_CAPS.get(engine, ())):
             continue
         if any(row.get("cap") == "cap-collections" for row in table.get("caps", [])):
             return cand
@@ -408,6 +412,6 @@ def test_the_python_copy_of_the_capability_table_is_the_binarys_own() -> None:
     assert out.returncode == 0, out.stderr
     table = json.loads(out.stdout.strip().splitlines()[-1])
     assert table["self"] == engines.LYPNING_L
-    assert table["self_caps"] == ["cap-collections"]
+    assert "cap-collections" in table["self_caps"]
     assert {r["name"]: tuple(r["caps"]) for r in table["spectrum"]} == engines.VARIANT_CAPS
-    assert {r["cap"]: r["modules"] for r in table["caps"]} == {"cap-collections": ["collections"]}
+    assert {r["cap"]: r["modules"] for r in table["caps"]}["cap-collections"] == ["collections"]

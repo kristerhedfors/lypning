@@ -37,6 +37,15 @@ impl Interp {
         // arithmetic never sees it.
         #[cfg(feature = "cap-collections")]
         crate::collections::guard_operand(a, b)?;
+        // `p / "x"`, `"x" / p` and `p / q`. Anything else with a path operand
+        // falls through to the generic message below, which is CPython's own
+        // text for it word for word.
+        #[cfg(feature = "cap-pathlib")]
+        if let Div = op {
+            if let Some(v) = crate::pathlib::truediv(a, b)? {
+                return Ok(v);
+            }
+        }
         Ok(match (op, a, b) {
             (Add, Value::Str(x), Value::Str(y)) => Value::Str(format!("{x}{y}").into()),
             (Add, Value::Bytes(x), Value::Bytes(y)) => {
@@ -188,6 +197,11 @@ impl Interp {
         // one value for which that is observable. The rule lives in
         // `value::elem_eq`, once, at the element level — a blanket refusal here
         // used to reject `n in [1, 2]`, which has exactly one answer.
+        // `x in p.parents` is a Sequence membership test in CPython, which
+        // this value cannot answer without an identity; falling through would
+        // be a TypeError at exit 1 for a program that works there.
+        #[cfg(feature = "cap-pathlib")]
+        crate::pathlib::guard_view(container, "`in`")?;
         Ok(match container {
             Value::Str(s) => match needle {
                 Value::Str(n) => s.contains(n.as_ref()),
@@ -312,6 +326,10 @@ impl Interp {
     }
 
     pub fn index(&mut self, base: &Value, idx: &Value) -> R<Value> {
+        #[cfg(feature = "cap-pathlib")]
+        if let Value::Path(s, true) = base {
+            return crate::pathlib::view_index(s, crate::eval::int_val(idx)?);
+        }
         Ok(match base {
             Value::Dict(d) => {
                 // The missing key is where the two `collections` types differ
@@ -463,6 +481,10 @@ impl Interp {
             })
         };
         let (lo, hi) = (opt(&lo)?, opt(&hi)?);
+        // CPython answers a slice of `.parents` with a TUPLE; falling through
+        // would be a TypeError at exit 1 for a program that works there.
+        #[cfg(feature = "cap-pathlib")]
+        crate::pathlib::guard_view(base, "a slice")?;
         // `step == 1` is what almost every slice in the corpus is, and it names a
         // CONTIGUOUS range. The general path below has to materialise the picked
         // indices because a step can skip or reverse; taking that range directly
@@ -576,6 +598,24 @@ impl Interp {
     pub fn get_attr(&mut self, base: &Value, name: &str) -> R<Value> {
         if let Value::Module(_) = base {
             return crate::modules::get_attr(base, name);
+        }
+        // A path's properties are COMPUTED here — `.name`, `.parts`, `.parent`
+        // are not methods — and every name this engine does not answer refuses
+        // rather than raising AttributeError, for the reason `collections` does
+        // the same: CPython answers `.resolve()` and `.glob()`, and an
+        // AttributeError is exit 1, which the chain never retries.
+        #[cfg(feature = "cap-pathlib")]
+        if let Value::Path(s, view) = base {
+            return crate::pathlib::get_attr(s, *view, name);
+        }
+        // `Path.cwd` — a classmethod on the type object.
+        #[cfg(feature = "cap-pathlib")]
+        if matches!(base, Value::Builtin("Path")) {
+            return if name == "cwd" {
+                Ok(Value::Bound(Rc::new(Value::Module("pathlib")), "cwd"))
+            } else {
+                Err(crate::pathlib::refuse(&format!("Path.{name}")))
+            };
         }
         if let Some(m) = crate::methods::method_name(base, name) {
             return Ok(Value::Bound(Rc::new(base.clone()), m));
@@ -1196,6 +1236,13 @@ fn order_as(sym: &str, a: &Value, b: &Value) -> R<Ordering> {
     // multiset containment in CPython 3.10+.)
     #[cfg(feature = "cap-collections")]
     crate::collections::guard_operand(a, b)?;
+    // Two paths order by their SPLIT strings, and only when they share a root
+    // — `pathlib.rs` trap 2 has the measurement. A path against anything else
+    // falls to the TypeError below, which is CPython's answer for it.
+    #[cfg(feature = "cap-pathlib")]
+    if let Some(o) = crate::pathlib::order(a, b)? {
+        return Ok(o);
+    }
     // The numeric and scalar paths run BEFORE the guard, because neither can
     // descend and `sorted()` of a list of ints reaches this once per
     // comparison. See `value::eq` for the same split and the same reasoning.

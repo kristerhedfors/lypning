@@ -23,6 +23,11 @@ pub fn to_str(v: &Value) -> R<String> {
     Ok(match v {
         Value::Str(s) => s.to_string(),
         Value::Exc(_, m) => m.to_string(),
+        // `str(Path('a/b'))` is `a/b`, not the repr — it is `__fspath__`, and
+        // it is what makes `open(p)`, `os.path.join(p, x)` and `'%s' % p`
+        // right without a coercion of their own.
+        #[cfg(feature = "cap-pathlib")]
+        Value::Path(s, false) => s.to_string(),
         _ => repr(v)?,
     })
 }
@@ -44,6 +49,8 @@ pub fn to_str(v: &Value) -> R<String> {
 pub fn to_rc(v: &Value) -> R<Rc<str>> {
     Ok(match v {
         Value::Str(s) => s.clone(),
+        #[cfg(feature = "cap-pathlib")]
+        Value::Path(s, false) => s.clone(),
         Value::Exc(_, m) => m.clone(),
         Value::Int(i) => int_rc(*i),
         _ => repr(v)?.into(),
@@ -200,6 +207,10 @@ pub fn repr(v: &Value) -> R<String> {
                 "repr() of a generator, whose CPython repr contains a heap address",
             ))
         }
+        // `PosixPath('a')` on POSIX, quoted by the same rule every other
+        // string repr here uses.
+        #[cfg(feature = "cap-pathlib")]
+        Value::Path(s, view) => return crate::pathlib::repr(s, *view),
         Value::Exc(kind, msg) => {
             if msg.is_empty() {
                 format!("{kind}()")
@@ -594,6 +605,21 @@ fn g_with_point(f: f64, prec: usize, upper: bool, alt: bool) -> String {
 /// no spelling for at all — so the two share every other rule and must not share
 /// this one.
 pub fn format_value(v: &Value, spec_src: &str) -> R<String> {
+    // A `Path` has no `__format__` of its own, so CPython's `object.__format__`
+    // raises a TypeError for any NON-EMPTY spec: `f"{p:>10}"` is an error there
+    // and would be a padded string here — a wrong answer at exit 0 on the one
+    // spelling an agent reaches for to line paths up in a table. The `%`
+    // operator is a different path and is not affected: `'%10s' % p` formats
+    // `str(p)` in CPython too.
+    #[cfg(feature = "cap-pathlib")]
+    if !spec_src.is_empty() {
+        if let Value::Path(..) = v {
+            return Err(crate::pathlib::refuse(
+                "a format spec on a Path, which CPython answers with a TypeError from \
+                 object.__format__",
+            ));
+        }
+    }
     format_inner(v, spec_src, false)
 }
 
