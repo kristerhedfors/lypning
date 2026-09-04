@@ -27,6 +27,16 @@ import pytest
 from typing import List
 
 from lypning import build, embed, engines, paths
+
+
+@pytest.fixture
+def largest_bin():
+    """The binary of the LARGEST spectrum variant — the one the C ABI library is
+    built as, so drift and route agreement compare like variant with like."""
+    b = engines.find(engines.SPECTRUM[-1])
+    if b is None:
+        pytest.skip("the largest variant (%s) is not built" % engines.SPECTRUM[-1])
+    return b
 from conftest import _INSTALLED_LIBRARY
 
 
@@ -80,8 +90,10 @@ def test_sys_exit_is_the_programs_own_code(lypning_lib):
 
 def test_abi_and_runtime_versions(lypning_lib, lypning_bin):
     assert lypning_lib.version
+    # `lypning X.Y.Z (variant)` — the version is the second field; the trailing
+    # parenthesised name is the variant, checked elsewhere.
     reported = subprocess.run([str(lypning_bin), "--version"], capture_output=True,
-                              text=True, check=False).stdout.split()[-1]
+                              text=True, check=False).stdout.split()[1]
     assert lypning_lib.version == reported
 
 
@@ -103,9 +115,11 @@ AGREEMENT_PROGRAMS = [
 
 
 @pytest.mark.parametrize("program", AGREEMENT_PROGRAMS)
-def test_library_agrees_with_the_binary(lypning_lib, lypning_bin, program, tmp_path):
-    """The drift detector. Two implementations of one contract, same answer."""
-    spawned = subprocess.run([str(lypning_bin), "-c", program], capture_output=True,
+def test_library_agrees_with_the_binary(lypning_lib, largest_bin, program, tmp_path):
+    """The drift detector. Two implementations of one contract, same answer —
+    the library is the largest variant, so it is compared against that binary,
+    whose refusal line is headed by the same name."""
+    spawned = subprocess.run([str(largest_bin), "-c", program], capture_output=True,
                              cwd=str(tmp_path), check=False)
     linked = lypning_lib.run(program)
     assert linked.stdout == spawned.stdout
@@ -403,9 +417,9 @@ def test_route_answers_without_running_anything(lypning_lib, tmp_path, monkeypat
     assert not (tmp_path / "written.txt").exists()
 
 
-def test_route_agrees_with_the_binary(lypning_lib, lypning_bin):
+def test_route_agrees_with_the_binary(lypning_lib, largest_bin):
     for program in ("print(1)", "import re", "async def f(): pass", "import subprocess"):
-        spawned = subprocess.run([str(lypning_bin), "route", "-c", program],
+        spawned = subprocess.run([str(largest_bin), "route", "-c", program],
                                  capture_output=True, text=True, check=False)
         assert lypning_lib.route(program).engine == spawned.stdout.split()[0]
 

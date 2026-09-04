@@ -60,7 +60,7 @@ from . import engines
 #: FROZEN there: every new capability goes to a larger variant. This used to be
 #: reported and never failed; a spectrum whose whole premise is bytes-per-point
 #: cannot leave its points ungated.
-VARIANT_BLOCK_BUDGET: dict[str, int] = {engines.LYPNING: 8}
+VARIANT_BLOCK_BUDGET: dict[str, int] = {engines.LYPNING: 8, engines.LYPNING_L: 32}
 
 MAX_BYTES = 700_000
 """lypning-mp's stripped-static budget.

@@ -14,6 +14,28 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-04** — The spectrum, step 5: `lypning-l` exists, with identical capabilities · [#37]
+
+- The spectrum has two points: `lypning` (1 MB, 8 blocks, frozen) and
+  **`lypning-l`** (`--features variant-l`, budget 32 blocks). Today it carries
+  exactly `lypning`'s capabilities, so the router — first "can run" at or above
+  the running binary — never picks it, a runtime refusal never tries it (a
+  sibling with the same capabilities cannot answer what a smaller one could
+  not), and every mixture verdict and chain is identical to before; that
+  identity is this step's proof. It grows one capability per step from here.
+- Every table and ladder is over the spectrum now: `lypning build --rust`
+  builds both, `conformance` runs both by default and adds a **monotone**
+  check (a larger variant never does worse than a smaller one on a program
+  both ran — a violation fails the run), `gate` holds each to its budget,
+  `doctor` and `status` show both rows.
+- The C ABI library is the largest variant and says so: four additive symbols
+  (`lypning_engine_self/count/name/is_rust`), ABI still 1 — no existing symbol
+  changed shape, and the header now says a route can name any spectrum member.
+- **Correcting step 3**: it said a dispatcher disagreement "fails the run". The
+  report printed FAIL; the exit code did not follow — `Report.ok` never
+  learned about disagreements. It does now, along with monotone violations.
+- Docs: the chain diagram and the tier table show the spectrum.
+
 **2026-09-04** — The spectrum, step 4: build, install and gate per variant · [#36]
 
 - `lypning build --rust` builds every point on the spectrum (`--variant NAME`

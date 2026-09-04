@@ -87,7 +87,7 @@ VERDICTS = (MATCH, UNSUPPORTED, MISMATCH)
 
 #: The arms measured when the caller names none, cheapest first. CPython is the
 #: reference and would trivially match itself, so it is not an arm by default.
-DEFAULT_ARMS = (LYPNING, MICROPYTHON, MIXTURE)
+DEFAULT_ARMS = tuple(eng.SPECTRUM) + (MICROPYTHON, MIXTURE)
 
 DEFAULT_TIMEOUT = 30.0
 
@@ -510,6 +510,13 @@ class Report:
     #: entries where they did not agree. Only when both arms were requested.
     dispatchers: Optional[Tuple[int, int]] = None
     disagreements: List[str] = field(default_factory=list)
+    #: ``(violations, compared)`` over adjacent spectrum rungs: a larger variant
+    #: must never do worse than a smaller one on a program both ran — a MATCH
+    #: below must be a MATCH above with the same stdout where stdout was
+    #: compared. One violation is a variant that lost a capability it claims
+    #: to be a superset of, which no other gate can see.
+    monotone: Optional[Tuple[int, int]] = None
+    monotone_violations: List[str] = field(default_factory=list)
 
     @property
     def mismatches(self) -> int:
@@ -524,7 +531,11 @@ class Report:
         target, so reporting ``ok`` for it would be reporting a measurement we
         cannot stand behind.
         """
-        return self.mismatches == 0 and not self.damage
+        # Two dispatchers disagreeing, or a larger variant doing worse than a
+        # smaller one, are MISMATCH-class: an engine gave the user an answer the
+        # battery did not grade. Step 3 printed FAIL for the first and exited 0.
+        return (self.mismatches == 0 and not self.damage and not self.disagreements
+                and not self.monotone_violations)
 
 
 # --- the safety net ----------------------------------------------------------
@@ -834,7 +845,7 @@ def _refusal(engine: str, stderr: str) -> Optional[Tuple[str, str]]:
         # arm name is ours, for the report, and never reaches the runtime.
         if (who == engine
                 or (engine in (MIXTURE, MIXTURE_RUST) and who in eng.ENGINE_ORDER)
-                or (engine == LIBRARY and who == LYPNING)):
+                or (engine == LIBRARY and who == eng.SPECTRUM[-1])):
             return m.group(2), m.group(3)
     return None
 
@@ -1200,6 +1211,23 @@ def run(
                     disagreements.append("%s: python %s rc=%s, rust %s rc=%s"
                                          % (r.entry_id, a.verdict, a.actual_rc, b.verdict, b.actual_rc))
             dispatchers = (compared - len(disagreements), compared)
+        monotone = None
+        monotone_violations: List[str] = []
+        pairs = [(a, b) for a, b in zip(eng.SPECTRUM, eng.SPECTRUM[1:]) if a in arms and b in arms]
+        if pairs:
+            compared = 0
+            for r in scored:
+                for a, b in pairs:
+                    va, vb = r.verdicts.get(a), r.verdicts.get(b)
+                    if va is None or vb is None:
+                        continue
+                    compared += 1
+                    if va.verdict != MATCH:
+                        continue
+                    uncompared = "stdout uncompared" in (va.detail, vb.detail)
+                    if vb.verdict != MATCH or (not uncompared and va.stdout_digest != vb.stdout_digest):
+                        monotone_violations.append("%s: %s %s, %s %s" % (r.entry_id, a, va.verdict, b, vb.verdict))
+            monotone = (len(monotone_violations), compared)
         routes = {r.entry_id: eng.Route(r.predicted, r.route_kind, r.route_detail)
                   for r in scored if r.predicted}
     finally:
@@ -1210,6 +1238,8 @@ def run(
         routing_errors=routing_errors,
         dispatchers=dispatchers,
         disagreements=disagreements,
+        monotone=monotone,
+        monotone_violations=monotone_violations,
         skipped=skipped,
         seconds=time.perf_counter() - started,
         routes=routes,
@@ -1434,6 +1464,14 @@ def render(report: Report, plan: bool = False) -> str:
         for e in report.routing_errors[:10]:
             out.append("  %s: predicted %s, ideal %s — %s"
                        % (e.entry_id, e.predicted, e.ideal or "none", e.detail))
+
+    if report.monotone is not None:
+        bad, compared = report.monotone
+        out.append("")
+        out.append("monotone violations %d over %d — a larger variant never does worse than a "
+                   "smaller one on a program both ran%s" % (bad, compared, "" if not bad else ":  FAIL"))
+        for d in report.monotone_violations[:10]:
+            out.append("  %s" % d)
 
     if report.dispatchers is not None:
         agreed, compared = report.dispatchers

@@ -97,6 +97,14 @@ extern "C" {
  * without ambiguity. */
 #define LYPNING_UNSUPPORTED_EXIT 90
 
+/* The Rust spectrum: one crate, N sized variants; this library is the largest.
+ * All strings static, never freed. Added in ABI 1 additively (no existing
+ * symbol changed shape). */
+const char *lypning_engine_self(void);       /* e.g. "lypning-l" */
+int lypning_engine_count(void);
+const char *lypning_engine_name(int i);      /* cheapest first; "" past the end */
+int lypning_engine_is_rust(const char *name); /* 1 for a spectrum member */
+
 /* lypning_result_status(). */
 enum {
     /* The program ran. lypning_result_exit_code() is its own: 0, or whatever it
@@ -136,7 +144,9 @@ typedef struct lypning_route lypning_route;
 
 /* NULL if `src` is not UTF-8 or is NULL itself. */
 lypning_route *lypning_route_new(const char *src, size_t len);
-/* "lypning", "lypning-mp" or "cpython". "" for a NULL handle. */
+/* A member of the Rust spectrum (see lypning_engine_name), "lypning-mp" or
+ * "cpython". "" for a NULL handle. Do not compare against "lypning" by hand:
+ * ask lypning_engine_is_rust(), or lypning_engine_self() for this library. */
 const char *lypning_route_engine(const lypning_route *r);
 /* The construct that pushed it past lypning ("module", "async", …), or "".
  * Also "" for a NULL handle. */
