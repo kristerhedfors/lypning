@@ -39,6 +39,115 @@ impl Engine {
     }
 }
 
+/// One point on the Rust spectrum: its engine name and the capability features
+/// compiled into it. `caps` is cumulative — a larger variant lists everything a
+/// smaller one has — which is the monotonicity the router relies on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Variant {
+    pub name: &'static str,
+    pub caps: &'static [&'static str],
+}
+
+/// The spectrum, cheapest first. EVERY variant carries the whole table, not
+/// just its own row: the prototype that carried only its own capabilities
+/// routed `import json` past its larger sibling straight to lypning-mp,
+/// because the router could not know a sibling existed. The names are the
+/// Python side's `engines.SPECTRUM`, in this order, pinned by test. One row
+/// today; `lypning-l` is the next.
+pub const SPECTRUM: &[Variant] = &[Variant { name: "lypning", caps: &[] }];
+
+/// `cap-*` feature → (the modules it serves, the RUNTIME refusal kinds it
+/// answers). Empty until the first capability is gated; every row here is a
+/// claim `lypning build` proves on the variant that carries it.
+pub const CAPS: &[(&str, &[&str], &[&str])] = &[];
+
+/// This binary's own name, from `build.rs` — the same constant `err::ENGINE`
+/// writes at the head of every refusal line.
+pub const SELF: &str = env!("LYPNING_ENGINE");
+
+/// The capabilities this binary was built with, from `build.rs`.
+pub const SELF_CAPS: &str = env!("LYPNING_CAPS");
+
+/// Which row of [`SPECTRUM`] this binary is. A build whose `build.rs` named a
+/// variant the table does not list is a broken build, not a routing case.
+pub fn self_index() -> usize {
+    SPECTRUM
+        .iter()
+        .position(|v| v.name == SELF)
+        .expect("build.rs named a variant that route::SPECTRUM does not list")
+}
+
+/// `route --spectrum`: the table and this binary's place in it, as JSON, for
+/// `lypning build` to assert and the Python side to pin its copy against.
+pub fn spectrum_json() -> String {
+    fn q(s: &str) -> String {
+        let mut out = String::from("\"");
+        for c in s.chars() {
+            match c {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+        out
+    }
+    let rows: Vec<String> = SPECTRUM
+        .iter()
+        .map(|v| {
+            let caps: Vec<String> = v.caps.iter().map(|c| q(c)).collect();
+            format!("{{\"name\":{},\"caps\":[{}]}}", q(v.name), caps.join(","))
+        })
+        .collect();
+    let caps: Vec<String> = CAPS
+        .iter()
+        .map(|(c, mods, kinds)| {
+            let m: Vec<String> = mods.iter().map(|x| q(x)).collect();
+            let k: Vec<String> = kinds.iter().map(|x| q(x)).collect();
+            format!("{{\"cap\":{},\"modules\":[{}],\"kinds\":[{}]}}", q(c), m.join(","), k.join(","))
+        })
+        .collect();
+    let self_caps: Vec<String> = SELF_CAPS.split(',').filter(|s| !s.is_empty()).map(q).collect();
+    format!(
+        "{{\"self\":{},\"self_caps\":[{}],\"spectrum\":[{}],\"caps\":[{}]}}",
+        q(SELF), self_caps.join(","), rows.join(","), caps.join(",")
+    )
+}
+
+#[cfg(test)]
+mod spectrum_tests {
+    use super::*;
+
+    #[test]
+    fn this_binary_is_a_row_of_the_table_it_carries() {
+        assert_eq!(SPECTRUM[self_index()].name, SELF);
+        assert_eq!(crate::err::ENGINE, SELF);
+    }
+
+    #[test]
+    fn caps_are_cumulative_and_every_cap_is_declared() {
+        for w in SPECTRUM.windows(2) {
+            for c in w[0].caps {
+                assert!(w[1].caps.contains(c), "{} has {c} but {} does not", w[0].name, w[1].name);
+            }
+        }
+        for v in SPECTRUM {
+            for c in v.caps {
+                assert!(CAPS.iter().any(|(name, _, _)| name == c), "{c} is not in CAPS");
+            }
+        }
+    }
+
+    #[test]
+    fn the_caps_this_binary_was_built_with_are_its_row() {
+        let built: Vec<&str> = SELF_CAPS.split(',').filter(|s| !s.is_empty()).collect();
+        let mut declared: Vec<&str> = SPECTRUM[self_index()].caps.to_vec();
+        declared.sort();
+        assert_eq!(built, declared, "build.rs and route::SPECTRUM disagree about {SELF}");
+    }
+}
+
 #[derive(Debug)]
 pub struct Route {
     pub engine: Engine,

@@ -391,7 +391,7 @@ pub unsafe extern "C" fn lypning_result_stdout(
 }
 
 /// The program's stderr — its traceback, or, after a refusal, exactly the one
-/// `lypning: unsupported: <kind>: <detail>` line the binary would have printed.
+/// `<engine>: unsupported: <kind>: <detail>` line the binary would have printed.
 #[no_mangle]
 pub unsafe extern "C" fn lypning_result_stderr(
     r: *const lypning_result,

@@ -405,6 +405,31 @@ def micropython_modules(source: Optional[Path] = None) -> List[str]:
     return _STRING_RE.findall(m.group("body"))
 
 
+_SPECTRUM_RE = re.compile(
+    r"const\s+SPECTRUM\s*:\s*&\[Variant\]\s*=\s*&\[(?P<body>.*?)\];", re.S)
+_VARIANT_NAME_RE = re.compile(r'name\s*:\s*"([^"]*)"')
+
+
+def spectrum(source: Optional[Path] = None) -> List[str]:
+    """The Rust spectrum's variant names, in order, read from ``route.rs``.
+
+    Read rather than restated, like :func:`micropython_modules`. ``engines.SPECTRUM``
+    is the Python copy — a module constant on purpose, since argparse choices and
+    the fork-free hooks cannot spawn a binary at import — and ``tests/test_routing.py``
+    holds the copy to this reading, and to what a built binary says of itself.
+    Empty means the table was not found.
+    """
+    p = Path(source) if source is not None else table_source()
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    m = _SPECTRUM_RE.search(text)
+    if not m:
+        return []
+    return _VARIANT_NAME_RE.findall(m.group("body"))
+
+
 #: The `match kind { … => Engine::MicroPython }` arm of `engine_for`, which is
 #: the classifier's other table: not "which modules that tier has" but "which of
 #: lypning's refusal KINDS that tier can pick up". Read from the source for the

@@ -14,6 +14,22 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-04** — The spectrum, step 2: the binary learns its own name (no behaviour change) · [#34]
+
+- Exactly one `variant-*` cargo feature is on in any build (`variant-m`, today's
+  binary, is the default); `build.rs` turns it into `LYPNING_ENGINE`, and
+  `err::ENGINE` / `err::refusal_line` are the one place a refusal line is
+  spelled — the four literals that used to say `lypning:` go through it, so no
+  variant can ever write a sibling's name at the head of its refusal line.
+- `route::SPECTRUM` (one row) and `route::CAPS` (empty) are compiled into every
+  binary; `lypning route --spectrum` prints the table and which row this binary
+  is; `--version` names the variant. `lypning build --rust` now asserts, on the
+  binary it just produced, that it calls itself what we expect and that its
+  compiled table is exactly `engines.SPECTRUM`; `routing.spectrum()` reads the
+  same table from the source, and a test holds the Python copy to both.
+- Bytes unchanged (817,984 B / 7 blocks host); conformance 1573 / 931 / 0 over
+  2504 graded, identical to main.
+
 **2026-09-04** — The spectrum, step 1: the names become a grammar (no behaviour change) · [#33]
 
 - lypning is becoming a **spectrum** of Rust variants from one crate — `lypning`

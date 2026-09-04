@@ -57,7 +57,7 @@ pub mod capi;
 
 pub use embed::{fall_onward, run, Outcome, Request, Status};
 pub use err::UNSUPPORTED_EXIT;
-pub use route::{route, Engine, Route};
+pub use route::{route, Engine, Route, Variant, CAPS, SELF, SPECTRUM};
 
 /// The crate version, which is also what `lypning --version` prints.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -50,7 +50,7 @@ fn main() {
 fn run(argv: &[String]) -> i32 {
     let mut i = 1;
     if argv.len() > 1 && (argv[1] == "--version" || argv[1] == "-V") {
-        println!("lypning {}", env!("CARGO_PKG_VERSION"));
+        println!("lypning {} ({})", env!("CARGO_PKG_VERSION"), lypning::err::ENGINE);
         return 0;
     }
     if argv.len() > 1 && argv[1] == "route" {
@@ -75,7 +75,7 @@ fn run(argv: &[String]) -> i32 {
             }
             "-u" | "-B" | "-E" | "-s" | "-S" | "-I" => i += 1,
             other if other.starts_with('-') => {
-                eprintln!("lypning: unsupported: cli: option {other}");
+                eprintln!("{}", lypning::err::refusal_line("cli", &format!("option {other}")));
                 return UNSUPPORTED_EXIT;
             }
             path => {
@@ -187,6 +187,13 @@ fn route_cmd(args: &[String]) -> i32 {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            // The spectrum table this binary carries, and which row it is.
+            // `lypning build` asserts this on every binary it produces; the
+            // Python side pins its copy of the table to it.
+            "--spectrum" => {
+                println!("{}", lypning::route::spectrum_json());
+                return 0;
+            }
             "-c" => {
                 src = args.get(i + 1).cloned().unwrap_or_default();
                 i += 2;

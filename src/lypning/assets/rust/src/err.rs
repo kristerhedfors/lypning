@@ -2,7 +2,12 @@
 //!
 //! lypning inherits lypning-mp's contract verbatim (`docs/SUBSET.md`):
 //!
-//!   exit 90, one line on **stderr**: `lypning: unsupported: <kind>: <detail>`
+//!   exit 90, one line on **stderr**: `<engine>: unsupported: <kind>: <detail>`
+//!
+//! `<engine>` is THIS binary's own name — a point on the Rust spectrum, named at
+//! compile time by `build.rs` ([`ENGINE`]) — because the dispatcher reads the
+//! head of the line to know which tier refused, and a variant that wrote a
+//! sibling's name would misroute silently.
 //!
 //! 90 is clear of 0/1/2 (python's own), 126/127 (shell) and 128+n (signals), so
 //! the dispatcher can branch on it unambiguously and retry with the next
@@ -115,12 +120,23 @@ impl LypningError {
     }
 }
 
+/// This binary's engine name, from `build.rs` — the head of every refusal line
+/// and what `--version` and `route --spectrum` report. One point on the Rust
+/// spectrum (`route::SPECTRUM`); the same constant in every target of the crate.
+pub const ENGINE: &str = env!("LYPNING_ENGINE");
+
+/// The refusal line, spelled in exactly one place (CLAUDE.md invariant 2 and 9):
+/// `<engine>: unsupported: <kind>: <detail>`. Everything that writes one — the
+/// error's `Display`, the CLI's option refusal, the embedding's NUL refusal —
+/// goes through here, so no variant can ever write a name that is not its own.
+pub fn refusal_line(kind: &str, detail: &str) -> String {
+    format!("{ENGINE}: unsupported: {kind}: {detail}")
+}
+
 impl fmt::Display for LypningError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &*self.0 {
-            ErrKind::Unsupported { kind, detail } => {
-                write!(f, "lypning: unsupported: {kind}: {detail}")
-            }
+            ErrKind::Unsupported { kind, detail } => f.write_str(&refusal_line(kind, detail)),
             ErrKind::Syntax { line, msg } => write!(f, "  line {line}\nSyntaxError: {msg}"),
             ErrKind::Exc(e) => {
                 if e.msg.is_empty() {

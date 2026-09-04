@@ -18,6 +18,31 @@
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=Cargo.toml");
+    // The variant this build IS, from the one `variant-*` feature cargo turned
+    // on. Emitted as an env var so `err::ENGINE` can be a compile-time constant
+    // in library code, where `CARGO_BIN_NAME` does not reach. `rustc-env` is
+    // seen by every target of the package, so the bin, the rlib and the cdylib
+    // all agree on who they are.
+    let on = |f: &str| std::env::var(format!("CARGO_FEATURE_{f}")).is_ok();
+    let variants: Vec<&str> = [("VARIANT_M", "lypning")]
+        .iter()
+        .filter(|(f, _)| on(f))
+        .map(|(_, name)| *name)
+        .collect();
+    let engine = match variants.as_slice() {
+        [name] => *name,
+        [] => panic!("no variant feature is on: build with the default features (variant-m)"),
+        many => panic!("more than one variant feature is on: {many:?} — a binary is one point on the spectrum"),
+    };
+    println!("cargo:rustc-env=LYPNING_ENGINE={engine}");
+    // Every capability feature that is on, sorted, so a binary can state what
+    // it was built with (`route --spectrum`) and the build can check the claim.
+    let mut caps: Vec<String> = std::env::vars()
+        .filter_map(|(k, _)| k.strip_prefix("CARGO_FEATURE_CAP_").map(|c| format!("cap-{}", c.to_lowercase().replace('_', "-"))))
+        .collect();
+    caps.sort();
+    println!("cargo:rustc-env=LYPNING_CAPS={}", caps.join(","));
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         println!("cargo:rustc-cdylib-link-arg=-Wl,-install_name,@rpath/liblypning.dylib");
     }

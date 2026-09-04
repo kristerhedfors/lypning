@@ -781,6 +781,35 @@ def test_no_program_is_routed_to_the_tier_with_a_kind_the_chain_would_escalate()
 # --- the capability table -----------------------------------------------------
 
 
+def test_the_spectrum_copy_in_engines_is_the_rust_table():
+    # engines.SPECTRUM is a copy of route::SPECTRUM (it has to be a module
+    # constant). A copy is honest only while something checks it: this reads
+    # the Rust source and FAILS — never skips — if the two disagree, because a
+    # missing table is the same silent drift as a wrong one.
+    names = routing.spectrum()
+    assert names, "route::SPECTRUM was not found in %s" % routing.table_source()
+    assert list(eng.SPECTRUM) == names
+
+
+def test_a_built_core_knows_its_own_name(lypning_bin):
+    # The other half of the pin: not the source, the artefact. `route --spectrum`
+    # names the binary and the table it carries; `--version` says the same.
+    import json as _json
+    import subprocess as _sp
+    out = _sp.run([str(lypning_bin), "route", "--spectrum"], capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    table = _json.loads(out.stdout)
+    assert table["self"] == eng.LYPNING
+    assert [r["name"] for r in table["spectrum"]] == list(eng.SPECTRUM)
+    assert table["self_caps"] == [], "no capability is gated yet"
+    ver = _sp.run([str(lypning_bin), "--version"], capture_output=True, text=True, timeout=60).stdout
+    assert ver.startswith("lypning ") and "(%s)" % eng.LYPNING in ver
+    from lypning import build
+    assert build.check_spectrum_contract(lypning_bin) == (True, "")
+    ok, why = build.check_spectrum_contract(lypning_bin, expected="lypning-l")
+    assert not ok and "calls itself" in why
+
+
 def test_the_table_is_read_from_route_rs_not_restated_here():
     mods = routing.micropython_modules()
     assert mods, "MICROPYTHON_MODULES was not found in %s" % routing.table_source()
