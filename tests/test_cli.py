@@ -62,11 +62,15 @@ def test_status_json_is_valid_json(capsys):
 def test_status_reports_an_unbuilt_engine_as_not_built(capsys, no_micropython):
     assert cli.main(["status", "--json"]) == 0
     obj = json.loads(capsys.readouterr().out)
-    assert obj["engines"]["lypning-mp"] == {"path": None, "built": False,
+    # lypning-mp is an ORACLE now — measured, never routed to — so it is
+    # reported in its own section rather than among the tiers.
+    assert "lypning-mp" not in obj["engines"]
+    assert obj["oracles"]["lypning-mp"] == {"path": None, "built": False,
                                             "bytes": 0, "blocks": 0}
     capsys.readouterr()
     assert cli.main(["status"]) == 0
-    assert "lypning-mp: not built" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "oracles" in out and "lypning-mp: not built" in out
 
 
 def test_corpus_stats_render(capsys):

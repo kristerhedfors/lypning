@@ -84,7 +84,7 @@ tools run the same corpus and their tables get read side by side, so an arm that
 is named differently in each is an arm nobody can line up.
 """
 
-ARM_ORDER: Tuple[str, ...] = (engines.CPYTHON, engines.LYPNING, engines.MICROPYTHON, MIXTURE)
+ARM_ORDER: Tuple[str, ...] = (engines.CPYTHON,) + tuple(engines.SPECTRUM) + (MIXTURE,)
 
 STARTUP_PROGRAM = "pass"
 """The empty program. Everything left is the interpreter arriving and leaving."""
@@ -156,8 +156,9 @@ def resolve_arms(names: Optional[Sequence[Union[str, Arm]]] = None) -> List[Arm]
             env: Dict[str, str] = {}
             if found.get(engines.CPYTHON):
                 env[engines.env_var_for(engines.CPYTHON)] = str(found[engines.CPYTHON])
-            if found.get(engines.MICROPYTHON):
-                env[engines.env_var_for(engines.MICROPYTHON)] = str(found[engines.MICROPYTHON])
+            for name in engines.SPECTRUM:
+                if name != engines.LYPNING and found.get(name):
+                    env[engines.env_var_for(name)] = str(found[name])
             out.append(Arm(MIXTURE, b, ("run",), env))
             continue
         b = found.get(name)

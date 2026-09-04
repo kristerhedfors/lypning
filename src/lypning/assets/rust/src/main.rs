@@ -245,7 +245,7 @@ fn route_cmd(args: &[String]) -> i32 {
     if let Some(after) = next_after {
         let _ = next_detail;
         let after = if after.is_empty() { route::SELF.to_string() } else { after };
-        let chain = route::chain_after(&after, &next_kind, &r.imports, &r.verdicts);
+        let chain = route::chain_after(&after, &next_kind, &r.verdicts);
         println!("[{}]", chain.iter().map(|s| jstr(s)).collect::<Vec<_>>().join(","));
         return 0;
     }
@@ -337,7 +337,7 @@ fn dispatch(args: &[String]) -> i32 {
         // reimplementation, an import outside a tier's table rules that tier
         // out, and a larger sibling that could run the whole program comes
         // before both. The Python dispatcher walks the same function's answer.
-        let chain = route::chain_after(route::SELF, &kind, &r.imports, &r.verdicts);
+        let chain = route::chain_after(route::SELF, &kind, &r.verdicts);
         return walk_chain(&chain, &src, &tail, &is_file);
     }
     // A static route names the first rung; what follows it is the rest of
@@ -402,9 +402,6 @@ fn parse_run_args(args: &[String]) -> Result<(String, Vec<String>, Option<String
 /// binary, the state bin dir, then PATH by name — the same order, so the two
 /// dispatchers find the same sibling or the same nothing.
 fn engine_path_named(name: &str) -> String {
-    if name == route::MICROPYTHON_NAME {
-        return std::env::var("LYPNING_MP_BIN").unwrap_or_else(|_| "lypning-mp".into());
-    }
     if name == route::CPYTHON_NAME {
         return std::env::var("LYPNING_CPYTHON").unwrap_or_else(|_| "python3".into());
     }

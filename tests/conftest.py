@@ -159,10 +159,14 @@ def no_micropython(monkeypatch):
     path that silently skips itself on the one machine where the binary happens
     to exist is a test of nothing on that machine.
     """
+    # The oracle is not in `available()` any more — it is not a tier — so the
+    # simulation is of `find` answering None for it, which is what every reader
+    # (status's oracle row, the conformance arm) actually asks.
     available = engines.available
     monkeypatch.setattr(engines, "find_micropython", lambda: None)
+    monkeypatch.setattr(engines, "oracles", lambda: {engines.MICROPYTHON: None})
     monkeypatch.setattr(
         engines, "available",
-        lambda: dict(available(), **{engines.MICROPYTHON: None}),
+        lambda: dict(available()),
     )
     return None

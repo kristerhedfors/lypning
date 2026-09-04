@@ -87,7 +87,13 @@ VERDICTS = (MATCH, UNSUPPORTED, MISMATCH)
 
 #: The arms measured when the caller names none, cheapest first. CPython is the
 #: reference and would trivially match itself, so it is not an arm by default.
-DEFAULT_ARMS = tuple(eng.SPECTRUM) + (MICROPYTHON, MIXTURE)
+DEFAULT_ARMS = tuple(eng.SPECTRUM) + (MIXTURE,)
+
+#: Arms that are measured only when asked for by name. The oracle is here for
+#: the reason LIBRARY is: it needs a build most machines cannot do (a 32-bit
+#: toolchain and a network), and it grades a question — "what does a second
+#: reimplementation get wrong?" — that is not "did the chain answer correctly".
+OPT_IN_ARMS = tuple(eng.ORACLES) + (LIBRARY, MIXTURE_RUST)
 
 DEFAULT_TIMEOUT = 30.0
 
@@ -233,12 +239,11 @@ def is_seeded_stream(entry: Any) -> bool:
     Tier 1 does (`random.rs`), so its stdout is compared like any other
     program's; MicroPython's generator is a different algorithm, so for the
     `lypning-mp` arm stdout is not compared and the exit code stands alone.
-    That arm is graded on a program it is never given: `random` is not in the
-    middle tier's import table (`route.rs`), and both dispatchers re-read that
-    table when a runtime refusal falls onward, so no spelling of a seed —
-    star import, `getattr`, a bound name, a parse-time blocker beside it —
-    reaches it. The exemption describes a tier the chain skips, not one it
-    trusts.
+    That arm is graded on a program the chain never gives it: lypning-mp is an
+    ORACLE, not a tier — nothing routes to it at all. The exemption describes a
+    binary the chain cannot reach, not one it trusts, and it stays because the
+    oracle is still *measured*: a seeded stream there is a plausible wrong
+    number, so its exit code has to stand alone.
 
     The seed regex is a heuristic and errs loud: `seed(x)` with `x = None`
     counts as seeded, and such a program is compared and may MISMATCH against
@@ -1126,7 +1131,13 @@ def run(
         if limit is not None and limit >= 0:
             pool = pool[:limit]
 
-        binaries: Dict[str, Optional[Path]] = {e: eng.find(e) for e in eng.ENGINE_ORDER}
+        # The ladder PLUS the oracles: lypning-mp is not a routing destination
+        # any more, but `--engine lypning-mp` must still run it. Building this
+        # map from ENGINE_ORDER alone would report the oracle as "not built" on
+        # a machine that has it — an absent arm and a deliberately-unrouted one
+        # rendering identically is exactly how an oracle stops being measured.
+        binaries: Dict[str, Optional[Path]] = {
+            e: eng.find(e) for e in eng.ENGINE_ORDER + eng.ORACLES}
         ref_bin = binaries.get(CPYTHON)
 
         wanted = list(engines) if engines is not None else list(DEFAULT_ARMS)
@@ -1315,7 +1326,7 @@ def plan(report: Report) -> List[Tuple[str, int, List[str]]]:
     dispatcher that reaches CPython refuses nothing.
     """
     source = None
-    for name in (LYPNING, MICROPYTHON):
+    for name in eng.SPECTRUM:
         if name in report.engines:
             source = report.engines[name]
             break
@@ -1349,7 +1360,7 @@ def plan_cost(report: Report) -> Dict[str, int]:
     existing callers can keep unpacking. Empty when the mixture arm did not run.
     """
     source = None
-    for name in (LYPNING, MICROPYTHON):
+    for name in eng.SPECTRUM:
         if name in report.engines:
             source = report.engines[name]
             break
@@ -1387,9 +1398,11 @@ def render(report: Report, plan: bool = False) -> str:
         out.append("(a program is blocked by the FIRST thing it hits, so counts shift"
                    " as features land)")
         if cost:
-            out.append("ranked by ->cpy: the refusals that reach CPython, which is the only")
-            out.append("column that costs anything — a refusal the classifier sends to the")
-            out.append("middle tier is answered at that tier's spawn, roughly 30x cheaper.")
+            out.append("ranked by ->cpy: the refusals that reach CPython, which is what")
+            out.append("costs. Until 2026-09-04 a refusal could land on the MicroPython")
+            out.append("tier at ~30x less and the two columns diverged; that tier left the")
+            out.append("chain, so every refusal below costs a CPython spawn. This is the")
+            out.append("build order for the larger spectrum variant.")
             out.append("")
             out.append("%s %s %s  %s" % ("->cpy".rjust(6), "blocks".rjust(7),
                                          _pad("blocker", 44), "e.g."))

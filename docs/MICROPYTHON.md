@@ -2,6 +2,38 @@
 
 *Charter and design. Started 2026-08-13.*
 
+> ## It is an oracle now, not a tier
+>
+> **2026-09-04.** lypning-mp left the dispatch chain. Nothing routes to it: the
+> chain is `lypning` → `lypning-l` → CPython, and `engines.ENGINE_ORDER` does
+> not list it. It was the middle tier from the beginning of this project and
+> everything below describes why it was built and how — all of which is still
+> true of the artefact.
+>
+> It was kept, and is still measured, because it is the most expensive thing
+> this project owns: **a second, independent, from-scratch implementation of
+> Python** that has been run against real CPython over the whole corpus with
+> every disagreement written down. That makes it an *oracle*. The constructs a
+> reimplementation gets wrong are not evenly distributed — they cluster in float
+> formatting, sort stability, hash order, error-message text, and the places
+> CPython defines by its own internals — and `.github/known-mismatches.json`
+> holds **79 measured divergences in 34 families**, each with the reason. Every
+> one is something a larger Rust variant must implement *exactly* or *refuse*,
+> never approximate. `lypning oracle` renders the catalogue, and works without
+> the 32-bit toolchain that building the binary needs.
+>
+> What the oracle may not do: widen a capability table (invariant 1), stand in
+> for the CPython reference, or gate a build. It is absent on almost every
+> machine, so a missing oracle is a hole in a report and never a zero.
+>
+> **Why it left the chain.** The Rust spectrum reached two points, and the
+> larger one is meant to cover what mp covered — from one crate, with one
+> parser, under this tree's own contract, on every platform rather than only
+> where a 32-bit toolchain and a network exist. Measured the day it left: 852
+> corpus programs (23.1%) routed to mp and now reach CPython instead. That
+> number is the work `lypning-l` has left to do, and `conformance --plan` ranks
+> it.
+
 **lypning-mp** is a Python-subset runtime built for one job: run the
 python one-liners an agentic coding CLI actually types, inside the in-browser
 CheerpX Linux VM, without the cold-start cost that makes `python3` unusable

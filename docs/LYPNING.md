@@ -16,14 +16,20 @@ The interpreters are the mixture:
 | tier | what it is | where it lives |
 |---|---|---|
 | **lypning** | this — a Rust subset, 1 MB (8 device blocks, frozen) | `assets/rust/`, `--features variant-m` |
-| **lypning-l** | the same crate with more capabilities, up to 4 MB (32 blocks); identical to `lypning` today, it grows one capability per step and is meant to absorb what lypning-mp does | `assets/rust/`, `--features variant-l` |
-| **lypning-mp** | a MicroPython variant with a frozen shim stdlib | `assets/micropython/`, [`docs/MICROPYTHON.md`](MICROPYTHON.md) |
+| **lypning-l** | the same crate with more capabilities, up to 4 MB (32 blocks); identical to `lypning` today, it grows one capability per step | `assets/rust/`, `--features variant-l` |
 | **CPython** | the real thing | the system `python3` |
 
-lypning-mp exists because CPython costs **8,573 ms cold** in the CheerpX sandbox
-(`docs/SANDBOX-PERFORMANCE.md` §1) and the exec ceiling is 30 s. lypning exists
-because lypning-mp is still an interpreter written for microcontrollers, and the
+lypning exists because CPython costs **8,573 ms cold** in the CheerpX sandbox
+(`docs/SANDBOX-PERFORMANCE.md` §1) and the exec ceiling is 30 s, and because the
 programs an agent types are a much narrower target than "Python".
+
+A MicroPython variant, `lypning-mp`, was the middle tier until **2026-09-04**.
+It is no longer in the chain — nothing routes to it — and it is kept as an
+**oracle**: a second, independent reimplementation of Python whose measured
+disagreements with CPython (79 of them, in 34 families) are the evidence of what
+a reimplementation gets wrong, and therefore of what a larger Rust variant must
+implement exactly or refuse. `lypning oracle` renders the catalogue;
+[`docs/MICROPYTHON.md`](MICROPYTHON.md) is its manual.
 
 ## 1. Measurement
 

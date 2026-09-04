@@ -66,7 +66,16 @@ VARIANT_CAPS: dict = {LYPNING: (), LYPNING_L: ()}
 #: about the artefact a harness actually links.
 LIBRARY = "library"
 
-ENGINE_ORDER = SPECTRUM + (MICROPYTHON, CPYTHON)
+ENGINE_ORDER = SPECTRUM + (CPYTHON,)
+
+#: Engines that are measured but never routed to. lypning-mp left the chain on
+#: 2026-09-04: it is a second, independent reimplementation of Python, so the
+#: programs where IT diverges from CPython are the empirical catalogue of what a
+#: reimplementation gets wrong — which is what a larger Rust variant must
+#: implement exactly or refuse. `.github/known-mismatches.json` holds 79 of its
+#: divergences in 34 families; `lypning oracle` renders them. An oracle is
+#: findable, buildable and gradeable as an ARM, and appears in no chain.
+ORACLES = (MICROPYTHON,)
 
 #: Install-target suffixes `lypning build --target` appends so a cross-target
 #: binary never overwrites the host's: ``lypning-i686``. Documented, not
@@ -85,7 +94,10 @@ def parse_binary_name(name: str) -> tuple[str, str]:
     A name that is not an engine's parses as ``("", name)``.
     """
     base = name.rsplit("/", 1)[-1]
-    for engine in sorted(SPECTRUM + (MICROPYTHON,), key=len, reverse=True):
+    # MICROPYTHON is here although it is not a routing destination: a file
+    # called `lypning-mp-i386` must still parse as that engine for i386, or the
+    # gate measures the oracle against a Rust variant's block budget.
+    for engine in sorted(SPECTRUM + ORACLES, key=len, reverse=True):
         if base == engine:
             return engine, ""
         if base.startswith(engine + "-"):
@@ -282,6 +294,11 @@ def find(engine: str) -> Path | None:
     if engine in SPECTRUM:
         return find_variant(engine)
     raise KeyError(engine)
+
+
+def oracles() -> "dict[str, Path | None]":
+    """The engines that are measured but never routed to — see :data:`ORACLES`."""
+    return {e: find(e) for e in ORACLES}
 
 
 def available() -> dict[str, Path | None]:
@@ -752,6 +769,19 @@ def chain_from(engine: str) -> list[str]:
 #: kind here is a claim that no reimplementation short of CPython gets the
 #: construct right; removing one is a claim that a wrong answer was acceptable.
 #: `tests/test_routing.py` checks it against the battery in both directions.
+#: Refusal kinds after which the chain jumps straight to CPython — skipping
+#: EVERY Rust variant, not just the departed MicroPython tier.
+#:
+#: The rule was written when lypning-mp sat in the middle and each entry was
+#: measured on it: "mp's small-int boxing answers True", "mp spells every
+#: iterator type `iterator`", "a sort over a NaN is the algorithm's answer and
+#: mp's algorithm differs". Those measurements are why the rule exists, and
+#: they say something larger than they were used for. A kind is here because a
+#: REIMPLEMENTATION gets it wrong — and `lypning-l` is a reimplementation. So
+#: with the tier gone the same 16 kinds mean strictly more: not "skip the middle
+#: tier" but "no Rust variant may answer this, at any size". They are the one
+#: part of the spectrum's build order that is closed rather than open, and
+#: `lypning oracle` is where the evidence for each of them lives.
 ONLY_CPYTHON_REFUSALS = frozenset({
     "dunder-missing",     # mp builtins carry no __module__/__doc__; the getattr default wins
     "encoding",           # mp ignores every non-UTF-8 codec and answers the UTF-8 bytes
@@ -775,15 +805,13 @@ ONLY_CPYTHON_REFUSALS = frozenset({
 _MP_MODULES: "frozenset[str] | None" = None
 
 
-def micropython_can_import(imports: Iterable[str]) -> bool:
-    """Can lypning-mp import everything in ``imports``?
+def oracle_can_import(imports: Iterable[str]) -> bool:
+    """Can the ORACLE import everything in ``imports``?
 
-    The static router asks this before naming a tier; the dispatcher asks it
-    again in :func:`chain_after_refusal`, or a program sent to tier 1 on its
-    imports would fall onto a tier those imports had ruled out. Read from
-    ``route.rs`` (through :mod:`lypning.routing`, the one reader of that table)
-    so the two dispatchers cannot disagree; an unreadable table answers ``True``,
-    which is the pre-existing behaviour and never narrower than the binary's own.
+    No longer a routing question — lypning-mp is not a destination. It answers
+    "is this program one the oracle can be asked about at all", which is what
+    bounds `lypning oracle`'s reach over the corpus, and it is read from
+    ``route.rs``'s table rather than restated.
     """
     global _MP_MODULES
     if _MP_MODULES is None:
@@ -795,7 +823,6 @@ def micropython_can_import(imports: Iterable[str]) -> bool:
     if not _MP_MODULES:
         return True
     return all(m in _MP_MODULES for m in imports)
-
 
 def chain_after_refusal(engine: str, kind: str, imports: Iterable[str] = (),
                         verdicts: Iterable[tuple] = ()) -> list[str]:
@@ -817,8 +844,6 @@ def chain_after_refusal(engine: str, kind: str, imports: Iterable[str] = (),
     out = [e for e in rest if e in SPECTRUM
            and set(VARIANT_CAPS.get(e, ())) - have               # strictly more capable
            and any(v[0] == e and not v[1] for v in verdicts)]
-    if MICROPYTHON in rest and micropython_can_import(imports):
-        out.append(MICROPYTHON)
     out.append(CPYTHON)
     return out
 

@@ -96,9 +96,12 @@ traceback reaches a user unless `LYPNING_DEBUG=1`.
 Engine strings are exactly the members of `engines.ENGINE_ORDER`: the Rust
 **spectrum** — every variant built from the one crate, cheapest first, spelled
 in `engines.SPECTRUM` (today `"lypning"`; `"lypning-l"`, the 4 MB variant, when
-it lands) — then `"lypning-mp"`, then `"cpython"`. A variant's name is `lypning`
+it lands) — then `"cpython"`. A variant's name is `lypning`
 plus one lowercase letter from a closed set (`l`; never `m`, which reads as
 `-mp`), and it precedes the install-target suffix: `lypning-l-i686`.
+`"lypning-mp"` is still a name but no longer a tier: it left the chain on
+2026-09-04 and is an **oracle** — measured, never routed to (`engines.ORACLES`,
+`lypning oracle`).
 `engines.parse_binary_name` is the one reader of that shape, longest engine
 first. Each variant writes its **own** name at the head of its refusal line,
 through `engines.refusal_line`, never a literal. Env vars are `LYPNING_*`, a

@@ -26,7 +26,6 @@ use std::collections::BTreeSet;
 pub enum Engine {
     /// A point on the Rust spectrum, by row of [`SPECTRUM`].
     Rust(usize),
-    MicroPython,
     CPython,
 }
 
@@ -34,7 +33,6 @@ impl Engine {
     pub fn as_str(self) -> &'static str {
         match self {
             Engine::Rust(i) => SPECTRUM[i].name,
-            Engine::MicroPython => "lypning-mp",
             Engine::CPython => "cpython",
         }
     }
@@ -141,14 +139,21 @@ impl Verdict {
     }
 }
 
-pub const MICROPYTHON_NAME: &str = "lypning-mp";
 pub const CPYTHON_NAME: &str = "cpython";
 
-/// Every engine name in cost order — the spectrum, then lypning-mp, then
-/// CPython. The same tuple the Python side calls `ENGINE_ORDER`.
+/// The MicroPython build's name. NOT a routing destination — it left the chain
+/// on 2026-09-04 and is kept as an ORACLE: a second, independent reimplementation
+/// of Python whose measured divergences from CPython (`.github/known-mismatches.json`,
+/// 79 entries in 34 families) are the empirical list of what a reimplementation
+/// gets wrong, and therefore what a larger Rust variant must implement exactly
+/// or refuse. Nothing here routes to it; `MICROPYTHON_MODULES` below is its
+/// import surface, read as the oracle's reach and as `lypning-l`'s build order.
+pub const ORACLE_NAME: &str = "lypning-mp";
+
+/// Every engine name in cost order — the spectrum, then CPython. The same tuple
+/// the Python side calls `ENGINE_ORDER`.
 pub fn engine_order() -> Vec<&'static str> {
     let mut out: Vec<&'static str> = SPECTRUM.iter().map(|v| v.name).collect();
-    out.push(MICROPYTHON_NAME);
     out.push(CPYTHON_NAME);
     out
 }
@@ -157,9 +162,7 @@ impl Engine {
     /// The rung named `name`, or `None` for a name no table lists — which the
     /// caller must treat as CPython, the safe direction, never silently.
     pub fn from_name(name: &str) -> Option<Engine> {
-        if name == MICROPYTHON_NAME {
-            Some(Engine::MicroPython)
-        } else if name == CPYTHON_NAME {
+        if name == CPYTHON_NAME {
             Some(Engine::CPython)
         } else {
             SPECTRUM.iter().position(|v| v.name == name).map(Engine::Rust)
@@ -211,15 +214,15 @@ pub fn answers(v: &Variant, kind: &str, detail: &str) -> bool {
 /// sibling's capabilities) and are marked so; the floor rule never routes
 /// there anyway. lypning-mp's row is the same decision `engine_for` has
 /// always made; CPython's is always yes.
-pub fn verdicts(kind: &str, detail: &str, imports: &[String], mp_risk: &BTreeSet<&'static str>) -> Vec<Verdict> {
+pub fn verdicts(kind: &str, detail: &str, imports: &[String]) -> Vec<Verdict> {
     let me = self_index();
-    let mut out = Vec::with_capacity(SPECTRUM.len() + 2);
+    let mut out = Vec::with_capacity(SPECTRUM.len() + 1);
     for (i, v) in SPECTRUM.iter().enumerate() {
         let vd = if i < me {
             Verdict::no(v.name, "floor", "below the routing binary")
         } else if kind.is_empty() {
             Verdict::ok(v.name)
-        } else if only_cpython(kind) || CPYTHON_ONLY_KINDS.contains(&kind) || kind == "syntax" || kind == "error" {
+        } else if cpython_only(kind) || kind == "syntax" || kind == "error" {
             Verdict::no(v.name, kind, detail)
         } else if i == me || !answers(v, kind, detail) {
             Verdict::no(v.name, kind, detail)
@@ -230,19 +233,6 @@ pub fn verdicts(kind: &str, detail: &str, imports: &[String], mp_risk: &BTreeSet
         };
         out.push(vd);
     }
-    let mp_ok = if kind.is_empty() {
-        mp_risk.is_empty() && micropython_imports(imports)
-    } else if kind == "syntax" || kind == "error" {
-        false
-    } else {
-        engine_for(kind, imports, mp_risk) == Engine::MicroPython
-    };
-    out.push(if mp_ok {
-        Verdict::ok(MICROPYTHON_NAME)
-    } else {
-        Verdict::no(MICROPYTHON_NAME, if kind.is_empty() { "module" } else { kind },
-                    if kind.is_empty() { "an import outside lypning-mp's table" } else { detail })
-    });
     out.push(Verdict::ok(CPYTHON_NAME));
     out
 }
@@ -270,20 +260,21 @@ fn engine_from_verdicts(vs: &[Verdict]) -> Engine {
 /// strict superset of the refusing rung's — a sibling built with the same
 /// `cap-*` set cannot answer at runtime what this one could not, and trying it
 /// is a spawn wasted; then lypning-mp if it can import everything, then
-/// CPython. `mp_risk` is deliberately not consulted here: it never was at
-/// runtime, and changing that is a step with its own measurement, not a side
-/// effect of this generalisation.
-pub fn chain_after(after: &str, kind: &str, imports: &[String], verdicts: &[Verdict]) -> Vec<&'static str> {
+/// CPython. There is no tier between the spectrum and CPython: lypning-mp left
+/// the chain on 2026-09-04 (it is the oracle now), so a refusal a larger sibling
+/// cannot answer costs a CPython spawn — which is exactly what makes
+/// `conformance --plan` rank the build order by real cost.
+pub fn chain_after(after: &str, kind: &str, verdicts: &[Verdict]) -> Vec<&'static str> {
     let order = engine_order();
     let start = order.iter().position(|e| *e == after).map(|i| i + 1).unwrap_or(order.len() - 1);
     let rest = &order[start..];
-    if only_cpython(kind) {
+    if cpython_only(kind) {
         return vec![CPYTHON_NAME];
     }
     let after_caps: &[&str] = SPECTRUM.iter().find(|v| v.name == after).map(|v| v.caps).unwrap_or(&[]);
     let mut out = Vec::new();
     for e in rest {
-        if *e == MICROPYTHON_NAME || *e == CPYTHON_NAME {
+        if *e == CPYTHON_NAME {
             continue;
         }
         let caps = SPECTRUM.iter().find(|v| v.name == *e).map(|v| v.caps).unwrap_or(&[]);
@@ -292,15 +283,12 @@ pub fn chain_after(after: &str, kind: &str, imports: &[String], verdicts: &[Verd
             out.push(*e);
         }
     }
-    if rest.contains(&MICROPYTHON_NAME) && micropython_imports(imports) {
-        out.push(MICROPYTHON_NAME);
-    }
     out.push(CPYTHON_NAME);
     out
 }
 
-fn finish_route(kind: String, detail: String, imports: Vec<String>, mp_risk: &BTreeSet<&'static str>) -> Route {
-    let verdicts = verdicts(&kind, &detail, &imports, mp_risk);
+fn finish_route(kind: String, detail: String, imports: Vec<String>) -> Route {
+    let verdicts = verdicts(&kind, &detail, &imports);
     let engine = engine_from_verdicts(&verdicts);
     Route { engine, kind, detail, imports, verdicts }
 }
@@ -331,27 +319,26 @@ mod spectrum_tests {
 
     #[test]
     fn the_floor_rule_and_the_chain_reproduce_the_three_tier_decisions() {
-        let none: BTreeSet<&'static str> = BTreeSet::new();
         // nothing blocks: this binary runs it
-        let vs = verdicts("", "", &[], &none);
+        let vs = verdicts("", "", &[]);
         assert_eq!(engine_from_verdicts(&vs), Engine::Rust(self_index()));
-        // a module lypning-mp has: mp
-        let vs = verdicts("module", "import re", &["re".to_string()], &none);
-        assert_eq!(engine_from_verdicts(&vs), Engine::MicroPython);
+        // a module no Rust variant serves: CPython, because there is no tier
+        // between the spectrum and CPython any more
+        let vs = verdicts("module", "import re", &["re".to_string()]);
+        assert_eq!(engine_from_verdicts(&vs), Engine::CPython);
         // a module nobody but CPython has
-        let vs = verdicts("module", "import subprocess", &["subprocess".to_string()], &none);
+        let vs = verdicts("module", "import subprocess", &["subprocess".to_string()]);
         assert_eq!(engine_from_verdicts(&vs), Engine::CPython);
         // a semantic refusal skips everything
-        let vs = verdicts("set-order", "x", &[], &none);
+        let vs = verdicts("set-order", "x", &[]);
         assert_eq!(engine_from_verdicts(&vs), Engine::CPython);
-        // runtime chain: bigint from this binary with mp-importable imports.
-        // lypning-l has exactly this binary's caps, so it is not tried.
-        let vs_ok = verdicts("", "", &["os".to_string()], &none);
-        assert_eq!(chain_after(SELF, "bigint", &["os".to_string()], &vs_ok), vec![MICROPYTHON_NAME, CPYTHON_NAME]);
-        assert_eq!(chain_after(SELF, "bigint", &["random".to_string()], &vs), vec![CPYTHON_NAME]);
-        assert_eq!(chain_after(SELF, "set-order", &[], &vs), vec![CPYTHON_NAME]);
-        assert_eq!(chain_after(MICROPYTHON_NAME, "bigint", &[], &vs), vec![CPYTHON_NAME]);
-        assert_eq!(chain_after("nonesuch", "bigint", &[], &vs), vec![CPYTHON_NAME]);
+        // runtime chain: with lypning-l carrying exactly this binary's caps it
+        // is not tried, and there is nothing between the spectrum and CPython.
+        let vs_ok = verdicts("", "", &["os".to_string()]);
+        assert_eq!(chain_after(SELF, "bigint", &vs_ok), vec![CPYTHON_NAME]);
+        assert_eq!(chain_after(SELF, "bigint", &vs), vec![CPYTHON_NAME]);
+        assert_eq!(chain_after(SELF, "set-order", &vs), vec![CPYTHON_NAME]);
+        assert_eq!(chain_after("nonesuch", "bigint", &vs), vec![CPYTHON_NAME]);
     }
 
     #[test]
@@ -371,14 +358,13 @@ mod spectrum_tests {
         if self_index() != 0 {
             return;
         }
-        let none: BTreeSet<&'static str> = BTreeSet::new();
         for (kind, detail, imports) in [
             ("module", "import re", vec!["re".to_string()]),
             ("module", "import subprocess", vec!["subprocess".to_string()]),
             ("class", "class definition", vec![]),
             ("bigint", "x", vec![]),
         ] {
-            let vs = verdicts(kind, detail, &imports, &none);
+            let vs = verdicts(kind, detail, &imports);
             assert_ne!(engine_from_verdicts(&vs), Engine::Rust(1), "{kind}");
             assert_eq!(vs[1].kind, vs[0].kind, "{kind}: rows 0 and 1 must agree");
         }
@@ -610,7 +596,7 @@ pub fn route(src: &str) -> Route {
             // the source for them: the import line is what usually decides the
             // tier, and it is cheap and unambiguous to find.
             imports = scan_imports(src);
-            finish_route(kind, detail, imports, &BTreeSet::new())
+            finish_route(kind, detail, imports)
         }
         Err(ref e) if matches!(e.kind(), ErrKind::Syntax { .. }) => {
             let (line, msg) = match e.kind() {
@@ -621,114 +607,46 @@ pub fn route(src: &str) -> Route {
             // its message is the one the caller expects to read.
             // `syntax` is in neither kind table, so every rung but CPython
             // refuses it and the verdicts say so.
-            finish_route("syntax".into(), format!("line {line}: {msg}"), scan_imports(src), &BTreeSet::new())
+            finish_route("syntax".into(), format!("line {line}: {msg}"), scan_imports(src))
         }
-        Err(other) => finish_route("error".into(), other.to_string(), imports, &BTreeSet::new()),
+        Err(other) => finish_route("error".into(), other.to_string(), imports),
         Ok(body) => {
             let mut req = Requirements::default();
             walk_block(&body, &mut req);
             imports = req.imports.iter().cloned().collect();
             match req.blocker {
-                None => finish_route(String::new(), String::new(), imports, &req.mp_risk),
-                Some((kind, detail)) => finish_route(kind, detail, imports, &req.mp_risk),
+                None => finish_route(String::new(), String::new(), imports),
+                Some((kind, detail)) => finish_route(kind, detail, imports),
             }
         }
     }
 }
 
-/// Constructs lypning-mp is KNOWN to answer WRONGLY, each named by its family in
-/// `.github/known-mismatches.json`.
+/// The constructs a second reimplementation is KNOWN to get wrong lived here as
+/// `MICROPYTHON_UNSAFE` — a table whose only job was to keep a program off the
+/// MicroPython tier. That tier left the chain on 2026-09-04, so the table
+/// decided nothing and is gone; leaving a table wired into the walker that
+/// changes no route is the inert contradiction this file already paid for once.
 ///
-/// This is the inverse of `MICROPYTHON_MODULES` and it exists for one number:
-/// **UNSAFE**, a program routed to a tier that gives the wrong answer. Six of
-/// the seven route to lypning-mp, and lypning-mp is a third-party runtime whose
-/// defects cannot be fixed here — but the CLASSIFIER can decline to send a
-/// program there when the source shows it would trip on one.
-///
-/// Deliberately CONSTRUCT-level and not KIND-level. Iteration 48 widened a whole
-/// blocker kind toward lypning-mp on the strength of a LATE improvement and
-/// bought two UNSAFE; the lesson recorded there is that a population where the
-/// tier is usually right is not a population the classifier may claim. A named
-/// construct with a measured cost is a different claim, and each entry here
-/// carries both.
-///
-/// Measured 2026-08-28 over a corpus of 2239 programs: `random.seed` 19,
-/// `__module__` 5, `.parts` 1 — 25 in total, against 133 for routing all of
-/// `pathlib` away and 15 for all of `base64`. Twenty-five extra CPython spawns
-/// buys three UNSAFE, and UNSAFE is a gate where LATE is a budget.
-///
-/// `random.seed` was the first entry and is gone: a construct-level marker was
-/// the wrong instrument for it, because seededness has spellings the walker
-/// cannot see and stages it never reaches (see `MICROPYTHON_MODULES`). The
-/// whole module is routed past the tier instead — the one case where the
-/// module-level rule is the precise one.
-const MICROPYTHON_UNSAFE: &[(&str, &str)] = &[
-    // Built-in types carry no `__module__` there, so the ordinary
-    // `type(e).__module__ + '.' + type(e).__name__` idiom dies mid-program with
-    // output already committed.
-    ("__module__", "dunder-missing-on-builtins"),
-    // `Path('/a/b').parts` drops the root component. Guarded on `pathlib` also
-    // being imported, since `.parts` is an ordinary attribute name.
-    ("parts", "pathlib-parts-drops-root"),
-    // The rest are the COMMIT BARRIER, and they fail differently: lypning-mp
-    // answers correctly right up to the construct and only then refuses, with
-    // its output already streamed. A refusal is interchangeable with the next
-    // tier's answer only because it leaves nothing behind, so one that arrives
-    // late is not a refusal the chain can act on (docs/LYPNING.md §6). The tier
-    // cannot be fixed here; the classifier can decline to start there.
-    ("hashlib.algorithms_guaranteed", "commit-barrier"),
-];
+/// The KNOWLEDGE is not lost, and is more load-bearing than before:
+/// `ONLY_CPYTHON_KINDS` (below) rules those constructs out of every Rust
+/// variant, not just of the departed tier, and `.github/known-mismatches.json`
+/// holds the oracle's 79 measured divergences in 34 named families — the list
+/// a larger variant must implement exactly or refuse.
 
-//: Keyword ARGUMENT names carrying the same risk. A separate table because a
-//: keyword is a different node from an attribute, not a different policy: the
-//: entry below is a parameter lypning-mp does not accept and discovers only at
-//: the call, by which point the program has printed.
-const MICROPYTHON_UNSAFE_KWARGS: &[(&str, &str)] = &[("strict_mode", "commit-barrier")];
 
-fn engine_for(kind: &str, imports: &[String], mp_risk: &BTreeSet<&'static str>) -> Engine {
-    if CPYTHON_ONLY_KINDS.contains(&kind) {
-        return Engine::CPython;
-    }
-    // A construct lypning-mp gets wrong decides before anything else does: the
-    // whole point is that this program must not reach that tier, whatever else
-    // would have sent it there.
-    if !mp_risk.is_empty() {
-        return Engine::CPython;
-    }
-    // Any import outside lypning-mp's stdlib decides for CPython regardless of what
-    // else blocked lypning — the import fails first, so a closer look is wasted.
-    for m in imports {
-        if !MICROPYTHON_MODULES.contains(&m.as_str()) {
-            return Engine::CPython;
-        }
-    }
-    match kind {
-        // lypning-mp is MicroPython: it has arbitrary-precision integers, a
-        // class system, decorators and generators. Each of these is exactly a
-        // gap lypning refuses — AT PARSE TIME, which is the only time this
-        // match runs. The classifier sees a kind from exactly three sources:
-        // a parse-time refusal (parse.rs), a lex-time one (lex.rs), or
-        // `Requirements::block` in this file. This arm listed 23 more kinds
-        // that only the EVALUATOR emits (`set-order`, `del`, `json`,
-        // `percent-format`, `round`, …) — names that can never reach it, six of
-        // which `ONLY_CPYTHON_KINDS` says must skip lypning-mp entirely. Dead,
-        // the contradiction was inert; the day someone taught the parser to
-        // spot one of those constructs statically, this arm would have started
-        // routing programs to the tier the other table exists to keep them off,
-        // with no gate looking. The unlisted kinds fall to `_ => CPython`,
-        // which is the safe direction: a spare spawn, never a wrong answer.
-        // `tests/test_routing.py` now holds this arm to the kinds the
-        // classifier can actually emit, read out of the source.
-        "bigint" | "module" | "module-attr" | "class" | "recursion" | "fstring"
-        | "setattr" | "slice-assign" | "unpack" | "kwonly" | "nonlocal"
-        | "import" | "escape" | "ellipsis" | "complex"
-        // Both are language features there, not library ones. See
-        // CPYTHON_ONLY_KINDS, which listed them as absent until it was measured.
-        | "decorator" | "generator" => Engine::MicroPython,
-        // A construct nobody named yet: send it to the most capable tier rather
-        // than guess, and let the conformance run reclassify it with evidence.
-        _ => Engine::CPython,
-    }
+/// Which engine should run a program whose walker stopped on `kind`?
+///
+/// With lypning-mp out of the chain there is one question left: can any Rust
+/// variant at or above the router answer it (`verdicts`), or is it CPython's?
+/// This is now only the CPython-only check; the per-variant answer lives in
+/// `answers`. The old `match kind` arm that named the MicroPython tier is gone
+/// with the tier — and with it `mp_risk`, whose whole job was to keep a program
+/// OFF that tier. The knowledge those tables held (which constructs a second
+/// reimplementation gets wrong) is not lost: it is `ONLY_CPYTHON_KINDS` below,
+/// which now rules out every Rust variant too, and `.github/known-mismatches.json`.
+fn cpython_only(kind: &str) -> bool {
+    ONLY_CPYTHON_KINDS.contains(&kind) || CPYTHON_ONLY_KINDS.contains(&kind)
 }
 
 #[derive(Default)]
@@ -741,11 +659,6 @@ struct Requirements {
     /// `random.seed` marker and the battery's own source regex: py-0e241643581e
     /// reached lypning-mp and printed a different stream at exit 0.
     aliases: Vec<(String, String)>,
-    /// shows it would trip on lypning-mp. See [`MICROPYTHON_UNSAFE`]. The
-    /// labels come from two namespaces — ledger family names for the construct
-    /// table, refusal kinds for the AST markers — and only EMPTINESS is ever
-    /// read; a label is a breadcrumb for the next reader, not a join key.
-    mp_risk: BTreeSet<&'static str>,
 }
 
 impl Requirements {
@@ -993,22 +906,6 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             // a dunder that means nothing else; a construct spelled with a dot
             // is matched as a dotted path, so an unrelated `.seed` on some other
             // object does not fire `random.seed`.
-            for (construct, family) in MICROPYTHON_UNSAFE {
-                let hit = match construct.split_once('.') {
-                    Some((module, attr)) => {
-                        n.as_ref() == attr
-                            && matches!(b.as_ref(), Expr::Name(m) if m.as_ref() == module
-                                || req.aliases.iter().any(|(a, p)| a == m.as_ref() && p == module))
-                    }
-                    None if *construct == "parts" => {
-                        n.as_ref() == "parts" && req.imports.iter().any(|m| m == "pathlib")
-                    }
-                    None => n.as_ref() == *construct,
-                };
-                if hit {
-                    req.mp_risk.insert(family);
-                }
-            }
             // A module attribute is decidable; anything else is a method name.
             if let Some(crate::value::Value::Module(m)) = resolve_module(b, &req.aliases) {
                 if crate::modules::get_attr(&crate::value::Value::Module(m), n).is_err() {
@@ -1027,86 +924,18 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             dstar,
             ..
         } => {
-            // THE TWO TABLES HAVE TO COVER THE SAME GROUND, and this is where
-            // they did not. `engines.ONLY_CPYTHON_REFUSALS` is the RUNTIME half:
-            // it fires on a refusal tier 1 actually emitted. But tier 1 only
-            // runs when the classifier sends the program there, and a program
-            // whose FIRST blocker is an ordinary capability gap goes straight to
-            // lypning-mp — so tier 1 never refuses, the runtime table never
-            // sees the kind, and the tier answers wrongly at exit 0:
-            //
-            //     import math                      (an unused import is enough)
-            //     x = float("nan")
-            //     print(x in [x])     CPython True   lypning-mp False
-            //
-            // A NaN literal is visible in the SOURCE, so the static half can
-            // catch what the runtime half cannot. Measured over the corpus the
-            // run loaded (2,239 programs, 2026-08-28): 8 programs contain
-            // `float("nan")` and exactly ONE routes to lypning-mp today, so the
-            // rule costs one spawn.
-            if let Expr::Name(f) = func.as_ref() {
-                // The third spelling of `__module__`: `getattr(x, "__module__",
-                // default)`. The attribute marker sees only `Expr::Attr`, and a
-                // harvested probe reached lypning-mp this way and printed the
-                // DEFAULT — mp has no `__module__` on builtins — where CPython
-                // prints the module name.
-                if f.as_ref() == "getattr" && args.len() >= 2 {
-                    if let Expr::Str(a) = &args[1] {
-                        if a.as_ref() == "__module__" {
-                            req.mp_risk.insert("dunder-missing-on-builtins");
-                        }
-                    }
-                }
-                if f.as_ref() == "float" && args.len() == 1 {
-                    if let Expr::Str(v) = &args[0] {
-                        if v.eq_ignore_ascii_case("nan") {
-                            req.mp_risk.insert("nan-identity");
-                        }
-                    }
-                }
-            }
             walk_expr(func, req);
             for a in args {
                 walk_expr(a, req);
             }
-            for (name, v) in kwargs {
-                for (construct, family) in MICROPYTHON_UNSAFE_KWARGS {
-                    if name.as_ref() == *construct {
-                        req.mp_risk.insert(family);
-                    }
-                }
+            for (_name, v) in kwargs {
                 walk_expr(v, req);
             }
             for d in dstar {
                 walk_expr(d, req);
             }
         }
-        Expr::Bin(op, a, b) => {
-            // The same hole as the NaN literal above, for the kind this session
-            // split out of `bigint`. `int / int` where an operand is past 2**53
-            // needs a quotient rounded from the integers themselves, and
-            // lypning-mp converts both to double exactly as tier 1 would have —
-            // so it answers, and it answers wrongly:
-            //
-            //     import math                  (an unused import is enough)
-            //     print(9007199254740993 / 3)
-            //     CPython 3002399751580331.0   lypning-mp 3002399751580330.5
-            //
-            // Narrow on purpose: the DIVISION operator with a literal operand
-            // past the exactly-representable range, not "a big literal anywhere".
-            // Measured over the corpus the run loaded (2,239 programs,
-            // 2026-08-28): 10 programs hold a literal that large and exactly ONE
-            // routes to lypning-mp, so the rule costs one spawn.
-            const EXACT: i64 = 1 << 53;
-            if matches!(op, BinOp::Div) {
-                for side in [a.as_ref(), b.as_ref()] {
-                    if let Expr::Int(n) = side {
-                        if n.unsigned_abs() > EXACT as u64 {
-                            req.mp_risk.insert("int-div-precision");
-                        }
-                    }
-                }
-            }
+        Expr::Bin(_op, a, b) => {
             walk_expr(a, req);
             walk_expr(b, req);
         }

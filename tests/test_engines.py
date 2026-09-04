@@ -68,7 +68,11 @@ def test_chain_from_each_tier():
     for i, e in enumerate(order):
         assert engines.chain_from(e) == order[i:]
     assert engines.SPECTRUM == ("lypning", "lypning-l")
-    assert order == ["lypning", "lypning-l", "lypning-mp", "cpython"]
+    # lypning-mp left the chain on 2026-09-04: it is an ORACLE, measured but
+    # never routed to, so it is in ORACLES and in no ladder.
+    assert order == ["lypning", "lypning-l", "cpython"]
+    assert engines.ORACLES == ("lypning-mp",)
+    assert engines.MICROPYTHON not in engines.ENGINE_ORDER
 
 
 def test_parse_binary_name_is_the_one_name_parser():
@@ -133,25 +137,25 @@ def test_no_engine_name_is_spelled_by_hand_outside_engines_py():
     assert not offenders, offenders
 
 
-def test_chain_after_refusal_walks_siblings_that_could_run_then_mp_then_cpython(monkeypatch):
+def test_chain_after_refusal_walks_siblings_that_could_run_then_cpython(monkeypatch):
     # The rule route.rs spells in chain_after, mirrored here: a later Rust
     # sibling whose STATIC verdict was "can run" comes first, then lypning-mp
     # if it can import everything, then CPython. With one row today there is
     # never a sibling, so this pins the rule on a two-row spectrum.
     monkeypatch.setattr(engines, "SPECTRUM", ("lypning", "lypning-l"))
-    monkeypatch.setattr(engines, "ENGINE_ORDER", ("lypning", "lypning-l", "lypning-mp", "cpython"))
+    monkeypatch.setattr(engines, "ENGINE_ORDER", ("lypning", "lypning-l", "cpython"))
     monkeypatch.setattr(engines, "VARIANT_CAPS", {"lypning": (), "lypning-l": ("cap-bigint",)})
-    ok_l = (("lypning", "module", "import re"), ("lypning-l", "", ""), ("lypning-mp", "", ""), ("cpython", "", ""))
-    assert engines.chain_after_refusal("lypning", "bigint", ("os",), ok_l) == ["lypning-l", "lypning-mp", "cpython"]
+    ok_l = (("lypning", "module", "import re"), ("lypning-l", "", ""), ("cpython", "", ""))
+    assert engines.chain_after_refusal("lypning", "bigint", ("os",), ok_l) == ["lypning-l", "cpython"]
     assert engines.chain_after_refusal("lypning", "bigint", ("random",), ok_l) == ["lypning-l", "cpython"]
-    no_l = (("lypning", "", ""), ("lypning-l", "module", "import subprocess"), ("lypning-mp", "", ""), ("cpython", "", ""))
-    assert engines.chain_after_refusal("lypning", "bigint", ("os",), no_l) == ["lypning-mp", "cpython"]
+    no_l = (("lypning", "", ""), ("lypning-l", "module", "import subprocess"), ("cpython", "", ""))
+    assert engines.chain_after_refusal("lypning", "bigint", ("os",), no_l) == ["cpython"]
     assert engines.chain_after_refusal("lypning", "set-order", ("os",), ok_l) == ["cpython"]
-    assert engines.chain_after_refusal("lypning-l", "bigint", ("os",), ok_l) == ["lypning-mp", "cpython"]
+    assert engines.chain_after_refusal("lypning-l", "bigint", ("os",), ok_l) == ["cpython"]
     # identical capabilities: the sibling is never tried — the chain the tree
     # has always walked
     monkeypatch.setattr(engines, "VARIANT_CAPS", {"lypning": (), "lypning-l": ()})
-    assert engines.chain_after_refusal("lypning", "bigint", ("os",), ok_l) == ["lypning-mp", "cpython"]
+    assert engines.chain_after_refusal("lypning", "bigint", ("os",), ok_l) == ["cpython"]
     assert engines.chain_after_refusal("lypning", "bigint", ("random",), ok_l) == ["cpython"]
 
 
