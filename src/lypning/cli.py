@@ -2442,8 +2442,11 @@ worth reading. Kinds in engines.ONLY_CPYTHON_REFUSALS are marked NOT
 IMPLEMENTABLE and `--plan` drops them: they exist because a reimplementation
 gets them wrong.
 
-`lypning run` (the Rust dispatcher) does not feed the ledger, so every count is
-a floor. LYPNING_ROUTES=0 turns the writer off.
+The Rust binary's OWN dispatcher — what an installed chain actually execs —
+writes nothing here; only the Python `lypning run` above does. So every count is
+a floor, never a total. LYPNING_ROUTES=0 turns the writer off, and so does
+LYPNING_CAPTURE=0: this is a recording feed and the documented capture opt-out
+covers it.
 """, """
 examples:
   lypning routes                 what has been learned, by refusal kind
@@ -2455,7 +2458,8 @@ examples:
     s.add_argument("--plan", action="store_true",
                    help="only the kinds a larger variant could implement")
     s.add_argument("--compact", action="store_true",
-                   help="fold duplicate program ids into their counts")
+                   help="fold duplicate program ids into their counts "
+                        "(skips unreadable, truncated and stale stores)")
     s.add_argument("--clear", action="store_true", help="delete every store")
     s.add_argument("--forget", metavar="ID", help="drop every record for one program id")
     s.add_argument("--json", action="store_true", help="machine-readable")

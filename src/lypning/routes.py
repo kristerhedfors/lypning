@@ -60,6 +60,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -94,9 +95,29 @@ MAX_LINE = 4096
 #: only, as a reminder of which refusal this was, never as data to parse.
 DETAIL_MAX = 96
 
+#: A refusal kind is one hyphenated token (`bigint`, `set-order`). Bounded on
+#: the way in AND on the way out, because the file between the two is on disk
+#: and hand-editable — see `_clean`.
+KIND_MAX = 64
+
+#: An invocation count is a count. A hand-edited store holding a 400-digit
+#: integer must not get a 400-digit column.
+MAX_N = 1 << 40
+
 
 def enabled() -> bool:
-    """``LYPNING_ROUTES=0`` disables the writer. Anything else enables it."""
+    """``LYPNING_ROUTES=0`` disables the writer, and so does ``LYPNING_CAPTURE=0``.
+
+    The second one is the point. ``LYPNING_CAPTURE=0`` is documented as turning
+    the capture harness off, and a user who set it believes recording stopped.
+    This is a second feed writing program digests under ``$LYPNING_HOME``, and
+    adding it without honouring the opt-out already in the README would be a
+    consent regression under invariant 7 — the user would keep a switch that no
+    longer covers what it says it covers. A narrower switch may be added; the
+    broader one may never quietly narrow.
+    """
+    if os.environ.get("LYPNING_CAPTURE", "1").strip() == "0":
+        return False
     return os.environ.get(ENV, "1").strip() != "0"
 
 
@@ -162,7 +183,7 @@ def record(program: str, kind: str, detail: str,
            when: Optional[datetime] = None) -> Dict[str, Any]:
     """One ledger record. ``n`` is 1 here; only :func:`compact` ever folds."""
     day = (when or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
-    return {"id": digest(program), "kind": str(kind or "")[:64],
+    return {"id": digest(program), "kind": str(kind or "")[:KIND_MAX],
             "detail": str(detail or "")[:DETAIL_MAX], "n": 1, "t": day}
 
 
@@ -228,6 +249,16 @@ class Store:
     head: Optional[Dict[str, Any]] = None
     present: bool = False
     stale: bool = False
+    #: The file is there and could not be read. NOT the same fact as `not
+    #: present`, and the whole rendering contract turns on the difference: an
+    #: absent store means nothing was recorded, an unreadable one means we do
+    #: not know what was recorded. Reporting the second as the first hides an
+    #: IO or permission fault for as long as it lasts.
+    unreadable: bool = False
+    #: More records on disk than `MAX_RECORDS` let us load. `compact` must
+    #: refuse to rewrite a store in this state — it would persist the
+    #: truncation as the whole file.
+    truncated: bool = False
 
     @property
     def invocations(self) -> int:
@@ -251,26 +282,55 @@ def _is_record(obj: Any) -> bool:
     return isinstance(obj.get("kind"), str)
 
 
+#: Control characters, including the ESC that starts a terminal escape
+#: sequence. A refusal kind and detail are engine prose and never contain one.
+_CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _clean(text: str, cap: int) -> str:
+    """Bound a field from the store and strip anything a terminal would obey.
+
+    `record` caps these on the way in, but this is the way OUT and the two are
+    not the same trust boundary. The file is on disk, editable by hand, and
+    `Result.refusal` reads its kind from the first stderr line merely CONTAINING
+    the marker — looser than the `refused` gate — so a program can put bytes of
+    its choosing in here. Every later `lypning routes` prints them, long after
+    and out of context from the run that produced them, which is the one thing
+    a persisted record must not let a program do.
+    """
+    return _CTRL.sub("", text)[:cap]
+
+
 def _normal(r: Dict[str, Any]) -> Dict[str, Any]:
     n = r.get("n")
-    return {"id": str(r["id"]), "kind": str(r.get("kind") or ""),
-            "detail": str(r.get("detail") or "")[:DETAIL_MAX],
-            "n": n if isinstance(n, int) and n > 0 else 1,
-            "t": str(r.get("t") or "")}
+    return {"id": _clean(str(r["id"]), 12),
+            "kind": _clean(str(r.get("kind") or ""), KIND_MAX),
+            "detail": _clean(str(r.get("detail") or ""), DETAIL_MAX),
+            "n": n if isinstance(n, int) and 0 < n <= MAX_N else 1,
+            "t": _clean(str(r.get("t") or ""), 10)}
 
 
 def load(engine: str, path: Optional[Path] = None) -> Store:
     """One engine's records, or nothing at all if the header has gone stale.
 
-    A missing or unreadable file is ``present=False`` with no records, and the
-    renderer says "no routes learned yet" rather than printing a zero: an empty
-    ledger means nothing is KNOWN, never that every route was right.
+    A missing file is ``present=False``; a file that exists and cannot be read
+    is ``present=True, unreadable=True``, which is a DIFFERENT fact and is
+    rendered as one. Either way the renderer says what it does not know rather
+    than printing a zero: an empty ledger means nothing is KNOWN, never that
+    every route was right.
     """
     target = Path(path) if path is not None else store_path(engine)
     store = Store(engine=engine, path=target)
     try:
         text = target.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return store
     except OSError:
+        # It is there and we cannot read it. Say that, and never "no routes
+        # learned yet" — a store of 3,000 records behind a permission fault is
+        # not a store that was never written.
+        store.present = True
+        store.unreadable = True
         return store
     store.present = True
     lines = [ln for ln in text.splitlines() if ln.strip()]
@@ -293,6 +353,7 @@ def load(engine: str, path: Optional[Path] = None) -> Store:
         return store
     for ln in lines[1:]:
         if len(store.records) >= MAX_RECORDS:
+            store.truncated = True
             break
         try:
             obj = json.loads(ln)
@@ -373,11 +434,29 @@ def compact(stores: Optional[Sequence[Store]] = None) -> List[Tuple[str, int, in
     The ONLY place folding happens. A run appends and does nothing else, because
     folding means reading the file first, and a program's path does not read
     this file.
+
+    Folding is ALL it does. Three states are skipped rather than rewritten,
+    because `_rewrite` replaces the file with what `load` returned and in each
+    of them that would destroy something:
+
+    * **unreadable** — we do not know what is in there, so we may not replace it.
+    * **truncated** — `load` stopped at `MAX_RECORDS`; rewriting would persist
+      the truncation and silently drop every record past the cap.
+    * **stale** — the file honestly says "discarded, the engine changed".
+      Rewriting it with a current header converts that into "empty" and loses
+      the reason. `--clear` is how a user throws a stale store away, and it
+      says so.
+
+    A skipped store reports ``(engine, before, before)`` — no change — so a
+    caller can never read a loss as a fold.
     """
     stores = load_all() if stores is None else stores
     out: List[Tuple[str, int, int]] = []
     for s in stores:
         if not s.present:
+            continue
+        if s.unreadable or s.truncated or s.stale:
+            out.append((s.engine, len(s.records), len(s.records)))
             continue
         before = len(s.records)
         folded: Dict[str, Dict[str, Any]] = {}
@@ -423,11 +502,25 @@ def forget(record_id: str, stores: Optional[Sequence[Store]] = None) -> List[Tup
 
 # --- reporting (invariant 8: these return strings, they do not print) --------
 
-#: Said wherever a total is shown. The Rust dispatcher does not write here, so
-#: every number is a floor — and a floor presented as a total is a claim of
-#: completeness this feature cannot make.
-UNDERCOUNT = ("`lypning run` (the Rust dispatcher) does not feed this ledger, so every "
-              "count here UNDER-counts.\nThat is a known hole, not a claim of completeness.")
+#: Said wherever a total is shown, and it names the RUST BINARY's own
+#: dispatcher — `<binary> run`, `main.rs::dispatch` — which is the one that does
+#: not write. The Python `lypning run` does write; it is the only thing that
+#: does. Getting these two the wrong way round tells a user who was just
+#: recorded that nothing records them, so the sentence is spelled out rather
+#: than shortened. The undercount is real either way: the crate binary is what
+#: an installed chain actually execs, so every number here is a floor, and a
+#: floor presented as a total is a claim of completeness this feature cannot
+#: make.
+UNDERCOUNT = ("Only the Python dispatcher (`lypning run`) feeds this ledger. The Rust "
+              "binary's own\ndispatcher — what an installed chain execs — writes nothing "
+              "here, so every count\nUNDER-counts. That is a known hole, not a claim of "
+              "completeness.")
+
+_UNREADABLE = ("routes — UNREADABLE (%s).\n"
+               "\n"
+               "  The store is there and could not be read. That is NOT the same fact as\n"
+               "  an empty ledger: what it holds is unknown, not nothing. Check the\n"
+               "  permissions on the path below before reading any count here as a total.")
 
 _HOLE = ("routes — no routes learned yet.\n"
          "\n"
@@ -446,7 +539,8 @@ def to_obj(stores: Sequence[Store]) -> Dict[str, Any]:
         "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
         "undercounts": True,
         "stores": [{"engine": s.engine, "path": str(s.path), "present": s.present,
-                    "stale": s.stale, "records": len(s.records),
+                    "stale": s.stale, "unreadable": s.unreadable,
+                    "truncated": s.truncated, "records": len(s.records),
                     "programs": s.programs, "invocations": s.invocations,
                     "header": s.head} for s in stores],
         "kinds": [{"kind": k.kind, "programs": k.programs, "invocations": k.invocations,
@@ -460,9 +554,14 @@ def render(stores: Sequence[Store], plan: bool = False) -> str:
     loaded = sum(len(s.records) for s in stores)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if not loaded:
-        out = [_HOLE.rstrip("\n"), ""]
+        # "Nothing was recorded" is a claim, and it is false when a store is
+        # sitting right there unread. Say which hole this is.
+        bad = [x.engine for x in stores if x.unreadable]
+        out = [(_UNREADABLE % ", ".join(bad)) if bad else _HOLE.rstrip("\n"), ""]
         for s in stores:
-            state = ("discarded as stale — the engine changed since these were learned"
+            state = ("UNREADABLE — the file is there and could not be read"
+                     if s.unreadable else
+                     "discarded as stale — the engine changed since these were learned"
                      if s.stale else "no file yet" if not s.present else "empty")
             out.append("  %-13s %s" % (s.engine + ":", state))
         out += ["", "loaded 0 records on %s." % today, UNDERCOUNT]
@@ -476,12 +575,17 @@ def render(stores: Sequence[Store], plan: bool = False) -> str:
            ""]
     out.append("  %-13s %8s %9s %13s  %s" % ("engine", "records", "programs", "invocations", "store"))
     for s in stores:
+        if s.unreadable:
+            out.append("  %-13s UNREADABLE — cannot say what it holds  (%s)"
+                       % (s.engine + ":", s.path))
+            continue
         if not s.present or s.stale:
             why = ("discarded as stale" if s.stale else "no routes learned yet")
             out.append("  %-13s %s  (%s)" % (s.engine + ":", why, s.path))
             continue
-        out.append("  %-13s %8d %9d %13d  %s"
-                   % (s.engine + ":", len(s.records), s.programs, s.invocations, s.path))
+        out.append("  %-13s %8d %9d %13d  %s%s"
+                   % (s.engine + ":", len(s.records), s.programs, s.invocations, s.path,
+                      "  [TRUNCATED at %d — more on disk]" % MAX_RECORDS if s.truncated else ""))
     out.append("")
     shown = [k for k in rows if k.implementable] if plan else rows
     if plan:
@@ -513,10 +617,20 @@ def status_line(stores: Optional[Sequence[Store]] = None) -> str:
     stores = load_all() if stores is None else stores
     loaded = sum(len(s.records) for s in stores)
     stale = [s.engine for s in stores if s.stale]
-    if not loaded:
+    bad = [s.engine for s in stores if s.unreadable]
+    cut = [s.engine for s in stores if s.truncated]
+    if bad and not loaded:
+        # An unreadable store is not an empty one, and `status` is the line most
+        # likely to be the only thing anyone reads.
+        body = "UNREADABLE: %s" % ", ".join(bad)
+    elif not loaded:
         body = "no routes learned yet"
     else:
         body = "%d record(s), %d kind(s)" % (loaded, len(kinds(stores)))
+        if bad:
+            body += "  [UNREADABLE: %s]" % ", ".join(bad)
     if stale:
         body += "  [%s discarded as stale]" % ", ".join(stale)
+    if cut:
+        body += "  [%s truncated at %d]" % (", ".join(cut), MAX_RECORDS)
     return "routes       %s  (%s)" % (body, paths.routes_dir())

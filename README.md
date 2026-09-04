@@ -582,7 +582,7 @@ Environment:
 | `LYPNING_CPYTHON` | override the reference CPython |
 | `LYPNING_CAPTURE=0` | disable the whole capture harness |
 | `LYPNING_HARVEST=0` | keep capturing, stop the Stop hook publishing |
-| `LYPNING_ROUTES=0` | stop the dispatcher recording runtime refusals (`lypning routes`) |
+| `LYPNING_ROUTES=0` | stop the dispatcher recording runtime refusals (`lypning routes`); `LYPNING_CAPTURE=0` also covers it |
 | `LYPNING_DEBUG=1` | show tracebacks |
 
 ---

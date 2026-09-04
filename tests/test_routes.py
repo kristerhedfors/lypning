@@ -376,3 +376,127 @@ def test_status_carries_one_line_about_the_ledger(capsys):
     line = next(ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("routes"))
     assert "1 record(s), 1 kind(s)" in line
     assert str(paths.routes_dir()) in line
+
+
+# --- the five defects an adversarial pass found in the first cut --------------
+#
+# Every one of these is a HONESTY defect rather than a safety defect: the
+# write-only invariant survived the attack intact, and what did not survive was
+# the rendering telling the truth about what it does and does not know. They
+# are grouped because they are one lesson — a store is a fact about the world,
+# and the three ways of not having one (absent, unreadable, truncated) are three
+# different facts.
+
+
+def test_an_unreadable_store_is_not_an_empty_one(tmp_path):
+    """A hole, never a zero — and "unreadable" is a DIFFERENT hole from "absent".
+
+    The first cut caught OSError from `read_text` and returned the same Store it
+    returns for a file that was never written. A store of 3,000 records behind a
+    permission fault then read as "no routes learned yet", which is the exact
+    confusion the rendering contract exists to prevent, and it hid the fault for
+    as long as it lasted.
+    """
+    p = tmp_path / "x.jsonl"
+    p.write_text(json.dumps(routes.header(CORE)) + "\n", encoding="utf-8")
+    p.chmod(0o000)
+    try:
+        store = routes.load(CORE, path=p)
+        if store.present:  # a root-ish CI user can read it anyway
+            assert store.unreadable
+            assert not store.stale
+            text = routes.render([store])
+            assert "UNREADABLE" in text
+            assert "no routes learned yet" not in text
+            assert "UNREADABLE" in routes.status_line([store])
+    finally:
+        p.chmod(0o600)
+
+
+def test_an_absent_store_still_reads_as_absent(tmp_path):
+    """The other side of the same fix: absent must not become "unreadable"."""
+    store = routes.load(CORE, path=tmp_path / "nope.jsonl")
+    assert not store.present and not store.unreadable and not store.stale
+    assert "no routes learned yet" in routes.render([store])
+
+
+def test_compact_folds_and_never_truncates(tmp_path):
+    """`--compact` is documented as folding. It may not also destroy.
+
+    `load` stops at MAX_RECORDS and `compact` rewrites the file from what
+    loaded, so an over-cap store was silently rewritten to the cap — with the
+    loaded count quoted as the before-count, which made the loss invisible.
+    """
+    p = tmp_path / "big.jsonl"
+    rows = [json.dumps(routes.header(CORE), separators=(",", ":"))]
+    rows += [json.dumps({"id": "%012x" % i, "kind": "bigint", "detail": "d",
+                         "n": 1, "t": "2026-09-01"}, separators=(",", ":"))
+             for i in range(routes.MAX_RECORDS + 200)]
+    p.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    before = len(p.read_text(encoding="utf-8").splitlines())
+
+    store = routes.load(CORE, path=p)
+    assert store.truncated and len(store.records) == routes.MAX_RECORDS
+    assert "TRUNCATED" in routes.render([store])
+
+    assert routes.compact([store]) == [(CORE, routes.MAX_RECORDS, routes.MAX_RECORDS)]
+    assert len(p.read_text(encoding="utf-8").splitlines()) == before
+
+
+def test_compact_does_not_erase_a_stale_store(tmp_path, monkeypatch):
+    """Rewriting a stale store with a current header turns a reason into "empty"."""
+    p = tmp_path / "s.jsonl"
+    head = dict(routes.header(CORE), bin="1:1")
+    p.write_text(json.dumps(head, separators=(",", ":")) + "\n"
+                 + json.dumps({"id": "a" * 12, "kind": "bigint", "detail": "d",
+                               "n": 1, "t": "2026-09-01"}, separators=(",", ":")) + "\n",
+                 encoding="utf-8")
+    kept = p.read_text(encoding="utf-8")
+    store = routes.load(CORE, path=p)
+    assert store.stale
+    routes.compact([store])
+    assert p.read_text(encoding="utf-8") == kept
+    assert "stale" in routes.render([routes.load(CORE, path=p)])
+
+
+def test_a_store_cannot_smuggle_terminal_bytes_into_a_later_render(tmp_path):
+    """The ledger is the first thing here that PERSISTS program-chosen bytes.
+
+    `Result.refusal` reads its kind from the first stderr line merely CONTAINING
+    the marker — looser than the `refused` gate — so a program can choose that
+    text. The store is also editable by hand. Either way the bytes are replayed
+    to a terminal on every later `lypning routes`, out of context from the run.
+    """
+    p = tmp_path / "evil.jsonl"
+    p.write_text(
+        json.dumps(routes.header(CORE), separators=(",", ":")) + "\n"
+        + json.dumps({"id": "b" * 12, "kind": "\x1b[2Jbig\x07nt" + "A" * 5000,
+                      "detail": "x\x1b]0;pwned\x07y", "n": 10 ** 40,
+                      "t": "2026-09-01"}, separators=(",", ":")) + "\n",
+        encoding="utf-8")
+    rec = routes.load(CORE, path=p).records[0]
+    assert "\x1b" not in rec["kind"] and "\x07" not in rec["kind"]
+    assert "\x1b" not in rec["detail"]
+    assert len(rec["kind"]) <= routes.KIND_MAX
+    assert rec["n"] == 1                      # an invocation count is a count
+    text = routes.render([routes.load(CORE, path=p)])
+    assert "\x1b" not in text and "\x07" not in text
+
+
+def test_the_documented_capture_opt_out_covers_this_feed(monkeypatch):
+    """Invariant 7: a switch the user already has may not quietly narrow.
+
+    README documents LYPNING_CAPTURE=0 as turning the capture harness off. This
+    is a second feed writing program digests under $LYPNING_HOME, and a user who
+    set that switch believes recording stopped.
+    """
+    monkeypatch.setenv("LYPNING_CAPTURE", "0")
+    assert not routes.enabled()
+    assert not routes.note(CORE, BIGINT, "bigint", "beyond 64-bit")
+    assert not routes.store_path(CORE).exists()
+
+    monkeypatch.setenv("LYPNING_CAPTURE", "1")
+    monkeypatch.setenv("LYPNING_ROUTES", "0")
+    assert not routes.enabled()
+    monkeypatch.delenv("LYPNING_ROUTES")
+    assert routes.enabled()
