@@ -14,6 +14,34 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-04** — The route ledger: the refusals a static route cannot predict · [#43]
+
+- New `lypning routes`. `lypning route` is exact about everything it can see and
+  it cannot see VALUE: `print(2**10)` and `print(2**100)` are the same program to
+  a static walker, and one of them exits 90 with `bigint`. The ledger records
+  those runtime refusals — a CLEAN static route followed by an exit-90 refusal
+  from the tier it named, and nothing else — so `--plan` ranks the capability
+  gaps real sessions hit next to `conformance --plan`, which only ever sees the
+  shipped corpus.
+- **Write-only with respect to routing.** Nothing in the store is consulted while
+  routing, ever. A machine-local file that could move a route would make
+  `conformance` a measurement of one laptop and give the two dispatchers a new
+  way to disagree; the test that says so compares a graded `conformance.run`
+  byte-for-byte with the store populated and absent.
+- One `json.dumps` and one `O_APPEND` write under `PIPE_BUF`, every exception
+  swallowed, so the write cannot fail a session (invariant 5). The header pins
+  engine, caps and binary identity; anything else discards the file rather than
+  put a dead binary's refusal into a build order.
+- Absent, unreadable and truncated are rendered as three different facts, and an
+  empty store is a hole, never a zero. `LYPNING_CAPTURE=0` disables this feed as
+  well as `LYPNING_ROUTES=0` — a documented opt-out may not quietly narrow.
+- Only the Python dispatcher writes; the Rust binary's own dispatcher does not,
+  so every count is a floor and each rendering says so.
+- Measured on 2504 corpus programs: MATCH/UNSUPPORTED/MISMATCH unchanged at
+  1573/931/0 and 1741/763/0, LATE 38, WASTED 73, UNSAFE 0, monotone 0/2504,
+  dispatchers agree 2504/2504, doctor 0 FAIL. Both binaries byte-identical
+  (818,080 B and 867,744 B) — no Rust changed.
+
 **2026-09-04** — Three router over-refusals, and the mis-route economics that rank them · [#42]
 
 - `import os.path` recorded a false alias `os` → `os.path`, so `os.path.basename(...)`
@@ -1738,6 +1766,20 @@ runtime exists — the number came first, and both were built for it. It is
 ---
 
 [#25]: https://github.com/kristerhedfors/lypning/pull/25
+[#26]: https://github.com/kristerhedfors/lypning/pull/26
+[#27]: https://github.com/kristerhedfors/lypning/pull/27
+[#28]: https://github.com/kristerhedfors/lypning/pull/28
+[#32]: https://github.com/kristerhedfors/lypning/pull/32
+[#33]: https://github.com/kristerhedfors/lypning/pull/33
+[#34]: https://github.com/kristerhedfors/lypning/pull/34
+[#35]: https://github.com/kristerhedfors/lypning/pull/35
+[#36]: https://github.com/kristerhedfors/lypning/pull/36
+[#37]: https://github.com/kristerhedfors/lypning/pull/37
+[#38]: https://github.com/kristerhedfors/lypning/pull/38
+[#39]: https://github.com/kristerhedfors/lypning/pull/39
+[#41]: https://github.com/kristerhedfors/lypning/pull/41
+[#42]: https://github.com/kristerhedfors/lypning/pull/42
+[#43]: https://github.com/kristerhedfors/lypning/pull/43
 [#1]: https://github.com/kristerhedfors/lypning/pull/1
 [#2]: https://github.com/kristerhedfors/lypning/pull/2
 [#3]: https://github.com/kristerhedfors/lypning/pull/3
