@@ -713,7 +713,16 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
         Stmt::Import { names } => {
             for (path, bound) in names {
                 req.imports.insert(path.to_string());
-                if bound.as_ref() != path.as_ref() {
+                // An alias is an `as` clause and NOTHING else. `import a.b`
+                // binds the name `a` (parse.rs does this correctly, as Python
+                // does), so comparing the binding against the full dotted path
+                // recorded a false alias "os" -> "os.path" — and then
+                // `resolve_module` turned the name `os` into the module
+                // `os.path`, so `os.path.basename(...)` blocked as
+                // `module-attr: os.path.path` and the program went to CPython
+                // for a call this engine answers. Compare against the FIRST
+                // component, which is what the name is actually bound to.
+                if bound.as_ref() != path.split('.').next().unwrap_or(path.as_ref()) {
                     req.aliases.push((bound.to_string(), path.to_string()));
                 }
                 if !crate::modules::MODULES.contains(&path.as_ref()) {
@@ -795,8 +804,27 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
             walk_block(body, req);
             for h in handlers {
                 for k in &h.kinds {
-                    let base = k.rsplit('.').next().unwrap_or(k);
-                    if !crate::builtins::is_exception_name(base) {
+                    // A DOTTED name is resolved the way an attribute is, not by
+                    // throwing the prefix away: `except json.JSONDecodeError`
+                    // reduced to `JSONDecodeError`, which is not a builtin, and
+                    // blocked a program this engine runs. Resolve the module and
+                    // ask it for the leaf; fall back to the old rule when the
+                    // prefix is not a module we serve, so this can only remove
+                    // refusals it can justify.
+                    let ok = match k.rsplit_once('.') {
+                        Some((prefix, leaf)) => {
+                            match crate::modules::MODULES.iter().find(|m| **m == prefix) {
+                                Some(m) => crate::modules::get_attr(
+                                    &crate::value::Value::Module(m),
+                                    leaf,
+                                )
+                                .is_ok(),
+                                None => crate::builtins::is_exception_name(leaf),
+                            }
+                        }
+                        None => crate::builtins::is_exception_name(k),
+                    };
+                    if !ok {
                         req.block("exception", format!("except {k}"));
                     }
                 }
@@ -879,6 +907,14 @@ fn known_method(name: &str) -> bool {
             name,
             "read" | "readline" | "readlines" | "write" | "writelines" | "close" | "seek" | "tell"
                 | "flush" | "args"
+                // Safe to admit unconditionally, and the reason is the exact
+                // one the pathlib note below turns on: an unmodelled receiver
+                // REFUSES rather than errors. `x = 3; x.__name__` answers
+                // `unsupported: dunder-attr: int.__name__` at exit 90, which
+                // the chain recovers for one spawn — where `.name` or `.errno`
+                // would raise AttributeError at exit 1, which it never
+                // recovers. Only names whose miss is a refusal belong here.
+                | "__name__"
         )
 }
 
