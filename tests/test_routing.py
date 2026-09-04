@@ -39,7 +39,7 @@ from lypning import routing
 from lypning.conformance import MATCH, MISMATCH, UNSUPPORTED
 from lypning.routing import IDEAL, LATE, NO_ENGINE, UNSAFE, WASTED
 
-LADDER = (eng.LYPNING, eng.MICROPYTHON, eng.CPYTHON)
+LADDER = tuple(eng.ENGINE_ORDER)
 
 #: How much of the corpus the end-to-end test grades. The whole corpus is the
 #: CLI's job — `lypning conformance` runs it, prints the routing table and exits
@@ -831,6 +831,28 @@ def test_the_spectrum_copy_in_engines_is_the_rust_table():
     assert list(eng.SPECTRUM) == names
 
 
+def test_the_larger_variant_knows_its_own_name_and_the_floor_rule_holds():
+    # Skips only when lypning-l is not built; when it is, it must call itself
+    # lypning-l, refuse with its own name at the head, and — being row 1 —
+    # never route a program below itself.
+    import json as _json
+    import subprocess as _sp
+    p = eng.find(eng.LYPNING_L)
+    if p is None:
+        pytest.skip("lypning-l is not built")
+    out = _sp.run([str(p), "route", "--spectrum"], capture_output=True, text=True, timeout=60)
+    assert _json.loads(out.stdout)["self"] == eng.LYPNING_L
+    r = _sp.run([str(p), "-c", "import subprocess"], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 90 and r.stdout == "" and r.stderr.strip() == eng.refusal_line(eng.LYPNING_L, "module", "import subprocess")
+    ver = _sp.run([str(p), "--version"], capture_output=True, text=True, timeout=60).stdout
+    assert "(%s)" % eng.LYPNING_L in ver
+    r = eng.route("print(1)", binary=p)
+    assert r.engine == eng.LYPNING_L                         # itself, never row 0
+    assert r.verdicts[0][1] == "floor"                       # row 0 is below the routing binary
+    from lypning import build
+    assert build.check_spectrum_contract(p, expected=eng.LYPNING_L) == (True, "")
+
+
 def test_a_built_core_knows_its_own_name(lypning_bin):
     # The other half of the pin: not the source, the artefact. `route --spectrum`
     # names the binary and the table it carries; `--version` says the same.
@@ -841,6 +863,7 @@ def test_a_built_core_knows_its_own_name(lypning_bin):
     table = _json.loads(out.stdout)
     assert table["self"] == eng.LYPNING
     assert [r["name"] for r in table["spectrum"]] == list(eng.SPECTRUM)
+    assert {r["name"]: tuple(r["caps"]) for r in table["spectrum"]} == eng.VARIANT_CAPS
     assert table["self_caps"] == [], "no capability is gated yet"
     ver = _sp.run([str(lypning_bin), "--version"], capture_output=True, text=True, timeout=60).stdout
     assert ver.startswith("lypning ") and "(%s)" % eng.LYPNING in ver

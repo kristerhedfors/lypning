@@ -81,10 +81,9 @@ def test_the_host_build_is_this_machines_engine_and_installs_unsuffixed():
 
 def test_each_variant_is_one_cargo_feature_and_its_own_target_dir(monkeypatch):
     assert build.variant_feature(engines.LYPNING) == "variant-m"
-    with pytest.raises(ValueError):
-        build.variant_feature("lypning-l")          # not on the spectrum yet
-    monkeypatch.setattr(engines, "SPECTRUM", ("lypning", "lypning-l"))
     assert build.variant_feature("lypning-l") == "variant-l"
+    with pytest.raises(ValueError):
+        build.variant_feature("lypning-q")          # not on the spectrum
     r = build.build_rust(target="host", dry_run=True, variant=engines.LYPNING)
     assert r.engine == engines.LYPNING and r.dry_run
     assert "--features variant-m" in r.log and "--no-default-features" not in r.log
@@ -98,7 +97,6 @@ def test_each_variant_is_one_cargo_feature_and_its_own_target_dir(monkeypatch):
 
 
 def test_build_all_builds_every_variant_by_default(monkeypatch):
-    monkeypatch.setattr(engines, "SPECTRUM", ("lypning", "lypning-l"))
     results = build.build_all(rust=True, micropython=False, target="host", dry_run=True)
     rust = [r.engine for r in results if r.engine in engines.SPECTRUM]
     assert rust == ["lypning", "lypning-l"]

@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from lypning import engines
 from lypning import cli
 
 SRC = str(Path(__file__).resolve().parents[1] / "src")
@@ -51,7 +52,7 @@ def test_status_json_is_valid_json(capsys):
     assert cli.main(["status", "--json"]) == 0
     obj = json.loads(capsys.readouterr().out)
     assert obj["version"]
-    assert set(obj["engines"]) == set(("lypning", "lypning-mp", "cpython"))
+    assert set(obj["engines"]) == set(engines.ENGINE_ORDER)
     for name, e in obj["engines"].items():
         assert isinstance(e["built"], bool)
         assert (e["path"] is None) == (not e["built"])
@@ -165,7 +166,7 @@ def test_a_command_with_nothing_to_run_exits_2_without_a_traceback(tmp_path):
 def test_route_names_a_tier_and_says_why(capsys, lypning_bin):
     assert cli.main(["route", "-c", "import ctypes"]) == 0
     out = capsys.readouterr().out
-    assert out.split("\t")[0] in ("lypning", "lypning-mp", "cpython")
+    assert out.split("\t")[0] in engines.ENGINE_ORDER
 
 
 def test_run_passes_a_program_s_own_exit_code_through(capsys, lypning_bin):

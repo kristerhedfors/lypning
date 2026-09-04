@@ -24,7 +24,8 @@ use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Engine {
-    Lypning,
+    /// A point on the Rust spectrum, by row of [`SPECTRUM`].
+    Rust(usize),
     MicroPython,
     CPython,
 }
@@ -32,7 +33,7 @@ pub enum Engine {
 impl Engine {
     pub fn as_str(self) -> &'static str {
         match self {
-            Engine::Lypning => "lypning",
+            Engine::Rust(i) => SPECTRUM[i].name,
             Engine::MicroPython => "lypning-mp",
             Engine::CPython => "cpython",
         }
@@ -54,7 +55,15 @@ pub struct Variant {
 /// because the router could not know a sibling existed. The names are the
 /// Python side's `engines.SPECTRUM`, in this order, pinned by test. One row
 /// today; `lypning-l` is the next.
-pub const SPECTRUM: &[Variant] = &[Variant { name: "lypning", caps: &[] }];
+pub const SPECTRUM: &[Variant] = &[
+    Variant { name: "lypning", caps: &[] },
+    Variant { name: "lypning-l", caps: &[] },
+];
+
+/// The same names, NUL-terminated for the C ABI. A test holds the two lists
+/// to each other; `c""` literals are the only way to get a static C string
+/// without an allocation, and the ABI promises these are never freed.
+pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 
 /// `cap-*` feature → (the modules it serves, the RUNTIME refusal kinds it
 /// answers). Empty until the first capability is gated; every row here is a
@@ -152,13 +161,8 @@ impl Engine {
             Some(Engine::MicroPython)
         } else if name == CPYTHON_NAME {
             Some(Engine::CPython)
-        } else if SPECTRUM.first().map(|v| v.name) == Some(name) {
-            // The enum has one Rust rung until the spectrum has two rows
-            // (the next step widens it); the floor rule never picks a rung
-            // below this binary, and this binary IS row 0 today.
-            Some(Engine::Lypning)
         } else {
-            None
+            SPECTRUM.iter().position(|v| v.name == name).map(Engine::Rust)
         }
     }
 }
@@ -262,10 +266,13 @@ fn engine_from_verdicts(vs: &[Verdict]) -> Engine {
 ///
 /// A kind in `ONLY_CPYTHON_KINDS` rules out every reimplementation. Otherwise:
 /// each later Rust sibling whose STATIC verdict was "can run" (it already
-/// satisfied the imports and every static kind), then lypning-mp if it can
-/// import everything, then CPython. `mp_risk` is deliberately not consulted
-/// here: it never was at runtime, and changing that is a step with its own
-/// measurement, not a side effect of this generalisation.
+/// satisfied the imports and every static kind) AND whose capabilities are a
+/// strict superset of the refusing rung's — a sibling built with the same
+/// `cap-*` set cannot answer at runtime what this one could not, and trying it
+/// is a spawn wasted; then lypning-mp if it can import everything, then
+/// CPython. `mp_risk` is deliberately not consulted here: it never was at
+/// runtime, and changing that is a step with its own measurement, not a side
+/// effect of this generalisation.
 pub fn chain_after(after: &str, kind: &str, imports: &[String], verdicts: &[Verdict]) -> Vec<&'static str> {
     let order = engine_order();
     let start = order.iter().position(|e| *e == after).map(|i| i + 1).unwrap_or(order.len() - 1);
@@ -273,12 +280,15 @@ pub fn chain_after(after: &str, kind: &str, imports: &[String], verdicts: &[Verd
     if only_cpython(kind) {
         return vec![CPYTHON_NAME];
     }
+    let after_caps: &[&str] = SPECTRUM.iter().find(|v| v.name == after).map(|v| v.caps).unwrap_or(&[]);
     let mut out = Vec::new();
     for e in rest {
         if *e == MICROPYTHON_NAME || *e == CPYTHON_NAME {
             continue;
         }
-        if verdicts.iter().any(|v| v.engine == *e && v.kind.is_empty()) {
+        let caps = SPECTRUM.iter().find(|v| v.name == *e).map(|v| v.caps).unwrap_or(&[]);
+        let gains = caps.iter().any(|c| !after_caps.contains(c));
+        if gains && verdicts.iter().any(|v| v.engine == *e && v.kind.is_empty()) {
             out.push(*e);
         }
     }
@@ -324,7 +334,7 @@ mod spectrum_tests {
         let none: BTreeSet<&'static str> = BTreeSet::new();
         // nothing blocks: this binary runs it
         let vs = verdicts("", "", &[], &none);
-        assert_eq!(engine_from_verdicts(&vs), Engine::Lypning);
+        assert_eq!(engine_from_verdicts(&vs), Engine::Rust(self_index()));
         // a module lypning-mp has: mp
         let vs = verdicts("module", "import re", &["re".to_string()], &none);
         assert_eq!(engine_from_verdicts(&vs), Engine::MicroPython);
@@ -334,12 +344,44 @@ mod spectrum_tests {
         // a semantic refusal skips everything
         let vs = verdicts("set-order", "x", &[], &none);
         assert_eq!(engine_from_verdicts(&vs), Engine::CPython);
-        // runtime chain: bigint from this binary with mp-importable imports
-        assert_eq!(chain_after(SELF, "bigint", &["os".to_string()], &vs), vec![MICROPYTHON_NAME, CPYTHON_NAME]);
+        // runtime chain: bigint from this binary with mp-importable imports.
+        // lypning-l has exactly this binary's caps, so it is not tried.
+        let vs_ok = verdicts("", "", &["os".to_string()], &none);
+        assert_eq!(chain_after(SELF, "bigint", &["os".to_string()], &vs_ok), vec![MICROPYTHON_NAME, CPYTHON_NAME]);
         assert_eq!(chain_after(SELF, "bigint", &["random".to_string()], &vs), vec![CPYTHON_NAME]);
         assert_eq!(chain_after(SELF, "set-order", &[], &vs), vec![CPYTHON_NAME]);
         assert_eq!(chain_after(MICROPYTHON_NAME, "bigint", &[], &vs), vec![CPYTHON_NAME]);
         assert_eq!(chain_after("nonesuch", "bigint", &[], &vs), vec![CPYTHON_NAME]);
+    }
+
+    #[test]
+    fn the_c_names_are_the_names() {
+        assert_eq!(SPECTRUM.len(), SPECTRUM_C.len());
+        for (v, c) in SPECTRUM.iter().zip(SPECTRUM_C) {
+            assert_eq!(c.to_str().unwrap(), v.name);
+        }
+    }
+
+    #[test]
+    fn with_identical_capabilities_the_floor_rule_never_picks_the_larger_sibling() {
+        // Row 1 has exactly row 0's caps, so from row 0 every program that row 0
+        // refuses is refused by row 1 too, and the engine is never lypning-l.
+        // This is what makes step 5 behaviour-free; it stops holding the day
+        // lypning-l gains a capability, which is the point.
+        if self_index() != 0 {
+            return;
+        }
+        let none: BTreeSet<&'static str> = BTreeSet::new();
+        for (kind, detail, imports) in [
+            ("module", "import re", vec!["re".to_string()]),
+            ("module", "import subprocess", vec!["subprocess".to_string()]),
+            ("class", "class definition", vec![]),
+            ("bigint", "x", vec![]),
+        ] {
+            let vs = verdicts(kind, detail, &imports, &none);
+            assert_ne!(engine_from_verdicts(&vs), Engine::Rust(1), "{kind}");
+            assert_eq!(vs[1].kind, vs[0].kind, "{kind}: rows 0 and 1 must agree");
+        }
     }
 
     #[test]

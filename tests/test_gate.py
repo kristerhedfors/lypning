@@ -69,5 +69,7 @@ def test_the_rust_core_is_measured_against_its_own_budget():
     assert gate._size_check("lypning", 8 * gate.DEVICE_BLOCK).ok
     assert not gate._size_check("lypning", 8 * gate.DEVICE_BLOCK + 1).ok
     assert gate._size_check("lypning", 8 * gate.DEVICE_BLOCK).unit == "blocks"
+    assert gate._size_check("lypning-l", over).ok            # 17 blocks fits the 32-block ceiling
+    assert not gate._size_check("lypning-l", 33 * gate.DEVICE_BLOCK).ok
     assert not gate._size_check("lypning-mp", over).ok
     assert gate._size_check("lypning-mp", gate.MAX_BYTES).ok

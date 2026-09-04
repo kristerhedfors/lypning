@@ -42,14 +42,21 @@ MICROPYTHON = "lypning-mp"
 CPYTHON = "cpython"
 
 #: The Rust spectrum, cheapest first: every variant built from the one crate, in
-#: cost order. One entry today; ``"lypning-l"`` joins when the 4 MB variant lands.
+#: cost order. Two points: the 1 MB core (frozen at 8 blocks) and the 4 MB variant.
 #: This tuple is the Python copy of ``route::SPECTRUM`` — it must stay a module
 #: constant (argparse choices and the fork-free hooks read it at import, and can
 #: spawn no binary to ask), and a test pins it to the Rust table once one exists.
 #: A variant's name is ``lypning`` plus one lowercase letter from the closed set
 #: {``l``} (``s`` is reserved for a small variant; ``m`` is never used, it reads
 #: as ``-mp``), and it precedes the install-target suffix: ``lypning-l-i686``.
-SPECTRUM = (LYPNING,)
+LYPNING_L = "lypning-l"
+SPECTRUM = (LYPNING, LYPNING_L)
+
+#: Each variant's `cap-*` set — the Python copy of ``route::SPECTRUM``'s
+#: ``caps`` column, pinned to ``route --spectrum`` by test. Read by
+#: :func:`chain_after_refusal`: a sibling built with the same set cannot answer
+#: at runtime what a smaller one could not, so it is not tried.
+VARIANT_CAPS: dict = {LYPNING: (), LYPNING_L: ()}
 
 #: Not a fourth engine — the same lypning, reached through the C ABI instead of
 #: through a process, the way an embedding host reaches it. It is spelled
@@ -806,7 +813,9 @@ def chain_after_refusal(engine: str, kind: str, imports: Iterable[str] = (),
     rest = chain_from(engine)[1:]
     if kind in ONLY_CPYTHON_REFUSALS:
         return [CPYTHON]
+    have = set(VARIANT_CAPS.get(engine, ()))
     out = [e for e in rest if e in SPECTRUM
+           and set(VARIANT_CAPS.get(e, ())) - have               # strictly more capable
            and any(v[0] == e and not v[1] for v in verdicts)]
     if MICROPYTHON in rest and micropython_can_import(imports):
         out.append(MICROPYTHON)
@@ -929,7 +938,7 @@ def library_binary_drift(programs: Sequence[str] = DRIFT_PROBES,
     second as the first would report a comparison nobody made (a hole, never a
     zero — the rule every unbuilt tier in this package follows).
     """
-    if find(LYPNING) is None or run_library("").returncode == 127:
+    if find(SPECTRUM[-1]) is None or run_library("").returncode == 127:
         return None
     out: list[tuple[str, str, str]] = []
     for program in programs:

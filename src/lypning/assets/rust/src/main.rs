@@ -317,7 +317,7 @@ fn dispatch(args: &[String]) -> i32 {
         Err(code) => return code,
     };
     let r = route::route(&src);
-    if r.engine == route::Engine::Lypning {
+    if r.engine == route::Engine::Rust(route::self_index()) {
         // Running in-process also means stdin is still unread at this point,
         // which a spawned child could not be given back.
         let mut kind = String::new();

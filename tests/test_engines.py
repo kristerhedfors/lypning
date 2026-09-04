@@ -67,8 +67,8 @@ def test_chain_from_each_tier():
     order = list(engines.ENGINE_ORDER)
     for i, e in enumerate(order):
         assert engines.chain_from(e) == order[i:]
-    assert engines.SPECTRUM == ("lypning",)
-    assert order == ["lypning", "lypning-mp", "cpython"]
+    assert engines.SPECTRUM == ("lypning", "lypning-l")
+    assert order == ["lypning", "lypning-l", "lypning-mp", "cpython"]
 
 
 def test_parse_binary_name_is_the_one_name_parser():
@@ -87,24 +87,23 @@ def test_parse_binary_name_is_the_one_name_parser():
 
 
 def test_parse_binary_name_grows_with_the_spectrum(monkeypatch):
-    # The day `lypning-l` joins SPECTRUM, `lypning-l-i686` must parse as that
-    # variant for i686 — and until that day it parses as the core with an odd
-    # target, which is exactly what the gate did before this parser existed.
-    assert engines.parse_binary_name("lypning-l-i686") == ("lypning", "l-i686")
-    monkeypatch.setattr(engines, "SPECTRUM", ("lypning", "lypning-l"))
+    # `lypning-l-i686` is that variant for i686, longest engine first; with the
+    # spectrum shrunk to one row it would be the core with an odd target,
+    # which is exactly what the gate did before this parser existed.
     assert engines.parse_binary_name("lypning-l-i686") == ("lypning-l", "i686")
     assert engines.parse_binary_name("lypning-l") == ("lypning-l", "")
     assert engines.parse_binary_name("lypning-i686") == ("lypning", "i686")
+    monkeypatch.setattr(engines, "SPECTRUM", ("lypning",))
+    assert engines.parse_binary_name("lypning-l-i686") == ("lypning", "l-i686")
 
 
 def test_env_var_for_spells_every_pin_by_rule(monkeypatch):
     assert engines.env_var_for(engines.LYPNING) == "LYPNING_BIN"
     assert engines.env_var_for(engines.MICROPYTHON) == "LYPNING_MP_BIN"
     assert engines.env_var_for(engines.CPYTHON) == "LYPNING_CPYTHON"
-    with pytest.raises(ValueError):
-        engines.env_var_for("lypning-l")   # not in the spectrum yet
-    monkeypatch.setattr(engines, "SPECTRUM", ("lypning", "lypning-l"))
     assert engines.env_var_for("lypning-l") == "LYPNING_L_BIN"
+    with pytest.raises(ValueError):
+        engines.env_var_for("lypning-q")   # not on the spectrum
 
 
 def test_refusal_line_is_what_the_build_and_the_embedding_pin():
@@ -112,7 +111,9 @@ def test_refusal_line_is_what_the_build_and_the_embedding_pin():
     line = engines.refusal_line(engines.LYPNING, "module", "import subprocess")
     assert line == "lypning: unsupported: module: import subprocess"
     assert build.REFUSAL_LINE == line
-    assert embed.REFUSAL_LINE == (line + "\n").encode()
+    # The library is the LARGEST variant, so its pinned line is headed by that name.
+    largest = engines.refusal_line(engines.SPECTRUM[-1], "module", "import subprocess")
+    assert embed.REFUSAL_LINE == (largest + "\n").encode()
     assert engines._REFUSAL_RE.match(engines.refusal_line("lypning-l", "module", "import re"))
 
 
@@ -139,6 +140,7 @@ def test_chain_after_refusal_walks_siblings_that_could_run_then_mp_then_cpython(
     # never a sibling, so this pins the rule on a two-row spectrum.
     monkeypatch.setattr(engines, "SPECTRUM", ("lypning", "lypning-l"))
     monkeypatch.setattr(engines, "ENGINE_ORDER", ("lypning", "lypning-l", "lypning-mp", "cpython"))
+    monkeypatch.setattr(engines, "VARIANT_CAPS", {"lypning": (), "lypning-l": ("cap-bigint",)})
     ok_l = (("lypning", "module", "import re"), ("lypning-l", "", ""), ("lypning-mp", "", ""), ("cpython", "", ""))
     assert engines.chain_after_refusal("lypning", "bigint", ("os",), ok_l) == ["lypning-l", "lypning-mp", "cpython"]
     assert engines.chain_after_refusal("lypning", "bigint", ("random",), ok_l) == ["lypning-l", "cpython"]
@@ -146,11 +148,11 @@ def test_chain_after_refusal_walks_siblings_that_could_run_then_mp_then_cpython(
     assert engines.chain_after_refusal("lypning", "bigint", ("os",), no_l) == ["lypning-mp", "cpython"]
     assert engines.chain_after_refusal("lypning", "set-order", ("os",), ok_l) == ["cpython"]
     assert engines.chain_after_refusal("lypning-l", "bigint", ("os",), ok_l) == ["lypning-mp", "cpython"]
-    # today's three-name answers, unchanged
-    monkeypatch.setattr(engines, "SPECTRUM", ("lypning",))
-    monkeypatch.setattr(engines, "ENGINE_ORDER", ("lypning", "lypning-mp", "cpython"))
-    assert engines.chain_after_refusal("lypning", "bigint", ("os",)) == ["lypning-mp", "cpython"]
-    assert engines.chain_after_refusal("lypning", "bigint", ("random",)) == ["cpython"]
+    # identical capabilities: the sibling is never tried — the chain the tree
+    # has always walked
+    monkeypatch.setattr(engines, "VARIANT_CAPS", {"lypning": (), "lypning-l": ()})
+    assert engines.chain_after_refusal("lypning", "bigint", ("os",), ok_l) == ["lypning-mp", "cpython"]
+    assert engines.chain_after_refusal("lypning", "bigint", ("random",), ok_l) == ["cpython"]
 
 
 def test_a_route_naming_an_engine_we_do_not_list_is_loud_not_silent():

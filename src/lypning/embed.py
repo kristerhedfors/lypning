@@ -55,8 +55,10 @@ STATUS_NAMES = {OK: "ok", ERROR: "error", UNSUPPORTED: "unsupported",
 #: The same pinned refusal the binary's contract check uses. One program, two
 #: shapes, one expected answer — that is the point of pinning it.
 REFUSAL_PROGRAM = "import subprocess"
-from .engines import LYPNING as _LYPNING, refusal_line as _refusal_line  # noqa: E402
-REFUSAL_LINE = (_refusal_line(_LYPNING, "module", "import subprocess") + "\n").encode("ascii")
+from .engines import SPECTRUM as _SPECTRUM, refusal_line as _refusal_line  # noqa: E402
+#: The library is the LARGEST variant (build_lib names it), so its refusal
+#: line is headed by that name.
+REFUSAL_LINE = (_refusal_line(_SPECTRUM[-1], "module", "import subprocess") + "\n").encode("ascii")
 
 
 def shared_library_name(platform: str = sys.platform) -> str:
@@ -339,6 +341,10 @@ class Library:
         c, cp, sz, u8p = ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_ubyte)
         _c(L.lypning_abi_version, ctypes.c_uint32, [])
         _c(L.lypning_version, c, [])
+        try:
+            _c(L.lypning_engine_self, c, [])
+        except AttributeError:
+            pass  # an older library: engine_name() answers ''
         _c(L.lypning_route_new, cp, [c, sz])
         _c(L.lypning_route_engine, c, [cp])
         _c(L.lypning_route_kind, c, [cp])
@@ -371,6 +377,14 @@ class Library:
     @property
     def version(self) -> str:
         return (self._lib.lypning_version() or b"").decode("utf-8", "replace")
+
+    def engine_name(self) -> str:
+        """The variant this library is (`lypning_engine_self`), or "" for an
+        older library without the symbol."""
+        fn = getattr(self._lib, "lypning_engine_self", None)
+        if fn is None:
+            return ""
+        return (fn() or b"").decode("ascii", "replace")
 
     def route(self, source: str) -> Route:
         """Which tier should run this? One parse, no execution."""
@@ -494,6 +508,12 @@ def check_refusal_contract(path: Optional[Path | str] = None) -> tuple[bool, str
         return False, "a refused run produced stdout: %r" % out.stdout[:120]
     if out.stderr != REFUSAL_LINE:
         return False, "stderr was %r, expected %r" % (out.stderr[:160], REFUSAL_LINE)
+    name = lib.engine_name()
+    if name and name != _SPECTRUM[-1]:
+        # The library must be the largest variant — build_lib names it — and a
+        # library that is some other point silently costs every embedded
+        # refusal a CPython spawn, with the contract still holding.
+        return False, "the library calls itself %r; the library is the largest variant, %r" % (name, _SPECTRUM[-1])
     if out.committed:
         return False, "a refused run reported that it committed"
     if not out.fall_onward:

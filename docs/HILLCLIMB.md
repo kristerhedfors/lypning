@@ -19,7 +19,7 @@ The four numbers, in the order an entry states them:
 
 | | instrument | what it can see |
 |---|---|---|
-| **bytes** | `lypning build --rust` | the cost of everything else |
+| **bytes** | `lypning build --rust` | the cost of everything else — one line per spectrum variant, each against its own block budget |
 | **correctness** | `lypning conformance --engine lypning` | MATCH / UNSUPPORTED / **MISMATCH 0** |
 | **speed** | `lypning perf` | the interpreter, startup subtracted |
 | **corpus** | `lypning corpus-time --baseline` | a regression; **not** a compute win — see the skill §3 |

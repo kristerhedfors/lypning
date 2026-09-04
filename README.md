@@ -3,9 +3,11 @@
 <img src="docs/logo.svg" alt="" width="72" height="72">
 
 `lypning` optimizes the interpreter layer underneath a coding harness: it runs
-a Python program on the cheapest of three interpreters that can actually run
-it. The architecture is a *mixture of Pythons* — a from-scratch Python subset
-written in Rust, a MicroPython variant with a frozen shim stdlib, and the real
+a Python program on the cheapest interpreter that can actually run it. The
+architecture is a *mixture of Pythons* — a **spectrum** of from-scratch Python
+subsets written in Rust and built from one crate at increasing sizes
+(`lypning`, 1 MB; `lypning-l`, up to 4 MB), a MicroPython variant with a
+frozen shim stdlib, and the real
 CPython for everything the first two refuse — with a classifier that decides
 which one, per program, by asking the Rust core's own parser rather than
 guessing at the text. The subset is not sized to Python — it is sized to the
@@ -81,14 +83,21 @@ reproduce.
       │ 64.1%                           │ 24.9%        │ 11.0%
       ▼                                 │              │
   ┌───────────────────────────────────┐ │              │
-  │ 1  lypning · Rust subset          │ │              │
+  │ 1  lypning · Rust subset, 1 MB    │ │              │
   │    runs IN-PROCESS — zero spawns  │ │              │
   │    output staged to the barrier   │ │              │
   └───┬───────────────────────────────┘ │              │
       │ exit 90 · one line on stderr,   │              │
       │ and stdout never written        │              │
       │ (a kind in ONLY_CPYTHON_KINDS   │              │
-      │  skips 2 and goes straight to 3)│              │
+      │  skips 1l and 2, goes to 3)     │              │
+      ▼                                 │              │
+  ┌───────────────────────────────────┐ │              │
+  │ 1l lypning-l · the same crate,    │ │              │
+  │    up to 4 MB; exec'd, owns the   │ │              │
+  │    rest of the chain              │ │              │
+  └───┬───────────────────────────────┘ │              │
+      │ exit 90, as above               │              │
       ▼                                 │              │
   ┌───────────────────────────────────┐ │              │
   │ 2  lypning-mp · MicroPython       │◀┘              │

@@ -45,6 +45,10 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 # documented.
 default = ["variant-m"]
 variant-m = []
+# The 4 MB point. Names the smaller variant so cargo's feature union makes it a
+# superset by construction — the monotonicity the router assumes. Identical
+# capabilities today; it grows one `cap-*` per step.
+variant-l = ["variant-m"]
 capi = []
 
 # The library's profile, and the one thing it may not inherit is `panic`.

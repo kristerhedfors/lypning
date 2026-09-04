@@ -108,6 +108,44 @@ pub extern "C" fn lypning_abi_version() -> u32 {
     crate::ABI_VERSION
 }
 
+/// This library's own engine name — a point on the Rust spectrum, e.g.
+/// `"lypning-l"`; the head of every refusal line it writes. Static: never freed.
+#[no_mangle]
+pub extern "C" fn lypning_engine_self() -> *const c_char {
+    concat!(env!("LYPNING_ENGINE"), "\0").as_ptr() as *const c_char
+}
+
+/// How many points the Rust spectrum has, in the table this library carries.
+#[no_mangle]
+pub extern "C" fn lypning_engine_count() -> c_int {
+    crate::route::SPECTRUM.len() as c_int
+}
+
+/// The `i`-th spectrum name, cheapest first; `""` past the end. Static.
+#[no_mangle]
+pub extern "C" fn lypning_engine_name(i: c_int) -> *const c_char {
+    match usize::try_from(i).ok().and_then(|i| crate::route::SPECTRUM_C.get(i)) {
+        Some(c) => c.as_ptr(),
+        None => empty_cstr(),
+    }
+}
+
+/// 1 if `name` (NUL-terminated) is a point on the Rust spectrum — something
+/// THIS library family runs — 0 for lypning-mp, cpython, or anything else.
+/// Compare with this rather than hard-coding "lypning": a route can name any
+/// spectrum member.
+///
+/// # Safety
+/// `name` must be a valid NUL-terminated string or NULL (which answers 0).
+#[no_mangle]
+pub unsafe extern "C" fn lypning_engine_is_rust(name: *const c_char) -> c_int {
+    if name.is_null() {
+        return 0;
+    }
+    let s = std::ffi::CStr::from_ptr(name);
+    crate::route::SPECTRUM_C.iter().any(|c| *c == s) as c_int
+}
+
 /// The runtime version — the same string `lypning --version` prints. Static:
 /// never freed.
 #[no_mangle]
