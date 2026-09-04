@@ -41,6 +41,16 @@ LYPNING = "lypning"
 MICROPYTHON = "lypning-mp"
 CPYTHON = "cpython"
 
+#: The Rust spectrum, cheapest first: every variant built from the one crate, in
+#: cost order. One entry today; ``"lypning-l"`` joins when the 4 MB variant lands.
+#: This tuple is the Python copy of ``route::SPECTRUM`` — it must stay a module
+#: constant (argparse choices and the fork-free hooks read it at import, and can
+#: spawn no binary to ask), and a test pins it to the Rust table once one exists.
+#: A variant's name is ``lypning`` plus one lowercase letter from the closed set
+#: {``l``} (``s`` is reserved for a small variant; ``m`` is never used, it reads
+#: as ``-mp``), and it precedes the install-target suffix: ``lypning-l-i686``.
+SPECTRUM = (LYPNING,)
+
 #: Not a fourth engine — the same lypning, reached through the C ABI instead of
 #: through a process, the way an embedding host reaches it. It is spelled
 #: separately because it is a separate ARM to measure: the interpreter is
@@ -49,7 +59,60 @@ CPYTHON = "cpython"
 #: about the artefact a harness actually links.
 LIBRARY = "library"
 
-ENGINE_ORDER = (LYPNING, MICROPYTHON, CPYTHON)
+ENGINE_ORDER = SPECTRUM + (MICROPYTHON, CPYTHON)
+
+#: Install-target suffixes `lypning build --target` appends so a cross-target
+#: binary never overwrites the host's: ``lypning-i686``. Documented, not
+#: enforced — :func:`parse_binary_name` takes whatever follows the engine name
+#: as the target, exactly as the gate's name check always has.
+ARCH_TOKENS = ("host", "i686", "x86_64", "aarch64", "arm64")
+
+
+def parse_binary_name(name: str) -> tuple[str, str]:
+    """``(engine, target)`` from an installed binary's file name.
+
+    The one parser for the ``<engine>[-<target>]`` shape. Engine names are tried
+    longest first so ``lypning-mp-i386`` is MicroPython for i386 and, once the
+    spectrum has ``lypning-l``, ``lypning-l-i686`` is that variant for i686 —
+    the ordering bug the gate's docstring used to warn about, solved once.
+    A name that is not an engine's parses as ``("", name)``.
+    """
+    base = name.rsplit("/", 1)[-1]
+    for engine in sorted(SPECTRUM + (MICROPYTHON,), key=len, reverse=True):
+        if base == engine:
+            return engine, ""
+        if base.startswith(engine + "-"):
+            return engine, base[len(engine) + 1:]
+    return "", base
+
+
+def env_var_for(engine: str) -> str:
+    """The ``LYPNING_*`` variable that pins ``engine``'s binary.
+
+    ``LYPNING_BIN`` for the unsuffixed Rust variant, ``LYPNING_<V>_BIN`` for a
+    suffixed one (``LYPNING_L_BIN``), and the two historical names for the other
+    tiers. Spelled by rule so the five places that used to spell them by hand
+    cannot disagree.
+    """
+    if engine == CPYTHON:
+        return "LYPNING_CPYTHON"
+    if engine == MICROPYTHON:
+        return "LYPNING_MP_BIN"
+    if engine == LYPNING:
+        return "LYPNING_BIN"
+    if engine in SPECTRUM and engine.startswith(LYPNING + "-"):
+        return "LYPNING_%s_BIN" % engine[len(LYPNING) + 1:].upper()
+    raise ValueError("not an engine: %r" % (engine,))
+
+
+def refusal_line(engine: str, kind: str, detail: str) -> str:
+    """One refusal line as ``engine`` writes it (invariant 2), spelled once.
+
+    Every variant writes its OWN name at the head; the build and the embedding
+    check assert the line for the binary they just produced through this, never
+    through a literal.
+    """
+    return "%s: unsupported: %s: %s" % (engine, kind, detail)
 
 #: The refusal line, exactly as every tier writes it:
 #: ``<engine>: unsupported: <kind>: <detail>``. Spelled once here because two
@@ -126,7 +189,7 @@ def find_lypning() -> Path | None:
     rust_target = paths.build_dir() / "rust" / "target"
     which = shutil.which(LYPNING)
     return _first_engine([
-        _override("LYPNING_BIN", "point it at a `lypning build --rust` binary"),
+        _override(env_var_for(LYPNING), "point it at a `lypning build --rust` binary"),
         paths.bin_dir() / LYPNING,
         rust_target / "x86_64-unknown-linux-musl" / "release" / LYPNING,
         rust_target / "release" / LYPNING,
@@ -138,7 +201,7 @@ def find_micropython() -> Path | None:
     """The MicroPython variant: ``$LYPNING_MP_BIN``, state bin dir, build dir, PATH."""
     which = shutil.which(MICROPYTHON)
     return _first_engine([
-        _override("LYPNING_MP_BIN", "point it at a `lypning build --micropython` binary"),
+        _override(env_var_for(MICROPYTHON), "point it at a `lypning build --micropython` binary"),
         paths.bin_dir() / MICROPYTHON,
         paths.build_dir() / "micropython" / "build" / MICROPYTHON,
         Path(which) if which else None,

@@ -585,12 +585,12 @@ def _status_obj() -> Dict[str, Any]:
 def _render_status(st: Dict[str, Any]) -> str:
     lines = ["lypning %s" % st.get("version", __version__), ""]
     lines.append("engines")
-    for name in ("lypning", "lypning-mp", "cpython"):
+    for name in engines.ENGINE_ORDER:
         e = st["engines"].get(name) or {}
         if not e.get("built"):
-            hint = {"lypning": "  — `lypning build --rust`",
-                    "lypning-mp": "  — `lypning build --micropython` (needs a network)",
-                    "cpython": ""}.get(name, "")
+            hint = {engines.LYPNING: "  — `lypning build --rust`",
+                    engines.MICROPYTHON: "  — `lypning build --micropython` (needs a network)",
+                    engines.CPYTHON: ""}.get(name, "  — `lypning build --rust`")
             lines.append("  %-11s not built%s" % (name + ":", hint))
             continue
         size = e.get("bytes") or 0
@@ -864,7 +864,7 @@ def _doctor_checks() -> List[Tuple[str, str, str]]:
                    "%s (%s B)" % (core, format(_size_of(core), ",")) if core
                    else "not built — run `lypning build --rust`"))
     mp = found.get(engines.MICROPYTHON)
-    checks.append((OK if mp else WARN, "lypning-mp",
+    checks.append((OK if mp else WARN, engines.MICROPYTHON,
                    "%s (%s B)" % (mp, format(_size_of(mp), ",")) if mp
                    else "not built — `lypning build --micropython` needs a network; "
                         "everything routes past this tier meanwhile"))

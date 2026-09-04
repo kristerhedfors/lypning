@@ -56,7 +56,7 @@ CHEERPX_BLOCK = 131072
 # unambiguous: no subset will ever grow it, so the expected output can be an
 # exact string rather than a pattern.
 REFUSAL_PROGRAM = "import subprocess"
-REFUSAL_LINE = "lypning: unsupported: module: import subprocess"
+REFUSAL_LINE = engines.refusal_line(engines.LYPNING, "module", "import subprocess")
 
 MUSL_X86_64 = "x86_64-unknown-linux-musl"
 MUSL_I686 = "i686-unknown-linux-musl"
@@ -1156,13 +1156,13 @@ def verify(results: Iterable[BuildResult] | None = None, *, limit: int | None = 
             pins["LYPNING_LIB"] = str(r.binary)
             continue
         subjects.append(Path(r.binary))
-        var = {engines.LYPNING: "LYPNING_BIN", engines.MICROPYTHON: "LYPNING_MP_BIN"}.get(r.engine)
-        if var:
-            pins[var] = str(r.binary)
+        if r.engine in engines.SPECTRUM + (engines.MICROPYTHON,):
+            pins[engines.env_var_for(r.engine)] = str(r.binary)
     if results is None:
         subjects = [p for p in (engines.find_lypning(), engines.find_micropython()) if p]
 
-    saved = {k: os.environ.get(k) for k in ("LYPNING_BIN", "LYPNING_MP_BIN", "LYPNING_LIB")}
+    saved = {k: os.environ.get(k) for k in
+             [engines.env_var_for(e) for e in engines.SPECTRUM + (engines.MICROPYTHON,)] + ["LYPNING_LIB"]}
     try:
         os.environ.update(pins)
         for b in subjects:

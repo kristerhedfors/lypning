@@ -357,14 +357,11 @@ def _engine_of(p: Path) -> str:
     two different runtimes with two different jobs, and only the opens==0 rule
     is shared between them.
 
-    lypning-mp is checked first because `lypning-mp` also starts with `lypning`.
+    The parsing itself is :func:`engines.parse_binary_name` — the one place the
+    ``<engine>[-<target>]`` shape is read, longest engine name first, which is
+    what makes `lypning-mp` (and a spectrum variant) win over plain `lypning`.
     """
-    name = p.name
-    if name == engines.MICROPYTHON or name.startswith(engines.MICROPYTHON + "-"):
-        return engines.MICROPYTHON
-    if name == engines.LYPNING or name.startswith(engines.LYPNING + "-"):
-        return engines.LYPNING
-    return ""
+    return engines.parse_binary_name(p.name)[0]
 
 
 def _resolve(binary: Path | str | None) -> Tuple[Optional[Path], str]:

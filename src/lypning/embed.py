@@ -55,7 +55,8 @@ STATUS_NAMES = {OK: "ok", ERROR: "error", UNSUPPORTED: "unsupported",
 #: The same pinned refusal the binary's contract check uses. One program, two
 #: shapes, one expected answer — that is the point of pinning it.
 REFUSAL_PROGRAM = "import subprocess"
-REFUSAL_LINE = b"lypning: unsupported: module: import subprocess\n"
+from .engines import LYPNING as _LYPNING, refusal_line as _refusal_line  # noqa: E402
+REFUSAL_LINE = (_refusal_line(_LYPNING, "module", "import subprocess") + "\n").encode("ascii")
 
 
 def shared_library_name(platform: str = sys.platform) -> str:

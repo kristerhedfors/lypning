@@ -60,9 +60,76 @@ def test_live_engine_emits_the_refusal_contract(lypning_bin):
 
 
 def test_chain_from_each_tier():
-    assert engines.chain_from(engines.LYPNING) == ["lypning", "lypning-mp", "cpython"]
-    assert engines.chain_from(engines.MICROPYTHON) == ["lypning-mp", "cpython"]
-    assert engines.chain_from(engines.CPYTHON) == ["cpython"]
+    # Derived from ENGINE_ORDER, which is SPECTRUM + (mp, cpython): the chain from
+    # any rung is the ladder from that rung down. With one Rust variant this is
+    # the three-name list the project has always had — asserted literally too,
+    # so growing the spectrum is a visible edit here, never a silent one.
+    order = list(engines.ENGINE_ORDER)
+    for i, e in enumerate(order):
+        assert engines.chain_from(e) == order[i:]
+    assert engines.SPECTRUM == ("lypning",)
+    assert order == ["lypning", "lypning-mp", "cpython"]
+
+
+def test_parse_binary_name_is_the_one_name_parser():
+    # Longest engine first: `lypning-mp-i386` is MicroPython for i386, never
+    # the Rust core with a "mp-i386" target. Anything after the engine is the
+    # install target, verbatim — the gate never required it to be a known arch.
+    p = engines.parse_binary_name
+    assert p("lypning") == ("lypning", "")
+    assert p("lypning-i686") == ("lypning", "i686")
+    assert p("lypning-host") == ("lypning", "host")
+    assert p("lypning-mp") == ("lypning-mp", "")
+    assert p("lypning-mp-i386") == ("lypning-mp", "i386")
+    assert p("/x/bin/lypning-mp") == ("lypning-mp", "")
+    assert p("python3") == ("", "python3")
+    assert p("cpython") == ("", "cpython")
+
+
+def test_parse_binary_name_grows_with_the_spectrum(monkeypatch):
+    # The day `lypning-l` joins SPECTRUM, `lypning-l-i686` must parse as that
+    # variant for i686 — and until that day it parses as the core with an odd
+    # target, which is exactly what the gate did before this parser existed.
+    assert engines.parse_binary_name("lypning-l-i686") == ("lypning", "l-i686")
+    monkeypatch.setattr(engines, "SPECTRUM", ("lypning", "lypning-l"))
+    assert engines.parse_binary_name("lypning-l-i686") == ("lypning-l", "i686")
+    assert engines.parse_binary_name("lypning-l") == ("lypning-l", "")
+    assert engines.parse_binary_name("lypning-i686") == ("lypning", "i686")
+
+
+def test_env_var_for_spells_every_pin_by_rule(monkeypatch):
+    assert engines.env_var_for(engines.LYPNING) == "LYPNING_BIN"
+    assert engines.env_var_for(engines.MICROPYTHON) == "LYPNING_MP_BIN"
+    assert engines.env_var_for(engines.CPYTHON) == "LYPNING_CPYTHON"
+    with pytest.raises(ValueError):
+        engines.env_var_for("lypning-l")   # not in the spectrum yet
+    monkeypatch.setattr(engines, "SPECTRUM", ("lypning", "lypning-l"))
+    assert engines.env_var_for("lypning-l") == "LYPNING_L_BIN"
+
+
+def test_refusal_line_is_what_the_build_and_the_embedding_pin():
+    from lypning import build, embed
+    line = engines.refusal_line(engines.LYPNING, "module", "import subprocess")
+    assert line == "lypning: unsupported: module: import subprocess"
+    assert build.REFUSAL_LINE == line
+    assert embed.REFUSAL_LINE == (line + "\n").encode()
+    assert engines._REFUSAL_RE.match(engines.refusal_line("lypning-l", "module", "import re"))
+
+
+def test_no_engine_name_is_spelled_by_hand_outside_engines_py():
+    # Invariant 9's names live in engines.py. A literal elsewhere is a copy that
+    # can drift when the spectrum grows; comments and docstrings may say the
+    # word, code may not.
+    src = Path(engines.__file__).parent
+    offenders = []
+    for py in sorted(src.glob("*.py")):
+        if py.name == "engines.py":
+            continue
+        for n, ln in enumerate(py.read_text(encoding="utf-8").splitlines(), 1):
+            code = ln.split("#", 1)[0]
+            if '"lypning-mp"' in code or "'lypning-mp'" in code:
+                offenders.append("%s:%d" % (py.name, n))
+    assert not offenders, offenders
 
 
 def test_chain_from_an_unknown_engine_ends_at_cpython():
