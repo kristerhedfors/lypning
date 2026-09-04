@@ -55,7 +55,7 @@ pub struct Variant {
 /// today; `lypning-l` is the next.
 pub const SPECTRUM: &[Variant] = &[
     Variant { name: "lypning", caps: &[] },
-    Variant { name: "lypning-l", caps: &[] },
+    Variant { name: "lypning-l", caps: &["cap-collections"] },
 ];
 
 /// The same names, NUL-terminated for the C ABI. A test holds the two lists
@@ -64,9 +64,17 @@ pub const SPECTRUM: &[Variant] = &[
 pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 
 /// `cap-*` feature → (the modules it serves, the RUNTIME refusal kinds it
-/// answers). Empty until the first capability is gated; every row here is a
-/// claim `lypning build` proves on the variant that carries it.
-pub const CAPS: &[(&str, &[&str], &[&str])] = &[];
+/// answers). Every row here is a claim `lypning build` proves on the variant
+/// that carries it.
+///
+/// `cap-collections` serves the `collections` MODULE and answers no runtime
+/// kind: the `collections` kind it raises is a refusal a larger sibling would
+/// raise identically (there is no larger sibling, and the surface it refuses —
+/// error messages, multiset arithmetic, `.elements()` — is refused BECAUSE it
+/// is CPython's to answer, not because these bytes are missing). An empty kind
+/// list is the honest one; a kind listed here would cost a spawn to be told no
+/// a second time.
+pub const CAPS: &[(&str, &[&str], &[&str])] = &[("cap-collections", &["collections"], &[])];
 
 /// This binary's own name, from `build.rs` — the same constant `err::ENGINE`
 /// writes at the head of every refusal line.
@@ -332,10 +340,25 @@ mod spectrum_tests {
         // a semantic refusal skips everything
         let vs = verdicts("set-order", "x", &[]);
         assert_eq!(engine_from_verdicts(&vs), Engine::CPython);
-        // runtime chain: with lypning-l carrying exactly this binary's caps it
-        // is not tried, and there is nothing between the spectrum and CPython.
+        // Runtime chain. lypning-l is no longer capability-identical — it
+        // carries `cap-collections` — so from the core a runtime refusal on a
+        // program lypning-l can statically RUN now tries lypning-l before
+        // CPython. That is `chain_after`'s "strictly more capable" rule doing
+        // what it says, and both dispatchers apply it (the Python side is
+        // `engines.chain_after_refusal`, held to this by a cross-product test).
+        // It costs one spawn on a kind lypning-l cannot answer either, which is
+        // the price of the rule being about capability sets rather than about
+        // this one kind; the CAPS `kinds` column is where a future capability
+        // says which runtime refusals it DOES answer.
+        // Asked of the row that HAS a larger sibling; the top row's chain is
+        // CPython and nothing else, which the assertions below cover.
         let vs_ok = verdicts("", "", &["os".to_string()]);
-        assert_eq!(chain_after(SELF, "bigint", &vs_ok), vec![CPYTHON_NAME]);
+        let after_core: Vec<&str> = if self_index() == 0 {
+            vec!["lypning-l", CPYTHON_NAME]
+        } else {
+            vec![CPYTHON_NAME]
+        };
+        assert_eq!(chain_after(SELF, "bigint", &vs_ok), after_core);
         assert_eq!(chain_after(SELF, "bigint", &vs), vec![CPYTHON_NAME]);
         assert_eq!(chain_after(SELF, "set-order", &vs), vec![CPYTHON_NAME]);
         assert_eq!(chain_after("nonesuch", "bigint", &vs), vec![CPYTHON_NAME]);
@@ -815,6 +838,15 @@ fn walk_target(t: &Target, req: &mut Requirements) {
 /// it is allowed to be optimistic in the other direction because the dispatcher
 /// falls through on exit 90.
 fn known_method(name: &str) -> bool {
+    // A capability's own method names are not on any of the probe types below,
+    // because the probes are plain values: `Counter.most_common` lives on a
+    // dict whose tag says Counter, and a probe dict has no tag. Without this
+    // the variant that HAS the capability would block the very program it was
+    // built to run.
+    #[cfg(feature = "cap-collections")]
+    if crate::collections::known_method(name) {
+        return true;
+    }
     crate::methods::method_name(&crate::value::Value::Str("".into()), name).is_some()
         || crate::methods::method_name(&crate::value::list(Vec::new()), name).is_some()
         || crate::methods::method_name(

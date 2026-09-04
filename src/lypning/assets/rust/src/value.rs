@@ -160,6 +160,15 @@ pub struct Dict {
     /// `iter()` skips, so deletion does not disturb the order of the rest.
     holes: usize,
     dead: Vec<bool>,
+    /// Which `collections` type this mapping IS, when the `cap-collections`
+    /// capability is compiled in. `Counter` and `defaultdict` are dict
+    /// SUBCLASSES in CPython, so they are this same `Dict` with a tag rather
+    /// than a second mapping implementation: every behaviour they inherit —
+    /// insertion order, key collapse, `==` against a plain dict, the views — is
+    /// then theirs by construction and cannot drift. `collections.rs` holds the
+    /// short list of places a subclass differs, and nothing else reads this.
+    #[cfg(feature = "cap-collections")]
+    pub coll: Option<crate::collections::Kind>,
 }
 
 impl Dict {
@@ -286,7 +295,15 @@ pub fn type_name(v: &Value) -> &'static str {
         Value::Bytes(_) => "bytes",
         Value::List(_) => "list",
         Value::Tuple(_) => "tuple",
-        Value::Dict(_) => "dict",
+        Value::Dict(_d) => {
+            // A `Counter` names itself in every message that names a type, and
+            // `type()` refuses on the name rather than answering `dict`.
+            #[cfg(feature = "cap-collections")]
+            if let Some(k) = crate::collections::kind_of(_d) {
+                return crate::collections::kind_name(k);
+            }
+            "dict"
+        }
         Value::Set(_) => "set",
         Value::Range(..) => "range",
         Value::File(_) => "TextIOWrapper",

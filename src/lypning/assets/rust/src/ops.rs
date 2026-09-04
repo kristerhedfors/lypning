@@ -31,6 +31,12 @@ impl Interp {
                 return num_binop(op, x, y, matches!((a, b), (Value::Bool(_), Value::Bool(_))));
             }
         }
+        // A `Counter` operand means multiset arithmetic, which this engine does
+        // not have — and for `|` the dict arm below would answer a MERGE at
+        // exit 0 rather than fail. After the numeric fast path, so ordinary
+        // arithmetic never sees it.
+        #[cfg(feature = "cap-collections")]
+        crate::collections::guard_operand(a, b)?;
         Ok(match (op, a, b) {
             (Add, Value::Str(x), Value::Str(y)) => Value::Str(format!("{x}{y}").into()),
             (Add, Value::Bytes(x), Value::Bytes(y)) => {
@@ -166,6 +172,12 @@ impl Interp {
                         _ => unreachable!(),
                     });
                 }
+                // `Counter` has multiset containment for `< <= > >=` (3.10+),
+                // where a plain dict has no ordering at all — so the TypeError
+                // below is CPython's answer for a dict and is not its answer
+                // for these.
+                #[cfg(feature = "cap-collections")]
+                crate::collections::guard_operand(a, b)?;
                 return order_cmp(op, a, b);
             }
         })
@@ -301,10 +313,19 @@ impl Interp {
 
     pub fn index(&mut self, base: &Value, idx: &Value) -> R<Value> {
         Ok(match base {
-            Value::Dict(d) => match d.borrow().get(idx)? {
-                Some(v) => v,
-                None => return Err(key_err(fmt::repr(idx)?)),
-            },
+            Value::Dict(d) => {
+                // The missing key is where the two `collections` types differ
+                // from a dict and from each other: `0` and no insert for a
+                // Counter, the factory's value INSERTED for a defaultdict.
+                #[cfg(feature = "cap-collections")]
+                if let Some(k) = crate::collections::kind_of(d) {
+                    return crate::collections::index(d, k, idx);
+                }
+                match d.borrow().get(idx)? {
+                    Some(v) => v,
+                    None => return Err(key_err(fmt::repr(idx)?)),
+                }
+            }
             Value::List(l) => {
                 let b = l.borrow();
                 let i = norm_index(crate::eval::int_val(idx)?, b.len(), "list")?;
@@ -365,7 +386,15 @@ impl Interp {
 
     pub fn set_item(&mut self, base: &Value, idx: Value, v: Value) -> R<()> {
         match base {
-            Value::Dict(d) => d.borrow_mut().insert(idx, v)?,
+            Value::Dict(d) => {
+                // Named before the borrow, so an unhashable key that IS this
+                // dict still gets its own type name in the TypeError.
+                #[cfg(feature = "cap-collections")]
+                if crate::collections::kind_of(d).is_some() {
+                    crate::collections::self_key_guard(&idx)?;
+                }
+                d.borrow_mut().insert(idx, v)?
+            }
             Value::List(l) => {
                 let n = l.borrow().len();
                 let i = norm_index(crate::eval::int_val(&idx)?, n, "list")?;
@@ -384,6 +413,13 @@ impl Interp {
     pub fn del_item(&mut self, base: &Value, idx: &Value) -> R<()> {
         match base {
             Value::Dict(d) => {
+                // `del c[missing]` is a NO-OP on a Counter — it overrides
+                // `__delitem__` precisely so that it is — and a KeyError on a
+                // defaultdict, which does not.
+                #[cfg(feature = "cap-collections")]
+                if let Some(k) = crate::collections::kind_of(d) {
+                    return crate::collections::del_item(d, k, idx);
+                }
                 if d.borrow_mut().remove(idx)?.is_none() {
                     return Err(key_err(fmt::repr(idx)?));
                 }
@@ -543,6 +579,16 @@ impl Interp {
         }
         if let Some(m) = crate::methods::method_name(base, name) {
             return Ok(Value::Bound(Rc::new(base.clone()), m));
+        }
+        // Anything else on a Counter or a defaultdict — `.default_factory`,
+        // `.elements`, `.subtract`, `.total` — is a refusal and not an
+        // AttributeError: CPython answers all four, and an AttributeError is
+        // exit 1, the program's own, which the chain never retries.
+        #[cfg(feature = "cap-collections")]
+        if let Value::Dict(d) = base {
+            if let Some(k) = crate::collections::kind_of(d) {
+                return Err(crate::collections::attr_refused(k, name));
+            }
         }
         // `str.upper` — the UNBOUND method, which `map(str.upper, xs)` uses.
         // Represented as a bound method on the type object; `call_method` then
@@ -1142,6 +1188,14 @@ pub fn order(a: &Value, b: &Value) -> R<Ordering> {
 }
 
 fn order_as(sym: &str, a: &Value, b: &Value) -> R<Ordering> {
+    // `sorted`, `min`, `max` and `list.sort` reach the comparator HERE rather
+    // than through `Interp::cmp`, so a type this engine declines to ORDER has to
+    // be caught here too. Without it the generic path raised a TypeError at exit
+    // 1 where CPython answers — a wrong exit code instead of a refusal the
+    // dispatcher can act on. (`sorted([Counter('ab'), Counter('a')])` is
+    // multiset containment in CPython 3.10+.)
+    #[cfg(feature = "cap-collections")]
+    crate::collections::guard_operand(a, b)?;
     // The numeric and scalar paths run BEFORE the guard, because neither can
     // descend and `sorted()` of a list of ints reaches this once per
     // comparison. See `value::eq` for the same split and the same reasoning.

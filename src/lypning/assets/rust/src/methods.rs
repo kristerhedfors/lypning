@@ -253,6 +253,16 @@ pub fn missing_method(recv: &Value, name: &str) -> bool {
 /// Is `name` a method of `recv`? Returns the interned name so the caller can
 /// build a `Value::Bound` without allocating.
 pub fn method_name(recv: &Value, name: &str) -> Option<&'static str> {
+    // A `Counter` is a tagged `Dict`, and its table is `dict`'s plus
+    // `most_common`; a `defaultdict`'s is `dict`'s exactly. Asked here rather
+    // than by widening `DICT_METHODS`, which would resolve `{}.most_common`
+    // on a plain dict — an answer where CPython raises.
+    #[cfg(feature = "cap-collections")]
+    if let Value::Dict(d) = recv {
+        if let Some(k) = crate::collections::kind_of(d) {
+            return crate::collections::method_name(k, name);
+        }
+    }
     let table: &[&str] = match recv {
         Value::Str(_) => STR_METHODS,
         Value::List(_) => LIST_METHODS,
@@ -406,7 +416,7 @@ pub fn call_method(
 ) -> R<Value> {
     // An unbound method (`str.upper`) arrives with the TYPE as receiver; the
     // real receiver is the first argument, exactly as CPython does it.
-    if let Value::Builtin(_) = recv {
+    if let Value::Builtin(t) = recv {
         let mut args = args;
         if args.is_empty() {
             return Err(type_err(format!(
@@ -414,12 +424,32 @@ pub fn call_method(
             )));
         }
         let real = args.remove(0);
+        // `dict.update(c, …)` on a Counter is DICT's update, not Counter's — an
+        // unbound method is looked up on the TYPE the caller named, which is the
+        // whole reason to spell it that way. Dispatching on the RECEIVER instead
+        // gave Counter's add-semantics where CPython replaces, and
+        // `dict.copy(c)` a Counter where CPython gives a plain dict: two silent
+        // wrong answers at exit 0, both found by the adversarial pass.
+        #[cfg(feature = "cap-collections")]
+        if *t == "dict" {
+            if let Value::Dict(d) = &real {
+                if crate::collections::kind_of(d).is_some() {
+                    return dict_method(it, d, name, args, kw);
+                }
+            }
+        }
         return call_method(it, &real, name, args, kw);
     }
     match recv {
         Value::Str(s) => str_method(it, s, name, args, kw),
         Value::List(l) => list_method(it, l, name, args, kw),
-        Value::Dict(d) => dict_method(it, d, name, args, kw),
+        Value::Dict(d) => {
+            #[cfg(feature = "cap-collections")]
+            if let Some(k) = crate::collections::kind_of(d) {
+                return crate::collections::method(it, d, k, name, args, kw);
+            }
+            dict_method(it, d, name, args, kw)
+        }
         Value::Set(s) => set_method(it, s, name, args, kw),
         Value::Bytes(b) => bytes_method(it, b, name, args, kw),
         Value::Tuple(t) => tuple_method(t, name, args),
@@ -1343,7 +1373,7 @@ fn list_method(
 
 // ---- dict -----------------------------------------------------------------
 
-fn dict_method(
+pub(crate) fn dict_method(
     it: &mut Interp,
     d: &Rc<RefCell<Dict>>,
     name: &str,

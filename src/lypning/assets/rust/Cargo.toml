@@ -38,7 +38,9 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 # is today's binary and the default, so `cargo build` by hand and `lypning
 # build --rust` still produce the same artefact from the same object cache.
 # Capability features (`cap-*`) gate code and are never passed by hand — a
-# variant feature names its set; none exist yet.
+# variant feature names its set. `route::CAPS` says what each one serves and
+# `build.rs` turns the set that is on into `LYPNING_CAPS`, which the binary
+# states back through `route --spectrum`.
 #
 # The C ABI is compiled only for the library build, which is also the only
 # build allowed to unwind — see `capi.rs` for why that is enforced rather than
@@ -46,9 +48,15 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 default = ["variant-m"]
 variant-m = []
 # The 4 MB point. Names the smaller variant so cargo's feature union makes it a
-# superset by construction — the monotonicity the router assumes. Identical
-# capabilities today; it grows one `cap-*` per step.
-variant-l = ["variant-m"]
+# superset by construction — the monotonicity the router assumes. It grows one
+# `cap-*` per step; `variant-m` is FROZEN and gains none of them.
+variant-l = ["variant-m", "cap-collections"]
+
+# `collections.Counter` and `collections.defaultdict` — 83 of the corpus
+# programs measured on 2026-09-04 import `collections`, and between them they
+# use only those two names. `src/collections.rs` is the whole of it.
+cap-collections = []
+
 capi = []
 
 # The library's profile, and the one thing it may not inherit is `panic`.

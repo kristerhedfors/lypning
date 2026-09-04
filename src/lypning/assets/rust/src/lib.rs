@@ -29,6 +29,10 @@ pub mod alloc;
 pub mod args;
 pub mod ast;
 pub mod builtins;
+/// `collections.Counter` / `defaultdict` — the `cap-collections` capability.
+/// Absent from the smaller variant entirely, not merely unreachable in it.
+#[cfg(feature = "cap-collections")]
+pub mod collections;
 pub mod embed;
 pub mod err;
 pub mod eval;
