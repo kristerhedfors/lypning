@@ -26,6 +26,85 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-09-04 · iteration 73 — the spectrum's first capability, and the oracle earns its keep
+
+First iteration since the spectrum landed, and the first where the loop has a
+LARGER variant to grow instead of a frozen one to squeeze. `lypning` is frozen
+at 8 device blocks; every capability now goes to `lypning-l`.
+
+### The gradient is real for the first time
+
+lypning-mp left the chain the same day (PR #38), so `--plan` no longer ranks by
+"blocks" against a cheaper tier that could absorb the refusal — every refusal
+below now costs a real CPython spawn. The head of the build order, measured
+over 2,504 graded programs: `re` 237, `pathlib` 147, `lypning` 64 (irreducible),
+**`collections` 42**, `subprocess` 34 (correctly refused), `sys.path` 31
+(irreducible), `glob` 28, `csv` 23.
+
+`collections` was taken first on the judges' order — not the largest row, the
+one whose traps are best understood — and the corpus slice is narrow: 83
+programs import it and use ONLY `Counter` (87 uses) and `defaultdict` (14).
+
+### The oracle wrote the spec
+
+`lypning oracle` (new the same day) is the catalogue of what a SECOND
+reimplementation of Python got wrong against CPython — 79 measured divergences
+in 34 families. For this capability it named the traps before a line was
+written: **sort-instability** (`most_common` ties must keep insertion order —
+CPython's sort is stable), **dict-key-collapse** (1/1.0/True collapse keeping
+the FIRST key and the LAST value), **bool-not-int-subclass**,
+**dict-view-equality**. Every one became a grid row. This is the oracle's whole
+purpose and it paid for itself on its first use.
+
+The implementation is a tagged `Dict` rather than a new type: Counter and
+defaultdict ARE dict subclasses in CPython, so length, `in`, iteration order,
+`==` against a plain dict, `dict(c)`, `json.dumps(c)` and key collapse are
+inherited by construction instead of reimplemented — the smaller surface is the
+safer one.
+
+### What the adversarial pass caught, and it was not cosmetic
+
+Two independent adversaries ran ~1,400 programs. Three real findings, all mine
+to fix, none of which the implementer's own 200-row grid had reached:
+
+- **`dict.update(c, {...})` on a Counter used COUNTER's add-semantics** where
+  CPython uses dict's replace: `Counter({'a': 3})` against CPython's
+  `Counter({'a': 1})`. Silent, exit 0. The unbound-method path
+  (`dict.method(instance)`) dispatched on the RECEIVER; an unbound method is
+  looked up on the TYPE the caller named, which is the entire reason to spell
+  it that way.
+- **`dict.copy(Counter(...))` returned a Counter** where CPython returns a
+  plain dict. Same root cause, second victim.
+- **`sorted([Counter, Counter])` raised TypeError at exit 1** where CPython
+  answers (multiset containment, 3.10+). The refusal guard was wired into
+  `Interp::binop` and `Interp::cmp` but NOT into `ops::order_as`, the free
+  comparator `sorted`/`min`/`max`/`list.sort` actually use — so the one path
+  that mattered fell through to a wrong EXIT CODE instead of a clean refusal.
+  A refusal is always acceptable; a wrong exit code is not.
+
+The lesson is the ledger's oldest one in a new place: **a guard is only as good
+as the paths it is wired into**, and the path a builtin takes is not the path an
+operator takes.
+
+- bytes: `lypning` **818,080 B unchanged, 7 blocks** — the frozen core did not
+  move on disk. Its `__text` grew 768 B, and none of it is the capability: with
+  the CAPS table emptied and everything else in place it rebuilds byte for byte,
+  so the 768 B is the router's table readers no longer const-folding against two
+  empty slices. That is a ONE-TIME cost for the first cap row, paid so the core
+  can still route `import collections` to the sibling that serves it — the
+  spectrum's premise that every variant carries the whole table. `lypning-l`
+  818,080 → 834,624 B, still 7 blocks
+- conformance: `lypning` 1573 / 931 / 0 (unchanged, as designed);
+  **`lypning-l` 1573 → 1609 / 895 / 0 — 62.8% → 64.3%, +36 programs**;
+  mixture 2504 / 0 / 0; mixture-rust 2504 / 0 / 0; **monotone violations
+  0 over 2504** — the first run where that check has two genuinely different
+  variants to compare; dispatchers agree 2504/2504; UNSAFE 0
+- perf: not run — no shared path changed for `lypning`
+- pytest: 1554 passed with the new `tests/test_collections_grid.py`; the 6
+  known host failures unchanged
+
+PR [#39](https://github.com/kristerhedfors/lypning/pull/39).
+
 ## 2026-09-02 · iteration 72 — tier 1 serves seeded `random`, and the adversarial pass paid for itself four times
 
 Coverage focus, `--plan` read by cost: after the irreducible rows (`import

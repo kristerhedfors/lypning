@@ -14,6 +14,31 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-04** — `lypning-l` serves `collections.Counter` and `defaultdict` · [#39]
+
+- The first capability the spectrum's larger variant carries that the frozen
+  core does not: **`cap-collections`**, in `variant-l` only. Coverage
+  **62.8% → 64.3%** (+36 corpus programs); `lypning` is byte-identical on disk
+  (818,080 B, 7 blocks) and its answers are unchanged.
+- Counter and defaultdict are the existing `Dict` with a tag, because they are
+  dict subclasses in CPython — length, `in`, iteration order, `==` against a
+  plain dict, `dict(c)`, `json.dumps(c)` and key collapse come for free rather
+  than being reimplemented. `most_common` keeps insertion order on ties, and
+  both reprs are exact.
+- Everything outside the measured corpus slice refuses: multiset arithmetic,
+  `.elements()`, `.subtract()`, `.total()`, keyword construction, a callable
+  `default_factory`, and every error path (message text drifts across
+  3.11/3.12/3.14).
+- **The oracle wrote the spec.** `lypning oracle` named the traps before a line
+  was written — sort instability on `most_common` ties, key collapse across
+  bool/int/float, dict-view equality — and each became a grid row. The
+  adversarial pass then caught three defects the implementation grid had not:
+  `dict.update(c, …)` using Counter's add-semantics where CPython replaces,
+  `dict.copy(c)` returning a Counter where CPython returns a plain dict (both
+  silent, exit 0), and `sorted([Counter, Counter])` raising TypeError at exit 1
+  where a clean exit-90 refusal was owed — the guard was wired into the operator
+  paths but not into the free comparator `sorted`/`min`/`max` use.
+
 **2026-09-04** — lypning-mp leaves the tier stack and becomes the oracle · [#38]
 
 - **The chain is now `lypning` → `lypning-l` → CPython.** Nothing routes to

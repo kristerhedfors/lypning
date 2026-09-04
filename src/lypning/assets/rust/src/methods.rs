@@ -416,7 +416,7 @@ pub fn call_method(
 ) -> R<Value> {
     // An unbound method (`str.upper`) arrives with the TYPE as receiver; the
     // real receiver is the first argument, exactly as CPython does it.
-    if let Value::Builtin(_) = recv {
+    if let Value::Builtin(t) = recv {
         let mut args = args;
         if args.is_empty() {
             return Err(type_err(format!(
@@ -424,6 +424,20 @@ pub fn call_method(
             )));
         }
         let real = args.remove(0);
+        // `dict.update(c, …)` on a Counter is DICT's update, not Counter's — an
+        // unbound method is looked up on the TYPE the caller named, which is the
+        // whole reason to spell it that way. Dispatching on the RECEIVER instead
+        // gave Counter's add-semantics where CPython replaces, and
+        // `dict.copy(c)` a Counter where CPython gives a plain dict: two silent
+        // wrong answers at exit 0, both found by the adversarial pass.
+        #[cfg(feature = "cap-collections")]
+        if *t == "dict" {
+            if let Value::Dict(d) = &real {
+                if crate::collections::kind_of(d).is_some() {
+                    return dict_method(it, d, name, args, kw);
+                }
+            }
+        }
         return call_method(it, &real, name, args, kw);
     }
     match recv {

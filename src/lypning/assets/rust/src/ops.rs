@@ -1188,6 +1188,14 @@ pub fn order(a: &Value, b: &Value) -> R<Ordering> {
 }
 
 fn order_as(sym: &str, a: &Value, b: &Value) -> R<Ordering> {
+    // `sorted`, `min`, `max` and `list.sort` reach the comparator HERE rather
+    // than through `Interp::cmp`, so a type this engine declines to ORDER has to
+    // be caught here too. Without it the generic path raised a TypeError at exit
+    // 1 where CPython answers — a wrong exit code instead of a refusal the
+    // dispatcher can act on. (`sorted([Counter('ab'), Counter('a')])` is
+    // multiset containment in CPython 3.10+.)
+    #[cfg(feature = "cap-collections")]
+    crate::collections::guard_operand(a, b)?;
     // The numeric and scalar paths run BEFORE the guard, because neither can
     // descend and `sorted()` of a list of ints reaches this once per
     // comparison. See `value::eq` for the same split and the same reasoning.
