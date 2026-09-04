@@ -375,22 +375,23 @@ def _engine_of(p: Path) -> str:
 def _resolve(binary: Path | str | None) -> Tuple[Optional[Path], str]:
     """The artifact to gate, and which engine it is.
 
-    With nothing named, lypning-mp is the subject — the budget below is its
-    budget. It needs a network to build and often is not present, so the Rust
-    core stands in rather than the gate returning nothing at all; the
-    substitution is reported as its own row so no one reads the result as
-    lypning-mp's.
+    With nothing named the subject is the Rust core — the tier every program
+    starts on. lypning-mp used to be the default because it was the tier whose
+    budget this file was written for; it left the chain on 2026-09-04 and is an
+    oracle now, so it is gated only when named. Its budget below is still its
+    own (:data:`MAX_BYTES`); a Rust variant answers to
+    :data:`VARIANT_BLOCK_BUDGET`.
     """
     if binary is not None:
         p = Path(binary)
         return (p if p.is_file() else None, _engine_of(p))
+    rust = engines.find(engines.LYPNING)
+    if rust is not None:
+        return (rust, engines.LYPNING)
     mp = engines.find_micropython()
     if mp is not None:
         return (mp, engines.MICROPYTHON)
-    rust = engines.find_lypning()
-    if rust is not None:
-        return (rust, engines.LYPNING)
-    return (None, engines.MICROPYTHON)
+    return (None, engines.LYPNING)
 
 
 def _size_check(engine: str, size: int) -> Check:

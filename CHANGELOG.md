@@ -14,6 +14,36 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-04** — lypning-mp leaves the tier stack and becomes the oracle · [#38]
+
+- **The chain is now `lypning` → `lypning-l` → CPython.** Nothing routes to
+  lypning-mp: it is out of `ENGINE_ORDER`, out of `route.rs`'s `Engine` enum,
+  out of both dispatchers' fall-through, and the machinery that existed only to
+  steer programs around it (`MICROPYTHON_UNSAFE`, the `mp_risk` markers,
+  `engine_for`'s MicroPython arm) is deleted rather than left deciding nothing.
+- **It is kept as an ORACLE — measured, never routed to.** It is a second,
+  independent, from-scratch implementation of Python that has been run against
+  real CPython over the whole corpus with every disagreement recorded:
+  **79 divergences in 34 families** in `.github/known-mismatches.json`. Those
+  are the empirical clusters where a reimplementation goes wrong — float
+  formatting, sort stability, hash order, message text — so each one is
+  something a larger Rust variant must implement *exactly* or *refuse*. New
+  `lypning oracle [--full] [--json]` renders the catalogue; it reads the ledger,
+  so it works without the 32-bit toolchain the binary needs. `engines.ORACLES`,
+  a `status` section of its own, and `--engine lypning-mp` still measures it.
+- **The cost, measured, not estimated**: 852 of 3,688 corpus programs (23.1%)
+  routed to lypning-mp and now reach CPython instead — `re` 345, `pathlib` 177,
+  `collections` 58, `glob` 23, `csv` 19, `hashlib` 13, `math` 12 … That list is
+  `lypning-l`'s build order, and `conformance --plan` now ranks by real CPython
+  cost because there is no cheaper tier left to hide behind.
+- `ONLY_CPYTHON_KINDS` survives and means *more*: it used to say "skip the
+  MicroPython tier", it now says **no Rust variant may answer this, at any
+  size**. The gate's default subject is the Rust core rather than the oracle;
+  `lypning build` no longer builds the oracle unless asked; `bench` gains a
+  `lypning-l` arm.
+- Bytes: removing the tier's routing machinery **shrank the core** 834,592 →
+  818,080 B (host build, still 7 blocks).
+
 **2026-09-04** — The spectrum, step 5: `lypning-l` exists, with identical capabilities · [#37]
 
 - The spectrum has two points: `lypning` (1 MB, 8 blocks, frozen) and

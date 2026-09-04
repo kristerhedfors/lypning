@@ -53,11 +53,11 @@ CORPUS_SLICE = 200
 
 
 def test_the_cheapest_matching_engine_is_ideal():
-    by = {eng.LYPNING: MATCH, eng.MICROPYTHON: MATCH, eng.CPYTHON: MATCH}
+    by = {eng.LYPNING: MATCH, eng.LYPNING_L: MATCH, eng.CPYTHON: MATCH}
     assert routing.score_route(eng.LYPNING, by, LADDER).grade == IDEAL
     # Correct answer, wrong bill: both of these matched, and both cost more than
     # the tier that also would have.
-    assert routing.score_route(eng.MICROPYTHON, by, LADDER).grade == LATE
+    assert routing.score_route(eng.LYPNING_L, by, LADDER).grade == LATE
     assert routing.score_route(eng.CPYTHON, by, LADDER).grade == LATE
 
 
@@ -68,53 +68,22 @@ def _refusal_kind(program):
 
 
 def test_a_semantic_refusal_skips_every_tier_but_cpython():
-    # The chain assumes the tier below is at least as correct as the one that
-    # refused. For a capability gap that holds — MicroPython has decorators.
-    # For a refusal that says "CPython's behaviour here is subtle and I decline
-    # to guess", it does not: the reason tier 1 refused is the reason a second
-    # reimplementation gets it wrong too, so falling through turns a correct
-    # refusal into a silent wrong answer.
-    assert eng.chain_after_refusal(eng.LYPNING, "decorator") == [eng.MICROPYTHON, eng.CPYTHON]
+    # These kinds skip EVERY Rust variant, not just the departed MicroPython
+    # tier: a kind is in ONLY_CPYTHON_REFUSALS because a REIMPLEMENTATION gets
+    # it wrong, and every variant is the same reimplementation at a different
+    # size. With the tier gone the rule means strictly more than it used to.
+    assert eng.chain_after_refusal(eng.LYPNING, "decorator") == [eng.CPYTHON]
     assert eng.chain_after_refusal(eng.LYPNING, "nan-identity") == [eng.CPYTHON]
     # An unknown kind falls through, which is the safe default for the cost: a
     # kind nobody classified costs a spawn, never an answer it could not have
     # got right anyway.
-    assert eng.chain_after_refusal(eng.LYPNING, "kind-nobody-wrote") == [eng.MICROPYTHON, eng.CPYTHON]
-    # Nothing is left to skip once lypning-mp is the one refusing.
-    assert eng.chain_after_refusal(eng.MICROPYTHON, "nan-identity") == [eng.CPYTHON]
+    assert eng.chain_after_refusal(eng.LYPNING, "kind-nobody-wrote") == [eng.CPYTHON]
+    # A larger sibling with no capability the refusing one lacks is not tried:
+    # it cannot answer what the smaller one could not.
+    assert eng.chain_after_refusal(eng.LYPNING_L, "nan-identity") == [eng.CPYTHON]
 
 
-def test_the_mp_kind_arm_lists_only_kinds_the_classifier_can_emit():
-    """The arm is not a list of the engine's refusal vocabulary, and it was.
-
-    `engine_for` runs at ROUTING time, so the only kinds that can reach it come
-    from a parse-time refusal, a lex-time one, or `Requirements::block`. The
-    match arm nonetheless listed 23 kinds only the evaluator emits — dead names,
-    six of which (`set-order`, `set-method`, `repr-unicode`, `percent-format`,
-    `del`, `json`) `ONLY_CPYTHON_KINDS` says must skip lypning-mp entirely.
-    Dead, the contradiction was inert. The day the parser learns to spot one of
-    those constructs statically, a listed name starts routing programs to
-    exactly the tier the escalation table exists to keep them off — with no
-    gate looking, because the conformance battery only measures kinds that
-    actually fire.
-
-    `micropython_kinds()` was written to read this arm and had zero callers.
-    This is its job.
-    """
-    arm = routing.micropython_kinds()
-    if not arm:
-        pytest.skip("engine_for's match arm was not found in %s" % routing.table_source())
-    emittable = routing.classifier_kinds()
-    if not emittable:
-        pytest.skip("could not read the classifier's refusal kinds")
-    dead = sorted(set(arm) - set(emittable))
-    assert not dead, (
-        "these kinds are routed to lypning-mp but nothing at parse/lex/block "
-        "time can emit them — dead today, a silent routing change the day the "
-        "parser learns to see them: %s" % dead)
-    both = sorted(set(arm) & set(eng.ONLY_CPYTHON_REFUSALS))
-    assert not both, (
-        "the mp arm and ONLY_CPYTHON_KINDS disagree about: %s" % both)
+# `test_the_mp_kind_arm_lists_only_kinds_the_classifier_can_emit` is gone with its subject: micropython_kinds() read engine_for's mp arm, which no longer exists
 
 
 def test_both_dispatchers_walk_the_same_chain_after_a_runtime_refusal(lypning_bin):
@@ -154,7 +123,7 @@ def test_route_json_carries_a_verdict_per_rung(lypning_bin):
     assert [v[0] for v in r.verdicts] == list(eng.ENGINE_ORDER)
     assert r.verdicts[0][1:] == ("module", "import re")   # this binary refuses
     assert r.verdicts[-1] == ("cpython", "", "")            # CPython always can
-    assert r.engine == eng.MICROPYTHON                       # first "can run" at or above self
+    assert r.engine == eng.CPYTHON                           # first "can run" at or above self
 
 
 def test_both_dispatchers_read_the_same_escalation_table():
@@ -250,24 +219,7 @@ def test_a_construct_the_runtime_table_would_escalate_is_kept_off_the_tier_stati
     assert _route("import math\nprint(9007199254740993 / 3)").engine == eng.CPYTHON
 
 
-def test_the_static_markers_are_narrow_enough_to_be_worth_their_spawns(lypning_bin):
-    """Both directions, because every rule here is paid for in process spawns.
-
-    `float('inf')` and `float('1.5')` are ordinary calls; a large literal that is
-    never divided cannot lose precision; and `//` is exact whatever the operands.
-    None of them may fire. Measured over the corpus the run loaded (2,239
-    programs, 2026-08-28) the two rules move ZERO programs off lypning-mp: the
-    only corpus entries carrying that text hold it inside a string — a regex
-    pattern in one, a literal being string-replaced in the other — which is
-    exactly the difference between matching the AST and matching the text.
-    """
-    assert _route("import math\nprint(float('inf'))").engine == eng.MICROPYTHON
-    assert _route("import math\nprint(float('1.5'))").engine == eng.MICROPYTHON
-    assert _route("import math\nprint(9007199254740993 // 3)").engine == eng.MICROPYTHON
-    assert _route("import math\nprint(9007199254740993)").engine == eng.MICROPYTHON
-    assert _route("import math\nprint(7 / 3)").engine == eng.MICROPYTHON
-    # The text is in a string, not a call: the AST rule must not see it.
-    assert _route("import math\nprint('float(\\'nan\\')')").engine == eng.MICROPYTHON
+# `test_the_static_markers_are_narrow_enough_to_be_worth_their_spawns` is gone with its subject: the MICROPYTHON_UNSAFE AST markers existed only to keep a program off the MicroPython tier, which left the chain
 
 
 def test_the_integer_refusals_split_by_what_the_tier_below_can_do(lypning_bin, micropython_bin):
@@ -285,7 +237,7 @@ def test_the_integer_refusals_split_by_what_the_tier_below_can_do(lypning_bin, m
     """
     assert _refusal_kind("print(2**70)") == "bigint"
     assert _refusal_kind("print(9007199254740993/3)") == "int-div-precision"
-    assert eng.dispatch("print(2**70)").engine == eng.MICROPYTHON
+    assert eng.dispatch("print(2**70)").engine == eng.LYPNING_L
     assert eng.dispatch("print(9007199254740993/3)").engine == eng.CPYTHON
 
 
@@ -306,29 +258,46 @@ def test_every_escalated_refusal_kind_is_one_an_engine_actually_emits():
         "so the escalation is dead code: %s" % missing)
 
 
-def test_a_refusal_that_falls_through_to_a_wrong_answer_is_unsafe_not_wasted():
+def test_a_refusal_that_falls_through_to_a_wrong_answer_is_unsafe_not_wasted(monkeypatch):
     # The rule this file exists for, and the one that was missing. A refusal is
-    # not an outcome: the dispatcher moves down the ladder and the NEXT tier's
+    # not an outcome: the dispatcher moves up the spectrum and the NEXT rung's
     # answer is what the user sees. Here tier 1 refuses CORRECTLY — it knows it
-    # cannot match CPython on this construct — and lypning-mp then answers
-    # wrongly at exit 0. Grading the tier that was NAMED reads that as a spare
-    # process spawn; grading the tier that ANSWERED reads it as what it is.
-    by = {eng.LYPNING: UNSUPPORTED, eng.MICROPYTHON: MISMATCH, eng.CPYTHON: MATCH}
-    s = routing.score_route(eng.LYPNING, by, LADDER)
+    # cannot match CPython on this construct — and the larger variant then
+    # answers wrongly at exit 0. Grading the rung that was NAMED reads that as a
+    # spare spawn; grading the rung that ANSWERED reads it as what it is.
+    #
+    # The larger variant is only IN the chain when it is strictly more capable,
+    # so the caps and the verdicts both have to say so — which is the same
+    # condition the dispatcher itself checks.
+    monkeypatch.setattr(eng, "VARIANT_CAPS", {eng.LYPNING: (), eng.LYPNING_L: ("cap-bigint",)})
+    verdicts = ((eng.LYPNING, "bigint", "x"), (eng.LYPNING_L, "", ""), (eng.CPYTHON, "", ""))
+    by = {eng.LYPNING: UNSUPPORTED, eng.LYPNING_L: MISMATCH, eng.CPYTHON: MATCH}
+    s = routing.score_route(eng.LYPNING, by, LADDER, route_verdicts=verdicts)
     assert s.grade == UNSAFE
-    assert eng.MICROPYTHON in s.detail, "the grade has to name the tier that actually answered"
+    assert eng.LYPNING_L in s.detail, "the grade has to name the rung that actually answered"
 
 
-def test_a_refusal_that_falls_through_to_a_right_answer_is_still_only_wasted():
+def test_a_refusal_that_falls_through_to_a_right_answer_is_still_only_wasted(monkeypatch):
     # The guard on the rule above. Falling through is the design and costs one
-    # spawn; it is only fatal when the tier that catches the fall is wrong.
-    by = {eng.LYPNING: UNSUPPORTED, eng.MICROPYTHON: MATCH, eng.CPYTHON: MATCH}
+    # spawn; it is only fatal when the rung that catches the fall is wrong.
+    monkeypatch.setattr(eng, "VARIANT_CAPS", {eng.LYPNING: (), eng.LYPNING_L: ("cap-bigint",)})
+    verdicts = ((eng.LYPNING, "bigint", "x"), (eng.LYPNING_L, "", ""), (eng.CPYTHON, "", ""))
+    by = {eng.LYPNING: UNSUPPORTED, eng.LYPNING_L: MATCH, eng.CPYTHON: MATCH}
+    assert routing.score_route(eng.LYPNING, by, LADDER, route_verdicts=verdicts).grade == WASTED
+
+
+def test_a_same_caps_sibling_is_not_in_the_chain_at_all():
+    # With identical capabilities the larger variant cannot answer what the
+    # smaller one refused, so it is never tried and its verdict cannot be
+    # delivered — the refusal goes straight to CPython. This is what makes the
+    # spectrum's first N=2 step behaviour-free.
+    by = {eng.LYPNING: UNSUPPORTED, eng.LYPNING_L: MISMATCH, eng.CPYTHON: MATCH}
     assert routing.score_route(eng.LYPNING, by, LADDER).grade == WASTED
 
 
 def test_the_fall_through_skips_tiers_that_also_refused():
     # Two refusals in a row is still one delivered answer, and it is CPython's.
-    by = {eng.LYPNING: UNSUPPORTED, eng.MICROPYTHON: UNSUPPORTED, eng.CPYTHON: MATCH}
+    by = {eng.LYPNING: UNSUPPORTED, eng.LYPNING_L: UNSUPPORTED, eng.CPYTHON: MATCH}
     assert routing.score_route(eng.LYPNING, by, LADDER).grade == WASTED
     # ...and a tier that was never measured is skipped like one that is not built,
     # rather than counted as the answer.
@@ -341,29 +310,29 @@ def test_a_refusal_is_wasted_and_a_wrong_answer_is_unsafe():
     # that assertion was the bug written down: with lypning-mp MISMATCHing, a
     # refusal at tier 1 falls through INTO the wrong answer. It is covered as
     # UNSAFE above; what is left here is the part that was always true.
-    by = {eng.LYPNING: UNSUPPORTED, eng.MICROPYTHON: MISMATCH, eng.CPYTHON: MATCH}
-    assert routing.score_route(eng.MICROPYTHON, by, LADDER).grade == UNSAFE
+    by = {eng.LYPNING: UNSUPPORTED, eng.LYPNING_L: MISMATCH, eng.CPYTHON: MATCH}
+    assert routing.score_route(eng.LYPNING_L, by, LADDER).grade == UNSAFE
     assert routing.score_route(eng.CPYTHON, by, LADDER).grade == IDEAL
     # A refusal at the tier ABOVE the wrong one never reaches it.
-    by2 = {eng.LYPNING: MISMATCH, eng.MICROPYTHON: UNSUPPORTED, eng.CPYTHON: MATCH}
-    assert routing.score_route(eng.MICROPYTHON, by2, LADDER).grade == WASTED
+    by2 = {eng.LYPNING: MISMATCH, eng.LYPNING_L: UNSUPPORTED, eng.CPYTHON: MATCH}
+    assert routing.score_route(eng.LYPNING_L, by2, LADDER).grade == WASTED
 
 
 def test_a_route_that_is_both_wrong_and_ideal_is_still_unsafe():
     # The ideal engine is the cheapest that MATCHED, so an engine that
     # mismatches can never be it — but the rule is ordered so that a mismatch is
     # read before anything else, and that order is the gate. Pin it.
-    by = {eng.LYPNING: MISMATCH, eng.MICROPYTHON: MATCH}
+    by = {eng.LYPNING: MISMATCH, eng.LYPNING_L: MATCH}
     s = routing.score_route(eng.LYPNING, by, LADDER)
     assert s.grade == UNSAFE
-    assert s.ideal == eng.MICROPYTHON, "an UNSAFE route still names where it should have gone"
+    assert s.ideal == eng.LYPNING_L, "an UNSAFE route still names where it should have gone"
 
 
 def test_nothing_to_grade_when_no_engine_matched():
     # Every tier refused: the program is outside the mixture, which is a
     # coverage number and not the classifier's fault. Counting it against the
     # classifier would make an engine's gap look like a routing bug.
-    by = {eng.LYPNING: UNSUPPORTED, eng.MICROPYTHON: UNSUPPORTED, eng.CPYTHON: UNSUPPORTED}
+    by = {eng.LYPNING: UNSUPPORTED, eng.LYPNING_L: UNSUPPORTED, eng.CPYTHON: UNSUPPORTED}
     s = routing.score_route(eng.LYPNING, by, LADDER)
     assert s.grade == NO_ENGINE
     assert s.ideal == ""
@@ -378,11 +347,11 @@ def test_a_route_to_an_engine_that_does_not_exist_is_unsafe_not_unscored():
 
 
 def test_the_ladder_decides_which_match_is_ideal():
-    by = {eng.LYPNING: MATCH, eng.MICROPYTHON: MATCH}
+    by = {eng.LYPNING: MATCH, eng.LYPNING_L: MATCH}
     # Same verdicts, reversed ladder: ideal follows the ORDER, which is the
     # routing preference, not the dict's insertion order.
-    assert routing.score_route(eng.MICROPYTHON, by, (eng.MICROPYTHON, eng.LYPNING)).grade == IDEAL
-    assert routing.score_route(eng.MICROPYTHON, by, (eng.LYPNING, eng.MICROPYTHON)).grade == LATE
+    assert routing.score_route(eng.LYPNING_L, by, (eng.LYPNING_L, eng.LYPNING)).grade == IDEAL
+    assert routing.score_route(eng.LYPNING_L, by, (eng.LYPNING, eng.LYPNING_L)).grade == LATE
 
 
 def test_failing_the_same_way_is_not_a_claim_on_being_the_ideal_tier():
@@ -394,7 +363,7 @@ def test_failing_the_same_way_is_not_a_claim_on_being_the_ideal_tier():
     # destination for a program it cannot run, and 19 corpus programs read LATE
     # for that reason alone.
     failed = conf.Verdict(eng.LYPNING, "py-1", MATCH, actual_rc=1)
-    by = {eng.LYPNING: failed, eng.MICROPYTHON: failed, eng.CPYTHON: MATCH}
+    by = {eng.LYPNING: failed, eng.LYPNING_L: failed, eng.CPYTHON: MATCH}
     s = routing.score_route(eng.CPYTHON, by, LADDER, route_kind="syntax")
     assert s.grade == IDEAL
     assert s.ideal == eng.CPYTHON
@@ -425,8 +394,8 @@ def test_a_verdict_record_grades_the_same_as_a_bare_verdict_string():
     # The battery hands over `conformance.Verdict` objects; a test that wants to
     # pin one rule hands over strings. Both must mean the same thing, or the
     # rule covered here is not the rule that runs.
-    v = conf.Verdict(eng.MICROPYTHON, "py-1", MISMATCH, "stdout", "line 2 differs")
-    s = routing.score_route(eng.MICROPYTHON, {eng.MICROPYTHON: v, eng.CPYTHON: MATCH}, LADDER)
+    v = conf.Verdict(eng.LYPNING_L, "py-1", MISMATCH, "stdout", "line 2 differs")
+    s = routing.score_route(eng.LYPNING_L, {eng.LYPNING_L: v, eng.CPYTHON: MATCH}, LADDER)
     assert s.grade == UNSAFE
     assert s.detail == "stdout: line 2 differs", "the evidence has to survive into the report"
 
@@ -463,17 +432,17 @@ def _report(verdicts, routes):
 def test_a_run_is_graded_program_by_program_and_summed():
     rp = routing.grade(_report(
         verdicts={
-            "ideal": {eng.LYPNING: MATCH, eng.MICROPYTHON: MATCH},
-            "wasted": {eng.LYPNING: UNSUPPORTED, eng.MICROPYTHON: MATCH},
-            "late": {eng.LYPNING: MATCH, eng.MICROPYTHON: MATCH},
+            "ideal": {eng.LYPNING: MATCH, eng.LYPNING_L: MATCH},
+            "wasted": {eng.LYPNING: UNSUPPORTED, eng.LYPNING_L: MATCH},
+            "late": {eng.LYPNING: MATCH, eng.LYPNING_L: MATCH},
         },
-        routes={"ideal": eng.LYPNING, "wasted": eng.LYPNING, "late": eng.MICROPYTHON},
+        routes={"ideal": eng.LYPNING, "wasted": eng.LYPNING, "late": eng.LYPNING_L},
     ))
     assert rp.counts[IDEAL] == 1
     assert rp.counts[WASTED] == 1
     assert rp.counts[LATE] == 1
     assert rp.graded == 3 and rp.scored == 3
-    assert rp.predictions == {eng.LYPNING: 2, eng.MICROPYTHON: 1}
+    assert rp.predictions == {eng.LYPNING: 2, eng.LYPNING_L: 1}
     assert rp.ok, "WASTED and LATE are budget — neither may fail a run"
     assert round(rp.ideal_pct, 1) == 33.3
     assert round(rp.first_try_pct, 1) == 66.7, "IDEAL + LATE both answered on the first spawn"
@@ -481,12 +450,12 @@ def test_a_run_is_graded_program_by_program_and_summed():
 
 def test_one_unsafe_route_fails_the_whole_run_and_is_named():
     rp = routing.grade(_report(
-        verdicts={"bad": {eng.LYPNING: MISMATCH, eng.MICROPYTHON: MATCH, conf.MIXTURE: MATCH}},
+        verdicts={"bad": {eng.LYPNING: MISMATCH, eng.LYPNING_L: MATCH, conf.MIXTURE: MATCH}},
         routes={"bad": eng.LYPNING},
     ))
     assert not rp.ok
     (s,) = rp.unsafe()
-    assert (s.entry_id, s.predicted, s.ideal) == ("bad", eng.LYPNING, eng.MICROPYTHON)
+    assert (s.entry_id, s.predicted, s.ideal) == ("bad", eng.LYPNING, eng.LYPNING_L)
     # The dispatcher fell onward and the caller got the right answer. That is
     # the difference between a wasted spawn and a wrong answer, and it is
     # recorded rather than allowed to excuse the route.
@@ -501,7 +470,7 @@ def test_cpython_is_on_the_ladder_even_though_it_is_never_an_arm():
     # verdict scored every one of them UNSAFE, which is the exact inverse of the
     # truth: CPython's answer is the definition of right.
     rp = routing.grade(_report(
-        verdicts={"p": {eng.LYPNING: UNSUPPORTED, eng.MICROPYTHON: UNSUPPORTED}},
+        verdicts={"p": {eng.LYPNING: UNSUPPORTED, eng.LYPNING_L: UNSUPPORTED}},
         routes={"p": eng.CPYTHON},
     ))
     assert rp.counts[IDEAL] == 1 and rp.ok
@@ -516,12 +485,12 @@ def test_a_tier_that_was_not_measured_is_a_hole_not_a_failure(no_micropython):
     # classifier bug.
     rp = routing.grade(_report(
         verdicts={"p": {eng.LYPNING: UNSUPPORTED, conf.MIXTURE: MATCH}},
-        routes={"p": eng.MICROPYTHON},
+        routes={"p": eng.LYPNING_L},
     ))
     assert rp.ok and rp.counts[UNSAFE] == 0
     assert rp.graded == 0 and rp.ungraded_total == 1
-    assert eng.MICROPYTHON in rp.note
-    assert eng.MICROPYTHON in routing.render(rp), "the hole is named, never rendered as a zero"
+    assert eng.LYPNING_L in rp.note
+    assert eng.LYPNING_L in routing.render(rp), "the hole is named, never rendered as a zero"
 
 
 def test_no_classifier_built_means_nothing_to_grade_rather_than_a_perfect_score():
@@ -569,7 +538,7 @@ def test_a_plain_one_liner_goes_to_the_cheapest_tier(lypning_bin):
 
 def test_an_import_only_the_second_tier_has_names_the_blocker(lypning_bin):
     r = _route("import re\nprint(re.findall(r'\\d+', 'a1'))")
-    assert r.engine == eng.MICROPYTHON
+    assert r.engine == eng.CPYTHON
     assert (r.kind, r.detail) == ("module", "import re")
 
 
@@ -617,46 +586,10 @@ def test_resolution_stops_at_the_first_thing_that_is_not_a_module(lypning_bin):
     assert _route("import os\nprint(os.environ.get('HOME'))").engine == eng.LYPNING
 
 
-def test_a_construct_the_middle_tier_gets_wrong_keeps_a_program_off_it(lypning_bin):
-    # UNSAFE is the one routing outcome that spends trust instead of
-    # milliseconds, and six of the seven routed to lypning-mp. That tier is
-    # third-party and its defects cannot be fixed here — but the classifier can
-    # decline to send a program there when the SOURCE shows it would trip on
-    # one. Each of these is a family in `.github/known-mismatches.json`.
-    # A seeded stream is tier 1's own (`random.rs` runs CPython's Mersenne
-    # Twister). What must never happen is the middle tier answering one, and
-    # the seed marker that used to guard that had spellings it could not see —
-    # so the whole module is off that tier's table and every path past tier 1
-    # ends at CPython: a static blocker, a parse-time one beside the seed, and
-    # a runtime refusal, whatever its kind.
-    assert _route("import random\nrandom.seed(7)\nprint(random.random())").engine == eng.LYPNING
-    assert _route("import random as r\nr.seed(7)\nprint(r.random())").engine == eng.LYPNING
-    assert _route("from random import seed, random\nseed(7)\nprint(random())").engine == eng.LYPNING
-    assert _route("import random\nrandom.seed(7)\nrandom.shuffle([1])").engine == eng.CPYTHON
-    assert _route("from random import *\nseed(7)\nprint(random())").engine == eng.CPYTHON
-    assert _route("import random\nrandom.seed(7)\nprint(random.random())\nclass C: pass").engine == eng.CPYTHON
-    r = _route("import os, random\nrandom.seed(7)\nprint(random.randint(1, 10) ** 30)")
-    assert r.engine == eng.LYPNING and r.imports == ("os", "random")
-    assert eng.chain_after_refusal(eng.LYPNING, "bigint", r.imports) == [eng.CPYTHON]
-    assert eng.chain_after_refusal(eng.LYPNING, "random") == [eng.CPYTHON]
-    assert eng.chain_after_refusal(eng.LYPNING, "bigint", ("os",)) == [eng.MICROPYTHON, eng.CPYTHON]
-    assert _route("from pathlib import Path\nprint(Path('/a/b').parts)").engine == eng.CPYTHON
-    assert _route("try:\n    1/0\nexcept Exception as e:\n    print(type(e).__module__)").engine == eng.CPYTHON
+# `test_a_construct_the_middle_tier_gets_wrong_keeps_a_program_off_it` is gone with its subject: there is no middle tier to keep a program off; the constructs it named are the oracle's families in .github/known-mismatches.json
 
 
-def test_the_unsafe_construct_rules_are_precise_and_not_whole_modules(lypning_bin):
-    # The cost of this table is spawns, so it must fire on the construct and not
-    # on its module: `Path.name` is correct there, and `.parts` on an unrelated
-    # object is an ordinary attribute. Routing all of `pathlib` away instead
-    # would cost 133 corpus programs against 25 for the constructs together.
-    # (`random` is the exception, and a measured one: no construct-level rule
-    # can see every seed, so the module left the table — see route.rs.)
-    r = _route("import random\nprint(random.random())")
-    assert r.engine == eng.LYPNING  # refused at the first draw, then CPython
-    assert _route("from pathlib import Path\nprint(Path('/a/b').name)").engine == eng.MICROPYTHON
-    assert _route("import base64\nprint(base64.b64encode(b'hi'))").engine == eng.MICROPYTHON
-    # `.parts` with no pathlib in sight is not the pathlib defect.
-    assert _route("class C:\n    parts = 1\nprint(C.parts)").engine != eng.CPYTHON
+# `test_the_unsafe_construct_rules_are_precise_and_not_whole_modules` is gone with its subject: same — the construct-level rules were the mp_risk markers
 
 
 def test_constructs_no_micropython_derived_runtime_has_skip_the_middle_tier(lypning_bin):
@@ -667,15 +600,7 @@ def test_constructs_no_micropython_derived_runtime_has_skip_the_middle_tier(lypn
     assert _route("async def f(): pass").engine == eng.CPYTHON
 
 
-def test_decorators_and_generators_are_language_features_the_middle_tier_has(lypning_bin):
-    # Both sat in CPYTHON_ONLY_KINDS as "constructs no MicroPython-derived
-    # runtime has", which was never true: MicroPython implements them in the
-    # language. Ten corpus programs were routed past a tier that runs them.
-    for program in ("@dec\ndef f(): pass",
-                    "def g():\n    yield 1\nprint(list(g()))"):
-        assert _route(program).engine == eng.MICROPYTHON, program
-    # A generator *expression* is not the blocker and never was — tier 1 runs it.
-    assert _route("print(list(x * 2 for x in range(3)))").engine == eng.LYPNING
+# `test_decorators_and_generators_are_language_features_the_middle_tier_has` is gone with its subject: engine_for's `=> Engine::MicroPython` arm is gone with the tier
 
 
 def test_a_decorator_from_an_absent_module_is_still_decided_by_the_import(lypning_bin):
@@ -709,7 +634,7 @@ def test_routing_grades_a_live_battery_run(lypning_bin):
     for s in rp.unsafe():
         # The tree's one known UNSAFE class, asserted in full below. Anything
         # else is a new defect and this is where it surfaces.
-        assert s.predicted == eng.MICROPYTHON and s.detail.startswith("contract:"), (
+        assert s.predicted == eng.LYPNING_L and s.detail.startswith("contract:"), (
             "a new UNSAFE route, and an UNSAFE route is a wrong answer: %s" % s)
 
 
@@ -748,38 +673,18 @@ def test_the_one_unsafe_route_is_the_tracked_barrier_defect(lypning_bin, micropy
     makes docs/LYPNING.md §6, the README's conformance section and this test
     stale — say so rather than deleting the assertion.
     """
-    assert eng.route(PRINT_THEN_REFUSE_MP).engine == eng.MICROPYTHON
+    assert eng.route(PRINT_THEN_REFUSE_MP).engine == eng.LYPNING_L
     report = conf.run(entries=[corpus.Entry(id="unsafe-repro", program=PRINT_THEN_REFUSE_MP)],
                       timeout=20.0)
     rp = routing.grade(report)
     (s,) = rp.unsafe()
-    assert (s.predicted, s.grade) == (eng.MICROPYTHON, UNSAFE)
+    assert (s.predicted, s.grade) == (eng.LYPNING_L, UNSAFE)
     assert "already reached stdout" in s.detail
     assert not rp.ok, "UNSAFE is the gate; it must fail the run it appears in"
     assert s.rescued, "the dispatcher still contains the leak, so the caller is unharmed"
 
 
-def test_a_barrier_construct_the_classifier_can_see_is_kept_off_the_tier(lypning_bin):
-    """The half that is fixable here, on the program that used to be the one above.
-
-    The commit barrier is lypning-mp's and cannot be fixed in this tree — the
-    test above still reproduces it on a regex the classifier cannot screen,
-    because the pattern is only a string until it is compiled. But where the
-    construct IS visible in the source, the classifier can decline to start
-    there, and two of the corpus' three barrier entries are visible that way:
-    `hashlib.algorithms_guaranteed`, and the `strict_mode=` keyword.
-
-    Precision is the whole point, so both directions are asserted: sibling uses
-    of the same modules must still reach the cheaper tier, or the rule has
-    quietly become "route all of hashlib away" at 100x the price.
-    """
-    assert eng.route(PRINT_THEN_REFUSE_MP_DECLINED).engine == eng.CPYTHON
-    assert _route("import base64\nprint(base64.b64decode(b'aGk=', strict_mode=True))").engine == eng.CPYTHON
-    assert _route("import hashlib\nprint(hashlib.md5(b'x').hexdigest())").engine == eng.MICROPYTHON
-    assert _route("import base64\nprint(base64.b64decode(b'aGk='))").engine == eng.MICROPYTHON
-    # `algorithms_guaranteed` on something that is not hashlib is an ordinary
-    # attribute: the rule is a dotted path, not a bare name.
-    assert _route("class C:\n    algorithms_guaranteed = 1\nprint(C.algorithms_guaranteed)").engine != eng.CPYTHON
+# `test_a_barrier_construct_the_classifier_can_see_is_kept_off_the_tier` is gone with its subject: the barrier markers routed away from lypning-mp; nothing routes there now
 
 
 def test_no_program_is_routed_to_the_tier_with_a_kind_the_chain_would_escalate():
@@ -810,7 +715,7 @@ def test_no_program_is_routed_to_the_tier_with_a_kind_the_chain_would_escalate()
     caught = []
     for e in entries:
         r = eng.route(e.program)
-        if r.engine == eng.MICROPYTHON and r.kind in eng.ONLY_CPYTHON_REFUSALS:
+        if r.engine == eng.LYPNING_L and r.kind in eng.ONLY_CPYTHON_REFUSALS:
             caught.append((e.id, r.kind))
     assert not caught, (
         "these programs are routed to lypning-mp under a kind the chain would "
@@ -892,7 +797,7 @@ def test_every_module_the_table_claims_can_actually_be_imported(micropython_bin)
     """
     missing = []
     for m in routing.micropython_modules():
-        r = eng.run(eng.MICROPYTHON, "import %s" % m, binary=micropython_bin, timeout=20.0)
+        r = eng.run(eng.LYPNING_L, "import %s" % m, binary=micropython_bin, timeout=20.0)
         if r.returncode != 0:
             missing.append((m, (r.stderr or "").strip().splitlines()[-1:] or [""]))
     assert not missing, (
@@ -916,7 +821,7 @@ def test_modules_the_tier_serves_but_the_table_omits_are_reported_not_fixed(micr
     for name, count in corpus.stats(entries, top=0).top_imports:
         if name in table:
             continue
-        r = eng.run(eng.MICROPYTHON, "import %s" % name, binary=micropython_bin, timeout=20.0)
+        r = eng.run(eng.LYPNING_L, "import %s" % name, binary=micropython_bin, timeout=20.0)
         if r.returncode == 0:
             left.append((name, count))
     if left:
@@ -939,13 +844,23 @@ def test_the_table_check_degrades_when_the_source_is_missing(tmp_path):
 
 
 def test_no_module_in_the_table_routes_past_the_tier_that_claims_it(lypning_bin):
-    """The table is only half the decision — ``engine_for`` has to agree.
+    """The oracle's import table is lypning-l's BUILD ORDER, and it is measured.
 
-    Below lypning-mp, not *to* it: the Rust core has ``json``, ``math`` and
-    ``sys`` of its own, and a program importing one of those belongs on the
-    cheaper tier. What may not happen is a module the table claims routing all
-    the way to CPython, which would be a table nobody reads.
+    This used to assert the inverse — that no module lypning-mp claimed could
+    route past it — because the tier was in the chain. It left on 2026-09-04,
+    so every module the oracle serves that no Rust variant serves now reaches
+    CPython at ~11 ms, and the list of those modules is exactly the work
+    `lypning-l` has left to do. The test pins the direction: each name is
+    either served by a Rust variant or a row on the build order, never
+    silently neither.
     """
-    stray = [(m, eng.route("import %s\n" % m)) for m in routing.micropython_modules()]
-    stray = [(m, r.engine, r.kind, r.detail) for m, r in stray if r.engine == eng.CPYTHON]
-    assert not stray, "modules in lypning-mp's table that route to CPython anyway: %r" % stray
+    served, todo = [], []
+    for m in routing.micropython_modules():
+        r = eng.route("import %s\n" % m)
+        (todo if r.engine == eng.CPYTHON else served).append(m)
+    assert served, "the Rust core serves none of the oracle's modules — that cannot be right"
+    # Every remaining name must be a plain module blocker, not something subtler:
+    # a build-order row has to be actionable.
+    for m in todo:
+        r = eng.route("import %s\n" % m)
+        assert (r.kind, r.detail) == ("module", "import %s" % m), (m, r.kind, r.detail)

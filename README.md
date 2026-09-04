@@ -6,8 +6,7 @@
 a Python program on the cheapest interpreter that can actually run it. The
 architecture is a *mixture of Pythons* — a **spectrum** of from-scratch Python
 subsets written in Rust and built from one crate at increasing sizes
-(`lypning`, 1 MB; `lypning-l`, up to 4 MB), a MicroPython variant with a
-frozen shim stdlib, and the real
+(`lypning`, 1 MB; `lypning-l`, up to 4 MB) and the real
 CPython for everything the first two refuse — with a classifier that decides
 which one, per program, by asking the Rust core's own parser rather than
 guessing at the text. The subset is not sized to Python — it is sized to the
@@ -90,7 +89,7 @@ reproduce.
       │ exit 90 · one line on stderr,   │              │
       │ and stdout never written        │              │
       │ (a kind in ONLY_CPYTHON_KINDS   │              │
-      │  skips 1l and 2, goes to 3)     │              │
+      │  skips every Rust variant)      │              │
       ▼                                 │              │
   ┌───────────────────────────────────┐ │              │
   │ 1l lypning-l · the same crate,    │ │              │
@@ -99,15 +98,8 @@ reproduce.
   └───┬───────────────────────────────┘ │              │
       │ exit 90, as above               │              │
       ▼                                 │              │
-  ┌───────────────────────────────────┐ │              │
-  │ 2  lypning-mp · MicroPython       │◀┘              │
-  │    forked, so its own refusal     │                │
-  │    is catchable; streams stdout   │                │
-  └───┬───────────────────────────────┘                │
-      │ exit 90 · MemoryError · traceback with exit 0  │
-      ▼                                                │
   ┌───────────────────────────────────┐                │
-  │ 3  cpython · the reference        │◀───────────────┘
+  │ 2  cpython · the reference        │◀───────────────┘
   │    exec'd — no fork, no way back  │
   │    and none is needed             │
   └───┬───────────────────────────────┘
@@ -534,9 +526,9 @@ Interpreter mode is decided before argument parsing, so anything that calls
 |---|---|
 | `lypning -c PROG [args…]` | exec the Rust core directly — no wrapper left in the process |
 | `lypning FILE [args…]`, `lypning -` | same, from a file or stdin |
-| `lypning run -c PROG` | route, execute, and fall through to the next tier on exit 90 only |
+| `lypning run -c PROG` | route, execute, and fall through to the next variant on exit 90 only |
 | `lypning route -c PROG` | print `<engine>\t<kind>: <detail>` — the tier, and the construct that stopped the cheaper one |
-| `lypning build [--rust\|--micropython\|--lib\|--all]` | build the engines into `~/.lypning/bin`, and `--lib` the C ABI into `~/.lypning/lib` |
+| `lypning build [--rust\|--variant V\|--micropython\|--lib\|--all]` | build every spectrum variant into `~/.lypning/bin`, `--lib` the C ABI into `~/.lypning/lib`, `--micropython` the oracle |
 | `lypning status [--json]` | what is built, wired and captured |
 | `lypning doctor [--json]` | the same with an opinion; non-zero on any FAIL |
 | `lypning install [--dry-run] [--user] [--force]` | wire the skill, hooks and shim into a project |
@@ -545,12 +537,13 @@ Interpreter mode is decided before argument parsing, so anything that calls
 | `lypning hook {pre-tool-use,stop}` | hook entry points; event JSON on stdin, protocol JSON on stdout |
 | `lypning conformance [--plan] [--engine E]` | run the corpus against CPython and grade every answer |
 | `lypning fuzz [--iterations N] [--seed S]` | generate programs from the subset and diff them against CPython |
-| `lypning bench [--startup] [--corpus]` | time the four arms, interleaved, min of repeats |
+| `lypning bench [--startup] [--corpus]` | time every arm, interleaved, min of repeats |
 | `lypning corpus-time [--engine E] [--baseline F] [--record F]` | time the corpus on ONE binary, and diff two runs of it |
 | `lypning perf [--only CASE] [--baseline F] [--record F]` | one construct at a time against CPython — where the interpreter's time goes |
 | `lypning lib [--cflags\|--libs\|--path\|--static\|--include] [--json]` | where the embeddable C ABI is, and the line to compile against it |
 | `lypning pool [serve\|ping\|stop] [--socket P] [--max-requests N]` | a warm CPython backstop for the chain: opt-in, off by default, `LYPNING_POOL` points at it |
 | `lypning gate [BIN] [--compare]` | static? how many bytes? how many file opens? |
+| `lypning oracle [--full] [--json]` | what a second reimplementation of Python got wrong — the traps a larger variant must implement exactly or refuse |
 | `lypning harvest [--export]` | captured invocations → sightings → corpus |
 | `lypning corpus [--stats] [--list] [--model NAME]` | inspect the harvested programs, whole or sliced by the model that issued them |
 

@@ -55,10 +55,16 @@ def test_exit_90_without_the_contract_line_is_a_mismatch():
 
 
 def test_the_mixture_arm_may_relay_any_tier_s_refusal():
-    v = _classify(_res(90, "", "lypning-mp: unsupported: syntax: f-string\n",
+    # Any tier the chain can actually reach. lypning-mp is an ORACLE now — the
+    # mixture never routes there — so a `lypning-mp:` line arriving from the
+    # mixture is not a relayed refusal, it is a program that printed something
+    # refusal-shaped, and scoring it as coverage would hide a routing bug.
+    v = _classify(_res(90, "", "lypning-l: unsupported: syntax: f-string\n",
                        engine=conformance.MIXTURE), engine=conformance.MIXTURE)
     assert v.verdict == UNSUPPORTED
-    assert v.kind == "syntax"
+    v = _classify(_res(90, "", "lypning-mp: unsupported: syntax: f-string\n",
+                       engine=conformance.MIXTURE), engine=conformance.MIXTURE)
+    assert v.verdict == MISMATCH and v.kind == "contract"
 
 
 def test_a_refusal_line_from_something_that_is_not_a_tier_is_not_a_refusal():

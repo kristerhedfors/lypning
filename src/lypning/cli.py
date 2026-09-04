@@ -46,7 +46,7 @@ PROG = "lypning"
 COMMANDS = (
     "run", "route", "build", "lib", "pool", "status", "doctor", "install", "uninstall",
     "shim", "hook", "conformance", "fuzz", "bench", "corpus-time", "perf", "gate",
-    "harvest", "corpus",
+    "harvest", "corpus", "oracle",
 )
 
 #: The only dash-flags this CLI keeps for itself. Every other flag belongs to
@@ -280,7 +280,11 @@ def cmd_build(ns: argparse.Namespace) -> int:
     # `--lib` is the same shape of thing — an artefact of the Rust core rather
     # than a tier — so asking for it alone must not rebuild the engines either.
     if ns.all or not (rust or mp or ns.stock or lib):
-        rust = mp = True
+        # The oracle is not a tier: `lypning build` with no flags builds what the
+        # chain needs. lypning-mp joins --stock and --lib as an artefact you ask
+        # for by name — it needs a 32-bit toolchain and a network, and nothing
+        # routes to it.
+        rust = True
     if ns.all:
         lib = True
     results = build.build_all(rust=rust, micropython=mp, target=ns.target,
@@ -545,6 +549,14 @@ def _status_obj() -> Dict[str, Any]:
     found = engines.available()
     st["version"] = __version__
     st["engines"] = {}
+    # Oracles are reported apart from the engines: lypning-mp is measured but
+    # never routed to, and listing it among the tiers is what would make a
+    # reader think the chain still ends somewhere it does not.
+    st["oracles"] = {}
+    for name, p in engines.oracles().items():
+        size = _size_of(p)
+        st["oracles"][name] = {"path": str(p) if p else None, "built": p is not None,
+                               "bytes": size, "blocks": (size + 131071) // 131072 if size else 0}
     for name, p in found.items():
         size = _size_of(p)
         st["engines"][name] = {
@@ -596,6 +608,20 @@ def _render_status(st: Dict[str, Any]) -> str:
         size = e.get("bytes") or 0
         detail = "  (%s B, %d blocks)" % (format(size, ","), e.get("blocks") or 0) if size else ""
         lines.append("  %-11s %s%s" % (name + ":", e["path"], detail))
+
+    oracles = st.get("oracles") or {}
+    if oracles:
+        lines.append("")
+        lines.append("oracles  (measured, never routed to)")
+        for name, o in oracles.items():
+            if not o.get("built"):
+                lines.append("  %-11s not built  — `lypning build --micropython` (needs a network); "
+                             "`lypning oracle` reads the recorded divergences either way"
+                             % (name + ":"))
+                continue
+            size = o.get("bytes") or 0
+            lines.append("  %-11s %s  (%s B, %d blocks)"
+                         % (name + ":", o["path"], format(size, ","), o.get("blocks") or 0))
 
     lib = st.get("library") or {}
     lines += ["", "library"]
@@ -872,22 +898,32 @@ def _doctor_checks() -> List[Tuple[str, str, str]]:
                             % ("" if name == engines.LYPNING else " --variant " + name)))
     mp = found.get(engines.MICROPYTHON)
     checks.append((OK if mp else WARN, engines.MICROPYTHON,
-                   "%s (%s B)" % (mp, format(_size_of(mp), ",")) if mp
-                   else "not built — `lypning build --micropython` needs a network; "
-                        "everything routes past this tier meanwhile"))
+                   "%s (%s B) — the oracle; measured, never routed to" % (mp, format(_size_of(mp), ","))
+                   if mp else
+                   "not built — the ORACLE, not a tier: nothing routes to it. "
+                   "`lypning build --micropython` needs a network; `lypning oracle` "
+                   "reads the recorded divergences either way"))
     py = found.get(engines.CPYTHON)
     checks.append((OK if py else FAIL, "cpython",
                    "%s" % py if py else "no real CPython found — the last tier is missing"))
 
-    # 3. the refusal contract, on the binary that is actually installed
-    if core is not None and build is not None:
-        ok, why = build.check_refusal_contract(core)
-        checks.append((OK if ok else FAIL, "refusal contract",
-                       "exit 90, one line on stderr, clean stdout" if ok else why))
+    # 3. the refusal contract, on each installed variant — with ITS OWN name at
+    # the head of the line. A variant that writes a sibling's name misroutes the
+    # dispatcher silently, so the check is per variant or it is not a check.
+    if build is not None:
+        for name in engines.SPECTRUM:
+            b = found.get(name)
+            if b is None:
+                continue
+            ok, why = build.check_refusal_contract(b, expected=name)
+            checks.append((OK if ok else FAIL,
+                           "refusal contract" if name == engines.LYPNING
+                           else "refusal contract (%s)" % name,
+                           "exit 90, one line on stderr, clean stdout" if ok else why))
     if mp is not None:
         res = engines.run(engines.MICROPYTHON, "import subprocess", binary=mp, timeout=30.0)
         ok = res.returncode == UNSUPPORTED_EXIT and res.stdout == ""
-        checks.append((OK if ok else FAIL, "lypning-mp refusal",
+        checks.append((OK if ok else FAIL, "oracle refusal",
                        "exit 90, clean stdout" if ok else
                        "exit %d, stdout %r" % (res.returncode, res.stdout[:80])))
 
@@ -1530,6 +1566,21 @@ def cmd_perf(ns: argparse.Namespace) -> int:
 
 
 # --- gate --------------------------------------------------------------------
+
+
+def cmd_oracle(ns: argparse.Namespace) -> int:
+    oracle = _mod("oracle")
+    rows = oracle.load()
+    if ns.json:
+        _json({"engine": engines.MICROPYTHON,
+               "built": bool(engines.find(engines.MICROPYTHON)),
+               "ledger": str(oracle.ledger_path()),
+               "divergences": sum(n for _, n, _ in oracle.families(rows)),
+               "families": [{"family": f, "programs": n, "why": w}
+                            for f, n, w in oracle.families(rows)]})
+        return 0
+    print(oracle.render(rows, full=ns.full), end="")
+    return 0
 
 
 def cmd_gate(ns: argparse.Namespace) -> int:
@@ -2205,6 +2256,32 @@ examples:
     s.set_defaults(func=cmd_perf)
 
     # gate
+    s = _sub(subs, "oracle", "what a second reimplementation of Python got wrong", """
+lypning-mp was tier 2 until 2026-09-04. It is not a routing destination any more
+— nothing falls through to it — but it is kept and still measured, because it is
+a second, independent, from-scratch implementation of Python that has been run
+against real CPython over the whole corpus with every disagreement written down.
+
+That is the question a larger Rust variant needs answered before it implements
+anything: the constructs a reimplementation gets wrong are not evenly spread,
+they cluster in float formatting, sort stability, hash order, error-message text
+and the places CPython defines by its own internals. Every family listed is
+something to implement EXACTLY or to refuse — never to approximate.
+
+The catalogue is read from `.github/known-mismatches.json`, which the oracle's
+CI job maintains by identity, so it works without the 32-bit toolchain that
+building the oracle needs. A wheel has no catalogue and says so: a hole, never a
+clean bill.
+""", """
+examples:
+  lypning oracle
+  lypning oracle --full
+  lypning oracle --json
+""")
+    s.add_argument("--full", action="store_true", help="do not truncate the explanations")
+    s.add_argument("--json", action="store_true", help="machine-readable")
+    s.set_defaults(func=cmd_oracle)
+
     s = _sub(subs, "gate", "measure a binary against the acceptance table", """
 The acceptance table for a binary that has to start cold in a sandbox: it runs
 `-c 'pass'`, it is statically linked, it links no shared objects, it fits the
@@ -2215,17 +2292,18 @@ A check that could NOT be taken — no strace, no readelf — is reported as
 unmeasured rather than as a pass. Zero shared objects from a toolchain that
 cannot read them is an artefact, not a result.
 
-With no BIN named it gates lypning-mp, whose budget this is; if that is not
-built the Rust core stands in and the substitution gets its own row so nobody
-reads the numbers as lypning-mp's. --compare adds the same measurements taken
-against the real CPython on this machine.
+With no BIN named it gates the Rust core — the tier every program starts on.
+Each spectrum variant answers to its own budget in device blocks; lypning-mp is
+an oracle rather than a tier and is gated against its own byte budget only when
+named. --compare adds the same measurements taken against the real CPython on
+this machine.
 """, """
 examples:
   lypning gate
   lypning gate --compare
   lypning gate ./target/release/lypning --json
 """)
-    s.add_argument("binary", nargs="?", metavar="BIN", help="binary to measure (default: lypning-mp, else lypning)")
+    s.add_argument("binary", nargs="?", metavar="BIN", help="binary to measure (default: the Rust core; lypning-mp only when named)")
     s.add_argument("--compare", action="store_true", help="measure the real CPython alongside it")
     s.add_argument("--json", action="store_true", help="machine-readable")
     s.set_defaults(func=cmd_gate)
