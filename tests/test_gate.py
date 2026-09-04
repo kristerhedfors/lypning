@@ -62,6 +62,12 @@ def test_the_rust_core_is_measured_against_its_own_budget():
     # verdict on the Rust core, and reporting it as one would invent a number
     # no document argues for.
     over = gate.MAX_BYTES * 3
-    assert gate._size_check("lypning", over).ok
+    # A Rust variant is gated in device blocks against its own budget — this
+    # used to pass anything for `lypning`, and a spectrum whose premise is
+    # bytes-per-point cannot leave its points ungated. 2.1 MB is 17 blocks.
+    assert not gate._size_check("lypning", over).ok
+    assert gate._size_check("lypning", 8 * gate.DEVICE_BLOCK).ok
+    assert not gate._size_check("lypning", 8 * gate.DEVICE_BLOCK + 1).ok
+    assert gate._size_check("lypning", 8 * gate.DEVICE_BLOCK).unit == "blocks"
     assert not gate._size_check("lypning-mp", over).ok
     assert gate._size_check("lypning-mp", gate.MAX_BYTES).ok

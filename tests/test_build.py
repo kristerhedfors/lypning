@@ -71,6 +71,41 @@ def test_the_staging_tree_the_old_workaround_left_behind_is_removed(tmp_path, mo
 # --- the benchmark control ---------------------------------------------------
 
 
+def test_the_host_build_is_this_machines_engine_and_installs_unsuffixed():
+    # `lypning build --target host` used to install as `lypning-host`, a name no
+    # finder looked for, so a darwin host had a built engine and no engine.
+    assert build._runs_here("host")
+    assert build._runs_here("")
+    assert not build._runs_here("i686-unknown-linux-musl") or __import__("platform").machine() == "i686"
+
+
+def test_each_variant_is_one_cargo_feature_and_its_own_target_dir(monkeypatch):
+    assert build.variant_feature(engines.LYPNING) == "variant-m"
+    with pytest.raises(ValueError):
+        build.variant_feature("lypning-l")          # not on the spectrum yet
+    monkeypatch.setattr(engines, "SPECTRUM", ("lypning", "lypning-l"))
+    assert build.variant_feature("lypning-l") == "variant-l"
+    r = build.build_rust(target="host", dry_run=True, variant=engines.LYPNING)
+    assert r.engine == engines.LYPNING and r.dry_run
+    assert "--features variant-m" in r.log and "--no-default-features" not in r.log
+    assert "--target-dir" not in r.log            # the default variant shares cargo's target/
+    r = build.build_rust(target="host", dry_run=True, variant="lypning-l")
+    assert r.engine == "lypning-l" and r.dry_run
+    assert "--features variant-l" in r.log and "--no-default-features" in r.log
+    assert "target/variant-l" in r.log and r.log.rstrip().endswith("release/lypning")
+    r = build.build_rust(target="host", dry_run=True, variant="lypning-q")
+    assert not r.ok and "not a Rust variant" in r.skipped_reason
+
+
+def test_build_all_builds_every_variant_by_default(monkeypatch):
+    monkeypatch.setattr(engines, "SPECTRUM", ("lypning", "lypning-l"))
+    results = build.build_all(rust=True, micropython=False, target="host", dry_run=True)
+    rust = [r.engine for r in results if r.engine in engines.SPECTRUM]
+    assert rust == ["lypning", "lypning-l"]
+    results = build.build_all(rust=True, micropython=False, target="host", dry_run=True, variant="lypning-l")
+    assert [r.engine for r in results if r.engine in engines.SPECTRUM] == ["lypning-l"]
+
+
 def test_the_control_is_not_an_engine_name():
     # CLAUDE.md §9: there are exactly three engine strings. The control is a
     # fourth binary, and naming it after one of them is how a bench arm ends up

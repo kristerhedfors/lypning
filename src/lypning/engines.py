@@ -254,9 +254,13 @@ def find_variant(engine: str) -> Path | None:
     dir, then PATH — the order `main.rs` `engine_path_named` searches, so the
     two dispatchers find the same sibling or the same nothing."""
     which = shutil.which(engine)
+    feature = "variant-" + engine[len(LYPNING) + 1:]
+    root = paths.build_dir() / "rust" / "target" / feature
     return _first_engine([
         _override(env_var_for(engine), "point it at a `lypning build --variant` binary"),
         paths.bin_dir() / engine,
+        root / "x86_64-unknown-linux-musl" / "release" / LYPNING,
+        root / "release" / LYPNING,
         Path(which) if which else None,
     ])
 

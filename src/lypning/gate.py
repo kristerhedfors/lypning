@@ -54,6 +54,14 @@ from . import engines
 
 # --- the budget, docs/MICROPYTHON.md §2 --------------------------------------
 
+#: Each Rust variant's budget, in device blocks — the unit cold cost is paid in
+#: (`DEVICE_BLOCK` B each). The unsuffixed core has been at 8 since the first
+#: measurement (1,007,824 B on musl = 8 blocks, 40,752 B of headroom) and is
+#: FROZEN there: every new capability goes to a larger variant. This used to be
+#: reported and never failed; a spectrum whose whole premise is bytes-per-point
+#: cannot leave its points ungated.
+VARIANT_BLOCK_BUDGET: dict[str, int] = {engines.LYPNING: 8}
+
 MAX_BYTES = 700_000
 """lypning-mp's stripped-static budget.
 
@@ -389,8 +397,9 @@ def _size_check(engine: str, size: int) -> Check:
     """Bytes against :data:`MAX_BYTES` — for lypning-mp and for an unnamed
     binary, which is gated as a candidate for that tier.
 
-    The Rust core is measured and reported here but NOT failed against this
-    number, and the reason is not leniency. They are different runtimes with
+    A Rust variant is gated against its OWN budget in device blocks
+    (:data:`VARIANT_BLOCK_BUDGET`), never against this number, and the reason
+    is not leniency. They are different runtimes with
     different jobs: lypning-mp is MicroPython carrying a frozen Python stdlib,
     sized against the 541,688 B prototype, while lypning is a from-scratch
     subset whose bytes are its own code and whose release profile is tuned
@@ -402,11 +411,12 @@ def _size_check(engine: str, size: int) -> Check:
     they do share is the constraint that actually predicts cold cost: opens and
     shared objects at zero, enforced identically on both.
     """
-    if engine == engines.LYPNING:
-        return Check("size", size, None, True, "B",
-                     "the Rust core has its own budget; %s B = %d device blocks, "
-                     "not gated against lypning-mp's %s B"
-                     % (format(size, ","), device_blocks(size), format(MAX_BYTES, ",")))
+    if engine in VARIANT_BLOCK_BUDGET:
+        budget = VARIANT_BLOCK_BUDGET[engine]
+        blocks = device_blocks(size)
+        return Check("size", blocks, budget, blocks <= budget, "blocks",
+                     "%s B = %d device blocks of %d; budget %d (not lypning-mp's %s B)"
+                     % (format(size, ","), blocks, DEVICE_BLOCK, budget, format(MAX_BYTES, ",")))
     return Check("size", size, MAX_BYTES, size <= MAX_BYTES, "B")
 
 
