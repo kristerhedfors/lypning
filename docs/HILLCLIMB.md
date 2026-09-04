@@ -26,6 +26,87 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-09-04 · iteration 74 — pathlib, and density becomes a number the loop steers by
+
+The loop now has three curves on the larger variant — coverage, precision,
+and **information density: corpus programs gained per KB of `lypning-l`
+growth**. Density is what decides the ORDER, because the block budget is the
+one thing a spectrum cannot spend twice.
+
+| capability | bytes | +programs | **progs/KB** | landed |
+|---|---:|---:|---:|:--:|
+| collections (it. 73) | +16,544 | +36 | **2.23** | yes |
+| **pathlib** | **+33,120** | **+132** | **4.08** | **yes** |
+| csv | +16,576 | 23 | 1.39 | held |
+| hashlib | +16,560 | 14 | **0.87** | **rejected** |
+
+Three capabilities were built in parallel worktrees and measured against the
+same standard. Only pathlib was worth its bytes, and the two that were not are
+worth writing down.
+
+### pathlib: the densest row on the board
+
+147 blocked programs at the head of `--plan` after `re`, and almost no new
+machinery: `Value::Path(Rc<str>, bool)` is the normalised text plus a bit for
+the `.parents` view. No new container, no new hash table; the filesystem half
+reuses `builtins::open_value` and the io.rs staging, so the commit barrier is
+untouched. That is what a dense implementation looks like — the coverage comes
+from reusing the interpreter, not from adding to it.
+
+The oracle named the trap before a line was written: family
+`pathlib-parts-drops-root` — the other reimplementation returned
+`Path('/a/b').parts` without the root. `.parts` gets 38 grid rows.
+
+### What the adversarial pass caught, again
+
+442 grid rows and 64 refusal rows did not reach any of these three; ~1,100
+adversarial programs did:
+
+- **`with_stem('')` built a dotfile** where CPython 3.13+ raises ValueError —
+  and 3.11/3.12 build the dotfile. The eras disagree, so the only correct
+  answer is a refusal.
+- **`Path('.') < Path('-x')` answered True; CPython says False.** 3.11 ordered
+  the `.parts` tuple, 3.12+ order `str(p).split('/')`, and for a relative path
+  carrying a component `.parts` drops the two disagree. Ordering now computes
+  BOTH and answers only where they agree — the same rule the function already
+  applied to differing roots, extended to the case that actually bit.
+- **`bytes(Path('a/b'))` raised TypeError at exit 1** where CPython answers
+  `b'a/b'` (`PurePath.__bytes__` is `os.fsencode`). A wrong EXIT CODE, which
+  the chain never retries. This is the THIRD capability in a row to ship this
+  same shape: a builtin reaching a new value through a path no guard was wired
+  into. It should now be a checklist item, not a discovery.
+
+### Why hashlib was rejected, and csv held
+
+**hashlib: 0.87 programs/KB** — the worst density measured — and its three
+findings were not hashlib bugs at all: adding the module to the router made
+programs route to `lypning-l` that then died at **exit 1 with partial stdout**
+on an unrelated missing method (`f.read()`, `(255).to_bytes(...)`). Serving a
+module admits programs whose OTHER constructs the variant still lacks, and an
+`AttributeError` at exit 1 is not a refusal — the barrier only discards on 90.
+Correct MD5/SHA is worth having; it is not worth having at 0.87 progs/KB while
+it drags that hazard in. Held until the fall-through is a refusal.
+
+**csv: 1.39 programs/KB**, five findings all from one root cause — a new
+`Value::CsvWriter` variant wired into `type_name`, `methods`, `ops` and `fmt`
+but NOT into `value::eq`, `is_same` or hash, so two writers compared unequal at
+exit 0 and `list.remove(w)` died at exit 1. The lesson generalises: **a new
+Value variant costs more than it looks**, and the arms it must be wired into
+are exactly the ones nothing forces you to remember. pathlib added a variant
+too and paid the same tax — it was caught because the adversary looked.
+
+- bytes: `lypning` **818,080 B unchanged, byte for byte**; `lypning-l`
+  834,624 → **867,744 B, still 7 of its 32 blocks**
+- conformance: `lypning` 1573 / 931 / 0 unchanged; **`lypning-l` 1609 → 1741 /
+  763 / 0 — 64.3% → 69.5%**; mixture 2504 / 0 / 0; mixture-rust 2504 / 0 / 0;
+  monotone violations 0 over 2504; dispatchers agree 2504/2504; UNSAFE 0
+- pytest: 2,070 passed (was 1,625), the 6 known host failures unchanged; the pathlib grid is 378 rows + 64 refusals + 3 structural
+
+The ceiling is close. `--plan` after this lands is the next measurement, and
+`re` (237) is the only row left that is worth more than everything under it.
+
+PR [#41](https://github.com/kristerhedfors/lypning/pull/41).
+
 ## 2026-09-04 · iteration 73 — the spectrum's first capability, and the oracle earns its keep
 
 First iteration since the spectrum landed, and the first where the loop has a

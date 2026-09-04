@@ -409,6 +409,11 @@ pub fn call_builtin(
     if matches!(name, "Counter" | "defaultdict") {
         return crate::collections::construct(it, name, args, kw);
     }
+    // `Path(...)` arrives the same way and for the same reason.
+    #[cfg(feature = "cap-pathlib")]
+    if name == "Path" {
+        return crate::pathlib::construct(args, &kw);
+    }
     Ok(match name {
         // `print(` is in nearly every corpus program, and this arm allocated
         // four times to write one line: a `String` for a separator it never
@@ -1230,6 +1235,8 @@ pub fn call_builtin(
             // set-order exposure. That was a spawn spent on nothing: CPython
             // never gets far enough to iterate, so the TypeError below is
             // exact and the refusal is not needed.
+            #[cfg(feature = "cap-pathlib")]
+            crate::pathlib::guard_view(&v, "reversed()")?;
             match &v {
                 Value::Str(_)
                 | Value::Bytes(_)
@@ -1394,6 +1401,10 @@ pub fn call_builtin(
                 return Err(unsupported("isinstance", "isinstance() against `type`"));
             }
             let t = type_name(&v);
+            #[cfg(feature = "cap-pathlib")]
+            if names.iter().any(|n| crate::pathlib::isinstance_hit(n, &v)) {
+                return Ok(Value::Bool(true));
+            }
             Value::Bool(names.iter().any(|n| {
                 // An exception instance is matched through the SAME hierarchy
                 // table `except` uses, not by its type name. `type_name` of any
@@ -1446,6 +1457,12 @@ pub fn call_builtin(
         }
         "bytes" => match args.first() {
             None => Value::Bytes(Rc::new(Vec::new())),
+            // `PurePath.__bytes__` is `os.fsencode(self)`, so CPython answers
+            // the path's own text as bytes. Reaching the generic arm instead
+            // raised "not iterable" at exit 1 for a program CPython runs — a
+            // wrong exit code, not a refusal, which the chain never retries.
+            #[cfg(feature = "cap-pathlib")]
+            Some(Value::Path(p, false)) => Value::Bytes(Rc::new(p.as_bytes().to_vec())),
             // `bytes('abc')` is a TypeError: a str has no bytes until an
             // ENCODING says which. Answering `b'abc'` silently picked UTF-8 on
             // the caller's behalf — right for ASCII and a wrong answer the
@@ -1540,6 +1557,10 @@ pub fn length(v: &Value) -> R<usize> {
         Value::Dict(d) => d.borrow().len(),
         Value::Set(s) => s.borrow().len(),
         Value::DictView(d, _) => d.borrow().len(),
+        // `len(p.parents)`. A bare `Path` has no length in CPython either, so
+        // it falls to the TypeError below with the type name it prints.
+        #[cfg(feature = "cap-pathlib")]
+        Value::Path(s, true) => crate::pathlib::view_len(s),
         Value::Range(a, b, st) => {
             // CPython's `len()` returns a C ssize_t, so a range longer than one
             // raises rather than truncating — and this answered 0, because the

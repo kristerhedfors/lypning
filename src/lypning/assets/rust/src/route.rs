@@ -55,7 +55,7 @@ pub struct Variant {
 /// today; `lypning-l` is the next.
 pub const SPECTRUM: &[Variant] = &[
     Variant { name: "lypning", caps: &[] },
-    Variant { name: "lypning-l", caps: &["cap-collections"] },
+    Variant { name: "lypning-l", caps: &["cap-collections", "cap-pathlib"] },
 ];
 
 /// The same names, NUL-terminated for the C ABI. A test holds the two lists
@@ -74,7 +74,17 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// is CPython's to answer, not because these bytes are missing). An empty kind
 /// list is the honest one; a kind listed here would cost a spawn to be told no
 /// a second time.
-pub const CAPS: &[(&str, &[&str], &[&str])] = &[("cap-collections", &["collections"], &[])];
+///
+/// `cap-pathlib` serves the `pathlib` MODULE and, like `cap-collections`,
+/// answers no runtime kind: every `pathlib` refusal it raises is a shape it
+/// declines BECAUSE CPython is the one that can answer it — a `ValueError`'s
+/// wording, a directory order, a `.stat()` — and not because these bytes are
+/// missing, so a sibling would refuse it identically and listing the kind would
+/// cost a spawn to be told no twice.
+pub const CAPS: &[(&str, &[&str], &[&str])] = &[
+    ("cap-collections", &["collections"], &[]),
+    ("cap-pathlib", &["pathlib"], &[]),
+];
 
 /// This binary's own name, from `build.rs` — the same constant `err::ENGINE`
 /// writes at the head of every refusal line.
@@ -872,6 +882,25 @@ fn known_method(name: &str) -> bool {
         )
 }
 
+/// A `pathlib` name — `.name`, `.parts`, `.with_suffix` — admitted to the
+/// optimistic union above ONLY for a program that imports `pathlib`.
+///
+/// Unconditionally would be wrong in the direction that matters. `.name` is an
+/// ordinary attribute on other objects and this engine answers it on none of
+/// them, so a program that says `f.name` is blocked today and routed to
+/// CPython, which answers it; admitting the name for every receiver would run
+/// the program here instead and stop at an `AttributeError` — exit 1, the
+/// program's own exit, which the chain never retries. The import is what makes
+/// the optimism honest.
+#[cfg(feature = "cap-pathlib")]
+fn pathlib_method(req: &Requirements, n: &str) -> bool {
+    req.imports.contains("pathlib") && crate::pathlib::known_method(n)
+}
+#[cfg(not(feature = "cap-pathlib"))]
+fn pathlib_method(_req: &Requirements, _n: &str) -> bool {
+    false
+}
+
 /// The module a dotted expression names, if it names one at all.
 ///
 /// Recursive because module paths nest and the check that used this had no way
@@ -945,7 +974,7 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
                 }
                 return;
             }
-            if !known_method(n) {
+            if !known_method(n) && !pathlib_method(req, n) {
                 req.block("method", format!(".{n}()"));
             }
         }

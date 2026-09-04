@@ -50,12 +50,19 @@ variant-m = []
 # The 4 MB point. Names the smaller variant so cargo's feature union makes it a
 # superset by construction — the monotonicity the router assumes. It grows one
 # `cap-*` per step; `variant-m` is FROZEN and gains none of them.
-variant-l = ["variant-m", "cap-collections"]
+variant-l = ["variant-m", "cap-collections", "cap-pathlib"]
 
 # `collections.Counter` and `collections.defaultdict` — 83 of the corpus
 # programs measured on 2026-09-04 import `collections`, and between them they
 # use only those two names. `src/collections.rs` is the whole of it.
 cap-collections = []
+
+# `pathlib.Path` — the top row of the measured build order: it is the module the
+# corpus reaches for most among those lypning does not serve, and the densest
+# one on that list, because the pure-path surface is string algebra over one
+# `Rc<str>` and the filesystem surface is the commit barrier `io.rs` already
+# holds. `src/pathlib.rs` is the whole of it.
+cap-pathlib = []
 
 capi = []
 

@@ -14,6 +14,30 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-04** — `lypning-l` serves `pathlib` · [#41]
+
+- Coverage **64.3% → 69.5%** (+132 corpus programs) for +32.3 KB — **4.08
+  programs per KB**, nearly double the previous capability. `lypning` is
+  byte-identical (818,080 B, 7 blocks); `lypning-l` is 867,744 B, still 7 of
+  its 32 blocks.
+- The pure-path algebra is exact: construction and normalisation, `/` in all
+  three spellings, `.parts` (**with the root as a component** — the oracle
+  recorded a reimplementation dropping it), `.name/.stem/.suffix/.suffixes/`
+  `.parent/.parents`, `with_name/with_stem/with_suffix`, `relative_to`,
+  comparison, hashing, `str`/`repr`/`bytes`/f-strings. The filesystem half
+  (`read_text`, `write_text`, `mkdir`, `unlink`, `open`, `exists`…) goes
+  through the existing commit barrier.
+- Refused rather than approximated: `.glob`/`.rglob`/`.iterdir`/`.walk`
+  (directory order is filesystem-defined, as `os.listdir` already is),
+  `.resolve`/`.absolute`/`.stat`/`.home`, `PurePath`/`WindowsPath`, every error
+  path, and the two places CPython's own versions disagree — `with_stem('')` on
+  a suffixed name, and ordering paths where 3.11's `.parts` and 3.12+'s
+  `str.split('/')` give different answers.
+- Measured and **not** landed: `hashlib` at 0.87 programs/KB (and serving it
+  made programs route in that then died at exit 1 on unrelated missing
+  methods) and `csv` at 1.39. Density is now a tracked curve; see
+  `docs/HILLCLIMB.md` iteration 74.
+
 **2026-09-04** — `lypning-l` serves `collections.Counter` and `defaultdict` · [#39]
 
 - The first capability the spectrum's larger variant carries that the frozen

@@ -142,6 +142,11 @@ impl Interp {
             // See value.rs: reproducing CPython's set order is impossible, so
             // iterating one is refused instead of silently reordered.
             Value::Set(_) => return Err(set_order_refused("iterating a set")),
+            // `for q in p.parents` — the parents are a short, already-computed
+            // list, so the existing tuple iterator carries them and there is no
+            // new iterator state in the binary for this.
+            #[cfg(feature = "cap-pathlib")]
+            Value::Path(s, true) => Iter::Tuple(Rc::new(crate::pathlib::view_items(&s)), 0),
             Value::File(f) => Iter::Lines(f),
             Value::Gen(g) => Iter::Gen(g),
             Value::IterObj(it, _) => Iter::Shared(it),
