@@ -229,6 +229,21 @@ def test_dict_order_is_specified_so_reordering_one_is_a_divergence():
     assert v.verdict == MISMATCH
 
 
+def test_the_rust_dispatcher_is_an_arm_and_is_held_to_the_python_one(lypning_bin):
+    # `mixture-rust` runs `lypning run` — the dispatcher users exec — over the
+    # same pinned binaries as `mixture`; the report counts the entries where
+    # the two agreed and a disagreement fails the run.
+    entries = [corpus.Entry(id="py-plain", program="print(1 + 1)"),
+               corpus.Entry(id="py-refused", program="import subprocess\nprint(2)"),
+               corpus.Entry(id="py-runtime", program="print(2 ** 100)")]
+    report = conformance.run(entries, engines=[conformance.MIXTURE, conformance.MIXTURE_RUST], timeout=60)
+    assert conformance.MIXTURE_RUST in report.engines
+    assert report.engines[conformance.MIXTURE_RUST].mismatch == 0
+    assert report.dispatchers == (3, 3), report.disagreements
+    assert report.ok
+    assert "dispatchers agree 3/3" in conformance.render(report)
+
+
 def test_a_program_that_runs_the_battery_is_skipped_not_replayed():
     # The corpus is harvested from real sessions, and this project's own
     # development sessions type these constantly. Run inside the battery, each

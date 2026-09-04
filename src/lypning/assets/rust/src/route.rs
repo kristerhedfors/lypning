@@ -115,6 +115,186 @@ pub fn spectrum_json() -> String {
     )
 }
 
+/// One rung's verdict on a program. `kind == ""` means it can run it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Verdict {
+    pub engine: &'static str,
+    pub kind: String,
+    pub detail: String,
+}
+
+impl Verdict {
+    fn ok(engine: &'static str) -> Self {
+        Verdict { engine, kind: String::new(), detail: String::new() }
+    }
+    fn no(engine: &'static str, kind: &str, detail: &str) -> Self {
+        Verdict { engine, kind: kind.to_string(), detail: detail.to_string() }
+    }
+}
+
+pub const MICROPYTHON_NAME: &str = "lypning-mp";
+pub const CPYTHON_NAME: &str = "cpython";
+
+/// Every engine name in cost order — the spectrum, then lypning-mp, then
+/// CPython. The same tuple the Python side calls `ENGINE_ORDER`.
+pub fn engine_order() -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = SPECTRUM.iter().map(|v| v.name).collect();
+    out.push(MICROPYTHON_NAME);
+    out.push(CPYTHON_NAME);
+    out
+}
+
+impl Engine {
+    /// The rung named `name`, or `None` for a name no table lists — which the
+    /// caller must treat as CPython, the safe direction, never silently.
+    pub fn from_name(name: &str) -> Option<Engine> {
+        if name == MICROPYTHON_NAME {
+            Some(Engine::MicroPython)
+        } else if name == CPYTHON_NAME {
+            Some(Engine::CPython)
+        } else if SPECTRUM.first().map(|v| v.name) == Some(name) {
+            // The enum has one Rust rung until the spectrum has two rows
+            // (the next step widens it); the floor rule never picks a rung
+            // below this binary, and this binary IS row 0 today.
+            Some(Engine::Lypning)
+        } else {
+            None
+        }
+    }
+}
+
+/// Does `v` serve module `m`? The core set every variant has, plus whatever a
+/// capability it carries adds. `modules::MODULES` is THIS binary's set, which
+/// is the core set until the first `cap-*` gate makes it variant-specific.
+fn served_module(v: &Variant, m: &str) -> bool {
+    crate::modules::MODULES.contains(&m)
+        || CAPS.iter().any(|(c, mods, _)| v.caps.contains(c) && mods.contains(&m))
+}
+
+fn module_of(detail: &str) -> &str {
+    // `import X` / `from X import …`, as the walker spells its blockers.
+    detail
+        .trim_start_matches("import ")
+        .trim_start_matches("from ")
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+}
+
+/// Would variant `v` run a program that THIS binary stopped on `(kind, detail)`?
+///
+/// Asked only of rungs at or above this one. A `module` blocker is answered by
+/// a variant that serves the module; a runtime kind (`bigint`, `format-spec`,
+/// …) by one whose capability lists it in `CAPS`. `module-attr` is never
+/// claimed until the attribute surface is a table (it is a `match` in
+/// `modules::get_attr` today), because claiming a module's attribute by the
+/// module's name alone is exactly how a program would reach a sibling that
+/// refuses it again — a spawn wasted, and the ledger already paid for that
+/// lesson once. With one row in the spectrum every answer here is `false`.
+pub fn answers(v: &Variant, kind: &str, detail: &str) -> bool {
+    match kind {
+        "module" => served_module(v, module_of(detail)),
+        "module-attr" => false,
+        _ => CAPS.iter().any(|(c, _, kinds)| v.caps.contains(c) && kinds.contains(&kind)),
+    }
+}
+
+/// The verdict of every rung on a program that THIS binary's walker stopped on
+/// `(kind, detail)` — empty kind: nothing stopped it.
+///
+/// Rungs below this binary get no verdict of their own (the walker reports
+/// only THIS binary's first blocker, which says nothing about a smaller
+/// sibling's capabilities) and are marked so; the floor rule never routes
+/// there anyway. lypning-mp's row is the same decision `engine_for` has
+/// always made; CPython's is always yes.
+pub fn verdicts(kind: &str, detail: &str, imports: &[String], mp_risk: &BTreeSet<&'static str>) -> Vec<Verdict> {
+    let me = self_index();
+    let mut out = Vec::with_capacity(SPECTRUM.len() + 2);
+    for (i, v) in SPECTRUM.iter().enumerate() {
+        let vd = if i < me {
+            Verdict::no(v.name, "floor", "below the routing binary")
+        } else if kind.is_empty() {
+            Verdict::ok(v.name)
+        } else if only_cpython(kind) || CPYTHON_ONLY_KINDS.contains(&kind) || kind == "syntax" || kind == "error" {
+            Verdict::no(v.name, kind, detail)
+        } else if i == me || !answers(v, kind, detail) {
+            Verdict::no(v.name, kind, detail)
+        } else if let Some(m) = imports.iter().find(|m| !served_module(v, m)) {
+            Verdict::no(v.name, "module", &format!("import {m}"))
+        } else {
+            Verdict::ok(v.name)
+        };
+        out.push(vd);
+    }
+    let mp_ok = if kind.is_empty() {
+        mp_risk.is_empty() && micropython_imports(imports)
+    } else if kind == "syntax" || kind == "error" {
+        false
+    } else {
+        engine_for(kind, imports, mp_risk) == Engine::MicroPython
+    };
+    out.push(if mp_ok {
+        Verdict::ok(MICROPYTHON_NAME)
+    } else {
+        Verdict::no(MICROPYTHON_NAME, if kind.is_empty() { "module" } else { kind },
+                    if kind.is_empty() { "an import outside lypning-mp's table" } else { detail })
+    });
+    out.push(Verdict::ok(CPYTHON_NAME));
+    out
+}
+
+/// `Route.engine` from the verdict vector: the first rung that can run the
+/// program AT OR ABOVE this binary — the floor rule. A router never sends a
+/// program to a variant smaller than itself: the running binary's blocks are
+/// already paid for.
+fn engine_from_verdicts(vs: &[Verdict]) -> Engine {
+    let me = self_index();
+    vs.iter()
+        .skip(me)
+        .find(|v| v.kind.is_empty())
+        .and_then(|v| Engine::from_name(v.engine))
+        .unwrap_or(Engine::CPython)
+}
+
+/// The chain the dispatcher walks after `after` refused AT RUNTIME with
+/// `kind` — the rule both dispatchers use, so it is spelled here once and the
+/// Python side is held to it by a cross-product test.
+///
+/// A kind in `ONLY_CPYTHON_KINDS` rules out every reimplementation. Otherwise:
+/// each later Rust sibling whose STATIC verdict was "can run" (it already
+/// satisfied the imports and every static kind), then lypning-mp if it can
+/// import everything, then CPython. `mp_risk` is deliberately not consulted
+/// here: it never was at runtime, and changing that is a step with its own
+/// measurement, not a side effect of this generalisation.
+pub fn chain_after(after: &str, kind: &str, imports: &[String], verdicts: &[Verdict]) -> Vec<&'static str> {
+    let order = engine_order();
+    let start = order.iter().position(|e| *e == after).map(|i| i + 1).unwrap_or(order.len() - 1);
+    let rest = &order[start..];
+    if only_cpython(kind) {
+        return vec![CPYTHON_NAME];
+    }
+    let mut out = Vec::new();
+    for e in rest {
+        if *e == MICROPYTHON_NAME || *e == CPYTHON_NAME {
+            continue;
+        }
+        if verdicts.iter().any(|v| v.engine == *e && v.kind.is_empty()) {
+            out.push(*e);
+        }
+    }
+    if rest.contains(&MICROPYTHON_NAME) && micropython_imports(imports) {
+        out.push(MICROPYTHON_NAME);
+    }
+    out.push(CPYTHON_NAME);
+    out
+}
+
+fn finish_route(kind: String, detail: String, imports: Vec<String>, mp_risk: &BTreeSet<&'static str>) -> Route {
+    let verdicts = verdicts(&kind, &detail, &imports, mp_risk);
+    let engine = engine_from_verdicts(&verdicts);
+    Route { engine, kind, detail, imports, verdicts }
+}
+
 #[cfg(test)]
 mod spectrum_tests {
     use super::*;
@@ -140,6 +320,29 @@ mod spectrum_tests {
     }
 
     #[test]
+    fn the_floor_rule_and_the_chain_reproduce_the_three_tier_decisions() {
+        let none: BTreeSet<&'static str> = BTreeSet::new();
+        // nothing blocks: this binary runs it
+        let vs = verdicts("", "", &[], &none);
+        assert_eq!(engine_from_verdicts(&vs), Engine::Lypning);
+        // a module lypning-mp has: mp
+        let vs = verdicts("module", "import re", &["re".to_string()], &none);
+        assert_eq!(engine_from_verdicts(&vs), Engine::MicroPython);
+        // a module nobody but CPython has
+        let vs = verdicts("module", "import subprocess", &["subprocess".to_string()], &none);
+        assert_eq!(engine_from_verdicts(&vs), Engine::CPython);
+        // a semantic refusal skips everything
+        let vs = verdicts("set-order", "x", &[], &none);
+        assert_eq!(engine_from_verdicts(&vs), Engine::CPython);
+        // runtime chain: bigint from this binary with mp-importable imports
+        assert_eq!(chain_after(SELF, "bigint", &["os".to_string()], &vs), vec![MICROPYTHON_NAME, CPYTHON_NAME]);
+        assert_eq!(chain_after(SELF, "bigint", &["random".to_string()], &vs), vec![CPYTHON_NAME]);
+        assert_eq!(chain_after(SELF, "set-order", &[], &vs), vec![CPYTHON_NAME]);
+        assert_eq!(chain_after(MICROPYTHON_NAME, "bigint", &[], &vs), vec![CPYTHON_NAME]);
+        assert_eq!(chain_after("nonesuch", "bigint", &[], &vs), vec![CPYTHON_NAME]);
+    }
+
+    #[test]
     fn the_caps_this_binary_was_built_with_are_its_row() {
         let built: Vec<&str> = SELF_CAPS.split(',').filter(|s| !s.is_empty()).collect();
         let mut declared: Vec<&str> = SPECTRUM[self_index()].caps.to_vec();
@@ -162,6 +365,10 @@ pub struct Route {
     /// that indexed `imports[0]` expecting the first line got the alphabetically
     /// first module instead.
     pub imports: Vec<String>,
+    /// Every rung's verdict on this program, in `engine_order()` — what
+    /// `engine` was derived from, and what the dispatcher walks after a
+    /// RUNTIME refusal (`chain_after`). Both dispatchers read this same vector.
+    pub verdicts: Vec<Verdict>,
 }
 
 /// Modules lypning-mp serves: its frozen `micropython/lib` shim stdlib plus the
@@ -361,13 +568,7 @@ pub fn route(src: &str) -> Route {
             // the source for them: the import line is what usually decides the
             // tier, and it is cheap and unambiguous to find.
             imports = scan_imports(src);
-            let engine = engine_for(&kind, &imports, &BTreeSet::new());
-            Route {
-                engine,
-                kind,
-                detail,
-                imports,
-            }
+            finish_route(kind, detail, imports, &BTreeSet::new())
         }
         Err(ref e) if matches!(e.kind(), ErrKind::Syntax { .. }) => {
             let (line, msg) = match e.kind() {
@@ -376,39 +577,18 @@ pub fn route(src: &str) -> Route {
             };
             // A syntax error is not a capability gap. CPython owns it, because
             // its message is the one the caller expects to read.
-            Route {
-                engine: Engine::CPython,
-                kind: "syntax".into(),
-                detail: format!("line {line}: {msg}"),
-                imports: scan_imports(src),
-            }
+            // `syntax` is in neither kind table, so every rung but CPython
+            // refuses it and the verdicts say so.
+            finish_route("syntax".into(), format!("line {line}: {msg}"), scan_imports(src), &BTreeSet::new())
         }
-        Err(other) => Route {
-            engine: Engine::CPython,
-            kind: "error".into(),
-            detail: other.to_string(),
-            imports,
-        },
+        Err(other) => finish_route("error".into(), other.to_string(), imports, &BTreeSet::new()),
         Ok(body) => {
             let mut req = Requirements::default();
             walk_block(&body, &mut req);
             imports = req.imports.iter().cloned().collect();
             match req.blocker {
-                None => Route {
-                    engine: Engine::Lypning,
-                    kind: String::new(),
-                    detail: String::new(),
-                    imports,
-                },
-                Some((kind, detail)) => {
-                    let engine = engine_for(&kind, &imports, &req.mp_risk);
-                    Route {
-                        engine,
-                        kind,
-                        detail,
-                        imports,
-                    }
-                }
+                None => finish_route(String::new(), String::new(), imports, &req.mp_risk),
+                Some((kind, detail)) => finish_route(kind, detail, imports, &req.mp_risk),
             }
         }
     }

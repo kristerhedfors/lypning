@@ -117,6 +117,46 @@ def test_the_mp_kind_arm_lists_only_kinds_the_classifier_can_emit():
         "the mp arm and ONLY_CPYTHON_KINDS disagree about: %s" % both)
 
 
+def test_both_dispatchers_walk_the_same_chain_after_a_runtime_refusal(lypning_bin):
+    """The Rust dispatcher's `chain_after` against Python's `chain_after_refusal`.
+
+    Over the cross product of (every rung that can refuse) x (every kind the
+    evaluator or the classifier can emit, plus a few that nothing emits) x
+    (programs whose imports fit no tier, the middle tier, or every tier). The
+    Rust answer is `lypning route --next --after E --kind K -c PROG`; the
+    Python answer is computed from the same route's verdicts. Two dispatchers,
+    one rule — this is what holds them to it.
+    """
+    import json as _json
+    import subprocess as _sp
+    kinds = sorted(set(routing.classifier_kinds() or []) | set(eng.ONLY_CPYTHON_REFUSALS)
+                   | {"bigint", "format-spec", "bytes", "random", "float-sum", "nonesuch"})
+    programs = ["print(1)", "import os\nprint(os.sep)", "import re\nprint(re)", "import subprocess\nprint(1)",
+                "import random\nrandom.seed(1)\nprint(random.random())"]
+    checked = 0
+    for prog in programs:
+        r = eng.route(prog, binary=lypning_bin)
+        assert r.kind != eng.ROUTE_UNKNOWN_ENGINE
+        for after in eng.ENGINE_ORDER[:-1]:
+            for kind in kinds:
+                out = _sp.run([str(lypning_bin), "route", "--next", "--after", after, "--kind", kind, "-c", prog],
+                              capture_output=True, text=True, timeout=60)
+                assert out.returncode == 0, out.stderr
+                rust = _json.loads(out.stdout)
+                py = eng.chain_after_refusal(after, kind, r.imports, r.verdicts)
+                assert rust == py, "after %s kind %s prog %r: rust %r, python %r" % (after, kind, prog, rust, py)
+                checked += 1
+    assert checked >= 100
+
+
+def test_route_json_carries_a_verdict_per_rung(lypning_bin):
+    r = eng.route("import re\nprint(1)", binary=lypning_bin)
+    assert [v[0] for v in r.verdicts] == list(eng.ENGINE_ORDER)
+    assert r.verdicts[0][1:] == ("module", "import re")   # this binary refuses
+    assert r.verdicts[-1] == ("cpython", "", "")            # CPython always can
+    assert r.engine == eng.MICROPYTHON                       # first "can run" at or above self
+
+
 def test_both_dispatchers_read_the_same_escalation_table():
     """There are TWO dispatchers, and the rule was added to one of them.
 

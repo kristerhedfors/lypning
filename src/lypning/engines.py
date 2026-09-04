@@ -249,12 +249,28 @@ def find_cpython() -> Path | None:
     return Path(sys.executable).resolve() if sys.executable else None
 
 
+def find_variant(engine: str) -> Path | None:
+    """A Rust variant other than the unsuffixed core: its env pin, the state bin
+    dir, then PATH — the order `main.rs` `engine_path_named` searches, so the
+    two dispatchers find the same sibling or the same nothing."""
+    which = shutil.which(engine)
+    return _first_engine([
+        _override(env_var_for(engine), "point it at a `lypning build --variant` binary"),
+        paths.bin_dir() / engine,
+        Path(which) if which else None,
+    ])
+
+
 def find(engine: str) -> Path | None:
-    return {
-        LYPNING: find_lypning,
-        MICROPYTHON: find_micropython,
-        CPYTHON: find_cpython,
-    }[engine]()
+    if engine == LYPNING:
+        return find_lypning()
+    if engine == MICROPYTHON:
+        return find_micropython()
+    if engine == CPYTHON:
+        return find_cpython()
+    if engine in SPECTRUM:
+        return find_variant(engine)
+    raise KeyError(engine)
 
 
 def available() -> dict[str, Path | None]:
@@ -518,8 +534,13 @@ def run(
     timeout: float | None = 30.0,
     script: Path | None = None,
     env: dict[str, str] | None = None,
+    prefix: Sequence[str] = (),
 ) -> Result:
-    """Run ``program`` on one engine. Never raises for a program's own failure."""
+    """Run ``program`` on one engine. Never raises for a program's own failure.
+
+    ``prefix`` goes between the binary and the program — ``("run",)`` turns the
+    Rust core into its own dispatcher, which is how the `mixture-rust` arm runs.
+    """
     if engine == CPYTHON and script is None:
         sock = _pool_socket(env)
         if sock:
@@ -530,6 +551,7 @@ def run(
     if b is None:
         return Result(engine, "", 127, "", f"lypning: engine not built: {engine}\n", 0)
     cmd = _argv_for(engine, Path(b), program, script)
+    cmd[1:1] = list(prefix)
     cmd.extend(argv_tail)
     full_env = dict(os.environ)
     # A nested capture would log the conformance run's own corpus back into the
@@ -590,10 +612,34 @@ class Route:
     #: RUNTIME refusal falls onward: a tier that cannot import one of these was
     #: ruled out before the program ran and stays ruled out after it refuses.
     imports: tuple = ()
+    #: Every rung's verdict on the program, ``(engine, kind, detail)`` in
+    #: ``ENGINE_ORDER`` — kind ``""`` is "can run it". What the binary derived
+    #: ``engine`` from, and what :func:`chain_after_refusal` walks: a sibling
+    #: whose static verdict was "can run" is the next stop after a runtime
+    #: refusal in a smaller variant.
+    verdicts: tuple = ()
 
     def __str__(self) -> str:
         why = f"\t{self.kind}: {self.detail}" if self.kind else ""
         return f"{self.engine}{why}"
+
+
+#: The kind :func:`route` reports when the binary names an engine this copy of
+#: the table does not list. Never silent: the program still goes to CPython
+#: (the safe direction), and the grader counts the route as ungraded.
+ROUTE_UNKNOWN_ENGINE = "route-unknown-engine"
+
+
+def _route_from_json(d: dict) -> Route:
+    """A :class:`Route` from what ``route --json`` printed."""
+    engine = str(d.get("engine") or CPYTHON)
+    imports = tuple(str(m) for m in d.get("imports") or ())
+    verdicts = tuple(
+        (str(v.get("engine") or ""), str(v.get("kind") or ""), str(v.get("detail") or ""))
+        for v in d.get("verdicts") or () if isinstance(v, dict))
+    if engine not in ENGINE_ORDER:
+        return Route(CPYTHON, ROUTE_UNKNOWN_ENGINE, engine, imports, verdicts)
+    return Route(engine, str(d.get("kind") or ""), str(d.get("detail") or ""), imports, verdicts)
 
 
 def route(program: str, *, binary: Path | None = None, timeout: float | None = 30.0,
@@ -636,9 +682,7 @@ def route(program: str, *, binary: Path | None = None, timeout: float | None = 3
         d = json.loads(line)
     except ValueError:
         return Route(CPYTHON, "route-failed", "unreadable route: %s" % line[:200])
-    engine = str(d.get("engine") or CPYTHON)
-    imports = tuple(str(m) for m in d.get("imports") or ())
-    return Route(engine, str(d.get("kind") or ""), str(d.get("detail") or ""), imports)
+    return _route_from_json(d)
 
 
 def chain_from(engine: str) -> list[str]:
@@ -742,21 +786,28 @@ def micropython_can_import(imports: Iterable[str]) -> bool:
     return all(m in _MP_MODULES for m in imports)
 
 
-def chain_after_refusal(engine: str, kind: str, imports: Iterable[str] = ()) -> list[str]:
+def chain_after_refusal(engine: str, kind: str, imports: Iterable[str] = (),
+                        verdicts: Iterable[tuple] = ()) -> list[str]:
     """What is left of the chain once ``engine`` has refused with ``kind``.
 
-    Ordinarily the next tier down; for a refusal in
-    :data:`ONLY_CPYTHON_REFUSALS`, or a program whose ``imports`` lypning-mp
-    cannot all serve, CPython and nothing in between.
+    The rule `route.rs` spells in ``chain_after``, held to it by a cross-product
+    test (`lypning route --next`): a kind in :data:`ONLY_CPYTHON_REFUSALS` rules
+    out every reimplementation; otherwise each later Rust sibling whose STATIC
+    verdict was "can run" (it already satisfied the imports and every static
+    kind), then lypning-mp if it can import everything, then CPython.
 
-    :mod:`lypning.routing` reads the same table to grade a route, so the grader
-    models the chain the dispatcher actually walks. Two readers, one table —
-    the same reason :data:`_REFUSAL_RE` is spelled once.
+    :mod:`lypning.routing` reads the same rule to grade a route, so the grader
+    models the chain the dispatcher actually walks.
     """
     rest = chain_from(engine)[1:]
-    if kind in ONLY_CPYTHON_REFUSALS or not micropython_can_import(imports):
-        return [e for e in rest if e == CPYTHON]
-    return rest
+    if kind in ONLY_CPYTHON_REFUSALS:
+        return [CPYTHON]
+    out = [e for e in rest if e in SPECTRUM
+           and any(v[0] == e and not v[1] for v in verdicts)]
+    if MICROPYTHON in rest and micropython_can_import(imports):
+        out.append(MICROPYTHON)
+    out.append(CPYTHON)
+    return out
 
 
 @dataclass
@@ -814,7 +865,7 @@ def dispatch(
         attempts.append(res)
         # The refusal says WHY, and some reasons rule out every tier but CPython.
         kind, _ = res.refusal
-        remaining = [e for e in chain_after_refusal(engine, kind, r.imports) if e in remaining]
+        remaining = [e for e in chain_after_refusal(engine, kind, r.imports, r.verdicts) if e in remaining]
     if last is None:
         last = Result(CPYTHON, "", 127, "", "lypning: no engine available\n", 0)
     return Dispatch(last, r, attempts[:-1] if attempts else [])

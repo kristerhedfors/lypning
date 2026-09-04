@@ -138,7 +138,8 @@ def _matched_by_failing(x: Any) -> bool:
 
 
 def _delivered(predicted: str, by_engine: Mapping[str, Any],
-               ladder: Sequence[str], imports: Sequence[str] = ()) -> tuple:
+               ladder: Sequence[str], imports: Sequence[str] = (),
+               verdicts: Sequence[tuple] = ()) -> tuple:
     """The tier whose answer the user actually receives, and its verdict.
 
     A refusal is not the end of the program: :func:`engines.dispatch` falls
@@ -169,7 +170,7 @@ def _delivered(predicted: str, by_engine: Mapping[str, Any],
         # A refusal names its reason, and some reasons rule out every tier but
         # CPython. Read the same table the dispatcher reads, or the grade
         # describes a chain nothing walks.
-        allowed = eng.chain_after_refusal(name, getattr(v, "kind", "") or "", imports)
+        allowed = eng.chain_after_refusal(name, getattr(v, "kind", "") or "", imports, verdicts)
         remaining = [e for e in remaining if e in allowed]
     return predicted, conf.UNSUPPORTED
 
@@ -183,6 +184,7 @@ def score_route(
     rescued: bool = False,
     route_kind: str = "",
     route_imports: Sequence[str] = (),
+    route_verdicts: Sequence[tuple] = (),
 ) -> RouteScore:
     """Grade one route, given every engine's measured verdict for that program.
 
@@ -240,7 +242,7 @@ def score_route(
         # be counted as a spawn: WASTED, whose definition ends "and the chain
         # still produces the right answer", against 25 measured programs where
         # it does not.
-        answered, delivered = _delivered(predicted, by_engine, ladder, route_imports)
+        answered, delivered = _delivered(predicted, by_engine, ladder, route_imports, route_verdicts)
         if delivered == conf.MISMATCH:
             return RouteScore(entry_id, predicted, ideal, UNSAFE,
                               "%s refused, %s answered wrongly: %s"
@@ -361,6 +363,7 @@ def grade(report: conf.Report) -> RoutingReport:
             rescued=_verdict_of(mixture) == conf.MATCH,
             route_kind=route.kind,
             route_imports=getattr(route, "imports", ()),
+            route_verdicts=getattr(route, "verdicts", ()),
         )
         out.scores.append(s)
         out.counts[s.grade] = out.counts.get(s.grade, 0) + 1
@@ -436,7 +439,10 @@ def spectrum(source: Optional[Path] = None) -> List[str]:
 #: same reason as the module list — a copy kept here would be checked against
 #: itself.
 _KIND_ARM_RE = re.compile(
-    r"match kind \{(?P<body>.*?)=> Engine::MicroPython", re.S)
+    # Anchored to `engine_for`: route.rs now has other `match kind` blocks
+    # (`answers`), and an unanchored search swallowed every string literal
+    # between the first of them and the arm this reads.
+    r"fn engine_for\(.*?match kind \{(?P<body>.*?)=> Engine::MicroPython", re.S)
 
 
 def micropython_kinds(source: Optional[Path] = None) -> List[str]:
