@@ -135,7 +135,18 @@ pub fn repr(v: &Value) -> R<String> {
             out.push(')');
             out
         }
-        Value::Dict(d) => dict_repr(&d.borrow())?,
+        Value::Dict(d) => {
+            let b = d.borrow();
+            // A `Counter` and a `defaultdict` are this same `Dict` with a tag,
+            // and their reprs are the two texts a subset runtime is most likely
+            // to get subtly wrong: most_common ORDER for one, the real
+            // `<class 'list'>` for the other.
+            #[cfg(feature = "cap-collections")]
+            if b.coll.is_some() {
+                return crate::collections::repr(&b);
+            }
+            dict_repr(&b)?
+        }
         // See value.rs: CPython's set order is a property of its hashing, so a
         // second implementation cannot reproduce it. Refuse rather than differ.
         Value::Set(s) => {
@@ -215,7 +226,7 @@ pub fn repr(v: &Value) -> R<String> {
     })
 }
 
-fn dict_repr(d: &Dict) -> R<String> {
+pub(crate) fn dict_repr(d: &Dict) -> R<String> {
     let mut out = String::from("{");
     let mut first = true;
     for (k, v) in d.iter() {

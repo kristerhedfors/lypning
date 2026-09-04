@@ -19,7 +19,16 @@ use std::rc::Rc;
 
 /// Modules lypning can serve. `route.rs` reads this to decide whether a program's
 /// imports are within reach before anything is executed.
+///
+/// Spelled twice rather than appended to, so the smaller variant's table is the
+/// same bytes it always was: a capability that added an entry at runtime would
+/// still have compiled the branch that adds it. `route::CAPS` carries the same
+/// claim for the ROUTER, which has to answer for a sibling it is not.
+#[cfg(not(feature = "cap-collections"))]
 pub const MODULES: &[&str] = &["sys", "os", "os.path", "io", "json", "posixpath", "random"];
+#[cfg(feature = "cap-collections")]
+pub const MODULES: &[&str] =
+    &["sys", "os", "os.path", "io", "json", "posixpath", "random", "collections"];
 
 pub fn import(path: &str) -> R<Value> {
     match MODULES.iter().find(|m| **m == path) {
@@ -123,6 +132,16 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
             Value::Bound(Rc::new(m.clone()), interned(name)?)
         }
         ("json", "JSONDecodeError") => Value::Builtin("ValueError"),
+        // The two names 83 corpus programs import `collections` for. They are
+        // TYPES, not module functions, so they are `Value::Builtin` — the same
+        // shape `int` and `list` have, which is what makes
+        // `isinstance(c, Counter)` fall out of the existing comparison.
+        // Every other name under `collections` (`OrderedDict`, `deque`,
+        // `namedtuple`, …) refuses through the arm below.
+        #[cfg(feature = "cap-collections")]
+        ("collections", "Counter") => Value::Builtin("Counter"),
+        #[cfg(feature = "cap-collections")]
+        ("collections", "defaultdict") => Value::Builtin("defaultdict"),
         _ => {
             return Err(unsupported(
                 "module-attr",

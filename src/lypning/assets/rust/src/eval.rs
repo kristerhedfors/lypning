@@ -807,6 +807,13 @@ impl Interp {
             }
             Expr::Un(op, a) => {
                 let v = self.eval(a)?;
+                // Unary `+` and `-` on a Counter drop the non-positive counts
+                // and answer a Counter; `~` is a TypeError there as here. `not`
+                // is truthiness and is the dict's own.
+                #[cfg(feature = "cap-collections")]
+                if !matches!(op, UnOp::Not) {
+                    crate::collections::guard_operand(&v, &v)?;
+                }
                 match op {
                     UnOp::Not => Value::Bool(!truthy(&v)?),
                     UnOp::Neg => match v {

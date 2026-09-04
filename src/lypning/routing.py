@@ -489,6 +489,37 @@ def only_cpython_kinds(source: Optional[Path] = None) -> List[str]:
     return _STRING_RE.findall(m.group("body"))
 
 
+#: `CPYTHON_ONLY_KINDS` in route.rs — the other half of ``route::cpython_only``.
+#: Where :data:`_ONLY_CPYTHON_RE`'s table names behaviours no reimplementation
+#: gets right, this one names CONSTRUCTS no reimplementation has at all
+#: (``async``, which needs asyncio). Rust's ``chain_after`` consults both; the
+#: Python dispatcher consulted only the first, which was invisible for as long
+#: as every Rust variant had the same capabilities — with identical caps both
+#: dispatchers answered ``["cpython"]`` for a different reason. The moment
+#: ``lypning-l`` gained one, the two disagreed. Read from the source for the
+#: same reason its neighbour is: a copy would be checked against itself.
+_CPYTHON_ONLY_RE = re.compile(
+    r"const CPYTHON_ONLY_KINDS: &\[&str\] = &\[(?P<body>.*?)\];", re.S)
+
+
+def cpython_only_constructs(source: Optional[Path] = None) -> List[str]:
+    """The constructs ``route.rs`` sends straight to CPython whatever refused.
+
+    Empty when the table cannot be found — the safe direction: the chain then
+    tries a larger sibling that cannot answer either, which costs one spawn and
+    never an answer.
+    """
+    p = Path(source) if source is not None else table_source()
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    m = _CPYTHON_ONLY_RE.search(text)
+    if not m:
+        return []
+    return _STRING_RE.findall(m.group("body"))
+
+
 #: `unsupported("<kind>"` across a Rust source file, multi-line calls included.
 _UNSUPPORTED_KIND_RE = re.compile(r'unsupported\(\s*"([a-z-]+)"')
 _BLOCK_KIND_RE = re.compile(r'\bblock\("([a-z-]+)"')

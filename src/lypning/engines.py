@@ -56,7 +56,12 @@ SPECTRUM = (LYPNING, LYPNING_L)
 #: ``caps`` column, pinned to ``route --spectrum`` by test. Read by
 #: :func:`chain_after_refusal`: a sibling built with the same set cannot answer
 #: at runtime what a smaller one could not, so it is not tried.
-VARIANT_CAPS: dict = {LYPNING: (), LYPNING_L: ()}
+#:
+#: ``cap-collections`` (``collections.Counter`` / ``defaultdict``) is on the
+#: larger variant ONLY. The core is frozen: it gains no capability feature, and
+#: a capability that appeared in both columns would buy the chain nothing —
+#: the whole point of the column is that the sets differ.
+VARIANT_CAPS: dict = {LYPNING: (), LYPNING_L: ("cap-collections",)}
 
 #: Not a fourth engine — the same lypning, reached through the C ABI instead of
 #: through a process, the way an embedding host reaches it. It is spelled
@@ -824,21 +829,45 @@ def oracle_can_import(imports: Iterable[str]) -> bool:
         return True
     return all(m in _MP_MODULES for m in imports)
 
+_CPYTHON_ONLY_CONSTRUCTS: "frozenset[str] | None" = None
+
+
+def _cpython_only_constructs() -> "frozenset[str]":
+    """``route::CPYTHON_ONLY_KINDS``, read once. A cycle at import time, not at
+    call time — the same shape :func:`oracle_can_import` uses."""
+    global _CPYTHON_ONLY_CONSTRUCTS
+    if _CPYTHON_ONLY_CONSTRUCTS is None:
+        from . import routing
+        try:
+            _CPYTHON_ONLY_CONSTRUCTS = frozenset(routing.cpython_only_constructs())
+        except Exception:
+            _CPYTHON_ONLY_CONSTRUCTS = frozenset()
+    return _CPYTHON_ONLY_CONSTRUCTS
+
+
 def chain_after_refusal(engine: str, kind: str, imports: Iterable[str] = (),
                         verdicts: Iterable[tuple] = ()) -> list[str]:
     """What is left of the chain once ``engine`` has refused with ``kind``.
 
     The rule `route.rs` spells in ``chain_after``, held to it by a cross-product
-    test (`lypning route --next`): a kind in :data:`ONLY_CPYTHON_REFUSALS` rules
-    out every reimplementation; otherwise each later Rust sibling whose STATIC
-    verdict was "can run" (it already satisfied the imports and every static
-    kind), then lypning-mp if it can import everything, then CPython.
+    test (`lypning route --next`): a kind in :data:`ONLY_CPYTHON_REFUSALS` — or
+    in ``route::CPYTHON_ONLY_KINDS``, the constructs no reimplementation HAS —
+    rules out every reimplementation; otherwise each later Rust sibling whose
+    STATIC verdict was "can run" (it already satisfied the imports and every
+    static kind), then lypning-mp if it can import everything, then CPython.
+
+    The second table was missing here, and it could not be seen while every
+    Rust variant carried the same capabilities: both dispatchers answered
+    ``[cpython]`` for an ``async`` refusal, one because the kind said so and one
+    because no sibling was more capable. The first `cap-*` on `lypning-l` split
+    them. It is read from `route.rs` rather than restated, exactly as
+    :data:`ONLY_CPYTHON_REFUSALS`'s own table is checked against it.
 
     :mod:`lypning.routing` reads the same rule to grade a route, so the grader
     models the chain the dispatcher actually walks.
     """
     rest = chain_from(engine)[1:]
-    if kind in ONLY_CPYTHON_REFUSALS:
+    if kind in ONLY_CPYTHON_REFUSALS or kind in _cpython_only_constructs():
         return [CPYTHON]
     have = set(VARIANT_CAPS.get(engine, ()))
     out = [e for e in rest if e in SPECTRUM

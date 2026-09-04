@@ -142,6 +142,21 @@ pub fn is_exception_name(n: &str) -> bool {
     EXCEPTIONS.contains(&n)
 }
 
+/// Is `t` a dict SUBCLASS that `isinstance(x, dict)` must answer True for?
+///
+/// `Counter` and `defaultdict` are, and `isinstance(c, dict)` answering False
+/// would be a wrong answer at exit 0 on the commonest guard an agent writes
+/// around a mapping. Spelled twice, and not as a `cfg!` inside the comparison,
+/// so the variant without the capability compiles the same bytes it always did.
+#[cfg(feature = "cap-collections")]
+fn dict_subclass(want: &str, have: &str) -> bool {
+    want == "dict" && matches!(have, "Counter" | "defaultdict")
+}
+#[cfg(not(feature = "cap-collections"))]
+fn dict_subclass(_want: &str, _have: &str) -> bool {
+    false
+}
+
 pub fn exception_static(n: &str) -> &'static str {
     EXCEPTIONS.iter().find(|e| **e == n).copied().unwrap_or("Exception")
 }
@@ -386,6 +401,13 @@ pub fn call_builtin(
             None => String::new(),
         };
         return Ok(Value::Exc(exception_static(name), msg.into()));
+    }
+    // `Counter` and `defaultdict` are not builtin NAMES — they resolve only
+    // through `collections`, and `builtin()` still says no to them — but they
+    // arrive here as `Value::Builtin`, the shape every type object has.
+    #[cfg(feature = "cap-collections")]
+    if matches!(name, "Counter" | "defaultdict") {
+        return crate::collections::construct(it, name, args, kw);
     }
     Ok(match name {
         // `print(` is in nearly every corpus program, and this arm allocated
@@ -1389,6 +1411,10 @@ pub fn call_builtin(
                     // related, and neither are list/tuple.
                     || (*n == "int" && t == "bool")
                     || (*n == "float" && matches!(t, "float"))
+                    // …and `Counter` and `defaultdict` are subclasses of dict,
+                    // which is exactly the idiom that would have answered False
+                    // at exit 0: `isinstance(c, dict)` is True in CPython.
+                    || dict_subclass(n, t)
             }))
         }
         "open" => {
