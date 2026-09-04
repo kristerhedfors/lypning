@@ -46,7 +46,7 @@ PROG = "lypning"
 COMMANDS = (
     "run", "route", "build", "lib", "pool", "status", "doctor", "install", "uninstall",
     "shim", "hook", "conformance", "fuzz", "bench", "corpus-time", "perf", "gate",
-    "harvest", "corpus", "oracle",
+    "harvest", "corpus", "oracle", "routes",
 )
 
 #: The only dash-flags this CLI keeps for itself. Every other flag belongs to
@@ -589,6 +589,17 @@ def _status_obj() -> Dict[str, Any]:
         st["corpus"] = {"path": str(paths.CORPUS_FILE), "entries": None,
                         "problems": [],
                         "error": "%s: %s" % (type(e).__name__, e)}
+    try:
+        routes = _mod("routes")
+        stores = routes.load_all()
+        st["routes"] = routes.to_obj(stores)
+        st["routes"]["line"] = routes.status_line(stores)
+    except Exception as e:
+        # A hole, never a zero: an unreadable ledger must not render as "no
+        # routes learned yet", which is a different fact.
+        st["routes"] = {"dir": str(paths.routes_dir()), "loaded": None,
+                        "error": "%s: %s" % (type(e).__name__, e),
+                        "line": "routes       UNREADABLE: %s  (%s)" % (e, paths.routes_dir())}
     st["state_dir"] = str(paths.state_dir())
     st["cli"] = shutil.which(PROG)
     return st
@@ -671,6 +682,8 @@ def _render_status(st: Dict[str, Any]) -> str:
             log.get("path", ""),
             " (%s B)" % format(log.get("bytes", 0), ",") if log.get("exists")
             else " (not created yet)")]
+    lines.append((st.get("routes") or {}).get("line")
+                 or "routes       no routes learned yet")
     lines.append("state dir    %s" % st.get("state_dir", ""))
     return "\n".join(lines)
 
@@ -1637,6 +1650,55 @@ def cmd_harvest(ns: argparse.Namespace) -> int:
     return 0
 
 
+# --- routes ------------------------------------------------------------------
+
+
+def cmd_routes(ns: argparse.Namespace) -> int:
+    """The route ledger: which capability gaps real runs actually hit.
+
+    Read-only by default. `--compact`, `--clear` and `--forget` are the only
+    writers outside a dispatch, and they are here rather than on a program's
+    path on purpose: folding duplicates means reading the file first, and
+    nothing that runs a program reads this file (`lypning.routes`).
+    """
+    routes = _mod("routes")
+    if ns.clear:
+        gone = routes.clear()
+        if ns.json:
+            _json({"action": "clear", "cleared": gone})
+        else:
+            _out("routes: cleared %d store(s)%s"
+                 % (len(gone), (": " + ", ".join(gone)) if gone else " — there were none"))
+        return 0
+    if ns.forget:
+        touched = routes.forget(ns.forget)
+        if ns.json:
+            _json({"action": "forget", "id": ns.forget,
+                   "dropped": [{"engine": e, "dropped": n} for e, n in touched]})
+        elif touched:
+            _out("\n".join("routes: %s: dropped %d record(s) for %s" % (e, n, ns.forget)
+                           for e, n in touched))
+        else:
+            _out("routes: no record with id %s" % ns.forget)
+        return 0
+    if ns.compact:
+        folded = routes.compact()
+        if ns.json:
+            _json({"action": "compact",
+                   "stores": [{"engine": e, "before": b, "after": a} for e, b, a in folded]})
+        elif folded:
+            _out("\n".join("routes: %s: %d record(s) folded to %d" % (e, b, a)
+                           for e, b, a in folded))
+        else:
+            _out("routes: nothing to compact — no routes learned yet")
+        return 0
+    stores = routes.load_all()
+    if ns.json:
+        _json(routes.to_obj(stores))
+    else:
+        _out(routes.render(stores, plan=ns.plan))
+    return 0
+
 # --- corpus ------------------------------------------------------------------
 
 
@@ -2361,6 +2423,43 @@ examples:
     s.add_argument("--model", metavar="NAME", help="only programs this model was seen to issue")
     s.add_argument("--json", action="store_true", help="machine-readable")
     s.set_defaults(func=cmd_corpus)
+
+    # routes
+    s = _sub(subs, "routes", "the value-dependent refusals a static route could not see", """
+`lypning route` is exact about everything it can see, and it cannot see VALUE:
+print(2**10) and print(2**100) are the same program to a static walker, and one
+of them exits 90 with `bigint`. This is the ledger of those runtime refusals —
+written by `lypning run`'s Python dispatcher when a CLEAN route was followed by
+a refusal from the tier it named, and by nothing else.
+
+It is WRITE-ONLY with respect to routing: nothing here is consulted while
+routing, ever. A machine-local file that could move a route would make
+`lypning conformance` a measurement of one laptop.
+
+`conformance --plan` ranks the shipped corpus; this ranks what real sessions on
+this machine actually hit, so the two are different build orders and both are
+worth reading. Kinds in engines.ONLY_CPYTHON_REFUSALS are marked NOT
+IMPLEMENTABLE and `--plan` drops them: they exist because a reimplementation
+gets them wrong.
+
+`lypning run` (the Rust dispatcher) does not feed the ledger, so every count is
+a floor. LYPNING_ROUTES=0 turns the writer off.
+""", """
+examples:
+  lypning routes                 what has been learned, by refusal kind
+  lypning routes --plan          the same, minus the kinds nobody may implement
+  lypning routes --json | jq .kinds
+  lypning routes --compact       fold repeats of one program into its count
+  lypning routes --forget a1b2c3d4e5f6
+""")
+    s.add_argument("--plan", action="store_true",
+                   help="only the kinds a larger variant could implement")
+    s.add_argument("--compact", action="store_true",
+                   help="fold duplicate program ids into their counts")
+    s.add_argument("--clear", action="store_true", help="delete every store")
+    s.add_argument("--forget", metavar="ID", help="drop every record for one program id")
+    s.add_argument("--json", action="store_true", help="machine-readable")
+    s.set_defaults(func=cmd_routes)
 
     return p
 

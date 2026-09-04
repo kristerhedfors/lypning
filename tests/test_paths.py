@@ -74,5 +74,13 @@ def test_project_dir_falls_back_to_the_start_dir_outside_a_work_tree(tmp_path, m
     assert paths.project_dir(lonely) == lonely.resolve()
 
 
+def test_routes_dir_is_state_and_moves_with_lypning_home(tmp_path, monkeypatch):
+    # State, never assets: the route ledger is what THIS machine's runs learned,
+    # so it must not be shippable and must not survive a `rm -rf ~/.lypning`.
+    monkeypatch.setenv("LYPNING_HOME", str(tmp_path / "elsewhere"))
+    assert paths.routes_dir() == tmp_path / "elsewhere" / "routes"
+    assert paths.ASSETS not in paths.routes_dir().parents
+
+
 def test_sightings_dir_is_one_directory_under_the_project(tmp_path):
     assert paths.sightings_dir(tmp_path) == tmp_path / "tests" / "corpus" / "sightings"

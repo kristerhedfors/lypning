@@ -122,6 +122,18 @@ def log_path() -> Path:
     return state_dir() / "invocations.jsonl"
 
 
+def routes_dir() -> Path:
+    """The route ledger — one JSON Lines file per engine, in state.
+
+    State and never assets, for the reason :mod:`lypning.routes` exists to
+    hold: what is in here was learned from THIS machine's runs, so it may not
+    ship, may not be committed, and above all may not be read by anything that
+    decides a route. A shipped copy would be a machine's habits grading every
+    other machine's conformance run.
+    """
+    return state_dir() / "routes"
+
+
 def project_dir(start: Path | str | None = None) -> Path:
     """The repository the session is working in.
 

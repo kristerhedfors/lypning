@@ -546,6 +546,7 @@ Interpreter mode is decided before argument parsing, so anything that calls
 | `lypning oracle [--full] [--json]` | what a second reimplementation of Python got wrong — the traps a larger variant must implement exactly or refuse |
 | `lypning harvest [--export]` | captured invocations → sightings → corpus |
 | `lypning corpus [--stats] [--list] [--model NAME]` | inspect the harvested programs, whole or sliced by the model that issued them |
+| `lypning routes [--plan] [--compact] [--clear] [--forget ID]` | the ledger of value-dependent refusals — a CLEAN route whose tier then refused at runtime, which is the one gap a static route cannot see |
 
 Every subcommand that reports something takes `--json` (all of them except
 `run` and `hook`, which have a caller-defined output already). Exit codes: `0` ok, `1` the command failed (a
@@ -581,6 +582,7 @@ Environment:
 | `LYPNING_CPYTHON` | override the reference CPython |
 | `LYPNING_CAPTURE=0` | disable the whole capture harness |
 | `LYPNING_HARVEST=0` | keep capturing, stop the Stop hook publishing |
+| `LYPNING_ROUTES=0` | stop the dispatcher recording runtime refusals (`lypning routes`) |
 | `LYPNING_DEBUG=1` | show tracebacks |
 
 ---

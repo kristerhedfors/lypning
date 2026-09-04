@@ -899,6 +899,7 @@ def dispatch(
     cwd: Path | str | None = None,
     timeout: float | None = 30.0,
     env: dict[str, str] | None = None,
+    ledger: bool = True,
 ) -> Dispatch:
     """Route, then run, falling through on a REFUSAL until a tier answers.
 
@@ -916,6 +917,14 @@ def dispatch(
     afterwards hits a refusal gives the next tier an empty stream and the run
     prints nothing. :func:`lypning.cli._replayable_stdin` is what fills it in
     for ``lypning run``.
+
+    ``ledger`` writes the one case :mod:`lypning.routes` exists to record — a
+    CLEAN static route whose tier then refused at RUNTIME. The store is never
+    read here, by this function or by :func:`route`; a routing decision that
+    could be moved by a machine-local file would make ``lypning conformance``
+    a measurement of one laptop. Callers that run the corpus rather than a
+    session's own traffic pass ``ledger=False``, for the reason
+    :func:`lypning.conformance._env_for` redirects the capture log.
     """
     r = route(program, timeout=timeout, env=env)
     attempts: list[Result] = []
@@ -932,7 +941,20 @@ def dispatch(
             return Dispatch(res, r, attempts)
         attempts.append(res)
         # The refusal says WHY, and some reasons rule out every tier but CPython.
-        kind, _ = res.refusal
+        kind, detail = res.refusal
+        # The one signal a static walker provably cannot produce: the route was
+        # CLEAN — the classifier said this very tier could run the whole program
+        # — and the tier refused anyway, part way through, on a VALUE. Written
+        # here and nowhere else, and never read back: see lypning.routes.
+        # `lypning run`, the Rust dispatcher, does NOT write it (the core is
+        # frozen at 8 device blocks and a second writer is a second thing to
+        # keep in lockstep), so the ledger under-counts. That is a known hole.
+        if ledger and engine == r.engine and not r.kind and engine != CPYTHON:
+            try:
+                from . import routes
+                routes.note(engine, program, kind, detail, binary=Path(res.binary))
+            except Exception:
+                pass
         remaining = [e for e in chain_after_refusal(engine, kind, r.imports, r.verdicts) if e in remaining]
     if last is None:
         last = Result(CPYTHON, "", 127, "", "lypning: no engine available\n", 0)
