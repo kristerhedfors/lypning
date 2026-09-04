@@ -338,6 +338,17 @@ pub fn method(
         "with_stem" => {
             let stem = fmt_str(&one(args, "with_stem()")?)?;
             let suffix = stem_suffix(name_of(s))?.1.to_string();
+            // CPython 3.13 added an explicit guard: an EMPTY stem on a name that
+            // still has a suffix is a ValueError, not a dotfile. Answering
+            // `.txt` there was a silent wrong answer, and 3.11/3.12 build the
+            // dotfile instead — so the shapes disagree across the versions this
+            // tree is graded against and the only correct move is to refuse.
+            if stem.is_empty() && !suffix.is_empty() {
+                return Err(refuse(
+                    "with_stem('') on a name that has a suffix, which CPython 3.13+ answers \
+                     with a ValueError and earlier versions answer with a dotfile",
+                ));
+            }
             path_value(with_name(s, &format!("{stem}{suffix}"))?)
         }
         "with_suffix" => {
@@ -572,7 +583,23 @@ pub fn order(a: &Value, b: &Value) -> R<Option<std::cmp::Ordering>> {
              one), where CPython 3.11 and 3.12+ disagree about the root component",
         ));
     }
-    Ok(Some(tail(x).cmp(&tail(y))))
+    // CPython 3.11 ordered the `.parts` tuple; 3.12+ order `str(p).split('/')`.
+    // For most paths the two agree, but not for a relative path whose text
+    // carries a component `.parts` drops: `Path('.') < Path('-x')` is True by
+    // parts (an empty tuple sorts first) and False by split ('.' > '-'). Answer
+    // only where BOTH eras agree, and refuse where they do not — the same rule
+    // this function already applies to differing roots.
+    let by_parts = tail(x).cmp(&tail(y));
+    let xs: Vec<&str> = x.split('/').collect();
+    let ys: Vec<&str> = y.split('/').collect();
+    let by_split = xs.cmp(&ys);
+    if by_parts != by_split {
+        return Err(refuse(
+            "ordering these paths, where CPython 3.11 compares the .parts tuple and 3.12+ \
+             compare str(p).split('/') and the two disagree",
+        ));
+    }
+    Ok(Some(by_parts))
 }
 
 /// Everything the `.parents` view is asked that is not `len`, an index or

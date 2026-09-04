@@ -1457,6 +1457,12 @@ pub fn call_builtin(
         }
         "bytes" => match args.first() {
             None => Value::Bytes(Rc::new(Vec::new())),
+            // `PurePath.__bytes__` is `os.fsencode(self)`, so CPython answers
+            // the path's own text as bytes. Reaching the generic arm instead
+            // raised "not iterable" at exit 1 for a program CPython runs — a
+            // wrong exit code, not a refusal, which the chain never retries.
+            #[cfg(feature = "cap-pathlib")]
+            Some(Value::Path(p, false)) => Value::Bytes(Rc::new(p.as_bytes().to_vec())),
             // `bytes('abc')` is a TypeError: a str has no bytes until an
             // ENCODING says which. Answering `b'abc'` silently picked UTF-8 on
             // the caller's behalf — right for ASCII and a wrong answer the
