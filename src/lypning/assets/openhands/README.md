@@ -82,9 +82,9 @@ established and are worth re-checking against your install:
 2. lypning doctor                # 0 FAIL
 3. Run one `python3 -c 'print(1)'` and one heredoc through the agent.
 4. Confirm two new lines in $LYPNING_LOG, each carrying "host":"openhands".
-5. lypning harvest --export --dry-run --json
-   → confirm the session file it would write is named by YOUR session id,
-     not unknown.jsonl.
+5. lypning harvest --export --json
+   → `files` names the session file it wrote: YOUR session id, not
+     unknown.jsonl. (`--dry-run --json` prints counts only, no file name.)
 6. Quote the counts those runs print, WITH THE DATE. Never a remembered number.
 ```
 

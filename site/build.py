@@ -48,7 +48,7 @@ PAGES = [
     ("docs/LYPNING.md", "docs/lypning.html", "Design", "The mixture, the classifier, and the commit barrier that makes falling onward safe."),
     ("docs/SUBSET.md", "docs/subset.html", "The subset", "What the engines implement, and the rules that decide what they refuse."),
     ("docs/COOKBOOK.md", "docs/cookbook.html", "Cookbook", "Rewrites for constructs outside the subset — every recipe executed by the test suite."),
-    ("docs/MICROPYTHON.md", "docs/micropython.html", "MicroPython tier", "The frozen-stdlib variant, and the cost model both runtimes are optimised against."),
+    ("docs/MICROPYTHON.md", "docs/micropython.html", "The oracle", "lypning-mp — the oracle: measured, never routed to — and the cost model the runtimes are optimised against."),
     ("docs/RESEARCH.md", "docs/research.html", "Research", "How the runtime was chosen and built, including what was measured and rejected."),
     ("docs/CAPTURE.md", "docs/capture.html", "Capture", "The hooks and shim that grow the corpus, and what they do and do not record."),
     ("docs/PROMPTING.md", "docs/prompting.html", "Prompting", "Can an agent be asked into the subset? 884 generated programs across nine treatments."),
@@ -56,6 +56,11 @@ PAGES = [
     ("docs/BENCH-LEDGER.md", "docs/bench-ledger.html", "Bench ledger", "Append-only measurement history, including the runs where the subset lost."),
     ("docs/HILLCLIMB.md", "docs/hillclimb.html", "Hillclimb ledger", "Append-only history of improvement steps — the four numbers each moved, and the ones that moved nothing."),
     ("docs/SANDBOX-PERFORMANCE.md", "docs/sandbox-performance.html", "Sandbox cost", "The measurements the whole project is downstream of."),
+    ("docs/COMPARISON.md", "docs/comparison.html", "Comparison", "lypning against ADK-Rust CodeAct + Monty: two designs, and what each was measured to get right."),
+    ("docs/EXECUTIVE-SUMMARY.md", "docs/executive-summary.html", "Executive summary", "Does lypning improve anything, and where — the dated verdicts."),
+    ("docs/PAPER.md", "docs/paper.html", "Paper", "Agent Python is not Python: profiling what coding agents execute, and the interpreter chain built for it."),
+    ("docs/FORKING.md", "docs/forking.html", "Forking", "Grow your own corpus and tune your own subset: what transfers from this tree and what has to be re-measured."),
+    ("docs/HARNESSES.md", "docs/harnesses.html", "Harnesses", "Wiring capture into opencode and OpenHands, and what each adapter does and does not do."),
     ("CLAUDE.md", "contributing.html", "Working agreement", "The invariants an agent changing this repository must not break."),
     ("CHANGELOG.md", "changelog.html", "Changelog", "Every change that matters, back to before the project had this name — with the defects tracked rather than waived."),
 ]
@@ -409,8 +414,8 @@ def build(out_dir: Path) -> int:
             body=body,
             current="index.html",
             depth=0,
-            description="A tiny Python subset in Rust, a frozen-stdlib MicroPython, "
-                        "and the router that picks between them — for the one-liners "
+            description="A Python subset in Rust, built at two sizes, and the router "
+                        "that picks between them and CPython — for the one-liners "
                         "coding agents actually type.",
             wide=True,
         ),
@@ -465,7 +470,36 @@ def main(argv: list[str] | None = None) -> int:
         if unlinked:
             return 1
         print("markdown check: every cited file in this repository opens rendered")
+
+        # Warn-only until every page's fragments have been repointed: a dead
+        # fragment is a page that opens at the top instead of at the heading.
+        for page, href in check_fragments(out):
+            print("dead fragment: %s -> %s" % (page, href), file=sys.stderr)
     return 0
+
+
+def check_fragments(out: Path) -> list[tuple[str, str]]:
+    """Every ``href="page.html#slug"`` must land on an ``id="slug"`` there.
+
+    :func:`check_links` stops at the file: it strips the fragment before it
+    looks, so a heading that was renamed leaves a link that resolves and
+    sends the reader to the top of the wrong page. The ids are read from the
+    HTML that was actually written, which is the same slugger the toc used.
+    """
+    ids: dict = {}
+    for page in sorted(out.rglob("*.html")):
+        ids[page.resolve()] = set(re.findall(r'\sid="([^"]+)"', page.read_text(encoding="utf-8")))
+    dead: list[tuple[str, str]] = []
+    for page in sorted(out.rglob("*.html")):
+        text = page.read_text(encoding="utf-8")
+        for href in re.findall(r'href="([^"]+#[^"]+)"', text):
+            if re.match(r"^(https?:|mailto:|//)", href):
+                continue
+            path, _, frag = href.partition("#")
+            target = (page.parent / path).resolve() if path else page.resolve()
+            if target in ids and frag not in ids[target]:
+                dead.append((str(page.relative_to(out)), href))
+    return dead
 
 
 def check_links(out: Path) -> list[tuple[str, str]]:

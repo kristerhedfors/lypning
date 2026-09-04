@@ -234,3 +234,84 @@ def test_every_host_quickstart_is_documented():
     assert not without, (
         "host directories with no quickstart: %s -- every host has one, and it is "
         "the file tests/test_hosts.py drives" % ", ".join(without))
+
+
+# --- the names, and the words that describe a chain this tree does not have --
+
+#: The three append-only ledgers, plus the two history documents that quote
+#: them: every dated narrative of an earlier spelling of the chain lives here,
+#: and the positional words below are the vocabulary of that history.
+LEDGERS = {"BENCH-LEDGER.md", "HILLCLIMB.md", "PAPER.md", "RESEARCH.md", "CHANGELOG.md"}
+
+
+def _upstream_names() -> list:
+    """The two project names this package was extracted under, read from
+    README §8 — the credit paragraph is their one sanctioned home in prose,
+    so it is the one place a test may learn them from without spelling them."""
+    text = README.read_text(encoding="utf-8")
+    start = text.index("## 8. Credit")
+    end = text.index("\n## 9.", start)
+    names = re.findall(r"\*\*`([a-z]+)`\*\*", text[start:end])
+    assert len(names) == 2, "README §8 names the two upstream projects in bold code"
+    return names
+
+
+@pytest.mark.parametrize("doc", OWNED, ids=lambda p: str(p.relative_to(ROOT)))
+def test_the_upstream_names_appear_only_where_the_credit_says(doc):
+    """CLAUDE.md invariant 9: the two upstream names appear in exactly three
+    places — README §8, CHANGELOG's *Before the name*, and the historical corpus
+    JSONL. This test is the grep, and it never spells them: it reads them from
+    §8, so a document that copies the credit paragraph elsewhere fails here
+    rather than in a reviewer's memory."""
+    if doc.name in ("README.md", "CHANGELOG.md"):
+        pytest.skip("a sanctioned home")
+    text = doc.read_text(encoding="utf-8")
+    found = sorted(n for n in _upstream_names() if re.search(r"\b%s\b" % re.escape(n), text))
+    assert not found, "%s spells an upstream project name (%s); the credit in README §8 " \
+        "and CHANGELOG's 'Before the name' are its only homes in prose" % (
+            doc.relative_to(ROOT), ", ".join(found))
+
+
+#: Words that place an engine by position in a chain the code does not have.
+#: Engines are spelled as engine strings — the members of
+#: ``engines.ENGINE_ORDER`` — and the oracle is "measured, never routed to".
+POSITIONAL_TIER_WORDS = re.compile(
+    r"\btier [12]\b|\btier-[12]\b|\bmiddle tier\b|\bsecond tier\b|\bMicroPython tier\b|"
+    r"\bthree interpreters\b|\bthree tiers\b|\bboth tiers\b|\btwo subset tiers\b", re.I)
+
+
+@pytest.mark.xfail(strict=False, reason="the documents are being rewritten one PR at a "
+                   "time; this turns green as each lands and the marker comes off last")
+@pytest.mark.parametrize("doc", [d for d in OWNED if d.name not in LEDGERS],
+                         ids=lambda p: str(p.relative_to(ROOT)))
+def test_no_document_places_an_engine_by_tier_number(doc):
+    """`tier 1`, `middle tier`, `MicroPython tier`, `three interpreters`: each
+    describes the chain of a dated CHANGELOG entry, not the one in
+    ``engines.ENGINE_ORDER``. The ledgers keep the words; nothing else may."""
+    hits = ["%d: %s" % (n, line.strip())
+            for n, line in enumerate(doc.read_text(encoding="utf-8").splitlines(), 1)
+            if POSITIONAL_TIER_WORDS.search(line)]
+    assert not hits, "%s places an engine by position:\n%s" % (
+        doc.relative_to(ROOT), "\n".join(hits[:12]))
+
+
+@pytest.mark.parametrize("doc", OWNED, ids=lambda p: str(p.relative_to(ROOT)))
+def test_every_test_node_id_a_document_cites_exists(doc):
+    """``tests/test_x.py::test_name`` must be a function that file defines.
+
+    The file-level check above catches a test file that was never written; a
+    citation by node id makes a stronger claim — THIS test pins THIS sentence —
+    and a renamed function breaks it just as silently.
+    """
+    text = doc.read_text(encoding="utf-8")
+    missing = []
+    for m in re.finditer(r"\b(tests/test_\w+\.py)::(\w+)", text):
+        path, name = m.groups()
+        target = ROOT / path
+        if not target.is_file():
+            missing.append("%s (no such file)" % m.group(0))
+        elif not re.search(r"^\s*(?:async\s+)?def\s+%s\s*\(" % re.escape(name),
+                           target.read_text(encoding="utf-8"), re.M):
+            missing.append(m.group(0))
+    assert not missing, "%s cites a test that does not exist: %s" % (
+        doc.relative_to(ROOT), ", ".join(sorted(set(missing))))

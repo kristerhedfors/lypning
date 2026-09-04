@@ -111,11 +111,15 @@ def plan(
         elif dest.is_file() and not is_ours(dest):
             # A refusal, not a note that everything is fine: something else owns
             # this name and overwriting it is exactly the cost invariant 7
-            # forbids. --force moves it aside rather than deleting it.
+            # forbids. `install.apply` passes --force to the shim only, so this
+            # file is never moved aside by lypning: the note says so rather
+            # than promising a backup that would not be made (uninstall restores
+            # a `<name>` + BACKUP_SUFFIX file if one exists).
             actions.append(install.Action(
                 "skip", dest,
-                "NOT a lypning plugin — needs --force, which moves it to %s%s"
-                % (dest.name, BACKUP_SUFFIX), "plugin", src))
+                "NOT a lypning plugin — left alone; move it aside yourself "
+                "(--force moves only a foreign python3 shim, not this file)",
+                "plugin", src))
         else:
             actions.append(install._file_action(src, dest, "plugin"))
             if not root.exists():

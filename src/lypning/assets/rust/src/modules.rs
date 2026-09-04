@@ -1,11 +1,13 @@
-//! The module surface: `sys`, `os`, `os.path`, `io`, `json`.
+//! The module surface: `MODULES` below — and, on the variant built with the
+//! `cap-*` feature for it, `collections` and `pathlib`.
 //!
 //! Chosen from the corpus, in frequency order: `sys` (82 imports), `json` (74),
 //! `io` (63 — almost entirely `io.open(p, encoding='utf-8').read()`, which is
 //! the file-read idiom agents actually type), `os` (21). `re` is deliberately
-//! ABSENT: a regex engine is a large amount of code with deep semantics, and
-//! lypning-mp already has one, so `import re` is a routing decision rather than a
-//! gap to fill here.
+//! ABSENT: a regex engine is a large amount of code with deep semantics, so
+//! `import re` is a routing decision — it goes to CPython, and
+//! `lypning conformance --plan` ranks what that costs — rather than a gap to
+//! fill here.
 
 use crate::args::Args;
 use crate::err::*;

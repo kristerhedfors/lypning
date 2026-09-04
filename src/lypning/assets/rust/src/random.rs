@@ -23,9 +23,10 @@
 //!   other name are refused at `modules::get_attr`, before any call.
 //!
 //! Every refusal raised here carries the kind `random`, which `route.rs` lists
-//! as only-CPython: MicroPython's generator is not MT19937, so a seeded stream
-//! that falls one tier instead of two would be answered plausibly and wrongly.
-//! The module is off that tier's import table for the same reason.
+//! as only-CPython: a reimplementation's generator is not MT19937 unless it
+//! was built to be (the oracle's is not — `route.rs`, 2026-09-02), so a seeded
+//! stream that fell to one would be answered plausibly and wrongly. The module
+//! is off the oracle's import table for the same reason.
 
 use std::rc::Rc;
 
