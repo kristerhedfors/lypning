@@ -14,6 +14,30 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-04** — Three router over-refusals, and the mis-route economics that rank them · [#42]
+
+- `import os.path` recorded a false alias `os` → `os.path`, so `os.path.basename(...)`
+  blocked as `module-attr: os.path.path` and went to CPython for a call this
+  engine answers. An alias is an `as` clause and nothing else; the binding is
+  compared against the first dotted component now, which is what Python binds.
+- `__name__` joins the router's optimistic method union. Safe to admit
+  unconditionally for the reason `.name` and `.errno` are not: an unmodelled
+  receiver **refuses** (`dunder-attr`, exit 90, one spawn recovered by the
+  chain) where those raise `AttributeError` at exit 1, which the chain never
+  recovers. Only names whose miss is a refusal belong there.
+- `except json.JSONDecodeError` reduced a dotted name to its leaf, found no
+  builtin, and blocked. Dotted exception names now resolve the prefix as a
+  module and ask it for the leaf, falling back to the old rule when the prefix
+  is not a module we serve — so it can only remove refusals it can justify.
+- **The measured trade, quoted from this run** (2,504 graded, 2026-09-04):
+  LATE 45 → 38, WASTED 59 → 73, MISMATCH 0, UNSAFE 0. A LATE costs a CPython
+  spawn (12.0 ms measured here); a WASTED costs a parse, because `lypning run`
+  IS the dispatcher and the process is already running (1.21 ms). So the trade
+  is −84 ms against +17 ms — a **net ~67 ms**, roughly 5:1 — while the report's
+  `accuracy` line reads 95.8% → 95.6%, because it weights the two grades
+  equally when they cost an order of magnitude differently. The grades are a
+  census, not a cost model; read them with the millisecond beside them.
+
 **2026-09-04** — `lypning-l` serves `pathlib` · [#41]
 
 - Coverage **64.3% → 69.5%** (+132 corpus programs) for +32.3 KB — **4.08
