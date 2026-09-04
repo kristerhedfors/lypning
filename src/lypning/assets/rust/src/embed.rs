@@ -204,7 +204,7 @@ fn nul_in_source(src: &str) -> Option<usize> {
 fn run_guarded(req: &Request) -> Outcome {
     if let Some(at) = nul_in_source(&req.source) {
         return Outcome {
-            stderr: format!("lypning: unsupported: source: NUL byte at offset {at}\n")
+            stderr: format!("{}\n", crate::err::refusal_line("source", &format!("NUL byte at offset {at}")))
                 .into_bytes(),
             kind: "source".into(),
             detail: format!("NUL byte at offset {at}"),

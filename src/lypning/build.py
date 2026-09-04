@@ -30,6 +30,7 @@ reports :func:`verify` collects are rendered by the modules that own them.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -335,6 +336,39 @@ def check_refusal_contract(binary: Path | str) -> tuple[bool, str]:
     return True, ""
 
 
+def check_spectrum_contract(binary: Path | str,
+                            expected: str = engines.LYPNING) -> tuple[bool, str]:
+    """``(ok, why)``: the binary knows which variant it is, and agrees with us.
+
+    ``route --spectrum`` must name ``expected`` as ``self``, list it in the table
+    it carries, and that table's names must be exactly ``engines.SPECTRUM`` —
+    the Python copy pinned to the compiled table at the moment a binary is
+    produced, which is the earliest a drift could exist. ``--version`` must say
+    the same name. A variant that mis-names itself writes a sibling's name at
+    the head of its refusal line and the dispatcher misroutes silently; this is
+    the assertion that makes that loud.
+    """
+    b = str(binary)
+    rc, out = _run([b, "route", "--spectrum"], timeout=60)
+    if rc != 0:
+        return False, "route --spectrum exited %d: %s" % (rc, out.strip()[:160])
+    try:
+        table = json.loads(out.strip().splitlines()[-1] if out.strip() else "")
+    except (ValueError, IndexError):
+        return False, "route --spectrum was not JSON: %r" % out.strip()[:160]
+    names = [row.get("name") for row in table.get("spectrum", [])]
+    if table.get("self") != expected:
+        return False, "the binary calls itself %r, expected %r" % (table.get("self"), expected)
+    if expected not in names:
+        return False, "%r is not a row of the table it carries: %r" % (expected, names)
+    if names != list(engines.SPECTRUM):
+        return False, "the compiled spectrum %r is not engines.SPECTRUM %r" % (names, list(engines.SPECTRUM))
+    rc, ver = _run([b, "--version"], timeout=60)
+    if rc != 0 or "(%s)" % expected not in ver:
+        return False, "--version says %r, expected it to name (%s)" % (ver.strip()[:80], expected)
+    return True, ""
+
+
 def _startup_opens(binary: Path) -> int | None:
     """File opens on ``-c 'pass'``. A static build must do zero of them."""
     strace = shutil.which("strace")
@@ -494,6 +528,8 @@ def build_rust(target: str = "musl", jobs: int | None = None,
                 opens, "" if opens == 0 else "  WARNING: a static build should open nothing"))
 
     ok, why = check_refusal_contract(binary)
+    if ok:
+        ok, why = check_spectrum_contract(binary)
     shape.append("unsupported contract: %s" % ("held" if ok else "BROKEN — " + why))
     return BuildResult(
         engines.LYPNING,

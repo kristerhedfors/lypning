@@ -32,11 +32,19 @@ path = "src/lib.rs"
 crate-type = ["rlib", "cdylib", "staticlib"]
 
 [features]
-# Off by default so `cargo build` still builds the binary and nothing else.
+# Exactly one `variant-*` feature is on in any build: it names the point on the
+# Rust spectrum this binary is (`build.rs` turns it into `LYPNING_ENGINE`, the
+# name at the head of every refusal line, and refuses zero or two). `variant-m`
+# is today's binary and the default, so `cargo build` by hand and `lypning
+# build --rust` still produce the same artefact from the same object cache.
+# Capability features (`cap-*`) gate code and are never passed by hand — a
+# variant feature names its set; none exist yet.
+#
 # The C ABI is compiled only for the library build, which is also the only
 # build allowed to unwind — see `capi.rs` for why that is enforced rather than
 # documented.
-default = []
+default = ["variant-m"]
+variant-m = []
 capi = []
 
 # The library's profile, and the one thing it may not inherit is `panic`.
