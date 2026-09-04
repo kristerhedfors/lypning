@@ -14,6 +14,28 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-04** — The spectrum, step 4: build, install and gate per variant · [#36]
+
+- `lypning build --rust` builds every point on the spectrum (`--variant NAME`
+  narrows it): one cargo feature per variant, the default variant in cargo's
+  own `target/` so a by-hand build still shares the object cache, every other
+  one under `target/variant-<letter>/`; the refusal and spectrum contracts are
+  asserted with each variant's **own** name. The C ABI library names the
+  largest variant explicitly instead of inheriting `default`.
+- **The Rust core is now size-gated**: `lypning gate` holds each variant to a
+  budget in device blocks (`lypning`: 8, frozen — 1,007,824 B on musl today,
+  40,752 B of headroom; every new capability goes to a larger variant). It was
+  measured and never failed before.
+- **`--target host` installs as `lypning`**, not `lypning-host`: the literal
+  `"host"` was compared as an architecture name and the only binary that runs
+  on a darwin host landed under a name no finder looked for. `doctor` shows
+  one row per variant. Routing and conformance counts unchanged.
+- **Retracting a claim from the step-3 entry.** It said "bytes unchanged"; no
+  sized build was run for it. Measured now on the host build: step 3's verdict
+  vector, chain walk and `--next` cost **+7,472 B of `__text`** (639,296 →
+  646,768; file 817,984 → 834,592, still 7 blocks). Steps 1, 2 and 4 are
+  Python-only and cost nothing; the musl count is CI's to print.
+
 **2026-09-04** — The spectrum, step 3: one routing rule in both dispatchers (no behaviour change) · [#35]
 
 - `route.rs` now decides by a **verdict vector** — every rung's yes/no on the

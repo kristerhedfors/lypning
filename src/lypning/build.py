@@ -317,22 +317,35 @@ def _can_reach(host: str, port: int = 443, timeout: float = 5.0) -> bool:
 # --- the pinned contract -----------------------------------------------------
 
 
-def check_refusal_contract(binary: Path | str) -> tuple[bool, str]:
+def variant_feature(variant: str) -> str:
+    """The one cargo feature that names ``variant``: ``variant-m`` for the
+    unsuffixed core, ``variant-<letter>`` for a suffixed one (invariant 9)."""
+    if variant == engines.LYPNING:
+        return "variant-m"
+    if variant in engines.SPECTRUM and variant.startswith(engines.LYPNING + "-"):
+        return "variant-" + variant[len(engines.LYPNING) + 1:]
+    raise ValueError("not a Rust variant: %r" % (variant,))
+
+
+def check_refusal_contract(binary: Path | str, expected: str = engines.LYPNING) -> tuple[bool, str]:
     """``(ok, why)`` for the three things a refusal must do, all at once.
 
-    Exit ``90``; the exact line on stderr; **nothing** on stdout. The last one is
-    the one that hurts: a refusal written to stdout still exits 90 and still
-    looks right in a terminal, while it silently poisons every ``… | wc -l``
-    the caller had around it.
+    Exit ``90``; the exact line on stderr — headed by ``expected``'s own name,
+    which is the half a spectrum adds: a variant writing a sibling's name would
+    misroute the dispatcher silently; **nothing** on stdout. The last one is the
+    one that hurts: a refusal written to stdout still exits 90 and still looks
+    right in a terminal, while it silently poisons every ``… | wc -l`` the
+    caller had around it.
     """
+    want = engines.refusal_line(expected, "module", REFUSAL_PROGRAM)
     res = engines.run(engines.LYPNING, REFUSAL_PROGRAM, binary=Path(binary), timeout=60.0)
     if res.returncode != UNSUPPORTED_EXIT:
         return False, "exit %d, expected %d (%s)" % (
             res.returncode, UNSUPPORTED_EXIT, res.stderr.strip()[:160] or "no stderr")
     if res.stdout != "":
         return False, "the refusal line reached stdout: %r" % res.stdout[:120]
-    if res.stderr.strip() != REFUSAL_LINE:
-        return False, "stderr was %r, expected %r" % (res.stderr.strip()[:160], REFUSAL_LINE)
+    if res.stderr.strip() != want:
+        return False, "stderr was %r, expected %r" % (res.stderr.strip()[:160], want)
     return True, ""
 
 
@@ -439,7 +452,8 @@ def _ensure_rust_target(triple: str, verbose: bool) -> tuple[str, str]:
 
 
 def build_rust(target: str = "musl", jobs: int | None = None,
-               verbose: bool = False, dry_run: bool = False) -> BuildResult:
+               verbose: bool = False, dry_run: bool = False,
+               variant: str = engines.LYPNING) -> BuildResult:
     """Build the Rust core, then refuse to call it ok until the contract holds.
 
     The default is STATIC MUSL, and that is not a preference — it is the same
@@ -450,21 +464,33 @@ def build_rust(target: str = "musl", jobs: int | None = None,
     dir, which :func:`engines.find_lypning` prefers over every cargo target —
     so a host build silently becomes the binary every later measurement uses.
     ``--target host`` still builds the glibc control, deliberately.
+
+    ``variant`` is which point on the Rust spectrum to build (invariant 9): one
+    cargo feature names it, the default variant keeps cargo's default target
+    dir (so a by-hand ``cargo build`` shares the object cache), every other one
+    builds under ``target/variant-<letter>/`` because alternating feature sets
+    in one dir recompiles the world. Both contracts are asserted with the
+    variant's OWN name.
     """
     t0 = time.perf_counter()
+    try:
+        feature = variant_feature(variant)
+    except ValueError as e:
+        return BuildResult(variant, target=str(target), seconds=time.perf_counter() - t0,
+                           skipped_reason=str(e))
     triple = resolve_target(target)
     if triple is None:
-        return BuildResult(engines.LYPNING, target=str(target), seconds=time.perf_counter() - t0,
+        return BuildResult(variant, target=str(target), seconds=time.perf_counter() - t0,
                            skipped_reason="unknown target %r (host, musl, x86_64, i686)" % target)
 
     tc = toolchain()
     if tc["cargo"] is None:
-        return BuildResult(engines.LYPNING, target=triple or "host",
+        return BuildResult(variant, target=triple or "host",
                            seconds=time.perf_counter() - t0,
                            skipped_reason="cargo not found — install Rust: https://rustup.rs",
                            unavailable=True)
     if not (paths.RUST_DIR / "Cargo.toml").is_file():
-        return BuildResult(engines.LYPNING, target=triple or "host",
+        return BuildResult(variant, target=triple or "host",
                            seconds=time.perf_counter() - t0,
                            skipped_reason="no crate source at %s" % paths.RUST_DIR)
 
@@ -486,20 +512,26 @@ def build_rust(target: str = "musl", jobs: int | None = None,
     # archive on every `lypning build --rust` — minutes of cargo for an artefact
     # this command was not asked for and does not install.
     cmd = [tc["cargo"], "build", "--manifest-path", str(workdir / "Cargo.toml"),
-           "--release", "--bin", engines.LYPNING]
+           "--release", "--bin", engines.LYPNING, "--features", feature]
+    if variant != engines.LYPNING:
+        cmd.append("--no-default-features")
     if triple:
         cmd += ["--target", triple]
+    target_root = workdir / "target"
+    if variant != engines.LYPNING:
+        target_root = target_root / feature
+        cmd += ["--target-dir", str(target_root)]
     if jobs:
         cmd += ["--jobs", str(int(jobs))]
     if verbose:
         cmd.append("--verbose")
 
-    out_dir = workdir / "target" / triple / "release" if triple else workdir / "target" / "release"
-    binary = out_dir / engines.LYPNING
+    out_dir = target_root / triple / "release" if triple else target_root / "release"
+    binary = out_dir / engines.LYPNING   # cargo's file name; install renames it to the variant
 
     if dry_run:
         return BuildResult(
-            engines.LYPNING, target=triple or "host", binary=None,
+            variant, target=triple or "host", binary=None,
             seconds=time.perf_counter() - t0,
             log=_join(*notes, " ".join(cmd), "would produce: %s" % binary),
             skipped_reason="dry run: nothing was built", dry_run=True,
@@ -507,13 +539,13 @@ def build_rust(target: str = "musl", jobs: int | None = None,
 
     rc, out = _run(cmd, cwd=workdir, timeout=_CARGO_TIMEOUT)
     if rc != 0:
-        return BuildResult(engines.LYPNING, target=triple or "host",
+        return BuildResult(variant, target=triple or "host",
                            seconds=time.perf_counter() - t0,
                            log=_join(*notes, _tail(out, verbose)),
                            skipped_reason="cargo build failed (exit %d)%s (`-v` for the full log)"
                                           % (rc, _why(out)))
     if not binary.is_file():
-        return BuildResult(engines.LYPNING, target=triple or "host",
+        return BuildResult(variant, target=triple or "host",
                            seconds=time.perf_counter() - t0,
                            log=_join(*notes, _tail(out, verbose)),
                            skipped_reason="cargo reported success but %s does not exist" % binary)
@@ -527,12 +559,12 @@ def build_rust(target: str = "musl", jobs: int | None = None,
             shape.append("file opens on -c 'pass': %d%s" % (
                 opens, "" if opens == 0 else "  WARNING: a static build should open nothing"))
 
-    ok, why = check_refusal_contract(binary)
+    ok, why = check_refusal_contract(binary, expected=variant)
     if ok:
-        ok, why = check_spectrum_contract(binary)
+        ok, why = check_spectrum_contract(binary, expected=variant)
     shape.append("unsupported contract: %s" % ("held" if ok else "BROKEN — " + why))
     return BuildResult(
-        engines.LYPNING,
+        variant,
         ok=ok,
         binary=binary,
         size_bytes=size,
@@ -613,8 +645,12 @@ def build_lib(target: str = "host", jobs: int | None = None,
         if note:
             notes.append(note)
 
+    # The library is the LARGEST variant, said in code: inheriting `default`
+    # would make it whichever variant is the default, silently.
     cmd = [tc["cargo"], "build", "--manifest-path", str(workdir / "Cargo.toml"),
-           "--lib", "--features", "capi", "--profile", LIB_PROFILE]
+           "--lib", "--no-default-features",
+           "--features", "capi,%s" % variant_feature(engines.SPECTRUM[-1]),
+           "--profile", LIB_PROFILE]
     if triple:
         cmd += ["--target", triple]
     if jobs:
@@ -1018,7 +1054,8 @@ def _c_probe() -> tuple[int, str]:
 def build_all(rust: bool = True, micropython: bool = True, target: str = "musl",
               jobs: int | None = None, verbose: bool = False,
               dry_run: bool = False, stock: bool = False,
-              lib: bool = False, lib_target: str = "") -> list[BuildResult]:
+              lib: bool = False, lib_target: str = "",
+              variant: str = "all") -> list[BuildResult]:
     """Build what was asked for, in tier order, and never stop on a failure.
 
     The tiers are independent — a missing 32-bit toolchain says nothing about
@@ -1030,7 +1067,12 @@ def build_all(rust: bool = True, micropython: bool = True, target: str = "musl",
     """
     results: list[BuildResult] = []
     if rust:
-        results.append(build_rust(target=target, jobs=jobs, verbose=verbose, dry_run=dry_run))
+        # Every variant on the spectrum by default, so the dev tree is never a
+        # build behind on one sibling; `--variant NAME` narrows an inner loop.
+        names = list(engines.SPECTRUM) if variant == "all" else [variant]
+        for name in names:
+            results.append(build_rust(target=target, jobs=jobs, verbose=verbose,
+                                      dry_run=dry_run, variant=name))
     if lib:
         # The HOST target unless the caller named one, whatever the binary is
         # building for: a shared object has to match the libc of the process
@@ -1055,9 +1097,11 @@ def _runs_here(target: str) -> bool:
     64-bit host, but only when the loader for it is installed, and a musl-static
     i686 binary that happens to run here is still not what this host should be
     dispatching to — the host build exists and is faster to nobody's surprise.
-    Same-arch is the only honest yes.
+    Same-arch is the only honest yes. ``"host"`` is this machine by definition:
+    it used to be compared as an architecture name, fail, and install the only
+    binary that runs here as ``lypning-host`` — which no finder ever looked for.
     """
-    if not target:
+    if not target or target == "host":
         return True
     import platform
 
@@ -1195,7 +1239,7 @@ def verify(results: Iterable[BuildResult] | None = None, *, limit: int | None = 
         if r.engine in engines.SPECTRUM + (engines.MICROPYTHON,):
             pins[engines.env_var_for(r.engine)] = str(r.binary)
     if results is None:
-        subjects = [p for p in (engines.find_lypning(), engines.find_micropython()) if p]
+        subjects = [p for p in (engines.find(e) for e in engines.SPECTRUM + (engines.MICROPYTHON,)) if p]
 
     saved = {k: os.environ.get(k) for k in
              [engines.env_var_for(e) for e in engines.SPECTRUM + (engines.MICROPYTHON,)] + ["LYPNING_LIB"]}

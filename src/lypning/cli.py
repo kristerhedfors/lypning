@@ -285,7 +285,7 @@ def cmd_build(ns: argparse.Namespace) -> int:
         lib = True
     results = build.build_all(rust=rust, micropython=mp, target=ns.target,
                               jobs=ns.jobs, verbose=ns.verbose, dry_run=ns.dry_run,
-                              stock=ns.stock, lib=lib,
+                              stock=ns.stock, lib=lib, variant=ns.variant,
                               # Only when the caller named one. `--target` defaults
                               # to musl for the binary, which is the one thing a
                               # loadable shared object must not be on a glibc host.
@@ -859,10 +859,17 @@ def _doctor_checks() -> List[Tuple[str, str, str]]:
 
     # 2. engines
     found = engines.available()
-    core = found.get(engines.LYPNING)
-    checks.append((OK if core else FAIL, "lypning core",
-                   "%s (%s B)" % (core, format(_size_of(core), ",")) if core
-                   else "not built — run `lypning build --rust`"))
+    # One row per point on the Rust spectrum. The unsuffixed core missing is a
+    # FAIL — nothing routes without it; a larger sibling missing is a WARN, the
+    # same "hole in the table" rule lypning-mp gets.
+    for name in engines.SPECTRUM:
+        core = found.get(name)
+        label = "lypning core" if name == engines.LYPNING else name
+        checks.append((OK if core else (FAIL if name == engines.LYPNING else WARN), label,
+                       "%s (%s B, %d blocks)" % (core, format(_size_of(core), ","),
+                                                 -(-_size_of(core) // 131_072)) if core
+                       else "not built — run `lypning build --rust%s`"
+                            % ("" if name == engines.LYPNING else " --variant " + name)))
     mp = found.get(engines.MICROPYTHON)
     checks.append((OK if mp else WARN, engines.MICROPYTHON,
                    "%s (%s B)" % (mp, format(_size_of(mp), ",")) if mp
@@ -1734,6 +1741,9 @@ examples:
   lypning build --all --dry-run       print the commands, build nothing
 """)
     s.add_argument("--rust", action="store_true", help="build the Rust core")
+    s.add_argument("--variant", default="all", metavar="V",
+                   choices=("all",) + tuple(engines.SPECTRUM),
+                   help="which point on the Rust spectrum to build (default: every one)")
     s.add_argument("--micropython", action="store_true", help="build the MicroPython tier")
     s.add_argument("--all", action="store_true",
                    help="both tiers and the library (the default when none is named is both tiers)")
