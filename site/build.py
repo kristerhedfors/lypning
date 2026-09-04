@@ -45,6 +45,7 @@ SITE = Path(__file__).resolve().parent
 # one-line description the index shows. Order is the nav order.
 PAGES = [
     ("README.md", "readme.html", "Overview", "What it is, how to install it, and how to wire it into a session."),
+    ("docs/VERIFICATION.md", "docs/verification.html", "Verification", "Every contract as a command, its expected output from a dated run of record, and the test that pins it."),
     ("docs/LYPNING.md", "docs/lypning.html", "Design", "The mixture, the classifier, and the commit barrier that makes falling onward safe."),
     ("docs/SUBSET.md", "docs/subset.html", "The subset", "What the engines implement, and the rules that decide what they refuse."),
     ("docs/COOKBOOK.md", "docs/cookbook.html", "Cookbook", "Rewrites for constructs outside the subset — every recipe executed by the test suite."),

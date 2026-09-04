@@ -1,0 +1,96 @@
+[
+ {
+  "name": "malformed JSON on stdin",
+  "event": "pre-tool-use",
+  "stdin": "not json at all\n",
+  "env": {},
+  "stdout": "{\"continue\":true,\"suppressOutput\":true}\n",
+  "exit": 0
+ },
+ {
+  "name": "empty stdin",
+  "event": "pre-tool-use",
+  "stdin": "",
+  "env": {},
+  "stdout": "{\"continue\":true,\"suppressOutput\":true}\n",
+  "exit": 0
+ },
+ {
+  "name": "the log path is unwritable",
+  "event": "pre-tool-use",
+  "stdin": "{\"tool_name\": \"Bash\", \"tool_input\": {\"command\": \"python3 -c \\\"print(1)\\\"\"}, \"session_id\": \"s-fixture\", \"cwd\": \"/tmp\", \"tool_use_id\": \"toolu_fixture\"}",
+  "env": {
+   "LYPNING_LOG": "/dev/null/invocations.jsonl"
+  },
+  "stdout": "{\"continue\":true,\"suppressOutput\":true}\n",
+  "exit": 0
+ },
+ {
+  "name": "no engine is built",
+  "event": "pre-tool-use",
+  "stdin": "{\"tool_name\": \"Bash\", \"tool_input\": {\"command\": \"python3 -c \\\"print(1)\\\"\"}, \"session_id\": \"s-fixture\", \"cwd\": \"/tmp\", \"tool_use_id\": \"toolu_fixture\"}",
+  "env": {
+   "LYPNING_BIN": "/dev/null/no-such-binary"
+  },
+  "stdout": "{\"continue\":true,\"suppressOutput\":true}\n",
+  "exit": 0
+ },
+ {
+  "name": "a python command (the happy path)",
+  "event": "pre-tool-use",
+  "stdin": "{\"tool_name\": \"Bash\", \"tool_input\": {\"command\": \"python3 -c \\\"print(1)\\\"\"}, \"session_id\": \"s-fixture\", \"cwd\": \"/tmp\", \"tool_use_id\": \"toolu_fixture\"}",
+  "env": {},
+  "stdout": "{\"continue\":true,\"suppressOutput\":true}\n",
+  "exit": 0,
+  "logs": true
+ },
+ {
+  "name": "a command that is not python is answered and dropped",
+  "event": "pre-tool-use",
+  "stdin": "{\"tool_name\": \"Bash\", \"tool_input\": {\"command\": \"ls -la\"}}",
+  "env": {},
+  "stdout": "{\"continue\":true,\"suppressOutput\":true}\n",
+  "exit": 0,
+  "logs": false
+ },
+ {
+  "name": "capture switched off",
+  "event": "pre-tool-use",
+  "stdin": "{\"tool_name\": \"Bash\", \"tool_input\": {\"command\": \"python3 -c \\\"print(1)\\\"\"}, \"session_id\": \"s-fixture\", \"cwd\": \"/tmp\", \"tool_use_id\": \"toolu_fixture\"}",
+  "env": {
+   "LYPNING_CAPTURE": "0"
+  },
+  "stdout": "{\"continue\":true,\"suppressOutput\":true}\n",
+  "exit": 0,
+  "logs": false
+ },
+ {
+  "name": "stop with no log",
+  "event": "stop",
+  "stdin": "{\"cwd\": \"/tmp\"}",
+  "env": {},
+  "stdout": "{\"continue\":true,\"suppressOutput\":true}\n",
+  "exit": 0
+ },
+ {
+  "name": "OpenHands terminal call",
+  "event": "openhands-post-tool-use",
+  "stdin": "{\"tool_name\": \"terminal\", \"tool_input\": {\"command\": \"python3 -c \\\"print(2)\\\"\"}, \"tool_response\": {\"exit_code\": 0}, \"session_id\": \"oh-fixture\", \"working_dir\": \"/tmp\"}",
+  "env": {},
+  "stdout": "{\"continue\":true,\"suppressOutput\":true}\n",
+  "exit": 0,
+  "logs": true,
+  "log_has": {
+   "host": "openhands",
+   "exit_code": 0
+  }
+ },
+ {
+  "name": "OpenHands session end with no log",
+  "event": "openhands-session-end",
+  "stdin": "{\"session_id\": \"oh-fixture\"}",
+  "env": {},
+  "stdout": "{\"continue\":true,\"suppressOutput\":true}\n",
+  "exit": 0
+ }
+]

@@ -1,0 +1,121 @@
+[
+ {
+  "engine": "lypning",
+  "program": "import subprocess",
+  "exit": 90,
+  "stdout": "",
+  "stderr": "lypning: unsupported: module: import subprocess\n"
+ },
+ {
+  "engine": "lypning-l",
+  "program": "import subprocess",
+  "exit": 90,
+  "stdout": "",
+  "stderr": "lypning-l: unsupported: module: import subprocess\n"
+ },
+ {
+  "engine": "lypning",
+  "program": "print(1); import subprocess",
+  "exit": 90,
+  "stdout": "",
+  "stderr": "lypning: unsupported: module: import subprocess\n"
+ },
+ {
+  "engine": "lypning",
+  "program": "print(2**100)",
+  "exit": 90,
+  "stdout": "",
+  "stderr": "lypning: unsupported: bigint: integer result beyond 64-bit range (Python would use a bignum)\n"
+ },
+ {
+  "engine": "lypning-l",
+  "program": "print(2**100)",
+  "exit": 90,
+  "stdout": "",
+  "stderr": "lypning-l: unsupported: bigint: integer result beyond 64-bit range (Python would use a bignum)\n"
+ },
+ {
+  "engine": "lypning",
+  "program": "print(getattr(print, \"__name__\"))",
+  "exit": 90,
+  "stdout": "",
+  "stderr": "lypning: unsupported: builtin: getattr\n"
+ },
+ {
+  "engine": "lypning",
+  "program": "print({3, 1, 2})",
+  "exit": 90,
+  "stdout": "",
+  "stderr": "lypning: unsupported: set-order: repr() of a set with more than one element exposes set iteration order, which CPython defines by its own hashing\n"
+ },
+ {
+  "engine": "lypning",
+  "program": "import collections; print(collections.Counter(\"aab\"))",
+  "exit": 90,
+  "stdout": "",
+  "stderr": "lypning: unsupported: module: import collections\n"
+ },
+ {
+  "engine": "lypning-l",
+  "program": "import collections; print(collections.Counter(\"aab\"))",
+  "exit": 0,
+  "stdout": "Counter({'a': 2, 'b': 1})\n",
+  "stderr": ""
+ },
+ {
+  "engine": "lypning",
+  "program": "import sys; sys.exit(90)",
+  "exit": 90,
+  "stdout": "",
+  "stderr": ""
+ },
+ {
+  "engine": "lypning",
+  "program": "import sys; sys.exit(3)",
+  "exit": 3,
+  "stdout": "",
+  "stderr": ""
+ },
+ {
+  "engine": "lypning",
+  "program": "x = 1/0",
+  "exit": 1,
+  "stdout": "",
+  "stderr_startswith": "Traceback (most recent call last):\n"
+ },
+ {
+  "engine": "lypning",
+  "program": "match 1:\n    case 1: pass",
+  "exit": 1,
+  "stdout": "",
+  "stderr_startswith": "Traceback (most recent call last):\n"
+ },
+ {
+  "engine": "run",
+  "program": "import subprocess; print(\"answered\")",
+  "exit": 0,
+  "stdout": "answered\n",
+  "stderr": ""
+ },
+ {
+  "engine": "run",
+  "program": "import sys; sys.exit(90)",
+  "exit": 90,
+  "stdout": "",
+  "stderr": ""
+ },
+ {
+  "engine": "run",
+  "program": "print(2**100)",
+  "exit": 0,
+  "stdout": "1267650600228229401496703205376\n",
+  "stderr": ""
+ },
+ {
+  "engine": "run",
+  "program": "import collections; print(collections.Counter(\"aab\"))",
+  "exit": 0,
+  "stdout": "Counter({'a': 2, 'b': 1})\n",
+  "stderr": ""
+ }
+]

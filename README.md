@@ -874,6 +874,7 @@ Makefile               thin wrappers: build test check conformance fuzz bench ga
 
 | doc | what |
 |---|---|
+| `docs/VERIFICATION.md` | the QA spine: every contract as a command, its expected output from a dated run of record, the failure text a regression prints, and the test that pins it |
 | `docs/LYPNING.md` | the design: the measurement, the subset, the three refusals, the classifier, the commit barrier |
 | `docs/MICROPYTHON.md` | the cost model both runtimes are optimised against, and the second tier's charter |
 | `docs/SANDBOX-PERFORMANCE.md` | where the 8,573 ms cold `python3 --version` comes from |
