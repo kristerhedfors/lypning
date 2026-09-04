@@ -93,10 +93,20 @@ through untouched). The named reporter functions — `report`, `render`,
 traceback reaches a user unless `LYPNING_DEBUG=1`.
 
 **9. The names.**
-Engine strings are exactly `"lypning"`, `"lypning-mp"`, `"cpython"`; env vars
-are `LYPNING_*`; the state dir is `~/.lypning` (`$LYPNING_HOME`). The two
-upstream names belong to the project's history and appear in exactly three
-places: the credit paragraph in `README.md`, the *Before the name* section of
+Engine strings are exactly the members of `engines.ENGINE_ORDER`: the Rust
+**spectrum** — every variant built from the one crate, cheapest first, spelled
+in `engines.SPECTRUM` (today `"lypning"`; `"lypning-l"`, the 4 MB variant, when
+it lands) — then `"lypning-mp"`, then `"cpython"`. A variant's name is `lypning`
+plus one lowercase letter from a closed set (`l`; never `m`, which reads as
+`-mp`), and it precedes the install-target suffix: `lypning-l-i686`.
+`engines.parse_binary_name` is the one reader of that shape, longest engine
+first. Each variant writes its **own** name at the head of its refusal line,
+through `engines.refusal_line`, never a literal. Env vars are `LYPNING_*`, a
+variant's binary pinned by `engines.env_var_for` (`LYPNING_BIN`,
+`LYPNING_L_BIN`, `LYPNING_MP_BIN`, `LYPNING_CPYTHON`); the state dir is
+`~/.lypning` (`$LYPNING_HOME`). No engine name is spelled by hand outside
+`engines.py` — a test holds that. The two upstream names belong to the
+project's history and appear in exactly three places: the credit paragraph in `README.md`, the *Before the name* section of
 `CHANGELOG.md`, and the historical corpus JSONL, whose programs are captured
 verbatim and are not ours to edit. Nowhere else, including comments — and never
 as a live identifier, which is the half that matters: a name that still resolves

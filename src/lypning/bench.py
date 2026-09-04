@@ -155,9 +155,9 @@ def resolve_arms(names: Optional[Sequence[Union[str, Arm]]] = None) -> List[Arm]
                 continue
             env: Dict[str, str] = {}
             if found.get(engines.CPYTHON):
-                env["LYPNING_CPYTHON"] = str(found[engines.CPYTHON])
+                env[engines.env_var_for(engines.CPYTHON)] = str(found[engines.CPYTHON])
             if found.get(engines.MICROPYTHON):
-                env["LYPNING_MP_BIN"] = str(found[engines.MICROPYTHON])
+                env[engines.env_var_for(engines.MICROPYTHON)] = str(found[engines.MICROPYTHON])
             out.append(Arm(MIXTURE, b, ("run",), env))
             continue
         b = found.get(name)
@@ -1511,7 +1511,7 @@ def render_micropython(report: MicropythonReport) -> str:
     out.append("corpus — %d programs loaded, %d timed, min of %d, arms interleaved per entry" % (
         loaded, run.corpus_size, run.repeat))
     out.append("")
-    out.append("%-46s %12s %12s %10s" % ("case", "lypning-mp", "stock", "mp/stock"))
+    out.append("%-46s %12s %12s %10s" % ("case", engines.MICROPYTHON, "stock", "mp/stock"))
     for case, ours, theirs in _mp_rows(report):
         out.append("%-46s %12s %12s %10s" % (
             case, _ms(ours, 12), _ms(theirs, 12), _ratio(ours, theirs)))
@@ -1527,7 +1527,7 @@ def render_micropython(report: MicropythonReport) -> str:
         share = _concentration(gaps, st.shared_total_ms - mp.shared_total_ms)
         out.append("")
         out.append("biggest per-entry gaps, shared subset (pointer, not verdict)")
-        out.append("%-30s %12s %12s %10s" % ("entry", "lypning-mp", "stock", "delta"))
+        out.append("%-30s %12s %12s %10s" % ("entry", engines.MICROPYTHON, "stock", "delta"))
         for i, ours, theirs in gaps:
             out.append("%-30s %12.1f %12.1f %10.1f" % (i[:30], ours, theirs, theirs - ours))
         if share is not None and share >= 0.5:
@@ -1538,7 +1538,7 @@ def render_micropython(report: MicropythonReport) -> str:
         out.append("")
         out.append("coverage — a refusal is data, not a failure")
         out.append("%-14s %6s %9s %8s %8s" % ("arm", "ran", "refused", "failed", "errors"))
-        out.append("%-14s %6d %9d %8d %8d" % ("lypning-mp", mp.ran, mp.refused, mp.failed, mp.errors))
+        out.append("%-14s %6d %9d %8d %8d" % (engines.MICROPYTHON, mp.ran, mp.refused, mp.failed, mp.errors))
         out.append("%-14s %6d %9d %8d %8d" % ("stock", st.ran, st.refused, st.failed, st.errors))
         def _only(a: ArmResult, b: ArmResult) -> int:
             """Entries ``a`` COMPLETED and ``b`` did not — coverage, in one direction.

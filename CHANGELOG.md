@@ -14,6 +14,19 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-04** — The spectrum, step 1: the names become a grammar (no behaviour change) · [#33]
+
+- lypning is becoming a **spectrum** of Rust variants from one crate — `lypning`
+  (1 MB, today's binary) and, next, `lypning-l` (4 MB, to absorb what the
+  MicroPython tier does). This PR is the grammar only, at N=1: invariant 9 is
+  amended; `engines.SPECTRUM` (one entry) feeds `ENGINE_ORDER`;
+  `parse_binary_name` is the one reader of `<engine>[-<target>]` (it replaces the
+  gate's ad-hoc check, longest engine first); `env_var_for` spells every
+  `LYPNING_*_BIN` pin by rule where five sites spelled them by hand;
+  `refusal_line` is the one formatting site the build and embedding checks pin
+  against. A test holds that no engine name is spelled by hand outside
+  `engines.py`. Every chain, pin and gate answers exactly as before.
+
 **2026-09-03** — Timing tools report host load, and refuse to call a loaded reading a measurement · [#32]
 
 - `lypning bench`, `corpus-time` and `perf` print the 1-minute load average in
