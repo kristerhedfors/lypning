@@ -808,7 +808,7 @@ def _median(xs: Sequence[float]) -> Optional[float]:
 # loops twenty thousand times; a corpus entry runs once and exits, so its cost
 # is startup, parse and compile rather than steady-state dispatch. Optimising
 # against the first distribution and shipping to the second is how a speed pass
-# produces numbers nobody can feel: docs/MICROPYTHON.md §8a records a synthetic
+# produces numbers nobody can feel: CHANGELOG.md (2026-08-15) records a synthetic
 # workload that said computed-goto was worth 48 ms per program where the corpus
 # said 0.14 ms.
 #

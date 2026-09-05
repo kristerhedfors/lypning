@@ -337,10 +337,10 @@ things bound the risk, and both matter for the 30 s exec ceiling that
   A dict of ~20,000 distinct keys is the point to be careful about — a word
   count over a large document is an ordinary one-liner that could reach it.
 
-**This has not yet been measured in a real VM.** `docs/MICROPYTHON.md` §5 already
-stages delivery behind a live `tests/e2e/sandbox-perf.spec.js` run before
-`PKGS_COMMON` changes, and a large-dict case belongs in that run. Until then
-the guest-side cost is an extrapolation, and is labelled as one.
+**This has not been measured in a real VM.** The acceptance metric in
+`docs/MICROPYTHON.md` §2 is a cold run in a real VM, and a large-dict case
+belongs in that run. Until then the guest-side cost is an extrapolation, and is
+labelled as one.
 
 The permanent fix is CPython's compact-dict layout — an ordered array with a
 hash index, O(1) lookup *and* insertion order. That is a VM change of a

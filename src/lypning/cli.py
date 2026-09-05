@@ -2258,7 +2258,7 @@ They disagree, routinely and by an order of magnitude, because a microbenchmark
 loops twenty thousand times while a corpus entry runs once and exits — so its
 cost is startup, parse and compile rather than steady-state dispatch. A
 synthetic workload once said a compiler change was worth 48 ms per program
-where the corpus said 0.14 ms (docs/MICROPYTHON.md §8a).
+where the corpus said 0.14 ms (CHANGELOG.md, 2026-08-15).
 
 Min of --repeat, one temp cwd per entry, LYPNING_CAPTURE=0 in every child.
 Entries that exit 90 are TIMED, not skipped — a refusal costs a spawn the agent

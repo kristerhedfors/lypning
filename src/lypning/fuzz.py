@@ -174,7 +174,7 @@ BYTES_METHODS: Dict[str, Tuple[str, ...]] = {
 #: CPython answers 0.
 TUPLE_METHODS: Dict[str, Tuple[str, ...]] = {"count": ("int",), "index": ("int",)}
 
-#: Deliberately a SUBSET of lypning's set table. ``docs/LYPNING.md`` §5 refuses
+#: Deliberately a SUBSET of lypning's set table. ``docs/LYPNING.md`` §3 refuses
 #: anything that would expose set iteration order, so a probe that prints a set
 #: is refused by construction and only the order-free operations are worth
 #: generating: the results here are consumed by ``len``, ``sorted`` and the
@@ -253,7 +253,7 @@ class _Grammar:
     def int_lit(self) -> str:
         """Well inside i64, mostly.
 
-        lypning is *right* to refuse a bignum (``docs/LYPNING.md`` §5.1) and a
+        lypning is *right* to refuse a bignum (``docs/LYPNING.md`` §3) and a
         refusal teaches nothing, so the budget is not spent on them — but the
         boundary is exactly where a saturating cast hides, so a small share of
         literals sit on it deliberately. ``-9223372036854775808`` is not among
