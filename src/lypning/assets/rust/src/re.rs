@@ -53,8 +53,11 @@
 //! cosmetic: a runtime refusal that lands after a side effect the commit
 //! barrier has already let through (`os.makedirs` before `re.sub`) cannot fall
 //! onward, so it becomes exit 1, the program's own exit, which the chain never
-//! retries. A pattern BUILT at runtime has nothing for a walk to compile and
-//! keeps the runtime refusal, which is what the backstop is for.
+//! retries. The walk therefore reads the pattern wherever it honestly can —
+//! the pattern argument, the `pattern=` keyword, a literal bound to a name
+//! above the call, and a `bytes` literal in any of those, which refuses
+//! whatever its content. A pattern BUILT at runtime has nothing for a walk to
+//! compile and keeps the runtime refusal, which is what the backstop is for.
 //!
 //! **The traps, each measured on CPython 3.11.15, 3.12.13, 3.13.13 and 3.14.5
 //! before the code below was written:**
@@ -1808,7 +1811,26 @@ impl<'a> Ex<'a> {
                         if let Some(kind) = iterate_kind {
                             self.reps[r].count = count;
                             let saved = self.reps[r].last;
-                            self.reps[r].last = ptr0;
+                            // The zero-width guard is CASE TWO'S ALONE. `sre`
+                            // writes `last_ptr` only in the branch that pushes
+                            // and pops it — "we may have enough matches, but if
+                            // we can match another item, do so" — and the
+                            // `count < min` branch above it does not touch it
+                            // at all. Writing it here too armed the guard one
+                            // iteration early: the next `Until` at the SAME ptr
+                            // then read `ptr0 == last` and skipped case two, so
+                            // the engine reached the tail down a different path
+                            // and the marks it arrived with were a different
+                            // iteration's. The SPAN was still right, which is
+                            // why this survived: only `group(n)` disagreed.
+                            // `re.search(r'(a*?){1,2}b', 'ab').group(1)` is
+                            // CPython's `'a'` and was `''` — a wrong answer at
+                            // exit 0, the one thing this engine may never do.
+                            // Only reachable for `min >= 1`, so `{0,n}`, `*`
+                            // and `?` never saw it.
+                            if kind == F_UNTIL2 {
+                                self.reps[r].last = ptr0;
+                            }
                             let f = Frame {
                                 kind,
                                 pc,

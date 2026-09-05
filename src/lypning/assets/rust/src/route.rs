@@ -821,6 +821,16 @@ fn cpython_only(kind: &str) -> bool {
     ONLY_CPYTHON_KINDS.contains(&kind) || CPYTHON_ONLY_KINDS.contains(&kind)
 }
 
+/// A pattern a walk could read: the text of a `str` literal, or the fact that
+/// it was a `bytes` one — which is all the walk needs, since a bytes pattern
+/// refuses whatever its content.
+#[cfg(feature = "cap-re")]
+#[derive(Clone)]
+enum PatLit {
+    Str(std::rc::Rc<str>),
+    Bytes,
+}
+
 #[derive(Default)]
 struct Requirements {
     imports: BTreeSet<String>,
@@ -837,6 +847,15 @@ struct Requirements {
     /// serves `re`: the core has no compiler to decide with.
     #[cfg(feature = "cap-re")]
     re_names: Vec<(String, String)>,
+    /// `P = r'…'` — a pattern LITERAL bound to a name, so that `re.sub(P, …)`
+    /// is decided by the same walk that decides `re.sub(r'…', …)`. `None` is a
+    /// name a walk cannot read a literal out of (a loop variable, a
+    /// parameter, anything computed), and it is the value that MATTERS: a name
+    /// this table does not resolve keeps the runtime refusal, which is the
+    /// backstop. Only filled once `re` is imported, so a program that never
+    /// touches the module pays one set lookup per binding and no allocation.
+    #[cfg(feature = "cap-re")]
+    re_pats: Vec<(String, Option<PatLit>)>,
     /// See `Route::reads_stdin`. The walk's half: `sys.stdin`, `input()`,
     /// `open(0)`, `os.read(0, …)`, `fileinput`; the text scan is the other.
     reads_stdin: bool,
@@ -848,6 +867,44 @@ impl Requirements {
             self.blocker = Some((kind.to_string(), detail));
         }
     }
+
+    /// Record what `name` now holds: a pattern literal, or `None` for a
+    /// binding a walk cannot read. The walk is in SOURCE ORDER, so the value
+    /// in force at the call is the one the call is decided against, and a
+    /// rebinding before the call replaces the literal rather than stacking on
+    /// it. A name bound only AFTER its use is never resolved, which is the
+    /// safe direction: the runtime refusal still catches it.
+    #[cfg(feature = "cap-re")]
+    fn bind_pattern(&mut self, name: &str, lit: Option<PatLit>) {
+        if !self.imports.contains("re") {
+            return;
+        }
+        match self.re_pats.iter_mut().find(|(n, _)| n == name) {
+            Some(slot) => slot.1 = lit,
+            None => self.re_pats.push((name.to_string(), lit)),
+        }
+    }
+
+    #[cfg(feature = "cap-re")]
+    fn pattern_named(&self, name: &str) -> Option<PatLit> {
+        self.re_pats
+            .iter()
+            .find(|(n, _)| n == name)
+            .and_then(|(_, v)| v.clone())
+    }
+
+    /// Every name a parameter list binds is a name whose value arrives at
+    /// CALL time, so it is not the module-level literal that shares its
+    /// spelling. Blocking on that literal would send a program this engine
+    /// runs to CPython — the direction `resolve_module` was written to stop.
+    #[cfg(feature = "cap-re")]
+    fn shadow_params(&mut self, params: &crate::ast::Params) {
+        for n in &params.names {
+            self.bind_pattern(n, None);
+        }
+    }
+    #[cfg(not(feature = "cap-re"))]
+    fn shadow_params(&mut self, _params: &crate::ast::Params) {}
 }
 
 fn walk_block(body: &[Stmt], req: &mut Requirements) {
@@ -920,6 +977,16 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
             for t in targets {
                 walk_target(t, req);
             }
+            // After `walk_target`, which cleared every name it bound: a string
+            // literal is the one value a walk can read back, so it is put back.
+            #[cfg(feature = "cap-re")]
+            if let Some(lit) = pattern_literal(value) {
+                for t in targets {
+                    if let Target::Name(n) = t {
+                        req.bind_pattern(n, Some(lit.clone()));
+                    }
+                }
+            }
         }
         Stmt::AugAssign { target, value, .. } => {
             walk_target(target, req);
@@ -959,6 +1026,7 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
             for d in params.defaults.iter().flatten() {
                 walk_expr(d, req);
             }
+            req.shadow_params(params);
             walk_block(body, req);
         }
         Stmt::Try {
@@ -1031,7 +1099,15 @@ fn walk_target(t: &Target, req: &mut Requirements) {
                 walk_expr(e, req);
             }
         }
-        Target::Name(_) => {}
+        // A name this binds no longer holds whatever literal it held: a `for`
+        // target, an augmented assignment, a `with … as`, a `del`, a
+        // comprehension's variable and an assignment of anything but a string
+        // all arrive here, and all of them make the name unreadable to a walk.
+        // `Stmt::Assign` puts a string literal back afterwards.
+        Target::Name(_n) => {
+            #[cfg(feature = "cap-re")]
+            req.bind_pattern(_n, None);
+        }
     }
 }
 
@@ -1117,14 +1193,19 @@ fn re_method(_req: &Requirements, _n: &str) -> bool {
 }
 
 /// The `re` function a call names — `re.sub`, `x.sub` after `import re as x`,
-/// or a name bound by `from re import sub [as s]` — together with its PATTERN
-/// argument when that is a literal.
+/// or a name bound by `from re import sub [as s]` — together with the
+/// expression in its PATTERN position, wherever that is spelled.
 ///
 /// Only for a program that imports `re`: the import is what makes the name mean
 /// the module, exactly as for [`pathlib_method`]; `re.split(",")` on a string
 /// someone called `re` is a str method and runs here.
 #[cfg(feature = "cap-re")]
-fn re_call_of<'a>(func: &Expr, args: &'a [Expr], req: &Requirements) -> Option<&'a Expr> {
+fn re_call_of<'a>(
+    func: &Expr,
+    args: &'a [Expr],
+    kwargs: &'a [(std::rc::Rc<str>, Expr)],
+    req: &Requirements,
+) -> Option<&'a Expr> {
     if !req.imports.contains("re") {
         return None;
     }
@@ -1144,8 +1225,23 @@ fn re_call_of<'a>(func: &Expr, args: &'a [Expr], req: &Requirements) -> Option<&
         Expr::Name(n) => req.re_names.iter().any(|(bound, _)| bound == n.as_ref()),
         _ => false,
     };
-    // The pattern is the first positional argument of every one of them.
-    named.then(|| args.first()).flatten()
+    if !named {
+        return None;
+    }
+    // The pattern is the first positional argument of every one of them, and
+    // `pattern=` when there is no positional at all — the spelling CPython
+    // and this engine both accept and the walk would otherwise not see.
+    args.first()
+        .or_else(|| kwargs.iter().find(|(k, _)| k.as_ref() == "pattern").map(|(_, v)| v))
+}
+
+#[cfg(feature = "cap-re")]
+fn pattern_literal(e: &Expr) -> Option<PatLit> {
+    match e {
+        Expr::Str(s) => Some(PatLit::Str(s.clone())),
+        Expr::Bytes(_) => Some(PatLit::Bytes),
+        _ => None,
+    }
 }
 
 /// A pattern literal this engine cannot compile, as a STATIC block.
@@ -1156,17 +1252,52 @@ fn re_call_of<'a>(func: &Expr, args: &'a [Expr], req: &Requirements) -> Option<&
 /// through (`os.makedirs` before `re.sub`) cannot fall onward: it becomes exit
 /// 1, which the chain never retries. `route.rs` learned that from the `re`
 /// surface's first shape, where the whole matcher was a static row for exactly
-/// this reason. A pattern built at RUNTIME still refuses at runtime; there is
-/// nothing here for a walk to compile.
+/// this reason.
+///
+/// So the walk reads the pattern wherever a walk honestly can: a literal in
+/// the pattern position, a literal `pattern=` keyword, a literal bound to a
+/// NAME above the call, and a `bytes` literal in any of those — which refuses
+/// whatever its content. A pattern BUILT at runtime, or read out of a name a
+/// walk cannot follow, keeps the runtime refusal; that is what the backstop is
+/// for, and taking a static route on a guess would send a program this engine
+/// runs to CPython instead.
+///
+/// This is THIS binary's walk, so it decides for a chain that starts here.
+/// A chain that starts at the core reaches `lypning-l` through `exec` with
+/// `-c`, not `run`, so the core's own route — `module: import re` — is the one
+/// that placed the program, and the runtime refusal is still what fires there.
 #[cfg(feature = "cap-re")]
-fn re_pattern_block(req: &mut Requirements, func: &Expr, args: &[Expr]) {
-    let Some(Expr::Str(p)) = re_call_of(func, args, req) else {
-        return;
+fn re_pattern_block(
+    req: &mut Requirements,
+    func: &Expr,
+    args: &[Expr],
+    kwargs: &[(std::rc::Rc<str>, Expr)],
+) {
+    let lit = match re_call_of(func, args, kwargs, req) {
+        // `P = r'…'` above the call. `pattern_named` answers only for a name
+        // whose binding a walk could read; anything else is `None` here and
+        // keeps the runtime refusal, which is what the backstop is for.
+        Some(Expr::Name(n)) => req.pattern_named(n),
+        Some(other) => pattern_literal(other),
+        None => None,
     };
-    if let Err(e) = crate::re::precompile(p) {
-        if let crate::err::ErrKind::Unsupported { kind, detail } = e.kind() {
-            req.block(kind, detail.clone());
+    match lit {
+        Some(PatLit::Str(src)) => {
+            if let Err(e) = crate::re::precompile(&src) {
+                if let crate::err::ErrKind::Unsupported { kind, detail } = e.kind() {
+                    req.block(kind, detail.clone());
+                }
+            }
         }
+        // A BYTES pattern is servable by CPython and by nothing in this
+        // engine, and it refuses whatever its content and whatever the
+        // subject — which makes it exactly the shape that must not wait for
+        // runtime to say so. Same kind, same detail, one in-process run
+        // earlier.
+        Some(PatLit::Bytes) => {
+            req.block("re", "bytes pattern or subject (re over bytes)".to_string())
+        }
+        None => {}
     }
 }
 
@@ -1281,7 +1412,7 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             // program whose arguments hold a second blocker is still counted
             // under the pattern it cannot compile — the row `--plan` ranks.
             #[cfg(feature = "cap-re")]
-            re_pattern_block(req, func, args);
+            re_pattern_block(req, func, args, kwargs);
             if calls_stdin(func, args) {
                 req.reads_stdin = true;
             }
@@ -1366,6 +1497,7 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             for d in params.defaults.iter().flatten() {
                 walk_expr(d, req);
             }
+            req.shadow_params(params);
             walk_expr(body, req);
         }
         _ => {}

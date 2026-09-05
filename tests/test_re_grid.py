@@ -509,6 +509,79 @@ IDIOMS = [R + x for x in [
     "re.findall(r'(?:home|tmp|root)','/tmp/x /home/y'))",
 ]]
 
+#: **The quantifier cross-product**, and the wrong answer at exit 0 it was
+#: written for. A capturing group whose body ends in a LAZY quantifier, nested
+#: in a bounded counted repeat with `min >= 1`, captured the WRONG ITERATION:
+#: `re.search(r'(a*?){1,2}b', 'ab').group(1)` was `''` where CPython says `'a'`.
+#: The overall SPAN was right every time, which is why nothing above caught it
+#: — only `group(n)`, `span(n)`, `groups()` and everything rendered from them
+#: (`findall`, `split`, a `sub` template, a `finditer` group read) disagreed.
+#:
+#: The cause was one write. `sre`'s MAX_UNTIL arms the zero-width guard
+#: (`last_ptr`) only in the branch that pushes and pops it — "we may have
+#: enough matches, but if we can match another item, do so" — and leaves it
+#: alone in the `count < min` branch above. This engine armed it in BOTH, so the
+#: next `Until` at the same position read `ptr == last`, skipped the
+#: try-one-more-iteration case, and reached the tail carrying a different
+#: iteration's marks. `{0,n}`, `*` and `?` never reach that branch, which is
+#: exactly the bisect the adversary reported.
+#:
+#: So every quantifier is nested inside every quantifier here, greedy and lazy,
+#: with a capturing group and without, and every rendering of the marks is
+#: printed. One program per row rather than one per pattern: 23 x 23 x 9 is
+#: 4,761 lines of stdout compared byte for byte, in 0.02 s on either engine.
+_Q = ("'', '*', '*?', '+', '+?', '?', '??', '{2}', '{2}?', '{0,2}', '{0,2}?', "
+      "'{1,2}', '{1,2}?', '{1,3}', '{1,3}?', '{2,3}', '{2,3}?', '{2,4}', '{2,4}?', "
+      "'{1,}', '{1,}?', '{2,}', '{2,}?'")
+_S = "'', 'a', 'b', 'aa', 'ab', 'aab', 'aaa', 'ba', 'abab'"
+
+
+def _cross(build: str, show: str, subjects: str = _S) -> str:
+    """One program that walks the inner x outer x subject cube and prints
+    `show` for each cell. `build` names the pattern in terms of `i` and `o`."""
+    return (R + "Q = [%s]\nS = [%s]\n"
+            "for i in Q:\n"
+            "    for o in Q:\n"
+            "        p = %s\n"
+            "        for s in S:\n"
+            "            print(p, repr(s), %s)\n" % (_Q, subjects, build, show))
+
+
+QUANTIFIERS = [
+    # The defect itself, spelled out: the three renderings from the report.
+    R + "print(re.search('(a*?){1,2}b','ab').group(1), re.findall('(.*?){1,2}','a.b'), "
+        "re.split('(a*?){1,2}b','xaby'))",
+    R + "print(re.search('(a*?){1,2}b','ab').span(1), re.search('(a*?){1,2}b','ab').groups(), "
+        "re.sub('(a*?){1,2}b',r'[\\1]','ab'), [m.group(1) for m in re.finditer('(a*?){1,3}b','abab')])",
+    # A CAPTURING group, every quantifier inside every quantifier, and every
+    # path the marks are read through.
+    _cross("'(a' + i + ')' + o + 'b'",
+           "None if re.search(p, s) is None else (re.search(p, s).span(), re.search(p, s).groups())"),
+    _cross("'(a' + i + ')' + o + 'b'", "re.findall(p, s), re.split(p, s)"),
+    _cross("'(a' + i + ')' + o", "re.findall(p, s), re.split(p, s)"),
+    _cross("'(a' + i + ')' + o + 'b'", "re.sub(p, '<\\1>', s), re.subn(p, '-', s)"),
+    _cross("'(a' + i + ')' + o", "[(m.span(), m.span(1), m.groups()) for m in re.finditer(p, s)]"),
+    _cross("'(a' + i + ')' + o + '$'",
+           "None if re.match(p, s) is None else (re.match(p, s).span(), re.match(p, s).groups())"),
+    _cross("'(a' + i + ')' + o",
+           "None if re.fullmatch(p, s) is None else (re.fullmatch(p, s).span(), re.fullmatch(p, s).groups())"),
+    # …and WITHOUT one, where only the span can disagree.
+    _cross("'(?:a' + i + ')' + o + 'b'",
+           "None if re.search(p, s) is None else re.search(p, s).span(), re.findall(p, s)"),
+    # Bodies that are not a bare atom: the `.` of the report's `findall` row, a
+    # class, an alternation, and an alternation with an empty branch.
+    _cross("'(.' + i + ')' + o", "re.findall(p, s), re.split(p, s)"),
+    _cross("'([ab]' + i + ')' + o + 'b'", "re.findall(p, s), re.split(p, s)"),
+    _cross("'((?:a|b)' + i + ')' + o", "re.findall(p, s)"),
+    _cross("'(a|' + i + ')' + o + 'b'", "re.findall(p, s), re.split(p, s)"),
+    # Three deep, with a group at each level, so an inner repeat's marks are
+    # read through an outer one's.
+    _cross("'((a' + i + ')' + o + ')'",
+           "None if re.search(p, s) is None else (re.search(p, s).span(), re.search(p, s).groups())"),
+    _cross("'(?:(a' + i + ')(b' + o + '))+'",
+           "None if re.search(p, s) is None else (re.search(p, s).span(), re.search(p, s).groups())"),
+]
+
 #: Everything the matcher must REFUSE rather than approximate: the constructs of
 #: a later slice, every `re.error` path (whose message text and position moved
 #: across 3.11–3.14), the Unicode tables, and the step budget.
@@ -624,8 +697,8 @@ SPELLINGS = [
 ]
 
 GRID = (IMPORTS + FLAGS + ESCAPE + PURGE + INT_PARTNERS + MATCHER + EMPTY
-        + GROUPS + ANCHORS + CLASSES + POSENDPOS + NONASCII + SUBSPLIT + FLAGS2
-        + OBJECTS + LINEAR + IDIOMS + SPELLINGS)
+        + GROUPS + QUANTIFIERS + ANCHORS + CLASSES + POSENDPOS + NONASCII + SUBSPLIT
+        + FLAGS2 + OBJECTS + LINEAR + IDIOMS + SPELLINGS)
 
 
 def _spectrum(binary: Path) -> dict | None:
@@ -828,6 +901,97 @@ def test_a_pattern_literal_outside_the_slice_is_a_static_route_to_cpython() -> N
     assert r2.stdout.split("\t")[0].strip() == engines.CPYTHON, r2.stdout
     got2 = _run([str(BINARY), "run"], side)
     assert (got2.stdout, got2.returncode) == ("aX\n", 0), (got2.stdout, got2.stderr[-300:])
+
+
+#: Where the walk finds the pattern, one row per spelling: what the route must
+#: be, and the blocker's prefix when it is a block. Every `cpython` row is a
+#: construct that USED to reach the runtime refusal and now does not, and every
+#: `lypning-l` row is a pattern a walk cannot read — the backstop's half,
+#: which must stay the backstop's.
+STATIC_PATTERNS = [
+    # A literal in the pattern position: the shape step 2 already decided.
+    (R + "print(re.search(r'(?P<a>x)', 'x'))", engines.CPYTHON, "re: pattern"),
+    # A literal bound to a NAME above the call. The compiled pattern is the
+    # same one; only the walk had to reach further to find it.
+    (R + "P = r'(?P<a>x)'\nprint(re.search(P, 'x'))", engines.CPYTHON, "re: pattern"),
+    (R + "P = r'a(?=b)'\nprint(re.sub(P, '-', 'ab'))", engines.CPYTHON, "re: pattern"),
+    (R + "P = r'(a)\\1'\nprint(re.compile(P).findall('aa'))", engines.CPYTHON, "re: pattern"),
+    ("from re import findall\nP = r'(?P<a>x)'\nprint(findall(P, 'x'))",
+     engines.CPYTHON, "re: pattern"),
+    ("import re as r\nP = r'(?<=a)b'\nprint(r.search(P, 'ab'))", engines.CPYTHON, "re: pattern"),
+    # A BYTES pattern: servable by CPython, by nothing here, and refused on
+    # every subject — so there is nothing for a run to learn.
+    (R + "print(re.finditer(b'a', b'ab'))", engines.CPYTHON, "re: bytes pattern"),
+    (R + "print(re.compile(b'a'))", engines.CPYTHON, "re: bytes pattern"),
+    (R + "P = rb'\\s'\nprint(re.findall(P, b'a b'))", engines.CPYTHON, "re: bytes pattern"),
+    # `pattern=` is the one keyword spelling of the same argument, and this
+    # engine and CPython both take it.
+    (R + "print(re.search(pattern=r'(?P<a>x)', string='x'))", engines.CPYTHON, "re: pattern"),
+    # …and the other half. A pattern a walk cannot read keeps the RUNTIME
+    # refusal, because a static block here would be a program sent to CPython
+    # that this engine runs — the direction that costs a spawn for nothing.
+    (R + "for P in ['a', 'b']:\n    print(re.findall(P, 'ab'))", engines.LYPNING_L, None),
+    (R + "P = r'(?P<a>x)'\nP = r'x'\nprint(re.search(P, 'x').span())", engines.LYPNING_L, None),
+    (R + "P = r'(?P<a>x)'\ndef f(P):\n    return re.search(P, 'x')\nprint(f('x').span())",
+     engines.LYPNING_L, None),
+    (R + "print(re.findall('(?P' + '<a>x)', 'x'))", engines.LYPNING_L, None),
+    (R + "P = 'x'\nprint(re.findall(P + '+', 'xx'))", engines.LYPNING_L, None),
+    (R + "P = r'x'\nprint(re.findall(P, 'xx'))", engines.LYPNING_L, None),
+    # A name that means the module and a name that does not: `re.split(',')` on
+    # a string someone called `re` is a str method, and no walk may compile it.
+    # This routes to lypning-l because a router never routes below itself, not
+    # because the walk found a pattern — the `blocker is None` half is the
+    # assertion that matters.
+    ("re = 'a,b'\nprint(re.split(','))", engines.LYPNING_L, None),
+]
+
+
+@needs_l
+@pytest.mark.parametrize("program,engine,blocker",
+                         STATIC_PATTERNS, ids=range(len(STATIC_PATTERNS)))
+def test_where_the_walk_finds_the_pattern(program: str, engine: str, blocker: str | None) -> None:
+    """A pattern this engine cannot compile is the program's blocker in the
+    WALK, wherever the pattern is spelled — and a pattern the walk cannot
+    read keeps the runtime refusal.
+
+    Both halves are the same argument, and it is the one the `re` surface has
+    paid for twice: a runtime refusal that lands after a side effect the commit
+    barrier has let through cannot fall onward, so it becomes exit 1, the
+    program's own exit, which the chain never retries. A static route costs
+    nothing and cannot land late. But a static route taken for a pattern the
+    program never uses is a program sent to CPython that this engine runs —
+    so the walk resolves a name only where a walk can honestly read it, and
+    every other spelling stays with the backstop."""
+    got = subprocess.run([str(BINARY), "route", "-c", program],
+                         capture_output=True, text=True, timeout=60)
+    assert got.returncode == 0, got.stderr
+    fields = got.stdout.split("\t")
+    assert fields[0].strip() == engine, got.stdout
+    if blocker is None:
+        assert len(fields) == 1 or not fields[1].strip().startswith("re:"), got.stdout
+    else:
+        assert fields[1].strip().startswith(blocker), got.stdout
+
+
+@needs_l
+def test_a_static_pattern_block_answers_where_the_runtime_refusal_could_not() -> None:
+    """The barrier case, for the constructs this commit moved.
+
+    `os.makedirs` is past the commit barrier, so the refusal `re.finditer`
+    would have raised cannot be replayed onward: it becomes exit 1 with the
+    directory already made. Routed by the walk instead, the program never
+    starts here and CPython answers it."""
+    for program, want in [
+        ("import re, os\nos.makedirs('d1/d2')\nprint(re.findall(b'a', b'aa'))",
+         "[b'a', b'a']\n"),
+        ("import re, os\nP = r'(?P<a>x)'\nos.makedirs('d3')\n"
+         "print(re.findall(P, 'xx'))", "['x', 'x']\n"),
+    ]:
+        route = subprocess.run([str(BINARY), "route", "-c", program],
+                               capture_output=True, text=True, timeout=60)
+        assert route.stdout.split("\t")[0].strip() == engines.CPYTHON, route.stdout
+        got = _run([str(BINARY), "run"], program)
+        assert (got.stdout, got.returncode) == (want, 0), (got.stdout, got.stderr[-300:])
 
 
 @needs_l
