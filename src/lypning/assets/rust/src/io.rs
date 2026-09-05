@@ -254,6 +254,20 @@ pub fn effective_content(path: &str) -> R<Option<Vec<u8>>> {
     }
 }
 
+/// Is anything held back by the barrier right now — a staged write, or a
+/// staged delete?
+///
+/// Every OTHER reader here asks about ONE path and merges the staging into its
+/// answer (`effective_content`, `path_exists`), which is what makes the
+/// barrier invisible to the program. A reader that enumerates a DIRECTORY
+/// cannot do that: it would have to decide which staged path names an entry of
+/// which listing, from the spelling the program happened to use, and a
+/// disagreement there is a wrong listing at exit 0. So `glob.rs` asks this
+/// instead and refuses while the answer is yes.
+pub fn has_staged() -> bool {
+    PENDING.with(|p| !p.borrow().files.is_empty()) || DELETED.with(|d| !d.borrow().is_empty())
+}
+
 /// Paths this run has deleted or renamed away but not yet committed.
 pub fn is_staged_deleted(path: &str) -> bool {
     DELETED.with(|d| d.borrow().contains(path))

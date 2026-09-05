@@ -142,6 +142,15 @@ impl Interp {
             // See value.rs: reproducing CPython's set order is impossible, so
             // iterating one is refused instead of silently reordered.
             Value::Set(_) => return Err(set_order_refused("iterating a set")),
+            // The one arm that stops `for f in glob.glob(...)`, and with it
+            // `list()`, `tuple()`, `map`, `zip`, `enumerate`, `reversed`,
+            // `''.join`, unpacking and every comprehension — they all
+            // materialise through here. A result of nought or one path is a
+            // plain `Value::List` and never reaches this.
+            #[cfg(feature = "cap-glob")]
+            Value::Glob(_) => {
+                return Err(crate::glob::order_refused("iterating a glob() result"))
+            }
             // `for q in p.parents` — the parents are a short, already-computed
             // list, so the existing tuple iterator carries them and there is no
             // new iterator state in the binary for this.
@@ -460,6 +469,14 @@ impl Interp {
     pub fn collect_unordered(&mut self, v: Value) -> R<Vec<Value>> {
         if let Value::Set(s) = &v {
             return Ok(s.borrow().items.clone());
+        }
+        // `sorted()`, `min()`, `max()` and `set()` ask for the elements without
+        // caring what order they arrive in — which is exactly the question a
+        // glob result can answer. Everything else goes through `make_iter`
+        // above and refuses.
+        #[cfg(feature = "cap-glob")]
+        if let Value::Glob(g) = &v {
+            return Ok(crate::glob::items(g));
         }
         self.iter_collect(v)
     }

@@ -215,6 +215,13 @@ pub fn repr(v: &Value) -> R<String> {
         // and `to_rc` fall to this on purpose: `str(re.I)` IS the repr.
         #[cfg(feature = "cap-re")]
         Value::ReFlag(b) => return crate::re::flag_repr(*b),
+        // `print(glob.glob(...))` and every f-string, `%s`, `str()` and
+        // `repr()` that reaches a glob result: a list's repr IS its order.
+        // `to_str` and `to_rc` fall to this the way they do for a set.
+        #[cfg(feature = "cap-glob")]
+        Value::Glob(_) => {
+            return Err(crate::glob::order_refused("repr() of a glob() result"))
+        }
         Value::Exc(kind, msg) => {
             if msg.is_empty() {
                 format!("{kind}()")
@@ -644,6 +651,12 @@ fn format_inner(v: &Value, spec_src: &str, from_pct: bool) -> R<String> {
     #[cfg(feature = "cap-re")]
     if let Value::ReFlag(_) = v {
         return Err(crate::re::spec_refused());
+    }
+    // A spec is padding and alignment around `str()`, which refuses above —
+    // but `parse_spec` can raise on the way there, so this is decided first.
+    #[cfg(feature = "cap-glob")]
+    if let Value::Glob(_) = v {
+        return Err(crate::glob::order_refused("format() of a glob() result"));
     }
     let sp = parse_spec(spec_src)?;
 

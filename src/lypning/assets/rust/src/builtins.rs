@@ -964,6 +964,15 @@ pub fn call_builtin(
             reject_unknown_kw(name, &kw, &["key", "default"])?;
             let want_max = name == "max";
             let from_set = args.len() == 1 && matches!(args.first(), Some(Value::Set(_)));
+            // The same leak as a set, from the same cause: a tie is broken by
+            // the order the elements arrived in, and for a glob result that is
+            // the filesystem's. `max(g, key=len)` with one longest path has one
+            // answer and keeps giving it. Read HERE, because the collect
+            // below empties `args`.
+            #[cfg(feature = "cap-glob")]
+            let from_glob = args.len() == 1 && matches!(args.first(), Some(Value::Glob(_)));
+            #[cfg(not(feature = "cap-glob"))]
+            let from_glob = false;
             let items: Vec<Value> = if args.len() == 1 {
                 it.collect_unordered(args.remove(0))?
             } else {
@@ -1004,6 +1013,12 @@ pub fn call_builtin(
             // tie ACTUALLY occurred, not whenever a key is present over a set:
             // `max(s, key=len)` with distinct lengths has one answer and should
             // keep giving it.
+            if tied && from_glob {
+                #[cfg(feature = "cap-glob")]
+                return Err(crate::glob::order_refused(&format!(
+                    "{name}() of a glob() result where the key ties"
+                )));
+            }
             if tied && from_set {
                 return Err(set_order_refused(&format!(
                     "{name}() of a set where the key ties"
@@ -1018,6 +1033,10 @@ pub fn call_builtin(
                 .cloned()
                 .ok_or_else(|| type_err("sorted expected 1 argument, got 0"))?;
             let from_set = matches!(v, Value::Set(_));
+            #[cfg(feature = "cap-glob")]
+            let from_glob = matches!(v, Value::Glob(_));
+            #[cfg(not(feature = "cap-glob"))]
+            let from_glob = false;
             let mut items = it.collect_unordered(v)?;
             let keyf = key_arg(&kw, "key");
             let rev = reverse_arg(&kw)?;
@@ -1029,10 +1048,20 @@ pub fn call_builtin(
             // in the order it received them, and over a set that order is this
             // engine's. Only a real tie is refused — `sorted(s, key=len)` with
             // distinct lengths has one answer.
-            if from_set && keyf.is_some() {
+            if (from_set || from_glob) && keyf.is_some() {
                 for i in 0..keys.len() {
                     for j in (i + 1)..keys.len() {
                         if ops::order(&keys[i], &keys[j])? == std::cmp::Ordering::Equal {
+                            // A stable sort keeps tied elements in the order it
+                            // received them, and for a glob result that order
+                            // is the disk's: `sorted(g, key=os.path.getsize)`
+                            // over two files of one size has two answers.
+                            #[cfg(feature = "cap-glob")]
+                            if from_glob {
+                                return Err(crate::glob::order_refused(
+                                    "sorted() of a glob() result where the key ties",
+                                ));
+                            }
                             return Err(set_order_refused("sorted() of a set where the key ties"));
                         }
                     }
@@ -1141,6 +1170,11 @@ pub fn call_builtin(
             // materialised: `any(1/x for x in [1,0])` must not divide by zero.
             let mut iter = match &v {
                 Value::Set(s) => Iter::Vec(s.borrow().items.clone(), 0),
+                // Order-blind: `any`/`all` reduce with `or`/`and`, and both
+                // are commutative. The short-circuit is not observable here —
+                // the elements are `str`, so no element can raise.
+                #[cfg(feature = "cap-glob")]
+                Value::Glob(g) => Iter::Vec(crate::glob::items(g), 0),
                 other => it.make_iter(other.clone())?,
             };
             let mut result = want_all;
@@ -1247,6 +1281,13 @@ pub fn call_builtin(
             // exact and the refusal is not needed.
             #[cfg(feature = "cap-pathlib")]
             crate::pathlib::guard_view(&v, "reversed()")?;
+            // A list IS reversible, so the TypeError arm below would have been
+            // exit 1 where CPython answers — and what it answers is the
+            // filesystem order, backwards.
+            #[cfg(feature = "cap-glob")]
+            if let Value::Glob(_) = v {
+                return Err(crate::glob::order_refused("reversed() of a glob() result"));
+            }
             match &v {
                 Value::Str(_)
                 | Value::Bytes(_)
@@ -1587,6 +1628,11 @@ pub fn length(v: &Value) -> R<usize> {
         Value::Tuple(t) => t.len(),
         Value::Dict(d) => d.borrow().len(),
         Value::Set(s) => s.borrow().len(),
+        // How MANY paths matched does not depend on which order they matched
+        // in, so this is answered — and it is the one question the corpus asks
+        // of a glob result more often than any other after `sorted`.
+        #[cfg(feature = "cap-glob")]
+        Value::Glob(g) => g.len(),
         Value::DictView(d, _) => d.borrow().len(),
         // `len(p.parents)`. A bare `Path` has no length in CPython either, so
         // it falls to the TypeError below with the type name it prints.

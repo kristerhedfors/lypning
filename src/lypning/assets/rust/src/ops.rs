@@ -59,6 +59,35 @@ impl Interp {
         // arithmetic never sees it.
         #[cfg(feature = "cap-collections")]
         crate::collections::guard_operand(a, b)?;
+        // A glob operand, AFTER the numeric fast path so that ordinary
+        // arithmetic never pays for it — `as_num` reads a glob result as
+        // nothing, so nothing above this can have taken it.
+        #[cfg(feature = "cap-glob")]
+        if matches!(a, Value::Glob(_)) || matches!(b, Value::Glob(_)) {
+            // `glob.glob(x) + glob.glob(y)` is the shape the corpus uses to
+            // search two roots at once, and CONCATENATION is the one operator
+            // whose result stays order-blind: the elements of a list joined to
+            // a multiset whose order may not be shown are a multiset whose
+            // order may not be shown. A plain list on either side counts,
+            // because a one-path glob result IS one.
+            let side = |v: &Value| -> Option<Vec<Value>> {
+                match v {
+                    Value::Glob(g) => Some(crate::glob::items(g)),
+                    Value::List(l) => Some(l.borrow().clone()),
+                    _ => None,
+                }
+            };
+            if let (Add, Some(mut x), Some(y)) = (op, side(a), side(b)) {
+                x.extend(y);
+                return Ok(crate::glob::concat(x));
+            }
+            // Every other operator places elements by position — `g * 2`,
+            // `g += (x,)` — or is a type error CPython owns.
+            return Err(crate::glob::order_refused(&format!(
+                "`{}` over a glob() result",
+                op_sym(op)
+            )));
+        }
         // `p / "x"`, `"x" / p` and `p / q`. Anything else with a path operand
         // falls through to the generic message below, which is CPython's own
         // text for it word for word.
@@ -231,6 +260,21 @@ impl Interp {
             return Err(crate::re::refuse("`in` over a RegexFlag (Flag.__contains__)"));
         }
         Ok(match container {
+            // `p in glob.glob(...)` is a scan for equality, and a scan does not
+            // care what order it scans in. Answered — but only as the
+            // CONTAINER: a glob result as the NEEDLE reaches `eq`, which
+            // refuses.
+            #[cfg(feature = "cap-glob")]
+            Value::Glob(g) => {
+                let mut hit = false;
+                for x in g.iter() {
+                    if eq(x, needle)? {
+                        hit = true;
+                        break;
+                    }
+                }
+                hit
+            }
             Value::Str(s) => match needle {
                 Value::Str(n) => s.contains(n.as_ref()),
                 other => {
@@ -371,6 +415,11 @@ impl Interp {
             return crate::pathlib::view_index(s, crate::eval::int_val(idx)?);
         }
         Ok(match base {
+            // `files[0]` is the single commonest way an order leaks out.
+            #[cfg(feature = "cap-glob")]
+            Value::Glob(_) => {
+                return Err(crate::glob::order_refused("indexing a glob() result"))
+            }
             Value::Dict(d) => {
                 // The missing key is where the two `collections` types differ
                 // from a dict and from each other: `0` and no insert for a
@@ -504,6 +553,10 @@ impl Interp {
         hi: Option<Value>,
         step: Option<Value>,
     ) -> R<Value> {
+        #[cfg(feature = "cap-glob")]
+        if let Value::Glob(_) = base {
+            return Err(crate::glob::order_refused("slicing a glob() result"));
+        }
         let step = match &step {
             None | Some(Value::None) => 1i64,
             Some(v) => {
@@ -645,6 +698,16 @@ impl Interp {
         #[cfg(feature = "cap-re")]
         if let Value::ReFlag(_) = base {
             return Err(crate::re::attr_refused(name));
+        }
+        // Every list method — `.sort()`, `.index()`, `.pop()`, `.count()` —
+        // either reads the order or mutates a value this one cannot be. CPython
+        // answers all of them, so this is a refusal and never an
+        // AttributeError, which would be exit 1 the chain never retries.
+        #[cfg(feature = "cap-glob")]
+        if let Value::Glob(_) = base {
+            return Err(crate::glob::order_refused(&format!(
+                "`.{name}` on a glob() result"
+            )));
         }
         // A path's properties are COMPUTED here — `.name`, `.parts`, `.parent`
         // are not methods — and every name this engine does not answer refuses
@@ -1311,6 +1374,14 @@ fn order_as(sym: &str, a: &Value, b: &Value) -> R<Ordering> {
     Ok(match (a, b) {
         (Value::Str(x), Value::Str(y)) => x.as_bytes().cmp(y.as_bytes()),
         (Value::Bytes(x), Value::Bytes(y)) => x.cmp(y),
+        // Two lists order element by position, so `<` reads the order — and
+        // this is also where `sorted`, `min`, `max` and `list.sort` reach the
+        // comparator when a glob result is an ELEMENT of what is being sorted.
+        // After the numeric path, which a glob result never takes.
+        #[cfg(feature = "cap-glob")]
+        (Value::Glob(_), _) | (_, Value::Glob(_)) => {
+            return Err(crate::glob::order_refused("ordering a glob() result"))
+        }
         // The two arms that descend. `sorted([x, y])` over two deep lists is a
         // stack overflow without this, and a stack overflow embedded is the
         // HOST's SIGSEGV rather than a refusal it can route onward.

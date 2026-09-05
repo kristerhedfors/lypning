@@ -443,6 +443,13 @@ fn write_value(out: &mut String, v: &Value, o: &Opts, depth: usize) -> R<()> {
         Value::Set(_) => {
             return Err(type_err("Object of type set is not JSON serializable"))
         }
+        // CPython serialises a list as a JSON ARRAY, which is ordered — so a
+        // glob result would be written out in the order it may not show. The
+        // TypeError arm below would have been exit 1 where CPython answers.
+        #[cfg(feature = "cap-glob")]
+        Value::Glob(_) => {
+            return Err(crate::glob::order_refused("json.dumps() of a glob() result"))
+        }
         other => {
             return Err(type_err(format!(
                 "Object of type {} is not JSON serializable",

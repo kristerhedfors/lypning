@@ -54,7 +54,13 @@ pub struct Variant {
 /// Python side's `engines.SPECTRUM`, in this order, pinned by test.
 pub const SPECTRUM: &[Variant] = &[
     Variant { name: "lypning", caps: &[] },
-    Variant { name: "lypning-l", caps: &["cap-collections", "cap-pathlib", "cap-re"] },
+    Variant {
+        name: "lypning-l",
+        // Alphabetical, which is the order `build.rs` emits `LYPNING_CAPS`
+        // in — so the binary's own answer, this table and `engines.VARIANT_CAPS`
+        // are one list and not three that happen to agree.
+        caps: &["cap-collections", "cap-glob", "cap-pathlib", "cap-re"],
+    },
 ];
 
 /// The same names, NUL-terminated for the C ABI. A test holds the two lists
@@ -86,10 +92,18 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// owns (a matcher call, a version-shaped repr), there is no rung above
 /// lypning-l to carry a kind to, and `chain_after` a runtime `re:` refusal is
 /// `[cpython]` by construction.
+///
+/// `cap-glob` serves the `glob` MODULE and answers no runtime kind either. The
+/// one refusal it raises that a router would like to have seen coming —
+/// `glob-order`, a result of two or more paths reaching somewhere that would
+/// show their order — is in [`ONLY_CPYTHON_KINDS`] instead, because it is not a
+/// gap in these bytes: no reimplementation can reproduce `os.scandir` order, so
+/// no sibling could answer it either.
 pub const CAPS: &[(&str, &[&str], &[&str])] = &[
     ("cap-collections", &["collections"], &[]),
     ("cap-pathlib", &["pathlib"], &[]),
     ("cap-re", &["re"], &[]),
+    ("cap-glob", &["glob"], &[]),
 ];
 
 /// The `re` functions that need a MATCHER — the half of the module's surface
@@ -694,6 +708,11 @@ pub const ONLY_CPYTHON_KINDS: &[&str] = &[
     // LookupError, and latin-1/utf-16/ascii all come back as the UTF-8 bytes.
     "encoding",
     "exception-chaining",
+    // A glob result of two or more paths, reaching a place that would show
+    // their order. The same fact as `set-order` about a different system call:
+    // CPython's answer comes from `os.scandir`, so a second reimplementation
+    // is no likelier to reproduce it than the first was. `glob.rs`.
+    "glob-order",
     // `is` between two equal immutables not provably the same object. The kind
     // only fires on that ambiguous case, and it is exactly where lypning-mp
     // answers wrongly: its small-int boxing makes `int('1000') is 1000` True

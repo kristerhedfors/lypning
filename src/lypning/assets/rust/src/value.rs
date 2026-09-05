@@ -68,6 +68,14 @@ pub enum Value {
     /// it is not a `Value::Int`.
     #[cfg(feature = "cap-re")]
     ReFlag(u32),
+    /// The result of `glob.glob()` when it matched TWO OR MORE paths — an
+    /// ordinary `list` in CPython, whose ORDER comes from `os.scandir` and
+    /// cannot be reproduced. Held sorted; every operation that would show the
+    /// order refuses `glob-order`, exactly as [`Value::Set`] does for a set's.
+    /// A zero- or one-path result is a plain `Value::List` and never this.
+    /// `glob.rs` says why the line is drawn at two.
+    #[cfg(feature = "cap-glob")]
+    Glob(Rc<Vec<Value>>),
 }
 
 pub struct FuncObj {
@@ -372,6 +380,11 @@ pub fn type_name(v: &Value) -> &'static str {
         // `len()`, `<` and `%` TypeErrors print.
         #[cfg(feature = "cap-re")]
         Value::ReFlag(_) => "RegexFlag",
+        // A glob result IS a list in CPython, and every message that names its
+        // type — a TypeError's, `type(x).__name__` — must say so. Answering
+        // "glob" would be a name CPython never prints.
+        #[cfg(feature = "cap-glob")]
+        Value::Glob(_) => "list",
     }
 }
 
@@ -398,6 +411,10 @@ pub fn truthy(v: &Value) -> R<bool> {
         // `bool(re.NOFLAG)` is False.
         #[cfg(feature = "cap-re")]
         Value::ReFlag(b) => *b != 0,
+        // Two or more paths is never empty, so truthiness does not depend on
+        // the order and is answered.
+        #[cfg(feature = "cap-glob")]
+        Value::Glob(_) => true,
         _ => true,
     })
 }
@@ -716,6 +733,14 @@ pub fn eq(a: &Value, b: &Value) -> R<bool> {
         (Value::Builtin(x), Value::Builtin(y)) => x == y,
         (Value::Func(x), Value::Func(y)) => Rc::ptr_eq(x, y),
         (Value::File(x), Value::File(y)) => Rc::ptr_eq(x, y),
+        // List equality is ELEMENT-BY-POSITION, so it reads the order a glob
+        // result may not show — and it reads it on either side, including
+        // `[] == g` and `g in [xs]`. Refused rather than answered from this
+        // engine's own sorted order.
+        #[cfg(feature = "cap-glob")]
+        (Value::Glob(_), _) | (_, Value::Glob(_)) => {
+            return Err(crate::glob::order_refused("comparing a glob() result"))
+        }
         _ => false,
     })
 }
@@ -783,6 +808,8 @@ pub fn is_same(a: &Value, b: &Value) -> bool {
         // foldable list.
         #[cfg(feature = "cap-re")]
         (Value::ReFlag(x), Value::ReFlag(y)) => x == y,
+        #[cfg(feature = "cap-glob")]
+        (Value::Glob(x), Value::Glob(y)) => Rc::ptr_eq(x, y),
         // Small-int caching is an implementation detail agents should not rely
         // on and we will not reproduce; refusing beats guessing either way.
         _ => false,

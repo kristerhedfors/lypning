@@ -64,7 +64,10 @@ SPECTRUM = (LYPNING, LYPNING_L)
 #: frozen: it gains no capability feature, and a capability that appeared in both
 #: columns would buy the chain nothing — the whole point of the column is that
 #: the sets differ.
-VARIANT_CAPS: dict = {LYPNING: (), LYPNING_L: ("cap-collections", "cap-pathlib", "cap-re")}
+VARIANT_CAPS: dict = {
+    LYPNING: (),
+    LYPNING_L: ("cap-collections", "cap-glob", "cap-pathlib", "cap-re"),
+}
 
 #: Not a fourth engine — the same lypning, reached through the C ABI instead of
 #: through a process, the way an embedding host reaches it. It is spelled
@@ -811,6 +814,7 @@ ONLY_CPYTHON_REFUSALS = frozenset({
     "set-method",         # ...including hash(-1) == -2, reserved as an error sentinel
     "dict-view",          # keys/items are set-like, values compare by identity
     "exception-chaining",  # __context__/__cause__ do not exist one tier down
+    "glob-order",         # two or more matched paths: os.scandir order, as unrepeatable as a set's
     "repr-unicode",       # repr() escapes a character set nothing else reproduces
     "percent-format",     # the '0' flag, grouping, and their interaction with '-'
     "del",                # the ValueError text of a failed list.remove/index

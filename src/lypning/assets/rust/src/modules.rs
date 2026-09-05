@@ -40,14 +40,28 @@ pub const MODULES: &[&str] =
 pub const MODULES: &[&str] = &[
     "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib",
 ];
-#[cfg(all(feature = "cap-collections", feature = "cap-pathlib", feature = "cap-re"))]
+#[cfg(all(
+    feature = "cap-collections",
+    feature = "cap-pathlib",
+    feature = "cap-re",
+    feature = "cap-glob"
+))]
 pub const MODULES: &[&str] = &[
     "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib", "re",
+    "glob",
 ];
-// `cap-re` names no row of its own: it is only ever built as part of
-// `variant-l`, whose feature names the full set.
-#[cfg(all(feature = "cap-re", not(all(feature = "cap-collections", feature = "cap-pathlib"))))]
-compile_error!("cap-re is only built as part of variant-l (it names the full set)");
+// `cap-re` and `cap-glob` name no row of their own: neither is ever built
+// except as part of `variant-l`, whose feature names the full set.
+#[cfg(all(
+    any(feature = "cap-re", feature = "cap-glob"),
+    not(all(
+        feature = "cap-collections",
+        feature = "cap-pathlib",
+        feature = "cap-re",
+        feature = "cap-glob"
+    ))
+))]
+compile_error!("cap-re and cap-glob are only built as part of variant-l (it names the full set)");
 
 pub fn import(path: &str) -> R<Value> {
     match MODULES.iter().find(|m| **m == path) {
@@ -181,6 +195,11 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
         // statically in the router too.
         #[cfg(feature = "cap-re")]
         ("re", _) => return crate::re::module_attr(name),
+        // `glob.glob`, `glob.escape` and `glob.has_magic`. Every other name —
+        // `iglob`, `translate`, `glob0`, `glob1` — refuses with the
+        // `module-attr` kind, which the router blocks on statically.
+        #[cfg(feature = "cap-glob")]
+        ("glob", _) => return crate::glob::module_attr(name),
         _ => {
             return Err(unsupported(
                 "module-attr",
@@ -219,6 +238,10 @@ fn touches_disk(m: &str, name: &str) -> bool {
     match (m, name) {
         ("os.path", "join" | "basename" | "dirname" | "splitext" | "split" | "normpath") => false,
         ("pathlib", "cwd") => true,
+        // `glob.glob()` lists directories; `escape` and `has_magic` are string
+        // algebra over a path that need never exist.
+        ("glob", "escape") | ("glob", "has_magic") => false,
+        ("glob", _) => true,
         ("os", "getenv") => false,
         ("os", _) | ("os.path", _) => true,
         _ => false,
@@ -247,6 +270,8 @@ pub fn call_module_method(
     Ok(match (m, name) {
         #[cfg(feature = "cap-re")]
         ("re", _) => return crate::re::call(it, name, args, &kw),
+        #[cfg(feature = "cap-glob")]
+        ("glob", _) => return crate::glob::call(it, name, args, &kw),
         ("random", _) => return crate::random::call(it, name, args, &kw),
         // `Path.cwd()`. A classmethod on the type object, reached through
         // `ops::get_attr`, which spells it as a method on the module so that

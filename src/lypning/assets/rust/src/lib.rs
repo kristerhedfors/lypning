@@ -37,6 +37,10 @@ pub mod embed;
 pub mod err;
 pub mod eval;
 pub mod fmt;
+/// `glob.glob` / `escape` / `has_magic` — the `cap-glob` capability. Absent
+/// from the smaller variant entirely, not merely unreachable in it.
+#[cfg(feature = "cap-glob")]
+pub mod glob;
 pub mod hash;
 pub mod host;
 pub mod io;

@@ -462,6 +462,13 @@ pub fn call_method(
         // variant on purpose rather than through the fallthrough below.
         #[cfg(feature = "cap-re")]
         Value::ReFlag(_) => Err(crate::re::attr_refused(name)),
+        // Unreachable through `get_attr` for the same reason as the flag above,
+        // and named here so the match does not fall through to an
+        // AttributeError if a future path binds a method without going by it.
+        #[cfg(feature = "cap-glob")]
+        Value::Glob(_) => Err(crate::glob::order_refused(&format!(
+            "`.{name}()` on a glob() result"
+        ))),
         Value::DictView(d, kind) => {
             // `d.keys()` is a view, and `.keys().foo()` is not a thing agents
             // type; the one real case is a set-like op, which is refused.
