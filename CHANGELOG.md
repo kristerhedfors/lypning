@@ -19,6 +19,22 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > `#45`–`#47`) are GitHub issue numbers or unused. The commit link is the one
 > that resolves.
 
+**2026-09-05** — The unbuilt-oracle line no longer promises a catalogue a wheel does not ship
+
+- `.github/known-mismatches.json` is deliberately not a package asset, so a
+  wheel has no oracle catalogue. `lypning status` and `lypning doctor` told the
+  reader that `lypning oracle` "reads the recorded divergences either way",
+  which sends them to a command that answers "no catalogue" — a hole reported
+  as a capability. Both lines are now conditional on the catalogue being there.
+- Found by running the wheel shape end to end (CLAUDE.md's "two shapes that
+  must both keep working"): `pip install --no-build-isolation .` into a venv,
+  then `LYPNING_HOME=<tmp> lypning build --rust && lypning status`. Everything
+  else held — both variants built at the same bytes as the source checkout
+  (834,672 B and 867,840 B), `lypning oracle` reported its hole, the
+  `lypning hook pre-tool-use` CLI entry point answered
+  `{"continue":true,"suppressOutput":true}` at exit 0, and `install --dry-run`
+  printed its diff and wrote 0 files.
+
 **2026-09-05** — lypning-l serves the `re` surface; matcher calls route statically to CPython · [49c8aa2]
 
 - `import re` binds a module on `lypning-l`: the flag constants as a value with

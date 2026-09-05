@@ -73,6 +73,35 @@ def test_status_reports_an_unbuilt_engine_as_not_built(capsys, no_micropython):
     assert "oracles" in out and "lypning-mp: not built" in out
 
 
+def test_the_unbuilt_oracle_line_does_not_promise_a_catalogue_a_wheel_lacks(
+        capsys, no_micropython, monkeypatch, tmp_path):
+    """A hole reported as a capability is the inverse of the rule for holes.
+
+    `.github/known-mismatches.json` is deliberately not a package asset, so a
+    wheel ships no catalogue. Saying "`lypning oracle` reads the recorded
+    divergences either way" there sends the reader to a command that answers
+    "no catalogue" — which is the one confusion this line exists to prevent.
+    """
+    from lypning import oracle
+
+    monkeypatch.setattr(oracle, "ledger_path", lambda root=None: tmp_path / "gone.json")
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "no catalogue in this install" in out
+    assert "either way" not in out
+
+
+def test_the_unbuilt_oracle_line_promises_the_catalogue_where_it_shipped(
+        capsys, no_micropython, monkeypatch, tmp_path):
+    from lypning import oracle
+
+    have = tmp_path / "known-mismatches.json"
+    have.write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(oracle, "ledger_path", lambda root=None: have)
+    assert cli.main(["status"]) == 0
+    assert "reads the recorded divergences either way" in capsys.readouterr().out
+
+
 def test_corpus_stats_render(capsys):
     assert cli.main(["corpus", "--stats"]) == 0
     out = capsys.readouterr().out
