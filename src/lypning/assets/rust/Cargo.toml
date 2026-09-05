@@ -2,7 +2,7 @@
 name = "lypning"
 version = "0.1.0"
 edition = "2021"
-description = "The Coding Harness Interpreter Optimizer — a from-scratch Rust runtime (the bottom tier of a mixture of Pythons) for agent-typed Python one-liners"
+description = "The Coding Harness Interpreter Optimizer — a from-scratch Rust runtime (the Rust spectrum of a mixture of Pythons, one variant per feature) for agent-typed Python one-liners"
 license = "MIT"
 # The floor is the committed Cargo.lock, which the wheel ships and `lypning
 # build` hands to cargo: it is lockfile format 4, which cargo before 1.78
@@ -11,10 +11,10 @@ license = "MIT"
 # cannot actually build at is a claim, not a floor.
 rust-version = "1.78"
 
-# ZERO runtime dependencies, on purpose. CLAUDE.md invariant 5 governs src/;
+# ZERO runtime dependencies, on purpose. CLAUDE.md invariant 6 governs src/;
 # the same discipline applies here for a second reason: every crate linked in
 # is bytes in a binary whose cold cost in the CheerpX VM tracks bytes and file
-# opens (the lypning-mp skill §1). std only.
+# opens (docs/SANDBOX-PERFORMANCE.md §1). std only.
 [dependencies]
 
 [[bin]]
@@ -85,9 +85,9 @@ inherits = "release"
 panic = "unwind"
 
 [profile.release]
-opt-level = "s"   # size, not speed: 96% of an invocation is the OS spawning
-                  # the process (docs/MICROPYTHON.md §8c), so codegen quality cannot
-                  # buy what a smaller image can.
+opt-level = "s"   # size, not speed: most of an invocation is the OS spawning
+                  # the process (docs/SANDBOX-PERFORMANCE.md §3), so codegen
+                  # quality cannot buy what a smaller image can.
 lto = true
 codegen-units = 1
 panic = "abort"

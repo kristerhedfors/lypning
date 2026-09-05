@@ -2,7 +2,7 @@
 //!
 //! The barrier is what makes a mixture-of-interpreters safe. Routing a program
 //! to lypning is only sound if a lypning run that ends in `unsupported` left nothing
-//! behind — otherwise the retry on lypning-mp or CPython re-executes the side
+//! behind — otherwise the retry on a larger sibling or CPython re-executes the side
 //! effects and the file is written twice, or half.
 //!
 //! So a lypning run is transactional:

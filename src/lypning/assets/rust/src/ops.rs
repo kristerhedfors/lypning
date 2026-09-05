@@ -773,7 +773,7 @@ impl Interp {
         //     print(e.__class__.__name__)      CPython: ...    this: AttributeError
         //     print(len.__doc__ is not None)   CPython: True   this: AttributeError
         //
-        // Three MISMATCHes on the tier-1 arm, measured, and invariant 1 says a
+        // Three MISMATCHes on the `lypning` arm, measured, and invariant 1 says a
         // MISMATCH is always a bug. Worse than the count: AttributeError is
         // exit 1, the PROGRAM's own exit, which the chain does not retry — so
         // unlike a refusal it cannot be answered one spawn later. The program
@@ -797,8 +797,9 @@ impl Interp {
         // ordinary format-an-exception idiom and appeared in 22 corpus programs;
         // refusing it sent them out of the tier that is CPython-exact. Rerouting
         // them instead was tried first and REVERTED (docs/HILLCLIMB.md, this
-        // date): letting them fall to the middle tier exposed four programs to
-        // defects that tier has elsewhere, and the block had been shielding them
+        // date): letting them fall to the rung then below (the oracle, out of
+        // the chain since 2026-09-04) exposed four programs to defects it has
+        // elsewhere, and the block had been shielding them
         // by accident. Answering here keeps them where the answer is right.
         if name == "__name__" {
             if let Value::Builtin(b) = base {
@@ -812,11 +813,11 @@ impl Interp {
             // (built-in types carry neither there, so the ordinary
             // format-an-exception idiom prints the getattr DEFAULT at exit 0).
             // `dunder-missing` is in ONLY_CPYTHON_KINDS; `dunder-attr` falls
-            // through to the tier that answers it.
+            // through to the engine that answers it.
             if matches!(name, "__module__" | "__doc__") {
                 return Err(unsupported(
                     "dunder-missing",
-                    &format!("{}.{name}, which the middle tier's builtins do not carry", type_name(base)),
+                    &format!("{}.{name}, which only CPython's builtins carry", type_name(base)),
                 ));
             }
             return Err(unsupported(

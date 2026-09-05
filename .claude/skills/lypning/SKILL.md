@@ -1,6 +1,6 @@
 ---
 name: lypning
-description: Route Python one-liners through lypning instead of python3, and understand what it refuses. Load when about to run python from Bash in a repo where lypning is installed (`lypning -c`, `lypning run -c`, `lypning route -c`), when a command exited 90 or printed "unsupported:", when python startup cost matters, or when asked why a program went to CPython rather than the subset. Also load when working ON this package — the Rust subset, the MicroPython tier, the classifier, the conformance battery, the differential fuzzer, the benchmarks (`lypning bench`, `lypning corpus-time`), the capture harness that grows the corpus, or anything under src/lypning/ or assets/rust/.
+description: Route Python one-liners through lypning instead of python3, and understand what it refuses. Load when about to run python from Bash in a repo where lypning is installed (`lypning -c`, `lypning run -c`, `lypning route -c`), when a command exited 90 or printed "unsupported:", when python startup cost matters, or when asked why a program went to CPython rather than the subset. Also load when working ON this package — the Rust subset, the oracle lypning-mp (measured, never routed to), the classifier, the conformance battery, the differential fuzzer, the benchmarks (`lypning bench`, `lypning corpus-time`), the capture harness that grows the corpus, or anything under src/lypning/ or assets/rust/.
 ---
 
 # lypning — the Coding Harness Interpreter Optimizer (a mixture of Pythons)
@@ -25,9 +25,11 @@ lypning status                    # what is built, wired and captured
 lypning doctor                    # the same with an opinion; non-zero on any FAIL
 ```
 
-Three interpreters, cheapest first — **lypning** (Rust subset), **lypning-mp**
-(MicroPython variant), **cpython** — plus a classifier that picks one per
-program and a dispatcher that recovers when the pick was wrong.
+The chain, cheapest first: **lypning** (the Rust core), **lypning-l** (the same
+crate built with `collections` and `pathlib`), **cpython** — plus a classifier
+that picks one per program and a dispatcher that recovers when the pick was
+wrong. **lypning-mp** is the oracle — measured, never routed to
+(`lypning oracle`).
 
 **A refusal is exit `90`, one `<engine>: unsupported: <kind>: <detail>` line on
 stderr, and nothing on stdout.** That is not a failure; it means "outside my
@@ -37,34 +39,37 @@ that retried on exit 1 would run a half-completed program twice.
 
 If `lypning status` says `not built`, everything routes to cpython and the
 numbers below do not apply. `lypning build --rust` takes seconds and needs only
-cargo. The lypning-mp tier needs a 32-bit C toolchain and a network and is
-**absent by default**; that is a status line, never an error.
+cargo. The oracle needs a 32-bit C toolchain and a network and is **absent by
+default**; that is a status line, never an error.
 
 **Never quote a remembered corpus size.** Capture grows it every session. Every
 tool prints the count it loaded — quote that number, from that run.
 
-## 1a. Writing python that stays on tier 1
+## 1a. Writing python that stays on lypning
 
 This section exists because it was measured to be missing. `docs/PROMPTING.md`
-put 884 agent-written programs through nine prompt treatments; this file, handed
-over verbatim, scored **81.7%** against **88.5%** for prompts that said the
-following, and the gap was entirely programs that reached for an import the
-subset does not have. What follows is the part of that gap this file can close.
+(the study of 2026-08-23) put 884 agent-written programs through nine prompt
+treatments; this file, handed over verbatim, scored **81.7%** against **88.5%**
+for prompts that said the following, and the gap was entirely programs that
+reached for an import the subset does not have. What follows is the part of
+that gap this file can close.
 
-**The motive, which is most of the win.** The fastest tier runs the program in
-the dispatcher's own process — no second spawn, and about 96% of a one-liner's
-cost is the spawn. A program that leaves the subset does not cost a little more,
-it costs everything: a wasted classification plus the full CPython price. So the
+**The motive, which is most of the win.** The Rust core runs the program in the
+dispatcher's own process — no second spawn, and most of a one-liner's cost is
+the spawn. A program that leaves the subset does not cost a little more, it
+costs everything: a wasted classification plus the full CPython price. So the
 question to ask while typing is not "is this valid Python" but "does this need a
-module". Over a battery of 26 realistic tasks that one framing moved the mixture
-from 0.470x of CPython to 0.178x.
+module". Over that study's battery of 26 realistic tasks (2026-08-23, measured
+on the chain of that date) the framing moved the mixture from 0.470x of CPython
+to 0.178x.
 
-**Correctness outranks the tier, always, and it is not close.** Never approximate
-an answer to stay inside the subset, and never reimplement a standard algorithm
-to avoid an import — the study has an agent that wrote 54 lines of SHA-256 by
-hand rather than `import hashlib`, to save about eleven milliseconds. **The
-subset is a routing decision, not a challenge.** A fall-back is free and always
-safe; a wrong answer is the one thing this project exists to prevent.
+**Correctness outranks the route, always, and it is not close.** Never
+approximate an answer to stay inside the subset, and never reimplement a
+standard algorithm to avoid an import — the study has an agent that wrote 54
+lines of SHA-256 by hand rather than `import hashlib`, to save about eleven
+milliseconds. **The subset is a routing decision, not a challenge.** A fall-back
+is free and always safe; a wrong answer is the one thing this project exists to
+prevent.
 
 **The rewrites that account for nearly all of it.** Each is an exact
 substitution, not an approximation:
@@ -89,15 +94,13 @@ order** (`set(...)` and `len(set(...))` are fine; printing or iterating one is
 refused, so `sorted(set(...))`), and **`os.listdir`**, whose order the filesystem
 defines rather than Python.
 
-If you must import, the cheap ones still land on lypning-mp rather than CPython:
-`re`, `collections`, `math`, `csv`, `hashlib`, `datetime`, `random`, `struct`,
-`base64`, `pathlib`, `textwrap`, `glob`, `statistics`, `time`, `urllib.parse`,
-`zlib`. `subprocess`, `itertools`, `functools`, `argparse` and `unicodedata` go
-straight to CPython.
-
-**One caveat about `lypning route`, until it is fixed.** It reports every
-`os.path.<fn>()` call as `cpython`, and the engine runs all of them on tier 1
-anyway (`docs/LYPNING.md` §4). Do not rewrite `os.path` code to satisfy it.
+If you must import: `collections` and `pathlib` land on **lypning-l**, the
+larger variant of the same crate — one forked spawn, no CPython. Every other
+module the core does not serve (`re`, `math`, `csv`, `hashlib`, `datetime`,
+`struct`, `base64`, `textwrap`, `glob`, `statistics`, `time`, `urllib.parse`,
+`zlib`, `subprocess`, `itertools`, `functools`, `argparse`, `unicodedata`) goes
+straight to CPython. `lypning route -c '<program>'` says which, with the
+construct that decided it; `os.path.<fn>()` calls stay on the core.
 
 ## 2. The gates — they answer different questions, so run the ones that apply
 

@@ -112,8 +112,11 @@ enum {
     LYPNING_OK = 0,
     /* The program raised. stderr holds the traceback; exit code 1. */
     LYPNING_ERROR = 1,
-    /* lypning refused. NOT a failure — run it on CPython. Exit code 90, stdout
-     * empty, stderr exactly one `lypning: unsupported: <kind>: <detail>` line. */
+    /* The library refused. NOT a failure — route the program onward. Exit
+     * code 90, stdout empty, stderr exactly one `<engine>: unsupported:
+     * <kind>: <detail>` line, headed by the name lypning_engine_self()
+     * returns (`lypning-l: unsupported: …` for the library that
+     * `lypning build --lib` ships). */
     LYPNING_UNSUPPORTED = 2,
     /* This thread is already running a program. Nothing was executed. */
     LYPNING_BUSY = 3,
@@ -144,8 +147,8 @@ typedef struct lypning_route lypning_route;
 
 /* NULL if `src` is not UTF-8 or is NULL itself. */
 lypning_route *lypning_route_new(const char *src, size_t len);
-/* A member of the Rust spectrum (see lypning_engine_name), "lypning-mp" or
- * "cpython". "" for a NULL handle. Do not compare against "lypning" by hand:
+/* A member of the Rust spectrum (see lypning_engine_name) or "cpython". "" for
+ * a NULL handle. Do not compare against "lypning" by hand:
  * ask lypning_engine_is_rust(), or lypning_engine_self() for this library. */
 const char *lypning_route_engine(const lypning_route *r);
 /* The construct that pushed it past lypning ("module", "async", …), or "".
@@ -157,7 +160,7 @@ const char *lypning_route_detail(const lypning_route *r);
 size_t lypning_route_import_count(const lypning_route *r);
 /* The i'th import, or NULL when i is out of range. SORTED AND DEDUPLICATED, not
  * in source order: the question is which modules a program needs, which has no
- * order. For the one import that decided the tier, read lypning_route_detail.
+ * order. For the one import that decided the engine, read lypning_route_detail.
  * NULL is the loop terminator and only that: a NULL handle answers "", like
  * every other string accessor, and has an import count of 0. */
 const char *lypning_route_import(const lypning_route *r, size_t i);
@@ -228,7 +231,8 @@ int32_t lypning_result_exit_code(const lypning_result *r);
  * only for a NULL result. `len` may be NULL. */
 const uint8_t *lypning_result_stdout(const lypning_result *r, size_t *len);
 /* The program's stderr: its traceback, or after a refusal exactly the one
- * `lypning: unsupported: <kind>: <detail>` line the binary would have printed. */
+ * `<engine>: unsupported: <kind>: <detail>` line the binary of the same variant
+ * would have printed (see LYPNING_UNSUPPORTED). */
 const uint8_t *lypning_result_stderr(const lypning_result *r, size_t *len);
 /* The refusal's two halves, so you can branch on the kind without parsing the
  * line apart: "module" / "import re". "" when the run was not a refusal, and
@@ -255,7 +259,7 @@ int lypning_result_should_fall_onward(const lypning_result *r);
 void lypning_result_free(lypning_result *r);
 
 /* The dispatcher's own predicate, for a harness that chains OTHER interpreters
- * too (lypning-mp, or a sandboxed python3). True for exit 90, for a MemoryError
+ * too (a sandboxed python3, say). True for exit 90, for a MemoryError
  * — a property of that engine's heap, never the program's answer — and for a
  * traceback reported with exit 0, which would hand you empty stdout and a
  * success status. Deliberately false for an ordinary non-zero exit with a

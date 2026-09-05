@@ -551,11 +551,14 @@ def hook_opencode_context(stdin: Optional[TextIO] = None,
                           stdout: Optional[TextIO] = None) -> int:
     """The routing paragraph and engine state, as plain text on stdout.
 
-    Nothing in opencode reads this hook's stdout as a protocol response — the
-    JavaScript plugin reads it as text and appends it to the bash tool's
-    description. So this is the one entry point here that does not print
-    ``OK_RESPONSE``, and it still cannot fail: an exception yields an empty
-    string and the plugin falls back to its own baked-in copy.
+    Nothing in opencode reads this hook's stdout as a protocol response, so this
+    is the one entry point here that does not print ``OK_RESPONSE``. The shipped
+    plugin (``assets/opencode/lypning.js``) does not call it: it appends its own
+    baked-in copy of the paragraph to the bash tool's description, and
+    ``tests/test_harness_opencode.py::test_the_routing_paragraph_has_not_drifted``
+    holds that copy to the shipped prompt. This entry point is for a plugin that
+    wants the live engine state as well, and it cannot fail either: an
+    exception yields an empty string.
     """
     try:
         read_event(stdin)

@@ -7,9 +7,9 @@
 //!
 //! Two entry points matter to a host:
 //!
-//!   * [`route`] — ask, for the cost of one parse and no execution, which of
-//!     the three interpreters should run a program. This is lypning's own
-//!     front end answering, not a guess over the text.
+//!   * [`route`] — ask, for the cost of one parse and no execution, which
+//!     engine — a spectrum variant or CPython — should run a program. This is
+//!     lypning's own front end answering, not a guess over the text.
 //!   * [`embed::run`] — run it here, in this thread, with its output captured
 //!     and its stdin supplied. On the programs lypning accepts there is no
 //!     process spawn at all, which is the 96% of a one-liner's cost that the

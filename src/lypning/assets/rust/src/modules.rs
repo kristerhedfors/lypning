@@ -1,12 +1,15 @@
-//! The module surface: `sys`, `os`, `os.path`, `io`, `json`.
+//! The module surface: `MODULES` below — and, on the variant built with the
+//! `cap-*` feature for it, `collections` and `pathlib`.
 //!
 //! Chosen from the corpus, in frequency order: `sys` (82 imports), `json` (74),
 //! `io` (63 — almost entirely `io.open(p, encoding='utf-8').read()`, which is
 //! the file-read idiom agents actually type), `os` (21). `re` is on the larger
 //! variant only, and as a SURFACE — `re.rs`: the flags, `escape`, `purge` and
-//! the names of the matcher-backed functions, which refuse at call time — so a
-//! program that imports it is admitted where it used to be a routing decision,
-//! and reaches CPython only if it calls a matcher.
+//! the names of the matcher-backed functions. A program that imports it is
+//! admitted where it used to be a routing decision; a program that CALLS a
+//! matcher is still one — `route.rs` sees the call statically and sends it to
+//! CPython, and `lypning conformance --plan` ranks what that costs. The runtime
+//! refusal in `re.rs` is the backstop for the reach a static walk cannot see.
 
 use crate::args::Args;
 use crate::err::*;

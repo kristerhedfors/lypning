@@ -1,12 +1,13 @@
 //! lypning — the Coding Harness Interpreter Optimizer.
 //!
-//! (The architecture is a mixture of Pythons; this crate is its bottom tier
-//! and its classifier.)
+//! (The architecture is a mixture of Pythons; this crate is its Rust spectrum
+//! — every variant, selected by cargo feature — and its classifier.)
 //!
 //! A from-scratch Python subset in Rust, sized to the BOTTOM of the
 //! distribution of one-liners an agentic CLI actually types (harvested in
-//! `tests/corpus/corpus.jsonl`), plus the classifier that decides which of the
-//! three interpreters — lypning, lypning-mp, CPython — should run a given program.
+//! `tests/corpus/corpus.jsonl`), plus the classifier that decides which engine
+//! — a variant of this crate (`route::SPECTRUM`) or CPython — should run a
+//! given program. lypning-mp is the oracle: measured, never routed to.
 //!
 //! Usage:
 //!   lypning run -c PROG [args…]    ROUTE, then run on whichever engine fits
@@ -17,9 +18,9 @@
 //!   lypning route -f FILE          … for a file
 //!   lypning --version
 //!
-//! Exit codes follow lypning-mp's contract exactly, which is what makes the tiers
-//! interchangeable: 0/1 as CPython, and **90 with one line on stderr** for a
-//! construct outside the subset.
+//! Exit codes follow the one refusal contract every engine keeps, which is what
+//! makes the engines interchangeable: 0/1 as CPython, and **90 with one line on
+//! stderr** for a construct outside the subset.
 
 //! The modules themselves live in `lib.rs`: this binary is one consumer of the
 //! crate and the C ABI is another, and both run programs through the same
@@ -433,16 +434,15 @@ fn engine_path_named(name: &str) -> String {
 
 /// Hand the program to `bin`.
 ///
-/// The terminal tier (CPython) is `exec`ed: it replaces this process, so no
+/// The terminal rung (CPython) is `exec`ed: it replaces this process, so no
 /// extra process ever exists and nothing needs to be waited on.
 ///
-/// An INTERMEDIATE tier is forked instead, because its own refusal has to be
-/// caught. lypning-mp's capability table in `route.rs` is necessarily approximate —
-/// it knows lypning-mp HAS `hashlib` and `re`, not that this build lacks
-/// `hashlib.md5` or `re.VERBOSE` — and measurement found 14 corpus programs
-/// where the difference bites. Forking costs one process on the lypning-mp path and
-/// makes the chain converge on CPython every time, which is the property that
-/// lets the mixture answer 100% of what CPython answers.
+/// An INTERMEDIATE rung — a larger spectrum sibling such as `lypning-l` — is
+/// forked instead, because its own refusal has to be caught: its static verdict
+/// was "can run", and a value-dependent refusal (`bigint`, `set-order`) can
+/// fire once it runs. Forking costs one process on that path and makes
+/// the chain converge on CPython every time, which is the property that lets
+/// the mixture answer everything CPython answers.
 fn exec_engine(
     bin: String,
     src: &str,

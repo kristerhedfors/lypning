@@ -17,7 +17,9 @@ It was written by `lypning install --harness opencode`. Remove it with
 - **Puts the shim on PATH.** `shell.env` prepends `$LYPNING_HOME/bin`, so the
   `python3` a command resolves is the logging shim.
 - **Tells the agent to route.** `tool.definition` appends the routing paragraph
-  to the `bash` tool's description.
+  to the `bash` tool's description — its own baked-in copy, held to the
+  shipped prompt by `tests/test_harness_opencode.py`; it does not call
+  `lypning hook opencode-context`.
 - **Publishes.** On `session.idle` and on `dispose` it runs
   `lypning harvest --export --quiet`.
 
@@ -62,13 +64,18 @@ Do not assume any of the above still holds; opencode moves fast. As of
 2. lypning doctor                # 0 FAIL
 3. Run one `python3 -c 'print(1)'` and one heredoc through the agent.
 4. Confirm two new lines in $LYPNING_LOG, each carrying "host":"opencode".
-5. lypning harvest --export --dry-run --json
-   → confirm the session file it would write is named by YOUR session id,
-     not unknown.jsonl.
+5. lypning harvest --export --json
+   → `files` names the session file it wrote: YOUR session id, not
+     unknown.jsonl. (`--dry-run --json` prints counts only, no file name.)
 6. Quote the counts those runs print, WITH THE DATE. Never a remembered number.
 ```
 
 ## Off switches
 
 `LYPNING_CAPTURE=0` disables capture entirely (the hooks still run and do
-nothing). `LYPNING_HARVEST=0` keeps capturing but stops the export.
+nothing). `LYPNING_HARVEST=0` is honoured by the Claude Code Stop hook and the
+OpenHands `SessionEnd` hook, and NOT by this plugin: it runs
+`lypning harvest --export --quiet` on idle and dispose regardless
+(github.com/kristerhedfors/lypning/issues/44). To stop the export under
+opencode, remove the plugin. A foreign `lypning.js` at the plugin's path is
+left alone and reported; `--force` does not move it aside (issues/43).

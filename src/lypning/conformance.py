@@ -142,6 +142,19 @@ _RUN_SPECIFIC = tuple(re.compile(p) for p in (
     # interpreter's: a program printing the capture log's own size can never
     # match a reference taken a moment earlier — the log grew in between.
     r"\bos\.path\s*\.\s*(?:getsize|getmtime|getatime|getctime)\b",
+    # The CONTENT of the harness's own live state is the run's too. The capture
+    # log under ~/.lypning grows on every python spawn — including the
+    # reference spawn the battery itself just made — and the transcripts under
+    # ~/.claude grow as the session that is running the battery types. A
+    # program that counts records in either can never match a reference taken
+    # a moment earlier; on 2026-09-05 one such program (py-627dabb6be55) read
+    # 7180 distinct commands for the reference and 7181 for the arm, both from
+    # CPython. Only the two harness directories are named: a program reading
+    # any other file under ~ is graded, because that file is not ours to grow.
+    r"""(?:expanduser\(\s*['"]~/\.(?:lypning|claude)\b"""
+    r"""|Path\.home\(\)\s*/\s*['"]\.(?:lypning|claude)\b"""
+    r"""|\$HOME/\.(?:lypning|claude)\b"""
+    r"""|HOME['"]\]\s*\+\s*['"]/\.(?:lypning|claude)\b)""",
     # A subprocess's output belongs to the environment it ran in. The corpus
     # holds a probe that spawns python3 three hundred times with
     # PYTHONHASHSEED deliberately REMOVED to count both set orders — its own

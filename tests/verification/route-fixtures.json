@@ -1,0 +1,86 @@
+[
+ {
+  "program": "print(1)",
+  "route": "lypning"
+ },
+ {
+  "program": "f = lambda x: x + 1; print(f(1))",
+  "route": "lypning"
+ },
+ {
+  "program": "import json; print(json.dumps({\"a\": 1}))",
+  "route": "lypning"
+ },
+ {
+  "program": "import os; print(os.path.join(\"a\", \"b\"))",
+  "route": "lypning"
+ },
+ {
+  "program": "import collections; print(collections.Counter(\"aab\"))",
+  "route": "lypning-l\tmodule: import collections"
+ },
+ {
+  "program": "import pathlib; print(pathlib.Path(\"a/b\").name)",
+  "route": "lypning-l\tmodule: import pathlib"
+ },
+ {
+  "program": "from collections import defaultdict; d = defaultdict(int); d[\"a\"] += 1; print(d[\"a\"])",
+  "route": "lypning-l\tmodule: from collections import …"
+ },
+ {
+  "program": "import subprocess",
+  "route": "cpython\tmodule: import subprocess"
+ },
+ {
+  "program": "import re; print(re.sub(\"a\", \"b\", \"aa\"))",
+  "route": "cpython\tmodule: import re"
+ },
+ {
+  "program": "import collections, re",
+  "route": "cpython\tmodule: import collections"
+ },
+ {
+  "program": "import hashlib; print(hashlib.md5(b\"x\").hexdigest())",
+  "route": "cpython\tmodule: import hashlib"
+ },
+ {
+  "program": "class A: pass",
+  "route": "cpython\tclass: class definition"
+ },
+ {
+  "program": "async def f(): pass",
+  "route": "cpython\tasync: async def / async for"
+ },
+ {
+  "program": "def g(): yield 1",
+  "route": "cpython\tgenerator: yield expression"
+ },
+ {
+  "program": "@staticmethod\ndef f(): pass",
+  "route": "cpython\tdecorator: decorated definition"
+ },
+ {
+  "program": "match 1:\n    case 1: pass",
+  "route": "cpython\tsyntax: line 1: invalid syntax: unexpected a literal"
+ },
+ {
+  "program": "try:\n    pass\nexcept* ValueError:\n    pass",
+  "route": "cpython\texcept-star: except* group"
+ },
+ {
+  "program": "print(2**100)",
+  "route": "lypning"
+ },
+ {
+  "program": "print(getattr(print, \"__name__\"))",
+  "route": "lypning"
+ },
+ {
+  "program": "print({3, 1, 2})",
+  "route": "lypning"
+ },
+ {
+  "program": "import sys; sys.exit(90)",
+  "route": "lypning"
+ }
+]

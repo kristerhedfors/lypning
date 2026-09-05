@@ -131,7 +131,7 @@ pub extern "C" fn lypning_engine_name(i: c_int) -> *const c_char {
 }
 
 /// 1 if `name` (NUL-terminated) is a point on the Rust spectrum — something
-/// THIS library family runs — 0 for lypning-mp, cpython, or anything else.
+/// THIS library family runs — 0 for cpython, the oracle, or anything else.
 /// Compare with this rather than hard-coding "lypning": a route can name any
 /// spectrum member.
 ///
@@ -184,9 +184,10 @@ pub unsafe extern "C" fn lypning_route_new(src: *const c_char, len: usize) -> *m
     })
 }
 
-/// `"lypning"`, `"lypning-mp"` or `"cpython"` — the tier that should run it.
-/// `""` for a NULL handle, as for every string accessor here: a route the host
-/// never got names no tier, and a host that failed to check must not crash in
+/// A spectrum member (`"lypning"`, `"lypning-l"`) or `"cpython"` — the engine
+/// that should run it. `""` for a NULL handle, as for every string accessor
+/// here: a route the host never got names no engine, and a host that failed to
+/// check must not crash in
 /// `strcmp` for it.
 #[no_mangle]
 pub unsafe extern "C" fn lypning_route_engine(r: *const lypning_route) -> *const c_char {
@@ -223,7 +224,7 @@ pub unsafe extern "C" fn lypning_route_import_count(r: *const lypning_route) -> 
 
 /// The `i`th import — **sorted and deduplicated**, not in source order — or
 /// NULL when `i` is out of range. Use `lypning_route_detail` for the one import
-/// that actually decided the tier.
+/// that actually decided the engine.
 ///
 /// NULL is the loop terminator and only that: a NULL *handle* answers `""`
 /// like every other string accessor, so a host that indexes a route it never
@@ -513,8 +514,8 @@ pub unsafe extern "C" fn lypning_result_free(r: *mut lypning_result) {
 /// measurement rather than design (a `MemoryError` is a property of the
 /// engine's heap, not the program's answer; a traceback reported with exit 0
 /// would hand the caller empty stdout and a success status). A harness that
-/// chains lypning -> lypning-mp -> CPython should ask this rather than reinvent
-/// it.
+/// chains other interpreters too (a sandboxed python3, say) should ask this
+/// rather than reinvent it.
 #[no_mangle]
 pub unsafe extern "C" fn lypning_fall_onward(
     exit_code: i32,

@@ -1,9 +1,9 @@
 //! `json.loads` / `json.dumps`, written directly against CPython's output.
 //!
-//! This is the single largest capability win lypning has over lypning: lypning-mp's
-//! `json` is a frozen PYTHON module, so `json.dumps` inherits its ordered-dict
-//! cost (measured at 3.8x stock in the lypning-mp bench ledger). Here it is Rust
-//! over the same insertion-ordered dict.
+//! This is the largest capability win lypning has over the oracle lypning-mp:
+//! its `json` is a frozen PYTHON module, so `json.dumps` inherits its
+//! ordered-dict cost (`docs/BENCH-LEDGER.md` has the run). Here it is Rust over
+//! the same insertion-ordered dict.
 //!
 //! The defaults matter and are easy to get subtly wrong: `ensure_ascii=True`,
 //! separators `(', ', ': ')` with no indent and `(',', ': ')` with one, floats
