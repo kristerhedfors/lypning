@@ -46,3 +46,6 @@ study/hosts/run_go/run_go
 study/hosts/run_swift/build/
 study/hosts/run_swift/run_swift
 study/data/hostset/
+
+# uv writes this when run without --no-project; the package has no dependencies to lock
+uv.lock
