@@ -1,56 +1,38 @@
 # Comparison — lypning against ADK-Rust CodeAct + Monty
 
-Two Rust-implemented Pythons for agent-typed code, built for different jobs.
-This document says what each is for, then puts both on **one instrument over
-one corpus** and reports what came out. Every number below was measured on this
-container on **2026-08-30**, against **pydantic-monty 0.0.21** and the lypning
-binary built the same day (1,024,208 B); the harness is committed at
-`study/monty/` so a fork can re-run it. Per CLAUDE.md invariant 3, do not quote
-these numbers without re-running them — both projects move.
+> **Status (2026-09-05):** measured on the upstream container on 2026-08-30
+> (fidelity, compute, end to end) and 2026-08-31 (warm parity), against
+> pydantic-monty 0.0.21 and the `lypning` core built that day, on the chain
+> `lypning → lypning-mp → cpython` (`lypning-mp` is the oracle — measured, never
+> routed to — since 2026-09-04, `CHANGELOG.md` #38). No table has a `lypning-l`
+> column; nothing was re-run on `lypning → lypning-l → cpython`. Monty 0.0.21
+> was current on 2026-08-31 — re-check before quoting. The harness does not run
+> from this tree unedited (*Reproducing*); the wider sweep is `docs/PAPER.md`.
 
-A wider five-engine evaluation over the same corpus — adding PyPy, standalone
-MicroPython, CPython 3.13, and a warm CPython fork pool, re-run 2026-08-31 with
-a hardened harness — is `docs/PAPER.md` with harnesses in `study/paper/`. Where
-a number here differs from that document, the difference is run date; each is
-quoted with its own.
+## The two designs
 
-## The two designs, honestly stated
-
-**[Monty](https://github.com/pydantic/monty)** (Pydantic, MIT) is a minimal
-Python interpreter in Rust built to be *embedded*: it cannot touch the
-filesystem, environment or network unless the host grants an external function,
-it enforces resource limits, and it can snapshot its entire execution state and
-resume later. **[ADK-Rust](https://github.com/zavora-ai/adk-rust)** (Apache-2.0)
-uses it as the substrate for its experimental **CodeAct** runtime
-(`adk-codeact-monty`): the LLM writes Python that calls the agent's tools as
-functions, Monty executes it inside the sandbox, and suspend/resume snapshots
-carry state across turns. The security boundary *is* the interpreter.
-
-**lypning** is a drop-in interpreter chain for programs an agent launches as
-*processes* — the `python3 -c …` a coding harness runs a hundred times a day.
-Its contract is different: it must be **indistinguishable from CPython or
-refuse** (exit 90, nothing on stdout), and anything refused falls through the
-chain until CPython answers, so the caller always gets CPython's answer —
-usually cheaper. Side effects are real (files are written), guarded by a commit
-barrier that makes a refused run observably a no-op. The security boundary is
-the harness's, not the interpreter's.
+**[Monty](https://github.com/pydantic/monty)** (Pydantic, MIT) is embedded — no
+filesystem, environment or network unless the host grants a function; resource
+limits; snapshot and resume — and
+**[ADK-Rust](https://github.com/zavora-ai/adk-rust)** (Apache-2.0) builds its
+experimental CodeAct runtime on it: the LLM's Python calls the agent's tools as
+functions; the security boundary is the interpreter. **lypning** runs the
+`python3 -c …` a harness launches as a process — CPython's answer or a refusal
+(`docs/VERIFICATION.md` §C1) that falls through the chain (§C4) — and the
+boundary is the harness's.
 
 So Monty asks *"how do I run untrusted code safely inside my process?"* and
 lypning asks *"how do I run the code my harness already trusts, faster, without
-ever being wrong?"* The measurements below are about the second question —
-fidelity to CPython on real agent programs — because that is the axis the two
-designs genuinely share.
+ever being wrong?"* The measurements are about the second question.
 
 ## One instrument, one corpus
 
-`study/monty/grade_monty.py` and `study/monty/grade_lypning.py` run the same
-grading over the same programs: the lypning corpus (2,906 captured programs on
-this date), minus 755 naming absolute paths and 161 nondeterministic ones —
-**1,990 graded**. The CPython reference runs per-program in a fresh temp cwd
-with `PYTHONHASHSEED=0` and `LC_ALL=C.UTF-8`. Monty runs with no OS access
-(its default); lypning runs as the process it is.
+`study/monty/grade_monty.py` and `grade_lypning.py` grade the corpus as loaded
+on 2026-08-30 (2,906) minus 755 naming absolute paths and 161 nondeterministic
+— **1,990 graded** — against CPython in a fresh temp cwd per program with
+`PYTHONHASHSEED=0`, `LC_ALL=C.UTF-8` (`conformance._env_for`).
 
-| outcome, of 1,990 | lypning (tier 1 alone) | Monty 0.0.21 |
+| outcome, of 1,990 | `lypning` alone | Monty 0.0.21 |
 |---|---:|---:|
 | agreed with CPython (stdout, success) | **480** (24.1%) | 275 (13.8%) |
 | both failed (program fails in an empty sandbox on both) | 1,245 (62.6%) | 1,245 (62.6%) |
@@ -58,163 +40,70 @@ with `PYTHONHASHSEED=0` and `LC_ALL=C.UTF-8`. Monty runs with no OS access
 | errored where CPython succeeds | 0 | 107 (5.4%) |
 | **answered wrongly at exit-success** | **1** (0.05%) | **23** (1.2%) |
 
-(The paper's sweep reports all 447 Monty failures as one LOUD-ERROR class,
-because Monty has no exit-90 refusal channel a dispatcher could act on; this
-table subdivides by whether the error names an unimplemented construct.)
-
 The identical both-fail counts are the sanity check that one instrument graded
-both columns. On the **CPython-clean subset** (745 programs that run cleanly in
-the sandbox):
+both columns. On the **CPython-clean subset**, the 745 programs that ran
+cleanly (2026-08-30):
 
-| | lypning tier 1 | Monty 0.0.21 |
+| | `lypning` alone | Monty 0.0.21 |
 |---|---:|---:|
 | answers correctly | **480 / 745 = 64.4%** | 275 / 745 = 36.9% |
 | fails or refuses loudly | 264 (35.4%) | 447 (60.0%) |
 | **silent wrong answer** | **1 (0.13%)** | 23 (3.1%) |
 
-lypning's one silent divergence is the ledgered musl-libm `pow` last-ULP
-difference (`1.7976931348623157e308 ** 0.5`), tracked by identity in
-`.github/known-mismatches.json`. And tier 1 is not the product — the **chain**
-is: with the fall-through, the full mixture answers **2,119 of 2,906** corpus
-programs identically to CPython with 7 ledgered exceptions (`lypning
-conformance`, 2026-08-30), because a refusal is answered by the next tier
-rather than surfaced to the model. (The two instruments differ: the conformance
-battery grades all 2,906 entries including matching-failure outcomes and its
-ledger spans the whole corpus, which is how it reports 7 exceptions where the
-paper's 1,990-program sweep, grading stdout on success only, finds 1 on its 745
-clean programs. Neither number is wrong; they answer different questions.)
-CodeAct has no equivalent — a Monty error
-returns to the LLM, which spends a model turn recovering.
+lypning's one divergence is the musl-libm `pow` last-ULP case, ledgered by
+identity: engine `lypning`, entry `py-ab7286f43b7a`, family
+`float-pow-last-bit`, `.github/known-mismatches.json`. Chain, whole corpus
+(`lypning conformance`, 2026-08-30): 2,119 / 2,906 match, 7 ledgered
+exceptions — the battery grades failures too, so the counts are not comparable.
 
 ### Where Monty's 23 silent divergences live
 
-Four spellings were independently re-verified (each on three CPython runs)
-before publication; they are the *same families* lypning refuses or escalates
-rather than answers:
+Four spellings, re-verified by hand on three CPython runs (2026-08-30; no script
+reproduces this table):
 
-| construct | CPython | Monty 0.0.21 | lypning |
+| construct | CPython | Monty 0.0.21 | `lypning` and `lypning-l` |
 |---|---|---|---|
 | `9007199254740993 / 3` | `3002399751580331.0` | `3002399751580330.5` | refuses `int-div-precision`, chain → CPython |
-| `getattr(type(e), "__module__", "MISSING")` | `builtins` | `MISSING` | refuses `dunder-missing`, chain → CPython |
+| `getattr(type(e), "__module__", "MISSING")` | `builtins` | `MISSING` | refuses `builtin: getattr`, chain → CPython |
 | `round(2.675, 2)` | `2.67` (rounds the stored value) | `2.68` | answers `2.67` |
 | caught-`TypeError` text from a mixed sort | names the innermost pair (`'int' and 'str'`) | names the outer tuples | matches CPython's text |
 
-Credit where measured: Monty reproduces CPython's `hash(-1) == -2` sentinel
-quirk correctly, and one candidate set-order divergence did **not** reproduce
-under a pinned hash seed — both claims were dropped from this table for exactly
-that reason.
+The `getattr` row is a run-time refusal: `lypning route -c` predicts `lypning`
+and both variants exit 90 (2026-09-05, `tests/verification/refusal-probes.json`)
+— the case `lypning routes` is for (§C11). Credit where measured: Monty
+reproduces CPython's `hash(-1) == -2` sentinel quirk correctly, and one
+candidate set-order divergence did **not** reproduce under a pinned hash seed —
+both claims were dropped from this table for exactly that reason.
 
-## Performance
+## Compute
 
-Four instruments, because no single one can see everything: startup (where the
-corpus population actually lives), sustained compute (where none of these
-systems was designed to live), the end-to-end corpus wall (the deployment
-number), and memory. All measured on this container, 2026-08-30.
+Startup does not separate the systems (2026-08-30, 60 runs: warm in-process
+0.05 vs 0.04 ms median; spawned 0.64 vs CPython's 10.33 ms). On six compute
+workloads (2026-08-30, `study/monty/perf_matrix.py`; the matrix is
+`tests/verification/comparison-compute-2026-08-30.md`) lypning and Monty both
+run 1.9–4.5× slower than CPython and the oracle is bimodal, 0.78× to 23.41×.
+None of these engines is a compute accelerator; they are startup and safety
+plays.
 
-### Startup and footprint
-
-Both projects claim fast startup and both are right — *in the same shape*. The
-fair comparison is shape-to-shape (60 runs each):
-
-| shape | lypning | Monty 0.0.21 | CPython 3.11 |
-|---|---:|---:|---:|
-| in-process, warm (`liblypning` C ABI / warm pool checkout+feed) | **0.05 ms** median | **0.04 ms** median | — |
-| process spawn, `print(1)` | **0.64 ms** median | ~100 µs execution + runtime start (CLI shape) | 10.33 ms median |
-| cold pool / first load | one `dlopen` | 15.6 ms pool construction | — |
-| on-disk runtime | 1,024,208 B (one static binary, 8 CheerpX blocks) | 22,064,856 B runtime binary (9.2 MB wheel payload) | — |
-| peak RSS (hello / dict-heavy) | at the ~8.6 MB measurement floor | floor +0.2 MB / +1.0 MB | at the floor |
-
-In-process to in-process they are the same order of magnitude; startup does not
-separate these systems. (A 2026-08-31 re-run of the spawn row printed 0.553 ms /
-10.663 ms — run-to-run spread on a shared container; quote either only with its
-date. The 08-30 end-to-end walls below likewise predate the stdin-EOF harness
-hardening of 08-31, which changed no correctness count and moved walls a few
-percent.)
-
-### Sustained compute — where nobody beats CPython
-
-Six compute-bound workloads (integer and float loops, string methods, list and
-dict churn, recursive calls), each first validated to produce **byte-identical
-stdout on every engine**, then timed as the median of 5 interleaved rounds so
-machine load hits all arms alike. Ratios are against CPython's wall clock:
-
-| workload | CPython | lypning | liblypning | lypning-mp | Monty (warm feed) | Monty (CLI) |
-|---|---:|---:|---:|---:|---:|---:|
-| int loop (3M) | 218 ms | 1.85× | 2.08× | **0.78×** | 1.91× | 1.98× |
-| float loop (2M) | 135 ms | 2.31× | 2.51× | 1.36× | 2.36× | 2.33× |
-| str methods (120k) | 83 ms | 2.82× | 3.41× | 5.88× | **2.13×** | 2.61× |
-| list churn (400k) | 60 ms | 2.92× | 3.24× | **1.00×** | 2.12× | 2.13× |
-| dict churn (600k) | 122 ms | **2.12×** | 2.48× | 23.41× | 4.42× | 4.52× |
-| recursive calls (fib) | 29 ms | 4.51× | 5.15× | **1.05×** | 2.31× | 2.37× |
-
-The honest headline: **on sustained loops, nothing here beats CPython** —
-lypning runs 1.9–4.5× slower, Monty 1.9–4.5× slower (consistent with its own
-"5× faster to 5× slower" claim), and MicroPython is bimodal (fastest on
-ints and lists, 23× slower on dict churn, which is why the classifier exists).
-Instruction counts (callgrind, exact) partially reorder the wall ranks — on
-the int loop Monty *executes* 0.84× CPython's instructions and lypning-mp
-0.62×, yet both lose or tie on wall — so the wall costs are memory- and
-dispatch-bound, not instruction-bound. None of these engines is a compute
-accelerator; they are startup and safety plays.
-
-### End to end — the number an agent session pays
-
-The corpus population is one-liners, so the deployment metric is spawn-bound
-by construction: total wall to run all **745 CPython-clean corpus programs**,
-each in a fresh temp cwd, in each system's natural shape (best of 2 rounds):
-
-| system, its own shape | total | per program | and it answers |
-|---|---:|---:|---|
-| CPython, spawned per program | 12,687 ms | 17.0 ms | 100% (it is the oracle) |
-| **lypning chain** (`lypning run`) | **8,569 ms** | **11.5 ms** | matches CPython or refuses; 1 ledgered ULP divergence |
-| lypning tier 1 alone | 2,029 ms | 2.7 ms | 64.4% (the chain covers the rest) |
-| Monty, warm pool | 6,812 ms | 9.1 ms | 36.9% correct; 60% error back to the LLM |
-
-Read the last column with the middle ones: Monty's pool completes the sweep
-faster than the chain, but on this population it hands 6 of 10 programs back
-to the model as errors — and a model turn costs three to six orders of
-magnitude more time and money than any interpreter in this table. The chain is
-32% faster than spawning CPython while returning CPython's answer for
-everything it grades (744 of 745, plus the one ledgered ULP below). An earlier
-version of this paragraph called the tier-1 row a "ceiling" of 6.3×; the paper
-retracts that splice — 2.7 ms/program averages 480 answers with 264 cheap
-refusals, so it is not the cost of serving a program — and this document follows
-it. One arm measured later belongs in this table's company: a **pre-warmed
-CPython that forks per program** serves the same clean subset at **8.39
-ms/program** (2026-08-31, `study/paper/measure_all.py`) — faster than the chain,
-and correct by construction. The paper reports that loss and what the pool costs
-(a resident daemon) in its §5.4.
-
-The warm-shape asymmetry this document used to carry — Monty measured warm,
-lypning only cold — is closed by the parity run of 2026-08-31
-(`study/paper/warm_parity.py`, paper §5.5): warm substrate against warm
-substrate over the same 745 programs, liblypning serves the sweep at 2.23
-ms/program against Monty's 9.41, with 480 matches against 275 and 1 silent
-divergence against 23. The concession above ("Monty's pool completes the sweep
-faster than the chain") stands even warm-for-warm at the whole-chain level —
-the all-answering warm chain (12.60 ms/program) is still slower on wall than
-Monty's pool, buying 742 correct answers instead of 275 correct plus 447
-errors — but reverses at the substrate level, and part of the substrate gap is
-Monty's checkout/feed dispatch rather than interpreter speed. The same run caught a lypning defect: the
-in-process library arm errs on 2 programs the spawned binary correctly refuses.
+End to end over the 745 clean programs (2026-08-30, `perf_endtoend.py`): the
+pre-oracle chain (`lypning run`) 11.5 ms/program against CPython's 17.0 and the
+Monty pool's 9.1, which hands 6 of 10 programs back to the model as errors;
+`lypning -c` alone 2.7 ms over 480 answers and 264 refusals — not a per-answer
+cost (`CHANGELOG.md` 2026-08-31 retracts that ratio). Warm for warm
+(`docs/PAPER.md` §5.5, 2026-08-31): liblypning 2.23 ms/program against the
+pool's 9.41, 480 / 1 silent against 275 / 23; the all-answering warm chain,
+12.60, is slower on wall and buys 742 correct answers instead of 275 plus 447
+errors. Its 2-program library-arm disagreement was build hygiene (`CHANGELOG.md`
+2026-08-31); `lypning doctor` `core/library agreement` guards it (§C7).
 
 ## Feature-by-feature
 
-| | lypning (mixture chain) | ADK-Rust CodeAct + Monty |
+| | lypning (the chain) | ADK-Rust CodeAct + Monty |
 |---|---|---|
-| primary job | make a harness's real `python3` invocations cheaper, never wrong | run LLM-written tool-calling code inside the agent process, safely |
-| wrong-answer discipline | **refuse (exit 90) or match CPython**; divergences ledgered by identity; grid+fuzz+corpus battery enforce it | best-effort subset; divergences surface as differences (23/1,990 measured) |
-| on unsupported code | falls through the chain; caller still gets CPython's answer | raises to the host; the LLM sees the error and retries |
-| side effects | real, transactional (commit barrier discards on refusal) | none unless host grants external functions / `AbstractOS` |
-| sandboxing | none of its own — inherits the harness's | **built-in**: no FS/env/network by default, resource limits |
-| state across runs | none (process model) | **session state, snapshot/serialize/resume** |
-| tool calling | not its job (the harness's tools stay outside) | **the point**: tools exposed as Python functions via `external_lookup` |
-| classes, generators, `match`, inheritance | classes/generators refused → chain answers; no gap visible to caller | partial (no inheritance/metaclasses/`match` at 0.0.21) → error to the LLM |
-| stdlib | tier 1 subset + tier 2's frozen stdlib + all of CPython via the chain | curated subset (`json`, `re`, `datetime`, `pathlib`, …) |
-| adapts to *your* programs | **yes — the product**: capture → harvest → gate → step (`FORKING.md`) | fixed feature roadmap upstream |
-| typing | runs code as CPython would | optional ahead-of-time type checking |
-| maturity | experimental, measured | experimental (pre-V1; CodeAct crate marked experimental) |
-| license | MIT | Monty MIT; ADK-Rust Apache-2.0 |
+| wrong-answer discipline | **refuse (exit 90) or match CPython**; divergences ledgered by identity; grid + fuzz + corpus battery enforce it | best-effort subset; divergences surface as differences (23/1,990 on 2026-08-30) |
+| on unsupported code | falls through the chain; the caller gets CPython's answer | raises to the host; the LLM sees the error and retries |
+| stdlib | `lypning`'s subset; `lypning-l` adds `collections` and `pathlib` (`engines.VARIANT_CAPS`); all of CPython via the chain | curated subset (`json`, `re`, `datetime`, `pathlib`, …) |
+| adapts to *your* programs | **yes — the product**: capture → harvest → gate → step (`docs/FORKING.md`) | fixed feature roadmap upstream |
 
 ## When to choose which — and when both
 
@@ -228,23 +117,27 @@ in-process library arm errs on 2 programs the spawned binary correctly refuses.
   JSON inside the agent loop; lypning replaces the interpreter under the shell
   commands that loop still issues. A fork could even mount Monty as a tier in
   the chain — the contract any tier must honor is one line on stderr and
-  exit 90 (`docs/LYPNING.md` §5) — though Monty's error model would need a
-  wrapper to qualify.
+  exit 90 (`docs/LYPNING.md` §5).
 
-## Reproducing this
+## Reproducing
 
 ```bash
-pip install pydantic-monty            # 0.0.21 at time of measurement
-python3 study/monty/grade_monty.py    # fidelity: Monty column   (~40 s)
-python3 study/monty/grade_lypning.py  # fidelity: lypning column (~50 s)
-python3 study/monty/perf_matrix.py    # compute matrix, 6 workloads x 6 arms
-python3 study/monty/perf_endtoend.py  # the 745-program deployment sweep
+pip install pydantic-monty==0.0.21
+python3 study/monty/grade_monty.py    # → corpus loaded: N   abs-path skipped: N   nondeterministic skipped: N   graded: N
+python3 study/monty/grade_lypning.py  # → graded N   wall Ns; then one `<class> <count> (<pct>)` line each
+python3 study/monty/perf_matrix.py    # compute matrix, 6 workloads × 6 arms
+python3 study/monty/perf_endtoend.py  # the clean-subset sweep
 ```
 
 Both scripts print the counts they graded; quote those, from your run, with
-its date.
-
-Sources: [pydantic/monty](https://github.com/pydantic/monty) ·
-[Pydantic's announcement](https://pydantic.dev/articles/pydantic-monty) ·
-[zavora-ai/adk-rust](https://github.com/zavora-ai/adk-rust) ·
-[ADK-Rust site](https://adk-rust.com/en)
+its date. Classes: `MATCH`, `BOTH-FAIL`, `UNSUPPORTED`, `LOUD-ERROR`,
+`SILENT-DIFF`, `TIMEOUT`, `REF-TIMEOUT`. Pass: lypning's `SILENT-DIFF` is 0
+modulo the identities in `.github/known-mismatches.json`
+(`.github/scripts/known-mismatches.py`) — a new one is invariant 1, file it,
+never widen a table; Monty's count is a data point; timeouts, nondeterminism
+and stderr grade as §C3 says. The scripts pin the upstream container
+(`/home/user/lypning/src`, `/root/.lypning/bin/lypning`, `-mp-i386`), read none
+of the variables `engines.env_var_for` spells (`LYPNING_BIN`, `LYPNING_L_BIN`,
+`LYPNING_MP_BIN`), and `perf_matrix.py` fails without `lypning-mp`: issue #45.
+No `lypning-l` column exists; `lypning conformance --engine lypning-l` is its
+instrument (§C3). The reference CPython was the container's 3.11.
