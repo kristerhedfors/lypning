@@ -123,7 +123,7 @@ def test_route_json_carries_a_verdict_per_rung(lypning_bin):
     assert [v[0] for v in r.verdicts] == list(eng.ENGINE_ORDER)
     assert r.verdicts[0][1:] == ("module", "import re")   # this binary refuses
     assert r.verdicts[-1] == ("cpython", "", "")            # CPython always can
-    assert r.engine == eng.CPYTHON                           # first "can run" at or above self
+    assert r.engine == eng.LYPNING_L                         # first "can run" at or above self
 
 
 def test_both_dispatchers_read_the_same_escalation_table():
@@ -536,10 +536,68 @@ def test_a_plain_one_liner_goes_to_the_cheapest_tier(lypning_bin):
     assert _route("import json\nprint(json.dumps({'a': 1}))").engine == eng.LYPNING
 
 
-def test_an_import_only_the_second_tier_has_names_the_blocker(lypning_bin):
-    r = _route("import re\nprint(re.findall(r'\\d+', 'a1'))")
-    assert r.engine == eng.CPYTHON
+def test_an_import_only_the_larger_variant_serves_names_the_blocker(lypning_bin):
+    # The core refuses `re` and names it; the larger variant serves the module
+    # (its surface: the flags, `escape`, `purge`). A MATCHER call is a different
+    # decision, and the next test's.
+    r = _route("import re\nprint(re.escape('a.b'))")
+    assert r.engine == eng.LYPNING_L
     assert (r.kind, r.detail) == ("module", "import re")
+
+
+def test_a_matcher_call_is_decided_statically_and_routes_to_cpython(lypning_bin):
+    """No Rust variant has a matcher, so `re.sub(…)` is a STATIC route to
+    CPython in every spelling the walk can see — not a spawn of lypning-l to be
+    told no, and not a program committed at an `os.makedirs` that then cannot
+    fall onward (it exited 1 while the matcher was a runtime refusal alone).
+    The sibling's verdict carries the kind and detail its own walker raises,
+    so `--plan` ranks one row per function; and the Python chain after the
+    core's own refusal agrees with the Rust one: CPython, nobody in between."""
+    want = "re.%s() (pattern matching is not served yet)"
+    for src, f in [
+        ("import re\nprint(re.sub('a', 'b', 'a'))", "sub"),
+        ("import re as x\nprint(x.findall('a', 'a'))", "findall"),
+        ("from re import search\nprint(search('a', 'a'))", "search"),
+        ("from re import compile as c\nprint(c('a'))", "compile"),
+        ("import re, os\nos.makedirs('d1/d2')\nprint(re.sub('a', 'b', 'a'))", "sub"),
+        ("import sys, re\nd = sys.stdin.read()\nprint(re.findall(r'\\d', d))", "findall"),
+    ]:
+        r = _route(src)
+        assert r.engine == eng.CPYTHON, (src, r)
+        by = {v[0]: v[1:] for v in r.verdicts}
+        assert by[eng.LYPNING_L] == ("re", want % f), (src, by)
+        assert eng.chain_after_refusal(eng.LYPNING, r.kind, r.imports, r.verdicts) == [eng.CPYTHON]
+        assert eng.chain_after_refusal(eng.LYPNING_L, "re", r.imports, r.verdicts) == [eng.CPYTHON]
+    # The names alone block nothing, a matcher reached DYNAMICALLY is the
+    # runtime backstop's (one spawn later), and a string called `re` is a str.
+    for src in ["import re\nf = re.sub\nprint(f)",
+                "import re\nprint(getattr(re, 'sub')('a', 'b', 'a'))",
+                "re = 'a,b'\nprint(re.split(','))"]:
+        assert _route(src).engine != eng.CPYTHON, src
+
+
+def test_route_json_says_whether_the_program_can_read_stdin(lypning_bin):
+    """`Route.reads_stdin` is what both dispatchers read before buffering a
+    piped stdin for replay. Generous by design: an over-match costs one read of
+    bytes the program was going to read anyway, a miss is the exhausted-stream
+    bug back — and a program that CANNOT read it must not wait for the writer
+    to close (`(sleep 30; echo hi) | lypning run -c 'print(1)'`)."""
+    for src in ["import sys\nprint(sys.stdin.read())", "print(input())", "print(open(0).read())",
+                "import os\nprint(os.read(0, 4))",
+                "import fileinput\nfor l in fileinput.input(): print(l)",
+                "print(open('/dev/stdin').read())",
+                # a parse-time blocker stops the walk; the text scan still answers
+                "class C: pass\nprint(open(0).read())",
+                # `input` bound to a name: the bare identifier reads the pipe, and
+                # a scan that looked only for `input(` handed CPython an exhausted
+                # stream after the core's bigint refusal (EOFError at exit 1)
+                "f = input\nprint(int(f()) * 10**30)"]:
+        assert _route(src).reads_stdin, src
+    for src in ["print(1)", "import collections\nprint(collections.Counter('ab'))",
+                "import sys\nprint(sys.argv[1:])", "import re\nprint(re.escape('a'))",
+                # the word, not the substring
+                "inputs = [1]\nprint(inputs[0])"]:
+        assert not _route(src).reads_stdin, src
 
 
 def test_an_import_nobody_but_cpython_has_skips_the_middle_tier(lypning_bin):

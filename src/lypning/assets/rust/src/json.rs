@@ -330,14 +330,12 @@ pub fn dumps(v: &Value, kw: &[(Rc<str>, Value)]) -> R<String> {
     };
     let indent = match get("indent") {
         None | Some(Value::None) => None,
-        Some(Value::Int(n)) => Some(" ".repeat(n.max(0) as usize)),
         Some(Value::Str(s)) => Some(s.to_string()),
-        Some(other) => {
-            return Err(type_err(format!(
-                "indent must be int or str, not {}",
-                type_name(&other)
-            )))
-        }
+        // CPython's encoder does `' ' * indent` for anything that is not a
+        // str, so a bool or an IntFlag is its int — `indent=True` is one
+        // space, `indent=re.I` two — and a float is the TypeError `int_val`
+        // raises. Matching `Value::Int` alone made both an exit 1.
+        Some(other) => Some(" ".repeat(crate::eval::int_val(&other)?.max(0) as usize)),
     };
     let (item_sep, key_sep) = match get("separators") {
         None | Some(Value::None) => (
@@ -381,6 +379,10 @@ fn write_value(out: &mut String, v: &Value, o: &Opts, depth: usize) -> R<()> {
         Value::None => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Int(i) => out.push_str(&i.to_string()),
+        // The encoder calls `int.__repr__` on an int subclass: `json.dumps(re.I)`
+        // is `2`.
+        #[cfg(feature = "cap-re")]
+        Value::ReFlag(b) => out.push_str(&b.to_string()),
         Value::Float(f) => {
             // json uses repr(float), including the bare `NaN`/`Infinity` that
             // are not valid JSON but are what CPython emits by default.
@@ -404,6 +406,8 @@ fn write_value(out: &mut String, v: &Value, o: &Opts, depth: usize) -> R<()> {
                 let ks = match k {
                     Value::Str(s) => s.to_string(),
                     Value::Int(i) => i.to_string(),
+                    #[cfg(feature = "cap-re")]
+                    Value::ReFlag(b) => b.to_string(),
                     Value::Bool(b) => if *b { "true" } else { "false" }.to_string(),
                     Value::None => "null".to_string(),
                     Value::Float(f) => fmt::float_repr(*f),

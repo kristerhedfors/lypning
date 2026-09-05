@@ -3,11 +3,13 @@
 //!
 //! Chosen from the corpus, in frequency order: `sys` (82 imports), `json` (74),
 //! `io` (63 — almost entirely `io.open(p, encoding='utf-8').read()`, which is
-//! the file-read idiom agents actually type), `os` (21). `re` is deliberately
-//! ABSENT: a regex engine is a large amount of code with deep semantics, so
-//! `import re` is a routing decision — it goes to CPython, and
-//! `lypning conformance --plan` ranks what that costs — rather than a gap to
-//! fill here.
+//! the file-read idiom agents actually type), `os` (21). `re` is on the larger
+//! variant only, and as a SURFACE — `re.rs`: the flags, `escape`, `purge` and
+//! the names of the matcher-backed functions. A program that imports it is
+//! admitted where it used to be a routing decision; a program that CALLS a
+//! matcher is still one — `route.rs` sees the call statically and sends it to
+//! CPython, and `lypning conformance --plan` ranks what that costs. The runtime
+//! refusal in `re.rs` is the backstop for the reach a static walk cannot see.
 
 use crate::args::Args;
 use crate::err::*;
@@ -26,18 +28,26 @@ use std::rc::Rc;
 /// same bytes it always was: a capability that added an entry at runtime would
 /// still have compiled the branch that adds it. `route::CAPS` carries the same
 /// claim for the ROUTER, which has to answer for a sibling it is not.
-#[cfg(not(any(feature = "cap-collections", feature = "cap-pathlib")))]
+#[cfg(not(any(feature = "cap-collections", feature = "cap-pathlib", feature = "cap-re")))]
 pub const MODULES: &[&str] = &["sys", "os", "os.path", "io", "json", "posixpath", "random"];
-#[cfg(all(feature = "cap-collections", not(feature = "cap-pathlib")))]
+#[cfg(all(feature = "cap-collections", not(feature = "cap-pathlib"), not(feature = "cap-re")))]
 pub const MODULES: &[&str] =
     &["sys", "os", "os.path", "io", "json", "posixpath", "random", "collections"];
-#[cfg(all(feature = "cap-pathlib", not(feature = "cap-collections")))]
+#[cfg(all(feature = "cap-pathlib", not(feature = "cap-collections"), not(feature = "cap-re")))]
 pub const MODULES: &[&str] =
     &["sys", "os", "os.path", "io", "json", "posixpath", "random", "pathlib"];
-#[cfg(all(feature = "cap-collections", feature = "cap-pathlib"))]
+#[cfg(all(feature = "cap-collections", feature = "cap-pathlib", not(feature = "cap-re")))]
 pub const MODULES: &[&str] = &[
     "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib",
 ];
+#[cfg(all(feature = "cap-collections", feature = "cap-pathlib", feature = "cap-re"))]
+pub const MODULES: &[&str] = &[
+    "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib", "re",
+];
+// `cap-re` names no row of its own: it is only ever built as part of
+// `variant-l`, whose feature names the full set.
+#[cfg(all(feature = "cap-re", not(all(feature = "cap-collections", feature = "cap-pathlib"))))]
+compile_error!("cap-re is only built as part of variant-l (it names the full set)");
 
 pub fn import(path: &str) -> R<Value> {
     match MODULES.iter().find(|m| **m == path) {
@@ -106,7 +116,11 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
                 "sys.path (lypning has no import machinery)",
             ))
         }
-        ("sys.stdin", "read" | "readline" | "readlines" | "buffer") => {
+        // Not `buffer`: it was handed back as a bound METHOD, so
+        // `sys.stdin.buffer.read()` was an AttributeError at exit 1 where
+        // CPython returns bytes. It falls to the `module-attr` arm below and
+        // refuses — statically too, since the router resolves `sys.stdin`.
+        ("sys.stdin", "read" | "readline" | "readlines") => {
             Value::Bound(Rc::new(m.clone()), interned(name)?)
         }
         ("sys.stdout" | "sys.stderr", "write" | "flush") => {
@@ -160,6 +174,13 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
         // `WindowsPath`, `Path.home` and the rest.
         #[cfg(feature = "cap-pathlib")]
         ("pathlib", "Path" | "PosixPath") => Value::Builtin("Path"),
+        // The `re` surface: flags, `escape`, `purge`, and the matcher-backed
+        // names that refuse when called. Everything else under `re` —
+        // `re.error`, `re.Pattern`, `re.TEMPLATE` — refuses through the same
+        // `module-attr` kind the arm below raises, which is what blocks it
+        // statically in the router too.
+        #[cfg(feature = "cap-re")]
+        ("re", _) => return crate::re::module_attr(name),
         _ => {
             return Err(unsupported(
                 "module-attr",
@@ -176,7 +197,7 @@ fn interned(name: &str) -> R<&'static str> {
         "read", "readline", "readlines", "write", "flush", "exit", "getcwd", "listdir", "makedirs",
         "mkdir", "remove", "unlink", "rename", "replace", "rmdir", "getenv", "join", "exists",
         "basename", "dirname", "splitext", "abspath", "isfile", "isdir", "getsize", "expanduser",
-        "split", "relpath", "normpath", "islink", "loads", "dumps", "load", "dump", "buffer",
+        "split", "relpath", "normpath", "islink", "loads", "dumps", "load", "dump",
         "seed", "random", "randint", "randrange", "choice", "getrandbits",
     ];
     NAMES
@@ -224,6 +245,8 @@ pub fn call_module_method(
         }
     };
     Ok(match (m, name) {
+        #[cfg(feature = "cap-re")]
+        ("re", _) => return crate::re::call(it, name, args, &kw),
         ("random", _) => return crate::random::call(it, name, args, &kw),
         // `Path.cwd()`. A classmethod on the type object, reached through
         // `ops::get_attr`, which spells it as a method on the module so that

@@ -211,6 +211,10 @@ pub fn repr(v: &Value) -> R<String> {
         // string repr here uses.
         #[cfg(feature = "cap-pathlib")]
         Value::Path(s, view) => return crate::pathlib::repr(s, *view),
+        // `re.IGNORECASE`, `re.IGNORECASE|re.MULTILINE`, `re.NOFLAG`. `to_str`
+        // and `to_rc` fall to this on purpose: `str(re.I)` IS the repr.
+        #[cfg(feature = "cap-re")]
+        Value::ReFlag(b) => return crate::re::flag_repr(*b),
         Value::Exc(kind, msg) => {
             if msg.is_empty() {
                 format!("{kind}()")
@@ -632,6 +636,14 @@ pub fn format_value_pct(v: &Value, spec_src: &str) -> R<String> {
 fn format_inner(v: &Value, spec_src: &str, from_pct: bool) -> R<String> {
     if spec_src.is_empty() {
         return to_str(v);
+    }
+    // A NON-empty spec on a flag, from `format()`, an f-string or a numeric
+    // `%` conversion (`%s`/`%r` never get here: `percent_one` turns the flag
+    // into its `str()` first). The empty spec above is `str()`, which is the
+    // repr on every CPython; re.rs trap 2 says why every other spec refuses.
+    #[cfg(feature = "cap-re")]
+    if let Value::ReFlag(_) = v {
+        return Err(crate::re::spec_refused());
     }
     let sp = parse_spec(spec_src)?;
 

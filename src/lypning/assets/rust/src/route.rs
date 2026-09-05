@@ -54,7 +54,7 @@ pub struct Variant {
 /// Python side's `engines.SPECTRUM`, in this order, pinned by test.
 pub const SPECTRUM: &[Variant] = &[
     Variant { name: "lypning", caps: &[] },
-    Variant { name: "lypning-l", caps: &["cap-collections", "cap-pathlib"] },
+    Variant { name: "lypning-l", caps: &["cap-collections", "cap-pathlib", "cap-re"] },
 ];
 
 /// The same names, NUL-terminated for the C ABI. A test holds the two lists
@@ -80,10 +80,48 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// wording, a directory order, a `.stat()` — and not because these bytes are
 /// missing, so a sibling would refuse it identically and listing the kind would
 /// cost a spawn to be told no twice.
+///
+/// `cap-re` serves the `re` MODULE — its surface, not a matcher — and answers
+/// no runtime kind either: every `re:` refusal it raises is a shape CPython
+/// owns (a matcher call, a version-shaped repr), there is no rung above
+/// lypning-l to carry a kind to, and `chain_after` a runtime `re:` refusal is
+/// `[cpython]` by construction.
 pub const CAPS: &[(&str, &[&str], &[&str])] = &[
     ("cap-collections", &["collections"], &[]),
     ("cap-pathlib", &["pathlib"], &[]),
+    ("cap-re", &["re"], &[]),
 ];
+
+/// The `re` functions that need a MATCHER — the half of the module's surface
+/// no Rust variant serves (`re.rs` serves the other half: the flags, `escape`,
+/// `purge`). A call to one is decided HERE, statically, by every rung's
+/// walker: on `lypning-l` it is the program's first blocker, on the core it is
+/// the fact that rules the serving sibling out (`verdicts_with`), and either
+/// way the route is CPython with no spawn to be told no.
+///
+/// It was a runtime refusal first, and the battery priced that: 62 wasted
+/// `lypning-l` spawns over the corpus, and one real regression —
+/// `import re, os; os.makedirs("d1/d2"); print(re.sub("a", "b", "a"))`
+/// committed the barrier at the mkdir, so the refusal could not fall onward
+/// and a program that used to route straight to CPython exited 1. Every
+/// spelling a walk can see is caught: `re.sub(…)`, `x.sub(…)` after
+/// `import re as x`, `sub(…)` after `from re import sub`. `re::call`'s
+/// catch-all is the same refusal at runtime, kept for the reach a walk cannot
+/// see — `getattr(re, name)`, a function stored in a variable.
+///
+/// Not a `cap-*` kind: every row of `CAPS` keeps an empty kinds column, and
+/// this list is the router's knowledge of what the sibling LACKS, which is why
+/// the core carries it (nine names and one sentence) and none of `re.rs`.
+pub const RE_MATCHERS: &[&str] = &[
+    "compile", "findall", "finditer", "fullmatch", "match", "search", "split", "sub", "subn",
+];
+
+/// The refusal detail for a matcher call, spelled once for the static route
+/// and the runtime backstop so `conformance --plan` and `lypning routes --plan`
+/// rank one row per function.
+pub fn re_matcher_detail(name: &str) -> String {
+    format!("re.{name}() (pattern matching is not served yet)")
+}
 
 /// This binary's own name, from `build.rs` — the same constant `err::ENGINE`
 /// writes at the head of every refusal line.
@@ -231,6 +269,17 @@ pub fn answers(v: &Variant, kind: &str, detail: &str) -> bool {
 /// sibling's capabilities) and are marked so; the floor rule never routes
 /// there anyway. CPython's row is always yes.
 pub fn verdicts(kind: &str, detail: &str, imports: &[String]) -> Vec<Verdict> {
+    verdicts_with(kind, detail, imports, None)
+}
+
+/// [`verdicts`], with the one fact the first blocker cannot carry: `re_call`
+/// is a matcher function the program calls ([`RE_MATCHERS`]), which no Rust
+/// variant serves. The core's walker stops at `module: import re`, and on
+/// that blocker alone the sibling that serves the MODULE would be handed the
+/// program — to refuse it at runtime, one spawn later. So a rung that answers
+/// the blocker is still ruled out by the call, with the same kind and detail
+/// its own walker would have raised.
+pub fn verdicts_with(kind: &str, detail: &str, imports: &[String], re_call: Option<&str>) -> Vec<Verdict> {
     let me = self_index();
     let mut out = Vec::with_capacity(SPECTRUM.len() + 1);
     for (i, v) in SPECTRUM.iter().enumerate() {
@@ -242,6 +291,8 @@ pub fn verdicts(kind: &str, detail: &str, imports: &[String]) -> Vec<Verdict> {
             Verdict::no(v.name, kind, detail)
         } else if i == me || !answers(v, kind, detail) {
             Verdict::no(v.name, kind, detail)
+        } else if let Some(f) = re_call {
+            Verdict::no(v.name, "re", &re_matcher_detail(f))
         } else if let Some(m) = imports.iter().find(|m| !served_module(v, m)) {
             Verdict::no(v.name, "module", &format!("import {m}"))
         } else {
@@ -303,10 +354,16 @@ pub fn chain_after(after: &str, kind: &str, verdicts: &[Verdict]) -> Vec<&'stati
     out
 }
 
-fn finish_route(kind: String, detail: String, imports: Vec<String>) -> Route {
-    let verdicts = verdicts(&kind, &detail, &imports);
+fn finish_route(
+    kind: String,
+    detail: String,
+    imports: Vec<String>,
+    re_call: Option<String>,
+    reads_stdin: bool,
+) -> Route {
+    let verdicts = verdicts_with(&kind, &detail, &imports, re_call.as_deref());
     let engine = engine_from_verdicts(&verdicts);
-    Route { engine, kind, detail, imports, verdicts }
+    Route { engine, kind, detail, imports, verdicts, reads_stdin }
 }
 
 #[cfg(test)]
@@ -338,11 +395,14 @@ mod spectrum_tests {
         // nothing blocks: this binary runs it
         let vs = verdicts("", "", &[]);
         assert_eq!(engine_from_verdicts(&vs), Engine::Rust(self_index()));
-        // a module no Rust variant serves: CPython, because there is no tier
-        // between the spectrum and CPython any more
+        // a module only the larger variant serves: from the core, that
+        // variant (the variant's own walker never raises this blocker)
         let vs = verdicts("module", "import re", &["re".to_string()]);
-        assert_eq!(engine_from_verdicts(&vs), Engine::CPython);
-        // a module nobody but CPython has
+        if self_index() == 0 {
+            assert_eq!(engine_from_verdicts(&vs), Engine::Rust(1));
+        }
+        // a module nobody but CPython has: CPython, because there is no tier
+        // between the spectrum and CPython any more
         let vs = verdicts("module", "import subprocess", &["subprocess".to_string()]);
         assert_eq!(engine_from_verdicts(&vs), Engine::CPython);
         // a semantic refusal skips everything
@@ -390,7 +450,7 @@ mod spectrum_tests {
             return;
         }
         for (kind, detail, imports) in [
-            ("module", "import re", vec!["re".to_string()]),
+            ("module", "import ctypes", vec!["ctypes".to_string()]),
             ("module", "import subprocess", vec!["subprocess".to_string()]),
             ("class", "class definition", vec![]),
             ("bigint", "x", vec![]),
@@ -398,6 +458,91 @@ mod spectrum_tests {
             let vs = verdicts(kind, detail, &imports);
             assert_ne!(engine_from_verdicts(&vs), Engine::Rust(1), "{kind}");
             assert_eq!(vs[1].kind, vs[0].kind, "{kind}: rows 0 and 1 must agree");
+        }
+    }
+
+    #[test]
+    fn a_matcher_call_rules_out_every_rust_variant_but_a_bare_import_does_not() {
+        let want = re_matcher_detail("sub");
+        assert_eq!(want, "re.sub() (pattern matching is not served yet)");
+        // The core stops at the import. Without the call fact, the sibling
+        // that serves the module is the route; with it, CPython — and the
+        // sibling's verdict carries the kind and detail its own walker raises.
+        let vs = verdicts_with("module", "import re", &["re".to_string()], Some("sub"));
+        assert_eq!(engine_from_verdicts(&vs), Engine::CPython);
+        if self_index() == 0 {
+            assert_eq!((vs[1].kind.as_str(), vs[1].detail.as_str()), ("re", want.as_str()));
+        }
+        assert!(chain_after(SELF, "re", &vs).iter().all(|e| *e == CPYTHON_NAME));
+        // The same through the walker, in every spelling the walk can see.
+        for (src, f) in [
+            ("import re\nprint(re.sub('a', 'b', 'a'))", "sub"),
+            ("import re as x\nprint(x.findall('a', 'a'))", "findall"),
+            ("from re import search\nprint(search('a', 'a'))", "search"),
+            ("from re import compile as c\nprint(c('a'))", "compile"),
+            ("import re, os\nos.makedirs('d1/d2')\nprint(re.sub('a', 'b', 'a'))", "sub"),
+            ("import re\ns = open('x').read()\nprint(len(re.findall('a', s)))", "findall"),
+        ] {
+            let r = route(src);
+            assert_eq!(r.engine, Engine::CPython, "{src}");
+            let l = r.verdicts.iter().find(|v| v.engine == "lypning-l").unwrap();
+            assert_eq!((l.kind.as_str(), l.detail.as_str()), ("re", re_matcher_detail(f).as_str()), "{src}");
+        }
+        // The surface without a matcher is the sibling's, and the names
+        // alone — never called — block nothing.
+        for src in [
+            "import re\nprint(re.escape('a.'), re.I | re.M, re.purge())",
+            "import re\nprint('ok')",
+            "import re\nf = re.sub\nprint(f)",
+            "re = 'a,b'\nprint(re.split(','))",
+        ] {
+            let r = route(src);
+            assert!(r.verdicts.iter().find(|v| v.engine == "lypning-l").unwrap().kind.is_empty(), "{src}");
+        }
+        // Every matcher is a served NAME on the variant that has the module —
+        // the static block predicts a runtime refusal, never an AttributeError.
+        #[cfg(feature = "cap-re")]
+        for f in RE_MATCHERS {
+            assert!(crate::re::module_attr(f).is_ok(), "{f}");
+        }
+        assert!(!RE_MATCHERS.contains(&"escape") && !RE_MATCHERS.contains(&"purge"));
+        assert!(RE_MATCHERS.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    #[test]
+    fn reads_stdin_is_generous_and_false_for_a_program_that_cannot_read_it() {
+        for src in [
+            "import sys\nprint(sys.stdin.read())",
+            "import sys as s\nfor l in s.stdin: print(l)",
+            "from sys import stdin\nprint(stdin.read())",
+            "print(input())",
+            "print(open(0).read())",
+            "import os\nprint(os.read(0, 10))",
+            "import fileinput\nfor l in fileinput.input(): print(l)",
+            "print(open('/dev/stdin').read())",
+            "import sys\nprint(getattr(sys, 'stdin').read())",
+            "class C: pass\nimport sys\nsys.stdin.read()",
+            // A parse-time blocker stops the walk before it sees the call;
+            // the text scan is what answers for these.
+            "class C: pass\nprint(open(0).read())",
+            "class C: pass\nimport os\nprint(os.read(0, 10))",
+            // `input` bound to a name and called through it: the bare
+            // identifier, not the spelling `input(`, is what reads the pipe.
+            "f = input\nprint(int(f()) * 10**30)",
+            "g = (input)\nprint(g())",
+        ] {
+            assert!(route(src).reads_stdin, "{src}");
+        }
+        for src in [
+            "print(1)",
+            // The word, not the substring: these cannot read stdin.
+            "inputs = [1]\nprint(inputs[0])",
+            "user_input = 'x'\nprint(user_input)",
+            "import collections\nprint(collections.Counter('ab'))",
+            "import sys\nprint(sys.argv[1:])",
+            "import re\nprint(re.escape('a'))",
+        ] {
+            assert!(!route(src).reads_stdin, "{src}");
         }
     }
 
@@ -428,6 +573,17 @@ pub struct Route {
     /// `engine` was derived from, and what the dispatcher walks after a
     /// RUNTIME refusal (`chain_after`). Both dispatchers read this same vector.
     pub verdicts: Vec<Verdict>,
+    /// The program can read stdin — `sys.stdin`, `input()`, `open(0)`,
+    /// `fileinput`, `/dev/stdin` — as far as a walk and a text scan can tell.
+    /// The dispatcher reads this before it forks an intermediate rung: a piped
+    /// stdin is buffered once and replayed to every rung ONLY when the program
+    /// can consume it, because the read blocks until the writer closes, and
+    /// `tail -f x | lypning run -c 'print(1)'` must print rather than wait
+    /// (`main.rs:exec_engine`). Generous by design — an over-match costs one
+    /// read of bytes the program was going to read anyway; a miss is the
+    /// exhausted-stream bug back — and the Python dispatcher applies the same
+    /// bit (`engines.dispatch`), so the two agree on when to buffer.
+    pub reads_stdin: bool,
 }
 
 /// Modules the oracle lypning-mp serves: its frozen `micropython/lib` shim
@@ -606,6 +762,10 @@ const CPYTHON_ONLY_KINDS: &[&str] = &["async"];
 
 pub fn route(src: &str) -> Route {
     let mut imports = Vec::new();
+    // Textual, so it is available on every path below — a parse-time blocker
+    // stops the walk before it sees anything, and the dispatcher's question
+    // about stdin still has to be answered for that program.
+    let reads_stdin = mentions_stdin(src);
     match crate::parse::parse(src) {
         Err(ref e) if matches!(e.kind(), ErrKind::Unsupported { .. }) => {
             let (kind, detail) = match e.kind() {
@@ -616,7 +776,7 @@ pub fn route(src: &str) -> Route {
             // the source for them: the import line is what usually decides the
             // tier, and it is cheap and unambiguous to find.
             imports = scan_imports(src);
-            finish_route(kind, detail, imports)
+            finish_route(kind, detail, imports, None, reads_stdin)
         }
         Err(ref e) if matches!(e.kind(), ErrKind::Syntax { .. }) => {
             let (line, msg) = match e.kind() {
@@ -627,19 +787,65 @@ pub fn route(src: &str) -> Route {
             // its message is the one the caller expects to read.
             // `syntax` is in neither kind table, so every rung but CPython
             // refuses it and the verdicts say so.
-            finish_route("syntax".into(), format!("line {line}: {msg}"), scan_imports(src))
+            finish_route(
+                "syntax".into(),
+                format!("line {line}: {msg}"),
+                scan_imports(src),
+                None,
+                reads_stdin,
+            )
         }
-        Err(other) => finish_route("error".into(), other.to_string(), imports),
+        Err(other) => finish_route("error".into(), other.to_string(), imports, None, reads_stdin),
         Ok(body) => {
             let mut req = Requirements::default();
             walk_block(&body, &mut req);
             imports = req.imports.iter().cloned().collect();
+            let reads_stdin = reads_stdin || req.reads_stdin;
             match req.blocker {
-                None => finish_route(String::new(), String::new(), imports),
-                Some((kind, detail)) => finish_route(kind, detail, imports),
+                None => finish_route(String::new(), String::new(), imports, req.re_call, reads_stdin),
+                Some((kind, detail)) => finish_route(kind, detail, imports, req.re_call, reads_stdin),
             }
         }
     }
+}
+
+/// The textual half of `Route::reads_stdin`: the spellings a walk cannot see
+/// (`getattr(sys, "stdin")`, `sys.__dict__["stdin"]`, a program whose parse
+/// stopped before the walk began — where `open(0)` and `os.read(0, …)` have
+/// only this scan to be seen by). Substrings, not tokens, on purpose: `f.read(0)`
+/// on a file over-matches, and that costs one read of a pipe the caller
+/// filled for the program anyway.
+///
+/// `input` is matched as a bare identifier, not only as the call `input(`:
+/// `f = input; print(int(f()) * 10**30)` reads the pipe through the alias,
+/// refuses bigint AFTER it has, and a dispatcher that did not buffer stdin for
+/// it handed CPython an exhausted stream — EOFError at exit 1 where CPython
+/// prints the number. `stdin` is already a substring above, which is wider
+/// than the bare word.
+fn mentions_stdin(src: &str) -> bool {
+    ["stdin", "fileinput", "input(", "/dev/fd/0", "open(0", "read(0"]
+        .iter()
+        .any(|s| src.contains(s))
+        || mentions_word(src, "input")
+}
+
+/// `\bword\b` without a regex: `word` in `src` with no identifier character
+/// (`[A-Za-z0-9_]`) on either side. `inputs`, `user_input` and `input_` do not
+/// match; `f = input`, `(input)` and `input;` do.
+fn mentions_word(src: &str, word: &str) -> bool {
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut from = 0;
+    while let Some(i) = src[from..].find(word) {
+        let start = from + i;
+        let end = start + word.len();
+        let before = src[..start].chars().next_back().map_or(false, is_ident);
+        let after = src[end..].chars().next().map_or(false, is_ident);
+        if !before && !after {
+            return true;
+        }
+        from = start + 1;
+    }
+    false
 }
 
 /// The constructs a second reimplementation is KNOWN to get wrong lived here as
@@ -679,6 +885,18 @@ struct Requirements {
     /// `random.seed` marker and the battery's own source regex: py-0e241643581e
     /// reached lypning-mp and printed a different stream at exit 0.
     aliases: Vec<(String, String)>,
+    /// `from re import search as s` — bound name to the `re` function it
+    /// names, so a bare `s(…)` is seen as the matcher call it is.
+    re_names: Vec<(String, String)>,
+    /// The first matcher function called ([`RE_MATCHERS`]), by its `re`
+    /// name. Recorded BESIDE the blocker rather than as one, because on the
+    /// core the blocker is already `module: import re`, and this is the fact
+    /// that decides whether the sibling serving that module can run the
+    /// program (`verdicts_with`). On `lypning-l` it is also the blocker.
+    re_call: Option<String>,
+    /// See `Route::reads_stdin`. The walk's half: `sys.stdin`, `input()`,
+    /// `open(0)`, `os.read(0, …)`, `fileinput`; the text scan is the other.
+    reads_stdin: bool,
 }
 
 impl Requirements {
@@ -700,6 +918,9 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
         Stmt::Import { names } => {
             for (path, bound) in names {
                 req.imports.insert(path.to_string());
+                if path.as_ref() == "fileinput" {
+                    req.reads_stdin = true;
+                }
                 // An alias is an `as` clause and NOTHING else. `import a.b`
                 // binds the name `a` (parse.rs does this correctly, as Python
                 // does), so comparing the binding against the full dotted path
@@ -719,6 +940,23 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
         }
         Stmt::FromImport { module, names } => {
             req.imports.insert(module.to_string());
+            match module.as_ref() {
+                "fileinput" => req.reads_stdin = true,
+                "sys" if names.iter().any(|(n, _)| matches!(n.as_ref(), "stdin" | "__stdin__")) => {
+                    req.reads_stdin = true
+                }
+                // Decided against the router's own list, not the module table:
+                // the core has no `re` and still has to know that `sub(…)`
+                // below this line is a matcher call.
+                "re" => {
+                    for (n, bind) in names {
+                        if RE_MATCHERS.contains(&n.as_ref()) {
+                            req.re_names.push((bind.to_string(), n.to_string()));
+                        }
+                    }
+                }
+                _ => {}
+            }
             if !crate::modules::MODULES.contains(&module.as_ref()) {
                 req.block("module", format!("from {module} import …"));
             } else {
@@ -924,6 +1162,73 @@ fn pathlib_method(_req: &Requirements, _n: &str) -> bool {
     false
 }
 
+/// The Match/Pattern names — `.group`, `.span`, `.start`, `.string` — admitted
+/// ONLY for a program that imports `re`, by the same argument as
+/// [`pathlib_method`]: `.start` and `.end` are ordinary names on other objects
+/// that this engine answers on none of them.
+#[cfg(feature = "cap-re")]
+fn re_method(req: &Requirements, n: &str) -> bool {
+    req.imports.contains("re") && crate::re::known_method(n)
+}
+#[cfg(not(feature = "cap-re"))]
+fn re_method(_req: &Requirements, _n: &str) -> bool {
+    false
+}
+
+/// The matcher function a call names, if it names one: `re.sub`, `x.sub`
+/// after `import re as x`, or a name bound by `from re import sub [as s]`.
+/// Only for a program that imports `re` — the import is what makes the name
+/// mean the module, exactly as for `pathlib_method`; `re.split(",")` on a
+/// string someone called `re` is a str method and runs here.
+///
+/// Resolved by NAME against `RE_MATCHERS`, not through `modules::get_attr`:
+/// the core has no `re` module to ask, and it is the core's router that has
+/// to know the sibling serving the module still cannot serve the call.
+fn re_matcher_of(func: &Expr, req: &Requirements) -> Option<String> {
+    if !req.imports.contains("re") {
+        return None;
+    }
+    match func {
+        Expr::Attr(b, n) => match &**b {
+            Expr::Name(base) => {
+                let name = req
+                    .aliases
+                    .iter()
+                    .find(|(a, _)| a == base.as_ref())
+                    .map(|(_, p)| p.as_str())
+                    .unwrap_or(base.as_ref());
+                (name == "re" && RE_MATCHERS.contains(&n.as_ref())).then(|| n.to_string())
+            }
+            _ => None,
+        },
+        Expr::Name(n) => req
+            .re_names
+            .iter()
+            .find(|(bound, _)| bound == n.as_ref())
+            .map(|(_, f)| f.clone()),
+        _ => None,
+    }
+}
+
+/// A call that reads stdin, for `Route::reads_stdin`: `input()`, and the
+/// descriptor spellings — `open(0)`, `os.fdopen(0)`, `os.read(0, n)`,
+/// `open("/dev/stdin")`. Over-matching (`f.read(0)` on a file) is the cheap
+/// direction and is allowed.
+fn calls_stdin(func: &Expr, args: &[Expr]) -> bool {
+    let fd0 = match args.first() {
+        Some(Expr::Int(0)) => true,
+        Some(Expr::Str(s)) => s.as_ref() == "/dev/stdin",
+        _ => false,
+    };
+    match func {
+        Expr::Name(n) => n.as_ref() == "input" || (n.as_ref() == "open" && fd0),
+        Expr::Attr(_, n) => {
+            fd0 && matches!(n.as_ref(), "open" | "fdopen" | "read" | "readline" | "readlines")
+        }
+        _ => false,
+    }
+}
+
 /// The module a dotted expression names, if it names one at all.
 ///
 /// Recursive because module paths nest and the check that used this had no way
@@ -981,6 +1286,9 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
         }
         Expr::Attr(b, n) => {
             walk_expr(b, req);
+            if matches!(n.as_ref(), "stdin" | "__stdin__") {
+                req.reads_stdin = true;
+            }
             // Record any construct the oracle lypning-mp is known to answer
             // wrongly (a family in `.github/known-mismatches.json`). This
             // runs BEFORE the module/method resolution below, because the point
@@ -998,7 +1306,7 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
                 }
                 return;
             }
-            if !known_method(n) && !pathlib_method(req, n) {
+            if !known_method(n) && !pathlib_method(req, n) && !re_method(req, n) {
                 req.block("method", format!(".{n}()"));
             }
         }
@@ -1009,6 +1317,18 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             dstar,
             ..
         } => {
+            // Before the callee and the arguments are walked, so that a
+            // program whose arguments hold a second blocker is still counted
+            // under the matcher it calls — the row `--plan` ranks.
+            if let Some(f) = re_matcher_of(func, req) {
+                req.block("re", re_matcher_detail(&f));
+                if req.re_call.is_none() {
+                    req.re_call = Some(f);
+                }
+            }
+            if calls_stdin(func, args) {
+                req.reads_stdin = true;
+            }
             walk_expr(func, req);
             for a in args {
                 walk_expr(a, req);

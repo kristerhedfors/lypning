@@ -62,6 +62,12 @@ pub enum Value {
     /// `pathlib.rs` says why that is the point rather than a shortcut.
     #[cfg(feature = "cap-pathlib")]
     Path(Rc<str>, bool),
+    /// A `re.RegexFlag` — the bits, and nothing else: `re.I` is `ReFlag(2)`,
+    /// `re.I | re.M` is `ReFlag(10)`. An int on every arithmetic path (see
+    /// [`as_num`]) and a flag under `| & ^` and in its repr; `re.rs` says why
+    /// it is not a `Value::Int`.
+    #[cfg(feature = "cap-re")]
+    ReFlag(u32),
 }
 
 pub struct FuncObj {
@@ -123,6 +129,11 @@ pub fn hkey(v: &Value) -> R<HKey> {
         }
         Value::Str(s) => HKey::Str(s.clone()),
         Value::Bytes(b) => HKey::Bytes(b.clone()),
+        // An `IntFlag` hashes as its int: `{re.I: 1}[2]` and `2 in {re.I}` are
+        // CPython's answers, and `{re.I, 2}` is one element. Without this the
+        // generic arm below raised `unhashable type` at exit 1.
+        #[cfg(feature = "cap-re")]
+        Value::ReFlag(b) => HKey::Int(*b as i64),
         // The `.parents` view is hashable in CPython (it inherits object
         // identity) and this value carries no identity to hash, so it refuses
         // rather than collapse two views of the same path into one key.
@@ -357,6 +368,10 @@ pub fn type_name(v: &Value) -> &'static str {
         // answered "Exception" for every one of the twenty-four exception
         // classes, so every message naming the type named the wrong type.
         Value::Exc(kind, _) => kind,
+        // The bare name: a Python-defined class, whose tp_name is what the
+        // `len()`, `<` and `%` TypeErrors print.
+        #[cfg(feature = "cap-re")]
+        Value::ReFlag(_) => "RegexFlag",
     }
 }
 
@@ -380,6 +395,9 @@ pub fn truthy(v: &Value) -> R<bool> {
         // would answer True for it.
         #[cfg(feature = "cap-pathlib")]
         Value::Path(s, view) => !*view || crate::pathlib::view_len(s) != 0,
+        // `bool(re.NOFLAG)` is False.
+        #[cfg(feature = "cap-re")]
+        Value::ReFlag(b) => *b != 0,
         _ => true,
     })
 }
@@ -725,6 +743,13 @@ pub fn as_num(v: &Value) -> Option<Num> {
         Value::Bool(b) => Some(Num::I(*b as i64)),
         Value::Int(i) => Some(Num::I(*i)),
         Value::Float(f) => Some(Num::F(*f)),
+        // ONE arm that makes `== != < <= > >= + - * / // % ** << >>`,
+        // `sorted`, `min`, `max`, `sum`, `int()`, `float()`, `round()` and
+        // `abs()` exact for a flag wherever they go through here: IntFlag
+        // arithmetic returns a plain int in every CPython. `| & ^` are taken
+        // by `re::binop` BEFORE this can answer them.
+        #[cfg(feature = "cap-re")]
+        Value::ReFlag(b) => Some(Num::I(*b as i64)),
         _ => None,
     }
 }
@@ -752,6 +777,12 @@ pub fn is_same(a: &Value, b: &Value) -> bool {
         (Value::Func(x), Value::Func(y)) => Rc::ptr_eq(x, y),
         (Value::Module(x), Value::Module(y)) => x == y,
         (Value::Builtin(x), Value::Builtin(y)) => x == y,
+        // `re.I is re.IGNORECASE` is True, and `Flag` caches its pseudo-members
+        // so `(re.I | re.M) is (re.I | re.M)` is True too. `re.I is 2` is
+        // False, which `ops::identity` answers because a flag is not in its
+        // foldable list.
+        #[cfg(feature = "cap-re")]
+        (Value::ReFlag(x), Value::ReFlag(y)) => x == y,
         // Small-int caching is an implementation detail agents should not rely
         // on and we will not reproduce; refusing beats guessing either way.
         _ => false,
@@ -808,7 +839,8 @@ pub fn dismantle(root: Value) {
                     work.push(inner);
                 }
             }
-            // Everything else is either a scalar or an `Rc` to something whose
+            // Everything else is either a scalar (a `ReFlag` is its bits and
+            // holds no child) or an `Rc` to something whose
             // own depth is bounded by the parser (`parse::MAX_PARSE_DEPTH`), so
             // its recursive drop is bounded too.
             _ => {}

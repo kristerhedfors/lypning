@@ -147,6 +147,14 @@ impl Interp {
             // new iterator state in the binary for this.
             #[cfg(feature = "cap-pathlib")]
             Value::Path(s, true) => Iter::Tuple(Rc::new(crate::pathlib::view_items(&s)), 0),
+            // `list(re.I | re.M)` and `for f in re.I` are `Flag.__iter__` —
+            // the members present — which CPython answers. This one arm covers
+            // `iter()`, `list()`, `tuple()`, `set()`, `sorted()`, `for`,
+            // comprehensions, `map`/`filter`/`zip`, `any`/`all` and `sum`.
+            #[cfg(feature = "cap-re")]
+            Value::ReFlag(_) => {
+                return Err(crate::re::refuse("iterating a RegexFlag (Flag.__iter__)"))
+            }
             Value::File(f) => Iter::Lines(f),
             Value::Gen(g) => Iter::Gen(g),
             Value::IterObj(it, _) => Iter::Shared(it),
