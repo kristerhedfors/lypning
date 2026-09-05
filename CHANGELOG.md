@@ -14,6 +14,41 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-05** — Reading the harness's own live state is run-specific
+
+- `conformance.is_run_specific` now flags a program that reads under
+  `~/.lypning` or `~/.claude`: the capture log grows on the battery's own
+  reference spawn and the transcripts grow as the session running the battery
+  types, so such a program can never match a reference taken a moment earlier.
+  On 2026-09-05 `py-627dabb6be55` counted 7180 commands for the reference and
+  7181 for the arm — both from CPython — and `MISMATCH 0` went red on an
+  instrument artefact. Stdout is no longer compared for 45 such programs; their
+  exit codes still are. Every other grade unchanged (2504 programs, MISMATCH 0,
+  dispatchers agree 2504/2504).
+
+**2026-09-05** — Docs refactor, part 1: code-side strings, the VERIFICATION spine, CLAUDE.md and README · [#45]
+
+- Every `--help` string, crate doc comment, header comment and skill file
+  spells the chain as engine strings — `lypning -> lypning-l -> cpython` — with
+  `lypning-mp` as the oracle, measured and never routed to. Engine lists are
+  built from `engines.SPECTRUM` / `ENGINE_ORDER` / `ORACLES`, never spelled.
+  Both binaries byte-identical (818,080 B and 867,744 B, `lypning build --rust`
+  on 2026-09-05).
+- New `docs/VERIFICATION.md`: fifteen contracts C1–C15, each a statement, a
+  code home by `file:symbol`, a copy-pasteable check with its exit code, the
+  expected output from a dated run of record, a failure-mode table and the
+  pytest node that pins it. Fixtures live in `tests/verification/`.
+- CLAUDE.md gains invariant 10 (the routes ledger is read by nothing that
+  routes) and the ownership rule: CLAUDE.md is the rule, one design doc the
+  mechanism, VERIFICATION.md the check. README's dated measurement tables moved
+  to `docs/BENCH-LEDGER.md` by append.
+- Three doc tests: upstream names appear only where README §8 says; no
+  document places an engine by tier number (xfail until the remaining docs
+  land); every cited `tests/x.py::test_name` exists.
+- Opened #43 (opencode `--force` does not move a foreign `lypning.js`) and #44
+  (`LYPNING_HARVEST=0` inert under the opencode plugin) rather than document
+  behaviour the code does not have.
+
 **2026-09-04** — The route ledger: the refusals a static route cannot predict · [#43]
 
 - New `lypning routes`. `lypning route` is exact about everything it can see and
@@ -1780,6 +1815,7 @@ runtime exists — the number came first, and both were built for it. It is
 [#41]: https://github.com/kristerhedfors/lypning/pull/41
 [#42]: https://github.com/kristerhedfors/lypning/pull/42
 [#43]: https://github.com/kristerhedfors/lypning/pull/43
+[#45]: https://github.com/kristerhedfors/lypning/pull/45
 [#1]: https://github.com/kristerhedfors/lypning/pull/1
 [#2]: https://github.com/kristerhedfors/lypning/pull/2
 [#3]: https://github.com/kristerhedfors/lypning/pull/3

@@ -466,3 +466,26 @@ def test_plan_ranks_by_cpython_reach_not_by_block_count() -> None:
     object.__setattr__(report, "routes", {})
     assert [r[0] for r in conf.plan(report)] == ["module: cheap", "module: dear"]
     assert conf.plan_cost(report) == {}
+
+
+@pytest.mark.parametrize("program", [
+    "import os\nfor l in open(os.path.expanduser('~/.lypning/invocations.jsonl')): pass",
+    "import glob, os\nprint(len(glob.glob(os.path.expanduser('~/.claude/projects/**/*.jsonl'), recursive=True)))",
+    "from pathlib import Path\nprint(len((Path.home() / '.claude').iterdir()))",
+])
+def test_reading_the_harness_own_live_state_is_run_specific(program):
+    """The capture log and the transcripts grow WHILE the battery runs.
+
+    The battery's own reference spawn appends to ~/.lypning/invocations.jsonl,
+    and the session running the battery appends to ~/.claude/projects/. A
+    program counting either can never match a reference taken a moment
+    earlier — on 2026-09-05 py-627dabb6be55 read 7180 distinct commands for
+    the reference and 7181 for the arm, both from CPython, and the gate went
+    red on an instrument artefact. Only the two harness directories qualify.
+    """
+    assert conformance.is_nondeterministic(corpus.Entry(id="py-h", program=program))
+
+
+def test_a_file_under_home_that_is_not_ours_is_still_graded():
+    entry = corpus.Entry(id="py-n", program="import os\nprint(open(os.path.expanduser('~/notes.txt')).read())")
+    assert not conformance.is_nondeterministic(entry)
