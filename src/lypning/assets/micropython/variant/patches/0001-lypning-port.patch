@@ -911,7 +911,7 @@ index d43cf97..4f48368 100644
 +// signal, none of which exist in this guest. They stay UNDEFINED so
 +// `except TimeoutError:` keeps leaving through the honest exit-90 `builtin:`
 +// refusal rather than being declared and never raised, which is the bug class
-+// docs/MICROPYTHON.md §4b was written about.
++// docs/MICROPYTHON.md §4 was written about.
 +const mp_obj_type_t *lypning_oserror_type(mp_int_t errno_) {
 +    switch (errno_) {
 +        case MP_ENOENT:

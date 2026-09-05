@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from lypning import install
+from lypning import install, paths
 
 FOREIGN_SETTINGS = {
     "model": "opusmagnum",
@@ -63,6 +63,10 @@ def test_install_uninstall_round_trip(project, settings_path):
     install.install(project, shim=False)
     root = project / ".claude"
     assert (root / "skills" / "lypning" / "SKILL.md").is_file()
+    # The installed skill is the shipped one, file for file — nothing more (a
+    # stale copy of a deleted document would be read by every agent session).
+    assert sorted(p.name for p in (root / "skills" / "lypning").iterdir()) == \
+        sorted(p.name for p in paths.SKILL_SRC.iterdir())
     assert sorted(p.name for p in (root / "hooks").glob("*.sh"))
     after = json.loads(settings_path.read_text(encoding="utf-8"))
     assert any("lypning" in c for c in _commands(after, "PreToolUse"))

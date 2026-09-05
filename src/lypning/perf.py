@@ -6,7 +6,7 @@ agents actually type, which run once and exit, so their cost is dominated by
 process spawn and parse. A microbenchmark loops fifty thousand times and
 measures steady-state dispatch instead. The two disagree by an order of
 magnitude, routinely, and the corpus is the one that decides
-(``docs/MICROPYTHON.md`` §8a).
+(``CHANGELOG.md``, 2026-08-15).
 
 So what is this for? **Finding the gradient.** A corpus run says "the 500
 programs cost 416 ms"; it does not say which construct to open the profiler on.
