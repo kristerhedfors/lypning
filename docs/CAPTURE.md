@@ -154,7 +154,7 @@ the histogram is empty, which is what lets records captured before any of this
 existed keep the bytes they have.
 
 ```bash
-lypning corpus --stats --model claude-fable-5-1   # → the slice and the whole it came from, with an `unattributed` row
+lypning corpus --stats   # → per-model rows and an `unattributed` row; `--model ID` narrows to one slice
 # → under `by model`: a row per model id, then `unattributed <count> <share>` — the whole corpus, 100.0%, on a tree with no transcript to join (2026-09-05)
 python3 -c 'import json,sys; assert all(sum(r.get("models",{}).values())<=r["count"] for r in map(json.loads,open(sys.argv[1]))); print("ok")' src/lypning/assets/corpus/corpus.jsonl   # → ok
 ```
