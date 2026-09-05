@@ -846,3 +846,41 @@ remembered corpus size**, and do not carry a remembered ordering either.
 `docs/LYPNING.md` §1 is the design's own version of this table,
 `docs/BENCH-LEDGER.md` is the append-only history including the runs where the
 subset lost.
+
+## 2026-09-05 — moved from docs/LYPNING.md §8a and the pre-oracle docs/MICROPYTHON.md: the 2026-08-19 VM probe table and the computed-goto measurement
+
+Two upstream measurements the 2026-09-05 rewrites dropped from the present-tense
+documents. Both were taken on the upstream container before extraction and are
+not reproducible from this tree; both are cited from code (`gate.py`, `bench.py`,
+`cli.py`, `perf.py`, `assets/micropython/lib/re.py`) and are kept here so those
+comments point at something.
+
+**VM probes, 2026-08-19.** `build/alpine-i386-lypning.ext2`, 5 repeats, headless
+CheerpX; the i686 build (`lypning build --rust --target i686`) beside lypning-mp
+(then a rung, since 2026-09-04 the oracle) and the image's python3:
+
+| probe | lypning-mp cold | lypning cold | python3 cold |
+|---|---|---|---|
+| `--version` (first touch of the binary) | 80 ms / **768 KB** | 193 ms / **1,280 KB** | 281 ms / 3,584 KB |
+| `-c 'print(1+1)'` | 52 ms | 31 ms | 3,353 ms |
+| `-c 'import json; …'` | 61 ms | 23 ms | **13,281 ms** |
+| a 200,000-iteration loop | 964 ms | 815 ms | — |
+
+lypning cost 1.67x lypning-mp's bytes on first touch — 1,280 KB against 768 KB,
+8 device blocks against 3 — and `docs/LYPNING.md` §8 accepted that as a known
+cost rather than a violation, because lypning buys back multiples of it on the
+programs it accepts. The IDB cache is fresh per run, not per probe, so only a
+runtime's FIRST probe is a size; a later probe on the same binary reads as free.
+
+**Synthetic workload against the corpus, lypning-mp, August 2026** (the corpus
+then loaded 340 programs; the run predates this ledger's first entry). The heavy
+benchmark — 20,000 iterations plus regex plus json — said
+`MICROPY_OPT_COMPUTED_GOTO` was worth 48 ms per program. Timing the 340 real
+corpus programs said 0.14 ms each: 630 ms → 678 ms over the corpus, against a
+one-time 5 ms cold saving from the 4,096 B the option removes, so it paid back
+only after ~37 programs in a session. A synthetic workload overstates VM speed
+by about tenfold; the corpus is the instrument a speed change is accepted on.
+The same pass rejected two port-patch hunks (`MICROPY_PY_BUILTINS_COMPLEX = 0`
+turned the `1j` literal into a SyntaxError, exit 1, indistinguishable from a
+wrong program) because upstream-tracking surface is what the variant does not
+spend — the rule `lib/re.py` cites for leaving its non-ASCII path as it is.

@@ -587,7 +587,9 @@ def _find(p, s):
     # on any other, with the test being one encode per call — against one slice
     # per match, which is what it replaces. Non-ASCII input keeps today's cost;
     # closing that needs the engine to hand back a byte-space resume point,
-    # which is a port-patch hunk rather than a shim change (docs/MICROPYTHON.md §8c).
+    # which is a port-patch hunk rather than a shim change — upstream-tracking
+    # surface the variant deliberately does not spend (docs/BENCH-LEDGER.md,
+    # the entry dated 2026-09-05, on why port-patch hunks are refused).
     #
     # One deliberate behaviour change rides along, in the ASCII path only: with
     # slicing, the engine saw each remainder as a fresh string, so `^` matched at

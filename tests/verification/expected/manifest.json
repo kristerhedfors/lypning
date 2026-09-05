@@ -1,0 +1,167 @@
+[
+ {
+  "file": "c1-refusal.txt",
+  "contract": "C1",
+  "argv": null,
+  "must_match": [
+   "^lypning: unsupported: module: import subprocess$",
+   "^lypning-l: unsupported: module: import subprocess$",
+   "^90$"
+  ]
+ },
+ {
+  "file": "c2-build.txt",
+  "contract": "C2",
+  "argv": null,
+  "must_match": [
+   "^unsupported contract: held$",
+   "^unsupported contract \\(in-process\\): held$",
+   "^lypning +host .* ok"
+  ]
+ },
+ {
+  "file": "c3-conformance.txt",
+  "contract": "C3",
+  "argv": [
+   "conformance",
+   "--mixture",
+   "both",
+   "--limit",
+   "40"
+  ],
+  "exit": 0,
+  "must_match": [
+   "^MISMATCH 0 — ok$",
+   "^  UNSAFE +0 ",
+   "^monotone violations 0 over ",
+   "^dispatchers agree (\\d+)/\\1 "
+  ]
+ },
+ {
+  "file": "c4-dispatchers.txt",
+  "contract": "C4",
+  "argv": null,
+  "must_match": [
+   "^monotone violations 0 over ",
+   "^dispatchers agree (\\d+)/\\1 ",
+   "^MISMATCH 0 — ok$",
+   "^\\[\"lypning-l\",\"cpython\"\\]$",
+   "^\\[\"cpython\"\\]$"
+  ]
+ },
+ {
+  "file": "c5-route.txt",
+  "contract": "C5",
+  "argv": [
+   "route",
+   "--spectrum"
+  ],
+  "exit": 0,
+  "must_match": [
+   "\"self\":\"lypning\"",
+   "\"name\":\"lypning-l\""
+  ],
+  "via": "binary"
+ },
+ {
+  "file": "c6-gate.txt",
+  "contract": "C6",
+  "argv": [
+   "gate"
+  ],
+  "exit": 0,
+  "must_match": [
+   "^PASS",
+   "want <= 8 blocks$"
+  ]
+ },
+ {
+  "file": "c7-doctor.txt",
+  "contract": "C7",
+  "argv": [
+   "doctor"
+  ],
+  "exit": 0,
+  "must_match": [
+   "^OK   refusal contract ",
+   ", 0 FAIL"
+  ]
+ },
+ {
+  "file": "c8-net.txt",
+  "contract": "C8",
+  "argv": null,
+  "must_match": [
+   "^skipped \\d+ not run: "
+  ]
+ },
+ {
+  "file": "c9-hook.txt",
+  "contract": "C9",
+  "argv": null,
+  "must_match": [
+   "^\\{\"continue\":true,\"suppressOutput\":true\\}$",
+   "\"host\":\"openhands\""
+  ]
+ },
+ {
+  "file": "c10-install.txt",
+  "contract": "C10",
+  "argv": null,
+  "must_match": [
+   "^unchanged$",
+   "^b backup ",
+   "all 3 hook entries already present",
+   "NOT deleted"
+  ]
+ },
+ {
+  "file": "c11-routes.txt",
+  "contract": "C11",
+  "argv": [
+   "routes"
+  ],
+  "exit": 0,
+  "must_match": [
+   "^routes — no routes learned yet\\.$"
+  ]
+ },
+ {
+  "file": "c12-oracle.txt",
+  "contract": "C12",
+  "argv": [
+   "oracle"
+  ],
+  "exit": 0,
+  "must_match": [
+   "^oracle — lypning-mp against CPython: \\d+ recorded divergences in \\d+ families$"
+  ]
+ },
+ {
+  "file": "c13-wheel.txt",
+  "contract": "C13",
+  "argv": null,
+  "must_match": [
+   "^  liblypning: not built",
+   "^lypning: lib: the C ABI library is not built"
+  ]
+ },
+ {
+  "file": "c14-lib.txt",
+  "contract": "C14",
+  "argv": null,
+  "must_match": [
+   "^lypning-l unsupported 90 b'' b'lypning-l: unsupported: module: import subprocess\\\\n' False True$",
+   "^MISMATCH 0 — ok$"
+  ]
+ },
+ {
+  "file": "c15-names.txt",
+  "contract": "C15",
+  "argv": null,
+  "must_match": [
+   "^\\./README\\.md$",
+   "^\\./CHANGELOG\\.md$"
+  ]
+ }
+]

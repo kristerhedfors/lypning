@@ -1,0 +1,12 @@
+run of record · lypning routes · 2026-09-04 · 437056c · 3688 loaded · Darwin arm64
+routes — no routes learned yet.
+1267650600228229401496703205376
+0
+  engine         records  programs   invocations  store
+  lypning:             1         1             1  /tmp/lyp-b1/routes/lypning.jsonl
+  lypning-l:    no routes learned yet  (/tmp/lyp-b1/routes/lypning-l.jsonl)
+  kind                    programs  invocations  note
+  bigint                         1            1
+570abca302598b5c731292be19ad637f554a0899  -
+routes: cleared 1 store(s): lypning
+570abca302598b5c731292be19ad637f554a0899  -

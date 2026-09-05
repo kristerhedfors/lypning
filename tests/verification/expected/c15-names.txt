@@ -1,0 +1,7 @@
+run of record · grep · 2026-09-04 · 437056c · 3688 loaded · Darwin arm64
+./CHANGELOG.md
+./README.md
+./src/lypning/assets/corpus/corpus.jsonl
+./src/lypning/assets/corpus/seed-corpus.jsonl
+52
+0

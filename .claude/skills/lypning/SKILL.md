@@ -5,12 +5,12 @@ description: Route Python one-liners through lypning instead of python3, and und
 
 # lypning — the Coding Harness Interpreter Optimizer (a mixture of Pythons)
 
-Reference: `MICROPYTHON.md` next to this file (the second tier's charter) is the
-only one that ships with the skill. The rest — `docs/LYPNING.md` (design),
-`docs/MICROPYTHON.md` (the cost model the second tier is built against),
-`docs/COOKBOOK.md` (unsupported Python, rewritten) — live in the **lypning
-repository**, not in the project this skill was installed into. Do not go
-looking for them here unless this *is* that repository.
+Reference: this file is the only one that ships with the skill. The rest —
+`docs/LYPNING.md` (design), `docs/SUBSET.md` (the subset and the refusal
+contract), `docs/MICROPYTHON.md` (the oracle), `docs/COOKBOOK.md` (unsupported
+Python, rewritten) — live in the **lypning repository**, not in the project
+this skill was installed into. Do not go looking for them here unless this
+*is* that repository.
 
 ## 1. Using it
 
@@ -44,6 +44,13 @@ default**; that is a status line, never an error.
 
 **Never quote a remembered corpus size.** Capture grows it every session. Every
 tool prints the count it loaded — quote that number, from that run.
+
+**The oracle.** `lypning oracle` renders the divergences a second
+reimplementation of Python recorded against CPython, family by family, from
+`.github/known-mismatches.json` (a checkout only; a wheel says it has none).
+Each family is something to implement exactly or refuse — never approximate.
+The oracle may not widen a capability table, stand in for CPython, or gate a
+build; `--engine lypning-mp` measures it only when named (`LYPNING_MP_BIN`).
 
 ## 1a. Writing python that stays on lypning
 
@@ -174,14 +181,15 @@ only ever blocked by the first thing it hits — so re-run it.
 - After ANY of these, re-run `lypning conformance`. Coverage going up is the
   point; MISMATCH going above zero cancels the change. Then run `lypning fuzz`:
   the corpus only exercises what someone typed, and a new builtin or method is
-  exactly the surface nobody has typed at yet. `str.partition("")`,
+  exactly the surface nobody has typed at. `str.partition("")`,
   `round(-0.5, 0)`, `format(7, "10")` and `"日本".islower()` were all found this
   way, and all four were already "covered" by a green conformance run.
 
 **Do not implement `re`.** It is the largest single gap and it is deliberate:
-lypning-mp has a regex engine, so `import re` is a routing decision. If it is
-ever revisited, the shape is a small backtracking engine that exits 90 on any
-syntax outside a measured subset — the mixture pattern one level down.
+`import re` is a routing decision — it goes to cpython, and `conformance
+--plan` ranks what that costs. If it is ever revisited, the shape is a small
+backtracking engine that exits 90 on any syntax outside a measured subset —
+the mixture pattern one level down.
 
 ## 5. The refusals are the design, not gaps to close
 
@@ -190,8 +198,8 @@ guessing, produces a *plausible wrong answer* — the one outcome that makes a
 subset runtime worse than nothing:
 
 - **i64 integers.** Python's are arbitrary precision. Every op is checked;
-  overflow is `unsupported: bigint`. The dispatcher then hands the program to
-  lypning-mp, which HAS bignums.
+  overflow is `unsupported: bigint`. The chain then tries `lypning-l`, which
+  refuses it the same way, and lands on cpython.
 - **Set iteration order.** It falls out of CPython's hashing and no independent
   implementation reproduces it. Order-independent operations work; anything that
   would expose an order exits 90. Dicts have no such restriction — Python
@@ -219,15 +227,16 @@ Two rules that are easy to break:
 
 ## 7. Traps already paid for
 
-- **Static musl is a precondition, not a preference.** glibc-dynamic: 1.33 ms
-  startup, 5 file opens. musl-static: 0.24 ms, 0 opens. The dynamic loader's
+- **Static musl is a precondition, not a preference.** A glibc-dynamic build
+  opens five files at startup where musl-static opens none, and starts several
+  times slower (`build-rust.sh`'s header has the measurement). The dynamic loader's
   five opens are the ENTIRE gap, and measuring the wrong binary understates
   lypning by more than everything else the benchmark varies. `lypning build
   --rust` defaults to musl for exactly this reason; `--target host` builds the
   dynamically linked control and **installs it under the same name**, so put
   the musl build back before quoting anything.
-- **`Command::output()` defaults stdin to /dev/null.** The forked lypning-mp
-  tier silently answered about an empty stream, and every `stdin → transform →
+- **`Command::output()` defaults stdin to /dev/null.** The forked intermediate
+  rung silently answered about an empty stream, and every `stdin → transform →
   stdout` one-liner — the corpus's largest cluster — got the wrong answer at
   exit 0. Only the end-to-end mixture arm could see it; per-engine conformance
   could not.
@@ -235,14 +244,15 @@ Two rules that are easy to break:
   `['-c','a','b']`; `python f.py a b` gives `['f.py','a','b']`; and under
   `lypning run` the dispatcher's own subcommand must not appear. Three separate
   bugs, all in the same six lines.
-- **An engine's `MemoryError` is not the program's answer.** lypning-mp's heap
+- **An engine's `MemoryError` is not the program's answer.** A MicroPython heap
   is a fraction of CPython's, so `json.load` on a 4 MB file dies there and
   succeeds under python3 — with a *non-zero* exit and a traceback, which looks
   exactly like a program that legitimately raised. The chain treats MemoryError
   as a refusal; it deliberately does NOT treat an ordinary non-zero traceback
   that way, because re-running would execute the program's side effects twice.
-- **`opt-level = "z"` saves 57,344 B and zero CheerpX blocks.** Cold cost is a
-  step function in 131,072 B device blocks (`MICROPYTHON.md` §2d), so a saving
+- **`opt-level = "z"` saved bytes and zero CheerpX blocks (2026-08-24,
+  `docs/HILLCLIMB.md`).** Cold cost is a
+  step function in 131,072 B device blocks (`gate.DEVICE_BLOCK`), so a saving
   that crosses no boundary streams the same number of fetches. Check the block
   count, not the byte count.
 - **RUNNING THE CORPUS CAN REWRITE THIS REPOSITORY.** The corpus is harvested
@@ -276,9 +286,9 @@ within noise of each other on every probe, because a 50–85 ms exec round-trip
 floor sits under both, while lypning costs **1.67x lypning-mp's bytes on first
 touch** (1,280 KB vs 768 KB — 8 device blocks against 3). What the measurement
 DOES support is the case for a subset at all: `python3 -c 'import json; …'`
-takes **13.3 s** cold in that image against lypning-mp's 61 ms and lypning's
-23 ms, and the exec ceiling that destroys the VM is 30 s. Do not argue lypning
-over lypning-mp on sandbox speed; the evidence is not there. And cold VM boot
-still dominates a sandbox turn regardless: 24.4 s of boot against 290 ms of
-commands. This is a real but **secondary** term, and no user-facing copy should
-say the sandbox is fast because of it.
+took **13.3 s** cold in that image (2026-08-19) against lypning-mp's 61 ms and
+lypning's 23 ms, and the exec ceiling that destroys the VM is 30 s. Do not argue
+lypning over lypning-mp on sandbox speed; the evidence is not there. And cold
+VM boot dominated the sandbox turn regardless (2026-08-19): 24.4 s of boot
+against 290 ms of commands. This is a real but **secondary** term, and no
+user-facing copy should say the sandbox is fast because of it.

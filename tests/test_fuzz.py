@@ -155,7 +155,7 @@ def test_the_fuzzer_knows_every_method_lypning_implements(methods_rs, table, nam
 
 
 def test_the_fuzzers_set_methods_are_a_subset(methods_rs):
-    # Deliberately a subset: docs/LYPNING.md §5 refuses anything exposing set
+    # Deliberately a subset: docs/LYPNING.md §3 refuses anything exposing set
     # iteration order, so only the order-free operations are worth generating.
     # The direction is asserted, not equality.
     claimed = set(_rust_table(methods_rs, "SET_METHODS"))

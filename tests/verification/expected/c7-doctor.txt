@@ -1,0 +1,23 @@
+run of record · lypning doctor · 2026-09-04 · 437056c · 3688 loaded · Darwin arm64
+OK   toolchain                     cargo/rustc/cc/make present
+WARN strace                        absent — `lypning gate` cannot count file opens, and reports them unmeasured rather than zero
+OK   lypning core                  /private/tmp/lyp-b1/bin/lypning (818,080 B, 7 blocks)
+OK   lypning-l                     /private/tmp/lyp-b1/bin/lypning-l (867,744 B, 7 blocks)
+WARN lypning-mp                    not built — the ORACLE, not a tier: nothing routes to it. `lypning build --micropython` needs a network; `lypning oracle` reads the recorded divergences either way
+OK   cpython                       /opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/bin/python3.14
+OK   refusal contract              exit 90, one line on stderr, clean stdout
+OK   refusal contract (lypning-l)  exit 90, one line on stderr, clean stdout
+OK   library refusal               /tmp/lyp-b1/lib/liblypning.dylib — unsupported status, clean stdout, one line, falls onward
+WARN lypning on PATH               not on PATH — pip put the console script in /opt/homebrew/bin; add it to $PATH
+OK   capture hooks                 wired in project scope
+WARN shim                          not installed — `lypning shim install`
+OK   log                           /tmp/lyp-b1/invocations.jsonl (not created yet)
+OK   harness claude                wired in project scope
+NOTE harness opencode              not wired — `lypning install --harness opencode`
+NOTE harness openhands             not wired — `lypning install --harness openhands`
+OK   corpus                        3688 programs from /Users/user/dev/lypning-docs-b1/src/lypning/assets/corpus/corpus.jsonl
+OK   core/library agreement        7 frontier probes answer alike in both artifacts
+
+18 check(s), 0 FAIL, 4 WARN
+0
+True []

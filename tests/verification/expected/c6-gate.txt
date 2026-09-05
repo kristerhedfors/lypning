@@ -1,0 +1,24 @@
+run of record · lypning gate · 2026-09-04 · 437056c · 3688 loaded · Darwin arm64
+gate  /private/tmp/lyp-b1/bin/lypning
+
+  ok   target             lypning                want lypning-mp
+  ok   runs -c 'pass'     exit 0                 want exit 0
+  --   statically linked  unknown                want static
+  --   shared objects     unmeasured             want <= 0
+  ok   size               7 blocks               want <= 8 blocks
+  ok   device blocks      7                      
+  --   file opens         unmeasured             want <= 3
+       target: lypning-mp is not built; gated lypning instead — these numbers are not lypning-mp's
+       statically linked: unmeasured: unknown: no file(1) and no readelf
+       shared objects: unmeasured: no readelf and no ldd — zero here would be an artefact of the toolchain, not of the build
+       size: 818,080 B = 7 device blocks of 131072; budget 8 (not lypning-mp's 700,000 B)
+       device blocks: 131,072 B each
+       file opens: unmeasured: strace not available
+
+PASS  (3 of 7 checks unmeasured)
+0
+  ok   size               7 blocks               want <= 32 blocks
+PASS  (3 of 6 checks unmeasured)
+0
+lypning: gate: no such binary: /no/such/binary
+2

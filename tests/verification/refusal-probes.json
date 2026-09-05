@@ -117,5 +117,54 @@
   "exit": 0,
   "stdout": "Counter({'a': 2, 'b': 1})\n",
   "stderr": ""
+ },
+ {
+  "engine": "lypning-l",
+  "program": "print(getattr(print, \"__name__\"))",
+  "exit": 90,
+  "stdout": "",
+  "stderr": "lypning-l: unsupported: builtin: getattr\n"
+ },
+ {
+  "engine": "lypning",
+  "program": "print(9007199254740993 / 3)",
+  "exit": 90,
+  "stdout": "",
+  "stderr": "lypning: unsupported: int-div-precision: int / int where an operand is past 2**53 and the quotient needs exact rounding\n"
+ },
+ {
+  "engine": "lypning",
+  "program": "print(round(2.675, 2))",
+  "exit": 0,
+  "stdout": "2.67\n",
+  "stderr": ""
+ },
+ {
+  "engine": "lypning",
+  "program": "try:\n    sorted([(1, \"a\"), (1, 2)])\nexcept TypeError as e:\n    print(e)",
+  "exit": 0,
+  "stdout": "'<' not supported between instances of 'int' and 'str'\n",
+  "stderr": ""
+ },
+ {
+  "engine": "lypning-l",
+  "program": "print(9007199254740993 / 3)",
+  "exit": 90,
+  "stdout": "",
+  "stderr": "lypning-l: unsupported: int-div-precision: int / int where an operand is past 2**53 and the quotient needs exact rounding\n"
+ },
+ {
+  "engine": "lypning-l",
+  "program": "print(round(2.675, 2))",
+  "exit": 0,
+  "stdout": "2.67\n",
+  "stderr": ""
+ },
+ {
+  "engine": "lypning-l",
+  "program": "try:\n    sorted([(1, \"a\"), (1, 2)])\nexcept TypeError as e:\n    print(e)",
+  "exit": 0,
+  "stdout": "'<' not supported between instances of 'int' and 'str'\n",
+  "stderr": ""
  }
 ]

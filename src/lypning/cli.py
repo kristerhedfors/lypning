@@ -2258,7 +2258,7 @@ They disagree, routinely and by an order of magnitude, because a microbenchmark
 loops twenty thousand times while a corpus entry runs once and exits — so its
 cost is startup, parse and compile rather than steady-state dispatch. A
 synthetic workload once said a compiler change was worth 48 ms per program
-where the corpus said 0.14 ms (docs/MICROPYTHON.md §8a).
+where the corpus said 0.14 ms (docs/BENCH-LEDGER.md, the entry dated 2026-09-05).
 
 Min of --repeat, one temp cwd per entry, LYPNING_CAPTURE=0 in every child.
 Entries that exit 90 are TIMED, not skipped — a refusal costs a spawn the agent
@@ -2304,8 +2304,8 @@ first. That ordering is the work queue.
 
 Read it as a diagnostic and accept on `corpus-time --baseline`. A microbenchmark
 once said a change was worth 48 ms per program where the corpus said 0.14
-(docs/MICROPYTHON.md 8a) — this table is the same kind of instrument and lies
-the same way.
+(docs/BENCH-LEDGER.md, the entry dated 2026-09-05) — this table is the same
+kind of instrument and lies the same way.
 
 Every case prints a checksum and the arms must agree on it, so a construct that
 is fast because it computes something else fails here rather than winning. A case

@@ -1,167 +1,50 @@
 # lypning — the Coding Harness Interpreter Optimizer
 
-**Status: experimental, measured, not wired into the sandbox yet.**
+*Design. Numbers are from the run of record, `docs/VERIFICATION.md` §0
+(2026-09-04 · 437056c · corpus 3688 programs), or carry their own date.*
 
-lypning optimizes the interpreter layer under a coding harness. Its
-architecture is a **mixture of Pythons**: a Python subset written from scratch
-in Rust, sized to the *bottom* of the distribution of one-liners an agentic
-CLI actually types — built as a **spectrum** of variants from one crate, each
-a superset of the last at a larger size — plus a classifier that decides, per
-program, the cheapest interpreter that should run it. Every table in this design is derived from a
-captured corpus and re-derivable from yours: the adaptability is the product,
-and [`FORKING.md`](FORKING.md) is its manual.
+lypning optimizes the interpreter layer under a coding harness: a **mixture of
+Pythons** — a Python subset written from scratch in Rust, sized to the
+one-liners an agentic CLI types and built as a **spectrum** of variants from
+one crate — plus a classifier that picks the cheapest engine per program.
+Every table is re-derivable from your own corpus ([`FORKING.md`](FORKING.md)).
 
-The interpreters are the mixture:
-
-| tier | what it is | where it lives |
+| engine | what it is | where it lives |
 |---|---|---|
-| **lypning** | this — a Rust subset, 1 MB (8 device blocks, frozen) | `assets/rust/`, `--features variant-m` |
-| **lypning-l** | the same crate with more capabilities, up to 4 MB (32 blocks); identical to `lypning` today, it grows one capability per step | `assets/rust/`, `--features variant-l` |
-| **CPython** | the real thing | the system `python3` |
+| `lypning` | the Rust core, frozen at 8 blocks (`gate.VARIANT_BLOCK_BUDGET`); it gains no capability | `src/lypning/assets/rust/`, `--features variant-m` (the default) |
+| `lypning-l` | the same crate with `cap-collections` and `cap-pathlib` (`engines.VARIANT_CAPS`), budgeted 32 blocks | `--features variant-l` |
+| `cpython` | the real thing, and the reference every verdict is graded against | the system `python3` (`engines.find_cpython`) |
 
-lypning exists because CPython costs **8,573 ms cold** in the CheerpX sandbox
-(`docs/SANDBOX-PERFORMANCE.md` §1) and the exec ceiling is 30 s, and because the
-programs an agent types are a much narrower target than "Python".
-
-A MicroPython variant, `lypning-mp`, was the middle tier until **2026-09-04**.
-It is no longer in the chain — nothing routes to it — and it is kept as an
-**oracle**: a second, independent reimplementation of Python whose measured
-disagreements with CPython (79 of them, in 34 families) are the evidence of what
-a reimplementation gets wrong, and therefore of what a larger Rust variant must
-implement exactly or refuse. `lypning oracle` renders the catalogue;
-[`docs/MICROPYTHON.md`](MICROPYTHON.md) is its manual.
+The chain is `engines.ENGINE_ORDER`, cheapest first. `lypning-mp` is the oracle
+— measured, never routed to ([`MICROPYTHON.md`](MICROPYTHON.md)): its recorded
+divergences say what a Rust variant must implement exactly or refuse.
 
 ## 1. Measurement
 
-Everything below is downstream of one table, and the table gets **re-measured,
-never remembered**. The capture harness grows the corpus every session — this
-project's first table was over 420 programs and the number was stale within the
-day. Every tool prints the count it loaded; quote that one, with its date.
-
-This tree, on **2026-08-25**: `lypning bench --startup-repeat 15 --repeat 3`,
-4 CPUs, Linux 6.18.44-fc-v21, all three engines built, **1551 programs loaded
-and 1305 measured** (`assets/corpus/corpus.jsonl` + `assets/corpus/seed-corpus.jsonl`;
-246 skipped for naming an absolute path the per-entry temp cwd does not contain).
+Every count carries the run it came from; re-run the tool and quote the count
+it prints, with the date (`CLAUDE.md` invariant 3). `lypning bench` measures
+cost, arm by arm in `bench.ARM_ORDER` (`cpython`, `lypning`, `lypning-l`,
+`mixture`); `lypning conformance` measures correctness and grades routes in the
+same run. No timing from the run of record is quoted (the host was shared);
+`docs/BENCH-LEDGER.md` carries the dated ones.
 
 ```
-startup — `-c 'pass'`, min of 15, arms interleaved
-
-arm         min ms   vs cpython
-cpython      11.57     1.000x
-lypning       0.66     0.057x
-lypning-mp    0.61     0.053x
-mixture       0.60     0.052x
-
-shared subset — the 904 programs every arm executed, min of 3
-
-arm          ran  refused   shared total   median   vs cpython
-cpython     1305        0      13093.8 ms   12.83     1.000x
-lypning      906      399       1164.3 ms    0.91     0.089x
-lypning-mp  1236       69       1336.8 ms    0.90     0.102x
-mixture     1305        0       1718.1 ms    0.92     0.131x
-
-whole corpus — what a session of 1305 one-liners costs
-
-cpython     23865.0 ms   1.000x
-lypning      1638.0 ms   0.069x   (399 unanswered)
-lypning-mp   2335.8 ms   0.098x   (69 unanswered)
-mixture      7206.6 ms   0.302x   (0 unanswered — saves 16658.4 ms, 69.8%)
+lypning conformance · 2026-09-04 · 437056c · 3688 loaded
+engine       MATCH  UNSUPPORTED  MISMATCH   coverage
+lypning      1573          931         0     62.8%
+lypning-l    1741          763         0     69.5%
+mixture      2504            0         0    100.0%
+lypning status · same run · on Darwin arm64:  lypning 818,080 B, 7 blocks;  lypning-l 867,744 B, 7 blocks;  lypning-mp not built
 ```
 
-Read it in this order:
-
-- **The mixture answers everything CPython answers** — 1305 of 1305 — at
-  **0.302x of CPython's cost**, a 69.8% saving. This is the result the design
-  exists to produce and the one that has held on every machine it has been run
-  on. Its own arm is no longer at zero mismatches, and that is `lypning-mp`
-  leaking through it rather than the dispatcher: see §2a.
-- **The other two arms are cheap because they refuse**, not because they are
-  faster: 399 and 69 programs unanswered, and a refusal still costs its spawn.
-  `bench` prints that sentence next to those totals for a reason.
-- **Startup is a floor the three share.** All three engines land within a
-  twentieth of a millisecond of each other, 17–19x under CPython. They are
-  static musl binaries that open no files at startup; past that, the differences
-  are the machine.
-- **The subset was not tuned to this corpus.** It was built against 420
-  programs and has been measured against every capture since; coverage has gone
-  up as the corpus grew, with mismatches on the lypning arm still at zero. That
-  is a generalisation signal rather than a fit to the sample.
-- **lypning is ahead of lypning-mp on the shared subset again** — 0.089x against
-  0.102x — which is the ordering upstream reported on 2026-08-16 and which two
-  re-runs in this tree had reversed. Read the next section before believing it is
-  settled: it has now flipped twice, and both engines sit near their startup
-  floor on the programs they share.
-
-Both binary sizes move with every rebuild — 987,336 B and 296,100 B in this
-tree today; `lypning status` and `lypning gate` print the ones you actually
-have.
-
-### Upstream results and the item that did not reproduce
-
-The project was written up on a different run: upstream, **2026-08-16**, over
-the 472 programs the corpus then held, min of 5, arms interleaved, before this
-package was extracted from that container.
-
-```
-corpus — 472 programs
-
-arm          ran  refused   shared total (323)   vs cpython
-cpython      472        0          4314.4 ms      1.000x
-lypning-mp   444       28           616.5 ms      0.143x
-lypning      324      148           440.3 ms      0.102x
-mixture      472        0           547.0 ms      0.127x
-
-whole corpus     cpython 6987.9 ms 1.000x     mixture 1860.8 ms 0.266x
-```
-
-That run put **lypning ahead of lypning-mp on the shared subset** — 0.102x
-against 0.143x — and it was written up as the thesis: a runtime built for
-two-thirds of the distribution beats a general one on that two-thirds.
-
-**Two re-runs in this tree reversed it, and a third put it back.** On
-2026-08-20 and again on 2026-08-21 lypning-mp came in ahead (0.061x against
-0.073x); on **2026-08-25**, after the allocator work in `docs/HILLCLIMB.md`
-iterations 18–38, lypning is ahead again (0.089x against 0.102x). Successive
-runs on one box agree on the ordering and on the ratios to within about a point
-while the absolute milliseconds move by tens of percent with load — which is why
-ratios are what get quoted, and why `bench` is not a CI gate.
-
-**So the ordering is not a property of the design, and this run does not make it
-one.** It has now moved three times, and the reason it is fragile is
-structural: the shared subset is by construction the programs lypning accepted —
-the simplest in the corpus — where both engines sit near their startup floor,
-and lypning-mp's floor is lower because its binary is a third the size. A change
-that moves lypning's compute cost moves this ordering, and the next capture that
-adds harder programs to the shared subset may move it back. What survives every
-re-measurement is the mixture result: everything CPython answers, for about a
-third of the cost.
-
-Reproduce: `lypning build --rust && lypning bench`.
-
-> **Running the corpus can rewrite this repository.** It is harvested from real
-> agent sessions, so it is full of programs that edit `src/` and `docs/`. Every
-> entry runs in its own temp directory, which contains the relative paths.
-> Entries that name an ABSOLUTE path are skipped rather than run, and both
-> tools print how many they skipped on every run — do not carry the number from
-> here, it grows with the corpus. Both tools then bracket the battery with a
-> `git status` check that reports and restores anything that changed anyway,
-> and **fail the run** when something did: numbers taken against a moving tree
-> are numbers nobody can stand behind. This is a net, not a sandbox — it cannot
-> undo a write outside the repository, only make the next one loud. It exists
-> because the first measurement runs here rewrote 34 tracked files.
-
-`lypning bench` is deliberately **not in CI** — a wall-clock benchmark on a
-shared runner measures the runner. CI keeps the deterministic half (conformance,
-routing safety).
+The counts grow with the corpus and move with every capability; `MISMATCH 0`
+does not. The bytes are host builds, not the musl bytes CI gates. Run a battery
+only in a worktree with its own `LYPNING_HOME` (`docs/VERIFICATION.md` §C8).
 
 ## 2. Conformance
 
-```
-lypning conformance
-```
-
-Every corpus program runs under CPython (the reference) and under each engine,
-and each engine's result is one of three things:
+Every corpus program runs under CPython and under each engine, and each
+engine's result is one of three things (`conformance.classify`):
 
 | verdict | meaning | is it a failure? |
 |---|---|---|
@@ -169,86 +52,39 @@ and each engine's result is one of three things:
 | UNSUPPORTED | exit **90** with `<engine>: unsupported: <kind>: <detail>` | **no** — this is coverage, and the build order |
 | MISMATCH | anything else | **yes, always** |
 
-This tree, on **2026-08-25**, over the 1305 of 1551 corpus programs the battery
-could run:
-
-```
-engine      MATCH  UNSUPPORTED  MISMATCH   coverage
-lypning       906          399         0     69.4%
-lypning-mp   1229           65        11     94.2%
-mixture      1305            0         1    100.0%
-```
-
-**The gate is red, and it is red on the lypning-mp arm** — as it has been since
-the tier existed. Four of the eleven are the contract defect §6 describes:
-MicroPython streams stdout, so a program that prints before it reaches an
-unsupported construct has already committed those bytes when it exits 90. They
-are tracked rather than waived, and `lypning conformance` fails while they
-stand.
-
-**Six of the other seven arrived with the corpus, not with the tier**, and they
-are worth reading as a result rather than as breakage. The 2026-08-24 session
-that produced iterations 18–38 wrote differential probes — programs that
-enumerate a cross-product of `str.find` bounds, of `json.loads` control
-characters, of `int()` whitespace — to find defects in the *Rust* core. The
-capture harness harvested them, so they are corpus entries now, and they find
-the **same defect families in lypning-mp**: `'Hello'.find('', 6)` answers 5
-there where CPython answers -1, and `json.loads('"a\tb"')` returns a string
-where CPython raises. Those were always true of the tier. Nothing could see
-them until the corpus contained a program that looked.
-
-The mixture's single MISMATCH is `lypning-mp` leaking through it: the tier
-answers `py-9b16a7261b96` at exit 0, so the chain never falls onward. That is
-the one shape §5 exists to prevent, and it is why routing safety counts it
-separately.
-
-Upstream, on 2026-08-16, over the 472 programs the corpus then held:
-
-```
-engine      MATCH  UNSUPPORTED  MISMATCH   coverage
-lypning       324          148         0     68.6%
-lypning-mp    443           28         1     93.9%
-mixture       472            0         0    100.0%
-```
-
-**That table is history, not status**, and so is the one above it by the time
-you read this — run `lypning conformance` for your own, and quote the corpus
-size it prints. The single lypning-mp MISMATCH upstream was a different defect:
-`json.load` on a 4 MB file exhausting its heap. The dispatcher recovers from
-that one too (§5).
-
 **A subset runtime that silently disagrees with CPython is worse than no runtime
 at all**, because the agent that typed the one-liner will not notice. That is
 why MISMATCH is the gate and UNSUPPORTED is not.
 
-## 3. The implemented subset, and its rationale
+A MISMATCH carries a sub-kind: `stdout`, `exit`, `stderr`, `timeout` (one
+deadline on both sides; only the engine hit it), `unbuilt`, and `contract` —
+exit 90 after bytes reached stdout, or exit 90 without the line.
+`conformance.DEFAULT_ARMS` is `engines.SPECTRUM` plus `mixture`, the Python
+dispatcher end to end; `lypning-mp`, `library` and `mixture-rust` are
+`conformance.OPT_IN_ARMS`, and an unbuilt arm is a `note:` line, never a
+MISMATCH. `--mixture both` adds the Rust dispatcher as an arm (`dispatchers
+agree N/N`, §5); `--plan` ranks every blocker by the programs it sends to
+CPython (`conformance.plan`): `lypning-l`'s build order. Checks:
+`docs/VERIFICATION.md` §C3.
 
-The subset is chosen from the corpus, not from the language reference. Measured
-prevalence over the 558 harvested and seeded programs:
+## 3. The subset
 
-```
-print(     93.5%      json.     16.5%      listcomp   5.9%
-open(      42.7%      slice     12.4%      fstring    5.0%
-for        38.4%      genexp    11.1%      try        4.8%
-if         24.2%      sys.stdin 10.4%      os.        4.7%
-assert     19.9%      re.       10.2%      def        3.2%
-```
+The subset is chosen from the corpus, not from the language reference:
+expressions, statements, comprehensions, f-strings, `%` and `.format()`,
+functions with closures and `lambda`, `try`/`except`, `with`, slicing and
+unpacking. The module surface is `modules.rs:MODULES`, one table per variant:
 
-So: expressions, statements, comprehensions (list/dict/set/generator),
-f-strings, `%` formatting, `.format()`, functions with closures, `try`/`except`,
-`with`, slicing, unpacking — and the modules `sys`, `os`, `os.path`, `io`,
-`json`, plus the seeded-integer subset of `random` (CPython's Mersenne Twister,
-bit for bit; `random.rs`).
+| variant | modules |
+|---|---|
+| `lypning` | `sys`, `os`, `os.path`, `posixpath`, `io`, `json`, `random` (the seeded-integer subset, MT19937 bit for bit — `random.rs`) |
+| `lypning-l` | the same, plus `collections` (`Counter`, `defaultdict` — `collections.rs`) and `pathlib` (`Path` — `pathlib.rs`) |
 
-`re` is the largest single gap (66 programs, 14.0%) and is **deliberately not
-implemented**: lypning-mp already has a regex engine, so `import re` is a routing
-decision rather than a hole. `subprocess` appears nowhere in `src/` and goes
-straight to CPython.
+`re` is absent from every variant: `import re` routes to `cpython`, and
+`conformance --plan` ranks what that costs.
 
-### The three refusals
-
-A subset can be wrong in two ways, and only one of them is acceptable. These are
-the places where lypning refuses rather than approximates:
+**The four refusals.** A subset can be wrong in two ways, and only one of them
+is acceptable. These are the places where lypning refuses rather than
+approximates:
 
 1. **Integers are i64; Python's are arbitrary precision.** Every arithmetic
    operation is checked and an overflow is `unsupported: bigint`, never a wrap.
@@ -260,14 +96,15 @@ the places where lypning refuses rather than approximates:
    refusal correctly and is worth falling through to, while on this one it does
    the same lossy conversion and answers wrongly. See
    `engines.ONLY_CPYTHON_REFUSALS`.
+   (Since 2026-09-04, `CHANGELOG.md` #38, nothing falls through to lypning-mp;
+   the distinction survives as the meaning of that table — see below.)
 2. **Set iteration order is CPython's hashing, and cannot be reproduced.** So
    order-*independent* operations on sets work (`len`, `in`, the set algebra,
    `sorted`, `min`, `max`, `any`, `all`) and anything that would expose an order
    (`repr`, iteration, `list()`, `.join`) exits 90. Dicts, whose order Python
    *defines* as insertion order, have no such restriction.
-3. **`repr` of a non-ASCII character** needs CPython's Unicode category tables
-   to decide whether to escape it. lypning carries a whitelist of blocks that are
-   unambiguously printable and refuses the rest.
+3. **`repr` of a non-ASCII character** needs CPython's Unicode category tables;
+   a whitelist of unambiguously printable blocks is answered, the rest refused.
 4. **A NaN inside a container is compared by object identity, which a bare
    `f64` cannot carry.** CPython's element test is `x is y or x == y` —
    identity *first* — and a NaN is the one value for which the shortcut is
@@ -287,12 +124,12 @@ ints is always a float, `float` repr is shortest-roundtrip with the
 fixed/scientific switch at `decpt <= -4 || decpt > 16`, and a function's
 `UnboundLocalError` comes from a real analysis of the names its body assigns.
 
-## 4. The classifier
+`route.rs:ONLY_CPYTHON_KINDS` names the refusal kinds that rule out **every**
+Rust variant, at any size — behaviours a reimplementation gets wrong, from the
+oracle's catalogue; `engines.ONLY_CPYTHON_REFUSALS` is the Python copy, held by
+`tests/test_routing.py::test_both_dispatchers_read_the_same_escalation_table`.
 
-```
-lypning route -c 'import re; print(re.findall(r"\d+", s))'
-    lypning-mp   module: import re
-```
+## 4. The classifier
 
 Routing is a **static analysis over lypning's own front end**, not a heuristic over
 the program text. That is the design:
@@ -300,183 +137,63 @@ the program text. That is the design:
 - lypning's parser already reports the exact construct that would stop it. Asking
   the parser is therefore an *exact* answer to "can lypning run this", costing one
   parse and no process spawn.
-- The tiers below cannot be asked the same way — they are separate binaries — so
-  those are capability **tables** in `assets/rust/src/route.rs`, kept honest by the
-  routing arm of the conformance runner.
+- A larger sibling cannot be asked, so its reach is a table: `route.rs:verdicts`
+  gives one verdict per rung from `route.rs:CAPS` and `served_module`.
 
-The routing score is asymmetric on purpose (this tree, 2026-08-25, same run as
-§2 — `lypning conformance` grades routes and answers together):
+**The floor rule.** `route.rs:engine_from_verdicts` never names a variant
+smaller than the binary that routed (its blocks are already paid for); a rung
+below is marked `floor: below the routing binary`. `lypning route` prints a
+clean route as the engine name alone, a refusal-derived one as
+`<engine>\t<kind>: <detail>` (`engines.Route.__str__`); the binary's own
+`~/.lypning/bin/lypning route --spectrum` (the flag is the binary's, not the
+CLI's) prints the table as JSON, and `engines.VARIANT_CAPS` is pinned to it by
+`tests/test_routing.py::test_the_spectrum_copy_in_engines_is_the_rust_table`.
+The fixture table — every refusal kind, both variants, the floor rule — is
+`tests/verification/route-fixtures.json` (`docs/VERIFICATION.md` §C5).
 
+```bash
+lypning route -c 'import collections; print(collections.Counter("aab"))'
+# → lypning-l	module: import collections      (`class A: pass` → cpython	class: class definition)
 ```
-routing over 1305 programs
 
-  IDEAL      1233  routed to the cheapest engine that works
-  WASTED       28  engine refused; one extra spawn, right answer
-  LATE         40  worked, but a cheaper engine would have too
-  UNSAFE        4  routed to an engine that MISMATCHES
-  NO-ENGINE     0
-
-  accuracy 94.5% ideal, 97.5% correct-on-first-try
-  predictions: lypning=888  lypning-mp=309  cpython=108
-```
-
-**LATE counts only programs a cheaper tier would have *answered*.** It did not
-always: a program that does not parse has an empty stdout and a non-zero exit on
-every interpreter, so each one scored MATCH for producing nothing and the
-cheapest was named the ideal destination for a program none of them could run.
-Nineteen programs read LATE for that reason alone — a quarter of the budget spent
-on `print($p)`. The difference that matters is on **stderr**, which the battery
-does not compare, so the grader now skips a tier whose match was a shared
-failure. It skips it only on a `syntax` route and only when that tier exited
-non-zero: a tier that exited 0 with real output *answered*, and a classifier
-calling that a syntax error is a misclassification that must stay visible.
-
-**All four UNSAFE routes are lypning-mp**, and three of them are the
-streamed-stdout defect of §2 reached through the router: a program predicted for
-lypning-mp whose ideal tier is CPython. The dispatcher recovered those three,
-and they still count — a route that lands on an engine which mismatches is the
-one outcome that spends trust instead of milliseconds.
-
-The fourth is the one the dispatcher **cannot** recover, and not for the reason
-this paragraph gave until it was re-measured. `py-9b16a7261b96` does not answer
-at exit 0 with the wrong output; it dies at **exit 1** with a MicroPython
-traceback, eleven correct lines already on stdout, on `type(e).__module__` —
-which built-in types do not carry there. An ordinary non-zero exit is
-deliberately not a refusal (re-running would execute side effects twice), so the
-chain does not rescue it and the caller keeps the fragment. The distinction
-matters to a reader deciding what to fix: this is a loud crash where CPython
-succeeds, not a silent wrong answer. `.github/known-mismatches.json` carries the
-same account, and had it right first.
-
-A wrong route costs a process spawn. A wrong *answer* costs the user's trust, so
-UNSAFE is tracked separately and the dispatcher is built to recover from it.
-
-### One systematic LATE route: `os.path`, and what closing it moved
-
-The prompting study ([PROMPTING.md](PROMPTING.md) §6) put 884 agent-written
-programs through the classifier and then through the engine, and found that
-**every one of the classifier's false negatives was the same construct**: 35
-programs sent past tier 1 that tier 1 then ran correctly, of which
-`os.path.getsize()` was 16, `os.path.splitext()` 15 and `os.path.basename()` 4,
-and nothing else.
-
-`walk_expr`'s `Expr::Attr` arm in `route.rs` resolved a module attribute only
-when the base was a bare `Expr::Name`. So `os.getenv` was decided against
-`modules::MODULES` and answered correctly, while `os.path.basename` — whose base
-is itself an `Expr::Attr` — fell past that check into the method table, missed
-every entry there, and was blocked as `method: .basename()`. The engine
-implements fourteen functions under `os.path`; the classifier could see none of
-them.
-
-The cost was never only a spawn, which is why this was worth closing rather than
-budgeting. `lypning route` is what the skill tells an agent to trust, so an agent
-reads `cpython` and *rewrites working code to satisfy a tier the original already
-met*. Two of the study's agents replaced `os.path.splitext` with a hand-rolled
-`rfind` for exactly that reason. **A classifier that under-reports its own engine
-teaches, once it is inside a prompt loop.**
-
-The fix is a recursive `resolve_module`: a dotted expression resolves one step at
-a time through `modules::get_attr`, and a step counts only when it lands on a
-`Value::Module`. `os.environ` is a dict, so the walk stops there and `.get` stays
-a method — which is correct, and is the half a non-recursive rewrite would have
-got wrong. Measured over 1305 programs, on the same binary to the byte
-(987,336 B, 8 blocks — routing is parse-time and costs no code):
-
-| | before | after |
-|---|---|---|
-| IDEAL | 1190 | **1204** |
-| LATE | 83 | **69** |
-| WASTED | 28 | 28 |
-| UNSAFE | 4 | 4 |
-| routed to cpython | 132 | **118** |
-
-(Both columns are from this session's two runs over the same 1305 graded
-programs, and both were graded before the shared-failure rule above landed —
-which is why neither matches the block at the top of this section. An A/B is
-only an A/B when one thing changed.)
-
-Fourteen programs stopped paying a CPython spawn — twelve now answered by
-lypning, two by lypning-mp — and no program moved the wrong way: WASTED did not
-rise, so nothing was sent to a tier that then refused it. An unknown name under a
-module the engine does have is now reported as `module-attr: os.path.nosuchfn`
-rather than `method: .nosuchfn()`, which is the same word the engine's own
-refusal uses.
+`lypning conformance` grades every route (`routing.py`): IDEAL; WASTED (the
+engine refused — one extra spawn, right answer); LATE (a cheaper engine would
+have answered); UNSAFE (routed to an engine that MISMATCHES — must be 0);
+NO-ENGINE. The `accuracy` line is a census, not a cost model: it weights LATE
+and WASTED equally, and a LATE costs a CPython spawn where a WASTED costs an
+in-process parse (2026-09-04, `CHANGELOG.md` #42: 12.0 ms against 1.21 ms). A
+systematic LATE is a defect — an agent reads `cpython` from `lypning route`
+and rewrites working code; `docs/HILLCLIMB.md` iteration 45 (2026-08-25) is
+the `os.path` case, closed by `route.rs:resolve_module`.
 
 ## 5. The dispatcher
 
 ```
-lypning run -c 'print(1 + 1)'
+  python3 -c '…' ──shim or PreToolUse hook──▶ lypning run (main.rs): one verdict per rung
+  lypning    IN-PROCESS, no spawn; output staged to the barrier (§6)
+     │ exit 90 + the line
+  lypning-l  forked, so its own exit 90 can be caught
+     │ exit 90 + the line
+  cpython    exec'd — no fork, no way back, and none is needed
 ```
 
-End to end, with the shares from the routing run in §4:
+A program routed to this binary runs in this process — no second spawn — and
+exit 90 is a refusal only when a refusal fired: `main.rs:finish` leaves `kind`
+empty for `sys.exit(90)`, the program's own number, returned unchanged. A rung
+with something after it is forked so its exit 90 can be caught; the last is
+exec'd (`main.rs:exec_engine`). The two dispatchers fall onward on:
 
-```
-  python3 -c 'import json,sys; print(len(json.load(sys.stdin)))'
-     │
-     │  the shim on PATH — or the PreToolUse hook — hands the program
-     ▼  to lypning instead of to CPython
-  ┌─────────────────────────────────────────────────────────────────────┐
-  │ lypning run — the dispatcher IS the Rust binary, not a wrapper      │
-  │ classify: ask lypning's own parser which tier can take this program │
-  └───┬─────────────────────────────────┬──────────────┬────────────────┘
-      │ 64.1%                           │ 24.9%        │ 11.0%
-      ▼                                 │              │
-  ┌───────────────────────────────────┐ │              │
-  │ 1  lypning · Rust subset          │ │              │
-  │    runs IN-PROCESS — zero spawns  │ │              │
-  │    output staged to the barrier   │ │              │
-  └───┬───────────────────────────────┘ │              │
-      │ exit 90 · one line on stderr,   │              │
-      │ and stdout never written        │              │
-      ▼                                 │              │
-  ┌───────────────────────────────────┐ │              │
-  │ 2  lypning-mp · MicroPython       │◀┘              │
-  │    forked, so its own refusal     │                │
-  │    is catchable; streams stdout   │                │
-  └───┬───────────────────────────────┘                │
-      │ exit 90 · MemoryError · traceback with exit 0  │
-      ▼                                                │
-  ┌───────────────────────────────────┐                │
-  │ 3  cpython · the reference        │◀───────────────┘
-  │    exec'd — no fork, no way back  │
-  │    and none is needed             │
-  └───┬───────────────────────────────┘
-      ▼
-  the program's own stdout, the program's own exit code
-```
+| dispatcher | falls onward on |
+|---|---|
+| Python, `engines.dispatch` | exit 90 **with** the contract line (`engines.Result.refused`), and nothing else |
+| Rust, `main.rs` through `embed.rs:fall_onward` | exit 90; also `MemoryError` on stderr; also `Traceback (` on stderr at exit 0 |
 
-Two properties make the mixture cheap enough to be worth having:
-
-- **The winning case costs nothing.** A program routed to lypning runs *in this
-  process* — no second spawn, no pipe. Since 96% of a one-liner's cost is the OS
-  spawning a process (`docs/MICROPYTHON.md` §8c), a dispatcher that spawned a child
-  would give back most of what the fast engine won.
-- **Falling onward costs one `exec`, not one fork** for the terminal tier. An
-  *intermediate* tier is forked instead, because its own refusal has to be
-  caught — lypning-mp's capability table knows lypning-mp *has* `hashlib` and `re`, not
-  that this build lacks `hashlib.md5` and `re.VERBOSE`. Measurement found 14
-  corpus programs where that difference bites.
-
-The chain moves past an intermediate engine on three signals: exit 90; a
-`MemoryError` (a property of that engine's heap, never the program's answer);
-and a traceback with exit 0 (which no conforming Python produces). An ordinary
-non-zero exit with a traceback is deliberately *not* one of them — that is very
-often the program's own correct answer, and re-running it would execute its side
-effects twice.
-
-**Where the chain moves *to* depends on why the tier refused.** Falling through
-assumes the tier below is at least as correct as the one that refused, and for
-a capability gap it is — "I have no decorators", and MicroPython has
-decorators. Some refusals are not capability gaps: they name a behaviour subtle
-enough that the refusal exists *because* a reimplementation gets it wrong, so
-the tier below answers wrongly at exit 0 instead of refusing —
-`nan-identity`, `set-order` and `int-div-precision` among them. For those kinds
-the chain skips lypning-mp and goes straight to CPython. The table is
-`ONLY_CPYTHON_KINDS` in `route.rs`, read by **both** dispatchers — the Rust
-binary's own `run` and `engines.dispatch` — because it briefly lived in only
-one of them, and `lypning run -c 'print({3,1,2})'` printed `{3, 1, 2}` through
-the binary while the battery, which exercises the Python dispatcher, stayed
-green. `tests/test_routing.py` holds the two to the one table.
+Where the chain goes is `route.rs:chain_after`, mirrored by
+`engines.chain_after_refusal`: a kind in `ONLY_CPYTHON_KINDS` goes straight
+to `cpython`; otherwise each later sibling whose static verdict was "can run"
+and whose `cap-*` set is a strict superset, then `cpython`. `conformance
+--mixture both` must print `dispatchers agree N/N` and `monotone violations 0`
+(what `lypning` answers, `lypning-l` answers). `docs/VERIFICATION.md` §C4.
 
 ## 6. The commit barrier
 
@@ -490,54 +207,14 @@ file is written twice, or half. So a lypning run is transactional
 - file writes accumulate per path, and deletes and renames are staged;
 - exit 90 discards all of it, so the program is observably a no-op.
 
+`lypning-mp` has no barrier: it streams stdout, so a refusal after a `print`
+is graded `MISMATCH contract` — one reason it is an oracle and not a rung
+(`tests/test_routing.py::test_the_one_unsafe_route_is_the_tracked_barrier_defect`).
+
 The barrier is invisible to the program and visible only to the dispatcher: a
 read consults the staged writes first, so `open(p,'w').write(x)` followed by
 `open(p).read()` behaves exactly as in CPython. `os.path.exists`, `getsize`,
 `isfile`, `remove` and `rename` all see the overlay too.
-
-### The barrier applies to lypning only
-
-**This is the sharpest asymmetry between the two subset tiers, and it is not
-visible from the exit codes.** lypning-mp is MicroPython: it streams stdout as
-the program produces it, so a program that prints and *then* reaches an
-unsupported construct has already committed those bytes when it exits 90.
-
-```
-$ lypning-mp -c 'print("BEFORE")
-import unicodedata as u
-print(u.decomposition(chr(0xC0)))'
-BEFORE                                            # <- already on stdout
-lypning-mp: unsupported: attribute: unicodedata.decomposition   # (stderr, exit 90)
-
-$ lypning -c 'print("BEFORE")
-import subprocess'
-lypning: unsupported: module: import subprocess   # (stderr, exit 90) — stdout empty
-```
-
-Two corpus programs (`py-876af0f0a956`, `py-b2a043f241f1`) reproduce it. The
-upstream harness could not see them: it classified a run as UNSUPPORTED the
-moment a refusal line appeared on stderr, without asking whether stdout was
-already dirty. `lypning conformance` checks, and reports it as
-`contract: refused after N byte(s) had already reached stdout`.
-
-What follows from it:
-
-- **Through the dispatcher, it is contained.** `lypning run` captures each
-  tier's stdout in the parent and discards it on exit 90, so the caller sees
-  exactly one tier's output. The mixture arm is clean over the whole corpus.
-  The barrier for lypning-mp therefore lives in the *dispatcher*, not in the
-  engine — which is a weaker guarantee, because it holds only while the
-  dispatcher is the one running it.
-- **Invoking `lypning-mp` directly is not safe for a program that might
-  refuse.** As a drop-in `python3` in a pipeline it can emit partial output and
-  exit 90, and a consumer reading stdout will act on the fragment.
-- **Side effects, not just stdout.** lypning-mp stages nothing, so a file it
-  wrote before refusing stays written. The retry then re-executes those writes.
-  Nothing in the corpus does this today, which is luck rather than design.
-
-Fixing it properly means buffering all output inside the MicroPython VM, which
-fights the heap budget the tier exists to respect. It is tracked rather than
-waived, and `lypning conformance` fails while it stands.
 
 Two escape hatches in lypning's own barrier, both handled rather than assumed
 away:
@@ -549,158 +226,120 @@ away:
   before refusing, the dispatcher forks instead of exec'ing and replays the
   captured bytes.
 
+The threshold is `io.rs:COMMIT_THRESHOLD`. A refusal after bytes reached stdout
+is `MISMATCH contract` (§2; the oracle's `commit-barrier` family), pinned by
+`tests/test_commit_barrier.py::test_rust_core_refuses_with_stdout_untouched`.
+
 ## 7. Building
 
-```bash
-lypning build --rust                      # host musl (x86_64) — what the bench uses
-lypning build --rust --target i686        # the CheerpX sandbox target
-lypning build --rust --target host        # the dynamic-linking control
-```
-
-All three install over the same `~/.lypning/bin/lypning`, and the build line
-names the target it just put there — a control left installed is a control
-every route then uses. `lypning build --rust` puts the default musl build back.
-`lypning build --dry-run` prints the cargo command without running it.
-
-**Static musl is a precondition, not a preference.** Measured, `-c 'pass'`, min
-of 30:
-
-| build | startup | file opens |
-|---|---|---|
-| glibc, dynamically linked | 1.33 ms | 5 |
-| musl, static | **0.24 ms** | **0** |
-| lypning-mp (musl, static) | 0.21 ms | 0 |
-
-Cold cost in the sandbox tracks bytes and file opens and nothing else, so the
-dynamic loader's five opens are the entire gap. A dynamically linked lypning is
-5.5x slower to start and gives back most of what the runtime won.
-
-Zero runtime dependencies — `std` only. That follows CLAUDE.md invariant 5 and
-adds a second reason: every crate linked in is bytes in a binary whose cold cost
-is a step function in CheerpX's 131,072 B device blocks.
+`lypning build --rust` builds every variant in `engines.SPECTRUM` from the one
+crate (`--variant V` for one), installs each under its own name in
+`~/.lypning/bin`, and asserts the refusal contract on the binary it just built
+before it reports `ok` (`build.check_refusal_contract`; `BROKEN — <why>`
+otherwise; `docs/VERIFICATION.md` §C2). A cross `--target` installs as
+`lypning-i686`, never over the default (`engines.parse_binary_name`).
+**Static musl is a precondition, not a preference.** `--target host` builds
+the dynamically linked control, whose loader opens files `lypning gate` counts
+against `gate.MAX_OPENS`. Zero runtime dependencies (`CLAUDE.md` invariant 6)
+holds here for a second reason: every crate linked in is bytes in a binary
+whose cold cost is a step function in device blocks (§8).
 
 ## 8. Size
 
-Measured 2026-08-25 unless the row says otherwise; `lypning gate` prints the
-ones you actually have.
-
-| binary | bytes | CheerpX blocks |
-|---|---|---|
-| lypning-mp (i386 musl) | 296,100 | 3 |
-| lypning (x86_64 musl) | 987,336 | 8 |
-| lypning (i686 musl, 2026-08-19) | 973,428 | 8 |
-| CPython 3.11 | 6,639,992 | 51 |
-
-`opt-level = "z"` was measured at 963,256 B — 57,344 B smaller, and **still 8
-blocks**, so it buys nothing under the cost model that matters. Getting to 7
-blocks needs 103,096 B, which no single flag provides; the levers not yet tried
-are `build-std` with `panic_immediate_abort` (nightly) and cutting the `std`
-formatting machinery. This is the clearest open work item.
-
-**`opt-level = "z"` is not merely pointless, it is expensive — measured
-2026-08-24.** The paragraph above says it buys nothing, which was true of the
-bytes and was never a claim about speed. It is: on the 31-case `perf` suite,
-`"z"` against `"s"` on the same source cost **+31.6% on the total** (1802.73 ms
-→ 2371.69 ms), spread across nearly every row rather than concentrated in one.
-So the sentence to carry forward is that `"z"` trades a third of the
-interpreter's throughput for bytes that do not change the block count — and if
-it ever *did* change the block count, that is the price of the trade, not a free
-win. Re-measure before believing either half.
-
-**Static, not static-PIE — one block, taken 2026-08-24.** The musl targets
-default to a position-independent executable and the fixups it needs at load are
-`.rela.dyn`: 33,864 B here. `-C relocation-model=static`, wired into the crate's
-`.cargo/config.toml` so a by-hand `cargo build` and `lypning build --rust`
-produce the same artefact, took this tree from 1,049,272 B to **1,020,104 B** and
-nine blocks back to eight. Startup is *not* part of the case and it was worth
-measuring to find that out — `-c 'pass'`, min of 60 interleaved runs, 0.387 ms as
-a PIE against 0.388 ms without. What it gives up is ASLR of the executable's own
-image, which the file argues is the right trade for a short-lived interpreter
-that takes no network input.
+Cold cost in the sandbox is a step function in 131,072 B (`gate.DEVICE_BLOCK`)
+device blocks, so a variant is budgeted in blocks, not bytes — `lypning` 8,
+`lypning-l` 32 (`gate.VARIANT_BLOCK_BUDGET`) — and
+`lypning gate` fails a build that crosses its budget (`docs/VERIFICATION.md`
+§C6). The core is frozen by decision (`Cargo.toml`, the `variant-m` comment):
+every new capability goes to `lypning-l`. `opt-level = "z"` was measured on
+2026-08-24 (`docs/HILLCLIMB.md`, iterations 18 and 19) as smaller and **still 8
+blocks**, so it buys nothing under the cost model that matters, and the same
+day it cost interpreter throughput on the `perf` suite. The crate is static,
+not static-PIE; `.cargo/config.toml` carries that measurement and the trade.
 
 ## 8a. Measurement in a sandbox VM
 
-Every lypning figure before 2026-08-19 came from a normal Linux filesystem, with
-the **x86_64** binary. CheerpX is 32-bit x86 only, so that binary cannot be
-loaded in the sandbox at all: the numbers that motivate the project were taken
-with an artifact that does not run in the environment they are about.
-
-The i686 build (`lypning build --rust --target i686`) now ships in the upstream
-image beside lypning-mp, and that project's VM harness has lypning probes.
-Measured
-2026-08-19 against `build/alpine-i386-lypning.ext2`, 5 repeats, headless CheerpX:
-
-| probe | lypning-mp cold | lypning cold | python3 cold |
-|---|---|---|---|
-| `--version` (first touch of the binary) | 80 ms / **768 KB** | 193 ms / **1,280 KB** | 281 ms / 3,584 KB |
-| `-c 'print(1+1)'` | 52 ms | 31 ms | 3,353 ms |
-| `-c 'import json; …'` | 61 ms | 23 ms | **13,281 ms** |
-| a 200,000-iteration loop | 964 ms | 815 ms | — |
-
-Three things follow, and only the third is the one anyone expected.
-
-**lypning costs 1.67x lypning-mp's bytes on first touch** — 1,280 KB against 768 KB,
-which is the 8-blocks-against-3 of §8 showing up as real fetches. Cold cost in
-this environment is a step function in 131,072 B device blocks, so size is not a
-tiebreak here, it is the dominant term for anything that runs once.
-
-**lypning's warm advantage does not clearly survive.** It is 0.102x CPython on a
-normal filesystem and the fastest engine on what it accepts; here the two
-subsets are within noise of each other on every probe, because a 50–85 ms exec
-round-trip floor sits under all of them and neither interpreter's own execution
-is anywhere near it. The loop probe — the only one with real work in it — is
-0.85x, and a single run at that magnitude is not a finding.
-
-**Both subsets keep CPython away from the ceiling, and that is the result that
-matters.** `python3 -c 'import json; …'` takes **13.3 seconds** cold in this
-image. The exec ceiling is 30 s and crossing it destroys the VM and ends the
-agent's turn, so that one line spends nearly half the budget; lypning-mp does the
-same work in 61 ms and lypning in 23 ms. The case for a Python subset in the
-sandbox does not rest on lypning being faster than lypning-mp, and on this evidence it
-should not be argued that way.
+CheerpX is 32-bit x86, so `lypning build --rust --target i686` is the binary
+that runs there; the VM probes were measured upstream on 2026-08-19 with it and
+are not reproducible from this tree; the probe table (first-touch bytes per
+runtime, cited by `gate.py`) is in `docs/BENCH-LEDGER.md` under 2026-09-05. The
+cost model is `docs/SANDBOX-PERFORMANCE.md`; `lypning gate` measures the shape
+locally.
 
 **Read the byte columns with the tool's ordering caveat in hand.** The IDB cache
 is fresh per RUN, not per probe, so the first probe to touch a binary pays for
 all of its blocks and later probes on the same binary read as free. Compare each
 runtime's FIRST probe; a later one's byte count is not a size.
 
-## 9. Deliberate exclusions
+## 9. What is excluded
 
-- **No `re`.** 14.0% of the corpus and the single biggest routing bucket, but a
-  regex engine is a large amount of code with deep semantics, and lypning-mp already
-  has one. If lypning ever gets one it should be a small backtracking engine that
-  exits 90 on any syntax outside a measured subset — the mixture pattern applied
-  one level down.
-- **No `subprocess`, threading, or networking.** They appear in the corpus only
-  as CPython-routed programs.
-- **No classes, decorators, generators, or `async`.** Under 4% combined, and
-  each is a routing decision today.
-- **No daemon.** The same reasoning that ruled one out for lypning-mp
-  (`docs/MICROPYTHON.md` §4) applies unchanged: interpreter init is a rounding error
-  inside the process-spawn floor.
+- **No `re`, `subprocess`, threading or networking.** A regex engine is a large
+  amount of code with deep semantics, and a working `subprocess` fake would keep
+  the expensive pattern alive; each is a `module` refusal `--plan` ranks.
+- **No classes, decorators, generators, or `async`.** Each is a parse-time
+  refusal (`parse.rs`) and a route to `cpython`; `lambda` is in the subset.
+- **No daemon.** Interpreter init is a rounding error inside the process-spawn
+  floor (`docs/RESEARCH.md` §5), so a fork server has nothing to save.
 
-## 10. File layout
+## 10. Layout
 
-| path | what |
+| path (under `src/lypning/assets/rust/`) | what |
 |---|---|
-| `assets/rust/Cargo.toml` | zero-dependency crate, size-tuned release profile |
-| `assets/rust/src/lex.rs` | tokenizer, layout (INDENT/DEDENT), string prefixes and escapes |
-| `assets/rust/src/parse.rs` | recursive-descent parser; every gap becomes `unsupported: <kind>` |
-| `assets/rust/src/ast.rs` | the subset AST |
-| `assets/rust/src/eval.rs` | tree-walking evaluator, real scope chains, `UnboundLocalError` analysis |
-| `assets/rust/src/value.rs` | values, insertion-ordered dict, set, the bigint and set-order refusals |
-| `assets/rust/src/ops.rs` | operators, indexing, slicing, `%`-formatting, Python's floor/mod rules |
-| `assets/rust/src/iter.rs` | iteration; lazy `range`, file lines and generator expressions |
-| `assets/rust/src/fmt.rs` | `str`/`repr`, float repr, the format-spec mini-language |
-| `assets/rust/src/builtins.rs` | the builtin functions, chosen by corpus frequency |
-| `assets/rust/src/methods.rs` | str/list/dict/set/bytes/file methods; the tables the router reads |
-| `assets/rust/src/modules.rs` | `sys`, `os`, `os.path`, `io`, `json`; `random.rs` for the seeded subset of `random` |
-| `assets/rust/src/json.rs` | JSON parse + dump, written against CPython's exact output |
-| `assets/rust/src/io.rs` | files, streams, and the commit barrier |
-| `assets/rust/src/route.rs` | the classifier |
-| `assets/rust/src/main.rs` | CLI, the exit contract, and the dispatcher |
-| `assets/scripts/build-rust.sh` | the standalone build, with the shape and contract smoke checks |
-| `lypning build --rust` | the same build, driven from the CLI |
-| `lypning bench` | the four-arm benchmark |
-| `lypning conformance` | three engines + the mixture + routing accuracy |
-| `tests/test_engines.py`, `tests/test_conformance.py` | the unit half (`make test`) |
+| `Cargo.toml`, `build.rs`, `.cargo/config.toml` | the crate: `variant-*` and `cap-*` features; `LYPNING_ENGINE`/`LYPNING_CAPS` from the feature set; static, not static-PIE |
+| `src/lex.rs`, `src/parse.rs`, `src/ast.rs` | tokenizer; recursive-descent parser — every gap is `unsupported: <kind>`; the AST |
+| `src/eval.rs`, `src/value.rs`, `src/ops.rs`, `src/iter.rs`, `src/fmt.rs` | evaluator with real scopes; values (insertion-ordered dict, the set-order and NaN refusals); operators and Python's floor/mod rules; lazy iteration; `str`/`repr` and format specs |
+| `src/builtins.rs`, `src/methods.rs`, `src/modules.rs`, `src/json.rs`, `src/random.rs` | builtins and methods (the tables the router reads); `MODULES` per variant; JSON against CPython's exact output; MT19937 |
+| `src/collections.rs`, `src/pathlib.rs` | `cap-collections`, `cap-pathlib` — compiled into `lypning-l` only |
+| `src/io.rs`, `src/alloc.rs`, `src/hash.rs`, `src/args.rs`, `src/err.rs` | the commit barrier; the size-class allocator; hashing; call arguments; the refusal line and `ENGINE` |
+| `src/route.rs`, `src/main.rs`, `src/embed.rs`, `src/capi.rs`, `src/host.rs`, `src/lib.rs` | the classifier; CLI, exit contract, dispatcher; the in-process runner and `fall_onward`; the C ABI (`capi` feature); host hooks |
+| `../scripts/build-rust.sh` | the standalone build, with the shape and contract smoke checks; `lypning build --rust` drives the same build |
+
+Python side: `src/lypning/`, laid out in `README.md` §9; `cli.py` is the only
+module that prints.
+
+## 11. Adding a capability to lypning-l
+
+The realistic next PR is a `cap-*` on the larger variant; the core is frozen.
+`cap-pathlib` (`CHANGELOG.md` #41) is the worked example, in this order:
+
+1. **Cargo.toml.** A `cap-<name> = []` feature in the `variant-l` list and
+   nothing smaller; `build.rs` turns the set that is on into `LYPNING_CAPS`.
+2. **route.rs.** A `CAPS` row (the modules it serves; a runtime kind only if a
+   sibling would answer it) and the name in `SPECTRUM`'s `lypning-l` row.
+3. **engines.VARIANT_CAPS**, the Python copy of that row;
+   `tests/test_routing.py::test_the_spectrum_copy_in_engines_is_the_rust_table`
+   fails until the two agree
+   (`tests/test_engines.py::test_parse_binary_name_grows_with_the_spectrum`
+   holds the name grammar).
+4. **modules.rs and lib.rs.** A `#[cfg(feature = "cap-<name>")]` row of
+   `MODULES`, a `get_attr` arm per served name, a `pub mod` in `lib.rs`; the
+   code lives in its own file so the core does not move a byte.
+5. **The wiring list — the recurring defect.** A new `Value` variant or dict
+   tag reaches every path that materialises, compares or formats a value, and
+   the adversarial pass has found the missed one three times
+   (`docs/HILLCLIMB.md` iteration 74; `CHANGELOG.md` #39): `value.rs`
+   (`type_name`, `eq`, `is_same`, hash, truthiness), `fmt.rs` (`repr`, `str`,
+   format specs), `ops.rs` (operators, ordering, `in`, indexing, slices,
+   `getattr`), `methods.rs`, `builtins.rs` (`isinstance`, `len`, `bytes`,
+   `reversed`, constructor), `iter.rs`, `eval.rs`: grep `cfg(feature = "cap-`.
+6. **The grid test.** One `tests/test_<name>_grid.py` running a cross-product
+   of shapes under CPython and the variant
+   (`tests/test_pathlib_grid.py::test_the_pathlib_grid_agrees_with_cpython`);
+   a family in `lypning oracle` is a row here.
+7. **The density measurement.** Programs gained per KB of `lypning-l` growth
+   decides the order, because the block budget is the one thing a spectrum
+   cannot spend twice: `lypning gate ~/.lypning/bin/lypning-l` for the bytes,
+   `lypning conformance --engine lypning-l` for the programs, before and after
+   (`docs/HILLCLIMB.md` iteration 74, 2026-09-04, ranked four by it).
+8. **The gates.** `lypning build --rust`, `lypning gate` (`PASS`), `lypning
+   conformance --mixture both` (`MISMATCH 0`, `monotone violations 0`,
+   `dispatchers agree N/N`), `lypning doctor`, `git status`; then the
+   `CHANGELOG.md` entry, its coverage delta quoted from that run.
+
+**Verify.** `docs/VERIFICATION.md` §C1–§C6 hold these claims as commands
+with expected output; the two that change most:
+
+```bash
+lypning conformance --mixture both | grep -E '^(MISMATCH [0-9]|dispatchers|monotone)|UNSAFE'; echo $?
+~/.lypning/bin/lypning route --spectrum; echo $?     # the table §4 describes, as JSON; the binary only, 0
+```

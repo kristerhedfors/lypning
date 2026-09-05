@@ -1,0 +1,13 @@
+run of record · lypning oracle · 2026-09-04 · 437056c · 3688 loaded · Darwin arm64
+oracles  (measured, never routed to)
+  lypning-mp: not built  — `lypning build --micropython` (needs a network); `lypning oracle` reads the recorded divergences either way
+
+WARN lypning-mp                    not built — the ORACLE, not a tier: nothing routes to it. `lypning build --micropython` needs a network; `lypning oracle` reads the recorded divergences either way
+0
+note: lypning-mp is not built — that arm was not measured
+  ok   target             lypning                want lypning-mp
+       target: lypning-mp is not built; gated lypning instead — these numbers are not lypning-mp's
+oracle — lypning-mp against CPython: 79 recorded divergences in 34 families
+ledger: /Users/user/dev/lypning-docs-b1/.github/known-mismatches.json (maintained by identity; a divergence that stops reproducing reddens CI)
+0
+lypning-mp False 79 34

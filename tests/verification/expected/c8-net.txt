@@ -1,0 +1,5 @@
+run of record · lypning conformance · 2026-09-04 · 437056c · 3688 loaded · Darwin arm64
+0
+0
+0
+skipped 1184 not run: absolute path outside the sandbox (949), imports lypning and drives a battery (208), would spawn a lypning battery (conformance/bench/corpus-time/perf) (27)
