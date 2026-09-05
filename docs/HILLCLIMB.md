@@ -26,6 +26,71 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-09-05 · iteration 75 — the `re` surface, and the instrument's blind spot shaped like its sandbox
+
+Host: macOS arm64, host-target build (no rustup; musl bytes unmeasured).
+Corpus 3,688 loaded, 2,504 graded, 1,184 skipped. Reference CPython 3.14.5.
+
+**Step.** `cap-re` PR 1 on `lypning-l`: the `re` module surface with no matcher
+— flags as a value, `re.escape`, `re.purge`; every matcher call a static route
+to CPython (kind `re`), runtime refusal as the backstop.
+
+| number | before (#46) | after (#47) |
+|---|---|---|
+| `lypning-l` MATCH / UNSUPPORTED / MISMATCH | 1741 / 763 / 0 (69.5%) | 1910 / 594 / 0 (76.3%) |
+| `lypning` MATCH / UNSUPPORTED / MISMATCH | 1573 / 931 / 0 | 1572 / 932 / 0 |
+| `lypning-l` bytes / blocks | 867,744 / 7 | 867,840 / 7 |
+| `lypning` bytes / blocks | 818,080 / 7 | 834,672 / 7 |
+| routing IDEAL / WASTED / LATE / UNSAFE | 2393 / 73 / 38 / 0 | 2302 / 79 / 123 / 0 |
+| dispatchers agree | 2504/2504 | 2504/2504 |
+
+**Density.** +169 programs for +96 B on disk is not a real number: the Mach-O
+text segment is page-padded, and `size -m` put the surface at about +4.5 KB of
+`__text` before the dispatcher fix. Call it ~35 progs/KB and treat it as the
+ceiling of the metric, not a comparable row — the gain is a module object,
+not an implementation.
+
+### The blind spot
+
+A corpus mine before the step (scratchpad `re-spec/`) ran the 213 admissible
+`import re` programs in the battery's temp cwd: 174 die identically on both
+engines before their first regex call (167 `FileNotFoundError` on a repo-
+relative file — they are grep scripts from this repo's own sessions), and only
+25 reach a matcher. So the surface alone scores most of what a matcher would,
+and a matcher (~65 KB, the first slice to cross into block 8) is worth +13 by
+the battery against +87 by corpus intent. The +85 LATE rows are the same
+artefact moved to the routing report: lypning-l "works" on them by failing
+identically. The correctness instrument for a matcher is the 172-row grid
+(`re-spec/GRID.txt`) diffed against CPython; the value claim is intent. Quote
+both, never one.
+
+### What the fall-through taught, again
+
+The skill's warning that a new refusal is a new code path through the
+fall-through held exactly. This was the first runtime-refusal class that reads
+stdin at any frequency: the Rust dispatcher forked lypning-l with the inherited
+pipe, the program consumed it, refused at 90, and CPython printed nothing at
+exit 0. `dispatchers agree 2501/2504` caught it. The fix — buffer the pipe
+before forking — was first written unconditionally and blocked on a slow
+producer (`(sleep 30; echo hi) | lypning run …`), so it is conditional on a
+`reads_stdin` fact the walker computes (bare `input` and `stdin` count; an
+over-match is one read). Two pre-existing exit-1-where-CPython-answers bugs
+came out of the same battery: `open(0)` opened a file named `0`;
+`sys.stdin.buffer` was a bound method. Both refuse.
+
+### Decision recorded
+
+Matcher calls are static blocks, not runtime refusals. The walker can see them,
+a static route costs nothing, and a runtime refusal after an irreversible side
+effect (`os.makedirs` commits the barrier) is exit 1 the chain cannot retry —
+the adversary had `os.makedirs("d1/d2"); re.sub(…)` going from correct to
+exit 1 in the first cut. "Frozen core" is defined from here as: no capability
+code or text (`strings`), inside the 8-block gate. It was never byte-identical
+across capabilities; only its size was.
+
+**Next.** `re` PR 2, the matcher, on its own branch with the grid as the gate.
+Then `glob` 34, `csv` 23, `class` 22.
+
 ## 2026-09-04 · iteration 74 — pathlib, and density becomes a number the loop steers by
 
 The loop now has three curves on the larger variant — coverage, precision,

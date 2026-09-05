@@ -14,6 +14,35 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-05** — lypning-l serves the `re` surface; matcher calls route statically to CPython · [#47]
+
+- `import re` binds a module on `lypning-l`: the flag constants as a value with
+  CPython's repr and arithmetic, `re.escape` (the 3.7+ table) and `re.purge`.
+  Every matcher call — `search`, `match`, `fullmatch`, `findall`, `finditer`,
+  `compile`, `sub`, `subn`, `split` — is a static route to CPython with kind
+  `re`, and a runtime refusal as the backstop for dynamic reach.
+- `lypning conformance --mixture both` on 2026-09-05, 2,504 programs graded:
+  `lypning-l` MATCH 1910 / UNSUPPORTED 594 / MISMATCH 0 — coverage 69.5% → 76.3%.
+  MISMATCH 0, UNSAFE 0, monotone 0, dispatchers agree 2504/2504. `lypning-l`
+  867,744 → 867,840 B (7 blocks). LATE 38 → 123: those rows are programs that
+  call a matcher but die identically on both engines before reaching it in the
+  battery's temp cwd — an artefact of the instrument, not a routing cost, and
+  the reason `--plan` still ranks `re: re.findall()` at 23.
+- Two dispatcher bugs the first runtime-refusal class that reads stdin exposed:
+  a forked intermediate rung inherited the pipe, so a program that read stdin
+  and then refused handed the next rung an exhausted stream (`''` at exit 0).
+  Both dispatchers now buffer a piped stdin before forking — only when the
+  route says the program can read it, since unconditionally that blocked on a
+  slow producer. `open(0)` and `sys.stdin.buffer` were exit 1 where CPython
+  answers; both refuse.
+- Three adversarial passes, 540 + 34 differential one-liners; eight holes in
+  the first cut (four flag-value paths, the slow-producer hang, the
+  makedirs-then-refuse route regression) closed before merge.
+- The frozen core is 818,080 → 834,672 B and still 7 blocks: the router rows
+  every binary carries plus the conditional preload, with the Mach-O text
+  segment crossing a 16 KB page. It carries no `re` code or text (`strings`).
+  Earlier "byte-identical" claims for #39 and #41 were size-identical only.
+
 **2026-09-05** — Docs refactor, part 2: every engineer- and QA-facing document condensed to its budget · [#46]
 
 - The fifteen documents an engineer or QA reader is sent to went from 6,696 to
@@ -1838,6 +1867,7 @@ runtime exists — the number came first, and both were built for it. It is
 [#43]: https://github.com/kristerhedfors/lypning/pull/43
 [#45]: https://github.com/kristerhedfors/lypning/pull/45
 [#46]: https://github.com/kristerhedfors/lypning/pull/46
+[#47]: https://github.com/kristerhedfors/lypning/pull/47
 [#1]: https://github.com/kristerhedfors/lypning/pull/1
 [#2]: https://github.com/kristerhedfors/lypning/pull/2
 [#3]: https://github.com/kristerhedfors/lypning/pull/3

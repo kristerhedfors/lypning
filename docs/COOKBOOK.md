@@ -189,9 +189,9 @@ print(heapq.nsmallest(2, [5, 1, 9, 3]), heapq.nlargest(2, [5, 1, 9, 3]))
 xs = [5, 1, 9, 3]
 print(sorted(xs)[:2], sorted(xs, reverse=True)[:2])
 ```
-<!-- recipe id=re-sub-digits kind=module detail="import re" engine=lypning-l -->
+<!-- recipe id=re-sub-digits kind=re detail="re.sub() (pattern matching is not served yet)" engine=lypning-l -->
 ```python
-# before — lypning-l: unsupported: module: import re
+# before — lypning-l: unsupported: re: re.sub() (pattern matching is not served yet)
 import re
 print(re.sub(r"[0-9]", "#", "a1b22"))
 ```

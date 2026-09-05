@@ -37,7 +37,8 @@
  },
  {
   "program": "import collections, re",
-  "route": "cpython\tmodule: import collections"
+  "route": "lypning-l\tmodule: import collections",
+  "note": "Since #47 `import re` is admitted on lypning-l (the surface; matcher calls route to cpython), so the row lands on lypning-l for collections."
  },
  {
   "program": "import hashlib; print(hashlib.md5(b\"x\").hexdigest())",
