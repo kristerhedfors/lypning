@@ -142,6 +142,18 @@ impl Args {
         out
     }
 
+    /// Put a value back at `i`, the mirror of [`Args::take`]. Used by
+    /// `classes::render_args`, which replaces an instance argument with the
+    /// text its class produced before the builtin sees it.
+    #[cfg(feature = "cap-class")]
+    pub fn set(&mut self, i: usize, v: Value) {
+        if self.spilled {
+            self.spill[i] = v;
+        } else {
+            self.inline[i] = v;
+        }
+    }
+
     /// Move the value at `i` out, leaving `None` behind and the length alone.
     ///
     /// This is what binding parameters uses instead of `into_iter`: it takes

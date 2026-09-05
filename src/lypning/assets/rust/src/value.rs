@@ -62,6 +62,17 @@ pub enum Value {
     /// `pathlib.rs` says why that is the point rather than a shortcut.
     #[cfg(feature = "cap-pathlib")]
     Path(Rc<str>, bool),
+    /// A class object, and an instance of one — the `cap-class` capability.
+    /// `Meth` is `inst.method` before the call: it carries the receiver
+    /// because a `Bound` cannot (its name is `&'static str`, and a method's is
+    /// the program's). `classes.rs` says what the subset is and why the
+    /// default `repr` of an instance is a refusal rather than a guess.
+    #[cfg(feature = "cap-class")]
+    Class(Rc<crate::classes::ClassObj>),
+    #[cfg(feature = "cap-class")]
+    Obj(Rc<crate::classes::InstObj>),
+    #[cfg(feature = "cap-class")]
+    Meth(Rc<crate::classes::InstObj>, Rc<FuncObj>),
     /// A `re.RegexFlag` — the bits, and nothing else: `re.I` is `ReFlag(2)`,
     /// `re.I | re.M` is `ReFlag(10)`. An int on every arithmetic path (see
     /// [`as_num`]) and a flag under `| & ^` and in its repr; `re.rs` says why
@@ -172,6 +183,21 @@ pub fn hkey(v: &Value) -> R<HKey> {
                 out.push(hkey(x)?);
             }
             HKey::Tuple(out)
+        }
+        // AN INSTANCE IS HASHABLE IN CPYTHON — `{obj: 1}` and `{obj}` both
+        // work there, keyed by `id()` — so the generic arm below would raise
+        // `unhashable type` at exit 1 for a program CPython answers. Keying by
+        // the pointer would even be right while the object is alive, and that
+        // is the trap: a dropped instance frees an address the allocator hands
+        // to the next one, and two distinct objects would then be one key. A
+        // class object and a bound method hash the same way and refuse the
+        // same way.
+        #[cfg(feature = "cap-class")]
+        Value::Obj(_) | Value::Class(_) | Value::Meth(..) => {
+            return Err(crate::classes::refuse(
+                "an instance, a class or a bound method as a dict key or set member \
+                 (CPython hashes it by object identity)",
+            ))
         }
         other => {
             return Err(type_err(format!(
@@ -372,6 +398,20 @@ pub fn type_name(v: &Value) -> &'static str {
         // `len()`, `<` and `%` TypeErrors print.
         #[cfg(feature = "cap-re")]
         Value::ReFlag(_) => "RegexFlag",
+        // The CLASS's own name, which is what every message naming an
+        // instance's type prints: `object of type 'Row' has no len()`,
+        // `'<' not supported between instances of 'Row' and 'Row'`,
+        // `Object of type Row is not JSON serializable`. Those messages are
+        // CPython's word for word once this is right, and were "instance" —
+        // a type name that does not exist — while it was not.
+        #[cfg(feature = "cap-class")]
+        Value::Obj(o) => o.class.name,
+        // `type(C)` is `type` in CPython, and `C.nosuch` says
+        // `type object 'C' has no attribute`.
+        #[cfg(feature = "cap-class")]
+        Value::Class(_) => "type",
+        #[cfg(feature = "cap-class")]
+        Value::Meth(..) => "method",
     }
 }
 
@@ -716,6 +756,24 @@ pub fn eq(a: &Value, b: &Value) -> R<bool> {
         (Value::Builtin(x), Value::Builtin(y)) => x == y,
         (Value::Func(x), Value::Func(y)) => Rc::ptr_eq(x, y),
         (Value::File(x), Value::File(y)) => Rc::ptr_eq(x, y),
+        // `a == a` is True and `C() == C()` is False: the default `__eq__` is
+        // identity, and a class that defines its own is refused at parse time
+        // precisely so this arm can BE the whole rule. Without it the
+        // catch-all below answered False for `a == a` — at exit 0, which is
+        // the shape invariant 1 exists for. Two bound methods of the same
+        // function and the same receiver ARE equal in CPython (`a.f == a.f`),
+        // which pointer equality does not give, so they are not compared here
+        // and fall to the refusal in `ops::identity`'s caller instead.
+        #[cfg(feature = "cap-class")]
+        (Value::Obj(x), Value::Obj(y)) => Rc::ptr_eq(x, y),
+        #[cfg(feature = "cap-class")]
+        (Value::Class(x), Value::Class(y)) => Rc::ptr_eq(x, y),
+        #[cfg(feature = "cap-class")]
+        (Value::Meth(..), Value::Meth(..)) => {
+            return Err(crate::classes::refuse(
+                "== between two bound methods (CPython compares the receiver and the function)",
+            ))
+        }
         _ => false,
     })
 }
@@ -783,6 +841,16 @@ pub fn is_same(a: &Value, b: &Value) -> bool {
         // foldable list.
         #[cfg(feature = "cap-re")]
         (Value::ReFlag(x), Value::ReFlag(y)) => x == y,
+        // `x is y` on instances is the same pointer test `==` uses, because
+        // for these two the default `__eq__` IS identity. A bound method is
+        // the exception CPython itself makes: `a.f is a.f` is False (a new
+        // object per access) while `a.f == a.f` is True, so `is` on one is
+        // answered False here — which is CPython's answer for two SEPARATE
+        // accesses, the only way a program can spell it.
+        #[cfg(feature = "cap-class")]
+        (Value::Obj(x), Value::Obj(y)) => Rc::ptr_eq(x, y),
+        #[cfg(feature = "cap-class")]
+        (Value::Class(x), Value::Class(y)) => Rc::ptr_eq(x, y),
         // Small-int caching is an implementation detail agents should not rely
         // on and we will not reproduce; refusing beats guessing either way.
         _ => false,
@@ -839,6 +907,22 @@ pub fn dismantle(root: Value) {
                     work.push(inner);
                 }
             }
+            // An instance's attributes are a chain a program can build as deep
+            // as it likes (`n.next = m`), so the same iterative teardown the
+            // containers get applies here — a recursive drop of one is the
+            // host's SIGSEGV in the library build.
+            #[cfg(feature = "cap-class")]
+            Value::Obj(rc) => {
+                if let Ok(o) = Rc::try_unwrap(rc) {
+                    if let Ok(cell) = Rc::try_unwrap(o.dict) {
+                        work.extend(cell.into_inner().into_values());
+                    }
+                }
+            }
+            // A bound method holds the receiver, so it is the same chain
+            // reached one indirection later.
+            #[cfg(feature = "cap-class")]
+            Value::Meth(rc, _) => work.push(Value::Obj(rc)),
             // Everything else is either a scalar (a `ReFlag` is its bits and
             // holds no child) or an `Rc` to something whose
             // own depth is bounded by the parser (`parse::MAX_PARSE_DEPTH`), so

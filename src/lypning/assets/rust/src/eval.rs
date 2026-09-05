@@ -363,6 +363,11 @@ impl Interp {
                 }));
                 self.bind(name, f);
             }
+            #[cfg(feature = "cap-class")]
+            Stmt::ClassDef { name, body } => {
+                let c = crate::classes::define(self, name, body)?;
+                self.bind(name, c);
+            }
             Stmt::Global(names) => {
                 if let Some(g) = self.global_decls.last_mut() {
                     for n in names {
@@ -653,6 +658,10 @@ impl Interp {
             }
             Target::Attr(b, n) => {
                 let bv = self.eval(b)?;
+                #[cfg(feature = "cap-class")]
+                if let Some(r) = crate::classes::set_attr(&bv, n, v) {
+                    return r;
+                }
                 return Err(unsupported(
                     "setattr",
                     &format!("assignment to .{n} on a {}", type_name(&bv)),
@@ -943,11 +952,30 @@ impl Interp {
                     match p {
                         FPart::Lit(s) => out.push_str(s),
                         FPart::Expr { expr, conv, spec } => {
-                            let v = self.eval(expr)?;
+                            #[allow(unused_mut)]
+                            let mut v = self.eval(expr)?;
                             let spec_s = match spec {
                                 Some(s) => fmt::to_str(&self.eval(s)?)?,
                                 None => String::new(),
                             };
+                            #[allow(unused_mut)]
+                            let mut conv = *conv;
+                            // `f"{obj}"` is `format(obj, "")`, which for an
+                            // instance is `str(obj)` — the ONE format path an
+                            // instance is answered on, because it is the one an
+                            // agent's one-liner actually types. Every other
+                            // (`"%s" % obj`, `"{}".format(obj)`, an instance
+                            // inside a printed list) refuses in `fmt`.
+                            // The conversion is spent once it has run: applying
+                            // `!r` to the string `__repr__` returned would
+                            // quote it a second time.
+                            #[cfg(feature = "cap-class")]
+                            if let Some(t) =
+                                crate::classes::render_field(self, &v, conv, &spec_s)?
+                            {
+                                v = t;
+                                conv = None;
+                            }
                             let s = match conv {
                                 Some('r') => fmt::repr(&v)?,
                                 Some('s') => fmt::to_str(&v)?,
@@ -1153,6 +1181,13 @@ impl Interp {
             Value::Builtin(name) => crate::builtins::call_builtin(self, name, args, kw),
             Value::Bound(recv, name) => crate::methods::call_method(self, recv, name, args, kw),
             Value::Func(func) => self.call_func(func.clone(), args, kw),
+            #[cfg(feature = "cap-class")]
+            Value::Class(c) => crate::classes::instantiate(self, c.clone(), args, kw),
+            #[cfg(feature = "cap-class")]
+            Value::Meth(recv, f) => {
+                let (recv, f) = (recv.clone(), f.clone());
+                crate::classes::call_method(self, &recv, &f, args, kw)
+            }
             other => Err(type_err(format!(
                 "'{}' object is not callable",
                 type_name(other)
@@ -1465,7 +1500,7 @@ pub struct IterState {
 /// Every name assigned anywhere in a function body, including its parameters.
 /// Used to make an early read raise `UnboundLocalError` rather than silently
 /// finding a global of the same name.
-fn assigned_names(body: &[Stmt], params: &Params) -> FastSet<Rc<str>> {
+pub(crate) fn assigned_names(body: &[Stmt], params: &Params) -> FastSet<Rc<str>> {
     let mut out = crate::hash::set();
     for n in &params.names {
         out.insert(n.clone());
@@ -1531,6 +1566,10 @@ fn collect_assigned(body: &[Stmt], out: &mut FastSet<Rc<str>>) {
                 collect_assigned(body, out);
             }
             Stmt::Def { name, .. } => {
+                out.insert(name.clone());
+            }
+            #[cfg(feature = "cap-class")]
+            Stmt::ClassDef { name, .. } => {
                 out.insert(name.clone());
             }
             Stmt::Import { names } => {

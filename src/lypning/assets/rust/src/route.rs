@@ -54,7 +54,7 @@ pub struct Variant {
 /// Python side's `engines.SPECTRUM`, in this order, pinned by test.
 pub const SPECTRUM: &[Variant] = &[
     Variant { name: "lypning", caps: &[] },
-    Variant { name: "lypning-l", caps: &["cap-collections", "cap-pathlib", "cap-re"] },
+    Variant { name: "lypning-l", caps: &["cap-class", "cap-collections", "cap-pathlib", "cap-re"] },
 ];
 
 /// The same names, NUL-terminated for the C ABI. A test holds the two lists
@@ -86,10 +86,17 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// owns (a matcher call, a version-shaped repr), there is no rung above
 /// lypning-l to carry a kind to, and `chain_after` a runtime `re:` refusal is
 /// `[cpython]` by construction.
+/// `cap-class` is the first row that serves no module and DOES list a kind:
+/// `class` is a PARSE-time refusal, so the core's walker reports it before it
+/// has seen a single import, and without the kind here the core would send
+/// every program that defines a class to CPython — past the sibling that runs
+/// it. It is the one row whose kind column earns its spawn, because the
+/// blocker it answers is one no smaller variant can look past.
 pub const CAPS: &[(&str, &[&str], &[&str])] = &[
     ("cap-collections", &["collections"], &[]),
     ("cap-pathlib", &["pathlib"], &[]),
     ("cap-re", &["re"], &[]),
+    ("cap-class", &[], &["class"]),
 ];
 
 /// The `re` functions that need a MATCHER — the half of the module's surface
@@ -798,6 +805,8 @@ pub fn route(src: &str) -> Route {
         Err(other) => finish_route("error".into(), other.to_string(), imports, None, reads_stdin),
         Ok(body) => {
             let mut req = Requirements::default();
+            #[cfg(feature = "cap-class")]
+            collect_class_attrs(&body, &mut req.class_attrs);
             walk_block(&body, &mut req);
             imports = req.imports.iter().cloned().collect();
             let reads_stdin = reads_stdin || req.reads_stdin;
@@ -897,12 +906,134 @@ struct Requirements {
     /// See `Route::reads_stdin`. The walk's half: `sys.stdin`, `input()`,
     /// `open(0)`, `os.read(0, …)`, `fileinput`; the text scan is the other.
     reads_stdin: bool,
+    /// Every attribute name THIS PROGRAM's own class bodies define — its
+    /// methods, its class attributes, and every `self.x` a method assigns.
+    /// Collected in a pass of its own before the walk, because the walk stops
+    /// at the first blocker and `.label()` on line 7 must be admitted by a
+    /// `def label` on line 4 that the walk has not reached yet.
+    ///
+    /// The same argument as `pathlib_method`: an attribute name on a receiver
+    /// whose type is not known statically is admitted only when the program
+    /// contains the thing that makes it mean something. A name in here that
+    /// turns out to be read off a str is an `AttributeError` — which is
+    /// CPython's answer for it too, at the same exit code.
+    #[cfg(feature = "cap-class")]
+    class_attrs: BTreeSet<String>,
 }
 
 impl Requirements {
     fn block(&mut self, kind: &str, detail: String) {
         if self.blocker.is_none() {
             self.blocker = Some((kind.to_string(), detail));
+        }
+    }
+}
+
+/// Is `n` an attribute name one of this program's own classes defines?
+#[cfg(feature = "cap-class")]
+fn class_attr(req: &Requirements, n: &str) -> bool {
+    req.class_attrs.contains(n)
+}
+#[cfg(not(feature = "cap-class"))]
+fn class_attr(_req: &Requirements, _n: &str) -> bool {
+    false
+}
+
+/// The pre-pass: every name a class body binds, and every `self.x` its methods
+/// assign. Runs over the WHOLE program before the walk, so an attribute used
+/// above the class that defines it is still admitted.
+#[cfg(feature = "cap-class")]
+fn collect_class_attrs(body: &[Stmt], out: &mut BTreeSet<String>) {
+    for s in body {
+        match s {
+            Stmt::ClassDef { body, .. } => {
+                for m in body.iter() {
+                    match m {
+                        Stmt::Def { name, body, .. } => {
+                            out.insert(name.to_string());
+                            collect_self_attrs(body, out);
+                        }
+                        Stmt::Assign { targets, .. } => {
+                            for t in targets {
+                                if let Target::Name(n) = t {
+                                    out.insert(n.to_string());
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // A class can be nested in any block; `classes::define` refuses one
+            // inside a function, but the walk still has to find the names.
+            Stmt::If { arms, els } => {
+                for (_, b) in arms {
+                    collect_class_attrs(b, out);
+                }
+                collect_class_attrs(els, out);
+            }
+            Stmt::For { body, els, .. } | Stmt::While { body, els, .. } => {
+                collect_class_attrs(body, out);
+                collect_class_attrs(els, out);
+            }
+            Stmt::Def { body, .. } => collect_class_attrs(body, out),
+            Stmt::With { body, .. } => collect_class_attrs(body, out),
+            Stmt::Try { body, handlers, els, finally } => {
+                collect_class_attrs(body, out);
+                for h in handlers {
+                    collect_class_attrs(&h.body, out);
+                }
+                collect_class_attrs(els, out);
+                collect_class_attrs(finally, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// `self.x = …` anywhere in a method body, at any depth.
+#[cfg(feature = "cap-class")]
+fn collect_self_attrs(body: &[Stmt], out: &mut BTreeSet<String>) {
+    fn tgt(t: &Target, out: &mut BTreeSet<String>) {
+        match t {
+            Target::Attr(_, n) => {
+                out.insert(n.to_string());
+            }
+            Target::Tuple(v) => v.iter().for_each(|x| tgt(x, out)),
+            Target::Star(b) => tgt(b, out),
+            _ => {}
+        }
+    }
+    for s in body {
+        match s {
+            Stmt::Assign { targets, .. } => targets.iter().for_each(|t| tgt(t, out)),
+            Stmt::AugAssign { target, .. } => tgt(target, out),
+            Stmt::If { arms, els } => {
+                for (_, b) in arms {
+                    collect_self_attrs(b, out);
+                }
+                collect_self_attrs(els, out);
+            }
+            Stmt::For { target, body, els, .. } => {
+                tgt(target, out);
+                collect_self_attrs(body, out);
+                collect_self_attrs(els, out);
+            }
+            Stmt::While { body, els, .. } => {
+                collect_self_attrs(body, out);
+                collect_self_attrs(els, out);
+            }
+            Stmt::Def { body, .. } => collect_self_attrs(body, out),
+            Stmt::With { body, .. } => collect_self_attrs(body, out),
+            Stmt::Try { body, handlers, els, finally } => {
+                collect_self_attrs(body, out);
+                for h in handlers {
+                    collect_self_attrs(&h.body, out);
+                }
+                collect_self_attrs(els, out);
+                collect_self_attrs(finally, out);
+            }
+            _ => {}
         }
     }
 }
@@ -1068,6 +1199,8 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
             walk_block(body, req);
         }
         Stmt::Del(ts) => ts.iter().for_each(|t| walk_target(t, req)),
+        #[cfg(feature = "cap-class")]
+        Stmt::ClassDef { body, .. } => walk_block(body, req),
         _ => {}
     }
 }
@@ -1078,7 +1211,13 @@ fn walk_target(t: &Target, req: &mut Requirements) {
         Target::Star(b) => walk_target(b, req),
         Target::Attr(e, n) => {
             walk_expr(e, req);
-            req.block("setattr", format!("assignment to .{n}"));
+            // `self.n = n` in an `__init__` is the whole of what this engine
+            // sets an attribute on, and `class_attrs` is exactly the set of
+            // names a class body assigns — so the admission and the refusal
+            // are the same list read twice.
+            if !class_attr(req, n) {
+                req.block("setattr", format!("assignment to .{n}"));
+            }
         }
         Target::Index(a, b) => {
             walk_expr(a, req);
@@ -1306,7 +1445,9 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
                 }
                 return;
             }
-            if !known_method(n) && !pathlib_method(req, n) && !re_method(req, n) {
+            if !known_method(n) && !pathlib_method(req, n) && !re_method(req, n)
+                && !class_attr(req, n)
+            {
                 req.block("method", format!(".{n}()"));
             }
         }

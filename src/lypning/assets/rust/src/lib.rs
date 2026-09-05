@@ -29,6 +29,10 @@ pub mod alloc;
 pub mod args;
 pub mod ast;
 pub mod builtins;
+/// Classes — the `cap-class` capability, a LANGUAGE feature rather than a
+/// module. Absent from the smaller variant entirely, not merely unreachable.
+#[cfg(feature = "cap-class")]
+pub mod classes;
 /// `collections.Counter` / `defaultdict` — the `cap-collections` capability.
 /// Absent from the smaller variant entirely, not merely unreachable in it.
 #[cfg(feature = "cap-collections")]

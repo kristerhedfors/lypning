@@ -58,13 +58,18 @@ SPECTRUM = (LYPNING, LYPNING_L)
 #: at runtime what a smaller one could not, so it is not tried.
 #:
 #: ``cap-collections`` (``collections.Counter`` / ``defaultdict``),
-#: ``cap-pathlib`` (``pathlib.Path``) and ``cap-re`` (the ``re`` SURFACE: the
+#: ``cap-pathlib`` (``pathlib.Path``), ``cap-re`` (the ``re`` SURFACE: the
 #: flags, ``escape``, ``purge``, and the matcher-backed names, which refuse at
-#: call time) are on the larger variant ONLY. The core is
+#: call time) and ``cap-class`` (a class with no base or ``object``, its
+#: ``__init__``, methods, attributes and ``__repr__``/``__str__``) are on the
+#: larger variant ONLY. The core is
 #: frozen: it gains no capability feature, and a capability that appeared in both
 #: columns would buy the chain nothing — the whole point of the column is that
 #: the sets differ.
-VARIANT_CAPS: dict = {LYPNING: (), LYPNING_L: ("cap-collections", "cap-pathlib", "cap-re")}
+VARIANT_CAPS: dict = {
+    LYPNING: (),
+    LYPNING_L: ("cap-class", "cap-collections", "cap-pathlib", "cap-re"),
+}
 
 #: Not a fourth engine — the same lypning, reached through the C ABI instead of
 #: through a process, the way an embedding host reaches it. It is spelled

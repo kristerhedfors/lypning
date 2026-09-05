@@ -50,7 +50,7 @@ variant-m = []
 # The 4 MB point. Names the smaller variant so cargo's feature union makes it a
 # superset by construction — the monotonicity the router assumes. It grows one
 # `cap-*` per step; `variant-m` is FROZEN and gains none of them.
-variant-l = ["variant-m", "cap-collections", "cap-pathlib", "cap-re"]
+variant-l = ["variant-m", "cap-collections", "cap-pathlib", "cap-re", "cap-class"]
 
 # `collections.Counter` and `collections.defaultdict` — 83 of the corpus
 # programs measured on 2026-09-04 import `collections`, and between them they
@@ -70,6 +70,14 @@ cap-pathlib = []
 # and 174 of them never reach a regex call in the battery. `src/re.rs` is the
 # whole of it; the core gains none of it.
 cap-re = []
+
+# `class` — the LANGUAGE feature, not a module: a class with no base or
+# `object`, `__init__`, plain methods, instance and class attributes, and
+# `__repr__`/`__str__`. Everything else in the class grammar is refused BY NAME
+# at parse time, where a walker sees it (`parse::class_def`), because the
+# default `object.__repr__` prints a heap address and an engine that guessed one
+# would be wrong at exit 0. `src/classes.rs` is the whole of it.
+cap-class = []
 
 capi = []
 

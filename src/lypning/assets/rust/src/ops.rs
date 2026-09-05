@@ -664,6 +664,15 @@ impl Interp {
                 Err(crate::pathlib::refuse(&format!("Path.{name}")))
             };
         }
+        // An instance's own attributes, then its class's — and a REFUSAL for
+        // every name neither holds that CPython answers off `object`
+        // (`__dict__`, `__module__`, `__doc__`). Before the method table,
+        // because a class is free to name a method `get` or `items` and the
+        // program means its own, not a dict's.
+        #[cfg(feature = "cap-class")]
+        if let Some(r) = crate::classes::get_attr(base, name) {
+            return r;
+        }
         if let Some(m) = crate::methods::method_name(base, name) {
             return Ok(Value::Bound(Rc::new(base.clone()), m));
         }

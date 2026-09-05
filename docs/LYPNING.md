@@ -12,7 +12,7 @@ Every table is re-derivable from your own corpus ([`FORKING.md`](FORKING.md)).
 | engine | what it is | where it lives |
 |---|---|---|
 | `lypning` | the Rust core, frozen at 8 blocks (`gate.VARIANT_BLOCK_BUDGET`); it gains no capability | `src/lypning/assets/rust/`, `--features variant-m` (the default) |
-| `lypning-l` | the same crate with `cap-collections` and `cap-pathlib` (`engines.VARIANT_CAPS`), budgeted 32 blocks | `--features variant-l` |
+| `lypning-l` | the same crate with `cap-class`, `cap-collections`, `cap-pathlib` and `cap-re` (`engines.VARIANT_CAPS`), budgeted 32 blocks | `--features variant-l` |
 | `cpython` | the real thing, and the reference every verdict is graded against | the system `python3` (`engines.find_cpython`) |
 
 The chain is `engines.ENGINE_ORDER`, cheapest first. `lypning-mp` is the oracle
@@ -77,7 +77,17 @@ unpacking. The module surface is `modules.rs:MODULES`, one table per variant:
 | variant | modules |
 |---|---|
 | `lypning` | `sys`, `os`, `os.path`, `posixpath`, `io`, `json`, `random` (the seeded-integer subset, MT19937 bit for bit — `random.rs`) |
-| `lypning-l` | the same, plus `collections` (`Counter`, `defaultdict` — `collections.rs`) and `pathlib` (`Path` — `pathlib.rs`) |
+| `lypning-l` | the same, plus `collections` (`Counter`, `defaultdict` — `collections.rs`), `pathlib` (`Path` — `pathlib.rs`) and the `re` SURFACE (`re.rs`) |
+
+One capability is not a module: `cap-class` (`classes.rs`) is the LANGUAGE
+feature — a class with no base or `object`, `__init__`, plain methods, instance
+and class attributes, and `__repr__`/`__str__`. Every other shape in the class
+grammar refuses BY NAME in `parse::class_def`, at parse time, where the walker
+sees it; the instance whose class defines no text method refuses wherever text
+is asked of it, because CPython's default repr prints a heap address. It is
+also the only `CAPS` row with a non-empty kinds column, and it needs one: a
+`class` blocker is reported by the core's parser before it has read an import,
+so nothing else could tell the core that the sibling runs the program.
 
 `re` is absent from every variant: `import re` routes to `cpython`, and
 `conformance --plan` ranks what that costs.
@@ -153,7 +163,7 @@ The fixture table — every refusal kind, both variants, the floor rule — is
 
 ```bash
 lypning route -c 'import collections; print(collections.Counter("aab"))'
-# → lypning-l	module: import collections      (`class A: pass` → cpython	class: class definition)
+# → lypning-l	module: import collections      (`class A: pass` → lypning-l	class: class definition)
 ```
 
 `lypning conformance` grades every route (`routing.py`): IDEAL; WASTED (the
@@ -276,8 +286,13 @@ runtime's FIRST probe; a later one's byte count is not a size.
 - **No `re`, `subprocess`, threading or networking.** A regex engine is a large
   amount of code with deep semantics, and a working `subprocess` fake would keep
   the expensive pattern alive; each is a `module` refusal `--plan` ranks.
-- **No classes, decorators, generators, or `async`.** Each is a parse-time
-  refusal (`parse.rs`) and a route to `cpython`; `lambda` is in the subset.
+- **No decorators, generators or `async`, and only a NARROW class.** Each of
+  the first three is a parse-time refusal (`parse.rs`) and a route to `cpython`;
+  `lambda` is in the subset. `cap-class` serves the class shape §3 names and
+  refuses the rest at parse time — inheritance, metaclasses, `__slots__`,
+  properties, `super()`, and every dunder it does not implement exactly, because
+  a dunder that silently falls back to CPython's default is a wrong answer and
+  the default `__repr__` prints an address.
 - **No daemon.** Interpreter init is a rounding error inside the process-spawn
   floor (`docs/RESEARCH.md` §5), so a fork server has nothing to save.
 
@@ -289,7 +304,7 @@ runtime's FIRST probe; a later one's byte count is not a size.
 | `src/lex.rs`, `src/parse.rs`, `src/ast.rs` | tokenizer; recursive-descent parser — every gap is `unsupported: <kind>`; the AST |
 | `src/eval.rs`, `src/value.rs`, `src/ops.rs`, `src/iter.rs`, `src/fmt.rs` | evaluator with real scopes; values (insertion-ordered dict, the set-order and NaN refusals); operators and Python's floor/mod rules; lazy iteration; `str`/`repr` and format specs |
 | `src/builtins.rs`, `src/methods.rs`, `src/modules.rs`, `src/json.rs`, `src/random.rs` | builtins and methods (the tables the router reads); `MODULES` per variant; JSON against CPython's exact output; MT19937 |
-| `src/collections.rs`, `src/pathlib.rs` | `cap-collections`, `cap-pathlib` — compiled into `lypning-l` only |
+| `src/collections.rs`, `src/pathlib.rs`, `src/re.rs`, `src/classes.rs` | `cap-collections`, `cap-pathlib`, `cap-re`, `cap-class` — compiled into `lypning-l` only |
 | `src/io.rs`, `src/alloc.rs`, `src/hash.rs`, `src/args.rs`, `src/err.rs` | the commit barrier; the size-class allocator; hashing; call arguments; the refusal line and `ENGINE` |
 | `src/route.rs`, `src/main.rs`, `src/embed.rs`, `src/capi.rs`, `src/host.rs`, `src/lib.rs` | the classifier; CLI, exit contract, dispatcher; the in-process runner and `fall_onward`; the C ABI (`capi` feature); host hooks |
 | `../scripts/build-rust.sh` | the standalone build, with the shape and contract smoke checks; `lypning build --rust` drives the same build |

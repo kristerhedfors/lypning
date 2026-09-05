@@ -231,6 +231,15 @@ pub enum Stmt {
     },
     Del(Vec<Target>),
     Global(Vec<std::rc::Rc<str>>),
+    /// `class C:` / `class C(object):` — the `cap-class` capability. The body
+    /// is already narrowed by `parse::class_def` to methods, plain attribute
+    /// assignments, `pass` and a docstring; everything else in the class
+    /// grammar refused at parse time and never reaches here.
+    #[cfg(feature = "cap-class")]
+    ClassDef {
+        name: std::rc::Rc<str>,
+        body: std::rc::Rc<Vec<Stmt>>,
+    },
 }
 
 #[derive(Debug, Clone)]

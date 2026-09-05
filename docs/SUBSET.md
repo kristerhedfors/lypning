@@ -31,9 +31,16 @@ Literals, operators with CPython's precedence, chained comparison, slicing
 with a step, calls with `*args`/`**kwargs`, assignment and star-unpacking,
 `if`/`for`/`while`, `def` with defaults and closures, `lambda`, imports,
 `with`, `try`/`except`/`finally`, `raise`, `assert`, comprehensions, generator
-expressions, f-strings with format specs (`parse.rs`). `class`, decorators,
-`yield` and `async` are parse-time refusals and a route to `cpython`; `match`
-is a SyntaxError on every variant, exit 1 (`docs/VERIFICATION.md` §C5).
+expressions, f-strings with format specs (`parse.rs`). Decorators, `yield` and
+`async` are parse-time refusals and a route to `cpython`; `match` is a
+SyntaxError on every variant, exit 1 (`docs/VERIFICATION.md` §C5). `class` is a
+parse-time refusal on the core and a NARROW capability on `lypning-l`
+(`cap-class`): no base or `object`, `__init__`, plain methods, instance and
+class attributes, `__repr__`/`__str__`. Inheritance, metaclasses, `__slots__`,
+properties, `super()` and every other dunder refuse by name in
+`parse::class_def` — a dunder that fell back to CPython's default would be a
+wrong answer, and the default `__repr__` prints a heap address
+(`docs/LYPNING.md` §3).
 
 ### 3.2 Builtins
 

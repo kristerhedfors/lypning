@@ -238,25 +238,26 @@ program both sides fail alike); `engines.Route.__str__` (a clean route is the
 engine name alone; a refusal-derived one `<engine>\t<kind>: <detail>`);
 `main.rs:route_cmd` (`--json`, `--spectrum`, `--next`); `engines.VARIANT_CAPS`
 (pinned to `route --spectrum`). The routing block is in §C3's EXPECTED. The
-fixture table is `tests/verification/route-fixtures.json` (21 rows: every
+fixture table is `tests/verification/route-fixtures.json` (23 rows: every
 refusal kind class, both variants, the kinds that rule out every Rust variant,
-the runtime-only refusals); two of its rows, `\t` for a tab:
+the runtime-only refusals); three of its rows, `\t` for a tab:
 
 | program | `lypning route -c` prints | note |
 |---|---|---|
-| `match 1:` / `    case 1: pass` | `cpython\tsyntax: line 1: invalid syntax: unexpected a literal` | `route.rs:ONLY_CPYTHON_KINDS`, like `class A: pass` → `cpython\tclass: class definition`; `lypning -c` on it exits 1, not 90 |
+| `match 1:` / `    case 1: pass` | `cpython\tsyntax: line 1: invalid syntax: unexpected a literal` | a syntax error is CPython's, whatever the tier; `lypning -c` on it exits 1, not 90 |
+| `class A: pass` | `lypning-l\tclass: class definition` | the core's parse-time blocker is a kind `cap-class` ANSWERS (`route.rs:CAPS`), so the sibling gets it; `import subprocess` before it still routes to `cpython`, through `route.rs:scan_imports` |
 | `print(getattr(print, "__name__"))` | `lypning` | a runtime `builtin: getattr` the static route cannot see — the case `lypning routes` exists for (§C11) |
 ```bash
 # CHECK — `c5-route.sh`.
 lypning route -c 'import collections; print(collections.Counter("aab"))' | cat -te
 lypning route -c 'print(getattr(print, "__name__"))'; lypning -c 'print(getattr(print, "__name__"))'; echo $?
 ~/.lypning/bin/lypning route --spectrum
-# EXPECTED — lypning route · 2026-09-04 · 437056c · 3688 loaded
+# EXPECTED — lypning route · 2026-09-05 · cap-class · 3688 loaded
 lypning-l^Imodule: import collections$
 lypning
 lypning: unsupported: builtin: getattr
 90
-{"self":"lypning","self_caps":[],"spectrum":[{"name":"lypning","caps":[]},{"name":"lypning-l","caps":["cap-collections","cap-pathlib"]}],"caps":[{"cap":"cap-collections","modules":["collections"],"kinds":[]},{"cap":"cap-pathlib","modules":["pathlib"],"kinds":[]}]}
+{"self":"lypning","self_caps":[],"spectrum":[{"name":"lypning","caps":[]},{"name":"lypning-l","caps":["cap-class","cap-collections","cap-pathlib","cap-re"]}],"caps":[{"cap":"cap-collections","modules":["collections"],"kinds":[]},{"cap":"cap-pathlib","modules":["pathlib"],"kinds":[]},{"cap":"cap-re","modules":["re"],"kinds":[]},{"cap":"cap-class","modules":[],"kinds":["class"]}]}
 # differs: the spectrum table whenever a variant gains a cap-*; in §C3's routing block, every count
 # must not: the fixture rows, `self` naming the binary that answered, `UNSAFE 0`
 ```

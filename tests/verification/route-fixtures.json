@@ -46,7 +46,18 @@
  },
  {
   "program": "class A: pass",
-  "route": "cpython\tclass: class definition"
+  "route": "lypning-l\tclass: class definition",
+  "note": "Since cap-class the core's parse-time `class` blocker is a kind the larger variant ANSWERS (`route::CAPS`), so it routes to the sibling instead of to CPython."
+ },
+ {
+  "program": "class A(Exception): pass",
+  "route": "lypning-l\tclass: class definition",
+  "note": "The core cannot see WHICH class shape it is — its parser stops at the keyword — so it hands the program to the sibling, which refuses it statically (the next row, run on lypning-l)."
+ },
+ {
+  "program": "import subprocess\nclass A: pass",
+  "route": "cpython\tclass: class definition",
+  "note": "`route::scan_imports` reads the imports off the SOURCE when a parse-time blocker stopped the walker, so an import no variant serves still decides the route — the half that keeps a corpus full of class programs from costing a spawn each."
  },
  {
   "program": "async def f(): pass",

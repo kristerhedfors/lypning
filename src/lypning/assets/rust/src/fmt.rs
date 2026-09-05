@@ -232,6 +232,37 @@ pub fn repr(v: &Value) -> R<String> {
                 format!("{kind}({})", str_repr(msg)?)
             }
         }
+        // `<class '__main__.C'>` — exactly reproducible, because a program run
+        // with `-c` has `__name__ == "__main__"` and a class this engine
+        // accepts is defined at module level, so its `__qualname__` is its
+        // bare name. (A class defined inside a function has
+        // `f.<locals>.C` there; `classes::define` refuses that one.)
+        #[cfg(feature = "cap-class")]
+        Value::Class(c) => format!("<class '__main__.{}'>", c.name),
+        // THE REFUSAL THIS CAPABILITY IS BUILT AROUND. `repr` of an instance
+        // whose class defines `__repr__` is answered — but only through
+        // `classes::text`, which needs the interpreter to call the method, and
+        // this is a free function. So everything that reaches an instance
+        // WITHOUT going through a call site that can dispatch — an instance
+        // inside a printed list, a `%s`, a `.format()` argument — arrives here,
+        // and the honest answer is exit 90. The alternative is CPython's
+        // `<__main__.C object at 0x104a2f350>`, whose address no
+        // reimplementation can produce and which CPython itself changes
+        // between two runs.
+        #[cfg(feature = "cap-class")]
+        Value::Obj(o) => {
+            return Err(crate::classes::refuse(&format!(
+                "the text of a {} where its __repr__ cannot be called (an instance inside a \
+                 container, a %-format or a .format() argument)",
+                o.class.name
+            )))
+        }
+        #[cfg(feature = "cap-class")]
+        Value::Meth(..) => {
+            return Err(crate::classes::refuse(
+                "repr() of a bound method, whose CPython repr contains a heap address",
+            ))
+        }
         other => {
             return Err(unsupported(
                 "repr",

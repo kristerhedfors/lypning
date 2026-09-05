@@ -381,6 +381,12 @@ pub fn call_builtin(
         return Err(type_err(format!("{name}() takes no keyword arguments")));
     }
     check_arity(name, args, &kw)?;
+    // `print(x)`, `str(x)`, `repr(x)`, `format(x)` — the four builtins that ask
+    // an object for its text. An instance is rendered HERE, where the
+    // interpreter is in hand to call `__str__`/`__repr__`, so `fmt` never sees
+    // one; every `fmt` path an instance reaches by another route refuses.
+    #[cfg(feature = "cap-class")]
+    crate::classes::render_args(it, name, args, &kw)?;
     // `raise ValueError("x")` / `except E as e` construct exception instances.
     if is_exception_name(name) {
         // `BaseException` takes no keywords, so `SystemExit(code=4)` is a
@@ -509,7 +515,16 @@ pub fn call_builtin(
             let v = arg1(name, &args)?;
             Value::Int(length(&v)? as i64)
         }
-        "repr" => Value::Str(fmt::repr_rc(&arg1(name, &args)?)?),
+        "repr" => {
+            let v = arg1(name, &args)?;
+            // An instance renders through its OWN `__repr__` and the string it
+            // returns is the answer — not a value to repr again.
+            #[cfg(feature = "cap-class")]
+            if let Some(s) = crate::classes::text(it, &v, true)? {
+                return Ok(s);
+            }
+            Value::Str(fmt::repr_rc(&v)?)
+        }
         "str" => match args.first() {
             None => Value::Str("".into()),
             Some(v) => {
@@ -1356,6 +1371,13 @@ pub fn call_builtin(
         }
         "type" => {
             let v = arg1(name, &args)?;
+            // `type(obj)` is the class object, whose repr is
+            // `<class '__main__.C'>` — reproducible exactly, unlike the repr
+            // of the instance itself.
+            #[cfg(feature = "cap-class")]
+            if let Value::Obj(o) = &v {
+                return Ok(Value::Class(o.class.clone()));
+            }
             Value::Builtin(match type_name(&v) {
                 "int" => "int",
                 "str" => "str",
@@ -1380,6 +1402,16 @@ pub fn call_builtin(
                 .get(1)
                 .cloned()
                 .ok_or_else(|| type_err("isinstance expected 2 arguments, got 1"))?;
+            // A user class on the right-hand side: identity against the class
+            // the instance was built from, which is the whole hierarchy this
+            // engine has (a base other than `object` refuses at parse time).
+            // Without this arm the table below raised
+            // `isinstance() arg 2 must be a type, not type` at exit 1 for a
+            // program CPython answers.
+            #[cfg(feature = "cap-class")]
+            if let Some(r) = crate::classes::isinstance(&v, &cls)? {
+                return Ok(Value::Bool(r));
+            }
             // `&'static str`, not `String`: these come out of `Value::Builtin`,
             // which already interns them, and building a `String` per class was
             // an allocation for a comparison.

@@ -245,6 +245,11 @@ impl Parser {
         if self.is_op("@") {
             return Err(unsupported("decorator", "decorated definition"));
         }
+        #[cfg(feature = "cap-class")]
+        if self.is_kw("class") {
+            return self.class_def();
+        }
+        #[cfg(not(feature = "cap-class"))]
         if self.is_kw("class") {
             return Err(unsupported("class", "class definition"));
         }
@@ -1183,6 +1188,121 @@ impl Parser {
     /// both callees are threaded with `?`: a hand-balanced counter would leak a
     /// level on every syntax error, and a long-lived host would watch its own
     /// nesting limit tighten with each bad program it was handed.
+    /// `class C:` and `class C(object):`, and a refusal BY NAME for every
+    /// other shape the grammar allows.
+    ///
+    /// Every refusal here is a PARSE-time one, which is the point: a walker
+    /// reads it without running the program, so `lypning route` sends
+    /// `class E(Exception)` straight to CPython instead of spawning this binary
+    /// to be told no. The header is read as tokens rather than as an
+    /// expression because the only two headers this engine accepts are the
+    /// empty one and the single name `object` — anything an expression parser
+    /// would have built is refused a line later anyway.
+    #[cfg(feature = "cap-class")]
+    fn class_def(&mut self) -> R<Stmt> {
+        self.bump();
+        let name = self.ident()?;
+        let mut bases: Vec<String> = Vec::new();
+        let mut computed = false;
+        if self.eat_op("(") {
+            let mut depth = 1usize;
+            loop {
+                if self.at_eof() {
+                    return Err(LypningError::syntax(self.line(), "unterminated class header"));
+                }
+                match self.peek().clone() {
+                    Tok::Op("(") | Tok::Op("[") | Tok::Op("{") => {
+                        depth += 1;
+                        self.bump();
+                    }
+                    Tok::Op(")") | Tok::Op("]") | Tok::Op("}") => {
+                        depth -= 1;
+                        self.bump();
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    Tok::Name(n) if depth == 1 => {
+                        bases.push(n);
+                        self.bump();
+                    }
+                    Tok::Op(",") if depth == 1 => {
+                        self.bump();
+                    }
+                    _ => {
+                        computed = true;
+                        self.bump();
+                    }
+                }
+            }
+        }
+        if computed {
+            // `class C(A.B)`, `class C(metaclass=M)`, `class C(*bases)`.
+            return Err(unsupported(
+                "class",
+                &format!("class {name} with a metaclass or a computed base"),
+            ));
+        }
+        if bases.len() > 1 {
+            return Err(unsupported("class", &format!("class {name} with multiple bases")));
+        }
+        if let Some(b) = bases.first().filter(|b| b.as_str() != "object") {
+            // `Exception` is here too, deliberately: an exception class is a
+            // hierarchy, a traceback and a message text, all of them CPython's.
+            return Err(unsupported(
+                "class",
+                &format!("class {name}({b}) — a base other than `object`"),
+            ));
+        }
+        let body = self.block()?;
+        for st in &body {
+            match st {
+                Stmt::Pass => {}
+                // The docstring, which is an expression statement and nothing
+                // else. Any other bare expression in a class body is a call
+                // with a side effect and is refused with the rest.
+                Stmt::Expr(Expr::Str(_)) => {}
+                Stmt::Def { name: m, params, .. } => {
+                    if params.names.is_empty() {
+                        return Err(unsupported(
+                            "class",
+                            &format!("{name}.{m}() takes no `self` (a staticmethod)"),
+                        ));
+                    }
+                    // EVERY dunder this engine does not implement EXACTLY is
+                    // refused, because the fallback is not "no behaviour" — it
+                    // is CPython's default, which for `__repr__` prints an
+                    // address and for `__eq__` and `__hash__` is object
+                    // identity. Silently using the default where the program
+                    // wrote its own is a wrong answer at exit 0.
+                    if is_dunder(m) && !matches!(&**m, "__init__" | "__repr__" | "__str__") {
+                        return Err(unsupported(
+                            "class",
+                            &format!("the dunder method {name}.{m}()"),
+                        ));
+                    }
+                }
+                Stmt::Assign { targets, .. } if targets.len() == 1 => match &targets[0] {
+                    // `__slots__` lands here, with every other dunder
+                    // attribute: none of them is a plain class attribute.
+                    Target::Name(n) if is_dunder(n) => {
+                        return Err(unsupported(
+                            "class",
+                            &format!("the dunder attribute {name}.{n}"),
+                        ))
+                    }
+                    Target::Name(_) => {}
+                    _ => return Err(class_body_refusal(&name)),
+                },
+                _ => return Err(class_body_refusal(&name)),
+            }
+        }
+        Ok(Stmt::ClassDef {
+            name,
+            body: Rc::new(body),
+        })
+    }
+
     fn nested<T>(&mut self, what: &str, f: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
         self.depth += 1;
         if self.depth > MAX_PARSE_DEPTH {
@@ -1619,4 +1739,21 @@ fn contains_yield(body: &[Stmt]) -> bool {
     // one; the check stays as a guard for future parser changes.
     let _ = body;
     false
+}
+
+/// `__x__`, the name shape whose meaning is the language's rather than the
+/// program's.
+#[cfg(feature = "cap-class")]
+fn is_dunder(n: &str) -> bool {
+    n.len() > 4 && n.starts_with("__") && n.ends_with("__")
+}
+
+/// One detail for everything a class body may not hold — a nested class, an
+/// `if`, a `for`, a tuple or attribute assignment target, a bare call.
+#[cfg(feature = "cap-class")]
+fn class_body_refusal(name: &str) -> LypningError {
+    unsupported(
+        "class",
+        &format!("a statement in class {name}'s body that is not a method, a plain attribute, `pass` or a docstring"),
+    )
 }
