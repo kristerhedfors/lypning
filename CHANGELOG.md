@@ -14,6 +14,27 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-05** — Docs refactor, part 2: every engineer- and QA-facing document condensed to its budget · [#46]
+
+- The fifteen documents an engineer or QA reader is sent to went from 6,696 to
+  3,053 lines (`wc -l` on 2026-09-05, this tree against `fc2c8e5`), plus the
+  746-line `docs/VERIFICATION.md` spine. Each states what the code does in the
+  present tense, cites its home as `file:symbol`, and points at the
+  VERIFICATION contract that checks it. History moved to the three ledgers.
+- Every EXPECTED block in VERIFICATION.md is a fixture under
+  `tests/verification/expected/` with its run-of-record header, held by
+  `tests/test_verification.py`; the check scripts live beside them.
+- Engine strings only: `lypning`, `lypning-l`, `cpython`, and `lypning-mp` as
+  the oracle at every first mention. The test that forbids placing an engine by
+  tier number passes for every document. The skill's MICROPYTHON.md is deleted;
+  SKILL.md carries a six-line oracle note.
+- Six adversarial verifiers raised 41 holes — ten false claims, seven broken
+  section anchors in code comments, three lost verbatim passages, seven missing
+  QA items — all closed; a seventh verifier confirmed it and found one more,
+  fixed by hand.
+- Both binaries byte-identical (818,080 B and 867,744 B). Conformance,
+  dispatcher agreement, doctor, site build and the Python suite unchanged.
+
 **2026-09-05** — Reading the harness's own live state is run-specific
 
 - `conformance.is_run_specific` now flags a program that reads under
@@ -1816,6 +1837,7 @@ runtime exists — the number came first, and both were built for it. It is
 [#42]: https://github.com/kristerhedfors/lypning/pull/42
 [#43]: https://github.com/kristerhedfors/lypning/pull/43
 [#45]: https://github.com/kristerhedfors/lypning/pull/45
+[#46]: https://github.com/kristerhedfors/lypning/pull/46
 [#1]: https://github.com/kristerhedfors/lypning/pull/1
 [#2]: https://github.com/kristerhedfors/lypning/pull/2
 [#3]: https://github.com/kristerhedfors/lypning/pull/3
