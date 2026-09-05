@@ -17,8 +17,9 @@ Claude-settings-specific, and the invariant-7 guarantees around a merge have to
 be re-derived, never assumed.
 
 The names here are a different namespace from the engine strings (invariant 9):
-an engine is ``"lypning"``, ``"lypning-mp"`` or ``"cpython"`` and says what ran
-a program; a harness name says who asked.
+an engine is a member of :data:`lypning.engines.ENGINE_ORDER` — a Rust spectrum
+variant or ``"cpython"`` — and says what ran a program; a harness name says who
+asked.
 """
 
 from __future__ import annotations

@@ -330,7 +330,7 @@ def cmd_build(ns: argparse.Namespace) -> int:
     ok = all(_built(r) for r in results)
     if ns.verify:
         # Verified even when a build failed, and the exit code is the AND of the
-        # two: the tiers are independent, so a broken MicroPython build must not
+        # two: the artefacts are independent, so a broken oracle build must not
         # cost the Rust core its battery — and must not let it report ok either.
         ok = _render_verify(build.verify(results)) and ok
     return 0 if ok else 1
@@ -754,8 +754,8 @@ def cmd_pool(ns: argparse.Namespace) -> int:
 
 #: NOTE is the fourth level and it is neither good news nor bad: an optional
 #: part that is absent. A WARN there would train a reader to ignore WARNs, and
-#: the parts that are optional here — the MicroPython tier, the C ABI — are
-#: absent on most machines by design, not by neglect.
+#: the parts that are optional here — the oracle, the C ABI — are absent on
+#: most machines by design, not by neglect.
 OK, WARN, FAIL, NOTE = "OK", "WARN", "FAIL", "NOTE"
 
 
@@ -1013,8 +1013,8 @@ def _doctor_checks() -> List[Tuple[str, str, str]]:
                                                 else " (not created yet)")))
 
         # The harnesses. An unwired one is a status line, never an error — the
-        # same rule the absent MicroPython tier has, and for the same reason:
-        # nobody has to use all three.
+        # same rule the absent oracle has, and for the same reason: nobody has
+        # to use all three.
         harnesses = st.get("harnesses") or {}
         for name in sorted(harnesses):
             info = harnesses[name] or {}
@@ -1756,20 +1756,21 @@ def build_parser() -> argparse.ArgumentParser:
         description="""
 lypning — the Coding Harness Interpreter Optimizer.
 
-A mixture of Pythons: three interpreters, cheapest first, and a classifier
-that picks one per program — a Python subset in Rust, a MicroPython variant
-with a frozen shim stdlib, and the real CPython for everything the first two
-refuse.
+A mixture of Pythons, cheapest first, and a classifier that picks one engine
+per program. The chain is %(chain)s: the Rust spectrum,
+every variant built from the one crate and each a Python subset that refuses
+what it cannot run exactly, then the real CPython for everything the spectrum
+refuses. %(oracles)s is the oracle — measured, never routed to.
 
 Used as an interpreter it IS one — `lypning -c PROG`, `lypning FILE` and
 `lypning -` exec straight into the Rust core, so anything that calls python3
 can call this instead. The subcommands below are the tooling around that.
-""",
+""" % {"chain": " -> ".join(engines.ENGINE_ORDER), "oracles": ", ".join(engines.ORACLES)},
         epilog="""
 examples:
   lypning -c 'print(2**8)'            run it, as python would
   lypning run -c 'import re; ...'     route it, then fall through on a refusal
-  lypning route -c 'import os'        say which tier would take it, and why
+  lypning route -c 'import os'        say which engine would take it, and why
   lypning status                      what is built, wired and captured
   lypning doctor                      the same, but opinionated
 
@@ -1783,12 +1784,12 @@ tracebacks.
 
     # run
     s = _sub(subs, "run", "route a program, then dispatch through the chain", """
-Route the program, run it on the tier the router picked, and fall through to
-the next tier on exit 90 — and only on exit 90. Any other non-zero exit is the
-program's own and is returned unchanged, because a dispatcher that retried on
-exit 1 would run a half-completed program twice.
+Route the program, run it on the engine the router picked, and fall through
+to the next rung of the chain on exit 90 — and only on exit 90. Any other
+non-zero exit is the program's own and is returned unchanged, because a
+dispatcher that retried on exit 1 would run a half-completed program twice.
 
-Output is buffered, not streamed: this command collects each tier's stdout and
+Output is buffered, not streamed: this command collects each rung's stdout and
 stderr so it can tell a refusal from a result. If you want an interpreter's
 native stdio, do not use `run` — `lypning -c PROG` execs and leaves nothing of
 us in the process.
@@ -1803,25 +1804,28 @@ examples:
     s.add_argument("--stdin", action="store_true",
                    help="read stdin and hand it to the program (off by default: this "
                         "command would otherwise block waiting for a pipe nobody wrote to)")
-    s.add_argument("--timeout", type=float, default=30.0, metavar="S", help="per-tier timeout (default 30)")
+    s.add_argument("--timeout", type=float, default=30.0, metavar="S", help="per-engine timeout (default 30)")
     s.add_argument("-v", "--verbose", action="store_true", help="print the route and the chain to stderr")
     s.add_argument("argv", nargs=argparse.REMAINDER, metavar="FILE|- [args...]")
     s.set_defaults(func=cmd_run)
 
     # route
-    s = _sub(subs, "route", "print the tier a program would run on, and why", """
-Prints `<engine>\\t<kind>: <detail>` — the tier, and the exact construct that
-stopped the cheaper one. This is the Rust core's own parser answering, not a
+    s = _sub(subs, "route", "print the engine a program would run on, and why", """
+Prints `<engine>\\t<kind>: <detail>` — the engine, and the exact construct that
+stopped the cheaper ones; a program the routing binary itself can run prints
+the engine name alone. This is the Rust core's own parser answering, not a
 heuristic over the text: it costs one parse and no execution, and it names the
-feature rather than guessing at it.
+feature rather than guessing at it. The one parse grades every variant of the
+spectrum, so a module only a larger sibling serves routes to that sibling.
 
 With no core built, everything routes to cpython and says so.
 """, """
 examples:
-  lypning route -c 'print(1)'        -> lypning
-  lypning route -c 'import re'       -> lypning-mp  module: import re
+  lypning route -c 'print(1)'           -> %(core)s
+  lypning route -c 'import collections' -> %(top)s  module: import collections
+  lypning route -c 'import re'          -> %(cpy)s    module: import re
   lypning route script.py
-""")
+""" % {"core": engines.SPECTRUM[0], "top": engines.SPECTRUM[-1], "cpy": engines.CPYTHON})
     s.add_argument("-c", dest="command", metavar="PROG", help="program passed as a string")
     s.add_argument("--json", action="store_true", help="machine-readable")
     s.add_argument("argv", nargs=argparse.REMAINDER, metavar="FILE|-")
@@ -1829,7 +1833,7 @@ examples:
 
     # build
     s = _sub(subs, "build", "build the engines and install them into ~/.lypning/bin", """
-Builds what you ask for and never stops on a failure: the tiers are
+Builds what you ask for and never stops on a failure: the artefacts are
 independent, so a missing 32-bit toolchain says nothing about the Rust core and
 must not cost you its result.
 
@@ -1840,12 +1844,14 @@ tree with its reason printed. `--lib` is held to the same contract through the
 ABI instead of through a process: the refusal must arrive as a status, with an
 empty stdout, the same one line, and a request to be routed onward.
 
-The MicroPython tier downloads a musl toolchain and needs a network and
-gcc-multilib. Without them this reports precisely which one is missing and
-moves on.
-""", """
+With no flag this builds the Rust spectrum (%(spectrum)s) — what the
+chain needs. The oracle, %(oracles)s, is measured and never routed to, so it
+is built only when named: `--micropython` downloads a musl toolchain and needs a
+network and gcc-multilib, and without them it reports precisely which one is
+missing and moves on.
+""" % {"spectrum": ", ".join(engines.SPECTRUM), "oracles": ", ".join(engines.ORACLES)}, """
 examples:
-  lypning build                       both tiers
+  lypning build                       the Rust spectrum
   lypning build --lib                 the embeddable C ABI, for a harness
   lypning build --rust --target host  the dynamically linked glibc control
   lypning build --micropython --jobs 4
@@ -1857,9 +1863,12 @@ examples:
     s.add_argument("--variant", default="all", metavar="V",
                    choices=("all",) + tuple(engines.SPECTRUM),
                    help="which point on the Rust spectrum to build (default: every one)")
-    s.add_argument("--micropython", action="store_true", help="build the MicroPython tier")
+    s.add_argument("--micropython", action="store_true",
+                   help="build the oracle, %s — measured, never routed to; needs a "
+                        "32-bit toolchain and a network" % ", ".join(engines.ORACLES))
     s.add_argument("--all", action="store_true",
-                   help="both tiers and the library (the default when none is named is both tiers)")
+                   help="the Rust spectrum and the library (with no flag at all: the "
+                        "spectrum). Never the oracle — name it with --micropython")
     s.add_argument("--lib", action="store_true",
                    help="build the embeddable C ABI (the shared library, liblypning.a and "
                         "the headers) into ~/.lypning/lib and ~/.lypning/include — for every "
@@ -1872,8 +1881,8 @@ examples:
                         "against")
     s.add_argument("--verify", action="store_true",
                    help="after building, gate what was built and run the whole conformance "
-                        "battery with the new binaries pinned — the battery covers every tier "
-                        "that is built, so it can fail on a tier this line did not touch")
+                        "battery with the new binaries pinned — the battery covers every engine "
+                        "that is built, so it can fail on one this line did not touch")
     s.add_argument("--target", default="musl", metavar="T",
                    help="musl, host, x86_64, i686, or a full triple (default: musl — "
                         "static; `host` is the dynamically linked control)")
@@ -2102,9 +2111,11 @@ so a non-zero exit here would refuse the user's command.
 
     # conformance
     s = _sub(subs, "conformance", "run the corpus against CPython and grade the answers", """
-Every harvested program on every built tier, graded against the real CPython:
+Every harvested program on every built engine of the Rust spectrum and on the
+mixture — the chain walked end to end — graded against the real CPython:
 MATCH, UNSUPPORTED (a clean exit-90 refusal — not a failure), or MISMATCH. Any
-MISMATCH exits 1.
+MISMATCH exits 1. The oracle, the library and the Rust dispatcher's chain are
+arms you ask for by name (--engine).
 
 Programs whose output cannot be equal on two interpreters — timestamps, pids,
 memory addresses, set ordering — are skipped by rule and listed, not quietly
@@ -2113,15 +2124,13 @@ collateral damage afterwards; the corpus is harvested from real sessions and is
 full of programs that rewrite src/.
 
 --plan turns the refusals into a build order, ranked by what a feature COSTS
-rather than by how many programs it blocks. A tier-1 refusal the classifier
-sends to lypning-mp is answered at that tier's spawn; one that reaches CPython
-costs roughly thirty times as much, so the `->cpy` column is the ranking key and
-`blocks` is shown beside it. The two disagree sharply: measured 2026-08-31,
-`import re` blocks 185 programs and only 12 of them reach CPython, and
-`import pathlib` blocks 83 and costs nothing at all, because lypning-mp answers
-every one. Ranking by block count sent two iterations of the improvement loop at
-rows worth ~0.07 s and 0.00 s. With the mixture arm absent there is no
-destination to rank by, and the counts are shown alone.
+rather than by how many programs it blocks. A refusal the classifier sends to
+a larger sibling on the spectrum is answered at that sibling's spawn; one that
+reaches CPython costs a CPython spawn, so the `->cpy` column is the ranking key
+and `blocks` is shown beside it. The two disagree, and CHANGELOG.md carries the
+dated runs where ranking by block count aimed the improvement loop at rows that
+cost nothing. With the mixture arm absent there is no destination to rank by,
+and the counts are shown alone.
 
 The same run grades ROUTING SAFETY, which is a different question: not whether
 an engine agreed with CPython, but whether the classifier SENT each program to
@@ -2131,21 +2140,26 @@ milliseconds, and neither gates anything.
 """, """
 examples:
   lypning conformance --limit 50
-  lypning conformance --engine lypning --plan
-  lypning conformance --engine library          the embedded tier, against CPython
+  lypning conformance --engine %(core)s --plan
+  lypning conformance --engine %(top)s --plan
+  lypning conformance --mixture both            both dispatchers, one answer
+  lypning conformance --engine library          the C ABI, in this process
   lypning conformance --json > conformance.json
-""")
+""" % {"core": engines.SPECTRUM[0], "top": engines.SPECTRUM[-1]})
     s.add_argument("--mixture", choices=("python", "rust", "both"), default="python",
                    help="which dispatcher the mixture arm walks: the Python one (default), "
                         "the Rust one (`lypning run`, what the shim execs), or both — "
                         "in which case the report holds them to each other and a "
                         "disagreement fails the run")
     s.add_argument("--engine", action="append", metavar="E",
-                   help="arm to measure: lypning, lypning-mp, mixture, mixture-rust, library "
-                        "(repeatable). `library` is the same lypning reached through "
-                        "the C ABI in this process — it shares the interpreter with the "
-                        "`lypning` arm but not the exit path, so the two disagreeing is "
-                        "the thing it is there to catch")
+                   help="arm to measure (repeatable). Default: %s and mixture. Opt-in: "
+                        "%s (the oracle), library, mixture-rust. `library` is %s reached "
+                        "through the C ABI in this process — it shares the interpreter "
+                        "with that arm but not the exit path, so the two disagreeing is "
+                        "the thing it is there to catch; `mixture-rust` is the chain "
+                        "walked by the Rust dispatcher (`lypning run`, what the shim "
+                        "execs)" % (", ".join(engines.SPECTRUM), ", ".join(engines.ORACLES),
+                                    engines.SPECTRUM[-1]))
     s.add_argument("--plan", action="store_true",
                    help="print the build order implied by the refusals INSTEAD of the table")
     s.add_argument("--limit", type=int, metavar="N", help="only the first N corpus programs")
@@ -2173,18 +2187,20 @@ failures cannot be replayed is a random number generator.
 examples:
   lypning fuzz --iterations 2000
   lypning fuzz --seed 1 --iterations 600
-  lypning fuzz --engine lypning-mp --json
-""")
+  lypning fuzz --engine %s --json
+""" % engines.SPECTRUM[-1])
     s.add_argument("--iterations", type=int, default=500, metavar="N",
                    help="programs to generate (default 500)")
     s.add_argument("--seed", type=int, metavar="S",
                    help="fix the run; the default is random and is printed")
-    # The tiers only. CPython is the oracle every arm is diffed against, so
-    # offering it as an arm offers a run that compares it with itself, agrees on
-    # every program, and prints a clean bill of health having tested nothing.
+    # The Rust spectrum only. CPython is the reference every arm is diffed
+    # against, so offering it as an arm offers a run that compares it with
+    # itself, agrees on every program, and prints a clean bill of health having
+    # tested nothing.
     s.add_argument("--engine", default=engines.LYPNING, metavar="E",
                    choices=[e for e in engines.ENGINE_ORDER if e != engines.CPYTHON],
-                   help="tier under test (default lypning)")
+                   help="engine under test: %s (default %s)"
+                        % (", ".join(engines.SPECTRUM), engines.LYPNING))
     s.add_argument("--timeout", type=float, default=30.0, metavar="S",
                    help="per-program timeout (default 30)")
     s.add_argument("--json", action="store_true", help="machine-readable")
@@ -2213,8 +2229,9 @@ examples:
     s.add_argument("--startup", action="store_true", help="startup only")
     s.add_argument("--corpus", action="store_true", help="corpus only")
     s.add_argument("--micropython", action="store_true",
-                   help="a different comparison: lypning-mp against the benchmark control "
-                        "(`lypning build --stock`), which is what says what OUR variant costs")
+                   help="a different comparison: the oracle %s (measured, never routed to) "
+                        "against the benchmark control (`lypning build --stock`), which is "
+                        "what says what OUR variant costs" % ", ".join(engines.ORACLES))
     s.add_argument("--record", metavar="FILE",
                    help="with --micropython, insert the run as an entry at the marker in "
                         "docs/BENCH-LEDGER.md (newest first)")
@@ -2223,7 +2240,9 @@ examples:
     s.add_argument("--repeat", type=int, default=1, metavar="N", help="corpus passes, best per entry (default 1)")
     s.add_argument("--startup-repeat", type=int, default=5, metavar="N", help="startup samples (default 5)")
     s.add_argument("--limit", type=int, metavar="N", help="only the first N corpus programs")
-    s.add_argument("--arm", action="append", metavar="A", help="cpython, lypning, lypning-mp, mixture (repeatable)")
+    s.add_argument("--arm", action="append", metavar="A",
+                   help="%s, mixture (repeatable; default all of them)"
+                        % ", ".join((engines.CPYTHON,) + engines.SPECTRUM))
     s.add_argument("--timeout", type=float, default=30.0, metavar="S", help="per-program timeout (default 30)")
     s.add_argument("--json", action="store_true", help="machine-readable")
     s.set_defaults(func=cmd_bench)
@@ -2252,12 +2271,13 @@ is stated rather than assumed. The corpus size loaded is printed every time.
 """, """
 examples:
   lypning corpus-time --record before.json
-  lypning corpus-time --engine lypning-mp --repeat 5
+  lypning corpus-time --engine lypning-l --repeat 5
   lypning corpus-time --engine target/release/lypning --baseline before.json
 """)
     s.add_argument("--engine", default=engines.LYPNING, metavar="NAME|PATH",
-                   help="cpython, lypning, lypning-mp, mixture — or a path to a binary that is "
-                        "not installed yet (default: lypning)")
+                   help="%s, mixture — or a path to a binary that is not installed "
+                        "(default: %s)" % (", ".join((engines.CPYTHON,) + engines.SPECTRUM),
+                                           engines.LYPNING))
     s.add_argument("--repeat", type=int, default=3, metavar="N",
                    help="passes, best per entry (default 3)")
     s.add_argument("--limit", type=int, metavar="N", help="only the first N corpus programs")
@@ -2299,8 +2319,9 @@ examples:
   lypning perf --baseline before.json
 """)
     s.add_argument("--arm", action="append", metavar="A",
-                   help="cpython, lypning, lypning-mp, mixture (repeatable; "
-                        "default cpython and lypning)")
+                   help="%s, mixture (repeatable; default %s and %s)"
+                        % (", ".join((engines.CPYTHON,) + engines.SPECTRUM),
+                           engines.CPYTHON, engines.LYPNING))
     s.add_argument("--repeat", type=int, default=5, metavar="N",
                    help="samples per case, best of (default 5)")
     s.add_argument("--only", action="append", metavar="CASE",
@@ -2317,12 +2338,13 @@ examples:
     s.add_argument("--json", action="store_true", help="machine-readable")
     s.set_defaults(func=cmd_perf)
 
-    # gate
+    # oracle
     s = _sub(subs, "oracle", "what a second reimplementation of Python got wrong", """
-lypning-mp was tier 2 until 2026-09-04. It is not a routing destination any more
-— nothing falls through to it — but it is kept and still measured, because it is
-a second, independent, from-scratch implementation of Python that has been run
-against real CPython over the whole corpus with every disagreement written down.
+%(oracles)s is the oracle — measured, never routed to. It left the chain on
+2026-09-04 (CHANGELOG.md): nothing falls through to it, but it is kept and
+measured, because it is a second, independent, from-scratch implementation of
+Python that has been run against real CPython over the whole corpus with every
+disagreement written down.
 
 That is the question a larger Rust variant needs answered before it implements
 anything: the constructs a reimplementation gets wrong are not evenly spread,
@@ -2339,7 +2361,7 @@ examples:
   lypning oracle
   lypning oracle --full
   lypning oracle --json
-""")
+""" % {"oracles": ", ".join(engines.ORACLES)})
     s.add_argument("--full", action="store_true", help="do not truncate the explanations")
     s.add_argument("--json", action="store_true", help="machine-readable")
     s.set_defaults(func=cmd_oracle)
@@ -2354,18 +2376,19 @@ A check that could NOT be taken — no strace, no readelf — is reported as
 unmeasured rather than as a pass. Zero shared objects from a toolchain that
 cannot read them is an artefact, not a result.
 
-With no BIN named it gates the Rust core — the tier every program starts on.
-Each spectrum variant answers to its own budget in device blocks; lypning-mp is
-an oracle rather than a tier and is gated against its own byte budget only when
-named. --compare adds the same measurements taken against the real CPython on
-this machine.
-""", """
+With no BIN named it gates the Rust core — the rung every program starts on.
+Each spectrum variant answers to its own budget in device blocks; the oracle,
+%(oracles)s, is measured and never routed to, and is gated against its own byte
+budget only when named. --compare adds the same measurements taken against the
+real CPython on this machine.
+""" % {"oracles": ", ".join(engines.ORACLES)}, """
 examples:
   lypning gate
   lypning gate --compare
   lypning gate ./target/release/lypning --json
 """)
-    s.add_argument("binary", nargs="?", metavar="BIN", help="binary to measure (default: the Rust core; lypning-mp only when named)")
+    s.add_argument("binary", nargs="?", metavar="BIN",
+                   help="binary to measure (default: the Rust core; the oracle only when named)")
     s.add_argument("--compare", action="store_true", help="measure the real CPython alongside it")
     s.add_argument("--json", action="store_true", help="machine-readable")
     s.set_defaults(func=cmd_gate)

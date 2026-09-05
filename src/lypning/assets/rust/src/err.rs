@@ -1,12 +1,12 @@
 //! Errors, and the unsupported-feature contract that makes routing safe.
 //!
-//! lypning inherits lypning-mp's contract verbatim (`docs/SUBSET.md`):
+//! Every engine keeps the one refusal contract (`docs/SUBSET.md` §7):
 //!
 //!   exit 90, one line on **stderr**: `<engine>: unsupported: <kind>: <detail>`
 //!
 //! `<engine>` is THIS binary's own name — a point on the Rust spectrum, named at
 //! compile time by `build.rs` ([`ENGINE`]) — because the dispatcher reads the
-//! head of the line to know which tier refused, and a variant that wrote a
+//! head of the line to know which engine refused, and a variant that wrote a
 //! sibling's name would misroute silently.
 //!
 //! 90 is clear of 0/1/2 (python's own), 126/127 (shell) and 128+n (signals), so

@@ -696,3 +696,153 @@ mismatches, 0.325x of CPython.
 Conformance on the same tree: lypning 500 MATCH / 263 UNSUPPORTED / 0 MISMATCH
 (65.5% coverage), lypning-mp 714 / 47 / **2** (93.6%), mixture 763 / 0 / 0
 (100%). The two MISMATCHes are the commit-barrier defect — `docs/LYPNING.md` §6.
+
+---
+
+## 2026-09-04 — moved from README.md: the 2026-08-25 four-arm table, the 2026-08-16 upstream shared-subset table, and the narrative of which arm led when
+
+**Measured on the pre-oracle chain (lypning → lypning-mp → cpython); not
+reproducible from this tree.** The two sections below stood in README.md
+(*Measured performance* and *1. Measurement*) until 2026-09-04, when README was
+condensed and its measured history moved here so that nothing measured was
+deleted. They are copied verbatim, with their original dates. `lypning-mp` has
+been the oracle — measured, never routed to — since 2026-09-04 (CHANGELOG.md
+#38), and no run has been taken on lypning → lypning-l → cpython. Section
+references inside the copied text (§1, §5) are README's of that date.
+
+### Measured performance (README.md, as of 2026-09-04)
+
+`lypning bench --startup-repeat 15 --repeat 3`, run on **2026-08-25** on this
+container — 4 CPUs, Linux 6.18.44-fc-v21, all three engines built — against a
+corpus capture that had grown to **1551 programs, 1305 of them measurable**:
+
+| | `cpython` | `lypning` | `lypning-mp` | **mixture** |
+|---|---:|---:|---:|---:|
+| startup, `-c 'pass'`, min of 15 | 11.57 ms | 0.66 ms | 0.61 ms | **0.60 ms** |
+| the 904 programs every arm ran | 13093.8 ms | 1164.3 ms | 1336.8 ms | **1718.1 ms** |
+| …as a ratio | 1.000x | 0.089x | 0.102x | **0.131x** |
+| all 1305, refusals included | 23865.0 ms | 1638.0 ms | 2335.8 ms | **7206.6 ms** |
+| …of which it answered | 1305 | 906 | 1236 | **1305** |
+| binary | 6,639,992 B | 987,336 B | 296,100 B | — |
+
+**The mixture answers all 1305 programs for 0.302x of CPython's cost** — 16.7
+seconds saved across one session's worth of one-liners, with nothing left
+unanswered (that run: 2026-08-25, 1305-program corpus; the corpus has since
+grown, and the 2026-08-31 sweeps in `docs/PAPER.md` put the chain at 1.50–1.77×
+distinct-weighted and 2.35× invocation-weighted over a 2,906-entry corpus). The
+two subset arms are cheaper than the mixture only because they refuse work, and
+a refusal still costs its spawn. The paper also reports the baseline that beats
+us — a pre-warmed CPython fork pool at 2.04×, correct by construction — and what
+that pool costs; read its §5.4 before quoting any single ratio from this table.
+
+Correctness on the same tree, from `lypning conformance`: `lypning` 906 MATCH ·
+399 UNSUPPORTED · **0 MISMATCH**; `lypning-mp` 1229 · 65 · **11**; the mixture
+**1305 / 1305** with **1**. Every one of those twelve is lypning-mp's, four are
+the known contract defect, and six arrived when the corpus grew probes that look
+for exactly this class — tracked rather than waived, §5 and `docs/LYPNING.md`
+§2.
+
+Numbers from one run on one machine. The reason every tool prints the corpus
+size it loaded is that yours will differ, so re-run rather than cite: §1 is this
+table in full, with its caveats and with the upstream result this tree did *not*
+reproduce.
+
+### 1. Measurement (README.md, as of 2026-09-04)
+
+Everything else is downstream of one table, and the table is re-measured rather
+than remembered. This is the run quoted above, in full — `lypning bench
+--startup-repeat 15 --repeat 3` on **2026-08-25**, 4 CPUs, Linux 6.18.44-fc-v21,
+**1551 programs loaded, 1305 measured**, 246 skipped for naming an absolute path
+the per-entry temp cwd does not contain:
+
+```
+startup — `-c 'pass'`, min of 15, arms interleaved
+
+arm             min ms   vs cpython
+cpython          11.57   1.000x
+lypning           0.66   0.057x
+lypning-mp        0.61   0.053x
+mixture           0.60   0.052x
+
+shared subset — the 904 programs every arm executed, min of 3
+
+arm          ran  refused   shared total    median   vs cpython
+cpython     1305        0      13093.8 ms    12.83    1.000x
+lypning      906      399       1164.3 ms     0.91    0.089x
+lypning-mp  1236       69       1336.8 ms     0.90    0.102x
+mixture     1305        0       1718.1 ms     0.92    0.131x
+
+whole corpus — what a session of 1305 one-liners costs
+
+cpython     23865.0 ms   1.000x
+lypning      1638.0 ms   0.069x   (399 unanswered)
+lypning-mp   2335.8 ms   0.098x   (69 unanswered)
+mixture      7206.6 ms   0.302x   (0 unanswered — saves 16658.4 ms, 69.8%)
+```
+
+Read it in this order:
+
+- **The mixture answers everything CPython answers** — 1305 of 1305 — for
+  0.302x of CPython's cost. That is the claim the project exists to make, and it
+  is the one that has held on every machine it has been run on. Its own arm now
+  carries one mismatch, and that is lypning-mp leaking through it rather than
+  the dispatcher: §5.
+- **The other two arms are cheap because they refuse**, not because they are
+  faster: 399 and 69 programs unanswered. `bench` annotates their whole-corpus
+  totals with exactly that sentence, because the number is otherwise a trap.
+- **Startup is a floor, not a ranking.** All three engines arrive within a
+  twentieth of a millisecond of each other, 17–19x under CPython; they are static
+  musl binaries that open no files at startup, and past that the differences
+  are the machine.
+
+There are two totals in that output and they answer different questions. The
+*shared subset* is the only apples-to-apples comparison — a total over
+different program sets is not a comparison at all — and the *whole corpus* is
+what the session actually costs. Both are printed and both are labelled, for
+the same reason.
+
+### Upstream measurements and their reproduction
+
+The table this project was written up with is not the table above. Upstream, on
+**2026-08-16**, over the 472 programs the corpus then held (min of 5, arms
+interleaved):
+
+```
+corpus — 472 programs
+
+arm          ran  refused   shared total (323)   vs cpython
+cpython      472        0          4314.4 ms      1.000x
+lypning-mp   444       28           616.5 ms      0.143x
+lypning      324      148           440.3 ms      0.102x
+mixture      472        0           547.0 ms      0.127x
+```
+
+That run had **lypning ahead of lypning-mp on the shared subset** — 0.102x
+against 0.143x — and it was written up as the thesis: a runtime built for
+two-thirds of the distribution beats a general one on that two-thirds.
+
+**The ordering reversed here, and has stayed reversed.** Both re-runs in this
+tree — 2026-08-20 and the 2026-08-21 run above — put lypning-mp ahead
+(0.061x against 0.073x, and 0.61 ms against 0.70 ms at startup). Successive
+runs on this box agree on the ordering and on the ratios to within about a
+point, while the absolute milliseconds move by tens of percent with the
+machine's load, which is why the ratios are what get quoted and why `bench` is
+not a CI gate.
+
+Read honestly, that thesis was **upstream's result, not a property of the
+design**. The shared subset is by construction the programs lypning accepted —
+the simplest in the corpus — where both engines sit near their startup floor,
+and lypning-mp's floor is lower: 296,100 B against lypning's 987,336 B (both
+printed by `lypning status`, and both move whenever an engine is rebuilt). On
+2026-08-25 the ordering flipped back — lypning 0.089x against lypning-mp's
+0.102x — which is the third time it has moved and is not evidence that it has
+settled.
+
+What survives re-measurement is the part the mixture is actually for: answering
+everything CPython answers, for about a third of the cost. Both tools print the
+corpus size they loaded on every run for exactly this reason — **never quote a
+remembered corpus size**, and do not carry a remembered ordering either.
+
+`docs/LYPNING.md` §1 is the design's own version of this table,
+`docs/BENCH-LEDGER.md` is the append-only history including the runs where the
+subset lost.
