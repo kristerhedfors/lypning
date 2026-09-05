@@ -14,10 +14,11 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-> Four entries below cite a **commit**, not a pull request: they were merged
-> straight to `main`, and the numbers their merge subjects carry (`#43`,
-> `#45`–`#47`) are GitHub issue numbers or unused. The commit link is the one
-> that resolves.
+> Four entries below cite a **commit**, not a pull request: those changes were
+> merged straight to `main` and never had one. The numbers in their merge
+> subjects (`#43`, `#45`–`#47`) do not refer to them — `#43` and `#45` are
+> issues, and `#46` was later taken by an unrelated pull request. The commit
+> link is the one that resolves.
 
 **2026-09-05** — The unbuilt-oracle line no longer promises a catalogue a wheel does not ship
 
