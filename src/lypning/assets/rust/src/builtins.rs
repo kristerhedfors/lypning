@@ -284,7 +284,15 @@ fn arity(name: &str) -> Option<(usize, usize)> {
         "bool" | "float" | "list" | "tuple" | "set" => (0, 1),
         "divmod" | "isinstance" => (2, 2),
         "int" => (0, 2),
-        "round" | "sum" | "next" | "iter" => (1, 2),
+        "sum" | "next" | "iter" => (1, 2),
+        // `round` has a CEILING of 2 and no floor HERE, because its zero-argument
+        // message is Argument Clinic's — `round() missing required argument
+        // 'number' (pos 1)` — and not the `takes at least` form this function
+        // writes. The arm below raises the right text; the table only has to
+        // stay out of its way. Found by py-7c8697bf4fa2, which greps CPython's
+        // own arity messages with a regex: until `re` had a matcher the program
+        // never ran here, and the divergence had nothing to expose it.
+        "round" => (0, 2),
         "range" => (1, 3),
         _ => return None,
     })
@@ -625,6 +633,10 @@ pub fn call_builtin(
                 Some(Value::Bool(b)) => Value::Int(*b as i64),
                 #[cfg(feature = "cap-re")]
                 Some(Value::ReFlag(b)) => Value::Int(*b as i64),
+                #[cfg(feature = "cap-re")]
+                Some(v @ (Value::Pattern(_) | Value::Match(_))) => {
+                    return Err(crate::re::guard_one(v, "int() of").unwrap_err())
+                }
                 Some(Value::Bytes(b)) => {
                     let s = decode_utf8(b)?;
                     return call_builtin(it, "int", &mut Args::one(Value::Str(s.into())), kw);
@@ -641,6 +653,10 @@ pub fn call_builtin(
             None => Value::Float(0.0),
             #[cfg(feature = "cap-re")]
             Some(Value::ReFlag(b)) => Value::Float(*b as f64),
+            #[cfg(feature = "cap-re")]
+            Some(v @ (Value::Pattern(_) | Value::Match(_))) => {
+                return Err(crate::re::guard_one(v, "float() of").unwrap_err())
+            }
             Some(Value::Str(s)) => {
                 let t = s.trim();
                 let lower = t.to_ascii_lowercase();
@@ -1246,7 +1262,9 @@ pub fn call_builtin(
             // never gets far enough to iterate, so the TypeError below is
             // exact and the refusal is not needed.
             #[cfg(feature = "cap-pathlib")]
-            crate::pathlib::guard_view(&v, "reversed()")?;
+            crate::pathlib::guard_view(&v, "reversed() of")?;
+            #[cfg(feature = "cap-re")]
+            crate::re::guard_one(&v, "reversed() of")?;
             match &v {
                 Value::Str(_)
                 | Value::Bytes(_)
@@ -1523,6 +1541,10 @@ pub fn call_builtin(
             // `bytes(re.I)` is `b'\x00\x00'` — the int path.
             #[cfg(feature = "cap-re")]
             Some(Value::ReFlag(b)) => Value::Bytes(Rc::new(vec![0u8; *b as usize])),
+            #[cfg(feature = "cap-re")]
+            Some(v @ (Value::Pattern(_) | Value::Match(_))) => {
+                return Err(crate::re::guard_one(v, "bytes() of").unwrap_err())
+            }
             Some(other) => {
                 let items = it.iter_collect(other.clone())?;
                 let mut out = Vec::with_capacity(items.len());

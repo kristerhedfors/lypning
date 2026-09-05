@@ -33,12 +33,18 @@
  },
  {
   "program": "import re; print(re.sub(\"a\", \"b\", \"aa\"))",
-  "route": "cpython\tmodule: import re"
+  "route": "lypning-l\tmodule: import re",
+  "note": "lypning-l has the matcher, so the core's blocker is the import alone and the sibling that serves it is the route."
+ },
+ {
+  "program": "import re; print(re.findall(r\"(?P<n>a)\", \"aa\"))",
+  "route": "lypning-l\tmodule: import re",
+  "note": "A pattern outside the slice, and the CORE still routes it to lypning-l: the core has no compiler, so it is optimistic and pays one refused spawn. lypning-l's OWN walker blocks the named group statically (`cpython\tre: pattern '(?P<n>a)': named group (?P<name>…)`), which is what tests/test_re_grid.py pins."
  },
  {
   "program": "import collections, re",
   "route": "lypning-l\tmodule: import collections",
-  "note": "Since #47 `import re` is admitted on lypning-l (the surface; matcher calls route to cpython), so the row lands on lypning-l for collections."
+  "note": "Since #47 `import re` is admitted on lypning-l, so the row lands on lypning-l for collections."
  },
  {
   "program": "import hashlib; print(hashlib.md5(b\"x\").hexdigest())",

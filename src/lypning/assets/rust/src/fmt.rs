@@ -215,6 +215,13 @@ pub fn repr(v: &Value) -> R<String> {
         // and `to_rc` fall to this on purpose: `str(re.I)` IS the repr.
         #[cfg(feature = "cap-re")]
         Value::ReFlag(b) => return crate::re::flag_repr(*b),
+        // `<re.Match object; span=(0, 2), match='ab'>` and
+        // `re.compile('a', re.IGNORECASE)`. Both truncate — to 50 and 200
+        // CHARACTERS of the inner repr, closing quote and all — and `re.rs`
+        // has the rules; this arm is where `print(m)`, `str(p)` and `'%s' % m`
+        // all arrive.
+        #[cfg(feature = "cap-re")]
+        Value::Pattern(_) | Value::Match(_) => return crate::re::repr(v),
         Value::Exc(kind, msg) => {
             if msg.is_empty() {
                 format!("{kind}()")
@@ -645,6 +652,8 @@ fn format_inner(v: &Value, spec_src: &str, from_pct: bool) -> R<String> {
     if let Value::ReFlag(_) = v {
         return Err(crate::re::spec_refused());
     }
+    #[cfg(feature = "cap-re")]
+    crate::re::guard_one(v, "a format spec on")?;
     let sp = parse_spec(spec_src)?;
 
     // A FLOAT WITH NO PRESENTATION TYPE IS NOT 'g'.

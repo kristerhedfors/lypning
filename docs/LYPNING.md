@@ -77,10 +77,18 @@ unpacking. The module surface is `modules.rs:MODULES`, one table per variant:
 | variant | modules |
 |---|---|
 | `lypning` | `sys`, `os`, `os.path`, `posixpath`, `io`, `json`, `random` (the seeded-integer subset, MT19937 bit for bit — `random.rs`) |
-| `lypning-l` | the same, plus `collections` (`Counter`, `defaultdict` — `collections.rs`) and `pathlib` (`Path` — `pathlib.rs`) |
+| `lypning-l` | the same, plus `collections` (`Counter`, `defaultdict` — `collections.rs`), `pathlib` (`Path` — `pathlib.rs`) and `re` (a matcher — `re.rs`) |
 
-`re` is absent from every variant: `import re` routes to `cpython`, and
-`conformance --plan` ranks what that costs.
+`re` is on the larger variant only: the core routes `import re` to
+`lypning-l`. What `re.rs` serves is a SLICE of the pattern language —
+literals, classes, `. ^ $ \b`, the table classes over ASCII, the quantifiers
+greedy and lazy, groups and alternation, `search`/`match`/`fullmatch`/
+`findall`/`finditer`/`compile`/`sub`/`subn`/`split` and the `Pattern` and
+`Match` values. Named groups, backreferences, lookaround, bytes patterns,
+Unicode `\w`/`\d`/`\s` and Unicode case folding are refusals, and
+`conformance --plan` ranks them. So is a step budget: CPython is exponential
+on `(a+)+$` and so is any backtracker, and a budget that answered "no match"
+when it ran out would be a wrong answer at exit 0.
 
 **The four refusals.** A subset can be wrong in two ways, and only one of them
 is acceptable. These are the places where lypning refuses rather than
@@ -273,9 +281,10 @@ runtime's FIRST probe; a later one's byte count is not a size.
 
 ## 9. What is excluded
 
-- **No `re`, `subprocess`, threading or networking.** A regex engine is a large
-  amount of code with deep semantics, and a working `subprocess` fake would keep
-  the expensive pattern alive; each is a `module` refusal `--plan` ranks.
+- **No `subprocess`, threading or networking.** A working `subprocess` fake
+  would keep the expensive pattern alive; each is a `module` refusal `--plan`
+  ranks. `re` was on this list until `cap-re` (§3): the matcher is on `lypning-l`
+  and the core still refuses it.
 - **No classes, decorators, generators, or `async`.** Each is a parse-time
   refusal (`parse.rs`) and a route to `cpython`; `lambda` is in the subset.
 - **No daemon.** Interpreter init is a rounding error inside the process-spawn

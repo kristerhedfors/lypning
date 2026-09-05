@@ -155,6 +155,12 @@ impl Interp {
             Value::ReFlag(_) => {
                 return Err(crate::re::refuse("iterating a RegexFlag (Flag.__iter__)"))
             }
+            // `list(m)` and `for x in p` are TypeErrors in CPython; the
+            // message names a type this engine would have to spell.
+            #[cfg(feature = "cap-re")]
+            v @ (Value::Pattern(_) | Value::Match(_)) => {
+                return Err(crate::re::guard_one(&v, "iterating").unwrap_err())
+            }
             Value::File(f) => Iter::Lines(f),
             Value::Gen(g) => Iter::Gen(g),
             Value::IterObj(it, _) => Iter::Shared(it),

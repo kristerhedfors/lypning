@@ -30,6 +30,15 @@ impl Interp {
         // leaves to the paths below.
         #[cfg(feature = "cap-re")]
         {
+            // A Pattern or a Match under ANY operator is a TypeError in
+            // CPython; here it would reach the generic arms and raise one of
+            // our own at exit 1, which the chain never retries.
+            // …except `%` with a str on the left, which is percent
+            // FORMATTING and not an operator on the value: `'%s' % m` is
+            // `str(m)` in CPython, which is its repr, and answers.
+            if !matches!((op, a), (Mod, Value::Str(_))) {
+                crate::re::guard_operand(a, b, crate::ops::op_sym(op))?;
+            }
             if let Some(v) = crate::re::binop(op, a, b)? {
                 return Ok(v);
             }
@@ -230,6 +239,8 @@ impl Interp {
         if let Value::ReFlag(_) = container {
             return Err(crate::re::refuse("`in` over a RegexFlag (Flag.__contains__)"));
         }
+        #[cfg(feature = "cap-re")]
+        crate::re::guard_one(container, "`in` over")?;
         Ok(match container {
             Value::Str(s) => match needle {
                 Value::Str(n) => s.contains(n.as_ref()),
@@ -366,6 +377,11 @@ impl Interp {
     }
 
     pub fn index(&mut self, base: &Value, idx: &Value) -> R<Value> {
+        // `m[0]`, `m[1]` — `Match.__getitem__`, which is `group()`.
+        #[cfg(feature = "cap-re")]
+        if let Value::Match(m) = base {
+            return crate::re::match_index(m, idx);
+        }
         #[cfg(feature = "cap-pathlib")]
         if let Value::Path(s, true) = base {
             return crate::pathlib::view_index(s, crate::eval::int_val(idx)?);
@@ -525,6 +541,9 @@ impl Interp {
         // would be a TypeError at exit 1 for a program that works there.
         #[cfg(feature = "cap-pathlib")]
         crate::pathlib::guard_view(base, "a slice")?;
+        // `m[0:1]` is an IndexError in CPython, not a slice of anything.
+        #[cfg(feature = "cap-re")]
+        crate::re::guard_one(base, "a slice of")?;
         // `step == 1` is what almost every slice in the corpus is, and it names a
         // CONTIGUOUS range. The general path below has to materialise the picked
         // indices because a step can skip or reverse; taking that range directly
@@ -645,6 +664,14 @@ impl Interp {
         #[cfg(feature = "cap-re")]
         if let Value::ReFlag(_) = base {
             return Err(crate::re::attr_refused(name));
+        }
+        // A Pattern's and a Match's properties are COMPUTED, and every name
+        // this engine does not answer refuses rather than raising
+        // AttributeError — `.groupdict()`, `.expand()`, `.lastindex` and
+        // `.groupindex` are all answered by CPython.
+        #[cfg(feature = "cap-re")]
+        if let Value::Pattern(_) | Value::Match(_) = base {
+            return crate::re::get_attr(base, name);
         }
         // A path's properties are COMPUTED here — `.name`, `.parts`, `.parent`
         // are not methods — and every name this engine does not answer refuses
@@ -1180,6 +1207,16 @@ fn identity(a: &Value, b: &Value) -> R<bool> {
             Value::Int(_) | Value::Float(_) | Value::Str(_) | Value::Bytes(_) | Value::Tuple(_)
         )
     };
+    // Two Patterns that compare equal are the same object in CPython while its
+    // 512-entry compile cache still holds the entry; once this one has thrown
+    // an entry away, the eviction order that decides it is CPython's own.
+    #[cfg(feature = "cap-re")]
+    if crate::re::identity_unclear(a, b) && eq(a, b)? {
+        return Err(unsupported(
+            "identity",
+            "`is` between two equal re.Pattern objects after the compile cache evicted",
+        ));
+    }
     if foldable(a) && foldable(b) && eq(a, b)? {
         return Err(unsupported(
             "identity",
@@ -1291,6 +1328,10 @@ fn order_as(sym: &str, a: &Value, b: &Value) -> R<Ordering> {
     if let Some(o) = crate::pathlib::order(a, b)? {
         return Ok(o);
     }
+    // `sorted`, `min`, `max` and `list.sort` reach the comparator HERE, not
+    // through `Interp::cmp`, so the two `re` values have to be caught here too.
+    #[cfg(feature = "cap-re")]
+    crate::re::guard_operand(a, b, &format!("'{sym}'"))?;
     // The numeric and scalar paths run BEFORE the guard, because neither can
     // descend and `sorted()` of a list of ints reaches this once per
     // comparison. See `value::eq` for the same split and the same reasoning.
