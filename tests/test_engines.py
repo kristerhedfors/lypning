@@ -171,6 +171,20 @@ def test_a_route_naming_an_engine_we_do_not_list_is_loud_not_silent():
     assert (r.engine, r.kind, r.verdicts) == ("lypning", "module", ())
 
 
+def test_a_route_carries_the_stdin_fact_and_a_binary_without_it_means_false():
+    # `reads_stdin` decides whether `lypning run` buffers a piped stdin for
+    # replay. A binary from before the field, or anything but a JSON `true`, is
+    # read as "cannot" — inherit, the behaviour every run had before there was
+    # a fact to read — and the unknown-engine route keeps the fact too.
+    r = engines._route_from_json({"engine": "lypning", "kind": "", "detail": "", "reads_stdin": True})
+    assert r.reads_stdin is True
+    assert engines._route_from_json({"engine": "lypning", "kind": "", "detail": ""}).reads_stdin is False
+    assert engines._route_from_json({"engine": "lypning", "reads_stdin": "yes"}).reads_stdin is False
+    r = engines._route_from_json({"engine": "lypning-q", "reads_stdin": True})
+    assert (r.kind, r.reads_stdin) == (engines.ROUTE_UNKNOWN_ENGINE, True)
+    assert engines.Route(engines.CPYTHON).reads_stdin is False
+
+
 def test_chain_from_an_unknown_engine_ends_at_cpython():
     # A classifier that names something that is not a tier must still produce a
     # runnable chain; CPython runs everything.

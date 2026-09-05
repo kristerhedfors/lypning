@@ -7,10 +7,15 @@
 //! the router admits a program that imports it; the flag constants as a value
 //! of their own (`Value::ReFlag`) with CPython's repr; `re.escape` and
 //! `re.purge`, the two functions that need no matcher; and the NAMES of the
-//! nine matcher-backed functions, each of which refuses at call time with a
-//! stable detail (`re: re.search() (pattern matching is not served yet)`) that
-//! `lypning routes --plan` and `conformance --plan` rank per function. That is
-//! the matcher's build order, measured rather than guessed.
+//! nine matcher-backed functions. A CALL to one of those is a static routing
+//! decision — `route::RE_MATCHERS`: the walker sees `re.search(…)` in every
+//! spelling of the import and sends the program to CPython without a spawn —
+//! and the same refusal here at call time, with the same detail
+//! (`re: re.search() (pattern matching is not served yet)`), is the backstop
+//! for the reach a walk cannot see: `getattr(re, name)`, a function stored in
+//! a variable. `lypning routes --plan` and `conformance --plan` rank that one
+//! row per function, which is the matcher's build order, measured rather than
+//! guessed.
 //!
 //! Why the surface alone is a variant step: the corpus mine of 2026-09-04
 //! (3,525 entries loaded; 248 blocked on `module: import re` for lypning-l, 213
@@ -198,7 +203,9 @@ pub fn call(_it: &mut Interp, name: &str, args: &mut Args, kw: &[(Rc<str>, Value
             }
             Ok(Value::None)
         }
-        other => Err(refuse(&format!("re.{other}() (pattern matching is not served yet)"))),
+        // The router's spelling, so the runtime row and the static row are
+        // one row in every plan.
+        other => Err(refuse(&crate::route::re_matcher_detail(other))),
     }
 }
 
@@ -274,6 +281,14 @@ pub fn flag_repr(bits: u32) -> R<String> {
 /// `Ok(None)` and falls to the numeric path through `as_num`, which is where
 /// `IntFlag` arithmetic returns a plain int in every CPython.
 ///
+/// One asymmetry, and it is CPython's dispatch rule: an INT on the left still
+/// answers a flag (`2 | re.I` is `re.IGNORECASE`), because `RegexFlag` is a
+/// subclass of `int` and its reflected `__ror__` is tried first — but a BOOL
+/// on the left answers a plain int (`False | re.I` is `2`, `True & re.I` is
+/// `0`), because `RegexFlag` is not a subclass of `bool`, so `bool.__or__`
+/// runs first and delegates to `int`'s, which never looks at the subclass.
+/// Measured on 3.11 through 3.14; found by a differential run.
+///
 /// Called FIRST in `Interp::binop`, before the numeric fast path — which would
 /// otherwise answer `re.I | re.M` as `10`, at exit 0.
 pub fn binop(op: BinOp, a: &Value, b: &Value) -> R<Option<Value>> {
@@ -282,6 +297,14 @@ pub fn binop(op: BinOp, a: &Value, b: &Value) -> R<Option<Value>> {
     }
     if !matches!(op, BinOp::BitOr | BinOp::BitAnd | BinOp::BitXor) {
         return Ok(None);
+    }
+    if let (Value::Bool(x), Value::ReFlag(y)) = (a, b) {
+        let (x, y) = (*x as i64, *y as i64);
+        return Ok(Some(Value::Int(match op {
+            BinOp::BitOr => x | y,
+            BinOp::BitAnd => x & y,
+            _ => x ^ y,
+        })));
     }
     let sym = crate::ops::op_sym(op);
     let bits = |v: &Value| -> R<u32> {

@@ -257,6 +257,15 @@ impl Interp {
                     b.contains(&(*i as u8))
                 }
                 Value::Bool(t) => b.contains(&(*t as u8)),
+                // An IntFlag is an int here too: `re.I in b"\x02"` is True and
+                // `re.A in b"x"` is the ValueError, as for 256.
+                #[cfg(feature = "cap-re")]
+                Value::ReFlag(f) => {
+                    if *f > 255 {
+                        return Err(value_err("byte must be in range(0, 256)"));
+                    }
+                    b.contains(&(*f as u8))
+                }
                 // ...and the message names the type, as everywhere else.
                 other => {
                     return Err(type_err(format!(
@@ -317,6 +326,9 @@ impl Interp {
                 let want = match needle {
                     Value::Int(i) => Some(*i),
                     Value::Bool(t) => Some(*t as i64),
+                    // `re.I in range(5)`: the flag is its int, `re.I == 2`.
+                    #[cfg(feature = "cap-re")]
+                    Value::ReFlag(f) => Some(*f as i64),
                     Value::Float(f) => {
                         if f.fract() == 0.0 && f.is_finite() && *f >= -(2f64.powi(63)) && *f < 2f64.powi(63) {
                             Some(*f as i64)

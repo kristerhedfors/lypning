@@ -315,6 +315,43 @@ def test_run_does_not_lose_stdin_when_the_first_tier_answers(tmp_path, lypning_b
     assert (p.returncode, p.stdout.strip()) == (0, "6"), p.stderr
 
 
+def test_replayable_stdin_is_read_only_when_the_route_says_the_program_can(monkeypatch, lypning_bin):
+    # The three conditions, one at a time: the program cannot read stdin; it
+    # can, but the first installed rung is the last one, so there is nobody to
+    # replay to; it can, and a rung follows — read once, for every rung.
+    import io
+    monkeypatch.setattr(sys, "stdin", io.StringIO("piped\n"))
+    assert cli._replayable_stdin(engines.Route(engines.LYPNING)) is None
+    assert cli._replayable_stdin(engines.Route(engines.CPYTHON, reads_stdin=True)) is None
+    assert cli._replayable_stdin(engines.Route(engines.LYPNING, reads_stdin=True)) == "piped\n"
+
+
+def test_run_does_not_wait_for_a_slow_producer_when_the_program_cannot_read_stdin(tmp_path, lypning_bin):
+    """`(sleep 30; echo hi) | lypning run -c 'print(1)'` must print at once.
+
+    Replaying stdin means reading it to EOF, and EOF is the producer's to give:
+    reading it for EVERY program made a run wait on a `tail -f` for good, for a
+    program that never looks at the stream. So the read is conditional on the
+    route's `reads_stdin` fact — `print(1)` cannot — and this holds the pipe
+    open for the whole run to prove the run did not wait for it.
+    """
+    env = {"PYTHONPATH": SRC, "PATH": "/usr/bin:/bin", "HOME": str(tmp_path),
+           "LYPNING_HOME": str(tmp_path / "state"), "CLAUDE_PROJECT_DIR": str(tmp_path),
+           "LYPNING_BIN": str(lypning_bin)}
+    p = subprocess.Popen([sys.executable, "-m", "lypning", "run", "-c", "print(1)"],
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         text=True, env=env, cwd=str(tmp_path))
+    try:
+        code = p.wait(timeout=60)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.wait()
+        pytest.fail("`lypning run` waited on a stdin the program cannot read")
+    finally:
+        p.stdin.close()
+    assert (code, p.stdout.read()) == (0, "1\n"), p.stderr.read()
+
+
 def test_harvest_dry_run_writes_nothing_under_the_state_dir(capsys):
     """Invariant 7: `--dry-run` is real — it opens files and writes none.
 

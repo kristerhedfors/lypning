@@ -330,14 +330,12 @@ pub fn dumps(v: &Value, kw: &[(Rc<str>, Value)]) -> R<String> {
     };
     let indent = match get("indent") {
         None | Some(Value::None) => None,
-        Some(Value::Int(n)) => Some(" ".repeat(n.max(0) as usize)),
         Some(Value::Str(s)) => Some(s.to_string()),
-        Some(other) => {
-            return Err(type_err(format!(
-                "indent must be int or str, not {}",
-                type_name(&other)
-            )))
-        }
+        // CPython's encoder does `' ' * indent` for anything that is not a
+        // str, so a bool or an IntFlag is its int — `indent=True` is one
+        // space, `indent=re.I` two — and a float is the TypeError `int_val`
+        // raises. Matching `Value::Int` alone made both an exit 1.
+        Some(other) => Some(" ".repeat(crate::eval::int_val(&other)?.max(0) as usize)),
     };
     let (item_sep, key_sep) = match get("separators") {
         None | Some(Value::None) => (

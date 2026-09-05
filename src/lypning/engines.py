@@ -654,6 +654,13 @@ class Route:
     #: whose static verdict was "can run" is the next stop after a runtime
     #: refusal in a smaller variant.
     verdicts: tuple = ()
+    #: The program can read stdin — ``sys.stdin``, ``input()``, ``open(0)``,
+    #: ``fileinput``, ``/dev/stdin`` — as far as the binary's walk and text scan
+    #: can tell (`route::Route::reads_stdin`; generous by design). What decides
+    #: whether a piped stdin is read once and replayed to every rung, or left
+    #: alone: reading it blocks until the writer closes, and a program that
+    #: never looks at the stream must not wait for a slow producer.
+    reads_stdin: bool = False
 
     def __str__(self) -> str:
         why = f"\t{self.kind}: {self.detail}" if self.kind else ""
@@ -673,9 +680,11 @@ def _route_from_json(d: dict) -> Route:
     verdicts = tuple(
         (str(v.get("engine") or ""), str(v.get("kind") or ""), str(v.get("detail") or ""))
         for v in d.get("verdicts") or () if isinstance(v, dict))
+    reads_stdin = d.get("reads_stdin") is True
     if engine not in ENGINE_ORDER:
-        return Route(CPYTHON, ROUTE_UNKNOWN_ENGINE, engine, imports, verdicts)
-    return Route(engine, str(d.get("kind") or ""), str(d.get("detail") or ""), imports, verdicts)
+        return Route(CPYTHON, ROUTE_UNKNOWN_ENGINE, engine, imports, verdicts, reads_stdin)
+    return Route(engine, str(d.get("kind") or ""), str(d.get("detail") or ""), imports, verdicts,
+                 reads_stdin)
 
 
 def route(program: str, *, binary: Path | None = None, timeout: float | None = 30.0,
@@ -902,6 +911,7 @@ def dispatch(
     timeout: float | None = 30.0,
     env: dict[str, str] | None = None,
     ledger: bool = True,
+    routed: Route | None = None,
 ) -> Dispatch:
     """Route, then run, falling through on a REFUSAL until a tier answers.
 
@@ -918,7 +928,10 @@ def dispatch(
     which the first tier then consumes — so a program that reads stdin and only
     afterwards hits a refusal gives the next tier an empty stream and the run
     prints nothing. :func:`lypning.cli._replayable_stdin` is what fills it in
-    for ``lypning run``.
+    for ``lypning run``, and only when :attr:`Route.reads_stdin` says the
+    program can consume the stream — which is why ``routed`` exists: the route
+    that decision was read from is the one this chain walks, asked of the
+    binary once rather than twice.
 
     ``ledger`` writes the one case :mod:`lypning.routes` exists to record — a
     CLEAN static route whose tier then refused at RUNTIME. The store is never
@@ -928,7 +941,7 @@ def dispatch(
     session's own traffic pass ``ledger=False``, for the reason
     :func:`lypning.conformance._env_for` redirects the capture log.
     """
-    r = route(program, timeout=timeout, env=env)
+    r = routed if routed is not None else route(program, timeout=timeout, env=env)
     attempts: list[Result] = []
     last: Result | None = None
     remaining = chain_from(r.engine)

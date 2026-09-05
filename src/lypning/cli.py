@@ -211,7 +211,7 @@ def _progress(label: str) -> Optional[Callable[..., None]]:
 # --- run / route -------------------------------------------------------------
 
 
-def _replayable_stdin() -> Optional[str]:
+def _replayable_stdin(route: engines.Route) -> Optional[str]:
     """A piped stdin, read ONCE so every tier in the chain can be handed it.
 
     Without this each engine inherits the pipe and the first one to run consumes
@@ -226,13 +226,28 @@ def _replayable_stdin() -> Optional[str]:
     lypning reads both lines, overflows, and exits 90; CPython is then handed a
     stream with nothing left in it and prints nothing, at exit 0. The dispatcher
     itself produced the empty answer — which is exactly the failure the whole
-    fall-through exists to prevent. The Rust `lypning run` already captures and
-    replays; this is the same rule on this side of the fence.
+    fall-through exists to prevent. The Rust `lypning run` captures and replays
+    under the same three conditions; this is the rule on this side of the fence.
 
-    A terminal is left alone: reading it would block for input the program may
-    never want. Nothing else is: a pipe the program ignores costs one read of
-    bytes that were going to be discarded anyway.
+    The three conditions, and each is a hang or a wrong answer without it:
+
+    * the program CAN read stdin (:attr:`engines.Route.reads_stdin`, the
+      binary's generous walk-and-scan). Reading a pipe to EOF blocks until the
+      writer closes, so reading it for every program made
+      ``(sleep 30; echo hi) | lypning run -c 'print(1)'`` print nothing for
+      thirty seconds and ``tail -f log | lypning run …`` wait for good — for a
+      program that never looks at the stream;
+    * a rung with something after it is about to run. When the first installed
+      rung is the last one there is no one to replay to, and inheriting is
+      exactly right;
+    * it is not a terminal, which would block for input the program may never
+      want.
     """
+    if not route.reads_stdin:
+        return None
+    installed = [e for e in engines.chain_from(route.engine) if engines.find(e) is not None]
+    if len(installed) < 2:
+        return None
     try:
         if sys.stdin is None or sys.stdin.isatty():
             return None
@@ -244,9 +259,10 @@ def _replayable_stdin() -> Optional[str]:
 
 def cmd_run(ns: argparse.Namespace) -> int:
     program, tail, stdin = _read_program(ns)
+    r = engines.route(program, timeout=ns.timeout)
     if stdin is None:
-        stdin = sys.stdin.read() if ns.stdin else _replayable_stdin()
-    d = engines.dispatch(program, argv_tail=tail, stdin=stdin, timeout=ns.timeout)
+        stdin = sys.stdin.read() if ns.stdin else _replayable_stdin(r)
+    d = engines.dispatch(program, argv_tail=tail, stdin=stdin, timeout=ns.timeout, routed=r)
     if ns.verbose:
         chain = " -> ".join([a.engine for a in d.attempts] + [d.engine])
         sys.stderr.write("lypning: route %s (%s: %s), ran %s\n"

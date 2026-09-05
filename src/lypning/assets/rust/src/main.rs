@@ -257,7 +257,7 @@ fn route_cmd(args: &[String]) -> i32 {
             .map(|v| format!("{{\"engine\":{},\"kind\":{},\"detail\":{}}}", jstr(v.engine), jstr(&v.kind), jstr(&v.detail)))
             .collect();
         println!(
-            "{{\"engine\":{},\"kind\":{},\"detail\":{},\"imports\":[{}],\"verdicts\":[{}]}}",
+            "{{\"engine\":{},\"kind\":{},\"detail\":{},\"imports\":[{}],\"verdicts\":[{}],\"reads_stdin\":{}}}",
             jstr(r.engine.as_str()),
             jstr(&r.kind),
             jstr(&r.detail),
@@ -266,7 +266,8 @@ fn route_cmd(args: &[String]) -> i32 {
                 .map(|s| jstr(s))
                 .collect::<Vec<_>>()
                 .join(","),
-            verdicts.join(",")
+            verdicts.join(","),
+            r.reads_stdin
         );
     } else if r.kind.is_empty() {
         println!("{}", r.engine.as_str());
@@ -339,7 +340,7 @@ fn dispatch(args: &[String]) -> i32 {
         // out, and a larger sibling that could run the whole program comes
         // before both. The Python dispatcher walks the same function's answer.
         let chain = route::chain_after(route::SELF, &kind, &r.verdicts);
-        return walk_chain(&chain, &src, &tail, &is_file);
+        return walk_chain(&chain, &src, &tail, &is_file, r.reads_stdin);
     }
     // A static route names the first rung; what follows it is the rest of
     // the same ladder, so a refusal there still falls onward.
@@ -349,18 +350,24 @@ fn dispatch(args: &[String]) -> i32 {
         let at = order.iter().position(|e| *e == name).unwrap_or(order.len() - 1);
         order[at..].to_vec()
     };
-    walk_chain(&chain, &src, &tail, &is_file)
+    walk_chain(&chain, &src, &tail, &is_file, r.reads_stdin)
 }
 
 /// Run the program on the first rung of `chain`, with the rest as what to try
 /// when that rung refuses or is not installed. Empty is impossible by
 /// construction (every chain ends at CPython); treated as CPython if it were.
-fn walk_chain(chain: &[&'static str], src: &str, tail: &[String], is_file: &Option<String>) -> i32 {
+fn walk_chain(
+    chain: &[&'static str],
+    src: &str,
+    tail: &[String],
+    is_file: &Option<String>,
+    reads_stdin: bool,
+) -> i32 {
     let (first, rest) = match chain.split_first() {
         Some((f, r)) => (*f, r),
         None => (route::CPYTHON_NAME, &[][..]),
     };
-    exec_engine(engine_path_named(first), src, tail, is_file, rest)
+    exec_engine(engine_path_named(first), src, tail, is_file, rest, reads_stdin)
 }
 
 /// Parse the tail of `lypning run ...` into (program source, program args, file?).
@@ -449,6 +456,7 @@ fn exec_engine(
     tail: &[String],
     is_file: &Option<String>,
     onward: &[&'static str],
+    reads_stdin: bool,
 ) -> i32 {
     use std::os::unix::process::CommandExt;
     // An intermediate rung is one with something after it: it is forked so an
@@ -456,7 +464,7 @@ fn exec_engine(
     let retry_cpython = !onward.is_empty();
     let next = |src: &str, tail: &[String], is_file: &Option<String>| -> i32 {
         match onward.split_first() {
-            Some((n, rest)) => exec_engine(engine_path_named(n), src, tail, is_file, rest),
+            Some((n, rest)) => exec_engine(engine_path_named(n), src, tail, is_file, rest, reads_stdin),
             None => 127,
         }
     };
@@ -478,19 +486,25 @@ fn exec_engine(
     //
     // The same loss happens one process further out, where this process
     // cannot see it: a FORKED intermediate rung inherits the pipe, and if the
-    // program reads stdin and then refuses at runtime — `import re, sys;
-    // re.sub(p, r, sys.stdin.read())` on lypning-l, which serves `re` but not
-    // its matcher — the rung after it is handed an exhausted stream and
-    // answers about nothing, at exit 0. Caught by the mixture-rust arm of
-    // `lypning conformance` (`stdin-regex-extract`, `stdin-replace-sed`) the
-    // day `re` was admitted. So a PIPED stdin is read once here, before the
-    // first intermediate rung, and every rung is handed a copy — the Python
-    // dispatcher's `_replayable_stdin` rule, now on both sides of the fence.
-    // A terminal is left alone: reading it would block for input the program
-    // may never want. Nothing is lost for the forked rung, whose stdout was
-    // already buffered whole by `Command::output` below; the direct `exec` of
-    // a terminal rung is not touched and still streams.
-    if retry_cpython && io::stdin_consumed().is_none() {
+    // program reads stdin and then refuses at runtime — `int(sys.stdin.read())
+    // * 10**30` on lypning-l, which reads the pipe and then overflows — the
+    // rung after it is handed an exhausted stream and answers about nothing,
+    // at exit 0. Caught by the mixture-rust arm of `lypning conformance`
+    // (`stdin-regex-extract`, `stdin-replace-sed`) the day `re` was admitted.
+    // So a PIPED stdin is read once here, before the first intermediate rung,
+    // and every rung is handed a copy — the Python dispatcher's rule, on both
+    // sides of the fence.
+    //
+    // ONLY for a program that can read stdin (`Route::reads_stdin`). Reading
+    // to EOF blocks until the writer closes, so an unconditional read made
+    // `(sleep 30; echo hi) | lypning run -c 'import collections; …'` print
+    // nothing for thirty seconds and `tail -f x | lypning run …` hang for
+    // good — for a program that never looks at the stream. A terminal is left
+    // alone too: reading it would block for input the program may never want.
+    // Nothing is lost for the forked rung, whose stdout was already buffered
+    // whole by `Command::output` below; the direct `exec` of a terminal rung
+    // is not touched and still streams.
+    if retry_cpython && reads_stdin && io::stdin_consumed().is_none() {
         use std::io::IsTerminal as _;
         if !std::io::stdin().is_terminal() {
             io::stdin_preload();

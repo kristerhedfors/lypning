@@ -149,7 +149,30 @@ PURGE = [
     R + "print(re.purge() is None)",
 ]
 
-GRID = IMPORTS + FLAGS + ESCAPE + PURGE
+#: The flag as the int partner of things that are not flags, each measured on
+#: CPython 3.11–3.14 and each once an exit 1 here: a BOOL on the left of `| & ^`
+#: gives a plain int (`bool.__or__` runs first, `RegexFlag` is no subclass of
+#: `bool`), a flag on the left of a bool stays a flag; `in range(…)` and
+#: `in b"…"` see the int (`re.A in b"x"` is the same ValueError as 256's); and
+#: `json.dumps(indent=…)` is `' ' * indent` for anything that is not a str, so
+#: `indent=re.I` is two spaces and `indent=True` one.
+INT_PARTNERS = [R + x for x in [
+    "print(False | re.I, True & re.I, False ^ re.I, True | re.M, True ^ re.I, False & re.I)",
+    "print(re.I | False, re.M & True, re.I ^ False, type(False | re.I) is int)",
+    "print(re.I in range(5), re.I in range(2), re.M in range(0, 100, 8), re.NOFLAG in range(1), "
+    "re.I in range(3, 1, -1))",
+    "print(re.I in b'\\x02', re.I in b'x', re.NOFLAG in b'\\x00a', re.M in b'', "
+    "re.I not in b'\\x02')",
+    "print(re.A in b'x')",
+    "print(re.A in bytes([1, 0]))",
+    "import json\nprint(json.dumps([re.I], indent=re.I))",
+    "import json\nprint(json.dumps({'a': [1, 2]}, indent=True))",
+    "import json\nprint(json.dumps([1], indent=False), json.dumps([1], indent=re.NOFLAG))",
+    "import json\nprint(json.dumps({'k': re.M, 'i': [re.I]}, indent=re.I, sort_keys=True))",
+    "import json\nprint(json.dumps([1], indent=1.5))",
+]]
+
+GRID = IMPORTS + FLAGS + ESCAPE + PURGE + INT_PARTNERS
 
 #: Everything that must refuse rather than answer: the nine matcher-backed
 #: functions in every spelling; every module attribute outside the surface;
@@ -321,28 +344,87 @@ def test_the_capability_is_on_the_larger_variant_only() -> None:
     assert route.stdout.split("\t")[0].strip() == engines.LYPNING_L, route.stdout
 
 
+def _core_env() -> dict:
+    return dict(os.environ, LYPNING_L_BIN=str(BINARY), LYPNING_CPYTHON=sys.executable)
+
+
 @needs_l
 def test_a_runtime_refusal_after_reading_stdin_replays_it_to_the_next_rung() -> None:
     """The corpus's largest cluster is `stdin -> transform -> stdout`, and with
-    `re` admitted its regex half now routes to lypning-l, reads the pipe, and
+    `re` admitted its regex half routes to lypning-l, reads the pipe, and
     refuses at the matcher. The core's `run` forks that rung; before this was
     pinned it forked it with the INHERITED pipe, so CPython was then handed an
     exhausted stream and answered about nothing at exit 0 — the mixture-rust
     arm's `stdin-regex-extract` and `stdin-replace-sed` MISMATCHes of
     2026-09-05. The Python dispatcher reads a piped stdin once and replays it
-    to every rung; this holds the Rust one to the same rule."""
+    to every rung; this holds the Rust one to the same rule.
+
+    The matcher is reached through `getattr`, the spelling the walker cannot
+    see: `re.search(…)` spelled out is a STATIC route to CPython now and never
+    touches lypning-l (the test after this one), so it would no longer measure
+    the replay. The route is asserted first, so the row keeps measuring it."""
     core = CORE
     if core is None:
         pytest.skip("no core carrying this tree's capability table is built")
-    env = dict(os.environ, LYPNING_L_BIN=str(BINARY), LYPNING_CPYTHON=sys.executable)
-    program = "import sys, re\nfor line in sys.stdin:\n    m = re.search(r'id=(\\d+)', line)\n    if m:\n        print(m.group(1))"
-    got = subprocess.run([str(core), "run", "-c", program], input="x id=41 y\nnope\nz id=7\n",
-                         capture_output=True, text=True, timeout=60, env=env)
-    assert (got.stdout, got.returncode) == ("41\n7\n", 0), (got.stdout, got.stderr[-300:])
-    program = "import sys, re\nsys.stdout.write(re.sub(r'foo+', 'BAR', sys.stdin.read()))"
-    got = subprocess.run([str(core), "run", "-c", program], input="foo fooo food\n",
-                         capture_output=True, text=True, timeout=60, env=env)
-    assert (got.stdout, got.returncode) == ("BAR BAR BARd\n", 0), (got.stdout, got.stderr[-300:])
+    env = _core_env()
+    for program, stdin, want in [
+        ("import sys, re\ns = getattr(re, 'search')\nfor line in sys.stdin:\n    m = s(r'id=(\\d+)', line)\n"
+         "    if m:\n        print(m.group(1))", "x id=41 y\nnope\nz id=7\n", "41\n7\n"),
+        ("import sys, re\nf = getattr(re, 'sub')\nsys.stdout.write(f(r'foo+', 'BAR', sys.stdin.read()))",
+         "foo fooo food\n", "BAR BAR BARd\n"),
+    ]:
+        route = subprocess.run([str(core), "route", "-c", program], capture_output=True, text=True,
+                               timeout=60, env=env)
+        assert route.stdout.split("\t")[0].strip() == engines.LYPNING_L, route.stdout
+        got = subprocess.run([str(core), "run", "-c", program], input=stdin,
+                             capture_output=True, text=True, timeout=60, env=env)
+        assert (got.stdout, got.returncode) == (want, 0), (got.stdout, got.stderr[-300:])
+
+
+@needs_l
+def test_a_matcher_call_over_a_piped_stdin_reaches_cpython_with_the_stream_intact() -> None:
+    """The direct spelling is a static route to CPython, exec'd with the pipe
+    inherited and untouched: nothing between the producer and the answer."""
+    core = CORE
+    if core is None:
+        pytest.skip("no core carrying this tree's capability table is built")
+    program = "import sys, re\nd = sys.stdin.read()\nprint(re.findall(r'\\d', d))"
+    route = subprocess.run([str(core), "route", "-c", program], capture_output=True, text=True,
+                           timeout=60, env=_core_env())
+    assert route.stdout.split("\t")[0].strip() == engines.CPYTHON, route.stdout
+    got = subprocess.run([str(core), "run", "-c", program], input="a1b2\n",
+                         capture_output=True, text=True, timeout=60, env=_core_env())
+    assert (got.stdout, got.returncode) == ("['1', '2']\n", 0), (got.stdout, got.stderr[-300:])
+
+
+@needs_l
+def test_a_program_that_cannot_read_stdin_does_not_wait_for_a_slow_producer() -> None:
+    """The other edge of the replay: buffering stdin means reading it to EOF,
+    and EOF is the producer's to give. Done for every forked rung it made
+    `(sleep 30; echo hi) | lypning run -c 'import collections; …'` print nothing
+    for thirty seconds and `tail -f log | lypning run …` wait for good — for a
+    program that never looks at the stream. So the read is conditional on
+    `Route::reads_stdin`. The program here routes core -> lypning-l, the forked
+    intermediate rung that used to trigger it; the pipe is held open for the
+    whole run to prove the run did not wait for it."""
+    core = CORE
+    if core is None:
+        pytest.skip("no core carrying this tree's capability table is built")
+    program = "import collections\nprint(collections.Counter('ab'))"
+    route = subprocess.run([str(core), "route", "-c", program], capture_output=True, text=True,
+                           timeout=60, env=_core_env())
+    assert route.stdout.split("\t")[0].strip() == engines.LYPNING_L, route.stdout
+    p = subprocess.Popen([str(core), "run", "-c", program], stdin=subprocess.PIPE,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=_core_env())
+    try:
+        code = p.wait(timeout=60)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.wait()
+        pytest.fail("`lypning run` waited on a stdin the program cannot read")
+    finally:
+        p.stdin.close()
+    assert (code, p.stdout.read()) == (0, "Counter({'a': 1, 'b': 1})\n"), p.stderr.read()
 
 
 @needs_l
