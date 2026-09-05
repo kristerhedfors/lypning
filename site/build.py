@@ -212,9 +212,32 @@ def shell(*, title: str, body: str, current: str, depth: int, description: str,
 
 
 def render(src: Path) -> tuple[str, str]:
+    return render_text(src.read_text(encoding="utf-8"))
+
+
+def render_text(text: str) -> tuple[str, str]:
     md = markdown.Markdown(extensions=EXTENSIONS, extension_configs=EXTENSION_CONFIGS)
-    body = md.convert(src.read_text(encoding="utf-8"))
+    body = md.convert(text)
     return body, getattr(md, "toc", "")
+
+
+DOCGRID_TOKEN = "{{docgrid}}"
+
+
+def docgrid_html() -> str:
+    """The landing page's document grid, from :data:`PAGES`.
+
+    One source: PAGES renders the nav, each page's description and this grid,
+    so a page added or relabelled there is on the landing page in the same
+    commit. A hand-copied grid kept a page's old label after PAGES renamed it
+    and nothing noticed; this is the check that would have.
+    """
+    items = [
+        '<a class="doclink" href="%s"><strong>%s</strong><span>%s</span></a>'
+        % (out, html.escape(label), html.escape(desc))
+        for _, out, label, desc in PAGES
+    ]
+    return '<div class="docgrid">\n%s\n</div>' % "\n".join(items)
 
 
 # A whole code span that is nothing but a repo path ending in `.md`, optionally
@@ -405,7 +428,10 @@ def build(out_dir: Path) -> int:
     # rendered from a doc: a reader arriving from a link needs the thesis and
     # the numbers before they need the reference.
     index_md = (SITE / "index.md").read_text(encoding="utf-8")
-    body, _ = render(SITE / "index.md")
+    if DOCGRID_TOKEN not in index_md:
+        sys.exit("site/build.py: site/index.md has no %s line — the document grid "
+                 "is rendered from PAGES, not written by hand" % DOCGRID_TOKEN)
+    body, _ = render_text(index_md.replace(DOCGRID_TOKEN, docgrid_html()))
     body, _h1 = strip_h1(body)
     body = wrap_tables(linkify_xrefs(rewrite_links(body, "README.md"), "README.md")
                        .replace('href="../', 'href="'))
@@ -423,7 +449,6 @@ def build(out_dir: Path) -> int:
         encoding="utf-8",
     )
     written += 1
-    del index_md
 
     for asset in ("style.css", "favicon.svg"):
         shutil.copy2(SITE / asset, out_dir / asset)
@@ -449,7 +474,8 @@ def build(out_dir: Path) -> int:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", default=str(ROOT / "_site"), help="output directory (default: _site)")
-    ap.add_argument("--check", action="store_true", help="build, then fail on a dead intra-site link")
+    ap.add_argument("--check", action="store_true",
+                    help="build, then fail on a dead intra-site link or #fragment")
     args = ap.parse_args(argv)
 
     out = Path(args.out)
@@ -472,10 +498,14 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print("markdown check: every cited file in this repository opens rendered")
 
-        # Warn-only until every page's fragments have been repointed: a dead
-        # fragment is a page that opens at the top instead of at the heading.
-        for page, href in check_fragments(out):
+        # A dead fragment is a page that opens at the top instead of at the
+        # heading — a build failure like a dead link, because the docs renumber.
+        dead = check_fragments(out)
+        for page, href in dead:
             print("dead fragment: %s -> %s" % (page, href), file=sys.stderr)
+        if dead:
+            return 1
+        print("fragment check: every #fragment lands on a heading")
     return 0
 
 
