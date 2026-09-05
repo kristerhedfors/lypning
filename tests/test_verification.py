@@ -117,3 +117,25 @@ def test_every_hook_fixture_answers_the_protocol_line(monkeypatch, capsys, tmp_p
             assert record.get(key) == value, "%s: %s=%r" % (row["name"], key, record.get(key))
         for key in row["env"]:
             monkeypatch.delenv(key, raising=False)
+
+
+DOCS = FIXTURES.parent.parent / "docs"
+
+
+def test_every_measurement_table_under_verification_is_dated_and_cited():
+    """A table moved out of a document into ``tests/verification/*.md`` keeps
+    its run header (tool, YYYY-MM-DD) and is quoted by the document that names
+    it, so the number policy holds on both sides of the move."""
+    import re
+    for table in sorted(FIXTURES.glob("*.md")):
+        text = table.read_text(encoding="utf-8")
+        head = text.split("\n|", 1)[0]
+        assert re.search(r"20\d\d-\d\d-\d\d", head), "%s: no date in its header" % table.name
+        assert "`" in head, "%s: no tool named in its header" % table.name
+        citers = re.findall(r"`docs/([A-Z-]+\.md)`", head)
+        assert citers, "%s: names no document" % table.name
+        for doc in citers:
+            assert ("tests/verification/" + table.name) in (DOCS / doc).read_text(encoding="utf-8"), \
+                "%s does not cite %s" % (doc, table.name)
+        for name in re.findall(r"`(lypning(?:-[a-z]+)?)`", text):
+            assert name in engines.ENGINE_ORDER or name in engines.ORACLES, name
