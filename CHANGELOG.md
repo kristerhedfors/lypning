@@ -14,7 +14,12 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-05** — lypning-l serves the `re` surface; matcher calls route statically to CPython · [#47]
+> Four entries below cite a **commit**, not a pull request: they were merged
+> straight to `main`, and the numbers their merge subjects carry (`#43`,
+> `#45`–`#47`) are GitHub issue numbers or unused. The commit link is the one
+> that resolves.
+
+**2026-09-05** — lypning-l serves the `re` surface; matcher calls route statically to CPython · [49c8aa2]
 
 - `import re` binds a module on `lypning-l`: the flag constants as a value with
   CPython's repr and arithmetic, `re.escape` (the 3.7+ table) and `re.purge`.
@@ -43,7 +48,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   segment crossing a 16 KB page. It carries no `re` code or text (`strings`).
   Earlier "byte-identical" claims for #39 and #41 were size-identical only.
 
-**2026-09-05** — Docs refactor, part 2: every engineer- and QA-facing document condensed to its budget · [#46]
+**2026-09-05** — Docs refactor, part 2: every engineer- and QA-facing document condensed to its budget · [4aa8209]
 
 - The fifteen documents an engineer or QA reader is sent to went from 6,696 to
   3,053 lines (`wc -l` on 2026-09-05, this tree against `fc2c8e5`), plus the
@@ -76,7 +81,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   exit codes still are. Every other grade unchanged (2504 programs, MISMATCH 0,
   dispatchers agree 2504/2504).
 
-**2026-09-05** — Docs refactor, part 1: code-side strings, the VERIFICATION spine, CLAUDE.md and README · [#45]
+**2026-09-05** — Docs refactor, part 1: code-side strings, the VERIFICATION spine, CLAUDE.md and README · [6a77a18]
 
 - Every `--help` string, crate doc comment, header comment and skill file
   spells the chain as engine strings — `lypning -> lypning-l -> cpython` — with
@@ -99,7 +104,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   (`LYPNING_HARVEST=0` inert under the opencode plugin) rather than document
   behaviour the code does not have.
 
-**2026-09-04** — The route ledger: the refusals a static route cannot predict · [#43]
+**2026-09-04** — The route ledger: the refusals a static route cannot predict · [7dc0d26]
 
 - New `lypning routes`. `lypning route` is exact about everything it can see and
   it cannot see VALUE: `print(2**10)` and `print(2**100)` are the same program to
@@ -1864,10 +1869,10 @@ runtime exists — the number came first, and both were built for it. It is
 [#39]: https://github.com/kristerhedfors/lypning/pull/39
 [#41]: https://github.com/kristerhedfors/lypning/pull/41
 [#42]: https://github.com/kristerhedfors/lypning/pull/42
-[#43]: https://github.com/kristerhedfors/lypning/pull/43
-[#45]: https://github.com/kristerhedfors/lypning/pull/45
-[#46]: https://github.com/kristerhedfors/lypning/pull/46
-[#47]: https://github.com/kristerhedfors/lypning/pull/47
+[7dc0d26]: https://github.com/kristerhedfors/lypning/commit/7dc0d26
+[6a77a18]: https://github.com/kristerhedfors/lypning/commit/6a77a18
+[4aa8209]: https://github.com/kristerhedfors/lypning/commit/4aa8209
+[49c8aa2]: https://github.com/kristerhedfors/lypning/commit/49c8aa2
 [#1]: https://github.com/kristerhedfors/lypning/pull/1
 [#2]: https://github.com/kristerhedfors/lypning/pull/2
 [#3]: https://github.com/kristerhedfors/lypning/pull/3
