@@ -29,7 +29,8 @@ Capture grows the corpus every session: every tool prints the count it loaded,
 so quote that number with its date, give every timing in `docs/` its run and
 date the same way, and re-run before relying on one. Carve-out: a number
 measured upstream that cannot be re-run here is kept, once per document, under
-`measured upstream on <date>; not reproducible from this tree`. `bench.py`.
+`measured upstream on <date>; not reproducible from this tree`. `bench.py`;
+`docs/VERIFICATION.md` §0.
 
 **4. The corpus rewrites repositories. Run it behind the net.**
 Running the battery is running an agent's edit history, so each entry gets its

@@ -134,13 +134,14 @@ stdout cap, `cat` short-circuit and CDN-auth notes stayed upstream.
 
 ## What enforces it here
 
-`lypning gate` holds the shape on every built variant: `gate.MAX_SHARED_OBJECTS`
-0, `gate.MAX_OPENS` 3 at `-c 'pass'`, the budgets `gate.VARIANT_BLOCK_BUDGET`
-(`lypning` 8, `lypning-l` 32 blocks) and `gate.MAX_BYTES` 700,000 B only when
-`lypning-mp` is the binary named; `build.CHEERPX_BLOCK` is the same 131,072 B
-for the blocks column of `lypning build --rust`. A `--` row is a check nobody
-took and is not a pass; any FAIL exits 1. The three regressions — a `NEEDED`
-entry, opens rising, a block boundary crossed — are `docs/VERIFICATION.md` §C6.
+`lypning gate <bin>` holds the shape of the one binary named — bare, the core
+`lypning`; `lypning-l` when named: `gate.MAX_SHARED_OBJECTS` 0, `gate.MAX_OPENS`
+3 at `-c 'pass'`, the budgets `gate.VARIANT_BLOCK_BUDGET` (`lypning` 8,
+`lypning-l` 32 blocks) and `gate.MAX_BYTES` 700,000 B only when `lypning-mp` is
+the binary named; `build.CHEERPX_BLOCK` is the same 131,072 B for the blocks
+column of `lypning build --rust`. A `--` row is a check nobody took and is not a
+pass; any FAIL exits 1. The three regressions — a `NEEDED` entry, opens rising,
+a block boundary crossed — are `docs/VERIFICATION.md` §C6.
 
 ```bash
 lypning gate; echo $?             # PASS (N of M checks unmeasured) · 0 — §C6

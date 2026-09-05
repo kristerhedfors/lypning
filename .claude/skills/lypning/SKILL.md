@@ -250,7 +250,7 @@ Two rules that are easy to break:
   exactly like a program that legitimately raised. The chain treats MemoryError
   as a refusal; it deliberately does NOT treat an ordinary non-zero traceback
   that way, because re-running would execute the program's side effects twice.
-- **`opt-level = "z"` saved bytes and zero CheerpX blocks (2026-08-25,
+- **`opt-level = "z"` saved bytes and zero CheerpX blocks (2026-08-24,
   `docs/HILLCLIMB.md`).** Cold cost is a
   step function in 131,072 B device blocks (`gate.DEVICE_BLOCK`), so a saving
   that crosses no boundary streams the same number of fetches. Check the block

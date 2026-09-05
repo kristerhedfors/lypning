@@ -121,7 +121,7 @@ tell it:
 | harness | surface | state |
 |---|---|---|
 | Claude Code | `SessionStart` → `hookSpecificOutput.additionalContext` | shipped, working |
-| opencode | `tool.definition` on the `bash` tool, appended to its description | shipped; the plugin carries the paragraph itself and never calls `lypning hook opencode-context`, which exists for a host wanting the text one exec later |
+| opencode | `tool.definition` on the `bash` tool, appended to its description | shipped; the plugin carries the paragraph itself and never calls `lypning hook opencode-context`, which exists for a host wanting the text one exec later; it routes nothing (`tests/test_harness_opencode.py::test_the_plugin_ships_no_router`) |
 | opencode | `AGENTS.md` or the `instructions` config key | yours to write; we will not write a file you own |
 | OpenHands | `SessionStart` hook stdout → `additionalContext` | shipped, **unverified on that event** (§6) |
 
@@ -141,15 +141,18 @@ Established 2026-09-02 against `opencode-ai` 1.18.26 and `openhands-sdk`
 `harnesses` section of `tests/verification/claims.json`;
 `tests/test_verification.py::test_every_claim_map_entry_resolves` fails when a
 named test is gone; a row naming no test is that day's manual check, to be
-re-checked, not quoted forward. Refuted — must not appear in code:
+re-checked, not quoted forward. Against a newer `opencode-ai` or
+`openhands-sdk`: install it, re-run `tests/test_harness_opencode.py` and
+`tests/test_harness_openhands.py`, redo the rows naming no test, move this date.
+Refuted — must not appear in code:
 
 - opencode's **`permission.ask` is declared in the plugin type and dispatched
   nowhere.** A capture plugin built on it would do nothing, silently, forever.
 - The bash tool is **not** a login shell, so prepending `export PATH=…` to the
   command string is unnecessary and harmful — it would put the rewrite in the
   transcript and change which permission patterns match.
-- The tool id is `bash`, not `shell`.
-- `installation.update-available` is hyphenated; an underscore never matches.
+- The tool id is `bash`, not `shell`; `installation.update-available` is
+  hyphenated — an underscore never matches.
 - opencode's prompts *do* steer python usage, in both directions, per model.
 
 ## 7. Verify on your install
@@ -159,6 +162,8 @@ lypning doctor | grep harness   # → `OK harness opencode wired in project scop
 lypning install --harness opencode --dry-run; echo $?   # → the one file it would write, or the `skip` line in §3; 0
 echo '{"tool_name":"terminal","tool_input":{"command":"python3 -c 1"},"tool_response":{"exit_code":0},"session_id":"oh"}' | LYPNING_LOG=/tmp/h.jsonl lypning hook openhands-post-tool-use; tail -1 /tmp/h.jsonl   # → {"continue":true,"suppressOutput":true}, then one record with "host":"openhands","exit_code":0
 lypning harvest --export --json   # → "files": [{"path": ".../tests/corpus/sightings/<YOUR session>.jsonl", …}], not unknown.jsonl
+echo '{}' | lypning hook openhands-session-start | head -c 40; echo; echo '{}' | LYPNING_LOG=/tmp/h.jsonl lypning hook openhands-session-end; echo $?   # → {"continue":true,"additionalContext":"Py · {"continue":true,"suppressOutput":true} · 0
+lypning install --harness opencode --dry-run --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["scope"], sorted(d["harnesses"][0]["plan"]["actions"][0]))'; echo $?   # → project ['component', 'kind', 'note', 'path', 'present'] · 0 — the shape is {scope, harnesses:[{harness, plan:{actions:[…]}}]}; `uninstall --harness --dry-run --json` answers `{scope, would_remove:[…]}`; exit codes 0/1/2 as every command (§C10)
 ```
 
 Then run one `python3 -c 'print(1)'` and one heredoc through the live harness

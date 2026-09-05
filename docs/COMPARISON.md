@@ -58,8 +58,9 @@ exceptions — the battery grades failures too, so the counts are not comparable
 
 ### Where Monty's 23 silent divergences live
 
-Four spellings, re-verified by hand on three CPython runs (2026-08-30; no script
-reproduces this table):
+Four spellings; the CPython column re-verified by hand on three runs
+(2026-08-30), the `lypning` / `lypning-l` column pinned for both variants by
+`tests/verification/refusal-probes.json` (2026-09-05):
 
 | construct | CPython | Monty 0.0.21 | `lypning` and `lypning-l` |
 |---|---|---|---|

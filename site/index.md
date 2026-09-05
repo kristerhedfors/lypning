@@ -41,8 +41,11 @@ always, cheap never.</p></div>
 <h3>lypning-mp</h3><p class="meta">the oracle — measured, never routed to</p>
 <p>A second reimplementation kept to measure against
 (<code>engines.ORACLES</code>). <code>lypning oracle</code> renders where it
-diverged from CPython, in families, binary built or not; absent, every tool
-prints <code>not built</code> — a hole, never a zero (§C12).</p></div>
+diverged from CPython in families — a family is one reason to implement
+something exactly or to refuse it (<code>oracle.py</code>) — binary built or
+not; absent, every tool prints <code>not built</code>, and a wheel, which
+ships no catalogue, prints <code>no catalogue</code>: a hole, never a zero
+(§C12).</p></div>
 </div>
 
 ## How a program reaches an interpreter

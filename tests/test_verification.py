@@ -13,7 +13,11 @@ them true:
   stdout; ``sys.exit(90)`` is not a refusal; a program's own failure is
   returned unchanged; and what the dispatcher answers after a refusal);
 * ``hook-fixtures.json``     hook event, stdin, environment -> stdout, exit
-  (§C9: the protocol line and exit 0 on every path, the failures included).
+  (§C9: the protocol line and exit 0 on every path, the failures included);
+* ``claims.json``            claim -> the test or symbol that holds it, for
+  ``docs/HARNESSES.md`` §6, ``docs/CAPTURE.md`` *Tests* and
+  ``docs/EMBEDDING.md`` §5 — every node id must exist and every ABI symbol
+  must be declared in ``lypning.h``.
 
 A row that stops holding is a contract that moved, and the document's
 EXPECTED block for it is stale in the same way: refresh both together
@@ -183,3 +187,53 @@ def test_every_expected_file_holds_against_a_fresh_run(entry, capsys):
     missing = [pat for pat in entry["must_match"] if not re.search(pat, text, re.M)]
     assert not missing, "lypning %s no longer shows %s:\n%s" % (
         " ".join(entry["argv"]), missing, text[-2000:])
+
+
+def test_every_claim_map_entry_resolves():
+    """``claims.json`` is cited by three documents in place of a table each
+    would otherwise carry; a claim held by a test that was renamed, or an ABI
+    symbol the header no longer declares, is a stale citation nobody reads."""
+    import re
+
+    root = Path(__file__).resolve().parent.parent
+    header = (root / "src" / "lypning" / "assets" / "include" / "lypning.h").read_text(encoding="utf-8")
+    claims = _rows("claims.json")
+    missing = []
+    for section in ("harnesses", "capture"):
+        for row in claims[section]:
+            for ref in row["held_by"]:
+                m = re.fullmatch(r"(tests/test_\w+\.py)::(\w+)", ref)
+                if not m:
+                    continue  # a symbol, not a node id: a manual check names its code home
+                path, name = m.groups()
+                target = root / path
+                if not target.is_file() or not re.search(
+                        r"^\s*(?:async\s+)?def\s+%s\s*\(" % re.escape(name),
+                        target.read_text(encoding="utf-8"), re.M):
+                    missing.append(ref)
+    for row in claims["abi"]:
+        if not re.search(r"\b%s\b" % re.escape(row["symbol"]), header):
+            missing.append("lypning.h: " + row["symbol"])
+    assert not missing, "claims.json names what does not exist: %s" % ", ".join(missing)
+
+
+DOCS = FIXTURES.parent.parent / "docs"
+
+
+def test_every_measurement_table_under_verification_is_dated_and_cited():
+    """A table moved out of a document into ``tests/verification/*.md`` keeps
+    its run header (tool, YYYY-MM-DD) and is quoted by the document that names
+    it, so the number policy holds on both sides of the move."""
+    import re
+    for table in sorted(FIXTURES.glob("*.md")):
+        text = table.read_text(encoding="utf-8")
+        head = text.split("\n|", 1)[0]
+        assert re.search(r"20\d\d-\d\d-\d\d", head), "%s: no date in its header" % table.name
+        assert "`" in head, "%s: no tool named in its header" % table.name
+        citers = re.findall(r"`docs/([A-Z-]+\.md)`", head)
+        assert citers, "%s: names no document" % table.name
+        for doc in citers:
+            assert ("tests/verification/" + table.name) in (DOCS / doc).read_text(encoding="utf-8"), \
+                "%s does not cite %s" % (doc, table.name)
+        for name in re.findall(r"`(lypning(?:-[a-z]+)?)`", text):
+            assert name in engines.ENGINE_ORDER or name in engines.ORACLES, name

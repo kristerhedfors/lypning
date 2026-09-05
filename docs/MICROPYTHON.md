@@ -11,31 +11,29 @@ machine, so a missing oracle is a hole in a report and never a zero.
 ## 1. What it is, and why CPython loses by shape
 
 It is deliberately **not** a Python implementation. It is the smallest thing
-that executes the observed corpus. Everything it does not cover, it must fail
-on loudly and predictably (§4). Its value is the catalogue: the constructs a
-reimplementation gets wrong cluster (float formatting, sort stability, hash
-order, message text), and `.github/known-mismatches.json` records each one by
-identity. Every family is something a larger Rust variant must implement
-exactly or refuse; `lypning oracle` renders it without the binary (`lypning
-oracle · 2026-09-04 · 437056c`: 79 divergences in 34 families). A subset
-runtime that silently disagrees with Python is worse than no runtime, because
-the agent will not notice.
+that executes the observed corpus. Everything it does not cover, it must fail on
+loudly and predictably (§4). Its value is the catalogue:
+`.github/known-mismatches.json` records each disagreement by identity, in
+families, and `lypning oracle` renders it without the binary (`lypning oracle ·
+2026-09-04 · 437056c`: 79 divergences in 34 families); every family is something
+a larger Rust variant must implement exactly or refuse. A subset runtime that
+silently disagrees with Python is worse than no runtime, because the agent will
+not notice.
 
-The cost model it shares with the Rust spectrum: in the target sandbox the
-root filesystem is streamed block by block, so a cold run pays for the binary's
-own bytes, every shared object it links and every path it opens — and for
-nothing else. CheerpX streams the disk image in **128 KiB device blocks**
-(`gate.DEVICE_BLOCK`). Cold cost is therefore not linear in bytes, it is a
-**step function**: any saving that does not cross a 131,072 B boundary streams
-exactly the same number of blocks as before. CPython loses there by shape, not
-speed — its stdlib is files, fetched over a network — and the 30 s exec ceiling
-that destroys the VM is the one absolute (`docs/SANDBOX-PERFORMANCE.md`).
+Its cost model is the Rust spectrum's: in the target sandbox the root filesystem
+is streamed block by block, so a cold run pays for the binary's own bytes, every
+shared object it links and every path it opens — and for nothing else. CheerpX
+streams the disk image in **128 KiB device blocks** (`gate.DEVICE_BLOCK`). Cold
+cost is therefore not linear in bytes, it is a **step function**: any saving
+that does not cross a 131,072 B boundary streams exactly the same number of
+blocks as before. CPython loses there by shape, not speed — its stdlib is files,
+fetched over a network — and the 30 s exec ceiling (`DEFAULT_EXEC_TIMEOUT_MS`,
+`docs/SANDBOX-PERFORMANCE.md`) that destroys the VM is the one absolute.
 
 ## 2. The budget
 
-`lypning gate <bin>` measures the three things that predict cold cost, in
-seconds; it never accepts on its own numbers — acceptance is a cold run in a
-real VM, which this tree cannot take.
+`lypning gate <bin>` measures the three predictors of cold cost, in seconds, and
+never accepts on its own numbers: acceptance is a cold run in a real VM.
 
 | check | budget | code home |
 |---|---|---|
@@ -43,13 +41,13 @@ real VM, which this tree cannot take.
 | paths opened on `-c 'pass'` | 3 (`gate.MAX_OPENS`) | `gate.file_opens`, where `strace` runs |
 | shared objects | 0 (`gate.MAX_SHARED_OBJECTS`); `file(1)` must say `statically linked` | `gate._needed`, `gate.is_static` |
 
-Measured upstream on 2026-08-14; not reproducible from this tree: CPython's
-`-c 'pass'` opens 22 files, probes 7 more that miss and makes 65 stat calls —
-what `gate --compare` puts beside the oracle's zeros.
-**The stripped file size is quantised to the 4,096 B page.**
-`size -A` is the fine-grained truth; the file size is what the gate measures
-because it is what the sandbox streams. A Rust variant is gated in device
-blocks instead (`gate.VARIANT_BLOCK_BUDGET`, `docs/VERIFICATION.md` §C6).
+Measured upstream on 2026-08-14; not reproducible from this tree: CPython's `-c
+'pass'` opens 22 files, probes 7 more that miss and makes 65 stat calls — what
+`gate --compare` puts beside the oracle's zeros. **The stripped file size is
+quantised to the 4,096 B page.** `size -A` is the fine-grained truth; the file
+size is what the gate measures because it is what the sandbox streams. A Rust
+variant is gated in device blocks instead (`gate.VARIANT_BLOCK_BUDGET`,
+`docs/VERIFICATION.md` §C6).
 
 ## 3. Building it
 
@@ -100,8 +98,5 @@ Every path degrades to `not built` and carries on: `lypning status` prints it
 under `oracles (measured, never routed to)` (`engines.ORACLES`), `doctor` a
 WARN row, `conformance --engine lypning-mp` a `note:` line, `bench` no row at
 all, `gate` with no binary named gates `lypning` and says so; never a zero. Test
-it by moving the binary aside. **Verify:** `docs/VERIFICATION.md` §C12.
-
-```bash
-lypning oracle | sed -n '1p;$p'; echo $?     # renders without the binary; 0
-```
+it by moving the binary aside. **Verify:** `docs/VERIFICATION.md` §C12, which
+holds `lypning oracle` rendering without the binary, exit 0.

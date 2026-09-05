@@ -36,7 +36,7 @@ then exactly two fenced python blocks whose first lines are `# before` and
 | `kind`, `detail` | the refusal line the *before* must produce; `detail` is matched as a prefix |
 | `engine` | the variant that refuses; default `lypning`, the floor of `engines.SPECTRUM`; `lypning-l` when the point is that no rung short of CPython runs the *before* |
 | `served_by` | a larger variant that runs the *before* unchanged — a routing fact, checked |
-| `stdin`, `argv` | what the shell supplies: `echo hi` piped into `lypning script.py`; `lypning script.py 0`. `lypning run -c` reads no stdin unless `--stdin` is passed |
+| `stdin`, `argv` | what the shell supplies: `echo hi` piped into `lypning script.py`; `lypning script.py 0`. `lypning run` reads a piped stdin once and replays it to every rung (`cli._replayable_stdin`); `--stdin` forces the read when stdin is a terminal |
 | `min_python`, `equivalent=no`, `synthetic=yes` | assertion 3 skips below the CPython named; the two opt-outs are pinned by id in `tests/test_cookbook.py` `OPT_OUTS` |
 | the `# before` / `# after` labels | the refusal line as the engine prints it / `prints:` and the rewrite's stdout, a second line written `\n` |
 

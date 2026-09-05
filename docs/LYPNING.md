@@ -144,8 +144,9 @@ the program text. That is the design:
 smaller than the binary that routed (its blocks are already paid for); a rung
 below is marked `floor: below the routing binary`. `lypning route` prints a
 clean route as the engine name alone, a refusal-derived one as
-`<engine>\t<kind>: <detail>` (`engines.Route.__str__`); `route --spectrum`
-prints the table as JSON, and `engines.VARIANT_CAPS` is pinned to it by
+`<engine>\t<kind>: <detail>` (`engines.Route.__str__`); the binary's own
+`~/.lypning/bin/lypning route --spectrum` (the flag is the binary's, not the
+CLI's) prints the table as JSON, and `engines.VARIANT_CAPS` is pinned to it by
 `tests/test_routing.py::test_the_spectrum_copy_in_engines_is_the_rust_table`.
 The fixture table — every refusal kind, both variants, the floor rule — is
 `tests/verification/route-fixtures.json` (`docs/VERIFICATION.md` §C5).
@@ -187,8 +188,6 @@ exec'd (`main.rs:exec_engine`). The two dispatchers fall onward on:
 | Python, `engines.dispatch` | exit 90 **with** the contract line (`engines.Result.refused`), and nothing else |
 | Rust, `main.rs` through `embed.rs:fall_onward` | exit 90; also `MemoryError` on stderr; also `Traceback (` on stderr at exit 0 |
 
-An ordinary non-zero exit with a traceback is neither: it is very often the
-program's own answer, and re-running it would execute its side effects twice.
 Where the chain goes is `route.rs:chain_after`, mirrored by
 `engines.chain_after_refusal`: a kind in `ONLY_CPYTHON_KINDS` goes straight
 to `cpython`; otherwise each later sibling whose static verdict was "can run"
@@ -207,6 +206,10 @@ file is written twice, or half. So a lypning run is transactional
   exit;
 - file writes accumulate per path, and deletes and renames are staged;
 - exit 90 discards all of it, so the program is observably a no-op.
+
+`lypning-mp` has no barrier: it streams stdout, so a refusal after a `print`
+is graded `MISMATCH contract` — one reason it is an oracle and not a rung
+(`tests/test_routing.py::test_the_one_unsafe_route_is_the_tracked_barrier_defect`).
 
 The barrier is invisible to the program and visible only to the dispatcher: a
 read consults the staged writes first, so `open(p,'w').write(x)` followed by
@@ -249,17 +252,19 @@ device blocks, so a variant is budgeted in blocks, not bytes — `lypning` 8,
 `lypning gate` fails a build that crosses its budget (`docs/VERIFICATION.md`
 §C6). The core is frozen by decision (`Cargo.toml`, the `variant-m` comment):
 every new capability goes to `lypning-l`. `opt-level = "z"` was measured on
-2026-08-25 (`docs/HILLCLIMB.md`) as smaller and **still 8 blocks**, so it buys
-nothing under the cost model that matters, and on 2026-08-24 it cost
-interpreter throughput on the `perf` suite. The crate is static, not
-static-PIE; `.cargo/config.toml` carries that measurement and the trade.
+2026-08-24 (`docs/HILLCLIMB.md`, iterations 18 and 19) as smaller and **still 8
+blocks**, so it buys nothing under the cost model that matters, and the same
+day it cost interpreter throughput on the `perf` suite. The crate is static,
+not static-PIE; `.cargo/config.toml` carries that measurement and the trade.
 
 ## 8a. Measurement in a sandbox VM
 
 CheerpX is 32-bit x86, so `lypning build --rust --target i686` is the binary
 that runs there; the VM probes were measured upstream on 2026-08-19 with it and
-are not reproducible from this tree. The cost model is
-`docs/SANDBOX-PERFORMANCE.md`; `lypning gate` measures the shape locally.
+are not reproducible from this tree; the probe table (first-touch bytes per
+runtime, cited by `gate.py`) is in `docs/BENCH-LEDGER.md` under 2026-09-05. The
+cost model is `docs/SANDBOX-PERFORMANCE.md`; `lypning gate` measures the shape
+locally.
 
 **Read the byte columns with the tool's ordering caveat in hand.** The IDB cache
 is fresh per RUN, not per probe, so the first probe to touch a binary pays for
@@ -289,11 +294,8 @@ runtime's FIRST probe; a later one's byte count is not a size.
 | `src/route.rs`, `src/main.rs`, `src/embed.rs`, `src/capi.rs`, `src/host.rs`, `src/lib.rs` | the classifier; CLI, exit contract, dispatcher; the in-process runner and `fall_onward`; the C ABI (`capi` feature); host hooks |
 | `../scripts/build-rust.sh` | the standalone build, with the shape and contract smoke checks; `lypning build --rust` drives the same build |
 
-Python side (`src/lypning/`): `engines.py` (names, finding, running, the
-chain), `build.py`, `conformance.py`, `routing.py`, `routes.py`, `oracle.py`,
-`gate.py`, `bench.py`, `perf.py`, `fuzz.py`, `corpus.py`, `capture.py`,
-`harvest.py`, `install.py`, `shim.py`, `embed.py`, `pool.py`, `paths.py`, and
-`cli.py`, the only module that prints.
+Python side: `src/lypning/`, laid out in `README.md` §9; `cli.py` is the only
+module that prints.
 
 ## 11. Adding a capability to lypning-l
 
@@ -317,10 +319,9 @@ The realistic next PR is a `cap-*` on the larger variant; the core is frozen.
    the adversarial pass has found the missed one three times
    (`docs/HILLCLIMB.md` iteration 74; `CHANGELOG.md` #39): `value.rs`
    (`type_name`, `eq`, `is_same`, hash, truthiness), `fmt.rs` (`repr`, `str`,
-   format specs), `ops.rs` (operators, ordering, `in`, index, set/del item,
-   slices, `getattr`), `methods.rs`, `builtins.rs` (`isinstance`, `len`,
-   `bytes`, `reversed`, the constructor), `iter.rs`, `eval.rs`, and the
-   comparator `sorted`/`min`/`max` share — grep `cfg(feature = "cap-`.
+   format specs), `ops.rs` (operators, ordering, `in`, indexing, slices,
+   `getattr`), `methods.rs`, `builtins.rs` (`isinstance`, `len`, `bytes`,
+   `reversed`, constructor), `iter.rs`, `eval.rs`: grep `cfg(feature = "cap-`.
 6. **The grid test.** One `tests/test_<name>_grid.py` running a cross-product
    of shapes under CPython and the variant
    (`tests/test_pathlib_grid.py::test_the_pathlib_grid_agrees_with_cpython`);
@@ -335,10 +336,10 @@ The realistic next PR is a `cap-*` on the larger variant; the core is frozen.
    `dispatchers agree N/N`), `lypning doctor`, `git status`; then the
    `CHANGELOG.md` entry, its coverage delta quoted from that run.
 
-**Verify.** `docs/VERIFICATION.md` §C1–§C6 hold these claims as commands with
-expected output; the two that change most:
+**Verify.** `docs/VERIFICATION.md` §C1–§C6 hold these claims as commands
+with expected output; the two that change most:
 
 ```bash
 lypning conformance --mixture both | grep -E '^(MISMATCH [0-9]|dispatchers|monotone)|UNSAFE'; echo $?
-lypning route --spectrum; echo $?     # the table §4 describes, from the binary
+~/.lypning/bin/lypning route --spectrum; echo $?     # the table §4 describes, as JSON; the binary only, 0
 ```

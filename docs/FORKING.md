@@ -23,7 +23,7 @@ lypning build --rust      # the exit-90 contract is asserted on the binary
 lypning conformance       # MISMATCH must be 0
 lypning doctor            # 0 FAIL
 git status                # the corpus runs behind a net; check it anyway
-lypning gate              # PASS — every variant inside its block budget
+lypning gate; lypning gate ~/.lypning/bin/lypning-l   # PASS twice — bare gates the core only
 ```
 
 Run it as a standing loop (`/loop`, or a cron): harvest, run the gates, take
@@ -38,7 +38,7 @@ wrong (invariant 3).
 ## 2. From fork to tuned spectrum
 
 ```bash
-lypning build --rust             # → `ok` per variant, `unsupported contract: held`  (§C2)
+lypning build --rust -v          # → `ok` per variant, `unsupported contract: held` in the log  (§C2)
 lypning build --micropython      # optional: the oracle; absent, every path prints `not built` (§C12)
 lypning install                  # merges hooks into .claude/settings.json; re-run → `all 3 hook entries already present` (§C10)
 lypning shim install             # python3 on $PATH records what runs
@@ -78,19 +78,19 @@ captured programs; tests object if you touch them.
 
 | what | where |
 |---|---|
-| the exit-90 refusal contract, spelled once and asserted on the built binary | `engines.refusal_line`, `main.rs::finish`, `build.check_refusal_contract` |
-| the commit barrier: stdout and writes staged, discarded on refusal | `io.rs::COMMIT_THRESHOLD` (8 MiB) |
-| fall-through only on a genuine refusal — never on the program's own errors | `engines.dispatch`, `main.rs::dispatch` |
-| CPython-exact semantics: identity-first element comparison, floor division, arity and keyword rejection, refuse-don't-guess | `value.rs::elem_eq`, `ops.rs`, `builtins.rs` |
-| the comparison environment: `PYTHONHASHSEED=0`, `LC_ALL=C.UTF-8`, capture off inside the battery | `conformance._env_for` |
+| The exit-90 refusal contract, spelled once and asserted on the built binary | `engines.refusal_line`, `main.rs::finish`, `build.check_refusal_contract` |
+| The commit barrier: stdout/writes staged, discarded on refusal, so a retry is safe | `io.rs::COMMIT_THRESHOLD` (8 MiB) |
+| Fall-through only on a genuine refusal — never on exit 90 alone, never on the program's own errors | `engines.dispatch`, `main.rs::dispatch` |
+| CPython-exact semantics: identity-first element comparison (`elem_eq`), floor-division rounding, arity/keyword rejection, refuse-don't-guess (NaN identity, set order, interning) | `value.rs::elem_eq`, `ops.rs`, `builtins.rs` |
+| The comparison environment: `PYTHONHASHSEED=0`, `LC_ALL=C.UTF-8`, identical decode rules on both sides, capture disabled inside the battery | `conformance._env_for` |
 | the net — a temp cwd per entry per engine and a `git status` snapshot; not a sandbox | `conformance.py` (§C8) |
-| the verdict asymmetry: MISMATCH is always a bug, UNSUPPORTED never is | `conformance.classify` |
-| recursion guards expressed as refusals, so deep data never SIGSEGVs a host | `err.rs::MAX_NEST` (500), `eval.rs::MAX_DEPTH` (180), `parse.rs::MAX_PARSE_DEPTH` (64) |
+| The battery's verdict asymmetry: MISMATCH is always a bug, UNSUPPORTED never is | `conformance.classify` |
+| Recursion guards expressed as refusals, so deep data can never SIGSEGV a host | `err.rs::MAX_NEST` (500), `eval.rs::MAX_DEPTH` (180), `parse.rs::MAX_PARSE_DEPTH` (64) |
 
 **Workload-general — keep the mechanism, re-derive the contents.**
 | mechanism | contents | re-derived by |
 |---|---|---|
-| what each variant serves | `route.rs::CAPS`, `modules.rs::MODULES` / `MODULES_L`, `engines.VARIANT_CAPS` | `conformance --plan` per variant; `tests/test_routing.py::test_no_module_in_the_table_routes_past_the_tier_that_claims_it` |
+| what each variant serves | `route.rs::CAPS`, `modules.rs::MODULES` (one `cfg`-gated table per `cap-*` set), `engines.VARIANT_CAPS` | `conformance --plan` per variant; `tests/test_routing.py::test_no_module_in_the_table_routes_past_the_tier_that_claims_it` |
 | kinds no Rust variant may answer, at any size | `route.rs::ONLY_CPYTHON_KINDS` = `engines.ONLY_CPYTHON_REFUSALS`, read by both dispatchers, held equal by test | `routes --plan` lists them as `NOT IMPLEMENTABLE`; a kind leaves the set only by being implemented exactly |
 | the spectrum itself | `engines.SPECTRUM`, `engines.ORACLES`, `route.rs::SPECTRUM` (`ENGINE_ORDER` and `conformance.DEFAULT_ARMS` derive from them) | the tests in §2 |
 | the nondeterminism screens | `conformance._RUN_SPECIFIC`, `_IMPLEMENTATION_DEFINED` | extend as your corpus surfaces shapes; never prune |

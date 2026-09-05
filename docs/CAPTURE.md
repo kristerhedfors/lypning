@@ -32,7 +32,7 @@ directory is yours. Keys are session-namespaced — `shim:<session>#<line>`,
 `capture.SESSION_ENV` the tag is `invocations` and the file `unknown.jsonl`
 (`harvest.session_filename`). `corpus.jsonl` is derived from the sightings by
 `lypning harvest`; no session has to run it. The shared-file design this
-replaced is in `CHANGELOG.md` (2026-08-14).
+replaced is in `CHANGELOG.md` (2026-08-15).
 
 ## The raw record
 
@@ -155,6 +155,7 @@ existed keep the bytes they have.
 
 ```bash
 lypning corpus --stats --model claude-fable-5-1   # → the slice and the whole it came from, with an `unattributed` row
+# → under `by model`: a row per model id, then `unattributed <count> <share>` — the whole corpus, 100.0%, on a tree with no transcript to join (2026-09-05)
 python3 -c 'import json,sys; assert all(sum(r.get("models",{}).values())<=r["count"] for r in map(json.loads,open(sys.argv[1]))); print("ok")' src/lypning/assets/corpus/corpus.jsonl   # → ok
 ```
 
@@ -182,7 +183,9 @@ the last 4096 consumed bytes (`harvest._tail_digest`; tail, not head, because a
 restored copy reproduces the opening records) re-reads the file from byte zero.
 It is never committed and deleting it costs one cold harvest; the byte counts
 of a cold and a warm harvest, dated 2026-09-02, are in the `harvest.py` module
-comment.
+comment. Force any of them — delete the file, `cp` the transcript onto a new
+inode, `truncate` it below the stored offset — and the next `lypning harvest
+--dry-run` re-reads from byte zero and prints the same `sightings` count.
 
 The two merges are **not** the same function, and this is the trap:
 `harvest._combine` and `fold_into_corpus` take the per-model **max**, because
@@ -254,6 +257,9 @@ interpreter is found by scanning `$PATH` minus the shim's own directory,
 skipping any file with the shim's marker, so it never execs into itself.
 `lypning shim status` is loud when the shim is installed but shadowed (that and
 "not installed" share a symptom, an empty log): `docs/VERIFICATION.md` §C10.
+Test the fallback: `LYPNING_LOG=/nonexistent/x.jsonl TMPDIR=/tmp/fb lypning hook
+pre-tool-use` writes `/tmp/fb/lypning-mp-<uid>/invocations.jsonl`; with
+`TMPDIR=/nonexistent` too it writes nothing and answers the protocol line, 0.
 
 ## Tests
 

@@ -670,8 +670,9 @@ def test_the_one_unsafe_route_is_the_tracked_barrier_defect(lypning_bin, micropy
     barrier (docs/LYPNING.md §6, tests/test_commit_barrier.py).
 
     If this fails, lypning-mp gained a commit barrier. That is good news and
-    makes docs/LYPNING.md §6, the README's conformance section and this test
-    stale — say so rather than deleting the assertion.
+    makes docs/LYPNING.md §6 (the paragraph on lypning-mp streaming stdout),
+    the README's conformance section and this test stale — say so rather than
+    deleting the assertion.
     """
     assert eng.route(PRINT_THEN_REFUSE_MP).engine == eng.LYPNING_L
     report = conf.run(entries=[corpus.Entry(id="unsafe-repro", program=PRINT_THEN_REFUSE_MP)],

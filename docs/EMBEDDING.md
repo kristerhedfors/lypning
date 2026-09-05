@@ -52,6 +52,7 @@ re-measure and do not quote a ratio. A refusal costs a CPython spawn as before.
 lypning build --lib          # the shared library, liblypning.a, and the headers
 lypning lib                  # where they went, and the exact cc line
 cc $(lypning lib --cflags) my_harness.c $(lypning lib --libs)
+# → each exits 0 once built; before that `lypning lib` exits 2 with the `build --lib` hint on stderr
 ```
 
 The artefacts are the shared library, the static archive `liblypning.a`, and
@@ -122,6 +123,7 @@ python3 study/hosts/prepare.py                    # lay out the shared program s
 make -C study/hosts                               # C, C++, Rust, Go, Swift drivers and the Node addon
 sh study/hosts/run_all.sh                         # every host, one summary line each
 git status                                        # the programs ran behind a net; check anyway
+# → the per-host summary lines above, exit 0, and an empty `git status --porcelain`
 ```
 
 The ABI has no capture hook: `lypning_run()` spawns nothing, so neither feed in
@@ -202,27 +204,28 @@ The library shares the interpreter with the binary but not the exit path, so it
 is verified on its own. `lypning build --lib` asserts the refusal contract
 through the ABI before `ok` — status, exit code, empty stdout, the one line
 headed `lypning-l:`, a request to be routed onward
-(`embed.check_refusal_contract`); a failure prints `unsupported contract
-(in-process): BROKEN — <why>`. `lypning lib --json` (keys in §C14) exits 2 with
-nothing on stdout when no library is built or `$LYPNING_LIB` names a missing
-one (`embed.LibraryError`). `lypning doctor` has two library rows: `library
+(`embed.check_refusal_contract`); the log line is `unsupported contract
+(in-process): held`, or `BROKEN — <why>` on a failure, printed under `-v` or in
+`--json`. `lypning lib --json` (keys in §C14) exits 2 with nothing on stdout
+when no library is built or `$LYPNING_LIB` names a missing one
+(`embed.LibraryError`). `lypning doctor` has two library rows: `library
 refusal`, and `core/library agreement` (`engines.library_binary_drift` over
-`engines.DRIFT_PROBES` — FAIL when `build --rust` without `--lib` left a
-library from an older tree; a hole, never OK, with an artefact absent).
-`lypning conformance --engine library` is opt-in (`conformance.OPT_IN_ARMS`),
-scored against CPython by the spawned arms' rules with
-`conformance.LIBRARY_STEP_LIMIT` graded UNSUPPORTED, never MISMATCH, and
-serialised under `engines._CHDIR_LOCK`; it is not compared with the `lypning`
-arm program for program — `lypning-l` legitimately runs programs `lypning`
-refuses, and binary/library agreement is the doctor row. `tests/test_embed.py`
-pins the library-only failure modes (leaked state, a latched commit flag, the
-deep programs of §7 on a 1 MB thread, BUSY and PANIC routable);
-`tests/test_commit_barrier.py::test_rust_core_refuses_with_stdout_untouched`
-the barrier; `tests/test_hosts.py::test_quickstart` every §4 host over the five
+`engines.DRIFT_PROBES` — FAIL when `build --rust` without `--lib` left a library
+from an older tree; a hole, never OK, with an artefact absent). `lypning
+conformance --engine library` is opt-in (`conformance.OPT_IN_ARMS`), scored
+against CPython by the spawned arms' rules with `conformance.LIBRARY_STEP_LIMIT`
+graded UNSUPPORTED, never MISMATCH, and serialised under `engines._CHDIR_LOCK`;
+it is not compared with the `lypning` arm program for program — `lypning-l`
+legitimately runs programs `lypning` refuses, and binary/library agreement is
+the doctor row. `tests/test_embed.py` pins the library-only failure modes
+(leaked state, a latched commit flag, the deep programs of §7 on a 1 MB thread,
+BUSY and PANIC routable);
+`tests/test_commit_barrier.py::test_rust_core_refuses_with_stdout_untouched` the
+barrier; `tests/test_hosts.py::test_quickstart` every §4 host over the five
 probes, bytes compared per host (a host missing its toolchain is skipped).
 
 ```bash
-lypning build --lib; echo $?   # → … unsupported contract (in-process): held … ok · 0
+lypning build --lib -v; echo $?   # → … unsupported contract (in-process): held … ok · 0 (the contract line is in the build log: `-v` or `--json`)
 lypning lib --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["abi"], d["cli_abi"])'   # → 1 1
 lypning doctor | grep -E 'library refusal|core/library'   # → OK … falls onward · OK … frontier probes answer alike in both artifacts
 ```

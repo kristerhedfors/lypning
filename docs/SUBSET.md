@@ -1,13 +1,11 @@
 # The subset and the refusal contract
 
 *What every Rust variant must execute exactly, and what happens when a program
-leaves that set; not a build order — that is `lypning conformance --plan`. The
-engines are `engines.ENGINE_ORDER`; `lypning-mp`, the oracle — measured, never
-routed to — is graded against the same rows only when named.*
+leaves that set. The engines are `engines.ENGINE_ORDER`; `lypning-mp`, the
+oracle — measured, never routed to — is graded against these rows when named.*
 
-It is not a Python implementation. It is the subset that the agent loop
-actually invokes, and the contract for what happens when a program leaves that
-subset.
+It is not a Python implementation. It is the subset that the agent loop actually
+invokes, and the contract for what happens when a program leaves that subset.
 
 ## 1. The evidence base
 
@@ -21,7 +19,7 @@ on the pipe, `argv_tail` after `-c` and a minimal environment (`PATH`, `HOME`,
 ## 2. The one-liner shapes
 
 Each variant accepts `<engine> -c '<src>' [args…]` (`sys.argv[0]` is `"-c"`),
-`<engine> script.py [args…]` (`sys.argv[0]` is the path), and `<engine> -` with
+`<engine> script.py [args…]` (`sys.argv[0]` is the path) and `<engine> -` with
 the program on stdin, consumed as under CPython (`main.rs:run`). `--version`
 prints the variant's own name; every `-m` is `cli: option -m`; there is no REPL.
 
@@ -102,8 +100,11 @@ divergence, and every row is **exact, or exit 90** — never approximate.
 When a program uses something an engine does not implement: exit code **90**,
 one line on stderr, nothing else — `<engine>: unsupported: <kind>: <detail>`,
 `<engine>` being the binary's own name (`err.rs:ENGINE`, `engines.refusal_line`)
-and `<kind>` any `[\w-]+` (`conformance._UNSUPPORTED_RE`); the live vocabulary
-is `grep -ho 'unsupported("[a-z-]*' src/lypning/assets/rust/src/*.rs | sort -u`.
+and `<kind>` any `[\w-]+` (`conformance._UNSUPPORTED_RE`). `grep -ho
+'unsupported("[a-z-]*' src/lypning/assets/rust/src/*.rs | sort -u` lists the
+kinds spelled at call sites; the rest reach `err.rs:unsupported` through helpers
+— `set-order` (`value.rs:set_order_refused`), `repr-unicode` (`fmt.rs`),
+`int-div-precision`, `nan-identity` and `type` (`ops.rs`).
 
 90 is clear of 0/1/2 (CPython's own), of 126/127 (shell "cannot execute" /
 "not found"), and of 128+n (signals), so a caller can branch on it
@@ -125,15 +126,13 @@ unambiguously and retry with real `python3` — or rewrite the line as awk.
 
 Silent semantic divergence — a program that runs to completion and prints the
 wrong thing — is the failure this whole contract exists to make impossible to
-miss. `docs/LYPNING.md` §2 is the grader, §6 the barrier a runtime 90 relies on.
+miss. `docs/LYPNING.md` §2 grades it; §6 is the barrier a runtime 90 needs.
 
 ## 8. Verify one row
 
 ```bash
 lypning -c 'print(-7 // 2)'; echo $?             # → -4, 0 — as python3 -c does
-lypning -c 'print(2**100)'; echo $?              # stderr: lypning: unsupported: bigint: …; 90
-lypning -c 'print(2**100)' 2>/dev/null | wc -c   # → 0: nothing on stdout
+lypning -c 'print(2**100)'; echo $?              # stderr: lypning: unsupported: bigint: …; 90 — and nothing on stdout
 ```
 
-Every row, every engine: `docs/VERIFICATION.md` §C1 (the refusal) and §C3
-(`MISMATCH 0`).
+Every row on every engine: `docs/VERIFICATION.md` §C1, §C3 (`MISMATCH 0`).

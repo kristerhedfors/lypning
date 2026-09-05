@@ -30,7 +30,7 @@ pub const BUILTINS: &[&str] = &[
 /// `as i64` SATURATES in Rust: `1e308 as i64` is i64::MAX and `f64::INFINITY as
 /// i64` is i64::MAX, so `int(1e308)` answered 9223372036854775807 and
 /// `round(1e100)` answered the same — both at exit 0, both wrong, and both in
-/// exactly the place docs/LYPNING.md §5 promises an `unsupported: bigint` refusal.
+/// exactly the place docs/LYPNING.md §3 promises an `unsupported: bigint` refusal.
 /// The promise was kept for arithmetic (every op is checked) and quietly broken
 /// on the two conversions. scripts/lypning-fuzz.mjs found it in its first 120
 /// probes.

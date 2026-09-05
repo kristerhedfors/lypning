@@ -5,9 +5,10 @@
 > measured, never routed to — since 2026-09-04). `study/harness.py` resolves
 > only `$LYPNING_HOME/bin/lypning` (`harness.lypning_bin`) and spells the
 > engines `lypning`, `mixture`, `cpython` by hand; `lypning-l` was never run,
-> and `study/gen_brief.py` reads `modules.rs` `MODULES`, not `MODULES_L`, so
-> the brief describes `lypning` alone. The tasks tempting `collections.Counter`
-> and `pathlib` (§4) name what `lypning-l` carries (`engines.VARIANT_CAPS`).
+> and `study/gen_brief.py` reads the first `const MODULES` in `modules.rs` —
+> the table with no `cap-*` on — so the brief describes `lypning` alone. The
+> tasks tempting `collections.Counter` and `pathlib` (§4) name what `lypning-l`
+> carries (`engines.VARIANT_CAPS`).
 > Nothing was re-run on `lypning → lypning-l → cpython`.
 
 Can a prompt keep an agent inside the subset, at what cost, and where does it
@@ -107,21 +108,33 @@ the prompt says enough, the outcome stops depending on which agent read it.
 
 ## 4. Causes of failure
 
-Tables 3 and 4 of `study/data/tables.md` (`study/score.py`, 2026-08-23) hold
-the three commonest blockers per treatment and every task's row.
+Table 3 of `study/data/tables.md` (`study/score.py`, 2026-08-23) holds the
+three commonest blockers per treatment; Table 4 is this one. **Per task**,
+control against the cheapest static prompt that solves it:
+
+| task | tempts | `lypning` feasible | control | cheapest static prompt that gets it | engine in the loop |
+|---|---|---|---:|---:|---:|
+| `word-freq-top3` | collections.Counter | yes | 0.0% | T1 (100%) | 100.0% |
+| `csv-column-sum` | csv | yes | 0.0% | T2 (100%) | 100.0% |
+| `csv-group-max` | csv, collections | yes | 0.0% | T2 (100%) | 100.0% |
+| `extract-ints` | re | yes | 0.0% | T2 (100%) | 100.0% |
+| `char-histogram` | collections.Counter | yes | 0.0% | T1 (100%) | 100.0% |
+| `isqrt` | math.isqrt | yes | 25.0% | T2 (100%) | 100.0% |
+| `listdir-filter` | glob, pathlib | **no** | 0.0% | — | 0.0% |
+| `big-factorial` | — | **no** | 0.0% | T4 (25%) | 0.0% |
+| `sha256-abc` | hashlib | **no** | 0.0% | — | 16.7% |
+| *the other 17* | — | yes | 100.0% | T1 (100%) | 100.0% |
 
 - At the ceiling the residue is identical — four `run: bigint`, four
   `run: os-listdir`, four `run: module`, one per replicate on each of the three
   infeasible tasks (§8). The kinds are the engine's refusal vocabulary
   (`docs/VERIFICATION.md` §C1); `os-listdir` and `bigint` are run-time
   refusals, the class the `lypning routes` ledger records in the field (§C11).
-- Six tasks carry the entire effect — `word-freq-top3`, `char-histogram`
-  (`collections.Counter`), `csv-column-sum`, `csv-group-max` (`csv`),
-  `extract-ints` (`re`), `isqrt` (`math.isqrt`): control 0–25%, T1 or T2 100%.
-  In each the idiomatic Python is an import and the subset-clean Python is four
-  more lines — `Counter` becomes `d.get(k, 0) + 1`, `csv.reader` becomes
-  `line.split(",")`, `re.findall` a digit-run loop, `math.isqrt` a binary
-  search. Seventeen tasks were already inside the subset; three are infeasible.
+- Six tasks carry the entire effect. In each the idiomatic Python is an import
+  and the subset-clean Python is four more lines — `Counter` becomes
+  `d.get(k, 0) + 1`, `csv.reader` becomes `line.split(",")`, `re.findall` a
+  digit-run loop, `math.isqrt` a binary search. Seventeen tasks were already
+  inside the subset; three are infeasible.
 - T3 handed the agent the `SKILL.md` of 2026-08-23 and reached 81.7% — seven
   points behind the motive paragraph, eight behind the generated brief — with
   4× `isqrt` reaching for `math` and 3× `unique-sorted` for `dict.fromkeys`:
@@ -252,10 +265,10 @@ none says *do not reimplement a standard algorithm to stay in the subset*.
   agents ran inside this repository, whose `CLAUDE.md` names the subset, and
   were told to ignore it. T0 is checked against the corpus itself:
 
-  | corpus, routed before this study's fold | programs | routes to `lypning` |
+  | corpus, routed by `study/baseline.py` on 2026-08-23 (count as loaded) | programs | routes to `lypning` |
   |---|---:|---:|
-  | as it stood on 2026-08-23 morning | 842 | **62.7%** |
-  | after the hillclimb work landed | 1037 | **55.6%** |
+  | as it stood that morning, commit `5617f7d` | 842 | **62.7%** |
+  | after the hillclimb work landed, commit `1ccbb4d` (#7) | 1037 | **55.6%** |
 
   T0 routed 62.5% and ran 66.3%: on the first anchor, seven points above the
   second. The later corpus is heavier because most of its new programs were

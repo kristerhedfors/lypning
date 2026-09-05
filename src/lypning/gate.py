@@ -404,9 +404,10 @@ def _size_check(engine: str, size: int) -> Check:
     different jobs: lypning-mp is MicroPython carrying a frozen Python stdlib,
     sized against the 541,688 B prototype, while lypning is a from-scratch
     subset whose bytes are its own code and whose release profile is tuned
-    separately. docs/LYPNING.md §8 measured the difference in the VM and
-    accepted it — 1,280 KB against 768 KB on first touch, 8 device blocks
-    against 3 — as a real and known cost rather than a violation, because
+    separately. The 2026-08-19 VM probes (docs/BENCH-LEDGER.md, the entry
+    dated 2026-09-05) measured the difference and docs/LYPNING.md §8 accepted
+    it — 1,280 KB against 768 KB on first touch, 8 device blocks against 3 —
+    as a real and known cost rather than a violation, because
     lypning buys back multiples of it on the programs it accepts. Sharing a byte
     budget between them would be inventing a number no document argues for. What
     they do share is the constraint that actually predicts cold cost: opens and

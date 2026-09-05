@@ -68,7 +68,9 @@ the C ABI (§3b), `--all` both, and `--micropython` the oracle, which needs a
 32-bit toolchain and a network and is absent by default — a missing arm is a
 status line, never an error: `status` and `doctor` say `not built`, `bench`
 leaves a hole rather than a zero, and `conformance` measures it only when named
-(`--engine lypning-mp`; `docs/VERIFICATION.md` §C12).
+(`--engine lypning-mp`; `docs/VERIFICATION.md` §C12). The wheel shape — `pip
+install --no-build-isolation .` into a venv, `assets/` read-only — is tested on
+purpose, never by accident (`docs/VERIFICATION.md` §C13).
 
 ## 3. Integration with a coding session
 
@@ -220,7 +222,7 @@ caller-defined output, every other subcommand takes `--json`.
 | `lypning oracle` | what a second reimplementation of Python got wrong | yes |
 | `lypning harvest` | turn captured invocations into corpus entries | yes |
 | `lypning corpus` | inspect the harvested programs | yes |
-| `lypning routes` | the value-dependent refusals a static route could not see — write-only with respect to routing | yes |
+| `lypning routes` | the value-dependent refusals a static route could not see — write-only with respect to routing (`docs/VERIFICATION.md` §C11) | yes |
 
 Exit codes (`cli.py`): `0` ok; `1` the command failed (a MISMATCH, a failed
 gate, a fuzz counterexample, a doctor FAIL); `2` usage, including "the core is
@@ -245,7 +247,7 @@ lypning: unsupported: module: import re
 | `LYPNING_BIN`, `LYPNING_L_BIN` | pin a spectrum variant's binary (`engines.env_var_for`) |
 | `LYPNING_MP_BIN` | pin the oracle's binary — measured, never routed to |
 | `LYPNING_LIB` | override the embeddable C ABI library (`lypning lib`, `lypning.embed`) |
-| `LYPNING_POOL` | socket of a warm CPython pool (`lypning pool serve`); the chain's last rung uses it, and falls back to a cold spawn if it is unreachable |
+| `LYPNING_POOL` | socket of a warm CPython pool (`lypning pool serve`); the chain's CPython tier uses it, and falls back to a cold spawn if it is unreachable |
 | `LYPNING_CPYTHON` | override the reference CPython |
 | `LYPNING_CAPTURE=0` | disable the whole capture harness |
 | `LYPNING_HARVEST=0` | keep capturing, stop the Stop hook publishing |
@@ -273,8 +275,9 @@ opt-in by `--engine`. Each answer is one of three:
 MISMATCH is the gate and UNSUPPORTED is a coverage number; never clear a
 MISMATCH by widening a capability table (`CLAUDE.md` invariant 1). Programs
 whose output cannot be equal on two interpreters — timestamps, pids, set order
-— are skipped by rule and listed; reference and engine share one deadline, so a
-reference timeout leaves the measurement and an engine-only timeout is a
+— run with stdout uncompared and are graded on exit code alone
+(`conformance.is_nondeterministic`); reference and engine share one deadline, so
+a reference timeout leaves the measurement and an engine-only timeout is a
 MISMATCH. The same run grades the routes — IDEAL, WASTED, LATE, UNSAFE
 (`routing.py`); UNSAFE must be 0, and `accuracy` is a census, not a cost model:
 a LATE is a CPython spawn, a WASTED an in-process parse (measured 2026-09-04,
