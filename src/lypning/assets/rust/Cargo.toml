@@ -50,7 +50,7 @@ variant-m = []
 # The 4 MB point. Names the smaller variant so cargo's feature union makes it a
 # superset by construction — the monotonicity the router assumes. It grows one
 # `cap-*` per step; `variant-m` is FROZEN and gains none of them.
-variant-l = ["variant-m", "cap-collections", "cap-pathlib"]
+variant-l = ["variant-m", "cap-collections", "cap-pathlib", "cap-re"]
 
 # `collections.Counter` and `collections.defaultdict` — 83 of the corpus
 # programs measured on 2026-09-04 import `collections`, and between them they
@@ -63,6 +63,13 @@ cap-collections = []
 # `Rc<str>` and the filesystem surface is the commit barrier `io.rs` already
 # holds. `src/pathlib.rs` is the whole of it.
 cap-pathlib = []
+
+# `re` — the module, its flag constants, `re.escape` and `re.purge`, and the
+# NAMES of the matcher-backed functions, which refuse at call time until the
+# matcher lands. 248 corpus programs (2026-09-04) were blocked on `import re`
+# and 174 of them never reach a regex call in the battery. `src/re.rs` is the
+# whole of it; the core gains none of it.
+cap-re = []
 
 capi = []
 

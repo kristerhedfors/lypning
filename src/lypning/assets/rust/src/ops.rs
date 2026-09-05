@@ -22,6 +22,28 @@ use std::rc::Rc;
 impl Interp {
     pub fn binop(&mut self, op: BinOp, a: &Value, b: &Value) -> R<Value> {
         use BinOp::*;
+        // A flag FIRST, before the numeric fast path: `as_num` reads a
+        // `RegexFlag` as its int, which is right for `+ - * < ==` and every
+        // other operator — and would answer `re.I | re.M` as `10` at exit 0
+        // where CPython keeps `| & ^` in the flag type. `re::binop` takes
+        // those three and refuses a non-int partner; everything else it
+        // leaves to the paths below.
+        #[cfg(feature = "cap-re")]
+        {
+            if let Some(v) = crate::re::binop(op, a, b)? {
+                return Ok(v);
+            }
+            // `'ab' * re.I` — sequence repetition reads the flag through
+            // `__index__`, and the fast path cannot see it because the other
+            // operand is not a number. Only `*`: `%` is percent formatting,
+            // which must see the flag itself (`'%s' % re.I` prints its repr).
+            if let Mul = op {
+                let (x, y) = (crate::re::as_int(a), crate::re::as_int(b));
+                if x.is_some() || y.is_some() {
+                    return self.binop(op, x.as_ref().unwrap_or(a), y.as_ref().unwrap_or(b));
+                }
+            }
+        }
         // Numeric fast path, then the per-type cases.
         if let (Some(x), Some(y)) = (as_num(a), as_num(b)) {
             if !matches!(op, Add | Sub | Mul | Div | FloorDiv | Mod | Pow)
@@ -202,6 +224,12 @@ impl Interp {
         // be a TypeError at exit 1 for a program that works there.
         #[cfg(feature = "cap-pathlib")]
         crate::pathlib::guard_view(container, "`in`")?;
+        // `re.I in re.I | re.M` is `Flag.__contains__`, a subset test CPython
+        // answers True; the arm below would raise at exit 1. Refused.
+        #[cfg(feature = "cap-re")]
+        if let Value::ReFlag(_) = container {
+            return Err(crate::re::refuse("`in` over a RegexFlag (Flag.__contains__)"));
+        }
         Ok(match container {
             Value::Str(s) => match needle {
                 Value::Str(n) => s.contains(n.as_ref()),
@@ -598,6 +626,13 @@ impl Interp {
     pub fn get_attr(&mut self, base: &Value, name: &str) -> R<Value> {
         if let Value::Module(_) = base {
             return crate::modules::get_attr(base, name);
+        }
+        // `.name`, `.value`, `.bit_length()`, `.real`: CPython answers every
+        // one, and an AttributeError here is exit 1, which the chain never
+        // retries. Refused, so it reaches CPython one spawn later.
+        #[cfg(feature = "cap-re")]
+        if let Value::ReFlag(_) = base {
+            return Err(crate::re::attr_refused(name));
         }
         // A path's properties are COMPUTED here — `.name`, `.parts`, `.parent`
         // are not methods — and every name this engine does not answer refuses
@@ -1767,6 +1802,18 @@ fn read_spec(
 /// being clever on an error path (ledger, iteration 28). A refusal costs one
 /// spawn and CPython answers it; a wrong answer costs the caller's trust.
 fn percent_one(v: &Value, spec: &str, min_digits: usize) -> R<String> {
+    // A flag under `%`: the `s` and `r` conversions are `str()`/`repr()` and
+    // then padding — `'%s' % re.I` and `'%-20s' % re.I` print `re.IGNORECASE`
+    // on every CPython, and the two arms below do exactly that — so they pass.
+    // The numeric conversions (`%d`, `%x`, `%c`, …) are refused with the
+    // format specs (re.rs, trap 2). `spec` is already `read_spec`'s
+    // translation (`%s` arrives as `>s`), so the conversion is its last byte.
+    #[cfg(feature = "cap-re")]
+    if let Value::ReFlag(_) = v {
+        if !(spec.ends_with('s') || spec.ends_with('r')) {
+            return Err(crate::re::spec_refused());
+        }
+    }
     // `%c` is the one conversion that cannot be handed to `format()` wholesale:
     // it takes an int **or a one-character string**, where `format()`'s `c`
     // takes only an int (`format('a', 'c')` is a ValueError there). So

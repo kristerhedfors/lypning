@@ -52,6 +52,11 @@ pub mod parse;
 #[cfg(feature = "cap-pathlib")]
 pub mod pathlib;
 pub mod random;
+/// The `re` SURFACE — module, flags, `escape`, `purge`, and the matcher-backed
+/// names, which refuse — the `cap-re` capability. Absent from the smaller
+/// variant entirely, not merely unreachable in it.
+#[cfg(feature = "cap-re")]
+pub mod re;
 pub mod route;
 pub mod value;
 

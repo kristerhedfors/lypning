@@ -381,6 +381,10 @@ fn write_value(out: &mut String, v: &Value, o: &Opts, depth: usize) -> R<()> {
         Value::None => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Int(i) => out.push_str(&i.to_string()),
+        // The encoder calls `int.__repr__` on an int subclass: `json.dumps(re.I)`
+        // is `2`.
+        #[cfg(feature = "cap-re")]
+        Value::ReFlag(b) => out.push_str(&b.to_string()),
         Value::Float(f) => {
             // json uses repr(float), including the bare `NaN`/`Infinity` that
             // are not valid JSON but are what CPython emits by default.
@@ -404,6 +408,8 @@ fn write_value(out: &mut String, v: &Value, o: &Opts, depth: usize) -> R<()> {
                 let ks = match k {
                     Value::Str(s) => s.to_string(),
                     Value::Int(i) => i.to_string(),
+                    #[cfg(feature = "cap-re")]
+                    Value::ReFlag(b) => b.to_string(),
                     Value::Bool(b) => if *b { "true" } else { "false" }.to_string(),
                     Value::None => "null".to_string(),
                     Value::Float(f) => fmt::float_repr(*f),

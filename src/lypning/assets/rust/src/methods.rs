@@ -457,6 +457,11 @@ pub fn call_method(
         Value::Tuple(t) => tuple_method(t, name, args),
         Value::File(f) => file_method(it, f, name, args, kw),
         Value::Module(m) => crate::modules::call_module_method(it, m, name, args, kw),
+        // Unreachable through `get_attr`, which refuses every attribute on a
+        // flag before a method could be bound; present so the match names the
+        // variant on purpose rather than through the fallthrough below.
+        #[cfg(feature = "cap-re")]
+        Value::ReFlag(_) => Err(crate::re::attr_refused(name)),
         Value::DictView(d, kind) => {
             // `d.keys()` is a view, and `.keys().foo()` is not a thing agents
             // type; the one real case is a set-like op, which is refused.

@@ -475,6 +475,27 @@ fn exec_engine(
     // refusing, `exec` would hand the next engine an empty stream — the one
     // side effect the commit barrier cannot roll back. So in that case only,
     // fork instead of exec and replay the captured bytes.
+    //
+    // The same loss happens one process further out, where this process
+    // cannot see it: a FORKED intermediate rung inherits the pipe, and if the
+    // program reads stdin and then refuses at runtime — `import re, sys;
+    // re.sub(p, r, sys.stdin.read())` on lypning-l, which serves `re` but not
+    // its matcher — the rung after it is handed an exhausted stream and
+    // answers about nothing, at exit 0. Caught by the mixture-rust arm of
+    // `lypning conformance` (`stdin-regex-extract`, `stdin-replace-sed`) the
+    // day `re` was admitted. So a PIPED stdin is read once here, before the
+    // first intermediate rung, and every rung is handed a copy — the Python
+    // dispatcher's `_replayable_stdin` rule, now on both sides of the fence.
+    // A terminal is left alone: reading it would block for input the program
+    // may never want. Nothing is lost for the forked rung, whose stdout was
+    // already buffered whole by `Command::output` below; the direct `exec` of
+    // a terminal rung is not touched and still streams.
+    if retry_cpython && io::stdin_consumed().is_none() {
+        use std::io::IsTerminal as _;
+        if !std::io::stdin().is_terminal() {
+            io::stdin_preload();
+        }
+    }
     if let Some(bytes) = io::stdin_consumed() {
         use std::io::Write as _;
         use std::process::Stdio;

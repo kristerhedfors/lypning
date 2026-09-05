@@ -28,6 +28,7 @@ RUST = Path(__file__).resolve().parents[1] / "src" / "lypning" / "assets" / "rus
 #: A table read some other way is not covered here and does not need to be.
 SOURCES = {
     RUST / "methods.rs": r"const (\w+_(?:METHODS|MISSING)): &\[&str\] = &\[(.*?)\];",
+    RUST / "re.rs": r"const (\w+_(?:METHODS|MISSING)): &\[&str\] = &\[(.*?)\];",
 }
 # `builtins.rs` is deliberately NOT here. Its BUILTINS and EXCEPTIONS tables were
 # converted to binary search too and it bought nothing measurable — a builtin

@@ -623,6 +623,8 @@ pub fn call_builtin(
                 Some(Value::Float(f)) => Value::Int(float_to_int(*f, "int")?),
                 Some(Value::Int(i)) => Value::Int(*i),
                 Some(Value::Bool(b)) => Value::Int(*b as i64),
+                #[cfg(feature = "cap-re")]
+                Some(Value::ReFlag(b)) => Value::Int(*b as i64),
                 Some(Value::Bytes(b)) => {
                     let s = decode_utf8(b)?;
                     return call_builtin(it, "int", &mut Args::one(Value::Str(s.into())), kw);
@@ -637,6 +639,8 @@ pub fn call_builtin(
         }
         "float" => match args.first() {
             None => Value::Float(0.0),
+            #[cfg(feature = "cap-re")]
+            Some(Value::ReFlag(b)) => Value::Float(*b as f64),
             Some(Value::Str(s)) => {
                 let t = s.trim();
                 let lower = t.to_ascii_lowercase();
@@ -1038,6 +1042,8 @@ pub fn call_builtin(
             list(items)
         }
         "abs" => match arg1(name, &args)? {
+            #[cfg(feature = "cap-re")]
+            Value::ReFlag(b) => Value::Int(b as i64),
             Value::Int(i) => Value::Int(i.checked_abs().ok_or_else(|| {
                 unsupported("bigint", "abs() result beyond 64-bit range")
             })?),
@@ -1068,6 +1074,10 @@ pub fn call_builtin(
             // same family as `key=None` (iteration 51). Passed through
             // `int_val` it raised at exit 1, so `round(x, None)` — which is what
             // an optional precision looks like — failed on valid Python.
+            // `round(re.I)` and `round(re.I, -1)` are the int's: substitute
+            // it and let the arms below answer.
+            #[cfg(feature = "cap-re")]
+            let v = crate::re::as_int(&v).unwrap_or(v);
             let nd = match args.get(1).cloned().or_else(|| kwget(&kw, "ndigits")) {
                 None | Some(Value::None) => None,
                 Some(x) => Some(int_val(&x)?),
@@ -1405,6 +1415,12 @@ pub fn call_builtin(
             if names.iter().any(|n| crate::pathlib::isinstance_hit(n, &v)) {
                 return Ok(Value::Bool(true));
             }
+            // `IntFlag` is an int subclass: `isinstance(re.I, int)` is True,
+            // and `isinstance(re.I, bool)` is not.
+            #[cfg(feature = "cap-re")]
+            if matches!(v, Value::ReFlag(_)) && names.contains(&"int") {
+                return Ok(Value::Bool(true));
+            }
             Value::Bool(names.iter().any(|n| {
                 // An exception instance is matched through the SAME hierarchy
                 // table `except` uses, not by its type name. `type_name` of any
@@ -1492,6 +1508,9 @@ pub fn call_builtin(
             }
             Some(Value::Bytes(b)) => Value::Bytes(b.clone()),
             Some(Value::Int(n)) => Value::Bytes(Rc::new(vec![0u8; (*n).max(0) as usize])),
+            // `bytes(re.I)` is `b'\x00\x00'` — the int path.
+            #[cfg(feature = "cap-re")]
+            Some(Value::ReFlag(b)) => Value::Bytes(Rc::new(vec![0u8; *b as usize])),
             Some(other) => {
                 let items = it.iter_collect(other.clone())?;
                 let mut out = Vec::with_capacity(items.len());
@@ -1575,6 +1594,12 @@ pub fn length(v: &Value) -> R<usize> {
         // the type, and CPython spells an iterator's type name in a way this
         // engine cannot reproduce, so it refuses rather than print a name that
         // is merely plausible.
+        // `len(re.I)` is the member count in CPython; the TypeError below
+        // would be exit 1 where it answers.
+        #[cfg(feature = "cap-re")]
+        Value::ReFlag(_) => {
+            return Err(crate::re::refuse("len() of a RegexFlag (Flag.__len__)"))
+        }
         Value::IterObj(..) | Value::Gen(_) => {
             return Err(unsupported(
                 "iterator-type-name",

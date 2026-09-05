@@ -410,12 +410,14 @@ def test_fall_onward_matches_the_dispatchers_rule(lypning_lib, code, stderr, exp
 
 def test_route_answers_without_running_anything(lypning_lib, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    r = lypning_lib.route("import re\nopen('written.txt', 'w').write('x')")
-    # No Rust variant serves `re` yet, and lypning-mp is an oracle rather than a
-    # tier, so the cheapest engine that can run this is CPython.
+    r = lypning_lib.route("import subprocess\nopen('written.txt', 'w').write('x')")
+    # The library is built as the LARGEST variant, which serves `re` now, so
+    # the module nobody but CPython has is the one to ask about: lypning-mp is
+    # an oracle rather than a tier, so the cheapest engine that can run this
+    # is CPython.
     assert r.engine == "cpython"
-    assert r.kind == "module" and "re" in r.detail
-    assert r.imports == ["re"]
+    assert r.kind == "module" and "subprocess" in r.detail
+    assert r.imports == ["subprocess"]
     assert not (tmp_path / "written.txt").exists()
 
 

@@ -123,7 +123,7 @@ def test_route_json_carries_a_verdict_per_rung(lypning_bin):
     assert [v[0] for v in r.verdicts] == list(eng.ENGINE_ORDER)
     assert r.verdicts[0][1:] == ("module", "import re")   # this binary refuses
     assert r.verdicts[-1] == ("cpython", "", "")            # CPython always can
-    assert r.engine == eng.CPYTHON                           # first "can run" at or above self
+    assert r.engine == eng.LYPNING_L                         # first "can run" at or above self
 
 
 def test_both_dispatchers_read_the_same_escalation_table():
@@ -536,9 +536,12 @@ def test_a_plain_one_liner_goes_to_the_cheapest_tier(lypning_bin):
     assert _route("import json\nprint(json.dumps({'a': 1}))").engine == eng.LYPNING
 
 
-def test_an_import_only_the_second_tier_has_names_the_blocker(lypning_bin):
+def test_an_import_only_the_larger_variant_serves_names_the_blocker(lypning_bin):
+    # The core refuses `re` and names it; the larger variant serves the module
+    # (its surface — the matcher call refuses there at runtime, which is the
+    # chain's business, not the router's).
     r = _route("import re\nprint(re.findall(r'\\d+', 'a1'))")
-    assert r.engine == eng.CPYTHON
+    assert r.engine == eng.LYPNING_L
     assert (r.kind, r.detail) == ("module", "import re")
 
 

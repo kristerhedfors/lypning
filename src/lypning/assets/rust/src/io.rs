@@ -428,6 +428,16 @@ pub fn stdin_consumed() -> Option<Vec<u8>> {
     STDIN.with(|s| s.borrow().clone())
 }
 
+/// Read stdin now, on the DISPATCHER's behalf, so that [`stdin_consumed`]
+/// has the bytes to replay to every rung of the chain. `main.rs` calls this
+/// before forking an intermediate rung whose stdin would otherwise be the
+/// inherited pipe — which that child may drain and then refuse, leaving the
+/// next rung an empty stream this process never saw. `false` if stdin could
+/// not be read (closed, or no fd 0); the caller then inherits, as before.
+pub fn stdin_preload() -> bool {
+    stdin_fill().is_ok()
+}
+
 pub fn stdin_rest() -> R<Vec<u8>> {
     stdin_fill()?;
     // Sliced inside the borrow. The cursor lives in a different thread_local,

@@ -817,6 +817,9 @@ impl Interp {
                 match op {
                     UnOp::Not => Value::Bool(!truthy(&v)?),
                     UnOp::Neg => match v {
+                        // IntFlag unary `-` and `+` return a plain int.
+                        #[cfg(feature = "cap-re")]
+                        Value::ReFlag(b) => Value::Int(-(b as i64)),
                         Value::Int(i) => Value::Int(
                             i.checked_neg()
                                 .ok_or_else(|| unsupported("bigint", "integer negation overflow"))?,
@@ -831,6 +834,8 @@ impl Interp {
                         }
                     },
                     UnOp::Pos => match v {
+                        #[cfg(feature = "cap-re")]
+                        Value::ReFlag(b) => Value::Int(b as i64),
                         Value::Bool(b) => Value::Int(b as i64),
                         v @ (Value::Int(_) | Value::Float(_)) => v,
                         other => {
@@ -841,6 +846,15 @@ impl Interp {
                         }
                     },
                     UnOp::Invert => match v {
+                        // `~re.I` is the inverted mask, which CPython spells
+                        // with the TEMPLATE bit — `re.TEMPLATE` on 3.12, `0x1`
+                        // on 3.13+ — so it is refused rather than picked.
+                        #[cfg(feature = "cap-re")]
+                        Value::ReFlag(_) => {
+                            return Err(crate::re::refuse(
+                                "~ on a RegexFlag, whose inverted mask CPython spells version-dependently",
+                            ))
+                        }
                         Value::Int(i) => Value::Int(!i),
                         Value::Bool(b) => Value::Int(!(b as i64)),
                         other => {
@@ -1584,6 +1598,10 @@ pub fn int_val(v: &Value) -> R<i64> {
     match v {
         Value::Int(i) => Ok(*i),
         Value::Bool(b) => Ok(*b as i64),
+        // `[0, 1, 2][re.I]`, `range(re.I)`, `chr(re.I + 63)`: `__index__` on
+        // an IntFlag is the int.
+        #[cfg(feature = "cap-re")]
+        Value::ReFlag(b) => Ok(*b as i64),
         other => Err(type_err(format!(
             "'{}' object cannot be interpreted as an integer",
             type_name(other)

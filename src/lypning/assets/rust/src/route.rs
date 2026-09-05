@@ -55,7 +55,7 @@ pub struct Variant {
 /// today; `lypning-l` is the next.
 pub const SPECTRUM: &[Variant] = &[
     Variant { name: "lypning", caps: &[] },
-    Variant { name: "lypning-l", caps: &["cap-collections", "cap-pathlib"] },
+    Variant { name: "lypning-l", caps: &["cap-collections", "cap-pathlib", "cap-re"] },
 ];
 
 /// The same names, NUL-terminated for the C ABI. A test holds the two lists
@@ -81,9 +81,16 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// wording, a directory order, a `.stat()` — and not because these bytes are
 /// missing, so a sibling would refuse it identically and listing the kind would
 /// cost a spawn to be told no twice.
+///
+/// `cap-re` serves the `re` MODULE — its surface, not a matcher — and answers
+/// no runtime kind either: every `re:` refusal it raises is a shape CPython
+/// owns (a matcher call, a version-shaped repr), there is no rung above
+/// lypning-l to carry a kind to, and `chain_after` a runtime `re:` refusal is
+/// `[cpython]` by construction.
 pub const CAPS: &[(&str, &[&str], &[&str])] = &[
     ("cap-collections", &["collections"], &[]),
     ("cap-pathlib", &["pathlib"], &[]),
+    ("cap-re", &["re"], &[]),
 ];
 
 /// This binary's own name, from `build.rs` — the same constant `err::ENGINE`
@@ -340,11 +347,14 @@ mod spectrum_tests {
         // nothing blocks: this binary runs it
         let vs = verdicts("", "", &[]);
         assert_eq!(engine_from_verdicts(&vs), Engine::Rust(self_index()));
-        // a module no Rust variant serves: CPython, because there is no tier
-        // between the spectrum and CPython any more
+        // a module only the larger variant serves: from the core, that
+        // variant (the variant's own walker never raises this blocker)
         let vs = verdicts("module", "import re", &["re".to_string()]);
-        assert_eq!(engine_from_verdicts(&vs), Engine::CPython);
-        // a module nobody but CPython has
+        if self_index() == 0 {
+            assert_eq!(engine_from_verdicts(&vs), Engine::Rust(1));
+        }
+        // a module nobody but CPython has: CPython, because there is no tier
+        // between the spectrum and CPython any more
         let vs = verdicts("module", "import subprocess", &["subprocess".to_string()]);
         assert_eq!(engine_from_verdicts(&vs), Engine::CPython);
         // a semantic refusal skips everything
@@ -392,7 +402,7 @@ mod spectrum_tests {
             return;
         }
         for (kind, detail, imports) in [
-            ("module", "import re", vec!["re".to_string()]),
+            ("module", "import ctypes", vec!["ctypes".to_string()]),
             ("module", "import subprocess", vec!["subprocess".to_string()]),
             ("class", "class definition", vec![]),
             ("bigint", "x", vec![]),
@@ -937,6 +947,19 @@ fn pathlib_method(_req: &Requirements, _n: &str) -> bool {
     false
 }
 
+/// The Match/Pattern names — `.group`, `.span`, `.start`, `.string` — admitted
+/// ONLY for a program that imports `re`, by the same argument as
+/// [`pathlib_method`]: `.start` and `.end` are ordinary names on other objects
+/// that this engine answers on none of them.
+#[cfg(feature = "cap-re")]
+fn re_method(req: &Requirements, n: &str) -> bool {
+    req.imports.contains("re") && crate::re::known_method(n)
+}
+#[cfg(not(feature = "cap-re"))]
+fn re_method(_req: &Requirements, _n: &str) -> bool {
+    false
+}
+
 /// The module a dotted expression names, if it names one at all.
 ///
 /// Recursive because module paths nest and the check that used this had no way
@@ -1010,7 +1033,7 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
                 }
                 return;
             }
-            if !known_method(n) && !pathlib_method(req, n) {
+            if !known_method(n) && !pathlib_method(req, n) && !re_method(req, n) {
                 req.block("method", format!(".{n}()"));
             }
         }
