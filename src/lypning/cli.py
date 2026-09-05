@@ -642,9 +642,17 @@ def _render_status(st: Dict[str, Any]) -> str:
         lines.append("oracles  (measured, never routed to)")
         for name, o in oracles.items():
             if not o.get("built"):
-                lines.append("  %-11s not built  — `lypning build --micropython` (needs a network); "
-                             "`lypning oracle` reads the recorded divergences either way"
-                             % (name + ":"))
+                # "either way" is true only where the catalogue shipped. A wheel
+                # does not carry `.github/`, so promising it there sends a reader
+                # to a command that answers "no catalogue" — a hole reported as a
+                # capability is the inverse of invariant 12.
+                has_ledger = _mod("oracle").ledger_path().is_file()
+                lines.append("  %-11s not built  — `lypning build --micropython` (needs a network)%s"
+                             % (name + ":",
+                                "; `lypning oracle` reads the recorded divergences either way"
+                                if has_ledger else
+                                "; no catalogue in this install either, so `lypning oracle` "
+                                "reports a hole"))
                 continue
             size = o.get("bytes") or 0
             lines.append("  %-11s %s  (%s B, %d blocks)"
@@ -931,7 +939,9 @@ def _doctor_checks() -> List[Tuple[str, str, str]]:
                    if mp else
                    "not built — the ORACLE, not a tier: nothing routes to it. "
                    "`lypning build --micropython` needs a network; `lypning oracle` "
-                   "reads the recorded divergences either way"))
+                   + ("reads the recorded divergences either way"
+                      if _mod("oracle").ledger_path().is_file() else
+                      "reports a hole, because this install ships no catalogue")))
     py = found.get(engines.CPYTHON)
     checks.append((OK if py else FAIL, "cpython",
                    "%s" % py if py else "no real CPython found — the last tier is missing"))
