@@ -1,0 +1,12 @@
+run of record · lypning build · 2026-09-04 · 437056c · 3688 loaded · Darwin arm64
+0
+engine     target  bytes   blocks  secs  status
+lypning    host    818080  7       <s>   ok  (rustup not found: built for the host instead of x86_64-unknown-linux-musl)
+lypning-l  host    867744  7       <s>   ok  (rustup not found: built for the host instead of x86_64-unknown-linux-musl)
+unsupported contract: held
+unsupported contract: held
+installed /tmp/lyp-b1/bin/lypning  (target: host)
+installed /tmp/lyp-b1/bin/lypning-l  (target: host)
+lypning lib  host    1033328  8       <s>   ok
+unsupported contract (in-process): held
+0

@@ -1,0 +1,34 @@
+run of record · lypning conformance · 2026-09-04 · 437056c · 3688 loaded · Darwin arm64
+conformance over 2504 corpus programs in <s>s (reference: /opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/bin/python3.14)
+
+engine       MATCH  UNSUPPORTED  MISMATCH   coverage
+lypning      1573          931         0     62.8%
+lypning-l    1741          763         0     69.5%
+mixture      2504            0         0    100.0%
+mixture-rust  2504            0         0    100.0%
+
+skipped 1184 not run: absolute path outside the sandbox (949), imports lypning and drives a battery (208), would spawn a lypning battery (conformance/bench/corpus-time/perf) (27)
+
+monotone violations 0 over 2504 — a larger variant never does worse than a smaller one on a program both ran
+
+dispatchers agree 2504/2504 — the Python dispatcher (`mixture`) and the Rust one (`mixture-rust`, what `lypning run` execs) over the same binaries
+
+MISMATCH 0 — ok
+
+routing safety over 2504 programs (2504 have an engine that matches)
+
+  IDEAL      2393  routed to the cheapest engine that works
+  WASTED       73  engine refused; one extra spawn, right answer
+  LATE         38  worked, but a cheaper engine would have too
+  UNSAFE        0  routed to an engine that MISMATCHES  <-- must be 0
+  NO-ENGINE     0  no engine matched; not the router's fault
+
+  accuracy 95.6% ideal, 97.1% correct-on-first-try
+  predictions: lypning=1568  cpython=766  lypning-l=170
+0
+0
+build order — 107 distinct blockers over 2504 programs
+(a program is blocked by the FIRST thing it hits, so counts shift as features land)
+ranked by ->cpy: the refusals that reach CPython, which is what
+note: lypning-mp is not built — that arm was not measured
+0

@@ -1,0 +1,21 @@
+run of record · venv lypning build · 2026-09-04 · 437056c · 3688 loaded · Darwin arm64
+0
+lypning    host    818080  7       <s>   ok  (rustup not found: built for the host instead of x86_64-unknown-linux-musl)
+lypning-l  host    867744  7       <s>   ok  (rustup not found: built for the host instead of x86_64-unknown-linux-musl)
+0
+library
+  liblypning: not built  — `lypning build --lib`
+  headers:    /private/tmp/lyp-b1-venv/lib/python3.14/site-packages/lypning/assets/include
+
+rust
+lypning: lib: the C ABI library is not built — run `lypning build --lib` (or point $LYPNING_LIB at a built library)
+2
++ write   /private/tmp/lypning-wheel-proj/.claude/skills/lypning/MICROPYTHON.md  — new
++ write   /private/tmp/lypning-wheel-proj/.claude/skills/lypning/SKILL.md  — new
++ write   /private/tmp/lypning-wheel-proj/.claude/hooks/lypning-capture.sh  — new
++ write   /private/tmp/lypning-wheel-proj/.claude/hooks/lypning-harvest.sh  — new
++ write   /private/tmp/lypning-wheel-proj/.claude/hooks/lypning-session-start.sh  — new
+~ merge   /private/tmp/lypning-wheel-proj/.claude/settings.json  — add 3 hook entries (creating the file)
++            "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/lypning-session-start.sh\""
++            "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/lypning-capture.sh\""
++            "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/lypning-harvest.sh\""

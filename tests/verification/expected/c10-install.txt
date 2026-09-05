@@ -1,0 +1,21 @@
+run of record · lypning install · 2026-09-04 · 437056c · 3688 loaded · Darwin arm64
+~ merge   /private/var/folders/ms/pq0b9hwj5fvfxb__l201gtk80000gn/T/tmp.ZOEb1Dod0l/.claude/settings.json  — add 3 hook entries
+9 changes, 0 already in place, 1 warning (the `.` line above)
+0
+unchanged
+b backup  /private/var/folders/ms/pq0b9hwj5fvfxb__l201gtk80000gn/T/tmp.ZOEb1Dod0l/.claude/settings.json.lypning-backup  — copy of the current settings.json
+~ merge   /private/var/folders/ms/pq0b9hwj5fvfxb__l201gtk80000gn/T/tmp.ZOEb1Dod0l/.claude/settings.json  — added 3 entries
+0
+1
+1
+. skip    /private/var/folders/ms/pq0b9hwj5fvfxb__l201gtk80000gn/T/tmp.ZOEb1Dod0l/.claude/settings.json  — all 3 hook entries already present
+0
+- remove  /private/var/folders/ms/pq0b9hwj5fvfxb__l201gtk80000gn/T/tmp.ZOEb1Dod0l/.claude/settings.json  — removed 3 hook entries
+. skip    /tmp/lyp-b1-inst/bin  — note: the log at /tmp/lyp-b1-inst/invocations.jsonl was NOT deleted.
+0
+0
+hooks
+settings.json
+settings.json.lypning-backup
+skills
+PATH        : WARNING — /tmp/lyp-b1-inst/bin is NOT on PATH — the shim will never run

@@ -25,6 +25,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -117,3 +118,68 @@ def test_every_hook_fixture_answers_the_protocol_line(monkeypatch, capsys, tmp_p
             assert record.get(key) == value, "%s: %s=%r" % (row["name"], key, record.get(key))
         for key in row["env"]:
             monkeypatch.delenv(key, raising=False)
+
+
+# --- the expected files ------------------------------------------------------
+
+EXPECTED = FIXTURES / "expected"
+#: Line 1 of every expected file: the run-of-record marker the document quotes.
+MARKER = re.compile(r"^run of record · .+ · \d{4}-\d{2}-\d{2} · [0-9a-f]{7,} · \d+ loaded · \S")
+
+
+def _manifest() -> list:
+    return json.loads((EXPECTED / "manifest.json").read_text(encoding="utf-8"))
+
+
+def _body(name: str) -> str:
+    head, _, body = (EXPECTED / name).read_text(encoding="utf-8").partition("\n")
+    assert MARKER.match(head), "%s: line 1 is not the run-of-record marker: %r" % (name, head)
+    return body
+
+
+def test_every_expected_file_is_listed_and_shows_its_own_must_not_differ_fields():
+    """Each ``tests/verification/expected/<contract>-<tool>.txt`` is one EXPECTED
+    block of ``docs/VERIFICATION.md`` in full, headed by its marker, and the
+    manifest names the fields of it that a fresh run may not move. The run of
+    record has to satisfy its own rules before a fresh run is held to them."""
+    entries = _manifest()
+    assert sorted(p.name for p in EXPECTED.glob("*.txt")) == sorted(e["file"] for e in entries)
+    bad = []
+    for e in entries:
+        body = _body(e["file"])
+        bad += ["%s lacks %r" % (e["file"], pat) for pat in e["must_match"]
+                if not re.search(pat, body, re.M)]
+    assert not bad, "\n".join(bad)
+
+
+def _spectrum_built() -> None:
+    unbuilt = [engine for engine in engines.SPECTRUM if engines.find(engine) is None]
+    if unbuilt:
+        pytest.skip("not built: %s (`lypning build --rust`)" % ", ".join(unbuilt))
+
+
+@pytest.mark.parametrize("entry", [e for e in _manifest() if e.get("argv")],
+                         ids=lambda e: e["file"])
+def test_every_expected_file_holds_against_a_fresh_run(entry, capsys):
+    """The must-not-differ fields of an expected file, on this machine, today.
+
+    Only the commands that run without a battery's cost or a throwaway project
+    carry an ``argv``; the rest are held by the fixture tables above and by the
+    tests their contract names under PINNED BY. Skipped, never failed, while a
+    variant is unbuilt — an absent binary is a hole (§C12), not a regression."""
+    _spectrum_built()
+    if entry.get("via") == "binary":  # the binary's own flags: `route --spectrum`, `--next`
+        proc = _run([str(engines.find_lypning())] + entry["argv"], timeout=30.0)
+        rc, text = proc.returncode, proc.stdout + proc.stderr
+    else:
+        try:
+            rc = cli.main(entry["argv"])
+        except SystemExit as e:  # argparse's own exits
+            rc = int(e.code or 0)
+        captured = capsys.readouterr()
+        text = captured.out + captured.err
+    assert rc == entry["exit"], "lypning %s exited %d, the run of record %d:\n%s" % (
+        " ".join(entry["argv"]), rc, entry["exit"], text[-2000:])
+    missing = [pat for pat in entry["must_match"] if not re.search(pat, text, re.M)]
+    assert not missing, "lypning %s no longer shows %s:\n%s" % (
+        " ".join(entry["argv"]), missing, text[-2000:])

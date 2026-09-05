@@ -1,0 +1,16 @@
+run of record · lypning hook · 2026-09-04 · 437056c · 3688 loaded · Darwin arm64
+{"continue":true,"suppressOutput":true}
+0
+{"continue":true,"suppressOutput":true}
+0
+{"continue":true,"suppressOutput":true}
+0
+{"continue":true,"suppressOutput":true}
+0
+{"continue":true,"suppressOutput":true}
+0
+{"kind":"bash_command","ts":"2026-09-04T21:36:53.935Z","session":"s","cwd":"/tmp","tool":"Bash","command":"python3 -c \"print(1)\"","description":null,"transcript":null,"host":"claude","tool_use_id":"t"}
+{"continue":true,"suppressOutput":true}
+{"kind":"bash_command","ts":"2026-09-04T21:36:53.968Z","session":"oh","cwd":"/Users/user/dev/lypning-docs-b1","tool":"terminal","command":"python3 -c 1","description":null,"transcript":null,"host":"openhands","exit_code":0}
+Python one-liners in this session should be typed as `lypning -c '<program>'`
+0

@@ -1,0 +1,12 @@
+run of record · lypning conformance · 2026-09-04 · 437056c · 3688 loaded · Darwin arm64
+monotone violations 0 over 2504 — a larger variant never does worse than a smaller one on a program both ran
+dispatchers agree 2504/2504 — the Python dispatcher (`mixture`) and the Rust one (`mixture-rust`, what `lypning run` execs) over the same binaries
+MISMATCH 0 — ok
+0
+["lypning-l","cpython"]
+["cpython"]
+{"engine":"lypning-l","kind":"module","detail":"import collections","imports":["collections"],"verdicts":[{"engine":"lypning","kind":"module","detail":"import collections"},{"engine":"lypning-l","kind":"","detail":""},{"engine":"cpython","kind":"","detail":""}]}
+1267650600228229401496703205376
+0
+1267650600228229401496703205376
+0
