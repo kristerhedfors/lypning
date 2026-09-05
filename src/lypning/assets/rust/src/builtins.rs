@@ -1447,7 +1447,19 @@ pub fn call_builtin(
         "open" => {
             let path = match args.first() {
                 Some(Value::Str(s)) => s.to_string(),
-                Some(other) => fmt::to_str(other)?,
+                // `open(Path('x'))` is `__fspath__`, and `to_str` knows it.
+                #[cfg(feature = "cap-pathlib")]
+                Some(p @ Value::Path(..)) => fmt::to_str(p)?,
+                // `open(0)` is the descriptor: CPython reads stdin. Stringified
+                // it opened a FILE named "0" — FileNotFoundError at exit 1 where
+                // CPython answers. A descriptor is not something this engine
+                // opens, so it refuses and the answer comes from CPython.
+                Some(_) => {
+                    return Err(unsupported(
+                        "builtin",
+                        "open() with a non-str path (a file descriptor)",
+                    ))
+                }
                 None => return Err(type_err("open() missing required argument: 'file'")),
             };
             let mode = match args.get(1).cloned().or_else(|| kwget(&kw, "mode")) {

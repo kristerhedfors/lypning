@@ -306,6 +306,45 @@ def test_run_replays_stdin_after_a_runtime_refusal(tmp_path, lypning_bin):
     assert p.stdout.split() == ["2" + "0" * 30, "3" + "0" * 30], p.stdout
 
 
+def test_run_replays_stdin_when_input_is_called_through_a_name(tmp_path, lypning_bin):
+    """The same failure, back through an alias. `reads_stdin` is decided before
+    the run, and the text scan behind it looked for `input(`: `f = input` read
+    the pipe through `f()`, refused bigint after it had, and this dispatcher —
+    buffering only when the route says the program can read stdin — handed
+    CPython nothing: EOFError at exit 1. The Rust dispatcher was right because
+    it knows in-process what it consumed; the two must agree."""
+    program = "f = input\nprint(int(f()) * 10**30)\n"
+    p = _cli("run", "-c", program, home=str(tmp_path), stdin="5\n",
+             env={"LYPNING_BIN": str(lypning_bin)})
+    assert p.returncode == 0, p.stderr
+    assert p.stdout == "5" + "0" * 30 + "\n", p.stdout
+
+
+#: Programs the core used to answer WRONGLY at exit 1 — never a refusal, so the
+#: chain never reached CPython — each with the stdin it reads. The core now
+#: refuses (`open(0)` is a descriptor; `sys.stdin.buffer` is bytes) or buffers
+#: (`f = input`), and the answer arrives from CPython, through both dispatchers.
+STDIN_SPELLINGS_THE_CORE_REFUSES = [
+    ("input-through-a-name", "f = input\nprint(int(f()) * 10**30)\n", "5\n"),
+    ("open-descriptor", "import re\nd = open(0).read()\nf = re.split\nprint(f(',', d))\n", "zz,y\n"),
+    # ASCII on purpose: `_cli` pipes text, and the bytes-ness of the answer is
+    # visible in the `b'…'` CPython prints either way.
+    ("stdin-buffer", "import sys\nd = sys.stdin.buffer.read()\nprint(d, 10**30)\n", "raw\n"),
+]
+
+
+@pytest.mark.parametrize("case_id,program,stdin", STDIN_SPELLINGS_THE_CORE_REFUSES,
+                         ids=[c[0] for c in STDIN_SPELLINGS_THE_CORE_REFUSES])
+def test_run_answers_a_stdin_spelling_the_core_refuses(case_id, program, stdin, tmp_path, lypning_bin):
+    theirs = subprocess.run([sys.executable, "-c", program], input=stdin,
+                            capture_output=True, text=True, timeout=60)
+    assert theirs.returncode == 0, theirs.stderr
+    ours = _cli("run", "-c", program, home=str(tmp_path), stdin=stdin,
+                env={"LYPNING_BIN": str(lypning_bin)})
+    assert ours.returncode == 0, ours.stderr
+    assert ours.stdout == theirs.stdout, ours.stdout
+
+
 def test_run_does_not_lose_stdin_when_the_first_tier_answers(tmp_path, lypning_bin):
     # The other side of it: capturing stdin must not change a run that never
     # falls through.

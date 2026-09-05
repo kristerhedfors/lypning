@@ -116,7 +116,11 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
                 "sys.path (lypning has no import machinery)",
             ))
         }
-        ("sys.stdin", "read" | "readline" | "readlines" | "buffer") => {
+        // Not `buffer`: it was handed back as a bound METHOD, so
+        // `sys.stdin.buffer.read()` was an AttributeError at exit 1 where
+        // CPython returns bytes. It falls to the `module-attr` arm below and
+        // refuses — statically too, since the router resolves `sys.stdin`.
+        ("sys.stdin", "read" | "readline" | "readlines") => {
             Value::Bound(Rc::new(m.clone()), interned(name)?)
         }
         ("sys.stdout" | "sys.stderr", "write" | "flush") => {
@@ -193,7 +197,7 @@ fn interned(name: &str) -> R<&'static str> {
         "read", "readline", "readlines", "write", "flush", "exit", "getcwd", "listdir", "makedirs",
         "mkdir", "remove", "unlink", "rename", "replace", "rmdir", "getenv", "join", "exists",
         "basename", "dirname", "splitext", "abspath", "isfile", "isdir", "getsize", "expanduser",
-        "split", "relpath", "normpath", "islink", "loads", "dumps", "load", "dump", "buffer",
+        "split", "relpath", "normpath", "islink", "loads", "dumps", "load", "dump",
         "seed", "random", "randint", "randrange", "choice", "getrandbits",
     ];
     NAMES

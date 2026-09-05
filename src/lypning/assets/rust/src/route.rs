@@ -526,11 +526,18 @@ mod spectrum_tests {
             // the text scan is what answers for these.
             "class C: pass\nprint(open(0).read())",
             "class C: pass\nimport os\nprint(os.read(0, 10))",
+            // `input` bound to a name and called through it: the bare
+            // identifier, not the spelling `input(`, is what reads the pipe.
+            "f = input\nprint(int(f()) * 10**30)",
+            "g = (input)\nprint(g())",
         ] {
             assert!(route(src).reads_stdin, "{src}");
         }
         for src in [
             "print(1)",
+            // The word, not the substring: these cannot read stdin.
+            "inputs = [1]\nprint(inputs[0])",
+            "user_input = 'x'\nprint(user_input)",
             "import collections\nprint(collections.Counter('ab'))",
             "import sys\nprint(sys.argv[1:])",
             "import re\nprint(re.escape('a'))",
@@ -808,10 +815,37 @@ pub fn route(src: &str) -> Route {
 /// only this scan to be seen by). Substrings, not tokens, on purpose: `f.read(0)`
 /// on a file over-matches, and that costs one read of a pipe the caller
 /// filled for the program anyway.
+///
+/// `input` is matched as a bare identifier, not only as the call `input(`:
+/// `f = input; print(int(f()) * 10**30)` reads the pipe through the alias,
+/// refuses bigint AFTER it has, and a dispatcher that did not buffer stdin for
+/// it handed CPython an exhausted stream — EOFError at exit 1 where CPython
+/// prints the number. `stdin` is already a substring above, which is wider
+/// than the bare word.
 fn mentions_stdin(src: &str) -> bool {
     ["stdin", "fileinput", "input(", "/dev/fd/0", "open(0", "read(0"]
         .iter()
         .any(|s| src.contains(s))
+        || mentions_word(src, "input")
+}
+
+/// `\bword\b` without a regex: `word` in `src` with no identifier character
+/// (`[A-Za-z0-9_]`) on either side. `inputs`, `user_input` and `input_` do not
+/// match; `f = input`, `(input)` and `input;` do.
+fn mentions_word(src: &str, word: &str) -> bool {
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut from = 0;
+    while let Some(i) = src[from..].find(word) {
+        let start = from + i;
+        let end = start + word.len();
+        let before = src[..start].chars().next_back().map_or(false, is_ident);
+        let after = src[end..].chars().next().map_or(false, is_ident);
+        if !before && !after {
+            return true;
+        }
+        from = start + 1;
+    }
+    false
 }
 
 /// The constructs a second reimplementation is KNOWN to get wrong lived here as

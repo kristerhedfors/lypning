@@ -587,10 +587,16 @@ def test_route_json_says_whether_the_program_can_read_stdin(lypning_bin):
                 "import fileinput\nfor l in fileinput.input(): print(l)",
                 "print(open('/dev/stdin').read())",
                 # a parse-time blocker stops the walk; the text scan still answers
-                "class C: pass\nprint(open(0).read())"]:
+                "class C: pass\nprint(open(0).read())",
+                # `input` bound to a name: the bare identifier reads the pipe, and
+                # a scan that looked only for `input(` handed CPython an exhausted
+                # stream after the core's bigint refusal (EOFError at exit 1)
+                "f = input\nprint(int(f()) * 10**30)"]:
         assert _route(src).reads_stdin, src
     for src in ["print(1)", "import collections\nprint(collections.Counter('ab'))",
-                "import sys\nprint(sys.argv[1:])", "import re\nprint(re.escape('a'))"]:
+                "import sys\nprint(sys.argv[1:])", "import re\nprint(re.escape('a'))",
+                # the word, not the substring
+                "inputs = [1]\nprint(inputs[0])"]:
         assert not _route(src).reads_stdin, src
 
 

@@ -197,6 +197,12 @@ MISSING_METHODS = [
     # lypning would have to guess which builtins are types. It used to answer
     # False for `isinstance(type(3), type)`: a wrong answer at exit 0.
     ("isinstance-against-type", "print(isinstance(type(3), type))"),
+    # Two stdin spellings that were exit 1 where CPython answers: `open(0)`
+    # stringified the descriptor and opened a FILE named "0" (FileNotFoundError);
+    # `sys.stdin.buffer` came back as a bound method (AttributeError on `.read`).
+    # Both refuse now, and before touching the stream, so CPython gets it whole.
+    ("open-descriptor", "print(open(0).read())"),
+    ("sys-stdin-buffer", "import sys\nprint(sys.stdin.buffer.read())"),
 ]
 
 
