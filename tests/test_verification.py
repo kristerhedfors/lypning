@@ -13,7 +13,11 @@ them true:
   stdout; ``sys.exit(90)`` is not a refusal; a program's own failure is
   returned unchanged; and what the dispatcher answers after a refusal);
 * ``hook-fixtures.json``     hook event, stdin, environment -> stdout, exit
-  (§C9: the protocol line and exit 0 on every path, the failures included).
+  (§C9: the protocol line and exit 0 on every path, the failures included);
+* ``claims.json``            claim -> the test or symbol that holds it, for
+  ``docs/HARNESSES.md`` §6, ``docs/CAPTURE.md`` *Tests* and
+  ``docs/EMBEDDING.md`` §5 — every node id must exist and every ABI symbol
+  must be declared in ``lypning.h``.
 
 A row that stops holding is a contract that moved, and the document's
 EXPECTED block for it is stale in the same way: refresh both together
@@ -117,3 +121,31 @@ def test_every_hook_fixture_answers_the_protocol_line(monkeypatch, capsys, tmp_p
             assert record.get(key) == value, "%s: %s=%r" % (row["name"], key, record.get(key))
         for key in row["env"]:
             monkeypatch.delenv(key, raising=False)
+
+
+def test_every_claim_map_entry_resolves():
+    """``claims.json`` is cited by three documents in place of a table each
+    would otherwise carry; a claim held by a test that was renamed, or an ABI
+    symbol the header no longer declares, is a stale citation nobody reads."""
+    import re
+
+    root = Path(__file__).resolve().parent.parent
+    header = (root / "src" / "lypning" / "assets" / "include" / "lypning.h").read_text(encoding="utf-8")
+    claims = _rows("claims.json")
+    missing = []
+    for section in ("harnesses", "capture"):
+        for row in claims[section]:
+            for ref in row["held_by"]:
+                m = re.fullmatch(r"(tests/test_\w+\.py)::(\w+)", ref)
+                if not m:
+                    continue  # a symbol, not a node id: a manual check names its code home
+                path, name = m.groups()
+                target = root / path
+                if not target.is_file() or not re.search(
+                        r"^\s*(?:async\s+)?def\s+%s\s*\(" % re.escape(name),
+                        target.read_text(encoding="utf-8"), re.M):
+                    missing.append(ref)
+    for row in claims["abi"]:
+        if not re.search(r"\b%s\b" % re.escape(row["symbol"]), header):
+            missing.append("lypning.h: " + row["symbol"])
+    assert not missing, "claims.json names what does not exist: %s" % ", ".join(missing)
