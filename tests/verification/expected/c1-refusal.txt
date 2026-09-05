@@ -1,0 +1,12 @@
+run of record · lypning · 2026-09-04 · 437056c · 3688 loaded · Darwin arm64
+lypning: unsupported: module: import subprocess
+90
+0
+lypning-l: unsupported: module: import subprocess
+90
+0
+90
+Traceback (most recent call last):
+ZeroDivisionError: division by zero
+1
+38

@@ -1,0 +1,8 @@
+run of record · lypning route · 2026-09-04 · 437056c · 3688 loaded · Darwin arm64
+lypning
+0
+lypning-l^Imodule: import collections$
+lypning
+lypning: unsupported: builtin: getattr
+90
+{"self":"lypning","self_caps":[],"spectrum":[{"name":"lypning","caps":[]},{"name":"lypning-l","caps":["cap-collections","cap-pathlib"]}],"caps":[{"cap":"cap-collections","modules":["collections"],"kinds":[]},{"cap":"cap-pathlib","modules":["pathlib"],"kinds":[]}]}
