@@ -462,6 +462,10 @@ pub fn call_method(
         // variant on purpose rather than through the fallthrough below.
         #[cfg(feature = "cap-re")]
         Value::ReFlag(_) => Err(crate::re::attr_refused(name)),
+        #[cfg(feature = "cap-re")]
+        Value::Pattern(p) => crate::re::pattern_method(it, &p.clone(), name, args, &kw),
+        #[cfg(feature = "cap-re")]
+        Value::Match(m) => crate::re::match_method(&m.clone(), name, args, &kw),
         Value::DictView(d, kind) => {
             // `d.keys()` is a view, and `.keys().foo()` is not a thing agents
             // type; the one real case is a set-like op, which is refused.

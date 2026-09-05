@@ -68,6 +68,16 @@ pub enum Value {
     /// it is not a `Value::Int`.
     #[cfg(feature = "cap-re")]
     ReFlag(u32),
+    /// A compiled `re.Pattern`. Equal to another with the same text and the
+    /// same effective flags, and the SAME object as one the compile cache
+    /// already holds, which is what `re.compile('a') is re.compile('a')` needs.
+    #[cfg(feature = "cap-re")]
+    Pattern(Rc<crate::re::Pat>),
+    /// A `re.Match`. Compared and hashed by IDENTITY in CPython, so two
+    /// matches of the same text are not equal — and a `Match` as a dict key
+    /// refuses rather than collapse two of them into one.
+    #[cfg(feature = "cap-re")]
+    Match(Rc<crate::re::MatchObj>),
 }
 
 pub struct FuncObj {
@@ -101,6 +111,10 @@ pub enum HKey {
     /// the string that spells it.
     #[cfg(feature = "cap-pathlib")]
     Path(Rc<str>),
+    /// A `re.Pattern`, by its text and its effective flags — the same two
+    /// fields `eq` compares, because equal objects must hash equal.
+    #[cfg(feature = "cap-re")]
+    Pattern(Rc<str>, u32),
 }
 
 pub fn hkey(v: &Value) -> R<HKey> {
@@ -134,6 +148,18 @@ pub fn hkey(v: &Value) -> R<HKey> {
         // generic arm below raised `unhashable type` at exit 1.
         #[cfg(feature = "cap-re")]
         Value::ReFlag(b) => HKey::Int(*b as i64),
+        // `{re.compile('a'): 1}` is a dict of one in CPython; the generic arm
+        // below raised `unhashable type` at exit 1.
+        #[cfg(feature = "cap-re")]
+        Value::Pattern(p) => HKey::Pattern(p.source.clone(), p.flags),
+        // A Match hashes by object identity there, which this value does not
+        // carry — so it refuses rather than collapse two matches into one key.
+        #[cfg(feature = "cap-re")]
+        Value::Match(_) => {
+            return Err(crate::re::refuse(
+                "a Match as a dict or set key, which CPython hashes by object identity",
+            ))
+        }
         // The `.parents` view is hashable in CPython (it inherits object
         // identity) and this value carries no identity to hash, so it refuses
         // rather than collapse two views of the same path into one key.
@@ -372,6 +398,12 @@ pub fn type_name(v: &Value) -> &'static str {
         // `len()`, `<` and `%` TypeErrors print.
         #[cfg(feature = "cap-re")]
         Value::ReFlag(_) => "RegexFlag",
+        // C types, whose tp_name is dotted — and it is what every message
+        // naming the type prints.
+        #[cfg(feature = "cap-re")]
+        Value::Pattern(_) => "re.Pattern",
+        #[cfg(feature = "cap-re")]
+        Value::Match(_) => "re.Match",
     }
 }
 
@@ -398,6 +430,11 @@ pub fn truthy(v: &Value) -> R<bool> {
         // `bool(re.NOFLAG)` is False.
         #[cfg(feature = "cap-re")]
         Value::ReFlag(b) => *b != 0,
+        // Named on purpose rather than through the fallthrough below: `if m:`
+        // is THE idiom for a match, in 11 corpus programs, and a Pattern has
+        // neither `__bool__` nor `__len__` either.
+        #[cfg(feature = "cap-re")]
+        Value::Pattern(_) | Value::Match(_) => true,
         _ => true,
     })
 }
@@ -597,6 +634,12 @@ pub fn eq(a: &Value, b: &Value) -> R<bool> {
     if let Some(r) = crate::pathlib::eq(a, b)? {
         return Ok(r);
     }
+    // A Pattern by text and flags, a Match by identity — and neither is ever
+    // equal to anything else, which is what CPython answers.
+    #[cfg(feature = "cap-re")]
+    if let Some(r) = crate::re::eq(a, b) {
+        return Ok(r);
+    }
     // Only the composite arms below can descend, so only they take the guard.
     // What it is for is `x == y` over two deep lists, which was a stack
     // overflow — and a stack overflow embedded is the HOST's SIGSEGV rather
@@ -783,6 +826,13 @@ pub fn is_same(a: &Value, b: &Value) -> bool {
         // foldable list.
         #[cfg(feature = "cap-re")]
         (Value::ReFlag(x), Value::ReFlag(y)) => x == y,
+        // Both are identity objects in CPython. Two Patterns that compare
+        // equal are usually the same one as well, because `re.compile` is
+        // cached — `ops::identity` is where that is decided.
+        #[cfg(feature = "cap-re")]
+        (Value::Pattern(x), Value::Pattern(y)) => Rc::ptr_eq(x, y),
+        #[cfg(feature = "cap-re")]
+        (Value::Match(x), Value::Match(y)) => Rc::ptr_eq(x, y),
         // Small-int caching is an implementation detail agents should not rely
         // on and we will not reproduce; refusing beats guessing either way.
         _ => false,
@@ -840,7 +890,8 @@ pub fn dismantle(root: Value) {
                 }
             }
             // Everything else is either a scalar (a `ReFlag` is its bits and
-            // holds no child) or an `Rc` to something whose
+            // holds no child; a `Pattern` and a `Match` hold opcodes, spans and
+            // an `Rc<str>`, and no `Value` at all) or an `Rc` to something whose
             // own depth is bounded by the parser (`parse::MAX_PARSE_DEPTH`), so
             // its recursive drop is bounded too.
             _ => {}

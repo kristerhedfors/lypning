@@ -383,6 +383,13 @@ fn write_value(out: &mut String, v: &Value, o: &Opts, depth: usize) -> R<()> {
         // is `2`.
         #[cfg(feature = "cap-re")]
         Value::ReFlag(b) => out.push_str(&b.to_string()),
+        // CPython's TypeError here names `Pattern`/`Match` through
+        // `__class__.__name__`, not the dotted `tp_name` every other message
+        // uses — so the generic arm below would print the wrong type.
+        #[cfg(feature = "cap-re")]
+        Value::Pattern(_) | Value::Match(_) => {
+            return Err(crate::re::guard_one(v, "json.dumps of").unwrap_err())
+        }
         Value::Float(f) => {
             // json uses repr(float), including the bare `NaN`/`Infinity` that
             // are not valid JSON but are what CPython emits by default.

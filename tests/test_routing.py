@@ -545,35 +545,32 @@ def test_an_import_only_the_larger_variant_serves_names_the_blocker(lypning_bin)
     assert (r.kind, r.detail) == ("module", "import re")
 
 
-def test_a_matcher_call_is_decided_statically_and_routes_to_cpython(lypning_bin):
-    """No Rust variant has a matcher, so `re.sub(…)` is a STATIC route to
-    CPython in every spelling the walk can see — not a spawn of lypning-l to be
-    told no, and not a program committed at an `os.makedirs` that then cannot
-    fall onward (it exited 1 while the matcher was a runtime refusal alone).
-    The sibling's verdict carries the kind and detail its own walker raises,
-    so `--plan` ranks one row per function; and the Python chain after the
-    core's own refusal agrees with the Rust one: CPython, nobody in between."""
-    want = "re.%s() (pattern matching is not served yet)"
-    for src, f in [
-        ("import re\nprint(re.sub('a', 'b', 'a'))", "sub"),
-        ("import re as x\nprint(x.findall('a', 'a'))", "findall"),
-        ("from re import search\nprint(search('a', 'a'))", "search"),
-        ("from re import compile as c\nprint(c('a'))", "compile"),
-        ("import re, os\nos.makedirs('d1/d2')\nprint(re.sub('a', 'b', 'a'))", "sub"),
-        ("import sys, re\nd = sys.stdin.read()\nprint(re.findall(r'\\d', d))", "findall"),
+def test_a_matcher_call_routes_to_the_variant_that_has_the_matcher(lypning_bin):
+    """The core's blocker is the IMPORT and nothing else, so the sibling that
+    serves `re` is the route — including for the shapes that used to be a static
+    row of the router's own (`os.makedirs` before a `re.sub`, a piped stdin).
+    The core cannot compile a pattern; deciding which patterns lypning-l can
+    serve is lypning-l's own walker's job, and `tests/test_re_grid.py` pins it.
+    The Python chain after the core's refusal agrees with the Rust one."""
+    for src in [
+        "import re\nprint(re.sub('a', 'b', 'a'))",
+        "import re as x\nprint(x.findall('a', 'a'))",
+        "from re import search\nprint(search('a', 'a'))",
+        "from re import compile as c\nprint(c('a'))",
+        "import re, os\nos.makedirs('d1/d2')\nprint(re.sub('a', 'b', 'a'))",
+        "import sys, re\nd = sys.stdin.read()\nprint(re.findall(r'\\d', d))",
+        "import re\nf = re.sub\nprint(f)",
+        "re = 'a,b'\nprint(re.split(','))",
     ]:
         r = _route(src)
-        assert r.engine == eng.CPYTHON, (src, r)
-        by = {v[0]: v[1:] for v in r.verdicts}
-        assert by[eng.LYPNING_L] == ("re", want % f), (src, by)
-        assert eng.chain_after_refusal(eng.LYPNING, r.kind, r.imports, r.verdicts) == [eng.CPYTHON]
-        assert eng.chain_after_refusal(eng.LYPNING_L, "re", r.imports, r.verdicts) == [eng.CPYTHON]
-    # The names alone block nothing, a matcher reached DYNAMICALLY is the
-    # runtime backstop's (one spawn later), and a string called `re` is a str.
-    for src in ["import re\nf = re.sub\nprint(f)",
-                "import re\nprint(getattr(re, 'sub')('a', 'b', 'a'))",
-                "re = 'a,b'\nprint(re.split(','))"]:
-        assert _route(src).engine != eng.CPYTHON, src
+        assert r.engine != eng.CPYTHON, (src, r)
+    r = _route("import re\nprint(re.sub('a', 'b', 'a'))")
+    assert (r.kind, r.detail) == ("module", "import re")
+    assert eng.chain_after_refusal(eng.LYPNING, r.kind, r.imports, r.verdicts) == [eng.LYPNING_L,
+                                                                                  eng.CPYTHON]
+    # A second module the sibling does NOT serve still rules it out.
+    r2 = _route("import re, glob\nprint(re.sub('a', 'b', 'a'), glob.glob('*'))")
+    assert r2.engine == eng.CPYTHON, r2
 
 
 def test_route_json_says_whether_the_program_can_read_stdin(lypning_bin):

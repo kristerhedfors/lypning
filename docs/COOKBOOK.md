@@ -189,15 +189,16 @@ print(heapq.nsmallest(2, [5, 1, 9, 3]), heapq.nlargest(2, [5, 1, 9, 3]))
 xs = [5, 1, 9, 3]
 print(sorted(xs)[:2], sorted(xs, reverse=True)[:2])
 ```
-<!-- recipe id=re-sub-digits kind=re detail="re.sub() (pattern matching is not served yet)" engine=lypning-l -->
+<!-- recipe id=re-backreference kind=re detail="pattern '(\\w)\\1': backreference \\1..\\99" engine=lypning-l -->
 ```python
-# before — lypning-l: unsupported: re: re.sub() (pattern matching is not served yet)
+# before — lypning-l: unsupported: re: pattern '(\w)\1': backreference \1..\99
 import re
-print(re.sub(r"[0-9]", "#", "a1b22"))
+print(re.findall(r"(\w)\1", "aabbc"))
 ```
 ```python
-# after — prints: a#b##
-print("".join("#" if c.isdigit() else c for c in "a1b22"))
+# after — prints: ['a', 'b']
+s = "aabbc"
+print([a for a, b in zip(s, s[1:]) if a == b])
 ```
 <!-- recipe id=getattr-builtin kind=builtin detail="getattr" -->
 ```python
