@@ -26,6 +26,102 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-09-05 · iteration 76 — three capabilities measured, one landed: `re`, and why `glob` and `class` were not
+
+Host: macOS arm64, host-target build (no rustup; musl bytes unmeasured).
+Corpus 3,688 loaded, 2,504 graded, 1,184 skipped. Reference CPython 3.14.5.
+All three were built in parallel worktrees off the same base and each was
+attacked by an adversary before any of them was judged.
+
+| capability | programs | bytes | progs/KB | outcome |
+|---|---|---|---|---|
+| `re` matcher | +40 battery / +93 intent | +64.70 KiB | **0.62** / 1.44 | landed |
+| `glob` | +16 | +16.62 KB | **0.99** | rejected |
+| `class` | +3 | +16.16 KB | **0.19** | rejected |
+
+`lypning-l` 1910 → 1950 MATCH, coverage 76.3% → 77.9%, MISMATCH 0, UNSAFE 0,
+monotone 0, dispatchers agree 2504/2504. `lypning-l` 867,840 → 934,096 B: the
+first capability to cross into device block 8, 8 of the 32-block budget. The
+frozen core is unchanged at 834,672 B / 7 blocks with no `re` text in it.
+
+### Landing a row below the rejection line, on purpose
+
+0.62 is below the 0.87 that got `hashlib` rejected in iteration 74, so the
+reason has to be written down rather than implied. The battery's under-count
+here is **measured**: the corpus mine ran the 213 admissible `re` programs in
+the battery's own temp cwd and 174 of them die identically on both engines
+*before their first regex call* — 167 on a repo-relative file the sandbox does
+not have. Those already scored MATCH from the surface in iteration 75, so no
+matcher can move them. By intent the slice is 93 programs, 1.44/KB. `re` is
+also the top corpus demand by roughly seven times the next module. Quote both
+numbers whenever this row is cited; the single-number habit is what would have
+made this look like a bad trade or a good one, depending on which half you kept.
+
+### The bug, and the diagnosis that was wrong
+
+A capturing group ending in a lazy quantifier inside a bounded `{m,n}` with
+m ≥ 1 captured the wrong iteration. The overall span was always right, so
+`group(1)` silently returned a different string at exit 0 — the worst shape
+this project has. The adversary that found it also localised it, to an
+unconditional `undo()` in the backtrack loop. That is a real deviation from
+`sre_lib.h` and **it is not this bug**: gating it off left 1,260 mismatching
+rows over the same 296 patterns, byte for byte. The cause was four lines
+earlier — `Op::Until` armed the zero-width guard `last_ptr` for every iterate
+kind, where `sre` arms it only in the branch that pushes and pops it, and the
+`count < min` branch never touches it. That is exactly why `{0,n}` always
+agreed and only m ≥ 1 diverged. **A precise diagnosis from a good adversary is
+still a hypothesis; the cheap experiment that falsifies it is worth more than
+the reasoning that produced it.**
+
+A second adversary then ran 114,428 differential rows — a 1,176-pattern
+quantifier cross-product over 12 subjects rendered 12 ways, then 6,400 patterns
+of deeper nesting over 14 subjects — for zero wrong answers, zero hangs and
+zero contract violations.
+
+### Why `glob` was rejected at 0.99
+
+Above `hashlib`'s 0.87 but below `csv`'s 1.39, which this ledger already
+rejected — and it repeated the recurring defect for the fifth time. A new
+`Value::Glob` variant was wired into `index`, `slice` and `get_attr` but not
+into `set_item`, `del_item` or slice assignment, so `del g[0]` printed
+`'list' object doesn't support item deletion` at exit 1 (the message
+self-contradicts, because `type_name` is deliberately `"list"` so `isinstance`
+works). Worse, `AugAssign`'s in-place-extend arm tests for `Value::List`, so
+`g += [...]` rebound instead of mutating and every alias went stale — a **wrong
+answer at exit 0**, where the baseline had refused cleanly at 90. It also
+turned a previously-correct family into exit 1: a `glob-order` refusal reached
+after `os.makedirs` cannot fall onward. And `sorted`'s O(n²) tie scan became
+reachable at filesystem scale — 60,000 matches took 7.98 s against CPython's
+0.06 s.
+
+If it is retried: `glob-order` must be a **static** block, and the order-taint
+must not be a `Value` variant at all. The branch is on the remote as
+`cap-glob`.
+
+### Why `class` was rejected at 0.19
+
+Far below every line, and the adversary returned `redo`. Two of the eight holes
+are wrong answers in both directions: CPython mangles `__x` inside a class body
+to `_C__x`, so writing it here binds a name CPython would not and reading it
+from outside answers where CPython raises; and the class body's scope leaked
+into lambdas and comprehensions defined inside it, which CPython gives their
+own scope. Method `TypeError`s also lacked the qualname CPython 3.10+ prints.
+The 22-row `class` blocker turns out to be mostly programs needing far more
+than a plain class, which is why the honest yield was three. Branch `cap-class`
+on the remote.
+
+### Recorded
+
+Filed #48: a static blocker only the larger variant can compute is inert when
+the chain enters at the core, because `exec_engine` invokes the next rung as
+`<bin> -c`. That limits the new static pattern blocks and the matcher-call
+block from iteration 75 alike, and it is why the routing census cannot see
+either.
+
+**Next.** `glob` 34 and `csv` 23 remain the top servable module rows and both
+now have a written reason they failed. `math` 14 (integer-exact only) and
+`base64` 10 are the untried rows with no known trap.
+
 ## 2026-09-05 · iteration 75 — the `re` surface, and the instrument's blind spot shaped like its sandbox
 
 Host: macOS arm64, host-target build (no rustup; musl bytes unmeasured).

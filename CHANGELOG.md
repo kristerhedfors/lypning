@@ -17,8 +17,38 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > Four entries below cite a **commit**, not a pull request: those changes were
 > merged straight to `main` and never had one. The numbers in their merge
 > subjects (`#43`, `#45`–`#47`) do not refer to them — `#43` and `#45` are
-> issues, and `#46` was later taken by an unrelated pull request. The commit
-> link is the one that resolves.
+> issues, and `#46` and `#47` were later taken by unrelated pull requests.
+> The commit link is the one that resolves.
+
+**2026-09-05** — `re` matcher round: lypning-l runs the regexes the corpus writes; `glob` and `class` rejected · [#47]
+
+- `cap-re` step 2. `lypning-l` MATCH 1910 → **1950**, coverage 76.3% → **77.9%**
+  (`lypning conformance --mixture both`, 2026-09-05, 2,504 graded, MISMATCH 0,
+  UNSAFE 0, monotone 0, dispatchers agree 2504/2504). Both `re` rows leave
+  `--plan`; the only one left is 4 programs wanting Unicode tables.
+- `lypning-l` 867,840 → **934,096 B**, the first capability to cross into device
+  block 8 (which begins at 917,504 B), 8 of a 32-block budget. The frozen core
+  is unchanged at 834,672 B and carries no `re` text.
+- **Density 0.62 programs/KiB by the battery, 1.44 by corpus intent**, and 0.62
+  is below the 0.87 that got `hashlib` rejected. Landed anyway because the
+  under-count is measured, not assumed: of the 213 admissible `re` programs,
+  174 die identically on both engines before their first regex call in the
+  battery's temp cwd, so no matcher can move them.
+- A capturing group ending in a lazy quantifier inside a bounded `{m,n}` with
+  m ≥ 1 captured the wrong iteration — the span was right, so `group(1)`
+  returned a different string at exit 0. Cause: `Op::Until` armed the
+  zero-width guard for every iterate kind, where `sre` arms it only in the
+  branch that pushes and pops it. The first diagnosis blamed a different line
+  and was disproved by experiment before anything was changed.
+- Verified by 114,428 differential rows against CPython 3.14.5 — a quantifier
+  cross-product over 12 subjects rendered 12 ways, then deeper nesting over 14
+  — with zero wrong answers, zero hangs, zero contract violations.
+- **`glob` rejected at 0.99 programs/KB** and **`class` at 0.19**, both built,
+  measured and attacked; branches `cap-glob` and `cap-class` are on the remote
+  unmerged. Reasons in `docs/HILLCLIMB.md` iteration 76.
+- Filed #48: a static blocker only the larger variant can compute is inert when
+  the chain enters at the core, because `exec_engine` invokes the next rung as
+  `<bin> -c`.
 
 **2026-09-05** — The unbuilt-oracle line no longer promises a catalogue a wheel does not ship
 
