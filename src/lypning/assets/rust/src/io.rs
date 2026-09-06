@@ -25,8 +25,6 @@ use crate::host;
 use std::cell::RefCell;
 use crate::hash::Map;
 use std::io::{Read, Write};
-#[cfg(feature = "cap-csv")]
-use std::rc::Rc;
 
 /// Past this many buffered bytes the run commits early and gives up its
 /// ability to fall back. 8 MiB is far above anything in the corpus.
@@ -50,32 +48,44 @@ pub struct FileObj {
     /// What `open(newline=…)` asked this text stream to do with line endings —
     /// one of [`NEWLINE_UNIVERSAL`], [`NEWLINE_RAW`], [`NEWLINE_KEEP_NL`].
     ///
-    /// Read in two places, and it took a differential grid to find the second.
-    /// `csv.rs`'s `split_lines` is the obvious one — to a `csv.reader` the mode
-    /// is the difference between one record and two. `iter::line_end` is the
-    /// one the first cut missed: `newline=''` means a line ends at `\r\n`,
-    /// `\n` OR a bare `\r`, so a file object that was SERVED under that flag
-    /// while still splitting at `\n` alone swallowed every bare CR, and
-    /// `readline`, `readlines`, `for line in f` and `seek(0)` all went with it.
-    /// Serving a flag and then not reading it is worse than refusing it.
+    /// It is the STREAM's flag and not the parser's, which is why `iter::Lines`
+    /// is the one place it is read: `newline=''` means a line ends at `\r\n`,
+    /// `\n` OR a bare `\r`, and `newline=None` means the same three ends AND
+    /// that each of them arrives as `\n`. A file served under either flag while
+    /// the stream still split at `\n` alone swallowed every bare CR, and
+    /// `readline`, `readlines`, `for line in f`, `seek(0)` and every
+    /// `csv.reader` over it went with it. `csv.rs` has no line splitter of its
+    /// own to disagree with this one — it reads the file object's lines, the
+    /// same ones a `for` loop gets.
     ///
     /// The core neither serves nor stores the mode: `newline=''` refuses there,
     /// exactly as it did before `cap-csv` existed.
     #[cfg(feature = "cap-csv")]
     pub newline_mode: u8,
-    /// Set when a `csv.reader` took the rest of this stream in one gulp.
+    /// The write generation [`FileObj::path`] had when this handle opened it.
     ///
-    /// CPython's reader is LAZY: after `next(r)` the file is positioned just
-    /// past the first record and `f.read()` returns the rest. This one is
-    /// eager, so the position it leaves behind is right only when the reader
-    /// was drained — which every corpus shape does and a `next(r)` followed by
-    /// `f.read()` does not. Rather than answer that difference wrongly at exit
-    /// 0, the stream remembers and every later READ of it refuses; CPython
-    /// answers one spawn later. Found by a 2,773-row differential grid, in the
-    /// two rows that did it — and left open for `sys.stdin`, which has its own
-    /// flag ([`stdin_csv_guard`]) because it is not a `FileObj`.
+    /// A `FileObj`'s `data` is the bytes `open()` read, once and at that
+    /// moment; CPython's file object reads the descriptor as it goes. The two
+    /// agree until something writes the path under an open handle — and a
+    /// `csv.reader` is the only reader here lazy enough to be caught by it, so
+    /// it compares this against [`write_gen`] before every row and refuses
+    /// rather than yield a record CPython has already replaced.
+    ///
+    /// A COUNTER and not a flag, because "has this path ever been written" is
+    /// the wrong question: `open(p,'w').write(text)` and then
+    /// `csv.reader(open(p))` reads the staged bytes through
+    /// [`effective_content`] and is not stale at all. "Written SINCE this
+    /// handle opened it" is the question, and two numbers answer it.
     #[cfg(feature = "cap-csv")]
-    pub csv_consumed: bool,
+    pub write_gen: u32,
+    /// `TextIOWrapper`'s `telling`, which `f.tell()` needs and nothing else
+    /// does. `__next__` on a TEXT stream clears it — CPython cannot say where a
+    /// position is once its read-ahead is in play — and restores it at the EOF
+    /// that ends the iteration, or at the next `seek()`. So `for line in f:`
+    /// run to the end leaves `tell()` working and a `break` out of it does not,
+    /// which is measured (`methods::tell_exact`) rather than reasoned about.
+    #[cfg(feature = "cap-csv")]
+    pub telling: bool,
 }
 
 /// `newline=None` — `\r\n` and a lone `\r` become `\n`.
@@ -300,6 +310,11 @@ pub fn is_staged_deleted(path: &str) -> bool {
     DELETED.with(|d| d.borrow().contains(path))
 }
 
+/// A delete is deliberately NOT a [`note_write`]: unlinking a path does not
+/// change the bytes an already-open handle reads — CPython's descriptor holds
+/// the inode open and this engine's `FileObj` holds a copy — so a `csv.reader`
+/// over a file the program then removes goes on yielding on both, and refusing
+/// it would cost a spawn for a divergence that does not exist.
 pub fn stage_delete(path: &str) {
     PENDING.with(|p| {
         let mut p = p.borrow_mut();
@@ -312,6 +327,7 @@ pub fn stage_delete(path: &str) {
 }
 
 pub fn stage_write(path: &str, bytes: Vec<u8>) {
+    note_write(path);
     DELETED.with(|d| {
         d.borrow_mut().remove(path);
     });
@@ -368,11 +384,9 @@ pub fn open_file(path: &str, mode: &str, binary: bool) -> R<FileObj> {
             }
         }
     } else {
-        // `open(p,'w')` TRUNCATES in CPython, and `open(p,'a')` moves the end a
-        // lazy reader has not reached yet; either is a write a live
-        // `csv.reader` over the same path would see and this engine's eager one
-        // cannot.
-        csv_on_write(path)?;
+        // `open(p,'w')` TRUNCATES and `open(p,'a')` moves the end, and both are
+        // writes an open read handle over the same path cannot see.
+        note_write(path);
         // Staging the write means the file is not truncated until commit; that
         // is intentional, and it is also what makes `open(p,'w')` reversible.
         DELETED.with(|d| {
@@ -397,177 +411,62 @@ pub fn open_file(path: &str, mode: &str, binary: bool) -> R<FileObj> {
         #[cfg(feature = "cap-csv")]
         newline_mode: NEWLINE_UNIVERSAL,
         #[cfg(feature = "cap-csv")]
-        csv_consumed: false,
+        write_gen: write_gen(path),
+        #[cfg(feature = "cap-csv")]
+        telling: true,
     })
 }
 
-/// The read half of `FileObj::csv_consumed`: every path that would observe the
-/// position a `csv.reader` left behind, and nothing else. `close` and `write`
-/// are not among them — neither can see it.
-#[cfg(feature = "cap-csv")]
-pub fn csv_read_guard(f: &FileObj) -> R<()> {
-    if f.csv_consumed {
-        return Err(unsupported(
-            "csv",
-            "reading a file that csv.reader() has already taken (CPython's reader is lazy and leaves the stream where the last row it yielded ended)",
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(not(feature = "cap-csv"))]
-pub fn csv_read_guard(_f: &FileObj) -> R<()> {
-    Ok(())
-}
-
-// The `sys.stdin` half of [`csv_read_guard`], and the one stream that has no
-// other half: a file can be reopened and read again, stdin cannot.
+// Every path this run has staged a write to, and how many times.
 //
-// `csv.reader(sys.stdin)` reaches [`stdin_rest`], which DRAINS — and the first
-// cut of this capability recorded that on `FileObj` and nowhere else, so every
-// later `sys.stdin.read()`, `.readline()`, `.readlines()` and `for line in
-// sys.stdin` answered empty at exit 0 where CPython, whose reader is lazy,
-// still has the whole stream. One match arm away from the guard that was
-// already right.
+// The reader that reads it is `csv.rs`, once per row, through [`write_gen`]
+// and `FileObj::write_gen`. Five other guards used to stand here — a drained
+// flag on the stream, a second one for `sys.stdin`, a registry pairing every
+// live reader with its file, and the two events (`close`, `write`) the file
+// had to push back at a reader that could not see them. All five existed
+// because the reader was EAGER: it took the whole stream at construction, so
+// the rows were right and the MOMENT was not, and every path back to the
+// stream had to be told. A lazy reader pulls its lines from the file object
+// itself, so the moment is the file's own and there is nothing left to tell:
+// a closed file raises from `Iter::Lines`, `f.read()` after `next(r)` returns
+// what is left because the reader only took what it yielded, and `sys.stdin`
+// keeps one cursor for `input()`, `for line in sys.stdin` and the reader
+// alike.
+//
+// This one is not a csv guard at all. It is the FILE object's own divergence
+// — `data` is a snapshot, CPython's is a descriptor — and csv declines to add
+// to it rather than closing it: `open(p).read()` after a write to `p` still
+// answers from the snapshot, on both variants, as it did before this
+// capability existed.
 #[cfg(feature = "cap-csv")]
 thread_local! {
-    static STDIN_CSV: RefCell<bool> = const { RefCell::new(false) };
+    static WRITE_GEN: RefCell<Map<String, u32>> = RefCell::new(Map::default());
 }
 
+/// Note that `path` has been written. Called from every staging entry point,
+/// so `Path.write_text` and `os.remove` count as much as `f.write`.
 #[cfg(feature = "cap-csv")]
-pub fn stdin_csv_take() {
-    STDIN_CSV.with(|s| *s.borrow_mut() = true);
-}
-
-#[cfg(feature = "cap-csv")]
-pub fn stdin_csv_guard() -> R<()> {
-    if STDIN_CSV.with(|s| *s.borrow()) {
-        return Err(unsupported(
-            "csv",
-            "reading sys.stdin after csv.reader() has taken it (CPython's reader is lazy and leaves the stream where the last row it yielded ended)",
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(not(feature = "cap-csv"))]
-pub fn stdin_csv_guard() -> R<()> {
-    Ok(())
-}
-
-/// Why a registered reader was killed: its file was closed, so the next row is
-/// CPython's `ValueError: I/O operation on closed file.`
-#[cfg(feature = "cap-csv")]
-pub const CSV_DEAD_CLOSED: u8 = 0;
-/// … or its file was written to after it had been drained, so the next row is a
-/// row CPython would still find and this engine no longer can.
-#[cfg(feature = "cap-csv")]
-pub const CSV_DEAD_STALE: u8 = 1;
-
-// Every live `csv.reader` and the file it was taken from.
-//
-// The eager reader is right about the ROWS and wrong about the MOMENT, and the
-// two moments a program can see the difference are both events on the FILE:
-// closing it (CPython's lazy reader then raises on the next row) and writing to
-// it (CPython's lazy reader then sees what was written). Neither is visible
-// from the reader, so the file tells the reader instead — which is why this
-// list exists rather than a flag on either side.
-//
-// An entry whose reader has a strong count of 1 is held by nothing but this
-// list: the program has dropped it, no `next` can ever reach it again, and it
-// is pruned rather than answered for. That is what keeps the common shape —
-// `rows = list(csv.reader(open(p)))` and then `open(p,'w').write(…)` — from
-// paying a refusal for a reader nobody can look at.
-#[cfg(feature = "cap-csv")]
-thread_local! {
-    static CSV_READERS: RefCell<Vec<CsvReader>> = const { RefCell::new(Vec::new()) };
-}
-
-#[cfg(feature = "cap-csv")]
-struct CsvReader {
-    file: Rc<RefCell<FileObj>>,
-    /// Copied at registration so a scan never has to borrow the `FileObj` —
-    /// `file_write` is already holding one.
-    path: String,
-    rows: Rc<RefCell<crate::iter::Iter>>,
-}
-
-#[cfg(feature = "cap-csv")]
-pub fn csv_register(file: &Rc<RefCell<FileObj>>, rows: &Rc<RefCell<crate::iter::Iter>>) {
-    let path = file.borrow().path.clone();
-    CSV_READERS.with(|r| {
-        let mut r = r.borrow_mut();
-        // Prune here as well as on close and write, so a loop over a directory
-        // of CSVs keeps at most its LIVE readers: an entry holds the file's
-        // whole buffer, and the list is the only thing keeping a dropped
-        // reader's copy of it alive.
-        r.retain(|e| Rc::strong_count(&e.rows) > 1);
-        r.push(CsvReader { file: file.clone(), path, rows: rows.clone() })
+pub fn note_write(path: &str) {
+    WRITE_GEN.with(|g| {
+        let mut g = g.borrow_mut();
+        // The lookup before the insert is not a style choice: this runs on
+        // every `f.write()`, and `path.to_string()` on each of them would be an
+        // allocation per line written for the whole of a write loop.
+        if let Some(n) = g.get_mut(path) {
+            *n += 1;
+            return;
+        }
+        g.insert(path.to_string(), 1);
     });
 }
 
-/// `f.close()`. CPython's reader holds the FILE, so the next row after a close
-/// is `ValueError: I/O operation on closed file.` — for a drained reader too,
-/// which is why this fires on every reader over the file and not only on the
-/// ones with rows left. The drained-and-never-touched-again shape (`with open(p)
-/// as f: rows = list(csv.reader(f))`) is unaffected: nothing asks for another
-/// row, so nothing raises.
 #[cfg(feature = "cap-csv")]
-pub fn csv_on_close(file: &Rc<RefCell<FileObj>>) {
-    CSV_READERS.with(|r| {
-        let mut r = r.borrow_mut();
-        for e in r.iter() {
-            if Rc::ptr_eq(&e.file, file) && Rc::strong_count(&e.rows) > 1 {
-                if let Ok(mut b) = e.rows.try_borrow_mut() {
-                    *b = crate::iter::Iter::CsvDead(CSV_DEAD_CLOSED);
-                }
-            }
-        }
-        r.retain(|e| Rc::strong_count(&e.rows) > 1);
-    });
+pub fn write_gen(path: &str) -> u32 {
+    WRITE_GEN.with(|g| g.borrow().get(path).copied().unwrap_or(0))
 }
 
 #[cfg(not(feature = "cap-csv"))]
-pub fn csv_on_close(_file: &std::rc::Rc<RefCell<FileObj>>) {}
-
-/// A write to `path`. CPython's reader would see it; this one read the file
-/// once, at construction, so it cannot. A reader with rows left REFUSES (exit
-/// 90, and CPython answers one spawn later); a drained one is marked stale, so
-/// the write itself is allowed and only a further `next` on that reader
-/// refuses. Both directions were reachable at exit 0 before.
-#[cfg(feature = "cap-csv")]
-pub fn csv_on_write(path: &str) -> R<()> {
-    CSV_READERS.with(|r| {
-        let mut r = r.borrow_mut();
-        let mut stale: Vec<Rc<RefCell<crate::iter::Iter>>> = Vec::new();
-        for e in r.iter() {
-            if e.path != path || Rc::strong_count(&e.rows) == 1 {
-                continue;
-            }
-            match e.rows.try_borrow() {
-                Ok(b) if crate::iter::drained(&b) => stale.push(e.rows.clone()),
-                _ => {
-                    return Err(unsupported(
-                        "csv",
-                        "writing a file a csv.reader() still has rows to yield (CPython's reader is lazy and would yield what is written)",
-                    ))
-                }
-            }
-        }
-        for it in stale {
-            if let Ok(mut b) = it.try_borrow_mut() {
-                *b = crate::iter::Iter::CsvDead(CSV_DEAD_STALE);
-            }
-        }
-        r.retain(|e| Rc::strong_count(&e.rows) > 1);
-        Ok(())
-    })
-}
-
-#[cfg(not(feature = "cap-csv"))]
-pub fn csv_on_write(_path: &str) -> R<()> {
-    Ok(())
-}
+pub fn note_write(_path: &str) {}
 
 pub fn file_write(f: &FileObj, bytes: &[u8]) -> R<usize> {
     if f.closed {
@@ -582,7 +481,7 @@ pub fn file_write(f: &FileObj, bytes: &[u8]) -> R<usize> {
             "not writable",
         ));
     }
-    csv_on_write(&f.path)?;
+    note_write(&f.path);
     PENDING.with(|p| {
         let mut p = p.borrow_mut();
         if let Some((buf, _)) = p.files.get_mut(&f.path) {
@@ -727,4 +626,6 @@ pub fn reset() {
     COMMITTED.with(|c| *c.borrow_mut() = false);
     STDIN.with(|s| *s.borrow_mut() = None);
     STDIN_POS.with(|p| *p.borrow_mut() = 0);
+    #[cfg(feature = "cap-csv")]
+    WRITE_GEN.with(|g| g.borrow_mut().clear());
 }

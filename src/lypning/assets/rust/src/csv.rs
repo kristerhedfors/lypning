@@ -11,9 +11,10 @@
 //! `del`, augmented assignment, `json.dumps` and `%`-formatting, and the arms it
 //! must be wired into are exactly the ones nothing forces you to remember.
 //!
-//! So a reader here is an **[`Iter::Vec`] behind the existing
-//! [`Value::IterObj`]** — the shape `re.finditer` already returns. Every one of
-//! those arms is already wired for it: `next(r)` takes it as an iterator,
+//! So a reader here is an **`Iter` behind the existing [`Value::IterObj`]** —
+//! the shape `re.finditer` already returns, and `Iter` is where the lazy
+//! shapes already live (`Iter::Lines`, `Iter::Range`, `Iter::Gen`). Every one
+//! of those arms is already wired for it: `next(r)` takes it as an iterator,
 //! `for row in r` shares the same cursor, `list(r)` collects it, `repr(r)`
 //! refuses because CPython's repr carries a heap address, and `type(r).__name__`
 //! is the `reader` / `DictReader` CPython prints. Nothing new had to be
@@ -27,26 +28,33 @@
 //! 23 programs `--plan` blocks on `import csv` counts 15 readers over a file, 2
 //! over `sys.stdin` and 6 writers.
 //!
-//! **The reader is EAGER, and the file is what makes that safe.** CPython's is
-//! lazy over the input iterator, so it has the rows at a different MOMENT, and
-//! an adversarial grid found five directions in which the moment is observable.
-//! Two are answered here: a parse error is raised at construction (a refusal,
-//! and an earlier refusal is a better one — it is further from any side effect
-//! that could commit the barrier), and a `float()` that a `QUOTE_NONNUMERIC`
-//! field fails is a refusal for the OPPOSITE reason (it is the program's own
-//! `ValueError`, not a refusal, so raising it from the wrong statement changes
-//! what a `try` catches — see [`Parser::save`]).
+//! **The reader is LAZY, which is the design.** CPython's pulls one line from
+//! its input iterator per record, so a program can look at the stream BETWEEN
+//! two rows — and an adversarial grid found five directions in which it does.
+//! The first cut of this file drained the stream at construction and answered
+//! all five with guards: a flag on the file, a second flag for `sys.stdin`, a
+//! registry pairing every live reader with its file, and two events (`close`,
+//! `write`) the file had to push back at a reader that could not see them.
+//! Each closed one row and left the next; `input()` reached the one stream
+//! without a guard, and a stream iterator already in flight walked past the one
+//! that was installed per loop.
 //!
-//! The other three are events on the FILE, invisible from the reader, so the
-//! file tells the reader: `io::csv_register` pairs the two, `io::csv_on_close`
-//! turns a close into CPython's own `ValueError: I/O operation on closed file.`
-//! on the next row, and `io::csv_on_write` refuses a write a lazy reader would
-//! have seen. `sys.stdin` has no second half — it cannot be reopened — so
-//! `io::stdin_csv_take` marks it and every later read of it refuses.
+//! So the reader pulls lines from the FILE OBJECT, through the same
+//! [`Iter::Lines`] a `for line in f` uses and the same `Iter::Stdin` `input()`
+//! shares a cursor with. It has no stream of its own to leave in the wrong
+//! place. `f.read()` after `next(r)` returns what is left because the reader
+//! only took what it yielded; a file closed under it raises CPython's own
+//! `ValueError: I/O operation on closed file.` from the line read; a
+//! `QUOTE_NONNUMERIC` field `float()` cannot take raises the program's own
+//! `ValueError` from the ITERATION that reaches it, which is the statement a
+//! `try:` around the loop is written to catch. None of that is code here. It
+//! is what is left when the guards go.
 //!
-//! Every corpus shape consumes the reader immediately, which is why eagerness
-//! is still what makes the plain `Iter::Vec` above possible; the bookkeeping is
-//! what makes it honest.
+//! One thing survives them, and it is not a csv divergence: this engine's
+//! `FileObj` holds the bytes `open()` read, where CPython's holds a
+//! descriptor. So a write to a path under an open read handle is invisible
+//! here and visible there — for `f.read()` as much as for a reader — and
+//! [`next_line`] refuses a row rather than adding to it (`io::write_gen`).
 //!
 //! **The refusals are the design, not the leftovers.** Every `csv.Error`
 //! message is CPython's to word, `field_size_limit` and `Sniffer` are CPython's
@@ -130,6 +138,7 @@ pub fn call(it: &mut Interp, name: &str, args: &mut Args, kw: &[(Rc<str>, Value)
 /// READER ignores it entirely (`_csv`'s parser hard-codes `\r` and `\n`) while
 /// still VALIDATING it, so accepting it would mean reproducing a validation
 /// whose only effect is an error message CPython owns; it refuses instead.
+#[derive(Clone, Copy)]
 struct Dialect {
     delimiter: char,
     /// `None` is `quotechar=None`, which no character can equal — the same way
@@ -287,7 +296,14 @@ fn check_chars(d: &Dialect) -> R<()> {
 
 // ---- the input -------------------------------------------------------------
 
-/// The lines a reader will see, taken from whatever was handed to it.
+/// The LINES a reader will see, as the stream's own iterator.
+///
+/// This is the whole of the laziness. `csv.reader(f)` in CPython is
+/// `PyObject_GetIter(f)` and one `PyIter_Next` per record; here it is
+/// `Iter::Lines` — the same iterator `for line in f` and `f.readline()` drive —
+/// and one `iter_next` per record. So the stream ends up exactly where CPython
+/// leaves it after every row, and none of the five guards the eager version
+/// needed has anything left to guard.
 ///
 /// The corpus mine (2026-09-06) says what this has to accept: 15 of the 17
 /// corpus readers read a file object from `open(...)` and 2 read `sys.stdin`.
@@ -295,10 +311,15 @@ fn check_chars(d: &Dialect) -> R<()> {
 /// served — it appears in the corpus only inside two capture-harness programs
 /// that are unroutable for other reasons, and guessing at a shape the mine does
 /// not show is how a capability grows surface nobody measured.
-fn input_lines(v: &Value) -> R<(Vec<String>, Option<Rc<RefCell<mio::FileObj>>>)> {
+///
+/// The three checks below are CPython's own, at CPython's own moment: `iter()`
+/// of a closed file IS the `ValueError`, raised from the `csv.reader(...)` call
+/// and not from the first row. The other two are refusals, and a refusal may
+/// always be earlier than the error it stands for.
+fn input_lines(v: &Value) -> R<Iter> {
     match v {
         Value::File(f) => {
-            let mut fo = f.borrow_mut();
+            let fo = f.borrow();
             if fo.closed {
                 return Err(LypningError::exc(
                     "ValueError",
@@ -314,40 +335,19 @@ fn input_lines(v: &Value) -> R<(Vec<String>, Option<Rc<RefCell<mio::FileObj>>>)>
                 // `_csv.Error: iterator should return strings, not bytes …`
                 return Err(refuse("csv.reader() over a file opened in binary mode"));
             }
-            // A SECOND reader over the same stream. CPython's first reader is
-            // lazy, so an unconsumed one left the file at the start and the
-            // second reader gets every row; this one already took them, and the
-            // second would silently answer `[]` at exit 0. Same guard, and the
-            // same reason, as the direct reads in `methods.rs`.
-            mio::csv_read_guard(&fo)?;
-            // The reader CONSUMES its input in CPython too: an `f.read()` after
-            // one returns "".
-            let start = fo.pos;
-            fo.pos = fo.data.len();
-            fo.csv_consumed = true;
-            let text = crate::iter::decode_utf8(&fo.data[start..])?;
-            let mode = fo.newline_mode;
             drop(fo);
-            Ok((split_lines(&text, mode), Some(f.clone())))
+            Ok(Iter::Lines(f.clone()))
         }
         // `sys.stdin` is a text stream opened with `newline="\n"`, NOT with
         // the `newline=None` a plain `open()` gets: CPython's `create_stdio`
         // names it, and this engine's own `sys.stdin.read()` already returns a
-        // `\r` verbatim. The first cut of this file split it with
-        // `NEWLINE_UNIVERSAL` on a comment that said the opposite, so a `\r`
-        // inside a quoted field was rewritten to `\n` and a bare `\r` between
-        // records became a record break where CPython raises. Checked by
-        // experiment against this box's CPython, both directions, before the
-        // constant was changed.
-        //
-        // `stdin_rest` is the same reader `sys.stdin.read()` uses and it
-        // CONSUMES — which `stdin_csv_take` records, so a later read of the one
-        // stream a program cannot reopen refuses instead of answering empty.
-        Value::Module("sys.stdin") => {
-            let text = crate::iter::decode_utf8(&mio::stdin_rest()?)?;
-            mio::stdin_csv_take();
-            Ok((split_lines(&text, mio::NEWLINE_KEEP_NL), None))
-        }
+        // `\r` verbatim. Checked by experiment against this box's CPython, both
+        // directions, before the constant was chosen. `Iter::Stdin` splits at
+        // `\n` alone, which is that mode — and it is the SAME cursor `input()`,
+        // `sys.stdin.readline()` and `for line in sys.stdin` advance, so an
+        // interleaving of them comes out in CPython's order rather than in one
+        // this engine invented.
+        Value::Module("sys.stdin") => Ok(Iter::Stdin),
         other => Err(refuse(&format!(
             "csv.reader() over a {} (only a file object and sys.stdin are served)",
             type_name(other)
@@ -355,51 +355,33 @@ fn input_lines(v: &Value) -> R<(Vec<String>, Option<Rc<RefCell<mio::FileObj>>>)>
     }
 }
 
-/// Split text into the lines a Python TEXT STREAM would hand the reader, which
-/// is the one place `open(newline=…)` is observable to `csv`.
+/// One line, or `None` at end of input.
 ///
-/// `newline=None` translates `\r\n` and a lone `\r` to `\n` and splits there;
-/// `newline=''` translates nothing and splits at all three; `newline='\n'`
-/// translates nothing and splits only at `\n`. The three agree on every input
-/// without a `\r`, which is why they can be — and were, by the first cut of
-/// this file — confused: they diverge exactly when a `\r` falls inside a quoted
-/// field, where the reader keeps it verbatim.
-fn split_lines(text: &str, mode: u8) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '\n' => {
-                cur.push('\n');
-                out.push(std::mem::take(&mut cur));
-            }
-            '\r' if mode != mio::NEWLINE_KEEP_NL => {
-                if mode == mio::NEWLINE_UNIVERSAL {
-                    if chars.peek() == Some(&'\n') {
-                        chars.next();
-                    }
-                    cur.push('\n');
-                } else {
-                    cur.push('\r');
-                    if chars.peek() == Some(&'\n') {
-                        chars.next();
-                        cur.push('\n');
-                    }
-                }
-                out.push(std::mem::take(&mut cur));
-            }
-            c => cur.push(c),
+/// The one check that is left, and it is the FILE object's divergence rather
+/// than this reader's: `FileObj::data` is the bytes `open()` read, so a write
+/// to the path under the handle is invisible here and visible to CPython, whose
+/// reader would go on to yield it. `f.read()` has the same hole and does not
+/// refuse; this declines to widen it rather than to close it.
+fn next_line(it: &mut Interp, lines: &mut Iter) -> R<Option<Rc<str>>> {
+    if let Iter::Lines(f) = lines {
+        let fo = f.borrow();
+        if mio::write_gen(&fo.path) != fo.write_gen {
+            return Err(refuse(
+                "a row from a file that has been written since it was opened (this engine's file \
+                 object is the bytes open() read; CPython's reader would yield what was written)",
+            ));
         }
     }
-    // A file with no trailing newline ends in a partial line, and CPython's
-    // stream yields it; a file that DOES end in one yields nothing after it,
-    // which is why an empty `cur` is dropped rather than pushed. An empty file
-    // yields no lines at all and the reader produces no rows.
-    if !cur.is_empty() {
-        out.push(cur);
+    match it.iter_next(lines)? {
+        // `Iter::Lines` yields `Bytes` for a binary stream, which `input_lines`
+        // has already refused, and `Iter::Stdin` yields nothing else.
+        Some(Value::Str(s)) => Ok(Some(s)),
+        Some(other) => Err(refuse(&format!(
+            "an input line that is a {} (CPython's csv.Error names a type this engine does not)",
+            type_name(&other)
+        ))),
+        None => Ok(None),
     }
-    out
 }
 
 // ---- the parser ------------------------------------------------------------
@@ -426,8 +408,7 @@ enum St {
 /// confused with it; this uses `None` so the two cannot be confused at all.
 type Ch = Option<char>;
 
-struct Parser<'a> {
-    d: &'a Dialect,
+struct Parser {
     st: St,
     field: String,
     /// Set when an UNQUOTED field begins under `QUOTE_NONNUMERIC`, and cleared
@@ -442,16 +423,26 @@ struct Parser<'a> {
     row: Vec<Value>,
 }
 
-impl<'a> Parser<'a> {
-    fn new(d: &'a Dialect) -> Self {
+impl Parser {
+    fn new() -> Self {
         Parser {
-            d,
             st: St::StartRecord,
             field: String::new(),
             numeric: false,
             field_chars: 0,
             row: Vec::new(),
         }
+    }
+
+    /// `parse_reset`, which `_csv` runs at the top of every `Reader_iternext`
+    /// — so a record that ended mid-field at end of input cannot be yielded
+    /// twice, and the state a row starts from is always the same one.
+    fn reset(&mut self) {
+        self.st = St::StartRecord;
+        self.field.clear();
+        self.field_chars = 0;
+        self.numeric = false;
+        self.row.clear();
     }
 
     fn add(&mut self, c: char) -> R<()> {
@@ -471,30 +462,21 @@ impl<'a> Parser<'a> {
         self.field_chars = 0;
         let v = if self.numeric {
             self.numeric = false;
-            // `PyNumber_Float(field)`. The ValueError this raises for a
-            // non-numeric field is `float()`'s own — and it is the program's
-            // OWN exception, not a refusal, which is exactly why it may not be
-            // raised from here: this reader is eager, so `float()` runs during
-            // `csv.reader(…)` and CPython runs it during the ITERATION, after
-            // the rows before it have already been yielded and printed. A
-            // `try:` around the loop caught it there and does not catch it
-            // here. So the failure becomes a refusal at construction — no
-            // stdout has been written, the run falls onward, and CPython raises
-            // its own ValueError in its own statement.
-            let s = text.clone();
+            // `PyNumber_Float(field)`, and the ValueError it raises for a
+            // non-numeric field is the PROGRAM's own exception, not a refusal —
+            // so the only thing that matters is the statement it comes from.
+            // The eager reader ran it during `csv.reader(…)`, where a `try:`
+            // around the loop could not catch it and the rows before it had not
+            // printed, and turned it into a refusal for exactly that reason.
+            // A lazy reader runs it here: at the row that reaches the field,
+            // after the rows before it have been yielded, which is CPython's
+            // own place for it. Nothing to convert, and nothing to refuse.
             crate::builtins::call_builtin(
                 it,
                 "float",
                 &mut Args::one(Value::Str(text)),
                 Vec::new(),
-            )
-            .map_err(|_| {
-                refuse(&format!(
-                    "a QUOTE_NONNUMERIC field float() cannot take ({:?}) — CPython raises that \
-                     ValueError from the ITERATION, after the rows before it",
-                    clip(&s)
-                ))
-            })?
+            )?
         } else {
             Value::Str(text)
         };
@@ -506,8 +488,7 @@ impl<'a> Parser<'a> {
     /// branches; the one liberty taken is that `c == quotechar` is false when
     /// there is no quotechar, where `_csv` compares against a NUL it has already
     /// ruled out of the data.
-    fn step(&mut self, it: &mut Interp, c: Ch) -> R<()> {
-        let d = self.d;
+    fn step(&mut self, it: &mut Interp, d: &Dialect, c: Ch) -> R<()> {
         let is_quote = |c: Ch| c.is_some() && c == d.quotechar && d.quoting != QUOTE_NONE;
         let is_escape = |c: Ch| c.is_some() && c == d.escapechar;
         let is_delim = |c: Ch| c == Some(d.delimiter);
@@ -640,79 +621,140 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// Every row, eagerly. `Reader_iternext` yields a record each time the state
-/// machine lands back on `StartRecord` after the end-of-line sentinel, and
-/// finishes a trailing partial record at end of input; both are here.
-fn parse_rows(it: &mut Interp, lines: &[String], d: &Dialect) -> R<Vec<Vec<Value>>> {
-    let mut p = Parser::new(d);
-    let mut out: Vec<Vec<Value>> = Vec::new();
-    for line in lines {
-        for c in line.chars() {
-            if c == '\0' {
+// ---- the reader ------------------------------------------------------------
+
+/// A live `csv.reader` or `csv.DictReader`: the parser's state between rows,
+/// the dialect it parses with, and the stream it pulls lines from.
+///
+/// It is `_csv`'s `ReaderObj` with `Lib/csv.py`'s `DictReader` folded into it
+/// as an option, because the two differ only in what they do with a row that
+/// has already been parsed — and a `DictReader` in CPython holds a `reader` and
+/// forwards to it, which is a second object and a second set of arms for
+/// nothing.
+pub struct CsvIter {
+    lines: Iter,
+    d: Dialect,
+    p: Parser,
+    /// `None` for `csv.reader`. The header is `Option` inside it because
+    /// `DictReader.fieldnames` is a PROPERTY: the first row is read at the
+    /// first `next()`, not at construction, and not at all when `fieldnames=`
+    /// was given.
+    dict: Option<Box<DictState>>,
+}
+
+struct DictState {
+    header: Option<Vec<Value>>,
+    restkey: Value,
+    restval: Value,
+}
+
+/// One row, pulled now. `iter::Iter::Csv` is the only caller.
+pub fn next_row(it: &mut Interp, c: &mut CsvIter) -> R<Option<Value>> {
+    if c.dict.is_some() {
+        return dict_row(it, c);
+    }
+    Ok(row(it, c)?.map(list))
+}
+
+/// `Reader_iternext`, transcribed: reset, then pull a line and feed it until
+/// the state machine lands back on `StartRecord` after the end-of-line
+/// sentinel. A record spanning three lines is three pulls inside ONE call,
+/// which is why the loop is here and not in the caller.
+fn row(it: &mut Interp, c: &mut CsvIter) -> R<Option<Vec<Value>>> {
+    c.p.reset();
+    loop {
+        let Some(line) = next_line(it, &mut c.lines)? else {
+            // End of input with a field still open. `strict` makes it an error
+            // CPython words; otherwise the partial field is saved and the
+            // record yielded — once, because `reset` above runs before the next
+            // pull finds the same end of input.
+            if !c.p.field.is_empty() || c.p.st == St::InQuoted {
+                if c.d.strict {
+                    return Err(refuse("unexpected end of data (a csv.Error CPython words)"));
+                }
+                c.p.save(it)?;
+                return Ok(Some(std::mem::take(&mut c.p.row)));
+            }
+            return Ok(None);
+        };
+        for ch in line.chars() {
+            if ch == '\0' {
                 return Err(refuse("line contains NUL (a csv.Error CPython words)"));
             }
-            p.step(it, Some(c))?;
+            c.p.step(it, &c.d, Some(ch))?;
         }
-        p.step(it, None)?;
-        if p.st == St::StartRecord {
-            out.push(std::mem::take(&mut p.row));
+        c.p.step(it, &c.d, None)?;
+        if c.p.st == St::StartRecord {
+            return Ok(Some(std::mem::take(&mut c.p.row)));
         }
     }
-    // End of input with a field still open. `strict` makes it an error CPython
-    // words; otherwise the partial field is saved and the record yielded.
-    if !p.field.is_empty() || p.st == St::InQuoted {
-        if d.strict {
-            return Err(refuse("unexpected end of data (a csv.Error CPython words)"));
+}
+
+/// `DictReader.__next__`, transcribed, including the two places it reads a row
+/// that never becomes one: the header, and every `[]` an empty line parses to.
+fn dict_row(it: &mut Interp, c: &mut CsvIter) -> R<Option<Value>> {
+    // `self.fieldnames`, the property — and its `except StopIteration: pass`,
+    // which leaves `_fieldnames` None and lets the `next(self.reader)` below
+    // end the iteration instead.
+    if matches!(&c.dict, Some(d) if d.header.is_none()) {
+        if let Some(h) = row(it, c)? {
+            if let Some(d) = c.dict.as_mut() {
+                d.header = Some(h);
+            }
         }
-        p.save(it)?;
-        out.push(std::mem::take(&mut p.row));
     }
-    Ok(out)
+    let values = loop {
+        match row(it, c)? {
+            None => return Ok(None),
+            // `while row == []: row = next(self.reader)`
+            Some(r) if r.is_empty() => continue,
+            Some(r) => break r,
+        }
+    };
+    let ds = match c.dict.as_ref() {
+        Some(d) => d,
+        None => return Ok(None),
+    };
+    let header = ds.header.as_deref().unwrap_or(&[]);
+    let mut dict = Dict::new();
+    for (i, k) in header.iter().enumerate() {
+        match values.get(i) {
+            Some(v) => dict.insert(k.clone(), v.clone())?,
+            None => dict.insert(k.clone(), ds.restval.clone())?,
+        }
+    }
+    if values.len() > header.len() {
+        dict.insert(ds.restkey.clone(), list(values[header.len()..].to_vec()))?;
+    }
+    Ok(Some(Value::Dict(Rc::new(RefCell::new(dict)))))
+}
+
+/// The reader VALUE. `Value::IterObj` over the `Iter` above is the whole of it:
+/// an existing variant, on every arm the interpreter has, whose `type_name` is
+/// the `reader` / `DictReader` CPython prints and whose `repr` refuses because
+/// CPython's carries a heap address. There is no registration step and no
+/// pairing to keep — the reader holds its stream, the way CPython's does.
+fn reader_value(c: CsvIter, kind: &'static str) -> Value {
+    Value::IterObj(Rc::new(RefCell::new(Iter::Csv(Box::new(c)))), kind)
 }
 
 // ---- the two module functions ----------------------------------------------
 
 /// `csv.reader(f, **dialect)` → an iterator over lists of strings.
 ///
-/// `Value::IterObj` over an `Iter::Vec` is the whole return value: an existing
-/// variant, on every arm the interpreter has, whose `type_name` is the `reader`
-/// CPython prints and whose `repr` refuses because CPython's carries a heap
-/// address.
-fn reader(it: &mut Interp, args: &mut Args, kw: &[(Rc<str>, Value)]) -> R<Value> {
+/// Nothing is read here. CPython's `csv.reader(...)` takes an iterator over the
+/// input and the first `next()` is the first line off the stream, so the only
+/// thing that may fail at this statement is the dialect and the input's type —
+/// and both are refusals at the one point in a csv program that is furthest
+/// from a committed side effect.
+fn reader(_it: &mut Interp, args: &mut Args, kw: &[(Rc<str>, Value)]) -> R<Value> {
     let src = args
         .first()
         .cloned()
         .ok_or_else(|| refuse("csv.reader() with no argument"))?;
     let d = dialect_from(args, kw, 1)?;
-    let (lines, file) = input_lines(&src)?;
-    let rows = parse_rows(it, &lines, &d)?;
-    Ok(rows_iter(rows.into_iter().map(list).collect(), "reader", file))
-}
-
-/// The reader value, and the one bookkeeping step an EAGER reader owes its
-/// file.
-///
-/// The rows are right; the MOMENT they were read is not. CPython's reader holds
-/// the file and reads it row by row, so a file closed under it raises and a file
-/// written under it is seen — two divergences no amount of care inside this
-/// module can notice, because neither is an event on the reader. `io` keeps the
-/// pairing and the file tells the reader (`io::csv_on_close`,
-/// `io::csv_on_write`).
-fn rows_iter(rows: Vec<Value>, kind: &'static str, file: Option<Rc<RefCell<mio::FileObj>>>) -> Value {
-    let it = Rc::new(RefCell::new(Iter::Vec(rows, 0)));
-    if let Some(f) = file {
-        mio::csv_register(&f, &it);
-    }
-    Value::IterObj(it, kind)
-}
-
-/// One line of a field, for a refusal that must stay one line on stderr.
-fn clip(s: &str) -> String {
-    let mut out: String = s.chars().take(40).collect();
-    if s.chars().nth(40).is_some() {
-        out.push('…');
-    }
-    out
+    let lines = input_lines(&src)?;
+    Ok(reader_value(CsvIter { lines, d, p: Parser::new(), dict: None }, "reader"))
 }
 
 /// `csv.DictReader(f, **dialect)` → an iterator over plain `dict`s.
@@ -725,21 +767,21 @@ fn clip(s: &str) -> String {
 /// `.fieldnames` and `.line_num` are attributes, not methods, and no dict has
 /// them — so `route.rs`'s optimistic method union already stops a program that
 /// reads one, statically, before it runs.
-fn dict_reader(it: &mut Interp, args: &mut Args, kw: &[(Rc<str>, Value)]) -> R<Value> {
+fn dict_reader(_it: &mut Interp, args: &mut Args, kw: &[(Rc<str>, Value)]) -> R<Value> {
     let src = args
         .first()
         .cloned()
         .ok_or_else(|| refuse("csv.DictReader() with no argument"))?;
     let mut rest: Vec<(Rc<str>, Value)> = Vec::new();
-    let mut fieldnames: Option<Vec<Value>> = None;
+    let mut header: Option<Vec<Value>> = None;
     let mut restkey = Value::None;
     let mut restval = Value::None;
     for (k, v) in kw {
         match k.as_ref() {
             "fieldnames" => match v {
                 Value::None => {}
-                Value::List(l) => fieldnames = Some(l.borrow().clone()),
-                Value::Tuple(t) => fieldnames = Some((**t).clone()),
+                Value::List(l) => header = Some(l.borrow().clone()),
+                Value::Tuple(t) => header = Some((**t).clone()),
                 other => {
                     return Err(refuse(&format!(
                         "csv.DictReader(fieldnames=) as a {}",
@@ -753,58 +795,68 @@ fn dict_reader(it: &mut Interp, args: &mut Args, kw: &[(Rc<str>, Value)]) -> R<V
         }
     }
     let d = dialect_from(args, &rest, 1)?;
-    let (lines, file) = input_lines(&src)?;
-    let mut rows = parse_rows(it, &lines, &d)?.into_iter();
-    let header: Vec<Value> = match fieldnames {
-        Some(f) => f,
-        // `next(self.reader)` on an empty input raises StopIteration inside the
-        // property, which leaves `_fieldnames` None — and `__next__` then never
-        // runs, because the same emptiness ends the iteration.
-        None => match rows.next() {
-            Some(h) => h,
-            None => return Ok(rows_iter(Vec::new(), "DictReader", file)),
+    let lines = input_lines(&src)?;
+    Ok(reader_value(
+        CsvIter {
+            lines,
+            d,
+            p: Parser::new(),
+            dict: Some(Box::new(DictState { header, restkey, restval })),
         },
-    };
-    let mut out: Vec<Value> = Vec::new();
-    for row in rows {
-        if row.is_empty() {
-            continue; // `while row == []: row = next(self.reader)`
-        }
-        let mut dict = Dict::new();
-        for (i, k) in header.iter().enumerate() {
-            match row.get(i) {
-                Some(v) => dict.insert(k.clone(), v.clone())?,
-                None => dict.insert(k.clone(), restval.clone())?,
-            }
-        }
-        if row.len() > header.len() {
-            dict.insert(restkey.clone(), list(row[header.len()..].to_vec()))?;
-        }
-        out.push(Value::Dict(Rc::new(RefCell::new(dict))));
-    }
-    Ok(rows_iter(out, "DictReader", file))
+        "DictReader",
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn rows(text: &str, d: &Dialect) -> Vec<Vec<String>> {
+    /// A reader over an in-memory `FileObj`, drained the way a program drains
+    /// one. It goes through the REAL line reader (`iter::Iter::Lines`) and the
+    /// real `next_row`, so what these assert about a `\r` is what a file opened
+    /// under that `newline=` mode actually yields — the split used to live in
+    /// this module, where it could and did disagree with the stream it shared
+    /// the flag with.
+    fn try_rows(text: &str, d: &Dialect, mode: u8) -> R<Vec<Vec<String>>> {
         let mut it = Interp::new();
-        let lines = split_lines(text, mio::NEWLINE_RAW);
-        parse_rows(&mut it, &lines, d)
-            .unwrap()
-            .into_iter()
-            .map(|r| {
+        let f = Rc::new(RefCell::new(mio::FileObj {
+            path: String::new(),
+            mode: mio::Mode::Read,
+            binary: false,
+            closed: false,
+            data: text.as_bytes().to_vec(),
+            pos: 0,
+            newline_mode: mode,
+            write_gen: 0,
+            telling: true,
+        }));
+        let mut c = CsvIter {
+            lines: Iter::Lines(f),
+            d: *d,
+            p: Parser::new(),
+            dict: None,
+        };
+        let mut out = Vec::new();
+        while let Some(r) = row(&mut it, &mut c)? {
+            out.push(
                 r.into_iter()
                     .map(|v| match v {
                         Value::Str(s) => s.to_string(),
                         Value::Float(f) => format!("float:{f}"),
                         other => format!("?{}", type_name(&other)),
                     })
-                    .collect()
-            })
-            .collect()
+                    .collect(),
+            );
+        }
+        Ok(out)
+    }
+
+    fn rows_mode(text: &str, d: &Dialect, mode: u8) -> Vec<Vec<String>> {
+        try_rows(text, d, mode).unwrap()
+    }
+
+    fn rows(text: &str, d: &Dialect) -> Vec<Vec<String>> {
+        rows_mode(text, d, mio::NEWLINE_RAW)
     }
 
     #[test]
@@ -829,14 +881,55 @@ mod tests {
     }
 
     #[test]
-    fn split_lines_is_the_stream_and_not_the_parser() {
-        assert_eq!(split_lines("a\r\nb", mio::NEWLINE_UNIVERSAL), vec!["a\n", "b"]);
-        assert_eq!(split_lines("a\r\nb", mio::NEWLINE_RAW), vec!["a\r\n", "b"]);
-        assert_eq!(split_lines("a\rb", mio::NEWLINE_UNIVERSAL), vec!["a\n", "b"]);
-        assert_eq!(split_lines("a\rb", mio::NEWLINE_RAW), vec!["a\r", "b"]);
-        assert_eq!(split_lines("a\rb", mio::NEWLINE_KEEP_NL), vec!["a\rb"]);
-        let none: Vec<String> = Vec::new();
-        assert_eq!(split_lines("", mio::NEWLINE_RAW), none);
+    fn the_stream_decides_where_a_record_ends_and_the_parser_does_not() {
+        let d = Dialect::default();
+        // The three `newline=` modes differ exactly where a `\r` falls, and a
+        // reader is the thing that notices. `newline=None` TRANSLATES, so the
+        // `\r` inside the quoted field arrives as a `\n`.
+        assert_eq!(rows_mode("a\rb\n", &d, mio::NEWLINE_UNIVERSAL),
+                   vec![vec!["a".to_string()], vec!["b".to_string()]]);
+        assert_eq!(rows_mode("a\rb\n", &d, mio::NEWLINE_RAW),
+                   vec![vec!["a".to_string()], vec!["b".to_string()]]);
+        assert_eq!(rows_mode("\"a\rb\",c\n", &d, mio::NEWLINE_UNIVERSAL),
+                   vec![vec!["a\nb".to_string(), "c".to_string()]]);
+        assert_eq!(rows_mode("\"a\rb\",c\n", &d, mio::NEWLINE_RAW),
+                   vec![vec!["a\rb".to_string(), "c".to_string()]]);
+        // `newline='\n'` does not end a line at a `\r` at all, so the parser
+        // meets it inside an unquoted field, where CPython's own reader raises
+        // `new-line character seen in unquoted field` — a csv.Error, refused.
+        assert!(try_rows("a\rb\n", &d, mio::NEWLINE_KEEP_NL).is_err());
+        // …and it is the STREAM that decides that, not the dialect: the same
+        // bytes under the other two modes are two ordinary records.
+        assert_eq!(rows_mode("a\rb\n", &d, mio::NEWLINE_RAW).len(), 2);
+    }
+
+    /// The whole point of laziness: the stream is where CPython leaves it after
+    /// every row, so what is left of the file is still there to be read.
+    #[test]
+    fn a_row_takes_only_the_lines_it_needed() {
+        let mut it = Interp::new();
+        let f = Rc::new(RefCell::new(mio::FileObj {
+            path: String::new(),
+            mode: mio::Mode::Read,
+            binary: false,
+            closed: false,
+            data: b"a,b\nc,d\ne,f\n".to_vec(),
+            pos: 0,
+            newline_mode: mio::NEWLINE_RAW,
+            write_gen: 0,
+            telling: true,
+        }));
+        let d = Dialect::default();
+        let mut c = CsvIter { lines: Iter::Lines(f.clone()), d, p: Parser::new(), dict: None };
+        assert!(row(&mut it, &mut c).unwrap().is_some());
+        // One row taken, one line consumed — `f.read()` would return the rest.
+        assert_eq!(f.borrow().pos, 4);
+        assert!(row(&mut it, &mut c).unwrap().is_some());
+        assert_eq!(f.borrow().pos, 8);
+        // A file closed under the reader is CPython's own ValueError, and it
+        // comes from the line read rather than from anything this module does.
+        f.borrow_mut().closed = true;
+        assert!(row(&mut it, &mut c).is_err());
     }
 
     /// `route::MODULE_ATTRS` is read by the CORE, which has none of this file

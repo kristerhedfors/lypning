@@ -45,9 +45,12 @@ The traps this was written against, each measured against CPython 3.14.5:
    verbatim and `newline=None` translates it, and the two differ exactly when a
    `\\r` falls inside a quoted field. `NEWLINES` is that block.
 
-5. **The eager reader leaves the stream at EOF; CPython's lazy one does not.**
-   `next(r)` then `f.read()` returns the rest under CPython. That refuses here
-   rather than answering `''` at exit 0 — `REFUSED` holds it.
+5. **The reader is LAZY, so the stream is where CPython leaves it.** `next(r)`
+   then `f.read()` returns the rest, `f.readline()` returns the next line, a
+   second reader over an untouched first one gets every row, and `f.tell()` is
+   the offset one record in. Seven of these were refusals while the reader was
+   eager; `LAZY` is the block that holds them as ANSWERS, which is the only
+   thing that can tell laziness from a well-guarded eagerness.
 
 6. **Every error path is CPython's to word.** A bad dialect, a stray quote under
    `strict=True`, a `NUL`, a field over the limit, `csv.Sniffer`,
@@ -61,23 +64,32 @@ The traps this was written against, each measured against CPython 3.14.5:
    with a dialect CPython refuses to build. `SAME_CHAR` is that block, and every
    row of it is a refusal.
 
-8. **The eager reader is right about the rows and wrong about the MOMENT.**
-   CPython's is lazy over the FILE, so closing the file makes the next row a
-   `ValueError`, writing to the file makes the next row the written one, and a
-   `QUOTE_NONNUMERIC` field that `float()` cannot take raises from the iteration
-   rather than from the construction — after the earlier rows have printed.
-   `MOMENTS` crosses all four, and half its rows are refusals by design.
+8. **The MOMENT a row is read is observable, and it is the file's.** Closing
+   the file makes the next row a `ValueError`, and a `QUOTE_NONNUMERIC` field
+   that `float()` cannot take raises the program's OWN `ValueError` from the
+   iteration that reaches it — after the earlier rows have printed, which is
+   what a `try:` around the loop is written to catch. Both fall out of a reader
+   that holds the file rather than a copy of it. What does NOT fall out is a
+   write to the path under an open handle: `FileObj::data` is the bytes `open()`
+   read and CPython's is a descriptor, so `MOMENTS` keeps those rows and they
+   are refusals.
 
-9. **`open(newline='')` is a promise to the STREAM, not only to the parser.**
-   It means a line ends at `\r\n`, `\n` OR a bare `\r`, so `readline`,
-   `readlines`, `for line in f` and `seek(0)` all have to split there too.
-   Serving the flag and then splitting at `\n` alone swallowed every bare CR at
-   exit 0. `STREAM` is that block, and it deliberately uses no `csv` at all.
+9. **`open(newline=…)` is a promise to the STREAM, not only to the parser.**
+   `newline=''` means a line ends at `\r\n`, `\n` OR a bare `\r`; `newline=None`
+   means the same three ends AND that each arrives as `\n`. So `readline`,
+   `readlines`, `for line in f`, `read()` and `seek(0)` all have to split and
+   translate there too — and the reader has no splitter of its own, it reads
+   these lines. `STREAM` is that block, it deliberately uses no `csv` at all,
+   and it is run BYTE for byte: `text=True` universal-newline-translates a
+   captured stream, so a harness that decodes cannot see this class of
+   difference at all (`engines.run_engine` still cannot — see the commit).
 
-10. **`sys.stdin` is not `open(p)`.** CPython opens it with `newline="\n"`, not
-    with the `newline=None` a file gets, so a `\r` reaches the parser verbatim;
-    and it is the one stream a program cannot reopen, so the drain a reader
-    performs on it has to be remembered. Both are in `STDIN_ROWS`.
+10. **`sys.stdin` is not `open(p)`, and it has ONE cursor.** CPython opens it
+    with `newline="\n"`, not with the `newline=None` a file gets, so a `\r`
+    reaches the parser verbatim. And a reader, `input()`, `sys.stdin.read()`,
+    `.readline()` and a `for` loop already in flight all advance the same
+    position — the one stream a program cannot reopen, so an invented position
+    there is unrecoverable. `STDIN_ROWS` interleaves all five.
 
 11. **A `module` claim is not an attribute claim.** The binary that ROUTES is
     the core, which has none of this compiled in; `route::MODULE_ATTRS` is what
@@ -305,11 +317,13 @@ SAME_CHAR = [
               ", delimiter='\\t'")
 ]
 
-#: Trap 8. The four moments an eager reader can be caught out in, and — after
-#: each — the shape that must still WORK, because the cheapest way to pass this
-#: block would be to refuse every reader whose file is ever closed or written.
+#: Trap 8. The moments a reader's file can be seen from outside it, and —
+#: after each — the shape that must still WORK, because the cheapest way to
+#: pass this block would be to refuse every reader whose file is ever closed or
+#: written.
 MOMENTS = [
-    # The reader outlives its file: CPython raises, and so must this.
+    # The reader outlives its file: CPython raises, and so must this. It comes
+    # out of `Iter::Lines`, which is where a `for line in f` would get it.
     _prog("a,b\nc,d\n", "with open('d.csv') as g:\n    r = csv.reader(g)\nprint(list(r))"),
     _prog("a,b\nc,d\n", "g=open('d.csv')\nr=csv.reader(g)\ng.close()\nprint(next(r))"),
     _prog("a,b\nc,d\n", "with open('d.csv') as g:\n    r=csv.DictReader(g)\n"
@@ -319,40 +333,90 @@ MOMENTS = [
                          "    print('VE', e)"),
     _prog("a,b\nc,d\n", "def mk():\n    with open('d.csv') as g:\n        return csv.reader(g)\n"
                          "print(list(mk()))"),
+    # …and closed HALFWAY, which only a lazy reader can be: the rows before the
+    # close have printed and the one after it raises.
+    _prog("a,b\nc,d\ne,f\n", "g=open('d.csv')\nr=csv.reader(g)\nprint(next(r))\n"
+                              "g.close()\ntry:\n    print(next(r))\nexcept ValueError as e:\n"
+                              "    print('VE', e)"),
     # …and the shapes that close the file AFTER draining, which is every corpus
     # one and must keep answering.
     _prog("a,b\nc,d\n", "with open('d.csv') as g:\n    for row in csv.reader(g):\n"
                          "        print(row)"),
     _prog("a,b\nc,d\n", "g=open('d.csv')\nrows=list(csv.reader(g))\ng.close()\nprint(rows)"),
-    # The file is written under the reader: CPython's lazy one sees it.
+    # The file is written under the reader. This is the one divergence
+    # laziness does NOT close, because it is not the reader's: `FileObj::data`
+    # is the bytes `open()` read, where CPython holds a descriptor. Refusals.
     _prog("a\n", "r=csv.reader(f)\ng=open('d.csv','a')\ng.write('b\\n')\ng.close()\n"
                  "print(list(r))"),
     _prog("a\n", "r=csv.reader(f)\nopen('d.csv','w').write('b\\n')\nprint(list(r))"),
     _prog("a\n", "r=csv.DictReader(f)\nopen('d.csv','a').write('b\\n')\nprint(list(r))"),
-    # …and the read-then-rewrite shape, where the reader is DRAINED first and
-    # the write must therefore go through.
+    # …and the read-then-rewrite shape, where the write is to another path or
+    # the reader is drained and dropped, and must therefore go through.
     _prog("a\nb\n", "rows=list(csv.reader(f))\nopen('o.csv','w').write(str(rows))\n"
                      "print(open('o.csv').read())"),
     _prog("a\nb\n", "for row in csv.reader(f):\n    open('log','a').write(str(row))\n"
                      "print(open('log').read())"),
-    # QUOTE_NONNUMERIC: `float()` runs during ITERATION in CPython, so a real
-    # `try` around the loop catches it and the rows before it have printed.
+    # …and the write-then-read-back shape, where the file was written BEFORE it
+    # was opened, so the handle already has those bytes and is not stale at all.
+    _prog("", "open('n.csv','w').write('a,b\\n1,2\\n')\n"
+              "print(list(csv.reader(open('n.csv', newline=''))))"),
+    # QUOTE_NONNUMERIC: `float()` runs during ITERATION, so a real `try` around
+    # the loop catches the program's OWN ValueError and the rows before it have
+    # printed. A reader that converted at construction moved that exception to
+    # a different statement.
     _prog("1,2\nx,3\n", "r=csv.reader(f, quoting=csv.QUOTE_NONNUMERIC)\ntry:\n"
                          "    for row in r:\n        print(row)\nexcept ValueError:\n"
                          "    print('ve')"),
     _prog("1,2\nx,3\n", "try:\n    r=csv.reader(f, quoting=csv.QUOTE_NONNUMERIC)\n"
                          "    print('made')\n    print(list(r))\nexcept ValueError:\n"
                          "    print('bad')"),
+    _prog("1,2\nx,3\n", "r=csv.reader(f, quoting=csv.QUOTE_NONNUMERIC)\nprint(next(r))\n"
+                         "print(next(r))"),
     _prog("1,2\n3,4\n", "print(list(csv.reader(f, quoting=csv.QUOTE_NONNUMERIC)))"),
     _prog('"a",2\n', "print(list(csv.reader(f, quoting=csv.QUOTE_NONNUMERIC)))"),
+]
+
+#: Trap 5, and the block that tells a lazy reader from a well-guarded eager
+#: one. Every row here was a REFUSAL until the reader started pulling its lines
+#: from the file object: an eager reader can be stopped from answering wrongly,
+#: but it cannot answer these at all.
+LAZY = [
+    _prog(c, b)
+    for c in ("a,b\n1,2\n", "a,b\n1,2\n3,4\n", "a,b\n")
+    for b in (
+        "r=csv.reader(f)\nnext(r)\nprint(repr(f.read()))",
+        "r=csv.reader(f)\nprint(repr(f.readline()))",
+        "r=csv.reader(f)\nprint(f.readlines())",
+        "r=csv.reader(f)\nprint(f.tell())",
+        # `csv.reader(f)` is `iter(f)` plus one `next` per row, so a row taken
+        # disables `tell()` exactly as a `for` loop's first line does.
+        "r=csv.reader(f)\nnext(r, None)\nf.seek(0)\nprint(f.tell())",
+        "r=csv.reader(f)\nnext(r, None)\nprint(repr(f.readline()))",
+        "r=csv.reader(f)\nf.seek(0)\nprint(repr(f.read()))",
+        "r=csv.reader(f)\nprint([l for l in f])",
+        # A second reader over a first one that never advanced: CPython's left
+        # the file at the start, so every row goes to the second.
+        "r1=csv.reader(f)\nr2=csv.reader(f)\nprint(list(r2))",
+        # …and over one that DID advance, where the two share the cursor.
+        "r1=csv.reader(f)\nnext(r1, None)\nr2=csv.reader(f)\nprint(list(r2))",
+        # Two readers alternating down one stream.
+        "r1=csv.reader(f)\nr2=csv.reader(f)\nprint(next(r1, None), next(r2, None))",
+        # A DictReader reads its header at the first row, not at construction.
+        "d=csv.DictReader(f)\nprint(f.tell())\nprint(next(d, None) is not None)",
+        "d=csv.DictReader(f)\nnext(d, None)\nf.seek(0)\nprint(f.tell())",
+        "d=csv.DictReader(f)\nnext(d, None)\nprint(repr(f.read()))",
+        # The reader stops at the record it was asked for and no further.
+        "r=csv.reader(f)\nnext(r, None)\nprint(sum(1 for _ in f))",
+    )
 ]
 
 #: Trap 9. No `csv` here at all: this is the FILE OBJECT under the flag `csv`
 #: made reachable, and every one of these answered wrongly at exit 0 while the
 #: parser that shares the flag had it right.
 STREAM = [
-    "open('t','w').write(%r)\n" % c + b + "\n"
-    for c in ("a\rb\rc\r", "a\r\nb\nc\rd", "a\nb\n", "a\r\nb\r\n", "", "a", "\r")
+    "open('t','w',newline='').write(%r)\n" % c + b + "\n"
+    for c in ("a\rb\rc\r", "a\r\nb\nc\rd", "a\nb\n", "a\r\nb\r\n", "", "a", "\r",
+              "\r\n", "a\r\n", "a\rb")
     for b in ("print(open('t', newline='').readlines())",
               "print(sum(1 for _ in open('t', newline='')))",
               "print([repr(x) for x in open('t', newline='')])",
@@ -360,7 +424,39 @@ STREAM = [
               "f=open('t',newline='')\nprint(repr(f.readline()))\nf.seek(0)\n"
               "print(repr(f.readline()))",
               "print(repr(open('t', newline='').read()))",
-              "print(open('t', newline='\\n').readlines())")
+              "print(open('t', newline='\\n').readlines())",
+              "print(repr(open('t', newline='\\n').read()))",
+              # …and the DEFAULT spelling, `newline=None`, which is the only
+              # mode that TRANSLATES: every one of the three endings arrives as
+              # a `\n`. A stream that split at `\n` alone answered these
+              # wrongly at exit 0 and the parser above it went with them.
+              "print(open('t').readlines())",
+              "print([repr(x) for x in open('t')])",
+              "print(repr(open('t').readline()))",
+              "print(repr(open('t').read()))",
+              "print(sum(1 for _ in open('t')))",
+              # `tell()` on a text stream is an opaque COOKIE, and equals the
+              # offset only where the decoder holds nothing. Just past a bare
+              # `\r` it does not, and CPython answers a 39-digit integer.
+              "f=open('t',newline='')\nf.readline()\nprint(f.tell())",
+              "f=open('t')\nf.readline()\nprint(f.tell())",
+              "f=open('t',newline='\\n')\nf.readline()\nprint(f.tell())",
+              # …and `__next__` disables it outright until the iteration ends
+              # or the stream is seeked. `readlines` restores it and `readline`
+              # does not, which is the half of this rule that is not guessable.
+              # (`iter(f)` and not `next(f)`: a file IS its own iterator in
+              # CPython and is not one here, which is a divergence of its own
+              # and not this one's — see the commit.)
+              "f=open('t')\nfor l in f:\n    break\nprint(f.tell())",
+              "f=open('t')\nfor l in f:\n    pass\nprint(f.tell())",
+              "f=open('t')\nf.readlines()\nprint(f.tell())",
+              "f=open('t')\nf.readline()\nprint(f.tell())",
+              "f=open('t')\nit=iter(f)\nnext(it, None)\nprint(f.tell())",
+              "f=open('t')\nit=iter(f)\nnext(it, None)\nf.seek(0)\nprint(f.tell())",
+              "f=open('t')\nit=iter(f)\nnext(it, None)\nf.read()\nprint(f.tell())",
+              "f=open('t')\nit=iter(f)\nnext(it, None)\nf.readlines()\nprint(f.tell())",
+              "f=open('t','rb')\nit=iter(f)\nnext(it, None)\nprint(f.tell())",
+              "f=open('t')\nprint(f.tell())\nprint(f.tell())")
 ]
 
 #: Trap 9's other half: CPython rejects `newline=` on a BINARY stream, whatever
@@ -371,7 +467,7 @@ BINARY_NEWLINE = [
 ]
 
 GRID = (DIALECT + NEWLINES + PROTOCOL + DICTREADER + SURFACE
-        + SAME_CHAR + MOMENTS + STREAM + BINARY_NEWLINE)
+        + SAME_CHAR + MOMENTS + LAZY + STREAM + BINARY_NEWLINE)
 
 #: Programs CPython answers and this engine must REFUSE rather than answer.
 #: Every one is exit 90, empty stdout, one refusal line — anything else here is
@@ -438,17 +534,17 @@ REFUSED = [
     _prog("a,b\n", "r = csv.reader(f)\nprint(r.dialect)"),
     _prog("a,b\n1,2\n", "d = csv.DictReader(f)\nprint(d.fieldnames)"),
     _prog("a,b\n1,2\n", "d = csv.DictReader(f)\nprint(d.line_num)"),
-    # The eager reader leaves the stream at EOF where CPython's lazy one does
-    # not, so every later read of it refuses instead of inventing a position.
-    _prog("a,b\n1,2\n", "r = csv.reader(f)\nnext(r)\nprint(f.read())"),
-    _prog("a,b\n1,2\n", "r = csv.reader(f)\nprint(f.readline())"),
-    _prog("a,b\n1,2\n", "r = csv.reader(f)\nprint(f.readlines())"),
-    _prog("a,b\n1,2\n", "r = csv.reader(f)\nprint(f.tell())"),
-    _prog("a,b\n1,2\n", "r = csv.reader(f)\nf.seek(0)\nprint(f.read())"),
-    _prog("a,b\n1,2\n", "r = csv.reader(f)\nprint([l for l in f])"),
-    # A SECOND reader over the same stream: CPython's lazy first one left the
-    # file at the start, so its rows all go to the second.
-    _prog("a,b\n1,2\n", "r1 = csv.reader(f)\nr2 = csv.reader(f)\nprint(list(r2))"),
+    # `tell()` on a TEXT stream is an opaque cookie wherever the decoder holds
+    # state, which just past a bare `\r` it does — 39 digits, not an offset.
+    # (Every other position is exact and answers: see `LAZY` and `STREAM`.)
+    "open('t','w',newline='').write('a\\rb\\n')\nf=open('t',newline='')\n"
+    "f.readline()\nprint(f.tell())",
+    "open('t','w',newline='').write('a\\rb\\n')\nf=open('t')\n"
+    "f.readline()\nprint(f.tell())",
+    # `read(n)` counts CHARACTERS of the translated stream, and under
+    # `newline=None` a `\r\n` is one of them, so a byte count is the wrong
+    # count and would leave the position wrong too.
+    "open('t','w',newline='').write('a\\r\\nb\\n')\nprint(repr(open('t').read(3)))",
     # A field past `csv.field_size_limit()`, whose message quotes a limit that
     # is CPython's to set.
     _prog("x" * 200000 + "\n", "print(list(csv.reader(f)))"),
@@ -511,21 +607,34 @@ needs_l = pytest.mark.skipif(
 
 
 def _run(argv: list[str], program: str, stdin: str = "") -> subprocess.CompletedProcess:
-    """One program, in a temp cwd of its own — invariant 4, and these rows do
-    write files, so the temp cwd is load-bearing rather than ceremonial."""
+    """One program, in a temp cwd of its own, captured as BYTES.
+
+    Two things here are load-bearing and neither is ceremonial. The temp cwd is
+    invariant 4 — these rows really do write files. And `text=False` is trap 9:
+    `text=True` decodes a captured stream with universal newlines, so a stdout
+    of `b'a\\r\\n'` and one of `b'a\\n'` arrive identical and every row about a
+    carriage return quietly stops measuring anything. The battery
+    (`engines.run_engine`) still captures both arms with `text=True` and so
+    still cannot see this class of difference; this file can, which is the only
+    reason the rows are worth writing."""
     with tempfile.TemporaryDirectory() as d:
-        return subprocess.run(argv + ["-c", program], capture_output=True, text=True,
-                              cwd=d, timeout=60, input=stdin)
+        return subprocess.run(argv + ["-c", program], capture_output=True,
+                              cwd=d, timeout=60, input=stdin.encode())
+
+
+def _err(got: subprocess.CompletedProcess) -> str:
+    """The refusal line, which is text even where stdout is not."""
+    return got.stderr.decode("utf-8", "replace")
 
 
 def _refusal_problem(got: subprocess.CompletedProcess) -> str | None:
     """``None`` if this is a clean exit-90 refusal, else what is wrong with it."""
     if got.returncode != engines.UNSUPPORTED_EXIT:
         return "exit %d, not %d" % (got.returncode, engines.UNSUPPORTED_EXIT)
-    if got.stdout != "":
+    if got.stdout != b"":
         return "stdout was not empty: %r" % got.stdout[:120]
     head = "%s: unsupported: " % engines.LYPNING_L
-    line = got.stderr.strip()
+    line = _err(got).strip()
     if not line.startswith(head) or "\n" in line:
         return "stderr was %r, expected one %r line" % (line[:160], head)
     return None
@@ -541,15 +650,15 @@ def test_the_csv_grid_agrees_with_cpython(program: str) -> None:
         # refusing is a row that stopped measuring anything.
         problem = _refusal_problem(got)
         assert problem is None, "%s\n  program: %r" % (problem, program)
-        pytest.skip("lypning-l refuses this row: %s" % got.stderr.strip()[:160])
+        pytest.skip("lypning-l refuses this row: %s" % _err(got).strip()[:160])
     ref = _run([sys.executable], program)
     assert (got.stdout, got.returncode) == (ref.stdout, ref.returncode), (
         "lypning-l disagrees with CPython.\n"
         "  program:  %r\n"
         "  lypning-l: %r exit %d %s\n"
         "  cpython:   %r exit %d %s"
-        % (program, got.stdout, got.returncode, got.stderr.strip()[-200:],
-           ref.stdout, ref.returncode, ref.stderr.strip()[-200:])
+        % (program, got.stdout, got.returncode, _err(got).strip()[-200:],
+           ref.stdout, ref.returncode, _err(ref).strip()[-200:])
     )
 
 
@@ -571,13 +680,40 @@ STDIN_ROWS = [
     (C + "import sys\nprint(list(csv.reader(sys.stdin)))", '"a\rb",c\n'),
     (C + "import sys\nprint(list(csv.reader(sys.stdin)))", "a,b\rc,d\r"),
     (C + "import sys\nprint(list(csv.reader(sys.stdin)))", '"a\r\nb",c\n'),
-    # …and the drain, on the one stream that cannot be reopened. CPython's
-    # reader is lazy, so every one of these still has the whole stream.
+    # …and the CURSOR, on the one stream that cannot be reopened, which is why
+    # an invented position here is unrecoverable. A reader that took the whole
+    # stream at construction answered every one of these empty at exit 0, and a
+    # flag on the stream closed the first four and not the rest: `input()`
+    # reached the bytes through a different function, and a `for` loop already
+    # in flight had been handed its iterator before the flag was set. There is
+    # no flag now — one cursor, advanced a line at a time by whoever asks next.
     (C + "import sys\nr=csv.reader(sys.stdin)\nprint(repr(sys.stdin.read()))", "a,b\nc,d\n"),
     (C + "import sys\nr=csv.reader(sys.stdin)\nprint(repr(sys.stdin.readline()))", "a,b\nc,d\n"),
     (C + "import sys\nr=csv.reader(sys.stdin)\nprint(sys.stdin.readlines())", "a,b\nc,d\n"),
     (C + "import sys\nr=csv.DictReader(sys.stdin)\nprint(repr(sys.stdin.read()))", "a,b\nc,d\n"),
     (C + "import sys\nr=csv.reader(sys.stdin)\nfor l in sys.stdin:\n    print(l)", "a,b\nc,d\n"),
+    (C + "import sys\nr=csv.reader(sys.stdin)\nnext(r)\nprint(repr(sys.stdin.read()))",
+     "a,b\nc,d\ne,f\n"),
+    (C + "import sys\nr=csv.reader(sys.stdin)\nnext(r)\nprint(repr(sys.stdin.readline()))",
+     "a,b\nc,d\ne,f\n"),
+    # `input()`, which reaches the stream through neither `sys.stdin` nor the
+    # reader and so passed every guard that stood between them.
+    (C + "import sys\nr=csv.reader(sys.stdin)\nprint(next(r))\nprint(input())",
+     "a,b\n1,2\n3,4\n"),
+    (C + "import sys\nprint(input())\nr=csv.reader(sys.stdin)\nprint(list(r))",
+     "a,b\n1,2\n3,4\n"),
+    (C + "import sys\nr=csv.reader(sys.stdin)\nprint(input())\nprint(next(r))",
+     "a,b\n1,2\n3,4\n"),
+    # …and an iterator over the stream already IN FLIGHT when the reader is
+    # made, which is the case a guard installed once per loop cannot reach.
+    (C + "import sys\nit=iter(sys.stdin)\nprint(next(it).strip())\n"
+         "r=csv.reader(sys.stdin)\nprint(next(r))\nprint(next(it).strip())",
+     "a,b\n1,2\n3,4\n"),
+    (C + "import sys\nfor l in sys.stdin:\n    print(list(csv.reader(sys.stdin)))\n    break",
+     "a,b\n1,2\n3,4\n"),
+    # A DictReader reads its header at the first row, not at construction.
+    (C + "import sys\nd=csv.DictReader(sys.stdin)\nprint(repr(sys.stdin.readline()))",
+     "a,b\n1,2\n"),
 ]
 
 
@@ -588,7 +724,7 @@ def test_the_csv_grid_over_stdin_agrees_with_cpython(program: str, stdin: str) -
     if got.returncode == engines.UNSUPPORTED_EXIT:
         problem = _refusal_problem(got)
         assert problem is None, "%s\n  program: %r" % (problem, program)
-        pytest.skip("lypning-l refuses this row: %s" % got.stderr.strip()[:160])
+        pytest.skip("lypning-l refuses this row: %s" % _err(got).strip()[:160])
     ref = _run([sys.executable], program, stdin)
     assert (got.stdout, got.returncode) == (ref.stdout, ref.returncode), (
         "lypning-l disagrees with CPython over stdin.\n  program: %r\n  stdin: %r\n"
@@ -604,7 +740,7 @@ def test_the_surface_outside_the_subset_refuses_rather_than_guesses(program: str
     assert problem is None, (
         "this program must refuse, not answer — CPython answers it and any "
         "answer here would be a silent divergence: %s\n  program: %r\n  stderr: %r"
-        % (problem, program, got.stderr.strip()[:200])
+        % (problem, program, _err(got).strip()[:200])
     )
 
 
@@ -701,14 +837,14 @@ def test_the_capability_is_on_the_larger_variant_only() -> None:
     if core is None:
         pytest.skip("no core carrying this tree's capability table is built")
     refused = _run([str(core)], "import csv")
-    assert refused.returncode == engines.UNSUPPORTED_EXIT and refused.stdout == ""
-    assert refused.stderr.strip() == engines.refusal_line(
+    assert refused.returncode == engines.UNSUPPORTED_EXIT and refused.stdout == b""
+    assert _err(refused).strip() == engines.refusal_line(
         engines.LYPNING, "module", "import csv")
     # `newline=''` is served with the capability and by nothing smaller, and the
     # core still refuses it — with the kind that says so.
     nl = _run([str(core)], "f = open('x', 'w', newline='')")
-    assert nl.returncode == engines.UNSUPPORTED_EXIT and nl.stdout == ""
-    assert "open-newline" in nl.stderr
+    assert nl.returncode == engines.UNSUPPORTED_EXIT and nl.stdout == b""
+    assert "open-newline" in _err(nl)
 
     # …and the core's ROUTER knows which sibling serves it, which is what makes
     # the refusal cost one spawn instead of a CPython one.
@@ -751,8 +887,8 @@ def test_the_route_attribute_table_is_what_the_module_serves() -> None:
         # is a `repr` of a builtin, which CPython prints with an address. What it
         # may not be is `module-attr`, which is the kind the router reads.
         got = _run([str(BINARY)], "import csv\nprint(csv.%s)" % name)
-        assert not got.stderr.startswith(head), (name, got.stderr)
+        assert not _err(got).startswith(head), (name, _err(got))
     for name in refused:
         got = _run([str(BINARY)], "import csv\nprint(csv.%s)" % name)
-        assert _refusal_problem(got) is None, (name, got.returncode, got.stderr)
-        assert got.stderr.startswith(head + "csv." + name), (name, got.stderr)
+        assert _refusal_problem(got) is None, (name, got.returncode, _err(got))
+        assert _err(got).startswith(head + "csv." + name), (name, _err(got))

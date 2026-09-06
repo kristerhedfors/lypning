@@ -93,7 +93,8 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// of, and a `module` claim alone sent the six corpus writers into lypning-l to
 /// find that out at runtime. It answers no runtime kind, for the same reason as
 /// the three above: a `csv:` refusal is a `csv.Error` message, a dialect, or a
-/// moment CPython's lazy reader has and this eager one does not. It also serves
+/// file written under an open handle, which is the FILE object's divergence
+/// rather than the reader's. It also serves
 /// `open(newline='')`, whose refusal kind is `open-newline` and which is
 /// deliberately NOT listed here: the kinds column is read by `answers`, which
 /// decides STATIC routing, and no walk ever produces `open-newline`. The
