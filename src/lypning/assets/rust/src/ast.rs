@@ -50,7 +50,11 @@ pub enum Expr {
     None,
     True,
     False,
-    Int(i64),
+    /// An integer literal, at whatever width it was written. The payload is
+    /// `value::Int` rather than an `i64` so a literal past 64 bits is a VALUE on
+    /// the variant that has one and the same `bigint` refusal as before on the
+    /// core, decided in `lex.rs` where the digits are.
+    Int(crate::value::Int),
     Float(f64),
     Str(std::rc::Rc<str>),
     Bytes(std::rc::Rc<Vec<u8>>),

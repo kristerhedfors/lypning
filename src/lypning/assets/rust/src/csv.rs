@@ -67,7 +67,7 @@ use crate::err::{unsupported, LypningError, R};
 use crate::eval::Interp;
 use crate::io as mio;
 use crate::iter::Iter;
-use crate::value::{list, type_name, Dict, Value};
+use crate::value::{ival, list, type_name, Dict, Value};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -111,7 +111,7 @@ const FIELD_LIMIT: usize = 131_072;
 
 pub fn module_attr(name: &str) -> R<Value> {
     if let Ok(i) = CONSTANTS.binary_search_by(|(n, _)| (*n).cmp(name)) {
-        return Ok(Value::Int(CONSTANTS[i].1));
+        return Ok(ival(CONSTANTS[i].1));
     }
     match MODULE_METHODS.binary_search(&name) {
         Ok(i) => Ok(Value::Bound(
@@ -230,7 +230,9 @@ fn dialect_from(args: &Args, kw: &[(Rc<str>, Value)], skip: usize) -> R<Dialect>
             "skipinitialspace" => d.skipinitialspace = truth("skipinitialspace", v)?,
             "strict" => d.strict = truth("strict", v)?,
             "quoting" => match v {
-                Value::Int(n) if (QUOTE_MINIMAL..=QUOTE_NONE).contains(n) => d.quoting = *n,
+                Value::Int(n) if n.small().is_some_and(|v| (QUOTE_MINIMAL..=QUOTE_NONE).contains(&v)) => {
+                    d.quoting = n.small().unwrap_or(QUOTE_MINIMAL)
+                }
                 _ => {
                     return Err(refuse(
                         "quoting= outside QUOTE_MINIMAL..QUOTE_NONE (CPython's message names a \
@@ -978,7 +980,7 @@ mod tests {
         assert!(!bad(&[]));
         assert!(!bad(&[("delimiter", c(";")), ("quotechar", c("'")), ("escapechar", c("\\"))]));
         // `quotechar=None` and `escapechar=None` are both absent, not equal.
-        assert!(!bad(&[("quotechar", Value::None), ("quoting", Value::Int(QUOTE_NONE))]));
+        assert!(!bad(&[("quotechar", Value::None), ("quoting", ival(QUOTE_NONE))]));
     }
 
     #[test]
@@ -996,6 +998,7 @@ mod tests {
         }
         assert!(module_attr("reader").is_ok());
         assert!(module_attr("DictReader").is_ok());
-        assert!(matches!(module_attr("QUOTE_NONNUMERIC"), Ok(Value::Int(2))));
+        assert!(matches!(module_attr("QUOTE_NONNUMERIC"),
+                         Ok(Value::Int(n)) if n.small() == Some(2)));
     }
 }

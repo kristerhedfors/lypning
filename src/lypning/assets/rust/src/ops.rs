@@ -62,6 +62,15 @@ impl Interp {
                 return num_binop(op, x, y, matches!((a, b), (Value::Bool(_), Value::Bool(_))));
             }
         }
+        // A WIDE operand never reaches the fast path above — `as_num` answers
+        // None for one, deliberately — so it is taken here, before the arms that
+        // would give it a TypeError CPython does not print. `Ok(None)` means
+        // neither side was wide, or the other side is not a number at all and
+        // the generic message below IS CPython's answer.
+        #[cfg(feature = "cap-bigint")]
+        if let Some(v) = crate::bigint::binop(op, a, b)? {
+            return Ok(v);
+        }
         // A `Counter` operand means multiset arithmetic, which this engine does
         // not have — and for `|` the dict arm below would answer a MERGE at
         // exit 0 rather than fail. After the numeric fast path, so ordinary
@@ -262,10 +271,14 @@ impl Interp {
                 // answered False where CPython raises, and `-1 in b"ab"` tested
                 // 255. A byte value outside range(0, 256) is a ValueError there.
                 Value::Int(i) => {
-                    if !(0..=255).contains(i) {
-                        return Err(value_err("byte must be in range(0, 256)"));
+                    // A WIDE integer is out of range(0, 256) like any other
+                    // integer out of it, so `small()` and not `get()`: CPython's
+                    // ValueError is the exact answer and a refusal would be a
+                    // spawn spent to be told the same thing.
+                    match i.small() {
+                        Some(v) if (0..=255).contains(&v) => b.contains(&(v as u8)),
+                        _ => return Err(value_err("byte must be in range(0, 256)")),
                     }
-                    b.contains(&(*i as u8))
                 }
                 Value::Bool(t) => b.contains(&(*t as u8)),
                 // An IntFlag is an int here too: `re.I in b"\x02"` is True and
@@ -335,7 +348,10 @@ impl Interp {
                 // A non-integral float is still False, which is why the test is
                 // on the VALUE and not on the type.
                 let want = match needle {
-                    Value::Int(i) => Some(*i),
+                    // A range's three fields are i64, so no wide integer is ever
+                    // in one and `None` — "not an integer this range could
+                    // hold" — is the right answer, not a refusal.
+                    Value::Int(i) => i.small(),
                     Value::Bool(t) => Some(*t as i64),
                     // `re.I in range(5)`: the flag is its int, `re.I == 2`.
                     #[cfg(feature = "cap-re")]
@@ -444,7 +460,7 @@ impl Interp {
                 // message: "index out of range" for bytes, not "bytearray index
                 // out of range" — which named a type this subset does not even have.
                 let i = norm_index(crate::eval::int_val(idx)?, b.len(), "")?;
-                Value::Int(b[i] as i64)
+                ival(b[i] as i64)
             }
             Value::Range(a, bb, st) => {
                 let n = range_len(*a, *bb, *st);
@@ -462,7 +478,7 @@ impl Interp {
                 }
                 // CPython says "range object index out of range" here, not "range".
                 let i = norm_index(crate::eval::int_val(idx)?, n as usize, "range object")?;
-                Value::Int(a + (i as i64) * st)
+                ival(a + (i as i64) * st)
             }
             other => {
                 return Err(type_err(format!(
@@ -742,6 +758,17 @@ impl Interp {
                 "dict" => Some(Value::Dict(Rc::new(RefCell::new(Dict::new())))),
                 "set" => Some(Value::Set(Rc::new(RefCell::new(Set::new())))),
                 "bytes" => Some(Value::Bytes(Rc::new(Vec::new()))),
+                // `int` and `bool` have no methods here, so neither resolves an
+                // unbound one — they are probed for the OTHER half of this
+                // block. `int.from_bytes(b'\x01' * 16, 'big')` is a classmethod
+                // CPython answers and this raised `AttributeError` for, and an
+                // AttributeError is exit 1: the program's own exit, which the
+                // dispatcher returns unchanged and the caller has no second
+                // chance at. `INT_MISSING` already turned the INSTANCE spelling
+                // — `(2**100).from_bytes` — into a refusal; the type object is
+                // the same table read through the same probe.
+                "int" => Some(ival(0)),
+                "bool" => Some(Value::Bool(false)),
                 _ => None,
             };
             if let Some(p) = probe {
@@ -759,9 +786,9 @@ impl Interp {
         // CPython answers simply died.
         if let Value::Range(a, b, st) = base {
             match name {
-                "start" => return Ok(Value::Int(*a)),
-                "stop" => return Ok(Value::Int(*b)),
-                "step" => return Ok(Value::Int(*st)),
+                "start" => return Ok(ival(*a)),
+                "stop" => return Ok(ival(*b)),
+                "step" => return Ok(ival(*st)),
                 _ => {}
             }
         }
@@ -794,7 +821,7 @@ impl Interp {
                                 None => (tail, ""),
                             };
                             return Ok(match name {
-                                "errno" => Value::Int(n),
+                                "errno" => ival(n),
                                 "strerror" => Value::Str(text.into()),
                                 _ => Value::Str(file.into()),
                             });
@@ -934,21 +961,31 @@ fn num_binop(op: BinOp, a: Num, b: Num, both_bool: bool) -> R<Value> {
                 _ => (x != 0) ^ (y != 0),
             }));
         }
-        return Ok(Value::Int(match op {
+        return Ok(ival(match op {
             BitAnd => x & y,
             BitOr => x | y,
             BitXor => x ^ y,
             LShift => {
-                if !(0..64).contains(&y) {
-                    return Err(if y < 0 {
-                        value_err("negative shift count")
-                    } else {
-                        unsupported("bigint", "left shift beyond 64-bit range")
-                    });
+                if y < 0 {
+                    return Err(value_err("negative shift count"));
                 }
-                x.checked_shl(y as u32)
-                    .filter(|r| r >> y == x)
-                    .ok_or_else(|| unsupported("bigint", "left shift overflow"))?
+                // A SHIFT COUNT PAST 64 IS NOT A REFUSAL, IT IS A WIDE RESULT.
+                // This refused whenever the COUNT reached 64, so `1 << 64`
+                // declined while `2 ** 64` — the same integer — answered, and
+                // `0 << 64` declined for a result that is 0. The count is not
+                // the thing that has to fit a machine word; only the answer is,
+                // and `wide` is exactly the function that knows whether this
+                // variant can hold one. `bigint::i64_op`'s own `MAX_BITS` still
+                // refuses `1 << (10**9)` rather than allocate 128 MB.
+                if y >= 64 {
+                    return wide(LShift, x, y);
+                }
+                match x.checked_shl(y as u32).filter(|r| r >> y == x) {
+                    Some(r) => r,
+                    // `1 << 70` is a bignum in Python, so this is a RESULT that
+                    // does not fit rather than a machine word that is required.
+                    None => return wide(LShift, x, y),
+                }
             }
             RShift => {
                 if y < 0 {
@@ -969,42 +1006,39 @@ fn num_binop(op: BinOp, a: Num, b: Num, both_bool: bool) -> R<Value> {
     }
     if let (Num::I(x), Num::I(y)) = (a, b) {
         return Ok(match op {
-            Add => Value::Int(x.checked_add(y).ok_or_else(ovf)?),
-            Sub => Value::Int(x.checked_sub(y).ok_or_else(ovf)?),
-            Mul => Value::Int(x.checked_mul(y).ok_or_else(ovf)?),
+            // Each of the three promotes on overflow rather than refusing:
+            // `wide` is the bignum on a variant that has one and the `bigint`
+            // refusal on the frozen core, so this file reads the same in both.
+            Add => match x.checked_add(y) {
+                Some(r) => ival(r),
+                None => return wide(Add, x, y),
+            },
+            Sub => match x.checked_sub(y) {
+                Some(r) => ival(r),
+                None => return wide(Sub, x, y),
+            },
+            Mul => match x.checked_mul(y) {
+                Some(r) => ival(r),
+                None => return wide(Mul, x, y),
+            },
             // `/` is ALWAYS float in Python 3, even for two ints.
             Div => {
                 if y == 0 {
                     return Err(zero_div("division by zero"));
                 }
-                // `int / int` is CORRECTLY ROUNDED in CPython, computed from the
-                // integers themselves. Converting each to f64 first loses the
-                // low bits of anything past 2**53, and the error survives the
-                // division: `9007199254740993 / 3` answered
-                // 3002399751580330.5 where CPython answers 3002399751580331.0,
-                // because the numerator had already become …992 before the
-                // divide. Refused past the exactly-representable range rather
-                // than answered approximately — the same line every other
-                // 64-bit-range refusal in this file draws.
+                // `int / int` is CORRECTLY ROUNDED in CPython, computed from
+                // the integers themselves. Converting each to f64 first loses
+                // the low bits of anything past 2**53, and the error survives
+                // the division: `9007199254740993 / 3` answers
+                // 3002399751580330.5 that way where CPython answers
+                // 3002399751580331.0, because the numerator had already become
+                // …992 before the divide. Inside the exactly-representable
+                // range both conversions ARE exact and IEEE division is
+                // correctly rounded, so the cheap path below is the same answer;
+                // past it, `exact_div` decides it and the core refuses.
                 const EXACT: i64 = 1 << 53;
                 if x.unsigned_abs() > EXACT as u64 || y.unsigned_abs() > EXACT as u64 {
-                    // Its OWN kind, and not `bigint`, because the two ask
-                    // different things of the tier below. Every other `bigint`
-                    // refusal here means "Python would use a bignum" — a
-                    // capability, and MicroPython HAS arbitrary-precision
-                    // integers, so falling through gets the right answer. This
-                    // one means "the quotient needs rounding I cannot do
-                    // exactly", and MicroPython converts both operands to
-                    // double exactly as this would have: it answers, and it
-                    // answers wrongly. Measured over the corpus the run loaded
-                    // (2,239 programs, 2026-08-28): of the programs this file
-                    // refuses as `bigint`, MicroPython gets 10 right and this
-                    // one wrong. Sharing a kind with them would escalate all
-                    // eleven to CPython to rescue one.
-                    return Err(unsupported(
-                        "int-div-precision",
-                        "int / int where an operand is past 2**53 and the quotient needs exact rounding",
-                    ));
+                    return exact_div(x, y);
                 }
                 Value::Float(x as f64 / y as f64)
             }
@@ -1012,14 +1046,13 @@ fn num_binop(op: BinOp, a: Num, b: Num, both_bool: bool) -> R<Value> {
                 if y == 0 {
                     return Err(zero_div("integer division or modulo by zero"));
                 }
-                Value::Int(x.checked_div_euclid(y).ok_or_else(ovf).map(|q| {
+                match x.checked_div_euclid(y) {
                     // div_euclid rounds toward -inf only for positive divisors.
-                    if y < 0 && x.rem_euclid(y) != 0 {
-                        q - 1
-                    } else {
-                        q
-                    }
-                })?)
+                    Some(q) => ival(if y < 0 && x.rem_euclid(y) != 0 { q - 1 } else { q }),
+                    // The one overflowing case is `i64::MIN // -1`, whose answer
+                    // is 2**63 and therefore a bignum.
+                    None => return wide(FloorDiv, x, y),
+                }
             }
             Mod => {
                 if y == 0 {
@@ -1027,8 +1060,12 @@ fn num_binop(op: BinOp, a: Num, b: Num, both_bool: bool) -> R<Value> {
                 }
                 // Python's % has the SIGN OF THE DIVISOR; Rust's has the sign
                 // of the dividend.
-                let r = x.checked_rem(y).ok_or_else(ovf)?;
-                Value::Int(if r != 0 && (r < 0) != (y < 0) { r + y } else { r })
+                // `i64::MIN % -1` is 0 in Python and overflows the machine
+                // instruction; the wide path answers it without special-casing.
+                let Some(r) = x.checked_rem(y) else {
+                    return wide(Mod, x, y);
+                };
+                ival(if r != 0 && (r < 0) != (y < 0) { r + y } else { r })
             }
             Pow => {
                 if y < 0 {
@@ -1037,16 +1074,29 @@ fn num_binop(op: BinOp, a: Num, b: Num, both_bool: bool) -> R<Value> {
                     let mut acc: i64 = 1;
                     let mut base = x;
                     let mut e = y as u64;
-                    while e > 0 {
+                    let mut over = false;
+                    while e > 0 && !over {
                         if e & 1 == 1 {
-                            acc = acc.checked_mul(base).ok_or_else(ovf)?;
+                            match acc.checked_mul(base) {
+                                Some(r) => acc = r,
+                                None => over = true,
+                            }
                         }
                         e >>= 1;
-                        if e > 0 {
-                            base = base.checked_mul(base).ok_or_else(ovf)?;
+                        if e > 0 && !over {
+                            match base.checked_mul(base) {
+                                Some(r) => base = r,
+                                None => over = true,
+                            }
                         }
                     }
-                    Value::Int(acc)
+                    // Recomputed wide from the ORIGINAL operands rather than
+                    // continued from the overflowed accumulator, which has
+                    // already lost the value it was carrying.
+                    if over {
+                        return wide(Pow, x, y);
+                    }
+                    ival(acc)
                 }
             }
             _ => unreachable!(),
@@ -1165,6 +1215,43 @@ fn num_binop(op: BinOp, a: Num, b: Num, both_bool: bool) -> R<Value> {
     })
 }
 
+/// `x / y` past the exactly-representable range.
+///
+/// `cap-bigint` computes the quotient from the integers and rounds once; the
+/// frozen core raises the `int-div-precision` refusal, which is its OWN kind and
+/// not `bigint` because the two ask different things of the tier below. Every
+/// `bigint` refusal means "Python would use a bignum" — a capability. This one
+/// means "the quotient needs rounding I cannot do exactly", and the kind is what
+/// carried the difference while there was a second tier to carry it to. It stays
+/// separate now for a smaller reason that is still worth a name: it is the one
+/// refusal the LARGER variant answers with arithmetic rather than with a module.
+#[cfg(feature = "cap-bigint")]
+fn exact_div(x: i64, y: i64) -> R<Value> {
+    crate::bigint::div_exact(x, y)
+}
+#[cfg(not(feature = "cap-bigint"))]
+fn exact_div(_x: i64, _y: i64) -> R<Value> {
+    Err(unsupported(
+        "int-div-precision",
+        "int / int where an operand is past 2**53 and the quotient needs exact rounding",
+    ))
+}
+
+/// The exact result of `x op y` when the machine word could not hold it.
+///
+/// On `lypning-l` that is a bignum; on the frozen core there is nothing to
+/// promote to and it is the `bigint` refusal, byte for byte what this file did
+/// before `cap-bigint`. One name so `num_binop` above reads the same in both.
+#[cfg(feature = "cap-bigint")]
+fn wide(op: BinOp, x: i64, y: i64) -> R<Value> {
+    crate::bigint::i64_op(op, x, y)
+}
+#[cfg(not(feature = "cap-bigint"))]
+fn wide(_op: BinOp, _x: i64, _y: i64) -> R<Value> {
+    Err(ovf())
+}
+
+#[cfg(not(feature = "cap-bigint"))]
 fn ovf() -> LypningError {
     unsupported(
         "bigint",
@@ -1229,12 +1316,6 @@ fn identity(a: &Value, b: &Value) -> R<bool> {
     if is_same(a, b) {
         return Ok(true);
     }
-    let foldable = |v: &Value| {
-        matches!(
-            v,
-            Value::Int(_) | Value::Float(_) | Value::Str(_) | Value::Bytes(_) | Value::Tuple(_)
-        )
-    };
     // Two Patterns that compare equal are the same object in CPython while its
     // 512-entry compile cache still holds the entry; once this one has thrown
     // an entry away, the eviction order that decides it is CPython's own.
@@ -1245,7 +1326,7 @@ fn identity(a: &Value, b: &Value) -> R<bool> {
             "`is` between two equal re.Pattern objects after the compile cache evicted",
         ));
     }
-    if foldable(a) && foldable(b) && eq(a, b)? {
+    if crate::value::interned_identity(a) && crate::value::interned_identity(b) && eq(a, b)? {
         return Err(unsupported(
             "identity",
             "`is` between two equal immutable values, which CPython answers from interning",
@@ -1360,6 +1441,32 @@ fn order_as(sym: &str, a: &Value, b: &Value) -> R<Ordering> {
     // through `Interp::cmp`, so the two `re` values have to be caught here too.
     #[cfg(feature = "cap-re")]
     crate::re::guard_operand(a, b, &format!("'{sym}'"))?;
+    // A WIDE integer, before `as_num` answers None for it and the match below
+    // gives it a TypeError CPython does not print — which `sorted`, `min` and
+    // `max` would have reached at exit 1, the same wiring gap `sorted` over two
+    // Counters had (`docs/HILLCLIMB.md` iteration 73).
+    #[cfg(feature = "cap-bigint")]
+    if crate::bigint::is_wide(a) || crate::bigint::is_wide(b) {
+        match (a, b) {
+            (Value::Int(x), Value::Int(y)) => return Ok(crate::bigint::cmp_int(x, y)),
+            // `bool` and `re.RegexFlag` are integers too, and small ones, so the
+            // wide side's SIGN settles it.
+            (Value::Int(x), Value::Bool(_)) => {
+                return Ok(if x.sign() < 0 { Ordering::Less } else { Ordering::Greater })
+            }
+            (Value::Bool(_), Value::Int(y)) => {
+                return Ok(if y.sign() < 0 { Ordering::Greater } else { Ordering::Less })
+            }
+            (Value::Float(_), _) | (_, Value::Float(_)) => {
+                return Err(crate::bigint::refuse(
+                    "an integer past 64 bits ordered against a float, whose exact value this engine cannot round",
+                ))
+            }
+            // Anything else is unorderable against an int in CPython too, and
+            // the TypeError below is its own message for it.
+            _ => {}
+        }
+    }
     // The numeric and scalar paths run BEFORE the guard, because neither can
     // descend and `sorted()` of a list of ints reaches this once per
     // comparison. See `value::eq` for the same split and the same reasoning.
@@ -1724,9 +1831,9 @@ fn percent_format(f: &str, arg: &Value) -> R<String> {
         // with a width, a flag or another type takes the full path unchanged.
         match (spec.as_str(), v) {
             ("s", Value::Str(sv)) => out.push_str(sv),
-            ("d", Value::Int(n)) if min_digits == 0 => {
+            ("d", Value::Int(n)) if min_digits == 0 && n.small().is_some() => {
                 use std::fmt::Write;
-                let _ = write!(out, "{n}");
+                let _ = write!(out, "{}", n.small().unwrap_or(0));
             }
             _ => out.push_str(&percent_one(v, &spec, min_digits)?),
         }
@@ -1912,19 +2019,38 @@ fn percent_one(v: &Value, spec: &str, min_digits: usize) -> R<String> {
         }
     }
     if min_digits > 0 {
-        let n = match v {
-            Value::Int(i) => *i,
-            Value::Bool(b) => *b as i64,
-            // A float or anything else here is already the `integer format code
-            // applied to …` refusal one line down; let it produce its message.
-            _ => 0,
+        let radix = match spec.chars().last() {
+            Some('x') | Some('X') => 16,
+            Some('o') => 8,
+            Some('b') => 2,
+            _ => 10,
         };
-        let a = n.unsigned_abs();
-        let have = match spec.chars().last() {
-            Some('x') | Some('X') => format!("{a:x}").len(),
-            Some('o') => format!("{a:o}").len(),
-            Some('b') => format!("{a:b}").len(),
-            _ => a.to_string().len(),
+        // A WIDE INTEGER HAS DIGITS TOO, AND THEY ARE THE ANSWER HERE. This
+        // asked `Int::get()` for a machine word first, so `'%.3d' % (2**100,)`
+        // refused where `'%d' % (2**100,)` answers — a precision narrowed the
+        // conversion rather than widening it, for a value whose 31 digits
+        // satisfy the minimum several times over. The digits come from the same
+        // function the `d` and `x` arms of `fmt` use, so the count is the one
+        // that will be printed and not an estimate of it.
+        let have = match fmt::wide_digits(v, radix, false)? {
+            Some(d) => d.len(),
+            None => {
+                let n = match v {
+                    Value::Int(i) => i.get()?,
+                    Value::Bool(b) => *b as i64,
+                    // A float or anything else here is already the `integer
+                    // format code applied to …` refusal one line down; let it
+                    // produce its message.
+                    _ => 0,
+                };
+                let a = n.unsigned_abs();
+                match radix {
+                    16 => format!("{a:x}").len(),
+                    8 => format!("{a:o}").len(),
+                    2 => format!("{a:b}").len(),
+                    _ => a.to_string().len(),
+                }
+            }
         };
         if have < min_digits {
             return Err(unsupported(
