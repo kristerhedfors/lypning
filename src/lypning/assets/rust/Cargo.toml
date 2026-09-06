@@ -50,7 +50,7 @@ variant-m = []
 # The 4 MB point. Names the smaller variant so cargo's feature union makes it a
 # superset by construction — the monotonicity the router assumes. It grows one
 # `cap-*` per step; `variant-m` is FROZEN and gains none of them.
-variant-l = ["variant-m", "cap-bigint", "cap-collections", "cap-csv", "cap-glob", "cap-pathlib", "cap-re"]
+variant-l = ["variant-m", "cap-base64", "cap-bigint", "cap-collections", "cap-csv", "cap-glob", "cap-hashlib", "cap-pathlib", "cap-re"]
 
 # `collections.Counter` and `collections.defaultdict` — 83 of the corpus
 # programs measured on 2026-09-04 import `collections`, and between them they
@@ -94,6 +94,27 @@ cap-csv = []
 # statically everywhere else. 69 corpus programs (mined 2026-09-06) import it
 # and every one of them calls `glob.glob`. `src/glob.rs` is the whole of it.
 cap-glob = []
+
+# `base64.b64encode` / `b64decode` / `urlsafe_b64encode` / `urlsafe_b64decode`,
+# over `bytes` in and `bytes` out — no new `Value` variant, which is the defect
+# five capabilities in a row shipped (`docs/HILLCLIMB.md` iterations 74, 76, 77).
+# The rest of the module — `b16*`, `b32*`, `b85*`, `a85*`, `encodebytes`,
+# `standard_b64*` — is absent, so the router's walk stops on `module-attr:
+# base64.<name>` out of `route::MODULE_ATTRS` and CPython answers it. Every
+# refusal a served call can raise that the SOURCE spells is decided in the WALK,
+# before the program starts. 12 corpus entries (2026-09-06, 3,688 loaded) were
+# blocked on `import base64`. `src/base64.rs` is the whole of it.
+cap-base64 = []
+
+# `hashlib.md5` / `sha1` / `sha256` / `sha512`, with `.update()`,
+# `.hexdigest()`, `.digest()`, `.name` and `.digest_size`. No new `Value`
+# variant: a hash object is `Value::IterObj` over a new `Iter::Hash`, the shape
+# `csv.reader` already returns. `hashlib.new`, `algorithms_guaranteed`, the
+# variable-length digests (`blake2*`, `shake_*`) and `pbkdf2_hmac` are absent,
+# so `route::MODULE_ATTRS` blocks them in the CORE's walk. 14 corpus programs
+# (mined 2026-09-06) are blocked first on `import hashlib`; 10 of them need
+# nothing else this variant lacks. `src/hashlib.rs` is the whole of it.
+cap-hashlib = []
 
 capi = []
 

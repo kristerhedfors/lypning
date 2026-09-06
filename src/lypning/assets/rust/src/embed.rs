@@ -231,8 +231,10 @@ fn run_guarded(req: &Request) -> Outcome {
     let mut interp = crate::eval::Interp::new();
     let result = catch_unwind(AssertUnwindSafe(|| {
         let body = crate::parse::parse(&req.source)?;
-        #[cfg(feature = "cap-glob")]
+        #[cfg(any(feature = "cap-glob", feature = "cap-hashlib"))]
         crate::route::static_stop_check(&body, &req.source)?;
+        #[cfg(feature = "cap-base64")]
+        crate::route::base64_static_check(&body, &req.source)?;
         interp.run(&body)
     }));
 

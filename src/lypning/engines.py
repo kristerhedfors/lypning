@@ -64,11 +64,16 @@ SPECTRUM = (LYPNING, LYPNING_L)
 #: :func:`chain_after_refusal`: a sibling built with the same set cannot answer
 #: at runtime what a smaller one could not, so it is not tried.
 #:
-#: ``cap-collections`` (``collections.Counter`` / ``defaultdict``),
+#: ``cap-base64`` (``b64encode`` / ``b64decode`` / ``urlsafe_b64encode`` /
+#: ``urlsafe_b64decode``; the rest of the module refuses as ``module-attr`` from
+#: the WALK), ``cap-collections`` (``collections.Counter`` / ``defaultdict``),
 #: ``cap-csv`` (``csv.reader`` / ``csv.DictReader``; the writers are absent, so
 #: they refuse as ``module-attr`` from the WALK), ``cap-glob`` (``glob.glob``,
 #: whose every refusal is decided in the WALK by every variant, so the feature
-#: buys the LIST and nothing else), ``cap-pathlib`` (``pathlib.Path``) and
+#: buys the LIST and nothing else), ``cap-hashlib`` (``hashlib.md5`` / ``sha1``
+#: / ``sha256`` / ``sha512``; every other name on the module refuses as
+#: ``module-attr`` from the WALK, out of ``route::MODULE_ATTRS``),
+#: ``cap-pathlib`` (``pathlib.Path``) and
 #: ``cap-re`` (the ``re`` matcher) are on the larger
 #: variant ONLY. The core is
 #: frozen: it gains no capability feature, and a capability that appeared in both
@@ -76,8 +81,10 @@ SPECTRUM = (LYPNING, LYPNING_L)
 #: the sets differ.
 VARIANT_CAPS: dict = {
     LYPNING: (),
-    LYPNING_L: ("cap-bigint", "cap-collections", "cap-csv", "cap-glob", "cap-pathlib",
-                "cap-re"),
+    LYPNING_L: (
+        "cap-base64", "cap-bigint", "cap-collections", "cap-csv", "cap-glob",
+        "cap-hashlib", "cap-pathlib", "cap-re",
+    ),
 }
 
 #: Not a fourth engine — the same lypning, reached through the C ABI instead of

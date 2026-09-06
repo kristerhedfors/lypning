@@ -53,7 +53,16 @@
  },
  {
   "program": "import hashlib; print(hashlib.md5(b\"x\").hexdigest())",
-  "route": "cpython\tmodule: import hashlib"
+  "route": "lypning-l\tmodule: import hashlib",
+  "note": "Since cap-hashlib the core routes the four served constructors into lypning-l. A name the capability does NOT serve is still cpython, out of route::MODULE_ATTRS, in the core's own walk — the next row."
+ },
+ {
+  "program": "import hashlib; print(hashlib.new(\"sha256\").hexdigest())",
+  "route": "cpython\tmodule-attr: hashlib.new"
+ },
+ {
+  "program": "import hashlib; print(sorted(hashlib.algorithms_guaranteed))",
+  "route": "cpython\tmodule-attr: hashlib.algorithms_guaranteed"
  },
  {
   "program": "class A: pass",

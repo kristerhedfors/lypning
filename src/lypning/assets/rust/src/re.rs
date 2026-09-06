@@ -148,18 +148,6 @@ const FLAGS: &[(&str, u32)] = &[
     ("UNICODE", U), ("VERBOSE", X), ("X", X),
 ];
 
-/// The Match/Pattern names the router admits for a program that imports `re`
-/// (`route::re_method`). Sorted; binary-searched. Exactly the names this engine
-/// SERVES: `groupindex`, `scanner`, `expand`, `groupdict`, `lastindex`,
-/// `lastgroup` and `regs` are deliberately absent, because a shape the engine
-/// does not answer is cheaper as a static block — the program goes straight to
-/// CPython — than as a runtime refusal, which costs an in-process run first and
-/// can land after a side effect the commit barrier has already let through.
-const ROUTED_METHODS: &[&str] = &[
-    "end", "endpos", "findall", "finditer", "flags", "fullmatch", "group", "groups", "match",
-    "pattern", "pos", "re", "search", "span", "split", "start", "string", "sub", "subn",
-];
-
 /// Bit -> name, in `RegexFlag`'s DECLARATION order, which is the order the
 /// repr joins them in (trap 3). TEMPLATE (1) is deliberately absent.
 const FLAG_NAMES: &[(u32, &str)] = &[
@@ -189,10 +177,16 @@ pub fn spec_refused() -> LypningError {
 /// `m.group()` is blocked before it starts — but only for a program that
 /// imports `re`: `.start`, `.end`, `.span` and `.string` are ordinary names
 /// elsewhere. See `route::walk_expr`.
+///
+/// The names are `route::CAP_METHODS` and not a table here, for the reason
+/// `glob::SERVED` is `route::GLOB_SERVED`: the binary that ROUTES is the core,
+/// which has no `cap-re` — and two tables that must agree are one table. The
+/// test below holds the routing row to [`PATTERN_METHODS`]/[`MATCH_METHODS`],
+/// and `tests/test_method_tables.py` holds it there again in the suite that
+/// actually runs.
 pub fn known_method(name: &str) -> bool {
-    ROUTED_METHODS.binary_search(&name).is_ok()
+    crate::route::cap_serves("re", name)
 }
-
 
 /// `re.<name>`: a flag, a bound module function, or — for everything else,
 /// `re.error` and `re.Pattern` and `re.TEMPLATE` included — the same
@@ -2424,7 +2418,6 @@ mod tests {
     #[test]
     fn the_binary_searched_tables_are_sorted() {
         assert!(MODULE_METHODS.windows(2).all(|w| w[0] < w[1]));
-        assert!(ROUTED_METHODS.windows(2).all(|w| w[0] < w[1]));
         assert!(FLAGS.windows(2).all(|w| w[0].0 < w[1].0));
         assert!(MATCHER_FNS.windows(2).all(|w| w[0] < w[1]));
         assert!(PATTERN_METHODS.windows(2).all(|w| w[0] < w[1]));
@@ -2446,8 +2439,9 @@ mod tests {
         for n in &served {
             assert!(known_method(n), "the router does not admit {n}");
         }
-        for n in ROUTED_METHODS {
-            assert!(served.contains(n), "the router admits {n}, which nothing serves");
+        let routed = crate::route::CAP_METHODS.iter().find(|(m, _)| *m == "re").unwrap().1;
+        for n in routed.split_whitespace() {
+            assert!(served.contains(&n), "the router admits {n}, which nothing serves");
         }
         for n in ["groupdict", "expand", "lastindex", "lastgroup", "regs", "groupindex",
                   "scanner"] {

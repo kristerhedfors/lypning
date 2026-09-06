@@ -380,6 +380,13 @@ impl Interp {
             // iterable` at exit 1 — the program's own exit, never retried.
             #[cfg(feature = "cap-csv")]
             Value::Gen(_) | Value::IterObj(..) => {
+                // A hash object is an `IterObj` and is NOT a container:
+                // CPython raises here, and consuming it as an iterator would
+                // answer where CPython does not.
+                #[cfg(feature = "cap-hashlib")]
+                if crate::hashlib::as_hasher(container).is_some() {
+                    return Err(crate::hashlib::not_a_container());
+                }
                 let mut it = self.make_iter(container.clone())?;
                 while let Some(x) = self.iter_next(&mut it)? {
                     if crate::value::elem_eq(&x, needle)? {
@@ -725,6 +732,17 @@ impl Interp {
         #[cfg(feature = "cap-csv")]
         if let Value::IterObj(_, k @ ("reader" | "DictReader")) = base {
             return Err(crate::csv::refuse(&format!("{k}.{name}")));
+        }
+        // `h.name`, `h.digest_size`, `h.block_size` and the four bound methods
+        // — CPython's WHOLE non-dunder surface for `_hashlib.HASH`. That is
+        // what lets `hashlib::attr` answer an unknown name with CPython's own
+        // `AttributeError` where the three arms above must refuse instead: a
+        // `Path`, a `Counter` and a `csv.reader` each have attributes CPython
+        // answers and this engine does not, and a hash object has none left
+        // over.
+        #[cfg(feature = "cap-hashlib")]
+        if let Some(cell) = crate::hashlib::as_hasher(base) {
+            return crate::hashlib::attr(base, &cell, name);
         }
         // `Path.cwd` — a classmethod on the type object.
         #[cfg(feature = "cap-pathlib")]

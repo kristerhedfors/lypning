@@ -354,10 +354,16 @@ pub fn hkey(v: &Value) -> R<HKey> {
         // same reason a `re.Match` and a `.parents` view do, and the refusal is
         // the point: `{r: 1}` and `{r, r}` raised `unhashable type: 'reader'`
         // at exit 1, the program's own exit, which the chain never retries.
-        #[cfg(feature = "cap-csv")]
+        //
+        // The KIND is `iterator-identity` and not `csv`: `cap-hashlib` reaches
+        // the same arm with a `_hashlib.HASH`, and a refusal line naming a
+        // capability that has nothing to do with the value would be a worse
+        // answer than the one it replaced. No rung of the spectrum answers
+        // either kind, so routing is unchanged.
+        #[cfg(any(feature = "cap-csv", feature = "cap-hashlib"))]
         Value::IterObj(_, k) => {
             return Err(unsupported(
-                "csv",
+                "iterator-identity",
                 &format!("a {k} as a dict or set key, which CPython hashes by object identity"),
             ))
         }
@@ -945,7 +951,7 @@ pub fn eq(a: &Value, b: &Value) -> R<bool> {
         // recorded against `Value::CsvWriter`, on a value this capability did
         // not add: `is_same` says the two are one object and `eq` did not
         // agree. Gated with the arm in `is_same` and for the same reason.
-        #[cfg(feature = "cap-csv")]
+        #[cfg(any(feature = "cap-csv", feature = "cap-hashlib"))]
         (Value::IterObj(x, _), Value::IterObj(y, _)) => Rc::ptr_eq(x, y),
         _ => false,
     })
@@ -1239,7 +1245,7 @@ pub fn is_same(a: &Value, b: &Value) -> bool {
         // `DictView` is deliberately NOT here: `d.keys() is d.keys()` is False
         // in CPython — two view objects over one dict — and the `Rc` these
         // carry is the DICT's, so `ptr_eq` would answer True.
-        #[cfg(feature = "cap-csv")]
+        #[cfg(any(feature = "cap-csv", feature = "cap-hashlib"))]
         (Value::IterObj(x, _), Value::IterObj(y, _)) => Rc::ptr_eq(x, y),
         // Small-int caching is an implementation detail agents should not rely
         // on and we will not reproduce; refusing beats guessing either way.

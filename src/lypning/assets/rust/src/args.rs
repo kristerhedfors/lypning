@@ -54,8 +54,10 @@
 //! `docs/HILLCLIMB.md` iteration 1 already recorded. The caller knows the
 //! argument count before it starts, so it never has to find out the hard way.
 
+use crate::err::{type_err, LypningError, R};
 use crate::value::Value;
 use std::ops::Deref;
+use std::rc::Rc;
 
 /// Arguments held without allocating. Two — see the module note; it is swept,
 /// not chosen.
@@ -165,6 +167,77 @@ impl Args {
         }
         v
     }
+}
+
+/// One POSITIONAL-OR-KEYWORD parameter, bound the way CPython binds one.
+///
+/// Every call site that reads a parameter which may arrive either way used to
+/// spell it `args.get(i).cloned().or_else(|| kwget(&kw, "name"))` — fifteen of
+/// them across `builtins.rs` and `methods.rs`, plus one in `pathlib.rs`. That
+/// idiom is `Option::or_else`, and `or_else` does not run when the first option
+/// is `Some`: **the keyword was silently discarded whenever a positional was
+/// also given**, so the same parameter supplied twice answered at exit 0 with
+/// the positional's value where CPython raises.
+///
+/// ```text
+/// b"abcd".hex("-", sep=":")            this: '61-62-63-64'   cpython: TypeError
+/// "ab".encode("ascii", encoding="l1")  this: b'ab'           cpython: TypeError
+/// "a b".split(" ", sep=",")            this: ['a', 'b']      cpython: TypeError
+/// round(2.5, number=9)                 this: 2               cpython: TypeError
+/// open(p, "r", mode="w")               this: opened for READ cpython: TypeError
+/// ```
+///
+/// The last one is the shape that says why this is not a cosmetic disagreement:
+/// two spellings of the same parameter is what a program looks like when it was
+/// EDITED — a keyword added without the positional being removed — and the
+/// answer lypning gave was the one the edit meant to replace. CPython refuses
+/// the call rather than choose, and so does this.
+///
+/// The message is CPython's own for a C function with positional-or-keyword
+/// parameters (`_PyArg_UnpackKeywords`), which names the bare function and the
+/// 1-based POSITION rather than the type — `str.split` reports `split()`. It is
+/// a `TypeError` and not a refusal on purpose: a refusal is exit 90 and would
+/// send a program CPython rejects off to CPython to be rejected there, one
+/// spawn later and with the same answer. Raising costs nothing and is exact.
+///
+/// CPython checks the TOTAL argument count first, so two positionals plus a
+/// duplicating keyword reports `takes at most N arguments (M given)` instead;
+/// this reports the duplicate for that shape too. Same exit code and the same
+/// empty stdout, so `conformance.classify` — which compares those two and not
+/// stderr — cannot tell them apart. `tests/test_keyword_grid.py` DOES compare
+/// the sentence, which is why its rows are the one-positional shape only.
+pub fn bind(
+    args: &Args,
+    kw: &[(Rc<str>, Value)],
+    pos: usize,
+    name: &str,
+    func: &str,
+) -> R<Option<Value>> {
+    // The keyword list is walked only when there IS one, which for almost every
+    // call in the corpus is never: `kw` is empty and this is a slice-index and a
+    // branch, the same work the `or_else` spelling did.
+    let named = if kw.is_empty() {
+        None
+    } else {
+        kw.iter().find(|(k, _)| k.as_ref() == name)
+    };
+    match (args.get(pos), named) {
+        (Some(_), Some(_)) => Err(given_twice(func, name, pos)),
+        (Some(v), None) => Ok(Some(v.clone())),
+        (None, Some((_, v))) => Ok(Some(v.clone())),
+        (None, None) => Ok(None),
+    }
+}
+
+/// Out of line and `#[cold]`: two allocations on a path that never answers, and
+/// [`bind`] is on the hottest argument-reading calls the interpreter has.
+#[cold]
+#[inline(never)]
+fn given_twice(func: &str, name: &str, pos: usize) -> LypningError {
+    type_err(format!(
+        "argument for {func}() given by name ('{name}') and position ({})",
+        pos + 1
+    ))
 }
 
 impl Clone for Args {

@@ -141,13 +141,21 @@ fn execute_inner(src: &str, report_refusal: bool, kind: &mut String, detail: &mu
         Err(e) => return finish(Err(e), report_refusal, kind, detail),
     };
     // Before the interpreter exists, so the refusal cannot land after a side
-    // effect: `route.rs` decides every static glob question for the ROUTER,
-    // and this asks it again for a run that was never routed (`<bin> -c PROG`).
-    // The chain no longer arrives here that way (#48), but a typed `-c` and
-    // `lypning conformance`'s per-engine arm still do, and `glob-order` has no
-    // runtime backstop to catch them.
-    #[cfg(feature = "cap-glob")]
+    // effect: `route.rs` decides every static glob and hashlib question for the
+    // ROUTER, and this asks it again for a run that was never routed
+    // (`<bin> -c PROG`). The chain no longer arrives here that way (#48), but a
+    // typed `-c` and `lypning conformance`'s per-engine arm still do, and
+    // `glob-order` has no runtime backstop to catch them.
+    #[cfg(any(feature = "cap-glob", feature = "cap-hashlib"))]
     if let Err(e) = route::static_stop_check(&body, src) {
+        return finish(Err(e), report_refusal, kind, detail);
+    }
+    // The same, for `base64`: every refusal a served call can raise that the
+    // SOURCE spells is decided here, so `os.mkdir("D"); base64.b64decode(b"a")`
+    // is exit 90 with an untouched cwd rather than exit 1 with the directory on
+    // disk and no answer (#51).
+    #[cfg(feature = "cap-base64")]
+    if let Err(e) = route::base64_static_check(&body, src) {
         return finish(Err(e), report_refusal, kind, detail);
     }
     let mut interp = eval::Interp::new();

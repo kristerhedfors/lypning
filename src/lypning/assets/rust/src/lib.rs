@@ -28,6 +28,12 @@
 pub mod alloc;
 pub mod args;
 pub mod ast;
+/// `base64.b64encode` / `b64decode` / `urlsafe_b64encode` / `urlsafe_b64decode`
+/// — the `cap-base64` capability. Absent from the smaller variant entirely, not
+/// merely unreachable in it. `bytes` in and `bytes` out: no new `Value` variant,
+/// and therefore no arm of the interpreter that has to remember it exists.
+#[cfg(feature = "cap-base64")]
+pub mod base64;
 pub mod builtins;
 /// Arbitrary-precision integers — the `cap-bigint` capability. Not a module:
 /// `Value::Int`'s payload is wide on the variant that carries it and an `i64`
@@ -48,6 +54,10 @@ pub mod err;
 pub mod eval;
 pub mod fmt;
 pub mod hash;
+/// `hashlib.md5` / `sha1` / `sha256` / `sha512` — the `cap-hashlib` capability.
+/// Absent from the smaller variant entirely, not merely unreachable in it.
+#[cfg(feature = "cap-hashlib")]
+pub mod hashlib;
 pub mod host;
 pub mod io;
 pub mod iter;

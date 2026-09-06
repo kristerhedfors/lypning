@@ -75,6 +75,19 @@ pub enum Iter {
     /// it through every one of the others.
     #[cfg(feature = "cap-csv")]
     Csv(Box<crate::csv::CsvIter>),
+    /// A `hashlib` hash object. It is not an iterator and never yields — it is
+    /// an `Iter` for exactly the reason the `Csv` note above gives, which is
+    /// that `Value::IterObj` already carries a mutable object through `eq`,
+    /// `repr`, `hash`, `bool`, `type()` and a dozen more arms CORRECTLY for
+    /// this shape, and a new `Value` variant would have to be wired into every
+    /// one of them by hand (`docs/HILLCLIMB.md` iterations 74, 76, 77).
+    ///
+    /// [`Interp::iter_next`] answers it with CPython's own
+    /// `'_hashlib.HASH' object is not iterable`, which is what `for x in h`,
+    /// `list(h)`, `min(h)` and `b''.join(h)` all get — the same TypeError at
+    /// the same exit code with nothing on stdout.
+    #[cfg(feature = "cap-hashlib")]
+    Hash(Box<crate::hashlib::Hasher>),
 }
 
 /// Where a text stream's next line ends, given what `open(newline=…)` asked for.
@@ -412,6 +425,11 @@ impl Interp {
             // after every row.
             #[cfg(feature = "cap-csv")]
             Iter::Csv(c) => crate::csv::next_row(self, c)?,
+            // Not an iterator. CPython raises rather than answers, so this
+            // does too: a refusal would cost a CPython spawn to be told the
+            // same thing at the same exit code.
+            #[cfg(feature = "cap-hashlib")]
+            Iter::Hash(_) => return Err(crate::hashlib::not_iterable()),
             Iter::Stdin => match mio::stdin_line()? {
                 Some(b) => Some(Value::Str(decode_text(
                     &b,

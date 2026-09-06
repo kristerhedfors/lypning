@@ -63,10 +63,6 @@ const METHODS: &[&str] = &[
     "write_bytes", "write_text",
 ];
 
-/// The properties, which are computed at attribute access and never bound.
-const PROPERTIES: &[&str] =
-    &["name", "parent", "parents", "parts", "stem", "suffix", "suffixes"];
-
 pub fn refuse(what: &str) -> LypningError {
     unsupported("pathlib", what)
 }
@@ -77,8 +73,15 @@ pub fn refuse(what: &str) -> LypningError {
 /// on other objects, and admitting it unconditionally would turn a program this
 /// engine sends to CPython today into an `AttributeError` at exit 1. See
 /// `route::walk_expr`.
+///
+/// The names are `route::CAP_METHODS` and not a table here, for the reason
+/// `glob::SERVED` is `route::GLOB_SERVED`: the binary that ROUTES is the core,
+/// which has no `cap-pathlib` and therefore neither [`METHODS`] nor the
+/// property arms of [`get_attr`] — and two tables that must agree are one
+/// table. `tests/test_method_tables.py` holds the routing row to what
+/// `get_attr` actually answers, because there is no `cargo test` in CI.
 pub fn known_method(name: &str) -> bool {
-    name == "cwd" || METHODS.contains(&name) || PROPERTIES.contains(&name)
+    crate::route::cap_serves("pathlib", name)
 }
 
 // ---- the string algebra ---------------------------------------------------
@@ -407,7 +410,7 @@ pub fn method(
             crate::methods::call_method(it, &f, "write", &mut Args::one(data), Vec::new())?
         }
         "open" => {
-            let mode = match args.first().cloned().or_else(|| kwval(&kw, "mode")) {
+            let mode = match crate::args::bind(args, &kw, 0, "mode", "open")? {
                 Some(v) => fmt_str(&v)?,
                 None => "r".to_string(),
             };
