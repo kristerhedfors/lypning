@@ -946,7 +946,9 @@ def dispatch(
     could be moved by a machine-local file would make ``lypning conformance``
     a measurement of one laptop. Callers that run the corpus rather than a
     session's own traffic pass ``ledger=False``, for the reason
-    :func:`lypning.conformance._env_for` redirects the capture log.
+    :func:`lypning.conformance._env_for` redirects the capture log. There is no
+    ``ledger=`` on the Rust side to pass, so the switch that covers BOTH writers
+    is ``LYPNING_CAPTURE=0``, which :func:`run` sets in every child it spawns.
     """
     r = routed if routed is not None else route(program, timeout=timeout, env=env)
     attempts: list[Result] = []
@@ -967,10 +969,11 @@ def dispatch(
         # The one signal a static walker provably cannot produce: the route was
         # CLEAN — the classifier said this very tier could run the whole program
         # — and the tier refused anyway, part way through, on a VALUE. Written
-        # here and nowhere else, and never read back: see lypning.routes.
-        # `lypning run`, the Rust dispatcher, does NOT write it (the core is
-        # frozen at 8 device blocks and a second writer is a second thing to
-        # keep in lockstep), so the ledger under-counts. That is a known hole.
+        # here and never read back: see lypning.routes. The Rust dispatcher
+        # (`main.rs::dispatch`, `assets/rust/src/routes.rs`) writes the same
+        # record on the same condition, because it is the dispatcher an
+        # installed chain actually execs; the two are held to one another by
+        # tests/test_routes.py rather than kept in step by hand.
         if ledger and engine == r.engine and not r.kind and engine != CPYTHON:
             try:
                 from . import routes

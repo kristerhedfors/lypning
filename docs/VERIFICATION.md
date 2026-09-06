@@ -57,7 +57,7 @@ git status --porcelain                                             # prints noth
 | `lypning gate` | wall clock: bytes, blocks and opens are a shape, not a time |
 | `lypning bench` | compute, and cold blocks: it is spawn-bound and runs on a warm local filesystem |
 | `lypning fuzz` | what the engine's own tables do not generate |
-| `lypning routes` | the Rust dispatcher's refusals: `lypning run` in the binary never writes it, so every count is a floor |
+| `lypning routes` | a tier invoked directly, and the C ABI: neither is routed, so neither can produce the clean-route-then-runtime-refusal it records — every count is a floor |
 
 ## 1. C1 — The refusal contract
 **STATEMENT.** Invariant 2. A refusal is exit `90`, exactly one `<engine>:
@@ -472,18 +472,25 @@ tests/test_harness_opencode.py::test_a_foreign_lypning_js_is_refused_without_for
 ```
 ## 11. C11 — The routes ledger
 **STATEMENT.** `lypning routes` is write-only with respect to routing: nothing
-that routes reads it. It is written by `engines.dispatch` only, on one
-condition — a clean static route followed by an exit-90 refusal from the
-engine the route named — so the Rust dispatcher's refusals are never in it and
-every count is a floor. An empty store is a hole, never a zero. **CODE HOME.**
-`routes.note` (the writer; `engines.dispatch` is its one caller, and
-`conformance._run_entry` passes `ledger=False`); `routes.ENV`
+that routes reads it. BOTH dispatchers write it, on one condition — a clean
+static route followed by an exit-90 refusal, WITH the contract line, from the
+engine the route named — and neither reads it, so a populated store cannot move
+a grade. Every count is still a floor: a tier invoked directly is not routed,
+and the C ABI has no dispatcher. An empty store is a hole, never a zero.
+**CODE HOME.** `routes.note` (the Python writer; `engines.dispatch` is its one
+caller, and `conformance._run_entry` passes `ledger=False`); `routes.rs:note`
+(the Rust writer, a module of the BINARY and not of `lib.rs`; `main.rs:dispatch`
+is its one caller, on the in-process arm, which is the whole condition — a route
+naming a SIBLING always carries the kind that pushed the program past this rung,
+0 of 3,688 corpus programs on 2026-09-06); `routes.rs:digest` (blake2b, held
+equal to `routes.digest` by test); `routes.ENV`
 (`LYPNING_ROUTES=0`; `LYPNING_CAPTURE=0` covers it too); `routes.load`,
 `routes.load_all` (line 1 of each file names the engine, its `cap-*` set and
 its binary's stamp; a header for a rebuilt binary discards the file);
 `routes.Store` (`present`, `unreadable`, `truncated`, `stale`);
-`routes.render`; `routes.MAX_RECORDS`; the store is
-`$LYPNING_HOME/routes/<engine>.jsonl` (`paths.routes_dir`).
+`routes.render`, `routes.UNDERCOUNT`; `routes.MAX_RECORDS`; the store is
+`$LYPNING_HOME/routes/<engine>.jsonl` (`paths.routes_dir`, which is
+`routes.rs:state_dir` on the Rust side — one resolution per process).
 ```bash
 # CHECK — `c11-routes.sh`: one runtime refusal through the Python dispatcher, then a graded battery digested with the store present and, after `routes --clear`, with `LYPNING_ROUTES=0`.
 lypning run -c 'print(2**100)'; echo $?; lypning routes | grep -E '^  (engine|lypning|kind|bigint)'
@@ -494,19 +501,21 @@ lypning conformance --limit 50 --json | python3 -c 'import json,sys; d=json.load
 570abca302598b5c731292be19ad637f554a0899  -
 # … | vdiff c11-routes   (`cleared 1 store(s)`, then the same digest)
 # differs: the digest, the store path
-# must not: the two digests equal — with the store populated, and with the writer off and the store gone, a graded battery is the same bytes (`seconds` removed); the bigint record after one run through the Python dispatcher; nothing after `~/.lypning/bin/lypning run -c`, the Rust dispatcher
+# must not: the two digests equal — with the store populated, and with the writer off and the store gone, a graded battery is the same bytes (`seconds` removed); the bigint record after one run through the Python dispatcher. The RUST dispatcher writes the same record and is held by pytest, not here: `~/.lypning/bin/lypning run -c 'print(2**100)'` on an empty store leaves one file whose two lines are the header and one `bigint` record, byte-compatible with the Python writer's
 # not having a store renders as a fact, never a zero: absent, `no file yet`; unreadable, named as such (--compact skips it); truncated, `[TRUNCATED at N — more on disk]`; a rebuilt binary, `discarded as stale`; every rendering ends by saying the ledger under-counts
 ```
 
 | FAILURE MODES — what regressed | what it prints | which gate turns red |
 |---|---|---|
-| something on the routing path reads the store | the two digests differ | pytest: `tests/test_routes.py::test_a_populated_store_cannot_move_a_measurement` |
+| something on the routing path reads the store | the two digests differ | pytest: `tests/test_routes.py::test_a_populated_store_cannot_move_a_measurement`, `…::test_a_populated_store_cannot_move_a_measurement_through_the_rust_dispatcher` |
+| the two writers drift — a different digest, header or field order | one program lands as two records that never fold | pytest: `tests/test_routes.py::test_the_two_writers_are_byte_compatible_in_one_store` |
 | a second writer, a write on a static route, or a hole rendered as a zero | a record after a route to `cpython`, or after exit 90 without the line; an unreadable store reads like an empty one | pytest: `tests/test_routes.py::test_a_static_route_to_cpython_writes_nothing`, `tests/test_routes.py::test_exit_90_without_the_contract_line_writes_nothing`, `tests/test_routes.py::test_an_unreadable_store_is_not_an_empty_one` |
 
 ```
 # PINNED BY
 tests/test_routes.py::test_a_populated_store_cannot_move_a_measurement  tests/test_routes.py::test_the_dispatcher_writes_on_a_clean_route_then_a_runtime_refusal  tests/test_routes.py::test_a_rebuilt_binary_discards_the_file
 tests/test_routes.py::test_lypning_routes_0_disables_the_writer  tests/test_routes.py::test_the_documented_capture_opt_out_covers_this_feed  tests/test_routes.py::test_an_empty_store_is_a_hole_not_a_zero
+tests/test_routes.py::test_the_rust_dispatcher_writes_on_a_clean_route_then_a_runtime_refusal  tests/test_routes.py::test_the_rust_dispatcher_writes_nothing_on_a_static_route_or_a_bare_exit_90  tests/test_routes.py::test_the_two_writers_are_byte_compatible_in_one_store
 ```
 ## 12. C12 — The oracle-absent path
 **STATEMENT.** `lypning-mp` is an oracle — measured, never routed to
