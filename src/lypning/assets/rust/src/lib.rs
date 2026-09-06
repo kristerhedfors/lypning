@@ -33,6 +33,10 @@ pub mod builtins;
 /// Absent from the smaller variant entirely, not merely unreachable in it.
 #[cfg(feature = "cap-collections")]
 pub mod collections;
+/// `csv.reader` / `csv.DictReader` — the `cap-csv` capability. Absent from the
+/// smaller variant entirely, not merely unreachable in it.
+#[cfg(feature = "cap-csv")]
+pub mod csv;
 pub mod embed;
 pub mod err;
 pub mod eval;

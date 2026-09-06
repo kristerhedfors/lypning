@@ -58,15 +58,18 @@ SPECTRUM = (LYPNING, LYPNING_L)
 #: at runtime what a smaller one could not, so it is not tried.
 #:
 #: ``cap-collections`` (``collections.Counter`` / ``defaultdict``),
-#: ``cap-pathlib`` (``pathlib.Path``) and ``cap-re`` (the ``re`` SURFACE: the
-#: flags, ``escape``, ``purge``, and the matcher-backed names, which refuse at
-#: call time) are on the larger variant ONLY. The core is
+#: ``cap-csv`` (``csv.reader`` / ``csv.DictReader``; the writers are absent, so
+#: they refuse as ``module-attr`` from the WALK), ``cap-glob`` (``glob.glob``,
+#: whose every refusal is decided in the WALK by every variant, so the feature
+#: buys the LIST and nothing else), ``cap-pathlib`` (``pathlib.Path``) and
+#: ``cap-re`` (the ``re`` matcher) are on the larger
+#: variant ONLY. The core is
 #: frozen: it gains no capability feature, and a capability that appeared in both
 #: columns would buy the chain nothing — the whole point of the column is that
 #: the sets differ.
 VARIANT_CAPS: dict = {
     LYPNING: (),
-    LYPNING_L: ("cap-collections", "cap-glob", "cap-pathlib", "cap-re"),
+    LYPNING_L: ("cap-collections", "cap-csv", "cap-glob", "cap-pathlib", "cap-re"),
 }
 
 #: Not a fourth engine — the same lypning, reached through the C ABI instead of

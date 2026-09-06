@@ -199,6 +199,18 @@ pub fn hkey(v: &Value) -> R<HKey> {
             }
             HKey::Tuple(out)
         }
+        // An iterator IS hashable in CPython — by object identity, which is an
+        // address this engine has no business reproducing. It refuses for the
+        // same reason a `re.Match` and a `.parents` view do, and the refusal is
+        // the point: `{r: 1}` and `{r, r}` raised `unhashable type: 'reader'`
+        // at exit 1, the program's own exit, which the chain never retries.
+        #[cfg(feature = "cap-csv")]
+        Value::IterObj(_, k) => {
+            return Err(unsupported(
+                "csv",
+                &format!("a {k} as a dict or set key, which CPython hashes by object identity"),
+            ))
+        }
         other => {
             return Err(type_err(format!(
                 "unhashable type: '{}'",
@@ -759,6 +771,15 @@ pub fn eq(a: &Value, b: &Value) -> R<bool> {
         (Value::Builtin(x), Value::Builtin(y)) => x == y,
         (Value::Func(x), Value::Func(y)) => Rc::ptr_eq(x, y),
         (Value::File(x), Value::File(y)) => Rc::ptr_eq(x, y),
+        // An iterator has no `__eq__`, so CPython falls back to identity and
+        // `it == it` is True. Without this arm it was False — and `it in [it]`,
+        // `[it].count(it)` and `lst.remove(it)` all went with it, the last one
+        // as a ValueError at exit 1. That is the SAME defect iteration 74
+        // recorded against `Value::CsvWriter`, on a value this capability did
+        // not add: `is_same` says the two are one object and `eq` did not
+        // agree. Gated with the arm in `is_same` and for the same reason.
+        #[cfg(feature = "cap-csv")]
+        (Value::IterObj(x, _), Value::IterObj(y, _)) => Rc::ptr_eq(x, y),
         _ => false,
     })
 }
@@ -833,6 +854,21 @@ pub fn is_same(a: &Value, b: &Value) -> bool {
         (Value::Pattern(x), Value::Pattern(y)) => Rc::ptr_eq(x, y),
         #[cfg(feature = "cap-re")]
         (Value::Match(x), Value::Match(y)) => Rc::ptr_eq(x, y),
+        // An iterator IS its own iterator in CPython, so `iter(it) is it` is
+        // True — and this arm is what makes it True here, because `builtins`
+        // hands the same `Rc` straight back. Without it `iter(e) is e` answered
+        // False for every `enumerate`, `zip`, `map`, `filter`, `re.finditer`
+        // and `csv.reader`: a wrong answer at exit 0, found by the csv
+        // capability's differential grid on an arm the capability did not
+        // create. It is gated because the frozen core's SIZE is, and the hole
+        // is older than this file; the variant that can reach it is the one
+        // that fixes it.
+        //
+        // `DictView` is deliberately NOT here: `d.keys() is d.keys()` is False
+        // in CPython — two view objects over one dict — and the `Rc` these
+        // carry is the DICT's, so `ptr_eq` would answer True.
+        #[cfg(feature = "cap-csv")]
+        (Value::IterObj(x, _), Value::IterObj(y, _)) => Rc::ptr_eq(x, y),
         // Small-int caching is an implementation detail agents should not rely
         // on and we will not reproduce; refusing beats guessing either way.
         _ => false,

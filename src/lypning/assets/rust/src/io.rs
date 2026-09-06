@@ -45,7 +45,58 @@ pub struct FileObj {
     /// Read buffer with the cursor, for `.read()` / `.readline()` / iteration.
     pub data: Vec<u8>,
     pub pos: usize,
+    /// What `open(newline=…)` asked this text stream to do with line endings —
+    /// one of [`NEWLINE_UNIVERSAL`], [`NEWLINE_RAW`], [`NEWLINE_KEEP_NL`].
+    ///
+    /// It is the STREAM's flag and not the parser's, which is why `iter::Lines`
+    /// is the one place it is read: `newline=''` means a line ends at `\r\n`,
+    /// `\n` OR a bare `\r`, and `newline=None` means the same three ends AND
+    /// that each of them arrives as `\n`. A file served under either flag while
+    /// the stream still split at `\n` alone swallowed every bare CR, and
+    /// `readline`, `readlines`, `for line in f`, `seek(0)` and every
+    /// `csv.reader` over it went with it. `csv.rs` has no line splitter of its
+    /// own to disagree with this one — it reads the file object's lines, the
+    /// same ones a `for` loop gets.
+    ///
+    /// The core neither serves nor stores the mode: `newline=''` refuses there,
+    /// exactly as it did before `cap-csv` existed.
+    #[cfg(feature = "cap-csv")]
+    pub newline_mode: u8,
+    /// The write generation [`FileObj::path`] had when this handle opened it.
+    ///
+    /// A `FileObj`'s `data` is the bytes `open()` read, once and at that
+    /// moment; CPython's file object reads the descriptor as it goes. The two
+    /// agree until something writes the path under an open handle — and a
+    /// `csv.reader` is the only reader here lazy enough to be caught by it, so
+    /// it compares this against [`write_gen`] before every row and refuses
+    /// rather than yield a record CPython has already replaced.
+    ///
+    /// A COUNTER and not a flag, because "has this path ever been written" is
+    /// the wrong question: `open(p,'w').write(text)` and then
+    /// `csv.reader(open(p))` reads the staged bytes through
+    /// [`effective_content`] and is not stale at all. "Written SINCE this
+    /// handle opened it" is the question, and two numbers answer it.
+    #[cfg(feature = "cap-csv")]
+    pub write_gen: u32,
+    /// `TextIOWrapper`'s `telling`, which `f.tell()` needs and nothing else
+    /// does. `__next__` on a TEXT stream clears it — CPython cannot say where a
+    /// position is once its read-ahead is in play — and restores it at the EOF
+    /// that ends the iteration, or at the next `seek()`. So `for line in f:`
+    /// run to the end leaves `tell()` working and a `break` out of it does not,
+    /// which is measured (`methods::tell_exact`) rather than reasoned about.
+    #[cfg(feature = "cap-csv")]
+    pub telling: bool,
 }
+
+/// `newline=None` — `\r\n` and a lone `\r` become `\n`.
+#[cfg(feature = "cap-csv")]
+pub const NEWLINE_UNIVERSAL: u8 = 0;
+/// `newline=''` — no translation; a line ends at `\r\n`, `\n` or `\r`.
+#[cfg(feature = "cap-csv")]
+pub const NEWLINE_RAW: u8 = 1;
+/// `newline='\n'` — no translation; a line ends only at `\n`.
+#[cfg(feature = "cap-csv")]
+pub const NEWLINE_KEEP_NL: u8 = 2;
 
 #[derive(Default)]
 pub struct Pending {
@@ -285,6 +336,11 @@ pub fn staged_delete_paths() -> Vec<String> {
     DELETED.with(|d| d.borrow().iter().cloned().collect())
 }
 
+/// A delete is deliberately NOT a [`note_write`]: unlinking a path does not
+/// change the bytes an already-open handle reads — CPython's descriptor holds
+/// the inode open and this engine's `FileObj` holds a copy — so a `csv.reader`
+/// over a file the program then removes goes on yielding on both, and refusing
+/// it would cost a spawn for a divergence that does not exist.
 pub fn stage_delete(path: &str) {
     PENDING.with(|p| {
         let mut p = p.borrow_mut();
@@ -297,6 +353,7 @@ pub fn stage_delete(path: &str) {
 }
 
 pub fn stage_write(path: &str, bytes: Vec<u8>) {
+    note_write(path);
     DELETED.with(|d| {
         d.borrow_mut().remove(path);
     });
@@ -353,6 +410,9 @@ pub fn open_file(path: &str, mode: &str, binary: bool) -> R<FileObj> {
             }
         }
     } else {
+        // `open(p,'w')` TRUNCATES and `open(p,'a')` moves the end, and both are
+        // writes an open read handle over the same path cannot see.
+        note_write(path);
         // Staging the write means the file is not truncated until commit; that
         // is intentional, and it is also what makes `open(p,'w')` reversible.
         DELETED.with(|d| {
@@ -374,8 +434,65 @@ pub fn open_file(path: &str, mode: &str, binary: bool) -> R<FileObj> {
         closed: false,
         data,
         pos: 0,
+        #[cfg(feature = "cap-csv")]
+        newline_mode: NEWLINE_UNIVERSAL,
+        #[cfg(feature = "cap-csv")]
+        write_gen: write_gen(path),
+        #[cfg(feature = "cap-csv")]
+        telling: true,
     })
 }
+
+// Every path this run has staged a write to, and how many times.
+//
+// The reader that reads it is `csv.rs`, once per row, through [`write_gen`]
+// and `FileObj::write_gen`. Five other guards used to stand here — a drained
+// flag on the stream, a second one for `sys.stdin`, a registry pairing every
+// live reader with its file, and the two events (`close`, `write`) the file
+// had to push back at a reader that could not see them. All five existed
+// because the reader was EAGER: it took the whole stream at construction, so
+// the rows were right and the MOMENT was not, and every path back to the
+// stream had to be told. A lazy reader pulls its lines from the file object
+// itself, so the moment is the file's own and there is nothing left to tell:
+// a closed file raises from `Iter::Lines`, `f.read()` after `next(r)` returns
+// what is left because the reader only took what it yielded, and `sys.stdin`
+// keeps one cursor for `input()`, `for line in sys.stdin` and the reader
+// alike.
+//
+// This one is not a csv guard at all. It is the FILE object's own divergence
+// — `data` is a snapshot, CPython's is a descriptor — and csv declines to add
+// to it rather than closing it: `open(p).read()` after a write to `p` still
+// answers from the snapshot, on both variants, as it did before this
+// capability existed.
+#[cfg(feature = "cap-csv")]
+thread_local! {
+    static WRITE_GEN: RefCell<Map<String, u32>> = RefCell::new(Map::default());
+}
+
+/// Note that `path` has been written. Called from every staging entry point,
+/// so `Path.write_text` and `os.remove` count as much as `f.write`.
+#[cfg(feature = "cap-csv")]
+pub fn note_write(path: &str) {
+    WRITE_GEN.with(|g| {
+        let mut g = g.borrow_mut();
+        // The lookup before the insert is not a style choice: this runs on
+        // every `f.write()`, and `path.to_string()` on each of them would be an
+        // allocation per line written for the whole of a write loop.
+        if let Some(n) = g.get_mut(path) {
+            *n += 1;
+            return;
+        }
+        g.insert(path.to_string(), 1);
+    });
+}
+
+#[cfg(feature = "cap-csv")]
+pub fn write_gen(path: &str) -> u32 {
+    WRITE_GEN.with(|g| g.borrow().get(path).copied().unwrap_or(0))
+}
+
+#[cfg(not(feature = "cap-csv"))]
+pub fn note_write(_path: &str) {}
 
 pub fn file_write(f: &FileObj, bytes: &[u8]) -> R<usize> {
     if f.closed {
@@ -390,6 +507,7 @@ pub fn file_write(f: &FileObj, bytes: &[u8]) -> R<usize> {
             "not writable",
         ));
     }
+    note_write(&f.path);
     PENDING.with(|p| {
         let mut p = p.borrow_mut();
         if let Some((buf, _)) = p.files.get_mut(&f.path) {
@@ -534,4 +652,6 @@ pub fn reset() {
     COMMITTED.with(|c| *c.borrow_mut() = false);
     STDIN.with(|s| *s.borrow_mut() = None);
     STDIN_POS.with(|p| *p.borrow_mut() = 0);
+    #[cfg(feature = "cap-csv")]
+    WRITE_GEN.with(|g| g.borrow_mut().clear());
 }

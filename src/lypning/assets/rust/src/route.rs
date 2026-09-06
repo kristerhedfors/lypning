@@ -59,7 +59,7 @@ pub const SPECTRUM: &[Variant] = &[
         // Alphabetical, which is the order `build.rs` emits `LYPNING_CAPS` in —
         // so the binary's own answer, this table and `engines.VARIANT_CAPS` are
         // one list and not three that happen to agree.
-        caps: &["cap-collections", "cap-glob", "cap-pathlib", "cap-re"],
+        caps: &["cap-collections", "cap-csv", "cap-glob", "cap-pathlib", "cap-re"],
     },
 ];
 
@@ -93,19 +93,81 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// above lypning-l to carry a kind to, and `chain_after` a runtime `re:`
 /// refusal is `[cpython]` by construction.
 ///
-/// `cap-glob` serves the `glob` MODULE and answers no runtime kind either. The
-/// one thing about `glob` a router would like to have seen coming —
-/// `glob-order`, a result whose ORDER the program can observe — is not a
-/// runtime kind at all: [`walk_expr`] decides it STATICALLY, before the program
-/// starts, and the kind is in [`ONLY_CPYTHON_KINDS`] because no
-/// reimplementation can reproduce `os.scandir` order, so no sibling could
-/// answer it either.
+/// `cap-csv` serves the `csv` MODULE — its two READERS, and only the
+/// attributes [`MODULE_ATTRS`] names, which is the row that keeps this one
+/// honest: `csv` is the first module whose surface a variant serves only PART
+/// of, and a `module` claim alone sent the six corpus writers into lypning-l to
+/// find that out at runtime. It answers no runtime kind, for the same reason as
+/// the three above: a `csv:` refusal is a `csv.Error` message, a dialect, or a
+/// file written under an open handle, which is the FILE object's divergence
+/// rather than the reader's. It also serves
+/// `open(newline='')`, whose refusal kind is `open-newline` and which is
+/// deliberately NOT listed here: the kinds column is read by `answers`, which
+/// decides STATIC routing, and no walk ever produces `open-newline`. The
+/// RUNTIME chain off it already reaches lypning-l, because `chain_after` tries
+/// every sibling with a strictly larger `cap-*` set.
+///
+/// `cap-glob` serves the `glob` MODULE and answers no runtime kind either. It
+/// is the SECOND module served only in part, and it needs no [`MODULE_ATTRS`]
+/// row to say so: the walk below carries [`GLOB_SERVED`] unconditionally, so
+/// the core blocks `module-attr: glob.translate` out of its own walk exactly
+/// where lypning-l would. The one thing about `glob` a router would like to
+/// have seen coming — `glob-order`, a result whose ORDER the program can
+/// observe — is not a runtime kind at all: [`walk_expr`] decides it
+/// STATICALLY, before the program starts, and the kind is in
+/// [`ONLY_CPYTHON_KINDS`] because no reimplementation can reproduce
+/// `os.scandir` order, so no sibling could answer it either.
 pub const CAPS: &[(&str, &[&str], &[&str])] = &[
     ("cap-collections", &["collections"], &[]),
+    ("cap-csv", &["csv"], &[]),
     ("cap-glob", &["glob"], &[]),
     ("cap-pathlib", &["pathlib"], &[]),
     ("cap-re", &["re"], &[]),
 ];
+
+/// The module attributes a capability answers, for the modules whose surface is
+/// small enough to write down EXACTLY. Carried by every variant, like
+/// [`SPECTRUM`] and [`CAPS`], because the binary that routes is the CHEAPEST
+/// one — the core, which has none of these capabilities compiled in and
+/// therefore no other way to know.
+///
+/// It exists because a `module` claim alone is too coarse in one direction that
+/// costs an exit code. The core stops on `module: import csv` and [`CAPS`] says
+/// lypning-l serves `csv`, so every csv program routed INTO lypning-l — the six
+/// corpus WRITERS included, which `csv.rs` declines by omission. On lypning-l
+/// that decline is a `module-attr` its own walk sees, but the walk only runs
+/// under `route`; a `-c` run reaches it at RUNTIME, and a runtime refusal after
+/// a side effect the commit barrier has let through is exit 1 for a program
+/// that works. Naming the served attributes here moves the block back into the
+/// core's walk, where it is static and free.
+///
+/// A module NOT listed here claims its whole surface, which is the behaviour
+/// every module had before this table: `re` and `pathlib` are deliberately
+/// absent, because their surfaces are large, partly value-dependent, and an
+/// attribute wrongly left out of a list is a program sent to CPython that
+/// lypning-l would have run. The rule for adding a row is that the list can be
+/// held to the capability's own `module_attr` by a test on the variant that has
+/// it — `csv.rs` does, in `the_route_table_names_exactly_what_is_served`.
+///
+/// `glob` is absent for the opposite reason: it is small enough, but the walk
+/// already carries [`GLOB_SERVED`] unconditionally and decides `glob.<n>` from
+/// it — with the KIND the runtime would have raised — several arms before
+/// [`capability_module`] is reached. A row here would be a second table saying
+/// the same thing, and the two would drift.
+pub const MODULE_ATTRS: &[(&str, &[&str])] = &[(
+    "csv",
+    &["DictReader", "QUOTE_ALL", "QUOTE_MINIMAL", "QUOTE_NONE", "QUOTE_NONNUMERIC", "reader"],
+)];
+
+/// Does some variant on the spectrum answer `module.name`, as far as
+/// [`MODULE_ATTRS`] can say? `true` for every module the table does not list —
+/// the safe direction, since it leaves routing exactly as it was.
+fn served_attr(module: &str, name: &str) -> bool {
+    match MODULE_ATTRS.iter().find(|(m, _)| *m == module) {
+        Some((_, attrs)) => attrs.contains(&name),
+        None => true,
+    }
+}
 
 /// This binary's own name, from `build.rs` — the same constant `err::ENGINE`
 /// writes at the head of every refusal line.
@@ -992,6 +1054,26 @@ impl Requirements {
         self.stop_glob("glob-order", GLOB_ORDER.to_string());
     }
 
+    /// Replace a `module: import X` blocker with a `module-attr: X.name` one.
+    ///
+    /// The walk keeps the FIRST blocker, and for a capability module the first
+    /// is always the import — which a larger sibling answers, so the program
+    /// routes there and finds out at runtime that the ATTRIBUTE is not served.
+    /// This is the one case where a later blocker is strictly more informative
+    /// than the one already recorded: same module, and `answers` returns false
+    /// for `module-attr`, so the program goes to CPython in one step instead of
+    /// two. Only over a `module` blocker naming the SAME module — a blocker on
+    /// some other import is a different program's problem and stays put.
+    fn escalate(&mut self, module: &str, name: &str) {
+        let same = match &self.blocker {
+            Some((k, d)) => k == "module" && module_of(d) == module,
+            None => true,
+        };
+        if same {
+            self.blocker = Some(("module-attr".to_string(), format!("{module}.{name}")));
+        }
+    }
+
     /// Record what `name` now holds: a pattern literal, or `None` for a
     /// binding a walk cannot read. The walk is in SOURCE ORDER, so the value
     /// in force at the call is the one the call is decided against, and a
@@ -1139,6 +1221,15 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
             }
             if !crate::modules::MODULES.contains(&module.as_ref()) {
                 req.block("module", format!("from {module} import …"));
+                // `from csv import writer` on a variant that does not serve
+                // `csv`: the import alone would route to the sibling that does,
+                // which does not serve THIS name either. See `MODULE_ATTRS`.
+                for (n, _) in names {
+                    if !served_attr(module, n) {
+                        req.escalate(module, n);
+                        break;
+                    }
+                }
             } else {
                 let m = crate::value::Value::Module(
                     crate::modules::MODULES
@@ -2158,6 +2249,28 @@ fn resolve_module(e: &Expr, aliases: &[(String, String)]) -> Option<crate::value
     }
 }
 
+/// The module `e` names, when it is one this binary does NOT serve but
+/// [`MODULE_ATTRS`] has a row for — the mirror of `resolve_module`, which can
+/// only see modules in `modules::MODULES`. Only a bare name (or its `import … as`
+/// alias) that the program actually imported: `csv.reader` where `csv` is a
+/// local variable is not a module attribute, and the walk must not say it is.
+fn capability_module(e: &Expr, req: &Requirements) -> Option<String> {
+    let n = match e {
+        Expr::Name(n) => n.as_ref(),
+        _ => return None,
+    };
+    let name = req
+        .aliases
+        .iter()
+        .find(|(a, _)| a == n)
+        .map(|(_, p)| p.as_str())
+        .unwrap_or(n);
+    if crate::modules::MODULES.contains(&name) || !req.imports.contains(name) {
+        return None;
+    }
+    MODULE_ATTRS.iter().find(|(m, _)| *m == name).map(|(m, _)| (*m).to_string())
+}
+
 fn walk_expr(e: &Expr, req: &mut Requirements) {
     match e {
         Expr::Name(n) => {
@@ -2231,6 +2344,17 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
                     req.block("module-attr", format!("{m}.{n}"));
                 }
                 return;
+            }
+            // The same question for a module THIS binary does not serve but a
+            // sibling does: `resolve_module` cannot answer it, because the name
+            // is not in `modules::MODULES` here. `MODULE_ATTRS` is the table
+            // that can, and it is carried by every variant precisely so the
+            // cheapest one — the one that routes — can read it.
+            if let Some(m) = capability_module(b, req) {
+                if !served_attr(&m, n) {
+                    req.escalate(&m, n);
+                    return;
+                }
             }
             if !known_method(n) && !pathlib_method(req, n) && !re_method(req, n) {
                 req.block("method", format!(".{n}()"));

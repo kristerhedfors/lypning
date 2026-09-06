@@ -2217,6 +2217,127 @@ fn bytes_split(b: &[u8], sep: Option<&[u8]>, maxsplit: i64, from_right: bool) ->
 
 // ---- file -----------------------------------------------------------------
 
+/// What `f.tell()` may answer, which on a TEXT stream is not always a number
+/// this engine has.
+///
+/// CPython's is an opaque COOKIE, and it equals the byte offset only when the
+/// decoder is between characters with no state held. Under `newline=None` and
+/// `newline=''` — the two modes that recognise a bare `\r` as a line ending —
+/// the decoder holds a PENDING CR when the position sits just past one, because
+/// it cannot yet know whether a `\n` follows; the cookie then packs that flag
+/// and comes out as a 39-digit integer. Measured against this box's CPython:
+/// `open(t, newline='').readline()` over `b"a\rb\r\nc\n"` tells
+/// 340282367000166625996085689099021713410, and 5 and 7 for the two lines after
+/// it. A wrong offset at exit 0 is the worst of the three outcomes, so this is
+/// the refusal instead. `newline='\n'` recognises no bare `\r`, holds nothing,
+/// and is exact everywhere.
+#[cfg(feature = "cap-csv")]
+fn tell_exact(fo: &mio::FileObj) -> R<()> {
+    // `f.tell()` after `__next__` — which `for line in f`, `next(iter(f))`
+    // and every row of a `csv.reader(f)` are — is `OSError: telling position
+    // disabled by next() call` in CPython, until the iteration reaches EOF or
+    // a `seek()` puts the stream somewhere known. Measured against this box's CPython
+    // across `read`, `read(n)`, `readline`, `readlines`, a partial loop and a
+    // complete one, because the rule is not the one it looks like: `readlines`
+    // RESTORES telling and `readline` does not.
+    if !fo.telling {
+        return Err(unsupported(
+            "file-tell",
+            "tell() after the stream has been iterated (CPython raises OSError until the \
+             iteration ends or the stream is seeked)",
+        ));
+    }
+    if !fo.binary
+        && fo.newline_mode != mio::NEWLINE_KEEP_NL
+        && fo.pos > 0
+        && fo.data.get(fo.pos - 1) == Some(&b'\r')
+    {
+        return Err(unsupported(
+            "file-tell",
+            "tell() just past a bare \\r on a stream that ends a line there (CPython answers an \
+             opaque cookie, not an offset)",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "cap-csv"))]
+fn tell_exact(_fo: &mio::FileObj) -> R<()> {
+    Ok(())
+}
+
+#[cfg(feature = "cap-csv")]
+fn telling_of(f: &Rc<RefCell<mio::FileObj>>) -> bool {
+    f.borrow().telling
+}
+
+#[cfg(feature = "cap-csv")]
+fn restore_telling(f: &Rc<RefCell<mio::FileObj>>, on: bool) {
+    f.borrow_mut().telling = on;
+}
+
+// The core has no `telling` field and must compile to exactly what it did
+// before this capability existed, which is why both halves take the `Rc` and
+// do their own borrowing: a `&mut FileObj` at the call site is a borrow the
+// core would still have to check.
+#[cfg(not(feature = "cap-csv"))]
+fn telling_of(_f: &Rc<RefCell<mio::FileObj>>) {}
+
+#[cfg(not(feature = "cap-csv"))]
+fn restore_telling(_f: &Rc<RefCell<mio::FileObj>>, _on: ()) {}
+
+#[cfg(feature = "cap-csv")]
+fn seek_restores_telling(f: &Rc<RefCell<mio::FileObj>>) {
+    f.borrow_mut().telling = true;
+}
+
+#[cfg(not(feature = "cap-csv"))]
+fn seek_restores_telling(_f: &Rc<RefCell<mio::FileObj>>) {}
+
+/// What a TEXT stream hands back from `read()`, given `open(newline=…)`.
+///
+/// `newline=None` is the DEFAULT and the only mode that translates: `\r\n` and
+/// a bare `\r` both arrive as `\n`. A whole-file read is translated here.
+/// A counted one is not — `read(n)` counts CHARACTERS of the translated stream
+/// and `\r\n` is one of them, so a byte slice would be the wrong length and
+/// would leave `pos` wrong as well; it refuses, and only when a `\r` is
+/// actually in the bytes it would have returned.
+///
+/// The frozen core has neither half: it stores no newline mode and translates
+/// nothing, which is a divergence from CPython that predates this capability
+/// and that `lypning` still has.
+#[cfg(feature = "cap-csv")]
+fn text_chunk(fo: &mio::FileObj, chunk: Vec<u8>, whole: bool) -> R<Vec<u8>> {
+    if fo.newline_mode != mio::NEWLINE_UNIVERSAL || !chunk.contains(&b'\r') {
+        return Ok(chunk);
+    }
+    if !whole {
+        return Err(unsupported(
+            "file-read",
+            "read(n) across a \\r under newline=None, which CPython translates into one character",
+        ));
+    }
+    let mut out = Vec::with_capacity(chunk.len());
+    let mut i = 0;
+    while i < chunk.len() {
+        if chunk[i] == b'\r' {
+            out.push(b'\n');
+            if chunk.get(i + 1) == Some(&b'\n') {
+                i += 1;
+            }
+        } else {
+            out.push(chunk[i]);
+        }
+        i += 1;
+    }
+    Ok(out)
+}
+
+#[cfg(not(feature = "cap-csv"))]
+fn text_chunk(_fo: &mio::FileObj, chunk: Vec<u8>, _whole: bool) -> R<Vec<u8>> {
+    Ok(chunk)
+}
+
 fn file_method(
     it: &mut Interp,
     f: &Rc<RefCell<mio::FileObj>>,
@@ -2244,12 +2365,17 @@ fn file_method(
             if fo.binary {
                 Value::Bytes(Rc::new(chunk))
             } else {
-                Value::Str(crate::iter::decode_utf8_rc(&chunk)?)
+                Value::Str(crate::iter::decode_utf8_rc(&text_chunk(&fo, chunk, n.is_none())?)?)
             }
         }
         "readline" => {
+            // `readline()` is not `__next__` and does not touch `telling`;
+            // this reaches the same line reader, so it puts the flag back.
+            let keep = telling_of(f);
             let mut it2 = crate::iter::Iter::Lines(f.clone());
-            match it.iter_next(&mut it2)? {
+            let line = it.iter_next(&mut it2)?;
+            restore_telling(f, keep);
+            match line {
                 Some(v) => v,
                 None => {
                     if f.borrow().binary {
@@ -2313,7 +2439,11 @@ fn file_method(
             f.borrow_mut().closed = true;
             Value::None
         }
-        "tell" => Value::Int(f.borrow().pos as i64),
+        "tell" => {
+            let fo = f.borrow();
+            tell_exact(&fo)?;
+            Value::Int(fo.pos as i64)
+        }
         "seek" => {
             let n = int_val(args.first().unwrap_or(&Value::Int(0)))?;
             let whence = match args.get(1) {
@@ -2324,6 +2454,9 @@ fn file_method(
                 return Err(unsupported("file-seek", "seek() with whence != 0"));
             }
             f.borrow_mut().pos = n.max(0) as usize;
+            // A `seek()` puts the stream somewhere known, which is where
+            // CPython lets `tell()` work again.
+            seek_restores_telling(f);
             Value::Int(n)
         }
         other => return Err(unsupported("file-method", &format!("file.{other}()"))),
