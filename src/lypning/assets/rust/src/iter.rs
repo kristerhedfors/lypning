@@ -1,10 +1,12 @@
 //! Iteration.
 //!
 //! Iterators hold data only; the interpreter drives them, so an iterator can
-//! call back into `eval` without a borrow cycle. Three shapes are lazy on
-//! purpose — `range`, file lines, and generator expressions — because each has
-//! a case where materialising changes the answer rather than just the memory
-//! use.
+//! call back into `eval` without a borrow cycle. Four shapes are lazy on
+//! purpose — `range`, file lines, generator expressions and a `csv.reader` —
+//! because each has a case where materialising changes the ANSWER rather than
+//! just the memory use. For the last two the case is the same one: a program
+//! can look at the stream between two rows, and what it sees there is the
+//! difference between reproducing CPython and inventing a position.
 
 use crate::err::*;
 use crate::eval::{Interp, Scope};
@@ -54,7 +56,113 @@ pub enum Iter {
     Enumerate(Box<Iter>, i64),
     /// A live iterator handed out by `iter()` and consumed by `next()`.
     Shared(Rc<RefCell<Iter>>),
+    /// A `csv.reader` / `csv.DictReader`, pulling its lines from the stream
+    /// underneath it one row at a time — which is what CPython's does, and the
+    /// whole reason this is an `Iter` variant rather than a `Vec` of rows.
+    ///
+    /// The eager version of this capability had the right ROWS at the wrong
+    /// MOMENT: it drained the stream at construction, so a file closed under it
+    /// still answered, `f.read()` after `next(r)` came back empty, `input()`
+    /// and a reader over `sys.stdin` fought over one cursor, and five guards
+    /// stood on the paths back to the stream to say so. The state below is the
+    /// same state `_csv`'s `ReaderObj` carries between rows, and none of those
+    /// paths needs telling any more.
+    ///
+    /// An `Iter` variant and NOT a `Value` one: `Value` reaches `eq`, `hash`,
+    /// `repr`, `bool`, `len` and a dozen more arms nothing forces you to
+    /// remember (`docs/HILLCLIMB.md` iteration 74); `Iter` reaches `iter_next`,
+    /// and `Value::IterObj` — the shape `re.finditer` already returns — carries
+    /// it through every one of the others.
+    #[cfg(feature = "cap-csv")]
+    Csv(Box<crate::csv::CsvIter>),
 }
+
+/// Where a text stream's next line ends, given what `open(newline=…)` asked for.
+///
+/// `newline='\n'` — and every BINARY stream, which takes no `newline=` at all —
+/// ends a line at `\n` and nowhere else. The other two recognise all three
+/// endings: `\r\n`, `\n` and a bare `\r`. They differ only in what the line
+/// then LOOKS like, which is [`line_text`]'s half.
+#[cfg(feature = "cap-csv")]
+fn line_end(fo: &mio::FileObj, start: usize) -> usize {
+    if fo.binary || fo.newline_mode == mio::NEWLINE_KEEP_NL {
+        return match fo.data[start..].iter().position(|c| *c == b'\n') {
+            Some(i) => start + i + 1,
+            None => fo.data.len(),
+        };
+    }
+    match fo.data[start..].iter().position(|c| *c == b'\n' || *c == b'\r') {
+        Some(i) => {
+            let e = start + i;
+            if fo.data[e] == b'\r' && fo.data.get(e + 1) == Some(&b'\n') {
+                e + 2
+            } else {
+                e + 1
+            }
+        }
+        None => fo.data.len(),
+    }
+}
+
+/// The line itself. `newline=None` — the default, and the only mode that
+/// TRANSLATES — hands `\r\n` and a bare `\r` to the program as `\n`.
+///
+/// The translation is the TERMINATOR and nothing else, which is why this is a
+/// suffix test and not a scan: [`line_end`] stopped at the first `\r` or `\n`,
+/// so the only carriage return a line can contain is the one it ends with. The
+/// lines without one — every line of every file that has no `\r` in it — take
+/// the same single allocation they always did.
+#[cfg(feature = "cap-csv")]
+fn line_text(fo: &mio::FileObj, start: usize, end: usize) -> R<Rc<str>> {
+    let text = decode_text(&fo.data[start..end], LINE_UTF8)?;
+    if fo.newline_mode == mio::NEWLINE_UNIVERSAL {
+        let cut = if text.ends_with("\r\n") {
+            2
+        } else if text.ends_with('\r') {
+            1
+        } else {
+            return Ok(text);
+        };
+        let head = &text[..text.len() - cut];
+        let mut out = String::with_capacity(head.len() + 1);
+        out.push_str(head);
+        out.push('\n');
+        return Ok(Rc::from(out.as_str()));
+    }
+    Ok(text)
+}
+
+/// The core's half: this engine has never translated a line ending and splits
+/// at `\n`, which is exactly `newline='\n'` and — on input without a `\r` —
+/// `newline=None`. `newline=''` refuses here (`builtins::newline_mode_of`), so
+/// the other two modes are unreachable and cost no bytes.
+#[cfg(not(feature = "cap-csv"))]
+fn line_end(fo: &mio::FileObj, start: usize) -> usize {
+    match fo.data[start..].iter().position(|c| *c == b'\n') {
+        Some(i) => start + i + 1,
+        None => fo.data.len(),
+    }
+}
+
+#[cfg(not(feature = "cap-csv"))]
+fn line_text(fo: &mio::FileObj, start: usize, end: usize) -> R<Rc<str>> {
+    decode_text(&fo.data[start..end], LINE_UTF8)
+}
+
+const LINE_UTF8: &str = "non-UTF-8 bytes in a text-mode line read";
+
+/// `TextIOWrapper.__next__`'s one side effect on the stream, which is not
+/// `pos`: it disables `tell()` while its read-ahead is in play. A BINARY stream
+/// has no decoder to lose track of and keeps telling throughout.
+#[cfg(feature = "cap-csv")]
+fn set_telling(fo: &mut mio::FileObj, on: bool) {
+    if !fo.binary {
+        fo.telling = on;
+    }
+}
+
+#[cfg(not(feature = "cap-csv"))]
+fn set_telling(_fo: &mut mio::FileObj, _on: bool) {}
 
 /// A generator expression, suspended between elements.
 ///
@@ -165,7 +273,12 @@ impl Interp {
             Value::Gen(g) => Iter::Gen(g),
             Value::IterObj(it, _) => Iter::Shared(it),
             // `for line in sys.stdin` — the largest single cluster in the
-            // corpus is `stdin -> transform -> stdout`.
+            // corpus is `stdin -> transform -> stdout`. One cursor serves this,
+            // `input()`, `sys.stdin.read()` and a `csv.reader` over the stream,
+            // which is what makes an interleaving of them come out in CPython's
+            // order; a guard here used to stand in for that and was installed
+            // once per LOOP, so an iterator already in flight walked straight
+            // past it.
             Value::Module("sys.stdin") => Iter::Stdin,
             Value::DictView(d, kind) => {
                 let (items, n0) = {
@@ -273,14 +386,15 @@ impl Interp {
                     ));
                 }
                 if fo.pos >= fo.data.len() {
+                    // The EOF that ends a `for` loop is where CPython puts its
+                    // read-ahead down and `tell()` starts working again.
+                    set_telling(&mut fo, true);
                     None
                 } else {
                     let start = fo.pos;
-                    let end = match fo.data[start..].iter().position(|c| *c == b'\n') {
-                        Some(i) => start + i + 1,
-                        None => fo.data.len(),
-                    };
+                    let end = line_end(&fo, start);
                     fo.pos = end;
+                    set_telling(&mut fo, false);
                     Some(if fo.binary {
                         Value::Bytes(Rc::new(fo.data[start..end].to_vec()))
                     } else {
@@ -288,13 +402,16 @@ impl Interp {
                         // `Rc<str>`. This used to build a `Vec<u8>` and then a
                         // `String` on the way, so every line of every file read
                         // in a `for` loop was copied three times.
-                        Value::Str(decode_text(
-                            &fo.data[start..end],
-                            "non-UTF-8 bytes in a text-mode line read",
-                        )?)
+                        Value::Str(line_text(&fo, start, end)?)
                     })
                 }
             }
+            // One row, pulled now. The lines come from the arm above this one
+            // and from `Iter::Stdin` below it — the reader has no stream of its
+            // own, which is exactly why the stream is where CPython leaves it
+            // after every row.
+            #[cfg(feature = "cap-csv")]
+            Iter::Csv(c) => crate::csv::next_row(self, c)?,
             Iter::Stdin => match mio::stdin_line()? {
                 Some(b) => Some(Value::Str(decode_text(
                     &b,

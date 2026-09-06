@@ -1,5 +1,5 @@
 //! The module surface: `MODULES` below — and, on the variant built with the
-//! `cap-*` feature for it, `collections` and `pathlib`.
+//! `cap-*` feature for it, `collections`, `pathlib`, `re` and `csv`.
 //!
 //! Chosen from the corpus, in frequency order: `sys` (82 imports), `json` (74),
 //! `io` (63 — almost entirely `io.open(p, encoding='utf-8').read()`, which is
@@ -28,26 +28,66 @@ use std::rc::Rc;
 /// same bytes it always was: a capability that added an entry at runtime would
 /// still have compiled the branch that adds it. `route::CAPS` carries the same
 /// claim for the ROUTER, which has to answer for a sibling it is not.
-#[cfg(not(any(feature = "cap-collections", feature = "cap-pathlib", feature = "cap-re")))]
+#[cfg(not(any(
+    feature = "cap-collections",
+    feature = "cap-pathlib",
+    feature = "cap-re",
+    feature = "cap-csv"
+)))]
 pub const MODULES: &[&str] = &["sys", "os", "os.path", "io", "json", "posixpath", "random"];
-#[cfg(all(feature = "cap-collections", not(feature = "cap-pathlib"), not(feature = "cap-re")))]
+#[cfg(all(
+    feature = "cap-collections",
+    not(feature = "cap-pathlib"),
+    not(feature = "cap-re"),
+    not(feature = "cap-csv")
+))]
 pub const MODULES: &[&str] =
     &["sys", "os", "os.path", "io", "json", "posixpath", "random", "collections"];
-#[cfg(all(feature = "cap-pathlib", not(feature = "cap-collections"), not(feature = "cap-re")))]
+#[cfg(all(
+    feature = "cap-pathlib",
+    not(feature = "cap-collections"),
+    not(feature = "cap-re"),
+    not(feature = "cap-csv")
+))]
 pub const MODULES: &[&str] =
     &["sys", "os", "os.path", "io", "json", "posixpath", "random", "pathlib"];
-#[cfg(all(feature = "cap-collections", feature = "cap-pathlib", not(feature = "cap-re")))]
+#[cfg(all(
+    feature = "cap-collections",
+    feature = "cap-pathlib",
+    not(feature = "cap-re"),
+    not(feature = "cap-csv")
+))]
 pub const MODULES: &[&str] = &[
     "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib",
 ];
-#[cfg(all(feature = "cap-collections", feature = "cap-pathlib", feature = "cap-re"))]
+#[cfg(all(
+    feature = "cap-collections",
+    feature = "cap-pathlib",
+    feature = "cap-re",
+    not(feature = "cap-csv")
+))]
 pub const MODULES: &[&str] = &[
     "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib", "re",
 ];
-// `cap-re` names no row of its own: it is only ever built as part of
-// `variant-l`, whose feature names the full set.
+#[cfg(all(
+    feature = "cap-collections",
+    feature = "cap-pathlib",
+    feature = "cap-re",
+    feature = "cap-csv"
+))]
+pub const MODULES: &[&str] = &[
+    "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib", "re",
+    "csv",
+];
+// `cap-re` and `cap-csv` name no row of their own: each is only ever built as
+// part of `variant-l`, whose feature names the full set.
 #[cfg(all(feature = "cap-re", not(all(feature = "cap-collections", feature = "cap-pathlib"))))]
 compile_error!("cap-re is only built as part of variant-l (it names the full set)");
+#[cfg(all(
+    feature = "cap-csv",
+    not(all(feature = "cap-collections", feature = "cap-pathlib", feature = "cap-re"))
+))]
+compile_error!("cap-csv is only built as part of variant-l (it names the full set)");
 
 pub fn import(path: &str) -> R<Value> {
     match MODULES.iter().find(|m| **m == path) {
@@ -181,6 +221,15 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
         // statically in the router too.
         #[cfg(feature = "cap-re")]
         ("re", _) => return crate::re::module_attr(name),
+        // `csv.reader`, `csv.DictReader` and the four `QUOTE_*` constants.
+        // Everything else under `csv` — `writer`, `DictWriter`, `Sniffer`,
+        // `field_size_limit`, `Error` — refuses with the `module-attr` kind,
+        // which is what makes it a STATIC block in the router: `route.rs`
+        // resolves `csv.writer` through this very function during the walk, so
+        // the program never starts. That is the whole shape of this capability
+        // (`csv.rs`), and it is why the writers cost no bytes at all.
+        #[cfg(feature = "cap-csv")]
+        ("csv", _) => return crate::csv::module_attr(name),
         _ => {
             return Err(unsupported(
                 "module-attr",
@@ -247,6 +296,8 @@ pub fn call_module_method(
     Ok(match (m, name) {
         #[cfg(feature = "cap-re")]
         ("re", _) => return crate::re::call(it, name, args, &kw),
+        #[cfg(feature = "cap-csv")]
+        ("csv", _) => return crate::csv::call(it, name, args, &kw),
         ("random", _) => return crate::random::call(it, name, args, &kw),
         // `Path.cwd()`. A classmethod on the type object, reached through
         // `ops::get_attr`, which spells it as a method on the module so that
@@ -273,11 +324,21 @@ pub fn call_module_method(
             };
             return Err(LypningError::exc("SystemExit", msg));
         }
-        ("sys.stdin", "read") => Value::Str(crate::iter::decode_text(&mio::stdin_rest()?, "non-UTF-8 bytes on stdin (CPython decodes it with surrogateescape)")?),
-        ("sys.stdin", "readline") => match mio::stdin_line()? {
-            Some(b) => Value::Str(crate::iter::decode_text(&b, "non-UTF-8 bytes on stdin (CPython decodes it with surrogateescape)")?),
-            None => Value::Str("".into()),
-        },
+        // One cursor serves all four of these, `input()`, `for line in
+        // sys.stdin` and a `csv.reader` over the stream — which is what makes
+        // an interleaving of them come out in CPython's order. The reader used
+        // to DRAIN the one stream a program cannot reopen, and three of these
+        // carried a guard saying so; it is lazy now, and takes one line per row
+        // like everything else here.
+        ("sys.stdin", "read") => {
+            Value::Str(crate::iter::decode_text(&mio::stdin_rest()?, "non-UTF-8 bytes on stdin (CPython decodes it with surrogateescape)")?)
+        }
+        ("sys.stdin", "readline") => {
+            match mio::stdin_line()? {
+                Some(b) => Value::Str(crate::iter::decode_text(&b, "non-UTF-8 bytes on stdin (CPython decodes it with surrogateescape)")?),
+                None => Value::Str("".into()),
+            }
+        }
         ("sys.stdin", "readlines") => {
             let mut out = Vec::new();
             while let Some(b) = mio::stdin_line()? {

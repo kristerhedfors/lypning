@@ -1578,15 +1578,72 @@ pub fn open_value(path: &str, mode: &str, kw: &[(Rc<str>, Value)]) -> R<Value> {
             return Err(unsupported("encoding", &format!("text encoding '{e}'")));
         }
     }
-    if let Some(nl) = kwget(kw, "newline") {
-        if !matches!(nl, Value::None) && fmt::to_str(&nl)? != "\n" {
-            return Err(unsupported("open-newline", "open(newline=…) translation"));
+    // CPython rejects `newline=` on a BINARY stream before it looks at the
+    // value — `open(p,'rb',newline='')` is a ValueError, not a raw stream. The
+    // check has to come before `newline_mode_of`, which reads the value and
+    // would otherwise accept `''` in binary mode on the variant that serves it
+    // and `'\n'` on the one that does not.
+    if binary {
+        if let Some(nl) = kwget(kw, "newline") {
+            if !matches!(nl, Value::None) {
+                return Err(LypningError::exc(
+                    "ValueError",
+                    "binary mode doesn't take a newline argument",
+                ));
+            }
         }
     }
+    let nl = newline_mode_of(kw)?;
     let base: String = mode.chars().filter(|c| !matches!(c, 'b' | 't')).collect();
-    let f = mio::open_file(path, if base.is_empty() { "r" } else { &base }, binary)?;
+    let mut f = mio::open_file(path, if base.is_empty() { "r" } else { &base }, binary)?;
+    set_newline(&mut f, nl);
     Ok(Value::File(Rc::new(RefCell::new(f))))
 }
+
+/// What `open(newline=…)` asked for, on the variant that can tell the three
+/// modes apart.
+///
+/// `newline=''` is the spelling `csv`'s own documentation requires, and it is
+/// what 13 of the 15 corpus readers over a file are written with — a mine on
+/// 2026-09-06 finds that 16 of the 17 corpus programs passing `newline=` to
+/// `open` also import `csv`, and the seventeenth only prints the word. So it is
+/// served where `cap-csv` is and refused where it is not, which leaves the
+/// frozen core exactly as it was. Accepting it is EXACT rather than generous:
+/// this engine's file object has never translated a line ending, which is what
+/// `newline=''` means. The mode is only recorded — `csv.rs` is the one reader,
+/// because to a `csv.reader` a `\r` inside a quoted field is the difference
+/// between one record and two.
+#[cfg(feature = "cap-csv")]
+fn newline_mode_of(kw: &[(Rc<str>, Value)]) -> R<u8> {
+    match kwget(kw, "newline") {
+        None | Some(Value::None) => Ok(mio::NEWLINE_UNIVERSAL),
+        Some(v) => match fmt::to_str(&v)?.as_str() {
+            "" => Ok(mio::NEWLINE_RAW),
+            "\n" => Ok(mio::NEWLINE_KEEP_NL),
+            _ => Err(unsupported("open-newline", "open(newline=…) translation")),
+        },
+    }
+}
+
+/// The core's half: `newline=None` and `newline='\n'` are this engine's own
+/// behaviour and everything else refuses, exactly as it did before `cap-csv`
+/// existed.
+#[cfg(not(feature = "cap-csv"))]
+fn newline_mode_of(kw: &[(Rc<str>, Value)]) -> R<()> {
+    match kwget(kw, "newline") {
+        None | Some(Value::None) => Ok(()),
+        Some(v) if fmt::to_str(&v)? == "\n" => Ok(()),
+        Some(_) => Err(unsupported("open-newline", "open(newline=…) translation")),
+    }
+}
+
+#[cfg(feature = "cap-csv")]
+fn set_newline(f: &mut mio::FileObj, nl: u8) {
+    f.newline_mode = nl;
+}
+
+#[cfg(not(feature = "cap-csv"))]
+fn set_newline(_f: &mut mio::FileObj, _nl: ()) {}
 
 fn arg1(name: &str, args: &[Value]) -> R<Value> {
     args.first()

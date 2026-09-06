@@ -358,6 +358,21 @@ impl Interp {
                     }
                 }
             }
+            // `x in it` CONSUMES the iterator in CPython, up to the first
+            // match, and answers True or False; it does not raise. Without the
+            // `IterObj` half this was `argument of type 'reader' is not
+            // iterable` at exit 1 — the program's own exit, never retried.
+            #[cfg(feature = "cap-csv")]
+            Value::Gen(_) | Value::IterObj(..) => {
+                let mut it = self.make_iter(container.clone())?;
+                while let Some(x) = self.iter_next(&mut it)? {
+                    if crate::value::elem_eq(&x, needle)? {
+                        return Ok(true);
+                    }
+                }
+                false
+            }
+            #[cfg(not(feature = "cap-csv"))]
             Value::Gen(_) => {
                 let mut it = self.make_iter(container.clone())?;
                 while let Some(x) = self.iter_next(&mut it)? {
@@ -681,6 +696,19 @@ impl Interp {
         #[cfg(feature = "cap-pathlib")]
         if let Value::Path(s, view) = base {
             return crate::pathlib::get_attr(s, *view, name);
+        }
+        // A `csv.reader` carries `.line_num` and `.dialect`, and a
+        // `csv.DictReader` carries `.fieldnames`, `.line_num`, `.restkey` and
+        // `.restval` — all of which CPython ANSWERS and none of which this
+        // engine has, because the reader here is a materialised iterator with
+        // no parser left to ask. An AttributeError would be exit 1; this is
+        // exit 90 and CPython answers one spawn later. Only the two csv kinds:
+        // an unknown attribute on an `enumerate` or a `map` is an AttributeError
+        // in CPython too, and refusing there would cost a spawn to be told the
+        // same thing.
+        #[cfg(feature = "cap-csv")]
+        if let Value::IterObj(_, k @ ("reader" | "DictReader")) = base {
+            return Err(crate::csv::refuse(&format!("{k}.{name}")));
         }
         // `Path.cwd` — a classmethod on the type object.
         #[cfg(feature = "cap-pathlib")]
