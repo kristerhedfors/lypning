@@ -50,7 +50,7 @@ variant-m = []
 # The 4 MB point. Names the smaller variant so cargo's feature union makes it a
 # superset by construction — the monotonicity the router assumes. It grows one
 # `cap-*` per step; `variant-m` is FROZEN and gains none of them.
-variant-l = ["variant-m", "cap-collections", "cap-csv", "cap-glob", "cap-pathlib", "cap-re"]
+variant-l = ["variant-m", "cap-collections", "cap-csv", "cap-glob", "cap-hashlib", "cap-pathlib", "cap-re"]
 
 # `collections.Counter` and `collections.defaultdict` — 83 of the corpus
 # programs measured on 2026-09-04 import `collections`, and between them they
@@ -87,6 +87,16 @@ cap-csv = []
 # statically everywhere else. 69 corpus programs (mined 2026-09-06) import it
 # and every one of them calls `glob.glob`. `src/glob.rs` is the whole of it.
 cap-glob = []
+
+# `hashlib.md5` / `sha1` / `sha256` / `sha512`, with `.update()`,
+# `.hexdigest()`, `.digest()`, `.name` and `.digest_size`. No new `Value`
+# variant: a hash object is `Value::IterObj` over a new `Iter::Hash`, the shape
+# `csv.reader` already returns. `hashlib.new`, `algorithms_guaranteed`, the
+# variable-length digests (`blake2*`, `shake_*`) and `pbkdf2_hmac` are absent,
+# so `route::MODULE_ATTRS` blocks them in the CORE's walk. 14 corpus programs
+# (mined 2026-09-06) are blocked first on `import hashlib`; 10 of them need
+# nothing else this variant lacks. `src/hashlib.rs` is the whole of it.
+cap-hashlib = []
 
 capi = []
 

@@ -1,5 +1,6 @@
 //! The module surface: `MODULES` below — and, on the variant built with the
-//! `cap-*` feature for it, `collections`, `pathlib`, `re` and `csv`.
+//! `cap-*` feature for it, `collections`, `pathlib`, `re`, `csv`, `glob` and
+//! `hashlib`.
 //!
 //! Chosen from the corpus, in frequency order: `sys` (82 imports), `json` (74),
 //! `io` (63 — almost entirely `io.open(p, encoding='utf-8').read()`, which is
@@ -90,17 +91,31 @@ pub const MODULES: &[&str] = &[
     feature = "cap-pathlib",
     feature = "cap-re",
     feature = "cap-csv",
-    feature = "cap-glob"
+    feature = "cap-glob",
+    not(feature = "cap-hashlib")
 ))]
 pub const MODULES: &[&str] = &[
     "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib", "re",
     "csv", "glob",
 ];
+#[cfg(all(
+    feature = "cap-collections",
+    feature = "cap-pathlib",
+    feature = "cap-re",
+    feature = "cap-csv",
+    feature = "cap-glob",
+    feature = "cap-hashlib"
+))]
+pub const MODULES: &[&str] = &[
+    "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib", "re",
+    "csv", "glob", "hashlib",
+];
 // The rows above are the build-order CHAIN, not every subset: each capability
-// appends one row and stops the row before it. `cap-re`, `cap-csv` and
-// `cap-glob` name no row of their own because none of them is ever built except
-// as part of `variant-l`, whose feature names the full set — which is what the
-// three guards below say, each naming the caps that precede it in the chain.
+// appends one row and stops the row before it. `cap-re`, `cap-csv`, `cap-glob`
+// and `cap-hashlib` name no row of their own because none of them is ever built
+// except as part of `variant-l`, whose feature names the full set — which is
+// what the four guards below say, each naming the caps that precede it in the
+// chain.
 #[cfg(all(feature = "cap-re", not(all(feature = "cap-collections", feature = "cap-pathlib"))))]
 compile_error!("cap-re is only built as part of variant-l (it names the full set)");
 #[cfg(all(
@@ -118,6 +133,17 @@ compile_error!("cap-csv is only built as part of variant-l (it names the full se
     ))
 ))]
 compile_error!("cap-glob is only built as part of variant-l (it names the full set)");
+#[cfg(all(
+    feature = "cap-hashlib",
+    not(all(
+        feature = "cap-collections",
+        feature = "cap-pathlib",
+        feature = "cap-re",
+        feature = "cap-csv",
+        feature = "cap-glob"
+    ))
+))]
+compile_error!("cap-hashlib is only built as part of variant-l (it names the full set)");
 
 pub fn import(path: &str) -> R<Value> {
     match MODULES.iter().find(|m| **m == path) {
@@ -265,6 +291,12 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
         // `module-attr` kind, which the router blocks on statically.
         #[cfg(feature = "cap-glob")]
         ("glob", _) => return crate::glob::module_attr(name),
+        // `hashlib.md5` / `sha1` / `sha256` / `sha512`. Every other name —
+        // `new`, `algorithms_guaranteed`, `blake2b`, `sha3_256`, `pbkdf2_hmac`
+        // — refuses with the `module-attr` kind, which the router blocks on
+        // statically out of `route::MODULE_ATTRS`, in the CORE's walk.
+        #[cfg(feature = "cap-hashlib")]
+        ("hashlib", _) => return crate::hashlib::module_attr(name),
         _ => {
             return Err(unsupported(
                 "module-attr",
@@ -341,6 +373,8 @@ pub fn call_module_method(
         ("csv", _) => return crate::csv::call(it, name, args, &kw),
         #[cfg(feature = "cap-glob")]
         ("glob", _) => return crate::glob::call(it, name, args, &kw),
+        #[cfg(feature = "cap-hashlib")]
+        ("hashlib", _) => return crate::hashlib::call(it, name, args, &kw),
         ("random", _) => return crate::random::call(it, name, args, &kw),
         // `Path.cwd()`. A classmethod on the type object, reached through
         // `ops::get_attr`, which spells it as a method on the module so that

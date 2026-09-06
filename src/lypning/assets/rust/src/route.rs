@@ -59,7 +59,14 @@ pub const SPECTRUM: &[Variant] = &[
         // Alphabetical, which is the order `build.rs` emits `LYPNING_CAPS` in —
         // so the binary's own answer, this table and `engines.VARIANT_CAPS` are
         // one list and not three that happen to agree.
-        caps: &["cap-collections", "cap-csv", "cap-glob", "cap-pathlib", "cap-re"],
+        caps: &[
+            "cap-collections",
+            "cap-csv",
+            "cap-glob",
+            "cap-hashlib",
+            "cap-pathlib",
+            "cap-re",
+        ],
     },
 ];
 
@@ -107,6 +114,15 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// RUNTIME chain off it already reaches lypning-l, because `chain_after` tries
 /// every sibling with a strictly larger `cap-*` set.
 ///
+/// `cap-hashlib` serves the `hashlib` MODULE — four CONSTRUCTORS, and only the
+/// names [`MODULE_ATTRS`] lists, for the same reason `csv` needs a row: adding
+/// the module to this table admits every hashlib program into `lypning-l`,
+/// including the ones reaching for `hashlib.new`, `algorithms_guaranteed` or a
+/// variable-length digest, which this capability does not serve and which would
+/// otherwise be found out at RUNTIME. It answers no runtime kind: a `hashlib:`
+/// refusal is a keyword CPython owns or an attribute whose answer is CPython's
+/// to print, and there is no rung above `lypning-l` to carry the kind to.
+///
 /// `cap-glob` serves the `glob` MODULE and answers no runtime kind either. It
 /// is the SECOND module served only in part, and it needs no [`MODULE_ATTRS`]
 /// row to say so: the walk below carries [`GLOB_SERVED`] unconditionally, so
@@ -121,6 +137,7 @@ pub const CAPS: &[(&str, &[&str], &[&str])] = &[
     ("cap-collections", &["collections"], &[]),
     ("cap-csv", &["csv"], &[]),
     ("cap-glob", &["glob"], &[]),
+    ("cap-hashlib", &["hashlib"], &[]),
     ("cap-pathlib", &["pathlib"], &[]),
     ("cap-re", &["re"], &[]),
 ];
@@ -154,10 +171,19 @@ pub const CAPS: &[(&str, &[&str], &[&str])] = &[
 /// it — with the KIND the runtime would have raised — several arms before
 /// [`capability_module`] is reached. A row here would be a second table saying
 /// the same thing, and the two would drift.
-pub const MODULE_ATTRS: &[(&str, &[&str])] = &[(
-    "csv",
-    &["DictReader", "QUOTE_ALL", "QUOTE_MINIMAL", "QUOTE_NONE", "QUOTE_NONNUMERIC", "reader"],
-)];
+pub const MODULE_ATTRS: &[(&str, &[&str])] = &[
+    (
+        "csv",
+        &["DictReader", "QUOTE_ALL", "QUOTE_MINIMAL", "QUOTE_NONE", "QUOTE_NONNUMERIC", "reader"],
+    ),
+    // Held to `hashlib::SERVED` by
+    // `hashlib::tests::the_route_table_names_exactly_what_is_served`. Every
+    // other name on the module — `new`, `algorithms_guaranteed`,
+    // `algorithms_available`, `blake2b`, `blake2s`, `shake_128`, `shake_256`,
+    // `sha3_*`, `sha224`, `sha384`, `pbkdf2_hmac`, `scrypt`, `file_digest` —
+    // is blocked HERE, in the core's walk, and never reaches the variant.
+    ("hashlib", &["md5", "sha1", "sha256", "sha512"]),
+];
 
 /// Does some variant on the spectrum answer `module.name`, as far as
 /// [`MODULE_ATTRS`] can say? `true` for every module the table does not list —
@@ -859,7 +885,7 @@ pub fn route(src: &str) -> Route {
             walk_block(&body, &mut req);
             imports = req.imports.iter().cloned().collect();
             let reads_stdin = reads_stdin || req.reads_stdin;
-            let stop = req.glob_stop.take();
+            let stop = req.spectrum_stop.take();
             match req.blocker {
                 None => finish_route(String::new(), String::new(), imports, reads_stdin, stop),
                 Some((kind, detail)) => {
@@ -990,9 +1016,9 @@ struct Requirements {
     /// borrows one live AST for its whole run, so no node is freed and no
     /// address is reused; nothing is dereferenced through these.
     glob_blessed: Vec<*const Expr>,
-    /// The glob refusal that stops EVERY rung of the spectrum, as
+    /// The refusal that stops EVERY rung of the spectrum, as
     /// `(kind, detail)`, recorded even when an EARLIER blocker won the `--plan`
-    /// row. [`glob_static_check`] reads this one: a program whose first blocker
+    /// row. [`static_check`] reads this one: a program whose first blocker
     /// is something lypning-l runs anyway (the walker is deliberately
     /// pessimistic about methods) must still not reach a glob call it would
     /// have refused halfway through.
@@ -1007,7 +1033,7 @@ struct Requirements {
     /// match, an attribute it does not have — and each keeps the kind the
     /// runtime would have raised, so a program is refused with the same line
     /// one in-process run earlier.
-    glob_stop: Option<(String, String)>,
+    spectrum_stop: Option<(String, String)>,
     /// Which order-blind wrappers are still the BUILTIN, one bit per index into
     /// [`ORDER_BLIND`]. `sorted` rebound to something that shows its argument's
     /// order would make the blessing below a lie — see [`trusted_wrappers`].
@@ -1031,11 +1057,17 @@ impl Requirements {
         }
     }
 
-    /// A glob refusal the whole spectrum shares, for the router AND for the
-    /// run. `block` is first-wins because `--plan` ranks what a program hit
-    /// FIRST; this slot is separate because the run has to refuse whether or
-    /// not something else was hit earlier.
-    fn stop_glob(&mut self, kind: &str, detail: String) {
+    /// A refusal the whole spectrum shares, for the router AND for the run.
+    /// `block` is first-wins because `--plan` ranks what a program hit FIRST;
+    /// this slot is separate because the run has to refuse whether or not
+    /// something else was hit earlier.
+    ///
+    /// Named for the SLOT and not for `glob`, which was its only writer until
+    /// `cap-hashlib`: the two capabilities ask the same question of the walk —
+    /// *is there a refusal here that no rung answers, and can it be raised
+    /// before the interpreter exists?* — and one slot is what lets
+    /// [`static_check`] answer it once.
+    fn stop_spectrum(&mut self, kind: &str, detail: String) {
         self.block(kind, detail.clone());
         self.stop_only(kind, detail);
     }
@@ -1045,13 +1077,13 @@ impl Requirements {
     /// where the core blocks `module` and lypning-l blocks `module-attr` and
     /// neither should be displaced from the `--plan` row this walk reports.
     fn stop_only(&mut self, kind: &str, detail: String) {
-        if self.glob_stop.is_none() {
-            self.glob_stop = Some((kind.to_string(), detail));
+        if self.spectrum_stop.is_none() {
+            self.spectrum_stop = Some((kind.to_string(), detail));
         }
     }
 
     fn block_glob_order(&mut self) {
-        self.stop_glob("glob-order", GLOB_ORDER.to_string());
+        self.stop_spectrum("glob-order", GLOB_ORDER.to_string());
     }
 
     /// Replace a `module: import X` blocker with a `module-attr: X.name` one.
@@ -1492,6 +1524,27 @@ fn re_method(req: &Requirements, n: &str) -> bool {
 }
 #[cfg(not(feature = "cap-re"))]
 fn re_method(_req: &Requirements, _n: &str) -> bool {
+    false
+}
+
+/// `.hexdigest`, `.digest` and `.digest_size`, admitted ONLY for a program that
+/// imports `hashlib`, by the same argument as [`pathlib_method`].
+///
+/// **`.name` and `.update` are deliberately not here, for opposite reasons.**
+/// `.update` needs no admitting: it is already in the union, because a `dict`
+/// and a `set` have one. `.name` is the one this list must NOT be optimistic
+/// about — it is an ordinary attribute on a file object, a module and an
+/// exception, this engine answers it on none of them, and admitting it would
+/// run a hashlib program here only to stop at an `AttributeError` at exit 1,
+/// which the chain never retries, where CPython answers. So `h.name` is a
+/// static `method` block that costs a CPython spawn and is never wrong, and
+/// `hashlib.rs` still answers it for a run that entered as `-c`.
+#[cfg(feature = "cap-hashlib")]
+fn hash_method(req: &Requirements, n: &str) -> bool {
+    req.imports.contains("hashlib") && matches!(n, "digest" | "digest_size" | "hexdigest")
+}
+#[cfg(not(feature = "cap-hashlib"))]
+fn hash_method(_req: &Requirements, _n: &str) -> bool {
     false
 }
 
@@ -1984,8 +2037,82 @@ fn glob_call_block(
                 .map(|(k, _)| format!("glob.{name}({k}=…)"))
         });
     if let Some(d) = detail {
-        req.stop_glob("glob", d);
+        req.stop_spectrum("glob", d);
     }
+}
+
+/// Which `hashlib` CONSTRUCTOR this callee names, if any — one of
+/// `hashlib::SERVED`.
+///
+/// `hashlib.sha256(...)` and `h.sha256(...)` after `import hashlib as h`. A
+/// bare `sha256(...)` bound by `from hashlib import sha256` is NOT recognised
+/// and is left to the runtime backstop: the spelling appears nowhere in the
+/// corpus (mined 2026-09-06, 3,688 entries loaded), and a `glob_names`-shaped
+/// binding table for it would be more machinery than the shape is worth.
+#[cfg(feature = "cap-hashlib")]
+fn hash_ctor(func: &Expr, req: &Requirements) -> Option<&'static str> {
+    let Expr::Attr(b, n) = func else { return None };
+    if !hash_module(b, req) {
+        return None;
+    }
+    crate::hashlib::SERVED.iter().copied().find(|x| *x == n.as_ref())
+}
+
+/// Does `b` name the `hashlib` module — `hashlib.…` or `h.…` after
+/// `import hashlib as h`? Only for a program that imports it, exactly as
+/// [`glob_module`] requires.
+#[cfg(feature = "cap-hashlib")]
+fn hash_module(b: &Expr, req: &Requirements) -> bool {
+    if !req.imports.contains("hashlib") {
+        return false;
+    }
+    let Expr::Name(base) = b else { return false };
+    let m = req
+        .aliases
+        .iter()
+        .find(|(a, _)| a == base.as_ref())
+        .map(|(_, p)| p.as_str())
+        .unwrap_or(base.as_ref());
+    m == "hashlib"
+}
+
+/// Everything about a served `hashlib` constructor call that a walk can decide,
+/// decided here rather than one statement into a program that has already made
+/// a directory (issue #51).
+///
+/// A hash constructor takes ONE optional positional and no keywords this
+/// capability serves. `usedforsecurity=` is the keyword that matters: CPython
+/// answers it, and answers it DIFFERENTLY on a FIPS-mode build, where
+/// `usedforsecurity=True` on md5 raises instead of hashing. An engine that
+/// ignored the flag would be right on this host and wrong on that one, which is
+/// exactly the shape invariant 1 says to refuse rather than guess.
+///
+/// Deliberately blunt about `*` and `**`: a splice is refused rather than
+/// flattened, because the only thing this needs to be sure of is that there is
+/// nothing here it has not read, and a wrongly-admitted keyword is a wrong
+/// answer where a wrongly-refused one is a CPython spawn.
+#[cfg(feature = "cap-hashlib")]
+fn hash_call_block(
+    req: &mut Requirements,
+    func: &Expr,
+    args: &[Expr],
+    kwargs: &[(std::rc::Rc<str>, Expr)],
+    star: &[usize],
+    dstar: &[Expr],
+) {
+    let Some(name) = hash_ctor(func, req) else { return };
+    let detail = if let Some((k, _)) = kwargs.first() {
+        format!("hashlib.{name}({k}=…)")
+    } else if !dstar.is_empty() {
+        format!("hashlib.{name}(**…), whose keywords a walk cannot read")
+    } else if !star.is_empty() {
+        format!("hashlib.{name}(*…), whose arguments a walk cannot count")
+    } else if args.len() > 1 {
+        format!("hashlib.{name}() with extra positional arguments")
+    } else {
+        return;
+    };
+    req.stop_spectrum("hashlib", detail);
 }
 
 /// The call's arguments with every `*`/`**` spliced in, as
@@ -2113,8 +2240,17 @@ fn glob_bless(
 /// `os.makedirs()` would have been. Only for a source that mentions the module,
 /// so every other program pays one substring search.
 #[cfg(feature = "cap-glob")]
-pub fn glob_static_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
-    if !src.contains("glob") {
+/// Every static refusal the walk can raise that NO rung of the spectrum
+/// answers, asked again for a run that was never routed (`<bin> -c PROG`).
+///
+/// This is the mitigation for issue #51 and for issue #48 together. The core
+/// routes `import hashlib` and `import glob` INTO `lypning-l`, which then
+/// invokes the program as `-c` and never walks it — so a refusal only the walk
+/// could see would land at RUNTIME, and a runtime refusal after `os.mkdir` has
+/// committed the barrier is exit 1 with the output discarded and no answer.
+/// Asked here, before `Interp::new()`, it is exit 90 with an untouched disk.
+pub fn static_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
+    if !src.contains("glob") && !src.contains("hashlib") {
         return Ok(());
     }
     let mut req = Requirements {
@@ -2122,7 +2258,7 @@ pub fn glob_static_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
         ..Requirements::default()
     };
     walk_block(body, &mut req);
-    match req.glob_stop {
+    match req.spectrum_stop {
         Some((k, d)) => Err(crate::err::unsupported(&k, &d)),
         None => Ok(()),
     }
@@ -2315,6 +2451,28 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
                 req.block_glob_order();
                 return;
             }
+            // `hashlib.<n>` outside `hashlib::SERVED`. The CORE already
+            // routes this correctly out of [`MODULE_ATTRS`] — `escalate`
+            // replaces the import blocker and `answers` refuses every
+            // `module-attr` — so the ROUTE needs nothing here. What needs it is
+            // the RUN: `lypning-l` is entered as `<bin> -c`, walks nothing, and
+            // would meet `hashlib.new` at runtime, which after a committed side
+            // effect is exit 1 with the output discarded (issue #51). Recorded
+            // in the stop slot, [`static_check`] raises it before
+            // `Interp::new()` and the disk is untouched.
+            //
+            // Under the capability's feature and not in the core, which is
+            // frozen and already has the answer it needs; and NOT as a generic
+            // rule over every [`MODULE_ATTRS`] module, which was tried and
+            // measured: it made `lypning-l` refuse two corpus csv programs
+            // (py-a17ba3c48307, py-a28bd1e6292d) that name `csv.__file__` in a
+            // branch they never reach, where the core RAN them and matched —
+            // a monotone violation, which invariant 10 does not allow.
+            #[cfg(feature = "cap-hashlib")]
+            if hash_module(b, req) && !crate::hashlib::SERVED.contains(&n.as_ref()) {
+                req.stop_spectrum("module-attr", format!("hashlib.{n}"));
+                return;
+            }
             // Every OTHER `glob.<n>`, decided from [`GLOB_SERVED`]: `escape`
             // and `has_magic` are served in any position and stop the walk
             // here, and the rest are a `module-attr` refusal that no rung of
@@ -2324,7 +2482,7 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             // one statement into a program that had already made a directory.
             if glob_module(b, req) {
                 if !GLOB_SERVED.contains(&n.as_ref()) {
-                    req.stop_glob("module-attr", format!("glob.{n}"));
+                    req.stop_spectrum("module-attr", format!("glob.{n}"));
                 }
                 return;
             }
@@ -2356,7 +2514,11 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
                     return;
                 }
             }
-            if !known_method(n) && !pathlib_method(req, n) && !re_method(req, n) {
+            if !known_method(n)
+                && !pathlib_method(req, n)
+                && !re_method(req, n)
+                && !hash_method(req, n)
+            {
                 req.block("method", format!(".{n}()"));
             }
         }
@@ -2372,6 +2534,15 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             // under the pattern it cannot compile — the row `--plan` ranks.
             #[cfg(feature = "cap-re")]
             re_pattern_block(req, func, args, kwargs);
+            // Under the capability's own feature, like `re_pattern_block` and
+            // unlike `glob_call_block`: the CORE cannot resolve a hashlib
+            // constructor (it has no `hashlib` row in `modules::MODULES`), and
+            // the shape this catches — a keyword on a constructor — is one the
+            // corpus never types, so paying for it in the frozen core's walk
+            // would buy nothing. `static_check` is what makes it fire before
+            // the barrier on the `-c` path the core routes into.
+            #[cfg(feature = "cap-hashlib")]
+            hash_call_block(req, func, args, kwargs, star, dstar);
             // Is THIS a glob call, and did its parent bless it? A blessed call
             // is served and its callee is not walked; an unblessed one is the
             // blocker, whatever it was going to be handed to. `escape` and

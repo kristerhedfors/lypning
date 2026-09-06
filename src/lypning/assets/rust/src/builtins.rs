@@ -1329,6 +1329,13 @@ pub fn call_builtin(
         }
         "iter" => {
             let v = arg1(name, &args)?;
+            // Before the `IterObj` shortcut below: a hash object wears that
+            // shape and is not iterable, so handing it back would answer where
+            // CPython raises.
+            #[cfg(feature = "cap-hashlib")]
+            if crate::hashlib::as_hasher(&v).is_some() {
+                return Err(crate::hashlib::not_iterable());
+            }
             if let Value::IterObj(..) = v {
                 return Ok(v);
             }

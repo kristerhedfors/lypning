@@ -42,6 +42,10 @@ pub mod err;
 pub mod eval;
 pub mod fmt;
 pub mod hash;
+/// `hashlib.md5` / `sha1` / `sha256` / `sha512` — the `cap-hashlib` capability.
+/// Absent from the smaller variant entirely, not merely unreachable in it.
+#[cfg(feature = "cap-hashlib")]
+pub mod hashlib;
 pub mod host;
 pub mod io;
 pub mod iter;

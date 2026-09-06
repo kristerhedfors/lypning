@@ -440,6 +440,12 @@ pub fn call_method(
         }
         return call_method(it, &real, name, args, kw);
     }
+    // A hash object, whose receiver is a `Value::IterObj` — matched before the
+    // table below, which has no arm for one.
+    #[cfg(feature = "cap-hashlib")]
+    if let Some(cell) = crate::hashlib::as_hasher(recv) {
+        return crate::hashlib::method(&cell, name, args, &kw);
+    }
     match recv {
         Value::Str(s) => str_method(it, s, name, args, kw),
         Value::List(l) => list_method(it, l, name, args, kw),
