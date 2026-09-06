@@ -538,7 +538,10 @@ def test_the_rust_dispatcher_writes_on_a_clean_route_then_a_runtime_refusal(spec
     VALUE. Only the binary can produce that.
     """
     proc = _rust(spectrum / CORE, BIGINT)
-    assert proc.returncode == 0 and proc.stdout.strip() == str(2 ** 100)
+    # `2 ** 100 / 2` and not `2 ** 100`: cap-bigint (#55) made the bare power an
+    # ANSWER on both variants, so the old fixture stopped exercising a refusal at
+    # all. True division past 2**53 is still value-dependent and still refuses.
+    assert proc.returncode == 0 and proc.stdout.strip() == str(2 ** 100 / 2)
     # The refusal is an internal routing signal under `run`, never a line the
     # caller sees — the same contract the Python dispatcher keeps.
     assert "unsupported" not in proc.stderr
