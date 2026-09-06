@@ -2518,8 +2518,8 @@ examples:
 `lypning route` is exact about everything it can see, and it cannot see VALUE:
 print(2**10) and print(2**100) are the same program to a static walker, and one
 of them exits 90 with `bigint`. This is the ledger of those runtime refusals —
-written by `lypning run`'s Python dispatcher when a CLEAN route was followed by
-a refusal from the tier it named, and by nothing else.
+written when a CLEAN route was followed by a refusal from the tier it named, and
+on no other condition.
 
 It is WRITE-ONLY with respect to routing: nothing here is consulted while
 routing, ever. A machine-local file that could move a route would make
@@ -2531,11 +2531,13 @@ worth reading. Kinds in engines.ONLY_CPYTHON_REFUSALS are marked NOT
 IMPLEMENTABLE and `--plan` drops them: they exist because a reimplementation
 gets them wrong.
 
-The Rust binary's OWN dispatcher — what an installed chain actually execs —
-writes nothing here; only the Python `lypning run` above does. So every count is
-a floor, never a total. LYPNING_ROUTES=0 turns the writer off, and so does
-LYPNING_CAPTURE=0: this is a recording feed and the documented capture opt-out
-covers it.
+BOTH dispatchers write it: the Python `lypning run` above, and the Rust
+binary's own — what an installed chain actually execs, and what a session takes.
+Every count is still a floor rather than a total: a tier invoked directly
+(`lypning -c PROG`) was never routed, so a refusal from it predicts nothing, and
+the C ABI has no dispatcher at all. LYPNING_ROUTES=0 turns the writer off, and
+so does LYPNING_CAPTURE=0: this is a recording feed and the documented capture
+opt-out covers it — both halves of it.
 """, """
 examples:
   lypning routes                 what has been learned, by refusal kind
