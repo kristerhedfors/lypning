@@ -65,7 +65,18 @@
 //! **`glob.escape` and `glob.has_magic` are pure string algebra** and are
 //! answered exactly, in any position. `glob.translate`, `glob.glob0` and
 //! `glob.glob1` are not served: they refuse through `module-attr`, which the
-//! router also sees statically.
+//! router sees statically off `route::GLOB_SERVED`.
+//!
+//! **Every refusal reachable from an ADMITTED call is static where a walk can
+//! see it**, and for the same reason the position rule is: a blessed call has
+//! already started the program, so a refusal it reaches lands after the commit
+//! barrier and is exit 1 with the side effect on disk and no answer. So the
+//! keyword names, the argument count, the pattern's type and — through
+//! [`route::glob_pattern_block`] — the pattern itself are all decided in the
+//! walk when they are literal in the source. What is left at runtime is what no
+//! walk could hoist: a pattern built at runtime, a call spelled `f(*a, **k)`, a
+//! directory entry whose name is not valid UTF-8, and a `**` walk deeper than
+//! this engine follows. `route::glob_call_block` has the list.
 //!
 //! **The barrier is not invisible to a listing, so the listing merges it.**
 //! `io.rs` stages every write until the run ends, which is what lets a refusal
@@ -110,9 +121,11 @@ use crate::modules::normpath;
 use crate::value::{list, truthy, Value};
 use std::rc::Rc;
 
-/// The names this module serves. Everything else under `glob` is a
-/// `module-attr` refusal, which the router sees statically.
-const SERVED: &[&str] = &["escape", "glob", "has_magic", "iglob"];
+/// The names this module serves — `route::GLOB_SERVED` itself, not a copy of
+/// it. The router has to answer the same question BEFORE this file is reached
+/// (the core has no `glob` row in `modules::MODULES`, so `resolve_module`
+/// cannot), and two tables that must agree are one table.
+use crate::route::GLOB_SERVED as SERVED;
 
 pub fn refuse(what: &str) -> LypningError {
     unsupported("glob", what)
@@ -169,6 +182,16 @@ pub fn call(it: &mut Interp, name: &str, args: &mut Args, kw: &[(Rc<str>, Value)
             Ok(Value::Bool(has_magic(&pat)))
         }
         _ => {
+            // Every refusal the PATTERN can raise on its own, asked once and
+            // before a single directory is read — by the same function
+            // `route.rs` runs over a pattern literal in the walk. Asking it
+            // here rather than inside the matcher is what makes the answer
+            // depend on the pattern instead of on what happened to be on disk:
+            // a reversed range only reached `class_holds` when some candidate
+            // name got far enough into the pattern to test it.
+            if let Some(why) = crate::route::glob_pattern_block(&pat) {
+                return Err(refuse(why));
+            }
             let mut recursive = false;
             for (k, v) in kw {
                 match k.as_ref() {
@@ -436,7 +459,7 @@ fn glob1(out: &mut Vec<String>, dirname: &str, pattern: &str, dironly: bool) -> 
         if !show_hidden && hidden(&n) {
             continue;
         }
-        if fnmatch(&n, pattern)? {
+        if fnmatch(&n, pattern) {
             out.push(n);
         }
     }
@@ -507,7 +530,7 @@ fn rlistdir(
 /// `os.path.normcase` is the identity on POSIX, so there is no case folding.
 /// `fnmatch.translate` anchors both ends and compiles with `(?s:…)`, so this is
 /// a whole-name match and a newline in a name is an ordinary character.
-fn fnmatch(name: &str, pattern: &str) -> R<bool> {
+fn fnmatch(name: &str, pattern: &str) -> bool {
     let n: Vec<char> = name.chars().collect();
     let p: Vec<char> = pattern.chars().collect();
     let (mut i, mut j) = (0usize, 0usize);
@@ -527,9 +550,9 @@ fn fnmatch(name: &str, pattern: &str) -> R<bool> {
                     j += 1;
                     continue;
                 }
-                '[' => match class(&p, j)? {
+                '[' => match crate::route::glob_class(&p, j) {
                     Some((body, next)) => {
-                        if class_holds(body, n[i])? {
+                        if class_holds(body, n[i]) {
                             i += 1;
                             j = next;
                             continue;
@@ -547,7 +570,7 @@ fn fnmatch(name: &str, pattern: &str) -> R<bool> {
             continue;
         }
         if star == usize::MAX {
-            return Ok(false);
+            return false;
         }
         mark += 1;
         i = mark;
@@ -556,36 +579,20 @@ fn fnmatch(name: &str, pattern: &str) -> R<bool> {
     while j < p.len() && p[j] == '*' {
         j += 1;
     }
-    Ok(j == p.len())
+    j == p.len()
 }
 
-/// The bracket expression starting at `p[at]`, as `(body, index after ']')`, or
-/// `None` when there is no closing `]` at all. The scan is CPython's: a `!` and
-/// then a `]` immediately after the `[` are both part of the body, so `[]]`
-/// matches a `]` and `[!]]` matches anything else.
-#[allow(clippy::type_complexity)]
-fn class(p: &[char], at: usize) -> R<Option<(&[char], usize)>> {
-    let mut k = at + 1;
-    if k < p.len() && p[k] == '!' {
-        k += 1;
-    }
-    if k < p.len() && p[k] == ']' {
-        k += 1;
-    }
-    while k < p.len() && p[k] != ']' {
-        k += 1;
-    }
-    if k >= p.len() {
-        return Ok(None);
-    }
-    Ok(Some((&p[at + 1..k], k + 1)))
-}
-
-/// Does this bracket expression hold `c`? A range whose ends are reversed —
-/// `[z-a]` — is where CPython's translation stops being a plain character class
-/// and starts merging chunks, so it refuses rather than guess which of the two
-/// readings the regex ended up with.
-fn class_holds(body: &[char], c: char) -> R<bool> {
+/// Does this bracket expression hold `c`?
+///
+/// A range whose ends are reversed — `[z-a]` — is where CPython's translation
+/// stops being a plain character class and starts merging chunks, and this
+/// engine refuses rather than guess which of the two readings the regex ended
+/// up with. It does not refuse HERE: `route::glob_pattern_block`, which `call`
+/// above runs over every pattern before the first directory is read, has
+/// already turned that pattern away. So the stride below skips a reversed
+/// triple the same way and never has to decide anything — one rule, in one
+/// place, asked by the walker and by the run.
+fn class_holds(body: &[char], c: char) -> bool {
     let (neg, body) = match body.first() {
         Some('!') => (true, &body[1..]),
         _ => (false, body),
@@ -594,11 +601,7 @@ fn class_holds(body: &[char], c: char) -> R<bool> {
     let mut k = 0;
     while k < body.len() {
         if k + 2 < body.len() && body[k + 1] == '-' {
-            let (lo, hi) = (body[k], body[k + 2]);
-            if lo > hi {
-                return Err(refuse("a [z-a] range in a pattern (CPython rewrites it)"));
-            }
-            hit |= lo <= c && c <= hi;
+            hit |= body[k] <= c && c <= body[k + 2];
             k += 3;
         } else {
             hit |= body[k] == c;
@@ -606,5 +609,5 @@ fn class_holds(body: &[char], c: char) -> R<bool> {
         }
     }
     // `[!]` with nothing left is CPython's "negated empty range": any char.
-    Ok(hit != neg)
+    hit != neg
 }

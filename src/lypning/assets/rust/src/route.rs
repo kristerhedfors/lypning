@@ -325,32 +325,33 @@ pub fn chain_after(after: &str, kind: &str, verdicts: &[Verdict]) -> Vec<&'stati
     out
 }
 
-/// `order` is the `glob-order` detail, when the walk found one — a blocker
-/// that is NOT the one the blocker slot reports.
+/// `stop` is the glob refusal every rung shares, when the walk found one — a
+/// blocker that is NOT the one the blocker slot reports.
 ///
 /// The two are different questions and this is the only place they meet.
 /// `Route::kind` is what stopped THIS binary and is first-wins, because that is
-/// the row `--plan` ranks; `glob-order` is what stops EVERY binary, and in the
-/// core it is never first — `import glob` is, and `lypning-l` answers that one.
+/// the row `--plan` ranks; the stop is what stops EVERY binary, and in the core
+/// it is never first — `import glob` is, and `lypning-l` answers that one.
 /// Reporting only the blocker sent every such program to `lypning-l` for a
 /// refusal (`docs/HILLCLIMB.md`, the `cap-glob` review). So the blocker slot is
-/// left exactly as the walk filled it and the VERDICTS are overwritten: no rung
-/// of the spectrum can reproduce `os.scandir` order, which is why the kind is in
-/// [`ONLY_CPYTHON_KINDS`], and a verdict vector that says so routes to CPython
-/// through [`engine_from_verdicts`] and shortens the chain through
-/// [`chain_after`] with no special case in either.
+/// left exactly as the walk filled it and the VERDICTS are overwritten: what
+/// the stop names is a refusal no rung of the spectrum answers — `os.scandir`
+/// order, a keyword only CPython serves, an attribute nothing here has — and a
+/// verdict vector that says so routes to CPython through
+/// [`engine_from_verdicts`] and shortens the chain through [`chain_after`]
+/// with no special case in either.
 fn finish_route(
     kind: String,
     detail: String,
     imports: Vec<String>,
     reads_stdin: bool,
-    order: Option<String>,
+    stop: Option<(String, String)>,
 ) -> Route {
     let mut verdicts = verdicts(&kind, &detail, &imports);
-    if let Some(d) = order {
+    if let Some((k, d)) = stop {
         for v in verdicts.iter_mut().skip(self_index()) {
             if v.engine != CPYTHON_NAME {
-                *v = Verdict::no(v.engine, "glob-order", &d);
+                *v = Verdict::no(v.engine, &k, &d);
             }
         }
     }
@@ -796,11 +797,11 @@ pub fn route(src: &str) -> Route {
             walk_block(&body, &mut req);
             imports = req.imports.iter().cloned().collect();
             let reads_stdin = reads_stdin || req.reads_stdin;
-            let order = req.glob_order.take();
+            let stop = req.glob_stop.take();
             match req.blocker {
-                None => finish_route(String::new(), String::new(), imports, reads_stdin, order),
+                None => finish_route(String::new(), String::new(), imports, reads_stdin, stop),
                 Some((kind, detail)) => {
-                    finish_route(kind, detail, imports, reads_stdin, order)
+                    finish_route(kind, detail, imports, reads_stdin, stop)
                 }
             }
         }
@@ -873,14 +874,19 @@ fn cpython_only(kind: &str) -> bool {
     ONLY_CPYTHON_KINDS.contains(&kind) || CPYTHON_ONLY_KINDS.contains(&kind)
 }
 
-/// A pattern a walk could read: the text of a `str` literal, or the fact that
-/// it was a `bytes` one — which is all the walk needs, since a bytes pattern
-/// refuses whatever its content.
-#[cfg(feature = "cap-re")]
+/// A pattern a walk could read: the text of a `str` literal, the fact that it
+/// was a `bytes` one — which is all `re` needs, since a bytes pattern refuses
+/// whatever its content — or the TYPE of any other literal, which is what
+/// `glob` needs, because its refusal names the type it was handed.
+///
+/// Read by TWO capabilities now, which is why it is no longer behind
+/// `cap-re`: `re.sub(P, …)` and `glob.glob(P)` ask the same question of the
+/// same binding, and `glob`'s half has to be answered in the CORE.
 #[derive(Clone)]
 enum PatLit {
     Str(std::rc::Rc<str>),
     Bytes,
+    Other(&'static str),
 }
 
 #[derive(Default)]
@@ -900,14 +906,14 @@ struct Requirements {
     #[cfg(feature = "cap-re")]
     re_names: Vec<(String, String)>,
     /// `P = r'…'` — a pattern LITERAL bound to a name, so that `re.sub(P, …)`
-    /// is decided by the same walk that decides `re.sub(r'…', …)`. `None` is a
-    /// name a walk cannot read a literal out of (a loop variable, a
-    /// parameter, anything computed), and it is the value that MATTERS: a name
-    /// this table does not resolve keeps the runtime refusal, which is the
-    /// backstop. Only filled once `re` is imported, so a program that never
-    /// touches the module pays one set lookup per binding and no allocation.
-    #[cfg(feature = "cap-re")]
-    re_pats: Vec<(String, Option<PatLit>)>,
+    /// and `glob.glob(P)` are decided by the same walk that decides
+    /// `re.sub(r'…', …)` and `glob.glob('…')`. `None` is a name a walk cannot
+    /// read a literal out of (a loop variable, a parameter, anything
+    /// computed), and it is the value that MATTERS: a name this table does not
+    /// resolve keeps the runtime refusal, which is the backstop. Only filled
+    /// once `re` or `glob` is imported, so a program that never touches either
+    /// module pays one set lookup per binding and no allocation.
+    pats: Vec<(String, Option<PatLit>)>,
     /// `from glob import glob [as g]` — the bound name of a glob FUNCTION, so
     /// that a bare `g(...)` is seen as the call it is. Without it the order
     /// blocker below would miss the one spelling that hides the module name.
@@ -916,16 +922,24 @@ struct Requirements {
     /// borrows one live AST for its whole run, so no node is freed and no
     /// address is reused; nothing is dereferenced through these.
     glob_blessed: Vec<*const Expr>,
-    /// The glob order blocker, recorded even when an EARLIER blocker won the
-    /// `--plan` row. [`glob_order_check`] reads this one: a program whose first
-    /// blocker is something lypning-l runs anyway (the walker is deliberately
-    /// pessimistic about methods) must still not reach a glob call whose order
-    /// it could show.
+    /// The glob refusal that stops EVERY rung of the spectrum, as
+    /// `(kind, detail)`, recorded even when an EARLIER blocker won the `--plan`
+    /// row. [`glob_static_check`] reads this one: a program whose first blocker
+    /// is something lypning-l runs anyway (the walker is deliberately
+    /// pessimistic about methods) must still not reach a glob call it would
+    /// have refused halfway through.
     ///
     /// [`route`] reads it too, and has to: in the CORE the FIRST blocker is
     /// `module: import glob`, which `lypning-l` answers — so the blocker slot
-    /// alone would route a `glob-order` program to a sibling that refuses it.
-    glob_order: Option<String>,
+    /// alone would route such a program to a sibling that refuses it.
+    ///
+    /// It carries the KIND as well as the detail because it is no longer only
+    /// `glob-order`. Every static refusal an admitted glob call can raise goes
+    /// here — a keyword lypning-l does not serve, a pattern literal it cannot
+    /// match, an attribute it does not have — and each keeps the kind the
+    /// runtime would have raised, so a program is refused with the same line
+    /// one in-process run earlier.
+    glob_stop: Option<(String, String)>,
     /// Which order-blind wrappers are still the BUILTIN, one bit per index into
     /// [`ORDER_BLIND`]. `sorted` rebound to something that shows its argument's
     /// order would make the blessing below a lie — see [`trusted_wrappers`].
@@ -944,15 +958,27 @@ impl Requirements {
         }
     }
 
-    /// The order blocker, for the router AND for the run. `block` is first-wins
-    /// because `--plan` ranks what a program hit FIRST; this slot is not,
-    /// because the run has to refuse whether or not something else was hit
-    /// earlier.
-    fn block_glob_order(&mut self) {
-        self.block("glob-order", GLOB_ORDER.to_string());
-        if self.glob_order.is_none() {
-            self.glob_order = Some(GLOB_ORDER.to_string());
+    /// A glob refusal the whole spectrum shares, for the router AND for the
+    /// run. `block` is first-wins because `--plan` ranks what a program hit
+    /// FIRST; this slot is separate because the run has to refuse whether or
+    /// not something else was hit earlier.
+    fn stop_glob(&mut self, kind: &str, detail: String) {
+        self.block(kind, detail.clone());
+        self.stop_only(kind, detail);
+    }
+
+    /// The stop without the blocker, for the two places that have ALREADY
+    /// blocked correctly on both variants — the `from glob import …` arm,
+    /// where the core blocks `module` and lypning-l blocks `module-attr` and
+    /// neither should be displaced from the `--plan` row this walk reports.
+    fn stop_only(&mut self, kind: &str, detail: String) {
+        if self.glob_stop.is_none() {
+            self.glob_stop = Some((kind.to_string(), detail));
         }
+    }
+
+    fn block_glob_order(&mut self) {
+        self.stop_glob("glob-order", GLOB_ORDER.to_string());
     }
 
     /// Record what `name` now holds: a pattern literal, or `None` for a
@@ -961,20 +987,18 @@ impl Requirements {
     /// rebinding before the call replaces the literal rather than stacking on
     /// it. A name bound only AFTER its use is never resolved, which is the
     /// safe direction: the runtime refusal still catches it.
-    #[cfg(feature = "cap-re")]
     fn bind_pattern(&mut self, name: &str, lit: Option<PatLit>) {
-        if !self.imports.contains("re") {
+        if !self.imports.contains("re") && !self.imports.contains("glob") {
             return;
         }
-        match self.re_pats.iter_mut().find(|(n, _)| n == name) {
+        match self.pats.iter_mut().find(|(n, _)| n == name) {
             Some(slot) => slot.1 = lit,
-            None => self.re_pats.push((name.to_string(), lit)),
+            None => self.pats.push((name.to_string(), lit)),
         }
     }
 
-    #[cfg(feature = "cap-re")]
     fn pattern_named(&self, name: &str) -> Option<PatLit> {
-        self.re_pats
+        self.pats
             .iter()
             .find(|(n, _)| n == name)
             .and_then(|(_, v)| v.clone())
@@ -984,14 +1008,11 @@ impl Requirements {
     /// CALL time, so it is not the module-level literal that shares its
     /// spelling. Blocking on that literal would send a program this engine
     /// runs to CPython — the direction `resolve_module` was written to stop.
-    #[cfg(feature = "cap-re")]
     fn shadow_params(&mut self, params: &crate::ast::Params) {
         for n in &params.names {
             self.bind_pattern(n, None);
         }
     }
-    #[cfg(not(feature = "cap-re"))]
-    fn shadow_params(&mut self, _params: &crate::ast::Params) {}
 }
 
 fn walk_block(body: &[Stmt], req: &mut Requirements) {
@@ -1042,8 +1063,17 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                 }
                 "glob" => {
                     for (n, bind) in names {
-                        if matches!(n.as_ref(), "glob" | "iglob") {
+                        // EVERY served name, not just the two the order rule
+                        // cares about: `from glob import escape` binds a call
+                        // whose arguments this walk still has to decide.
+                        if GLOB_SERVED.contains(&n.as_ref()) {
                             req.glob_names.push((bind.to_string(), n.to_string()));
+                        } else {
+                            // `stop_only`, because the arm below already blocks
+                            // this correctly on both variants — `module` in the
+                            // core, `module-attr` on lypning-l — and neither
+                            // should be displaced from the `--plan` row.
+                            req.stop_only("module-attr", format!("glob.{n}"));
                         }
                     }
                 }
@@ -1071,9 +1101,8 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
             for t in targets {
                 walk_target(t, req);
             }
-            // After `walk_target`, which cleared every name it bound: a string
-            // literal is the one value a walk can read back, so it is put back.
-            #[cfg(feature = "cap-re")]
+            // After `walk_target`, which cleared every name it bound: a
+            // LITERAL is the one value a walk can read back, so it is put back.
             if let Some(lit) = pattern_literal(value) {
                 for t in targets {
                     if let Target::Name(n) = t {
@@ -1195,13 +1224,10 @@ fn walk_target(t: &Target, req: &mut Requirements) {
         }
         // A name this binds no longer holds whatever literal it held: a `for`
         // target, an augmented assignment, a `with … as`, a `del`, a
-        // comprehension's variable and an assignment of anything but a string
-        // all arrive here, and all of them make the name unreadable to a walk.
-        // `Stmt::Assign` puts a string literal back afterwards.
-        Target::Name(_n) => {
-            #[cfg(feature = "cap-re")]
-            req.bind_pattern(_n, None);
-        }
+        // comprehension's variable and an assignment of anything computed all
+        // arrive here, and all of them make the name unreadable to a walk.
+        // `Stmt::Assign` puts a literal back afterwards.
+        Target::Name(n) => req.bind_pattern(n, None),
     }
 }
 
@@ -1329,13 +1355,34 @@ fn re_call_of<'a>(
         .or_else(|| kwargs.iter().find(|(k, _)| k.as_ref() == "pattern").map(|(_, v)| v))
 }
 
-#[cfg(feature = "cap-re")]
 fn pattern_literal(e: &Expr) -> Option<PatLit> {
     match e {
         Expr::Str(s) => Some(PatLit::Str(s.clone())),
         Expr::Bytes(_) => Some(PatLit::Bytes),
-        _ => None,
+        e => literal_type(e).map(PatLit::Other),
     }
+}
+
+/// The TYPE of a literal expression, spelled the way `value::type_name` spells
+/// it — which is the way the refusal that names it spells it too.
+///
+/// An f-string IS a `str` and its text is not a walk's to read, so it answers
+/// the type and no value. Everything that is not a literal answers `None` and
+/// keeps the runtime refusal.
+fn literal_type(e: &Expr) -> Option<&'static str> {
+    Some(match e {
+        Expr::Str(_) | Expr::FString(_) => "str",
+        Expr::Bytes(_) => "bytes",
+        Expr::Int(_) => "int",
+        Expr::Float(_) => "float",
+        Expr::True | Expr::False => "bool",
+        Expr::None => "NoneType",
+        Expr::List(_) => "list",
+        Expr::Tuple(_) => "tuple",
+        Expr::Set(_) => "set",
+        Expr::Dict(_) | Expr::DictUnpack(_) => "dict",
+        _ => return None,
+    })
 }
 
 /// A pattern literal this engine cannot compile, as a STATIC block.
@@ -1391,7 +1438,10 @@ fn re_pattern_block(
         Some(PatLit::Bytes) => {
             req.block("re", "bytes pattern or subject (re over bytes)".to_string())
         }
-        None => {}
+        // A literal of any other type is `glob`'s half of this table and not
+        // `re`'s: what `re.compile(5)` raises is a `TypeError` whose wording is
+        // CPython's, so the runtime refusal is the one that must fire.
+        Some(PatLit::Other(_)) | None => {}
     }
 }
 
@@ -1470,41 +1520,252 @@ const GLOB_ORDER: &str = "glob() order is filesystem-defined and not \
      any(), all(), sum() or the right of `in` — and iglob() answers a \
      generator, which len() and bool() do not read as a list";
 
-/// Is this call a glob FUNCTION — and is it `iglob`?
+/// The `glob` attributes lypning-l serves, and therefore the only ones ANY rung
+/// of the spectrum answers. Every other name — `translate`, `glob0`, `glob1`,
+/// `_ishidden` — is a `module-attr` refusal.
+///
+/// **The table is here and not in `modules.rs`, and that is the whole point.**
+/// `modules::MODULES` is per-variant and has no `glob` row in the CORE, so
+/// [`resolve_module`] answers `None` for `glob.` in the one binary
+/// `engines.route()` asks. A program that reached `glob.translate` was
+/// therefore routed to `lypning-l` on the strength of `module: import glob`,
+/// ran until the attribute was touched, and refused THERE — after `os.mkdir`
+/// had committed the write barrier, which is exit 1 with the directory left
+/// behind and no answer, where the core without `cap-glob` refused cleanly at
+/// 90 and the chain got the answer from CPython. A router can only read a
+/// routing table, so the attribute surface is one; `glob::SERVED` is this list
+/// and not a second copy of it.
+pub const GLOB_SERVED: &[&str] = &["escape", "glob", "has_magic", "iglob"];
+
+/// The keyword arguments each served name takes. `glob`/`iglob` take
+/// `recursive=` and nothing else — `root_dir=`, `dir_fd=` and `include_hidden=`
+/// are CPython's and refuse (`glob.rs`) — and `escape`/`has_magic` take none.
+fn glob_kw_served(name: &str, k: &str) -> bool {
+    matches!(name, "glob" | "iglob") && k == "recursive"
+}
+
+/// Does this expression name the `glob` MODULE — through an alias, and only in
+/// a program that imported it?
+///
+/// Textual, and deliberately NOT through [`resolve_module`]: that resolves
+/// against `modules::MODULES`, which has no `glob` row in the core, so the core
+/// would miss exactly the spelling it is being asked to route.
+fn glob_module(b: &Expr, req: &Requirements) -> bool {
+    if !req.imports.contains("glob") {
+        return false;
+    }
+    let Expr::Name(base) = b else { return false };
+    let m = req
+        .aliases
+        .iter()
+        .find(|(a, _)| a == base.as_ref())
+        .map(|(_, p)| p.as_str())
+        .unwrap_or(base.as_ref());
+    m == "glob"
+}
+
+/// Which glob FUNCTION this callee names, if any — one of [`GLOB_SERVED`].
 ///
 /// `glob.glob(...)`, `x.iglob(...)` after `import glob as x`, and a bare
-/// `g(...)` bound by `from glob import glob as g`. Only for a program that
+/// `g(...)` bound by `from glob import escape as g`. Only for a program that
 /// imports `glob`: the import is what makes the name mean the module, exactly
 /// as for [`pathlib_method`].
-///
-/// The alias walk is textual and does NOT go through `modules::MODULES`, which
-/// is per-variant: the core has no `glob` row there, and a check that needed one
-/// would have made this rule inert in the one binary that routes.
-fn glob_call(func: &Expr, req: &Requirements) -> Option<bool> {
-    if !req.imports.contains("glob") {
-        return None;
-    }
-    match func {
-        Expr::Attr(b, n) => {
-            let Expr::Name(base) = &**b else { return None };
-            let m = req
-                .aliases
-                .iter()
-                .find(|(a, _)| a == base.as_ref())
-                .map(|(_, p)| p.as_str())
-                .unwrap_or(base.as_ref());
-            match (m, n.as_ref()) {
-                ("glob", "glob") => Some(false),
-                ("glob", "iglob") => Some(true),
-                _ => None,
-            }
-        }
+fn glob_func(func: &Expr, req: &Requirements) -> Option<&'static str> {
+    let n: &str = match func {
+        Expr::Attr(b, n) if glob_module(b, req) => n.as_ref(),
         Expr::Name(n) => req
             .glob_names
             .iter()
             .find(|(bound, _)| bound == n.as_ref())
-            .map(|(_, f)| f == "iglob"),
+            .map(|(_, f)| f.as_str())?,
+        _ => return None,
+    };
+    GLOB_SERVED.iter().copied().find(|x| *x == n)
+}
+
+/// Is this call one of the two names that answer a LISTING — and is it `iglob`?
+/// The order rule is about those two and no others: `escape` and `has_magic`
+/// are pure string algebra and carry no order to show.
+fn glob_call(func: &Expr, req: &Requirements) -> Option<bool> {
+    match glob_func(func, req)? {
+        "glob" => Some(false),
+        "iglob" => Some(true),
         _ => None,
+    }
+}
+
+/// The bracket expression starting at `p[at]`, as `(body, index after ']')`, or
+/// `None` when there is no closing `]` at all — in which case the `[` is a
+/// literal. The scan is CPython's: a `!` and then a `]` immediately after the
+/// `[` are both part of the body, so `[]]` matches a `]` and `[!]]` matches
+/// anything else.
+///
+/// In `route.rs` rather than `glob.rs` for the reason [`GLOB_SERVED`] is: the
+/// WALKER runs it, and every variant carries the walker including the one with
+/// no glob implementation behind it. `glob::fnmatch` calls this one.
+pub fn glob_class(p: &[char], at: usize) -> Option<(&[char], usize)> {
+    let mut k = at + 1;
+    if k < p.len() && p[k] == '!' {
+        k += 1;
+    }
+    if k < p.len() && p[k] == ']' {
+        k += 1;
+    }
+    while k < p.len() && p[k] != ']' {
+        k += 1;
+    }
+    if k >= p.len() {
+        return None;
+    }
+    Some((&p[at + 1..k], k + 1))
+}
+
+const GLOB_RANGE: &str = "a [z-a] range in a pattern (CPython rewrites it)";
+
+/// Every refusal a glob PATTERN can raise on its own, decided from the pattern
+/// alone — **the one place that question is asked.** The walker runs it over a
+/// literal it can read; `glob::call` runs it over the pattern it was handed,
+/// before the first directory is listed. So the two cannot disagree, and the
+/// runtime answer stopped depending on what happened to be on disk: a reversed
+/// range only ever reached the matcher when some candidate name got far enough
+/// into the pattern to test it, which made `glob.glob('[z-a]')` an answer in an
+/// empty directory and a refusal in a full one.
+///
+/// Split on `/` first, because that is what `iglob` does before anything is
+/// matched: a `[` in one component and a `]` in the next are two literals and
+/// not a class.
+pub fn glob_pattern_block(pat: &str) -> Option<&'static str> {
+    for comp in pat.split('/') {
+        let p: Vec<char> = comp.chars().collect();
+        let mut i = 0;
+        while i < p.len() {
+            if p[i] == '[' {
+                if let Some((body, next)) = glob_class(&p, i) {
+                    if glob_range_reversed(body) {
+                        return Some(GLOB_RANGE);
+                    }
+                    i = next;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+    }
+    None
+}
+
+/// Does this bracket body hold a REVERSED range — `[z-a]`, the shape where
+/// CPython stops emitting a character class and starts merging chunks?
+///
+/// The stride is the matcher's own in `glob::class_holds`, which no longer asks
+/// this question at all: [`glob_pattern_block`] has already refused every
+/// pattern that could have made it say yes, so there is one rule and not two.
+fn glob_range_reversed(body: &[char]) -> bool {
+    let body = match body.first() {
+        Some('!') => &body[1..],
+        _ => body,
+    };
+    let mut k = 0;
+    while k < body.len() {
+        if k + 2 < body.len() && body[k + 1] == '-' {
+            if body[k] > body[k + 2] {
+                return true;
+            }
+            k += 3;
+        } else {
+            k += 1;
+        }
+    }
+    false
+}
+
+/// As much of the pattern argument as a walk can honestly read: the TYPE of a
+/// literal — or of a literal bound to a name above the call — and its text when
+/// that type is `str`.
+///
+/// `None` is everything else: a pattern built at runtime, read from `argv`,
+/// returned by a call, or held by a name this walk cannot follow. Those keep
+/// the runtime refusal, and taking a static route on a guess would send a
+/// program this engine runs to CPython instead.
+fn glob_arg(e: &Expr, req: &Requirements) -> Option<(&'static str, Option<std::rc::Rc<str>>)> {
+    let lit = match e {
+        Expr::Name(n) => req.pattern_named(n)?,
+        e => pattern_literal(e)?,
+    };
+    Some(match lit {
+        PatLit::Str(s) => ("str", Some(s)),
+        PatLit::Bytes => ("bytes", None),
+        PatLit::Other(t) => (t, None),
+    })
+}
+
+/// Every refusal an ADMITTED glob call can raise that a walk can decide,
+/// hoisted out of the run and into the walk.
+///
+/// This is the class the position rule left open. `sorted(glob.glob(P, …))` is
+/// a blessed position, so the order rule serves it and the program STARTS — and
+/// then a refusal reached after `os.mkdir` has committed the write barrier is
+/// exit 1 with the directory on disk and no answer, which the chain never
+/// retries. `docs/HILLCLIMB.md` iteration 76 rejected the first `cap-glob`
+/// attempt for exactly that shape. A static blocker costs the program nothing:
+/// it was never started here.
+///
+/// The three that a walk can see are the three that are LITERAL in the source:
+///
+///   * the unsupported keyword arguments — `root_dir=`, `dir_fd=`,
+///     `include_hidden=` on `glob`/`iglob`, and any keyword at all on `escape`
+///     and `has_magic`. The NAME is what refuses, and a keyword's name is
+///     spelled at the call site.
+///   * the argument count, and the pattern's TYPE when it is a literal.
+///   * the pattern itself, when it is a `str` literal (or a name bound to one),
+///     through [`glob_pattern_block`] — the same scan `glob::call` runs.
+///
+/// The order the tests are made in is `glob::call`'s own, so a program is
+/// refused with the same line it would have been refused with a run later.
+///
+/// **What stays a runtime refusal, and why that is a much smaller surface.**
+/// A pattern whose value is computed keeps the type and range checks at
+/// runtime; so does a call spelled with `*args` or `**kwargs`, where the walk
+/// can neither count the positionals nor read the keyword names. Two more are
+/// the FILESYSTEM's and no walk could ever hoist them: a directory entry whose
+/// name is not valid UTF-8, and a `**` walk deeper than this engine follows.
+/// Each is now reachable only from a program whose pattern is dynamic or whose
+/// argument list is unpacked — a far narrower door than one a string literal
+/// could walk through.
+fn glob_call_block(
+    req: &mut Requirements,
+    func: &Expr,
+    args: &[Expr],
+    kwargs: &[(std::rc::Rc<str>, Expr)],
+    star: &[usize],
+    dstar: &[Expr],
+) {
+    let Some(name) = glob_func(func, req) else { return };
+    if !star.is_empty() || !dstar.is_empty() {
+        return;
+    }
+    let arg = args.first().and_then(|e| glob_arg(e, req));
+    let detail = match (args.len(), &arg) {
+        (0, _) => Some(format!("glob.{name}() with no pattern")),
+        (_, Some((t, _))) if *t != "str" => Some(format!(
+            "glob.{name}() over a pattern that is not a str (a {t})"
+        )),
+        (1, _) => None,
+        _ => Some(format!("glob.{name}() with extra positional arguments")),
+    };
+    let detail = detail
+        .or_else(|| match (name, arg.as_ref().and_then(|(_, s)| s.as_ref())) {
+            ("glob" | "iglob", Some(s)) => glob_pattern_block(s).map(str::to_string),
+            _ => None,
+        })
+        .or_else(|| {
+            kwargs
+                .iter()
+                .find(|(k, _)| !glob_kw_served(name, k))
+                .map(|(k, _)| format!("glob.{name}({k}=…)"))
+        });
+    if let Some(d) = detail {
+        req.stop_glob("glob", d);
     }
 }
 
@@ -1559,14 +1820,15 @@ fn glob_bless(
     }
 }
 
-/// The order rule, asked of a program that is ABOUT TO RUN rather than of one
-/// being routed — and it is the same walk, so the two can never disagree.
+/// The static glob rules, asked of a program that is ABOUT TO RUN rather than
+/// of one being routed — and it is the same walk, so the two can never
+/// disagree.
 ///
 /// `route()` is consulted by `lypning run`; `<bin> -c PROG` is not routed at
 /// all, and that is how the chain reaches this binary once a smaller sibling
 /// has picked it (`docs/HILLCLIMB.md` iteration 76 filed the general case as
-/// #48). Without this the static blocker would be inert on exactly the path the
-/// dispatcher uses, and `lypning-l -c 'import glob; print(glob.glob("*"))'`
+/// #48). Without this the static blockers would be inert on exactly the path
+/// the dispatcher uses, and `lypning-l -c 'import glob; print(glob.glob("*"))'`
 /// would answer in the filesystem's order at exit 0.
 ///
 /// It runs BEFORE the first statement, so the refusal is exit 90 with an empty
@@ -1574,7 +1836,7 @@ fn glob_bless(
 /// `os.makedirs()` would have been. Only for a source that mentions the module,
 /// so every other program pays one substring search.
 #[cfg(feature = "cap-glob")]
-pub fn glob_order_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
+pub fn glob_static_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
     if !src.contains("glob") {
         return Ok(());
     }
@@ -1583,8 +1845,8 @@ pub fn glob_order_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
         ..Requirements::default()
     };
     walk_block(body, &mut req);
-    match req.glob_order {
-        Some(d) => Err(crate::err::unsupported("glob-order", &d)),
+    match req.glob_stop {
+        Some((k, d)) => Err(crate::err::unsupported(&k, &d)),
         None => Ok(()),
     }
 }
@@ -1716,8 +1978,14 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             // A name bound by `from glob import glob` that is NOT the callee of
             // a blessed call: the walk skips the callee of one it served, so
             // reaching here means the function is being passed, stored or
-            // called somewhere the order shows.
-            if req.glob_names.iter().any(|(b, _)| b == n.as_ref()) {
+            // called somewhere the order shows. `escape` and `has_magic` carry
+            // no order and are bound by the same arm, so the test is on the
+            // FUNCTION and not merely on the binding.
+            if req
+                .glob_names
+                .iter()
+                .any(|(b, f)| b == n.as_ref() && matches!(f.as_str(), "glob" | "iglob"))
+            {
                 req.block_glob_order();
                 return;
             }
@@ -1746,6 +2014,19 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             // spelling it is being asked to route.
             if glob_call(e, req).is_some() {
                 req.block_glob_order();
+                return;
+            }
+            // Every OTHER `glob.<n>`, decided from [`GLOB_SERVED`]: `escape`
+            // and `has_magic` are served in any position and stop the walk
+            // here, and the rest are a `module-attr` refusal that no rung of
+            // the spectrum answers. `resolve_module` below cannot decide it —
+            // it reads `modules::MODULES`, which has no `glob` row in the core
+            // — so `glob.translate` was routed to lypning-l and refused THERE,
+            // one statement into a program that had already made a directory.
+            if glob_module(b, req) {
+                if !GLOB_SERVED.contains(&n.as_ref()) {
+                    req.stop_glob("module-attr", format!("glob.{n}"));
+                }
                 return;
             }
             // Record any construct the oracle lypning-mp is known to answer
@@ -1783,17 +2064,25 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             re_pattern_block(req, func, args, kwargs);
             // Is THIS a glob call, and did its parent bless it? A blessed call
             // is served and its callee is not walked; an unblessed one is the
-            // blocker, whatever it was going to be handed to.
-            let served_glob = match glob_call(func, req) {
+            // blocker, whatever it was going to be handed to. `escape` and
+            // `has_magic` are served in EVERY position — they are string
+            // algebra over the pattern and never list a directory — so they
+            // stop the callee walk without asking the order question.
+            let served_glob = match glob_func(func, req) {
                 None => false,
-                Some(_) => {
-                    let blessed = req.glob_blessed.contains(&(e as *const Expr));
-                    if !blessed {
+                Some(f) => {
+                    if matches!(f, "glob" | "iglob")
+                        && !req.glob_blessed.contains(&(e as *const Expr))
+                    {
                         req.block_glob_order();
                     }
                     true
                 }
             };
+            // After the order rule, which is the more specific row for a call
+            // that is in the wrong position AND spelled wrongly, and before the
+            // arguments are walked.
+            glob_call_block(req, func, args, kwargs, star, dstar);
             // Before the arguments are walked, because the blessing has to be
             // in place by the time the walk reaches the call it blesses.
             glob_bless(req, func, args, kwargs, star, dstar);

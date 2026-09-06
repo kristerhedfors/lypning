@@ -57,6 +57,22 @@ written:
    `[` is a literal `[`. A REVERSED range is where CPython's translation stops
    being a character class and starts merging chunks, so `[z-a]` refuses.
 
+**The class the position rule left open, and the table that closes it.**
+A blessed call is SERVED, so the program starts — and a refusal it reaches
+afterwards lands past the commit barrier, which is exit 1 with the side effect
+on disk, no answer, and a chain that never retries. That is not a smaller
+version of a clean 90; it is the regression `docs/HILLCLIMB.md` iteration 76
+rejected the first `cap-glob` attempt for, and three separate triggers reached
+it through blessed positions: a `root_dir=` keyword, a `[z-a]` pattern literal,
+and `glob.translate`, which the core could not even grade because
+`modules::MODULES` has no `glob` row in it. So every refusal reachable from an
+admitted glob call is now decided in the WALK wherever the walk can see it, and
+`AFTER_A_BARRIER` is one row per refusal KIND, each run as
+``os.mkdir('NEWD'); <the call>`` and each asserted four ways: exit 90, one
+refusal line, an EMPTY stdout, and a cwd whose listing is unchanged — checked by
+a before/after snapshot rather than by reading the message, because the message
+is the half that was already right.
+
 **The commit barrier is merged into the listing.** `io.rs` stages writes until
 the run ends; `open()` and `os.path.exists()` are asked about one path and merge
 it, and a LISTING has to work out which staged spelling names an entry of which
@@ -333,6 +349,117 @@ REFUSED = [G + x for x in [
     "print(glob)",
 ]]
 
+#: Every refusal an ADMITTED glob call can raise, one row per shape, as
+#: ``(kind, the call)``. The kind is asserted too: a refusal moved from the run
+#: into the walk has to keep the line it would have printed a run later, or the
+#: agent reading it learns something different depending on which binary
+#: answered.
+#:
+#: The list is the whole of `glob.rs`'s error surface minus the four that no
+#: walk can hoist — see `RUNTIME_BACKSTOP` below.
+AFTER_A_BARRIER = [
+    # the keyword arguments: literal at the call site, whatever their value
+    ("glob", "print(sorted(glob.glob('*.py', root_dir='d')))"),
+    ("glob", "print(sorted(glob.glob('*.py', dir_fd=3)))"),
+    ("glob", "print(sorted(glob.glob('*', include_hidden=True)))"),
+    ("glob", "print(len(glob.glob('*.py', include_hidden=False)))"),
+    ("glob", "print(sorted(glob.glob('*.py', bogus=1)))"),
+    ("glob", "print(sorted(glob.iglob('*.py', root_dir='d')))"),
+    ("glob", "print(glob.escape('a', x=1))"),
+    ("glob", "print(glob.has_magic('a*', x=1))"),
+    # `recursive=` is served by glob/iglob and by neither of the other two
+    ("glob", "print(glob.escape('a', recursive=True))"),
+    # the argument count
+    ("glob", "print(sorted(glob.glob()))"),
+    ("glob", "print(sorted(glob.iglob()))"),
+    ("glob", "print(glob.escape())"),
+    ("glob", "print(glob.has_magic())"),
+    ("glob", "print(sorted(glob.glob('*.py', True)))"),
+    ("glob", "print(glob.escape('a', 'b'))"),
+    # the pattern's TYPE, for every literal a walk can name
+    ("glob", "print(sorted(glob.glob(b'*.py')))"),
+    ("glob", "print(sorted(glob.glob(1)))"),
+    ("glob", "print(sorted(glob.glob(1.5)))"),
+    ("glob", "print(sorted(glob.glob(None)))"),
+    ("glob", "print(sorted(glob.glob(True)))"),
+    ("glob", "print(sorted(glob.glob(['*.py'])))"),
+    ("glob", "print(sorted(glob.glob(('*.py',))))"),
+    ("glob", "print(sorted(glob.glob({'*.py'})))"),
+    ("glob", "print(sorted(glob.glob({'a': 1})))"),
+    ("glob", "print(glob.escape(1))"),
+    ("glob", "print(glob.has_magic(b'a'))"),
+    # …and a literal bound to a NAME above the call, which is the same
+    # binding table `re.sub(P, …)` reads
+    ("glob", "P = 5\nprint(sorted(glob.glob(P)))"),
+    ("glob", "P = b'*.py'\nprint(sorted(glob.glob(P)))"),
+    # the pattern itself, parsed in the walk by the same scan the run uses
+    ("glob", "print(sorted(glob.glob('[z-a]')))"),
+    ("glob", "print(sorted(glob.glob('[z-a]*')))"),
+    ("glob", "print(sorted(glob.glob('[9-0]*')))"),
+    ("glob", "print(sorted(glob.glob('[!z-a]')))"),
+    ("glob", "print(sorted(glob.glob('d/[z-a]')))"),
+    ("glob", "print(sorted(glob.glob('*/[z-a]/x')))"),
+    ("glob", "print(sorted(glob.glob('[z-a]', recursive=True)))"),
+    ("glob", "print(sorted(glob.iglob('[z-a]')))"),
+    ("glob", "print(len(glob.glob('[z-a]')))"),
+    ("glob", "print('x' in glob.glob('[z-a]'))"),
+    ("glob", "P = '[z-a]'\nprint(sorted(glob.glob(P)))"),
+    # the attributes nothing on the spectrum serves
+    ("module-attr", "print(glob.translate('*.py'))"),
+    ("module-attr", "print(glob.glob0('.', 'a.py'))"),
+    ("module-attr", "print(glob.glob1('.', '*.py'))"),
+    ("module-attr", "print(glob.magic_check)"),
+    ("module-attr", "print(glob.nosuchthing)"),
+    ("module-attr", "print(sorted(glob.translate('*')))"),
+    # and the position rule itself, through the same barrier
+    ("glob-order", "print(glob.glob('*.py'))"),
+    ("glob-order", "print(set(glob.glob('*.py')))"),
+    ("glob-order", "print(bool(glob.iglob('nope*')))"),
+    ("glob-order", "for p in glob.glob('*.py'): print(p)"),
+]
+
+#: The same class through every spelling of the import, because the walk finds
+#: the function by NAME and an alias is where a name test goes wrong.
+AFTER_A_BARRIER_ALIASED = [
+    ("module-attr", "from glob import translate\nprint(translate('*'))"),
+    ("module-attr", "from glob import glob0\nprint(glob0('.', 'a'))"),
+    ("module-attr", "import glob as g\nprint(g.translate('*'))"),
+    ("glob", "from glob import escape\nprint(escape(1))"),
+    ("glob", "from glob import glob\nprint(sorted(glob('[z-a]')))"),
+    ("glob", "from glob import glob as gg\nprint(sorted(gg('*', root_dir='d')))"),
+    ("glob", "from glob import iglob as ig\nprint(sorted(ig('*', dir_fd=1)))"),
+    ("glob", "import glob as g\nprint(sorted(g.glob('[z-a]')))"),
+    ("glob", "import glob as g\nprint(sorted(g.iglob('*', include_hidden=True)))"),
+]
+
+#: What is deliberately NOT static, and the reason each one cannot be.
+#:
+#: A refusal here still lands after the barrier — that is the cost of admitting
+#: the shape at all — but it is reachable only from a program whose PATTERN or
+#: ARGUMENT LIST is a value the walk could not read, which is a far narrower
+#: door than one a string literal walks through. Of the glob calls in the corpus
+#: mined 2026-09-06, 45 pass a literal and 40 a computed pattern; none is
+#: spelled with `*args` at all.
+#:
+#: The rows are asserted to still REFUSE (not answer), because the backstop is
+#: the only thing standing behind them — and the last two are the filesystem's
+#: own and could not be hoisted by any walk at all.
+RUNTIME_BACKSTOP = [
+    # a pattern built at runtime: the value is not in the source
+    "p = ''.join(['[z', '-a]'])\nprint(sorted(glob.glob(p)))",
+    "p = len('ab')\nprint(sorted(glob.glob(p)))",
+    # an unpacked argument list: the walk can neither count the positionals
+    # nor read the keyword names
+    "a = ['[z-a]']\nprint(sorted(glob.glob(*a)))",
+    "k = {'root_dir': 'd'}\nprint(sorted(glob.glob('*', **k)))",
+    # the filesystem's own, and no walk could ever have hoisted it: how deep
+    # the tree turns out to be. (The other one, a directory entry whose name is
+    # not valid UTF-8, has no portable way to be created on this host — APFS
+    # rejects the name — so it is documented in `glob.rs` and not pinned here.)
+    "os.makedirs('/'.join(['deep'] * 140))\n"
+    "print(len(glob.glob('**', recursive=True)))",
+]
+
 #: The commit barrier, merged into the listing. Each row WRITES and then LISTS,
 #: which is the shape the corpus actually types (`glob-pattern`).
 STAGED = [G + x for x in [
@@ -484,6 +611,134 @@ def test_the_surface_outside_the_subset_refuses_rather_than_guesses(program: str
         "message that is not this engine's to write: %s\n  program: %r\n  stderr: %r"
         % (problem, program, got.stderr.strip()[:200])
     )
+
+
+#: The barrier every row of `AFTER_A_BARRIER` is asked through. `os.mkdir` is
+#: the cheapest thing that commits it: the directory is created immediately (a
+#: directory has no content to stage), so a refusal that lands afterwards is
+#: exit 1 with `NEWD` on disk, and one that lands before it is exit 90 with the
+#: cwd untouched. The test reads the cwd, not the message.
+BARRIER = "import os\nos.mkdir('NEWD')\n"
+
+
+def _barriered(call: str) -> str:
+    """``call``, with the barrier committed before it and its imports before
+    that. A row either brings its own import line or gets the plain one."""
+    if call.startswith(("import ", "from ")):
+        head, tail = call.split("\n", 1)
+        return head + "\n" + BARRIER + tail
+    return "import glob\n" + BARRIER + call
+
+
+def _run_snapshot(program: str) -> tuple[subprocess.CompletedProcess, list[str], list[str]]:
+    """One program, with the temp cwd listed before and after it ran."""
+    with tempfile.TemporaryDirectory() as d:
+        _tree(d)
+        before = sorted(os.listdir(d))
+        got = subprocess.run([str(BINARY), "-c", program], capture_output=True,
+                             text=True, cwd=d, timeout=120)
+        return got, before, sorted(os.listdir(d))
+
+
+@needs_l
+@pytest.mark.parametrize(
+    "kind,call",
+    AFTER_A_BARRIER + AFTER_A_BARRIER_ALIASED,
+    ids=range(len(AFTER_A_BARRIER) + len(AFTER_A_BARRIER_ALIASED)),
+)
+def test_every_refusal_a_glob_call_can_raise_lands_before_the_barrier(
+    kind: str, call: str,
+) -> None:
+    """The class, as one assertion per shape.
+
+    A blessed position SERVES the call, so the program runs — and a refusal it
+    reaches after `os.mkdir` has committed the write barrier is exit 1 with the
+    directory on disk and nothing on stdout, which the chain never retries and
+    the agent that typed the one-liner reads as a failure. The binary WITHOUT
+    `cap-glob` refused that program cleanly at 90 and the chain got the answer
+    from CPython, so the capability made the program worse.
+
+    Four assertions, and the fourth is the one that cannot be faked: the cwd is
+    listed before and after, so "no side effect" is measured rather than read
+    out of the refusal line."""
+    program = _barriered(call)
+    got, before, after = _run_snapshot(program)
+    assert _refusal_problem(got) is None, (
+        "%s\n  program: %r\n  stderr: %r"
+        % (_refusal_problem(got), program, got.stderr.strip()[:200]))
+    assert ": %s: " % kind in got.stderr, (
+        "the refusal moved into the walk must keep the kind the run would have "
+        "raised\n  program: %r\n  stderr: %r" % (program, got.stderr.strip()[:200]))
+    assert after == before, (
+        "the refusal landed AFTER os.mkdir committed the barrier: %r -> %r\n"
+        "  program: %r" % (before, after, program))
+
+
+@needs_l
+@pytest.mark.parametrize("call", RUNTIME_BACKSTOP, ids=range(len(RUNTIME_BACKSTOP)))
+def test_what_stays_a_runtime_refusal_still_refuses(call: str) -> None:
+    """The residue, pinned so it stays a residue.
+
+    These are the refusals a walk genuinely cannot decide: a pattern whose value
+    is computed, an argument list that is unpacked, and the filesystem's own. A
+    refusal here still lands after the barrier — that is the price of admitting
+    the shape at all — so what is asserted is only that the backstop is STILL
+    THERE. If a later change makes one of these answer instead of refusing, the
+    answer would be a wrong one at exit 0, which is strictly worse."""
+    program = _barriered(call)
+    got, _, _ = _run_snapshot(program)
+    assert got.returncode != 0, (
+        "this must still refuse — the static half deliberately cannot see it\n"
+        "  program: %r\n  stdout: %r" % (program, got.stdout[:200]))
+    assert "unsupported: " in got.stderr, got.stderr[:200]
+
+
+@needs_l
+def test_the_core_routes_every_static_glob_refusal_straight_to_cpython() -> None:
+    """The other half of making a refusal static: it stops costing a spawn.
+
+    `engines.route()` asks the CORE, and the core's first blocker for every one
+    of these is `module: import glob` — which `lypning-l` answers, so the whole
+    table used to route there and be refused. The walk now records the refusal
+    that stops EVERY rung in a slot of its own and the verdicts carry it, so the
+    core names CPython without a glob implementation of its own. `glob.translate`
+    is the row that proves the attribute table has to live in `route.rs`:
+    `modules::MODULES` has no `glob` row in the core, so nothing else here could
+    have graded it."""
+    if CORE is None:
+        pytest.skip("no core carrying this tree's capability table is built")
+    for _kind, call in AFTER_A_BARRIER:
+        program = "import glob\n" + call
+        out = subprocess.run([str(CORE), "route", "-c", program],
+                             capture_output=True, text=True, timeout=60)
+        assert out.stdout.split("\t")[0].strip() == engines.CPYTHON, (
+            "the core sent a program every Rust rung refuses to a Rust rung\n"
+            "  program: %r\n  route: %r" % (program, out.stdout))
+
+
+@needs_l
+def test_the_walk_and_the_run_answer_the_pattern_question_with_one_scan() -> None:
+    """`route::glob_pattern_block` is the only place a pattern is graded.
+
+    The walker runs it over a literal; `glob::call` runs it over the pattern it
+    was handed, before a single directory is read. Two consequences are asserted
+    here. The refusal is the SAME line either way — the second program's pattern
+    is built at runtime, so only the run can see it. And the runtime answer no
+    longer depends on what is on disk: `[z-a]` used to reach the matcher only
+    when some candidate name got far enough into the pattern to test it, so the
+    same program answered `[]` in an empty directory and refused in a full one."""
+    static = "import glob\nprint(sorted(glob.glob('[z-a]')))"
+    dynamic = "import glob\np = ''.join(['[z', '-a]'])\nprint(sorted(glob.glob(p)))"
+    with tempfile.TemporaryDirectory() as d:
+        one = subprocess.run([str(BINARY), "-c", static], capture_output=True,
+                             text=True, cwd=d, timeout=60)
+        two = subprocess.run([str(BINARY), "-c", dynamic], capture_output=True,
+                             text=True, cwd=d, timeout=60)
+    detail = "a [z-a] range in a pattern"
+    assert detail in one.stderr and detail in two.stderr, (one.stderr, two.stderr)
+    # …and an EMPTY directory refuses it too, which is what "one scan, before
+    # the walk" buys: the answer is a property of the pattern.
+    assert one.returncode == engines.UNSUPPORTED_EXIT and one.stdout == "", one
 
 
 @needs_l

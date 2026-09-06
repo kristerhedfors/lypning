@@ -978,6 +978,15 @@ pub fn call_builtin(
         }
         "min" | "max" => {
             reject_unknown_kw(name, &kw, &["key", "default"])?;
+            // `min()` is a TypeError about the ARGUMENT LIST, not a ValueError
+            // about an empty iterable: with no positional at all there is no
+            // iterable to be empty, and `default=` does not rescue it either.
+            // The empty-sequence arm below answered the wrong exception class,
+            // which a program that catches `ValueError` sees as a caught error
+            // where CPython propagates.
+            if args.is_empty() {
+                return Err(type_err(format!("{name} expected at least 1 argument, got 0")));
+            }
             let want_max = name == "max";
             let from_set = args.len() == 1 && matches!(args.first(), Some(Value::Set(_)));
             let items: Vec<Value> = if args.len() == 1 {

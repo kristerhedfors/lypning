@@ -175,6 +175,22 @@ CASES = [
         "            print(e)\n",
     ),
     (
+        # …and with NO argument at all it is a different EXCEPTION, not a
+        # different message: `min()` is a TypeError about the argument list,
+        # where an empty iterable is a ValueError about its contents. The
+        # empty-sequence arm answered the second for both, so a program that
+        # catches `ValueError` swallowed a call CPython propagates — and
+        # `default=` does not rescue it either, which is the half a "does it
+        # have a default" reading gets wrong.
+        "min-max-with-no-argument-are-a-typeerror-about-the-argument-list",
+        "for f in (min, max):\n"
+        "    for call in (lambda: f(), lambda: f(default=1), lambda: f(*[])):\n"
+        "        try:\n"
+        "            call()\n"
+        "        except TypeError as e:\n"
+        "            print('TypeError', e)\n",
+    ),
+    (
         "case-predicates-test-cased-characters",
         "for s in ['\\u65e5\\u672c', 'abc', 'ABC', '\\u65e5\\u672ca', '\\u01c5', '\\u01c5abc', '123']:\n"
         "    print(s.islower(), s.isupper(), s.isalpha())\n",
