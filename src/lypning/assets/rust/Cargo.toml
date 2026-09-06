@@ -50,7 +50,7 @@ variant-m = []
 # The 4 MB point. Names the smaller variant so cargo's feature union makes it a
 # superset by construction — the monotonicity the router assumes. It grows one
 # `cap-*` per step; `variant-m` is FROZEN and gains none of them.
-variant-l = ["variant-m", "cap-collections", "cap-pathlib", "cap-re", "cap-csv"]
+variant-l = ["variant-m", "cap-collections", "cap-csv", "cap-glob", "cap-pathlib", "cap-re"]
 
 # `collections.Counter` and `collections.defaultdict` — 83 of the corpus
 # programs measured on 2026-09-04 import `collections`, and between them they
@@ -79,6 +79,14 @@ cap-re = []
 # blocked on `import csv`: 15 read a file, 2 read `sys.stdin`, 6 write.
 # `src/csv.rs` is the whole of it.
 cap-csv = []
+
+# `glob` — `glob.glob`, `glob.iglob`, `glob.escape` and `glob.has_magic`. The
+# match SET is computed exactly and the match ORDER is never observable,
+# because `route.rs` admits the call only where a walk can see that the order
+# cannot be seen (`sorted(...)`, `len(...)`, `in`, …) and blocks `glob-order`
+# statically everywhere else. 69 corpus programs (mined 2026-09-06) import it
+# and every one of them calls `glob.glob`. `src/glob.rs` is the whole of it.
+cap-glob = []
 
 capi = []
 

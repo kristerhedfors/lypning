@@ -119,6 +119,13 @@ fn execute_inner(src: &str, report_refusal: bool, kind: &mut String, detail: &mu
         Ok(b) => b,
         Err(e) => return finish(Err(e), report_refusal, kind, detail),
     };
+    // Before the interpreter exists, so the refusal cannot land after a side
+    // effect: `route.rs` decides every static glob question for the ROUTER,
+    // and this asks it again for a run that was never routed (`<bin> -c PROG`).
+    #[cfg(feature = "cap-glob")]
+    if let Err(e) = route::glob_static_check(&body, src) {
+        return finish(Err(e), report_refusal, kind, detail);
+    }
     let mut interp = eval::Interp::new();
     let r = interp.run(&body);
     finish(r, report_refusal, kind, detail)

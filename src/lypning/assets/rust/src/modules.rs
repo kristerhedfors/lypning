@@ -32,14 +32,16 @@ use std::rc::Rc;
     feature = "cap-collections",
     feature = "cap-pathlib",
     feature = "cap-re",
-    feature = "cap-csv"
+    feature = "cap-csv",
+    feature = "cap-glob"
 )))]
 pub const MODULES: &[&str] = &["sys", "os", "os.path", "io", "json", "posixpath", "random"];
 #[cfg(all(
     feature = "cap-collections",
     not(feature = "cap-pathlib"),
     not(feature = "cap-re"),
-    not(feature = "cap-csv")
+    not(feature = "cap-csv"),
+    not(feature = "cap-glob")
 ))]
 pub const MODULES: &[&str] =
     &["sys", "os", "os.path", "io", "json", "posixpath", "random", "collections"];
@@ -47,7 +49,8 @@ pub const MODULES: &[&str] =
     feature = "cap-pathlib",
     not(feature = "cap-collections"),
     not(feature = "cap-re"),
-    not(feature = "cap-csv")
+    not(feature = "cap-csv"),
+    not(feature = "cap-glob")
 ))]
 pub const MODULES: &[&str] =
     &["sys", "os", "os.path", "io", "json", "posixpath", "random", "pathlib"];
@@ -55,7 +58,8 @@ pub const MODULES: &[&str] =
     feature = "cap-collections",
     feature = "cap-pathlib",
     not(feature = "cap-re"),
-    not(feature = "cap-csv")
+    not(feature = "cap-csv"),
+    not(feature = "cap-glob")
 ))]
 pub const MODULES: &[&str] = &[
     "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib",
@@ -64,7 +68,8 @@ pub const MODULES: &[&str] = &[
     feature = "cap-collections",
     feature = "cap-pathlib",
     feature = "cap-re",
-    not(feature = "cap-csv")
+    not(feature = "cap-csv"),
+    not(feature = "cap-glob")
 ))]
 pub const MODULES: &[&str] = &[
     "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib", "re",
@@ -73,14 +78,29 @@ pub const MODULES: &[&str] = &[
     feature = "cap-collections",
     feature = "cap-pathlib",
     feature = "cap-re",
-    feature = "cap-csv"
+    feature = "cap-csv",
+    not(feature = "cap-glob")
 ))]
 pub const MODULES: &[&str] = &[
     "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib", "re",
     "csv",
 ];
-// `cap-re` and `cap-csv` name no row of their own: each is only ever built as
-// part of `variant-l`, whose feature names the full set.
+#[cfg(all(
+    feature = "cap-collections",
+    feature = "cap-pathlib",
+    feature = "cap-re",
+    feature = "cap-csv",
+    feature = "cap-glob"
+))]
+pub const MODULES: &[&str] = &[
+    "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib", "re",
+    "csv", "glob",
+];
+// The rows above are the build-order CHAIN, not every subset: each capability
+// appends one row and stops the row before it. `cap-re`, `cap-csv` and
+// `cap-glob` name no row of their own because none of them is ever built except
+// as part of `variant-l`, whose feature names the full set — which is what the
+// three guards below say, each naming the caps that precede it in the chain.
 #[cfg(all(feature = "cap-re", not(all(feature = "cap-collections", feature = "cap-pathlib"))))]
 compile_error!("cap-re is only built as part of variant-l (it names the full set)");
 #[cfg(all(
@@ -88,6 +108,16 @@ compile_error!("cap-re is only built as part of variant-l (it names the full set
     not(all(feature = "cap-collections", feature = "cap-pathlib", feature = "cap-re"))
 ))]
 compile_error!("cap-csv is only built as part of variant-l (it names the full set)");
+#[cfg(all(
+    feature = "cap-glob",
+    not(all(
+        feature = "cap-collections",
+        feature = "cap-pathlib",
+        feature = "cap-re",
+        feature = "cap-csv"
+    ))
+))]
+compile_error!("cap-glob is only built as part of variant-l (it names the full set)");
 
 pub fn import(path: &str) -> R<Value> {
     match MODULES.iter().find(|m| **m == path) {
@@ -230,6 +260,11 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
         // (`csv.rs`), and it is why the writers cost no bytes at all.
         #[cfg(feature = "cap-csv")]
         ("csv", _) => return crate::csv::module_attr(name),
+        // `glob.glob`, `glob.iglob`, `glob.escape` and `glob.has_magic`. Every
+        // other name — `translate`, `glob0`, `glob1` — refuses with the
+        // `module-attr` kind, which the router blocks on statically.
+        #[cfg(feature = "cap-glob")]
+        ("glob", _) => return crate::glob::module_attr(name),
         _ => {
             return Err(unsupported(
                 "module-attr",
@@ -268,6 +303,12 @@ fn touches_disk(m: &str, name: &str) -> bool {
     match (m, name) {
         ("os.path", "join" | "basename" | "dirname" | "splitext" | "split" | "normpath") => false,
         ("pathlib", "cwd") => true,
+        // `glob.glob()` and `glob.iglob()` list directories; `escape` and
+        // `has_magic` are string algebra over a path that need never exist.
+        #[cfg(feature = "cap-glob")]
+        ("glob", "escape" | "has_magic") => false,
+        #[cfg(feature = "cap-glob")]
+        ("glob", _) => true,
         ("os", "getenv") => false,
         ("os", _) | ("os.path", _) => true,
         _ => false,
@@ -298,6 +339,8 @@ pub fn call_module_method(
         ("re", _) => return crate::re::call(it, name, args, &kw),
         #[cfg(feature = "cap-csv")]
         ("csv", _) => return crate::csv::call(it, name, args, &kw),
+        #[cfg(feature = "cap-glob")]
+        ("glob", _) => return crate::glob::call(it, name, args, &kw),
         ("random", _) => return crate::random::call(it, name, args, &kw),
         // `Path.cwd()`. A classmethod on the type object, reached through
         // `ops::get_attr`, which spells it as a method on the module so that
@@ -623,7 +666,9 @@ pub fn call_module_method(
     })
 }
 
-fn normpath(p: &str) -> String {
+/// `os.path.normpath`. Public to the crate because `glob.rs` needs the same
+/// answer to decide which directory a staged write belongs to.
+pub(crate) fn normpath(p: &str) -> String {
     let absolute = p.starts_with('/');
     let mut out: Vec<&str> = Vec::new();
     for part in p.split('/') {

@@ -61,6 +61,13 @@ pub mod random;
 /// variant entirely, not merely unreachable in it.
 #[cfg(feature = "cap-re")]
 pub mod re;
+
+/// `glob.glob` / `glob.iglob` / `glob.escape` / `glob.has_magic` — the
+/// `cap-glob` capability. Absent from the smaller variant entirely, not merely
+/// unreachable in it. The ORDER half of the module lives in `route.rs`, as a
+/// static blocker, so nothing here has to carry a taint.
+#[cfg(feature = "cap-glob")]
+pub mod glob;
 pub mod route;
 pub mod value;
 
