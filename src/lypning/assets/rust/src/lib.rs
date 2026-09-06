@@ -29,6 +29,12 @@ pub mod alloc;
 pub mod args;
 pub mod ast;
 pub mod builtins;
+/// Arbitrary-precision integers — the `cap-bigint` capability. Not a module:
+/// `Value::Int`'s payload is wide on the variant that carries it and an `i64`
+/// on the one that does not, so this file is absent from the smaller variant
+/// entirely rather than merely unreachable in it.
+#[cfg(feature = "cap-bigint")]
+pub mod bigint;
 /// `collections.Counter` / `defaultdict` — the `cap-collections` capability.
 /// Absent from the smaller variant entirely, not merely unreachable in it.
 #[cfg(feature = "cap-collections")]

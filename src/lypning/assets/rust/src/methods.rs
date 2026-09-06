@@ -234,6 +234,21 @@ fn cased_all(s: &str, want: fn(char) -> bool) -> bool {
 /// like every other table here (`tests/test_method_tables.py` holds them to it).
 const RANGE_MISSING: &[&str] = &["count", "index"];
 
+/// Methods `int` has in CPython and this engine does not implement.
+///
+/// The table exists because `cap-bigint` makes the programs that reach for them
+/// RUN. `(2**100).bit_length()` was an `AttributeError` at exit 1 — the
+/// program's own exit, which the chain never retries — for a call CPython
+/// answers; and that is the exact shape that held `hashlib` at
+/// `docs/HILLCLIMB.md` iteration 74, where serving a capability admitted
+/// programs whose OTHER constructs the variant lacked. It is on both variants,
+/// because "an AttributeError is not a refusal" is the refusal contract and not
+/// a capability. `bool` reaches it too: `True.bit_length()` is 1 there.
+const INT_MISSING: &[&str] = &[
+    "as_integer_ratio", "bit_count", "bit_length", "conjugate", "denominator", "from_bytes",
+    "imag", "is_integer", "numerator", "real", "to_bytes",
+];
+
 pub fn missing_method(recv: &Value, name: &str) -> bool {
     let table: &[&str] = match recv {
         Value::Str(_) => STR_MISSING,
@@ -245,6 +260,7 @@ pub fn missing_method(recv: &Value, name: &str) -> bool {
         // exit, which the chain does not retry. A refusal is answered one spawn
         // later; that error was not.
         Value::Range(..) => RANGE_MISSING,
+        Value::Int(_) | Value::Bool(_) => INT_MISSING,
         _ => return false,
     };
     table.contains(&name)
@@ -845,12 +861,12 @@ fn str_method(
                 }
             };
             match found {
-                Some(at) => Value::Int(at),
+                Some(at) => ival(at),
                 None => {
                     if name.ends_with("index") {
                         return Err(value_err("substring not found"));
                     }
-                    Value::Int(-1)
+                    ival(-1)
                 }
             }
         }
@@ -862,7 +878,7 @@ fn str_method(
         // bounds mean rather than two.
         "count" => {
             let needle = sarg(&args, 0, "count")?;
-            Value::Int(match slice_str(s, args.get(1), args.get(2))? {
+            ival(match slice_str(s, args.get(1), args.get(2))? {
                 None => 0,
                 Some((sub, _)) => {
                     if needle.is_empty() {
@@ -910,7 +926,7 @@ fn str_method(
             Value::Str(s.strip_suffix(p.as_ref()).unwrap_or(s).into())
         }
         "ljust" | "rjust" | "zfill" => {
-            let w = int_val(args.first().unwrap_or(&Value::Int(0)))?.max(0) as usize;
+            let w = int_val(args.first().unwrap_or(&ival(0)))?.max(0) as usize;
             let n = s.chars().count();
             let fill: char = match name {
                 "zfill" => '0',
@@ -1266,7 +1282,7 @@ fn resolve_path(it: &mut Interp, mut v: Value, path: &str) -> R<Value> {
             let end = r.find(']').ok_or_else(|| value_err("expected ']'"))?;
             let key = &r[..end];
             let kv = match key.parse::<i64>() {
-                Ok(n) => Value::Int(n),
+                Ok(n) => ival(n),
                 Err(_) => Value::Str(key.into()),
             };
             v = it.index(&v, &kv)?;
@@ -1313,7 +1329,7 @@ fn list_method(
             Value::None
         }
         "insert" => {
-            let i = int_val(args.first().unwrap_or(&Value::Int(0)))?;
+            let i = int_val(args.first().unwrap_or(&ival(0)))?;
             let v = args.get(1).cloned().unwrap_or(Value::None);
             let n = l.borrow().len() as i64;
             let at = if i < 0 { (n + i).max(0) } else { i.min(n) } as usize;
@@ -1382,7 +1398,7 @@ fn list_method(
             let mut i = lo;
             while i < hi {
                 if crate::value::eq(&b[i as usize], &v)? {
-                    return Ok(Value::Int(i));
+                    return Ok(ival(i));
                 }
                 if vn && crate::value::nan_here(&b[i as usize]) {
                     return Err(crate::value::refuse_nan_elem());
@@ -1403,7 +1419,7 @@ fn list_method(
                     return Err(crate::value::refuse_nan_elem());
                 }
             }
-            Value::Int(n)
+            ival(n)
         }
         "reverse" => {
             l.borrow_mut().reverse();
@@ -1643,7 +1659,7 @@ fn tuple_method(t: &Rc<Vec<Value>>, name: &str, args: &mut Args) -> R<Value> {
                     return Err(crate::value::refuse_nan_elem());
                 }
             }
-            Ok(Value::Int(n))
+            Ok(ival(n))
         }
         "index" => {
             // Kept in step with `list.index` above, which had the same defect.
@@ -1660,7 +1676,7 @@ fn tuple_method(t: &Rc<Vec<Value>>, name: &str, args: &mut Args) -> R<Value> {
             let mut i = lo;
             while i < hi {
                 if crate::value::eq(&t[i as usize], needle)? {
-                    return Ok(Value::Int(i));
+                    return Ok(ival(i));
                 }
                 if vn && crate::value::nan_here(&t[i as usize]) {
                     return Err(crate::value::refuse_nan_elem());
@@ -1845,8 +1861,8 @@ fn bytes_method(
         "find" => {
             let needle = as_bytes_or_byte(args.first(), name)?;
             match slice_bytes(b, args.get(1), args.get(2))? {
-                None => Value::Int(-1),
-                Some((hay, off)) => Value::Int(match find_sub(hay, &needle) {
+                None => ival(-1),
+                Some((hay, off)) => ival(match find_sub(hay, &needle) {
                     Some(i) => i as i64 + off,
                     None => -1,
                 }),
@@ -1992,18 +2008,19 @@ fn as_bytes_or_byte(v: Option<&Value>, method: &str) -> R<Vec<u8>> {
     let promoted;
     let v = match v {
         Some(Value::Bool(b)) => {
-            promoted = Value::Int(if *b { 1 } else { 0 });
+            promoted = ival(if *b { 1 } else { 0 });
             Some(&promoted)
         }
         other => other,
     };
     match v {
-        Some(Value::Int(n)) => {
-            if !(0..=255).contains(n) {
-                return Err(value_err("byte must be in range(0, 256)"));
-            }
-            Ok(vec![*n as u8])
-        }
+        // A WIDE integer is outside range(0, 256) like any other integer
+        // outside it, and CPython's ValueError is the exact answer — so
+        // `small()` here rather than the refusing `get()`.
+        Some(Value::Int(n)) => match n.small() {
+            Some(v) if (0..=255).contains(&v) => Ok(vec![v as u8]),
+            _ => Err(value_err("byte must be in range(0, 256)")),
+        },
         Some(Value::Bytes(x)) => Ok((**x).clone()),
         Some(other) => Err(bytes_search_arg_err(other)),
         None => Err(type_err(format!("{method}() takes at least 1 argument"))),
@@ -2497,7 +2514,7 @@ fn file_method(
                 }
             };
             let n = mio::file_write(&f.borrow(), &bytes)?;
-            Value::Int(if f.borrow().binary {
+            ival(if f.borrow().binary {
                 n as i64
             } else {
                 // Text mode reports CHARACTERS written, not bytes.
@@ -2531,10 +2548,10 @@ fn file_method(
         "tell" => {
             let fo = f.borrow();
             tell_exact(&fo)?;
-            Value::Int(fo.pos as i64)
+            ival(fo.pos as i64)
         }
         "seek" => {
-            let n = int_val(args.first().unwrap_or(&Value::Int(0)))?;
+            let n = int_val(args.first().unwrap_or(&ival(0)))?;
             let whence = match args.get(1) {
                 Some(v) => int_val(v)?,
                 None => 0,
@@ -2546,7 +2563,7 @@ fn file_method(
             // A `seek()` puts the stream somewhere known, which is where
             // CPython lets `tell()` work again.
             seek_restores_telling(f);
-            Value::Int(n)
+            ival(n)
         }
         other => return Err(unsupported("file-method", &format!("file.{other}()"))),
     })

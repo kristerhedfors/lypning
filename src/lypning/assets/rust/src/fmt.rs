@@ -16,7 +16,7 @@
 //!      are unambiguously printable and REFUSE the rest rather than guess.
 
 use crate::err::{overflow_err, unsupported, value_err, R};
-use crate::value::{set_order_refused, type_name, Dict, Value};
+use crate::value::{set_order_refused, type_name, Dict, Int, Value};
 use std::rc::Rc;
 
 pub fn to_str(v: &Value) -> R<String> {
@@ -52,7 +52,7 @@ pub fn to_rc(v: &Value) -> R<Rc<str>> {
         #[cfg(feature = "cap-pathlib")]
         Value::Path(s, false) => s.clone(),
         Value::Exc(_, m) => m.clone(),
-        Value::Int(i) => int_rc(*i),
+        Value::Int(Int::S(i)) => int_rc(*i),
         _ => repr(v)?.into(),
     })
 }
@@ -64,7 +64,7 @@ pub fn to_rc(v: &Value) -> R<Rc<str>> {
 /// wrong would be a silent wrong answer, so the two do not share an arm.
 pub fn repr_rc(v: &Value) -> R<Rc<str>> {
     Ok(match v {
-        Value::Int(i) => int_rc(*i),
+        Value::Int(Int::S(i)) => int_rc(*i),
         _ => repr(v)?.into(),
     })
 }
@@ -112,7 +112,7 @@ pub fn repr(v: &Value) -> R<String> {
     Ok(match v {
         Value::None => "None".into(),
         Value::Bool(b) => if *b { "True" } else { "False" }.into(),
-        Value::Int(i) => i.to_string(),
+        Value::Int(i) => int_str(i)?,
         Value::Float(f) => float_repr(*f),
         Value::Str(s) => str_repr(s)?,
         Value::Bytes(b) => bytes_repr(b),
@@ -465,9 +465,20 @@ pub struct Spec {
     pub grouping: Option<char>,
     pub precision: Option<usize>,
     pub ty: Option<char>,
+    /// PEP 682's `z`, which coerces a negative zero to a positive one. It sits
+    /// between the sign and the `#` in the grammar and this parser did not know
+    /// it existed, so it fell through to the type slot: `format(1.0, 'zf')` —
+    /// legal, and `'1.000000'` — was "Invalid format specifier 'zf'", an error
+    /// at exit 1 where CPython answers, and every rejection CPython words as
+    /// "Negative zero coercion (z) not allowed" carried some other sentence.
+    pub no_neg_0: bool,
 }
 
-pub fn parse_spec(s: &str) -> R<Spec> {
+/// `tname` is [`type_name`] of the value being formatted, for the two messages
+/// CPython names the object's type in. There is one caller and it has the
+/// value; the alternative — returning the raw type char and re-deciding in
+/// `format_inner` — would have put the decision in two places.
+pub fn parse_spec(s: &str, tname: &str) -> R<Spec> {
     let c: Vec<char> = s.chars().collect();
     let mut i = 0;
     let mut sp = Spec::default();
@@ -481,6 +492,10 @@ pub fn parse_spec(s: &str) -> R<Spec> {
     }
     if i < c.len() && matches!(c[i], '+' | '-' | ' ') {
         sp.sign = Some(c[i]);
+        i += 1;
+    }
+    if i < c.len() && c[i] == 'z' {
+        sp.no_neg_0 = true;
         i += 1;
     }
     if i < c.len() && c[i] == '#' {
@@ -546,14 +561,46 @@ pub fn parse_spec(s: &str) -> R<Spec> {
         let t = c[i];
         i += 1;
         if i != c.len() {
-            return Err(value_err(format!("Invalid format specifier '{s}'")));
+            return Err(value_err(format!(
+                "Invalid format specifier '{s}' for object of type '{tname}'"
+            )));
         }
-        match t {
-            's' | 'd' | 'f' | 'F' | 'e' | 'E' | 'g' | 'G' | 'x' | 'X' | 'o' | 'b' | 'c' | '%' => {
-                sp.ty = Some(t)
-            }
-            'n' => return Err(unsupported("format", "locale-aware 'n' format type")),
-            _ => return Err(value_err(format!("Unknown format code '{t}'"))),
+        sp.ty = Some(t);
+    }
+    // GROUPING IS DECIDED AGAINST THE TYPE HERE, BEFORE THE OBJECT IS LOOKED AT.
+    //
+    // That is CPython's own order — the test lives in its spec parser — and it
+    // is observable: `format(1234, ',a')` is "Cannot specify ',' with 'a'.",
+    // naming a type the object would have rejected a line later, and
+    // `format(1234, ',n')` is the same sentence rather than the locale refusal
+    // below. `,` groups in threes and `_` groups the radix types in fours (PEP
+    // 515), which is the whole of the asymmetry: `format(255, '_x')` is `'ff'`
+    // and `format(255, ',x')` is an error.
+    //
+    // The set is closed and was read off CPython 3.14.5, not reasoned about:
+    // every type outside it — `c`, `n`, `s` and every unknown code — refuses
+    // both separators. The engine screened four (`x X o b`) against `,` alone,
+    // so `format(1234, '_c')` padded a character and answered at exit 0.
+    if let (Some(g), Some(t)) = (sp.grouping, sp.ty) {
+        let ok = match t {
+            'd' | 'e' | 'E' | 'f' | 'F' | 'g' | 'G' | '%' => true,
+            'b' | 'o' | 'x' | 'X' => g == '_',
+            _ => false,
+        };
+        if !ok {
+            return Err(value_err(format!("Cannot specify '{g}' with '{t}'.")));
+        }
+    }
+    match sp.ty {
+        None
+        | Some(
+            's' | 'd' | 'f' | 'F' | 'e' | 'E' | 'g' | 'G' | 'x' | 'X' | 'o' | 'b' | 'c' | '%',
+        ) => {}
+        Some('n') => return Err(unsupported("format", "locale-aware 'n' format type")),
+        Some(t) => {
+            return Err(value_err(format!(
+                "Unknown format code '{t}' for object of type '{tname}'"
+            )))
         }
     }
     Ok(sp)
@@ -631,6 +678,24 @@ pub fn format_value(v: &Value, spec_src: &str) -> R<String> {
             ));
         }
     }
+    // …AND A PATH IS NOT THE ONLY TYPE WITH NO `__format__`. Exactly four have
+    // one — `str`, `int`, `bool` and `float`; every other value inherits
+    // `object.__format__`, which raises TypeError for any non-empty spec. So
+    // `format(None, '5s')`, `f"{[1]:>8}"` and `format(b'a', 's')` were padded
+    // answers at exit 0 where CPython raises. Found by a differential sweep
+    // over this function, on both variants.
+    if !spec_src.is_empty()
+        && !matches!(v, Value::Str(_) | Value::Int(_) | Value::Bool(_) | Value::Float(_))
+    {
+        return Err(unsupported(
+            "format",
+            &format!(
+                "a format spec on a {}, which CPython answers with a TypeError from \
+                 object.__format__",
+                type_name(v)
+            ),
+        ));
+    }
     format_inner(v, spec_src, false)
 }
 
@@ -654,7 +719,7 @@ fn format_inner(v: &Value, spec_src: &str, from_pct: bool) -> R<String> {
     }
     #[cfg(feature = "cap-re")]
     crate::re::guard_one(v, "a format spec on")?;
-    let sp = parse_spec(spec_src)?;
+    let sp = parse_spec(spec_src, type_name(v))?;
 
     // A FLOAT WITH NO PRESENTATION TYPE IS NOT 'g'.
     //
@@ -682,7 +747,7 @@ fn format_inner(v: &Value, spec_src: &str, from_pct: bool) -> R<String> {
             } else {
                 return Ok(pad_signed(nonfinite_sign(*f, &sp), &nonfinite(*f, false), &sp, true));
             };
-            let signch = if f.is_sign_negative() {
+            let signch = if f.is_sign_negative() && !zero_body(&sp, &body) {
                 "-"
             } else {
                 match sp.sign {
@@ -710,13 +775,15 @@ fn format_inner(v: &Value, spec_src: &str, from_pct: bool) -> R<String> {
     // "Unknown format code 'd' for object of type 'float'", not a complaint
     // about the precision. Checking the type alone reported the second error for
     // 450 specs that never reach the precision at all.
-    // `,` groups in THREES and the radix types group in FOURS, so CPython
-    // refuses the combination outright rather than pick one:
-    // `format(255, ',x')` is "Cannot specify ',' with 'x'." while
-    // `format(255, '_x')` is `'ff'`. This answered `'ff'` for both.
-    if !from_pct && sp.grouping == Some(',') && matches!(ty, 'x' | 'X' | 'o' | 'b' | 'c') {
-        return Err(value_err(format!("Cannot specify ',' with '{ty}'.")));
-    }
+    // The `,`-versus-radix test that used to sit here is `parse_spec`'s now,
+    // widened to the whole grouping table; see there for why it has to run
+    // before the object is consulted.
+    //
+    // What is left is CPython's `format_long_internal`, whose four rejections
+    // fire in this order — precision, then `z`, then the two that are `c`'s
+    // alone, in the `'c'` arm below. The order is observable: `format(1234,
+    // 'z.3c')` names the precision, `format(1234, 'z#c')` names the `z`, and
+    // `format(1234, '+#c')` names the sign.
     if !from_pct
         && sp.precision.is_some()
         && matches!(ty, 'd' | 'x' | 'X' | 'o' | 'b' | 'c')
@@ -724,11 +791,50 @@ fn format_inner(v: &Value, spec_src: &str, from_pct: bool) -> R<String> {
     {
         return Err(value_err("Precision not allowed in integer format specifier"));
     }
+    // `z` is a FLOAT flag: only a float has a negative zero to coerce, so the
+    // integer and string formatters reject it outright and each says which of
+    // the two it is. Keyed on the RESOLVED type, so the empty spec is covered —
+    // an int's resolves to `'d'` and a str's to `'s'`, both rejections, while a
+    // float's resolves to `'g'` and is allowed.
+    //
+    // Written as the set each formatter OWNS rather than "anything but a float
+    // type", because CPython dispatches on the code before it looks at the
+    // flag: `format(1234, 'zs')` is "Unknown format code 's' for object of type
+    // 'int'" — `s` never reaches the integer formatter — while `format('ab',
+    // 'zs')` names the `z`. The complement got the 32 `z…s` spellings wrong.
+    if sp.no_neg_0
+        && match v {
+            Value::Int(_) | Value::Bool(_) => matches!(ty, 'b' | 'c' | 'd' | 'o' | 'x' | 'X'),
+            Value::Str(_) => ty == 's',
+            _ => false,
+        }
+    {
+        return Err(value_err(format!(
+            "Negative zero coercion (z) not allowed in {} format specifier",
+            if matches!(v, Value::Str(_)) { "string" } else { "integer" }
+        )));
+    }
     // Filled in by the integer arm below; see there for why it is not part of
     // the body.
     let mut alt_prefix = "";
     let body = match ty {
         's' => {
+            // `'s'` ON A NUMBER IS A ValueError IN CPython, not `str()` of it:
+            // `format(2**100, 's')` and `f'{5:s}'` both raise "Unknown format
+            // code 's' for object of type 'int'". This padded the digits
+            // instead — an answer at exit 0 where CPython raises, on both
+            // variants and for a small integer too, so it predates
+            // `cap-bigint`. Only the three numeric types, because they are the
+            // ones that reach here with an EXPLICIT `s`: a number with no
+            // presentation type resolved to `'d'` or `'g'` above, and
+            // `object.__format__` raises TypeError rather than ValueError for
+            // the types that have no `__format__` of their own.
+            if matches!(v, Value::Int(_) | Value::Bool(_) | Value::Float(_)) {
+                return Err(value_err(format!(
+                    "Unknown format code 's' for object of type '{}'",
+                    type_name(v)
+                )));
+            }
             let mut s = to_str(v)?;
             if let Some(p) = sp.precision {
                 s = s.chars().take(p).collect();
@@ -736,6 +842,29 @@ fn format_inner(v: &Value, spec_src: &str, from_pct: bool) -> R<String> {
             return Ok(pad(&s, &sp, false));
         }
         'c' => {
+            // A CHARACTER HAS NEITHER A SIGN NOR AN ALTERNATE FORM, and CPython
+            // says so rather than ignore them: `format(1234, '+c')` and
+            // `format(1234, '#c')` are ValueErrors where this padded and printed
+            // `'Ӓ'` at exit 0. Sign first — `format(1234, '+#c')` names the sign.
+            //
+            // `!from_pct` because the `%` operator is a different grammar with a
+            // different answer: `'%+c' % 65` and `'%#c' % 65` are both `'A'` in
+            // CPython, the flags simply having nothing to do there. Gated on an
+            // INTEGER value for the same reason the precision and `z` checks
+            // above are: CPython matches the code against the object first, so
+            // `format(1.5, '+c')` is "Unknown format code 'c' for object of type
+            // 'float'" and never reaches the integer formatter's complaint about
+            // the sign. A float still leaves through `int_of`'s refusal below.
+            if !from_pct && matches!(v, Value::Int(_) | Value::Bool(_)) {
+                if sp.sign.is_some() {
+                    return Err(value_err("Sign not allowed with integer format specifier 'c'"));
+                }
+                if sp.alt {
+                    return Err(value_err(
+                        "Alternate form (#) not allowed with integer format specifier 'c'",
+                    ));
+                }
+            }
             let n = int_of(v)?;
             // CPython raises **OverflowError** here, with this exact message, for
             // both `format(x, 'c')` and `'%c' % x` — it is the same code path
@@ -753,17 +882,29 @@ fn format_inner(v: &Value, spec_src: &str, from_pct: bool) -> R<String> {
             return Ok(pad(&ch.to_string(), &sp, true));
         }
         'd' => {
-            let n = int_of(v)?;
-            group(&n.unsigned_abs().to_string(), sp.grouping, 3)
+            let digits = match wide_digits(v, 10, false)? {
+                Some(d) => d,
+                None => int_of(v)?.unsigned_abs().to_string(),
+            };
+            group(&digits, sp.grouping, 3)
         }
         'x' | 'X' | 'o' | 'b' => {
-            let n = int_of(v)?;
-            let a = n.unsigned_abs();
-            let mut s = match ty {
-                'x' => format!("{a:x}"),
-                'X' => format!("{a:X}"),
-                'o' => format!("{a:o}"),
-                _ => format!("{a:b}"),
+            let radix_of = match ty {
+                'o' => 8,
+                'b' => 2,
+                _ => 16,
+            };
+            let mut s = match wide_digits(v, radix_of, ty == 'X')? {
+                Some(d) => d,
+                None => {
+                    let a = int_of(v)?.unsigned_abs();
+                    match ty {
+                        'x' => format!("{a:x}"),
+                        'X' => format!("{a:X}"),
+                        'o' => format!("{a:o}"),
+                        _ => format!("{a:b}"),
+                    }
+                }
             };
             let radix = if ty == 'b' { 4 } else { 4 };
             s = group(&s, sp.grouping, radix);
@@ -824,9 +965,11 @@ fn format_inner(v: &Value, spec_src: &str, from_pct: bool) -> R<String> {
         _ => return Err(value_err(format!("Unknown format code '{ty}'"))),
     };
     let neg = match v {
-        Value::Int(i) => *i < 0,
+        Value::Int(i) => i.sign() < 0,
         Value::Bool(_) => false,
-        Value::Float(f) => f.is_sign_negative() && (*f != 0.0 || sp.ty.is_some()),
+        Value::Float(f) => {
+            f.is_sign_negative() && (*f != 0.0 || sp.ty.is_some()) && !zero_body(&sp, &body)
+        }
         _ => false,
     };
     let signch = if neg {
@@ -846,6 +989,24 @@ fn format_inner(v: &Value, spec_src: &str, from_pct: bool) -> R<String> {
     } else {
         Ok(pad_signed(&format!("{signch}{alt_prefix}"), &body, &sp, true))
     }
+}
+
+/// PEP 682's `z`, applied where CPython applies it: to the RENDERED magnitude,
+/// not to the value.
+///
+/// A `-` survives only when some digit of the body is not a zero, so
+/// `format(-0.0001, 'z.2f')` is `'0.00'` while `format(-0.0001, 'z.6f')` is
+/// `'-0.000100'` — whether the value IS a negative zero depends on the
+/// precision it was rounded to, which is why the test is on the string. A
+/// separator is not a digit, so grouping does not disturb it.
+///
+/// A body with NO digits at all is not a zero — `format(float('-inf'), 'z%')`
+/// is `'-inf%'` in CPython and "every digit is a zero" is vacuously true of
+/// `inf`, which dropped the sign. Hence the first test.
+fn zero_body(sp: &Spec, body: &str) -> bool {
+    sp.no_neg_0
+        && body.bytes().any(|c| c.is_ascii_digit())
+        && !body.bytes().any(|c| c.is_ascii_digit() && c != b'0')
 }
 
 /// `#` on a float means "keep the decimal point even when the precision left no
@@ -904,9 +1065,43 @@ fn nonfinite_sign(f: f64, sp: &Spec) -> &'static str {
     }
 }
 
+/// `repr`/`str` of an integer, which for a wide one is the decimal conversion
+/// CPython caps at `sys.get_int_max_str_digits()`.
+pub fn int_str(i: &Int) -> R<String> {
+    match i {
+        Int::S(v) => Ok(v.to_string()),
+        #[cfg(feature = "cap-bigint")]
+        Int::B(b) => crate::bigint::to_dec(b),
+    }
+}
+
+/// The UNSIGNED digits of a WIDE integer in `radix`, or `None` when the value is
+/// not a wide integer and the caller's own `i64` path answers it.
+///
+/// Split out rather than folded into `int_of` because the sign, the `0x` prefix
+/// and the zero fill are placed by the caller and every one of them goes in a
+/// different slot — `format(-255, '#010x')` is `-0x00000ff`.
+///
+/// `pub(crate)` for `ops::percent_one`, which needs the same digits for a
+/// different question: how many there are, so that `'%.3d' % (2**100,)` can
+/// tell "the value already satisfies the minimum" from "it does not".
+#[allow(unused_variables)]
+pub(crate) fn wide_digits(v: &Value, radix: u32, upper: bool) -> R<Option<String>> {
+    #[cfg(feature = "cap-bigint")]
+    if let Value::Int(Int::B(b)) = v {
+        return Ok(Some(if radix == 10 {
+            let d = crate::bigint::to_dec(b)?;
+            d.trim_start_matches('-').to_string()
+        } else {
+            crate::bigint::to_radix(b, radix, upper)
+        }));
+    }
+    Ok(None)
+}
+
 fn int_of(v: &Value) -> R<i64> {
     match v {
-        Value::Int(i) => Ok(*i),
+        Value::Int(i) => i.get(),
         Value::Bool(b) => Ok(*b as i64),
         _ => Err(unsupported(
             "format",
@@ -916,7 +1111,9 @@ fn int_of(v: &Value) -> R<i64> {
 }
 fn float_of(v: &Value) -> R<f64> {
     match v {
-        Value::Int(i) => Ok(*i as f64),
+        // A WIDE integer under `f`, `e`, `g` or `%` needs a rounded double,
+        // which this engine does not produce; `get()` refuses.
+        Value::Int(i) => Ok(i.get()? as f64),
         Value::Bool(b) => Ok(*b as i64 as f64),
         Value::Float(f) => Ok(*f),
         _ => Err(unsupported(

@@ -356,7 +356,7 @@ impl Interp {
             }
             Iter::Bytes(b, i) => {
                 if *i < b.len() {
-                    let v = Value::Int(b[*i] as i64);
+                    let v = ival(b[*i] as i64);
                     *i += 1;
                     Some(v)
                 } else {
@@ -385,7 +385,7 @@ impl Interp {
                     *cur = cur.checked_add(*step).ok_or_else(|| {
                         unsupported("bigint", "range counter beyond 64-bit range")
                     })?;
-                    Some(Value::Int(v))
+                    Some(ival(v))
                 } else {
                     None
                 }
@@ -491,7 +491,7 @@ impl Interp {
                 Some(v) => {
                     let i = *n;
                     *n += 1;
-                    Some(Value::Tuple(Rc::new(vec![Value::Int(i), v])))
+                    Some(Value::Tuple(Rc::new(vec![ival(i), v])))
                 }
                 None => None,
             },

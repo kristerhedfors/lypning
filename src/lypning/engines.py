@@ -80,7 +80,8 @@ SPECTRUM = (LYPNING, LYPNING_L)
 VARIANT_CAPS: dict = {
     LYPNING: (),
     LYPNING_L: (
-        "cap-collections", "cap-csv", "cap-glob", "cap-hashlib", "cap-pathlib", "cap-re",
+        "cap-bigint", "cap-collections", "cap-csv", "cap-glob", "cap-hashlib",
+        "cap-pathlib", "cap-re",
     ),
 }
 
@@ -885,7 +886,9 @@ ONLY_CPYTHON_REFUSALS = frozenset({
     "nan-order",          # a sort over a NaN is the algorithm's answer, and mp's differs
     "identity",           # `is` on equal immutables — mp's small-int boxing answers True
     "iterator-type-name",  # mp spells every iterator type `iterator`; CPython has a family
-    "int-div-precision",  # int/int past 2**53 — mp converts to double and loses the low bits
+    # `int-div-precision` was here until `cap-bigint`: `bigint.div_exact` computes
+    # the quotient from the integers and rounds once, so lypning-l answers it and
+    # the kind is no longer one no reimplementation may have.
     "set-order",          # CPython's hash order is observable, and it is CPython's
     "set-method",         # ...including hash(-1) == -2, reserved as an error sentinel
     "dict-view",          # keys/items are set-like, values compare by identity

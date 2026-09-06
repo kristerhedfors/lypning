@@ -25,7 +25,14 @@ use crate::ast::{Params, Stmt};
 pub enum Value {
     None,
     Bool(bool),
-    Int(i64),
+    /// A Python `int`. The payload is [`Int`], not a bare `i64`, which is the
+    /// whole of `cap-bigint`'s value model: there is **one** integer variant and
+    /// it can be wide, rather than a second `Value::BigInt` that every `_ =>`
+    /// arm in the tree would silently swallow (`docs/HILLCLIMB.md` iterations 74
+    /// and 76 are the five capabilities that shape sank). Widening the PAYLOAD
+    /// makes the compiler the work list: every site that read the `i64` is a
+    /// type error until it says what it does with a value that is not one.
+    Int(Int),
     Float(f64),
     Str(Rc<str>),
     Bytes(Rc<Vec<u8>>),
@@ -78,6 +85,112 @@ pub enum Value {
     /// refuses rather than collapse two of them into one.
     #[cfg(feature = "cap-re")]
     Match(Rc<crate::re::MatchObj>),
+}
+
+/// A Python integer: a machine word, or — on a variant with `cap-bigint` — a
+/// magnitude on the heap.
+///
+/// Zero and every value in `i64` range is **always** [`Int::S`]; `bigint::norm`
+/// is the only constructor of the wide arm and it demotes. Two consequences the
+/// rest of the tree relies on: `Int::S(x) == Int::S(y)` is integer equality with
+/// no normalisation step, and an [`Int::B`] is never equal to any `i64`, so a
+/// small/wide comparison is decided by the arm alone.
+///
+/// On the frozen core the wide arm does not exist, so this is a one-variant
+/// enum around an `i64` and every method below inlines to nothing.
+#[derive(Clone)]
+pub enum Int {
+    S(i64),
+    #[cfg(feature = "cap-bigint")]
+    B(Rc<crate::bigint::Big>),
+}
+
+impl Int {
+    /// The `i64`, or `None` for a value that is not one.
+    ///
+    /// Callers that can act on a wide integer use this; callers that cannot use
+    /// [`Int::get`], which refuses. Nothing may use `as i64` on the payload.
+    #[inline]
+    pub fn small(&self) -> Option<i64> {
+        match self {
+            Int::S(i) => Some(*i),
+            #[cfg(feature = "cap-bigint")]
+            Int::B(_) => None,
+        }
+    }
+
+    /// The `i64`, or the `bigint` refusal.
+    ///
+    /// This is the default for every consumer that needs a machine word — an
+    /// index, a count, a repeat, a codepoint, a file offset. CPython answers
+    /// most of them (`[1][2**100]` is an IndexError there, not a bignum), so a
+    /// refusal is a spawn and the right answer, where an `as i64` truncation
+    /// would be a wrong answer at exit 0.
+    #[inline]
+    pub fn get(&self) -> R<i64> {
+        match self {
+            Int::S(i) => Ok(*i),
+            #[cfg(feature = "cap-bigint")]
+            Int::B(_) => Err(unsupported(
+                "bigint",
+                "an integer past 64 bits where this engine needs a machine word",
+            )),
+        }
+    }
+
+    #[inline]
+    pub fn is_zero(&self) -> bool {
+        matches!(self, Int::S(0))
+    }
+
+    /// `-1`, `0` or `1`. Total, and defined for the wide arm.
+    #[inline]
+    pub fn sign(&self) -> i32 {
+        match self {
+            Int::S(i) => (*i > 0) as i32 - (*i < 0) as i32,
+            #[cfg(feature = "cap-bigint")]
+            Int::B(b) => {
+                if b.neg {
+                    -1
+                } else {
+                    1
+                }
+            }
+        }
+    }
+}
+
+/// Integer equality, which is what `Tok::Int` comparison and every derive over
+/// the AST mean by it. `Int::B` never fits an `i64`, so the arms decide a mixed
+/// pair without normalising either side.
+impl PartialEq for Int {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Int::S(a), Int::S(b)) => a == b,
+            #[cfg(feature = "cap-bigint")]
+            (Int::B(a), Int::B(b)) => a.neg == b.neg && a.mag == b.mag,
+            #[cfg(feature = "cap-bigint")]
+            _ => false,
+        }
+    }
+}
+
+impl std::fmt::Debug for Int {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Int::S(i) => write!(f, "{i}"),
+            // The digits would need the decimal conversion, which can refuse;
+            // a Debug that cannot fail says the width instead.
+            #[cfg(feature = "cap-bigint")]
+            Int::B(b) => write!(f, "<int of {} limbs>", b.mag.len()),
+        }
+    }
+}
+
+/// `Value::Int` from an `i64` — the spelling every construction site uses.
+#[inline]
+pub fn ival(i: i64) -> Value {
+    Value::Int(Int::S(i))
 }
 
 pub struct FuncObj {
@@ -152,7 +265,12 @@ pub fn hkey(v: &Value) -> R<HKey> {
     Ok(match v {
         Value::None => HKey::None,
         Value::Bool(b) => HKey::Int(*b as i64),
-        Value::Int(i) => HKey::Int(*i),
+        // A WIDE integer refuses as a key rather than collapse with a float.
+        // `2**100 == 2.0**100` is True in CPython, so the two are ONE dict key
+        // there; keying the integer on its magnitude and the float on its bits
+        // would make two, at exit 0. Matching CPython's hash (`x mod 2**61-1`)
+        // would not fix it either — equality decides the collapse, not the hash.
+        Value::Int(i) => HKey::Int(i.get()?),
         Value::Float(f) => {
             if f.is_finite() && f.fract() == 0.0 && *f >= -(2f64.powi(63)) && *f < 2f64.powi(63) {
                 HKey::Int(*f as i64)
@@ -461,7 +579,7 @@ pub fn truthy(v: &Value) -> R<bool> {
     Ok(match v {
         Value::None => false,
         Value::Bool(b) => *b,
-        Value::Int(i) => *i != 0,
+        Value::Int(i) => !i.is_zero(),
         Value::Float(f) => *f != 0.0,
         Value::Str(s) => !s.is_empty(),
         Value::Bytes(b) => !b.is_empty(),
@@ -674,6 +792,13 @@ pub fn eq(a: &Value, b: &Value) -> R<bool> {
         (Value::Bool(x), Value::Bool(y)) => return Ok(x == y),
         _ => {}
     }
+    // BEFORE `as_num`, which answers None for a wide integer — and after which
+    // `2**100 == 2**100` would have fallen through to the composite arms and
+    // answered False at exit 0.
+    #[cfg(feature = "cap-bigint")]
+    if let Some(r) = big_eq(a, b)? {
+        return Ok(r);
+    }
     if let (Some(x), Some(y)) = (as_num(a), as_num(b)) {
         return Ok(num_eq(x, y));
     }
@@ -853,7 +978,12 @@ pub enum Num {
 pub fn as_num(v: &Value) -> Option<Num> {
     match v {
         Value::Bool(b) => Some(Num::I(*b as i64)),
-        Value::Int(i) => Some(Num::I(*i)),
+        // A WIDE integer is deliberately not a `Num`: `Num::I` is an `i64` and
+        // there is no honest one to give. Every numeric path that can act on a
+        // wide value — `binop`, `eq`, `order_as` — takes it BEFORE reaching
+        // here; the ones that cannot then fall through to their own TypeError,
+        // which is what a `None` has always meant.
+        Value::Int(i) => i.small().map(Num::I),
         Value::Float(f) => Some(Num::F(*f)),
         // ONE arm that makes `== != < <= > >= + - * / // % ** << >>`,
         // `sorted`, `min`, `max`, `sum`, `int()`, `float()`, `round()` and
@@ -864,6 +994,30 @@ pub fn as_num(v: &Value) -> Option<Num> {
         Value::ReFlag(b) => Some(Num::I(*b as i64)),
         _ => None,
     }
+}
+
+/// Equality where one side is a WIDE integer.
+///
+/// `None` when neither is, so the ordinary numeric path decides. A wide integer
+/// against a float REFUSES: `2.0**100 == 2**100` is True in CPython and this
+/// engine will not convert either side to answer it. Against anything that is
+/// not a number the answer is False, which is CPython's own.
+#[cfg(feature = "cap-bigint")]
+fn big_eq(a: &Value, b: &Value) -> R<Option<bool>> {
+    if !crate::bigint::is_wide(a) && !crate::bigint::is_wide(b) {
+        return Ok(None);
+    }
+    Ok(match (a, b) {
+        (Value::Int(x), Value::Int(y)) => Some(crate::bigint::eq_int(x, y)),
+        (Value::Float(_), _) | (_, Value::Float(_)) => {
+            return Err(crate::bigint::refuse(
+                "an integer past 64 bits compared with a float, whose exact value this engine cannot round",
+            ))
+        }
+        // bool and RegexFlag are both small; a wide integer is equal to neither,
+        // and to nothing else in the language.
+        _ => Some(false),
+    })
 }
 
 fn num_eq(a: Num, b: Num) -> bool {

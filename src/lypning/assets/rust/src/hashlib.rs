@@ -80,7 +80,7 @@ use crate::args::Args;
 use crate::err::{attr_err, type_err, unsupported, LypningError, R};
 use crate::eval::Interp;
 use crate::iter::Iter;
-use crate::value::Value;
+use crate::value::{ival, Value};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -576,8 +576,8 @@ pub fn attr(recv: &Value, cell: &Rc<RefCell<Iter>>, name: &str) -> R<Value> {
     let h = borrow(cell)?;
     Ok(match name {
         "name" => Value::Str(h.name().into()),
-        "digest_size" => Value::Int(DIGEST_SIZE[h.alg as usize] as i64),
-        "block_size" => Value::Int(BLOCK[h.alg as usize] as i64),
+        "digest_size" => ival(DIGEST_SIZE[h.alg as usize] as i64),
+        "block_size" => ival(BLOCK[h.alg as usize] as i64),
         "copy" | "digest" | "hexdigest" | "update" => {
             drop(h);
             Value::Bound(Rc::new(recv.clone()), interned(name))

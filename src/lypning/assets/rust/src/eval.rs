@@ -726,7 +726,7 @@ impl Interp {
             Expr::None => Value::None,
             Expr::True => Value::Bool(true),
             Expr::False => Value::Bool(false),
-            Expr::Int(i) => Value::Int(*i),
+            Expr::Int(i) => Value::Int(i.clone()),
             Expr::Float(f) => Value::Float(*f),
             Expr::Str(s) => Value::Str(s.clone()),
             Expr::Bytes(b) => Value::Bytes(b.clone()),
@@ -819,12 +819,15 @@ impl Interp {
                     UnOp::Neg => match v {
                         // IntFlag unary `-` and `+` return a plain int.
                         #[cfg(feature = "cap-re")]
-                        Value::ReFlag(b) => Value::Int(-(b as i64)),
-                        Value::Int(i) => Value::Int(
-                            i.checked_neg()
-                                .ok_or_else(|| unsupported("bigint", "integer negation overflow"))?,
-                        ),
-                        Value::Bool(b) => Value::Int(-(b as i64)),
+                        Value::ReFlag(b) => ival(-(b as i64)),
+                        // `-(-2**63)` is 2**63, a bignum, and so is the
+                        // negation of every wide value. `neg_int` builds it on
+                        // the variant that has one and refuses on the core.
+                        Value::Int(i) => match i.small().and_then(|v| v.checked_neg()) {
+                            Some(v) => ival(v),
+                            None => neg_int(&i)?,
+                        },
+                        Value::Bool(b) => ival(-(b as i64)),
                         Value::Float(f) => Value::Float(-f),
                         other => {
                             return Err(type_err(format!(
@@ -835,8 +838,8 @@ impl Interp {
                     },
                     UnOp::Pos => match v {
                         #[cfg(feature = "cap-re")]
-                        Value::ReFlag(b) => Value::Int(b as i64),
-                        Value::Bool(b) => Value::Int(b as i64),
+                        Value::ReFlag(b) => ival(b as i64),
+                        Value::Bool(b) => ival(b as i64),
                         v @ (Value::Int(_) | Value::Float(_)) => v,
                         other => {
                             return Err(type_err(format!(
@@ -855,8 +858,12 @@ impl Interp {
                                 "~ on a RegexFlag, whose inverted mask CPython spells version-dependently",
                             ))
                         }
-                        Value::Int(i) => Value::Int(!i),
-                        Value::Bool(b) => Value::Int(!(b as i64)),
+                        // `~x` is `-x - 1` and needs no special case for a
+                        // wide value; `get()` refuses one for now, because
+                        // nothing in the corpus inverts a bignum and the arm
+                        // below would have to grow a magnitude complement.
+                        Value::Int(i) => ival(!i.get()?),
+                        Value::Bool(b) => ival(!(b as i64)),
                         other => {
                             return Err(type_err(format!(
                                 "bad operand type for unary ~: '{}'",
@@ -1594,9 +1601,25 @@ pub fn exc_matches(clause: &str, kind: &str) -> bool {
     }
 }
 
+/// Unary `-` where the machine word cannot hold the answer — `-(-2**63)`, and
+/// every wide value. The bignum on the variant that has one, the refusal this
+/// arm always raised on the core.
+#[allow(unused_variables)]
+fn neg_int(i: &Int) -> R<Value> {
+    #[cfg(feature = "cap-bigint")]
+    return Ok(crate::bigint::neg(i));
+    #[cfg(not(feature = "cap-bigint"))]
+    Err(unsupported("bigint", "integer negation overflow"))
+}
+
 pub fn int_val(v: &Value) -> R<i64> {
     match v {
-        Value::Int(i) => Ok(*i),
+        // THE machine-word gate. Every index, count, repeat, codepoint, width
+        // and offset in the interpreter arrives here, and a wide integer refuses
+        // at all of them rather than truncate — CPython answers most of them
+        // (`[1][2**100]` is an IndexError there), so the refusal is a spawn and
+        // the right answer where an `as i64` would be a wrong one at exit 0.
+        Value::Int(i) => i.get(),
         Value::Bool(b) => Ok(*b as i64),
         // `[0, 1, 2][re.I]`, `range(re.I)`, `chr(re.I + 63)`: `__index__` on
         // an IntFlag is the int.

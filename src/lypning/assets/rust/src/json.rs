@@ -295,7 +295,7 @@ impl<'a> P<'a> {
             })?))
         } else {
             match text.parse::<i64>() {
-                Ok(v) => Ok(Value::Int(v)),
+                Ok(v) => Ok(ival(v)),
                 Err(_) => Err(unsupported(
                     "bigint",
                     "JSON integer beyond 64-bit range",
@@ -378,7 +378,10 @@ fn write_value(out: &mut String, v: &Value, o: &Opts, depth: usize) -> R<()> {
     match v {
         Value::None => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        Value::Int(i) => out.push_str(&i.to_string()),
+        // A bignum is JSON's own number syntax, so this is the decimal text
+        // and nothing else — `fmt::int_str` is the same conversion `repr` uses,
+        // including CPython's digit cap.
+        Value::Int(i) => out.push_str(&fmt::int_str(i)?),
         // The encoder calls `int.__repr__` on an int subclass: `json.dumps(re.I)`
         // is `2`.
         #[cfg(feature = "cap-re")]
@@ -412,7 +415,7 @@ fn write_value(out: &mut String, v: &Value, o: &Opts, depth: usize) -> R<()> {
             for (k, val) in d.borrow().iter() {
                 let ks = match k {
                     Value::Str(s) => s.to_string(),
-                    Value::Int(i) => i.to_string(),
+                    Value::Int(i) => fmt::int_str(i)?,
                     #[cfg(feature = "cap-re")]
                     Value::ReFlag(b) => b.to_string(),
                     Value::Bool(b) => if *b { "true" } else { "false" }.to_string(),

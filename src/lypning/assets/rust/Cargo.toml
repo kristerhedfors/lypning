@@ -50,11 +50,18 @@ variant-m = []
 # The 4 MB point. Names the smaller variant so cargo's feature union makes it a
 # superset by construction — the monotonicity the router assumes. It grows one
 # `cap-*` per step; `variant-m` is FROZEN and gains none of them.
-variant-l = ["variant-m", "cap-collections", "cap-csv", "cap-glob", "cap-hashlib", "cap-pathlib", "cap-re"]
+variant-l = ["variant-m", "cap-bigint", "cap-collections", "cap-csv", "cap-glob", "cap-hashlib", "cap-pathlib", "cap-re"]
 
 # `collections.Counter` and `collections.defaultdict` — 83 of the corpus
 # programs measured on 2026-09-04 import `collections`, and between them they
 # use only those two names. `src/collections.rs` is the whole of it.
+# Python's integers, which are arbitrary precision, where `variant-m` has i64
+# and a refusal. NOT a module: it widens `Value::Int`'s payload, so the compiler
+# — not a reviewer — enumerates the paths that held an integer. `src/bigint.rs`
+# is the whole of it, and the two runtime kinds it answers are the only rows in
+# `route::CAPS` that are refusals rather than modules.
+cap-bigint = []
+
 cap-collections = []
 
 # `pathlib.Path` — the top row of the measured build order: it is the module the
