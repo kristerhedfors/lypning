@@ -758,6 +758,17 @@ impl Interp {
                 "dict" => Some(Value::Dict(Rc::new(RefCell::new(Dict::new())))),
                 "set" => Some(Value::Set(Rc::new(RefCell::new(Set::new())))),
                 "bytes" => Some(Value::Bytes(Rc::new(Vec::new()))),
+                // `int` and `bool` have no methods here, so neither resolves an
+                // unbound one — they are probed for the OTHER half of this
+                // block. `int.from_bytes(b'\x01' * 16, 'big')` is a classmethod
+                // CPython answers and this raised `AttributeError` for, and an
+                // AttributeError is exit 1: the program's own exit, which the
+                // dispatcher returns unchanged and the caller has no second
+                // chance at. `INT_MISSING` already turned the INSTANCE spelling
+                // — `(2**100).from_bytes` — into a refusal; the type object is
+                // the same table read through the same probe.
+                "int" => Some(ival(0)),
+                "bool" => Some(Value::Bool(false)),
                 _ => None,
             };
             if let Some(p) = probe {
@@ -955,12 +966,19 @@ fn num_binop(op: BinOp, a: Num, b: Num, both_bool: bool) -> R<Value> {
             BitOr => x | y,
             BitXor => x ^ y,
             LShift => {
-                if !(0..64).contains(&y) {
-                    return Err(if y < 0 {
-                        value_err("negative shift count")
-                    } else {
-                        unsupported("bigint", "left shift beyond 64-bit range")
-                    });
+                if y < 0 {
+                    return Err(value_err("negative shift count"));
+                }
+                // A SHIFT COUNT PAST 64 IS NOT A REFUSAL, IT IS A WIDE RESULT.
+                // This refused whenever the COUNT reached 64, so `1 << 64`
+                // declined while `2 ** 64` — the same integer — answered, and
+                // `0 << 64` declined for a result that is 0. The count is not
+                // the thing that has to fit a machine word; only the answer is,
+                // and `wide` is exactly the function that knows whether this
+                // variant can hold one. `bigint::i64_op`'s own `MAX_BITS` still
+                // refuses `1 << (10**9)` rather than allocate 128 MB.
+                if y >= 64 {
+                    return wide(LShift, x, y);
                 }
                 match x.checked_shl(y as u32).filter(|r| r >> y == x) {
                     Some(r) => r,
@@ -2001,23 +2019,38 @@ fn percent_one(v: &Value, spec: &str, min_digits: usize) -> R<String> {
         }
     }
     if min_digits > 0 {
-        let n = match v {
-            // A wide integer has more digits than any `min_digits` this reaches,
-            // so `0` would be the wrong side of the comparison below; `get()`
-            // refuses instead, and `%05d` of a bignum is the one `%`-format
-            // shape this engine does not answer.
-            Value::Int(i) => i.get()?,
-            Value::Bool(b) => *b as i64,
-            // A float or anything else here is already the `integer format code
-            // applied to …` refusal one line down; let it produce its message.
-            _ => 0,
+        let radix = match spec.chars().last() {
+            Some('x') | Some('X') => 16,
+            Some('o') => 8,
+            Some('b') => 2,
+            _ => 10,
         };
-        let a = n.unsigned_abs();
-        let have = match spec.chars().last() {
-            Some('x') | Some('X') => format!("{a:x}").len(),
-            Some('o') => format!("{a:o}").len(),
-            Some('b') => format!("{a:b}").len(),
-            _ => a.to_string().len(),
+        // A WIDE INTEGER HAS DIGITS TOO, AND THEY ARE THE ANSWER HERE. This
+        // asked `Int::get()` for a machine word first, so `'%.3d' % (2**100,)`
+        // refused where `'%d' % (2**100,)` answers — a precision narrowed the
+        // conversion rather than widening it, for a value whose 31 digits
+        // satisfy the minimum several times over. The digits come from the same
+        // function the `d` and `x` arms of `fmt` use, so the count is the one
+        // that will be printed and not an estimate of it.
+        let have = match fmt::wide_digits(v, radix, false)? {
+            Some(d) => d.len(),
+            None => {
+                let n = match v {
+                    Value::Int(i) => i.get()?,
+                    Value::Bool(b) => *b as i64,
+                    // A float or anything else here is already the `integer
+                    // format code applied to …` refusal one line down; let it
+                    // produce its message.
+                    _ => 0,
+                };
+                let a = n.unsigned_abs();
+                match radix {
+                    16 => format!("{a:x}").len(),
+                    8 => format!("{a:o}").len(),
+                    2 => format!("{a:b}").len(),
+                    _ => a.to_string().len(),
+                }
+            }
         };
         if have < min_digits {
             return Err(unsupported(

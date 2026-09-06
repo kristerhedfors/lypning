@@ -35,10 +35,18 @@
 //! `re.rs` caps backtracking steps. Both refuse; neither wraps or truncates.
 //!
 //! CPython carries a third budget of its own and it is *observable*:
-//! `sys.get_int_max_str_digits()` is 4300 on 3.14.5, and `str()` of a longer
-//! integer raises `ValueError` rather than answering. Two different messages
-//! (one names the digit count, one does not) guard `str()` and `int()`, so this
-//! refuses at the same threshold rather than reproduce them.
+//! `str()` of an integer past `sys.get_int_max_str_digits()` raises
+//! `ValueError` rather than answering. Two different messages (one names the
+//! digit count, one does not) guard `str()` and `int()`, so this refuses at the
+//! same threshold rather than reproduce them.
+//!
+//! That threshold is **not a constant**, which is how it was first written
+//! here. It is 4300 by default and `PYTHONINTMAXSTRDIGITS` otherwise, read at
+//! interpreter start, so `PYTHONINTMAXSTRDIGITS=640 lypning -c
+//! 'print(len(str(10**700)))'` printed 701 where CPython raises — an answer at
+//! exit 0 to a program CPython refuses. [`crate::host::int_max_str_digits`] is
+//! the reader, [`over_str_digit_limit`] the screen that keeps it off the hot
+//! path, and the ceiling stays 4300 for the reason that function gives.
 
 use crate::ast::BinOp;
 use crate::err::{unsupported, value_err, zero_div, LypningError, R};
@@ -68,8 +76,21 @@ const MAX_BITS: usize = 1 << 20;
 /// such cap because it is linear.
 const DIV_BUDGET_BITS: usize = 1 << 16;
 
-/// `sys.get_int_max_str_digits()` on CPython 3.14.5.
-const MAX_STR_DIGITS: usize = 4300;
+/// Is a base-10 conversion of `digits` digits past the limit CPython would
+/// apply to it?
+///
+/// The environment is read only when `digits` is past CPython's own
+/// `str_digits_check_threshold`, below which no accepted limit can bite — so
+/// `print(2**100)` costs no `getenv` at all and only a conversion already
+/// hundreds of digits wide pays for one.
+///
+/// A `PYTHONINTMAXSTRDIGITS` CPython would not start with answers `true`, so
+/// the caller refuses; `main.rs` has already refused the run for the same
+/// reason, and this keeps the library path honest for a host that has not.
+fn over_str_digit_limit(digits: usize) -> bool {
+    digits > crate::host::STR_DIGITS_CHECK_THRESHOLD
+        && crate::host::int_max_str_digits().map_or(true, |lim| digits > lim)
+}
 
 pub fn refuse(what: &str) -> LypningError {
     unsupported("bigint", what)
@@ -407,7 +428,7 @@ pub fn to_dec(b: &Big) -> R<String> {
         chunks.push(0);
     }
     let digits = (chunks.len() - 1) * 9 + chunks[chunks.len() - 1].to_string().len();
-    if digits > MAX_STR_DIGITS {
+    if over_str_digit_limit(digits) {
         return Err(refuse(
             "str() of an integer past sys.get_int_max_str_digits(), where CPython raises ValueError",
         ));
@@ -468,7 +489,7 @@ pub fn parse(digits: &str, radix: u32) -> Option<Int> {
     if digits.is_empty() {
         return None;
     }
-    if radix == 10 && digits.len() > MAX_STR_DIGITS {
+    if radix == 10 && over_str_digit_limit(digits.len()) {
         // CPython raises ValueError here too, with a message that names the
         // digit count. Refused as a None the caller turns into the `bigint`
         // refusal, for the reason `to_dec` gives.

@@ -17,6 +17,14 @@
 //! host threads can run two programs at once without either seeing the other's
 //! argv — and means a host that ignores that rule gets an honest `Busy` from
 //! `embed::run` rather than a silently interleaved answer.
+//!
+//! The other half of "what the process provides" is what CPython reads **before
+//! the program starts** and then never mentions again. There is one so far —
+//! [`int_max_str_digits`] — and it belongs here rather than in `bigint.rs` for
+//! two reasons: an invalid setting stops CPython from starting at all, so the
+//! check is on the run path of every variant and not inside a capability only
+//! one of them has; and a number that was compiled in as a constant is a number
+//! nobody thinks to re-read.
 
 use std::cell::RefCell;
 
@@ -96,4 +104,105 @@ pub fn output_limit() -> usize {
 /// `sys.argv`, verbatim, when the host supplied it.
 pub fn argv_override() -> Option<Vec<String>> {
     POLICY.with(|c| c.borrow().as_ref().and_then(|p| p.argv.clone()))
+}
+
+// ---- what CPython reads before the program starts --------------------------
+
+/// CPython's default `sys.get_int_max_str_digits()`, and the ceiling this
+/// engine will raise its own to. See [`int_max_str_digits`].
+pub const DEFAULT_MAX_STR_DIGITS: usize = 4300;
+
+/// CPython's `sys.int_info.str_digits_check_threshold`. Every limit CPython
+/// accepts is either 0 or at least this, so a conversion with no more digits
+/// than this is under **every** possible limit and the environment need not be
+/// read at all. The check sites use it as exactly that screen — one `getenv` on
+/// the rare wide conversion, none on the common one.
+pub const STR_DIGITS_CHECK_THRESHOLD: usize = 640;
+
+/// `sys.get_int_max_str_digits()` as this process would see it, or `Err` when
+/// `PYTHONINTMAXSTRDIGITS` holds something CPython refuses to start with.
+///
+/// The limit is **not** the constant 4300 it was written as. CPython reads
+/// `PYTHONINTMAXSTRDIGITS` at interpreter start: 0 means unlimited, anything
+/// else must be at least [`STR_DIGITS_CHECK_THRESHOLD`], and anything else
+/// again is `Fatal Python error: config_init_int_max_str_digits` — exit 1, no
+/// program run, nothing on stdout. Answering such a program at exit 0 is the
+/// worst outcome this project has, so the `Err` is a refusal and CPython
+/// produces its own fatal error one spawn later.
+///
+/// **The value is only ever LOWERED, never raised** — `min(env, 4300)`. That is
+/// two decisions in one line. It keeps `to_dec`'s O(n²) decimal conversion
+/// inside the budget it already had, next to `MAX_BITS` and `DIV_BUDGET_BITS`;
+/// and it makes `-E` and `-I` — which this binary accepts and ignores, and
+/// which tell CPython to ignore every `PYTHON*` variable — safe for free, since
+/// under them CPython's limit is the default and a limit we never raise above
+/// the default can only refuse where CPython answers. A raised limit honoured
+/// literally would have answered a 100,000-digit `str()` that `python3 -E`
+/// raises `ValueError` for: a wrong answer at exit 0, which is what this
+/// function exists to prevent. So `PYTHONINTMAXSTRDIGITS=0` (unlimited) buys
+/// coverage from CPython, not from here — a refusal, which invariant 1 says is
+/// never a bug.
+pub fn int_max_str_digits() -> Result<usize, ()> {
+    let Some(raw) = std::env::var_os("PYTHONINTMAXSTRDIGITS") else {
+        return Ok(DEFAULT_MAX_STR_DIGITS);
+    };
+    // CPython's `_Py_GetEnv` treats an EMPTY variable as unset, so
+    // `PYTHONINTMAXSTRDIGITS= python3` is the default and not an error. A
+    // non-UTF-8 value cannot be a decimal number, so it is invalid.
+    let s = match raw.to_str() {
+        Some("") => return Ok(DEFAULT_MAX_STR_DIGITS),
+        Some(s) => s,
+        None => return Err(()),
+    };
+    match strtol10(s) {
+        // 0 is CPython's "unlimited"; the ceiling above is why it is not.
+        Some(0) => Ok(DEFAULT_MAX_STR_DIGITS),
+        Some(v) if v >= STR_DIGITS_CHECK_THRESHOLD as i64 => {
+            Ok((v as usize).min(DEFAULT_MAX_STR_DIGITS))
+        }
+        _ => Err(()),
+    }
+}
+
+/// CPython's `_Py_str_to_int`: `strtol(s, &end, 10)` with `*end == '\0'`
+/// required and the result held to a C `int`.
+///
+/// Written out rather than handed to `str::parse` because the two disagree on
+/// four inputs that all appear in a shell: `" 640"` is accepted (strtol skips
+/// leading whitespace) while `"640 "` is not, `"+640"` and `"0640"` are 640,
+/// and `"0x280"` is a parse that stops at the `x` and therefore an error rather
+/// than 640. Each was checked against CPython 3.14.5 before it was written
+/// here; `tests/test_bigint_grid.py` keeps them checked.
+fn strtol10(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() && (b[i] == b' ' || (0x09..=0x0d).contains(&b[i])) {
+        i += 1;
+    }
+    let neg = match b.get(i) {
+        Some(b'-') => {
+            i += 1;
+            true
+        }
+        Some(b'+') => {
+            i += 1;
+            false
+        }
+        _ => false,
+    };
+    let start = i;
+    let mut v: i64 = 0;
+    while i < b.len() && b[i].is_ascii_digit() {
+        // Overflow is CPython's `errno == ERANGE`, and the `int` ceiling is its
+        // `value > INT_MAX`. Both are the same answer here: not a limit.
+        v = v * 10 + (b[i] - b'0') as i64;
+        if v > i32::MAX as i64 {
+            return None;
+        }
+        i += 1;
+    }
+    if i == start || i != b.len() {
+        return None;
+    }
+    Some(if neg { -v } else { v })
 }

@@ -38,6 +38,13 @@ programs, all of them printing a set or a dict-view whose order is seed-
 dependent; started with it, 0 of 745. **Start the pool with the hash seed its
 callers expect.**
 
+``PYTHONINTMAXSTRDIGITS`` is the second member of that class and was found
+while the Rust engines were taught to read it: it too is consumed at
+interpreter start, so a pool started without it answers ``str(10**700)`` where
+a cold ``python3`` under the caller's value raises ``ValueError``. The same
+rule applies — start the pool with the variable its callers expect, or do not
+set it for them at all.
+
 **The inherited-import subtlety, stated because it flatters us.** The child
 inherits whatever the parent has already imported, so a program doing
 ``import json`` pays nothing where a cold spawn pays the import. That is a real

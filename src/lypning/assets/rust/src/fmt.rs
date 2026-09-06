@@ -631,6 +631,24 @@ pub fn format_value(v: &Value, spec_src: &str) -> R<String> {
             ));
         }
     }
+    // …AND A PATH IS NOT THE ONLY TYPE WITH NO `__format__`. Exactly four have
+    // one — `str`, `int`, `bool` and `float`; every other value inherits
+    // `object.__format__`, which raises TypeError for any non-empty spec. So
+    // `format(None, '5s')`, `f"{[1]:>8}"` and `format(b'a', 's')` were padded
+    // answers at exit 0 where CPython raises. Found by a differential sweep
+    // over this function, on both variants.
+    if !spec_src.is_empty()
+        && !matches!(v, Value::Str(_) | Value::Int(_) | Value::Bool(_) | Value::Float(_))
+    {
+        return Err(unsupported(
+            "format",
+            &format!(
+                "a format spec on a {}, which CPython answers with a TypeError from \
+                 object.__format__",
+                type_name(v)
+            ),
+        ));
+    }
     format_inner(v, spec_src, false)
 }
 
@@ -729,6 +747,22 @@ fn format_inner(v: &Value, spec_src: &str, from_pct: bool) -> R<String> {
     let mut alt_prefix = "";
     let body = match ty {
         's' => {
+            // `'s'` ON A NUMBER IS A ValueError IN CPython, not `str()` of it:
+            // `format(2**100, 's')` and `f'{5:s}'` both raise "Unknown format
+            // code 's' for object of type 'int'". This padded the digits
+            // instead — an answer at exit 0 where CPython raises, on both
+            // variants and for a small integer too, so it predates
+            // `cap-bigint`. Only the three numeric types, because they are the
+            // ones that reach here with an EXPLICIT `s`: a number with no
+            // presentation type resolved to `'d'` or `'g'` above, and
+            // `object.__format__` raises TypeError rather than ValueError for
+            // the types that have no `__format__` of their own.
+            if matches!(v, Value::Int(_) | Value::Bool(_) | Value::Float(_)) {
+                return Err(value_err(format!(
+                    "Unknown format code 's' for object of type '{}'",
+                    type_name(v)
+                )));
+            }
             let mut s = to_str(v)?;
             if let Some(p) = sp.precision {
                 s = s.chars().take(p).collect();
@@ -932,8 +966,12 @@ pub fn int_str(i: &Int) -> R<String> {
 /// Split out rather than folded into `int_of` because the sign, the `0x` prefix
 /// and the zero fill are placed by the caller and every one of them goes in a
 /// different slot — `format(-255, '#010x')` is `-0x00000ff`.
+///
+/// `pub(crate)` for `ops::percent_one`, which needs the same digits for a
+/// different question: how many there are, so that `'%.3d' % (2**100,)` can
+/// tell "the value already satisfies the minimum" from "it does not".
 #[allow(unused_variables)]
-fn wide_digits(v: &Value, radix: u32, upper: bool) -> R<Option<String>> {
+pub(crate) fn wide_digits(v: &Value, radix: u32, upper: bool) -> R<Option<String>> {
     #[cfg(feature = "cap-bigint")]
     if let Value::Int(Int::B(b)) = v {
         return Ok(Some(if radix == 10 {

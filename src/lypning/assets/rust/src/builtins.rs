@@ -633,7 +633,7 @@ pub fn call_builtin(
                     let cleaned: String = t2.chars().filter(|c| *c != '_').collect();
                     match i64::from_str_radix(&cleaned, base as u32) {
                         Ok(v) => ival(if neg { -v } else { v }),
-                        Err(e) if cleaned.len() > 18 && !cleaned.is_empty()
+                        Err(e) if !cleaned.is_empty()
                             && cleaned.chars().all(|c| c.is_digit(base as u32)) =>
                         {
                             let _ = e;
@@ -642,6 +642,21 @@ pub fn call_builtin(
                             // still refuses. `parse` answers None past
                             // CPython's own `int_max_str_digits`, where CPython
                             // raises ValueError rather than converting.
+                            //
+                            // THE GUARD IS THE TWO CONDITIONS ABOVE AND NOTHING
+                            // ELSE. It carried a third — `cleaned.len() > 18`,
+                            // a decimal digit count — which is a cheap screen
+                            // for base 10 and a WRONG one for every other base:
+                            // `int('ffffffffffffffff', 16)` is 16 characters
+                            // and `int('z' * 13, 36)` is 13, both past an i64,
+                            // and both fell through to the ValueError arm
+                            // below. That is exit 1 — the program's own, which
+                            // the chain never retries — for a literal CPython
+                            // converts. The screen was never needed: `cleaned`
+                            // has had its sign stripped, so once it is
+                            // non-empty and every character is a digit of the
+                            // base, overflow is the ONLY error
+                            // `from_str_radix` can have returned.
                             #[cfg(feature = "cap-bigint")]
                             match crate::bigint::parse(&cleaned, base as u32) {
                                 Some(v) => {
