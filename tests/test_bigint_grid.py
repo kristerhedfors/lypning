@@ -26,6 +26,15 @@ elsewhere, and each has a block below:
    for `int()`. Both refuse here rather than be reproduced; `hex`/`oct`/`bin`
    have no such cap and answer at any width.
 
+   **Two halves of that rule were wrong, and each had its own wrong answer at
+   exit 0.** The count is of the INPUT STRING's digits on the way in, not of the
+   result's magnitude, so `int('0' * 5000 + '123')` printed `123` where CPython
+   raises; and the exemption is every POWER-OF-TWO base, not decimal alone, so
+   `int('1' * 4301, 3)` and `int('z' * 4301, 36)` answered too. Both halves come
+   from one function now — `host::over_str_digit_limit(digits, base)` — which
+   the frozen core calls as well, since `int(s)` is not a `cap-bigint` path and
+   the core had the first bug too.
+
    **And that limit is not a constant**, which is how it was first written
    here. CPython reads `PYTHONINTMAXSTRDIGITS` at interpreter start — 0 for
    unlimited, otherwise at least `sys.int_info.str_digits_check_threshold`
@@ -201,6 +210,31 @@ RENDERING = [
     "print(format(None, ''), format([1], ''), '{}'.format(b'a'), f'{None}')",
     "print('%10s|%s' % (None, [1]), '%r' % (b'a',), str(None) + str([1]))",
     "print(f'{2**100:>40}'[-4:], format(2**100, '020d')[:4], format(1.5, '.3f'))",
+    # Trap 1's two boundaries, from the side that must still ANSWER.
+    #
+    # CPython counts the digits of the INPUT STRING and exempts every
+    # POWER-OF-TWO base; the engine counted the RESULT's magnitude and exempted
+    # decimal alone. Both halves are one function now, so both directions of
+    # each need a row: one digit under the limit in a screened base, and any
+    # width at all in an exempt one. Leading zeros count toward the limit, and a
+    # sign, surrounding whitespace and underscores do not — so these four sit
+    # right up against it and must not refuse.
+    "print(int('0' * 4299 + '1'))",
+    "print(int('  ' + '1' * 4300 + '  ') % 1000)",
+    "print(int('_'.join(['1' * 100] * 43)) % 1000)",
+    "print(int('-' + '1' * 4300) % 1000)",
+    "print(int('1' * 4300, 3) % 1000, int('z' * 4300, 36) % 1000)",
+    "print(int('1' * 4301, 16) % 1000, int('1' * 100000, 2) % 1000)",
+    "print(int('3' * 100000, 4) % 1000, int('7' * 100000, 8) % 1000)",
+    "print(int('f' * 100000, 16) % 1000, int('v' * 100000, 32) % 1000)",
+    "print(int('0x' + 'f' * 100000, 0) % 1000, int('0b' + '1' * 100000, 0) % 1000)",
+    "print(len(format(10**5000, '_x')), len(hex(10**5000)))",
+    # …and the screen sits AFTER the well-formedness test, which is CPython's
+    # order: a 5,000-character run of `x` is "invalid literal", not "Exceeds the
+    # limit", so it must not be refused before it is rejected.
+    "int('x' * 5000)",
+    "int('!' * 5000, 3)",
+    "int('1' * 5000 + 'x')",
 ]
 
 #: Every place the widened payload flows through a container, a comparison or a
@@ -334,6 +368,26 @@ REFUSED = [
     "print(len(str(2**20000)))",
     "print(int('1' * 4301))",
     "print(1" + "0" * 4301 + ")",
+    # Trap 1, the INPUT side. CPython counts the digits of the STRING and not of
+    # the value it converts to, so a long run of leading zeros is over the limit
+    # however small the result: `int('0' * 5000 + '123')` is a ValueError there
+    # and printed `123` here — on BOTH variants, because the only screen sat on
+    # the arm `from_str_radix` reaches by OVERFLOWING, and a literal that fits an
+    # i64 never gets there however long it is.
+    "print(int('0' * 5000 + '123'))",
+    "print(int('0' * 4300 + '1'))",
+    "print(int('  ' + '1' * 4301 + '  '))",
+    "print(int('-' + '1' * 4301))",
+    "print(int(b'1' * 4301))",
+    # Trap 1, the BASE. CPython exempts the power-of-two bases — 2, 4, 8, 16 and
+    # 32 convert in linear time — and applies the limit to every other base in
+    # 2..=36. Only base 10 was screened, so 3, 5, 6, 7, 9, 11..15, 17..31 and
+    # 33..36 answered a program CPython refuses.
+    "print(int('1' * 4301, 3))",
+    "print(int('1' * 4301, 5))",
+    "print(int('z' * 4301, 36))",
+    "print(int('1' * 4301, 7))",
+    "print(int('1' * 4301, 33))",
     # Trap 4: the budgets. A hang is worse than either answer.
     "print(2 ** (10**9))",
     "print(1 << (10**9))",
@@ -454,6 +508,10 @@ ENV_LIMIT = [
     ("640", "print(int('1' * 700))"),
     ("640", "print(len(str(10**600)))"),
     ("640", "print(len(hex(10**700)))"),
+    ("640", "print(int('1' * 700, 3) % 1000)"),
+    ("640", "print(int('1' * 600, 3) % 1000)"),
+    ("640", "print(int('1' * 700, 2) % 1000)"),
+    ("640", "print(int('0' * 700 + '1'))"),
     ("700", "print(len(str(10**700)))"),
     ("4300", "print(len(str(10**700)))"),
     ("0", "print(len(str(10**700)))"),

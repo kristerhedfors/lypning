@@ -38,15 +38,20 @@
 //! `str()` of an integer past `sys.get_int_max_str_digits()` raises
 //! `ValueError` rather than answering. Two different messages (one names the
 //! digit count, one does not) guard `str()` and `int()`, so this refuses at the
-//! same threshold rather than reproduce them.
+//! same threshold rather than reproduce them. That threshold is not decimal's
+//! alone: it applies to every base that is not a power of two, in both
+//! directions.
 //!
 //! That threshold is **not a constant**, which is how it was first written
 //! here. It is 4300 by default and `PYTHONINTMAXSTRDIGITS` otherwise, read at
 //! interpreter start, so `PYTHONINTMAXSTRDIGITS=640 lypning -c
 //! 'print(len(str(10**700)))'` printed 701 where CPython raises — an answer at
 //! exit 0 to a program CPython refuses. [`crate::host::int_max_str_digits`] is
-//! the reader, [`over_str_digit_limit`] the screen that keeps it off the hot
-//! path, and the ceiling stays 4300 for the reason that function gives.
+//! the reader, [`crate::host::over_str_digit_limit`] the whole of the rule —
+//! which digits are counted and which bases are exempt — and the ceiling stays
+//! 4300 for the reason that function gives. The rule lives there and not here
+//! because the frozen core, which has no `cap-bigint` and so none of this
+//! file, screens `int(s)` by exactly the same test.
 
 use crate::ast::BinOp;
 use crate::err::{unsupported, value_err, zero_div, LypningError, R};
@@ -75,22 +80,6 @@ const MAX_BITS: usize = 1 << 20;
 /// path — which is what decimal conversion and every small divisor use — has no
 /// such cap because it is linear.
 const DIV_BUDGET_BITS: usize = 1 << 16;
-
-/// Is a base-10 conversion of `digits` digits past the limit CPython would
-/// apply to it?
-///
-/// The environment is read only when `digits` is past CPython's own
-/// `str_digits_check_threshold`, below which no accepted limit can bite — so
-/// `print(2**100)` costs no `getenv` at all and only a conversion already
-/// hundreds of digits wide pays for one.
-///
-/// A `PYTHONINTMAXSTRDIGITS` CPython would not start with answers `true`, so
-/// the caller refuses; `main.rs` has already refused the run for the same
-/// reason, and this keeps the library path honest for a host that has not.
-fn over_str_digit_limit(digits: usize) -> bool {
-    digits > crate::host::STR_DIGITS_CHECK_THRESHOLD
-        && crate::host::int_max_str_digits().map_or(true, |lim| digits > lim)
-}
 
 pub fn refuse(what: &str) -> LypningError {
     unsupported("bigint", what)
@@ -428,7 +417,7 @@ pub fn to_dec(b: &Big) -> R<String> {
         chunks.push(0);
     }
     let digits = (chunks.len() - 1) * 9 + chunks[chunks.len() - 1].to_string().len();
-    if over_str_digit_limit(digits) {
+    if crate::host::over_str_digit_limit(digits, 10) {
         return Err(refuse(
             "str() of an integer past sys.get_int_max_str_digits(), where CPython raises ValueError",
         ));
@@ -489,10 +478,16 @@ pub fn parse(digits: &str, radix: u32) -> Option<Int> {
     if digits.is_empty() {
         return None;
     }
-    if radix == 10 && over_str_digit_limit(digits.len()) {
+    if crate::host::over_str_digit_limit(digits.len(), radix) {
         // CPython raises ValueError here too, with a message that names the
         // digit count. Refused as a None the caller turns into the `bigint`
         // refusal, for the reason `to_dec` gives.
+        //
+        // The base test was `radix == 10` and is now
+        // [`crate::host::over_str_digit_limit`]'s, which exempts every
+        // power-of-two base instead of only naming decimal. The lexer, whose
+        // only wide non-decimal literals are `0b`, `0o` and `0x`, cannot tell
+        // the two apart; `int(s, 3)` can, and did.
         return None;
     }
     let mut mag: Vec<u32> = Vec::new();

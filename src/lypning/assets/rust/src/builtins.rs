@@ -631,6 +631,36 @@ pub fn call_builtin(
                         )));
                     }
                     let cleaned: String = t2.chars().filter(|c| *c != '_').collect();
+                    // CPython'S DIGIT LIMIT IS A SCREEN ON THIS STRING, NOT ON
+                    // THE RESULT. It was applied only inside `bigint::parse`,
+                    // which is reached from the overflow arm below — so a
+                    // literal that FITS an `i64` never met it however long it
+                    // was, and `int('0' * 5000 + '1')` printed `1` at exit 0 on
+                    // both variants where CPython raises `ValueError` for 5001
+                    // digits. `cleaned` is exactly what CPython counts: the
+                    // digit run, sign and whitespace and base prefix already
+                    // off it and underscores already out of it, leading zeros
+                    // kept. `base` has been resolved from a `0` argument, so
+                    // the power-of-two exemption inside the rule sees the base
+                    // that will actually be converted.
+                    //
+                    // Placed AFTER the well-formedness test, and that ordering
+                    // is CPython's: `int('x' * 5000)` is "invalid literal", not
+                    // "Exceeds the limit", so a screen in front of it would
+                    // refuse a program CPython answers with an ordinary
+                    // `ValueError`. The scan costs nothing on the hot path —
+                    // the rule's own length compare is false for every literal
+                    // under 641 digits and `&&` stops there.
+                    if crate::host::over_str_digit_limit(cleaned.len(), base as u32)
+                        && !cleaned.is_empty()
+                        && cleaned.chars().all(|c| c.is_digit(base as u32))
+                    {
+                        return Err(unsupported(
+                            "bigint",
+                            "int() of a string past sys.get_int_max_str_digits(), \
+                             where CPython raises ValueError",
+                        ));
+                    }
                     match i64::from_str_radix(&cleaned, base as u32) {
                         Ok(v) => ival(if neg { -v } else { v }),
                         Err(e) if !cleaned.is_empty()
@@ -639,9 +669,9 @@ pub fn call_builtin(
                             let _ = e;
                             // A well-formed literal too wide for an i64 IS an
                             // integer; `cap-bigint` builds it, and the core
-                            // still refuses. `parse` answers None past
-                            // CPython's own `int_max_str_digits`, where CPython
-                            // raises ValueError rather than converting.
+                            // still refuses. The digit limit has already been
+                            // applied above, on the string, which is where
+                            // CPython applies it.
                             //
                             // THE GUARD IS THE TWO CONDITIONS ABOVE AND NOTHING
                             // ELSE. It carried a third — `cleaned.len() > 18`,

@@ -119,6 +119,44 @@ pub const DEFAULT_MAX_STR_DIGITS: usize = 4300;
 /// the rare wide conversion, none on the common one.
 pub const STR_DIGITS_CHECK_THRESHOLD: usize = 640;
 
+/// Is a conversion between a string of `digits` digits and an integer in `base`
+/// past the limit CPython applies to it? **The one place that rule lives.**
+///
+/// Two halves, both of them CPython's and neither an approximation.
+///
+/// **The count is of DIGITS, and on the way IN those are the input string's,
+/// not the result's.** `int('0' * 5000 + '1')` is a `ValueError` in CPython —
+/// it reports 5001 digits — and answered `1` here, because the only screen sat
+/// on the arm that `i64::from_str_radix` reached by overflowing, and a literal
+/// that fits an `i64` never reaches it however long it is. Leading zeros are
+/// counted; a sign, surrounding whitespace and underscores are not, so the
+/// caller passes the digit run it has already stripped and cleaned. On the way
+/// OUT the count is the digits about to be written, which is the same number.
+///
+/// **A power-of-two base is EXEMPT.** Bases 2, 4, 8, 16 and 32 convert in
+/// linear time, so CPython applies no limit to them and every other base in
+/// `2..=36` gets one: `int('1' * 100000, 2)` and `hex(10**5000)` answer while
+/// `int('1' * 4301, 3)` and `int('z' * 4301, 36)` raise. Checked against
+/// CPython 3.14.5 for all 35 bases and both directions before it was written
+/// here. Base 10 was the only base screened, which left 3, 5, 6, 7, 9, 11..15,
+/// 17..31 and 33..36 answering at exit 0.
+///
+/// The environment is read only when `digits` is past CPython's own
+/// `str_digits_check_threshold`, below which no accepted limit can bite — so
+/// `print(2**100)` costs no `getenv` at all and only a conversion already
+/// hundreds of digits wide pays for one. That test is written first because it
+/// is one compare and it is false for every ordinary program; the base test is
+/// second because it is one instruction and it is the whole of `hex()`.
+///
+/// A `PYTHONINTMAXSTRDIGITS` CPython would not start with answers `true`, so
+/// the caller refuses; `main.rs` has already refused the run for the same
+/// reason, and this keeps the library path honest for a host that has not.
+pub fn over_str_digit_limit(digits: usize, base: u32) -> bool {
+    digits > STR_DIGITS_CHECK_THRESHOLD
+        && !base.is_power_of_two()
+        && int_max_str_digits().map_or(true, |lim| digits > lim)
+}
+
 /// `sys.get_int_max_str_digits()` as this process would see it, or `Err` when
 /// `PYTHONINTMAXSTRDIGITS` holds something CPython refuses to start with.
 ///
