@@ -355,8 +355,13 @@ REFUSED = [G + x for x in [
 #: agent reading it learns something different depending on which binary
 #: answered.
 #:
-#: The list is the whole of `glob.rs`'s error surface minus the four that no
-#: walk can hoist — see `RUNTIME_BACKSTOP` below.
+#: The list is the whole of `glob.rs`'s error surface minus what no walk can
+#: read — see `RUNTIME_BACKSTOP` below. "Read" is wider than one spelling and
+#: the rows say so: a CONSTANT f-string is a literal, a DISPLAY behind a `*` or
+#: a `**` is a literal, and a literal bound to a name is read out of the binding
+#: table in force AT the call — which means in source order AND in scope, so a
+#: `def f(P)`, a `lambda P:` or a comprehension over `P` no longer gives up a
+#: module-level `P` for a call that never entered them.
 AFTER_A_BARRIER = [
     # the keyword arguments: literal at the call site, whatever their value
     ("glob", "print(sorted(glob.glob('*.py', root_dir='d')))"),
@@ -404,6 +409,41 @@ AFTER_A_BARRIER = [
     ("glob", "print(len(glob.glob('[z-a]')))"),
     ("glob", "print('x' in glob.glob('[z-a]'))"),
     ("glob", "P = '[z-a]'\nprint(sorted(glob.glob(P)))"),
+    # …and a CONSTANT f-string, which is a literal with a prefix on it.
+    # `Expr::FString` answered the TYPE `str` and never the text, so the type
+    # gate passed, `glob_pattern_block` never ran, and the pattern was refused
+    # by the run instead — past the barrier, exit 1.
+    ("glob", 'print(sorted(glob.glob(f"[z-a]")))'),
+    ("glob", 'print(sorted(glob.glob(f"[z" "-a]")))'),
+    ("glob", 'P = f"[z-a]"\nprint(sorted(glob.glob(P)))'),
+    ("glob", 'print(sorted(glob.iglob(f"[z-a]")))'),
+    ("glob", 'print(sorted(glob.glob(f"", root_dir="d")))'),
+    # …and the binding that is still LIVE at the call. The table is read in
+    # source order, and scope is the other half of that rule: a name bound
+    # inside a `def`, a `lambda` or a comprehension is a name of that scope
+    # alone. Every row here gave the module-level literal up to a spelling that
+    # never touched it, and reached the runtime refusal past the barrier.
+    ("glob", "P = '[z-a]'\ndef f(P): pass\nprint(sorted(glob.glob(P)))"),
+    ("glob", "P = '[z-a]'\nf = lambda P: P\nprint(sorted(glob.glob(P)))"),
+    ("glob", "P = '[z-a]'\nq = [P for P in [1]]\nprint(sorted(glob.glob(P)))"),
+    ("glob", "P = '[z-a]'\nq = {P: 1 for P in [1]}\nprint(sorted(glob.glob(P)))"),
+    ("glob", "P = '[z-a]'\nfor P in sorted(glob.glob(P)): pass"),
+    # …and the same leak in the other direction: a literal bound INSIDE a
+    # function answered for the module-level name it shadows, so the call was
+    # decided against a pattern that was never in force at it.
+    ("glob", "P = '[z-a]'\ndef f():\n    P = '*.py'\nprint(sorted(glob.glob(P)))"),
+    ("glob", "P = '[z-a]'\nf = lambda: 0\nprint(sorted(glob.glob(P)))"),
+    # the argument list, when the `*`/`**` holds a DISPLAY — which is spelled
+    # out in the source, so the walk can count it and read its keys
+    ("glob", "print(sorted(glob.glob(*['[z-a]'])))"),
+    ("glob", "print(sorted(glob.glob(*('[z-a]',))))"),
+    ("glob", "print(sorted(glob.glob(*['*.py', 'x'])))"),
+    ("glob", "print(sorted(glob.glob(*[])))"),
+    ("glob", "print(sorted(glob.glob('*.py', **{'root_dir': 'd'})))"),
+    ("glob", "print(sorted(glob.glob(*['*.py'], **{'dir_fd': 3})))"),
+    ("glob", "print(sorted(glob.iglob('*.py', **{'include_hidden': True})))"),
+    ("glob", "print(glob.escape('a', **{'x': 1}))"),
+    ("glob", "print(sorted(glob.glob(*[b'*.py'])))"),
     # the attributes nothing on the spectrum serves
     ("module-attr", "print(glob.translate('*.py'))"),
     ("module-attr", "print(glob.glob0('.', 'a.py'))"),
@@ -441,17 +481,34 @@ AFTER_A_BARRIER_ALIASED = [
 #: mined 2026-09-06, 45 pass a literal and 40 a computed pattern; none is
 #: spelled with `*args` at all.
 #:
+#: **Landing after the barrier is not a glob property**, which is why these rows
+#: assert a refusal and not a clean 90. `os.mkdir`/`os.makedirs` commit the
+#: barrier the moment they run, so from there on every refusal this engine
+#: raises is exit 1 — `builtin: eval`, `builtin: complex` and `set-order` with
+#: no glob in the program behave identically. What the static half buys is that
+#: an admitted glob call stops REACHING that door; it does not close it.
+#:
 #: The rows are asserted to still REFUSE (not answer), because the backstop is
-#: the only thing standing behind them — and the last two are the filesystem's
-#: own and could not be hoisted by any walk at all.
+#: the only thing standing behind them — and the last row is the filesystem's
+#: own, which no walk could have hoisted at all.
 RUNTIME_BACKSTOP = [
     # a pattern built at runtime: the value is not in the source
     "p = ''.join(['[z', '-a]'])\nprint(sorted(glob.glob(p)))",
     "p = len('ab')\nprint(sorted(glob.glob(p)))",
-    # an unpacked argument list: the walk can neither count the positionals
-    # nor read the keyword names
+    # …including an f-string with an interpolation in it, which is a `str`
+    # whose TEXT only the run knows. The constant one above is a literal and is
+    # static; this one is the same computed-pattern residue by another spelling.
+    "x = 'a'\nprint(sorted(glob.glob(f'[z-{x}]')))",
+    # an unpacked argument list whose value is a NAME. The DISPLAY spellings
+    # above are static — a display is written out in the source — but the table
+    # that reads a name bound to a literal records a list or a dict as its TYPE
+    # and never its contents, so there is nothing here for a walk to read.
     "a = ['[z-a]']\nprint(sorted(glob.glob(*a)))",
     "k = {'root_dir': 'd'}\nprint(sorted(glob.glob('*', **k)))",
+    "print(sorted(glob.glob(*list(['[z-a]']))))",
+    "print(sorted(glob.glob('*', **dict(root_dir='d'))))",
+    "print(sorted(glob.glob(*[x for x in ['[z-a]']])))",
+    "d = {'root_dir': 'x'}\nprint(sorted(glob.glob('*', **{**d})))",
     # the filesystem's own, and no walk could ever have hoisted it: how deep
     # the tree turns out to be. (The other one, a directory entry whose name is
     # not valid UTF-8, has no portable way to be created on this host — APFS

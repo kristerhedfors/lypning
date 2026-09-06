@@ -912,7 +912,13 @@ struct Requirements {
     /// computed), and it is the value that MATTERS: a name this table does not
     /// resolve keeps the runtime refusal, which is the backstop. Only filled
     /// once `re` or `glob` is imported, so a program that never touches either
-    /// module pays one set lookup per binding and no allocation.
+    /// module pays one set lookup per binding and no allocation — and a literal
+    /// bound ABOVE that import line is therefore not in it.
+    ///
+    /// ONE table, read in source order and saved across a nested scope by
+    /// [`enter_scope`](Requirements::enter_scope): the entry in it at the call
+    /// is the binding in force at the call, and a name bound inside a `def`, a
+    /// `lambda` or a comprehension is a name of that scope alone.
     pats: Vec<(String, Option<PatLit>)>,
     /// `from glob import glob [as g]` — the bound name of a glob FUNCTION, so
     /// that a bare `g(...)` is seen as the call it is. Without it the order
@@ -946,6 +952,11 @@ struct Requirements {
     /// Zero, the default, trusts none of them, which is right for a program
     /// that never mentions the module and has nothing to bless.
     glob_wrappers: u16,
+    /// Every name some scope declared `global`, so [`Requirements::leave_scope`]
+    /// can give it up again on the way out. It is the one spelling that binds
+    /// OUT THERE from IN HERE, which is exactly what the save/restore below
+    /// would otherwise undo. `nonlocal` cannot appear: `parse.rs` refuses it.
+    pat_globals: Vec<String>,
     /// See `Route::reads_stdin`. The walk's half: `sys.stdin`, `input()`,
     /// `open(0)`, `os.read(0, …)`, `fileinput`; the text scan is the other.
     reads_stdin: bool,
@@ -986,7 +997,9 @@ impl Requirements {
     /// in force at the call is the one the call is decided against, and a
     /// rebinding before the call replaces the literal rather than stacking on
     /// it. A name bound only AFTER its use is never resolved, which is the
-    /// safe direction: the runtime refusal still catches it.
+    /// safe direction: the runtime refusal still catches it. Every spelling
+    /// that binds arrives here — an assignment, a `for` target, a `with … as`,
+    /// a parameter, an `import … as`, an `except … as`, a `def`'s own name.
     fn bind_pattern(&mut self, name: &str, lit: Option<PatLit>) {
         if !self.imports.contains("re") && !self.imports.contains("glob") {
             return;
@@ -1008,10 +1021,49 @@ impl Requirements {
     /// CALL time, so it is not the module-level literal that shares its
     /// spelling. Blocking on that literal would send a program this engine
     /// runs to CPython — the direction `resolve_module` was written to stop.
+    ///
+    /// It binds INSIDE ITS OWN FUNCTION and nowhere else, which is what the
+    /// [`enter_scope`](Self::enter_scope) around the body makes true. Without
+    /// that, one `def f(p)` anywhere in the file gave up a module-level
+    /// `p = "[z-a]"` for every call in it, and the pattern was refused at
+    /// runtime instead: past a committed barrier, exit 1.
     fn shadow_params(&mut self, params: &crate::ast::Params) {
         for n in &params.names {
             self.bind_pattern(n, None);
         }
+    }
+
+    /// Enter a nested scope — a `def` body, a `lambda` body, a comprehension —
+    /// and hand back the table to put back on the way out.
+    ///
+    /// The table is read in SOURCE ORDER, so a binding above a call is the one
+    /// the call is decided against and a binding below it is already too late
+    /// to matter. Scope is the other half of that rule and was missing: a name
+    /// bound in here is a name of in here, so neither direction of the leak is
+    /// right. A parameter or a local escaping outward gave up a module-level
+    /// literal that was live at the call (a runtime refusal past the barrier,
+    /// exit 1); a local literal escaping outward answered for a module-level
+    /// name it never held (a call decided against a pattern that was never in
+    /// force at it).
+    #[must_use]
+    fn enter_scope(&self) -> Vec<(String, Option<PatLit>)> {
+        self.pats.clone()
+    }
+
+    /// Leave it, restoring what the enclosing scope could read — minus every
+    /// name any scope declared `global`, which the walk has no call graph to
+    /// place. Giving that name up costs a CPython spawn; keeping a literal it
+    /// may no longer hold would cost an answer.
+    fn leave_scope(&mut self, saved: Vec<(String, Option<PatLit>)>) {
+        self.pats = saved;
+        if self.pat_globals.is_empty() {
+            return;
+        }
+        let names = std::mem::take(&mut self.pat_globals);
+        for n in &names {
+            self.bind_pattern(n, None);
+        }
+        self.pat_globals = names;
     }
 }
 
@@ -1041,6 +1093,9 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                 if bound.as_ref() != path.split('.').next().unwrap_or(path.as_ref()) {
                     req.aliases.push((bound.to_string(), path.to_string()));
                 }
+                // The `as` name is a binding like any other, so it gives up
+                // whatever literal that spelling held above it.
+                req.bind_pattern(bound, None);
                 if !crate::modules::MODULES.contains(&path.as_ref()) {
                     req.block("module", format!("import {path}"));
                 }
@@ -1048,6 +1103,9 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
         }
         Stmt::FromImport { module, names } => {
             req.imports.insert(module.to_string());
+            for (_, bind) in names {
+                req.bind_pattern(bind, None);
+            }
             match module.as_ref() {
                 "fileinput" => req.reads_stdin = true,
                 "sys" if names.iter().any(|(n, _)| matches!(n.as_ref(), "stdin" | "__stdin__")) => {
@@ -1112,8 +1170,11 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
             }
         }
         Stmt::AugAssign { target, value, .. } => {
-            walk_target(target, req);
+            // Value first, because that is the order the two run in: `p += x`
+            // reads `p`, evaluates `x`, then rebinds. Walking the target first
+            // gave the name up before the expression that used it was decided.
             walk_expr(value, req);
+            walk_target(target, req);
         }
         Stmt::If { arms, els } => {
             for (c, b) in arms {
@@ -1128,8 +1189,14 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
             body,
             els,
         } => {
-            walk_target(target, req);
+            // The ITERABLE is evaluated before the target is ever bound, in
+            // Python and so here: `for p in sorted(glob.glob(p))` globs the
+            // pattern `p` held on the way in. Walking the target first gave
+            // that binding up before the call that read it was decided, and
+            // the pattern was refused at runtime instead — past a committed
+            // barrier, exit 1.
             walk_expr(iter, req);
+            walk_target(target, req);
             walk_block(body, req);
             walk_block(els, req);
         }
@@ -1145,12 +1212,20 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                 walk_expr(m, req);
             }
         }
-        Stmt::Def { body, params, .. } => {
+        Stmt::Def { name, body, params } => {
+            // The defaults are evaluated OUT HERE, at definition time, so they
+            // are walked before the scope is entered.
             for d in params.defaults.iter().flatten() {
                 walk_expr(d, req);
             }
+            // …and the function object is bound out here too, so a `def p():`
+            // gives up a `p = "[z-a]"` above it exactly as any other rebinding
+            // of the name would.
+            req.bind_pattern(name, None);
+            let saved = req.enter_scope();
             req.shadow_params(params);
             walk_block(body, req);
+            req.leave_scope(saved);
         }
         Stmt::Try {
             body,
@@ -1185,6 +1260,12 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                         req.block("exception", format!("except {k}"));
                     }
                 }
+                // `except E as p` binds `p`, and Python deletes it again at
+                // the end of the handler — either way the literal it used to
+                // hold is not what the name reads afterwards.
+                if let Some(n) = &h.name {
+                    req.bind_pattern(n, None);
+                }
                 walk_block(&h.body, req);
             }
             walk_block(els, req);
@@ -1200,6 +1281,17 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
             walk_block(body, req);
         }
         Stmt::Del(ts) => ts.iter().for_each(|t| walk_target(t, req)),
+        // `global p` makes a binding in here a binding out there, and the walk
+        // has no call graph to say whether it ran before the call that reads
+        // `p`. Give the name up in this scope and in the one restored above it.
+        Stmt::Global(names) => {
+            for n in names {
+                if !req.pat_globals.iter().any(|g| g == n.as_ref()) {
+                    req.pat_globals.push(n.to_string());
+                }
+                req.bind_pattern(n, None);
+            }
+        }
         _ => {}
     }
 }
@@ -1355,10 +1447,40 @@ fn re_call_of<'a>(
         .or_else(|| kwargs.iter().find(|(k, _)| k.as_ref() == "pattern").map(|(_, v)| v))
 }
 
+/// The text of an f-string that has NO interpolations — `f"[z-a]"`, which is a
+/// string literal with a prefix on it and nothing else. A join rather than one
+/// part because adjacent literals concatenate: `f"[z" "-a]"` parses to two
+/// [`FPart::Lit`]s, and `f""` to none.
+///
+/// `None` the moment one `{…}` is in it. That part is built when the program
+/// runs, so its text is not a walk's to read and the call keeps the runtime
+/// backstop — the same direction every other unreadable value takes.
+fn fstring_text(parts: &[FPart]) -> Option<std::rc::Rc<str>> {
+    let mut out = String::new();
+    for part in parts {
+        match part {
+            FPart::Lit(s) => out.push_str(s),
+            FPart::Expr { .. } => return None,
+        }
+    }
+    Some(out.into())
+}
+
 fn pattern_literal(e: &Expr) -> Option<PatLit> {
     match e {
         Expr::Str(s) => Some(PatLit::Str(s.clone())),
         Expr::Bytes(_) => Some(PatLit::Bytes),
+        // Both halves of the f-string are a `str`; only one of them is a
+        // VALUE. A constant f-string is a literal and answers its text; one
+        // with an interpolation is computed and answers the type alone. Before
+        // this arm both fell to [`literal_type`], which answers the type and
+        // never a value — so `glob.glob(f"[z-a]")` passed the type gate with no
+        // text to scan, [`glob_pattern_block`] never ran, and the pattern was
+        // refused at runtime instead: past a committed barrier, exit 1.
+        Expr::FString(parts) => Some(match fstring_text(parts) {
+            Some(s) => PatLit::Str(s),
+            None => PatLit::Other("str"),
+        }),
         e => literal_type(e).map(PatLit::Other),
     }
 }
@@ -1366,8 +1488,9 @@ fn pattern_literal(e: &Expr) -> Option<PatLit> {
 /// The TYPE of a literal expression, spelled the way `value::type_name` spells
 /// it — which is the way the refusal that names it spells it too.
 ///
-/// An f-string IS a `str` and its text is not a walk's to read, so it answers
-/// the type and no value. Everything that is not a literal answers `None` and
+/// An f-string IS a `str` whatever is interpolated into it, so it answers the
+/// type here; whether its TEXT can be read is [`pattern_literal`]'s question
+/// and not this one's. Everything that is not a literal answers `None` and
 /// keeps the runtime refusal.
 fn literal_type(e: &Expr) -> Option<&'static str> {
     Some(match e {
@@ -1723,15 +1846,23 @@ fn glob_arg(e: &Expr, req: &Requirements) -> Option<(&'static str, Option<std::r
 /// The order the tests are made in is `glob::call`'s own, so a program is
 /// refused with the same line it would have been refused with a run later.
 ///
+/// **A `*`/`**` is not by itself a value the walk cannot read** — what is
+/// BEHIND it is the question. A DISPLAY is spelled out in the source, so
+/// `*["*.py"]`, `*("*.py",)` and `**{"root_dir": "d"}` are spliced into the
+/// positional and keyword lists by [`flatten_call`] and the call is then
+/// decided exactly as if the stars had never been typed. Everything else —
+/// a name, a call, a comprehension, a `*` inside the display, a dict key that
+/// is not a `str` literal — is where the early return still lives.
+///
 /// **What stays a runtime refusal, and why that is a much smaller surface.**
 /// A pattern whose value is computed keeps the type and range checks at
-/// runtime; so does a call spelled with `*args` or `**kwargs`, where the walk
-/// can neither count the positionals nor read the keyword names. Two more are
-/// the FILESYSTEM's and no walk could ever hoist them: a directory entry whose
-/// name is not valid UTF-8, and a `**` walk deeper than this engine follows.
-/// Each is now reachable only from a program whose pattern is dynamic or whose
-/// argument list is unpacked — a far narrower door than one a string literal
-/// could walk through.
+/// runtime; so does a call whose unpacked argument list is itself computed
+/// (`a = ["*.py"]; glob.glob(*a)`), where the walk can neither count the
+/// positionals nor read the keyword names. Two more are the FILESYSTEM's and no
+/// walk could ever hoist them: a directory entry whose name is not valid UTF-8,
+/// and a `**` walk deeper than this engine follows. Each is now reachable only
+/// from a program whose pattern is dynamic, or whose unpacked argument list is
+/// — a far narrower door than one a string literal could walk through.
 fn glob_call_block(
     req: &mut Requirements,
     func: &Expr,
@@ -1741,11 +1872,9 @@ fn glob_call_block(
     dstar: &[Expr],
 ) {
     let Some(name) = glob_func(func, req) else { return };
-    if !star.is_empty() || !dstar.is_empty() {
-        return;
-    }
-    let arg = args.first().and_then(|e| glob_arg(e, req));
-    let detail = match (args.len(), &arg) {
+    let Some((pos, kws)) = flatten_call(args, kwargs, star, dstar) else { return };
+    let arg = pos.first().and_then(|e| glob_arg(e, req));
+    let detail = match (pos.len(), &arg) {
         (0, _) => Some(format!("glob.{name}() with no pattern")),
         (_, Some((t, _))) if *t != "str" => Some(format!(
             "glob.{name}() over a pattern that is not a str (a {t})"
@@ -1759,14 +1888,71 @@ fn glob_call_block(
             _ => None,
         })
         .or_else(|| {
-            kwargs
-                .iter()
+            kws.iter()
                 .find(|(k, _)| !glob_kw_served(name, k))
                 .map(|(k, _)| format!("glob.{name}({k}=…)"))
         });
     if let Some(d) = detail {
         req.stop_glob("glob", d);
     }
+}
+
+/// The call's arguments with every `*`/`**` spliced in, as
+/// `(positionals, keywords)` — or `None` when one of them holds a value only
+/// the run can see.
+///
+/// A display is a literal: the walk can count `*["*.py"]` and read the keys of
+/// `**{"root_dir": "d"}`, so a call spelled that way is exactly as decidable as
+/// `glob.glob("*.py", root_dir="d")` and refuses in the walk rather than past a
+/// committed barrier. `*a` and `**k` are NAMES, and the binding table this file
+/// reads records a name bound to a list or a dict as its TYPE and never its
+/// contents — so there is nothing there to read and the runtime backstop is the
+/// answer.
+///
+/// A `**` inside the dict is the same computed value one level down, and it
+/// parses as `Expr::DictUnpack` rather than `Expr::Dict`, so it is already
+/// `None` here. A `*` inside the display (`*[*a]`) cannot reach this function
+/// at all today — `parse.rs` refuses `* in a list display` and `* in a
+/// parenthesized display` before the walk runs — and is rejected anyway, since
+/// the one thing a splice may assume about a display is that its LENGTH is the
+/// source's and not the run's.
+///
+/// The keyword list it returns is only ever asked for NAMES — [`glob_kw_served`]
+/// reads `k` and never `v` — so a duplicate that CPython would reject as
+/// `got multiple values` is not this function's to notice.
+fn flatten_call<'a>(
+    args: &'a [Expr],
+    kwargs: &'a [(std::rc::Rc<str>, Expr)],
+    star: &[usize],
+    dstar: &'a [Expr],
+) -> Option<(Vec<&'a Expr>, Vec<(&'a str, &'a Expr)>)> {
+    let mut pos: Vec<&Expr> = Vec::with_capacity(args.len());
+    for (i, a) in args.iter().enumerate() {
+        if !star.contains(&i) {
+            pos.push(a);
+            continue;
+        }
+        match a {
+            Expr::List(v) | Expr::Tuple(v) => {
+                if v.iter().any(|x| matches!(x, Expr::Starred(_))) {
+                    return None;
+                }
+                pos.extend(v.iter());
+            }
+            _ => return None,
+        }
+    }
+    let mut kws: Vec<(&str, &Expr)> = kwargs.iter().map(|(k, v)| (k.as_ref(), v)).collect();
+    for d in dstar {
+        let Expr::Dict(pairs) = d else { return None };
+        for (k, v) in pairs {
+            match k {
+                Expr::Str(s) => kws.push((s.as_ref(), v)),
+                _ => return None,
+            }
+        }
+    }
+    Some((pos, kws))
 }
 
 /// Bless the one argument of an order-blind wrapper, if it is a glob call.
@@ -2161,15 +2347,23 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
         Expr::Comp {
             elt, val, clauses, ..
         } => {
+            // A comprehension is its own scope in Python 3 and its clauses run
+            // before the element expression, so this is both of those: the
+            // targets are given up inside and restored outside, each iterable
+            // is walked before the target it feeds, and the FIRST iterable is
+            // therefore still read against the enclosing table — which is where
+            // it is evaluated.
+            let saved = req.enter_scope();
+            for c in clauses {
+                walk_expr(&c.iter, req);
+                walk_target(&c.target, req);
+                c.ifs.iter().for_each(|i| walk_expr(i, req));
+            }
             walk_expr(elt, req);
             if let Some(v) = val {
                 walk_expr(v, req);
             }
-            for c in clauses {
-                walk_target(&c.target, req);
-                walk_expr(&c.iter, req);
-                c.ifs.iter().for_each(|i| walk_expr(i, req));
-            }
+            req.leave_scope(saved);
         }
         Expr::FString(parts) => parts.iter().for_each(|p| {
             if let FPart::Expr { expr, spec, .. } = p {
@@ -2183,8 +2377,10 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             for d in params.defaults.iter().flatten() {
                 walk_expr(d, req);
             }
+            let saved = req.enter_scope();
             req.shadow_params(params);
             walk_expr(body, req);
+            req.leave_scope(saved);
         }
         _ => {}
     }

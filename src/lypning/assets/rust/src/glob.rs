@@ -73,10 +73,27 @@
 //! barrier and is exit 1 with the side effect on disk and no answer. So the
 //! keyword names, the argument count, the pattern's type and — through
 //! [`route::glob_pattern_block`] — the pattern itself are all decided in the
-//! walk when they are literal in the source. What is left at runtime is what no
-//! walk could hoist: a pattern built at runtime, a call spelled `f(*a, **k)`, a
-//! directory entry whose name is not valid UTF-8, and a `**` walk deeper than
-//! this engine follows. `route::glob_call_block` has the list.
+//! walk when they are literal in the source. "Literal" is the whole of that
+//! test and it is wider than one spelling: a constant f-string is a literal and
+//! its text is read, a display behind a `*` or a `**` is a literal and is
+//! spliced into the argument list, and a literal bound to a NAME is read out of
+//! the binding table in force AT the call — one table, in source order, saved
+//! across each nested scope so a `def f(p)` binds `p` in its own body alone.
+//!
+//! What is left at runtime is what no walk could hoist: a pattern whose value
+//! is computed (an f-string with an interpolation is one), a `*`/`**` whose
+//! operand is computed rather than written out, a directory entry whose name is
+//! not valid UTF-8, and a `**` walk deeper than this engine follows.
+//! `route::glob_call_block` has the list.
+//!
+//! **Every one of those four still lands past a committed barrier, and that is
+//! not a glob property.** `os.mkdir` and `os.makedirs` call
+//! [`crate::io::mark_committed`] the moment they run (`modules.rs`), so from
+//! there on ANY refusal this engine raises is exit 1 with the side effect on
+//! disk rather than a 90 the chain could act on — `builtin: eval`,
+//! `builtin: complex` and `set-order` behave exactly the same way, with no glob
+//! in the program. Hoisting a refusal into the walk is how an admitted glob
+//! call stops REACHING that door; it does not close the door.
 //!
 //! **The barrier is not invisible to a listing, so the listing merges it.**
 //! `io.rs` stages every write until the run ends, which is what lets a refusal
@@ -336,6 +353,15 @@ fn isdir(p: &str) -> bool {
 /// both, and an unbounded walk here is a stack overflow — a signal, which the
 /// dispatcher cannot route onward at all. So the walk is bounded and the bound
 /// is a refusal.
+///
+/// **This is the one refusal in this file that no walk could ever hoist**, and
+/// the reason is not that the walk is not clever enough: whether the bound is
+/// reached is a property of the TREE, which the source does not mention and
+/// which can change between the walk and the `readdir` that finds out. Every
+/// other refusal an admitted call can raise is a property of the call and lives
+/// in `route::glob_call_block`; this one can only be discovered by walking, so
+/// it is raised where it is discovered — and past a committed barrier that is
+/// exit 1, exactly as it is for every other refusal this engine raises there.
 const MAX_DEPTH: usize = 128;
 
 /// `glob._listdir`, merged with the commit barrier.
