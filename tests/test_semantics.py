@@ -159,6 +159,22 @@ CASES = [
         "    print(repr(format(v, '_')), repr(format(v, ',')))\n",
     ),
     (
+        # CPython 3.12 rewrote this message and lypning still spelled 3.9's:
+        # "min() arg is an empty sequence" against the reference's
+        # "min() iterable argument is empty". Caught here rather than by the
+        # corpus battery because both sides exit 1 with an empty stdout, so
+        # only a program that PRINTS the message can see the difference — and
+        # `cap-glob` made the empty case an advertised position, since an empty
+        # match set is the normal answer for a glob.
+        "min-max-of-an-empty-iterable-say-what-cpython-says",
+        "for f in (min, max):\n"
+        "    for empty in ([], (), '', set(), range(0)):\n"
+        "        try:\n"
+        "            f(empty)\n"
+        "        except ValueError as e:\n"
+        "            print(e)\n",
+    ),
+    (
         "case-predicates-test-cased-characters",
         "for s in ['\\u65e5\\u672c', 'abc', 'ABC', '\\u65e5\\u672ca', '\\u01c5', '\\u01c5abc', '123']:\n"
         "    print(s.islower(), s.isupper(), s.isalpha())\n",

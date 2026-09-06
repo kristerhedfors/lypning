@@ -990,7 +990,14 @@ pub fn call_builtin(
             if items.is_empty() {
                 return match default {
                     Some(d) => Ok(d),
-                    None => Err(value_err(format!("{name}() arg is an empty sequence"))),
+                    // CPython 3.12 rewrote this message: 3.9 said
+                    // "min() arg is an empty sequence" and the reference this
+                    // repository grades against (3.14.5) says
+                    // "min() iterable argument is empty". An empty match set is
+                    // the NORMAL case for a glob and `min`/`max` are positions
+                    // `route.rs` admits, so the older wording became reachable
+                    // from an advertised one.
+                    None => Err(value_err(format!("{name}() iterable argument is empty"))),
                 };
             }
             let mut best = items[0].clone();

@@ -17,13 +17,23 @@ ORDER is the filesystem's, because CPython walks with `os.scandir` and does not
 sort — the same fact that makes `os.listdir()` refuse (`os-listdir`) and
 `Path.glob()`/`.iterdir()` refuse. So the capability serves the match SET and
 never the match ORDER, and `route.rs` draws that line STATICALLY, before the
-program starts: a call wrapped directly in `sorted()`, `len()`, `set()`,
-`bool()`, `min()`/`max()`, `any()`/`all()`, `sum()`, or on the right of `in`, is
-served;
+program starts: a call wrapped directly in `sorted()`, `len()`, `bool()`,
+`min()`/`max()`, `any()`/`all()`, `sum()`, or on the right of `in`, is served;
 every other position is a `glob-order` blocker at exit 90 with an untouched
 disk. `ORDER_BLIND` below is one row per served position and `ORDER_SHOWN` is
 one row per refused one — and the second list is the one that matters, because a
 row that answered there would be a wrong answer at exit 0.
+
+**Two rules the first version of that list got wrong, one row each below.**
+`set()` was a served position: its ANSWER is order-blind, but the set it hands
+back is not, and this engine's `Value::Set` is insertion-ordered, so
+`print(set(glob.glob(p)))` was a RUNTIME `set-order` refusal — exit 1 after
+`os.mkdir` had committed the barrier, where the core refused at 90 and the chain
+got the answer from CPython. And `glob.iglob` answers a GENERATOR: every
+position that CONSUMES its argument cannot tell one from a list, but `len()`
+raises on a generator and `bool()` is True for every generator, so
+`bool(glob.iglob('nope*'))` printed False against CPython's True — at exit 0, on
+the case an empty directory makes normal.
 
 The matching traps, each measured against CPython 3.14.5 before the code was
 written:
@@ -174,7 +184,6 @@ ORDER_BLIND = [G + x for x in [
     "print(sorted(glob.glob('*.py')))",
     "print(sorted(glob.glob('*.py'), reverse=True))",
     "print(len(glob.glob('*.py')))",
-    "print(sorted(set(glob.glob('*.py'))))",
     "print(bool(glob.glob('*.py')), bool(glob.glob('nope*')))",
     "print(sum(glob.glob('*.py')))",
     "print(min(glob.glob('*.py')), max(glob.glob('*.py')))",
@@ -188,12 +197,20 @@ ORDER_BLIND = [G + x for x in [
     "print(sorted(glob.glob('*.py'))[0], sorted(glob.glob('*.py'))[-1])",
     "print(sorted(glob.glob('*.py'))[:2])",
     "print(len(sorted(glob.glob('*.py'))))",
-    "print(sorted(set(glob.glob('*.py')) | set(glob.glob('*.txt'))))",
     "n = len(glob.glob('*.py'))\nprint(n * 2)",
     "print([p.upper() for p in sorted(glob.glob('*.py'))])",
+    # `iglob` answers a generator, so only the positions that CONSUME their
+    # argument take one — decided per name in `route.rs`'s `ORDER_BLIND`.
     "print(sorted(glob.iglob('*.py')))",
-    "print(set(glob.iglob('nope*')))",
     "print('a.py' in glob.iglob('*.py'))",
+    "print(min(glob.iglob('*.py')), max(glob.iglob('*.py')))",
+    "print(any(glob.iglob('nope*')), all(glob.iglob('nope*')))",
+    "print(sum(glob.iglob('*.py')))",
+    # An empty match set is the NORMAL answer for a glob, and `min`/`max` are
+    # served over it — so CPython's ValueError text is reachable from an
+    # advertised position. 3.9 said "min() arg is an empty sequence".
+    "try:\n    print(min(glob.glob('nope*')))\nexcept ValueError as e:\n    print(e)",
+    "try:\n    print(max(glob.iglob('nope*')))\nexcept ValueError as e:\n    print(e)",
     # nested: the argument of an order-blind wrapper is order-blind whatever
     # the wrapper's own caller does with the answer.
     "print(str(sorted(glob.glob('*.py'))))",
@@ -238,13 +255,25 @@ ORDER_SHOWN = [G + x for x in [
     "f = glob.glob\nprint(sorted(f('*.py')))",
     "print(sorted(map(str, glob.glob('*.py'))))",
     "print(sorted(glob.glob('*.py')) == glob.glob('*.py'))",
+    # `set()` is NOT an order-blind wrapper, and the rule it fails is the one
+    # that decides the whole table: the wrapper's RESULT has to carry no order,
+    # not merely its answer. A set does — `Value::Set` is insertion-ordered here
+    # and hash-ordered in CPython — so blessing `set` bought a static block at 90
+    # and paid for it with a RUNTIME `set-order` refusal, which after a committed
+    # write barrier is exit 1 with nothing on stdout and the directory left
+    # behind. `frozenset` was excluded for this shape from the start.
+    "print(set(glob.glob('*.py')))",
+    "print(sorted(set(glob.glob('*.py'))))",
+    "print(len(set(glob.glob('*.py'))))",
+    "print(sorted(set(glob.glob('*.py')) | set(glob.glob('*.txt'))))",
+    "print(set(glob.iglob('nope*')))",
+    "import os\nos.mkdir('made_set')\nprint(set(glob.glob('*.py')))",
     # the wrapper is only order-blind while it is still the BUILTIN
     "sorted = lambda x: x\nprint(sorted(glob.glob('*.py')))",
     "def len(x): return 0\nprint(len(glob.glob('*.py')))",
     "def f(sorted): return sorted\nprint(sorted(glob.glob('*.py')))",
     "for sorted in [1]: pass\nprint(sorted(glob.glob('*.py')))",
     "print(list(map(len, ['ab'])), len(glob.glob('*.py')))",
-    "s = set\nprint(sorted(set(glob.glob('*.py'))))",
     "print(sorted(glob.glob('*.py'), *[], **{}))",
     # `bool()` is served and `frozenset` is not a builtin here, so blessing it
     # would refuse for the wrong reason. It is a `glob-order` row, not a
@@ -253,8 +282,18 @@ ORDER_SHOWN = [G + x for x in [
     # truthiness in a bare `if` is order-blind and is NOT blessed: `and`/`or`
     # yield the OPERAND, so a walk cannot tell the value from the test.
     "if glob.glob('*.py'): print('yes')",
-    # `len()` of a GENERATOR is a TypeError, so `iglob` is not a list there
+    # `iglob` answers a GENERATOR, and the two order-blind names that ask about
+    # the CONTAINER rather than consume it read one differently from a list.
+    # `len()` raises `TypeError`; `bool()` is True for EVERY generator, so the
+    # empty case — the normal one for a glob — printed False against CPython's
+    # True, at exit 0. Decided per name in `route.rs`, not by a `len` test.
     "print(len(glob.iglob('*.py')))",
+    "print(len(glob.iglob('nope*')))",
+    "print(bool(glob.iglob('*.py')))",
+    "print(bool(glob.iglob('nope*')))",
+    "print(bool(glob.iglob('*.py')), bool(glob.glob('*.py')))",
+    "from glob import iglob\nprint(bool(iglob('nope*')))",
+    "import glob as g\nprint(bool(g.iglob('nope*')))",
     # `from glob import glob` and then the function used as a value
     "from glob import glob\nprint(glob('*.py'))",
     "from glob import glob\nf = glob\nprint(sorted(f('*.py')))",
@@ -499,6 +538,69 @@ def test_the_order_block_is_static_so_the_router_can_see_it() -> None:
         assert not os.path.exists(os.path.join(d, "committed")), (
             "the refusal landed AFTER os.makedirs — that is exit 1 with the "
             "output discarded, which the chain never retries")
+
+    # The same claim for the shape that broke it: `set()` was an admitted
+    # position, so this program passed the static block and then hit `set-order`
+    # at RUNTIME, one statement after `os.mkdir` had committed the barrier —
+    # exit 1, no answer, the directory left behind, where the binary WITHOUT
+    # `cap-glob` refused cleanly at 90 and the chain asked CPython.
+    with tempfile.TemporaryDirectory() as d:
+        _tree(d)
+        got = subprocess.run(
+            [str(BINARY), "-c",
+             "import glob, os\nos.mkdir('made_set')\n"
+             "print(set(glob.glob('*.py')))"],
+            capture_output=True, text=True, cwd=d, timeout=60)
+        assert _refusal_problem(got) is None, got.stderr
+        assert ": glob-order: " in got.stderr, got.stderr
+        assert not os.path.exists(os.path.join(d, "made_set")), got
+
+
+@needs_l
+def test_the_core_routes_an_order_showing_program_past_the_variant() -> None:
+    """The position rule is in EVERY binary, because the core is the one asked.
+
+    `engines.route()` asks the frozen core, and the core reads `cap-glob` off
+    `lypning-l`'s row of `route::SPECTRUM`. While the walk that decides the
+    position was behind `cfg(feature = "cap-glob")`, the core saw only
+    `module: import glob` and answered `lypning-l` for programs `lypning-l`
+    refuses — one wasted spawn each. The rule has no glob implementation behind
+    it, so it is not a capability: it is routing, and it lives in the table every
+    variant carries whole (`route.rs`, `SPECTRUM`'s own doc comment).
+
+    Asked of BOTH binaries with the same programs, because "the core computes
+    the same verdict" is the claim, and one binary cannot check it."""
+    if CORE is None:
+        pytest.skip("no core carrying this tree's capability table is built")
+    shown = [
+        "import glob\nprint(glob.glob('*.py'))",
+        "import glob\nfor p in glob.glob('*.py'): print(p)",
+        "import glob\nprint(set(glob.glob('*.py')))",
+        "import glob\nprint(bool(glob.iglob('nope*')))",
+        "import glob\nf = glob.glob\nprint(sorted(f('*.py')))",
+        "from glob import glob\nprint(glob('*.py'))",
+        "import glob as g\nprint(g.iglob('*.py'))",
+    ]
+    blind = [
+        "import glob\nprint(sorted(glob.glob('*.py')))",
+        "import glob\nprint(len(glob.glob('*.py')))",
+        "import glob\nprint(bool(glob.glob('nope*')))",
+        "import glob\nprint(sorted(glob.iglob('*.py')))",
+    ]
+
+    def _engine(binary: Path, program: str) -> str:
+        out = subprocess.run([str(binary), "route", "-c", program],
+                             capture_output=True, text=True, timeout=60)
+        return out.stdout.split("\t")[0].strip()
+
+    for program in shown:
+        assert _engine(CORE, program) == engines.CPYTHON, program
+        assert _engine(BINARY, program) == engines.CPYTHON, program
+    for program in blind:
+        # The core cannot import `glob`, so it names the sibling that can; the
+        # sibling names itself. Neither answer is CPython, which is the point.
+        assert _engine(CORE, program) == engines.LYPNING_L, program
+        assert _engine(BINARY, program) == engines.LYPNING_L, program
 
 
 @needs_l

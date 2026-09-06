@@ -15,10 +15,18 @@
 //! **Where the refusal lives is the whole design.** It is in `route.rs`, in the
 //! WALK, and it is static: a `glob.glob(...)` call is admitted only where the
 //! walker can see that the order cannot be observed — wrapped directly in
-//! `sorted()`, `len()`, `set()`, `bool()`, `sum()`, `min()`/`max()`,
-//! `any()`/`all()`, or as the right operand of `in`. Every other position — a
-//! bare `for p in glob.glob(...)`, `print(glob.glob(...))`, an assignment, an
-//! index, a slice — is a `glob-order` blocker before the program starts.
+//! `sorted()`, `len()`, `bool()`, `sum()`, `min()`/`max()`, `any()`/`all()`, or
+//! as the right operand of `in`. Every other position — a bare
+//! `for p in glob.glob(...)`, `print(glob.glob(...))`, an assignment, an index,
+//! a slice — is a `glob-order` blocker before the program starts. None of that
+//! walk is behind `cap-glob`: it is a position test with no glob implementation
+//! behind it, so every variant carries it and the CORE — the binary
+//! `engines.route()` asks — predicts the same refusal instead of spending a
+//! spawn to be told.
+//!
+//! `set()` is NOT one of the admitted positions, and the reason is the rule
+//! that decides the list: the wrapper's RESULT has to carry no order, and a set
+//! handed back to the program does. `route.rs` has it.
 //!
 //! Two consequences, and both are the point:
 //!
@@ -36,13 +44,23 @@
 //!      turned correct programs into failures exactly that way. A static
 //!      blocker costs the program nothing: it was never started here.
 //!
-//! **`glob.iglob` is served and returns the same list.** In every position the
-//! router admits, the generator is consumed exactly once and immediately, so a
-//! list is byte-identical — except `len()`, which is a `TypeError` on a
-//! generator, and which `route.rs` therefore does not bless for `iglob`. A
-//! generator can never be BOUND here, because binding is not an admitted
-//! position, so the one shape where the two really differ — iterating it twice
-//! — is unreachable.
+//! **`glob.iglob` is served and returns the same list**, in the positions that
+//! CONSUME it. A generator can never be BOUND here, because binding is not an
+//! admitted position, so the shape where the two most obviously differ —
+//! iterating it twice — is unreachable. But "consumed" is the whole of the
+//! claim, and two admitted positions do not consume their argument at all; they
+//! ask about the CONTAINER, and a generator is not the container a list is:
+//!
+//!   * `len()` raises `TypeError` on a generator.
+//!   * `bool()` is `True` for EVERY generator, empty or not, because a
+//!     generator has no `__len__`. `bool(glob.iglob('nope*'))` is `True` in
+//!     CPython and was `False` here — at exit 0, on the normal case for a glob,
+//!     which is that nothing matched.
+//!
+//! `route.rs` therefore decides each admitted position for `iglob`
+//! SEPARATELY from `glob`, in the `ORDER_BLIND` table: `len` and `bool` are
+//! `glob`-only, and `sorted`, `min`, `max`, `any`, `all`, `sum` and `in` take
+//! either.
 //!
 //! **`glob.escape` and `glob.has_magic` are pure string algebra** and are
 //! answered exactly, in any position. `glob.translate`, `glob.glob0` and
