@@ -122,7 +122,7 @@ pub fn call(_it: &mut crate::eval::Interp, name: &str, args: &mut Args, kw: &[(R
         return Err(refuse(&format!("base64.{name}() with extra positional arguments")));
     }
     for (k, v) in kw {
-        match crate::route::base64_kw_block(name, k, falsy(v)) {
+        match crate::route::base64_kw_block(name, k, matches!(v, Value::None), falsy(v)) {
             Some(why) => return Err(refuse(&why)),
             None => {}
         }
@@ -149,14 +149,17 @@ pub fn call(_it: &mut crate::eval::Interp, name: &str, args: &mut Args, kw: &[(R
     }
 }
 
-/// Is this keyword's value the literal CPython default — the only value of
-/// `validate=` this capability serves and the only value of `altchars=`?
+/// Is this keyword's value falsy — the `validate=` question, and ONLY that one.
 ///
-/// `validate` reaches C as a `bool(accept={int})` converter, so `0` and `None`
-/// are `False` there exactly as `False` is; `altchars=None` is the default and
-/// a no-op. Anything else refuses, including a truthy value the walk could have
-/// read: `validate=True` selects `strict_mode`, whose every rejection is a
-/// `binascii.Error` message this engine does not write.
+/// `validate` reaches C through a `bool` converter that calls `PyObject_IsTrue`,
+/// so `0` and `None` are `False` there exactly as `False` is, and all three are
+/// served. `altchars=` asks a different question and gets a different predicate
+/// (`matches!(v, Value::None)`, at the call above): its default is ABSENT, and
+/// `None` is the only value that spells absent, because CPython's test is
+/// `if altchars is not None`. A PRESENT falsy `altchars` is a value CPython
+/// REJECTS — `TypeError` for `0` and `False`, `AssertionError` for `b""` and
+/// `""` — and answering it here was a wrong answer at exit 0.
+/// `route::base64_kw_block` holds both rules and the measurement.
 fn falsy(v: &Value) -> bool {
     matches!(v, Value::None | Value::Bool(false) | Value::Int(0))
 }

@@ -162,6 +162,47 @@ KEYWORDS = [
     B + "print(base64.b64decode(b'aGk=', altchars=None, validate=False))",
     B + "print(base64.b64decode(b'aGk=', **{'validate': False}))",
     B + "print(base64.b64encode(*[b'hi']))",
+    # `altchars=None` is the ONLY served altchars, and it is served on both
+    # standard functions and in either keyword order.
+    B + "print(base64.b64decode(b'aGk=', validate=False, altchars=None))",
+    B + "print(base64.b64decode(b'aGk=', **{'altchars': None}))",
+    # every falsy `validate`, because that predicate is the one that stays
+    B + "print(base64.b64decode(b'a!G k=', validate=0))",
+    B + "print(base64.b64decode('aGk=', validate=None))",
+]
+
+#: **Hole 1, both directions.** One `falsy` predicate was answering two
+#: different questions — "was the argument omitted" and "is the argument the
+#: default" — and `altchars=0` and `altchars=False` are falsy without being
+#: either. Measured against CPython 3.14.5 on 2026-09-06, one row per spelling:
+#: `None` is the default and ANSWERS; `0` and `False` reach
+#: `_bytes_from_decode_data` (or `len()`) and raise `TypeError`; `b""` and `""`
+#: reach `assert len(altchars) == 2` and raise `AssertionError`. The engine
+#: answered the middle two at exit 0, which is the outcome the whole refusal
+#: contract exists to prevent — `validate=` keeps the falsy predicate because
+#: its converter really does call `PyObject_IsTrue`.
+#:
+#: The pairs are `(program, does CPython answer it)`, so the same table drives
+#: the "must refuse" assertion and the "CPython would have raised" one.
+ALTCHARS = [
+    (B + "print(base64.b64decode(b'aGk=', altchars=None))", True),
+    (B + "print(base64.b64encode(b'hi', altchars=None))", True),
+    (B + "print(base64.b64decode(b'aGk=', altchars=0))", False),
+    (B + "print(base64.b64encode(b'hi', altchars=0))", False),
+    (B + "print(base64.b64decode(b'aGk=', altchars=False))", False),
+    (B + "print(base64.b64encode(b'hi', altchars=False))", False),
+    (B + "print(base64.b64decode(b'aGk=', altchars=b''))", False),
+    (B + "print(base64.b64encode(b'hi', altchars=b''))", False),
+    (B + "print(base64.b64decode(b'aGk=', altchars=''))", False),
+    (B + "print(base64.b64encode(b'hi', altchars=''))", False),
+    (B + "print(base64.b64decode(b'aGk=', altchars=b'-_'))", True),
+    (B + "print(base64.b64encode(b'hi', altchars=b'-_'))", True),
+    # the same values through `**`, which the walk flattens
+    (B + "print(base64.b64decode(b'aGk=', **{'altchars': 0}))", False),
+    (B + "print(base64.b64encode(b'hi', **{'altchars': False}))", False),
+    # and through an alias and a `from` import, where a name test goes wrong
+    ("import base64 as b\nprint(b.b64decode(b'aGk=', altchars=0))", False),
+    ("from base64 import b64encode as e\nprint(e(b'hi', altchars=False))", False),
 ]
 
 #: Every spelling of the import that binds a served name, because the walk finds
@@ -254,6 +295,17 @@ REFUSED = [
     B + "print(base64.b64decode(b'-_--', altchars=b'-_'))",
     B + "print(base64.b64encode(b'hi', b'-_'))",
     B + "print(base64.b64decode(b'aGk=', b'-_'))",
+    # …and a PRESENT falsy `altchars` is not the default, it is a value
+    # CPython rejects: `TypeError` for 0 and False, `AssertionError` for
+    # b'' and ''. Answering these was hole 1.
+    B + "print(base64.b64decode(b'aGk=', altchars=0))",
+    B + "print(base64.b64decode(b'aGk=', altchars=False))",
+    B + "print(base64.b64decode(b'aGk=', altchars=b''))",
+    B + "print(base64.b64decode(b'aGk=', altchars=''))",
+    B + "print(base64.b64encode(b'hi', altchars=0))",
+    B + "print(base64.b64encode(b'hi', altchars=False))",
+    B + "print(base64.b64encode(b'hi', altchars=b''))",
+    B + "print(base64.b64encode(b'hi', altchars=''))",
     # `validate=True` selects strict mode, whose rejections are binascii's text
     B + "print(base64.b64decode(b'aGk=', validate=True))",
     B + "print(base64.b64decode(b'a!Gk=', validate=True))",
@@ -335,6 +387,13 @@ AFTER_A_BARRIER = [
     ("base64", "print(base64.b64decode(1.5))"),
     ("base64", "print(base64.b64decode(True))"),
     ("base64", "print(base64.b64encode(b'x', altchars=b'-_'))"),
+    ("base64", "print(base64.b64decode(b'aGk=', altchars=0))"),
+    ("base64", "print(base64.b64decode(b'aGk=', altchars=False))"),
+    ("base64", "print(base64.b64decode(b'aGk=', altchars=b''))"),
+    ("base64", "print(base64.b64decode(b'aGk=', altchars=''))"),
+    ("base64", "print(base64.b64encode(b'hi', altchars=0))"),
+    ("base64", "print(base64.b64encode(b'hi', altchars=False))"),
+    ("base64", "print(base64.b64encode(b'hi', **{'altchars': 0}))"),
     ("base64", "print(base64.b64decode(b'aGk=', altchars=b'-_'))"),
     ("base64", "print(base64.b64decode(b'aGk=', validate=True))"),
     ("base64", "print(base64.b64decode(b'aGk=', validate=1))"),
@@ -415,6 +474,84 @@ RUNTIME_BACKSTOP = [
 ]
 
 
+#: **Hole 2, and it is a ROUTE and not a run.** Serving `import base64` moved
+#: the deciding blocker. The walk keeps the FIRST one, the import is it, and
+#: `verdicts()` re-checks only the IMPORTS against a larger rung — so a blocker
+#: recorded LATER was dropped, and `import base64` routed
+#: `(255).to_bytes(2, 'big')` into lypning-l, which has no `int.to_bytes`
+#: either and raises `AttributeError` at exit 1. That is the program's own exit,
+#: which the chain never retries, and the same program refused cleanly at 90
+#: before the module was served. `route::method_wide_stop` is the narrowing:
+#: `method` is the one kind whose meaning differs between variants, so a
+#: `method:` blocker stops the whole spectrum unless the program imports
+#: something from `METHOD_BEARING`.
+#:
+#: Each row is asserted twice — it must ROUTE to CPython, and lypning-l must
+#: still fail it, because a row lypning-l learned to answer would be a coverage
+#: loss quietly asserted as a fix.
+ROUTED_PAST_LYPNING_L = [
+    B + "print(base64.b64encode((255).to_bytes(2, 'big')))",
+    B + "print(int.from_bytes(base64.b64decode(b'AAAB'), 'big'))",
+    B + "print(base64.b64encode(b'hi').nosuchmethod())",
+    B + "x = 1.5\nprint(base64.b64encode(str(x.is_integer()).encode()))",
+    B + "print(base64.b64encode(str((7).bit_length()).encode()))",
+    "from base64 import b64encode\nprint(b64encode((255).to_bytes(2, 'big')))",
+]
+
+#: The other half of the same rule, and the reason this table is as long as the
+#: one above: the narrowing is one line away from refusing every base64 program
+#: in the corpus. It was, for one build — the walk had been recording
+#: `method: .b64decode()` for the SERVED module attribute all along, harmlessly,
+#: because nothing read a blocker after the first. These rows are what caught
+#: it, and the last three are the `METHOD_BEARING` guard: a program that imports
+#: `collections`, `pathlib` or `re` must stay optimistic, because only the
+#: variant that HAS the capability knows whether the method is one of its own.
+ROUTED_TO_LYPNING_L = [
+    B + "print(base64.b64encode(b'hello world'))",
+    B + "print(base64.b64decode(b'aGk='))",
+    "import base64 as b\nprint(b.urlsafe_b64encode(bytes([251, 255, 190])))",
+    "from base64 import b64decode\nprint(b64decode(b'aGk='))",
+    "import json, re, base64, os, sys\nprint(1)",
+    B + "import collections\nc = collections.Counter(base64.b64encode(b'hello'))\n"
+        "print(c.most_common(1))",
+    B + "import re\nprint(re.sub(r'=+$', '', base64.b64encode(b'hi').decode()))",
+    B + "import glob\nprint([base64.b64encode(p.encode()) for p in sorted(glob.glob('*'))])",
+]
+
+#: The MicroPython trap, as four literal values rather than a diff against
+#: CPython — because the whole point is that a reimplementation's answer is
+#: *plausible*, and a table that only says "agree with CPython" reads the same
+#: whether the rule was derived or guessed. `extmod/modbinascii.c` counts pads
+#: PER QUAD and stops at the first complete one, which is wrong in BOTH
+#: directions: it answers `b'hihi'` for `b"aGk=aGk="`, where CPython raises,
+#: and it answers two bytes for `b"AA==AA=="`, where CPython gives three.
+PER_QUAD = [
+    # four data characters, two pad runs, THREE bytes out — never two
+    (B + "print(base64.b64decode(b'AA==AA=='))", "b'\\x00\\x00\\x00'\n"),
+    # the pad run is reset by a later alphabet byte
+    (B + "print(base64.b64decode(b'aa=\\n='))", "b'i'\n"),
+    # non-alphabet bytes are gone before anything is counted
+    (B + "print(base64.b64decode(b'a!G k='))", "b'hi'\n"),
+    # `-` and `_` are not in the STANDARD alphabet
+    (B + "print(base64.b64decode(b'-_--'))", "b''\n"),
+    # two pad runs mid-input, four data characters, three bytes out — the
+    # per-quad decoder reads two padded quads here and answers TWO bytes
+    (B + "print(base64.b64decode(b'AB==CD=='))", "b'\\x00\\x10\\x83'\n"),
+    (B + "print(base64.b64decode(b'ABC=D'))", "b'\\x00\\x10\\x83'\n"),
+    (B + "print(base64.b64decode(b'AAA=A'))", "b'\\x00\\x00\\x00'\n"),
+]
+
+#: …and the direction the per-quad decoder ANSWERS where CPython raises. Six
+#: data characters and ONE trailing pad where a quad boundary needs two.
+PER_QUAD_REFUSED = [
+    B + "print(base64.b64decode(b'aGk=aGk='))",
+    B + "print(base64.b64decode(b'aGk=aGk'))",
+    B + "print(base64.b64decode(b'AA==A'))",
+    B + "print(base64.b64decode(b'AB=C'))",
+    B + "print(base64.b64decode(b'AAA=AB'))",
+]
+
+
 def _spectrum(binary: Path) -> dict | None:
     """What ``binary`` says it is, or ``None`` if it will not say."""
     try:
@@ -453,6 +590,12 @@ def _current(engine: str, cap: str) -> Path | None:
 
 
 BINARY = _current(engines.LYPNING_L, "cap-base64")
+
+#: The binary that ROUTES is the cheapest one, and it is a different binary
+#: from the one that answers — which is the whole of hole 2. `_current` accepts
+#: it on the same terms: its own name, its own (empty) capability list, and a
+#: `caps` table that has the row.
+CORE = _current(engines.LYPNING, "cap-base64")
 
 needs_l = pytest.mark.skipif(
     BINARY is None,
@@ -616,12 +759,136 @@ def test_the_runtime_backstop_still_refuses_what_no_walk_could_hoist(call: str) 
     )
 
 
+@needs_l
+@pytest.mark.parametrize("program,answered", ALTCHARS, ids=range(len(ALTCHARS)))
+def test_an_absent_altchars_is_the_default_and_a_present_falsy_one_is_a_value(
+    program: str, answered: bool,
+) -> None:
+    """Hole 1, as one assertion per spelling.
+
+    `altchars=None` is the default because CPython's test is `if altchars is
+    not None`, so it must ANSWER. Every other value must refuse — an
+    alternative alphabet this engine does not implement, or one of the two
+    raises CPython words itself. The `answered` column is what makes this a
+    real check and not a tautology: for the rows CPython answers, this file
+    also asserts the engine agrees byte for byte."""
+    got = _run([str(BINARY)], program)
+    if not answered:
+        problem = _refusal_problem(got)
+        assert problem is None, (
+            "a present falsy altchars must refuse, not answer: %s\n"
+            "  program: %r\n  stdout: %r" % (problem, program, got.stdout[:200])
+        )
+        ref = _run([sys.executable], program)
+        assert ref.returncode != 0, (
+            "this row is only interesting if CPython raises: %r" % program
+        )
+        return
+    if got.returncode == engines.UNSUPPORTED_EXIT:
+        assert _refusal_problem(got) is None
+        pytest.skip("refused, which is allowed: %s" % got.stderr.strip()[:120])
+    ref = _run([sys.executable], program)
+    assert (got.stdout, got.returncode) == (ref.stdout, ref.returncode), (
+        "altchars=None is the served default and must answer exactly\n"
+        "  program: %r\n  lypning-l: %r exit %d\n  cpython:   %r exit %d"
+        % (program, got.stdout, got.returncode, ref.stdout, ref.returncode)
+    )
+
+
+needs_core = pytest.mark.skipif(
+    CORE is None or BINARY is None,
+    reason="routing needs the CORE that routes and the lypning-l it routes to",
+)
+
+
+@needs_core
+@pytest.mark.parametrize("program", ROUTED_PAST_LYPNING_L,
+                         ids=range(len(ROUTED_PAST_LYPNING_L)))
+def test_a_later_blocker_no_variant_answers_still_routes_to_cpython(program: str) -> None:
+    """Hole 2. Two assertions, and the second is what keeps the first honest.
+
+    The route must be CPython: the program's first blocker is `module: import
+    base64`, which lypning-l answers, and its second is a method NOTHING on the
+    spectrum has. And lypning-l must still fail the program — a row it quietly
+    learned to answer would turn this test into a coverage loss asserted as a
+    fix."""
+    route = engines.route(program, binary=CORE)
+    assert route.engine == engines.CPYTHON, (
+        "routed to %r, which cannot run it\n  program: %r\n  first blocker: %s: %s"
+        % (route.engine, program, route.kind, route.detail)
+    )
+    got = _run([str(BINARY)], program)
+    assert got.returncode != 0, (
+        "lypning-l answers this now, so the row no longer pins the narrowing: %r"
+        % program
+    )
+
+
+@needs_core
+@pytest.mark.parametrize("program", ROUTED_TO_LYPNING_L,
+                         ids=range(len(ROUTED_TO_LYPNING_L)))
+def test_the_narrowing_did_not_take_the_capability_with_it(program: str) -> None:
+    """The other half, and the one that caught the narrowing's first build.
+
+    The walk had always recorded `method: .b64decode()` for the SERVED module
+    attribute — harmlessly, because nothing read a blocker after the first.
+    Reading them sent every base64 program in the corpus to CPython, refused by
+    the name of the very function the module was served to run. These rows are
+    what said so."""
+    route = engines.route(program, binary=CORE)
+    assert route.engine == engines.LYPNING_L, (
+        "routed to %r, not lypning-l\n  program: %r\n  blocker: %s: %s"
+        % (route.engine, program, route.kind, route.detail)
+    )
+
+
+@needs_l
+@pytest.mark.parametrize("program,want", PER_QUAD, ids=range(len(PER_QUAD)))
+def test_the_decoder_counts_pads_over_the_input_and_never_per_quad(
+    program: str, want: str,
+) -> None:
+    """The MicroPython trap, pinned as literal bytes.
+
+    `extmod/modbinascii.c` counts pads PER QUAD and stops at the first complete
+    one. `b"AA==AA=="` is four data characters and THREE bytes out; a per-quad
+    decoder gives two. Asserted against the value rather than against CPython,
+    because a table that only says "agree with CPython" reads the same whether
+    the rule was derived or guessed."""
+    got = _run([str(BINARY)], program)
+    assert (got.returncode, got.stdout) == (0, want), (
+        "program: %r\n  got: %r exit %d %s\n  want: %r"
+        % (program, got.stdout, got.returncode, got.stderr.strip()[:160], want)
+    )
+    ref = _run([sys.executable], program)
+    assert ref.stdout == want, "the reference moved: %r" % ref.stdout
+
+
+@needs_l
+@pytest.mark.parametrize("program", PER_QUAD_REFUSED, ids=range(len(PER_QUAD_REFUSED)))
+def test_the_per_quad_decoders_other_direction_refuses_rather_than_answers(
+    program: str,
+) -> None:
+    """`b"aGk=aGk="` is the six data characters `aGkaGk` with ONE trailing pad
+    where a quad boundary needs two — a `binascii.Error`, which this engine
+    does not word and therefore refuses. A per-quad decoder answers `b'hihi'`
+    here, at exit 0, which is the wrong answer the chain cannot catch."""
+    got = _run([str(BINARY)], program)
+    problem = _refusal_problem(got)
+    assert problem is None, (
+        "must refuse, not answer: %s\n  program: %r\n  stdout: %r"
+        % (problem, program, got.stdout[:200])
+    )
+    ref = _run([sys.executable], program)
+    assert ref.returncode != 0, "this row is only interesting if CPython raises"
+
+
 #: The sub-tables that must run COMPLETELY. `DECODE` is not among them and
 #: cannot be: `PADDING` is half error shapes on purpose, and an input CPython
 #: raises on is one this engine refuses — the same rule seen from the other
 #: side, asserted in `REFUSED`. Every other table is programs CPython answers,
 #: so a refusal in one is a row that quietly stopped measuring anything.
-FULLY_SERVED = ENCODE + ROUNDTRIP + KEYWORDS + SPELLINGS + BOUND + RESULT_USES + CORPUS
+FULLY_SERVED = (ENCODE + ROUNDTRIP + KEYWORDS + SPELLINGS + BOUND + RESULT_USES
+                + CORPUS + [p for p, _ in PER_QUAD])
 
 
 @needs_l

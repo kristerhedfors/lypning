@@ -879,7 +879,11 @@ pub fn route(src: &str) -> Route {
             walk_block(&body, &mut req);
             imports = req.imports.iter().cloned().collect();
             let reads_stdin = reads_stdin || req.reads_stdin;
-            let stop = req.glob_stop.take();
+            // A glob stop is the more specific refusal and wins the slot; a
+            // method that stops every rung is the fallback, and both mark the
+            // whole spectrum rather than one rung.
+            let method = method_wide_stop(req.method_stop.take(), &imports);
+            let stop = req.glob_stop.take().or(method);
             match req.blocker {
                 None => finish_route(String::new(), String::new(), imports, reads_stdin, stop),
                 Some((kind, detail)) => {
@@ -1044,6 +1048,22 @@ struct Requirements {
     /// runtime would have raised, so a program is refused with the same line
     /// one in-process run earlier.
     glob_stop: Option<(String, String)>,
+    /// The first `method:` blocker the walk recorded, kept even when an EARLIER
+    /// blocker won the `--plan` row — and read by [`method_wide_stop`], which
+    /// decides whether it stops the whole spectrum.
+    ///
+    /// It is here for the one thing [`Requirements::block`] being first-wins
+    /// cannot express. A program that imports a capability module blocks FIRST
+    /// on the import, which a larger sibling answers — so [`verdicts`] marks
+    /// that sibling "can run" and the method blocker recorded three statements
+    /// later is dropped. `import base64` then routes
+    /// `base64.b64encode((255).to_bytes(2, "big"))` into lypning-l, which has
+    /// no `int.to_bytes` either and raises `AttributeError` at exit 1 — the
+    /// program's own exit, which the chain never retries, where the same
+    /// program refused cleanly at 90 before the module was served and CPython
+    /// answered it one spawn later. `verdicts` re-checks the IMPORTS against a
+    /// larger rung and nothing else, so this is the second thing it re-checks.
+    method_stop: Option<String>,
     /// Which order-blind wrappers are still the BUILTIN, one bit per index into
     /// [`ORDER_BLIND`]. `sorted` rebound to something that shows its argument's
     /// order would make the blessing below a lie — see [`trusted_wrappers`].
@@ -1109,6 +1129,19 @@ impl Requirements {
     fn stop_base64(&mut self, kind: &str, detail: String) {
         if self.base64_stop.is_none() {
             self.base64_stop = Some((kind.to_string(), detail));
+        }
+    }
+
+    /// A method no type THIS binary models has — recorded as the blocker, and
+    /// kept in [`Self::method_stop`] whether or not it won that slot.
+    ///
+    /// `method` is the one kind whose meaning differs between variants, because
+    /// [`known_method`] is compiled per variant. Every other kind a walk
+    /// produces means the same thing in both, so `blocker` alone carries it.
+    fn block_method(&mut self, detail: String) {
+        self.block("method", detail.clone());
+        if self.method_stop.is_none() {
+            self.method_stop = Some(detail);
         }
     }
 
@@ -1541,6 +1574,43 @@ fn known_method(name: &str) -> bool {
         )
 }
 
+/// The capability modules whose capability brings METHOD NAMES with it, and
+/// therefore the only imports that make a `method:` blocker AMBIGUOUS in the
+/// core — the binary that routes and the one with none of them compiled in.
+///
+/// [`known_method`] is per variant, and the difference between the core's union
+/// and lypning-l's is exactly three things: `collections::known_method` (one
+/// name, `most_common`), `pathlib::known_method` and `re::known_method`, the
+/// last two already gated on their own import by [`pathlib_method`] and
+/// [`re_method`]. So a `method:` blocker the core records is a blocker on
+/// lypning-l TOO unless the program imports one of these three — and then, and
+/// only then, must the core keep routing optimistically and let the variant
+/// that HAS the capability decide.
+///
+/// `base64`, `csv` and `glob` are deliberately absent: their capabilities add
+/// no method name at all. Every value they hand back is a `bytes`, a `str`, a
+/// `list` or a `dict` the core already models, which `base64::call`'s docstring
+/// states for `base64` and `csv.rs`/`glob.rs` state by having no
+/// `known_method` to export. That is what makes this table three names long
+/// instead of a copy of every capability's method surface — which the core
+/// must not carry, because it is the frozen variant and those names are
+/// capability text.
+const METHOD_BEARING: &[&str] = &["collections", "pathlib", "re"];
+
+/// Does the `method:` blocker this walk recorded stop EVERY rung of the
+/// spectrum, and therefore belong in `finish_route`'s `stop` slot?
+///
+/// Only when the program imports nothing from [`METHOD_BEARING`]. The blocker
+/// stays out of `Route::kind` either way: `--plan` ranks what a program hit
+/// FIRST, and that is still the import.
+fn method_wide_stop(method: Option<String>, imports: &[String]) -> Option<(String, String)> {
+    let detail = method?;
+    if imports.iter().any(|m| METHOD_BEARING.contains(&m.as_str())) {
+        return None;
+    }
+    Some(("method".to_string(), detail))
+}
+
 /// A `pathlib` name — `.name`, `.parts`, `.with_suffix` — admitted to the
 /// optimistic union above ONLY for a program that imports `pathlib`.
 ///
@@ -1833,29 +1903,55 @@ pub const BASE64_SERVED: &[&str] =
 /// Which base64 keyword arguments are served, and the refusal line for the rest
 /// — one function, so the WALK and `base64::call` refuse with the same words.
 ///
-/// `falsy` is whether the value is the literal `False`, `None` or `0`; a value
-/// the walk cannot read is not falsy, which refuses, which is the safe
-/// direction. Three rules, and each of the three is a divergence a
-/// reimplementation would ship:
+/// **Two predicates, because there are two questions.** One `falsy` answering
+/// both of them ("was the argument omitted" and "is the argument the default")
+/// answered `altchars=0` and `altchars=False` at exit 0, where CPython 3.14.5
+/// raises — measured on 2026-09-06, all five spellings, in both directions:
 ///
-///   * `altchars=` is a parameter of `b64encode`/`b64decode` ONLY, and
-///     `altchars=None` is its default and a no-op. The urlsafe pair takes no
-///     keyword at all, so `urlsafe_b64encode(s, altchars=None)` is a CPython
-///     `TypeError` and must not be answered here.
+/// ```text
+///   b64decode(b'aGk=', altchars=None)   b'hi'   b64encode(b'hi', altchars=None)   b'aGk='
+///   b64decode(b'aGk=', altchars=b'')    Assert  b64encode(b'hi', altchars=b'')    Assert
+///   b64decode(b'aGk=', altchars='')     Assert  b64encode(b'hi', altchars='')     Assert
+///   b64decode(b'aGk=', altchars=0)      Type    b64encode(b'hi', altchars=0)      Type
+///   b64decode(b'aGk=', altchars=False)  Type    b64encode(b'hi', altchars=False)  Type
+/// ```
+///
+/// An ABSENT `altchars` is the default and `None` is the only value that spells
+/// absent — CPython's test is `if altchars is not None`, and everything past it
+/// either reaches `_bytes_from_decode_data` (a `TypeError` for an `int` or a
+/// `bool`) or `assert len(altchars) == 2` (an `AssertionError` for `b''` and
+/// `''`). A PRESENT falsy `altchars` is a VALUE, and one CPython rejects.
+/// `validate=` is the other question and keeps the other predicate: it reaches
+/// C through a `bool` converter that calls `PyObject_IsTrue`, so every falsy
+/// value there really is `validate=False`.
+///
+///   * `altchars=` is a parameter of `b64encode`/`b64decode` ONLY, and only
+///     `altchars=None` is served. The urlsafe pair takes no keyword at all, so
+///     `urlsafe_b64encode(s, altchars=None)` is a CPython `TypeError` and must
+///     not be answered here either.
 ///   * `validate=` is `b64decode`'s alone — `urlsafe_b64decode` does not
-///     forward it — and only its falsy values are served. It reaches C through
-///     a `bool(accept={int})` converter, so `validate=0` and `validate=None`
-///     are `validate=False` exactly.
+///     forward it — and its falsy values are served exactly: `validate=0` and
+///     `validate=None` ARE `validate=False`.
 ///   * `validate=True` selects `binascii`'s strict mode, whose every rejection
 ///     is a `binascii.Error` message this engine does not write.
+///
+/// A value the walk cannot read is neither `is_none` nor `falsy`, so it
+/// refuses, which is the safe direction for both questions.
 #[cfg(feature = "cap-base64")]
-pub fn base64_kw_block(name: &str, k: &str, falsy: bool) -> Option<String> {
+pub fn base64_kw_block(name: &str, k: &str, is_none: bool, falsy: bool) -> Option<String> {
+    let standard = matches!(name, "b64encode" | "b64decode");
     match k {
-        "altchars" if falsy && matches!(name, "b64encode" | "b64decode") => None,
+        "altchars" if standard && is_none => None,
+        "altchars" if standard => Some(format!(
+            "base64.{name}(altchars=…) with a value other than None, which is either an \
+             alternative alphabet this engine does not implement or a value CPython rejects \
+             with a TypeError or an AssertionError this engine does not word"
+        )),
         "validate" if falsy && name == "b64decode" => None,
         "validate" if name == "b64decode" => Some(format!(
-            "base64.{name}(validate=…) selects binascii's strict mode, whose \
-             every rejection is a binascii.Error message this engine does not write"
+            "base64.{name}(validate=…) that is not literally False, None or 0: a truthy \
+             validate selects binascii's strict mode, whose every rejection is a \
+             binascii.Error message this engine does not write"
         )),
         _ => Some(format!("base64.{name}({k}=…)")),
     }
@@ -1969,8 +2065,14 @@ fn base64_call_block(
         _ => Some(format!("base64.{name}() with extra positional arguments")),
     }
     .or_else(|| {
-        kws.iter()
-            .find_map(|(k, v)| base64_kw_block(name, k, matches!(v, Expr::None | Expr::False | Expr::Int(0))))
+        kws.iter().find_map(|(k, v)| {
+            base64_kw_block(
+                name,
+                k,
+                matches!(v, Expr::None),
+                matches!(v, Expr::None | Expr::False | Expr::Int(0)),
+            )
+        })
     })
     .or_else(|| {
         let (t, data) = pos.first().and_then(|e| base64_arg(e, req))?;
@@ -2535,11 +2637,16 @@ fn resolve_module(e: &Expr, aliases: &[(String, String)]) -> Option<crate::value
     }
 }
 
-/// The module `e` names, when it is one this binary does NOT serve but
-/// [`MODULE_ATTRS`] has a row for — the mirror of `resolve_module`, which can
-/// only see modules in `modules::MODULES`. Only a bare name (or its `import … as`
-/// alias) that the program actually imported: `csv.reader` where `csv` is a
-/// local variable is not a module attribute, and the walk must not say it is.
+/// The module `e` names, when it is one the program imported and THIS binary
+/// does NOT serve — the mirror of `resolve_module`, which can only see modules
+/// in `modules::MODULES`. Only a bare name (or its `import … as` alias) that the
+/// program actually imported: `csv.reader` where `csv` is a local variable is
+/// not a module attribute, and the walk must not say it is.
+///
+/// It no longer filters on [`MODULE_ATTRS`], and that is the half that matters.
+/// A row there decides the ATTRIBUTE; the absence of one still decides that
+/// this is an attribute AT ALL, which is what keeps `collections.Counter` and
+/// `glob.escape` out of the method check — see the caller.
 fn capability_module(e: &Expr, req: &Requirements) -> Option<String> {
     let n = match e {
         Expr::Name(n) => n.as_ref(),
@@ -2554,7 +2661,7 @@ fn capability_module(e: &Expr, req: &Requirements) -> Option<String> {
     if crate::modules::MODULES.contains(&name) || !req.imports.contains(name) {
         return None;
     }
-    MODULE_ATTRS.iter().find(|(m, _)| *m == name).map(|(m, _)| (*m).to_string())
+    Some(name.to_string())
 }
 
 fn walk_expr(e: &Expr, req: &mut Requirements) {
@@ -2647,11 +2754,21 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             if let Some(m) = capability_module(b, req) {
                 if !served_attr(&m, n) {
                     req.escalate(&m, n);
-                    return;
                 }
+                // Served — or claimed whole, which is what `served_attr` says
+                // for a module [`MODULE_ATTRS`] has no row for — and either way
+                // this is a MODULE ATTRIBUTE and not a method name. Returning
+                // is what says so. Falling through recorded `.b64decode()`,
+                // `.Counter()` and `.escape()` as `method:` blockers, which was
+                // invisible for as long as only the FIRST blocker was ever
+                // read and became a wrong route the moment `method_wide_stop`
+                // started reading the rest: every base64 program in the corpus
+                // went to CPython, refused by the method name of the very
+                // function the module was served to run.
+                return;
             }
             if !known_method(n) && !pathlib_method(req, n) && !re_method(req, n) {
-                req.block("method", format!(".{n}()"));
+                req.block_method(format!(".{n}()"));
             }
         }
         Expr::Call {
