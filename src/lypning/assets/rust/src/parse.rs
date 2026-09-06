@@ -1005,7 +1005,15 @@ impl Parser {
             let e = self.unary()?;
             // Fold `-<literal>` so integer-literal range checks read naturally.
             return Ok(match e {
-                Expr::Int(v) => Expr::Int(-v),
+                // A literal negated at parse time, which is what makes
+                // `-9223372036854775808` a literal rather than a negation of one
+                // that does not exist. A wide literal folds through the same
+                // path; only `-(-2**63)` and friends leave it as a unary node,
+                // where the evaluator promotes.
+                Expr::Int(v) => match v.small().and_then(|i| i.checked_neg()) {
+                    Some(i) => Expr::Int(crate::value::Int::S(i)),
+                    None => Expr::Un(UnOp::Neg, Box::new(Expr::Int(v))),
+                },
                 Expr::Float(v) => Expr::Float(-v),
                 other => Expr::Un(UnOp::Neg, Box::new(other)),
             });

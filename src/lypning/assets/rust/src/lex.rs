@@ -13,7 +13,7 @@ use crate::err::{unsupported, LypningError};
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tok {
     Name(String),
-    Int(i64),
+    Int(crate::value::Int),
     Float(f64),
     /// A string literal, already decoded. `is_bytes` distinguishes b"".
     Str { value: Vec<u8>, is_bytes: bool },
@@ -276,8 +276,10 @@ impl<'a> Lexer<'a> {
                 .chars()
                 .filter(|c| *c != '_')
                 .collect();
-            let v = i64::from_str_radix(&text, radix)
-                .map_err(|_| unsupported("bigint", "integer literal beyond 64-bit range"))?;
+            let v = match i64::from_str_radix(&text, radix) {
+                Ok(v) => crate::value::Int::S(v),
+                Err(_) => wide_literal(&text, radix)?,
+            };
             self.push(Tok::Int(v));
             return Ok(());
         }
@@ -314,10 +316,14 @@ impl<'a> Lexer<'a> {
             self.push(Tok::Float(text.parse::<f64>().unwrap_or(f64::NAN)));
         } else {
             match text.parse::<i64>() {
-                Ok(v) => self.push(Tok::Int(v)),
-                // Python has arbitrary-precision ints. Refusing is the only
-                // honest answer; guessing would be a silent wrong number.
-                Err(_) => return Err(unsupported("bigint", "integer literal beyond 64-bit range")),
+                Ok(v) => self.push(Tok::Int(crate::value::Int::S(v))),
+                // Python has arbitrary-precision ints. On the core, refusing is
+                // the only honest answer and guessing would be a silent wrong
+                // number; `cap-bigint` reads the digits instead.
+                Err(_) => {
+                    let v = wide_literal(&text, 10)?;
+                    self.push(Tok::Int(v));
+                }
             }
         }
         Ok(())
@@ -415,6 +421,29 @@ impl<'a> Lexer<'a> {
         };
         Ok((decoded, bytes))
     }
+}
+
+/// An integer literal whose digits do not fit an `i64`.
+///
+/// The digits are already stripped of their sign, prefix and underscores. On the
+/// frozen core there is nothing to build one out of and this is the refusal the
+/// lexer has always raised; on `cap-bigint` it is a value, refused only past
+/// CPython's own `sys.get_int_max_str_digits()`, where CPython raises
+/// `ValueError` rather than converting.
+#[allow(unused_variables)]
+fn wide_literal(digits: &str, radix: u32) -> Result<crate::value::Int, LypningError> {
+    #[cfg(feature = "cap-bigint")]
+    match crate::bigint::parse(digits, radix) {
+        Some(v) => return Ok(v),
+        None => {
+            return Err(unsupported(
+                "bigint",
+                "an integer literal past sys.get_int_max_str_digits(), where CPython raises ValueError",
+            ))
+        }
+    }
+    #[cfg(not(feature = "cap-bigint"))]
+    Err(unsupported("bigint", "integer literal beyond 64-bit range"))
 }
 
 fn is_ident_start(c: u8) -> bool {

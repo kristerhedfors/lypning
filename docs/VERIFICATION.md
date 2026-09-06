@@ -204,7 +204,7 @@ otherwise each later sibling whose static verdict was "can run" and whose
 # CHECK — `c4-dispatchers.sh`; `--next` and this `--json` are the binary's (`main.rs:route_cmd`).
 lypning conformance --mixture both | grep -E '^(monotone|dispatchers|MISMATCH [0-9])'; echo $?
 ~/.lypning/bin/lypning route --next --after lypning --kind set-order -c 'print({3, 1, 2})'
-~/.lypning/bin/lypning run -c 'print(2**100)'; echo $?; lypning run -c 'print(2**100)'; echo $?   # Rust, then Python
+~/.lypning/bin/lypning run -c 'print(2**100 / 2)'; echo $?; lypning run -c 'print(2**100 / 2)'; echo $?   # Rust, then Python
 # EXPECTED — lypning conformance · 2026-09-04 · 437056c · 3688 loaded
 monotone violations 0 over 2504 — a larger variant never does worse than a smaller one on a program both ran
 dispatchers agree 2504/2504 — the Python dispatcher (`mixture`) and the Rust one (`mixture-rust`, what `lypning run` execs) over the same binaries
@@ -486,7 +486,7 @@ its binary's stamp; a header for a rebuilt binary discards the file);
 `$LYPNING_HOME/routes/<engine>.jsonl` (`paths.routes_dir`).
 ```bash
 # CHECK — `c11-routes.sh`: one runtime refusal through the Python dispatcher, then a graded battery digested with the store present and, after `routes --clear`, with `LYPNING_ROUTES=0`.
-lypning run -c 'print(2**100)'; echo $?; lypning routes | grep -E '^  (engine|lypning|kind|bigint)'
+lypning run -c 'print(2**100 / 2)'; echo $?; lypning routes | grep -E '^  (engine|lypning|kind|bigint)'
 lypning conformance --limit 50 --json | python3 -c 'import json,sys; d=json.load(sys.stdin); d.pop("seconds"); print(json.dumps(d, sort_keys=True))' | shasum
 # EXPECTED — lypning routes · 2026-09-04 · 437056c · 3688 loaded
   lypning:             1         1             1  /tmp/lyp-b1/routes/lypning.jsonl

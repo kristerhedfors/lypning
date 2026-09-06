@@ -12,7 +12,7 @@ Every table is re-derivable from your own corpus ([`FORKING.md`](FORKING.md)).
 | engine | what it is | where it lives |
 |---|---|---|
 | `lypning` | the Rust core, frozen at 8 blocks (`gate.VARIANT_BLOCK_BUDGET`); it gains no capability | `src/lypning/assets/rust/`, `--features variant-m` (the default) |
-| `lypning-l` | the same crate with `cap-collections`, `cap-csv`, `cap-glob`, `cap-pathlib` and `cap-re` (`engines.VARIANT_CAPS`), budgeted 32 blocks | `--features variant-l` |
+| `lypning-l` | the same crate with `cap-bigint`, `cap-collections`, `cap-csv`, `cap-glob`, `cap-pathlib` and `cap-re` (`engines.VARIANT_CAPS`), budgeted 32 blocks | `--features variant-l` |
 | `cpython` | the real thing, and the reference every verdict is graded against | the system `python3` (`engines.find_cpython`) |
 
 The chain is `engines.ENGINE_ORDER`, cheapest first. `lypning-mp` is the oracle
@@ -77,7 +77,7 @@ unpacking. The module surface is `modules.rs:MODULES`, one table per variant:
 | variant | modules |
 |---|---|
 | `lypning` | `sys`, `os`, `os.path`, `posixpath`, `io`, `json`, `random` (the seeded-integer subset, MT19937 bit for bit — `random.rs`) |
-| `lypning-l` | the same, plus `collections` (`Counter`, `defaultdict` — `collections.rs`), `pathlib` (`Path` — `pathlib.rs`) and `re` (a matcher — `re.rs`) |
+| `lypning-l` | the same, plus `collections` (`Counter`, `defaultdict` — `collections.rs`), `pathlib` (`Path` — `pathlib.rs`) and `re` (a matcher — `re.rs`). `cap-bigint` adds no module: it widens the integers (`bigint.rs`) |
 
 `re` is on the larger variant only: the core routes `import re` to
 `lypning-l`. What `re.rs` serves is a SLICE of the pattern language —
@@ -94,18 +94,26 @@ when it ran out would be a wrong answer at exit 0.
 is acceptable. These are the places where lypning refuses rather than
 approximates:
 
-1. **Integers are i64; Python's are arbitrary precision.** Every arithmetic
-   operation is checked and an overflow is `unsupported: bigint`, never a wrap.
-   One integer refusal is deliberately *not* `bigint`: `int / int` where an
-   operand is past 2\*\*53 needs a quotient rounded from the integers themselves,
-   and converting each to `f64` first loses the low bits before the divide. That
-   is `unsupported: int-div-precision`, and the separate name is load-bearing —
-   lypning-mp *has* arbitrary-precision integers, so it answers a `bigint`
-   refusal correctly and is worth falling through to, while on this one it does
-   the same lossy conversion and answers wrongly. See
-   `engines.ONLY_CPYTHON_REFUSALS`.
-   (Since 2026-09-04, `CHANGELOG.md` #38, nothing falls through to lypning-mp;
-   the distinction survives as the meaning of that table — see below.)
+1. **Integers are i64 on the CORE; Python's are arbitrary precision.** Every
+   arithmetic operation there is checked and an overflow is `unsupported:
+   bigint`, never a wrap. On `lypning-l` this is no longer a refusal but a
+   capability: `cap-bigint` widens `Value::Int`'s payload — one integer variant
+   that can be wide, not a second `Value::BigInt` — so `+ - * ** // % divmod <<
+   >>`, the comparisons, `str`/`repr`/`%`/`.format`, `bin`/`hex`/`oct`,
+   `json.dumps` and `int()` are exact at any width (`bigint.rs`). What still
+   refuses there is written down in that file's header, and the largest item is
+   any mixing of a wide integer with a **float**, which needs a rounding this
+   engine does not do; so is a wide integer as a **dict key**, because
+   `2**100 == 2.0**100` is True in CPython and the two are one key.
+   `int / int` where an operand is past 2\*\*53 needs a quotient rounded from the
+   integers themselves, and converting each to `f64` first loses the low bits
+   before the divide. On the core that is `unsupported: int-div-precision`;
+   `bigint::div_exact` answers it on `lypning-l`, which is why the kind left
+   `route::ONLY_CPYTHON_KINDS` and `engines.ONLY_CPYTHON_REFUSALS`. The separate
+   NAME is still load-bearing: it is the one refusal a larger variant answers
+   with arithmetic rather than with a module, and `route::CAPS` carries it and
+   `bigint` as `cap-bigint`'s two kinds — the first row of that table whose
+   claim is a runtime kind and not a module.
 2. **Set iteration order is CPython's hashing, and cannot be reproduced.** So
    order-*independent* operations on sets work (`len`, `in`, the set algebra,
    `sorted`, `min`, `max`, `any`, `all`) and anything that would expose an order
@@ -298,7 +306,7 @@ runtime's FIRST probe; a later one's byte count is not a size.
 | `src/lex.rs`, `src/parse.rs`, `src/ast.rs` | tokenizer; recursive-descent parser — every gap is `unsupported: <kind>`; the AST |
 | `src/eval.rs`, `src/value.rs`, `src/ops.rs`, `src/iter.rs`, `src/fmt.rs` | evaluator with real scopes; values (insertion-ordered dict, the set-order and NaN refusals); operators and Python's floor/mod rules; lazy iteration; `str`/`repr` and format specs |
 | `src/builtins.rs`, `src/methods.rs`, `src/modules.rs`, `src/json.rs`, `src/random.rs` | builtins and methods (the tables the router reads); `MODULES` per variant; JSON against CPython's exact output; MT19937 |
-| `src/collections.rs`, `src/csv.rs`, `src/glob.rs`, `src/pathlib.rs`, `src/re.rs` | `cap-collections`, `cap-csv`, `cap-glob`, `cap-pathlib`, `cap-re` — compiled into `lypning-l` only; `glob`'s ORDER half is a static blocker in `route.rs`, not a value in `glob.rs` |
+| `src/bigint.rs`, `src/collections.rs`, `src/csv.rs`, `src/glob.rs`, `src/pathlib.rs`, `src/re.rs` | `cap-bigint`, `cap-collections`, `cap-csv`, `cap-glob`, `cap-pathlib`, `cap-re` — compiled into `lypning-l` only; `glob`'s ORDER half is a static blocker in `route.rs`, not a value in `glob.rs`, and `cap-bigint` serves no module at all |
 | `src/io.rs`, `src/alloc.rs`, `src/hash.rs`, `src/args.rs`, `src/err.rs` | the commit barrier; the size-class allocator; hashing; call arguments; the refusal line and `ENGINE` |
 | `src/route.rs`, `src/main.rs`, `src/embed.rs`, `src/capi.rs`, `src/host.rs`, `src/lib.rs` | the classifier; CLI, exit contract, dispatcher; the in-process runner and `fall_onward`; the C ABI (`capi` feature); host hooks |
 | `../scripts/build-rust.sh` | the standalone build, with the shape and contract smoke checks; `lypning build --rust` drives the same build |

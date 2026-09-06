@@ -16,7 +16,7 @@
 //!      are unambiguously printable and REFUSE the rest rather than guess.
 
 use crate::err::{overflow_err, unsupported, value_err, R};
-use crate::value::{set_order_refused, type_name, Dict, Value};
+use crate::value::{set_order_refused, type_name, Dict, Int, Value};
 use std::rc::Rc;
 
 pub fn to_str(v: &Value) -> R<String> {
@@ -52,7 +52,7 @@ pub fn to_rc(v: &Value) -> R<Rc<str>> {
         #[cfg(feature = "cap-pathlib")]
         Value::Path(s, false) => s.clone(),
         Value::Exc(_, m) => m.clone(),
-        Value::Int(i) => int_rc(*i),
+        Value::Int(Int::S(i)) => int_rc(*i),
         _ => repr(v)?.into(),
     })
 }
@@ -64,7 +64,7 @@ pub fn to_rc(v: &Value) -> R<Rc<str>> {
 /// wrong would be a silent wrong answer, so the two do not share an arm.
 pub fn repr_rc(v: &Value) -> R<Rc<str>> {
     Ok(match v {
-        Value::Int(i) => int_rc(*i),
+        Value::Int(Int::S(i)) => int_rc(*i),
         _ => repr(v)?.into(),
     })
 }
@@ -112,7 +112,7 @@ pub fn repr(v: &Value) -> R<String> {
     Ok(match v {
         Value::None => "None".into(),
         Value::Bool(b) => if *b { "True" } else { "False" }.into(),
-        Value::Int(i) => i.to_string(),
+        Value::Int(i) => int_str(i)?,
         Value::Float(f) => float_repr(*f),
         Value::Str(s) => str_repr(s)?,
         Value::Bytes(b) => bytes_repr(b),
@@ -753,17 +753,29 @@ fn format_inner(v: &Value, spec_src: &str, from_pct: bool) -> R<String> {
             return Ok(pad(&ch.to_string(), &sp, true));
         }
         'd' => {
-            let n = int_of(v)?;
-            group(&n.unsigned_abs().to_string(), sp.grouping, 3)
+            let digits = match wide_digits(v, 10, false)? {
+                Some(d) => d,
+                None => int_of(v)?.unsigned_abs().to_string(),
+            };
+            group(&digits, sp.grouping, 3)
         }
         'x' | 'X' | 'o' | 'b' => {
-            let n = int_of(v)?;
-            let a = n.unsigned_abs();
-            let mut s = match ty {
-                'x' => format!("{a:x}"),
-                'X' => format!("{a:X}"),
-                'o' => format!("{a:o}"),
-                _ => format!("{a:b}"),
+            let radix_of = match ty {
+                'o' => 8,
+                'b' => 2,
+                _ => 16,
+            };
+            let mut s = match wide_digits(v, radix_of, ty == 'X')? {
+                Some(d) => d,
+                None => {
+                    let a = int_of(v)?.unsigned_abs();
+                    match ty {
+                        'x' => format!("{a:x}"),
+                        'X' => format!("{a:X}"),
+                        'o' => format!("{a:o}"),
+                        _ => format!("{a:b}"),
+                    }
+                }
             };
             let radix = if ty == 'b' { 4 } else { 4 };
             s = group(&s, sp.grouping, radix);
@@ -824,7 +836,7 @@ fn format_inner(v: &Value, spec_src: &str, from_pct: bool) -> R<String> {
         _ => return Err(value_err(format!("Unknown format code '{ty}'"))),
     };
     let neg = match v {
-        Value::Int(i) => *i < 0,
+        Value::Int(i) => i.sign() < 0,
         Value::Bool(_) => false,
         Value::Float(f) => f.is_sign_negative() && (*f != 0.0 || sp.ty.is_some()),
         _ => false,
@@ -904,9 +916,39 @@ fn nonfinite_sign(f: f64, sp: &Spec) -> &'static str {
     }
 }
 
+/// `repr`/`str` of an integer, which for a wide one is the decimal conversion
+/// CPython caps at `sys.get_int_max_str_digits()`.
+pub fn int_str(i: &Int) -> R<String> {
+    match i {
+        Int::S(v) => Ok(v.to_string()),
+        #[cfg(feature = "cap-bigint")]
+        Int::B(b) => crate::bigint::to_dec(b),
+    }
+}
+
+/// The UNSIGNED digits of a WIDE integer in `radix`, or `None` when the value is
+/// not a wide integer and the caller's own `i64` path answers it.
+///
+/// Split out rather than folded into `int_of` because the sign, the `0x` prefix
+/// and the zero fill are placed by the caller and every one of them goes in a
+/// different slot — `format(-255, '#010x')` is `-0x00000ff`.
+#[allow(unused_variables)]
+fn wide_digits(v: &Value, radix: u32, upper: bool) -> R<Option<String>> {
+    #[cfg(feature = "cap-bigint")]
+    if let Value::Int(Int::B(b)) = v {
+        return Ok(Some(if radix == 10 {
+            let d = crate::bigint::to_dec(b)?;
+            d.trim_start_matches('-').to_string()
+        } else {
+            crate::bigint::to_radix(b, radix, upper)
+        }));
+    }
+    Ok(None)
+}
+
 fn int_of(v: &Value) -> R<i64> {
     match v {
-        Value::Int(i) => Ok(*i),
+        Value::Int(i) => i.get(),
         Value::Bool(b) => Ok(*b as i64),
         _ => Err(unsupported(
             "format",
@@ -916,7 +958,9 @@ fn int_of(v: &Value) -> R<i64> {
 }
 fn float_of(v: &Value) -> R<f64> {
     match v {
-        Value::Int(i) => Ok(*i as f64),
+        // A WIDE integer under `f`, `e`, `g` or `%` needs a rounded double,
+        // which this engine does not produce; `get()` refuses.
+        Value::Int(i) => Ok(i.get()? as f64),
         Value::Bool(b) => Ok(*b as i64 as f64),
         Value::Float(f) => Ok(*f),
         _ => Err(unsupported(

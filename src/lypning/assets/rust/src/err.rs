@@ -111,7 +111,13 @@ impl LypningError {
                 Some(match crate::builtins::system_exit_code(&e.msg) {
                     crate::value::Value::None => (0, None),
                     crate::value::Value::Bool(b) => (b as i32, None),
-                    crate::value::Value::Int(i) => (i as i32, None),
+                    // `sys.exit(2**100)` is exit 1 with the number printed in
+                    // CPython, which is what the fallback arm does; only a value
+                    // that fits the status word takes the first branch.
+                    crate::value::Value::Int(i) => match i.small() {
+                        Some(v) => (v as i32, None),
+                        None => (1, Some(e.msg.as_str())),
+                    },
                     _ => (1, Some(e.msg.as_str())),
                 })
             }

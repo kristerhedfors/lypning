@@ -55,9 +55,15 @@ def cpython():
 CORE = engines.SPECTRUM[0]
 
 #: Routes clean on every built variant, then refuses at runtime on a VALUE.
-#: `print(2**10)` is the same program to a static walker and runs fine, which is
-#: the whole reason a static plan cannot contain this row.
-BIGINT = "print(2**100)"
+#: `print(2**10 / 2)` is the same program to a static walker and runs fine, which
+#: is the whole reason a static plan cannot contain this row.
+#:
+#: It was `print(2**100)` until `cap-bigint`, which ANSWERS that one on
+#: lypning-l. The shape this file needs is a runtime `bigint` refusal that every
+#: built variant still raises, and mixing a wide integer with a float is it: the
+#: core refuses at the `**` and lypning-l refuses at the `/`, both with kind
+#: `bigint`, and CPython answers.
+BIGINT = "print(2**100 / 2)"
 
 
 def _read(path):
