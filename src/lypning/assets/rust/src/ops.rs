@@ -1298,12 +1298,6 @@ fn identity(a: &Value, b: &Value) -> R<bool> {
     if is_same(a, b) {
         return Ok(true);
     }
-    let foldable = |v: &Value| {
-        matches!(
-            v,
-            Value::Int(_) | Value::Float(_) | Value::Str(_) | Value::Bytes(_) | Value::Tuple(_)
-        )
-    };
     // Two Patterns that compare equal are the same object in CPython while its
     // 512-entry compile cache still holds the entry; once this one has thrown
     // an entry away, the eviction order that decides it is CPython's own.
@@ -1314,7 +1308,7 @@ fn identity(a: &Value, b: &Value) -> R<bool> {
             "`is` between two equal re.Pattern objects after the compile cache evicted",
         ));
     }
-    if foldable(a) && foldable(b) && eq(a, b)? {
+    if crate::value::interned_identity(a) && crate::value::interned_identity(b) && eq(a, b)? {
         return Err(unsupported(
             "identity",
             "`is` between two equal immutable values, which CPython answers from interning",

@@ -2328,7 +2328,18 @@ fn purge_cache() {
 /// whenever the cache still holds the entry, and the eviction order that
 /// decides it is version-shaped.
 pub fn identity_unclear(a: &Value, b: &Value) -> bool {
-    matches!((a, b), (Value::Pattern(_), Value::Pattern(_))) && EVICTED.with(|e| e.get())
+    matches!((a, b), (Value::Pattern(_), Value::Pattern(_))) && cache_evicted()
+}
+
+/// Has the compile cache thrown an entry away yet?
+///
+/// While it has not, a Pattern this engine hands back twice is one object and
+/// CPython's is too, so its ADDRESS is its identity. Once either cache has
+/// evicted, the answer belongs to whichever cache did it — which is what
+/// [`identity_unclear`] refuses on, and what `value::bound_key` refuses on
+/// before it builds a key that would have to agree with it.
+pub fn cache_evicted() -> bool {
+    EVICTED.with(|e| e.get())
 }
 
 // ---- argument shapes ------------------------------------------------------
