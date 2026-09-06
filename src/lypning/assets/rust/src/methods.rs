@@ -2318,6 +2318,10 @@ fn file_method(
         }
         "close" => {
             f.borrow_mut().closed = true;
+            // CPython's csv.reader holds the FILE, so a row asked for after
+            // this is `ValueError: I/O operation on closed file.` — the eager
+            // reader has the rows and has to be told the file is gone.
+            mio::csv_on_close(f);
             Value::None
         }
         "tell" => Value::Int(f.borrow().pos as i64),

@@ -1578,6 +1578,21 @@ pub fn open_value(path: &str, mode: &str, kw: &[(Rc<str>, Value)]) -> R<Value> {
             return Err(unsupported("encoding", &format!("text encoding '{e}'")));
         }
     }
+    // CPython rejects `newline=` on a BINARY stream before it looks at the
+    // value — `open(p,'rb',newline='')` is a ValueError, not a raw stream. The
+    // check has to come before `newline_mode_of`, which reads the value and
+    // would otherwise accept `''` in binary mode on the variant that serves it
+    // and `'\n'` on the one that does not.
+    if binary {
+        if let Some(nl) = kwget(kw, "newline") {
+            if !matches!(nl, Value::None) {
+                return Err(LypningError::exc(
+                    "ValueError",
+                    "binary mode doesn't take a newline argument",
+                ));
+            }
+        }
+    }
     let nl = newline_mode_of(kw)?;
     let base: String = mode.chars().filter(|c| !matches!(c, 'b' | 't')).collect();
     let mut f = mio::open_file(path, if base.is_empty() { "r" } else { &base }, binary)?;

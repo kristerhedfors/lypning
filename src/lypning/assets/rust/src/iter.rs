@@ -54,6 +54,70 @@ pub enum Iter {
     Enumerate(Box<Iter>, i64),
     /// A live iterator handed out by `iter()` and consumed by `next()`.
     Shared(Rc<RefCell<Iter>>),
+    /// A `csv.reader` its file has outlived it: closed
+    /// ([`mio::CSV_DEAD_CLOSED`]) or written to after the reader was drained
+    /// ([`mio::CSV_DEAD_STALE`]). The eager reader has the right ROWS at the
+    /// wrong MOMENT, and these are the two moments a program can see that; the
+    /// file installs this through `io::csv_on_close` / `io::csv_on_write`
+    /// rather than the reader noticing, because the reader cannot see either
+    /// event. An `Iter` variant and NOT a `Value` one: `Value` reaches `eq`,
+    /// `hash`, `repr`, `bool`, `len` and a dozen more arms nothing forces you
+    /// to remember (`docs/HILLCLIMB.md` iteration 74), `Iter` reaches
+    /// `iter_next` and `drained`.
+    #[cfg(feature = "cap-csv")]
+    CsvDead(u8),
+}
+
+/// Has this iterator nothing left to yield? Asked only of a `csv.reader`, whose
+/// rows are always an [`Iter::Vec`] — every other shape answers `false`, which
+/// is the safe direction: it means "may still yield", and the caller refuses.
+#[cfg(feature = "cap-csv")]
+pub fn drained(it: &Iter) -> bool {
+    match it {
+        Iter::Vec(v, i) => *i >= v.len(),
+        Iter::CsvDead(_) => true,
+        _ => false,
+    }
+}
+
+/// Where a text stream's next line ends, given what `open(newline=…)` asked for.
+///
+/// `newline=''` is the spelling `csv`'s own documentation requires, and it means
+/// a line ends at `\r\n`, `\n` OR a bare `\r` — so `open(p, newline='')` was
+/// SERVED while the file object behind it still split at `\n` alone, and every
+/// bare CR was swallowed into the line before it. `csv.rs`'s own `split_lines`
+/// had this right from the start; the stream it shares the flag with did not.
+#[cfg(feature = "cap-csv")]
+fn line_end(fo: &mio::FileObj, start: usize) -> usize {
+    if fo.newline_mode != mio::NEWLINE_RAW {
+        return match fo.data[start..].iter().position(|c| *c == b'\n') {
+            Some(i) => start + i + 1,
+            None => fo.data.len(),
+        };
+    }
+    match fo.data[start..].iter().position(|c| *c == b'\n' || *c == b'\r') {
+        Some(i) => {
+            let e = start + i;
+            if fo.data[e] == b'\r' && fo.data.get(e + 1) == Some(&b'\n') {
+                e + 2
+            } else {
+                e + 1
+            }
+        }
+        None => fo.data.len(),
+    }
+}
+
+/// The core's half: this engine has never translated a line ending and splits
+/// at `\n`, which is exactly `newline=None` and `newline='\n'` on input
+/// without a `\r`. `newline=''` refuses here (`builtins::newline_mode_of`), so
+/// the third mode is unreachable and costs no bytes.
+#[cfg(not(feature = "cap-csv"))]
+fn line_end(fo: &mio::FileObj, start: usize) -> usize {
+    match fo.data[start..].iter().position(|c| *c == b'\n') {
+        Some(i) => start + i + 1,
+        None => fo.data.len(),
+    }
 }
 
 /// A generator expression, suspended between elements.
@@ -171,8 +235,13 @@ impl Interp {
             Value::Gen(g) => Iter::Gen(g),
             Value::IterObj(it, _) => Iter::Shared(it),
             // `for line in sys.stdin` — the largest single cluster in the
-            // corpus is `stdin -> transform -> stdout`.
-            Value::Module("sys.stdin") => Iter::Stdin,
+            // corpus is `stdin -> transform -> stdout`. The guard is here and
+            // not in `iter_next` on purpose: once per loop, not once per line,
+            // on the hottest path there is.
+            Value::Module("sys.stdin") => {
+                mio::stdin_csv_guard()?;
+                Iter::Stdin
+            }
             Value::DictView(d, kind) => {
                 let (items, n0) = {
                     let b = d.borrow();
@@ -282,10 +351,7 @@ impl Interp {
                     None
                 } else {
                     let start = fo.pos;
-                    let end = match fo.data[start..].iter().position(|c| *c == b'\n') {
-                        Some(i) => start + i + 1,
-                        None => fo.data.len(),
-                    };
+                    let end = line_end(&fo, start);
                     fo.pos = end;
                     Some(if fo.binary {
                         Value::Bytes(Rc::new(fo.data[start..end].to_vec()))
@@ -300,6 +366,21 @@ impl Interp {
                         )?)
                     })
                 }
+            }
+            // Installed by the FILE, not reached by the reader: see
+            // `Iter::CsvDead`. A close is CPython's own ValueError, verbatim;
+            // a write is a refusal, because CPython ANSWERS there and this
+            // engine cannot.
+            #[cfg(feature = "cap-csv")]
+            Iter::CsvDead(why) => {
+                return Err(if *why == mio::CSV_DEAD_CLOSED {
+                    LypningError::exc("ValueError", "I/O operation on closed file.")
+                } else {
+                    unsupported(
+                        "csv",
+                        "a csv.reader() whose file has been written since it was drained (CPython's reader is lazy and would yield what was written)",
+                    )
+                })
             }
             Iter::Stdin => match mio::stdin_line()? {
                 Some(b) => Some(Value::Str(decode_text(

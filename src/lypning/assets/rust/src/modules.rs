@@ -324,12 +324,25 @@ pub fn call_module_method(
             };
             return Err(LypningError::exc("SystemExit", msg));
         }
-        ("sys.stdin", "read") => Value::Str(crate::iter::decode_text(&mio::stdin_rest()?, "non-UTF-8 bytes on stdin (CPython decodes it with surrogateescape)")?),
-        ("sys.stdin", "readline") => match mio::stdin_line()? {
-            Some(b) => Value::Str(crate::iter::decode_text(&b, "non-UTF-8 bytes on stdin (CPython decodes it with surrogateescape)")?),
-            None => Value::Str("".into()),
-        },
+        // Every read of `sys.stdin` passes `stdin_csv_guard` first: it is the
+        // stdin half of `io::csv_read_guard`, and `csv.reader(sys.stdin)`
+        // DRAINS the one stream a program cannot reopen. Without it a later
+        // read answered `''` at exit 0 where CPython, whose reader is lazy,
+        // still has the whole stream. On a variant without `cap-csv` the guard
+        // is `Ok(())`.
+        ("sys.stdin", "read") => {
+            mio::stdin_csv_guard()?;
+            Value::Str(crate::iter::decode_text(&mio::stdin_rest()?, "non-UTF-8 bytes on stdin (CPython decodes it with surrogateescape)")?)
+        }
+        ("sys.stdin", "readline") => {
+            mio::stdin_csv_guard()?;
+            match mio::stdin_line()? {
+                Some(b) => Value::Str(crate::iter::decode_text(&b, "non-UTF-8 bytes on stdin (CPython decodes it with surrogateescape)")?),
+                None => Value::Str("".into()),
+            }
+        }
         ("sys.stdin", "readlines") => {
+            mio::stdin_csv_guard()?;
             let mut out = Vec::new();
             while let Some(b) = mio::stdin_line()? {
                 out.push(Value::Str(crate::iter::decode_text(&b, "non-UTF-8 bytes on stdin (CPython decodes it with surrogateescape)")?));

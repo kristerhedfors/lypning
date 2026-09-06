@@ -505,6 +505,10 @@ impl Interp {
                 for v in opened {
                     if let Value::File(f) = v {
                         f.borrow_mut().closed = true;
+                        // `with open(p) as f: r = csv.reader(f)` — the same
+                        // close as `f.close()`, and the shape that made a
+                        // reader outlive its file at exit 0.
+                        crate::io::csv_on_close(&f);
                     }
                 }
                 return r;

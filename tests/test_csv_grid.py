@@ -53,6 +53,38 @@ The traps this was written against, each measured against CPython 3.14.5:
    `strict=True`, a `NUL`, a field over the limit, `csv.Sniffer`,
    `csv.field_size_limit`, `csv.QUOTE_STRINGS`: all refusals, and `REFUSED`
    asserts they are refusals rather than wrong answers.
+
+7. **A dialect is checked against ITSELF.** `_csv` compares the three dialect
+   characters to each other before it parses a byte — `delimiter=quotechar`,
+   `escapechar=delimiter`, `escapechar=quotechar` — and rejects `\r` or `\n` as
+   any of them. Validating each one in isolation passed all six and then parsed
+   with a dialect CPython refuses to build. `SAME_CHAR` is that block, and every
+   row of it is a refusal.
+
+8. **The eager reader is right about the rows and wrong about the MOMENT.**
+   CPython's is lazy over the FILE, so closing the file makes the next row a
+   `ValueError`, writing to the file makes the next row the written one, and a
+   `QUOTE_NONNUMERIC` field that `float()` cannot take raises from the iteration
+   rather than from the construction — after the earlier rows have printed.
+   `MOMENTS` crosses all four, and half its rows are refusals by design.
+
+9. **`open(newline='')` is a promise to the STREAM, not only to the parser.**
+   It means a line ends at `\r\n`, `\n` OR a bare `\r`, so `readline`,
+   `readlines`, `for line in f` and `seek(0)` all have to split there too.
+   Serving the flag and then splitting at `\n` alone swallowed every bare CR at
+   exit 0. `STREAM` is that block, and it deliberately uses no `csv` at all.
+
+10. **`sys.stdin` is not `open(p)`.** CPython opens it with `newline="\n"`, not
+    with the `newline=None` a file gets, so a `\r` reaches the parser verbatim;
+    and it is the one stream a program cannot reopen, so the drain a reader
+    performs on it has to be remembered. Both are in `STDIN_ROWS`.
+
+11. **A `module` claim is not an attribute claim.** The binary that ROUTES is
+    the core, which has none of this compiled in; `route::MODULE_ATTRS` is what
+    lets it send `csv.writer` straight to CPython instead of into lypning-l, to
+    be refused there after a side effect has already committed.
+    `test_a_writer_after_a_side_effect_is_routed_away_not_refused_late` holds
+    it end to end, through the real dispatcher.
 """
 
 from __future__ import annotations
@@ -250,7 +282,96 @@ SURFACE = [
                        "    print(list(csv.reader(g)))"),
 ]
 
-GRID = DIALECT + NEWLINES + PROTOCOL + DICTREADER + SURFACE
+#: Trap 7. `_csv` builds the dialect before it reads a byte, and refuses these.
+#: Each is a `ValueError` whose wording CPython owns, so each is a refusal here
+#: — but a refusal at `csv.reader(…)`, where no row exists yet and no output has
+#: been written, which is why it can still fall onward. The last four rows are
+#: the dialects that must NOT be refused, so that the check cannot pass by
+#: refusing everything.
+SAME_CHAR = [
+    _prog('a,"b""c",d\n', "print(list(csv.reader(f%s)))" % d)
+    for d in (", delimiter=',', quotechar=','",
+              ", delimiter=',', escapechar=','",
+              ", quotechar='\"', escapechar='\"'",
+              ", delimiter=' ', quotechar=' '",
+              ", delimiter='\\t', quotechar='\\t'",
+              ", delimiter='\\n'", ", delimiter='\\r'",
+              ", quotechar='\\n'", ", quotechar='\\r'",
+              ", escapechar='\\n'", ", escapechar='\\r'",
+              # …and the ones CPython builds happily.
+              ", delimiter=';', quotechar=\"'\"",
+              ", delimiter=';', escapechar='\\\\'",
+              ", quotechar=None, quoting=csv.QUOTE_NONE",
+              ", delimiter='\\t'")
+]
+
+#: Trap 8. The four moments an eager reader can be caught out in, and — after
+#: each — the shape that must still WORK, because the cheapest way to pass this
+#: block would be to refuse every reader whose file is ever closed or written.
+MOMENTS = [
+    # The reader outlives its file: CPython raises, and so must this.
+    _prog("a,b\nc,d\n", "with open('d.csv') as g:\n    r = csv.reader(g)\nprint(list(r))"),
+    _prog("a,b\nc,d\n", "g=open('d.csv')\nr=csv.reader(g)\ng.close()\nprint(next(r))"),
+    _prog("a,b\nc,d\n", "with open('d.csv') as g:\n    r=csv.DictReader(g)\n"
+                         "print([sorted(x.items(), key=str) for x in r])"),
+    _prog("a,b\nc,d\n", "with open('d.csv') as g:\n    r=csv.reader(g)\n    rows=list(r)\n"
+                         "print(rows)\ntry:\n    next(r)\nexcept ValueError as e:\n"
+                         "    print('VE', e)"),
+    _prog("a,b\nc,d\n", "def mk():\n    with open('d.csv') as g:\n        return csv.reader(g)\n"
+                         "print(list(mk()))"),
+    # …and the shapes that close the file AFTER draining, which is every corpus
+    # one and must keep answering.
+    _prog("a,b\nc,d\n", "with open('d.csv') as g:\n    for row in csv.reader(g):\n"
+                         "        print(row)"),
+    _prog("a,b\nc,d\n", "g=open('d.csv')\nrows=list(csv.reader(g))\ng.close()\nprint(rows)"),
+    # The file is written under the reader: CPython's lazy one sees it.
+    _prog("a\n", "r=csv.reader(f)\ng=open('d.csv','a')\ng.write('b\\n')\ng.close()\n"
+                 "print(list(r))"),
+    _prog("a\n", "r=csv.reader(f)\nopen('d.csv','w').write('b\\n')\nprint(list(r))"),
+    _prog("a\n", "r=csv.DictReader(f)\nopen('d.csv','a').write('b\\n')\nprint(list(r))"),
+    # …and the read-then-rewrite shape, where the reader is DRAINED first and
+    # the write must therefore go through.
+    _prog("a\nb\n", "rows=list(csv.reader(f))\nopen('o.csv','w').write(str(rows))\n"
+                     "print(open('o.csv').read())"),
+    _prog("a\nb\n", "for row in csv.reader(f):\n    open('log','a').write(str(row))\n"
+                     "print(open('log').read())"),
+    # QUOTE_NONNUMERIC: `float()` runs during ITERATION in CPython, so a real
+    # `try` around the loop catches it and the rows before it have printed.
+    _prog("1,2\nx,3\n", "r=csv.reader(f, quoting=csv.QUOTE_NONNUMERIC)\ntry:\n"
+                         "    for row in r:\n        print(row)\nexcept ValueError:\n"
+                         "    print('ve')"),
+    _prog("1,2\nx,3\n", "try:\n    r=csv.reader(f, quoting=csv.QUOTE_NONNUMERIC)\n"
+                         "    print('made')\n    print(list(r))\nexcept ValueError:\n"
+                         "    print('bad')"),
+    _prog("1,2\n3,4\n", "print(list(csv.reader(f, quoting=csv.QUOTE_NONNUMERIC)))"),
+    _prog('"a",2\n', "print(list(csv.reader(f, quoting=csv.QUOTE_NONNUMERIC)))"),
+]
+
+#: Trap 9. No `csv` here at all: this is the FILE OBJECT under the flag `csv`
+#: made reachable, and every one of these answered wrongly at exit 0 while the
+#: parser that shares the flag had it right.
+STREAM = [
+    "open('t','w').write(%r)\n" % c + b + "\n"
+    for c in ("a\rb\rc\r", "a\r\nb\nc\rd", "a\nb\n", "a\r\nb\r\n", "", "a", "\r")
+    for b in ("print(open('t', newline='').readlines())",
+              "print(sum(1 for _ in open('t', newline='')))",
+              "print([repr(x) for x in open('t', newline='')])",
+              "print(repr(open('t', newline='').readline()))",
+              "f=open('t',newline='')\nprint(repr(f.readline()))\nf.seek(0)\n"
+              "print(repr(f.readline()))",
+              "print(repr(open('t', newline='').read()))",
+              "print(open('t', newline='\\n').readlines())")
+]
+
+#: Trap 9's other half: CPython rejects `newline=` on a BINARY stream, whatever
+#: the value, and accepts an explicit `newline=None`.
+BINARY_NEWLINE = [
+    "open('t','wb').write(b'a\\r\\nb')\nprint(open('t','rb'%s).read())" % nl
+    for nl in (", newline=''", ", newline='\\n'", ", newline=None", "")
+]
+
+GRID = (DIALECT + NEWLINES + PROTOCOL + DICTREADER + SURFACE
+        + SAME_CHAR + MOMENTS + STREAM + BINARY_NEWLINE)
 
 #: Programs CPython answers and this engine must REFUSE rather than answer.
 #: Every one is exit 90, empty stdout, one refusal line — anything else here is
@@ -444,6 +565,19 @@ STDIN_ROWS = [
     (C + "import sys\nprint(list(csv.DictReader(sys.stdin)))", "a,b\n1,2\n"),
     (C + "import sys\nprint(list(csv.reader(sys.stdin, delimiter=';')))", "a;b\n"),
     (C + "import sys\nprint(list(csv.reader(sys.stdin)))", "a,b\r\nc,d\r\n"),
+    # Trap 10. CPython opens `sys.stdin` with `newline="\n"`, so a `\r` inside a
+    # quoted field survives and a bare `\r` between records is a csv.Error —
+    # neither of which is true of the `newline=None` a plain `open()` gets.
+    (C + "import sys\nprint(list(csv.reader(sys.stdin)))", '"a\rb",c\n'),
+    (C + "import sys\nprint(list(csv.reader(sys.stdin)))", "a,b\rc,d\r"),
+    (C + "import sys\nprint(list(csv.reader(sys.stdin)))", '"a\r\nb",c\n'),
+    # …and the drain, on the one stream that cannot be reopened. CPython's
+    # reader is lazy, so every one of these still has the whole stream.
+    (C + "import sys\nr=csv.reader(sys.stdin)\nprint(repr(sys.stdin.read()))", "a,b\nc,d\n"),
+    (C + "import sys\nr=csv.reader(sys.stdin)\nprint(repr(sys.stdin.readline()))", "a,b\nc,d\n"),
+    (C + "import sys\nr=csv.reader(sys.stdin)\nprint(sys.stdin.readlines())", "a,b\nc,d\n"),
+    (C + "import sys\nr=csv.DictReader(sys.stdin)\nprint(repr(sys.stdin.read()))", "a,b\nc,d\n"),
+    (C + "import sys\nr=csv.reader(sys.stdin)\nfor l in sys.stdin:\n    print(l)", "a,b\nc,d\n"),
 ]
 
 
@@ -500,6 +634,64 @@ def test_the_writers_refuse_from_the_walk_and_not_at_runtime() -> None:
 
 
 @needs_l
+def test_a_writer_after_a_side_effect_is_routed_away_not_refused_late() -> None:
+    """Trap 11, end to end through the REAL dispatcher.
+
+    `test_the_writers_refuse_from_the_walk_and_not_at_runtime` asks lypning-l,
+    which serves `csv` and therefore resolves `csv.writer` in its own walk. The
+    dispatcher does not ask lypning-l — it asks the cheapest binary there is
+    (`engines.route` → `find_lypning`), and the core has none of `csv.rs`
+    compiled in. With `csv` claimed by the module name alone, the core sent every
+    csv program into lypning-l; a program that committed a side effect first and
+    then reached `csv.writer` got that refusal at RUNTIME, past the commit
+    barrier, and the 90 became exit 1 for a program CPython answers. This asserts
+    the fix where it has to hold: the core's own route, and the dispatcher's
+    exit code.
+    """
+    core = CORE
+    if core is None:
+        pytest.skip("no core carrying this tree's capability table is built")
+    program = ("import csv, os\n"
+               "os.mkdir('d')\n"
+               "w = csv.writer(open('o','w'))\n"
+               "w.writerow([1, 2])\n"
+               "print('ok')\n")
+    route = subprocess.run([str(core), "route", "-c", program],
+                           capture_output=True, text=True, timeout=60)
+    engine, _, detail = route.stdout.partition("\t")
+    assert engine.strip() == engines.CPYTHON, route.stdout
+    assert detail.strip() == "module-attr: csv.writer", route.stdout
+    # …and the same for every other name `csv.rs` declines, under every spelling
+    # of the import, from the binary that cannot see `csv.rs` at all.
+    for prog, want in (
+            ("import csv\ncsv.DictWriter(open('o','w'), ['a'])\n", "csv.DictWriter"),
+            ("import csv\nprint(csv.Sniffer)\n", "csv.Sniffer"),
+            ("import csv\nprint(csv.field_size_limit())\n", "csv.field_size_limit"),
+            ("import csv as c\nc.writer(open('o','w'))\n", "csv.writer"),
+            ("from csv import writer\n", "csv.writer"),
+    ):
+        r = subprocess.run([str(core), "route", "-c", prog],
+                           capture_output=True, text=True, timeout=60)
+        assert r.stdout.split("\t")[0].strip() == engines.CPYTHON, (prog, r.stdout)
+        assert r.stdout.partition("\t")[2].strip() == "module-attr: " + want, (prog, r.stdout)
+    # …while a READER, and the constants, still route INTO lypning-l: the table
+    # must not have bought the exit code by sending the capability away.
+    for prog in ("import csv\nprint(list(csv.reader(open('d.csv'))))\n",
+                 "import csv\nprint(list(csv.DictReader(open('d.csv'))))\n",
+                 "import csv\nprint(csv.QUOTE_NONNUMERIC)\n",
+                 "from csv import reader\nprint(reader)\n"):
+        r = subprocess.run([str(core), "route", "-c", prog],
+                           capture_output=True, text=True, timeout=60)
+        assert r.stdout.split("\t")[0].strip() == engines.LYPNING_L, (prog, r.stdout)
+    # The dispatcher's own answer, which is the number that was wrong: the
+    # program runs, on CPython, at exit 0.
+    with tempfile.TemporaryDirectory() as d:
+        got = subprocess.run([sys.executable, "-m", "lypning", "run", "-c", program],
+                             capture_output=True, text=True, cwd=d, timeout=120)
+    assert (got.returncode, got.stdout) == (0, "ok\n"), (got.returncode, got.stdout, got.stderr)
+
+
+@needs_l
 def test_the_capability_is_on_the_larger_variant_only() -> None:
     """The byte budget, defended by asking each binary what it is.
 
@@ -538,3 +730,29 @@ def test_the_python_copy_of_the_capability_table_is_the_binarys_own() -> None:
     assert "cap-csv" in table["self_caps"]
     assert {r["name"]: tuple(r["caps"]) for r in table["spectrum"]} == engines.VARIANT_CAPS
     assert {r["cap"]: r["modules"] for r in table["caps"]}["cap-csv"] == ["csv"]
+
+
+@needs_l
+def test_the_route_attribute_table_is_what_the_module_serves() -> None:
+    """`route::MODULE_ATTRS` is a hand-written copy of what `csv.rs` answers,
+    read by a binary that does not have `csv.rs` — so the two have to be held
+    together from the outside as well as by the crate's own unit test. A name
+    in the table the module refuses routes a program into a refusal; a name the
+    module serves and the table omits sends a program lypning-l would have run
+    to CPython instead."""
+    served = ("reader", "DictReader", "QUOTE_ALL", "QUOTE_MINIMAL",
+              "QUOTE_NONE", "QUOTE_NONNUMERIC")
+    refused = ("writer", "DictWriter", "Sniffer", "field_size_limit", "Error",
+               "excel", "unix_dialect", "register_dialect", "list_dialects",
+               "get_dialect", "unregister_dialect", "QUOTE_STRINGS", "QUOTE_NOTNULL")
+    head = "%s: unsupported: module-attr: " % engines.LYPNING_L
+    for name in served:
+        # A served name may still refuse for another reason — `print(csv.reader)`
+        # is a `repr` of a builtin, which CPython prints with an address. What it
+        # may not be is `module-attr`, which is the kind the router reads.
+        got = _run([str(BINARY)], "import csv\nprint(csv.%s)" % name)
+        assert not got.stderr.startswith(head), (name, got.stderr)
+    for name in refused:
+        got = _run([str(BINARY)], "import csv\nprint(csv.%s)" % name)
+        assert _refusal_problem(got) is None, (name, got.returncode, got.stderr)
+        assert got.stderr.startswith(head + "csv." + name), (name, got.stderr)

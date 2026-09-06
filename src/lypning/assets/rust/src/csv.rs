@@ -27,13 +27,26 @@
 //! 23 programs `--plan` blocks on `import csv` counts 15 readers over a file, 2
 //! over `sys.stdin` and 6 writers.
 //!
-//! **The reader is EAGER.** CPython's is lazy over the input iterator, and the
-//! difference is observable in exactly two directions: a parse error is raised
-//! earlier here (a refusal, and an earlier refusal is a better one — it is
-//! further from any side effect that could commit the barrier), and a file
-//! mutated between construction and iteration would be read at the wrong
-//! moment. Every corpus shape consumes the reader immediately, and eagerness is
-//! what makes the plain `Iter::Vec` above possible.
+//! **The reader is EAGER, and the file is what makes that safe.** CPython's is
+//! lazy over the input iterator, so it has the rows at a different MOMENT, and
+//! an adversarial grid found five directions in which the moment is observable.
+//! Two are answered here: a parse error is raised at construction (a refusal,
+//! and an earlier refusal is a better one — it is further from any side effect
+//! that could commit the barrier), and a `float()` that a `QUOTE_NONNUMERIC`
+//! field fails is a refusal for the OPPOSITE reason (it is the program's own
+//! `ValueError`, not a refusal, so raising it from the wrong statement changes
+//! what a `try` catches — see [`Parser::save`]).
+//!
+//! The other three are events on the FILE, invisible from the reader, so the
+//! file tells the reader: `io::csv_register` pairs the two, `io::csv_on_close`
+//! turns a close into CPython's own `ValueError: I/O operation on closed file.`
+//! on the next row, and `io::csv_on_write` refuses a write a lazy reader would
+//! have seen. `sys.stdin` has no second half — it cannot be reopened — so
+//! `io::stdin_csv_take` marks it and every later read of it refuses.
+//!
+//! Every corpus shape consumes the reader immediately, which is why eagerness
+//! is still what makes the plain `Iter::Vec` above possible; the bookkeeping is
+//! what makes it honest.
 //!
 //! **The refusals are the design, not the leftovers.** Every `csv.Error`
 //! message is CPython's to word, `field_size_limit` and `Sniffer` are CPython's
@@ -225,7 +238,51 @@ fn dialect_from(args: &Args, kw: &[(Rc<str>, Value)], skip: usize) -> R<Dialect>
     if d.quotechar.is_none() && d.quoting != QUOTE_NONE {
         return Err(refuse("quotechar=None with quoting other than QUOTE_NONE"));
     }
+    check_chars(&d)?;
     Ok(d)
+}
+
+/// `_csv.c`'s `dialect_check_char`, which runs on every dialect character
+/// BEFORE a byte is parsed and which the first cut of this file did not have:
+/// each character was validated in ISOLATION, so a dialect CPython rejects
+/// outright — `delimiter=quotechar`, `escapechar=delimiter`,
+/// `escapechar=quotechar`, or any of the three spelled as `\r` or `\n` —
+/// parsed here and printed rows at exit 0. Twenty-seven rows of a 152-row
+/// dialect grid, all of this one family.
+///
+/// Refused rather than worded: these are `ValueError: bad delimiter or
+/// quotechar value` and its four siblings, whose exact spelling has moved
+/// between CPython versions and which the module's own policy leaves to
+/// CPython. The refusal lands at `csv.reader(…)`, before a row exists, which
+/// is as far from a committed side effect as this capability can put it.
+fn check_chars(d: &Dialect) -> R<()> {
+    for (what, c) in [
+        ("delimiter", Some(d.delimiter)),
+        ("quotechar", d.quotechar),
+        ("escapechar", d.escapechar),
+    ] {
+        if matches!(c, Some('\r') | Some('\n')) {
+            return Err(refuse(&format!(
+                "{what}= as a line terminator (CPython raises `bad {what} value` before it parses a byte)"
+            )));
+        }
+    }
+    // Two of the three being the same character is the case `_csv` names in
+    // one message per pair. `escapechar == quotechar` needs the `is_some`:
+    // both default to a `None` that is not a character and cannot collide.
+    let same = |a: Option<char>, b: Option<char>| a.is_some() && a == b;
+    for (a, b, msg) in [
+        (Some(d.delimiter), d.quotechar, "delimiter or quotechar"),
+        (Some(d.delimiter), d.escapechar, "delimiter or escapechar"),
+        (d.escapechar, d.quotechar, "escapechar or quotechar"),
+    ] {
+        if same(a, b) {
+            return Err(refuse(&format!(
+                "a dialect whose {msg} are the same character (CPython raises `bad {msg} value` before it parses a byte)"
+            )));
+        }
+    }
+    Ok(())
 }
 
 // ---- the input -------------------------------------------------------------
@@ -238,7 +295,7 @@ fn dialect_from(args: &Args, kw: &[(Rc<str>, Value)], skip: usize) -> R<Dialect>
 /// served — it appears in the corpus only inside two capture-harness programs
 /// that are unroutable for other reasons, and guessing at a shape the mine does
 /// not show is how a capability grows surface nobody measured.
-fn input_lines(v: &Value) -> R<Vec<String>> {
+fn input_lines(v: &Value) -> R<(Vec<String>, Option<Rc<RefCell<mio::FileObj>>>)> {
     match v {
         Value::File(f) => {
             let mut fo = f.borrow_mut();
@@ -269,14 +326,27 @@ fn input_lines(v: &Value) -> R<Vec<String>> {
             fo.pos = fo.data.len();
             fo.csv_consumed = true;
             let text = crate::iter::decode_utf8(&fo.data[start..])?;
-            Ok(split_lines(&text, fo.newline_mode))
+            let mode = fo.newline_mode;
+            drop(fo);
+            Ok((split_lines(&text, mode), Some(f.clone())))
         }
-        // `sys.stdin` is a text stream with the default `newline=None`, so it
-        // translates; `stdin_rest` is the same reader `sys.stdin.read()` uses,
-        // and it consumes, exactly as handing the stream to `csv.reader` does.
+        // `sys.stdin` is a text stream opened with `newline="\n"`, NOT with
+        // the `newline=None` a plain `open()` gets: CPython's `create_stdio`
+        // names it, and this engine's own `sys.stdin.read()` already returns a
+        // `\r` verbatim. The first cut of this file split it with
+        // `NEWLINE_UNIVERSAL` on a comment that said the opposite, so a `\r`
+        // inside a quoted field was rewritten to `\n` and a bare `\r` between
+        // records became a record break where CPython raises. Checked by
+        // experiment against this box's CPython, both directions, before the
+        // constant was changed.
+        //
+        // `stdin_rest` is the same reader `sys.stdin.read()` uses and it
+        // CONSUMES — which `stdin_csv_take` records, so a later read of the one
+        // stream a program cannot reopen refuses instead of answering empty.
         Value::Module("sys.stdin") => {
             let text = crate::iter::decode_utf8(&mio::stdin_rest()?)?;
-            Ok(split_lines(&text, mio::NEWLINE_UNIVERSAL))
+            mio::stdin_csv_take();
+            Ok((split_lines(&text, mio::NEWLINE_KEEP_NL), None))
         }
         other => Err(refuse(&format!(
             "csv.reader() over a {} (only a file object and sys.stdin are served)",
@@ -402,14 +472,29 @@ impl<'a> Parser<'a> {
         let v = if self.numeric {
             self.numeric = false;
             // `PyNumber_Float(field)`. The ValueError this raises for a
-            // non-numeric field is `float()`'s own and is worded identically
-            // here, because it IS this engine's `float()`.
+            // non-numeric field is `float()`'s own — and it is the program's
+            // OWN exception, not a refusal, which is exactly why it may not be
+            // raised from here: this reader is eager, so `float()` runs during
+            // `csv.reader(…)` and CPython runs it during the ITERATION, after
+            // the rows before it have already been yielded and printed. A
+            // `try:` around the loop caught it there and does not catch it
+            // here. So the failure becomes a refusal at construction — no
+            // stdout has been written, the run falls onward, and CPython raises
+            // its own ValueError in its own statement.
+            let s = text.clone();
             crate::builtins::call_builtin(
                 it,
                 "float",
                 &mut Args::one(Value::Str(text)),
                 Vec::new(),
-            )?
+            )
+            .map_err(|_| {
+                refuse(&format!(
+                    "a QUOTE_NONNUMERIC field float() cannot take ({:?}) — CPython raises that \
+                     ValueError from the ITERATION, after the rows before it",
+                    clip(&s)
+                ))
+            })?
         } else {
             Value::Str(text)
         };
@@ -599,15 +684,35 @@ fn reader(it: &mut Interp, args: &mut Args, kw: &[(Rc<str>, Value)]) -> R<Value>
         .cloned()
         .ok_or_else(|| refuse("csv.reader() with no argument"))?;
     let d = dialect_from(args, kw, 1)?;
-    let lines = input_lines(&src)?;
+    let (lines, file) = input_lines(&src)?;
     let rows = parse_rows(it, &lines, &d)?;
-    Ok(Value::IterObj(
-        Rc::new(RefCell::new(Iter::Vec(
-            rows.into_iter().map(list).collect(),
-            0,
-        ))),
-        "reader",
-    ))
+    Ok(rows_iter(rows.into_iter().map(list).collect(), "reader", file))
+}
+
+/// The reader value, and the one bookkeeping step an EAGER reader owes its
+/// file.
+///
+/// The rows are right; the MOMENT they were read is not. CPython's reader holds
+/// the file and reads it row by row, so a file closed under it raises and a file
+/// written under it is seen — two divergences no amount of care inside this
+/// module can notice, because neither is an event on the reader. `io` keeps the
+/// pairing and the file tells the reader (`io::csv_on_close`,
+/// `io::csv_on_write`).
+fn rows_iter(rows: Vec<Value>, kind: &'static str, file: Option<Rc<RefCell<mio::FileObj>>>) -> Value {
+    let it = Rc::new(RefCell::new(Iter::Vec(rows, 0)));
+    if let Some(f) = file {
+        mio::csv_register(&f, &it);
+    }
+    Value::IterObj(it, kind)
+}
+
+/// One line of a field, for a refusal that must stay one line on stderr.
+fn clip(s: &str) -> String {
+    let mut out: String = s.chars().take(40).collect();
+    if s.chars().nth(40).is_some() {
+        out.push('…');
+    }
+    out
 }
 
 /// `csv.DictReader(f, **dialect)` → an iterator over plain `dict`s.
@@ -648,7 +753,7 @@ fn dict_reader(it: &mut Interp, args: &mut Args, kw: &[(Rc<str>, Value)]) -> R<V
         }
     }
     let d = dialect_from(args, &rest, 1)?;
-    let lines = input_lines(&src)?;
+    let (lines, file) = input_lines(&src)?;
     let mut rows = parse_rows(it, &lines, &d)?.into_iter();
     let header: Vec<Value> = match fieldnames {
         Some(f) => f,
@@ -657,12 +762,7 @@ fn dict_reader(it: &mut Interp, args: &mut Args, kw: &[(Rc<str>, Value)]) -> R<V
         // runs, because the same emptiness ends the iteration.
         None => match rows.next() {
             Some(h) => h,
-            None => {
-                return Ok(Value::IterObj(
-                    Rc::new(RefCell::new(Iter::Vec(Vec::new(), 0))),
-                    "DictReader",
-                ))
-            }
+            None => return Ok(rows_iter(Vec::new(), "DictReader", file)),
         },
     };
     let mut out: Vec<Value> = Vec::new();
@@ -682,10 +782,7 @@ fn dict_reader(it: &mut Interp, args: &mut Args, kw: &[(Rc<str>, Value)]) -> R<V
         }
         out.push(Value::Dict(Rc::new(RefCell::new(dict))));
     }
-    Ok(Value::IterObj(
-        Rc::new(RefCell::new(Iter::Vec(out, 0))),
-        "DictReader",
-    ))
+    Ok(rows_iter(out, "DictReader", file))
 }
 
 #[cfg(test)]
@@ -740,6 +837,55 @@ mod tests {
         assert_eq!(split_lines("a\rb", mio::NEWLINE_KEEP_NL), vec!["a\rb"]);
         let none: Vec<String> = Vec::new();
         assert_eq!(split_lines("", mio::NEWLINE_RAW), none);
+    }
+
+    /// `route::MODULE_ATTRS` is read by the CORE, which has none of this file
+    /// compiled in — so the one thing that can keep it honest is this: the
+    /// variant that DOES have `module_attr` holds the two lists to each other,
+    /// in both directions. A name in the table this file does not serve routes
+    /// a program into a refusal; a name this file serves and the table omits
+    /// sends a program lypning-l would have run to CPython.
+    #[test]
+    fn the_route_table_names_exactly_what_is_served() {
+        let table = crate::route::MODULE_ATTRS
+            .iter()
+            .find(|(m, _)| *m == "csv")
+            .expect("route::MODULE_ATTRS has no csv row")
+            .1;
+        for name in table {
+            assert!(module_attr(name).is_ok(), "route claims csv.{name} and csv.rs refuses it");
+        }
+        for name in MODULE_METHODS.iter().chain(CONSTANTS.iter().map(|(n, _)| n)) {
+            assert!(
+                table.contains(name),
+                "csv.rs serves csv.{name} and route::MODULE_ATTRS omits it"
+            );
+        }
+        // Sorted, so the table reads as one list and a duplicate is visible.
+        assert!(table.windows(2).all(|w| w[0] < w[1]), "route::MODULE_ATTRS csv row is unsorted");
+    }
+
+    #[test]
+    fn a_dialect_is_checked_against_itself_before_it_parses() {
+        // `_csv` compares the three characters to EACH OTHER, and the first cut
+        // of this file compared each only to itself.
+        let bad = |kw: &[(&str, Value)]| {
+            let kw: Vec<(Rc<str>, Value)> =
+                kw.iter().map(|(k, v)| (Rc::from(*k), v.clone())).collect();
+            dialect_from(&Args::new(), &kw, 1).is_err()
+        };
+        let c = |s: &str| Value::Str(Rc::from(s));
+        assert!(bad(&[("delimiter", c(",")), ("quotechar", c(","))]));
+        assert!(bad(&[("delimiter", c(",")), ("escapechar", c(","))]));
+        assert!(bad(&[("quotechar", c("\"")), ("escapechar", c("\""))]));
+        assert!(bad(&[("delimiter", c("\n"))]));
+        assert!(bad(&[("quotechar", c("\r"))]));
+        assert!(bad(&[("escapechar", c("\n"))]));
+        // And the defaults, which collide with nothing, still pass.
+        assert!(!bad(&[]));
+        assert!(!bad(&[("delimiter", c(";")), ("quotechar", c("'")), ("escapechar", c("\\"))]));
+        // `quotechar=None` and `escapechar=None` are both absent, not equal.
+        assert!(!bad(&[("quotechar", Value::None), ("quoting", Value::Int(QUOTE_NONE))]));
     }
 
     #[test]
