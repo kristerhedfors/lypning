@@ -140,15 +140,22 @@ only when named); `conformance.classify`; `conformance.is_nondeterministic`,
 `only_set_order_differs`, `is_seeded_stream` (a seeded `random` stream is
 compared on every arm but the oracle); `conformance.DEFAULT_TIMEOUT`;
 `conformance.plan`, `plan_cost` (ranked by `->cpy`); `cli.cmd_conformance`
-(exit 1 unless the report and the routing grade are both ok). The verdicts are
-`README.md` §5's table; the sub-kinds of MISMATCH:
+(exit 1 unless the report and the routing grade are both ok).
+`engines.Result.stdout_bytes` is **what is compared** and `engines.exact_text`
+is what a failure detail is rendered from; `Result.stdout` is for display only.
+Both arms are captured as bytes (`engines.run`, `engines.run_library`,
+`engines._run_via_pool`, `pool._run_forked`): with `text=True` on both, Python's
+universal-newline translation rewrote `\r\n` and a bare `\r` to `\n` in the two
+strings before either was compared, so line endings were an axis on which no
+engine could be caught disagreeing (issue #50). The verdicts are `README.md`
+§5's table; the sub-kinds of MISMATCH:
 
 | sub-kind | when | how it is graded |
 |---|---|---|
 | `timeout` | the engine hit the deadline the reference finished inside | one deadline on both sides; a reference timeout is a `Skip` (`reference timed out after 30s`) and leaves the measurement |
 | `unbuilt` | a requested arm has no binary for one entry | a whole absent arm is a `note:` line and is not measured, never a MISMATCH |
 | `contract` | exit 90 after bytes reached stdout, or exit 90 with no line | unless CPython exited 90 too (`sys.exit(90)`), which compares like any exit code |
-| `stdout` | stdout differs | the first differing line; not compared when the entry is tagged `nondeterministic`, matches `_RUN_SPECIFIC` or `_IMPLEMENTATION_DEFINED`, draws from `random` unseeded, or differs only in set order — the verdict then reads `MATCH` with `stdout uncompared` |
+| `stdout` | stdout differs **as bytes**, line endings included | the first differing line, from text decoded but not newline-normalised; not compared when the entry is tagged `nondeterministic`, matches `_RUN_SPECIFIC` or `_IMPLEMENTATION_DEFINED`, draws from `random` unseeded, or differs only in set order — the verdict then reads `MATCH` with `stdout uncompared` |
 | `exit` | the exit code differs | `exit N, CPython gave M` |
 | `stderr` | CPython reported an error and the engine was silent | CPython's warning blocks are stripped first (`conformance._without_warnings`) |
 ```bash
@@ -284,6 +291,7 @@ larger variant (invariant 9). **CODE HOME.** The constants, each written once:
 | shared objects | 0 (`gate.MAX_SHARED_OBJECTS`) — a precondition, not a budget | `gate._needed` |
 | file opens on `-c 'pass'` | 3 (`gate.MAX_OPENS`) | `gate.file_opens`, only where `strace` runs |
 | the oracle's byte budget | 700,000 B (`gate.MAX_BYTES`) — only when `lypning-mp` is the binary named | `gate._size_check` |
+| the code section | Mach-O `__text` / ELF `.text` (`gate.TEXT_SECTION`) — reported, never budgeted: bytes on disk are what a cold start fetches, code bytes are what a commit added, and a page-padded `__TEXT` makes the two disagree | `gate.text_bytes`, a hole where it cannot be read |
 | CPython's cold anchor | 8573 ms (`gate.CPYTHON_COLD_MS`) — measured upstream, never here | `gate.project_cold_ms`, labelled an estimate |
 ```bash
 # CHECK — `c6-gate.sh`.
@@ -295,7 +303,7 @@ lypning gate /no/such/binary; echo $?
   ok   size               7 blocks               want <= 8 blocks
 PASS  (3 of 7 checks unmeasured)
 # … | vdiff c6-gate
-# differs: byte and block counts while under budget; which rows are `--` (a check nobody took: no strace, readelf or file(1) — never a pass, never a zero; CI has strace); the target row, absent once the oracle is built and named
+# differs: byte and block counts while under budget; the `code section` row, which is a measurement and not a budget; which rows are `--` (a check nobody took: no strace, readelf, file(1) or size(1) — never a pass, never a zero; CI has strace); the target row, absent once the oracle is built and named
 # must not: PASS, the two `want <=` budgets, exit 0; exit 2 for a path that is not a file
 ```
 

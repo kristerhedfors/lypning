@@ -230,6 +230,13 @@ def time_one(
     Every arm goes through this one function. Timing three arms here and the
     fourth through a different code path would put the difference between the
     two paths into the fourth arm's number.
+
+    The output is captured and thrown away: what is returned is a clock and an
+    exit code. That is why ``text=True`` is still right here and is wrong in
+    every grader (`engines.run`, `perf._capture`) — this function compares
+    nothing, so it cannot be blinded by a decode. Do not start comparing
+    ``proc.stdout`` here; the correctness half lives in `conformance` and
+    `perf`, and it compares bytes (issue #50).
     """
     cmd = [str(arm.binary)]
     cmd.extend(arm.prefix)

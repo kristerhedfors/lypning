@@ -15,6 +15,11 @@ built artifact, in seconds instead of a Playwright run:
      every ``.so`` streamed over the wire. Zero means one file, ever.
   2. **bytes** — every byte is a byte fetched, and in 131,072 B device blocks
      (docs/LYPNING.md §8), so size is a step function rather than a tiebreak.
+     Bytes on disk are what a cold start pays; they are NOT what a commit
+     added, because a Mach-O ``__TEXT`` segment is padded to the 16,384 B page
+     and an ELF is padded to its own alignment. :func:`text_bytes` reports the
+     code section itself, which is the denominator a bytes-per-capability
+     claim needs.
   3. **file opens** — how many paths a trivial ``-c 'pass'`` touches. This is
      the proxy for cold blocks, and it is where a stdlib that lives as files on
      disk becomes a stdlib fetched over a WebSocket.
@@ -44,6 +49,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import struct
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -185,6 +191,110 @@ def device_blocks(size: int) -> int:
     if size <= 0:
         return 0
     return -(-int(size) // DEVICE_BLOCK)
+
+
+#: The code section, by the name each object format gives it. Mach-O's
+#: ``__text`` lives inside the ``__TEXT`` segment; ELF's ``.text`` is a section
+#: of its own. Both mean the same thing — the instructions, without the padding
+#: the linker wraps them in.
+TEXT_SECTION = {"macho": "__text", "elf": ".text"}
+
+
+def text_bytes(binary: Path | str) -> Tuple[Optional[int], str]:
+    """``(code bytes, note)`` — the ``__text``/``.text`` section, never the file.
+
+    Bytes on disk answer "what does a cold start fetch". They do not answer
+    "what did this commit add", and on Mach-O the two come apart badly: the
+    ``__TEXT`` segment is padded to the 16,384 B page, so a commit that added
+    2,384 B of ``__text`` to the frozen core left its FILE size *unchanged*,
+    while the same capability in lypning-l grew the file 6.5x more than the code
+    in it. Three denominators for one capability gave 0.99, 0.66 and 0.89
+    programs per KB — which is three different claims, not one measurement.
+
+    ``None`` is a hole, never a zero and never the file size (invariant: an
+    unmeasurable check is not a passing check). ``size(1)`` is what reads Mach-O
+    here, so a machine without the Xcode command line tools reports the column
+    ``unmeasured`` rather than substituting a number that means something else.
+    ELF is read out of the file's own section headers, which needs no tool at
+    all — which is the case that matters, because the shipping target is a musl
+    ELF cross-built from wherever.
+    """
+    path = Path(binary)
+    try:
+        with open(path, "rb") as fh:
+            magic = fh.read(4)
+    except OSError as e:
+        return None, "%s: cannot read %s (%s)" % (UNMEASURED, path.name, e.__class__.__name__)
+    if magic[:4] == b"\x7fELF":
+        return _elf_text(path)
+    if magic in (b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe",
+                 b"\xfe\xed\xfa\xcf", b"\xfe\xed\xfa\xce",
+                 b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"):
+        return _macho_text(path)
+    return None, ("%s: %s is neither ELF nor Mach-O (magic %s)"
+                  % (UNMEASURED, path.name, magic.hex() or "empty"))
+
+
+def _macho_text(path: Path) -> Tuple[Optional[int], str]:
+    """Mach-O ``__text``, via ``size -m``. Absent tool means unmeasured."""
+    tool = shutil.which("size")
+    if tool is None:
+        return None, ("%s: no size(1) — install the Xcode command line tools; the "
+                      "file byte count is not a substitute" % UNMEASURED)
+    proc = _run([tool, "-m", str(path)], timeout=60.0)
+    if proc is None or proc.returncode != 0:
+        said = ((proc.stderr or proc.stdout).strip().splitlines() if proc else [])
+        return None, "%s: size -m failed (%s)" % (
+            UNMEASURED, said[-1][:120] if said else "no output")
+    found = [int(m.group(1)) for m in _MACHO_TEXT_RE.finditer(proc.stdout)]
+    if not found:
+        return None, "%s: size -m named no %s section" % (UNMEASURED, TEXT_SECTION["macho"])
+    if len(found) > 1:
+        # A universal binary: one block per slice. Reporting a sum would invent
+        # a binary nobody ships, so the first slice is reported and said so.
+        return found[0], ("%s, the first of %d architecture slices"
+                          % (TEXT_SECTION["macho"], len(found)))
+    return found[0], TEXT_SECTION["macho"] + " only; the segment around it is page-padded"
+
+
+def _elf_text(path: Path) -> Tuple[Optional[int], str]:
+    """ELF ``.text``, straight out of the section headers. No tool involved.
+
+    Deliberately not ``readelf``: the shipping target is a musl ELF cross-built
+    from whatever host is to hand, and macOS ships no readelf at all — a column
+    that went unmeasured on every developer machine would be a column nobody
+    reads. The header layout is fixed by the ABI and 30 lines of :mod:`struct`.
+    """
+    try:
+        raw = path.read_bytes()
+    except OSError as e:
+        return None, "%s: cannot read %s (%s)" % (UNMEASURED, path.name, e.__class__.__name__)
+    try:
+        wide = raw[4] == 2                       # EI_CLASS: 1 = 32-bit, 2 = 64-bit
+        end = "<" if raw[5] == 1 else ">"        # EI_DATA:  1 = little, 2 = big
+        # (e_shoff, e_shentsize, e_shnum, e_shstrndx) in the file header, then
+        # (sh_offset, sh_size) inside one section header. Two layouts, one walk.
+        if wide:
+            word, head = "Q", (0x28, 0x3A, 0x3C, 0x3E)
+            offset_at, size_at = 0x18, 0x20
+        else:
+            word, head = "I", (0x20, 0x2E, 0x30, 0x32)
+            offset_at, size_at = 0x10, 0x14
+        shoff = struct.unpack_from(end + word, raw, head[0])[0]
+        shentsize, shnum, shstrndx = (struct.unpack_from(end + "H", raw, at)[0]
+                                      for at in head[1:])
+        if not shoff or not shnum or shstrndx >= shnum:
+            return None, "%s: %s carries no section headers (stripped?)" % (UNMEASURED, path.name)
+        strtab = struct.unpack_from(end + word, raw, shoff + shstrndx * shentsize + offset_at)[0]
+        for i in range(shnum):
+            base = shoff + i * shentsize
+            at = strtab + struct.unpack_from(end + "I", raw, base)[0]
+            if raw[at:at + len(TEXT_SECTION["elf"]) + 1] == TEXT_SECTION["elf"].encode() + b"\x00":
+                return (struct.unpack_from(end + word, raw, base + size_at)[0],
+                        TEXT_SECTION["elf"] + " only; the rest of the file is data and padding")
+    except (IndexError, struct.error) as e:
+        return None, "%s: ELF section headers unreadable (%s)" % (UNMEASURED, e.__class__.__name__)
+    return None, "%s: no %s section in %s" % (UNMEASURED, TEXT_SECTION["elf"], path.name)
 
 
 def _needed(binary: Path | str) -> Tuple[List[str], bool]:
@@ -470,6 +580,11 @@ def gate(binary: Path | str | None = None, *, compare: bool = False) -> GateRepo
     # has not moved the cold cost at all.
     checks.append(Check("device blocks", device_blocks(size), None, True, "",
                         "%s B each" % format(DEVICE_BLOCK, ",")))
+    # Also informational, and the other half of what the byte count means: the
+    # file is code plus padding, and only one of the two is what a commit added.
+    # A hole where it cannot be read — never the file size wearing this label.
+    text, text_note = text_bytes(target)
+    checks.append(Check("code section", text, None, True, "B", text_note))
 
     rec = _trace(target, PROBE)
     if rec["opens"] is None:
@@ -642,6 +757,8 @@ def render(report: GateReport) -> str:
 # --- regexes, at the bottom because they are noise ---------------------------
 
 _NEEDED_RE = re.compile(r"\(NEEDED\)\s+Shared library:\s+\[([^\]]+)\]")
+# `size -m` indents each section under its segment: "\tSection __text: 657700".
+_MACHO_TEXT_RE = re.compile(r"^\s*Section\s+%s:\s+(\d+)\s*$" % TEXT_SECTION["macho"], re.M)
 # strace writes the pid two different ways: "[pid 123] call(…)" when it attaches
 # and a bare "123  call(…)" under -f -o. Both must be stripped, or the whole
 # trace parses as zero opens — which reads as a spectacular pass.

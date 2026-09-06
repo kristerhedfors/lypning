@@ -22,7 +22,7 @@ for script in tests/verification/checks/*.sh; do
     {
         echo "run of record · $tool · $today · $sha · $loaded loaded · $host"
         sh "$script" 2>&1
-    } | sed -E 's/ in [0-9]+\.[0-9]+s / in <s>s /; s/^(lypning[-a-z]* +(lib +)?host +[0-9]+ +[0-9]+ +)[0-9]+\.[0-9]+/\1<s>  /' \
+    } | sed -E 's/ in [0-9]+\.[0-9]+s / in <s>s /; s/^(lypning[-a-z]* +(lib +)?host +[0-9]+ +([0-9]+|unmeasured) +[0-9]+ +)[0-9]+\.[0-9]+/\1<s>  /' \
       > "$RR/$name.txt"
     echo "$name: $(wc -l < "$RR/$name.txt" | tr -d ' ') lines"
 done
