@@ -56,7 +56,25 @@ def test_status_json_is_valid_json(capsys):
     for name, e in obj["engines"].items():
         assert isinstance(e["built"], bool)
         assert (e["path"] is None) == (not e["built"])
+        # Two numbers per artefact: `bytes` is what a cold start fetches,
+        # `code_bytes` what a commit added — and the second is `None` where the
+        # section could not be read, never the first wearing its label.
+        assert e["code_bytes"] is None or e["code_bytes"] < e["bytes"]
     assert obj["corpus"]["entries"] and obj["corpus"]["entries"] > 0
+
+
+def test_status_never_reports_the_file_size_as_the_code_size(capsys, monkeypatch):
+    # The hole-never-a-zero rule on the one column where a wrong fallback is
+    # both available and plausible: `size(1)` is absent on a machine without the
+    # Xcode command line tools, and substituting the file bytes would make the
+    # two columns agree by fiction on every one of them.
+    gate = cli._mod("gate")
+    monkeypatch.setattr(gate, "text_bytes", lambda p: (None, "unmeasured: no size(1)"))
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    for line in out.splitlines():
+        if " blocks" in line and "code" in line:
+            assert "code unmeasured" in line
 
 
 def test_status_reports_an_unbuilt_engine_as_not_built(capsys, no_micropython):
@@ -66,7 +84,10 @@ def test_status_reports_an_unbuilt_engine_as_not_built(capsys, no_micropython):
     # reported in its own section rather than among the tiers.
     assert "lypning-mp" not in obj["engines"]
     assert obj["oracles"]["lypning-mp"] == {"path": None, "built": False,
-                                            "bytes": 0, "blocks": 0}
+                                            "bytes": 0, "blocks": 0,
+                                            # Nothing was built, so there is no
+                                            # section to have failed to read.
+                                            "code_bytes": None, "code_note": ""}
     capsys.readouterr()
     assert cli.main(["status"]) == 0
     out = capsys.readouterr().out

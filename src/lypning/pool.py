@@ -334,9 +334,15 @@ class Server:
             rc = -os.WTERMSIG(status)
         else:
             rc = os.WEXITSTATUS(status)
+        # `surrogateescape`, not `replace`: this is a TRANSPORT, and a transport
+        # that loses bytes makes the pool answer differently from the spawn it
+        # stands in for. The child already writes with surrogateescape, JSON
+        # carries lone surrogates as \udcXX escapes, and `engines._run_via_pool`
+        # encodes them straight back — so what the caller compares is what the
+        # program wrote, undecodable bytes and line endings included.
         return {"ok": True, "returncode": rc,
-                "stdout": out.decode("utf-8", "replace"),
-                "stderr": err.decode("utf-8", "replace")}
+                "stdout": out.decode("utf-8", "surrogateescape"),
+                "stderr": err.decode("utf-8", "surrogateescape")}
 
 
 def _drain(fd: int) -> bytes:

@@ -47,12 +47,22 @@ over-discards and never under-discards, which is the right way round: an
 over-discard costs a re-learn, an under-discard puts a dead binary's refusal in
 a build order.
 
-**It under-counts, and that is a known hole.** Only the Python dispatcher
-(:func:`lypning.engines.dispatch`) writes here. ``lypning run`` — the Rust
-dispatcher — does not, because the core is frozen at 8 device blocks and a
-second writer is a second thing to keep in lockstep. Every count this module
-renders is therefore a floor, and :func:`render` says so rather than presenting
-it as a total.
+**Both dispatchers write it, and it still under-counts.** For its first
+sessions only :func:`lypning.engines.dispatch` did, which meant the ledger was
+fed by everything except traffic: a real session execs the Rust binary and
+takes ``main.rs::dispatch``, so on a machine that had only ever run one-liners
+the answer was "no routes learned yet" and always would be. ``routes.rs`` is
+the second writer, on the same condition and in the same bytes — 12 hex of
+blake2b, the same header, one ``O_APPEND`` write under a page — and
+:func:`compact` folds the two writers' records together as one program's count.
+
+What is left out is still real, and :func:`render` says so rather than
+presenting a total: a tier invoked DIRECTLY (``<binary> -c PROG``) is never
+routed and has nothing to compare a refusal against; the C ABI has no
+dispatcher, because an embedding host is handed ``Status::Unsupported`` and
+decides for itself; ``LYPNING_CAPTURE=0`` silences both writers, which is what
+keeps a conformance battery out of the store; and a rebuild discards the file.
+Every count here is a floor.
 """
 
 from __future__ import annotations
@@ -206,6 +216,11 @@ def note(engine: str, program: str, kind: str, detail: str, *,
     holding open for writing, and it can move no route — see the module
     docstring on why reading the store's CONTENT here would be a different thing
     entirely.
+
+    ``assets/rust/src/routes.rs`` is this function in Rust, for the dispatcher
+    inside the binary. The two write the same bytes on the same condition and
+    neither reads; ``tests/test_routes.py`` holds them to each other by having
+    both append to one store and folding the result.
     """
     try:
         if not enabled():
@@ -502,19 +517,18 @@ def forget(record_id: str, stores: Optional[Sequence[Store]] = None) -> List[Tup
 
 # --- reporting (invariant 8: these return strings, they do not print) --------
 
-#: Said wherever a total is shown, and it names the RUST BINARY's own
-#: dispatcher — `<binary> run`, `main.rs::dispatch` — which is the one that does
-#: not write. The Python `lypning run` does write; it is the only thing that
-#: does. Getting these two the wrong way round tells a user who was just
-#: recorded that nothing records them, so the sentence is spelled out rather
-#: than shortened. The undercount is real either way: the crate binary is what
-#: an installed chain actually execs, so every number here is a floor, and a
-#: floor presented as a total is a claim of completeness this feature cannot
-#: make.
-UNDERCOUNT = ("Only the Python dispatcher (`lypning run`) feeds this ledger. The Rust "
-              "binary's own\ndispatcher — what an installed chain execs — writes nothing "
-              "here, so every count\nUNDER-counts. That is a known hole, not a claim of "
-              "completeness.")
+#: Said wherever a total is shown. Both dispatchers write now — the Python
+#: `engines.dispatch` and the Rust binary's own `main.rs::dispatch`, which is
+#: what an installed chain execs — so the sentence this used to carry ("the Rust
+#: binary writes nothing here") would tell a user who was just recorded that
+#: nothing records them. What is named instead is what is genuinely still
+#: missing, because a floor presented as a total is a claim of completeness this
+#: feature cannot make.
+UNDERCOUNT = ("Both dispatchers feed this ledger: `engines.dispatch` and the Rust binary's "
+              "own\n`main.rs::dispatch`, what an installed chain execs. It still "
+              "UNDER-counts — a tier\nrun directly (`lypning -c PROG`) was never routed, "
+              "the C ABI has no dispatcher, and\n`LYPNING_CAPTURE=0` silences both. A "
+              "floor, not a claim of completeness.")
 
 _UNREADABLE = ("routes — UNREADABLE (%s).\n"
                "\n"

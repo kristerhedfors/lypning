@@ -489,3 +489,77 @@ def test_reading_the_harness_own_live_state_is_run_specific(program):
 def test_a_file_under_home_that_is_not_ours_is_still_graded():
     entry = corpus.Entry(id="py-n", program="import os\nprint(open(os.path.expanduser('~/notes.txt')).read())")
     assert not conformance.is_nondeterministic(entry)
+
+
+# --- the axis the grader could not see (issue #50) ----------------------------
+#
+# `engines.run` captured both arms with `text=True`, so Python's universal-newline
+# translation rewrote `\r\n` and a bare `\r` to `\n` in BOTH strings before either
+# was compared. Line endings were therefore an axis on which no engine could ever
+# be caught disagreeing with CPython. It went unnoticed until `cap-csv` served
+# `open(newline='')` — csv is the module whose whole job is to write `\r\n`.
+
+
+def _raw(rc=0, stdout=b"hello\n", stderr=b"", *, engine=eng.LYPNING):
+    """A Result carrying what the process WROTE, decoded the way `run` decodes."""
+    return eng.Result(engine, "/bin/engine", rc,
+                      eng._as_text(stdout), eng._as_text(stderr), 1_000_000,
+                      stdout_raw=stdout, stderr_raw=stderr)
+
+
+@pytest.mark.parametrize("want,mine", [
+    (b"a,b\r\n", b"a,b\n"),          # csv.writer against a plain print
+    (b"a\n", b"a\r\n"),
+    (b"spinner\r", b"spinner\n"),    # a bare CR: `print(end='\r')`
+    (b"a\r\nb\r\n", b"a\nb\n"),
+])
+def test_output_that_differs_only_in_line_endings_is_a_mismatch(want, mine):
+    v = _classify(_raw(stdout=mine), ref=_raw(stdout=want, engine=eng.CPYTHON))
+    assert v.verdict == MISMATCH
+    assert v.kind == "stdout"
+    # And the evidence has to SHOW it. A detail rendered from newline-translated
+    # text reads "want 'a', got 'a'", which tells the reader nothing.
+    assert "\\r" in v.detail
+
+
+def test_the_decoded_text_of_those_two_runs_is_identical():
+    # The premise, pinned: this is exactly what the old grader compared, so a
+    # future change that quietly goes back to comparing `.stdout` fails the test
+    # above and this one explains why.
+    a, b = _raw(stdout=b"a,b\r\n"), _raw(stdout=b"a,b\n")
+    assert a.stdout == b.stdout
+    assert a.stdout_bytes != b.stdout_bytes
+
+
+def test_identical_bytes_are_still_a_match_and_carry_the_same_digest():
+    ref = _raw(stdout=b"x\r\ny\r\n", engine=eng.CPYTHON)
+    got = _raw(stdout=b"x\r\ny\r\n")
+    v = _classify(got, ref=ref)
+    assert v.verdict == MATCH
+    assert v.stdout_digest == _classify(_raw(stdout=b"x\r\ny\r\n"), ref=ref).stdout_digest
+
+
+def test_a_set_reorder_is_still_excused_but_not_a_line_ending(tmp_path):
+    # The one excuse the stdout comparison has, and it must not become two: a
+    # program whose set display reordered AND whose line endings changed is a
+    # divergence, not a reorder.
+    ref = _raw(stdout=b"{1, 2}\n", engine=eng.CPYTHON)
+    assert _classify(_raw(stdout=b"{2, 1}\n"), ref=ref).verdict == MATCH
+    assert _classify(_raw(stdout=b"{2, 1}\r\n"), ref=ref).verdict == MISMATCH
+
+
+def test_bytes_on_stdout_before_a_refusal_are_counted_as_bytes():
+    # "nothing at all on stdout" is a claim about what the process wrote; a lone
+    # `\r` is a byte the next tier cannot take back.
+    v = _classify(_raw(90, b"\r", b"lypning: unsupported: module: import ctypes\n"))
+    assert v.verdict == MISMATCH
+    assert v.kind == "contract"
+    assert "1 byte(s)" in v.detail
+
+
+def test_a_result_without_raw_bytes_still_grades():
+    # Every Result the package builds carries the bytes; one built by a caller
+    # from text alone degrades to the old comparison rather than to a crash.
+    old = eng.Result(eng.LYPNING, "/bin/engine", 0, "hello\n", "", 1)
+    assert old.stdout_bytes == b"hello\n"
+    assert _classify(old).verdict == MATCH
