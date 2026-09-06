@@ -20,6 +20,38 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-07** — `cap-hashlib` and `cap-base64` on lypning-l: two capabilities, one method hatch · [#56]
+
+- `lypning-l` MATCH 1992 → **2009**, coverage 79.6% → **80.2%**. MISMATCH 0,
+  UNSAFE 0, monotone 0, dispatchers agree 2504/2504. Frozen core 7 of its 8
+  blocks; `lypning-l` +21,000 B code, 8 of 32.
+- `hashlib` was rejected at iteration 74 because serving a module admits
+  programs whose OTHER constructs the variant lacks, which then die at exit 1
+  with partial stdout. The exit-1 count over newly-routed programs was the gate
+  this time, and it is **zero**.
+- Chasing one of its wrong answers found a shared idiom, not a hashlib bug:
+  across **16 call sites**, `args.get(i).cloned().or_else(|| kwget(&kw, "n"))`
+  — and `Option::or_else` does not run when the first option is `Some`, so a
+  positional plus the same parameter by keyword silently dropped the keyword
+  and answered at exit 0 where CPython raises. All 16 go through
+  `crate::args::bind` now, and `tests/test_keyword_grid.py` scans the source so
+  it cannot come back.
+- `base64` serves four names over `Value::Bytes`, no new variant. Its decode
+  rule was derived from 150,000 differential rows: pads are counted over the
+  whole input, not per quad. Three of the twelve corpus programs are agent-typed
+  harnesses against MicroPython's `modbinascii.c`, which counts per quad and
+  stops at the first complete one — wrong in both directions, and exactly what a
+  reimplementation reaches for.
+- The two branches narrowed the same `method` routing hatch in **opposite
+  polarity, different slots, different variant sets**, and did not collide
+  textually. Semantically base64's default-to-stop would have left `cap-hashlib`
+  dead. Resolved by giving `CAP_METHODS` a `hashlib` row read through
+  `hashlib::known_method`, so the core's table and lypning-l's walk are one list
+  by construction. The row is deliberately smaller than the module's surface —
+  `cap_method` matches by name and cannot see the receiver, so `name` would
+  admit `print(open(p).name)` into lypning-l for an exit-1 AttributeError;
+  `hashlib::ROUTER_WITHHELD` records the two withheld names and why.
+
 **2026-09-06** — the performance case moves to the landing page, measured against a PyPy arm · [#53]
 
 - README §1 carried no numbers and closed by saying nothing had been re-measured
@@ -2041,6 +2073,12 @@ runtime exists — the number came first, and both were built for it. It is
 [#39]: https://github.com/kristerhedfors/lypning/pull/39
 [#41]: https://github.com/kristerhedfors/lypning/pull/41
 [#42]: https://github.com/kristerhedfors/lypning/pull/42
+[#47]: https://github.com/kristerhedfors/lypning/pull/47
+[#49]: https://github.com/kristerhedfors/lypning/pull/49
+[#52]: https://github.com/kristerhedfors/lypning/pull/52
+[#53]: https://github.com/kristerhedfors/lypning/pull/53
+[#54]: https://github.com/kristerhedfors/lypning/pull/54
+[#56]: https://github.com/kristerhedfors/lypning/pull/56
 [7dc0d26]: https://github.com/kristerhedfors/lypning/commit/7dc0d26
 [6a77a18]: https://github.com/kristerhedfors/lypning/commit/6a77a18
 [4aa8209]: https://github.com/kristerhedfors/lypning/commit/4aa8209

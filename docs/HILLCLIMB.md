@@ -26,6 +26,143 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-09-07 · iteration 78 — four capabilities, three instrument debts, and a defect three of them found at once
+
+Host: macOS arm64, host-target build (no rustup; musl unmeasured). Corpus 3,688
+loaded, 2,504 graded. Reference CPython 3.14.5. The round was planned against
+measured spawn costs rather than intuition: `lypning` 2.1 ms, `lypning-l` 2.1 ms
+whether it answers or refuses, CPython 16.3 ms — so a WASTED costs ~2 ms, a LATE
+~14 ms, and an UNSUPPORTED program ~14 ms. 526 of those was ~7.4 s against ~0.7 s
+for every routing mis-prediction combined. Coverage outweighed routing 10:1 and
+both outweighed interpreter compute, so the round bought coverage.
+
+| | MATCH | coverage | PR |
+|---|---|---|---|
+| after iteration 77 | 1978 | 79.0% | — |
+| infrastructure (#48, #50, ledger, sizes) | 1977 | 79.0% | [#54] |
+| `cap-bigint` | 1992 | 79.6% | [#55] |
+| `cap-hashlib` + `cap-base64` | **2009** | **80.2%** | [#56] |
+
+MISMATCH 0, UNSAFE 0, monotone 0, dispatchers agree 2504/2504 throughout.
+Frozen core 7 of its 8 blocks; `lypning-l` 8 of 32.
+
+### Pay the instrument debts first
+
+Two of the three changed what earlier numbers meant, which is why they went first.
+
+**Density had the wrong denominator.** File size is page padding — `lypning` is
+867,904 B of file and 682,552 B of code — and every density in this ledger
+before iteration 77 divided by the padded number. `build`, `status` and `gate`
+now report the code section beside it, reading `__text` on Mach-O and the ELF
+headers elsewhere, and reporting **unmeasured** where neither is readable rather
+than falling back to file size, which is the one wrong answer that is both
+available and plausible.
+
+**The grader was blind to line endings** (#50): both arms were captured with
+`text=True`, so universal-newline translation rewrote both before comparison. A
+whole axis on which disagreement could not be detected. Everything compares
+bytes now, and the answer to the question that motivated it is a clean negative
+— no green row was green only because of the translation. The axis had no live
+corpus witness because `csv.writer(sys.stdout)` is still refused.
+
+Doing that turned up a dead feature: `engines._run_via_pool` read a free
+variable `env` and raised `NameError` on every call, so **the warm CPython pool
+has been inert since #19** whenever `$LYPNING_POOL` was set. `test_pool.py` held
+`pool.Server` to its contract directly and never entered through that door.
+
+### One defect, found by three capabilities at once
+
+`math`, `hashlib` and `bigint` each independently hit the same pre-existing gap:
+a module function accessed as a value is a fresh `Value::Bound` on every access,
+and `value::eq`, `value::is_same` and hash had **no `Value::Bound` arm at all**.
+`json.dumps is json.dumps` was False; `len({csv.reader})` was exit 1. It was
+mostly unreachable while those modules were unserved, and every capability
+landed makes more of it reachable — which is why three agents met it in one
+round.
+
+CPython's semantics were measured, not assumed: `==` compares the function plus
+the receiver's IDENTITY, and `is` is False between two accesses EXCEPT where the
+attribute is cached (a module function in `__dict__`, a `method_descriptor` in a
+type's). Every receiver kind was enumerated and decided with a test row —
+including three spelled `Value::Module` that are not modules. The case that
+could not be decided honestly REFUSES: `'abc'.upper == 'abc'.upper` is True in
+CPython only because the compiler folds the two constants into one object, and
+which one a program wrote is invisible from inside the engine.
+
+### The digit limit is configuration, not a constant
+
+`cap-bigint` hardcoded `MAX_STR_DIGITS = 4300` as "CPython 3.14.5's value".
+CPython reads it from `PYTHONINTMAXSTRDIGITS`. Three further facts came out of
+fixing it, all measured:
+
+- `str_digits_check_threshold` is 640, so a conversion under 640 digits is under
+  every possible limit and `print(2**100)` reads no environment at all.
+- `python3 -E` makes CPython IGNORE the variable, so honouring a raised limit
+  literally would have been a fresh wrong answer in a binary that accepts and
+  ignores `-E`. The limit is only ever lowered.
+- An invalid value is a fatal error BEFORE any program runs, so
+  `PYTHONINTMAXSTRDIGITS=abc lypning -c 'print(1)'` printing `1` was the same
+  wrong-answer class.
+
+Its adversary then found the screen was on the RESULT's magnitude rather than
+the INPUT string's length, so `int("0"*5000 + "123")` printed `123` at exit 0 —
+**on the frozen core too**. And only base 10 was exempt-checked, where CPython
+exempts every power-of-two base and limits the rest.
+
+**A correctness round the battery cannot see.** The format-spec sweep took the
+int grid from 1,330 to 3,772 exact and fixed 10,824 programs across a
+25,164-program sweep with 0 regressions — and measured **0.00 progs/KB**,
+because conformance is byte-identical before and after. The corpus contains none
+of those spellings. That is the hillclimb trap in its coverage form: quote the
+grid for a correctness round, never the battery.
+
+### Two capabilities, one hatch
+
+`cap-hashlib` and `cap-base64` each narrowed the same `method` routing hatch and
+did not collide textually. Semantically they were opposite: hashlib asked the
+IMPORT and defaulted to no stop, compiled only into `lypning-l`; base64 recorded
+a stop in EVERY variant and released it by NAME. base64's default-to-stop would
+have left `cap-hashlib` dead. Resolved by giving `CAP_METHODS` a `hashlib` row
+read through `hashlib::known_method`, so the core's table and lypning-l's walk
+are one list by construction — which is why `dispatchers agree` holds. The row
+is deliberately SMALLER than the module's surface, the first one that is,
+because `cap_method` matches by name and cannot see the receiver.
+
+Chasing a hashlib wrong answer found a shared idiom across **16 call sites**:
+`args.get(i).cloned().or_else(|| kwget(&kw, "n"))` — `or_else` does not run when
+the first option is `Some`, so a positional plus the same parameter by keyword
+dropped the keyword and answered at exit 0.
+
+### Rejected, with reasons
+
+**`math` 0.67 progs/KB** — below `glob`'s landed 0.89 and `hashlib`'s rejected
+0.87, for three programs and two distinct program texts. Its own author reached
+that verdict.
+
+**`class` — do not build, and this closes a question four iterations old.** No
+nested slice clears the base rate: the best, ~24 KiB, unlocks 5 of 34 rows at
+0.21 progs/KB, indistinguishable from the 0.19 already rejected; a COMPLETE
+object model reaches 7 rows at 0.11 and crosses a device block. The reason is
+not implementation quality — **27 of the 34 have a second blocker no class work
+can remove** (13 stopped by `from lypning import …`, 5 by `sys.path` mutation, 3
+by dataclasses). The dominant shape is a two-line test double for a corpus
+`Entry` inside a script that then imports `lypning.conformance`. The `class` row
+is the irreducible `import lypning` row in disguise.
+
+### Cost recorded, not hidden
+
+#48 fell WASTED 99 → 91 but raised LATE 36 → 48 and cost `lypning-l` one MATCH.
+Those programs were only accidentally fine: `lypning-l`'s own router already
+answered `cpython` for each, and the core spawned it anyway with `-c`, bypassing
+its walker, so they ran on a variant that refuses them and got lucky. ~0.2% of a
+corpus run to remove a latent exit-1.
+
+**Next.** The reachable remainder is ~280 programs against ~215 irreducible
+(`import lypning` 67, `sys.path` 36, `subprocess` 36, `glob-order` 21, `class`
+22, `exec`/`eval` 19). `unicodedata` 14 and `datetime` 9 are the untried rows.
+The route ledger now records real sessions, so the next capability choice can be
+made from what agents actually hit rather than from the shipped corpus alone.
+
 ## 2026-09-06 · iteration 77 — glob and csv, rebuilt without the values that sank them
 
 Host: macOS arm64, host-target build (no rustup; musl unmeasured). Corpus 3,688
