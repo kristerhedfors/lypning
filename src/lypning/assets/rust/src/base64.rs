@@ -161,7 +161,7 @@ pub fn call(_it: &mut crate::eval::Interp, name: &str, args: &mut Args, kw: &[(R
 /// `""` — and answering it here was a wrong answer at exit 0.
 /// `route::base64_kw_block` holds both rules and the measurement.
 fn falsy(v: &Value) -> bool {
-    matches!(v, Value::None | Value::Bool(false) | Value::Int(0))
+    matches!(v, Value::None | Value::Bool(false)) || matches!(v, Value::Int(i) if i.is_zero())
 }
 
 /// `base64._bytes_from_decode_data`, minus the two error paths it owns.

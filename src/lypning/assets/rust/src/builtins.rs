@@ -221,7 +221,7 @@ pub fn reverse_arg(kw: &[(Rc<str>, Value)]) -> R<bool> {
     match kwget(kw, "reverse") {
         None => Ok(false),
         Some(Value::Bool(b)) => Ok(b),
-        Some(Value::Int(i)) => Ok(i != 0),
+        Some(Value::Int(i)) => Ok(!i.is_zero()),
         Some(other) => Err(type_err(format!(
             "'{}' object cannot be interpreted as an integer",
             type_name(&other)
@@ -347,6 +347,14 @@ pub fn system_exit_msg(args: &Args) -> R<String> {
     }
     match args.first() {
         None => Ok(String::new()),
+        // A status past the machine word is not an exit CODE: CPython cannot
+        // put one in the status word either and exits 255 with nothing printed,
+        // which is a shape this engine has no way to produce. Refused, before
+        // the arm below turns it into a message and an exit 1.
+        Some(Value::Int(i)) if i.small().is_none() => Err(unsupported(
+            "bigint",
+            "sys.exit() of an integer past 64 bits, which CPython cannot put in a status word either",
+        )),
         Some(v @ (Value::None | Value::Int(_) | Value::Bool(_))) => fmt::to_str(v),
         Some(Value::Str(s))
             if !s.is_empty()
@@ -367,13 +375,24 @@ pub fn system_exit_msg(args: &Args) -> R<String> {
 
 /// `SystemExit(...).code`, read back from the message [`system_exit_msg`]
 /// stored. The constructor's refusals are what make every arm here exact.
+/// `abs()` where the magnitude does not fit a machine word — `abs(-2**63)`, and
+/// every wide value. The bignum on the variant that has one, a refusal on the
+/// core, which is what this arm did before `cap-bigint`.
+#[allow(unused_variables)]
+fn wide_abs(i: &Int) -> R<Value> {
+    #[cfg(feature = "cap-bigint")]
+    return Ok(crate::bigint::abs(i));
+    #[cfg(not(feature = "cap-bigint"))]
+    Err(unsupported("bigint", "abs() result beyond 64-bit range"))
+}
+
 pub fn system_exit_code(msg: &str) -> Value {
     match msg {
         "" | "None" => Value::None,
         "True" => Value::Bool(true),
         "False" => Value::Bool(false),
         _ => match msg.parse::<i64>() {
-            Ok(i) => Value::Int(i),
+            Ok(i) => ival(i),
             Err(_) => Value::Str(msg.into()),
         },
     }
@@ -515,7 +534,7 @@ pub fn call_builtin(
         "len" => {
             no_kw("len", &kw)?;
             let v = arg1(name, &args)?;
-            Value::Int(length(&v)? as i64)
+            ival(length(&v)? as i64)
         }
         "repr" => Value::Str(fmt::repr_rc(&arg1(name, &args)?)?),
         "str" => match args.first() {
@@ -560,7 +579,7 @@ pub fn call_builtin(
                 return Err(type_err("int() can't convert non-string with explicit base"));
             }
             match args.first() {
-                None => Value::Int(0),
+                None => ival(0),
                 Some(Value::Str(s)) => {
                     let t = s.trim();
                     let (t, neg) = match t.strip_prefix('-') {
@@ -612,12 +631,78 @@ pub fn call_builtin(
                         )));
                     }
                     let cleaned: String = t2.chars().filter(|c| *c != '_').collect();
+                    // CPython'S DIGIT LIMIT IS A SCREEN ON THIS STRING, NOT ON
+                    // THE RESULT. It was applied only inside `bigint::parse`,
+                    // which is reached from the overflow arm below — so a
+                    // literal that FITS an `i64` never met it however long it
+                    // was, and `int('0' * 5000 + '1')` printed `1` at exit 0 on
+                    // both variants where CPython raises `ValueError` for 5001
+                    // digits. `cleaned` is exactly what CPython counts: the
+                    // digit run, sign and whitespace and base prefix already
+                    // off it and underscores already out of it, leading zeros
+                    // kept. `base` has been resolved from a `0` argument, so
+                    // the power-of-two exemption inside the rule sees the base
+                    // that will actually be converted.
+                    //
+                    // Placed AFTER the well-formedness test, and that ordering
+                    // is CPython's: `int('x' * 5000)` is "invalid literal", not
+                    // "Exceeds the limit", so a screen in front of it would
+                    // refuse a program CPython answers with an ordinary
+                    // `ValueError`. The scan costs nothing on the hot path —
+                    // the rule's own length compare is false for every literal
+                    // under 641 digits and `&&` stops there.
+                    if crate::host::over_str_digit_limit(cleaned.len(), base as u32)
+                        && !cleaned.is_empty()
+                        && cleaned.chars().all(|c| c.is_digit(base as u32))
+                    {
+                        return Err(unsupported(
+                            "bigint",
+                            "int() of a string past sys.get_int_max_str_digits(), \
+                             where CPython raises ValueError",
+                        ));
+                    }
                     match i64::from_str_radix(&cleaned, base as u32) {
-                        Ok(v) => Value::Int(if neg { -v } else { v }),
-                        Err(e) if cleaned.len() > 18 && !cleaned.is_empty()
+                        Ok(v) => ival(if neg { -v } else { v }),
+                        Err(e) if !cleaned.is_empty()
                             && cleaned.chars().all(|c| c.is_digit(base as u32)) =>
                         {
                             let _ = e;
+                            // A well-formed literal too wide for an i64 IS an
+                            // integer; `cap-bigint` builds it, and the core
+                            // still refuses. The digit limit has already been
+                            // applied above, on the string, which is where
+                            // CPython applies it.
+                            //
+                            // THE GUARD IS THE TWO CONDITIONS ABOVE AND NOTHING
+                            // ELSE. It carried a third — `cleaned.len() > 18`,
+                            // a decimal digit count — which is a cheap screen
+                            // for base 10 and a WRONG one for every other base:
+                            // `int('ffffffffffffffff', 16)` is 16 characters
+                            // and `int('z' * 13, 36)` is 13, both past an i64,
+                            // and both fell through to the ValueError arm
+                            // below. That is exit 1 — the program's own, which
+                            // the chain never retries — for a literal CPython
+                            // converts. The screen was never needed: `cleaned`
+                            // has had its sign stripped, so once it is
+                            // non-empty and every character is a digit of the
+                            // base, overflow is the ONLY error
+                            // `from_str_radix` can have returned.
+                            #[cfg(feature = "cap-bigint")]
+                            match crate::bigint::parse(&cleaned, base as u32) {
+                                Some(v) => {
+                                    return Ok(if neg {
+                                        crate::bigint::neg(&v)
+                                    } else {
+                                        Value::Int(v)
+                                    })
+                                }
+                                None => {
+                                    return Err(crate::bigint::refuse(
+                                        "int() of a string past sys.get_int_max_str_digits(), where CPython raises ValueError",
+                                    ))
+                                }
+                            }
+                            #[cfg(not(feature = "cap-bigint"))]
                             return Err(unsupported("bigint", "int() result beyond 64-bit range"));
                         }
                         Err(_) => {
@@ -628,11 +713,11 @@ pub fn call_builtin(
                         }
                     }
                 }
-                Some(Value::Float(f)) => Value::Int(float_to_int(*f, "int")?),
-                Some(Value::Int(i)) => Value::Int(*i),
-                Some(Value::Bool(b)) => Value::Int(*b as i64),
+                Some(Value::Float(f)) => ival(float_to_int(*f, "int")?),
+                Some(Value::Int(i)) => Value::Int(i.clone()),
+                Some(Value::Bool(b)) => ival(*b as i64),
                 #[cfg(feature = "cap-re")]
-                Some(Value::ReFlag(b)) => Value::Int(*b as i64),
+                Some(Value::ReFlag(b)) => ival(*b as i64),
                 #[cfg(feature = "cap-re")]
                 Some(v @ (Value::Pattern(_) | Value::Match(_))) => {
                     return Err(crate::re::guard_one(v, "int() of").unwrap_err())
@@ -689,7 +774,10 @@ pub fn call_builtin(
                     },
                 }
             }
-            Some(Value::Int(i)) => Value::Float(*i as f64),
+            // `float(2**100)` needs the round-to-nearest a wide integer does
+            // not carry here; `get()` refuses rather than round through an
+            // intermediate this engine cannot make exact.
+            Some(Value::Int(i)) => Value::Float(i.get()? as f64),
             Some(Value::Bool(b)) => Value::Float(*b as i64 as f64),
             Some(Value::Float(f)) => Value::Float(*f),
             Some(other) => {
@@ -794,7 +882,7 @@ pub fn call_builtin(
                 .get(1)
                 .cloned()
                 .or_else(|| kwget(&kw, "start"))
-                .unwrap_or(Value::Int(0));
+                .unwrap_or(ival(0));
             // CPython refuses a str or bytes START before it looks at the
             // sequence at all — `sum([], '')` is a TypeError and so is
             // `sum([1, 2], '')`. lypning did not, and just concatenated:
@@ -853,14 +941,18 @@ pub fn call_builtin(
                     // `start` and produces whatever the mixed types or the
                     // overflow deserve — a TypeError, or the `bigint` refusal
                     // that sends the program to an interpreter with bignums.
-                    if let (Value::Int(a0), Value::List(l)) = (&start, v) {
+                    if let (Value::Int(Int::S(a0)), Value::List(l)) = (&start, v) {
                         let fast = {
                             let items = l.borrow();
                             let mut acc: i64 = *a0;
                             let mut ok = true;
                             for x in items.iter() {
                                 match x {
-                                    Value::Int(n) => match acc.checked_add(*n) {
+                                    // A wide element, or an overflow, leaves the
+                                    // fast loop with nothing undone; the general
+                                    // loop below starts over from `start` and
+                                    // `binop` promotes each addition.
+                                    Value::Int(Int::S(n)) => match acc.checked_add(*n) {
                                         Some(t) => acc = t,
                                         None => {
                                             ok = false;
@@ -880,7 +972,7 @@ pub fn call_builtin(
                             }
                         };
                         if let Some(n) = fast {
-                            return Ok(Value::Int(n));
+                            return Ok(ival(n));
                         }
                     }
                     // CPython's `sum` is three loops, not one: an exact-int
@@ -936,7 +1028,10 @@ pub fn call_builtin(
                                 // compensated on 3.14: it moves `c14` only.
                                 Value::Int(_) | Value::Bool(_) => {
                                     let x = match x {
-                                        Value::Int(n) => n as f64,
+                                        // Adding a wide integer to a running
+                                        // float sum needs the rounding this
+                                        // engine refuses; `get()` says so.
+                                        Value::Int(n) => n.get()? as f64,
                                         Value::Bool(b) => b as i64 as f64,
                                         _ => unreachable!(),
                                     };
@@ -1085,11 +1180,14 @@ pub fn call_builtin(
         }
         "abs" => match arg1(name, &args)? {
             #[cfg(feature = "cap-re")]
-            Value::ReFlag(b) => Value::Int(b as i64),
-            Value::Int(i) => Value::Int(i.checked_abs().ok_or_else(|| {
-                unsupported("bigint", "abs() result beyond 64-bit range")
-            })?),
-            Value::Bool(b) => Value::Int(b as i64),
+            Value::ReFlag(b) => ival(b as i64),
+            // `abs(-2**63)` is 2**63, a bignum, and so is `abs()` of any wide
+            // value; `bigint::abs` builds it and the core refuses.
+            Value::Int(i) => match i.small().and_then(|v| v.checked_abs()) {
+                Some(v) => ival(v),
+                None => wide_abs(&i)?,
+            },
+            Value::Bool(b) => ival(b as i64),
             Value::Float(f) => Value::Float(f.abs()),
             other => {
                 return Err(type_err(format!(
@@ -1125,8 +1223,8 @@ pub fn call_builtin(
                 Some(x) => Some(int_val(&x)?),
             };
             match (&v, nd) {
-                (Value::Int(i), None) => Value::Int(*i),
-                (Value::Int(i), Some(n)) if n >= 0 => Value::Int(*i),
+                (Value::Int(i), None) => Value::Int(i.clone()),
+                (Value::Int(i), Some(n)) if n >= 0 => Value::Int(i.clone()),
                 // `round(12345, -2)` is 12300, and `round(15, -1)` is 20 while
                 // `round(25, -1)` is 20 as well — half to EVEN, like everywhere
                 // else in Python. This used to refuse, which was safe but cost a
@@ -1136,13 +1234,17 @@ pub fn call_builtin(
                 // an int near 2**63 has more significant digits than a double
                 // carries, so the float path would answer a rounded number that
                 // is not the rounded number.
+                // A WIDE value rounded to a negative ndigits needs the same
+                // integer arithmetic at a width the scale below does not have.
+                // Refused rather than approximated.
                 (Value::Int(i), Some(n)) => {
+                    let i = &i.get()?;
                     let k = (-n) as u32;
                     let scale = match 10i64.checked_pow(k) {
                         Some(s) => s,
                         // Past 10**18 every i64 rounds to zero, and Python
                         // agrees — there is nothing to refuse.
-                        None => return Ok(Value::Int(0)),
+                        None => return Ok(ival(0)),
                     };
                     let q = i.div_euclid(scale);
                     let rem = i.rem_euclid(scale);
@@ -1150,7 +1252,7 @@ pub fn call_builtin(
                     let up = rem > half || (rem == half && q % 2 != 0);
                     let out = if up { q + 1 } else { q };
                     match out.checked_mul(scale) {
-                        Some(r) => Value::Int(r),
+                        Some(r) => ival(r),
                         None => {
                             return Err(unsupported(
                                 "bigint",
@@ -1159,9 +1261,9 @@ pub fn call_builtin(
                         }
                     }
                 }
-                (Value::Float(f), None) => Value::Int(float_to_int(round_half_even(*f, 0), "round")?),
+                (Value::Float(f), None) => ival(float_to_int(round_half_even(*f, 0), "round")?),
                 (Value::Float(f), Some(n)) => Value::Float(round_half_even(*f, n)),
-                (Value::Bool(b), _) => Value::Int(*b as i64),
+                (Value::Bool(b), _) => ival(*b as i64),
                 _ => {
                     return Err(unsupported(
                         "round",
@@ -1361,7 +1463,7 @@ pub fn call_builtin(
                 Value::Str(s) => {
                     let mut c = s.chars();
                     match (c.next(), c.next()) {
-                        (Some(ch), None) => Value::Int(ch as i64),
+                        (Some(ch), None) => ival(ch as i64),
                         _ => {
                             return Err(type_err(format!(
                                 "ord() expected a character, but string of length {} found",
@@ -1370,7 +1472,7 @@ pub fn call_builtin(
                         }
                     }
                 }
-                Value::Bytes(b) if b.len() == 1 => Value::Int(b[0] as i64),
+                Value::Bytes(b) if b.len() == 1 => ival(b[0] as i64),
                 _ => return Err(type_err("ord() expected string of length 1")),
             }
         }
@@ -1382,11 +1484,30 @@ pub fn call_builtin(
             }
         }
         "hex" | "oct" | "bin" => {
-            let n = int_val(&arg1(name, &args)?)?;
-            let (pfx, body) = match name {
-                "hex" => ("0x", format!("{:x}", n.unsigned_abs())),
-                "oct" => ("0o", format!("{:o}", n.unsigned_abs())),
-                _ => ("0b", format!("{:b}", n.unsigned_abs())),
+            let v = arg1(name, &args)?;
+            let (radix, pfx) = match name {
+                "hex" => (16, "0x"),
+                "oct" => (8, "0o"),
+                _ => (2, "0b"),
+            };
+            // The `format()` path for the same three radices goes through
+            // `fmt::wide_digits`; this one is the BUILTIN, which CPython reaches
+            // by a different slot and which has no digit cap of its own — so a
+            // wide value is answered here rather than refused, the way it is
+            // there. Splitting the sign from the digits is what lets one
+            // conversion serve both: CPython puts the minus BEFORE the prefix,
+            // `-0x10`.
+            #[cfg(feature = "cap-bigint")]
+            if let Value::Int(crate::value::Int::B(b)) = &v {
+                let body = crate::bigint::to_radix(b, radix, false);
+                let sign = if b.neg { "-" } else { "" };
+                return Ok(Value::Str(format!("{sign}{pfx}{body}").into()));
+            }
+            let n = int_val(&v)?;
+            let body = match radix {
+                16 => format!("{:x}", n.unsigned_abs()),
+                8 => format!("{:o}", n.unsigned_abs()),
+                _ => format!("{:b}", n.unsigned_abs()),
             };
             Value::Str(format!("{}{pfx}{body}", if n < 0 { "-" } else { "" }).into())
         }
@@ -1563,7 +1684,10 @@ pub fn call_builtin(
                 Value::Bytes(Rc::new(s.as_bytes().to_vec()))
             }
             Some(Value::Bytes(b)) => Value::Bytes(b.clone()),
-            Some(Value::Int(n)) => Value::Bytes(Rc::new(vec![0u8; (*n).max(0) as usize])),
+            // `bytes(2**100)` is a MemoryError in CPython, not a value; the
+            // machine-word requirement refuses, which is one spawn and the right
+            // answer.
+            Some(Value::Int(n)) => Value::Bytes(Rc::new(vec![0u8; n.get()?.max(0) as usize])),
             // `bytes(re.I)` is `b'\x00\x00'` — the int path.
             #[cfg(feature = "cap-re")]
             Some(Value::ReFlag(b)) => Value::Bytes(Rc::new(vec![0u8; *b as usize])),

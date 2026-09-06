@@ -122,6 +122,20 @@ fn execute(src: &str) -> i32 {
 /// caller can compute the chain to walk next (`route::chain_after`) instead of
 /// assuming it. Both are left untouched on any other outcome.
 fn execute_inner(src: &str, report_refusal: bool, kind: &mut String, detail: &mut String) -> i32 {
+    // BEFORE the parse, because CPython decides this before it has a program:
+    // `PYTHONINTMAXSTRDIGITS` holding anything that is not 0 and not at least
+    // 640 is `Fatal Python error: config_init_int_max_str_digits`, exit 1, with
+    // nothing on stdout and no program run at all. Answering `print(1)` at exit
+    // 0 under that variable is a wrong answer of the worst kind, so this
+    // refuses and CPython prints its own fatal error one spawn later.
+    if lypning::host::int_max_str_digits().is_err() {
+        let e = lypning::err::unsupported(
+            "env",
+            "PYTHONINTMAXSTRDIGITS is not a limit CPython will start with \
+             (0 for unlimited, otherwise at least 640)",
+        );
+        return finish(Err(e), report_refusal, kind, detail);
+    }
     let body = match parse::parse(src) {
         Ok(b) => b,
         Err(e) => return finish(Err(e), report_refusal, kind, detail),

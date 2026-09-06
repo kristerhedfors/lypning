@@ -115,3 +115,89 @@ def test_every_format_spec_agrees_with_cpython() -> None:
         ran,
         bad[:6],
     )
+
+
+#: EVERY presentation type and flag combination CPython rejects for an INT, plus
+#: the neighbours that make each rejection's boundary visible.
+#:
+#: Enumerated by RUNNING CPython 3.14.5 over the cross-product — every ASCII
+#: character as a presentation type, times sign, `z`, `#`, `0`, grouping and
+#: precision — and not by reading its grammar. Three families were answering at
+#: exit 0 where it raises, all of them on `c`: `format(1234, '_c')`,
+#: `format(1234, '+c')` and `format(1234, '#c')` each padded a character and
+#: printed it. Two more were errors of the wrong sentence: the grouping table
+#: was four types wide instead of the whole set, and the `z` flag was not in the
+#: grammar at all, so `format(1234, 'zd')` was "Invalid format specifier".
+#:
+#: The ORDER of the checks is as much of the rule as the checks are, and these
+#: rows pin it: grouping is decided against the type before the object is looked
+#: at (`',a'` names the comma, not the unknown code), then the code against the
+#: object (`'zs'` on an int names the `s`, not the `z`), then precision, then
+#: `z`, then `c`'s sign and `c`'s alternate form (`'+#c'` names the sign).
+INT_REJECTIONS = [
+    ",b", ",o", ",x", ",X", ",c", ",n", ",s", ",a", ",z", ",d", ",e", ",%", ",g",
+    "_c", "_n", "_s", "_a", "_z", "_b", "_o", "_x", "_X", "_d", "_g", "_e", "_%",
+    "a", "r", "q", "S", "D", "0z", "#z", "zz", "0a", "9a",
+    "z", "zd", "zb", "zo", "zx", "zX", "zc", "zs", "ze", "zf", "zg", "z%",
+    "+z", " z", "-z", "z.3", "z.3f", "z0", "z#", "z8.2f", "+z08.2f", "z,.2f",
+    ".3", ".3d", ".3x", ".3o", ".3b", ".3c", "z.3c", "+.3c", "#.3c",
+    "+c", "-c", " c", "#c", "+#c", "0c", "<c", ">c", "^c", "=c", "5c", "c", "9c",
+    ".", ".d", "#+c", "z+.2f", "#z.0f", "z^8.2f",
+]
+
+#: PEP 682's `z`, which the parser above did not know existed — so it fell into
+#: the type slot and `format(1.0, 'zf')` was "Invalid format specifier 'zf'", an
+#: error at exit 1 where CPython answers `'1.000000'`.
+#:
+#: What it coerces is a negative zero, and whether a value IS one is a question
+#: about the RENDERED digits and not about the value: `format(-0.0001, 'z.2f')`
+#: is `'0.00'` and `format(-0.0001, 'z.6f')` is `'-0.000100'`. `-1e-30` keeps its
+#: sign at every precision here, and `z^8.2f` is not this flag at all — `z` is
+#: the fill when an alignment follows it.
+Z_FLAG = [
+    "z", "zf", "z.2f", "z.6f", "z.0f", "ze", "z.2e", "zg", "z.3g", "z%",
+    "z.2%", "+z.2f", " z.2f", "z08.2f", "z8.2f", "z,.2f", "z_.2f", "z.20f", "z.0e",
+]
+
+INT_VALUES = "[1234, -1234, 0, 1, True, False, 65, -65]"
+Z_VALUES = "[1.5, -1.5, 0.0, -0.0, -0.0001, -0.4, -0.5, -0.6, -1e-30, -0.004, 1e300, -1e-7]"
+
+
+def _one_spec(engine: str, spec: str, values: str) -> str | None:
+    """``None`` when this spec agrees with CPython for every value, else why."""
+    program = PROGRAM.replace(VALUES, values) % spec
+    got = engines.run(engine, program, timeout=30)
+    if got.refused:
+        # Allowed by invariant 1 — but say so, because a row that started
+        # refusing is a row that stopped measuring anything.
+        return "refused: %s" % got.stderr.strip()[:120]
+    ref = subprocess.run(
+        [sys.executable, "-c", program], capture_output=True, text=True, timeout=30
+    )
+    if (got.stdout, got.returncode) == (ref.stdout, ref.returncode):
+        return None
+    return next(
+        ("lypning=%s cpython=%s" % (x, y)
+         for x, y in zip(got.stdout.splitlines(), ref.stdout.splitlines()) if x != y),
+        "output lengths differ",
+    )
+
+
+@needs_engine
+@pytest.mark.parametrize("engine", [engines.LYPNING, engines.LYPNING_L])
+@pytest.mark.parametrize("spec", INT_REJECTIONS, ids=INT_REJECTIONS)
+def test_the_int_rejection_family_agrees_with_cpython(engine: str, spec: str) -> None:
+    if engines.find(engine) is None:
+        pytest.skip("%s is not built" % engine)
+    problem = _one_spec(engine, spec, INT_VALUES)
+    assert problem is None, "%s: format(v, %r): %s" % (engine, spec, problem)
+
+
+@needs_engine
+@pytest.mark.parametrize("engine", [engines.LYPNING, engines.LYPNING_L])
+@pytest.mark.parametrize("spec", Z_FLAG, ids=Z_FLAG)
+def test_the_z_flag_agrees_with_cpython(engine: str, spec: str) -> None:
+    if engines.find(engine) is None:
+        pytest.skip("%s is not built" % engine)
+    problem = _one_spec(engine, spec, Z_VALUES)
+    assert problem is None, "%s: format(v, %r): %s" % (engine, spec, problem)

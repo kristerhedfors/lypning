@@ -210,7 +210,7 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
         ("sys", "stdout") => Value::Module("sys.stdout"),
         ("sys", "stderr") => Value::Module("sys.stderr"),
         ("sys", "platform") => Value::Str("linux".into()),
-        ("sys", "maxsize") => Value::Int(i64::MAX),
+        ("sys", "maxsize") => ival(i64::MAX),
         ("sys", "exit") => Value::Bound(Rc::new(m.clone()), "exit"),
         ("sys", "path") => {
             return Err(unsupported(
@@ -437,7 +437,7 @@ pub fn call_module_method(
             } else {
                 mio::write_out(text.as_bytes())?;
             }
-            Value::Int(text.chars().count() as i64)
+            ival(text.chars().count() as i64)
         }
         ("sys.stdout", "flush") | ("sys.stderr", "flush") => Value::None,
         ("os", "getcwd") => Value::Str(
@@ -576,8 +576,8 @@ pub fn call_module_method(
         ("os.path", "getsize") => {
             let p = s(0)?;
             match mio::effective_content(&p)? {
-                Some(c) => Value::Int(c.len() as i64),
-                None => Value::Int(
+                Some(c) => ival(c.len() as i64),
+                None => ival(
                     std::fs::metadata(&p)
                         .map_err(|e| mio::os_error(&p, &e))?
                         .len() as i64,

@@ -33,7 +33,7 @@ use std::rc::Rc;
 use crate::args::Args;
 use crate::err::{unsupported, R};
 use crate::eval::Interp;
-use crate::value::{type_name, Value};
+use crate::value::{ival, type_name, Value};
 
 const N: usize = 624;
 const M: usize = 397;
@@ -188,7 +188,10 @@ pub fn call(it: &mut Interp, name: &str, args: &mut Args, kw: &[(Rc<str>, Value)
     }
     let int = |v: &Value| -> R<i64> {
         match v {
-            Value::Int(i) => Ok(*i),
+            // `random.randrange(2**100)` is a real call in CPython — its
+            // generator is arbitrary precision — and this one's is not, so a
+            // wide bound refuses rather than truncate a seeded stream.
+            Value::Int(i) => i.get(),
             Value::Bool(b) => Ok(*b as i64),
             other => Err(unsupported(
                 "random",
@@ -234,7 +237,7 @@ pub fn call(it: &mut Interp, name: &str, args: &mut Args, kw: &[(Rc<str>, Value)
             if k > 63 {
                 return Err(big());
             }
-            Value::Int(it.rng.as_mut().expect("seeded").getrandbits(k as u32) as i64)
+            ival(it.rng.as_mut().expect("seeded").getrandbits(k as u32) as i64)
         }
         "randint" | "randrange" => {
             // Both are `start + _randbelow(stop - start)`; `randint(a, b)` is
@@ -258,7 +261,7 @@ pub fn call(it: &mut Interp, name: &str, args: &mut Args, kw: &[(Rc<str>, Value)
                 return Err(empty());
             }
             let r = it.rng.as_mut().expect("seeded").below(width as u64) as i64;
-            Value::Int(start + r)
+            ival(start + r)
         }
         "choice" => {
             arity(1, 1)?;
@@ -278,7 +281,7 @@ pub fn call(it: &mut Interp, name: &str, args: &mut Args, kw: &[(Rc<str>, Value)
                 return Err(empty());
             }
             let i = it.rng.as_mut().expect("seeded").below(n as u64) as i64;
-            it.index(&seq, &Value::Int(i))?
+            it.index(&seq, &ival(i))?
         }
         _ => return Err(unsupported("module-attr", &format!("random.{name}"))),
     })

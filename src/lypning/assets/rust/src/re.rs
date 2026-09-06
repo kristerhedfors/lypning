@@ -129,7 +129,7 @@ use crate::repat::{
     is_word, parse_pattern, show, swap_ascii, At, Class, Node, A, DEBUG, I, L, M, S, U, X,
 };
 use crate::eval::Interp;
-use crate::value::{type_name, Value};
+use crate::value::{ival, type_name, Value};
 use std::rc::Rc;
 
 
@@ -332,7 +332,7 @@ pub fn binop(op: BinOp, a: &Value, b: &Value) -> R<Option<Value>> {
     }
     if let (Value::Bool(x), Value::ReFlag(y)) = (a, b) {
         let (x, y) = (*x as i64, *y as i64);
-        return Ok(Some(Value::Int(match op {
+        return Ok(Some(ival(match op {
             BinOp::BitOr => x | y,
             BinOp::BitAnd => x & y,
             _ => x ^ y,
@@ -343,7 +343,7 @@ pub fn binop(op: BinOp, a: &Value, b: &Value) -> R<Option<Value>> {
         match v {
             Value::ReFlag(x) => Ok(*x),
             Value::Bool(x) => Ok(*x as u32),
-            Value::Int(i) => u32::try_from(*i).map_err(|_| {
+            Value::Int(i) => i.small().and_then(|v| u32::try_from(v).ok()).ok_or_else(|| {
                 refuse(&format!("{sym} between a RegexFlag and an int outside the flag range"))
             }),
             other => Err(refuse(&format!(
@@ -366,7 +366,7 @@ pub fn binop(op: BinOp, a: &Value, b: &Value) -> R<Option<Value>> {
 /// that is not a flag, so the caller can tell whether a substitution happened.
 pub fn as_int(v: &Value) -> Option<Value> {
     match v {
-        Value::ReFlag(b) => Some(Value::Int(*b as i64)),
+        Value::ReFlag(b) => Some(ival(*b as i64)),
         _ => None,
     }
 }
@@ -1572,7 +1572,7 @@ pub fn cache_evicted() -> bool {
 
 fn as_index(v: &Value, what: &str) -> R<i64> {
     match v {
-        Value::Int(i) => Ok(*i),
+        Value::Int(i) => i.get(),
         Value::Bool(b) => Ok(*b as i64),
         Value::ReFlag(f) => Ok(*f as i64),
         other => Err(refuse(&format!(
@@ -1598,8 +1598,10 @@ fn as_flags(v: Option<&Value>) -> R<u32> {
         None | Some(Value::None) => Ok(0),
         Some(Value::ReFlag(f)) => Ok(*f),
         Some(Value::Bool(b)) => Ok(*b as u32),
-        Some(Value::Int(i)) => u32::try_from(*i)
-            .map_err(|_| refuse(&format!("flags: the value {i}, which is not a flag mask"))),
+        Some(Value::Int(i)) => i
+            .small()
+            .and_then(|v| u32::try_from(v).ok())
+            .ok_or_else(|| refuse("flags: a value that is not a flag mask")),
         Some(other) => Err(refuse(&format!(
             "flags: a {}, which CPython answers with a TypeError",
             type_name(other)
@@ -1977,7 +1979,7 @@ fn sub_value(
     out.push_str(&subj.slice(last, n as u32));
     let s = Value::Str(out.into());
     Ok(if want_n {
-        Value::Tuple(Rc::new(vec![s, Value::Int(total as i64)]))
+        Value::Tuple(Rc::new(vec![s, ival(total as i64)]))
     } else {
         s
     })
@@ -2177,9 +2179,9 @@ pub fn match_method(
                 (a as i64, b as i64)
             };
             Ok(match name {
-                "start" => Value::Int(a),
-                "end" => Value::Int(b),
-                _ => Value::Tuple(Rc::new(vec![Value::Int(a), Value::Int(b)])),
+                "start" => ival(a),
+                "end" => ival(b),
+                _ => Value::Tuple(Rc::new(vec![ival(a), ival(b)])),
             })
         }
         other => Err(refuse(&format!("re.Match.{other}()"))),
@@ -2206,8 +2208,8 @@ pub fn get_attr(base: &Value, name: &str) -> R<Value> {
             // so `print(p.flags)` is `34` where `print(re.I|re.U)` is
             // `re.IGNORECASE|re.UNICODE`. `p.flags & re.I` still answers a
             // flag, because the RIGHT operand's subclass wins there.
-            "flags" => Value::Int(p.flags as i64),
-            "groups" => Value::Int(p.groups as i64),
+            "flags" => ival(p.flags as i64),
+            "groups" => ival(p.groups as i64),
             other => match PATTERN_METHODS.binary_search(&other) {
                 Ok(i) => Value::Bound(Rc::new(base.clone()), PATTERN_METHODS[i]),
                 Err(_) => return Err(refuse(&format!("re.Pattern.{other}"))),
@@ -2216,8 +2218,8 @@ pub fn get_attr(base: &Value, name: &str) -> R<Value> {
         Value::Match(m) => Ok(match name {
             "string" => Value::Str(m.subj.text.clone()),
             "re" => Value::Pattern(m.pat.clone()),
-            "pos" => Value::Int(m.pos as i64),
-            "endpos" => Value::Int(m.endpos as i64),
+            "pos" => ival(m.pos as i64),
+            "endpos" => ival(m.endpos as i64),
             other => match MATCH_METHODS.binary_search(&other) {
                 Ok(i) => Value::Bound(Rc::new(base.clone()), MATCH_METHODS[i]),
                 Err(_) => return Err(refuse(&format!("re.Match.{other}"))),

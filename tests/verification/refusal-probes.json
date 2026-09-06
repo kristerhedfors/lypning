@@ -30,9 +30,9 @@
  {
   "engine": "lypning-l",
   "program": "print(2**100)",
-  "exit": 90,
-  "stdout": "",
-  "stderr": "lypning-l: unsupported: bigint: integer result beyond 64-bit range (Python would use a bignum)\n"
+  "exit": 0,
+  "stdout": "1267650600228229401496703205376\n",
+  "stderr": ""
  },
  {
   "engine": "lypning",
@@ -149,9 +149,9 @@
  {
   "engine": "lypning-l",
   "program": "print(9007199254740993 / 3)",
-  "exit": 90,
-  "stdout": "",
-  "stderr": "lypning-l: unsupported: int-div-precision: int / int where an operand is past 2**53 and the quotient needs exact rounding\n"
+  "exit": 0,
+  "stdout": "3002399751580331.0\n",
+  "stderr": ""
  },
  {
   "engine": "lypning-l",
@@ -165,6 +165,20 @@
   "program": "try:\n    sorted([(1, \"a\"), (1, 2)])\nexcept TypeError as e:\n    print(e)",
   "exit": 0,
   "stdout": "'<' not supported between instances of 'int' and 'str'\n",
+  "stderr": ""
+ },
+ {
+  "engine": "lypning-l",
+  "program": "print(2**100 / 2)",
+  "exit": 90,
+  "stdout": "",
+  "stderr_startswith": "lypning-l: unsupported: bigint: "
+ },
+ {
+  "engine": "run",
+  "program": "print(9007199254740993 / 3)",
+  "exit": 0,
+  "stdout": "3002399751580331.0\n",
   "stderr": ""
  }
 ]

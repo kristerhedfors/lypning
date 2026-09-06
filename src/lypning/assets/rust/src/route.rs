@@ -59,7 +59,15 @@ pub const SPECTRUM: &[Variant] = &[
         // Alphabetical, which is the order `build.rs` emits `LYPNING_CAPS` in —
         // so the binary's own answer, this table and `engines.VARIANT_CAPS` are
         // one list and not three that happen to agree.
-        caps: &["cap-base64", "cap-collections", "cap-csv", "cap-glob", "cap-pathlib", "cap-re"],
+        caps: &[
+            "cap-base64",
+            "cap-bigint",
+            "cap-collections",
+            "cap-csv",
+            "cap-glob",
+            "cap-pathlib",
+            "cap-re",
+        ],
     },
 ];
 
@@ -71,6 +79,14 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// `cap-*` feature → (the modules it serves, the RUNTIME refusal kinds it
 /// answers). Every row here is a claim `lypning build` proves on the variant
 /// that carries it.
+///
+/// `cap-bigint` is the first row that is the OTHER column: it serves no module
+/// at all and answers two RUNTIME kinds, `bigint` and `int-div-precision`. Both
+/// are value-dependent by nature — `r *= i` in a loop overflows on an iteration
+/// no walk can pick out — so there is nothing to hoist into `walk_expr`, and the
+/// kinds column is what makes the core's runtime refusal reach the variant that
+/// can answer it instead of costing a CPython spawn. `int-div-precision` left
+/// [`ONLY_CPYTHON_KINDS`] on the same commit, for the reason written there.
 ///
 /// `cap-collections` serves the `collections` MODULE and answers no runtime
 /// kind: the `collections` kind it raises is a refusal a larger sibling would
@@ -126,6 +142,7 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// `os.scandir` order, so no sibling could answer it either.
 pub const CAPS: &[(&str, &[&str], &[&str])] = &[
     ("cap-base64", &["base64"], &[]),
+    ("cap-bigint", &[], &["bigint", "int-div-precision"]),
     ("cap-collections", &["collections"], &[]),
     ("cap-csv", &["csv"], &[]),
     ("cap-glob", &["glob"], &[]),
@@ -516,11 +533,12 @@ mod spectrum_tests {
     }
 
     #[test]
-    fn with_identical_capabilities_the_floor_rule_never_picks_the_larger_sibling() {
-        // Row 1 has exactly row 0's caps, so from row 0 every program that row 0
-        // refuses is refused by row 1 too, and the engine is never lypning-l.
-        // This is what makes step 5 behaviour-free; it stops holding the day
-        // lypning-l gains a capability, which is the point.
+    fn the_floor_rule_picks_the_larger_sibling_for_exactly_what_it_serves() {
+        // What row 1 does NOT serve, row 0's refusal cannot escape to: the
+        // engine is CPython and the two rows carry the same kind. This test was
+        // once about identical capabilities and every kind belonged in the first
+        // list; `bigint` moved to the second the day `cap-bigint` landed, which
+        // is the transition the old name described as the point of the test.
         if self_index() != 0 {
             return;
         }
@@ -528,11 +546,18 @@ mod spectrum_tests {
             ("module", "import ctypes", vec!["ctypes".to_string()]),
             ("module", "import subprocess", vec!["subprocess".to_string()]),
             ("class", "class definition", vec![]),
-            ("bigint", "x", vec![]),
         ] {
             let vs = verdicts(kind, detail, &imports);
             assert_ne!(engine_from_verdicts(&vs), Engine::Rust(1), "{kind}");
             assert_eq!(vs[1].kind, vs[0].kind, "{kind}: rows 0 and 1 must agree");
+        }
+        // …and what row 1 DOES serve, it is routed. `cap-bigint`'s two kinds are
+        // the first entries in the `CAPS` kinds column, so this is also the
+        // first time a RUNTIME refusal from the core names a sibling.
+        for kind in ["bigint", "int-div-precision"] {
+            let vs = verdicts(kind, "x", &[]);
+            assert_eq!(engine_from_verdicts(&vs), Engine::Rust(1), "{kind}");
+            assert_eq!(chain_after(SELF, kind, &vs), vec!["lypning-l", CPYTHON_NAME], "{kind}");
         }
     }
 
@@ -761,6 +786,16 @@ const MICROPYTHON_MODULES: &[&str] = &[
 /// `tests/test_routing.py`, which reads it out of this file the way
 /// `routing.micropython_modules()` reads `MICROPYTHON_MODULES` — a copy that
 /// cannot drift silently rather than a copy that already had.
+/// `int-div-precision` was in this table until `cap-bigint`. The entry was
+/// written while it meant *lypning-mp converts both operands to double and
+/// loses the low bits*, and with that tier gone it read as *no reimplementation
+/// may answer this*. `bigint::div_exact` answers it exactly, from the integers,
+/// so leaving the kind here would send every one of those programs past the
+/// variant that has the answer.
+///
+/// Keep the body a plain sorted list of quoted kinds: `routing.only_cpython_kinds`
+/// reads it by regex over the ARRAY, so a sentence in double quotes between the
+/// entries becomes an entry.
 pub const ONLY_CPYTHON_KINDS: &[&str] = &[
     "del",
     "dict-view",
@@ -784,7 +819,6 @@ pub const ONLY_CPYTHON_KINDS: &[&str] = &[
     // answers wrongly: its small-int boxing makes `int('1000') is 1000` True
     // where CPython says False. Measured 2026-08-30 on lypning-mp-i386.
     "identity",
-    "int-div-precision",
     // The message names an iterator type CPython spells from a family
     // (`list_iterator`, …) and lypning-mp spells as `iterator` — measured, so
     // its answer is the same wrong text this engine refused to print.
@@ -2157,7 +2191,8 @@ fn base64_call_block(
                 name,
                 k,
                 matches!(v, Expr::None),
-                matches!(v, Expr::None | Expr::False | Expr::Int(0)),
+                matches!(v, Expr::None | Expr::False)
+                    || matches!(v, Expr::Int(n) if n.small() == Some(0)),
             )
         })
     })
@@ -2679,7 +2714,7 @@ fn trusted_wrappers(src: &str) -> u16 {
 /// direction and is allowed.
 fn calls_stdin(func: &Expr, args: &[Expr]) -> bool {
     let fd0 = match args.first() {
-        Some(Expr::Int(0)) => true,
+        Some(Expr::Int(n)) if n.small() == Some(0) => true,
         Some(Expr::Str(s)) => s.as_ref() == "/dev/stdin",
         _ => false,
     };

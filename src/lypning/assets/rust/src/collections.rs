@@ -39,7 +39,7 @@ use crate::args::Args;
 use crate::err::{key_err, unsupported, LypningError, R};
 use crate::eval::Interp;
 use crate::fmt;
-use crate::value::{hkey, set_order_refused, type_name, Dict, Value};
+use crate::value::{hkey, ival, set_order_refused, type_name, Dict, Value};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -146,7 +146,7 @@ fn empty(k: Kind) -> Dict {
 
 fn default_value(f: &'static str) -> Value {
     match f {
-        "int" => Value::Int(0),
+        "int" => ival(0),
         "float" => Value::Float(0.0),
         "str" => Value::Str("".into()),
         "bool" => Value::Bool(false),
@@ -166,7 +166,10 @@ fn default_value(f: &'static str) -> Value {
 /// reproduced.
 fn int_count(v: &Value) -> R<i64> {
     match v {
-        Value::Int(i) => Ok(*i),
+        // A count past 64 bits refuses here for the same reason the arm below
+        // does: `most_common` and the ordering CPython applies to it are the
+        // caller's, and this engine will not order what it cannot hold.
+        Value::Int(i) => i.get(),
         _ => Err(unsupported(
             "collections",
             "a Counter count that is not an int, which CPython orders by comparing the values",
@@ -241,7 +244,7 @@ pub fn index(cell: &Rc<RefCell<Dict>>, k: Kind, idx: &Value) -> R<Value> {
         return Ok(v);
     }
     match k {
-        Kind::Counter => Ok(Value::Int(0)),
+        Kind::Counter => Ok(ival(0)),
         Kind::Default(None) => Err(key_err(fmt::repr(idx)?)),
         Kind::Default(Some(f)) => {
             let v = default_value(f);
@@ -351,7 +354,7 @@ fn update(it: &mut Interp, cell: &Rc<RefCell<Dict>>, v: &Value) -> R<()> {
                 };
                 let n = cur.checked_add(add).ok_or_else(count_overflow)?;
                 self_key_guard(&k)?;
-                cell.borrow_mut().insert(k, Value::Int(n))?;
+                cell.borrow_mut().insert(k, ival(n))?;
             }
         }
         Value::Set(_) => return Err(set_order_refused("Counter() over a set")),
@@ -370,7 +373,7 @@ fn update(it: &mut Interp, cell: &Rc<RefCell<Dict>>, v: &Value) -> R<()> {
                 };
                 let n = cur.checked_add(1).ok_or_else(count_overflow)?;
                 self_key_guard(&x)?;
-                cell.borrow_mut().insert(x, Value::Int(n))?;
+                cell.borrow_mut().insert(x, ival(n))?;
             }
         }
         other => {
@@ -410,7 +413,7 @@ pub fn method(
             // negative one yields nothing.
             let n = match args.first() {
                 None | Some(Value::None) => None,
-                Some(Value::Int(i)) => Some(*i),
+                Some(Value::Int(i)) => Some(i.get()?),
                 Some(Value::Bool(b)) => Some(*b as i64),
                 Some(other) => {
                     return Err(unsupported(
