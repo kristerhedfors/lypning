@@ -540,13 +540,11 @@ pub fn call_builtin(
                     "'{k}' is an invalid keyword argument for int()"
                 )));
             }
-            let explicit_base = args.get(1).is_some() || kwget(&kw, "base").is_some();
-            let base = match args.get(1) {
+            let base_arg = crate::args::bind(&args, &kw, 1, "base", "int")?;
+            let explicit_base = base_arg.is_some();
+            let base = match &base_arg {
                 Some(v) => int_val(v)?,
-                None => match kwget(&kw, "base") {
-                    Some(v) => int_val(&v)?,
-                    None => 10,
-                },
+                None => 10,
             };
             // `i64::from_str_radix` PANICS outside 2..=36, and a panic is exit
             // 134 — not 0, not 90, so the dispatcher hands it straight back and
@@ -790,10 +788,7 @@ pub fn call_builtin(
                     "sum() takes no keyword arguments (got '{k}')"
                 )));
             }
-            let start = args
-                .get(1)
-                .cloned()
-                .or_else(|| kwget(&kw, "start"))
+            let start = crate::args::bind(&args, &kw, 1, "start", "sum")?
                 .unwrap_or(Value::Int(0));
             // CPython refuses a str or bytes START before it looks at the
             // sequence at all — `sum([], '')` is a TypeError and so is
@@ -1107,11 +1102,8 @@ pub fn call_builtin(
                     "'{k}' is an invalid keyword argument for round()"
                 )));
             }
-            let v = match args.first() {
-                Some(v) => v.clone(),
-                None => kwget(&kw, "number")
-                    .ok_or_else(|| type_err("round() missing required argument 'number' (pos 1)"))?,
-            };
+            let v = crate::args::bind(&args, &kw, 0, "number", "round")?
+                .ok_or_else(|| type_err("round() missing required argument 'number' (pos 1)"))?;
             // `ndigits=None` is the DEFAULT and means "round to an integer", the
             // same family as `key=None` (iteration 51). Passed through
             // `int_val` it raised at exit 1, so `round(x, None)` — which is what
@@ -1120,7 +1112,7 @@ pub fn call_builtin(
             // it and let the arms below answer.
             #[cfg(feature = "cap-re")]
             let v = crate::re::as_int(&v).unwrap_or(v);
-            let nd = match args.get(1).cloned().or_else(|| kwget(&kw, "ndigits")) {
+            let nd = match crate::args::bind(&args, &kw, 1, "ndigits", "round")? {
                 None | Some(Value::None) => None,
                 Some(x) => Some(int_val(&x)?),
             };
@@ -1206,12 +1198,9 @@ pub fn call_builtin(
                 )));
             }
             let v = arg1(name, &args)?;
-            let start = match args.get(1) {
-                Some(x) => int_val(x)?,
-                None => match kwget(&kw, "start") {
-                    Some(x) => int_val(&x)?,
-                    None => 0,
-                },
+            let start = match crate::args::bind(&args, &kw, 1, "start", "enumerate")? {
+                Some(x) => int_val(&x)?,
+                None => 0,
             };
             let inner = it.make_iter(v)?;
             Value::IterObj(
@@ -1513,7 +1502,7 @@ pub fn call_builtin(
                 }
                 None => return Err(type_err("open() missing required argument: 'file'")),
             };
-            let mode = match args.get(1).cloned().or_else(|| kwget(&kw, "mode")) {
+            let mode = match crate::args::bind(&args, &kw, 1, "mode", "open")? {
                 Some(v) => fmt::to_str(&v)?,
                 None => "r".to_string(),
             };
@@ -1553,7 +1542,7 @@ pub fn call_builtin(
                 // `bytes('héllo', 'latin-1')` answered the UTF-8 bytes — data
                 // corruption at exit 0. Same rule as `str.encode` above: UTF-8
                 // spellings pass, ASCII validates, anything else refuses.
-                let enc = args.get(1).cloned().or_else(|| kwget(&kw, "encoding"));
+                let enc = crate::args::bind(&args, &kw, 1, "encoding", "bytes")?;
                 let Some(e) = enc else {
                     return Err(type_err("string argument without an encoding"));
                 };

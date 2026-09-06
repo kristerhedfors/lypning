@@ -15,6 +15,18 @@ looks finished: `str.split` read `maxsplit=` and not `sep=`, so
 `'a,b'.split(sep=',')` split on whitespace and returned `['a,b']` at exit 0.
 `sum(xs, start=10)` ignored the start and summed from zero.
 
+and the reader that DID handle both spellings took them in the wrong order:
+`args.get(i).cloned().or_else(|| kwget(&kw, "name"))` discards the keyword
+whenever a positional is also present, so the same parameter given twice
+answered at exit 0 with the positional's value —
+
+    b"abcd".hex("-", sep=":")  ->  '61-62-63-64'  (CPython: TypeError)
+    round(2.5, number=9)       ->  2              (CPython: TypeError)
+    open(p, "r", mode="w")     ->  opened for READ (CPython: TypeError)
+
+— which is what a one-liner looks like after an edit added the keyword and left
+the positional behind, answered with the value the edit meant to replace.
+
 This is a grid because the defect is per-parameter, not per-function: knowing
 that `split` handles one keyword says nothing about the other, and a list of
 examples is exactly what missed this for the project's whole history. The
@@ -29,12 +41,21 @@ program, and a grid that stops measures nothing after that point.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
 from lypning import engines
+
+RUST = Path(__file__).resolve().parents[1] / "src" / "lypning" / "assets" / "rust" / "src"
+
+#: The spelling this whole defect class is made of. `Option::or_else` does not
+#: run when the first option is `Some`, so reading a positional-or-keyword
+#: parameter this way DISCARDS the keyword whenever both are given.
+DISCARDS_THE_KEYWORD = re.compile(r"or_else\(\|\|\s*kw(get|val)\(")
 
 needs_engine = pytest.mark.skipif(
     engines.find_lypning() is None, reason="the Rust core is not built"
@@ -105,6 +126,45 @@ CASES = [
     ("print-sep", lambda: "a-b"),
     ("dict.update-kw", lambda: {"x": 0}),
     ("enumerate-start", lambda: list(enumerate("ab", start=1))),
+    # THE SAME PARAMETER TWICE — once by position, once by name. Every reader
+    # above was `args.get(i).or_else(|| kwget(kw, name))`, and `or_else` does
+    # not run when the positional is there, so the keyword was DROPPED and the
+    # call answered at exit 0 with the value the caller had just replaced. That
+    # is what an edited one-liner looks like: `hex('-')` grown a `sep=` without
+    # the positional coming out. CPython refuses rather than choose, and the
+    # message is its own — the bare function name and the 1-based position.
+    #
+    # Only the one-positional shape is here. CPython checks the TOTAL argument
+    # count first, so `split(",", 1, maxsplit=1)` reports `takes at most 2
+    # arguments (3 given)` where this reports the duplicate: same exit code,
+    # same empty stdout, a sentence `conformance.classify` does not compare and
+    # this grid would.
+    ("str.split-dup", lambda: "a,b".split(",", sep=",")),
+    ("str.rsplit-dup", lambda: "a,b".rsplit(",", sep=",")),
+    ("str.encode-dup", lambda: "ab".encode("utf-8", encoding="utf-8")),
+    ("bytes.decode-dup", lambda: b"ab".decode("utf-8", encoding="utf-8")),
+    ("bytes.split-dup", lambda: b"a,b".split(b",", sep=b",")),
+    ("bytes.hex-dup", lambda: b"ab".hex("-", sep="-")),
+    ("bytes.hex-per-dup", lambda: b"abcd".hex(sep="-", bytes_per_sep=2)),
+    ("round-dup", lambda: round(2.5, number=2.5)),
+    # The one duplicate on position TWO that CPython's arity rule lets through,
+    # because `bytes` takes three positionals and this call passes three
+    # arguments in total.
+    ("bytes-encoding-dup", lambda: bytes("ab", "utf-8", encoding="utf-8")),
+    # `str.encode(errors=…)`, and the POSITIONAL form, which is what the second
+    # argument is. Both were parsed and then discarded, so this arm always
+    # encoded strictly and `'héllo'.encode('ascii', 'ignore')` raised
+    # UnicodeEncodeError at exit 1 where CPython answers `b'hllo'`. Exit 1 is
+    # the program's own number: the dispatcher hands it back and the caller
+    # never learns that another engine would have answered.
+    ("str.encode-ignore", lambda: "héllo".encode("ascii", "ignore")),
+    ("str.encode-ignore-kw", lambda: "héllo".encode("ascii", errors="ignore")),
+    ("str.encode-replace", lambda: "héllo".encode("ascii", "replace")),
+    ("str.encode-strict", lambda: "abc".encode("ascii", "strict")),
+    # UTF-8 encodes every str, so CPython never consults the handler — which is
+    # why an unknown handler name is not a LookupError here either.
+    ("str.encode-utf8-errors", lambda: "héllo".encode(errors="ignore")),
+    ("str.encode-unused-handler", lambda: "abc".encode("ascii", "bogus")),
 ]
 rows = []
 for label, f in CASES:
@@ -152,4 +212,26 @@ def test_the_keyword_grid_agrees_with_cpython() -> None:
         len(bad),
         mine[0],
         ["lypning=%s cpython=%s" % (x, y) for x, y in bad[:6]],
+    )
+
+
+def test_no_arm_reads_a_parameter_by_position_or_else_by_name() -> None:
+    """`crate::args::bind` is the only way to read a positional-or-keyword
+    parameter, and this is what keeps it that way.
+
+    The grid above can only see the parameters someone thought to add a row
+    for, and the defect it pins is not a property of any one method — it is a
+    property of an IDIOM that is three characters shorter than the correct one
+    and reads as if it were the same thing. Sixteen call sites had it. A test
+    over the source is the only thing that notices the seventeenth, because a
+    new one arrives with its own new method and no row here."""
+    offenders = []
+    for path in sorted(RUST.glob("*.rs")):
+        for n, line in enumerate(path.read_text().splitlines(), 1):
+            if DISCARDS_THE_KEYWORD.search(line) and not line.lstrip().startswith("///"):
+                offenders.append("%s:%d: %s" % (path.name, n, line.strip()))
+    assert not offenders, (
+        "a parameter is read by position OR ELSE by name, which drops the "
+        "keyword when both are given; use `crate::args::bind(args, &kw, pos, "
+        "name, func)` instead:\n  " + "\n  ".join(offenders)
     )

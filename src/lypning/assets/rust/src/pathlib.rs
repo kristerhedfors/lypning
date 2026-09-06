@@ -407,7 +407,7 @@ pub fn method(
             crate::methods::call_method(it, &f, "write", &mut Args::one(data), Vec::new())?
         }
         "open" => {
-            let mode = match args.first().cloned().or_else(|| kwval(&kw, "mode")) {
+            let mode = match crate::args::bind(args, &kw, 0, "mode", "open")? {
                 Some(v) => fmt_str(&v)?,
                 None => "r".to_string(),
             };

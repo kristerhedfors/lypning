@@ -450,6 +450,44 @@ HEX_KEYWORDS = [H + x for x in [
     "print(hashlib.sha1(b'x').digest().hex('_'))",
     "print(hashlib.sha512(b'x').digest().hex(sep='|', bytes_per_sep=8))",
     "print(b''.hex(sep=':'))",
+    # The same parameter by position AND by name. The reader was
+    # `args.first().or_else(|| kwget(kw, "sep"))`, and `or_else` does not run
+    # when the positional is there, so the keyword was silently dropped and the
+    # digest came back grouped by the argument the caller had just replaced.
+    # `hex` takes two positionals, so a duplicate on the SECOND one always
+    # trips CPython's total-argument rule first and reports `takes at most 2
+    # arguments (3 given)` instead. Same exit code and same empty stdout, a
+    # different sentence, and this grid compares the sentence — so the row that
+    # would have gone here is in `tests/test_keyword_grid.py` as
+    # `bytes-encoding-dup`, on the one call wide enough to show it.
+    "print(hashlib.md5(b'x').digest().hex('-', sep=':'))",
+]]
+
+#: A SEPARATOR IS ONE ASCII CHARACTER, and neither half of that was checked.
+#:
+#: `h.digest().hex(sep)` is the ordinary spelling of a grouped digest, which is
+#: how `cap-hashlib` makes this reachable — but the hole is `bytes.hex`'s and
+#: predates the capability by every release. Any string at all was accepted and
+#: spliced between the pairs: `hex(':::')` answered `61:::62:::63` and
+#: `hex('é')` answered `61é62é63`, both at exit 0, where CPython hands the
+#: caller a `ValueError` and nothing else.
+#:
+#: CPython enforces the two rules SEPARATELY and in this order — length first,
+#: then ASCII, which is why `'éé'` is a length error and `'é'` is not — and it
+#: enforces them BEFORE it looks at the buffer, so an empty receiver and a
+#: `bytes_per_sep=0` that can never use the separator raise just the same. One
+#: row each, because a single rule implemented for both would pass a test that
+#: only had `':::'` in it.
+HEX_SEPARATOR = [H + x for x in [
+    "print(hashlib.md5(b'x').digest().hex(':::'))",
+    "print(hashlib.md5(b'x').digest().hex(''))",
+    "print(hashlib.md5(b'x').digest().hex(sep='ab'))",
+    "print(hashlib.md5(b'x').digest().hex('\u00e9'))",
+    "print(hashlib.md5(b'x').digest().hex('\u00e9\u00e9'))",
+    "print(hashlib.md5(b'x').digest().hex('\u0080'))",
+    "print(b''.hex('::'))",
+    "print(b'a'.hex('::', 0))",
+    "print(hashlib.sha1(b'x').digest().hex(sep=':::', bytes_per_sep=2))",
 ]]
 
 #: The iteration-74 defect class itself, one row per construct: a program that
@@ -496,7 +534,7 @@ RUNTIME_BACKSTOP = [
 ]
 
 GRID = (VECTORS + CHUNKING + SURFACE + THE_SHAPE + OWN_MESSAGES
-        + BOUND_IDENTITY + HEX_KEYWORDS)
+        + BOUND_IDENTITY + HEX_KEYWORDS + HEX_SEPARATOR)
 
 
 def _spectrum(binary: Path) -> dict | None:

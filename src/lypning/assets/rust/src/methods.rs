@@ -609,7 +609,7 @@ fn str_method(
             }
         }
         "split" | "rsplit" => {
-            let maxsplit = match args.get(1).cloned().or_else(|| kwget(&kw, "maxsplit")).as_ref() {
+            let maxsplit = match crate::args::bind(args, &kw, 1, "maxsplit", name)?.as_ref() {
                 Some(v) => int_val(v)?,
                 None => -1,
             };
@@ -617,7 +617,7 @@ fn str_method(
             // `'a,b'.split(sep=',')` split on WHITESPACE and answered `['a,b']`
             // at exit 0 — a wrong answer for an ordinary spelling, and one the
             // half-finished keyword handling right above it made easy to miss.
-            let sep_arg = args.first().cloned().or_else(|| kwget(&kw, "sep"));
+            let sep_arg = crate::args::bind(args, &kw, 0, "sep", name)?;
             let sep = match sep_arg.as_ref() {
                 None | Some(Value::None) => None,
                 Some(Value::Str(x)) => Some(x.clone()),
@@ -676,7 +676,7 @@ fn str_method(
             list(parts)
         }
         "splitlines" => {
-            let keepends = match args.first().cloned().or_else(|| kwget(&kw, "keepends")).as_ref() {
+            let keepends = match crate::args::bind(args, &kw, 0, "keepends", name)?.as_ref() {
                 Some(v) => truthy(v)?,
                 None => false,
             };
@@ -770,7 +770,7 @@ fn str_method(
         }
         "replace" => {
             let (from, to) = (sarg(&args, 0, "replace")?, sarg(&args, 1, "replace")?);
-            let count = match args.get(2).cloned().or_else(|| kwget(&kw, "count")).as_ref() {
+            let count = match crate::args::bind(args, &kw, 2, "count", name)?.as_ref() {
                 Some(v) => int_val(v)?,
                 None => -1,
             };
@@ -952,19 +952,64 @@ fn str_method(
             })
         }
         "encode" => {
-            if let Some(e) = args.first().cloned().or_else(|| kwget(&kw, "encoding")).as_ref() {
-                let e = fmt::to_str(e)?.to_ascii_lowercase().replace('_', "-");
-                if !matches!(e.as_str(), "utf-8" | "utf8" | "ascii") {
-                    return Err(unsupported("encoding", &format!("encode('{e}')")));
-                }
-                if e == "ascii" && !s.is_ascii() {
-                    return Err(LypningError::exc(
-                        "UnicodeEncodeError",
-                        "'ascii' codec can't encode character",
-                    ));
+            let enc = match crate::args::bind(args, &kw, 0, "encoding", name)? {
+                Some(v) => fmt::to_str(&v)?.to_ascii_lowercase().replace('_', "-"),
+                None => "utf-8".to_string(),
+            };
+            if !matches!(enc.as_str(), "utf-8" | "utf8" | "ascii") {
+                return Err(unsupported("encoding", &format!("encode('{enc}')")));
+            }
+            // `errors=` — and its positional spelling, which is what the second
+            // argument IS — was read by the parser and then DISCARDED, so this
+            // arm always encoded strictly: `"héllo".encode("ascii", "ignore")`
+            // raised UnicodeEncodeError at exit 1 where CPython answers
+            // `b'hllo'`. Exit 1 is the program's own number, so the dispatcher
+            // hands it straight back and the caller never learns another engine
+            // would have answered — the worst of the three ways to treat an
+            // argument, worse than refusing it.
+            //
+            // Bound here rather than below so that giving it twice is still the
+            // TypeError [`crate::args::bind`] exists for, even on the strings
+            // where its VALUE cannot matter.
+            let errors = crate::args::bind(args, &kw, 1, "errors", name)?;
+            if enc != "ascii" || s.is_ascii() {
+                // Every character encodes, so CPython never consults the
+                // handler at all — `"abc".encode("ascii", "bogus")` is `b'abc'`
+                // there and not a LookupError. Encoding to UTF-8 can never fail
+                // in this engine: a `str` is Rust's, so it holds no lone
+                // surrogate for the handler to be asked about.
+                Value::Bytes(Rc::new(s.as_bytes().to_vec()))
+            } else {
+                let e = match errors.as_ref() {
+                    Some(v) => fmt::to_str(v)?,
+                    None => "strict".to_string(),
+                };
+                match e.as_str() {
+                    "strict" => {
+                        return Err(LypningError::exc(
+                            "UnicodeEncodeError",
+                            "'ascii' codec can't encode character",
+                        ))
+                    }
+                    // Every byte of a non-ASCII character has the high bit set,
+                    // so dropping the non-ASCII BYTES drops exactly the
+                    // characters CPython's `ignore` handler drops.
+                    "ignore" => Value::Bytes(Rc::new(
+                        s.bytes().filter(u8::is_ascii).collect::<Vec<u8>>(),
+                    )),
+                    // One `?` per CODE POINT, which is why this walks chars.
+                    "replace" => Value::Bytes(Rc::new(
+                        s.chars()
+                            .map(|c| if c.is_ascii() { c as u8 } else { b'?' })
+                            .collect::<Vec<u8>>(),
+                    )),
+                    // `backslashreplace`, `xmlcharrefreplace`, `namereplace` and
+                    // `surrogateescape` each have an exact output this engine
+                    // would have to reproduce byte for byte — `namereplace`
+                    // needs the Unicode name table. Refused, not approximated.
+                    _ => return Err(unsupported("encoding", &format!("encode(errors='{e}')"))),
                 }
             }
-            Value::Bytes(Rc::new(s.as_bytes().to_vec()))
         }
         "format" => Value::Str(str_format(it, s, &args, &kw)?.into()),
         other => {
@@ -1639,13 +1684,13 @@ fn bytes_method(
     check_arity("bytes", name, args, &kw)?;
     Ok(match name {
         "decode" => {
-            if let Some(e) = args.first().cloned().or_else(|| kwget(&kw, "encoding")).as_ref() {
+            if let Some(e) = crate::args::bind(args, &kw, 0, "encoding", name)?.as_ref() {
                 let e = fmt::to_str(e)?.to_ascii_lowercase().replace('_', "-");
                 if !matches!(e.as_str(), "utf-8" | "utf8" | "ascii") {
                     return Err(unsupported("encoding", &format!("decode('{e}')")));
                 }
             }
-            if let Some(errs) = args.get(1).cloned().or_else(|| kwget(&kw, "errors")).as_ref() {
+            if let Some(errs) = crate::args::bind(args, &kw, 1, "errors", name)?.as_ref() {
                 // "replace"/"ignore" would need CPython's exact replacement
                 // behaviour; refuse rather than approximate it.
                 let e = fmt::to_str(errs)?;
@@ -1671,9 +1716,37 @@ fn bytes_method(
             // `b"abcdef".hex("-", bytes_per_sep=2)` grouped by one. Both are a
             // wrong answer at exit 0, the shape nothing downstream notices, and
             // the corpus types the first of them.
-            let sep = match args.first().cloned().or_else(|| kwget(&kw, "sep")) {
+            // A SEPARATOR IS ONE ASCII CHARACTER, and CPython enforces that as
+            // two separate rules in this order — length first, then ASCII:
+            //
+            //   b"abc".hex("::")   ValueError: sep must be length 1.
+            //   b"abc".hex("")     ValueError: sep must be length 1.
+            //   b"abc".hex("éé")   ValueError: sep must be length 1.   (2 chars)
+            //   b"abc".hex("é")    ValueError: sep must be ASCII.      (1 char)
+            //   b"abc".hex("\x80") ValueError: sep must be ASCII.
+            //
+            // Neither was checked, so any string at all was accepted and spliced
+            // between the pairs: `b"abc".hex(":::")` answered `61:::62:::63` and
+            // `b"abc".hex("é")` answered `61é62é63`, both at exit 0, where
+            // CPython gives the caller nothing. `hashlib` is how that becomes
+            // reachable — `h.digest().hex(sep)` is the ordinary spelling of a
+            // grouped digest — but the defect is `bytes.hex`'s and always was.
+            //
+            // The length is in CHARACTERS and the checks are UNCONDITIONAL:
+            // CPython validates the separator before it looks at the buffer, so
+            // `b"".hex("::")` and `b"a".hex("::", 0)` — where the separator can
+            // never be used — raise exactly the same way.
+            let sep = match crate::args::bind(args, &kw, 0, "sep", name)? {
                 None => None,
-                Some(Value::Str(x)) => Some(x.to_string()),
+                Some(Value::Str(x)) => {
+                    if x.chars().count() != 1 {
+                        return Err(value_err("sep must be length 1."));
+                    }
+                    if !x.is_ascii() {
+                        return Err(value_err("sep must be ASCII."));
+                    }
+                    Some(x.to_string())
+                }
                 Some(other) => {
                     return Err(type_err(format!(
                         "sep must be str or bytes, not {}",
@@ -1681,7 +1754,7 @@ fn bytes_method(
                     )))
                 }
             };
-            let per = match args.get(1).cloned().or_else(|| kwget(&kw, "bytes_per_sep")) {
+            let per = match crate::args::bind(args, &kw, 1, "bytes_per_sep", name)? {
                 Some(v) => int_val(&v)?,
                 None => 1,
             };
@@ -1751,7 +1824,7 @@ fn bytes_method(
         }
         "split" | "rsplit" => {
             // Same keyword gap as `str.split` above, kept in step with it.
-            let sep_arg = args.first().cloned().or_else(|| kwget(&kw, "sep"));
+            let sep_arg = crate::args::bind(args, &kw, 0, "sep", name)?;
             let sep = match sep_arg.as_ref() {
                 None | Some(Value::None) => None,
                 Some(v) => Some(as_bytes_arg(v, name)?),
@@ -1762,7 +1835,7 @@ fn bytes_method(
             if sep.as_deref() == Some(&[][..]) {
                 return Err(value_err("empty separator"));
             }
-            let maxsplit = match args.get(1).cloned().or_else(|| kwget(&kw, "maxsplit")) {
+            let maxsplit = match crate::args::bind(args, &kw, 1, "maxsplit", name)? {
                 Some(v) => crate::eval::int_val(&v)?,
                 None => -1,
             };
