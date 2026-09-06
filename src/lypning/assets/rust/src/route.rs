@@ -60,6 +60,7 @@ pub const SPECTRUM: &[Variant] = &[
         // so the binary's own answer, this table and `engines.VARIANT_CAPS` are
         // one list and not three that happen to agree.
         caps: &[
+            "cap-base64",
             "cap-bigint",
             "cap-collections",
             "cap-csv",
@@ -123,6 +124,13 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// RUNTIME chain off it already reaches lypning-l, because `chain_after` tries
 /// every sibling with a strictly larger `cap-*` set.
 ///
+/// `cap-base64` serves the `base64` MODULE — four functions of it, and only the
+/// attributes [`MODULE_ATTRS`] names — and answers no runtime kind. The one
+/// refusal it raises at runtime (`base64`) is a value the WALK could not read:
+/// an argument computed rather than spelled. There is no rung above lypning-l
+/// to hand it to, and `chain_after` a runtime `base64:` refusal is `[cpython]`
+/// by construction, so listing the kind would cost a spawn to be told no twice.
+///
 /// `cap-hashlib` serves the `hashlib` MODULE — four CONSTRUCTORS, and only the
 /// names [`MODULE_ATTRS`] lists, for the same reason `csv` needs a row: adding
 /// the module to this table admits every hashlib program into `lypning-l`,
@@ -143,6 +151,7 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// [`ONLY_CPYTHON_KINDS`] because no reimplementation can reproduce
 /// `os.scandir` order, so no sibling could answer it either.
 pub const CAPS: &[(&str, &[&str], &[&str])] = &[
+    ("cap-base64", &["base64"], &[]),
     ("cap-bigint", &[], &["bigint", "int-div-precision"]),
     ("cap-collections", &["collections"], &[]),
     ("cap-csv", &["csv"], &[]),
@@ -176,12 +185,22 @@ pub const CAPS: &[(&str, &[&str], &[&str])] = &[
 /// held to the capability's own `module_attr` by a test on the variant that has
 /// it — `csv.rs` does, in `the_route_table_names_exactly_what_is_served`.
 ///
+/// `base64` is here for exactly the reason `csv` is, and the row IS
+/// [`BASE64_SERVED`] rather than a copy of it. Four names are served —
+/// `b64encode`, `b64decode`, `urlsafe_b64encode`, `urlsafe_b64decode` — and the
+/// rest of the module (`b16*`, `b32*`, `b85*`, `a85*`, `encodebytes`,
+/// `decodebytes`, `standard_b64*`) is not. Without the row the core would route
+/// `base64.b32encode(...)` into lypning-l on the strength of `module: import
+/// base64` and the attribute would refuse THERE, one statement into a program
+/// that may already have written to disk.
+///
 /// `glob` is absent for the opposite reason: it is small enough, but the walk
 /// already carries [`GLOB_SERVED`] unconditionally and decides `glob.<n>` from
 /// it — with the KIND the runtime would have raised — several arms before
 /// [`capability_module`] is reached. A row here would be a second table saying
 /// the same thing, and the two would drift.
 pub const MODULE_ATTRS: &[(&str, &[&str])] = &[
+    ("base64", BASE64_SERVED),
     (
         "csv",
         &["DictReader", "QUOTE_ALL", "QUOTE_MINIMAL", "QUOTE_NONE", "QUOTE_NONNUMERIC", "reader"],
@@ -947,7 +966,11 @@ pub fn route(src: &str) -> Route {
             walk_block(&body, &mut req);
             imports = req.imports.iter().cloned().collect();
             let reads_stdin = reads_stdin || req.reads_stdin;
-            let stop = req.spectrum_stop.take();
+            // A refusal the walk spelled outright is the more specific one and
+            // wins the slot; a method no rung models is the fallback. Both mark
+            // the whole spectrum rather than one rung.
+            let method = method_wide_stop(req.method_stop.take(), &imports);
+            let stop = req.spectrum_stop.take().or(method);
             match req.blocker {
                 None => finish_route(String::new(), String::new(), imports, reads_stdin, stop),
                 Some((kind, detail)) => {
@@ -1024,15 +1047,6 @@ fn cpython_only(kind: &str) -> bool {
     ONLY_CPYTHON_KINDS.contains(&kind) || CPYTHON_ONLY_KINDS.contains(&kind)
 }
 
-/// Whether this binary has a reason to record what a name in a `hashlib`
-/// program holds. `false` in the core, where it folds the guard in
-/// [`Requirements::bind_pattern`] — and, with the `cfg` on the variant itself,
-/// the whole `PatLit::HashCtor` arm — away at compile time.
-#[cfg(feature = "cap-hashlib")]
-const TRACKS_HASHLIB: bool = true;
-#[cfg(not(feature = "cap-hashlib"))]
-const TRACKS_HASHLIB: bool = false;
-
 /// A pattern a walk could read: the text of a `str` literal, the fact that it
 /// was a `bytes` one — which is all `re` needs, since a bytes pattern refuses
 /// whatever its content — or the TYPE of any other literal, which is what
@@ -1094,6 +1108,22 @@ struct Requirements {
     /// is the binding in force at the call, and a name bound inside a `def`, a
     /// `lambda` or a comprehension is a name of that scope alone.
     pats: Vec<(String, Option<PatLit>)>,
+    /// `from base64 import b64decode [as d]` — the bound name of a base64
+    /// FUNCTION, so that a bare `d(...)` is decided by the same walk that
+    /// decides `base64.b64decode(...)`. Only on the variant that serves the
+    /// module: the core has no decoder to decide with, and reaches the same
+    /// programs through [`MODULE_ATTRS`] and the import blocker instead.
+    #[cfg(feature = "cap-base64")]
+    base64_names: Vec<(String, String)>,
+    /// The base64 refusal that stops the run, as `(kind, detail)`, recorded
+    /// even when an EARLIER blocker won the `--plan` row. Read only by
+    /// [`base64_static_check`], which runs before the first statement of a
+    /// `-c` run — the path the chain reaches this binary by, and the one
+    /// `route()` never sees (#48). It is not read by [`route`]: in the CORE
+    /// the first blocker is `module: import base64`, which lypning-l answers,
+    /// and lypning-l then refuses statically for the cost of one parse.
+    #[cfg(feature = "cap-base64")]
+    base64_stop: Option<(String, String)>,
     /// `from glob import glob [as g]` — the bound name of a glob FUNCTION, so
     /// that a bare `g(...)` is seen as the call it is. Without it the order
     /// blocker below would miss the one spelling that hides the module name.
@@ -1128,6 +1158,26 @@ struct Requirements {
     /// Each keeps the kind the runtime would have raised, so a program is
     /// refused with the same line one in-process run earlier.
     spectrum_stop: Option<(String, String)>,
+    /// The bare NAME of the first `method:` blocker the walk recorded, kept even
+    /// when an EARLIER blocker won the `--plan` row — and read by
+    /// [`method_wide_stop`], which decides whether it stops the whole spectrum.
+    ///
+    /// The name and not the `.name()` detail, because the decision is a lookup
+    /// in [`CAP_METHODS`] and re-deriving the name from the rendered detail is
+    /// how the two spellings drift apart.
+    ///
+    /// It is here for the one thing [`Requirements::block`] being first-wins
+    /// cannot express. A program that imports a capability module blocks FIRST
+    /// on the import, which a larger sibling answers — so [`verdicts`] marks
+    /// that sibling "can run" and the method blocker recorded three statements
+    /// later is dropped. `import base64` then routes
+    /// `base64.b64encode((255).to_bytes(2, "big"))` into lypning-l, which has
+    /// no `int.to_bytes` either and raises `AttributeError` at exit 1 — the
+    /// program's own exit, which the chain never retries, where the same
+    /// program refused cleanly at 90 before the module was served and CPython
+    /// answered it one spawn later. `verdicts` re-checks the IMPORTS against a
+    /// larger rung and nothing else, so this is the second thing it re-checks.
+    method_stop: Option<String>,
     /// Which order-blind wrappers are still the BUILTIN, one bit per index into
     /// [`ORDER_BLIND`]. `sorted` rebound to something that shows its argument's
     /// order would make the blessing below a lie — see [`trusted_wrappers`].
@@ -1176,6 +1226,53 @@ impl Requirements {
         }
     }
 
+    /// Does any capability in THIS binary still want the binding table filled?
+    ///
+    /// One question rather than a growing `||` chain at the call site, and the
+    /// capability halves are behind their features so the CORE's
+    /// `bind_pattern` is the bytes it always was — the frozen variant gains no
+    /// capability code. `re` and `glob` are unconditional because the core
+    /// decides both of those itself.
+    fn tracks_literals(&self) -> bool {
+        if self.imports.contains("re") || self.imports.contains("glob") {
+            return true;
+        }
+        #[cfg(feature = "cap-base64")]
+        if self.imports.contains("base64") {
+            return true;
+        }
+        // `PatLit::HashCtor`: which constructor a name holds, which only the
+        // variant that HAS the constructors has any use for.
+        #[cfg(feature = "cap-hashlib")]
+        if self.imports.contains("hashlib") {
+            return true;
+        }
+        false
+    }
+
+    /// A base64 refusal, for the run. It does NOT touch [`Self::blocker`]: the
+    /// `--plan` row for these programs is `module: import base64`, which is
+    /// what the core sees and what the build order should keep ranking.
+    #[cfg(feature = "cap-base64")]
+    fn stop_base64(&mut self, kind: &str, detail: String) {
+        if self.base64_stop.is_none() {
+            self.base64_stop = Some((kind.to_string(), detail));
+        }
+    }
+
+    /// A method no type THIS binary models has — recorded as the blocker, and
+    /// kept in [`Self::method_stop`] whether or not it won that slot.
+    ///
+    /// `method` is the one kind whose meaning differs between variants, because
+    /// [`known_method`] is compiled per variant. Every other kind a walk
+    /// produces means the same thing in both, so `blocker` alone carries it.
+    fn block_method(&mut self, name: &str) {
+        self.block("method", format!(".{name}()"));
+        if self.method_stop.is_none() {
+            self.method_stop = Some(name.to_string());
+        }
+    }
+
     fn block_glob_order(&mut self) {
         self.stop("glob-order", GLOB_ORDER.to_string());
     }
@@ -1209,10 +1306,7 @@ impl Requirements {
     /// that binds arrives here — an assignment, a `for` target, a `with … as`,
     /// a parameter, an `import … as`, an `except … as`, a `def`'s own name.
     fn bind_pattern(&mut self, name: &str, lit: Option<PatLit>) {
-        if !self.imports.contains("re")
-            && !self.imports.contains("glob")
-            && !(TRACKS_HASHLIB && self.imports.contains("hashlib"))
-        {
+        if !self.tracks_literals() {
             return;
         }
         match self.pats.iter_mut().find(|(n, _)| n == name) {
@@ -1326,6 +1420,22 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                     for (n, bind) in names {
                         if crate::repat::is_matcher(n) {
                             req.re_names.push((bind.to_string(), n.to_string()));
+                        }
+                    }
+                }
+                // `from base64 import b64decode [as d]`. The unserved
+                // names are already blocked correctly by both variants — the
+                // arm below spells `module` in the core and `module-attr` on
+                // lypning-l — but only the BLOCKER slot; the RUN needs its own
+                // stop, or `os.mkdir(); from base64 import b32encode` refuses
+                // past a committed barrier at exit 1.
+                #[cfg(feature = "cap-base64")]
+                "base64" => {
+                    for (n, bind) in names {
+                        if BASE64_SERVED.contains(&n.as_ref()) {
+                            req.base64_names.push((bind.to_string(), n.to_string()));
+                        } else {
+                            req.stop_base64("module-attr", format!("base64.{n}"));
                         }
                     }
                 }
@@ -1622,6 +1732,113 @@ fn known_method(name: &str) -> bool {
         )
 }
 
+/// Every method NAME that a capability adds and the type probes in
+/// [`known_method`] cannot see, per module: **the routing half of a
+/// capability's method surface, carried by every variant.**
+///
+/// The core is the binary that routes (`engines.route` asks it) and the binary
+/// with none of these capabilities compiled in, so it is the one that has to
+/// answer a question about a rung above it. That is the same economy as
+/// [`MODULE_ATTRS`], [`GLOB_SERVED`] and `repat.rs`: the names are ROUTING
+/// tokens, not implementation, and the implementation stays behind its
+/// `cap-*`. The three capability `known_method` functions read this table, so
+/// there is exactly one list per module and no copy to keep in step;
+/// `tests/test_method_tables.py` holds it to the DISPATCH tables next to it,
+/// which are a different thing and not merged into it.
+///
+/// `base64`, `csv` and `glob` have no row because their capabilities add no
+/// method name at all. Every value they hand back is a `bytes`, a `str`, a
+/// `list` or a `dict` the core already models, which `base64::call`'s docstring
+/// states for `base64` and `csv.rs`/`glob.rs` state by having no
+/// `known_method` to export.
+pub(crate) const CAP_METHODS: &[(&str, &str)] = &[
+    // The one name that is not on any other type: `Counter` is a tagged `Dict`
+    // and a probe dict has no tag, so `known_method` cannot see it.
+    ("collections", "most_common"),
+    // `hashlib::HASH_ATTRS`, less the names a probe type already answers
+    // (`copy`, `update`) and less `hashlib::ROUTER_WITHHELD`, which is where
+    // the reason for the subtraction is written. It is the first row that is
+    // deliberately SMALLER than what the module serves: this table is read by
+    // name and cannot see the receiver, and `.name` under `import hashlib` is
+    // a name the engine answers on a hash object and on nothing else.
+    ("hashlib", "digest digest_size hexdigest"),
+    // `pathlib::METHODS` and the property arms of `pathlib::get_attr`, plus
+    // `cwd`. Every name here is answered EXACTLY; a name CPython has and this
+    // row does not is a refusal, never an `AttributeError`.
+    (
+        "pathlib",
+        "as_posix cwd exists is_absolute is_dir is_file joinpath mkdir name open parent parents \
+         parts read_bytes read_text relative_to stem suffix suffixes unlink with_name with_stem \
+         with_suffix write_bytes write_text",
+    ),
+    // `re::PATTERN_METHODS`, `re::MATCH_METHODS` and the seven read-only
+    // attributes. `groupindex`, `scanner`, `expand`, `groupdict`, `lastindex`,
+    // `lastgroup` and `regs` are deliberately absent: a shape the engine does
+    // not answer is cheaper as a static block — the program goes straight to
+    // CPython — than as a runtime refusal, which costs an in-process run first
+    // and can land after a side effect the commit barrier has already let
+    // through.
+    (
+        "re",
+        "end endpos findall finditer flags fullmatch group groups match pattern pos re search \
+         span split start string sub subn",
+    ),
+];
+
+/// Is `name` one of the method names `module`'s capability adds?
+///
+/// A space-separated word list rather than a `&[&str]`: the core carries these
+/// names because it must, and 45 fat pointers cost it more than the text does.
+/// Read on the routing path only — never per method call — so a scan is the
+/// right shape.
+pub(crate) fn cap_serves(module: &str, name: &str) -> bool {
+    CAP_METHODS
+        .iter()
+        .any(|(m, names)| *m == module && names.split_whitespace().any(|w| w == name))
+}
+
+/// Could a rung ABOVE this one answer `.name()`, given what the program
+/// imported?
+///
+/// The question [`known_method`] and its two import-gated companions cannot
+/// answer, because those three are compiled per variant and this one is asked
+/// in the core, about `lypning-l`. Import-gated for the reason
+/// [`pathlib_method`] states: `.name` and `.start` and `.parts` are ordinary
+/// names on other objects, and the import is what makes the optimism honest.
+fn cap_method(name: &str, imports: &[String]) -> bool {
+    CAP_METHODS.iter().any(|(m, names)| {
+        imports.iter().any(|i| i == m) && names.split_whitespace().any(|w| w == name)
+    })
+}
+
+/// Does the `method:` blocker this walk recorded stop EVERY rung of the
+/// spectrum, and therefore belong in `finish_route`'s `stop` slot?
+///
+/// Only when no capability above this rung serves the NAME. The blocker stays
+/// out of `Route::kind` either way: `--plan` ranks what a program hit FIRST,
+/// and that is still the import.
+///
+/// **This used to ask about the import and not the name**, and the difference
+/// is a wrong answer. `method` is the one blocker kind whose meaning differs
+/// between variants, so the first cut suppressed the whole-spectrum stop for
+/// any program importing `collections`, `pathlib` or `re` — the three modules
+/// whose capability brings method names with it. That is far wider than the
+/// ambiguity: `import re` says nothing about `.to_bytes`, which no rung has, so
+/// `import base64, re; base64.b64encode((255).to_bytes(2, "big"))` routed to
+/// lypning-l and raised `AttributeError` at exit 1 — the program's own exit,
+/// which the chain never retries — where CPython prints `b'AP8='`. Asking
+/// [`CAP_METHODS`] for the name keeps every program the hatch was opened for
+/// (`.most_common` under `import collections`, `.group` under `import re`,
+/// `.with_suffix` under `import pathlib` — a name only the variant that HAS the
+/// capability can answer) and lets go of every program it was not.
+fn method_wide_stop(method: Option<String>, imports: &[String]) -> Option<(String, String)> {
+    let name = method?;
+    if cap_method(&name, imports) {
+        return None;
+    }
+    Some(("method".to_string(), format!(".{name}()")))
+}
+
 /// A `pathlib` name — `.name`, `.parts`, `.with_suffix` — admitted to the
 /// optimistic union above ONLY for a program that imports `pathlib`.
 ///
@@ -1666,9 +1883,14 @@ fn re_method(_req: &Requirements, _n: &str) -> bool {
 /// which the chain never retries, where CPython answers. So `h.name` is a
 /// static `method` block that costs a CPython spawn and is never wrong, and
 /// `hashlib.rs` still answers it for a run that entered as `-c`.
+///
+/// The names are [`CAP_METHODS`] and not a `matches!` here, for the reason
+/// [`pathlib_method`] and [`re_method`] give: the binary that ROUTES is the
+/// core, [`method_wide_stop`] asks it the same question about the same names,
+/// and two tables that must agree are one table.
 #[cfg(feature = "cap-hashlib")]
 fn hash_method(req: &Requirements, n: &str) -> bool {
-    req.imports.contains("hashlib") && matches!(n, "digest" | "digest_size" | "hexdigest")
+    req.imports.contains("hashlib") && crate::hashlib::known_method(n)
 }
 #[cfg(not(feature = "cap-hashlib"))]
 fn hash_method(_req: &Requirements, _n: &str) -> bool {
@@ -1922,6 +2144,254 @@ const GLOB_ORDER: &str = "glob() order is filesystem-defined and not \
      reproducible; served only inside sorted(), bool(), len(), min(), max(), \
      any(), all(), sum() or the right of `in` — and iglob() answers a \
      generator, which len() and bool() do not read as a list";
+
+/// The `base64` attributes lypning-l serves, and therefore the only ones ANY
+/// rung of the spectrum answers. It IS the [`MODULE_ATTRS`] row rather than a
+/// copy of it, and `base64::tests::the_route_table_names_exactly_what_is_served`
+/// holds it to `base64.rs` in both directions.
+///
+/// Four names, and the rest of the module — `b16encode`/`b16decode`,
+/// `b32encode`/`b32decode`, `b32hexencode`/`b32hexdecode`, `b85encode`/
+/// `b85decode`, `a85encode`/`a85decode`, `z85encode`/`z85decode`,
+/// `encodebytes`/`decodebytes`, `standard_b64encode`/`standard_b64decode` —
+/// is a `module-attr` refusal. `standard_b64*` looks like a synonym for the two
+/// served names and is not one worth serving: nothing in the corpus (mined
+/// 2026-09-06 over 3,688 entries) spells it, and every name here is bytes.
+///
+/// Sorted, because [`served_attr`] reads it as the [`MODULE_ATTRS`] row and
+/// that row is asserted sorted.
+pub const BASE64_SERVED: &[&str] =
+    &["b64decode", "b64encode", "urlsafe_b64decode", "urlsafe_b64encode"];
+
+/// Which base64 keyword arguments are served, and the refusal line for the rest
+/// — one function, so the WALK and `base64::call` refuse with the same words.
+///
+/// **Two predicates, because there are two questions.** One `falsy` answering
+/// both of them ("was the argument omitted" and "is the argument the default")
+/// answered `altchars=0` and `altchars=False` at exit 0, where CPython 3.14.5
+/// raises — measured on 2026-09-06, all five spellings, in both directions:
+///
+/// ```text
+///   b64decode(b'aGk=', altchars=None)   b'hi'   b64encode(b'hi', altchars=None)   b'aGk='
+///   b64decode(b'aGk=', altchars=b'')    Assert  b64encode(b'hi', altchars=b'')    Assert
+///   b64decode(b'aGk=', altchars='')     Assert  b64encode(b'hi', altchars='')     Assert
+///   b64decode(b'aGk=', altchars=0)      Type    b64encode(b'hi', altchars=0)      Type
+///   b64decode(b'aGk=', altchars=False)  Type    b64encode(b'hi', altchars=False)  Type
+/// ```
+///
+/// An ABSENT `altchars` is the default and `None` is the only value that spells
+/// absent — CPython's test is `if altchars is not None`, and everything past it
+/// either reaches `_bytes_from_decode_data` (a `TypeError` for an `int` or a
+/// `bool`) or `assert len(altchars) == 2` (an `AssertionError` for `b''` and
+/// `''`). A PRESENT falsy `altchars` is a VALUE, and one CPython rejects.
+/// `validate=` is the other question and keeps the other predicate: it reaches
+/// C through a `bool` converter that calls `PyObject_IsTrue`, so every falsy
+/// value there really is `validate=False`.
+///
+///   * `altchars=` is a parameter of `b64encode`/`b64decode` ONLY, and only
+///     `altchars=None` is served. The urlsafe pair takes no keyword at all, so
+///     `urlsafe_b64encode(s, altchars=None)` is a CPython `TypeError` and must
+///     not be answered here either.
+///   * `validate=` is `b64decode`'s alone — `urlsafe_b64decode` does not
+///     forward it — and its falsy values are served exactly: `validate=0` and
+///     `validate=None` ARE `validate=False`.
+///   * `validate=True` selects `binascii`'s strict mode, whose every rejection
+///     is a `binascii.Error` message this engine does not write.
+///
+/// A value the walk cannot read is neither `is_none` nor `falsy`, so it
+/// refuses, which is the safe direction for both questions.
+#[cfg(feature = "cap-base64")]
+pub fn base64_kw_block(name: &str, k: &str, is_none: bool, falsy: bool) -> Option<String> {
+    let standard = matches!(name, "b64encode" | "b64decode");
+    match k {
+        "altchars" if standard && is_none => None,
+        "altchars" if standard => Some(format!(
+            "base64.{name}(altchars=…) with a value other than None, which is either an \
+             alternative alphabet this engine does not implement or a value CPython rejects \
+             with a TypeError or an AssertionError this engine does not word"
+        )),
+        "validate" if falsy && name == "b64decode" => None,
+        "validate" if name == "b64decode" => Some(format!(
+            "base64.{name}(validate=…) that is not literally False, None or 0: a truthy \
+             validate selects binascii's strict mode, whose every rejection is a \
+             binascii.Error message this engine does not write"
+        )),
+        _ => Some(format!("base64.{name}({k}=…)")),
+    }
+}
+
+/// As much of a base64 argument as a walk can honestly read: the TYPE of a
+/// literal — or of a literal bound to a name above the call — and its BYTES
+/// when the literal is spelled at the call site.
+///
+/// The bytes matter here in a way they do not for `glob`, because whether a
+/// decode raises is a property of the DATA: `b"aGk="` decodes and `b"aGk"` is
+/// a `binascii.Error`, and the second must be refused before the program runs
+/// rather than after it has made a directory. A `bytes` literal bound to a
+/// NAME answers its type and not its content — [`PatLit`] is the core's table
+/// and records `bytes` without the bytes — so that spelling keeps the runtime
+/// backstop, which `tests/test_base64_grid.py::RUNTIME_BACKSTOP` pins.
+#[cfg(feature = "cap-base64")]
+fn base64_arg(e: &Expr, req: &Requirements) -> Option<(&'static str, Option<Vec<u8>>)> {
+    Some(match e {
+        Expr::Bytes(b) => ("bytes", Some(b.as_ref().clone())),
+        Expr::Str(s) => ("str", Some(s.as_bytes().to_vec())),
+        Expr::FString(parts) => match fstring_text(parts) {
+            Some(t) => ("str", Some(t.as_bytes().to_vec())),
+            None => ("str", None),
+        },
+        Expr::Name(n) => match req.pattern_named(n)? {
+            PatLit::Str(t) => ("str", Some(t.as_bytes().to_vec())),
+            PatLit::Bytes => ("bytes", None),
+            PatLit::Other(t) => (t, None),
+            // The only place the two capabilities meet: a name holding a
+            // hashlib CONSTRUCTOR is a callable, so `from hashlib import
+            // sha256 as h; base64.b64encode(h)` is a TypeError CPython owns.
+            // Saying so here refuses it before the barrier rather than after,
+            // which is what the rest of this function is for.
+            #[cfg(feature = "cap-hashlib")]
+            PatLit::HashCtor(_) => ("builtin_function_or_method", None),
+        },
+        e => (literal_type(e)?, None),
+    })
+}
+
+/// Does this expression name the `base64` MODULE, through an alias, in a
+/// program that imported it? The import is what makes the name mean the module
+/// — `base64 = 3; base64.b64encode(x)` is not a module attribute and the walk
+/// must not say it is.
+#[cfg(feature = "cap-base64")]
+fn base64_module(b: &Expr, req: &Requirements) -> bool {
+    req.imports.contains("base64")
+        && matches!(resolve_module(b, &req.aliases), Some(crate::value::Value::Module("base64")))
+}
+
+/// Which base64 FUNCTION this callee names, if any — one of [`BASE64_SERVED`].
+/// `base64.b64decode(...)`, `x.b64decode(...)` after `import base64 as x`, and
+/// a bare `d(...)` bound by `from base64 import b64decode as d`.
+#[cfg(feature = "cap-base64")]
+fn base64_func(func: &Expr, req: &Requirements) -> Option<&'static str> {
+    let n: &str = match func {
+        Expr::Attr(b, n) if base64_module(b, req) => n.as_ref(),
+        Expr::Name(n) => req
+            .base64_names
+            .iter()
+            .find(|(bound, _)| bound == n.as_ref())
+            .map(|(_, f)| f.as_str())?,
+        _ => return None,
+    };
+    BASE64_SERVED.iter().copied().find(|x| *x == n)
+}
+
+/// Every refusal a `base64` call can raise that a walk can decide, hoisted out
+/// of the run and into the walk.
+///
+/// This is issue #51 answered for this capability. Serving the module means the
+/// program STARTS here — and a refusal reached after `os.mkdir` has committed
+/// the write barrier (`io.rs`) is exit 1 with the directory on disk and no
+/// answer, which the chain never retries, where the core without `cap-base64`
+/// refused cleanly at 90 and CPython gave the answer. `docs/HILLCLIMB.md`
+/// iterations 76 and 77 rejected two capabilities for exactly that shape.
+///
+/// Five things are literal in the source and therefore decidable here, in the
+/// order [`crate::base64::call`] asks them, so a program is refused with the
+/// same line one in-process run earlier:
+///
+///   1. the argument count — none, or a second positional (which is `altchars`
+///      on the standard pair and a `TypeError` on the urlsafe one);
+///   2. the keyword names and whether their values are the served defaults,
+///      through [`base64_kw_block`];
+///   3. the argument's TYPE when it is a literal — a `str` handed to an
+///      encoder is CPython's `TypeError` and the commonest way this call is
+///      typed wrongly;
+///   4. a `str` literal holding a non-ASCII character, which is a `ValueError`
+///      in `base64._bytes_from_decode_data`;
+///   5. the DATA itself, through [`crate::base64::data_block`] — the same
+///      function the run uses, so the walk and the run cannot disagree about
+///      whether an input decodes.
+///
+/// **What stays a runtime refusal**, and it is one shape: an argument whose
+/// VALUE the source does not spell — read from stdin, returned by a call,
+/// built by a join, or held by a name bound to a `bytes` literal, which the
+/// core's binding table records by type alone. Those keep the backstop in
+/// `base64::call`, and a refusal there still lands past a committed barrier;
+/// what the static half buys is that a literal never reaches that door.
+#[cfg(feature = "cap-base64")]
+fn base64_call_block(
+    req: &mut Requirements,
+    func: &Expr,
+    args: &[Expr],
+    kwargs: &[(std::rc::Rc<str>, Expr)],
+    star: &[usize],
+    dstar: &[Expr],
+) {
+    let Some(name) = base64_func(func, req) else { return };
+    let Some((pos, kws)) = flatten_call(args, kwargs, star, dstar) else { return };
+    let decoding = matches!(name, "b64decode" | "urlsafe_b64decode");
+    let urlsafe = matches!(name, "urlsafe_b64encode" | "urlsafe_b64decode");
+    let detail = match pos.len() {
+        0 => Some(format!("base64.{name}() with no argument")),
+        1 => None,
+        _ => Some(format!("base64.{name}() with extra positional arguments")),
+    }
+    .or_else(|| {
+        kws.iter().find_map(|(k, v)| {
+            base64_kw_block(
+                name,
+                k,
+                matches!(v, Expr::None),
+                matches!(v, Expr::None | Expr::False)
+                    || matches!(v, Expr::Int(n) if n.small() == Some(0)),
+            )
+        })
+    })
+    .or_else(|| {
+        let (t, data) = pos.first().and_then(|e| base64_arg(e, req))?;
+        if !decoding {
+            return (t != "bytes").then(|| {
+                format!("base64.{name}() over a {t} (CPython requires a bytes-like object)")
+            });
+        }
+        if t != "bytes" && t != "str" {
+            return Some(format!(
+                "base64.{name}() over a {t} (CPython requires a bytes-like object or an ASCII str)"
+            ));
+        }
+        let data = data?;
+        if t == "str" && !data.is_ascii() {
+            return Some(format!(
+                "base64.{name}() over a str holding a non-ASCII character (CPython raises a ValueError this engine does not word)"
+            ));
+        }
+        crate::base64::data_block(&data, urlsafe).map(str::to_string)
+    });
+    if let Some(d) = detail {
+        req.stop_base64("base64", d);
+    }
+}
+
+/// The static base64 rules, asked of a program that is ABOUT TO RUN rather than
+/// of one being routed — and it is the same walk, so the two can never
+/// disagree.
+///
+/// `<bin> -c PROG` is not routed at all, and that is exactly how the chain
+/// reaches this binary once the core has picked it (#48). It runs BEFORE the
+/// first statement, so the refusal is exit 90 with an empty stdout and an
+/// untouched disk, never the exit 1 a refusal reached after `os.mkdir` would
+/// have been. Only for a source that mentions the module, so every other
+/// program pays one substring search.
+#[cfg(feature = "cap-base64")]
+pub fn base64_static_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
+    if !src.contains("base64") {
+        return Ok(());
+    }
+    let mut req = Requirements::default();
+    walk_block(body, &mut req);
+    match req.base64_stop {
+        Some((k, d)) => Err(crate::err::unsupported(&k, &d)),
+        None => Ok(()),
+    }
+}
 
 /// The `glob` attributes lypning-l serves, and therefore the only ones ANY rung
 /// of the spectrum answers. Every other name — `translate`, `glob0`, `glob1`,
@@ -2547,11 +3017,16 @@ fn resolve_module(e: &Expr, aliases: &[(String, String)]) -> Option<crate::value
     }
 }
 
-/// The module `e` names, when it is one this binary does NOT serve but
-/// [`MODULE_ATTRS`] has a row for — the mirror of `resolve_module`, which can
-/// only see modules in `modules::MODULES`. Only a bare name (or its `import … as`
-/// alias) that the program actually imported: `csv.reader` where `csv` is a
-/// local variable is not a module attribute, and the walk must not say it is.
+/// The module `e` names, when it is one the program imported and THIS binary
+/// does NOT serve — the mirror of `resolve_module`, which can only see modules
+/// in `modules::MODULES`. Only a bare name (or its `import … as` alias) that the
+/// program actually imported: `csv.reader` where `csv` is a local variable is
+/// not a module attribute, and the walk must not say it is.
+///
+/// It no longer filters on [`MODULE_ATTRS`], and that is the half that matters.
+/// A row there decides the ATTRIBUTE; the absence of one still decides that
+/// this is an attribute AT ALL, which is what keeps `collections.Counter` and
+/// `glob.escape` out of the method check — see the caller.
 fn capability_module(e: &Expr, req: &Requirements) -> Option<String> {
     let n = match e {
         Expr::Name(n) => n.as_ref(),
@@ -2566,7 +3041,7 @@ fn capability_module(e: &Expr, req: &Requirements) -> Option<String> {
     if crate::modules::MODULES.contains(&name) || !req.imports.contains(name) {
         return None;
     }
-    MODULE_ATTRS.iter().find(|(m, _)| *m == name).map(|(m, _)| (*m).to_string())
+    Some(name.to_string())
 }
 
 fn walk_expr(e: &Expr, req: &mut Requirements) {
@@ -2662,6 +3137,14 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             if let Some(crate::value::Value::Module(m)) = resolve_module(b, &req.aliases) {
                 if crate::modules::get_attr(&crate::value::Value::Module(m), n).is_err() {
                     req.block("module-attr", format!("{m}.{n}"));
+                    // `base64.b32encode` is a `module-attr` blocker in both
+                    // variants, so the ROUTE is already right — but a blocker
+                    // is not a stop, and the run has to refuse before the
+                    // barrier rather than when the attribute is touched.
+                    #[cfg(feature = "cap-base64")]
+                    if m == "base64" {
+                        req.stop_base64("module-attr", format!("{m}.{n}"));
+                    }
                 }
                 return;
             }
@@ -2673,15 +3156,21 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             if let Some(m) = capability_module(b, req) {
                 if !served_attr(&m, n) {
                     req.escalate(&m, n);
-                    return;
                 }
+                // Served — or claimed whole, which is what `served_attr` says
+                // for a module [`MODULE_ATTRS`] has no row for — and either way
+                // this is a MODULE ATTRIBUTE and not a method name. Returning
+                // is what says so. Falling through recorded `.b64decode()`,
+                // `.Counter()` and `.escape()` as `method:` blockers, which was
+                // invisible for as long as only the FIRST blocker was ever
+                // read and became a wrong route the moment `method_wide_stop`
+                // started reading the rest: every base64 program in the corpus
+                // went to CPython, refused by the method name of the very
+                // function the module was served to run.
+                return;
             }
-            if !known_method(n)
-                && !pathlib_method(req, n)
-                && !re_method(req, n)
-                && !hash_method(req, n)
+            if !known_method(n) && !pathlib_method(req, n) && !re_method(req, n) && !hash_method(req, n)
             {
-                let detail = format!(".{n}()");
                 // The iteration-74 defect class, and the reason `hashlib` was
                 // rejected there: the walk keeps the FIRST blocker, and for a
                 // program a capability admits the first blocker is the import.
@@ -2691,26 +3180,31 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
                 // on `.bit_length()`. An `AttributeError` is not a refusal, the
                 // barrier only discards on 90, and the chain never retried it.
                 //
-                // [`stop_only`](Requirements::stop_only), so the `--plan` row
-                // stays the one the program hit first, and the refusal is
-                // raised by [`static_check`] before `Interp::new()` — a clean
-                // 90 the chain answers on CPython one spawn later.
+                // [`method_wide_stop`] is what closes that hole for the ROUTER,
+                // by name and in the core. This is the same hole seen from
+                // inside the variant that HAS the capability: a program pinned
+                // to `lypning-l`, or reached through the C ABI, never asks the
+                // core anything, so it needs the walk's own
+                // [`stop_only`](Requirements::stop_only) to refuse before
+                // `Interp::new()` — a clean 90 the chain answers on CPython one
+                // spawn later. The `--plan` row stays the one the program hit
+                // first either way.
                 //
                 // The condition is [`admitted_by_a_capability`] and not "a
                 // blocker is already recorded": in the CORE the blocker is
                 // `module: import hashlib` and `.hexdigest()` is a `method`
                 // block (`hash_method` is `false` there), so an unconditional
-                // stop would route every hashlib program to CPython and the
-                // capability would be dead. It is measured, not argued: over
-                // the corpus loaded on 2026-09-06 the walk of the variant that
-                // HAS the capabilities blocks `method` on 35 programs, 4 of
-                // them admitted by a capability import, and exactly one of
-                // those four is a program it answers today.
+                // stop would refuse every hashlib program and the capability
+                // would be dead. It is measured, not argued: over the corpus
+                // loaded on 2026-09-06 the walk of the variant that HAS the
+                // capabilities blocks `method` on 35 programs, 4 of them
+                // admitted by a capability import, and exactly one of those
+                // four is a program it answers today.
                 #[cfg(feature = "cap-hashlib")]
                 if admitted_by_a_capability(req) {
-                    req.stop_only("method", detail.clone());
+                    req.stop_only("method", format!(".{n}()"));
                 }
-                req.block("method", detail);
+                req.block_method(n);
             }
         }
         Expr::Call {
@@ -2733,6 +3227,11 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             // the barrier on the `-c` path the core routes into.
             #[cfg(feature = "cap-hashlib")]
             hash_call_block(req, func, args, kwargs, star, dstar);
+            // Same reason, and the same place in the order: every refusal an
+            // admitted base64 call can raise that the source spells, decided
+            // before the program starts (#51).
+            #[cfg(feature = "cap-base64")]
+            base64_call_block(req, func, args, kwargs, star, dstar);
             // Is THIS a glob call, and did its parent bless it? A blessed call
             // is served and its callee is not walked; an unblessed one is the
             // blocker, whatever it was going to be handed to. `escape` and

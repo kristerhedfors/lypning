@@ -233,6 +233,8 @@ fn run_guarded(req: &Request) -> Outcome {
         let body = crate::parse::parse(&req.source)?;
         #[cfg(any(feature = "cap-glob", feature = "cap-hashlib"))]
         crate::route::static_stop_check(&body, &req.source)?;
+        #[cfg(feature = "cap-base64")]
+        crate::route::base64_static_check(&body, &req.source)?;
         interp.run(&body)
     }));
 

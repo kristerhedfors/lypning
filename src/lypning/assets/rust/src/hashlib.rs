@@ -110,6 +110,38 @@ pub const HASH_TYPE: &str = "_hashlib.HASH";
 pub const HASH_ATTRS: &[&str] =
     &["block_size", "copy", "digest", "digest_size", "hexdigest", "name", "update"];
 
+/// The names in [`HASH_ATTRS`] the ROUTER is not optimistic about, and so the
+/// names `route::CAP_METHODS`'s `hashlib` row does not carry.
+///
+/// `route::cap_method` asks its question by NAME and cannot see the receiver,
+/// so a name in that row admits it on ANY object for a program that imports
+/// `hashlib`. `.name` is an ordinary attribute on a file object, a module and
+/// an exception, this engine answers it on none of them, and claiming it would
+/// route `import hashlib; print(open(p).name)` into this variant to stop at an
+/// `AttributeError` — exit 1, the program's own, which the chain never retries,
+/// where CPython prints a value. `block_size` is withheld for the weaker
+/// reason: `route::hash_method` never admitted it either, and a router that
+/// claims more than the variant's own walk admits is two tables disagreeing.
+///
+/// Both are still ANSWERED by [`attr`] for a program that gets here. What they
+/// cost is a CPython spawn for `h.name` and `h.block_size`, which is coverage
+/// given away in the safe direction — `tests/test_method_tables.py` names the
+/// two directions and which one is a wrong exit code.
+pub const ROUTER_WITHHELD: &[&str] = &["block_size", "name"];
+
+/// Is `name` one of the attributes the ROUTER may assume this variant answers?
+///
+/// The names are `route::CAP_METHODS` and not a table here, for the reason
+/// `glob::SERVED` is `route::GLOB_SERVED`: the binary that ROUTES is the core,
+/// which has no `cap-hashlib` and therefore neither [`HASH_ATTRS`] nor
+/// [`attr`]'s arms — and two tables that must agree are one table.
+/// `tests/test_method_tables.py` holds the routing row to [`HASH_ATTRS`] minus
+/// the probe-type names minus [`ROUTER_WITHHELD`], because there is no `cargo
+/// test` in CI.
+pub fn known_method(name: &str) -> bool {
+    crate::route::cap_serves("hashlib", name)
+}
+
 pub fn refuse(what: &str) -> LypningError {
     unsupported("hashlib", what)
 }

@@ -149,3 +149,129 @@ def test_case_refusal_table_matches_cpython(fn, differs):
         "refuses where it could answer. Safe, but it is coverage given away for "
         "nothing. First few: %s" % (fn, len(extra), [hex(c) for c in extra[:8]])
     )
+
+
+# --- the routing projection of a capability's method surface -----------------
+#
+# `route::CAP_METHODS` is the one table in the crate that names methods a
+# capability serves and is compiled into the variant that does NOT serve them.
+# It has to be: the binary that ROUTES is the core, and a `method:` blocker is
+# the one kind whose meaning differs between variants, so the core is what has
+# to decide whether the name is one `lypning-l` would answer. The three
+# `known_method` functions read it rather than keeping a list each, exactly as
+# `glob::SERVED` is `route::GLOB_SERVED` — but the DISPATCH tables next to them
+# are still separate, and those are what the engine actually answers from.
+#
+# So this holds the routing row to the dispatch it stands for. The two
+# directions are not symmetric: a row that CLAIMS a name nothing serves routes
+# the program to a rung that refuses it — a wasted spawn, or exit 1 when the
+# refusal lands past a committed barrier (#51) — while a row that MISSES a name
+# blocks a program the capability was built to run, which is coverage given
+# away. Both are bugs; only the first is a wrong exit code.
+
+ROUTE_RS = RUST / "route.rs"
+
+
+def _cap_methods() -> dict:
+    """`route::CAP_METHODS`, as {module: [name, ...]}."""
+    src = ROUTE_RS.read_text(encoding="utf-8")
+    m = re.search(r"CAP_METHODS: &\[\(&str, &str\)\] = &\[(.*?)\n\];", src, re.S)
+    assert m, "CAP_METHODS is gone from route.rs"
+    body = re.sub(r"//[^\n]*", "", m.group(1))
+    out = {}
+    for mod, names in re.findall(r'\(\s*"(\w+)",\s*((?:"[^"]*"\s*\\?\s*)+)', body):
+        text = "".join(re.findall(r'"([^"]*)"', names, re.S))
+        # A `\` at end of line is Rust's line continuation: it eats the newline
+        # and the indent that follows, so the words on either side of it are
+        # separate words and the backslash is not one of them.
+        out[mod] = text.replace("\\", " ").split()
+    return out
+
+
+def _named(path: Path, table: str) -> list:
+    src = path.read_text(encoding="utf-8")
+    # `=\s*&[`: rustfmt breaks the line after the `=` when the initialiser does
+    # not fit, and a table that moved down one line is not a table that is gone.
+    m = re.search(r"const %s: &\[&str\] =\s*&\[(.*?)\];" % table, src, re.S)
+    assert m, "%s is gone from %s" % (table, path.name)
+    return re.findall(r'"([^"]+)"', m.group(1))
+
+
+def _get_attr_arms(path: Path) -> list:
+    """Every attribute name `get_attr` answers with a literal match arm.
+
+    The properties are computed at access and never bound, so they are in no
+    table — the arms ARE the list, and reading them here is what keeps this
+    check from being a copy of the thing it checks.
+    """
+    src = path.read_text(encoding="utf-8")
+    i = src.index("pub fn get_attr")
+    return re.findall(r'^\s*"(\w+)" =>', src[i:src.index("\n}\n", i)], re.M)
+
+
+#: One row per module in `CAP_METHODS`, with the served surface it stands for
+#: derived from that module's own dispatch. `cwd` is pathlib's one extra: it is
+#: a classmethod on `Path` and reaches `pathlib::cwd` rather than `get_attr`.
+#: `collections` subtracts instead of adding, because `Counter` is a tagged
+#: `dict` and every name but one is already answered by the probe types
+#: `route::known_method` walks — the row is the residue that is not.
+#:
+#: `hashlib` subtracts twice. The probe types answer `copy` and `update`, and
+#: `hashlib::ROUTER_WITHHELD` names the rest: this table is read BY NAME and
+#: cannot see the receiver, so `.name` in the row would admit `open(p).name`
+#: for any program that imports `hashlib` — the exit-1 shape the second
+#: assertion below is about. The withheld list lives in `hashlib.rs`, next to
+#: the reason, so this is still a derivation and not a copy.
+def _served() -> dict:
+    probes = set(
+        sum((_named(METHODS, t) for t in
+             ("STR_METHODS", "LIST_METHODS", "DICT_METHODS", "SET_METHODS",
+              "BYTES_METHODS")), [])
+    )
+    coll = set(_named(RUST / "collections.rs", "COUNTER_METHODS"))
+    coll |= set(_named(RUST / "collections.rs", "DEFAULT_METHODS"))
+    return {
+        "collections": coll - probes,
+        "hashlib": set(_named(RUST / "hashlib.rs", "HASH_ATTRS"))
+        - probes
+        - set(_named(RUST / "hashlib.rs", "ROUTER_WITHHELD")),
+        "pathlib": set(_named(RUST / "pathlib.rs", "METHODS"))
+        | set(_get_attr_arms(RUST / "pathlib.rs"))
+        | {"cwd"},
+        "re": set(_named(RUST / "re.rs", "PATTERN_METHODS"))
+        | set(_named(RUST / "re.rs", "MATCH_METHODS"))
+        | set(_get_attr_arms(RUST / "re.rs")),
+    }
+
+
+def test_the_routing_table_has_a_row_for_every_capability_that_bears_methods():
+    # A parse that found nothing would make every assertion below vacuous, and
+    # a capability that grew a method surface without a row here is the hole
+    # this table exists to close. `base64` and `bigint` are absent on purpose:
+    # neither adds a method name at all.
+    assert (
+        set(_cap_methods())
+        == set(_served())
+        == {"collections", "hashlib", "pathlib", "re"}
+    )
+
+
+@pytest.mark.parametrize("module", ["collections", "hashlib", "pathlib", "re"])
+def test_the_routing_row_is_exactly_what_that_capability_serves(module):
+    row = _cap_methods()[module]
+    served = _served()[module]
+    assert sorted(row) == row and len(set(row)) == len(row), (
+        "CAP_METHODS[%r] is meant to be read as a sorted, duplicate-free word "
+        "list: %r" % (module, row)
+    )
+    claimed = set(row)
+    assert not claimed - served, (
+        "CAP_METHODS[%r] claims %s, which %s.rs does not serve — the core will "
+        "route a program using that name to lypning-l, which refuses it"
+        % (module, sorted(claimed - served), module)
+    )
+    assert not served - claimed, (
+        "%s.rs serves %s, which CAP_METHODS[%r] does not name — the walk blocks "
+        "a program this capability exists to run"
+        % (module, sorted(served - claimed), module)
+    )

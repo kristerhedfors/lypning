@@ -121,8 +121,13 @@ pub fn attr_refused(k: Kind, name: &str) -> LypningError {
 /// The router's optimistic method union (`route::known_method`) has to admit
 /// the one name that is not on any other type, or `c.most_common()` blocks the
 /// program that this capability exists to run.
+///
+/// The name itself lives in `route::CAP_METHODS`, which every variant carries:
+/// the CORE routes, so the core is what has to know that a rung above it
+/// answers `.most_common()`. One list, read from both sides, so the router and
+/// the runtime cannot disagree about it.
 pub fn known_method(name: &str) -> bool {
-    name == "most_common"
+    crate::route::cap_serves("collections", name)
 }
 
 pub fn method_name(k: Kind, name: &str) -> Option<&'static str> {
