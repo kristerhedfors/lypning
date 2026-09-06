@@ -133,6 +133,148 @@ this ledger.
 
 <!-- lypning-bench: newest entry is inserted directly below this line -->
 
+## 2026-09-06 — five arms, with a PyPy comparison arm — `lypning bench`, not the variant-vs-stock harness
+
+**Different instrument from every entry below it**, and different again from the
+2026-08-21 entry under it: this is `lypning bench` with a **fifth arm**, PyPy,
+which is not an engine and is never routed to. `--arm` is name-only and silently
+drops a path (`bench.resolve_arms` looks names up in `engines.available()`), so
+the arm was added through the documented `bench.Arm` pass-through and the
+resolved arm list was asserted before any number was read. There is no stock
+control here and no `py/stock` verdict.
+
+This is also the first entry that measures `lypning → lypning-l → cpython` with
+both Rust variants in the same table; every PyPy figure published before today
+is upstream, on a different machine, against CPython 3.11.
+
+Machine: 10 cpus, Darwin 25.6.0 (arm64), a shared laptop, load 1.2–3.3 across
+the run with other sessions live. Corpus **3,688 programs loaded, 2,504
+measured**, 1,184 skipped for naming an absolute path; **shared subset 1,572**.
+Arms: `cpython` 3.14.5; `pypy3` 7.3.23 (Python 3.11.15, Homebrew source build,
+JIT confirmed enabled via `sys.pypy_translation_info`). Binaries as built here
+that day: lypning 834,672 B, lypning-l 950,656 B.
+
+> **These Rust binaries are host builds, not static musl.** There is no `rustup`
+> on this machine, so the musl default fell back to the host target and the
+> binaries link `libSystem` dynamically. The dynamic loader's file opens are
+> exactly the gap `build-rust.sh` measures, so **the startup rows here are not
+> comparable with the musl rows elsewhere in this ledger** — they understate the
+> Rust variants.
+
+```
+startup — `-c 'pass'`, min of 15, arms interleaved
+
+arm         min ms   vs cpython
+cpython      13.93     1.000x
+lypning       2.10     0.151x
+lypning-l     2.03     0.146x
+mixture       1.99     0.143x
+pypy3        12.63     0.907x
+
+shared subset — the 1,572 programs every arm executed, min of 3
+
+arm          ran  refused   shared total   median   vs cpython
+cpython     2504        0     32386.2 ms    22.16     1.000x
+lypning     1572      932      5399.9 ms     2.25     0.167x
+lypning-l   1967      537      5219.4 ms     2.09     0.161x
+mixture     2504        0      6348.4 ms     2.02     0.196x
+pypy3       2504        0     30681.7 ms    21.32     0.947x
+
+whole corpus — what a session of 2,504 one-liners costs
+
+arm            total     vs cpython
+cpython      70741.5 ms     1.000x
+lypning       7534.2 ms     0.107x   (932 unanswered — refuses, not faster)
+lypning-l     7210.8 ms     0.102x   (537 unanswered — refuses, not faster)
+mixture      37025.9 ms     0.523x   (0 unanswered — saves 47.7%)
+pypy3        72075.0 ms     1.019x
+```
+
+**The outcome census, which `bench.render` does not print.** A non-zero exit
+counts as `RAN`, so an arm that dies fast on a program it cannot run looks cheap
+in every total above. Counted from the per-entry return codes of a separate
+`--repeat 1` pass (return codes do not move with load):
+
+```
+arm         refused   failed
+lypning         932     1040
+lypning-l       537     1370
+mixture           0     1530
+cpython           0     1530
+pypy3             0     1531
+```
+
+`pypy3` fails on 1,531 programs against `cpython`'s 1,530 — it fails where
+CPython fails, plus one. The suspicion that PyPy's totals are inflated by fast
+failures is measured and closed. (Most of those 1,530 are corpus programs that
+need a real repository, real arguments, or the network.)
+
+**A per-program aggregate that is not a sum.** A sum over the corpus is weighted
+by its slowest program. The geometric mean of per-program ratios, over the 532
+programs every arm ran to exit 0: lypning **0.178x**, lypning-l **0.165x**,
+mixture **0.166x**, pypy3 **0.923x** (median 0.898x; slower than CPython on
+14.5% of them, against 2.4% for the Rust variants).
+
+**The compute ladder — the crossover `docs/PAPER.md` records as never swept.**
+The corpus is spawn-bound and cannot see a compute win either way, so one loop
+was swept across decades. Compute-only, each arm's own startup subtracted, arms
+interleaved, mean of 6 after the first sample is discarded:
+
+```
+iterations   cpython ms   lypning  lypning-l    pypy3
+     1,000         1.29     0.18x      0.22x    1.17x
+    10,000         1.94     0.38x      0.45x    0.84x
+   100,000         6.10     1.08x      1.30x    0.36x
+ 1,000,000        49.22     1.35x      1.49x    0.09x
+10,000,000       484.20     1.36x      1.55x    0.07x
+
+recursive fib(18), repeated
+         1          1.38     0.88x      1.05x    3.58x
+       200         34.77     6.08x      7.03x    0.37x
+```
+
+The crossing is between 1,000 and 10,000 operations. Under it the Rust variants
+win by 3–5x because almost nothing but startup and parse has happened; past a
+million a tracing JIT wins by 11–14x and they lose by 1.4–1.6x. Recursive calls
+are the Rust variants' worst construct and PyPy's best: 3.58x *slower* than
+CPython cold, 2.7x *faster* warm. `PYPYLOG=jit-summary` on the largest cell
+shows one trace, 1.1 ms tracing plus 0.4 ms backend — work a one-shot process
+exits before amortising. PyPy's own documentation states the same boundary:
+below roughly 0.2 s of work its JIT has no chance.
+
+**The statistic.** The corpus rows are `min`, as everywhere in this ledger, on
+the argument that noise is one-sided. That argument holds for a fixed
+interpreter and is documented false for a tracing JIT, so the ladder above
+reports the mean instead and discards each cell's first sample. Do not read a
+`min` from the ladder or a mean from the corpus rows.
+
+**What does not reproduce, and is therefore not claimed.** PyPy's `0.907x`
+startup cell is not stable: four min-of-15 samples the same day on this host gave
+0.890x, 0.890x, 0.907x and **1.008x** — the last reverses the ordering, and
+run-to-run drift is about half the effect. The honest reading is that PyPy and
+CPython 3.14.5 start within about 10% of each other here with no stable winner.
+Note also the language-level asymmetry: PyPy 7.3.23 implements Python 3.11
+against a CPython 3.14.5 reference, and the upstream figures it is tempting to
+compare with used a CPython 3.11 baseline — which is most of why this run does
+not reproduce the 3.0–3.1x PyPy penalty recorded upstream.
+
+Reproduce with a fifth arm (the CLI cannot express one; `--arm PATH` is dropped
+without an error):
+
+```python
+from pathlib import Path
+from lypning import bench
+arms = ["cpython", "lypning", "lypning-l", "mixture",
+        bench.Arm("pypy3", Path("/opt/homebrew/bin/pypy3").resolve())]
+assert "pypy3" in [a.name for a in bench.resolve_arms(arms)]
+print(bench.render(bench.bench(arms=arms, repeat=3, startup_repeat=15)))
+```
+
+Run it in a worktree with its own `LYPNING_HOME` (`CLAUDE.md` invariant 4); this
+run left its worktree with zero changed files across four corpus passes.
+
+---
+
 ## 2026-08-21 — the four arms, whole corpus — `lypning bench`, not the variant-vs-stock harness
 
 **Different instrument from every entry below it.** This is `lypning bench
