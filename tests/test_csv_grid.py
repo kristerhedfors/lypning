@@ -102,6 +102,7 @@ The traps this was written against, each measured against CPython 3.14.5:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -822,8 +823,17 @@ def test_a_writer_after_a_side_effect_is_routed_away_not_refused_late() -> None:
     # The dispatcher's own answer, which is the number that was wrong: the
     # program runs, on CPython, at exit 0.
     with tempfile.TemporaryDirectory() as d:
+        # `python -m lypning` in a subprocess does not inherit this run's
+        # import path: under `uv run` the interpreter is an isolated one that
+        # has never seen `src/`. Hand it the same sys.path this process has, or
+        # the test measures "no module named lypning" and calls it a failure.
+        env = dict(os.environ)
+        parts = [p for p in sys.path if p]
+        if env.get("PYTHONPATH"):
+            parts.append(env["PYTHONPATH"])
+        env["PYTHONPATH"] = os.pathsep.join(parts)
         got = subprocess.run([sys.executable, "-m", "lypning", "run", "-c", program],
-                             capture_output=True, text=True, cwd=d, timeout=120)
+                             capture_output=True, text=True, cwd=d, timeout=120, env=env)
     assert (got.returncode, got.stdout) == (0, "ok\n"), (got.returncode, got.stdout, got.stderr)
 
 
