@@ -198,7 +198,13 @@ below the routing binary`); `route.rs:chain_after`,
 `route.rs:CPYTHON_ONLY_KINDS`, `engines.ONLY_CPYTHON_REFUSALS`;
 `main.rs:exec_engine` (a rung with something after it is forked so its exit 90
 can be caught, the last is exec'd: `lypning` in-process, `lypning-l` forked,
-`cpython` exec'd); `conformance.run` (`dispatchers`, `monotone_violations`).
+`cpython` exec'd, and every one of them handed `-c` and not `run`, so a rung
+is never asked to route — which is safe only because the router already
+answered for the whole spectrum); `route.rs:Requirements::spectrum_stop` and
+`repat.rs:precompile` (the half of that the ROUTING binary could not compute
+until #48: a static blocker only `lypning-l` carried was inert on the default
+path, and a refusal it then raised at runtime past a committed write was exit
+1); `conformance.run` (`dispatchers`, `monotone_violations`).
 Both walk one rule — a kind in `ONLY_CPYTHON_*` goes straight to `cpython`;
 otherwise each later sibling whose static verdict was "can run" and whose
 `cap-*` set is a strict superset, then `cpython` — on:
@@ -245,13 +251,14 @@ program both sides fail alike); `engines.Route.__str__` (a clean route is the
 engine name alone; a refusal-derived one `<engine>\t<kind>: <detail>`);
 `main.rs:route_cmd` (`--json`, `--spectrum`, `--next`); `engines.VARIANT_CAPS`
 (pinned to `route --spectrum`). The routing block is in §C3's EXPECTED. The
-fixture table is `tests/verification/route-fixtures.json` (21 rows: every
+fixture table is `tests/verification/route-fixtures.json` (23 rows: every
 refusal kind class, both variants, the kinds that rule out every Rust variant,
-the runtime-only refusals); two of its rows, `\t` for a tab:
+the runtime-only refusals); three of its rows, `\t` for a tab:
 
 | program | `lypning route -c` prints | note |
 |---|---|---|
 | `match 1:` / `    case 1: pass` | `cpython\tsyntax: line 1: invalid syntax: unexpected a literal` | `route.rs:ONLY_CPYTHON_KINDS`, like `class A: pass` → `cpython\tclass: class definition`; `lypning -c` on it exits 1, not 90 |
+| `import re, os; os.makedirs("d"); print(re.findall(b"a", b"aa"))` | `cpython\tmodule: import re` | the KIND is the core's own first blocker, the ENGINE is the spectrum's verdict — `repat.rs` is why the core has one (#48). Before it, `lypning-l\tmodule: import re`, and the chain then reached `lypning-l` with `-c`, refused at runtime past a committed write, and exited 1 |
 | `print(getattr(print, "__name__"))` | `lypning` | a runtime `builtin: getattr` the static route cannot see — the case `lypning routes` exists for (§C11) |
 ```bash
 # CHECK — `c5-route.sh`.

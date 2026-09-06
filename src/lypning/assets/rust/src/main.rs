@@ -129,8 +129,11 @@ fn execute_inner(src: &str, report_refusal: bool, kind: &mut String, detail: &mu
     // Before the interpreter exists, so the refusal cannot land after a side
     // effect: `route.rs` decides every static glob question for the ROUTER,
     // and this asks it again for a run that was never routed (`<bin> -c PROG`).
+    // The chain no longer arrives here that way (#48), but a typed `-c` and
+    // `lypning conformance`'s per-engine arm still do, and `glob-order` has no
+    // runtime backstop to catch them.
     #[cfg(feature = "cap-glob")]
-    if let Err(e) = route::glob_static_check(&body, src) {
+    if let Err(e) = route::static_stop_check(&body, src) {
         return finish(Err(e), report_refusal, kind, detail);
     }
     let mut interp = eval::Interp::new();
