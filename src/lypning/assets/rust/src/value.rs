@@ -115,6 +115,32 @@ pub enum HKey {
     /// fields `eq` compares, because equal objects must hash equal.
     #[cfg(feature = "cap-re")]
     Pattern(Rc<str>, u32),
+    /// A bound method — `json.dumps`, `x.append`. CPython hashes one from its
+    /// receiver and its function and compares two by the receiver's IDENTITY
+    /// and the function, so the key is exactly that pair. BOXED: `HKey` is the
+    /// key of every dict and set the interpreter builds, and this is its rarest
+    /// shape — inline, its four fields would widen every one of them by half
+    /// again (measured: 32 bytes before and after, and 48 boxed).
+    Bound(Rc<BoundId>),
+}
+
+/// The identity of a bound method, as a dict or set key — see [`HKey::Bound`].
+#[derive(PartialEq, Eq, Hash)]
+pub struct BoundId {
+    /// `0` a module, `1` a type object, `2` an instance. Part of the key
+    /// because the first two are identified by NAME and nothing stops a module
+    /// and a type from sharing one; two objects that hash alike and compare
+    /// alike are one dict entry, which would be a wrong answer at exit 0.
+    kind: u8,
+    /// The receiver's name, when it is a singleton the process holds one of;
+    /// empty for an instance.
+    owner: &'static str,
+    /// The receiver's address, when it is an instance; `0` otherwise. Unique
+    /// among LIVE objects, and the receiver is alive for exactly as long as
+    /// this key is — the entry holds the `Value::Bound`, which holds it.
+    addr: usize,
+    /// The function: CPython's `m_ml` / `__func__` half.
+    name: &'static str,
 }
 
 pub fn hkey(v: &Value) -> R<HKey> {
@@ -199,6 +225,12 @@ pub fn hkey(v: &Value) -> R<HKey> {
             }
             HKey::Tuple(out)
         }
+        // A bound method IS hashable in CPython, and the key is the pair `eq`
+        // below compares. Every one of them raised `unhashable type:
+        // 'builtin_function_or_method'` at exit 1 — the program's own exit,
+        // which the chain never retries — so `{csv.reader}`, `{os.getcwd: 1}`
+        // and `x.append in {x.append}` simply died where CPython answers.
+        Value::Bound(r, name) => return bound_key(r, *name),
         // An iterator IS hashable in CPython — by object identity, which is an
         // address this engine has no business reproducing. It refuses for the
         // same reason a `re.Match` and a `.parents` view do, and the refusal is
@@ -769,6 +801,16 @@ pub fn eq(a: &Value, b: &Value) -> R<bool> {
         }
         (Value::Module(x), Value::Module(y)) => x == y,
         (Value::Builtin(x), Value::Builtin(y)) => x == y,
+        // A bound method compares by the FUNCTION and the receiver's IDENTITY,
+        // and both of CPython's two method types say so in the same words:
+        // `meth_richcompare` tests `m_self` by POINTER and then `m_ml`,
+        // `method_richcompare` tests `__func__` by `==` and then `__self__` by
+        // `is`. So `x.append == x.append` is True, `x.append == y.append` is
+        // False for two EQUAL lists, and `x.append == x.pop` is False.
+        // Without this arm all three were False, at exit 0 — `json.dumps ==
+        // json.dumps` and `csv.reader == csv.reader` with them. See
+        // [`recv_same`] for why the receiver test is not `is_same`.
+        (Value::Bound(x, nx), Value::Bound(y, ny)) => nx == ny && recv_same(x, y)?,
         (Value::Func(x), Value::Func(y)) => Rc::ptr_eq(x, y),
         (Value::File(x), Value::File(y)) => Rc::ptr_eq(x, y),
         // An iterator has no `__eq__`, so CPython falls back to identity and
@@ -827,6 +869,166 @@ fn num_eq(a: Num, b: Num) -> bool {
     }
 }
 
+// ---- bound methods --------------------------------------------------------
+//
+// `json.dumps` and `x.append` are one value here, `Value::Bound(receiver,
+// name)`, and CPython has two types behind them — `builtin_function_or_method`
+// and `method` — that agree on every question this file asks. Equality is the
+// FUNCTION and the receiver's IDENTITY (`meth_richcompare` compares `m_self` by
+// pointer, `method_richcompare` compares `__self__` by `is`); the hash is built
+// from the same pair; and `is` is False between two accesses unless the
+// attribute is one that is stored rather than built. Every fact below was
+// measured on CPython 3.14.5 on 2026-09-06 rather than read from the manual.
+
+/// Does CPython hand back the SAME object every time `<recv>.<name>` is read?
+///
+/// True for the two receivers whose attributes are *stored*: a module, whose
+/// functions live in its `__dict__`, and a type object, whose methods are
+/// `method_descriptor`s in its own — `json.dumps is json.dumps` and
+/// `str.upper is str.upper` are both True. Everything else BUILDS a bound
+/// method on access, so `x.append is x.append` is False there and here.
+///
+/// The two exceptions are why this is a function and not a `matches!`, and both
+/// are receivers spelled `Value::Module` that are not modules:
+///
+///   * `sys.stdin`, `sys.stdout` and `sys.stderr` are `TextIOWrapper`
+///     INSTANCES, so `sys.stdout.write is sys.stdout.write` is False (and
+///     `==` is True — the receiver is one object either way).
+///   * `Value::Module("pathlib")` is only ever the receiver of `Path.cwd`
+///     (`ops::get_attr`), which is a CLASSMETHOD: `Path.cwd is Path.cwd` is
+///     False and `Path.cwd == Path.cwd` is True, exactly like an instance's.
+fn attr_cached(recv: &Value) -> bool {
+    match recv {
+        Value::Module(m) => !matches!(*m, "sys.stdin" | "sys.stdout" | "sys.stderr" | "pathlib"),
+        Value::Builtin(_) => true,
+        _ => false,
+    }
+}
+
+/// Is `a` the SAME OBJECT as `b`, asked of the RECEIVER of a bound method?
+///
+/// Not [`is_same`], which answers `false` for everything it cannot decide.
+/// That is the right shape for `is`, where `ops::identity` re-examines the
+/// `false` and refuses what interning would have decided — and the wrong shape
+/// here, because `eq` would then print False where CPython prints True, at exit
+/// 0. So the undecidable receivers refuse instead.
+fn recv_same(a: &Value, b: &Value) -> R<bool> {
+    if is_same(a, b) {
+        return Ok(true);
+    }
+    // A path IS its `Rc<str>`: every new one is built from a fresh `String` by
+    // `pathlib::path_value`, and the only clone of an existing one is the
+    // receiver `get_attr` hands a bound method — so two paths share that `Rc`
+    // when and only when they are one object. `is_same` deliberately has no arm
+    // for it, because `p.parents` shares the same `Rc` and is a DIFFERENT
+    // object; a `.parents` view has no methods, so it cannot arrive here.
+    #[cfg(feature = "cap-pathlib")]
+    if let (Value::Path(x, false), Value::Path(y, false)) = (a, b) {
+        return Ok(Rc::ptr_eq(x, y));
+    }
+    // Two equal Patterns are one object while CPython's compile cache still
+    // holds the entry, and once either cache has evicted the answer is that
+    // cache's. `ops::identity` refuses the same question about the patterns
+    // themselves; this is the same question one level out.
+    #[cfg(feature = "cap-re")]
+    if crate::re::identity_unclear(a, b) && eq(a, b)? {
+        return Err(unsupported(
+            "identity",
+            "`==` between bound methods of two equal re.Pattern objects after the compile cache evicted",
+        ));
+    }
+    // `s.upper == t.upper` is True in CPython whenever `s` and `t` are one
+    // object, and the compiler folds equal constants into one — so
+    // `'abc'.upper == 'abc'.upper` is True and the same comparison over a
+    // string built at run time is False. Which of the two a program wrote is
+    // not visible from here (`ops::identity` refuses `is` between equal
+    // immutables for exactly this reason), so this refuses rather than pick.
+    if interned_identity(a) && interned_identity(b) && eq(a, b)? {
+        return Err(unsupported(
+            "identity",
+            "`==` between bound methods of two equal immutable receivers, whose identity CPython answers from interning",
+        ));
+    }
+    Ok(false)
+}
+
+/// Values whose object identity is CPython's INTERNING rather than a fact about
+/// the program: equal constants are folded to one object, and small ints and
+/// short strings are shared. Two equal ones here may be one object there or
+/// two, so `is` between them — and `==` between bound methods OF them —
+/// refuses. One home, read by `ops::identity` and by [`recv_same`].
+pub(crate) fn interned_identity(v: &Value) -> bool {
+    matches!(
+        v,
+        Value::Int(_) | Value::Float(_) | Value::Str(_) | Value::Bytes(_) | Value::Tuple(_)
+    )
+}
+
+/// The dict or set key of a bound method — see [`HKey::Bound`] — or the refusal
+/// for a receiver whose object identity is CPython's to decide.
+///
+/// The address halves are exact because two LIVE objects cannot share one, and
+/// the receiver of a key is alive for as long as the key is: the entry holds
+/// the `Value::Bound`, which holds the receiver.
+fn bound_key(recv: &Value, name: &'static str) -> R<HKey> {
+    let (kind, owner, addr) = match recv {
+        // A module and a type object are singletons — one `json` in
+        // `sys.modules`, one `str` — so the name IS the identity.
+        Value::Module(m) => (0u8, *m, 0usize),
+        Value::Builtin(t) => (1, *t, 0),
+        Value::List(r) => (2, "", Rc::as_ptr(r) as usize),
+        Value::Dict(r) => (2, "", Rc::as_ptr(r) as usize),
+        Value::Set(r) => (2, "", Rc::as_ptr(r) as usize),
+        Value::File(r) => (2, "", Rc::as_ptr(r) as usize),
+        #[cfg(feature = "cap-pathlib")]
+        Value::Path(s, false) => (2, "", Rc::as_ptr(s) as *const u8 as usize),
+        #[cfg(feature = "cap-re")]
+        Value::Match(r) => (2, "", Rc::as_ptr(r) as usize),
+        // A Pattern is an object here and an object there, and the two agree
+        // for as long as neither compile cache has evicted — the same
+        // condition `recv_same` refuses on, asked before a key is built rather
+        // than after two of them have collapsed into one entry.
+        #[cfg(feature = "cap-re")]
+        Value::Pattern(r) => {
+            if crate::re::cache_evicted() {
+                return Err(unsupported(
+                    "identity",
+                    "a bound method of an re.Pattern as a dict or set key, after the compile cache evicted",
+                ));
+            }
+            (2, "", Rc::as_ptr(r) as usize)
+        }
+        // The three immutables, which are the only other receiver kinds
+        // `methods::method_name` and the four capability `get_attr`s produce
+        // today. Their reason is [`recv_same`]'s: the identity is interning's
+        // answer, and keying on this engine's `Rc` would make
+        // `{'abc'.upper, 'abc'.upper}` a set of TWO where CPython has one, at
+        // exit 0.
+        Value::Str(_) | Value::Bytes(_) | Value::Tuple(_) => {
+            return Err(unsupported(
+                "identity",
+                &format!(
+                    "a bound method of a {} as a dict or set key, whose receiver's identity CPython answers from interning",
+                    type_name(recv)
+                ),
+            ))
+        }
+        // Unreachable today, and a refusal rather than an `unreachable!()`
+        // because a panic is not a refusal: a receiver kind added later lands
+        // here and costs a CPython spawn instead of inventing an identity.
+        other => {
+            return Err(unsupported(
+                "identity",
+                &format!(
+                    "a bound method of a {} as a dict or set key, whose receiver carries no object identity here",
+                    type_name(other)
+                ),
+            ))
+        }
+    };
+    Ok(HKey::Bound(Rc::new(BoundId { kind, owner, addr, name })))
+}
+
 /// Identity, for `is`. Only the cases Python actually guarantees.
 pub fn is_same(a: &Value, b: &Value) -> bool {
     match (a, b) {
@@ -841,6 +1043,22 @@ pub fn is_same(a: &Value, b: &Value) -> bool {
         (Value::Func(x), Value::Func(y)) => Rc::ptr_eq(x, y),
         (Value::Module(x), Value::Module(y)) => x == y,
         (Value::Builtin(x), Value::Builtin(y)) => x == y,
+        // A bound method is a NEW object on every attribute access, so
+        // `x.append is x.append` is False in CPython — and `f = x.append; f is
+        // f` is True, because that is one access and one object. The `Rc` this
+        // value carries is exactly that distinction: `ops::get_attr` builds a
+        // fresh one per access and assignment clones it.
+        //
+        // The exception is the attribute CPython STORES rather than builds:
+        // a module function lives in the module's `__dict__` and a
+        // `method_descriptor` in the type's, and both are handed back as they
+        // are — `json.dumps is json.dumps` and `str.upper is str.upper` are
+        // True. [`attr_cached`] is that half, and it is a function rather than
+        // a `matches!` because two receivers spelled `Value::Module` are not
+        // modules at all.
+        (Value::Bound(x, nx), Value::Bound(y, ny)) => {
+            nx == ny && (Rc::ptr_eq(x, y) || (attr_cached(x) && is_same(x, y)))
+        }
         // `re.I is re.IGNORECASE` is True, and `Flag` caches its pseudo-members
         // so `(re.I | re.M) is (re.I | re.M)` is True too. `re.I is 2` is
         // False, which `ops::identity` answers because a flag is not in its
