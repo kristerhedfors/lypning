@@ -20,6 +20,36 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-06** — the performance case moves to the landing page, measured against a PyPy arm · [#53]
+
+- README §1 carried no numbers and closed by saying nothing had been re-measured
+  on `lypning → lypning-l → cpython`. It now carries the table, and the chain has
+  been re-measured — with a **fifth arm**, PyPy, which is not an engine and is
+  never routed to. `--arm` is name-only and silently drops a path, so the arm
+  goes in through the `bench.Arm` pass-through and the resolved arm list is
+  asserted before a number is read. First table to carry both Rust variants.
+- The headline is the dispatcher over the **whole** corpus with fallback
+  charged, not the subset a refusing variant selects for itself: all 2,504
+  programs answered for **0.523x** of CPython's wall. Per-program figures are a
+  geometric mean over the 532 programs every arm ran to exit 0 — a sum is
+  weighted by the corpus's slowest program.
+- The compute crossing `docs/PAPER.md` records as never swept is now measured:
+  under ten thousand operations the Rust variants win by 3–5x, past a million a
+  tracing JIT wins by 11–14x and they lose by 1.4–1.6x.
+- The outcome census `bench.render` does not print: a non-zero exit counts as
+  `RAN`, so a fast failure hides inside a speed total. `pypy3` fails 1,531
+  programs against `cpython`'s 1,530 — it fails where CPython fails, plus one.
+- One claim withdrawn rather than published: PyPy's startup cell does not
+  reproduce (0.890x, 0.890x, 0.907x, **1.008x** in four min-of-15 samples the
+  same day), so the ledger records no stable winner. The corpus rows stay `min`
+  and the compute ladder uses the mean, because the one-sided-noise argument
+  that justifies `min` is documented false for a tracing JIT.
+- These Rust binaries are **host builds, not static musl** — no `rustup` here —
+  so the startup rows understate them and are marked not comparable with the
+  musl rows in the ledger. Corpus 3,688 loaded / 2,504 measured, shared subset
+  1,572, on a shared box at load 1.2–3.3; ratios are the reading, milliseconds
+  are not.
+
 **2026-09-06** — `cap-glob` on lypning-l: the order question is answered by the walker, not by a value · [#52]
 
 - `glob` was rejected at iteration 76 for seven holes, five from one decision —
