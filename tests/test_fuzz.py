@@ -191,6 +191,28 @@ def test_different_stdout_is_a_counterexample():
     assert fuzz.judge(_res(stdout="2\n"), _res(engine=eng.CPYTHON)) == fuzz.OUTPUT
 
 
+def _raw(rc=0, stdout=b"1\n", stderr=b"", engine=eng.LYPNING):
+    """A Result carrying the bytes, decoded the way ``engines.run`` decodes."""
+    return eng.Result(engine, "/bin/engine", rc, eng._as_text(stdout), eng._as_text(stderr),
+                      1_000_000, stdout_raw=stdout, stderr_raw=stderr)
+
+
+def test_stdout_that_differs_only_in_line_endings_is_a_counterexample():
+    # A fuzzer whose whole job is to find disagreements compared two strings
+    # Python had already run universal-newline translation over, so it could not
+    # find one about line endings (issue #50). The generator does not emit `\r`
+    # today; the judge is what would have to see it when it does.
+    got, ref = _raw(stdout=b"1\r\n"), _raw(stdout=b"1\n", engine=eng.CPYTHON)
+    assert got.stdout == ref.stdout          # what the old judge compared
+    assert fuzz.judge(got, ref) == fuzz.OUTPUT
+
+
+def test_the_report_shows_the_line_ending_it_found():
+    # An Answer rendered from newline-translated text prints the two sides
+    # identically, which is a counterexample nobody can act on.
+    assert "\\r" in repr(fuzz._answer(_raw(stdout=b"1\r\n")).stdout)
+
+
 def test_exit_90_without_the_contract_line_breaks_the_contract():
     # Not a refusal, so not coverage: a crash scored as coverage is a bug the
     # dispatcher will happily fall through on.

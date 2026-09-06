@@ -165,6 +165,35 @@ def _size_of(p: Optional[Path]) -> int:
         return 0
 
 
+def _shape_of(p: Optional[Path]) -> Dict[str, Any]:
+    """``bytes``/``blocks``/``code_bytes``/``code_note`` for one artefact.
+
+    Two numbers, because they answer two questions. ``bytes`` and ``blocks`` are
+    what a cold start fetches; ``code_bytes`` is the machine code inside that
+    file, and only it moves when a capability is added — a Mach-O ``__TEXT``
+    segment is padded to the page, so a build can grow by 2,384 B of code and
+    not one byte of file. ``code_bytes`` is ``None`` where the section could not
+    be read (``code_note`` says why); the file size is never put in its place.
+    """
+    size = _size_of(p)
+    code, note = (None, "")
+    if p is not None:
+        code, note = _mod("gate").text_bytes(p)
+    return {"bytes": size,
+            # 131072-byte device blocks: on the sandbox this project targets,
+            # that is what a cold start actually costs (docs/LYPNING.md §8).
+            "blocks": (size + 131071) // 131072 if size else 0,
+            "code_bytes": code, "code_note": note}
+
+
+def _code_suffix(e: Dict[str, Any]) -> str:
+    """``, code 657,700 B`` — or ``, code unmeasured``, never a zero."""
+    if "code_bytes" not in e:
+        return ""
+    code = e.get("code_bytes")
+    return ", code %s" % (format(code, ",") + " B" if code is not None else "unmeasured")
+
+
 def _read_program(ns: argparse.Namespace) -> Tuple[str, List[str], Optional[str]]:
     """``(program, argv_tail, stdin)`` from ``-c`` / FILE / ``-``.
 
@@ -257,6 +286,17 @@ def _replayable_stdin(route: engines.Route) -> Optional[str]:
         return None
 
 
+def _write_through(stream: Any, raw: bytes, text: str) -> None:
+    """Pass an engine's output on verbatim, bytes and all."""
+    buffer = getattr(stream, "buffer", None)
+    if buffer is None:
+        stream.write(text)
+        return
+    stream.flush()
+    buffer.write(raw)
+    buffer.flush()
+
+
 def cmd_run(ns: argparse.Namespace) -> int:
     program, tail, stdin = _read_program(ns)
     r = engines.route(program, timeout=ns.timeout)
@@ -267,9 +307,15 @@ def cmd_run(ns: argparse.Namespace) -> int:
         chain = " -> ".join([a.engine for a in d.attempts] + [d.engine])
         sys.stderr.write("lypning: route %s (%s: %s), ran %s\n"
                          % (d.route.engine, d.route.kind, d.route.detail, chain))
-    sys.stdout.write(d.result.stdout)
+    # The BYTES the engine wrote, not the decoded text: `Result.stdout` has had
+    # universal-newline translation applied to it, and a dispatcher that turns a
+    # program's `\r\n` into `\n` on its way through is a tier disagreeing with
+    # CPython in exactly the way invariant 1 exists to forbid (issue #50). Falls
+    # back to the text where stdout has no binary buffer under it — a test
+    # harness's capture, an embedding that replaced the stream.
+    _write_through(sys.stdout, d.result.stdout_bytes, d.result.stdout)
     sys.stdout.flush()
-    sys.stderr.write(d.result.stderr)
+    _write_through(sys.stderr, d.result.stderr_bytes, d.result.stderr)
     # Passed through verbatim, 90 included: the caller's fallback logic is the
     # reason the code exists, and re-mapping it here would break it.
     return d.result.returncode
@@ -570,19 +616,11 @@ def _status_obj() -> Dict[str, Any]:
     # reader think the chain still ends somewhere it does not.
     st["oracles"] = {}
     for name, p in engines.oracles().items():
-        size = _size_of(p)
-        st["oracles"][name] = {"path": str(p) if p else None, "built": p is not None,
-                               "bytes": size, "blocks": (size + 131071) // 131072 if size else 0}
+        st["oracles"][name] = dict({"path": str(p) if p else None, "built": p is not None},
+                                   **_shape_of(p))
     for name, p in found.items():
-        size = _size_of(p)
-        st["engines"][name] = {
-            "path": str(p) if p else None,
-            "built": p is not None,
-            "bytes": size,
-            # 131072-byte device blocks: on the sandbox this project targets,
-            # that is what a cold start actually costs (docs/LYPNING.md §8).
-            "blocks": (size + 131071) // 131072 if size else 0,
-        }
+        st["engines"][name] = dict({"path": str(p) if p else None, "built": p is not None},
+                                   **_shape_of(p))
     # Listed apart from the engines, not as a fourth one: it is an artefact of
     # the same core, and anything walking `engines` hands its paths to execv.
     try:
@@ -633,7 +671,8 @@ def _render_status(st: Dict[str, Any]) -> str:
             lines.append("  %-11s not built%s" % (name + ":", hint))
             continue
         size = e.get("bytes") or 0
-        detail = "  (%s B, %d blocks)" % (format(size, ","), e.get("blocks") or 0) if size else ""
+        detail = ("  (%s B, %d blocks%s)"
+                  % (format(size, ","), e.get("blocks") or 0, _code_suffix(e))) if size else ""
         lines.append("  %-11s %s%s" % (name + ":", e["path"], detail))
 
     oracles = st.get("oracles") or {}
@@ -655,8 +694,9 @@ def _render_status(st: Dict[str, Any]) -> str:
                                 "reports a hole"))
                 continue
             size = o.get("bytes") or 0
-            lines.append("  %-11s %s  (%s B, %d blocks)"
-                         % (name + ":", o["path"], format(size, ","), o.get("blocks") or 0))
+            lines.append("  %-11s %s  (%s B, %d blocks%s)"
+                         % (name + ":", o["path"], format(size, ","), o.get("blocks") or 0,
+                            _code_suffix(o)))
 
     lib = st.get("library") or {}
     lines += ["", "library"]
@@ -961,10 +1001,10 @@ def _doctor_checks() -> List[Tuple[str, str, str]]:
                            "exit 90, one line on stderr, clean stdout" if ok else why))
     if mp is not None:
         res = engines.run(engines.MICROPYTHON, "import subprocess", binary=mp, timeout=30.0)
-        ok = res.returncode == UNSUPPORTED_EXIT and res.stdout == ""
+        ok = res.returncode == UNSUPPORTED_EXIT and res.stdout_bytes == b""
         checks.append((OK if ok else FAIL, "oracle refusal",
                        "exit 90, clean stdout" if ok else
-                       "exit %d, stdout %r" % (res.returncode, res.stdout[:80])))
+                       "exit %d, stdout %r" % (res.returncode, res.stdout_bytes[:80])))
 
     # 3b. the same contract, through the ABI instead of through a process. A
     #     shared object has no exit code, so the three pinned properties are
@@ -2478,8 +2518,8 @@ examples:
 `lypning route` is exact about everything it can see, and it cannot see VALUE:
 print(2**10) and print(2**100) are the same program to a static walker, and one
 of them exits 90 with `bigint`. This is the ledger of those runtime refusals —
-written by `lypning run`'s Python dispatcher when a CLEAN route was followed by
-a refusal from the tier it named, and by nothing else.
+written when a CLEAN route was followed by a refusal from the tier it named, and
+on no other condition.
 
 It is WRITE-ONLY with respect to routing: nothing here is consulted while
 routing, ever. A machine-local file that could move a route would make
@@ -2491,11 +2531,13 @@ worth reading. Kinds in engines.ONLY_CPYTHON_REFUSALS are marked NOT
 IMPLEMENTABLE and `--plan` drops them: they exist because a reimplementation
 gets them wrong.
 
-The Rust binary's OWN dispatcher — what an installed chain actually execs —
-writes nothing here; only the Python `lypning run` above does. So every count is
-a floor, never a total. LYPNING_ROUTES=0 turns the writer off, and so does
-LYPNING_CAPTURE=0: this is a recording feed and the documented capture opt-out
-covers it.
+BOTH dispatchers write it: the Python `lypning run` above, and the Rust
+binary's own — what an installed chain actually execs, and what a session takes.
+Every count is still a floor rather than a total: a tier invoked directly
+(`lypning -c PROG`) was never routed, so a refusal from it predicts nothing, and
+the C ABI has no dispatcher at all. LYPNING_ROUTES=0 turns the writer off, and
+so does LYPNING_CAPTURE=0: this is a recording feed and the documented capture
+opt-out covers it — both halves of it.
 """, """
 examples:
   lypning routes                 what has been learned, by refusal kind

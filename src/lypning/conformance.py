@@ -4,7 +4,11 @@ Every corpus program is run twice — once by the real CPython, which is the
 reference by definition, and once by each engine — and the two are compared on
 stdout and exit code. Each engine's result is one of three things:
 
-  ``MATCH``        stdout and exit code identical to CPython.
+  ``MATCH``        stdout and exit code identical to CPython. Identical as
+                   BYTES: what the process wrote, before any decode. A grader
+                   that compared decoded text was comparing two strings Python
+                   had already run universal-newline translation over, and could
+                   not see a line-ending disagreement on either side (issue #50).
   ``UNSUPPORTED``  exit 90 with a ``<engine>: unsupported: <kind>: <detail>``
                    line on stderr. **Not a failure.** It is coverage, and
                    :func:`plan` turns it into the build order.
@@ -885,14 +889,21 @@ def classify(ref: eng.Result, got: eng.Result, engine: str, entry: Any) -> Verdi
     stdout and exit code as a MISMATCH.
     """
     entry_id = getattr(entry, "id", "")
+    # BYTES, on both sides. `Result.stdout` is decoded for a reader, and that
+    # decode applies universal-newline translation to the engine's output AND to
+    # CPython's before either is compared — which made line endings an axis this
+    # battery structurally could not see a disagreement on (issue #50). What is
+    # graded is what the process wrote; what is shown is `exact_text` of the
+    # same bytes, decoded but not normalised, so a CRLF divergence prints as one.
+    want, mine = ref.stdout_bytes, got.stdout_bytes
 
     def v(verdict: str, kind: str = "", detail: str = "", evidence: bool = False) -> Verdict:
         return Verdict(
             engine=engine, entry_id=entry_id, verdict=verdict, kind=kind, detail=detail,
-            expected_stdout=_clip(ref.stdout) if evidence else "",
-            actual_stdout=_clip(got.stdout) if evidence else "",
+            expected_stdout=_clip(eng.exact_text(want)) if evidence else "",
+            actual_stdout=_clip(eng.exact_text(mine)) if evidence else "",
             expected_rc=ref.returncode, actual_rc=got.returncode, wall_ns=got.wall_ns,
-            stdout_digest=hashlib.sha256(got.stdout.encode("utf-8", "replace")).hexdigest()[:16],
+            stdout_digest=hashlib.sha256(mine).hexdigest()[:16],
         )
 
     if got.timed_out:
@@ -905,7 +916,7 @@ def classify(ref: eng.Result, got: eng.Result, engine: str, entry: Any) -> Verdi
     refusal = _refusal(engine, got.stderr)
     if got.returncode == eng.UNSUPPORTED_EXIT:
         if refusal:
-            if got.stdout:
+            if mine:
                 # A refusal is only interchangeable with the next tier's answer
                 # because it leaves nothing behind. Output that already reached
                 # stdout is the one thing the next tier cannot take back: the
@@ -917,7 +928,7 @@ def classify(ref: eng.Result, got: eng.Result, engine: str, entry: Any) -> Verdi
                 # only failure mode the three-tier design cannot survive.
                 return v(MISMATCH, "contract",
                          "refused after %d byte(s) had already reached stdout"
-                         % len(got.stdout), evidence=True)
+                         % len(mine), evidence=True)
             return v(UNSUPPORTED, refusal[0], refusal[1])
         if ref.returncode != eng.UNSUPPORTED_EXIT:
             # Exit 90 without the contract line is itself a contract violation;
@@ -931,8 +942,14 @@ def classify(ref: eng.Result, got: eng.Result, engine: str, entry: Any) -> Verdi
 
     skip_stdout = is_nondeterministic(entry) or (
         engine == eng.MICROPYTHON and is_seeded_stream(entry))
-    if not skip_stdout and got.stdout != ref.stdout and not only_set_order_differs(ref.stdout, got.stdout):
-        return v(MISMATCH, "stdout", first_diff(ref.stdout, got.stdout), evidence=True)
+    if not skip_stdout and mine != want:
+        # The one excuse, and it is applied to the UNNORMALISED text: a set
+        # display may legitimately reorder (see :func:`only_set_order_differs`),
+        # and running that test on newline-translated text would let it excuse a
+        # line-ending divergence that happened to share a program with one.
+        a, b = eng.exact_text(want), eng.exact_text(mine)
+        if not only_set_order_differs(a, b):
+            return v(MISMATCH, "stdout", first_diff(a, b), evidence=True)
     if got.returncode != ref.returncode:
         return v(MISMATCH, "exit",
                  "exit %d, CPython gave %d" % (got.returncode, ref.returncode), evidence=True)

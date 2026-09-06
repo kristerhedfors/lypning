@@ -61,7 +61,7 @@
 //! reach — one behind `if False:`, or the unused arm of a ternary — is decided
 //! too, and such a program refuses where CPython answers. That is a coverage
 //! loss and never a wrong answer: the chain hands it to CPython for one spawn.
-//! `glob_static_check` has the identical property and for the identical reason,
+//! `static_stop_check` has the identical property and for the identical reason,
 //! and the alternative — deciding only what the run reaches — is the runtime
 //! refusal past a committed barrier this whole design exists to avoid.
 //!

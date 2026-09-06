@@ -185,3 +185,45 @@ def test_socket_is_not_world_readable(tmp_path):
 
 def test_shutdown_of_an_absent_pool_is_quiet(tmp_path):
     pool.Client(tmp_path / "gone.sock").shutdown()          # must not raise
+
+
+# --- through the door a caller actually uses ---------------------------------
+
+
+def test_the_backstop_is_reachable_through_engines_run(served, tmp_path):
+    """`engines.run` with ``$LYPNING_POOL`` set must reach the pool.
+
+    Every test above holds :class:`pool.Server` to the contract directly, and
+    that is exactly how ``_run_via_pool`` came to read a free variable named
+    ``env`` and raise ``NameError`` on every call from the moment it was added:
+    the door the chain uses had no test on it, so the backstop was dead in a way
+    that no measurement of the pool itself could see.
+    """
+    from lypning import engines
+
+    r = engines.run(engines.CPYTHON, "print('warm')", cwd=tmp_path, timeout=30,
+                    env={"LYPNING_POOL": str(served.path)})
+    assert r.binary.startswith("pool:")
+    assert r.stdout_bytes == b"warm\n" and r.returncode == 0
+
+
+@pytest.mark.parametrize("program,written", [
+    (r"import sys; sys.stdout.write('a\r\nb\r')", b"a\r\nb\r"),
+    (r"import sys; sys.stdout.buffer.write(b'\xff\xfe raw')", b"\xff\xfe raw"),
+])
+def test_the_pool_transports_bytes_the_spawn_would_have_produced(served, tmp_path,
+                                                                 program, written):
+    """The transport is JSON, so the bytes ride a `surrogateescape` round trip.
+
+    `replace` would have been lossy in both directions that matter: undecodable
+    bytes become U+FFFD, and a caller comparing a pooled reference against a
+    spawned engine would then see a divergence the harness invented. Line
+    endings are the other half — the whole reason the grader now keys on bytes.
+    """
+    from lypning import engines
+
+    served_result = engines.run(engines.CPYTHON, program, cwd=tmp_path, timeout=30,
+                                env={"LYPNING_POOL": str(served.path)})
+    spawned = engines.run(engines.CPYTHON, program, cwd=tmp_path, timeout=30)
+    assert served_result.stdout_bytes == written
+    assert served_result.stdout_bytes == spawned.stdout_bytes

@@ -350,7 +350,7 @@ REFUSED = [
 #: The conservatism, pinned rather than only described. The walk decides the
 #: WHOLE program, so a call the RUN would never reach is decided too — and such
 #: a program refuses where CPython answers. That is a coverage loss and never a
-#: wrong answer: the chain hands it to CPython for one spawn. `glob_static_check`
+#: wrong answer: the chain hands it to CPython for one spawn. `static_stop_check`
 #: has the identical property, and the alternative — deciding only what the run
 #: reaches — is the runtime refusal past a committed barrier that
 #: `AFTER_A_BARRIER` exists to rule out.
@@ -483,8 +483,19 @@ RUNTIME_BACKSTOP = [
 #: which the chain never retries, and the same program refused cleanly at 90
 #: before the module was served. `route::method_wide_stop` is the narrowing:
 #: `method` is the one kind whose meaning differs between variants, so a
-#: `method:` blocker stops the whole spectrum unless the program imports
-#: something from `METHOD_BEARING`.
+#: `method:` blocker stops the whole spectrum unless a capability ABOVE this
+#: rung serves the NAME — which the core reads out of `route::CAP_METHODS`.
+#:
+#: **The last five rows are the hole that narrowing left behind.** The first cut
+#: asked about the IMPORT and not the name: a program importing `collections`,
+#: `pathlib` or `re` kept the optimistic route whatever method it called,
+#: because those are the three modules whose capability brings method names with
+#: it. `import re` says nothing about `.to_bytes`, which no rung has — so adding
+#: one import line to row 0 put it back on lypning-l and back at
+#: `AttributeError`, exit 1, where CPython prints `b'AP8='`. The last row
+#: carries no base64 at all: the same one-line import opened the same hole on
+#: the parent commit, so the class is the router's and wider than this
+#: capability.
 #:
 #: Each row is asserted twice — it must ROUTE to CPython, and lypning-l must
 #: still fail it, because a row lypning-l learned to answer would be a coverage
@@ -496,6 +507,14 @@ ROUTED_PAST_LYPNING_L = [
     B + "x = 1.5\nprint(base64.b64encode(str(x.is_integer()).encode()))",
     B + "print(base64.b64encode(str((7).bit_length()).encode()))",
     "from base64 import b64encode\nprint(b64encode((255).to_bytes(2, 'big')))",
+    # …and row 0 again, once per method-bearing import
+    "import base64, re\nprint(base64.b64encode((255).to_bytes(2, 'big')))",
+    "import base64, collections\nprint(base64.b64encode((255).to_bytes(2, 'big')))",
+    "import base64, pathlib\nprint(base64.b64encode((255).to_bytes(2, 'big')))",
+    "from collections import Counter\n" + B
+    + "print(base64.b64encode((255).to_bytes(2, 'big')))",
+    # …and the same hole with no base64 in it at all
+    "import re\nprint((255).to_bytes(2, 'big'))",
 ]
 
 #: The other half of the same rule, and the reason this table is as long as the
@@ -503,9 +522,12 @@ ROUTED_PAST_LYPNING_L = [
 #: in the corpus. It was, for one build — the walk had been recording
 #: `method: .b64decode()` for the SERVED module attribute all along, harmlessly,
 #: because nothing read a blocker after the first. These rows are what caught
-#: it, and the last three are the `METHOD_BEARING` guard: a program that imports
-#: `collections`, `pathlib` or `re` must stay optimistic, because only the
-#: variant that HAS the capability knows whether the method is one of its own.
+#: it, and the last eight are the hatch itself: a method name a capability
+#: ABOVE this rung DOES serve — `.most_common` under `collections`, `.group`
+#: under `re`, `.with_suffix` under `pathlib` — must keep the optimistic route,
+#: because only the variant that HAS the capability can run it. They are what
+#: the narrowing may not take with it, and the reason the fix is a lookup by
+#: NAME rather than the deletion of the hatch.
 ROUTED_TO_LYPNING_L = [
     B + "print(base64.b64encode(b'hello world'))",
     B + "print(base64.b64decode(b'aGk='))",
@@ -516,6 +538,14 @@ ROUTED_TO_LYPNING_L = [
         "print(c.most_common(1))",
     B + "import re\nprint(re.sub(r'=+$', '', base64.b64encode(b'hi').decode()))",
     B + "import glob\nprint([base64.b64encode(p.encode()) for p in sorted(glob.glob('*'))])",
+    # …the NAME, not the import: each of these calls a method only the rung
+    # with the capability has, and each must still be routed there
+    "import re\nm = re.match('a(b)', 'abc')\nprint(m.group(1))",
+    "import pathlib\nprint(pathlib.Path('a/b.txt').with_suffix('.md'))",
+    "from collections import Counter\nprint(Counter('aab').most_common(1))",
+    B + "import re\nm = re.search('h(i)', base64.b64decode(b'aGk=').decode())\n"
+        "print(m.group(1))",
+    B + "import pathlib\nprint(base64.b64encode(pathlib.Path('a/b.txt').name.encode()))",
 ]
 
 #: The MicroPython trap, as four literal values rather than a diff against
