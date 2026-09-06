@@ -568,8 +568,10 @@ def test_a_matcher_call_routes_to_the_variant_that_has_the_matcher(lypning_bin):
     assert (r.kind, r.detail) == ("module", "import re")
     assert eng.chain_after_refusal(eng.LYPNING, r.kind, r.imports, r.verdicts) == [eng.LYPNING_L,
                                                                                   eng.CPYTHON]
-    # A second module the sibling does NOT serve still rules it out.
-    r2 = _route("import re, glob\nprint(re.sub('a', 'b', 'a'), glob.glob('*'))")
+    # A second module the sibling does NOT serve still rules it out. It used to
+    # be `glob`, which `cap-glob` now serves; `csv` is the top row of
+    # `--plan` that no variant has.
+    r2 = _route("import re, csv\nprint(re.sub('a', 'b', 'a'), csv.reader([]))")
     assert r2.engine == eng.CPYTHON, r2
 
 

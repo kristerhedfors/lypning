@@ -54,7 +54,13 @@ pub struct Variant {
 /// Python side's `engines.SPECTRUM`, in this order, pinned by test.
 pub const SPECTRUM: &[Variant] = &[
     Variant { name: "lypning", caps: &[] },
-    Variant { name: "lypning-l", caps: &["cap-collections", "cap-pathlib", "cap-re"] },
+    Variant {
+        name: "lypning-l",
+        // Alphabetical, which is the order `build.rs` emits `LYPNING_CAPS` in —
+        // so the binary's own answer, this table and `engines.VARIANT_CAPS` are
+        // one list and not three that happen to agree.
+        caps: &["cap-collections", "cap-glob", "cap-pathlib", "cap-re"],
+    },
 ];
 
 /// The same names, NUL-terminated for the C ABI. A test holds the two lists
@@ -86,8 +92,17 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// of a later slice, a version-shaped message, a step budget), there is no rung
 /// above lypning-l to carry a kind to, and `chain_after` a runtime `re:`
 /// refusal is `[cpython]` by construction.
+///
+/// `cap-glob` serves the `glob` MODULE and answers no runtime kind either. The
+/// one thing about `glob` a router would like to have seen coming —
+/// `glob-order`, a result whose ORDER the program can observe — is not a
+/// runtime kind at all: [`walk_expr`] decides it STATICALLY, before the program
+/// starts, and the kind is in [`ONLY_CPYTHON_KINDS`] because no
+/// reimplementation can reproduce `os.scandir` order, so no sibling could
+/// answer it either.
 pub const CAPS: &[(&str, &[&str], &[&str])] = &[
     ("cap-collections", &["collections"], &[]),
+    ("cap-glob", &["glob"], &[]),
     ("cap-pathlib", &["pathlib"], &[]),
     ("cap-re", &["re"], &[]),
 ];
@@ -641,6 +656,12 @@ pub const ONLY_CPYTHON_KINDS: &[&str] = &[
     // LookupError, and latin-1/utf-16/ascii all come back as the UTF-8 bytes.
     "encoding",
     "exception-chaining",
+    // A `glob.glob()` result in a position that would show the ORDER of two or
+    // more matched paths. The same fact as `set-order` about a different system
+    // call: CPython's answer comes from `os.scandir`, so a second
+    // reimplementation is no likelier to reproduce it than the first was.
+    // `glob.rs`, and the static blocker in `walk_expr` below.
+    "glob-order",
     // `is` between two equal immutables not provably the same object. The kind
     // only fires on that ambiguous case, and it is exactly where lypning-mp
     // answers wrongly: its small-int boxing makes `int('1000') is 1000` True
@@ -744,6 +765,14 @@ pub fn route(src: &str) -> Route {
         Err(other) => finish_route("error".into(), other.to_string(), imports, reads_stdin),
         Ok(body) => {
             let mut req = Requirements::default();
+            // Textual and computed once, before the walk, because a `def sorted`
+            // BELOW a call still decides what that call meant inside a function.
+            // Only for a source that mentions the module at all, so a program
+            // with no glob in it pays one substring search.
+            #[cfg(feature = "cap-glob")]
+            {
+                req.glob_wrappers = trusted_wrappers(src);
+            }
             walk_block(&body, &mut req);
             imports = req.imports.iter().cloned().collect();
             let reads_stdin = reads_stdin || req.reads_stdin;
@@ -856,6 +885,30 @@ struct Requirements {
     /// touches the module pays one set lookup per binding and no allocation.
     #[cfg(feature = "cap-re")]
     re_pats: Vec<(String, Option<PatLit>)>,
+    /// `from glob import glob [as g]` — the bound name of a glob FUNCTION, so
+    /// that a bare `g(...)` is seen as the call it is. Without it the order
+    /// blocker below would miss the one spelling that hides the module name.
+    #[cfg(feature = "cap-glob")]
+    glob_names: Vec<(String, String)>,
+    /// The call nodes the parent blessed as order-blind, by identity. The walk
+    /// borrows one live AST for its whole run, so no node is freed and no
+    /// address is reused; nothing is dereferenced through these.
+    #[cfg(feature = "cap-glob")]
+    glob_blessed: Vec<*const Expr>,
+    /// The glob order blocker, recorded even when an EARLIER blocker won the
+    /// `--plan` row. [`glob_order_check`] reads this one: a program whose first
+    /// blocker is something lypning-l runs anyway (the walker is deliberately
+    /// pessimistic about methods) must still not reach a glob call whose order
+    /// it could show.
+    #[cfg(feature = "cap-glob")]
+    glob_order: Option<String>,
+    /// Which order-blind wrappers are still the BUILTIN, one bit per index into
+    /// [`ORDER_BLIND`]. `sorted` rebound to something that shows its argument's
+    /// order would make the blessing below a lie — see [`trusted_wrappers`].
+    /// Zero, the default, trusts none of them, which is right for a program
+    /// that never mentions the module and has nothing to bless.
+    #[cfg(feature = "cap-glob")]
+    glob_wrappers: u16,
     /// See `Route::reads_stdin`. The walk's half: `sys.stdin`, `input()`,
     /// `open(0)`, `os.read(0, …)`, `fileinput`; the text scan is the other.
     reads_stdin: bool,
@@ -865,6 +918,18 @@ impl Requirements {
     fn block(&mut self, kind: &str, detail: String) {
         if self.blocker.is_none() {
             self.blocker = Some((kind.to_string(), detail));
+        }
+    }
+
+    /// The order blocker, for the router AND for the run. `block` is first-wins
+    /// because `--plan` ranks what a program hit FIRST; this slot is not,
+    /// because the run has to refuse whether or not something else was hit
+    /// earlier.
+    #[cfg(feature = "cap-glob")]
+    fn block_glob_order(&mut self) {
+        self.block("glob-order", GLOB_ORDER.to_string());
+        if self.glob_order.is_none() {
+            self.glob_order = Some(GLOB_ORDER.to_string());
         }
     }
 
@@ -950,6 +1015,14 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                     for (n, bind) in names {
                         if crate::re::is_matcher(n) {
                             req.re_names.push((bind.to_string(), n.to_string()));
+                        }
+                    }
+                }
+                #[cfg(feature = "cap-glob")]
+                "glob" => {
+                    for (n, bind) in names {
+                        if matches!(n.as_ref(), "glob" | "iglob") {
+                            req.glob_names.push((bind.to_string(), n.to_string()));
                         }
                     }
                 }
@@ -1301,6 +1374,208 @@ fn re_pattern_block(
     }
 }
 
+
+// ---- the glob order rule ---------------------------------------------------
+//
+// `glob.glob()` returns a list whose ORDER is the filesystem's, so the whole
+// question the capability has to answer is: can this program see the order?
+// It is decided HERE, in the walk, before anything runs — never at runtime,
+// because a runtime refusal reached after `os.makedirs` has committed the
+// barrier is exit 1 with the output discarded, and the chain never retries
+// that. `glob.rs` says the rest.
+
+/// The order-blind wrappers: builtins whose answer is the same for every
+/// permutation of the list they are handed. A `glob.glob(...)` call that is a
+/// DIRECT argument of one of these cannot show its order, so it is served;
+/// everywhere else the call is a `glob-order` blocker.
+#[cfg(feature = "cap-glob")]
+/// It is exactly the list the refusal below names, and `tests/test_glob_grid.py`
+/// has a row for each: a name here that this engine does not serve would bless a
+/// call and then refuse the wrapper, which is a refusal for the wrong reason.
+/// `frozenset` is such a name and is deliberately absent.
+const ORDER_BLIND: &[&str] =
+    &["all", "any", "bool", "len", "max", "min", "set", "sorted", "sum"];
+
+/// The detail of the static blocker, spelled once so `--plan` ranks one row for
+/// it however it was reached.
+#[cfg(feature = "cap-glob")]
+const GLOB_ORDER: &str = "glob() order is filesystem-defined and not \
+     reproducible; served only inside sorted(), len(), set(), bool(), min(), \
+     max(), any(), all(), sum() or the right of `in`";
+
+/// Is this call a glob FUNCTION — and is it `iglob`?
+///
+/// `glob.glob(...)`, `x.iglob(...)` after `import glob as x`, and a bare
+/// `g(...)` bound by `from glob import glob as g`. Only for a program that
+/// imports `glob`: the import is what makes the name mean the module, exactly
+/// as for [`pathlib_method`].
+#[cfg(feature = "cap-glob")]
+fn glob_call(func: &Expr, req: &Requirements) -> Option<bool> {
+    if !req.imports.contains("glob") {
+        return None;
+    }
+    match func {
+        Expr::Attr(b, n) => {
+            let Expr::Name(base) = &**b else { return None };
+            let m = req
+                .aliases
+                .iter()
+                .find(|(a, _)| a == base.as_ref())
+                .map(|(_, p)| p.as_str())
+                .unwrap_or(base.as_ref());
+            match (m, n.as_ref()) {
+                ("glob", "glob") => Some(false),
+                ("glob", "iglob") => Some(true),
+                _ => None,
+            }
+        }
+        Expr::Name(n) => req
+            .glob_names
+            .iter()
+            .find(|(bound, _)| bound == n.as_ref())
+            .map(|(_, f)| f == "iglob"),
+        _ => None,
+    }
+}
+
+/// Bless the one argument of an order-blind wrapper, if it is a glob call.
+///
+/// The blessing is by NODE IDENTITY, so it reaches exactly the call the wrapper
+/// was handed and not a second one nested inside its arguments:
+/// `sorted(f(glob.glob(p)))` blesses nothing, because `f` may show what
+/// `sorted` would have hidden.
+#[cfg(feature = "cap-glob")]
+fn glob_bless(
+    req: &mut Requirements,
+    func: &Expr,
+    args: &[Expr],
+    kwargs: &[(std::rc::Rc<str>, Expr)],
+    star: &[usize],
+    dstar: &[Expr],
+) {
+    if args.len() != 1 || !star.is_empty() || !dstar.is_empty() {
+        return;
+    }
+    let Expr::Name(w) = func else { return };
+    let w = w.as_ref();
+    let Some(i) = ORDER_BLIND.iter().position(|n| *n == w) else { return };
+    if req.glob_wrappers & (1 << i) == 0 {
+        return;
+    }
+    // `key=` is the trap and it is why this is a table rather than a name test.
+    // Python's sort is STABLE and `min`/`max` keep the FIRST extremum, so a tie
+    // under a key is resolved by the INPUT order: `sorted(glob.glob('*'),
+    // key=len)` is a filesystem order with extra steps. `reverse=` and
+    // `default=` do not read the order and are served.
+    let kw_ok = kwargs.iter().all(|(k, _)| match w {
+        "sorted" => k.as_ref() == "reverse",
+        "min" | "max" => k.as_ref() == "default",
+        _ => false,
+    });
+    if !kw_ok {
+        return;
+    }
+    if let Expr::Call { func: inner, .. } = &args[0] {
+        match glob_call(inner, req) {
+            // `len()` of a GENERATOR is a TypeError, so an `iglob` result is not
+            // a list in that one position however order-blind the question is.
+            Some(true) if w == "len" => {}
+            Some(_) => req.glob_blessed.push(&args[0] as *const Expr),
+            None => {}
+        }
+    }
+}
+
+/// The order rule, asked of a program that is ABOUT TO RUN rather than of one
+/// being routed — and it is the same walk, so the two can never disagree.
+///
+/// `route()` is consulted by `lypning run`; `<bin> -c PROG` is not routed at
+/// all, and that is how the chain reaches this binary once a smaller sibling
+/// has picked it (`docs/HILLCLIMB.md` iteration 76 filed the general case as
+/// #48). Without this the static blocker would be inert on exactly the path the
+/// dispatcher uses, and `lypning-l -c 'import glob; print(glob.glob("*"))'`
+/// would answer in the filesystem's order at exit 0.
+///
+/// It runs BEFORE the first statement, so the refusal is exit 90 with an empty
+/// stdout and an untouched disk — never the exit 1 a refusal reached after
+/// `os.makedirs()` would have been. Only for a source that mentions the module,
+/// so every other program pays one substring search.
+#[cfg(feature = "cap-glob")]
+pub fn glob_order_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
+    if !src.contains("glob") {
+        return Ok(());
+    }
+    let mut req = Requirements {
+        glob_wrappers: trusted_wrappers(src),
+        ..Requirements::default()
+    };
+    walk_block(body, &mut req);
+    match req.glob_order {
+        Some(d) => Err(crate::err::unsupported("glob-order", &d)),
+        None => Ok(()),
+    }
+}
+
+/// Which order-blind wrapper names this source still uses as the BUILTIN, one
+/// bit per index into [`ORDER_BLIND`].
+///
+/// The blessing above says `sorted(glob.glob(p))` cannot show the order, which
+/// is true of the BUILTIN `sorted` and of nothing else. A walk that tracked
+/// bindings would still be wrong in one direction — a `def sorted` BELOW the
+/// call decides what the call meant inside a function — so this is textual and
+/// runs once over the whole source, and it deliberately OVER-matches: any
+/// occurrence that is not the head of a call gives the name up, which costs a
+/// CPython spawn and never an answer. An occurrence after a `.` is somebody
+/// else's attribute and is skipped.
+///
+/// **Per NAME, not per program**, and the corpus is why: `defaultdict(set)`
+/// passes the builtin `set` around without rebinding anything, and a single
+/// verdict for the whole source let that spelling give up `sorted`'s blessing
+/// as well — refusing a program (py-ad25b33c55b7, mined 2026-09-06) whose glob
+/// call is squarely inside `sorted()`. Giving up only the name that was
+/// actually touched is strictly safer AND strictly wider.
+#[cfg(feature = "cap-glob")]
+fn trusted_wrappers(src: &str) -> u16 {
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut bits = (1u16 << ORDER_BLIND.len()) - 1;
+    if !src.contains("glob") {
+        return 0;
+    }
+    for (b, w) in ORDER_BLIND.iter().enumerate() {
+        let mut from = 0;
+        while let Some(i) = src[from..].find(w) {
+            let start = from + i;
+            let end = start + w.len();
+            from = end;
+            let head = &src[..start];
+            if head.chars().next_back().is_some_and(|c| is_ident(c) || c == '.') {
+                continue;
+            }
+            let tail = &src[end..];
+            if tail.chars().next().is_some_and(is_ident) {
+                continue;
+            }
+            // The head of a call is the only shape that is certainly the
+            // builtin; `sorted = f`, `sorted, x = …`, `def f(sorted)`,
+            // `lambda sorted:` and `map(len, xs)` are all something else.
+            let is_call = tail.trim_start().starts_with('(');
+            // `def sorted(`, `for sorted in`, `import x as sorted`,
+            // `global sorted` — a call shape that is still a binding.
+            let head = head.trim_end();
+            let n = head.chars().rev().take_while(|c| is_ident(*c)).count();
+            let bound = matches!(
+                &head[head.len() - n..],
+                "def" | "as" | "for" | "class" | "import" | "lambda" | "global" | "nonlocal"
+            );
+            if !is_call || bound {
+                bits &= !(1 << b);
+                break;
+            }
+        }
+    }
+    bits
+}
+
 /// A call that reads stdin, for `Route::reads_stdin`: `input()`, and the
 /// descriptor spellings — `open(0)`, `os.fdopen(0)`, `os.read(0, n)`,
 /// `open("/dev/stdin")`. Over-matching (`f.read(0)` on a file) is the cheap
@@ -1366,6 +1641,15 @@ fn resolve_module(e: &Expr, aliases: &[(String, String)]) -> Option<crate::value
 fn walk_expr(e: &Expr, req: &mut Requirements) {
     match e {
         Expr::Name(n) => {
+            // A name bound by `from glob import glob` that is NOT the callee of
+            // a blessed call: the walk skips the callee of one it served, so
+            // reaching here means the function is being passed, stored or
+            // called somewhere the order shows.
+            #[cfg(feature = "cap-glob")]
+            if req.glob_names.iter().any(|(b, _)| b == n.as_ref()) {
+                req.block_glob_order();
+                return;
+            }
             // Builtin names are the only ones resolvable statically; a local
             // may legitimately be defined anywhere, so unknown names pass here
             // and become a NameError at runtime exactly as in CPython.
@@ -1392,6 +1676,15 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             // object does not fire `random.seed`.
             // A module attribute is decidable; anything else is a method name.
             if let Some(crate::value::Value::Module(m)) = resolve_module(b, &req.aliases) {
+                // `glob.glob` as a VALUE — `f = glob.glob`, `map(glob.glob, ps)`.
+                // The callee of a call this walk served is never walked, so
+                // reaching the attribute here means the reference escaped into
+                // a position where the order could be shown.
+                #[cfg(feature = "cap-glob")]
+                if m == "glob" && matches!(n.as_ref(), "glob" | "iglob") {
+                    req.block_glob_order();
+                    return;
+                }
                 if crate::modules::get_attr(&crate::value::Value::Module(m), n).is_err() {
                     req.block("module-attr", format!("{m}.{n}"));
                 }
@@ -1405,18 +1698,43 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             func,
             args,
             kwargs,
+            star,
             dstar,
-            ..
         } => {
             // Before the callee and the arguments are walked, so that a
             // program whose arguments hold a second blocker is still counted
             // under the pattern it cannot compile — the row `--plan` ranks.
             #[cfg(feature = "cap-re")]
             re_pattern_block(req, func, args, kwargs);
+            // Is THIS a glob call, and did its parent bless it? A blessed call
+            // is served and its callee is not walked; an unblessed one is the
+            // blocker, whatever it was going to be handed to.
+            #[cfg(feature = "cap-glob")]
+            let served_glob = match glob_call(func, req) {
+                None => false,
+                Some(_) => {
+                    let blessed = req.glob_blessed.contains(&(e as *const Expr));
+                    if !blessed {
+                        req.block_glob_order();
+                    }
+                    true
+                }
+            };
+            #[cfg(not(feature = "cap-glob"))]
+            let served_glob = {
+                let _ = star;
+                false
+            };
+            // Before the arguments are walked, because the blessing has to be
+            // in place by the time the walk reaches the call it blesses.
+            #[cfg(feature = "cap-glob")]
+            glob_bless(req, func, args, kwargs, star, dstar);
             if calls_stdin(func, args) {
                 req.reads_stdin = true;
             }
-            walk_expr(func, req);
+            if !served_glob {
+                walk_expr(func, req);
+            }
             for a in args {
                 walk_expr(a, req);
             }
@@ -1438,6 +1756,18 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
         Expr::Un(_, a) => walk_expr(a, req),
         Expr::Compare { first, rest } => {
             walk_expr(first, req);
+            // `p in glob.glob(...)` answers a bool, which every permutation of
+            // the list answers the same way. Only for a comparison with ONE
+            // operator: in a CHAIN the same expression is also the LEFT operand
+            // of the next `in`, where `[a, b] in [[b, a]]` does read the order.
+            #[cfg(feature = "cap-glob")]
+            if rest.len() == 1 && matches!(rest[0].0, CmpOp::In | CmpOp::NotIn) {
+                if let Expr::Call { func, .. } = &rest[0].1 {
+                    if glob_call(func, req).is_some() {
+                        req.glob_blessed.push(&rest[0].1 as *const Expr);
+                    }
+                }
+            }
             for (_, x) in rest {
                 walk_expr(x, req);
             }

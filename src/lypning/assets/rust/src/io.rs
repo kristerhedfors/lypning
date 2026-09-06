@@ -259,6 +259,32 @@ pub fn is_staged_deleted(path: &str) -> bool {
     DELETED.with(|d| d.borrow().contains(path))
 }
 
+/// Is the barrier holding anything back at all?
+///
+/// The one question a DIRECTORY LISTING has to ask before it does any work.
+/// `path_exists` and `effective_content` are handed one path and look it up by
+/// the spelling the program used; a listing is handed a DIRECTORY and has to
+/// decide which staged spelling names an entry of it, which costs a `realpath`
+/// per candidate. This is what keeps that cost off every run that never wrote
+/// anything — which is almost all of them.
+#[cfg(feature = "cap-glob")]
+pub fn staging_active() -> bool {
+    PENDING.with(|p| !p.borrow().files.is_empty()) || DELETED.with(|d| !d.borrow().is_empty())
+}
+
+/// Every path this run has written but not committed, and every path it has
+/// removed, both in the program's own spelling. `glob.rs` splits each one and
+/// resolves its directory to decide where the entry belongs.
+#[cfg(feature = "cap-glob")]
+pub fn staged_write_paths() -> Vec<String> {
+    PENDING.with(|p| p.borrow().order.clone())
+}
+
+#[cfg(feature = "cap-glob")]
+pub fn staged_delete_paths() -> Vec<String> {
+    DELETED.with(|d| d.borrow().iter().cloned().collect())
+}
+
 pub fn stage_delete(path: &str) {
     PENDING.with(|p| {
         let mut p = p.borrow_mut();

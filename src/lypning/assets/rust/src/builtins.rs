@@ -1045,12 +1045,22 @@ pub fn call_builtin(
             // in the order it received them, and over a set that order is this
             // engine's. Only a real tie is refused — `sorted(s, key=len)` with
             // distinct lengths has one answer.
+            //
+            // A tie is a pair of ADJACENT keys once the keys are in order, so
+            // the question is answered by one sort and one linear scan. It used
+            // to be an all-pairs scan, which is O(n^2) `ops::order` calls: at
+            // 60,000 distinct keys — the size a filesystem listing reaches, and
+            // the size `docs/HILLCLIMB.md` iteration 76 measured — that was
+            // **28.61 s** against CPython's 0.02 s (macOS arm64, 2026-09-06).
+            // The keys are sorted here and again below because `sort_values`
+            // permutes `items` alongside them and this pass must not.
             if from_set && keyf.is_some() {
-                for i in 0..keys.len() {
-                    for j in (i + 1)..keys.len() {
-                        if ops::order(&keys[i], &keys[j])? == std::cmp::Ordering::Equal {
-                            return Err(set_order_refused("sorted() of a set where the key ties"));
-                        }
+                let mut probe = keys.clone();
+                let mut probe_keys = keys.clone();
+                ops::sort_values(&mut probe, &mut probe_keys, false)?;
+                for pair in probe.windows(2) {
+                    if ops::order(&pair[0], &pair[1])? == std::cmp::Ordering::Equal {
+                        return Err(set_order_refused("sorted() of a set where the key ties"));
                     }
                 }
             }

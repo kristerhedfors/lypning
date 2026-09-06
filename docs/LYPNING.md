@@ -298,7 +298,7 @@ runtime's FIRST probe; a later one's byte count is not a size.
 | `src/lex.rs`, `src/parse.rs`, `src/ast.rs` | tokenizer; recursive-descent parser — every gap is `unsupported: <kind>`; the AST |
 | `src/eval.rs`, `src/value.rs`, `src/ops.rs`, `src/iter.rs`, `src/fmt.rs` | evaluator with real scopes; values (insertion-ordered dict, the set-order and NaN refusals); operators and Python's floor/mod rules; lazy iteration; `str`/`repr` and format specs |
 | `src/builtins.rs`, `src/methods.rs`, `src/modules.rs`, `src/json.rs`, `src/random.rs` | builtins and methods (the tables the router reads); `MODULES` per variant; JSON against CPython's exact output; MT19937 |
-| `src/collections.rs`, `src/pathlib.rs` | `cap-collections`, `cap-pathlib` — compiled into `lypning-l` only |
+| `src/collections.rs`, `src/pathlib.rs`, `src/re.rs`, `src/glob.rs` | `cap-collections`, `cap-pathlib`, `cap-re`, `cap-glob` — compiled into `lypning-l` only; `glob`'s ORDER half is a static blocker in `route.rs`, not a value in `glob.rs` |
 | `src/io.rs`, `src/alloc.rs`, `src/hash.rs`, `src/args.rs`, `src/err.rs` | the commit barrier; the size-class allocator; hashing; call arguments; the refusal line and `ENGINE` |
 | `src/route.rs`, `src/main.rs`, `src/embed.rs`, `src/capi.rs`, `src/host.rs`, `src/lib.rs` | the classifier; CLI, exit contract, dispatcher; the in-process runner and `fall_onward`; the C ABI (`capi` feature); host hooks |
 | `../scripts/build-rust.sh` | the standalone build, with the shape and contract smoke checks; `lypning build --rust` drives the same build |

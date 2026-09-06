@@ -40,14 +40,34 @@ pub const MODULES: &[&str] =
 pub const MODULES: &[&str] = &[
     "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib",
 ];
-#[cfg(all(feature = "cap-collections", feature = "cap-pathlib", feature = "cap-re"))]
+#[cfg(all(
+    feature = "cap-collections",
+    feature = "cap-pathlib",
+    feature = "cap-re",
+    not(feature = "cap-glob")
+))]
 pub const MODULES: &[&str] = &[
     "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib", "re",
 ];
-// `cap-re` names no row of its own: it is only ever built as part of
-// `variant-l`, whose feature names the full set.
+#[cfg(all(
+    feature = "cap-collections",
+    feature = "cap-pathlib",
+    feature = "cap-re",
+    feature = "cap-glob"
+))]
+pub const MODULES: &[&str] = &[
+    "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib", "re",
+    "glob",
+];
+// `cap-re` and `cap-glob` name no row of their own: neither is ever built
+// except as part of `variant-l`, whose feature names the full set.
 #[cfg(all(feature = "cap-re", not(all(feature = "cap-collections", feature = "cap-pathlib"))))]
 compile_error!("cap-re is only built as part of variant-l (it names the full set)");
+#[cfg(all(
+    feature = "cap-glob",
+    not(all(feature = "cap-collections", feature = "cap-pathlib", feature = "cap-re"))
+))]
+compile_error!("cap-glob is only built as part of variant-l (it names the full set)");
 
 pub fn import(path: &str) -> R<Value> {
     match MODULES.iter().find(|m| **m == path) {
@@ -181,6 +201,11 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
         // statically in the router too.
         #[cfg(feature = "cap-re")]
         ("re", _) => return crate::re::module_attr(name),
+        // `glob.glob`, `glob.iglob`, `glob.escape` and `glob.has_magic`. Every
+        // other name — `translate`, `glob0`, `glob1` — refuses with the
+        // `module-attr` kind, which the router blocks on statically.
+        #[cfg(feature = "cap-glob")]
+        ("glob", _) => return crate::glob::module_attr(name),
         _ => {
             return Err(unsupported(
                 "module-attr",
@@ -219,6 +244,12 @@ fn touches_disk(m: &str, name: &str) -> bool {
     match (m, name) {
         ("os.path", "join" | "basename" | "dirname" | "splitext" | "split" | "normpath") => false,
         ("pathlib", "cwd") => true,
+        // `glob.glob()` and `glob.iglob()` list directories; `escape` and
+        // `has_magic` are string algebra over a path that need never exist.
+        #[cfg(feature = "cap-glob")]
+        ("glob", "escape" | "has_magic") => false,
+        #[cfg(feature = "cap-glob")]
+        ("glob", _) => true,
         ("os", "getenv") => false,
         ("os", _) | ("os.path", _) => true,
         _ => false,
@@ -247,6 +278,8 @@ pub fn call_module_method(
     Ok(match (m, name) {
         #[cfg(feature = "cap-re")]
         ("re", _) => return crate::re::call(it, name, args, &kw),
+        #[cfg(feature = "cap-glob")]
+        ("glob", _) => return crate::glob::call(it, name, args, &kw),
         ("random", _) => return crate::random::call(it, name, args, &kw),
         // `Path.cwd()`. A classmethod on the type object, reached through
         // `ops::get_attr`, which spells it as a method on the module so that
@@ -562,7 +595,9 @@ pub fn call_module_method(
     })
 }
 
-fn normpath(p: &str) -> String {
+/// `os.path.normpath`. Public to the crate because `glob.rs` needs the same
+/// answer to decide which directory a staged write belongs to.
+pub(crate) fn normpath(p: &str) -> String {
     let absolute = p.starts_with('/');
     let mut out: Vec<&str> = Vec::new();
     for part in p.split('/') {
