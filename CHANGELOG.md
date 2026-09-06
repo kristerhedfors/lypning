@@ -20,6 +20,41 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-06** — Round 78 infrastructure: an honest size column, a grader that compares bytes, a router that answers for the spectrum, and a ledger that records real sessions · [#53]
+
+- `build`, `status` and `gate` now report the **code section** beside file
+  bytes (`gate.text_bytes`: `size -m` on Mach-O, the ELF headers parsed with
+  `struct` elsewhere; unmeasured where neither is readable, never a silent
+  fallback to file size). This matters because file size is page padding —
+  `lypning` 867,856 B carries 675,580 B of code — and it had been the
+  denominator for every density figure in `docs/HILLCLIMB.md`.
+- **Issue #50**: every output comparison in `engines`, `conformance`, `fuzz`,
+  `perf`, `build` and `doctor` compares **bytes**. The grader had been blind to
+  line endings, because both arms were captured with `text=True` and universal
+  newline translation rewrote both before comparison. Answer to the question
+  that motivated it: no currently-green row was green only because of the
+  translation, and none turned red. The axis had no live corpus witness because
+  `csv.writer(sys.stdout)` is still refused; it has unit witnesses now.
+- Found while doing that: `engines._run_via_pool` read a free variable `env`
+  and raised `NameError` on every call, so the **warm CPython pool has been
+  dead since #19** whenever `$LYPNING_POOL` was set. `tests/test_pool.py` held
+  `pool.Server` to its contract directly and never entered through that door.
+- **Issue #48**: the `re` pattern parser is lifted into `src/repat.rs`, carried
+  by every variant, so the core computes the whole spectrum's verdict instead of
+  routing a program to a sibling that will refuse it. `import re, os;
+  os.makedirs("d"); print(re.findall(b"a", b"aa"))` was exit 1 after the barrier
+  committed; it now answers at exit 0. WASTED 99 → **91**; LATE 36 → **47** and
+  `lypning-l` MATCH 1978 → 1977, which is the honest cost: those programs ran on
+  a variant its own router already refused, and got lucky because the unservable
+  pattern sat on a branch never taken.
+- **The route ledger records real sessions.** `main.rs::dispatch` is a second
+  writer, on the same condition and in the same format as `engines.dispatch`
+  (verified byte-compatible: records from both fold by id). `lypning routes` had
+  said "no routes learned yet" since it was built, because every real session
+  goes through the Rust binary. Still write-only with respect to routing.
+- MISMATCH 0, UNSAFE 0, monotone 0, dispatchers agree 2504/2504, doctor 0 FAIL,
+  gate PASS. Core 7 of its 8 blocks carrying both new modules.
+
 **2026-09-06** — `cap-glob` on lypning-l: the order question is answered by the walker, not by a value · [#52]
 
 - `glob` was rejected at iteration 76 for seven holes, five from one decision —
