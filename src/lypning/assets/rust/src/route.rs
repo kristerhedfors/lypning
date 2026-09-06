@@ -54,7 +54,7 @@ pub struct Variant {
 /// Python side's `engines.SPECTRUM`, in this order, pinned by test.
 pub const SPECTRUM: &[Variant] = &[
     Variant { name: "lypning", caps: &[] },
-    Variant { name: "lypning-l", caps: &["cap-collections", "cap-pathlib", "cap-re"] },
+    Variant { name: "lypning-l", caps: &["cap-collections", "cap-csv", "cap-pathlib", "cap-re"] },
 ];
 
 /// The same names, NUL-terminated for the C ABI. A test holds the two lists
@@ -86,8 +86,18 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// of a later slice, a version-shaped message, a step budget), there is no rung
 /// above lypning-l to carry a kind to, and `chain_after` a runtime `re:`
 /// refusal is `[cpython]` by construction.
+///
+/// `cap-csv` serves the `csv` MODULE — its two READERS. It answers no runtime
+/// kind for the same reason as the three above: a `csv:` refusal is a
+/// `csv.Error` message, a dialect, or a shape CPython owns. It also serves
+/// `open(newline='')`, whose refusal kind is `open-newline` and which is
+/// deliberately NOT listed here: the kinds column is read by `answers`, which
+/// decides STATIC routing, and no walk ever produces `open-newline`. The
+/// RUNTIME chain off it already reaches lypning-l, because `chain_after` tries
+/// every sibling with a strictly larger `cap-*` set.
 pub const CAPS: &[(&str, &[&str], &[&str])] = &[
     ("cap-collections", &["collections"], &[]),
+    ("cap-csv", &["csv"], &[]),
     ("cap-pathlib", &["pathlib"], &[]),
     ("cap-re", &["re"], &[]),
 ];

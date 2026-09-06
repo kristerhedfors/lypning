@@ -2224,6 +2224,13 @@ fn file_method(
     args: &mut Args,
     _kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
+    // Before anything reads: a stream a `csv.reader` drained is not where
+    // CPython would have left it, and `io::csv_read_guard` says so rather than
+    // answer a position this engine invented. On a variant without `cap-csv`
+    // the guard is `Ok(())`.
+    if matches!(name, "read" | "readline" | "readlines" | "tell" | "seek") {
+        mio::csv_read_guard(&f.borrow())?;
+    }
     Ok(match name {
         "read" => {
             let mut fo = f.borrow_mut();

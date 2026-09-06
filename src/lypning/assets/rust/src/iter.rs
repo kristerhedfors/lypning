@@ -161,7 +161,13 @@ impl Interp {
             v @ (Value::Pattern(_) | Value::Match(_)) => {
                 return Err(crate::re::guard_one(&v, "iterating").unwrap_err())
             }
-            Value::File(f) => Iter::Lines(f),
+            Value::File(f) => {
+                // Same guard as the read methods: a stream `csv.reader` took is
+                // not where CPython left it, so iterating it refuses instead of
+                // yielding the lines this engine happens to have.
+                mio::csv_read_guard(&f.borrow())?;
+                Iter::Lines(f)
+            }
             Value::Gen(g) => Iter::Gen(g),
             Value::IterObj(it, _) => Iter::Shared(it),
             // `for line in sys.stdin` — the largest single cluster in the

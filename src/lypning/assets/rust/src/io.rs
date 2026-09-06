@@ -45,7 +45,39 @@ pub struct FileObj {
     /// Read buffer with the cursor, for `.read()` / `.readline()` / iteration.
     pub data: Vec<u8>,
     pub pos: usize,
+    /// What `open(newline=…)` asked this text stream to do with line endings —
+    /// one of [`NEWLINE_UNIVERSAL`], [`NEWLINE_RAW`], [`NEWLINE_KEEP_NL`].
+    ///
+    /// Recorded rather than acted on, because nothing in the core reads it: this
+    /// engine's own `read`/`readline`/iteration never translated, and changing
+    /// that would move bytes in a frozen binary for a case no corpus program
+    /// has. `csv.rs` is the one reader, and to a `csv.reader` the mode is the
+    /// difference between one record and two.
+    #[cfg(feature = "cap-csv")]
+    pub newline_mode: u8,
+    /// Set when a `csv.reader` took the rest of this stream in one gulp.
+    ///
+    /// CPython's reader is LAZY: after `next(r)` the file is positioned just
+    /// past the first record and `f.read()` returns the rest. This one is
+    /// eager, so the position it leaves behind is right only when the reader
+    /// was drained — which every corpus shape does and a `next(r)` followed by
+    /// `f.read()` does not. Rather than answer that difference wrongly at exit
+    /// 0, the stream remembers and every later READ of it refuses; CPython
+    /// answers one spawn later. Found by a 2,773-row differential grid, in the
+    /// two rows that did it.
+    #[cfg(feature = "cap-csv")]
+    pub csv_consumed: bool,
 }
+
+/// `newline=None` — `\r\n` and a lone `\r` become `\n`.
+#[cfg(feature = "cap-csv")]
+pub const NEWLINE_UNIVERSAL: u8 = 0;
+/// `newline=''` — no translation; a line ends at `\r\n`, `\n` or `\r`.
+#[cfg(feature = "cap-csv")]
+pub const NEWLINE_RAW: u8 = 1;
+/// `newline='\n'` — no translation; a line ends only at `\n`.
+#[cfg(feature = "cap-csv")]
+pub const NEWLINE_KEEP_NL: u8 = 2;
 
 #[derive(Default)]
 pub struct Pending {
@@ -348,7 +380,30 @@ pub fn open_file(path: &str, mode: &str, binary: bool) -> R<FileObj> {
         closed: false,
         data,
         pos: 0,
+        #[cfg(feature = "cap-csv")]
+        newline_mode: NEWLINE_UNIVERSAL,
+        #[cfg(feature = "cap-csv")]
+        csv_consumed: false,
     })
+}
+
+/// The read half of `FileObj::csv_consumed`: every path that would observe the
+/// position a `csv.reader` left behind, and nothing else. `close` and `write`
+/// are not among them — neither can see it.
+#[cfg(feature = "cap-csv")]
+pub fn csv_read_guard(f: &FileObj) -> R<()> {
+    if f.csv_consumed {
+        return Err(unsupported(
+            "csv",
+            "reading a file that csv.reader() has already taken (CPython's reader is lazy and leaves the stream where the last row it yielded ended)",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "cap-csv"))]
+pub fn csv_read_guard(_f: &FileObj) -> R<()> {
+    Ok(())
 }
 
 pub fn file_write(f: &FileObj, bytes: &[u8]) -> R<usize> {
