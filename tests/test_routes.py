@@ -17,6 +17,10 @@ built — the rule every optional tier in this suite follows.
 from __future__ import annotations
 
 import json
+import os
+import re
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -506,3 +510,190 @@ def test_the_documented_capture_opt_out_covers_this_feed(monkeypatch):
     assert not routes.enabled()
     monkeypatch.delenv("LYPNING_ROUTES")
     assert routes.enabled()
+
+
+# --- the RUST dispatcher, which is the one an installed chain execs ----------
+#
+# `engines.dispatch` is reached from `python -m lypning run` and from this
+# suite; `main.rs::dispatch` is reached from every session. The ledger was fed
+# by the first one only for its first sessions, which is why `lypning routes`
+# on a real machine said "no routes learned yet" and always would. These hold
+# the second writer to the first: same condition, same bytes, and — the one
+# that matters — still nothing that ROUTES reads the store.
+
+
+def _rust(binary, program, *, env=None):
+    """`<binary> run -c PROG`: the Rust dispatcher, on this machine's store."""
+    full = dict(os.environ)
+    full.update(env or {})
+    return subprocess.run([str(binary), "run", "-c", program], capture_output=True,
+                          text=True, timeout=60, env=full)
+
+
+def test_the_rust_dispatcher_writes_on_a_clean_route_then_a_runtime_refusal(spectrum):
+    """The gap this writer closes, end to end and through the real binary.
+
+    A fabricated `Result` could not prove it: the whole signal is a binary that
+    routed a program to itself, ran it, and refused part way through on a
+    VALUE. Only the binary can produce that.
+    """
+    proc = _rust(spectrum / CORE, BIGINT)
+    assert proc.returncode == 0 and proc.stdout.strip() == str(2 ** 100)
+    # The refusal is an internal routing signal under `run`, never a line the
+    # caller sees — the same contract the Python dispatcher keeps.
+    assert "unsupported" not in proc.stderr
+
+    store = routes.load(CORE)
+    assert store.head is not None and not store.stale, (
+        "the Rust writer's header does not describe the engine the Python reader "
+        "resolves, so every record it writes is discarded on load: %r" % (store.head,))
+    assert len(store.records) == 1
+    assert store.records[0]["id"] == routes.digest(BIGINT)
+    assert store.records[0]["kind"] == "bigint"
+    assert store.records[0]["n"] == 1
+
+
+def test_each_variant_writes_its_own_store_under_its_own_name(spectrum):
+    """A variant writes ITS name and ITS `cap-*` set, never a sibling's.
+
+    The header is what `load` matches against the engine as it is NOW, so a
+    variant that wrote the wrong caps would have every record it ever made
+    discarded — silently, since nothing on a program's path reads the file.
+    Skipped rather than faked when the larger variant is not built.
+    """
+    larger = engines.SPECTRUM[-1]
+    if larger == CORE or not _BUILT.get(larger):
+        pytest.skip("only one spectrum variant is built")
+    # Routes clean on the larger variant (`re` is its capability), then refuses
+    # at runtime on a value the static walk cannot see.
+    assert _rust(spectrum / larger, 'import re; re.findall("a", "aa"); ' + BIGINT).returncode == 0
+    assert not routes.store_path(CORE).exists()
+    store = routes.load(larger)
+    assert not store.stale and len(store.records) == 1
+    assert store.head["engine"] == larger
+    assert store.head["caps"] == sorted(engines.VARIANT_CAPS[larger])
+    assert store.records[0]["kind"] == "bigint"
+
+
+def test_the_rust_dispatcher_writes_nothing_on_a_static_route_or_a_bare_exit_90(spectrum):
+    """Three shapes that are not the signal, through the binary.
+
+    A static route to CPython was PREDICTED, so it teaches nothing. A program
+    that chose exit 90 is not a tier refusing — recording it would also mean
+    the dispatcher had re-run somebody's half-finished program. And a program
+    that merely failed is the program's own answer.
+    """
+    assert _rust(spectrum / CORE, "import ctypes; print(1)").returncode == 0
+    assert _rust(spectrum / CORE, "import sys; sys.exit(90)").returncode == 90
+    assert _rust(spectrum / CORE, "import sys; sys.exit(3)").returncode == 3
+    for engine in engines.SPECTRUM:
+        assert not routes.store_path(engine).exists()
+
+
+def test_lypning_routes_0_and_the_capture_opt_out_reach_the_rust_writer(spectrum):
+    """Both switches, on the writer inside the binary.
+
+    `LYPNING_CAPTURE=0` is the half that matters: `engines.run` sets it in
+    every child this package spawns, and it is the only reason a conformance
+    battery's `mixture-rust` arm does not pour the corpus into the store.
+    """
+    for off in ({"LYPNING_ROUTES": "0"}, {"LYPNING_CAPTURE": "0"}):
+        assert _rust(spectrum / CORE, BIGINT, env=off).returncode == 0
+        assert not routes.store_path(CORE).exists(), "%r did not reach the binary" % off
+    assert _rust(spectrum / CORE, BIGINT).returncode == 0
+    assert len(routes.load(CORE).records) == 1
+
+
+def test_the_two_writers_are_byte_compatible_in_one_store(spectrum):
+    """One store, both writers, one folded record — the compatibility proof.
+
+    The digest is the load-bearing half: it is `blake2b(program, digest_size=6)`
+    on both sides, and 6 is a BLAKE2 PARAMETER rather than a truncation, so an
+    implementation that hashed and then cut would produce ids that never fold.
+    `compact` folding the two into `n == 2` is what says they agree.
+    """
+    assert _rust(spectrum / CORE, BIGINT).returncode == 0
+    lines = routes.store_path(CORE).read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2, "header and first record must land in ONE write"
+    header, rust_record = (json.loads(ln) for ln in lines)
+    assert header == routes.header(CORE), "the header is not the one `load` recomputes"
+
+    assert routes.note(CORE, BIGINT, "bigint", "integer result beyond 64-bit range")
+    python_record = _read(routes.store_path(CORE))[-1]
+    assert sorted(rust_record) == sorted(python_record)
+    assert rust_record["id"] == python_record["id"] == routes.digest(BIGINT)
+    assert rust_record["kind"] == python_record["kind"] == "bigint"
+    assert rust_record["n"] == python_record["n"] == 1
+    assert rust_record["t"] == python_record["t"]
+    assert rust_record["detail"].startswith("integer result beyond 64-bit range")
+
+    assert routes.compact() == [(CORE, 2, 1)]
+    folded = routes.load(CORE).records
+    assert len(folded) == 1 and folded[0]["n"] == 2, (
+        "the two writers' records did not fold, so their ids disagree: %r" % (folded,))
+
+
+def test_a_populated_store_cannot_move_a_measurement_through_the_rust_dispatcher(
+        spectrum, cpython):
+    """The property the whole feature is subordinate to, for the second writer.
+
+    `mixture-rust` is the arm that execs `<binary> run`, so it is the only arm
+    that could read a store the Rust dispatcher can now write. Graded twice —
+    once with the store absent, once with it holding exactly the entries being
+    graded — and compared verbatim, the wall clock zeroed.
+    """
+    entries = [corpus.Entry(id="r-1", program=BIGINT),
+               corpus.Entry(id="r-2", program="print(2**10)"),
+               corpus.Entry(id="r-3", program="print({3,1,2})")]
+    arms = [CORE, conformance.MIXTURE_RUST]
+
+    def graded():
+        report = conformance.run(entries, engines=arms, workers=1)
+        report.seconds = 0.0
+        return conformance.render(report)
+
+    absent = graded()
+    assert "conformance over 3 corpus programs" in absent
+    assert "MISMATCH 0 — ok" in absent
+    # The arm has to have actually run, or "identical" is a statement about a
+    # battery that never reached the second writer at all.
+    assert conformance.MIXTURE_RUST in absent
+    # And the battery is not a session: `engines.run` sets LYPNING_CAPTURE=0 in
+    # every child, so the arm that dispatches in Rust wrote nothing either.
+    assert not routes.store_path(CORE).exists(), (
+        "the battery fed the ledger — a conformance run would then rank one "
+        "laptop's corpus, which is the loop `_env_for` exists to break")
+
+    for e in entries:
+        routes.note(CORE, e.program, "bigint", "integer result beyond 64-bit range")
+        routes.note(CORE, e.program, "set-order", "repr() of a set")
+    assert len(routes.load(CORE).records) == 6, "the adversarial store did not populate"
+
+    assert graded() == absent
+    assert len(routes.load(CORE).records) == 6
+
+
+def test_the_two_writers_agree_on_every_bound():
+    """The caps, spelled twice, held equal by reading the second copy.
+
+    Nothing at runtime would notice these drifting: a Rust `MAX_LINE` above the
+    Python one writes a record `load` still reads, and a `KIND_MAX` below it
+    writes a shorter string that folds into a different row. Both are silent,
+    and both make the store a thing two writers disagree about. Skipped rather
+    than faked where the Rust tree did not ship (the wheel shape).
+    """
+    src = Path(__file__).resolve().parents[1] / "src/lypning/assets/rust/src/routes.rs"
+    if not src.is_file():
+        pytest.skip("no Rust source tree in this install shape")
+    text = src.read_text(encoding="utf-8")
+    want = {"VERSION": routes.VERSION, "MAX_BYTES": routes.MAX_BYTES,
+            "MAX_LINE": routes.MAX_LINE, "KIND_MAX": routes.KIND_MAX,
+            "DETAIL_MAX": routes.DETAIL_MAX}
+    for name, value in want.items():
+        m = re.search(r"^const %s: \w+ = ([^;]+);" % name, text, re.M)
+        assert m, "assets/rust/src/routes.rs no longer spells %s" % name
+        assert eval(m.group(1).replace("_", "")) == value, (  # noqa: S307 — a literal
+            "%s: routes.py says %r, routes.rs says %r" % (name, value, m.group(1)))
+    # And the store's directory, which is the same question one level up.
+    assert 'format!("{}/routes"' in text, (
+        "the Rust writer no longer writes under `paths.routes_dir()`'s directory")

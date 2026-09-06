@@ -242,3 +242,58 @@ def test_a_failed_battery_fails_the_verify(tmp_path, monkeypatch):
     monkeypatch.setattr(conformance, "run", lambda **k: _Bad())
     out = build.verify([build.BuildResult(engines.LYPNING, ok=True, binary=core)])
     assert out.ok is False
+
+
+# --- the code column, beside the file bytes ----------------------------------
+
+
+def _row(text: str, engine: str) -> list[str]:
+    for line in text.splitlines():
+        if line.startswith(engine + " "):
+            return line.split()
+    raise AssertionError("no %s row in:\n%s" % (engine, text))
+
+
+def test_the_build_table_reports_code_bytes_beside_file_bytes():
+    # The two answer different questions: bytes on disk are what a cold start
+    # fetches, code bytes are what the commit added. On Darwin arm64 the Mach-O
+    # __TEXT segment is padded to 16,384 B, so a build can grow by 2,384 B of
+    # code and not one byte of file — a table with only one of the columns
+    # cannot tell those two builds apart.
+    r = build.BuildResult(engines.LYPNING, ok=True, size_bytes=834_720,
+                          text_bytes=657_700, target="host")
+    text = build.report(r)
+    assert text.splitlines()[0].split() == ["engine", "target", "bytes",
+                                            "code", "blocks", "secs", "status"]
+    row = _row(text, engines.LYPNING)
+    assert row[2:5] == ["834720", "657700", "7"]
+
+
+def test_an_unreadable_code_section_reads_unmeasured_and_never_the_file_bytes():
+    # A hole, never a zero and never the file size wearing the other column's
+    # label: `size(1)` is absent on a machine without the Xcode command line
+    # tools, and a silent fallback would make the two columns agree by fiction.
+    r = build.BuildResult(engines.LYPNING, ok=True, size_bytes=834_720,
+                          text_bytes=None, text_note="unmeasured: no size(1)",
+                          target="host")
+    row = _row(build.report(r), engines.LYPNING)
+    assert row[3] == "unmeasured"
+    assert "834720" not in row[3]
+
+
+def test_a_build_that_produced_nothing_has_no_code_column_either():
+    # `-` and not `unmeasured`: nothing was built, so there is no section to
+    # have failed to read.
+    r = build.BuildResult(engines.LYPNING, ok=False, skipped_reason="cargo not found",
+                          unavailable=True)
+    row = _row(build.report(r), engines.LYPNING)
+    assert row[2:5] == ["-", "-", "-"]
+
+
+def test_the_measured_code_size_reaches_the_result_object(tmp_path, monkeypatch):
+    # Wired through `gate.text_bytes`, so `--json` (which is `asdict`) and the
+    # table are reading one measurement rather than two.
+    monkeypatch.setattr(build, "_text", lambda p: (4242, ".text only"))
+    r = build.BuildResult(engines.LYPNING, ok=True, size_bytes=1, **dict(
+        zip(("text_bytes", "text_note"), build._text(tmp_path))))
+    assert r.text_bytes == 4242 and r.text_note == ".text only"
