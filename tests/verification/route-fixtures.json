@@ -38,8 +38,13 @@
  },
  {
   "program": "import re; print(re.findall(r\"(?P<n>a)\", \"aa\"))",
-  "route": "lypning-l\tmodule: import re",
-  "note": "A pattern outside the slice, and the CORE still routes it to lypning-l: the core has no compiler, so it is optimistic and pays one refused spawn. lypning-l's OWN walker blocks the named group statically (`cpython\tre: pattern '(?P<n>a)': named group (?P<name>…)`), which is what tests/test_re_grid.py pins."
+  "route": "cpython\tmodule: import re",
+  "note": "A pattern outside the slice, and the CORE routes it to CPython: since #48 the pattern PARSER is `repat.rs`, which every variant carries, so the binary that ROUTES answers the question the binary that RUNS would have. The KIND is still the core's own first blocker — `module: import re` is the row `--plan` ranks here — and the VERDICTS are the spectrum's, which is what picks the engine. lypning-l's own walker prints `cpython\tre: pattern '(?P<n>a)': named group (?P<name>…)`, which tests/test_re_grid.py pins. Before #48 this row read `lypning-l\tmodule: import re`: the core was optimistic, the chain handed the program to lypning-l with `-c` rather than `run`, and lypning-l refused at RUNTIME."
+ },
+ {
+  "program": "import re, os; os.makedirs(\"d\"); print(re.findall(b\"a\", b\"aa\"))",
+  "route": "cpython\tmodule: import re",
+  "note": "Issue #48's own reproduction. A bytes pattern is servable by CPython and by no rung of the spectrum, and the side effect before it is the point: through the chain this was `lypning: error: lypning-l: unsupported: re: bytes pattern or subject (re over bytes) — reached after output was already flushed`, exit 1, where CPython answers `[b'a', b'a']` at exit 0. A refusal past a committed barrier is not a 90 and the chain never retries it, so the only fix is to decide it in the ROUTER."
  },
  {
   "program": "import collections, re",

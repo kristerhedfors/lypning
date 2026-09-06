@@ -973,7 +973,11 @@ def _clip(s: str, n: int = _CLIP) -> str:
 
 
 def _answer(r: eng.Result, stderr_clip: int = _STDERR_CLIP) -> Answer:
-    return Answer(stdout=_clip(r.stdout), rc=r.returncode, stderr=_clip(r.stderr, stderr_clip))
+    # `exact_text`, not `.stdout`: the report has to be able to show the
+    # difference the judge found, and `.stdout` has had its line endings
+    # normalised away (`engines._as_text`).
+    return Answer(stdout=_clip(eng.exact_text(r.stdout_bytes)), rc=r.returncode,
+                  stderr=_clip(eng.exact_text(r.stderr_bytes), stderr_clip))
 
 
 def judge(engine_res: eng.Result, ref: Optional[eng.Result]) -> str:
@@ -985,14 +989,14 @@ def judge(engine_res: eng.Result, ref: Optional[eng.Result]) -> str:
     """
     if engine_res.timed_out or (ref is not None and ref.timed_out):
         return HARNESS
-    if engine_res.returncode == 127 and not engine_res.stdout:
+    if engine_res.returncode == 127 and not engine_res.stdout_bytes:
         return HARNESS
     if engine_res.unsupported:
         # Invariant 2 of CLAUDE.md, fuzzed rather than assumed: exit 90 means
         # the contract line on stderr and NOTHING on stdout. A refusal that
         # printed half an answer first is a half-completed program the
         # dispatcher is about to run again on the next tier.
-        if not engine_res.refused or engine_res.stdout:
+        if not engine_res.refused or engine_res.stdout_bytes:
             return CONTRACT
         return "refused"
     if ref is None:
@@ -1004,7 +1008,11 @@ def judge(engine_res: eng.Result, ref: Optional[eng.Result]) -> str:
         return HARNESS
     if engine_res.returncode != 0:
         return CRASH
-    if engine_res.stdout != ref.stdout:
+    # Bytes, for the same reason :func:`conformance.classify` compares bytes:
+    # both sides go through one decode that rewrites `\r\n` and `\r` to `\n`,
+    # so comparing the decoded text hides every disagreement about line endings
+    # from a fuzzer whose whole job is to find disagreements (issue #50).
+    if engine_res.stdout_bytes != ref.stdout_bytes:
         return OUTPUT
     return ""
 
@@ -1070,7 +1078,7 @@ def run(
         # CPython only when the engine claimed the program. It is the expensive
         # half of the pair and a refusal makes its answer irrelevant.
         ref = None
-        if not (got.unsupported and got.refused and not got.stdout):
+        if not (got.unsupported and got.refused and not got.stdout_bytes):
             ref = _run_one(CPYTHON, program, ref_bin, timeout)
         return (child, program, got, ref)
 
@@ -1170,7 +1178,7 @@ def _still_diverges(
     def still_fails(candidate: str) -> bool:
         got = _run_one(engine, candidate, binary, timeout)
         ref = None
-        if not (got.unsupported and got.refused and not got.stdout):
+        if not (got.unsupported and got.refused and not got.stdout_bytes):
             ref = _run_one(CPYTHON, candidate, ref_bin, timeout)
         return judge(got, ref) == kind
     return still_fails

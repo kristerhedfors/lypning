@@ -45,11 +45,57 @@ is the write-up, the baselines that beat us included.
 
 One instrument per question (§5, §6), and every instrument prints the corpus
 size it loaded: quote that number with its date, never a remembered one
-(`CLAUDE.md` invariant 3). Every measurement this document once carried is in
-`docs/BENCH-LEDGER.md`, dated — the last full `lypning bench` (2026-08-25) and
-the upstream table it was written against moved there on 2026-09-04, the day
-`lypning-mp` became the oracle — measured, never routed to; nothing has been
-re-measured on `lypning → lypning-l → cpython` since.
+(`CLAUDE.md` invariant 3).
+
+**`lypning bench`, 2026-09-06 — corpus 3,688 loaded, 2,504 measured, shared
+subset 1,572, min of 3, arms interleaved per entry.** Darwin arm64, 10 cpus,
+load 1.2–3.3: a shared box, so the ratios are the reading and the milliseconds
+are not. `cpython` is 3.14.5; `pypy3` is 7.3.23 (Python 3.11.15), a comparison
+arm — measured, never routed to.
+
+| arm | startup `-c 'pass'` | shared subset | per program | whole corpus | answers |
+|---|---:|---:|---:|---:|---|
+| `lypning` | 0.151x | 0.167x | 0.178x | 0.107x | refuses 932 |
+| `lypning-l` | 0.146x | 0.161x | 0.165x | 0.102x | refuses 537 |
+| **`mixture`** | **0.143x** | 0.196x | 0.166x | **0.523x** | **all 2,504** |
+| `cpython` | 1.000x | 1.000x | 1.000x | 1.000x | reference |
+| `pypy3` | 0.907x | 0.947x | 0.923x | 1.019x | all 2,504 |
+
+*per program* is the geometric mean of per-program ratios over the 532 programs
+every arm ran to exit 0; a sum over the corpus would be weighted by its slowest
+program. A variant that refuses is cheaper in the whole-corpus column for a
+reason that is not speed, which is why the number this project stands on is the
+dispatcher's **0.523x with nothing unanswered** — a session of 2,504 one-liners
+for 47.7% less wall clock than CPython, answering every one of them.
+
+The startup cell is the one number here not to lean on: `pypy3` and `cpython`
+land within about 10% of each other and the ordering is *not* stable, ranging
+0.89x–1.01x over four min-of-15 samples on this host the same day.
+
+**Where the subset stops paying.** The corpus is spawn-bound and cannot see a
+compute win in either direction, so one loop swept across decades locates the
+crossing (same run, compute-only, startup subtracted, mean of 6 after the first
+sample is discarded):
+
+| iterations of `n = (n + i * 7) % 999983` | `lypning` | `lypning-l` | `pypy3` |
+|---|---:|---:|---:|
+| 1,000 | 0.18x | 0.22x | 1.17x |
+| 10,000 | 0.38x | 0.45x | 0.84x |
+| 100,000 | 1.08x | 1.30x | 0.36x |
+| 1,000,000 | 1.35x | 1.49x | 0.09x |
+| 10,000,000 | 1.36x | 1.55x | 0.07x |
+
+Under ten thousand operations the Rust variants win, because almost nothing but
+startup and parse has happened yet; past a million a tracing JIT wins by more
+than an order of magnitude and they lose by 1.4–1.6x. Agent one-liners live at
+the left-hand end, and that is the whole bet — falsifiable by a corpus whose
+programs got longer. `pypy3` states the same boundary in its own documentation:
+below roughly 0.2 s of work its JIT has no chance to pay for itself.
+
+Full entry and methodology: `docs/BENCH-LEDGER.md`. Older figures are dated
+there too — the last full `lypning bench` before this one (2026-08-25) and the
+upstream table it was written against moved there on 2026-09-04, the day
+`lypning-mp` became the oracle — measured, never routed to.
 
 ## 2. Installation
 
@@ -251,7 +297,7 @@ lypning: unsupported: module: import re
 | `LYPNING_CPYTHON` | override the reference CPython |
 | `LYPNING_CAPTURE=0` | disable the whole capture harness |
 | `LYPNING_HARVEST=0` | keep capturing, stop the Stop hook publishing |
-| `LYPNING_ROUTES=0` | stop the Python dispatcher's write-only ledger (`lypning routes`); `LYPNING_CAPTURE=0` also covers it |
+| `LYPNING_ROUTES=0` | stop the write-only route ledger (`lypning routes`), in both dispatchers; `LYPNING_CAPTURE=0` also covers it |
 | `LYPNING_DEBUG=1` | show tracebacks |
 
 ## 5. Conformance contract

@@ -232,7 +232,7 @@ fn run_guarded(req: &Request) -> Outcome {
     let result = catch_unwind(AssertUnwindSafe(|| {
         let body = crate::parse::parse(&req.source)?;
         #[cfg(any(feature = "cap-glob", feature = "cap-hashlib"))]
-        crate::route::static_check(&body, &req.source)?;
+        crate::route::static_stop_check(&body, &req.source)?;
         interp.run(&body)
     }));
 

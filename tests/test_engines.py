@@ -312,3 +312,43 @@ def test_a_cpython_override_that_points_at_nothing_is_an_error(monkeypatch):
     with pytest.raises(engines.EngineError) as e:
         engines.find_cpython()
     assert "LYPNING_CPYTHON" in str(e.value)
+
+
+# --- what the process wrote, before any decode (issue #50) --------------------
+
+
+def test_a_spawn_carries_the_bytes_it_was_handed(lypning_bin):
+    # `text=True` used to decode here, and its universal-newline translation
+    # rewrote `\r\n` and `\r` to `\n` in the captured string — on BOTH sides of
+    # every comparison, so line endings became an axis on which no engine could
+    # be caught disagreeing. The bytes are now carried alongside the text.
+    r = engines.run(engines.LYPNING, r"import sys; sys.stdout.write('a\r\nb\r')",
+                    timeout=30)
+    assert r.stdout_bytes == b"a\r\nb\r"
+    # The text is still what a reader wants, and still translated: `Result.stdout`
+    # is for display, `stdout_bytes` is for comparison.
+    assert r.stdout == "a\nb\n"
+
+
+def test_a_reference_spawn_carries_them_too():
+    # The reference arm and the engine arm must capture by identical rules or a
+    # comparison between them measures the harness.
+    if engines.find_cpython() is None:
+        pytest.skip("no cpython found")
+    r = engines.run(engines.CPYTHON, r"import sys; sys.stdout.write('a\r\nb\r')",
+                    timeout=30)
+    assert r.stdout_bytes == b"a\r\nb\r" and r.stdout == "a\nb\n"
+
+
+def test_stdin_still_reaches_the_program(lypning_bin):
+    # `input=` takes bytes now; a str handed straight to a byte-mode spawn is a
+    # TypeError, and the corpus is full of programs that read stdin.
+    r = engines.run(engines.LYPNING, "import sys; print(sys.stdin.read().strip())",
+                    stdin="ping\n", timeout=30)
+    assert r.stdout.strip() == "ping" or r.unsupported
+
+
+def test_a_result_built_from_text_alone_still_answers_in_bytes():
+    r = _result(0)
+    assert r.stdout_bytes == b"" and r.stderr_bytes == b""
+    assert _result(90, REAL_REFUSAL).stderr_bytes == REAL_REFUSAL.encode()

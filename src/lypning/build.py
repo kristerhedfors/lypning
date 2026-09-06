@@ -179,6 +179,14 @@ class BuildResult:
     ok: bool = False
     binary: Path | None = None
     size_bytes: int = 0
+    #: Bytes of machine code — Mach-O ``__text``, ELF ``.text`` — beside the
+    #: bytes on disk, because the two answer different questions and only one of
+    #: them is what a commit added. ``None`` is a hole: the section could not be
+    #: read, and the file size is NOT substituted for it (:func:`gate.text_bytes`).
+    text_bytes: int | None = None
+    #: Which section was read, or why it could not be — the ``unmeasured`` note
+    #: that keeps the column above from ever reading as a zero.
+    text_note: str = ""
     seconds: float = 0.0
     target: str = ""
     log: str = ""
@@ -248,6 +256,20 @@ def _size(p: Path | None) -> int:
         return p.stat().st_size if p else 0
     except OSError:
         return 0
+
+
+def _text(p: Path | None) -> tuple[int | None, str]:
+    """``(code bytes, note)`` for a built artefact — :func:`gate.text_bytes`.
+
+    Imported here rather than at module scope for the same reason
+    :func:`verify` does it: ``lypning build`` is the command that runs on a
+    machine where nothing else is set up yet, and the gate pulls in a
+    measurement stack this function needs three lines of.
+    """
+    if p is None:
+        return None, ""
+    from . import gate
+    return gate.text_bytes(p)
 
 
 def _run(cmd: Sequence[str], *, cwd: Path | None = None,
@@ -342,8 +364,11 @@ def check_refusal_contract(binary: Path | str, expected: str = engines.LYPNING) 
     if res.returncode != UNSUPPORTED_EXIT:
         return False, "exit %d, expected %d (%s)" % (
             res.returncode, UNSUPPORTED_EXIT, res.stderr.strip()[:160] or "no stderr")
-    if res.stdout != "":
-        return False, "the refusal line reached stdout: %r" % res.stdout[:120]
+    # Bytes: "nothing at all on stdout" is a claim about what the process wrote,
+    # and a decode that normalises a lone `\r` away would let a byte through the
+    # one check whose whole subject is that no byte gets through.
+    if res.stdout_bytes != b"":
+        return False, "the refusal line reached stdout: %r" % res.stdout_bytes[:120]
     if res.stderr.strip() != want:
         return False, "stderr was %r, expected %r" % (res.stderr.strip()[:160], want)
     return True, ""
@@ -551,8 +576,11 @@ def build_rust(target: str = "musl", jobs: int | None = None,
                            skipped_reason="cargo reported success but %s does not exist" % binary)
 
     size = _size(binary)
+    text, text_note = _text(binary)
     shape = ["%s — %d bytes" % (binary, size),
-             "CheerpX device blocks (%d B each): %d" % (CHEERPX_BLOCK, cheerpx_blocks(size))]
+             "CheerpX device blocks (%d B each): %d" % (CHEERPX_BLOCK, cheerpx_blocks(size)),
+             "code section: %s  (%s)" % (format(text, ",") + " bytes"
+                                         if text is not None else "unmeasured", text_note)]
     if triple:
         opens = _startup_opens(binary)
         if opens is not None:
@@ -568,6 +596,8 @@ def build_rust(target: str = "musl", jobs: int | None = None,
         ok=ok,
         binary=binary,
         size_bytes=size,
+        text_bytes=text,
+        text_note=text_note,
         seconds=time.perf_counter() - t0,
         target=triple or "host",
         log=_join(*notes, _tail(out, verbose), *shape),
@@ -684,7 +714,10 @@ def build_lib(target: str = "host", jobs: int | None = None,
                            skipped_reason="cargo reported success but %s does not exist" % shared)
 
     size = _size(shared)
-    shape = ["%s — %d bytes" % (shared, size)]
+    text, text_note = _text(shared)
+    shape = ["%s — %d bytes" % (shared, size),
+             "code section: %s  (%s)" % (format(text, ",") + " bytes"
+                                         if text is not None else "unmeasured", text_note)]
     static = out_dir / LIB_STATIC
     if static.is_file():
         shape.append("%s — %d bytes" % (static, _size(static)))
@@ -698,6 +731,8 @@ def build_lib(target: str = "host", jobs: int | None = None,
         ok=ok,
         binary=shared,
         size_bytes=size,
+        text_bytes=text,
+        text_note=text_note,
         seconds=time.perf_counter() - t0,
         target=triple or "host",
         log=_join(*notes, _tail(out, verbose), *shape),
@@ -1024,12 +1059,16 @@ def _build_micropython(stock: bool, verbose: bool = False, clean: bool = False,
             _join(note, _tail(out, verbose)), unavailable=network)
 
     size = _size(out_bin)
+    text, text_note = _text(out_bin)
     return BuildResult(
         label, ok=True, binary=out_bin, size_bytes=size,
+        text_bytes=text, text_note=text_note,
         seconds=time.perf_counter() - t0, target="i386-musl",
         log=_join(note, _tail(out, verbose),
                   "%s — %d bytes" % (out_bin, size),
-                  "CheerpX device blocks (%d B each): %d" % (CHEERPX_BLOCK, cheerpx_blocks(size))),
+                  "CheerpX device blocks (%d B each): %d" % (CHEERPX_BLOCK, cheerpx_blocks(size)),
+                  "code section: %s  (%s)" % (format(text, ",") + " bytes"
+                                              if text is not None else "unmeasured", text_note)),
     )
 
 
@@ -1275,7 +1314,7 @@ def report(results: Iterable[BuildResult] | BuildResult, verbose: bool = False) 
     items = [results] if isinstance(results, BuildResult) else list(results)
     if not items:
         return "nothing to build"
-    head = ("engine", "target", "bytes", "blocks", "secs", "status")
+    head = ("engine", "target", "bytes", "code", "blocks", "secs", "status")
     rows = [head]
     for r in items:
         if r.ok:
@@ -1294,6 +1333,12 @@ def report(results: Iterable[BuildResult] | BuildResult, verbose: bool = False) 
             r.label,
             r.target or "-",
             str(r.size_bytes) if r.size_bytes else "-",
+            # `code` is the section, `bytes` the file. A build that could not
+            # read the section says so; substituting the file size here would
+            # make the two columns agree by fiction, which is the whole reason
+            # three different denominators once measured one capability.
+            (str(r.text_bytes) if r.text_bytes is not None
+             else ("unmeasured" if r.size_bytes else "-")),
             str(r.cheerpx_blocks) if r.size_bytes else "-",
             "%.1f" % r.seconds,
             status,

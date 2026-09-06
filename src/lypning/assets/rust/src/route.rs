@@ -436,7 +436,7 @@ pub fn chain_after(after: &str, kind: &str, verdicts: &[Verdict]) -> Vec<&'stati
     out
 }
 
-/// `stop` is the glob refusal every rung shares, when the walk found one — a
+/// `stop` is the refusal every rung shares, when the walk found one — a
 /// blocker that is NOT the one the blocker slot reports.
 ///
 /// The two are different questions and this is the only place they meet.
@@ -447,10 +447,10 @@ pub fn chain_after(after: &str, kind: &str, verdicts: &[Verdict]) -> Vec<&'stati
 /// refusal (`docs/HILLCLIMB.md`, the `cap-glob` review). So the blocker slot is
 /// left exactly as the walk filled it and the VERDICTS are overwritten: what
 /// the stop names is a refusal no rung of the spectrum answers — `os.scandir`
-/// order, a keyword only CPython serves, an attribute nothing here has — and a
-/// verdict vector that says so routes to CPython through
-/// [`engine_from_verdicts`] and shortens the chain through [`chain_after`]
-/// with no special case in either.
+/// order, a keyword only CPython serves, an attribute nothing here has, a
+/// pattern nothing here compiles — and a verdict vector that says so routes to
+/// CPython through [`engine_from_verdicts`] and shortens the chain through
+/// [`chain_after`] with no special case in either.
 fn finish_route(
     kind: String,
     detail: String,
@@ -567,10 +567,16 @@ mod spectrum_tests {
 
     #[test]
     fn a_pattern_this_engine_cannot_compile_is_a_static_block_and_a_good_one_is_not() {
-        // `re` is the sibling's module now, so a bare import routes there and
-        // so does an ordinary matcher call — the pattern is COMPILED by the
-        // walker, before the program starts, in every spelling a walk can see.
-        #[cfg(feature = "cap-re")]
+        // Every assertion below runs on EVERY variant, and that is the point of
+        // #48: the walk that decides a pattern is `repat.rs`, which the core
+        // carries too, so the binary that ROUTES answers the same question the
+        // binary that RUNS would have. While this was `cfg(feature = "cap-re")`
+        // the core answered `lypning-l` for the second list and the chain then
+        // reached lypning-l with `-c`, where the refusal fired at runtime.
+        //
+        // `re` is the sibling's module, so a bare import routes there and so
+        // does an ordinary matcher call — the pattern is decided by the walker,
+        // before the program starts, in every spelling a walk can see.
         for src in [
             "import re\nprint(re.sub('a', 'b', 'a'))",
             "import re as x\nprint(x.findall(r'\\d+', 'a1'))",
@@ -585,21 +591,27 @@ mod spectrum_tests {
             let l = r.verdicts.iter().find(|v| v.engine == "lypning-l").unwrap();
             assert!(l.kind.is_empty(), "{src}: {} {}", l.kind, l.detail);
         }
-        // …and a construct of a later slice, or a pattern CPython itself
-        // rejects, is the program's blocker HERE rather than a refusal one
-        // in-process run later — which is what keeps a runtime refusal from
-        // landing after a side effect the commit barrier has let through.
-        #[cfg(feature = "cap-re")]
+        // …and a construct of a later slice, a pattern CPython itself rejects,
+        // or a BYTES pattern is a route to CPython from every rung — which is
+        // what keeps a runtime refusal from landing after a side effect the
+        // commit barrier has let through. The last row is issue #48's own
+        // reproduction: through the chain it was
+        // `lypning: error: … reached after output was already flushed`, exit 1,
+        // where CPython answers `[b'a', b'a']` at exit 0.
         for src in [
             "import re\nprint(re.search(r'(?P<a>x)', 'x'))",
             "import re\nprint(re.findall(r'(?<=a)b', 'ab'))",
             "import re as x\nprint(x.sub(r'(a)\\1', 'b', 'aa'))",
             "from re import compile as c\nprint(c('a{2,1}'))",
             "import re, os\nos.makedirs('d1/d2')\nprint(re.sub(r'(?=a)', 'b', 'a'))",
+            "import re, os\nos.makedirs('d')\nprint(re.findall(b'a', b'aa'))",
         ] {
             let r = route(src);
             assert_eq!(r.engine, Engine::CPython, "{src}");
-            assert_eq!(r.kind, "re", "{src}");
+            // The KIND is this binary's own first blocker and differs by rung —
+            // `module: import re` in the core, `re: …` where `re` is served —
+            // because that is the row `--plan` ranks. The VERDICT is the
+            // spectrum's, and it is the same on both.
             let l = r.verdicts.iter().find(|v| v.engine == "lypning-l").unwrap();
             assert_eq!(l.kind, "re", "{src}");
         }
@@ -1036,9 +1048,9 @@ struct Requirements {
     aliases: Vec<(String, String)>,
     /// `from re import search as s` — bound name to the `re` function it
     /// names, so a bare `s(…)` is seen as the call it is and its PATTERN can
-    /// be compiled here, before the program starts. Only on a variant that
-    /// serves `re`: the core has no compiler to decide with.
-    #[cfg(feature = "cap-re")]
+    /// be decided here, before the program starts. In EVERY variant since #48:
+    /// the core has no matcher, but `repat.rs` gives it the parser, which is
+    /// all a walk ever needed.
     re_names: Vec<(String, String)>,
     /// `P = r'…'` — a pattern LITERAL bound to a name, so that `re.sub(P, …)`
     /// and `glob.glob(P)` are decided by the same walk that decides
@@ -1063,23 +1075,31 @@ struct Requirements {
     /// borrows one live AST for its whole run, so no node is freed and no
     /// address is reused; nothing is dereferenced through these.
     glob_blessed: Vec<*const Expr>,
-    /// The refusal that stops EVERY rung of the spectrum, as
-    /// `(kind, detail)`, recorded even when an EARLIER blocker won the `--plan`
-    /// row. [`static_check`] reads this one: a program whose first blocker
-    /// is something lypning-l runs anyway (the walker is deliberately
-    /// pessimistic about methods) must still not reach a glob call it would
-    /// have refused halfway through.
+    /// The refusal that stops EVERY rung of the spectrum, as `(kind, detail)`,
+    /// recorded even when an EARLIER blocker won the `--plan` row. A program
+    /// whose first blocker is something lypning-l runs anyway (the walker is
+    /// deliberately pessimistic about methods) must still not reach the call it
+    /// would have refused halfway through.
     ///
-    /// [`route`] reads it too, and has to: in the CORE the FIRST blocker is
-    /// `module: import glob`, which `lypning-l` answers — so the blocker slot
-    /// alone would route such a program to a sibling that refuses it.
+    /// [`route`] reads it, and has to: in the CORE the first blocker for a
+    /// capability program is `module: import X`, which `lypning-l` answers — so
+    /// the blocker slot alone routes the program to a sibling that refuses it.
+    /// One wasted spawn when the sibling refuses cleanly; **exit 1** when it
+    /// does not, because the chain reaches that sibling with `-c` and its
+    /// refusal then fires at RUNTIME, which after a committed `os.makedirs` is
+    /// a number invariant 2 forbids retrying. That is issue #48, and this slot
+    /// is the whole of the answer to it: every variant computes the spectrum's
+    /// verdict, so there is still exactly ONE routing decision.
     ///
-    /// It carries the KIND as well as the detail because it is no longer only
-    /// `glob-order`. Every static refusal an admitted glob call can raise goes
-    /// here — a keyword lypning-l does not serve, a pattern literal it cannot
-    /// match, an attribute it does not have — and each keeps the kind the
-    /// runtime would have raised, so a program is refused with the same line
-    /// one in-process run earlier.
+    /// [`static_stop_check`] reads it too, for the `-c` entry that is not
+    /// routed at all.
+    ///
+    /// It carries the KIND as well as the detail, and it is not glob's alone:
+    /// `glob-order`, a glob keyword no rung serves, a glob attribute nothing
+    /// here has, an `re` pattern literal no rung can compile (#48), and — since
+    /// `cap-hashlib` — a `hashlib` constructor or attribute no rung has.
+    /// Each keeps the kind the runtime would have raised, so a program is
+    /// refused with the same line one in-process run earlier.
     spectrum_stop: Option<(String, String)>,
     /// Which order-blind wrappers are still the BUILTIN, one bit per index into
     /// [`ORDER_BLIND`]. `sorted` rebound to something that shows its argument's
@@ -1106,23 +1126,23 @@ impl Requirements {
 
     /// A refusal the whole spectrum shares, for the router AND for the run.
     /// `block` is first-wins because `--plan` ranks what a program hit FIRST;
-    /// this slot is separate because the run has to refuse whether or not
+    /// the stop slot is separate because the run has to refuse whether or not
     /// something else was hit earlier.
     ///
     /// Named for the SLOT and not for `glob`, which was its only writer until
-    /// `cap-hashlib`: the two capabilities ask the same question of the walk —
-    /// *is there a refusal here that no rung answers, and can it be raised
-    /// before the interpreter exists?* — and one slot is what lets
-    /// [`static_check`] answer it once.
-    fn stop_spectrum(&mut self, kind: &str, detail: String) {
+    /// `re` (#48) and `cap-hashlib`: those capabilities ask the same question
+    /// of the walk — *is there a refusal here that no rung answers, and can it
+    /// be raised before the interpreter exists?* — and one slot is what lets
+    /// [`static_stop_check`] answer it once.
+    fn stop(&mut self, kind: &str, detail: String) {
         self.block(kind, detail.clone());
         self.stop_only(kind, detail);
     }
 
-    /// The stop without the blocker, for the two places that have ALREADY
-    /// blocked correctly on both variants — the `from glob import …` arm,
-    /// where the core blocks `module` and lypning-l blocks `module-attr` and
-    /// neither should be displaced from the `--plan` row this walk reports.
+    /// The stop without the blocker, for the places that have ALREADY blocked
+    /// correctly on both variants — the `from glob import …` arm, where the
+    /// core blocks `module` and lypning-l blocks `module-attr` and neither
+    /// should be displaced from the `--plan` row this walk reports.
     fn stop_only(&mut self, kind: &str, detail: String) {
         if self.spectrum_stop.is_none() {
             self.spectrum_stop = Some((kind.to_string(), detail));
@@ -1130,7 +1150,7 @@ impl Requirements {
     }
 
     fn block_glob_order(&mut self) {
-        self.stop_spectrum("glob-order", GLOB_ORDER.to_string());
+        self.stop("glob-order", GLOB_ORDER.to_string());
     }
 
     /// Replace a `module: import X` blocker with a `module-attr: X.name` one.
@@ -1275,10 +1295,9 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                 "sys" if names.iter().any(|(n, _)| matches!(n.as_ref(), "stdin" | "__stdin__")) => {
                     req.reads_stdin = true
                 }
-                #[cfg(feature = "cap-re")]
                 "re" => {
                     for (n, bind) in names {
-                        if crate::re::is_matcher(n) {
+                        if crate::repat::is_matcher(n) {
                             req.re_names.push((bind.to_string(), n.to_string()));
                         }
                     }
@@ -1287,7 +1306,7 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                 // `glob` arm below has both: a served name is a CONSTRUCTOR
                 // whose call this walk still has to decide, and an unserved
                 // one is a refusal that must be raised before the interpreter
-                // exists. `stop_only` and not `stop_spectrum` because the arm
+                // exists. `stop_only` and not `stop` because the arm
                 // further down already blocks it correctly on both variants —
                 // `module` in the core, `module-attr` on lypning-l — and
                 // neither should be displaced from the `--plan` row.
@@ -1636,7 +1655,6 @@ fn hash_method(_req: &Requirements, _n: &str) -> bool {
 /// Only for a program that imports `re`: the import is what makes the name mean
 /// the module, exactly as for [`pathlib_method`]; `re.split(",")` on a string
 /// someone called `re` is a str method and runs here.
-#[cfg(feature = "cap-re")]
 fn re_call_of<'a>(
     func: &Expr,
     args: &'a [Expr],
@@ -1655,7 +1673,7 @@ fn re_call_of<'a>(
                     .find(|(a, _)| a == base.as_ref())
                     .map(|(_, p)| p.as_str())
                     .unwrap_or(base.as_ref());
-                name == "re" && crate::re::is_matcher(n)
+                name == "re" && crate::repat::is_matcher(n)
             }
             _ => false,
         },
@@ -1751,11 +1769,17 @@ fn literal_type(e: &Expr) -> Option<&'static str> {
 /// for, and taking a static route on a guess would send a program this engine
 /// runs to CPython instead.
 ///
-/// This is THIS binary's walk, so it decides for a chain that starts here.
-/// A chain that starts at the core reaches `lypning-l` through `exec` with
-/// `-c`, not `run`, so the core's own route — `module: import re` — is the one
-/// that placed the program, and the runtime refusal is still what fires there.
-#[cfg(feature = "cap-re")]
+/// **Every variant runs this walk, and that is issue #48's fix.** It used to be
+/// behind `cfg(feature = "cap-re")`, so only `lypning-l` computed it — and
+/// `lypning-l` is not the binary that routes. The core stopped on `module:
+/// import re`, read `cap-re` off `lypning-l`'s row and sent the program there;
+/// the chain hands a rung its program with `-c`, not `run`, so `lypning-l` was
+/// never asked to route it either, and the block fired at RUNTIME instead —
+/// after `os.makedirs()` had committed the barrier, which is exit 1 and a
+/// chain that cannot fall onward. The pattern parser is `repat.rs` for exactly
+/// this reason, and the verdict goes in the SPECTRUM STOP slot rather than the
+/// blocker slot, because in the core the blocker is `module: import re` and
+/// `lypning-l` answers that one.
 fn re_pattern_block(
     req: &mut Requirements,
     func: &Expr,
@@ -1772,9 +1796,9 @@ fn re_pattern_block(
     };
     match lit {
         Some(PatLit::Str(src)) => {
-            if let Err(e) = crate::re::precompile(&src) {
+            if let Err(e) = crate::repat::precompile(&src) {
                 if let crate::err::ErrKind::Unsupported { kind, detail } = e.kind() {
-                    req.block(kind, detail.clone());
+                    req.stop(kind, detail.clone());
                 }
             }
         }
@@ -1784,7 +1808,7 @@ fn re_pattern_block(
         // runtime to say so. Same kind, same detail, one in-process run
         // earlier.
         Some(PatLit::Bytes) => {
-            req.block("re", "bytes pattern or subject (re over bytes)".to_string())
+            req.stop("re", "bytes pattern or subject (re over bytes)".to_string())
         }
         // A literal of any other type is `glob`'s half of this table and not
         // `re`'s: what `re.compile(5)` raises is a `TypeError` whose wording is
@@ -2127,7 +2151,7 @@ fn glob_call_block(
                 .map(|(k, _)| format!("glob.{name}({k}=…)"))
         });
     if let Some(d) = detail {
-        req.stop_spectrum("glob", d);
+        req.stop("glob", d);
     }
 }
 
@@ -2214,7 +2238,7 @@ fn hash_call_block(
     } else {
         return;
     };
-    req.stop_spectrum("hashlib", detail);
+    req.stop("hashlib", detail);
 }
 
 /// The call's arguments with every `*`/`**` spliced in, as
@@ -2326,32 +2350,41 @@ fn glob_bless(
     }
 }
 
-/// The static glob rules, asked of a program that is ABOUT TO RUN rather than
-/// of one being routed — and it is the same walk, so the two can never
-/// disagree.
+/// The spectrum stop, asked of a program that is ABOUT TO RUN rather than of
+/// one being routed — and it is the same walk, so the two can never disagree.
 ///
-/// `route()` is consulted by `lypning run`; `<bin> -c PROG` is not routed at
-/// all, and that is how the chain reaches this binary once a smaller sibling
-/// has picked it (`docs/HILLCLIMB.md` iteration 76 filed the general case as
-/// #48). Without this the static blockers would be inert on exactly the path
-/// the dispatcher uses, and `lypning-l -c 'import glob; print(glob.glob("*"))'`
-/// would answer in the filesystem's order at exit 0.
+/// **Its reason is `-c` itself, and it survives #48.** That issue was the
+/// CHAIN reaching this binary with `-c` on a route the core computed; the fix
+/// is that every variant now computes the whole spectrum's verdict
+/// ([`Requirements::spectrum_stop`]), so the chain no longer hands a rung a
+/// program that rung statically refuses. What is left is the entry the chain
+/// never touched: `<bin> -c PROG` typed by hand, and the one
+/// `lypning conformance` grades every engine through. `glob` has NO runtime
+/// backstop — the order rule is decided in the walk and nowhere else — so
+/// without this, `lypning-l -c 'import glob; print(glob.glob("*"))'` does not
+/// refuse, it ANSWERS, in whatever order the filesystem gave, at exit 0.
+/// Measured 2026-09-06 by deleting this call and rebuilding: the refusal became
+/// `['qqq.py', 'bbb.py', 'aaa.py', 'mmm.py', 'zzz.py']` and exit 0.
 ///
 /// It runs BEFORE the first statement, so the refusal is exit 90 with an empty
 /// stdout and an untouched disk — never the exit 1 a refusal reached after
-/// `os.makedirs()` would have been. Only for a source that mentions the module,
-/// so every other program pays one substring search.
-#[cfg(feature = "cap-glob")]
-/// Every static refusal the walk can raise that NO rung of the spectrum
-/// answers, asked again for a run that was never routed (`<bin> -c PROG`).
+/// `os.makedirs()` would have been. Only for a source that mentions `glob`, so
+/// every other program pays one substring search: `re`'s stops are not why this
+/// exists (the matcher refuses them at runtime, which is a backstop `glob` has
+/// none of), and widening the guard to catch them would put a second AST walk
+/// in front of every in-process run to buy an exit code on a path the chain can
+/// no longer reach. A program that mentions `glob` and stops on `re` first is
+/// refused here with the `re` line, which is the same line one statement later
+/// and one committed write earlier.
 ///
-/// This is the mitigation for issue #51 and for issue #48 together. The core
-/// routes `import hashlib` and `import glob` INTO `lypning-l`, which then
-/// invokes the program as `-c` and never walks it — so a refusal only the walk
-/// could see would land at RUNTIME, and a runtime refusal after `os.mkdir` has
-/// committed the barrier is exit 1 with the output discarded and no answer.
-/// Asked here, before `Interp::new()`, it is exit 90 with an untouched disk.
-pub fn static_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
+/// `cap-hashlib` widened the guard to `hashlib` for the same reason `glob` is
+/// in it: the core routes `import hashlib` INTO `lypning-l`, which enters the
+/// program as `-c` and never walks it, so a constructor or attribute only the
+/// walk could refuse would land at RUNTIME — and a runtime refusal after
+/// `os.mkdir` has committed the barrier is exit 1 with the output discarded
+/// (issue #51). Asked here, it is exit 90 with an untouched disk.
+#[cfg(any(feature = "cap-glob", feature = "cap-hashlib"))]
+pub fn static_stop_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
     if !src.contains("glob") && !src.contains("hashlib") {
         return Ok(());
     }
@@ -2572,7 +2605,7 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             // a monotone violation, which invariant 10 does not allow.
             #[cfg(feature = "cap-hashlib")]
             if hash_module(b, req) && !crate::hashlib::SERVED.contains(&n.as_ref()) {
-                req.stop_spectrum("module-attr", format!("hashlib.{n}"));
+                req.stop("module-attr", format!("hashlib.{n}"));
                 return;
             }
             // Every OTHER `glob.<n>`, decided from [`GLOB_SERVED`]: `escape`
@@ -2584,7 +2617,7 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             // one statement into a program that had already made a directory.
             if glob_module(b, req) {
                 if !GLOB_SERVED.contains(&n.as_ref()) {
-                    req.stop_spectrum("module-attr", format!("glob.{n}"));
+                    req.stop("module-attr", format!("glob.{n}"));
                 }
                 return;
             }
@@ -2663,7 +2696,6 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             // Before the callee and the arguments are walked, so that a
             // program whose arguments hold a second blocker is still counted
             // under the pattern it cannot compile — the row `--plan` ranks.
-            #[cfg(feature = "cap-re")]
             re_pattern_block(req, func, args, kwargs);
             // Under the capability's own feature, like `re_pattern_block` and
             // unlike `glob_call_block`: the CORE cannot resolve a hashlib

@@ -60,11 +60,24 @@ pub mod parse;
 #[cfg(feature = "cap-pathlib")]
 pub mod pathlib;
 pub mod random;
-/// The `re` SURFACE — module, flags, `escape`, `purge`, and the matcher-backed
-/// names, which refuse — the `cap-re` capability. Absent from the smaller
-/// variant entirely, not merely unreachable in it.
+/// The `re` SURFACE — module, flags, `escape`, `purge`, the compiler back end
+/// and the matching machine — the `cap-re` capability. Absent from the smaller
+/// variant entirely, not merely unreachable in it. The pattern PARSER is not
+/// here: it is [`repat`], which every variant carries.
 #[cfg(feature = "cap-re")]
 pub mod re;
+/// The `re` pattern parser, in EVERY variant, because the binary that routes is
+/// the cheapest one and a blocker only `lypning-l` can compute is inert on the
+/// path the dispatcher uses (issue #48). Not the capability: nothing here runs
+/// a regex, and `route::CAPS` still names `cap-re` on one row alone.
+///
+/// Without the matcher the parse tree is built and dropped — the walker asks
+/// only whether the parse SUCCEEDS — so a variant that has no `re` reads none
+/// of the tree's fields. That is what the `allow` says, and it is scoped to
+/// exactly those variants: with `cap-re` on, `re.rs` reads all of it and the
+/// lint stays live, so genuinely dead code is still caught where it can be.
+#[cfg_attr(not(feature = "cap-re"), allow(dead_code))]
+pub mod repat;
 
 /// `glob.glob` / `glob.iglob` / `glob.escape` / `glob.has_magic` — the
 /// `cap-glob` capability. Absent from the smaller variant entirely, not merely
