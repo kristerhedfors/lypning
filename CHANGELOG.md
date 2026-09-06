@@ -20,6 +20,32 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-06** — `cap-csv` on lypning-l: serve the readers lazily, refuse the writers, add no Value variant · [#49]
+
+- `csv` was held at iteration 74 because a new `Value::CsvWriter` was wired into
+  `type_name`, `methods`, `ops` and `fmt` but not into `value::eq`, `is_same` or
+  hash. This rebuild adds **no new `Value` variant**: the reader is
+  `Value::IterObj(Iter::Csv(..))`, an adapter over an existing lazy `Iter` in
+  the shape `Iter::Filter` and `re.finditer` already use.
+- A corpus mine (2026-09-06, 3,688 loaded) counts `csv.reader` 16, `csv.writer`
+  8, `csv.DictReader` 5, `csv.DictWriter` 2 over the 23 blocked programs, so the
+  readers are served and the writers are static `module-attr` refusals — the
+  writers are the only part that needs an object with methods.
+- **The reader is lazy.** The first cut read the stream eagerly at construction
+  and every other path to it then needed a guard; two adversarial rounds found
+  14 defects, five of them guard gaps. Making the reader pull through the same
+  iterator `for line in f` drives left five guards with nothing to guard, and
+  they were deleted. A reader outliving its file now raises CPython's verbatim
+  `ValueError: I/O operation on closed file.`
+- `lypning-l` MATCH 1950 → **1967**, coverage 77.9% → **78.6%**, MISMATCH 0,
+  UNSAFE 0, monotone 0, dispatchers agree 2504/2504, routing unchanged
+  (IDEAL 2372, WASTED 96, LATE 36). The frozen core is byte-count identical at
+  834,672 B with no csv text in it; `lypning-l` 934,096 → 950,656 B, 8 of 32
+  blocks. **Density 1.05 programs/KiB.**
+- Filed #50: `conformance` cannot see a newline difference at all, because
+  `engines.run_engine` captures both arms with `text=True` and universal-newline
+  translation rewrites both before they are compared.
+
 **2026-09-05** — `re` matcher round: lypning-l runs the regexes the corpus writes; `glob` and `class` rejected · [#47]
 
 - `cap-re` step 2. `lypning-l` MATCH 1910 → **1950**, coverage 76.3% → **77.9%**
