@@ -1,5 +1,6 @@
 //! The module surface: `MODULES` below — and, on the variant built with the
-//! `cap-*` feature for it, `collections`, `pathlib`, `re` and `csv`.
+//! `cap-*` feature for it, `collections`, `pathlib`, `re`, `csv`, `glob` and
+//! `base64`.
 //!
 //! Chosen from the corpus, in frequency order: `sys` (82 imports), `json` (74),
 //! `io` (63 — almost entirely `io.open(p, encoding='utf-8').read()`, which is
@@ -33,7 +34,8 @@ use std::rc::Rc;
     feature = "cap-pathlib",
     feature = "cap-re",
     feature = "cap-csv",
-    feature = "cap-glob"
+    feature = "cap-glob",
+    feature = "cap-base64"
 )))]
 pub const MODULES: &[&str] = &["sys", "os", "os.path", "io", "json", "posixpath", "random"];
 #[cfg(all(
@@ -41,7 +43,8 @@ pub const MODULES: &[&str] = &["sys", "os", "os.path", "io", "json", "posixpath"
     not(feature = "cap-pathlib"),
     not(feature = "cap-re"),
     not(feature = "cap-csv"),
-    not(feature = "cap-glob")
+    not(feature = "cap-glob"),
+    not(feature = "cap-base64")
 ))]
 pub const MODULES: &[&str] =
     &["sys", "os", "os.path", "io", "json", "posixpath", "random", "collections"];
@@ -50,7 +53,8 @@ pub const MODULES: &[&str] =
     not(feature = "cap-collections"),
     not(feature = "cap-re"),
     not(feature = "cap-csv"),
-    not(feature = "cap-glob")
+    not(feature = "cap-glob"),
+    not(feature = "cap-base64")
 ))]
 pub const MODULES: &[&str] =
     &["sys", "os", "os.path", "io", "json", "posixpath", "random", "pathlib"];
@@ -59,7 +63,8 @@ pub const MODULES: &[&str] =
     feature = "cap-pathlib",
     not(feature = "cap-re"),
     not(feature = "cap-csv"),
-    not(feature = "cap-glob")
+    not(feature = "cap-glob"),
+    not(feature = "cap-base64")
 ))]
 pub const MODULES: &[&str] = &[
     "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib",
@@ -69,7 +74,8 @@ pub const MODULES: &[&str] = &[
     feature = "cap-pathlib",
     feature = "cap-re",
     not(feature = "cap-csv"),
-    not(feature = "cap-glob")
+    not(feature = "cap-glob"),
+    not(feature = "cap-base64")
 ))]
 pub const MODULES: &[&str] = &[
     "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib", "re",
@@ -79,7 +85,8 @@ pub const MODULES: &[&str] = &[
     feature = "cap-pathlib",
     feature = "cap-re",
     feature = "cap-csv",
-    not(feature = "cap-glob")
+    not(feature = "cap-glob"),
+    not(feature = "cap-base64")
 ))]
 pub const MODULES: &[&str] = &[
     "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib", "re",
@@ -90,17 +97,31 @@ pub const MODULES: &[&str] = &[
     feature = "cap-pathlib",
     feature = "cap-re",
     feature = "cap-csv",
-    feature = "cap-glob"
+    feature = "cap-glob",
+    not(feature = "cap-base64")
 ))]
 pub const MODULES: &[&str] = &[
     "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib", "re",
     "csv", "glob",
 ];
+#[cfg(all(
+    feature = "cap-collections",
+    feature = "cap-pathlib",
+    feature = "cap-re",
+    feature = "cap-csv",
+    feature = "cap-glob",
+    feature = "cap-base64"
+))]
+pub const MODULES: &[&str] = &[
+    "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib", "re",
+    "csv", "glob", "base64",
+];
 // The rows above are the build-order CHAIN, not every subset: each capability
-// appends one row and stops the row before it. `cap-re`, `cap-csv` and
-// `cap-glob` name no row of their own because none of them is ever built except
-// as part of `variant-l`, whose feature names the full set — which is what the
-// three guards below say, each naming the caps that precede it in the chain.
+// appends one row and stops the row before it. `cap-re`, `cap-csv`, `cap-glob`
+// and `cap-base64` name no row of their own because none of them is ever built
+// except as part of `variant-l`, whose feature names the full set — which is
+// what the four guards below say, each naming the caps that precede it in the
+// chain.
 #[cfg(all(feature = "cap-re", not(all(feature = "cap-collections", feature = "cap-pathlib"))))]
 compile_error!("cap-re is only built as part of variant-l (it names the full set)");
 #[cfg(all(
@@ -118,6 +139,17 @@ compile_error!("cap-csv is only built as part of variant-l (it names the full se
     ))
 ))]
 compile_error!("cap-glob is only built as part of variant-l (it names the full set)");
+#[cfg(all(
+    feature = "cap-base64",
+    not(all(
+        feature = "cap-collections",
+        feature = "cap-pathlib",
+        feature = "cap-re",
+        feature = "cap-csv",
+        feature = "cap-glob"
+    ))
+))]
+compile_error!("cap-base64 is only built as part of variant-l (it names the full set)");
 
 pub fn import(path: &str) -> R<Value> {
     match MODULES.iter().find(|m| **m == path) {
@@ -265,6 +297,13 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
         // `module-attr` kind, which the router blocks on statically.
         #[cfg(feature = "cap-glob")]
         ("glob", _) => return crate::glob::module_attr(name),
+        // `base64.b64encode`, `b64decode`, `urlsafe_b64encode`,
+        // `urlsafe_b64decode`. Every other name — `b16encode`, `b32decode`,
+        // `a85encode`, `encodebytes`, `standard_b64encode` — refuses with the
+        // `module-attr` kind, which `route::MODULE_ATTRS` makes a STATIC block
+        // in the core's walk: the router reads that table, not this match.
+        #[cfg(feature = "cap-base64")]
+        ("base64", _) => return crate::base64::module_attr(name),
         _ => {
             return Err(unsupported(
                 "module-attr",
@@ -341,6 +380,8 @@ pub fn call_module_method(
         ("csv", _) => return crate::csv::call(it, name, args, &kw),
         #[cfg(feature = "cap-glob")]
         ("glob", _) => return crate::glob::call(it, name, args, &kw),
+        #[cfg(feature = "cap-base64")]
+        ("base64", _) => return crate::base64::call(it, name, args, &kw),
         ("random", _) => return crate::random::call(it, name, args, &kw),
         // `Path.cwd()`. A classmethod on the type object, reached through
         // `ops::get_attr`, which spells it as a method on the module so that

@@ -57,7 +57,9 @@ SPECTRUM = (LYPNING, LYPNING_L)
 #: :func:`chain_after_refusal`: a sibling built with the same set cannot answer
 #: at runtime what a smaller one could not, so it is not tried.
 #:
-#: ``cap-collections`` (``collections.Counter`` / ``defaultdict``),
+#: ``cap-base64`` (``b64encode`` / ``b64decode`` / ``urlsafe_b64encode`` /
+#: ``urlsafe_b64decode``; the rest of the module refuses as ``module-attr`` from
+#: the WALK), ``cap-collections`` (``collections.Counter`` / ``defaultdict``),
 #: ``cap-csv`` (``csv.reader`` / ``csv.DictReader``; the writers are absent, so
 #: they refuse as ``module-attr`` from the WALK), ``cap-glob`` (``glob.glob``,
 #: whose every refusal is decided in the WALK by every variant, so the feature
@@ -69,7 +71,7 @@ SPECTRUM = (LYPNING, LYPNING_L)
 #: the sets differ.
 VARIANT_CAPS: dict = {
     LYPNING: (),
-    LYPNING_L: ("cap-collections", "cap-csv", "cap-glob", "cap-pathlib", "cap-re"),
+    LYPNING_L: ("cap-base64", "cap-collections", "cap-csv", "cap-glob", "cap-pathlib", "cap-re"),
 }
 
 #: Not a fourth engine — the same lypning, reached through the C ABI instead of

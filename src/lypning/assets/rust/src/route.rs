@@ -59,7 +59,7 @@ pub const SPECTRUM: &[Variant] = &[
         // Alphabetical, which is the order `build.rs` emits `LYPNING_CAPS` in —
         // so the binary's own answer, this table and `engines.VARIANT_CAPS` are
         // one list and not three that happen to agree.
-        caps: &["cap-collections", "cap-csv", "cap-glob", "cap-pathlib", "cap-re"],
+        caps: &["cap-base64", "cap-collections", "cap-csv", "cap-glob", "cap-pathlib", "cap-re"],
     },
 ];
 
@@ -107,6 +107,13 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// RUNTIME chain off it already reaches lypning-l, because `chain_after` tries
 /// every sibling with a strictly larger `cap-*` set.
 ///
+/// `cap-base64` serves the `base64` MODULE — four functions of it, and only the
+/// attributes [`MODULE_ATTRS`] names — and answers no runtime kind. The one
+/// refusal it raises at runtime (`base64`) is a value the WALK could not read:
+/// an argument computed rather than spelled. There is no rung above lypning-l
+/// to hand it to, and `chain_after` a runtime `base64:` refusal is `[cpython]`
+/// by construction, so listing the kind would cost a spawn to be told no twice.
+///
 /// `cap-glob` serves the `glob` MODULE and answers no runtime kind either. It
 /// is the SECOND module served only in part, and it needs no [`MODULE_ATTRS`]
 /// row to say so: the walk below carries [`GLOB_SERVED`] unconditionally, so
@@ -118,6 +125,7 @@ pub const SPECTRUM_C: &[&std::ffi::CStr] = &[c"lypning", c"lypning-l"];
 /// [`ONLY_CPYTHON_KINDS`] because no reimplementation can reproduce
 /// `os.scandir` order, so no sibling could answer it either.
 pub const CAPS: &[(&str, &[&str], &[&str])] = &[
+    ("cap-base64", &["base64"], &[]),
     ("cap-collections", &["collections"], &[]),
     ("cap-csv", &["csv"], &[]),
     ("cap-glob", &["glob"], &[]),
@@ -149,15 +157,27 @@ pub const CAPS: &[(&str, &[&str], &[&str])] = &[
 /// held to the capability's own `module_attr` by a test on the variant that has
 /// it — `csv.rs` does, in `the_route_table_names_exactly_what_is_served`.
 ///
+/// `base64` is here for exactly the reason `csv` is, and the row IS
+/// [`BASE64_SERVED`] rather than a copy of it. Four names are served —
+/// `b64encode`, `b64decode`, `urlsafe_b64encode`, `urlsafe_b64decode` — and the
+/// rest of the module (`b16*`, `b32*`, `b85*`, `a85*`, `encodebytes`,
+/// `decodebytes`, `standard_b64*`) is not. Without the row the core would route
+/// `base64.b32encode(...)` into lypning-l on the strength of `module: import
+/// base64` and the attribute would refuse THERE, one statement into a program
+/// that may already have written to disk.
+///
 /// `glob` is absent for the opposite reason: it is small enough, but the walk
 /// already carries [`GLOB_SERVED`] unconditionally and decides `glob.<n>` from
 /// it — with the KIND the runtime would have raised — several arms before
 /// [`capability_module`] is reached. A row here would be a second table saying
 /// the same thing, and the two would drift.
-pub const MODULE_ATTRS: &[(&str, &[&str])] = &[(
-    "csv",
-    &["DictReader", "QUOTE_ALL", "QUOTE_MINIMAL", "QUOTE_NONE", "QUOTE_NONNUMERIC", "reader"],
-)];
+pub const MODULE_ATTRS: &[(&str, &[&str])] = &[
+    ("base64", BASE64_SERVED),
+    (
+        "csv",
+        &["DictReader", "QUOTE_ALL", "QUOTE_MINIMAL", "QUOTE_NONE", "QUOTE_NONNUMERIC", "reader"],
+    ),
+];
 
 /// Does some variant on the spectrum answer `module.name`, as far as
 /// [`MODULE_ATTRS`] can say? `true` for every module the table does not list —
@@ -982,6 +1002,22 @@ struct Requirements {
     /// is the binding in force at the call, and a name bound inside a `def`, a
     /// `lambda` or a comprehension is a name of that scope alone.
     pats: Vec<(String, Option<PatLit>)>,
+    /// `from base64 import b64decode [as d]` — the bound name of a base64
+    /// FUNCTION, so that a bare `d(...)` is decided by the same walk that
+    /// decides `base64.b64decode(...)`. Only on the variant that serves the
+    /// module: the core has no decoder to decide with, and reaches the same
+    /// programs through [`MODULE_ATTRS`] and the import blocker instead.
+    #[cfg(feature = "cap-base64")]
+    base64_names: Vec<(String, String)>,
+    /// The base64 refusal that stops the run, as `(kind, detail)`, recorded
+    /// even when an EARLIER blocker won the `--plan` row. Read only by
+    /// [`base64_static_check`], which runs before the first statement of a
+    /// `-c` run — the path the chain reaches this binary by, and the one
+    /// `route()` never sees (#48). It is not read by [`route`]: in the CORE
+    /// the first blocker is `module: import base64`, which lypning-l answers,
+    /// and lypning-l then refuses statically for the cost of one parse.
+    #[cfg(feature = "cap-base64")]
+    base64_stop: Option<(String, String)>,
     /// `from glob import glob [as g]` — the bound name of a glob FUNCTION, so
     /// that a bare `g(...)` is seen as the call it is. Without it the order
     /// blocker below would miss the one spelling that hides the module name.
@@ -1050,6 +1086,32 @@ impl Requirements {
         }
     }
 
+    /// Does any capability in THIS binary still want the binding table filled?
+    ///
+    /// One question rather than a growing `||` chain at the call site, and the
+    /// base64 half is behind its feature so the CORE's `bind_pattern` is the
+    /// bytes it always was — the frozen variant gains no capability code.
+    fn tracks_literals(&self) -> bool {
+        if self.imports.contains("re") || self.imports.contains("glob") {
+            return true;
+        }
+        #[cfg(feature = "cap-base64")]
+        if self.imports.contains("base64") {
+            return true;
+        }
+        false
+    }
+
+    /// A base64 refusal, for the run. It does NOT touch [`Self::blocker`]: the
+    /// `--plan` row for these programs is `module: import base64`, which is
+    /// what the core sees and what the build order should keep ranking.
+    #[cfg(feature = "cap-base64")]
+    fn stop_base64(&mut self, kind: &str, detail: String) {
+        if self.base64_stop.is_none() {
+            self.base64_stop = Some((kind.to_string(), detail));
+        }
+    }
+
     fn block_glob_order(&mut self) {
         self.stop_glob("glob-order", GLOB_ORDER.to_string());
     }
@@ -1083,7 +1145,7 @@ impl Requirements {
     /// that binds arrives here — an assignment, a `for` target, a `with … as`,
     /// a parameter, an `import … as`, an `except … as`, a `def`'s own name.
     fn bind_pattern(&mut self, name: &str, lit: Option<PatLit>) {
-        if !self.imports.contains("re") && !self.imports.contains("glob") {
+        if !self.tracks_literals() {
             return;
         }
         match self.pats.iter_mut().find(|(n, _)| n == name) {
@@ -1198,6 +1260,22 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                     for (n, bind) in names {
                         if crate::re::is_matcher(n) {
                             req.re_names.push((bind.to_string(), n.to_string()));
+                        }
+                    }
+                }
+                // `from base64 import b64decode [as d]`. The unserved
+                // names are already blocked correctly by both variants — the
+                // arm below spells `module` in the core and `module-attr` on
+                // lypning-l — but only the BLOCKER slot; the RUN needs its own
+                // stop, or `os.mkdir(); from base64 import b32encode` refuses
+                // past a committed barrier at exit 1.
+                #[cfg(feature = "cap-base64")]
+                "base64" => {
+                    for (n, bind) in names {
+                        if BASE64_SERVED.contains(&n.as_ref()) {
+                            req.base64_names.push((bind.to_string(), n.to_string()));
+                        } else {
+                            req.stop_base64("module-attr", format!("base64.{n}"));
                         }
                     }
                 }
@@ -1733,6 +1811,214 @@ const GLOB_ORDER: &str = "glob() order is filesystem-defined and not \
      reproducible; served only inside sorted(), bool(), len(), min(), max(), \
      any(), all(), sum() or the right of `in` — and iglob() answers a \
      generator, which len() and bool() do not read as a list";
+
+/// The `base64` attributes lypning-l serves, and therefore the only ones ANY
+/// rung of the spectrum answers. It IS the [`MODULE_ATTRS`] row rather than a
+/// copy of it, and `base64::tests::the_route_table_names_exactly_what_is_served`
+/// holds it to `base64.rs` in both directions.
+///
+/// Four names, and the rest of the module — `b16encode`/`b16decode`,
+/// `b32encode`/`b32decode`, `b32hexencode`/`b32hexdecode`, `b85encode`/
+/// `b85decode`, `a85encode`/`a85decode`, `z85encode`/`z85decode`,
+/// `encodebytes`/`decodebytes`, `standard_b64encode`/`standard_b64decode` —
+/// is a `module-attr` refusal. `standard_b64*` looks like a synonym for the two
+/// served names and is not one worth serving: nothing in the corpus (mined
+/// 2026-09-06 over 3,688 entries) spells it, and every name here is bytes.
+///
+/// Sorted, because [`served_attr`] reads it as the [`MODULE_ATTRS`] row and
+/// that row is asserted sorted.
+pub const BASE64_SERVED: &[&str] =
+    &["b64decode", "b64encode", "urlsafe_b64decode", "urlsafe_b64encode"];
+
+/// Which base64 keyword arguments are served, and the refusal line for the rest
+/// — one function, so the WALK and `base64::call` refuse with the same words.
+///
+/// `falsy` is whether the value is the literal `False`, `None` or `0`; a value
+/// the walk cannot read is not falsy, which refuses, which is the safe
+/// direction. Three rules, and each of the three is a divergence a
+/// reimplementation would ship:
+///
+///   * `altchars=` is a parameter of `b64encode`/`b64decode` ONLY, and
+///     `altchars=None` is its default and a no-op. The urlsafe pair takes no
+///     keyword at all, so `urlsafe_b64encode(s, altchars=None)` is a CPython
+///     `TypeError` and must not be answered here.
+///   * `validate=` is `b64decode`'s alone — `urlsafe_b64decode` does not
+///     forward it — and only its falsy values are served. It reaches C through
+///     a `bool(accept={int})` converter, so `validate=0` and `validate=None`
+///     are `validate=False` exactly.
+///   * `validate=True` selects `binascii`'s strict mode, whose every rejection
+///     is a `binascii.Error` message this engine does not write.
+#[cfg(feature = "cap-base64")]
+pub fn base64_kw_block(name: &str, k: &str, falsy: bool) -> Option<String> {
+    match k {
+        "altchars" if falsy && matches!(name, "b64encode" | "b64decode") => None,
+        "validate" if falsy && name == "b64decode" => None,
+        "validate" if name == "b64decode" => Some(format!(
+            "base64.{name}(validate=…) selects binascii's strict mode, whose \
+             every rejection is a binascii.Error message this engine does not write"
+        )),
+        _ => Some(format!("base64.{name}({k}=…)")),
+    }
+}
+
+/// As much of a base64 argument as a walk can honestly read: the TYPE of a
+/// literal — or of a literal bound to a name above the call — and its BYTES
+/// when the literal is spelled at the call site.
+///
+/// The bytes matter here in a way they do not for `glob`, because whether a
+/// decode raises is a property of the DATA: `b"aGk="` decodes and `b"aGk"` is
+/// a `binascii.Error`, and the second must be refused before the program runs
+/// rather than after it has made a directory. A `bytes` literal bound to a
+/// NAME answers its type and not its content — [`PatLit`] is the core's table
+/// and records `bytes` without the bytes — so that spelling keeps the runtime
+/// backstop, which `tests/test_base64_grid.py::RUNTIME_BACKSTOP` pins.
+#[cfg(feature = "cap-base64")]
+fn base64_arg(e: &Expr, req: &Requirements) -> Option<(&'static str, Option<Vec<u8>>)> {
+    Some(match e {
+        Expr::Bytes(b) => ("bytes", Some(b.as_ref().clone())),
+        Expr::Str(s) => ("str", Some(s.as_bytes().to_vec())),
+        Expr::FString(parts) => match fstring_text(parts) {
+            Some(t) => ("str", Some(t.as_bytes().to_vec())),
+            None => ("str", None),
+        },
+        Expr::Name(n) => match req.pattern_named(n)? {
+            PatLit::Str(t) => ("str", Some(t.as_bytes().to_vec())),
+            PatLit::Bytes => ("bytes", None),
+            PatLit::Other(t) => (t, None),
+        },
+        e => (literal_type(e)?, None),
+    })
+}
+
+/// Does this expression name the `base64` MODULE, through an alias, in a
+/// program that imported it? The import is what makes the name mean the module
+/// — `base64 = 3; base64.b64encode(x)` is not a module attribute and the walk
+/// must not say it is.
+#[cfg(feature = "cap-base64")]
+fn base64_module(b: &Expr, req: &Requirements) -> bool {
+    req.imports.contains("base64")
+        && matches!(resolve_module(b, &req.aliases), Some(crate::value::Value::Module("base64")))
+}
+
+/// Which base64 FUNCTION this callee names, if any — one of [`BASE64_SERVED`].
+/// `base64.b64decode(...)`, `x.b64decode(...)` after `import base64 as x`, and
+/// a bare `d(...)` bound by `from base64 import b64decode as d`.
+#[cfg(feature = "cap-base64")]
+fn base64_func(func: &Expr, req: &Requirements) -> Option<&'static str> {
+    let n: &str = match func {
+        Expr::Attr(b, n) if base64_module(b, req) => n.as_ref(),
+        Expr::Name(n) => req
+            .base64_names
+            .iter()
+            .find(|(bound, _)| bound == n.as_ref())
+            .map(|(_, f)| f.as_str())?,
+        _ => return None,
+    };
+    BASE64_SERVED.iter().copied().find(|x| *x == n)
+}
+
+/// Every refusal a `base64` call can raise that a walk can decide, hoisted out
+/// of the run and into the walk.
+///
+/// This is issue #51 answered for this capability. Serving the module means the
+/// program STARTS here — and a refusal reached after `os.mkdir` has committed
+/// the write barrier (`io.rs`) is exit 1 with the directory on disk and no
+/// answer, which the chain never retries, where the core without `cap-base64`
+/// refused cleanly at 90 and CPython gave the answer. `docs/HILLCLIMB.md`
+/// iterations 76 and 77 rejected two capabilities for exactly that shape.
+///
+/// Five things are literal in the source and therefore decidable here, in the
+/// order [`crate::base64::call`] asks them, so a program is refused with the
+/// same line one in-process run earlier:
+///
+///   1. the argument count — none, or a second positional (which is `altchars`
+///      on the standard pair and a `TypeError` on the urlsafe one);
+///   2. the keyword names and whether their values are the served defaults,
+///      through [`base64_kw_block`];
+///   3. the argument's TYPE when it is a literal — a `str` handed to an
+///      encoder is CPython's `TypeError` and the commonest way this call is
+///      typed wrongly;
+///   4. a `str` literal holding a non-ASCII character, which is a `ValueError`
+///      in `base64._bytes_from_decode_data`;
+///   5. the DATA itself, through [`crate::base64::data_block`] — the same
+///      function the run uses, so the walk and the run cannot disagree about
+///      whether an input decodes.
+///
+/// **What stays a runtime refusal**, and it is one shape: an argument whose
+/// VALUE the source does not spell — read from stdin, returned by a call,
+/// built by a join, or held by a name bound to a `bytes` literal, which the
+/// core's binding table records by type alone. Those keep the backstop in
+/// `base64::call`, and a refusal there still lands past a committed barrier;
+/// what the static half buys is that a literal never reaches that door.
+#[cfg(feature = "cap-base64")]
+fn base64_call_block(
+    req: &mut Requirements,
+    func: &Expr,
+    args: &[Expr],
+    kwargs: &[(std::rc::Rc<str>, Expr)],
+    star: &[usize],
+    dstar: &[Expr],
+) {
+    let Some(name) = base64_func(func, req) else { return };
+    let Some((pos, kws)) = flatten_call(args, kwargs, star, dstar) else { return };
+    let decoding = matches!(name, "b64decode" | "urlsafe_b64decode");
+    let urlsafe = matches!(name, "urlsafe_b64encode" | "urlsafe_b64decode");
+    let detail = match pos.len() {
+        0 => Some(format!("base64.{name}() with no argument")),
+        1 => None,
+        _ => Some(format!("base64.{name}() with extra positional arguments")),
+    }
+    .or_else(|| {
+        kws.iter()
+            .find_map(|(k, v)| base64_kw_block(name, k, matches!(v, Expr::None | Expr::False | Expr::Int(0))))
+    })
+    .or_else(|| {
+        let (t, data) = pos.first().and_then(|e| base64_arg(e, req))?;
+        if !decoding {
+            return (t != "bytes").then(|| {
+                format!("base64.{name}() over a {t} (CPython requires a bytes-like object)")
+            });
+        }
+        if t != "bytes" && t != "str" {
+            return Some(format!(
+                "base64.{name}() over a {t} (CPython requires a bytes-like object or an ASCII str)"
+            ));
+        }
+        let data = data?;
+        if t == "str" && !data.is_ascii() {
+            return Some(format!(
+                "base64.{name}() over a str holding a non-ASCII character (CPython raises a ValueError this engine does not word)"
+            ));
+        }
+        crate::base64::data_block(&data, urlsafe).map(str::to_string)
+    });
+    if let Some(d) = detail {
+        req.stop_base64("base64", d);
+    }
+}
+
+/// The static base64 rules, asked of a program that is ABOUT TO RUN rather than
+/// of one being routed — and it is the same walk, so the two can never
+/// disagree.
+///
+/// `<bin> -c PROG` is not routed at all, and that is exactly how the chain
+/// reaches this binary once the core has picked it (#48). It runs BEFORE the
+/// first statement, so the refusal is exit 90 with an empty stdout and an
+/// untouched disk, never the exit 1 a refusal reached after `os.mkdir` would
+/// have been. Only for a source that mentions the module, so every other
+/// program pays one substring search.
+#[cfg(feature = "cap-base64")]
+pub fn base64_static_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
+    if !src.contains("base64") {
+        return Ok(());
+    }
+    let mut req = Requirements::default();
+    walk_block(body, &mut req);
+    match req.base64_stop {
+        Some((k, d)) => Err(crate::err::unsupported(&k, &d)),
+        None => Ok(()),
+    }
+}
 
 /// The `glob` attributes lypning-l serves, and therefore the only ones ANY rung
 /// of the spectrum answers. Every other name — `translate`, `glob0`, `glob1`,
@@ -2342,6 +2628,14 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             if let Some(crate::value::Value::Module(m)) = resolve_module(b, &req.aliases) {
                 if crate::modules::get_attr(&crate::value::Value::Module(m), n).is_err() {
                     req.block("module-attr", format!("{m}.{n}"));
+                    // `base64.b32encode` is a `module-attr` blocker in both
+                    // variants, so the ROUTE is already right — but a blocker
+                    // is not a stop, and the run has to refuse before the
+                    // barrier rather than when the attribute is touched.
+                    #[cfg(feature = "cap-base64")]
+                    if m == "base64" {
+                        req.stop_base64("module-attr", format!("{m}.{n}"));
+                    }
                 }
                 return;
             }
@@ -2372,6 +2666,11 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
             // under the pattern it cannot compile — the row `--plan` ranks.
             #[cfg(feature = "cap-re")]
             re_pattern_block(req, func, args, kwargs);
+            // Same reason, and the same place in the order: every refusal an
+            // admitted base64 call can raise that the source spells, decided
+            // before the program starts (#51).
+            #[cfg(feature = "cap-base64")]
+            base64_call_block(req, func, args, kwargs, star, dstar);
             // Is THIS a glob call, and did its parent bless it? A blessed call
             // is served and its callee is not walked; an unblessed one is the
             // blocker, whatever it was going to be handed to. `escape` and

@@ -28,6 +28,12 @@
 pub mod alloc;
 pub mod args;
 pub mod ast;
+/// `base64.b64encode` / `b64decode` / `urlsafe_b64encode` / `urlsafe_b64decode`
+/// — the `cap-base64` capability. Absent from the smaller variant entirely, not
+/// merely unreachable in it. `bytes` in and `bytes` out: no new `Value` variant,
+/// and therefore no arm of the interpreter that has to remember it exists.
+#[cfg(feature = "cap-base64")]
+pub mod base64;
 pub mod builtins;
 /// `collections.Counter` / `defaultdict` — the `cap-collections` capability.
 /// Absent from the smaller variant entirely, not merely unreachable in it.

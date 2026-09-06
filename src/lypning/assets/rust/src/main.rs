@@ -126,6 +126,14 @@ fn execute_inner(src: &str, report_refusal: bool, kind: &mut String, detail: &mu
     if let Err(e) = route::glob_static_check(&body, src) {
         return finish(Err(e), report_refusal, kind, detail);
     }
+    // The same, for `base64`: every refusal a served call can raise that the
+    // SOURCE spells is decided here, so `os.mkdir("D"); base64.b64decode(b"a")`
+    // is exit 90 with an untouched cwd rather than exit 1 with the directory on
+    // disk and no answer (#51).
+    #[cfg(feature = "cap-base64")]
+    if let Err(e) = route::base64_static_check(&body, src) {
+        return finish(Err(e), report_refusal, kind, detail);
+    }
     let mut interp = eval::Interp::new();
     let r = interp.run(&body);
     finish(r, report_refusal, kind, detail)
