@@ -20,6 +20,40 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-06** — `cap-glob` on lypning-l: the order question is answered by the walker, not by a value · [#52]
+
+- `glob` was rejected at iteration 76 for seven holes, five from one decision —
+  a `Value::Glob` carrying an order-taint, unwired from `set_item`, `del_item`,
+  slice assignment and `AugAssign`'s in-place-extend arm. This rebuild has no
+  variant: `glob.glob()` returns a plain `Value::List` and the order rule is a
+  **static** blocker in `route.rs`, admitting a glob call only inside
+  `sorted()`, `len()`, `bool()`, `min()`, `max()`, `any()`, `all()`, `sum()` or
+  the right of `in`. Three adversarial rounds, ~7,000 differential runs, found
+  no way to observe filesystem order through an admitted position.
+- Two rules that were load-bearing and unwritten are now in the code, each
+  having been a hole: a name belongs in `ORDER_BLIND` only if its **result**
+  carries no order, not merely if its **answer** is order-blind (`set` failed
+  this and is dropped); and a position is safe for `iglob` only if it
+  **consumes** its argument (`bool` and `len` ask about the container, so a
+  generator and a list differ — `bool(glob.iglob("zzz*"))` was a wrong answer).
+- Every refusal an admitted call can raise is hoisted into the walk —
+  keyword rules, the pattern scan, the served-attribute table — unconditionally,
+  because the core is the binary `engines.route()` asks. WASTED 115 → 99. A
+  79-row barrier sweep asserts exit 90, one refusal line, empty stdout and an
+  unchanged cwd for every refusal shape, measured by a before/after snapshot.
+- Two fixes to shared code found while chasing this: the binding table let a
+  `def` parameter escape outward to shadow a module-level literal **and** a
+  function-local literal escape outward to answer for a name it never held, and
+  `for`/`AugAssign`/comprehensions walked the target before the value that binds
+  it. And `sorted()`'s O(n²) tie scan: 60,000 keys, **28.09 s → 0.05 s**.
+- `lypning-l` MATCH 1967 → **1978**, coverage 78.6% → **79.0%**, MISMATCH 0,
+  UNSAFE 0, monotone 0, dispatchers agree 2504/2504, pytest 4,402 passed.
+  **Density 0.89 programs/KB on `size -m __text`** — the honest denominator;
+  file bytes are page-aligned and measure nothing.
+- Residue, filed as #51: a runtime-built pattern and the `**` depth cap cannot
+  be hoisted, and `os.mkdir` commits the barrier immediately, so any later
+  refusal is exit 1 — `eval`, `complex` and `__import__` included.
+
 **2026-09-06** — `cap-csv` on lypning-l: serve the readers lazily, refuse the writers, add no Value variant · [#49]
 
 - `csv` was held at iteration 74 because a new `Value::CsvWriter` was wired into

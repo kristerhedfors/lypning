@@ -26,6 +26,96 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-09-06 · iteration 77 — glob and csv, rebuilt without the values that sank them
+
+Host: macOS arm64, host-target build (no rustup; musl unmeasured). Corpus 3,688
+loaded, 2,504 graded. Reference CPython 3.14.5. Both capabilities were rejected
+in iteration 76 and 74 respectively, for what looked like the same defect; both
+turned out to have a different real cause underneath it.
+
+| | MATCH | coverage | __text | progs/KB | PR |
+|---|---|---|---|---|---|
+| after `re` (76) | 1950 | 77.9% | — | — | — |
+| `cap-csv` | 1967 | 78.6% | +16.2 KiB | 1.05 | [#49] |
+| `cap-glob` | **1978** | **79.0%** | +12.7 KiB | 0.89 | [#52] |
+
+MISMATCH 0, UNSAFE 0, monotone 0, dispatchers agree 2504/2504 throughout. The
+frozen core is 834,720 B, 7 of its 8 blocks, and carries no implementation from
+either capability — only the routing tables and the refusal messages it must
+produce on their behalf.
+
+### The metric was being measured wrong
+
+Every density in this ledger before today divided by FILE bytes. On macOS arm64
+`__TEXT` is page-aligned at 16,384 B, so the file number is padding: the core
+grew 2,384 B of `__text` in one of these commits and its file size did not move
+at all, while lypning-l's file grew 6.5x more than its `__text` did. `size -m …
+Section __text` is the honest denominator. glob measured 0.99 (rejected), then
+0.66, then **0.89** — the same code, three denominators. Re-derive before
+comparing a new row to an old one.
+
+### csv: the variant was never the problem
+
+Iteration 74 blamed `Value::CsvWriter` and its unwired `eq`/`is_same`/hash arms.
+Avoiding the variant was necessary and not sufficient: the reader still read the
+stream EAGERLY where CPython's is lazy, so every other path to that stream —
+`input()`, an iterator already in flight, a later `f.read()` — needed a guard,
+and each guard's own refusal became a new failure. Two adversarial rounds, 14
+defects, 5 of them guard gaps. Making the reader pull through the same iterator
+`for line in f` drives let **five guards be deleted** and made reader-lifetime
+and error-timing correct for free.
+
+**When a capability needs a guard on every other path to a resource, the design
+is wrong, not the guard list.**
+
+Writers are refused statically: they are the only part needing an object with
+methods, which is what cost the five findings.
+
+### glob: the order question belongs to the walker
+
+No `Value::Glob`, no taint, no arm to forget. `route.rs` admits a glob call only
+in a position where the order cannot be observed. Three adversarial rounds and
+~7,000 differential runs found no way to observe filesystem order through an
+admitted position — and two rules that made that true were undocumented, one
+change away from becoming a leak, and each was a hole before it was written down:
+
+1. A name belongs in `ORDER_BLIND` only if its **result** carries no order, not
+   merely if its **answer** is order-blind. `set`'s answer is permutation-
+   invariant, but the set is handed back and `Value::Set` is insertion-ordered
+   here; its safety rested entirely on an unrelated runtime `set-order` guard,
+   which after `os.mkdir` is exit 1. Dropped.
+2. A position is safe for `iglob` only if it **consumes** its argument. `bool`
+   and `len` ask about the container, and CPython's `iglob` is a generator —
+   always truthy. `bool(glob.iglob("zzz*"))` printed False where CPython prints
+   True. The old code tested one name inline; it is a table now, so the next
+   position added has to answer the question.
+
+### The barrier class, named at last
+
+Three capabilities in a row rediscovered it one refusal kind at a time. `os.mkdir`
+calls `io::mark_committed()` immediately, so ANY later refusal is exit 1 with the
+side effect on disk and no answer, where the chain would otherwise have fallen to
+CPython. It is not a capability bug — `eval`, `complex`, `__import__` and
+`set-order` all do it. The mitigation that works is hoisting the refusal into
+`route.rs`; what cannot be hoisted (a runtime-built pattern, a filesystem-depth
+cap) is irreducible until `io.rs` changes. Filed as #51, with #48 (a static
+blocker only the larger variant can compute is inert when the chain enters at the
+core) and #50 (conformance captures both arms with `text=True` and is blind to
+newline differences).
+
+### Found while chasing, fixed, unrelated to either capability
+
+The binding table leaked in both directions and read source order wrongly: a
+`def` parameter escaped outward to shadow a module-level literal, a
+function-local literal escaped outward to answer for a name it never held, and
+`for`/`AugAssign`/comprehensions walked the target before the value binding it.
+And `sorted()`'s O(n²) all-pairs tie scan: 60,000 distinct keys, **28.09 s →
+0.05 s** (CPython 0.02 s).
+
+**Next.** `--plan`'s servable rows are now `class` 22 (rejected at 0.19 in
+iteration 76), `hashlib` 14, `math` 14 (integer-exact only) and `base64` 10.
+`import lypning` 67 and `subprocess` 36 are irreducible.
+
 ## 2026-09-05 · iteration 76 — three capabilities measured, one landed: `re`, and why `glob` and `class` were not
 
 Host: macOS arm64, host-target build (no rustup; musl bytes unmeasured).
