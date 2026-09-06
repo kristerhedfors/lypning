@@ -372,6 +372,108 @@ AFTER_A_BARRIER = [
     ("hashlib", "print(hashlib.sha256(b'a', b'b').hexdigest())"),
     ("hashlib", "k = {'usedforsecurity': False}\nprint(hashlib.md5(**k).hexdigest())"),
     ("hashlib", "print(hashlib.sha256(*[b'a']).hexdigest())"),
+    # …and every one of those again under a spelling that is not `hashlib.md5`.
+    # `route::hash_ctor` used to require `Expr::Attr`, so a constructor reached
+    # through `from hashlib import …` or through a name it was assigned to
+    # walked straight past the static check and refused at RUNTIME instead —
+    # which past the barrier is exit 1 with `NEWD` on disk. The binding table
+    # (`bind_pattern`) is what makes the check spelling-independent, and these
+    # rows are what holds it there.
+    ("hashlib", "from hashlib import sha256\nprint(sha256(b'a', usedforsecurity=False))"),
+    ("hashlib", "from hashlib import sha256 as s\nprint(s(b'a', usedforsecurity=False))"),
+    ("hashlib", "f = hashlib.md5\nprint(f(b'a', usedforsecurity=False).hexdigest())"),
+    ("hashlib", "f = hashlib.md5\ng = f\nprint(g(b'a', usedforsecurity=False).hexdigest())"),
+    ("hashlib", "f = hashlib.sha1\nprint(f(b'a', b'b').hexdigest())"),
+    ("hashlib", "from hashlib import sha512\nprint(sha512(*[b'a']).hexdigest())"),
+    ("hashlib", "from hashlib import md5\nprint(md5(**{'data': b'a'}).hexdigest())"),
+    ("hashlib", "import hashlib as hh\nf = hh.sha256\nprint(f(data=b'a').hexdigest())"),
+    ("module-attr", "from hashlib import sha3_256\nprint(sha3_256(b'a').hexdigest())"),
+    ("module-attr", "f = hashlib.new\nprint(f('sha256', b'a').hexdigest())"),
+]
+
+#: A constructor read as a VALUE, which is `Value::Bound(Module("hashlib"), n)`
+#: built fresh on every attribute access.
+#:
+#: Every row here answered `False` — or died at exit 1 as unhashable — until
+#: `value::eq`, `value::is_same` and the hash/`HKey` path got a `Value::Bound`
+#: arm. CPython's rule, measured on 3.14.5 rather than read from the manual:
+#: `==` compares the FUNCTION and the receiver's IDENTITY, `hash` is built from
+#: the same pair, and `is` is True between two accesses only where the
+#: attribute is STORED and handed back — which a module's `__dict__` does, so
+#: `hashlib.md5 is hashlib.md5` is True while `h.update is h.update` is False.
+#: Both directions are rows: an engine that answered True to everything would
+#: pass a table that only asked the first question.
+BOUND_IDENTITY = [H + x for x in [
+    "print(hashlib.md5 is hashlib.md5)",
+    "print(hashlib.md5 == hashlib.md5)",
+    "print(hashlib.md5 != hashlib.md5)",
+    "print(hashlib.md5 is hashlib.sha256)",
+    "print(hashlib.md5 == hashlib.sha1)",
+    "print(hashlib.md5 in [hashlib.md5])",
+    "print(hashlib.sha256 in [hashlib.md5])",
+    "print(len({hashlib.md5}))",
+    "print(len({hashlib.md5, hashlib.sha256, hashlib.md5}))",
+    "print({hashlib.md5: 'm'}[hashlib.md5])",
+    "print(hashlib.sha256 in {hashlib.md5: 1})",
+    "print(sorted({hashlib.md5: 'm', hashlib.sha1: 's'}.values()))",
+    "f = hashlib.md5\nprint(f is f)",
+    "f = hashlib.md5\nprint(f is hashlib.md5)",
+    "f = hashlib.md5\nprint(f == hashlib.md5)",
+    "f = hashlib.md5\ng = hashlib.md5\nprint(f is g, f == g, len({f, g}))",
+    "from hashlib import sha256\nprint(sha256 is hashlib.sha256, sha256 == hashlib.sha256)",
+    # the INSTANCE rule, which is the opposite answer for `is` and the same
+    # one for `==`: a bound method of a hash object is built on access.
+    "h = hashlib.sha256()\nprint(h.update is h.update, h.hexdigest == h.hexdigest)",
+    "h = hashlib.sha256()\nu = h.update\nprint(u is u, u == h.update)",
+    "print(hashlib.md5(b'a').hexdigest() == hashlib.md5(b'a').hexdigest())",
+]]
+
+#: `bytes.hex(sep=…, bytes_per_sep=…)`, which is how a hashlib program formats
+#: a digest and is the reason these rows live in THIS file rather than a bytes
+#: one.
+#:
+#: `methods::accepts_kw` lists `bytes.hex`, so a keyword reached the arm — and
+#: the arm read `args` only. `b.hex(sep=':')` answered the UNSEPARATED string
+#: at exit 0 and `b.hex('-', bytes_per_sep=2)` grouped by one; the corpus types
+#: the first of them. Positional, keyword and mixed spellings are all here,
+#: because the defect was invisible from the positional side alone.
+HEX_KEYWORDS = [H + x for x in [
+    "print(hashlib.sha256(b'x').digest().hex(sep=':'))",
+    "print(hashlib.md5(b'x').digest().hex(sep='-', bytes_per_sep=2))",
+    "print(hashlib.md5(b'x').digest().hex('-', bytes_per_sep=4))",
+    "print(hashlib.md5(b'x').digest().hex(bytes_per_sep=4, sep='.'))",
+    "print(hashlib.md5(b'x').digest().hex(bytes_per_sep=2))",
+    "print(hashlib.md5(b'x').digest().hex(sep=' ', bytes_per_sep=-4))",
+    "print(hashlib.sha1(b'x').digest().hex(sep=':', bytes_per_sep=0))",
+    "print(hashlib.sha1(b'x').digest().hex(sep=':', bytes_per_sep=True))",
+    "print(hashlib.sha1(b'x').digest().hex())",
+    "print(hashlib.sha1(b'x').digest().hex('_'))",
+    "print(hashlib.sha512(b'x').digest().hex(sep='|', bytes_per_sep=8))",
+    "print(b''.hex(sep=':'))",
+]]
+
+#: The iteration-74 defect class itself, one row per construct: a program that
+#: `import hashlib` ADMITS onto `lypning-l`, whose NEXT blocker no rung of the
+#: spectrum answers.
+#:
+#: The walk keeps the FIRST blocker and the router only ever sees that one, so
+#: with `hashlib` served the second blocker decided nothing: every row below
+#: printed its digest and then died at exit 1 on an `AttributeError`, which is
+#: the program's own exit code and not a refusal — the barrier does not discard
+#: it and the chain does not retry it. CPython answers all of them at exit 0.
+#:
+#: `.to_bytes()` is the construct iteration 74 named. The others are the same
+#: shape on `int`, `float` and `str`, and one where the missing method is
+#: reached BEFORE anything is printed, so the failure is not merely a partial
+#: stdout.
+HIDDEN_BLOCKER = [
+    "print(hashlib.md5((255).to_bytes(2, 'big')).hexdigest())",
+    "print(hashlib.md5(b'a').hexdigest())\nprint((5).bit_length())",
+    "print(hashlib.sha1(b'a').hexdigest())\nprint('x'.isascii())",
+    "print(hashlib.sha256(int.from_bytes(b'\\x01', 'big').to_bytes(1, 'big')).hexdigest())",
+    "print((2.5).is_integer(), hashlib.md5(b'a').hexdigest())",
+    "from hashlib import sha256\nprint(sha256(b'a').hexdigest())\nprint((7).bit_count())",
+    "h = hashlib.sha256()\nh.update(b'a')\nprint(h.hexdigest())\nprint((1).as_integer_ratio())",
 ]
 
 #: The refusals a walk genuinely CANNOT decide, pinned so they stay a residue.
@@ -393,7 +495,8 @@ RUNTIME_BACKSTOP = [
     "h = hashlib.sha256()\nprint(h.__class__)",
 ]
 
-GRID = VECTORS + CHUNKING + SURFACE + THE_SHAPE + OWN_MESSAGES
+GRID = (VECTORS + CHUNKING + SURFACE + THE_SHAPE + OWN_MESSAGES
+        + BOUND_IDENTITY + HEX_KEYWORDS)
 
 
 def _spectrum(binary: Path) -> dict | None:
@@ -645,6 +748,58 @@ def test_every_refusal_a_hashlib_call_can_raise_lands_before_the_barrier(
     assert after == before, (
         "the refusal landed AFTER os.mkdir committed the barrier: %r -> %r\n"
         "  program: %r" % (before, after, program))
+
+
+@needs_l
+@pytest.mark.parametrize("program", HIDDEN_BLOCKER, ids=range(len(HIDDEN_BLOCKER)))
+def test_a_blocker_the_router_could_not_see_refuses_instead_of_exiting_one(
+    program: str,
+) -> None:
+    """Iteration 74's rejection reason, as one assertion per construct.
+
+    The router is first-blocker-wins and the first blocker of every row here is
+    `module: import hashlib`, which `lypning-l` answers — so the program is
+    admitted, and the construct that actually stops it (`.to_bytes()`,
+    `.bit_length()`, `.isascii()`) was invisible to the route. It printed the
+    digest and then raised `AttributeError`: exit 1, which the barrier does not
+    discard and the chain does not retry, for a program CPython answers.
+
+    Four assertions, and the first two are the ones that matter: CPython
+    answers at exit 0 (so the refusal is not hiding a program that fails
+    anyway), and this engine exits 90 with an empty stdout rather than 1 with a
+    partial one. The barrier is committed first and the cwd compared, so
+    `NEWD` on disk would fail the row even if the exit code looked right."""
+    plain = program if program.startswith(("import ", "from ")) else H + program
+    ref = _run([sys.executable], plain)
+    assert ref.returncode == 0 and ref.stdout, (
+        "this row is only interesting if CPython answers it\n  program: %r\n"
+        "  cpython: exit %d %r" % (plain, ref.returncode, ref.stderr.strip()[-200:]))
+    got, before, after = _run_snapshot(_barriered(program))
+    assert _refusal_problem(got) is None, (
+        "%s\n  program: %r\n  stderr: %r"
+        % (_refusal_problem(got), program, got.stderr.strip()[:200]))
+    assert ": method: " in got.stderr, (
+        "the refusal must keep the kind the walk raised\n  program: %r\n"
+        "  stderr: %r" % (program, got.stderr.strip()[:200]))
+    assert after == before, (
+        "the refusal landed AFTER os.mkdir committed the barrier: %r -> %r\n"
+        "  program: %r" % (before, after, program))
+
+
+@needs_l
+@pytest.mark.parametrize("program", BOUND_IDENTITY, ids=range(len(BOUND_IDENTITY)))
+def test_a_constructor_read_as_a_value_answers_rather_than_refusing(
+    program: str,
+) -> None:
+    """The grid SKIPS a row this engine refuses, which is right for a table of
+    reach and wrong for this one: `hashlib.md5 is hashlib.md5` answering
+    `unsupported` instead of `True` would be a silent regression that leaves
+    `test_the_hashlib_grid_agrees_with_cpython` green. So the identity rows are
+    asserted to ANSWER as well as to agree."""
+    got = _run([str(BINARY)], program)
+    assert got.returncode != engines.UNSUPPORTED_EXIT, (
+        "a constructor compared with itself must be answered, not refused\n"
+        "  program: %r\n  stderr: %r" % (program, got.stderr.strip()[:200]))
 
 
 @needs_l

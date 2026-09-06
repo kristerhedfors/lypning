@@ -1661,18 +1661,28 @@ fn bytes_method(
             // `bytes_per_sep` counts from the RIGHT when positive and from the
             // left when negative, which is why the grouping is computed against
             // the distance from the end.
-            let sep = match args.first() {
+            //
+            // BOTH parameters are keyword-able — CPython spells the signature
+            // `hex($self, /, sep=<unrepresentable>, bytes_per_sep=1)` — which
+            // is why `accepts_kw` lists `bytes.hex` and lets a keyword through
+            // to here. Only the POSITIONALS were read, so the keyword arrived
+            // and was dropped: `b"abcdef".hex(sep="-")` answered
+            // `616263646566` where CPython answers `61-62-63-64-65-66`, and
+            // `b"abcdef".hex("-", bytes_per_sep=2)` grouped by one. Both are a
+            // wrong answer at exit 0, the shape nothing downstream notices, and
+            // the corpus types the first of them.
+            let sep = match args.first().cloned().or_else(|| kwget(&kw, "sep")) {
                 None => None,
                 Some(Value::Str(x)) => Some(x.to_string()),
                 Some(other) => {
                     return Err(type_err(format!(
                         "sep must be str or bytes, not {}",
-                        type_name(other)
+                        type_name(&other)
                     )))
                 }
             };
-            let per = match args.get(1) {
-                Some(v) => int_val(v)?,
+            let per = match args.get(1).cloned().or_else(|| kwget(&kw, "bytes_per_sep")) {
+                Some(v) => int_val(&v)?,
                 None => 1,
             };
             let mut out = String::with_capacity(b.len() * 2);

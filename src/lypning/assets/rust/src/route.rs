@@ -305,6 +305,29 @@ fn served_module(v: &Variant, m: &str) -> bool {
         || CAPS.iter().any(|(c, mods, _)| v.caps.contains(c) && mods.contains(&m))
 }
 
+/// Was this program handed here on `import hashlib` alone — the one import
+/// that admits a program onto a rung this commit added?
+///
+/// The general form of the question (*any* module a capability serves) is the
+/// right one and it does not work, which is measured rather than argued. Made
+/// generic it refused three corpus programs that the CORE runs and matches —
+/// py-a17ba3c48307 and py-a28bd1e6292d, which reach `csv.writer(...).writerow`
+/// only after `sys.argv[1]` has already raised IndexError, and py-2dbc1fa3548e,
+/// which reads `Fraction.numerator` in a branch a missing file stops it from
+/// entering. All three die identically on both engines today; hoisting a
+/// blocker they never reach into a static refusal makes the larger variant do
+/// worse than the smaller one on a program both ran, which invariant 10 does
+/// not allow. `cap-glob` measured the same shape over `MODULE_ATTRS` and
+/// narrowed the same way.
+///
+/// So: `hashlib` only, behind the capability's own feature, and the identical
+/// hole for `collections`, `csv`, `pathlib` and `re` is left OPEN and written
+/// down rather than closed by a rule that costs three matches.
+#[cfg(feature = "cap-hashlib")]
+fn admitted_by_a_capability(req: &Requirements) -> bool {
+    req.imports.contains("hashlib")
+}
+
 fn module_of(detail: &str) -> &str {
     // `import X` / `from X import …`, as the walker spells its blockers.
     detail
@@ -962,6 +985,15 @@ fn cpython_only(kind: &str) -> bool {
     ONLY_CPYTHON_KINDS.contains(&kind) || CPYTHON_ONLY_KINDS.contains(&kind)
 }
 
+/// Whether this binary has a reason to record what a name in a `hashlib`
+/// program holds. `false` in the core, where it folds the guard in
+/// [`Requirements::bind_pattern`] — and, with the `cfg` on the variant itself,
+/// the whole `PatLit::HashCtor` arm — away at compile time.
+#[cfg(feature = "cap-hashlib")]
+const TRACKS_HASHLIB: bool = true;
+#[cfg(not(feature = "cap-hashlib"))]
+const TRACKS_HASHLIB: bool = false;
+
 /// A pattern a walk could read: the text of a `str` literal, the fact that it
 /// was a `bytes` one — which is all `re` needs, since a bytes pattern refuses
 /// whatever its content — or the TYPE of any other literal, which is what
@@ -969,12 +1001,27 @@ fn cpython_only(kind: &str) -> bool {
 ///
 /// Read by TWO capabilities now, which is why it is no longer behind
 /// `cap-re`: `re.sub(P, …)` and `glob.glob(P)` ask the same question of the
-/// same binding, and `glob`'s half has to be answered in the CORE.
+/// same binding, and `glob`'s half has to be answered in the CORE. THREE with
+/// `PatLit::HashCtor` below, which is not a pattern and is here anyway.
 #[derive(Clone)]
 enum PatLit {
     Str(std::rc::Rc<str>),
     Bytes,
     Other(&'static str),
+    /// `f = hashlib.md5`, `from hashlib import sha256 as f` — the served
+    /// CONSTRUCTOR a name holds, so a call through the name is decided by the
+    /// same walk that decides the dotted spelling.
+    ///
+    /// Not a literal, and in this table anyway, because what a name holds is a
+    /// question of ORDER and SCOPE and [`Requirements::bind_pattern`] is the
+    /// one place that already gets both right: a rebinding above the call
+    /// replaces it, a parameter of that spelling gives it up, and a binding
+    /// made inside a `def` is a binding of that `def` alone. A second table
+    /// beside it would have to repeat all three, and `glob_names` — which
+    /// does not — is the reason `from glob import glob` inside a function
+    /// still shadows the module at the top of the file.
+    #[cfg(feature = "cap-hashlib")]
+    HashCtor(&'static str),
 }
 
 #[derive(Default)]
@@ -1115,7 +1162,10 @@ impl Requirements {
     /// that binds arrives here — an assignment, a `for` target, a `with … as`,
     /// a parameter, an `import … as`, an `except … as`, a `def`'s own name.
     fn bind_pattern(&mut self, name: &str, lit: Option<PatLit>) {
-        if !self.imports.contains("re") && !self.imports.contains("glob") {
+        if !self.imports.contains("re")
+            && !self.imports.contains("glob")
+            && !(TRACKS_HASHLIB && self.imports.contains("hashlib"))
+        {
             return;
         }
         match self.pats.iter_mut().find(|(n, _)| n == name) {
@@ -1233,6 +1283,23 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                         }
                     }
                 }
+                // Both halves of `from hashlib import …`, for the reason the
+                // `glob` arm below has both: a served name is a CONSTRUCTOR
+                // whose call this walk still has to decide, and an unserved
+                // one is a refusal that must be raised before the interpreter
+                // exists. `stop_only` and not `stop_spectrum` because the arm
+                // further down already blocks it correctly on both variants —
+                // `module` in the core, `module-attr` on lypning-l — and
+                // neither should be displaced from the `--plan` row.
+                #[cfg(feature = "cap-hashlib")]
+                "hashlib" => {
+                    for (n, bind) in names {
+                        match crate::hashlib::SERVED.iter().copied().find(|x| *x == n.as_ref()) {
+                            Some(c) => req.bind_pattern(bind, Some(PatLit::HashCtor(c))),
+                            None => req.stop_only("module-attr", format!("hashlib.{n}")),
+                        }
+                    }
+                }
                 "glob" => {
                     for (n, bind) in names {
                         // EVERY served name, not just the two the order rule
@@ -1279,8 +1346,22 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
         Stmt::Expr(e) => walk_expr(e, req),
         Stmt::Assign { targets, value } => {
             walk_expr(value, req);
+            // BEFORE `walk_target`, which gives up every name it binds: this
+            // one READS the table (`f = g` after `g = hashlib.md5`), and
+            // `g = g` would otherwise be decided against the slot the target
+            // had just cleared.
+            #[cfg(feature = "cap-hashlib")]
+            let ctor = hash_ctor(value, req);
             for t in targets {
                 walk_target(t, req);
+            }
+            #[cfg(feature = "cap-hashlib")]
+            if let Some(c) = ctor {
+                for t in targets {
+                    if let Target::Name(n) = t {
+                        req.bind_pattern(n, Some(PatLit::HashCtor(c)));
+                    }
+                }
             }
             // After `walk_target`, which cleared every name it bound: a
             // LITERAL is the one value a walk can read back, so it is put back.
@@ -1707,7 +1788,11 @@ fn re_pattern_block(
         }
         // A literal of any other type is `glob`'s half of this table and not
         // `re`'s: what `re.compile(5)` raises is a `TypeError` whose wording is
-        // CPython's, so the runtime refusal is the one that must fire.
+        // CPython's, so the runtime refusal is the one that must fire. A name
+        // holding a hashlib constructor is the same case one type further out:
+        // `re.sub(f, …)` after `f = hashlib.md5` is CPython's TypeError too.
+        #[cfg(feature = "cap-hashlib")]
+        Some(PatLit::HashCtor(_)) => {}
         Some(PatLit::Other(_)) | None => {}
     }
 }
@@ -1963,6 +2048,11 @@ fn glob_arg(e: &Expr, req: &Requirements) -> Option<(&'static str, Option<std::r
         PatLit::Str(s) => ("str", Some(s)),
         PatLit::Bytes => ("bytes", None),
         PatLit::Other(t) => (t, None),
+        // `f = hashlib.md5; glob.glob(f)` — a TypeError in CPython, named
+        // after the type `value::type_name` gives the value, which is the
+        // wording `glob`'s refusal is built from.
+        #[cfg(feature = "cap-hashlib")]
+        PatLit::HashCtor(_) => ("builtin_function_or_method", None),
     })
 }
 
@@ -2041,21 +2131,33 @@ fn glob_call_block(
     }
 }
 
-/// Which `hashlib` CONSTRUCTOR this callee names, if any — one of
+/// Which `hashlib` CONSTRUCTOR this expression names, if any — one of
 /// `hashlib::SERVED`.
 ///
-/// `hashlib.sha256(...)` and `h.sha256(...)` after `import hashlib as h`. A
-/// bare `sha256(...)` bound by `from hashlib import sha256` is NOT recognised
-/// and is left to the runtime backstop: the spelling appears nowhere in the
-/// corpus (mined 2026-09-06, 3,688 entries loaded), and a `glob_names`-shaped
-/// binding table for it would be more machinery than the shape is worth.
+/// Every spelling, because a static check that depends on how a function was
+/// SPELLED is a static check with a hole in it. `hashlib.sha256`, `h.sha256`
+/// after `import hashlib as h`, a bare `sha256` bound by
+/// `from hashlib import sha256`, and `f` after `f = hashlib.md5` are one
+/// function under four names, and the last two used to fall through to the
+/// runtime backstop — which past a committed `os.mkdir` is exit 1 with the
+/// output discarded, the exact shape [`hash_call_block`] exists to prevent.
+///
+/// The bound names are read out of the binding table rather than a list of
+/// their own: `PatLit::HashCtor` is recorded by
+/// [`bind_pattern`](Requirements::bind_pattern), so a rebinding, a parameter
+/// of the same spelling and a `def`-local binding are all already right here.
 #[cfg(feature = "cap-hashlib")]
 fn hash_ctor(func: &Expr, req: &Requirements) -> Option<&'static str> {
-    let Expr::Attr(b, n) = func else { return None };
-    if !hash_module(b, req) {
-        return None;
+    match func {
+        Expr::Attr(b, n) if hash_module(b, req) => {
+            crate::hashlib::SERVED.iter().copied().find(|x| *x == n.as_ref())
+        }
+        Expr::Name(n) => match req.pattern_named(n) {
+            Some(PatLit::HashCtor(c)) => Some(c),
+            _ => None,
+        },
+        _ => None,
     }
-    crate::hashlib::SERVED.iter().copied().find(|x| *x == n.as_ref())
 }
 
 /// Does `b` name the `hashlib` module — `hashlib.…` or `h.…` after
@@ -2519,7 +2621,36 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
                 && !re_method(req, n)
                 && !hash_method(req, n)
             {
-                req.block("method", format!(".{n}()"));
+                let detail = format!(".{n}()");
+                // The iteration-74 defect class, and the reason `hashlib` was
+                // rejected there: the walk keeps the FIRST blocker, and for a
+                // program a capability admits the first blocker is the import.
+                // The ROUTER only ever sees that one — so `import hashlib;
+                // print(hashlib.md5(b"a").hexdigest()); print((5).bit_length())`
+                // routed to lypning-l, printed the digest, and died at exit 1
+                // on `.bit_length()`. An `AttributeError` is not a refusal, the
+                // barrier only discards on 90, and the chain never retried it.
+                //
+                // [`stop_only`](Requirements::stop_only), so the `--plan` row
+                // stays the one the program hit first, and the refusal is
+                // raised by [`static_check`] before `Interp::new()` — a clean
+                // 90 the chain answers on CPython one spawn later.
+                //
+                // The condition is [`admitted_by_a_capability`] and not "a
+                // blocker is already recorded": in the CORE the blocker is
+                // `module: import hashlib` and `.hexdigest()` is a `method`
+                // block (`hash_method` is `false` there), so an unconditional
+                // stop would route every hashlib program to CPython and the
+                // capability would be dead. It is measured, not argued: over
+                // the corpus loaded on 2026-09-06 the walk of the variant that
+                // HAS the capabilities blocks `method` on 35 programs, 4 of
+                // them admitted by a capability import, and exactly one of
+                // those four is a program it answers today.
+                #[cfg(feature = "cap-hashlib")]
+                if admitted_by_a_capability(req) {
+                    req.stop_only("method", detail.clone());
+                }
+                req.block("method", detail);
             }
         }
         Expr::Call {
