@@ -17,6 +17,13 @@ scripts pin it.
 first on ``$PATH``; a conformance run that measured the shim would be measuring
 a shell script. :func:`find_cpython` walks past anything carrying the shim
 marker.
+
+**A comparison is between bytes; a decode is for a reader.** Every arm here
+captures what the process wrote (:attr:`Result.stdout_raw`) and decodes it once,
+in :func:`_as_text`, for display. The two must never be confused: that decode
+applies universal-newline translation, and applying it to both sides of a
+comparison is how line endings became an axis on which no engine could be caught
+disagreeing with CPython (issue #50).
 """
 
 from __future__ import annotations
@@ -333,10 +340,35 @@ class Result:
     stderr: str
     wall_ns: int
     timed_out: bool = False
+    #: What the process actually WROTE, before any decoding. ``stdout`` above is
+    #: this decoded by :func:`_as_text`, which — like ``subprocess(text=True)``,
+    #: which it replaces — rewrites ``\r\n`` and a bare ``\r`` to ``\n``. That
+    #: translation is right for display and blinding for a grader: it is applied
+    #: to BOTH sides of a comparison, so a program whose only divergence from
+    #: CPython is its line endings compared equal and scored MATCH. Every
+    #: comparison keys on these; nothing that renders does (issue #50).
+    #: ``None`` only where a ``Result`` was built without them.
+    stdout_raw: bytes | None = None
+    stderr_raw: bytes | None = None
 
     @property
     def wall_ms(self) -> float:
         return self.wall_ns / 1e6
+
+    @property
+    def stdout_bytes(self) -> bytes:
+        """stdout as the process wrote it. Falls back to re-encoding the text
+        for a ``Result`` that carries none, so an old caller degrades to the
+        old (newline-blind) comparison rather than to an exception."""
+        if self.stdout_raw is not None:
+            return self.stdout_raw
+        return self.stdout.encode("utf-8", "replace")
+
+    @property
+    def stderr_bytes(self) -> bytes:
+        if self.stderr_raw is not None:
+            return self.stderr_raw
+        return self.stderr.encode("utf-8", "replace")
 
     @property
     def unsupported(self) -> bool:
@@ -501,19 +533,33 @@ def run_library(
     return Result(
         LIBRARY, str(path), out.exit_code,
         _as_text(out.stdout), _as_text(out.stderr), wall,
+        stdout_raw=out.stdout, stderr_raw=out.stderr,
     )
 
 
 def _as_text(raw: bytes) -> str:
-    """Decode exactly as ``subprocess.run(..., text=True)`` would.
+    """Decode for a reader, exactly as ``subprocess.run(..., text=True)`` did.
 
-    Two rules, and both must match or a comparison lies. ``errors="replace"``
-    is the first. UNIVERSAL NEWLINES is the second and is the one that bites: a
-    spawned arm's ``\r\n`` arrives as ``\n``, so a program printing a carriage
-    return matched CPython through a subprocess and MISMATCHed through the
-    library — a disagreement the battery invented rather than found.
+    This is now the ONLY decode in the package, applied by every arm — spawn,
+    library and pool — so what a reader is shown is one thing rather than three.
+    Two rules. ``errors="replace"`` is the first: a spawn under ``LC_ALL=C``
+    decoded with the locale would turn every non-ASCII byte into U+FFFD.
+    UNIVERSAL NEWLINES is the second, and it is why nothing here may be
+    compared: it rewrites ``\r\n`` and a bare ``\r`` to ``\n``, so a program
+    printing a carriage return looked identical to one that did not. Comparisons
+    key on :attr:`Result.stdout_bytes`; diffs render from :func:`exact_text`.
     """
     return raw.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def exact_text(raw: bytes) -> str:
+    """Decode for a human WITHOUT touching line endings.
+
+    :func:`_as_text` is what a caller displaying output wants; this is what a
+    *diff* wants. A grader that reports "line 1: want 'a', got 'a'" because it
+    normalised away the only difference it found has told the reader nothing.
+    """
+    return raw.decode("utf-8", "replace")
 
 
 def _argv_for(engine: str, binary: Path, program: str, script: Path | None) -> list[str]:
@@ -535,8 +581,18 @@ def _pool_socket(env: dict[str, str] | None = None) -> str:
 
 
 def _run_via_pool(program: str, socket_path: str, *, argv_tail: Sequence[str] = (),
-                  stdin: str | None = None, cwd: Path | str | None = None) -> Result | None:
-    """Answer from the warm pool, or return None so the caller spawns instead."""
+                  stdin: str | None = None, cwd: Path | str | None = None,
+                  env: dict[str, str] | None = None) -> Result | None:
+    """Answer from the warm pool, or return None so the caller spawns instead.
+
+    ``env`` is the caller's, threaded through rather than read off this process:
+    it was a free variable here and every call raised ``NameError`` before it
+    reached the socket, so the backstop has been dead since it was added — the
+    module's own tests exercise :class:`pool.Server` directly and never came
+    through this door. It is also what the child adopts, and a battery arm that
+    ran under a different environment from the arm it is compared with is a
+    divergence the harness invented (`conformance._env_for`).
+    """
     from . import pool as _pool
     child_env = dict(os.environ)
     child_env["LYPNING_CAPTURE"] = "0"
@@ -554,15 +610,19 @@ def _run_via_pool(program: str, socket_path: str, *, argv_tail: Sequence[str] = 
     if not reply.get("ok"):
         return None
     wall = time.perf_counter_ns() - t0
-    # The spawned arms decode with `text=True`, which applies universal-newline
-    # translation; the pool hands back exactly what the program wrote. Without
-    # this the two Result kinds are not comparable and a CRLF-emitting program
-    # (csv.writer, say) grades as a divergence against its own reference.
-    def _universal(text: str) -> str:
-        return text.replace("\r\n", "\n").replace("\r", "\n")
+    # The pool's JSON carries the child's bytes through a `surrogateescape`
+    # round trip (`pool._run_forked`), so this recovers exactly what the program
+    # wrote — including its line endings, which every comparison now keys on —
+    # and then decodes it by the same two rules a spawned arm does. Two arms
+    # decoding differently is a divergence the battery invented rather than
+    # found: it is how a CRLF-emitting program (csv.writer, say) once graded
+    # against its own reference.
+    def _raw(field: str) -> bytes:
+        return (reply.get(field) or "").encode("utf-8", "surrogateescape")
+    out, err = _raw("stdout"), _raw("stderr")
     return Result(CPYTHON, "pool:" + socket_path, int(reply.get("returncode", 1)),
-                  _universal(reply.get("stdout", "")),
-                  _universal(reply.get("stderr", "")), wall)
+                  _as_text(out), _as_text(err), wall,
+                  stdout_raw=out, stderr_raw=err)
 
 
 def run(
@@ -586,7 +646,8 @@ def run(
     if engine == CPYTHON and script is None:
         sock = _pool_socket(env)
         if sock:
-            served = _run_via_pool(program, sock, argv_tail=argv_tail, stdin=stdin, cwd=cwd)
+            served = _run_via_pool(program, sock, argv_tail=argv_tail, stdin=stdin,
+                                   cwd=cwd, env=env)
             if served is not None:
                 return served
     b = binary or find(engine)
@@ -605,31 +666,38 @@ def run(
     try:
         proc = subprocess.run(
             cmd,
-            input=stdin,
+            # BYTES, deliberately, on both sides of every comparison. `text=True`
+            # here was the second half of a decode the two arms had to agree on,
+            # and it silently agreed on too much: Python's universal-newline
+            # translation rewrites `\r\n` and a bare `\r` to `\n` in BOTH
+            # captured strings before anything compares them, so line endings
+            # were an axis on which no engine could ever be caught disagreeing
+            # with CPython (issue #50; found when `cap-csv` served
+            # `open(newline='')`). The decode both arms still have to agree on
+            # lives in `_as_text`, one layer up from the grader: utf-8 with
+            # `errors="replace"`, never `locale.getpreferredencoding()` — under
+            # `LC_ALL=C` that turns every non-ASCII byte into U+FFFD, so two
+            # engines printing DIFFERENT non-ASCII (`é` against `ü`) decode to
+            # the same replacement characters and compare EQUAL. A third of the
+            # corpus is non-ASCII. The children run under `LC_ALL=C.UTF-8`
+            # (`conformance._env_for`); this is the other half of that.
+            input=stdin.encode("utf-8") if stdin is not None else None,
             capture_output=True,
-            text=True,
-            # Named, never inherited from the caller's locale. `text=True` alone
-            # decodes with `locale.getpreferredencoding()`, so under `LC_ALL=C`
-            # every non-ASCII byte becomes U+FFFD — and two engines printing
-            # DIFFERENT non-ASCII (`é` against `ü`) then decode to the same
-            # string of replacement characters and compare EQUAL. A third of the
-            # corpus is non-ASCII, so that is a MISMATCH silently scored MATCH.
-            # The children are run under `LC_ALL=C.UTF-8` (conformance._env_for);
-            # this is the other half of that agreement.
-            encoding="utf-8",
-            errors="replace",
             cwd=str(cwd) if cwd else None,
             timeout=timeout,
             env=full_env,
             check=False,
         )
         wall = time.perf_counter_ns() - t0
-        return Result(engine, str(b), proc.returncode, proc.stdout, proc.stderr, wall)
+        return Result(engine, str(b), proc.returncode,
+                      _as_text(proc.stdout), _as_text(proc.stderr), wall,
+                      stdout_raw=proc.stdout, stderr_raw=proc.stderr)
     except subprocess.TimeoutExpired as e:
         wall = time.perf_counter_ns() - t0
-        out = e.stdout.decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
-        err = e.stderr.decode("utf-8", "replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
-        return Result(engine, str(b), 124, out, err, wall, timed_out=True)
+        out = e.stdout if isinstance(e.stdout, bytes) else (e.stdout or "").encode("utf-8", "replace")
+        err = e.stderr if isinstance(e.stderr, bytes) else (e.stderr or "").encode("utf-8", "replace")
+        return Result(engine, str(b), 124, _as_text(out), _as_text(err), wall, timed_out=True,
+                      stdout_raw=out, stderr_raw=err)
     except (OSError, ValueError) as e:
         # ValueError is the NUL byte: argv cannot carry one, and a corpus
         # harvested from a shim's argv is exactly where one turns up. That is a
@@ -946,7 +1014,9 @@ def dispatch(
     could be moved by a machine-local file would make ``lypning conformance``
     a measurement of one laptop. Callers that run the corpus rather than a
     session's own traffic pass ``ledger=False``, for the reason
-    :func:`lypning.conformance._env_for` redirects the capture log.
+    :func:`lypning.conformance._env_for` redirects the capture log. There is no
+    ``ledger=`` on the Rust side to pass, so the switch that covers BOTH writers
+    is ``LYPNING_CAPTURE=0``, which :func:`run` sets in every child it spawns.
     """
     r = routed if routed is not None else route(program, timeout=timeout, env=env)
     attempts: list[Result] = []
@@ -967,10 +1037,11 @@ def dispatch(
         # The one signal a static walker provably cannot produce: the route was
         # CLEAN — the classifier said this very tier could run the whole program
         # — and the tier refused anyway, part way through, on a VALUE. Written
-        # here and nowhere else, and never read back: see lypning.routes.
-        # `lypning run`, the Rust dispatcher, does NOT write it (the core is
-        # frozen at 8 device blocks and a second writer is a second thing to
-        # keep in lockstep), so the ledger under-counts. That is a known hole.
+        # here and never read back: see lypning.routes. The Rust dispatcher
+        # (`main.rs::dispatch`, `assets/rust/src/routes.rs`) writes the same
+        # record on the same condition, because it is the dispatcher an
+        # installed chain actually execs; the two are held to one another by
+        # tests/test_routes.py rather than kept in step by hand.
         if ledger and engine == r.engine and not r.kind and engine != CPYTHON:
             try:
                 from . import routes

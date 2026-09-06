@@ -31,6 +31,13 @@ use lypning::err::{ErrKind, LypningError, UNSUPPORTED_EXIT};
 use lypning::{eval, io, parse, route};
 use std::io::{Read, Write};
 
+/// The route ledger's writer. A module of the BINARY and not of `lib.rs`, on
+/// purpose: a ledger belongs to a DISPATCHER, and the library has none — an
+/// embedding host is handed `Status::Unsupported` and decides for itself, so
+/// linking it a recorder would be bytes and a write to `$LYPNING_HOME` it
+/// never asked for (invariant 7). `dispatch` below is its one caller.
+mod routes;
+
 /// Installed for the BINARY only, deliberately — see `alloc.rs` for what it is
 /// and why the general allocator is most of this program's instruction stream.
 ///
@@ -122,8 +129,11 @@ fn execute_inner(src: &str, report_refusal: bool, kind: &mut String, detail: &mu
     // Before the interpreter exists, so the refusal cannot land after a side
     // effect: `route.rs` decides every static glob question for the ROUTER,
     // and this asks it again for a run that was never routed (`<bin> -c PROG`).
+    // The chain no longer arrives here that way (#48), but a typed `-c` and
+    // `lypning conformance`'s per-engine arm still do, and `glob-order` has no
+    // runtime backstop to catch them.
     #[cfg(feature = "cap-glob")]
-    if let Err(e) = route::glob_static_check(&body, src) {
+    if let Err(e) = route::static_stop_check(&body, src) {
         return finish(Err(e), report_refusal, kind, detail);
     }
     let mut interp = eval::Interp::new();
@@ -340,11 +350,34 @@ fn dispatch(args: &[String]) -> i32 {
             return code;
         }
         // The route was optimistic and a value-dependent refusal fired: an
-        // integer outgrew 64 bits, or a set's order was asked for. Fall onward
-        // — along the chain the KIND, the IMPORTS and the siblings' verdicts
-        // decide (`route::chain_after`): a semantic refusal rules out every
-        // reimplementation, an import outside a tier's table rules that tier
-        // out, and a larger sibling that could run the whole program comes
+        // integer outgrew 64 bits, or a set's order was asked for.
+        //
+        // That is the one refusal a static walk provably cannot predict, and
+        // the one thing the route ledger records: a CLEAN route (`r.kind`
+        // empty — the classifier said this very tier could run the WHOLE
+        // program) followed by a RUNTIME refusal from the tier it named.
+        // `engines.dispatch` writes on exactly this condition, spelled `engine
+        // == r.engine and not r.kind`; nothing here or there READS the store,
+        // and nothing may (`routes.rs`). It happens before the chain is walked
+        // because what happens next is a spawn, and the whole claim about this
+        // write is that it costs nothing next to one.
+        //
+        // The IN-PROCESS arm is the whole condition rather than half of it.
+        // `Route::kind` is what stopped THIS binary, so a route naming a larger
+        // sibling always carries the kind that pushed the program past this
+        // rung, and a router never routes below itself — "clean route, naming
+        // another tier" is not a state this spectrum can produce. Measured
+        // rather than assumed: 0 of 3,688 corpus programs on 2026-09-06,
+        // against 1,884 clean routes every one of which named the running
+        // binary. A third point on the spectrum could change that, and would
+        // need the branch here and in `engines.dispatch` on the same day.
+        if r.kind.is_empty() {
+            routes::note(route::SELF, &self_path(), &src, &kind, &detail);
+        }
+        // Fall onward along the chain the KIND, the IMPORTS and the siblings'
+        // verdicts decide (`route::chain_after`): a semantic refusal rules out
+        // every reimplementation, an import outside a tier's table rules that
+        // tier out, and a larger sibling that could run the whole program comes
         // before both. The Python dispatcher walks the same function's answer.
         let chain = route::chain_after(route::SELF, &kind, &r.verdicts);
         return walk_chain(&chain, &src, &tail, &is_file, r.reads_stdin);
@@ -358,6 +391,19 @@ fn dispatch(args: &[String]) -> i32 {
         order[at..].to_vec()
     };
     walk_chain(&chain, &src, &tail, &is_file, r.reads_stdin)
+}
+
+/// This binary's own path, for the ledger header's `<size>:<mtime_ns>` stamp.
+///
+/// `current_exe` and not `argv[0]`: the stamp has to name the same FILE the
+/// Python reader stats through `engines.find`, and a shell that resolved this
+/// binary on PATH leaves `argv[0]` a bare name that stats as nothing — which
+/// would write a header no reader could ever match, and discard every record
+/// under it as stale.
+fn self_path() -> String {
+    std::env::current_exe()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| engine_path_named(route::SELF))
 }
 
 /// Run the program on the first rung of `chain`, with the rest as what to try
@@ -436,8 +482,11 @@ fn engine_path_named(name: &str) -> String {
             }
         }
     }
-    let home = std::env::var("LYPNING_HOME").ok().or_else(|| std::env::var("HOME").ok().map(|h| format!("{h}/.lypning")));
-    if let Some(h) = home {
+    // `routes::state_dir` and not a second copy of the same two lines: the
+    // ledger writes under this directory and the dispatcher looks for its
+    // siblings in it, and two resolutions of one path in one process is the
+    // thing that drifts.
+    if let Some(h) = routes::state_dir() {
         let p = std::path::Path::new(&h).join("bin").join(name);
         if p.is_file() {
             return p.to_string_lossy().into_owned();

@@ -400,7 +400,7 @@ class PerfReport:
 # --- measurement -------------------------------------------------------------
 
 
-def _capture(arm: bench.Arm, program: str, cwd: Path, timeout: float) -> Tuple[int, str]:
+def _capture(arm: bench.Arm, program: str, cwd: Path, timeout: float) -> Tuple[int, bytes]:
     """Run once and keep the output. **Untimed, on purpose.**
 
     The number in the table comes from :func:`bench.time_one` and from nothing
@@ -408,6 +408,11 @@ def _capture(arm: bench.Arm, program: str, cwd: Path, timeout: float) -> Tuple[i
     end up inside an arm's reading. This is the correctness half: it runs the
     same program one more time, throws the clock away, and keeps what was
     printed so the arms can be held to the same answer.
+
+    BYTES, because that is what "the same answer" means. Captured as text, both
+    arms' output went through Python's universal-newline translation before they
+    were compared, so two arms disagreeing only about `\r\n` compared equal
+    (issue #50; the same blindness `conformance.classify` had).
     """
     cmd = [str(arm.binary)]
     cmd.extend(arm.prefix)
@@ -420,14 +425,13 @@ def _capture(arm: bench.Arm, program: str, cwd: Path, timeout: float) -> Tuple[i
     env.update(arm.env)
     try:
         proc = subprocess.run(
-            cmd, input="", capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
+            cmd, input=b"", capture_output=True,
             cwd=str(cwd), timeout=timeout, env=env, check=False,
         )
     except subprocess.TimeoutExpired:
-        return (124, "")
+        return (124, b"")
     except OSError:
-        return (127, "")
+        return (127, b"")
     return (proc.returncode, proc.stdout)
 
 
@@ -484,7 +488,7 @@ def run(
             # Correctness first: an entry the arms disagree about is not a
             # measurement, and timing it five times would only make the wrong
             # number more precise.
-            outs: Dict[str, str] = {}
+            outs: Dict[str, bytes] = {}
             for arm in resolved:
                 rc, out = _capture(arm, case.program, tmp, timeout)
                 outs[arm.name] = out
@@ -497,7 +501,7 @@ def run(
             if row.verdict == OK and len(set(outs.values())) > 1:
                 row.verdict = DIFFER
                 row.note = "arms printed different answers: " + ", ".join(
-                    "%s=%r" % (n, (outs[n] or "")[:40]) for n in names)
+                    "%s=%r" % (n, engines.exact_text(outs[n] or b"")[:40]) for n in names)
             if row.verdict != OK:
                 results.append(row)
                 continue

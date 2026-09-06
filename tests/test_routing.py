@@ -549,9 +549,9 @@ def test_a_matcher_call_routes_to_the_variant_that_has_the_matcher(lypning_bin):
     """The core's blocker is the IMPORT and nothing else, so the sibling that
     serves `re` is the route — including for the shapes that used to be a static
     row of the router's own (`os.makedirs` before a `re.sub`, a piped stdin).
-    The core cannot compile a pattern; deciding which patterns lypning-l can
-    serve is lypning-l's own walker's job, and `tests/test_re_grid.py` pins it.
-    The Python chain after the core's refusal agrees with the Rust one."""
+    Every pattern below is one lypning-l serves; the ones it does not are the
+    next test. The Python chain after the core's refusal agrees with the Rust
+    one."""
     for src in [
         "import re\nprint(re.sub('a', 'b', 'a'))",
         "import re as x\nprint(x.findall('a', 'a'))",
@@ -575,6 +575,42 @@ def test_a_matcher_call_routes_to_the_variant_that_has_the_matcher(lypning_bin):
     # far side of it.
     r2 = _route("import re, itertools\nprint(re.sub('a', 'b', 'a'), list(itertools.count()))")
     assert r2.engine == eng.CPYTHON, r2
+
+
+def test_a_pattern_no_rung_can_compile_is_the_cores_verdict_too(lypning_bin):
+    """Issue #48: the router is the CORE, so the core has to answer it.
+
+    A static blocker only `lypning-l` could compute was inert on the default
+    path. The core stopped at `module: import re`, read `cap-re` off
+    `lypning-l`'s row and named it; the chain then handed the program to
+    `lypning-l` as `<bin> -c PROG` rather than `<bin> run -c PROG`, so
+    `lypning-l`'s walker was never asked either, and the block fired at RUNTIME
+    — after `os.makedirs()` had committed the barrier, which is exit 1 and a
+    chain that cannot fall onward. The fix gives every variant the pattern
+    PARSER (`repat.rs`), so there is still exactly ONE routing decision and the
+    core makes it.
+
+    The KIND stays the core's own first blocker, because that is the row
+    `--plan` ranks. The VERDICTS are the spectrum's, and they are what picks
+    the engine.
+    """
+    for src in [
+        'import re; print(re.findall(b"a", b"aa"))',
+        'import re; print(re.search(r"(?P<a>x)", "x"))',
+        'import re; print(re.findall(r"(?<=a)b", "ab"))',
+        'import re, os\nos.makedirs("d")\nprint(re.findall(b"a", b"aa"))',
+        'from re import compile as c\nprint(c("a{2,1}"))',
+        'import re\nP = b"a"\nprint(re.findall(P, b"aa"))',
+    ]:
+        r = _route(src)
+        assert r.engine == eng.CPYTHON, (src, r)
+        # Not a chain that runs lypning-l first and finds out there.
+        assert eng.chain_from(r.engine) == [eng.CPYTHON], (src, r)
+        larger = [v for v in r.verdicts if v[0] == eng.LYPNING_L]
+        assert larger and larger[0][1] == "re", (src, r.verdicts)
+    # …and a pattern lypning-l DOES serve is untouched: the point is the
+    # verdict, not a blanket retreat from the capability.
+    assert _route('import re; print(re.sub("a", "b", "aa"))').engine == eng.LYPNING_L
 
 
 def test_route_json_says_whether_the_program_can_read_stdin(lypning_bin):
