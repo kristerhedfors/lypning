@@ -20,6 +20,60 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-07** — Round 80: the grader could not see most disagreements, and `MISMATCH 0` was not true
+
+- **Four confirmed blind spots in `lypning conformance`**, each with a
+  reproduction and three proved end-to-end with compiled mutant engines run
+  through the real `conformance.run()`:
+  - **stderr was never compared, in either direction.** An engine keeping
+    stdout and exit code but replacing its entire stderr with an invented
+    `RuntimeError` kept **1,571 of 1,571 MATCHes**; one appending
+    `lypning: WARNING: results may be wrong` to every run was invisible.
+  - **75% of MATCHes compared nothing but an exit code** — 1,185 of 1,571 had
+    empty stdout on both arms. 800 were `FileNotFoundError` on both sides for a
+    RELATIVE path (absolute ones are skipped, so the skip rule is exactly what
+    left this class in); 380 read stdin with no sample, so both hit instant EOF.
+  - **The nondeterminism waiver was decided on raw program text**, so a name in
+    a string literal or a comment bought it — a mutant printing `WRONG ANSWER`
+    scored MATCH 6 / `ok=True` on six entries whose CPython output is `12`.
+  - **A program could forge a refusal** and be counted as coverage.
+- All four closed. `classify` compares the exception TYPE and the fact of
+  raising (never the message wording — that drifts across 3.11/3.12/3.14 and is
+  why stderr was left alone); the waiver reads the AST with a text fallback for
+  the 47 programs that do not parse; the sandbox is seeded with the relative
+  files an entry reads, but only after an empty run dies of `FileNotFoundError`,
+  so a program written to test an absent file keeps its branch; and CPython
+  exiting 90 is the program's choice, not a refusal.
+- **The honest numbers.** `lypning` 62.7% → **61.7%**, `lypning-l` 80.2% →
+  **79.2%**, and `MISMATCH 0` was **not true** — it was 1 per Rust arm. The
+  report now prints what each MATCH compared: for `lypning`, 487 stdout, 898
+  stderr, **172 on an exit code alone** where under the old grader all 1,060
+  MATCHes with empty stdout rested on one.
+- **The blind spot corrupted the roadmap, not just the verdict.** 23 refusals
+  per arm had been counted as MATCH, creating a `--plan` row that did not exist:
+  `repr: repr() of a type` 0 → **15**, now rank 6. `import re` 237 → 243,
+  `import collections` 42 → 45.
+- The MISMATCH it exposed: CPython's tokenizer reads a logical line's
+  indentation before lexing it, so an unexpected indent hides everything after;
+  this lexer tokenized the whole source first and a later problem won. Fixed as
+  a **refusal**, not an imitation — `python -c` DEDENTS its command from 3.13
+  on, so ` print(1)` prints `1` on 3.14.5 and raises `IndentationError` on
+  3.11.15, and a static binary cannot know which CPython the chain will reach.
+  That also closed a latent unsafe route: three shapes CPython 3.14 runs where
+  the engine answered `SyntaxError` at **exit 1**, which the chain cannot retry.
+- `call-recursive` **−5.6%** with disjoint bands under the corrected protocol.
+- **`textwrap` measured 0.54 programs/KB and was reverted**, establishing the
+  floor this loop needed: **~11 KiB of `__text` is the cheapest module
+  capability shape**, so a row needs ≥10 corpus programs to be worth building.
+  `datetime` was not built — 9 blocked entries are 7 once the ambient `now()`
+  ones are discounted.
+- Band audit: only iteration 23 used the recipe iteration 79 found broken, but
+  every other quoted band is worse — most sample two fixed binaries and zero
+  build variation, and most accepted rows quote no band at all. Re-measured
+  under the corrected protocol: iteration 41 STANDS, iteration 64 stands on
+  `str-fmt-pct` but is INSIDE THE BAND on `str-of-scalar`, both round-79 wins
+  STAND.
+
 **2026-09-07** — Round 79: the method table stops calling `memcmp`, the barrier can be taken back, and the grader stops hiding disagreements
 
 - **`lypning perf`, seven rows outside their band**: `str-methods` −20.9%,

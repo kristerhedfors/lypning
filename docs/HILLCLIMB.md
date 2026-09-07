@@ -26,6 +26,99 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-09-07 · iteration 80 — the grader could not see most disagreements
+
+Host: macOS arm64, host-target build. Corpus 3,688 loaded, 2,504 graded.
+Reference CPython 3.14.5. This iteration audited the INSTRUMENT rather than the
+engine, and the result invalidates the headline number this loop has been
+reporting since it began.
+
+### `MISMATCH 0` was not true
+
+Four blind spots, each reproduced, three proved with compiled mutant engines run
+through the real `conformance.run()`:
+
+1. **stderr was never compared, in either direction.** An engine that keeps
+   stdout and exit code and replaces its entire stderr with an invented
+   `RuntimeError` keeps **1,571 of 1,571 MATCHes**. A real in-corpus case needed
+   no mutant: `py-771e5de335fc` scored MATCH with CPython saying
+   `IndentationError` at line 1 and the engine `SyntaxError` at line 6.
+2. **1,185 of 1,571 MATCHes (75%) compared nothing but an exit code.** 800 are
+   `FileNotFoundError` on both sides for a RELATIVE path — and absolute paths
+   are *skipped*, so the skip rule is precisely what leaves this class in. 380
+   read stdin with no sample. This is #57's disease with two more doors.
+3. **The nondeterminism waiver read raw program text**, so a name in a string or
+   a comment bought it. 210 waived, 199 provably deterministic. A mutant
+   printing `WRONG ANSWER` scored MATCH 6 / ok=True on six entries.
+4. **A program could forge a refusal** and be scored as coverage.
+
+| | before | honest |
+|---|---|---|
+| `lypning` | 1571 / 933 / 0 — 62.7% | 1546 / 958 / 0 — **61.7%** |
+| `lypning-l` | 2008 / 496 / 0 — 80.2% | 1983 / 521 / 0 — **79.2%** |
+
+The report now prints what each MATCH compared. For `lypning`: 487 stdout, 898
+stderr, **172 on an exit code alone**. Under the old grader every one of the
+1,060 MATCHes with empty stdout rested on an exit code.
+
+### The blind spot corrupted the roadmap
+
+23 refusals per arm were being counted as MATCH, and `--plan` is ranked by
+refusal counts. `repr: repr() of a type` goes **0 → 15 and lands at rank 6** — a
+row that did not exist. `import re` 237 → 243, `import collections` 42 → 45.
+Every capability decision this loop has made, including two rejections, was
+ranked off a table missing its sixth row.
+
+### The defect it exposed, and why the fix is a refusal
+
+CPython's tokenizer reads a logical line's indentation before lexing that line,
+so an unexpected indent hides everything after it; this lexer tokenized the
+whole source first, so a later lexical problem won. The fix REFUSES rather than
+imitating, for a reason worth keeping: **`python -c` dedents its command from
+3.13 on.** ` print(1)` prints `1` on 3.14.5 and raises `IndentationError` on
+3.11.15 — a static binary cannot know which CPython the chain will reach.
+
+The author's first attempt emitted `IndentationError` for the "unambiguous" case
+and created a NEW mismatch (`py-50e65eaca71f`, a commit message CPython rejects
+ten lines above the first indent for a leading-zero literal). An engine's own
+error ORDER is not CPython's, and any "my first error is CPython's first error"
+claim is unfounded. Reverted to the refusal.
+
+It also closed a latent unsafe route: three shapes CPython 3.14 RUNS where the
+engine answered `SyntaxError` at **exit 1** — reporting a program as broken that
+CPython answers, with the dispatcher unable to fall through.
+
+### Speed, and the floor for a capability
+
+`call-recursive` **−5.6%** with disjoint bands under iteration 79's corrected
+protocol.
+
+**`textwrap` 0.54 progs/KB — REVERTED**, and the number it produced is the
+iteration's real product: **~11 KiB of `__text` is the floor for the cheapest
+module capability shape**, so a row needs **≥10 corpus programs** to be worth
+building. `datetime` was not built: 9 blocked entries are 7 once the ambient
+`now()` ones are discounted, and its three object types put it above that floor.
+
+### Band audit
+
+Only iteration 23 ran the comment recipe iteration 79 found broken — but every
+other band in this file is worse. Iterations 35, 41, 42 and the flat readings in
+31/37/38 quote "three interleaved rounds" of TWO FIXED BINARIES, which samples
+run-to-run noise and zero build variation; most accepted rows (18, 20, 22,
+27-30, 32-34, 36, 64, 65) quote no band at all. Re-measured on the corrected
+protocol: **iteration 41 STANDS** (−10.6%, clears by 5.9%), **iteration 64
+stands on `str-fmt-pct`** (−18.9%) but is **INSIDE THE BAND on `str-of-scalar`**,
+**both round-79 wins STAND**. The auditor then noted its own `dict-get` control
+moved 1.3% and refused to claim anything from a margin that small.
+
+**Next.** `repr: repr() of a type` (15) is newly visible and is the first row
+the corrected instrument put on the board. Five more grader holes are filed for
+triage: warning-shaped lines are still stripped from both arms, the sandbox
+filesystem is never compared between arms, `stderr_shape` can swallow program
+text of a traceback-like shape, exception-type comparison is not rename- or
+subclass-aware (`re.error` became `re.PatternError` in 3.13), and `skip_stdout`
+switches off the stderr-text comparison too.
+
 ## 2026-09-07 · iteration 79 — the instrument was wrong twice, and the wins are real anyway
 
 Host: macOS arm64, host-target build (no rustup; musl unmeasured). Corpus 3,688
