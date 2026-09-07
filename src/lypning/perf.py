@@ -34,7 +34,6 @@ Nothing here prints; :mod:`lypning.cli` renders. See CLAUDE.md invariant 8.
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import re
 import subprocess
@@ -417,12 +416,16 @@ def _capture(arm: bench.Arm, program: str, cwd: Path, timeout: float) -> Tuple[i
     cmd = [str(arm.binary)]
     cmd.extend(arm.prefix)
     cmd.extend(["-c", program])
-    env = dict(os.environ)
-    env["LYPNING_CAPTURE"] = "0"
-    env["LYPNING_LOG"] = str(cwd / "capture.jsonl")
-    env["PYTHONHASHSEED"] = "0"
-    env["LC_ALL"] = "C.UTF-8"
-    env.update(arm.env)
+    # Through `engines.child_env` like every other spawn in the tree: it is
+    # where `LYPNING_CAPTURE=0` comes from, and where a relative `PYTHONPATH`
+    # is resolved before a child that runs in `cwd` can read it as its own
+    # (issue #57).
+    env = engines.child_env({
+        "LYPNING_LOG": str(cwd / "capture.jsonl"),
+        "PYTHONHASHSEED": "0",
+        "LC_ALL": "C.UTF-8",
+        **arm.env,
+    })
     try:
         proc = subprocess.run(
             cmd, input=b"", capture_output=True,

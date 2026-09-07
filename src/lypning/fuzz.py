@@ -937,6 +937,10 @@ def _env_for(cwd: Path) -> Dict[str, str]:
     capturing them would fold generated text into the corpus as *observed*
     evidence and destroy the frequency table that ranks the build order.
     ``engines.run`` sets ``LYPNING_CAPTURE=0`` as the other half of that.
+
+    The inherited variables are the other half of "the same environment", and
+    they are made absolute in :func:`lypning.engines.child_env` rather than here
+    — one place for every spawn in the tree (issue #57).
     """
     return {
         "LYPNING_LOG": str(cwd / "capture.jsonl"),

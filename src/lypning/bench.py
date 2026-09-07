@@ -206,14 +206,18 @@ def _child_env(arm: Arm, cwd: Optional[Path]) -> Dict[str, str]:
     ``PYTHONHASHSEED`` and ``LC_ALL`` are pinned because they are free to pin and
     because a benchmark whose baseline arm varies with the ambient locale is
     measuring the shell it was started from.
+
+    Built through :func:`lypning.engines.child_env`, which is where
+    ``LYPNING_CAPTURE=0`` comes from and where the path-like variables are made
+    absolute: every arm here is timed in a temp cwd, so a relative ``PYTHONPATH``
+    would name a different directory in each of them (issue #57).
     """
-    env = dict(os.environ)
-    env["LYPNING_CAPTURE"] = "0"
-    env["LYPNING_LOG"] = str((cwd or Path(tempfile.gettempdir())) / "capture.jsonl")
-    env["PYTHONHASHSEED"] = "0"
-    env["LC_ALL"] = "C.UTF-8"
-    env.update(arm.env)
-    return env
+    return engines.child_env({
+        "LYPNING_LOG": str((cwd or Path(tempfile.gettempdir())) / "capture.jsonl"),
+        "PYTHONHASHSEED": "0",
+        "LC_ALL": "C.UTF-8",
+        **arm.env,
+    })
 
 
 def time_one(

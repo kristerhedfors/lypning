@@ -352,3 +352,63 @@ def test_a_result_built_from_text_alone_still_answers_in_bytes():
     r = _result(0)
     assert r.stdout_bytes == b"" and r.stderr_bytes == b""
     assert _result(90, REAL_REFUSAL).stderr_bytes == REAL_REFUSAL.encode()
+
+
+# --- the environment a child runs in (issue #57) ------------------------------
+
+
+def test_a_relative_path_in_the_environment_is_resolved_before_a_child_sees_it():
+    # Every arm runs in a temp cwd of its own (CLAUDE.md invariant 4), so a
+    # relative `PYTHONPATH=src` names a DIFFERENT directory in each of them —
+    # and in the CPython reference, which is the half that made this silent.
+    env = engines.child_env({"PYTHONPATH": "src"})
+    assert env["PYTHONPATH"] == os.path.join(engines.LAUNCH_CWD, "src")
+
+
+def test_an_absolute_element_is_returned_byte_for_byte():
+    # No normpath: anything that already worked must keep the spelling it had,
+    # or this fix becomes a second way for an environment to change under a
+    # caller who did nothing wrong.
+    value = "/a/b/" + os.pathsep + "/c/../d"
+    assert engines.absolute_env_value(value) == value
+
+
+def test_every_element_of_a_list_variable_is_resolved_independently():
+    got = engines.absolute_env_value(os.pathsep.join(["/abs", "rel", ""]))
+    assert got.split(os.pathsep) == [
+        "/abs", os.path.join(engines.LAUNCH_CWD, "rel"),
+        # An empty element is POSIX for "the current directory" — the one thing
+        # that must not differ between two arms running in two sandboxes.
+        engines.LAUNCH_CWD]
+
+
+def test_an_override_is_resolved_by_the_same_rule_the_inherited_value_is():
+    # Otherwise a caller could reintroduce the divergence by passing one in,
+    # which is exactly how a battery arm gets its environment.
+    assert engines.child_env({"LYPNING_LOG": "log.jsonl"})["LYPNING_LOG"] == (
+        os.path.join(engines.LAUNCH_CWD, "log.jsonl"))
+
+
+def test_every_variable_that_pins_an_engine_binary_is_path_like():
+    # Spelled by rule rather than by hand (CLAUDE.md invariant 9): a relative
+    # $LYPNING_BIN resolves inside the sandbox, where nothing is installed, so
+    # the arm exits 127 and the battery compares two failures to spawn.
+    for engine in engines.ENGINE_ORDER + engines.ORACLES:
+        assert engines.env_var_for(engine) in engines.PATH_LIKE_ENV
+
+
+def test_a_spawned_child_can_import_from_a_relative_pythonpath(tmp_path):
+    # The property end to end, and on the arm the battery grades against: the
+    # reference must find the module however the caller spelled the variable,
+    # even though it runs in a cwd that is not the caller's.
+    if engines.find_cpython() is None:
+        pytest.skip("no cpython found")
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "issue57probe.py").write_text("VALUE = 'imported'\n", encoding="utf-8")
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    relative = os.path.relpath(str(lib), engines.LAUNCH_CWD)
+    r = engines.run(engines.CPYTHON, "import issue57probe; print(issue57probe.VALUE)",
+                    cwd=sandbox, timeout=30, env={"PYTHONPATH": relative})
+    assert r.stdout.strip() == "imported", r.stderr

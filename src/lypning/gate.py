@@ -46,7 +46,6 @@ is an estimate from shape — labelled as one everywhere it appears.
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import struct
@@ -426,8 +425,7 @@ def _trace(binary: Path | str, program: str = PROBE) -> Dict[str, Any]:
         # Containers routinely ship without strace or forbid ptrace. That is a
         # missing measurement, not a violation, and it must stay visible.
         return dict(empty, note="%s: strace not available" % UNMEASURED)
-    env = dict(os.environ)
-    env["LYPNING_CAPTURE"] = "0"  # a traced probe must not log itself into the corpus
+    env = engines.child_env()  # LYPNING_CAPTURE=0: a traced probe must not log itself
     # The caller's PYTHONPATH is a directory the baseline interpreter then opens
     # and stats, and it belongs to whoever launched the gate rather than to the
     # interpreter being measured. Running under `PYTHONPATH=src` is enough to

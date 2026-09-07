@@ -399,6 +399,55 @@ def test_every_arm_runs_in_the_same_environment_as_the_reference_it_is_scored_ag
         "the environment did not reach the tier that answered (%s)" % d.engine)
 
 
+def test_the_grade_does_not_depend_on_how_the_caller_spelled_pythonpath():
+    """A relative ``PYTHONPATH`` used to HIDE disagreements (issue #57).
+
+    Every entry runs in a temp cwd of its own, so under the documented
+    ``PYTHONPATH=src`` the *reference* could not import ``lypning`` either. Both
+    sides exited 1 with empty stdout, and :func:`conformance.classify` reads two
+    identical failures as agreement — the inverse of what the battery is for, on
+    the project's central gate. ``MISMATCH 0`` and ``MISMATCH 1`` were both
+    honest answers to the same tree, one variable apart.
+
+    Asserted on a program that imports a module reachable only through the
+    variable, because that is the shape the corpus is full of: the battery must
+    grade it the same however the caller spelled the path.
+    """
+    import os
+    import tempfile
+
+    if eng.find_cpython() is None:
+        pytest.skip("no cpython found")
+    root = tempfile.mkdtemp(prefix="lypning-issue57-")
+    lib = os.path.join(root, "lib")
+    os.mkdir(lib)
+    with open(os.path.join(lib, "issue57mod.py"), "w", encoding="utf-8") as fh:
+        fh.write("VALUE = 'imported'\n")
+    entry = corpus.Entry(id="py-issue57-relative-pythonpath",
+                         program="import issue57mod\nprint(issue57mod.VALUE)\n")
+
+    grades = set()
+    for spelling in (os.path.relpath(lib, eng.LAUNCH_CWD), lib):
+        saved = os.environ.get("PYTHONPATH")
+        os.environ["PYTHONPATH"] = spelling
+        try:
+            report = conformance.run([entry], engines=[eng.LYPNING], timeout=30)
+        finally:
+            if saved is None:
+                os.environ.pop("PYTHONPATH", None)
+            else:
+                os.environ["PYTHONPATH"] = saved
+        arm = report.engines.get(eng.LYPNING)
+        if arm is None:
+            pytest.skip("no engine built")
+        # The engine refuses the import; what must not move is the REFERENCE,
+        # whose exit code is the evidence the verdict was formed against.
+        grades.add((arm.verdicts[0].verdict, arm.verdicts[0].expected_rc))
+    assert len(grades) == 1, "the battery graded the same program two ways: %s" % sorted(grades)
+    assert grades == {(UNSUPPORTED, 0)}, (
+        "the reference did not run: %s" % sorted(grades))
+
+
 def test_the_battery_is_stable_on_a_program_whose_output_depends_on_set_order():
     # The program this was found on, reduced: `min` over a set with tied keys
     # returns whichever element iteration reached first, and CPython randomises

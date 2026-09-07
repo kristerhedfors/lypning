@@ -989,6 +989,14 @@ def _env_for(cwd: Path) -> Dict[str, str]:
     ranked by those counts, the loop does not merely add noise, it ranks guesses
     above what an agent actually typed. ``engines.run`` sets ``LYPNING_CAPTURE=0``
     as the other half of that belt and braces.
+
+    What is NOT here is the other half of "the same environment": the variables
+    the arms INHERIT. A path-like one is resolved against the child's cwd, and
+    every child here has a sandbox cwd of its own — so ``PYTHONPATH=src`` broke
+    the reference's imports exactly as it broke the engine's, and two identical
+    failures are what :func:`classify` reads as agreement. Those are made
+    absolute in one place, :func:`lypning.engines.child_env`, which every spawn
+    goes through (issue #57).
     """
     return {
         "LYPNING_LOG": str(cwd / "capture.jsonl"),
