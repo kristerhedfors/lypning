@@ -14,6 +14,7 @@ use crate::io as mio;
 use crate::ops;
 use crate::value::*;
 use std::cell::RefCell;
+use std::cmp::Ordering;
 use std::rc::Rc;
 
 const STR_METHODS: &[&str] = &[
@@ -289,14 +290,69 @@ pub fn method_name(recv: &Value, name: &str) -> Option<&'static str> {
         Value::File(_) => FILE_METHODS,
         _ => return None,
     };
-    // Binary search, not a scan: `.foo()` appears in most corpus programs and
-    // STR_METHODS alone is 37 entries, so a linear miss cost dozens of string
-    // compares on the hottest attribute path there is. Every table above is
-    // written in sorted order and `tests/test_method_tables.py` holds them to
-    // it — an unsorted table would make binary search MISS a method that exists,
-    // which is an AttributeError where CPython answers, and invariant 1 says
-    // that is the failure that matters.
-    table.binary_search(&name).ok().map(|i| table[i])
+    find_sorted(table, name)
+}
+
+/// One three-way comparison of two method names, WITHOUT calling `memcmp`.
+///
+/// `<str as Ord>::cmp` is `memcmp` plus a length tiebreak, and on this target
+/// `memcmp` is not an instruction — it is a branch through a dyld stub into
+/// `libsystem_platform.dylib`, whose SIMD entry sequence is longer than the
+/// whole comparison it is asked to do. A method name is five or six bytes and
+/// the search below diverges on the first one or two, so the CALL is the work.
+///
+/// Sampled with `sample(1)` on `t.count('a')` in a loop (2026-09-07, macOS
+/// arm64, 383 main-thread samples): `_platform_memcmp` and its stub were **77
+/// of them, 20% of the run**, and 55 of those 77 were reached from the binary
+/// search below. After this change the same program samples at 341 with 28 in
+/// `memcmp` — the rest of which belong to the scope map's key equality, which
+/// is a different mechanism and still there.
+///
+/// This is the one place the ledger's standing answer does not apply: it is a
+/// scan and not an allocation, and `docs/HILLCLIMB.md` iteration 4 found that
+/// replacing a table scan bought no wall clock at all. That reading was taken
+/// on musl x86_64, where `memcmp` is a leaf call into the same image. It does
+/// not transfer to a target where the same comparison leaves the binary.
+///
+/// A byte loop is not a clever comparison. It is the one that stays inline.
+#[inline]
+fn cmp_name(probe: &str, name: &str) -> Ordering {
+    let (x, y) = (probe.as_bytes(), name.as_bytes());
+    for (p, q) in x.iter().zip(y.iter()) {
+        if p != q {
+            return p.cmp(q);
+        }
+    }
+    x.len().cmp(&y.len())
+}
+
+/// Look `name` up in a sorted method table, returning the table's own
+/// `&'static str` so the caller can name the method without allocating.
+///
+/// Binary search, not a scan: `.foo()` appears in most corpus programs and
+/// `STR_METHODS` alone is 37 entries, so a linear miss cost dozens of string
+/// compares on the hottest attribute path there is. Every table here is written
+/// in sorted order and `tests/test_method_tables.py` holds them to it — an
+/// unsorted table would make binary search MISS a method that exists, which is
+/// an AttributeError where CPython answers, and invariant 1 says that is the
+/// failure that matters.
+///
+/// Spelled out rather than `slice::binary_search_by`, which takes a closure
+/// `opt-level = "s"` is under no obligation to inline — and an out-of-line
+/// comparator would put back exactly the call this exists to remove. It is the
+/// same search: the same probe sequence, the same answer.
+#[inline]
+pub fn find_sorted(table: &[&'static str], name: &str) -> Option<&'static str> {
+    let (mut lo, mut hi) = (0usize, table.len());
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        match cmp_name(table[mid], name) {
+            Ordering::Less => lo = mid + 1,
+            Ordering::Greater => hi = mid,
+            Ordering::Equal => return Some(table[mid]),
+        }
+    }
+    None
 }
 
 fn kwget(kw: &[(Rc<str>, Value)], name: &str) -> Option<Value> {
