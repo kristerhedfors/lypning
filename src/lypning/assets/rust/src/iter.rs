@@ -449,6 +449,12 @@ impl Interp {
                 self.iter_next(&mut b)?
             }
             Iter::Map(f, its) => {
+                // Same shape as `Iter::Zip` below, and unreachable rather
+                // than guarded: `map()` with fewer than two arguments is
+                // CPython's TypeError, raised in `builtins::call_builtin`
+                // before this value exists. If a second construction site ever
+                // appears, this is the arm it would spin in.
+                debug_assert!(!its.is_empty(), "map() with no iterables");
                 let f = f.clone();
                 let mut args = crate::args::Args::with_capacity(its.len());
                 for it in its.iter_mut() {
@@ -477,6 +483,20 @@ impl Interp {
                     }
                 }
             }
+            // ZERO iterables is exhaustion, not a fixpoint. `out` is built by
+            // the loop below, so with `its` empty the body never runs, nothing
+            // ever reports a `None`, and the arm answered `Some(())` — forever.
+            // `list(zip())`, `sorted(zip())`, `dict(zip())` and a comprehension
+            // over one all HUNG; `next(zip())` and `for t in zip(): break`
+            // consumed one element of that infinite stream and printed `()` at
+            // exit 0 where CPython's `zip()` is immediately empty. A hang is the
+            // one outcome worse than a wrong answer: the dispatcher never gets
+            // an exit code to retry on, so the caller waits for nothing.
+            //
+            // The guard is HERE and not at the `zip()` call because `zip(*[])`
+            // reaches the same state through a splat, and `Iter::Zip` is the one
+            // place both arrive.
+            Iter::Zip(its) if its.is_empty() => None,
             Iter::Zip(its) => {
                 let mut out = Vec::with_capacity(its.len());
                 for it in its.iter_mut() {
@@ -648,6 +668,23 @@ pub fn decode_utf8_rc(b: &[u8]) -> R<std::rc::Rc<str>> {
         Ok(s) => Ok(std::rc::Rc::from(s)),
         Err(e) => Err(utf8_error(b, &e)),
     }
+}
+
+/// `bytes.decode(encoding)` — and `str(bytes, encoding)`, which is the same
+/// operation under a second spelling.
+///
+/// The two spellings used to disagree: `b'h\xe9'.decode('latin-1')` refused
+/// with the exit-90 contract while `str(b'h\xe9', 'latin-1')` went straight to
+/// [`decode_utf8`] and raised a catchable UnicodeDecodeError at exit 1 for a
+/// program CPython answers `'hé'` — a wrong exit code on the path the
+/// dispatcher never retries. One reader now, so a codec this crate does not
+/// have refuses whichever way the caller wrote it.
+pub fn decode_named(b: &[u8], encoding: &str) -> R<std::rc::Rc<str>> {
+    let e = encoding.to_ascii_lowercase().replace('_', "-");
+    if !matches!(e.as_str(), "utf-8" | "utf8" | "ascii") {
+        return Err(crate::err::unsupported("encoding", &format!("decode('{e}')")));
+    }
+    decode_utf8_rc(b)
 }
 
 pub fn decode_utf8(b: &[u8]) -> R<String> {

@@ -261,6 +261,76 @@ ALIASED = [
 #: because the two names are one class and CPython's own repr proves it.
 NOT_ALIASED = ("IOError", "OSError")
 
+#: **The third instance of the `ALIASED` rule, and the one that arrives from the
+#: other direction.** `ALIASED` is one engine value standing for two CPython
+#: CLASSES; this is one engine value standing for a CPython class the engine has
+#: no name for at all. `modules.rs` materialises `os.environ` as a `Value::Dict`,
+#: so `type()` read `dict` off it and — once `repr` learned to serve class
+#: objects — printed ``<class 'dict'>`` at exit 0 where CPython prints
+#: ``<class 'os._Environ'>``. The parent commit refused it only because no
+#: `Value::Builtin` had a repr yet; the refusal has to be deliberate now.
+#:
+#: ``(program, what_cpython_prints_instead)``. Every row must refuse: the engine
+#: cannot spell `os._Environ`, and every one of these would otherwise print a
+#: dict's answer for something that is not a dict.
+NOT_A_DICT = [
+    ("import os\nprint(type(os.environ))", "<class 'os._Environ'>"),
+    ("import os\nprint(repr(type(os.environ)))", "<class 'os._Environ'>"),
+    ("import os\ne = os.environ\nprint(type(e))", "<class 'os._Environ'>"),
+    ("import os\nprint(str(type(os.environ)))", "<class 'os._Environ'>"),
+    ("import os\nprint(f'{type(os.environ)}')", "<class 'os._Environ'>"),
+    ("import os\nprint('%s' % type(os.environ))", "<class 'os._Environ'>"),
+    ("import os\nprint([type(os.environ)])", "[<class 'os._Environ'>]"),
+    # The mapping ITSELF, not its class: `_Environ.__repr__` writes
+    # `environ({…})` around the braces, so the dict repr is wrong here too.
+    ("import os\nprint(os.environ)", "environ({…})"),
+    ("import os\nprint(repr(os.environ))", "environ({…})"),
+    ("import os\nprint(str(os.environ))", "environ({…})"),
+    ("import os\nprint('%s' % os.environ)", "environ({…})"),
+    ("import os\nprint({'e': os.environ})", "{'e': environ({…})}"),
+    # And its views, which name the mapping inside the wrapper.
+    ("import os\nprint(os.environ.keys())", "KeysView(environ({…}))"),
+    ("import os\nprint(os.environ.items())", "ItemsView(environ({…}))"),
+    ("import os\nprint(os.environ.values())", "ValuesView(environ({…}))"),
+]
+
+#: **A pre-existing gap this round found and did NOT close, pinned so it cannot
+#: get quietly worse.** `modules::get_attr` rebuilds `os.environ` from
+#: `std::env::vars()` on every attribute access, so a write through one access
+#: is not visible through the next: `os.environ['X'] = 'v'` then
+#: `os.environ.get('X')` answers `None` at exit 0 where CPython answers `'v'`.
+#: Bound to a name first — `e = os.environ; e['X'] = 'v'` — it works, because
+#: then there is one dict; that row is in `STILL_A_DICT` above.
+#:
+#: It is not this round's and is not caused by it: naming the mapping changed
+#: what `type()`, `repr` and `isinstance` say about it and nothing about how it
+#: is BUILT, and this failed the same way before the tag existed. Closing it
+#: needs the mapping to be materialised once and to reach `putenv`, since
+#: CPython's `os.environ[k] = v` is visible to a child process. What is asserted
+#: is only that the engine still DISAGREES here — so the day someone fixes it,
+#: this test fails and says to move the row up into `STILL_A_DICT`.
+WRITES_DO_NOT_STICK_TODAY = [
+    "import os\nos.environ['LYP_X'] = 'v'\nprint(os.environ.get('LYP_X'))",
+    "import os\nos.environ['LYP_X'] = 'v'\nprint('LYP_X' in os.environ)",
+    "import os\nos.environ.setdefault('LYP_X', 'v')\nprint(os.environ.get('LYP_X'))",
+]
+
+#: The control for `NOT_A_DICT`, and the half that must NOT have been
+#: over-corrected: a plain dict is still a dict, a copy of `os.environ` is a
+#: plain dict in CPython too, and reading the mapping was never the problem.
+STILL_A_DICT = [
+    ("print(type({}))", "<class 'dict'>\n"),
+    ("print(type({'a': 1}))", "<class 'dict'>\n"),
+    ("import os\nprint(type(dict(os.environ)))", "<class 'dict'>\n"),
+    ("import os\nprint(type(os.environ.copy()))", "<class 'dict'>\n"),
+    ("import os\nprint(type(os.environ.get('PATH', '')))", "<class 'str'>\n"),
+    ("import os\ne = os.environ\ne['LYP_X'] = 'v'\nprint(e['LYP_X'])", "v\n"),
+    ("import os\nprint(len(os.environ) > 0)", "True\n"),
+    ("import os\nprint(sorted(os.environ) == sorted(dict(os.environ)))", "True\n"),
+    ("import os\nprint(os.environ == dict(os.environ))", "True\n"),
+    ("import os\nprint(isinstance(os.environ, dict))", "False\n"),
+]
+
 #: The `tp_name` / repr split, as programs. `Counter`'s `tp_name` is bare and
 #: its repr is module-qualified; `defaultdict`'s are both dotted; every builtin
 #: is bare in both. One table for the two would have printed `<class 'Counter'>`.
@@ -744,3 +814,85 @@ def test_every_variant_answers_the_grid_identically() -> None:
         assert (a.stdout, a.returncode) == (b.stdout, b.returncode), (
             "the two variants disagree on %r: %r/%d vs %r/%d"
             % (program, a.stdout, a.returncode, b.stdout, b.returncode))
+
+
+@needs_engine
+@on_each
+@pytest.mark.parametrize("program,cpython_says", NOT_A_DICT,
+                         ids=range(len(NOT_A_DICT)))
+def test_os_environ_is_not_a_dict_and_is_never_spelled_as_one(
+    engine: str, binary: Path, program: str, cpython_says: str,
+) -> None:
+    """`os.environ` is `ALIASED`'s rule met from the other side.
+
+    There the engine holds one value for two CPython classes; here it holds a
+    `Value::Dict` for a CPython class that is not `dict` at all. Both make a
+    repr a guess, and a guess printed at exit 0 is the failure invariant 1
+    exists to prevent — so both refuse. The reference is run rather than
+    recalled, because the whole claim is that CPython says something else."""
+    ref = _run([sys.executable], program)
+    assert ref.returncode == 0, (
+        "the reference cannot run this row, so it proves nothing: %r"
+        % ref.stderr.strip()[:200])
+    assert "dict" not in ref.stdout.split("(")[0], (
+        "this row is in the wrong table: CPython answers %r, which a dict "
+        "answer would equal" % ref.stdout)
+    got = _run([str(binary)], program)
+    problem = _refusal_problem(engine, got)
+    assert problem is None, (
+        "this program must refuse, not answer: %s\n"
+        "  program: %r\n  cpython says: %s\n  got: %r"
+        % (problem, program, cpython_says, got.stdout[:200]))
+
+
+@needs_engine
+@on_each
+@pytest.mark.parametrize("program,want", STILL_A_DICT, ids=range(len(STILL_A_DICT)))
+def test_naming_os_environ_did_not_cost_a_plain_dict_its_own_name(
+    engine: str, binary: Path, program: str, want: str,
+) -> None:
+    """The over-correction check, and the reason `NOT_A_DICT` is a tag on one
+    mapping rather than a refusal on `type()` of any dict.
+
+    Fourteen corpus programs print `type(d)` for a `d` that came out of
+    `json.loads`, and every one of them must still be answered. `dict(os.environ)`
+    and `os.environ.copy()` are here too: CPython returns a plain dict for both,
+    so the tag must not travel with the data."""
+    ref = _run([sys.executable], program)
+    assert ref.returncode == 0 and ref.stdout == want, (
+        "this table's expectation is not what the reference prints: %r vs %r"
+        % (ref.stdout, want))
+    got = _run([str(binary)], program)
+    if got.returncode == engines.UNSUPPORTED_EXIT:
+        assert _refusal_problem(engine, got) is None, program
+        pytest.skip("%s refuses this row: %s" % (engine, got.stderr.strip()[:160]))
+    assert (got.stdout, got.returncode) == (ref.stdout, 0), (
+        "%s no longer answers a plain dict.\n  program: %r\n  %s: %r exit %d"
+        % (engine, program, engine, got.stdout, got.returncode))
+
+
+@needs_engine
+@on_each
+@pytest.mark.parametrize("program", WRITES_DO_NOT_STICK_TODAY,
+                         ids=range(len(WRITES_DO_NOT_STICK_TODAY)))
+def test_a_write_to_os_environ_is_still_not_visible_through_the_next_read(
+    engine: str, binary: Path, program: str,
+) -> None:
+    """The gap above, pinned as a disagreement rather than as an answer.
+
+    Asserting the engine's current output would be asserting that a wrong answer
+    is right; what is asserted instead is that it is still WRONG, and in the
+    direction measured. A failure here means someone materialised `os.environ`
+    once — which is the fix — and the row belongs in `STILL_A_DICT` now."""
+    ref = _run([sys.executable], program)
+    assert ref.returncode == 0 and ref.stdout in ("v\n", "True\n"), (
+        "the reference no longer runs this row, so it pins nothing: %r %r"
+        % (ref.stdout, ref.stderr.strip()[:160]))
+    got = _run([str(binary)], program)
+    if got.returncode == engines.UNSUPPORTED_EXIT:
+        assert _refusal_problem(engine, got) is None, program
+        pytest.skip("%s refuses this row, which closes the gap safely" % engine)
+    assert got.stdout != ref.stdout, (
+        "%s now agrees with CPython on a write to os.environ — the gap this "
+        "row pins is CLOSED. Move it into STILL_A_DICT.\n  program: %r"
+        % (engine, program))

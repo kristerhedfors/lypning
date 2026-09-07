@@ -411,6 +411,18 @@ fn write_value(out: &mut String, v: &Value, o: &Opts, depth: usize) -> R<()> {
         }
         Value::Tuple(t) => write_seq(out, t, o, depth)?,
         Value::Dict(d) => {
+            // `os.environ` is a `Dict` here and an `os._Environ` in CPython,
+            // which `json` has no encoder for: `json.dumps(os.environ)` raises,
+            // where this serialised the environment at exit 0. The message is
+            // the generic one below, reached on purpose so that the name in it
+            // is `type_name`'s and cannot drift away from the one every other
+            // message prints.
+            if crate::value::is_environ(d) {
+                return Err(type_err(format!(
+                    "Object of type {} is not JSON serializable",
+                    type_name(v)
+                )));
+            }
             let mut pairs: Vec<(String, Value)> = Vec::new();
             for (k, val) in d.borrow().iter() {
                 let ks = match k {

@@ -152,6 +152,16 @@ pub fn repr(v: &Value) -> R<String> {
             if b.coll.is_some() {
                 return crate::collections::repr(&b);
             }
+            // `os.environ` is a third tagged dict and the one whose repr is NOT
+            // a dict's: `_Environ.__repr__` writes `environ({…})`. Printing the
+            // braces alone was a wrong answer at exit 0 on a program whose
+            // author would not look twice — the same shape as `<class 'dict'>`
+            // for `type(os.environ)`, and refused for the same reason. Serving
+            // it would mean claiming this process's `environ` array is ordered
+            // the way the reference interpreter's is.
+            if b.environ {
+                return Err(unsupported("repr", "repr() of os.environ"));
+            }
             dict_repr(&b)?
         }
         // See value.rs: CPython's set order is a property of its hashing, so a
@@ -174,6 +184,12 @@ pub fn repr(v: &Value) -> R<String> {
         }
         Value::DictView(d, kind) => {
             let d = d.borrow();
+            // A view OF `os.environ` reprs as `KeysView(environ({…}))`, not as
+            // `dict_keys([…])`: the wrapper names the mapping, so the refusal
+            // above has to reach through it as well.
+            if d.environ {
+                return Err(unsupported("repr", "repr() of an os.environ view"));
+            }
             let items: Vec<Value> = match *kind {
                 "keys" => d.keys(),
                 "values" => d.values(),

@@ -1746,21 +1746,15 @@ fn bytes_method(
     check_arity("bytes", name, args, &kw)?;
     Ok(match name {
         "decode" => {
-            if let Some(e) = crate::args::bind(args, &kw, 0, "encoding", name)?.as_ref() {
-                let e = fmt::to_str(e)?.to_ascii_lowercase().replace('_', "-");
-                if !matches!(e.as_str(), "utf-8" | "utf8" | "ascii") {
-                    return Err(unsupported("encoding", &format!("decode('{e}')")));
-                }
+            crate::builtins::check_decode_errors(
+                crate::args::bind(args, &kw, 1, "errors", name)?.as_ref(),
+            )?;
+            match crate::args::bind(args, &kw, 0, "encoding", name)?.as_ref() {
+                // The encoding name is read by `iter::decode_named`, which
+                // `str(bytes, encoding)` reads it through as well.
+                Some(e) => Value::Str(crate::iter::decode_named(b, &fmt::to_str(e)?)?),
+                None => Value::Str(crate::iter::decode_utf8_rc(b)?),
             }
-            if let Some(errs) = crate::args::bind(args, &kw, 1, "errors", name)?.as_ref() {
-                // "replace"/"ignore" would need CPython's exact replacement
-                // behaviour; refuse rather than approximate it.
-                let e = fmt::to_str(errs)?;
-                if e != "strict" {
-                    return Err(unsupported("encoding", &format!("decode(errors='{e}')")));
-                }
-            }
-            Value::Str(crate::iter::decode_utf8_rc(b)?)
         }
         "hex" => {
             // `b.hex('-')` groups the output; the separator was accepted and

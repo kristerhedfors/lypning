@@ -257,11 +257,18 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
         ("os", "path") => Value::Module("os.path"),
         ("os", "sep") => Value::Str("/".into()),
         ("os", "linesep") => Value::Str("\n".into()),
+        // The ONE place `Dict::environ` is set. It is what makes the four
+        // operations that NAME this mapping — `type()`, `repr`/`str`,
+        // `isinstance` and `json.dumps` — able to tell it from the `{}` it is
+        // otherwise modelled on; everything that merely READS it is a dict's
+        // job and stays one. `dict(os.environ)` and `os.environ.copy()` build a
+        // fresh untagged `Dict`, which is a plain dict in CPython too.
         ("os", "environ") => {
             let mut d = Dict::new();
             for (k, v) in std::env::vars() {
                 d.insert(Value::Str(k.into()), Value::Str(v.into()))?;
             }
+            d.environ = true;
             Value::Dict(Rc::new(RefCell::new(d)))
         }
         (

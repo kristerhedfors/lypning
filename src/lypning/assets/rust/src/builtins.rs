@@ -392,44 +392,83 @@ fn no_kw(name: &str, kw: &[(Rc<str>, Value)]) -> R<()> {
     }
 }
 
-/// How many POSITIONAL arguments each builtin takes, as `(min, max)`.
+/// Which of CPython's three arity WORDINGS a builtin uses. The counts alone
+/// were not enough: the same `(1, 1)` is spelled three different ways depending
+/// on how the function is defined in C, and a table that got the count right
+/// and the text wrong still disagrees with the reference on stderr.
+///
+/// Read off CPython 3.14.5 on 2026-09-07 by calling each name with 0..5
+/// type-correct arguments and keeping the message verbatim.
+#[derive(Clone, Copy)]
+enum Say {
+    /// `METH_O`, which spells its count as a WORD and never varies:
+    /// `len() takes exactly one argument (2 given)`, at zero arguments too.
+    One,
+    /// Argument Clinic's vectorcall wording, with **no parentheses** after the
+    /// name: `sorted expected 1 argument, got 2`,
+    /// `int expected at most 2 arguments, got 3`,
+    /// `range expected at least 1 argument, got 0`.
+    Bare,
+    /// Argument Clinic's *parenthesised* wording, used by the names whose
+    /// signature has a keyword-capable parameter:
+    /// `enumerate() takes at most 2 arguments (3 given)`.
+    Paren,
+}
+
+/// How many POSITIONAL arguments each builtin takes, as `(min, max, wording)`.
 ///
 /// The same defect as the method table in `methods.rs`: extras were dropped in
 /// silence, so `abs(1, 2)` answered `1`, `chr(65, 66)` answered `'A'`,
 /// `len([1], [2])` answered `1`, `repr(1, 2)` answered `'1'` and
 /// `divmod(1, 2, 3)` answered `(0, 1)` — every one at exit 0 where CPython
-/// raises. Derived by calling CPython 3.11 with 0..6 arguments.
+/// raises.
 ///
-/// `min`, `max`, `print` and `zip` are variadic and absent. `str`, `bytes` and
-/// `open` are absent because their upper bound depends on which overload the
-/// caller reached, and a wrong ceiling here would refuse working code — those
-/// arms keep their own handling.
-fn arity(name: &str) -> Option<(usize, usize)> {
+/// **The rows added on 2026-09-07 are the names that were still doing it.**
+/// Seven were absent and dropped their extras in the same silence:
+/// `dict({'a': 1}, 0)` answered `{'a': 1}`, `enumerate([1], 0, 0)` enumerated,
+/// `filter(bool, [1], 0)` filtered, `reversed([1], 0)` reversed,
+/// `input('a', 'b')` prompted, and `str` and `bytes` ignored a fourth argument
+/// — every one at exit 0 where CPython raises TypeError. They belong here
+/// rather than in their arms because an arm that has already begun is an arm
+/// that can have written to a file first.
+///
+/// `print` and `zip` are variadic and absent. `min`, `max` and `map` have a
+/// floor and no ceiling, and each already raises its own floor message —
+/// `min expected at least 1 argument, got 0` and
+/// `map() must have at least two arguments.` — so the table stays out of their
+/// way. `type` is absent because neither a floor nor a ceiling can say
+/// "1 or 3", and `open` because its floor message names a parameter.
+fn arity(name: &str) -> Option<(usize, usize, Say)> {
     Some(match name {
-        "len" | "abs" | "chr" | "ord" | "hex" | "oct" | "bin" | "repr" | "sorted" | "all"
-        | "any" => (1, 1),
+        "len" | "abs" | "chr" | "ord" | "hex" | "oct" | "bin" | "repr" | "all" | "any" => {
+            (1, 1, Say::One)
+        }
         // `format(value, format_spec)` takes two, and the first derivation of
         // this table said one. The probe had called `format(1, 1)`, which fails
         // with "argument 2 must be str, not int" — a TYPE error whose text
         // contains the word "argument", so it was scored as an arity limit.
         // Deriving a table by asking the oracle only works if the question is
-        // asked with type-correct values; `type` came back (1, 3) for the
-        // three-argument class form and is left out entirely rather than
-        // guessed at.
-        "format" => (1, 2),
-        "bool" | "float" | "list" | "tuple" | "set" => (0, 1),
-        "divmod" | "isinstance" => (2, 2),
-        "int" => (0, 2),
-        "sum" | "next" | "iter" => (1, 2),
-        // `round` has a CEILING of 2 and no floor HERE, because its zero-argument
-        // message is Argument Clinic's — `round() missing required argument
-        // 'number' (pos 1)` — and not the `takes at least` form this function
-        // writes. The arm below raises the right text; the table only has to
-        // stay out of its way. Found by py-7c8697bf4fa2, which greps CPython's
-        // own arity messages with a regex: until `re` had a matcher the program
-        // never ran here, and the divergence had nothing to expose it.
-        "round" => (0, 2),
-        "range" => (1, 3),
+        // asked with type-correct values.
+        "format" => (1, 2, Say::Bare),
+        "sorted" | "reversed" => (1, 1, Say::Bare),
+        "bool" | "float" | "list" | "tuple" | "set" | "dict" => (0, 1, Say::Bare),
+        "divmod" | "isinstance" | "filter" => (2, 2, Say::Bare),
+        "int" => (0, 2, Say::Bare),
+        "next" | "iter" => (1, 2, Say::Bare),
+        "input" => (0, 1, Say::Bare),
+        "str" => (0, 3, Say::Bare),
+        // `round` and `sum` have a CEILING and no floor HERE, because their
+        // zero-argument messages are neither of the two forms below —
+        // `round() missing required argument 'number' (pos 1)` and
+        // `sum() takes at least 1 positional argument (0 given)`. The arms raise
+        // those; the table only has to stay out of the way. Found by
+        // py-7c8697bf4fa2, which greps CPython's own arity messages with a
+        // regex: until `re` had a matcher the program never ran here, and the
+        // divergence had nothing to expose it. `enumerate` and `bytes` are the
+        // same shape.
+        "round" | "sum" | "enumerate" => (0, 2, Say::Paren),
+        "bytes" => (0, 3, Say::Paren),
+        "range" => (1, 3, Say::Bare),
         _ => return None,
     })
 }
@@ -443,7 +482,7 @@ fn plural(n: usize) -> &'static str {
 }
 
 fn check_arity(name: &str, args: &Args, kw: &[(Rc<str>, Value)]) -> R<()> {
-    let Some((lo, hi)) = arity(name) else { return Ok(()) };
+    let Some((lo, hi, say)) = arity(name) else { return Ok(()) };
     let n = args.len();
     // The floor counts POSITIONAL arguments, so it only applies when nothing was
     // passed by name: `round(number=2.5)` has none and is still a complete call.
@@ -452,12 +491,18 @@ fn check_arity(name: &str, args: &Args, kw: &[(Rc<str>, Value)]) -> R<()> {
     if n <= hi && (n >= lo || !kw.is_empty()) {
         return Ok(());
     }
-    Err(type_err(if lo == hi {
-        format!("{name}() takes exactly {lo} {} ({n} given)", plural(lo))
-    } else if n > hi {
-        format!("{name}() takes at most {hi} {} ({n} given)", plural(hi))
-    } else {
-        format!("{name}() takes at least {lo} {} ({n} given)", plural(lo))
+    Err(type_err(match say {
+        // One text for both directions: `METH_O` counts what it got and says
+        // nothing about the bound.
+        Say::One => format!("{name}() takes exactly one argument ({n} given)"),
+        Say::Bare if lo == hi => {
+            format!("{name} expected {lo} {}, got {n}", plural(lo))
+        }
+        Say::Bare if n > hi => {
+            format!("{name} expected at most {hi} {}, got {n}", plural(hi))
+        }
+        Say::Bare => format!("{name} expected at least {lo} {}, got {n}", plural(lo)),
+        Say::Paren => format!("{name}() takes at most {hi} arguments ({n} given)"),
     }))
 }
 
@@ -676,13 +721,27 @@ pub fn call_builtin(
         "str" => match args.first() {
             None => Value::Str("".into()),
             Some(v) => {
-                if let (Value::Bytes(b), Some(_)) = (v, kwget(&kw, "encoding")) {
-                    Value::Str(decode_utf8(b)?.into())
-                } else if let (Value::Bytes(_), Some(_)) = (v, args.get(1)) {
-                    let Value::Bytes(b) = v else { unreachable!() };
-                    Value::Str(decode_utf8(b)?.into())
-                } else {
-                    Value::Str(fmt::to_rc(v)?)
+                let (enc, errs) = text_codec_args("str", &args, &kw)?;
+                match v {
+                    // `str(b, encoding)` IS `b.decode(encoding)`, and it went
+                    // straight to `decode_utf8` whatever the encoding said —
+                    // so `str(b'h\xe9', 'latin-1')` raised UnicodeDecodeError at
+                    // exit 1 for a program CPython answers `'hé'`, while
+                    // `b'h\xe9'.decode('latin-1')`, the same operation spelled
+                    // the other way, correctly refused. One reader for both
+                    // spellings now, so the two cannot disagree again.
+                    Value::Bytes(b) if enc.is_some() => {
+                        check_decode_errors(errs.as_ref())?;
+                        let e = fmt::to_str(enc.as_ref().unwrap())?;
+                        Value::Str(crate::iter::decode_named(b, &e)?)
+                    }
+                    // An encoding given for something that is not bytes at all.
+                    // This fell through to `to_rc` and STRINGIFIED the object:
+                    // `str(1, 'utf-8')` answered `'1'` at exit 0.
+                    _ => match codec_without_subject("str", v, enc.as_ref(), errs.is_some(), true) {
+                        Some(e) => return Err(e),
+                        None => Value::Str(fmt::to_rc(v)?),
+                    },
                 }
             }
         },
@@ -1199,7 +1258,12 @@ pub fn call_builtin(
                         None => acc,
                     }
                 }
-                None => return Err(type_err("sum() missing 1 required positional argument")),
+                // Argument Clinic's, and neither of the two forms
+                // `check_arity` writes — which is why `sum`'s floor is 0 in the
+                // table and lives here instead.
+                None => {
+                    return Err(type_err("sum() takes at least 1 positional argument (0 given)"))
+                }
             }
         }
         "min" | "max" => {
@@ -1240,7 +1304,10 @@ pub fn call_builtin(
             let mut tied = false;
             for x in &items[1..] {
                 let k = keyed(it, &keyf, x)?;
-                let o = ops::order(&k, &bestk)?;
+                // `>` for `max` and `<` for `min`: the symbol reaches stderr
+                // through the TypeError for a pair this engine will not order,
+                // and CPython's names the operator the builtin actually uses.
+                let o = ops::order_op(if want_max { ">" } else { "<" }, &k, &bestk)?;
                 // Ties keep the FIRST element, matching CPython.
                 if (want_max && o == std::cmp::Ordering::Greater)
                     || (!want_max && o == std::cmp::Ordering::Less)
@@ -1435,7 +1502,15 @@ pub fn call_builtin(
                     "'{k}' is an invalid keyword argument for enumerate()"
                 )));
             }
-            let v = arg1(name, &args)?;
+            // Argument Clinic names the parameter; `arg1` writes the generic
+            // `missing 1 required positional argument`, which is a Python-level
+            // function's wording and not this one's.
+            let v = match args.first() {
+                Some(v) => v.clone(),
+                None => {
+                    return Err(type_err("enumerate() missing required argument 'iterable'"))
+                }
+            };
             let start = match crate::args::bind(&args, &kw, 1, "start", "enumerate")? {
                 Some(x) => int_val(&x)?,
                 None => 0,
@@ -1473,7 +1548,13 @@ pub fn call_builtin(
             Value::IterObj(Rc::new(RefCell::new(Iter::Zip(its))), "zip")
         }
         "map" => {
-            if args.is_empty() {
+            // TWO, not one. `map(abs)` built an `Iter::Map` over ZERO iterables,
+            // which — like `Iter::Zip` over zero — has nothing to report
+            // exhaustion, so it called `abs()` forever: exit 0 while the value
+            // went unconsumed, and `abs() takes exactly one argument (0 given)`
+            // the moment it was. CPython raises here, before the iterator
+            // exists, and the trailing full stop is its own.
+            if args.len() < 2 {
                 return Err(type_err("map() must have at least two arguments."));
             }
             let f = args.remove(0);
@@ -1555,6 +1636,21 @@ pub fn call_builtin(
             )
         }
         "iter" => {
+            // The two-argument form is `iter(callable, sentinel)` — a different
+            // iterator entirely, which this engine does not build. The sentinel
+            // was DROPPED, so `iter([1, 2], 0)` handed back a plain list
+            // iterator at exit 0 where CPython raises. The ceiling in `arity`
+            // admits two arguments; what they MEAN is decided here, and the two
+            // outcomes are not the same: a first argument that is not callable
+            // is the caller's own TypeError and is served exactly, while a real
+            // callable is a feature this crate does not have and refuses.
+            if args.len() == 2 {
+                let v = arg1(name, &args)?;
+                if !matches!(v, Value::Func(_) | Value::Builtin(_) | Value::Bound(..)) {
+                    return Err(type_err("iter(v, w): v must be callable"));
+                }
+                return Err(unsupported("builtin", "iter(callable, sentinel)"));
+            }
             let v = arg1(name, &args)?;
             // Before the `IterObj` shortcut below: a hash object wears that
             // shape and is not iterable, so handing it back would answer where
@@ -1652,6 +1748,19 @@ pub fn call_builtin(
             Value::Str(fmt::format_value(&v, &spec)?.into())
         }
         "type" => {
+            // `type(name, bases, dict)` is the CLASS CONSTRUCTOR, a second
+            // signature this engine has no class objects to answer with, and
+            // `type()` with any other count is a TypeError with one wording for
+            // both. Not in `arity()` because that table's floor and ceiling
+            // cannot say "1 or 3": every count but those two answered
+            // `<class 'int'>` for the FIRST argument at exit 0, and the
+            // three-argument form answered it for a program CPython runs.
+            if args.len() == 3 {
+                return Err(unsupported("type", "type() with 3 arguments (class creation)"));
+            }
+            if args.len() != 1 {
+                return Err(type_err("type() takes 1 or 3 arguments"));
+            }
             let v = arg1(name, &args)?;
             Value::Builtin(match type_name(&v) {
                 "int" => "int",
@@ -1757,7 +1866,7 @@ pub fn call_builtin(
                         "open() with a non-str path (a file descriptor)",
                     ))
                 }
-                None => return Err(type_err("open() missing required argument: 'file'")),
+                None => return Err(type_err("open() missing required argument 'file' (pos 1)")),
             };
             let mode = match crate::args::bind(&args, &kw, 1, "mode", "open")? {
                 Some(v) => fmt::to_str(&v)?,
@@ -1780,69 +1889,98 @@ pub fn call_builtin(
                 None => return Err(LypningError::exc("EOFError", "EOF when reading a line")),
             }
         }
-        "bytes" => match args.first() {
-            None => Value::Bytes(Rc::new(Vec::new())),
-            // `PurePath.__bytes__` is `os.fsencode(self)`, so CPython answers
-            // the path's own text as bytes. Reaching the generic arm instead
-            // raised "not iterable" at exit 1 for a program CPython runs — a
-            // wrong exit code, not a refusal, which the chain never retries.
-            #[cfg(feature = "cap-pathlib")]
-            Some(Value::Path(p, false)) => Value::Bytes(Rc::new(p.as_bytes().to_vec())),
-            // `bytes('abc')` is a TypeError: a str has no bytes until an
-            // ENCODING says which. Answering `b'abc'` silently picked UTF-8 on
-            // the caller's behalf — right for ASCII and a wrong answer the
-            // moment the text is not, which is exactly when it matters.
-            // `bytes('abc', 'utf-8')` is the spelling that works and still does.
-            Some(Value::Str(s)) => {
-                // The encoding argument's VALUE was never read: `bytes('a',
-                // 'bogus')` answered b'a' where CPython raises LookupError, and
-                // `bytes('héllo', 'latin-1')` answered the UTF-8 bytes — data
-                // corruption at exit 0. Same rule as `str.encode` above: UTF-8
-                // spellings pass, ASCII validates, anything else refuses.
-                let enc = crate::args::bind(&args, &kw, 1, "encoding", "bytes")?;
-                let Some(e) = enc else {
-                    return Err(type_err("string argument without an encoding"));
-                };
-                let e = fmt::to_str(&e)?.to_ascii_lowercase().replace('_', "-");
-                if !matches!(e.as_str(), "utf-8" | "utf8" | "ascii") {
-                    return Err(unsupported("encoding", &format!("bytes(str, '{e}')")));
+        "bytes" => {
+            // An `encoding` is only meaningful for a str source, and CPython says so
+            // before it looks at the source at all. Every arm below but the
+            // `Value::Str` one DROPPED the pair in silence, so `bytes(2, 'utf-8')`
+            // answered `b'\x00\x00'` and `bytes(2, 0)` answered the same, where
+            // CPython raises two different TypeErrors. The str arm reads the pair
+            // itself, which is why it is excluded here rather than checked twice.
+            if !matches!(args.first(), Some(Value::Str(_))) {
+                let (enc, errs) = text_codec_args("bytes", &args, &kw)?;
+                let subject = args.first().unwrap_or(&Value::None);
+                if let Some(e) =
+                    codec_without_subject("bytes", subject, enc.as_ref(), errs.is_some(), false)
+                {
+                    return Err(e);
                 }
-                if e == "ascii" && !s.is_ascii() {
-                    return Err(LypningError::exc(
-                        "UnicodeEncodeError",
-                        "'ascii' codec can't encode character",
-                    ));
-                }
-                Value::Bytes(Rc::new(s.as_bytes().to_vec()))
             }
-            Some(Value::Bytes(b)) => Value::Bytes(b.clone()),
-            // `bytes(2**100)` is a MemoryError in CPython, not a value; the
-            // machine-word requirement refuses, which is one spawn and the right
-            // answer.
-            Some(Value::Int(n)) => Value::Bytes(Rc::new(vec![0u8; n.get()?.max(0) as usize])),
-            // `bytes(re.I)` is `b'\x00\x00'` — the int path.
-            #[cfg(feature = "cap-re")]
-            Some(Value::ReFlag(b)) => Value::Bytes(Rc::new(vec![0u8; *b as usize])),
-            #[cfg(feature = "cap-re")]
-            Some(v @ (Value::Pattern(_) | Value::Match(_))) => {
-                return Err(crate::re::guard_one(v, "bytes() of").unwrap_err())
-            }
-            Some(other) => {
-                let items = it.iter_collect(other.clone())?;
-                let mut out = Vec::with_capacity(items.len());
-                for x in items {
-                    // `as u8` TRUNCATES in Rust, so bytes([2**62]) was b"\x00"
-                    // and bytes([300]) was b"\x2c" — silent data corruption at
-                    // exit 0 where CPython raises. Found by scripts/lypning-fuzz.mjs.
-                    let n = int_val(&x)?;
-                    if !(0..=255).contains(&n) {
-                        return Err(value_err("bytes must be in range(0, 256)"));
+            match args.first() {
+                None => Value::Bytes(Rc::new(Vec::new())),
+                // `PurePath.__bytes__` is `os.fsencode(self)`, so CPython answers
+                // the path's own text as bytes. Reaching the generic arm instead
+                // raised "not iterable" at exit 1 for a program CPython runs — a
+                // wrong exit code, not a refusal, which the chain never retries.
+                #[cfg(feature = "cap-pathlib")]
+                Some(Value::Path(p, false)) => Value::Bytes(Rc::new(p.as_bytes().to_vec())),
+                // `bytes('abc')` is a TypeError: a str has no bytes until an
+                // ENCODING says which. Answering `b'abc'` silently picked UTF-8 on
+                // the caller's behalf — right for ASCII and a wrong answer the
+                // moment the text is not, which is exactly when it matters.
+                // `bytes('abc', 'utf-8')` is the spelling that works and still does.
+                Some(Value::Str(s)) => {
+                    // The encoding argument's VALUE was never read: `bytes('a',
+                    // 'bogus')` answered b'a' where CPython raises LookupError, and
+                    // `bytes('héllo', 'latin-1')` answered the UTF-8 bytes — data
+                    // corruption at exit 0. Same rule as `str.encode` above: UTF-8
+                    // spellings pass, ASCII validates, anything else refuses.
+                    let enc = crate::args::bind(&args, &kw, 1, "encoding", "bytes")?;
+                    let Some(e) = enc else {
+                        return Err(type_err("string argument without an encoding"));
+                    };
+                    let e = fmt::to_str(&e)?.to_ascii_lowercase().replace('_', "-");
+                    if !matches!(e.as_str(), "utf-8" | "utf8" | "ascii") {
+                        return Err(unsupported("encoding", &format!("bytes(str, '{e}')")));
                     }
-                    out.push(n as u8);
+                    if e == "ascii" && !s.is_ascii() {
+                        return Err(LypningError::exc(
+                            "UnicodeEncodeError",
+                            "'ascii' codec can't encode character",
+                        ));
+                    }
+                    Value::Bytes(Rc::new(s.as_bytes().to_vec()))
                 }
-                Value::Bytes(Rc::new(out))
+                Some(Value::Bytes(b)) => Value::Bytes(b.clone()),
+                // `bytes(2**100)` is a MemoryError in CPython, not a value; the
+                // machine-word requirement refuses, which is one spawn and the right
+                // answer.
+                Some(Value::Int(n)) => {
+                    // `.max(0)` CLAMPED: `bytes(-1)` answered `b''` at exit 0 where
+                    // CPython raises `ValueError: negative count`. A count that is
+                    // not a count is the caller's mistake, and answering the empty
+                    // object hides it — the program keeps running with an object it
+                    // never asked for. Served exactly rather than refused: the
+                    // message is four bytes of table and CPython's own wording.
+                    let n = n.get()?;
+                    if n < 0 {
+                        return Err(value_err("negative count"));
+                    }
+                    Value::Bytes(Rc::new(vec![0u8; n as usize]))
+                }
+                // `bytes(re.I)` is `b'\x00\x00'` — the int path.
+                #[cfg(feature = "cap-re")]
+                Some(Value::ReFlag(b)) => Value::Bytes(Rc::new(vec![0u8; *b as usize])),
+                #[cfg(feature = "cap-re")]
+                Some(v @ (Value::Pattern(_) | Value::Match(_))) => {
+                    return Err(crate::re::guard_one(v, "bytes() of").unwrap_err())
+                }
+                Some(other) => {
+                    let items = it.iter_collect(other.clone())?;
+                    let mut out = Vec::with_capacity(items.len());
+                    for x in items {
+                        // `as u8` TRUNCATES in Rust, so bytes([2**62]) was b"\x00"
+                        // and bytes([300]) was b"\x2c" — silent data corruption at
+                        // exit 0 where CPython raises. Found by scripts/lypning-fuzz.mjs.
+                        let n = int_val(&x)?;
+                        if !(0..=255).contains(&n) {
+                            return Err(value_err("bytes must be in range(0, 256)"));
+                        }
+                        out.push(n as u8);
+                    }
+                    Value::Bytes(Rc::new(out))
+                }
             }
-        },
+        }
         other => {
             return Err(unsupported(
                 "builtin",
@@ -1926,6 +2064,74 @@ fn set_newline(f: &mut mio::FileObj, nl: u8) {
 
 #[cfg(not(feature = "cap-csv"))]
 fn set_newline(_f: &mut mio::FileObj, _nl: ()) {}
+
+/// The `errors=` argument of `bytes.decode` and `str(bytes, encoding, errors)`.
+///
+/// `"replace"` and `"ignore"` would need CPython's exact replacement behaviour;
+/// refused rather than approximated, whichever of the two spellings asked.
+pub fn check_decode_errors(errs: Option<&Value>) -> R<()> {
+    if let Some(v) = errs {
+        let e = fmt::to_str(v)?;
+        if e != "strict" {
+            return Err(unsupported("encoding", &format!("decode(errors='{e}')")));
+        }
+    }
+    Ok(())
+}
+
+/// The `(encoding, errors)` tail of `str(object, encoding, errors)` and
+/// `bytes(source, encoding, errors)`.
+///
+/// Both take the pair positionally OR by keyword, and the arms below were
+/// reading only one spelling each — so `bytes(2, encoding='utf-8')` took a
+/// different path from `bytes(2, 'utf-8')` for one and the same call. Read
+/// through [`crate::args::bind`], which is the crate's only correct way to read
+/// a positional-or-keyword parameter and says why.
+fn text_codec_args(
+    who: &str,
+    args: &Args,
+    kw: &[(Rc<str>, Value)],
+) -> R<(Option<Value>, Option<Value>)> {
+    Ok((
+        crate::args::bind(args, kw, 1, "encoding", who)?,
+        crate::args::bind(args, kw, 2, "errors", who)?,
+    ))
+}
+
+/// CPython's TypeError for a `str()`/`bytes()` call whose FIRST argument cannot
+/// take an encoding at all, or `None` when no encoding was given.
+///
+/// Three texts, chosen by the two argument types, and all three measured on
+/// CPython 3.14.5 on 2026-09-07. `who` is the constructor's own name, which
+/// only the first text carries.
+fn codec_without_subject(
+    who: &str,
+    subject: &Value,
+    enc: Option<&Value>,
+    errs: bool,
+    decoding: bool,
+) -> Option<LypningError> {
+    if let Some(e) = enc {
+        if !matches!(e, Value::Str(_)) {
+            return Some(type_err(format!(
+                "{who}() argument 'encoding' must be str, not {}",
+                type_name(e)
+            )));
+        }
+    } else if !errs {
+        return None;
+    }
+    Some(type_err(if decoding {
+        // `str(1, 'utf-8')`: the encoding is fine, the OBJECT is not bytes.
+        format!(
+            "decoding to str: need a bytes-like object, {} found",
+            type_name(subject)
+        )
+    } else {
+        // `bytes(2, 'utf-8')`: an encoding is only meaningful for a str.
+        format!("{} without a string argument", if enc.is_some() { "encoding" } else { "errors" })
+    }))
+}
 
 fn arg1(name: &str, args: &[Value]) -> R<Value> {
     args.first()

@@ -1463,6 +1463,18 @@ pub fn order(a: &Value, b: &Value) -> R<Ordering> {
     order_as("<", a, b)
 }
 
+/// [`order`], but naming the operator the CALLER would have written.
+///
+/// `max` compares with `>` and `min` with `<`, so `max([1, 2], 0)` prints
+/// `'>' not supported between instances of 'int' and 'list'` where this crate,
+/// which routed both through `order`, printed `'<'` — the right exception, the
+/// right operands, the wrong symbol, on the one line a reader would use to find
+/// the comparison in their own source. `sorted` and `list.sort` really do use
+/// `<`, so they keep [`order`].
+pub fn order_op(sym: &str, a: &Value, b: &Value) -> R<Ordering> {
+    order_as(sym, a, b)
+}
+
 fn order_as(sym: &str, a: &Value, b: &Value) -> R<Ordering> {
     // `sorted`, `min`, `max` and `list.sort` reach the comparator HERE rather
     // than through `Interp::cmp`, so a type this engine declines to ORDER has to
