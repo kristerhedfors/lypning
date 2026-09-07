@@ -13,7 +13,7 @@ use crate::fmt;
 use crate::modules;
 use crate::value::*;
 use std::cell::RefCell;
-use crate::hash::{Map, Set as FastSet};
+use crate::hash::{Map, Names, Set as FastSet};
 use std::rc::Rc;
 
 pub type Scope = Rc<RefCell<Map<Rc<str>, Value>>>;
@@ -55,10 +55,14 @@ pub struct Interp {
     pub globals: Scope,
     /// Innermost-last scope chain for the function currently executing.
     pub chain: Vec<Scope>,
-    /// Names declared `global` in the function currently executing.
-    global_decls: Vec<FastSet<Rc<str>>>,
+    /// Names declared `global` in the function currently executing, one entry
+    /// per live frame. `Option<Box<..>>` and not the table itself, because
+    /// `global` is a statement almost no function contains: the entry is then a
+    /// null pointer pushed and popped, where an inline table was a whole empty
+    /// hash set constructed, moved and dropped on every single call.
+    global_decls: Vec<Option<Box<FastSet<Rc<str>>>>>,
     /// Names assigned somewhere in the current function body.
-    assigned: Vec<Rc<FastSet<Rc<str>>>>,
+    assigned: Vec<Rc<Names>>,
     pub modules: Map<Rc<str>, Value>,
     /// The `random` module's generator, `None` until `random.seed(int)`
     /// runs — an unseeded stream is a refusal (`random.rs`). Boxed: the
@@ -144,7 +148,7 @@ impl Interp {
         }
         if let Some(f) = self.assigned.last() {
             // Assigned somewhere in this function but not bound yet.
-            if f.contains(name) && !self.global_decls.last().is_some_and(|g| g.contains(name)) {
+            if f.contains(name) && !self.declared_global(name) {
                 return Err(LypningError::exc(
                     "UnboundLocalError",
                     format!("cannot access local variable '{name}' where it is not associated with a value"),
@@ -160,12 +164,19 @@ impl Interp {
         Err(name_err(name))
     }
 
-    pub fn bind(&mut self, name: &Rc<str>, v: Value) {
-        if self
-            .global_decls
+    /// Was `name` declared `global` by the function currently executing?
+    ///
+    /// The outer `is_some_and` is the frame, the inner one is that frame's
+    /// table — absent until a `global` statement created it.
+    #[inline]
+    fn declared_global(&self, name: &str) -> bool {
+        self.global_decls
             .last()
-            .is_some_and(|g| g.contains(name.as_ref()))
-        {
+            .is_some_and(|g| g.as_ref().is_some_and(|g| g.contains(name)))
+    }
+
+    pub fn bind(&mut self, name: &Rc<str>, v: Value) {
+        if self.declared_global(name.as_ref()) {
             self.globals.borrow_mut().insert(name.clone(), v);
             return;
         }
@@ -365,6 +376,7 @@ impl Interp {
             }
             Stmt::Global(names) => {
                 if let Some(g) = self.global_decls.last_mut() {
+                    let g = g.get_or_insert_with(|| Box::new(crate::hash::set()));
                     for n in names {
                         g.insert(n.clone());
                     }
@@ -994,7 +1006,7 @@ impl Interp {
                     defaults,
                     lambda: Some(Rc::new((**body).clone())),
                     env: self.chain.clone(),
-                    assigned: Rc::new(crate::hash::set()),
+                    assigned: Rc::new(Names::new()),
                 }))
             }
             Expr::Comp {
@@ -1219,7 +1231,10 @@ impl Interp {
                 s.insert(p.names[si].clone(), Value::Tuple(Rc::new(extra)));
                 used.set(si);
             }
-            let mut leftover = Dict::new();
+            // Built only if a keyword actually lands in it. `**kwargs` is
+            // rare and this is the hottest call in the interpreter: a `Dict` is
+            // four fields to zero on the stack of every call that has none.
+            let mut leftover: Option<Dict> = None;
             for (k, v) in kw {
                 // FROM `posonly`, not from zero: a name before the `/` is
                 // positional-only and a keyword may not fill it. Searching the
@@ -1251,7 +1266,9 @@ impl Interp {
                     }
                     None => {
                         if p.dstar.is_some() {
-                            leftover.insert(Value::Str(k), v)?;
+                            leftover
+                                .get_or_insert_with(Dict::new)
+                                .insert(Value::Str(k), v)?;
                         } else {
                             return Err(type_err(format!(
                                 "{}() got an unexpected keyword argument '{k}'",
@@ -1264,7 +1281,7 @@ impl Interp {
             if let Some(di) = p.dstar {
                 s.insert(
                     p.names[di].clone(),
-                    Value::Dict(Rc::new(RefCell::new(leftover))),
+                    Value::Dict(Rc::new(RefCell::new(leftover.unwrap_or_default()))),
                 );
                 used.set(di);
             }
@@ -1290,10 +1307,14 @@ impl Interp {
         // at the bottom of this function, so a recursion pays for its depth once
         // rather than once per frame per call.
         let mut c = self.chain_pool.pop().unwrap_or_default();
-        c.extend_from_slice(&f.env);
+        // Guarded: a module-level `def` has no closure, so this is an
+        // out-of-line call that copies nothing on most calls in most programs.
+        if !f.env.is_empty() {
+            c.extend_from_slice(&f.env);
+        }
         c.push(scope);
         let saved_chain = std::mem::replace(&mut self.chain, c);
-        self.global_decls.push(crate::hash::set());
+        self.global_decls.push(None);
         self.assigned.push(f.assigned.clone());
         let r = match &f.lambda {
             Some(body) => self.eval(body),
@@ -1483,8 +1504,8 @@ pub struct IterState {
 /// Every name assigned anywhere in a function body, including its parameters.
 /// Used to make an early read raise `UnboundLocalError` rather than silently
 /// finding a global of the same name.
-fn assigned_names(body: &[Stmt], params: &Params) -> FastSet<Rc<str>> {
-    let mut out = crate::hash::set();
+fn assigned_names(body: &[Stmt], params: &Params) -> Names {
+    let mut out = Names::new();
     for n in &params.names {
         out.insert(n.clone());
     }
@@ -1492,8 +1513,8 @@ fn assigned_names(body: &[Stmt], params: &Params) -> FastSet<Rc<str>> {
     out
 }
 
-fn collect_assigned(body: &[Stmt], out: &mut FastSet<Rc<str>>) {
-    fn tgt(t: &Target, out: &mut FastSet<Rc<str>>) {
+fn collect_assigned(body: &[Stmt], out: &mut Names) {
+    fn tgt(t: &Target, out: &mut Names) {
         match t {
             Target::Name(n) => {
                 out.insert(n.clone());
