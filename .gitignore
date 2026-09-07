@@ -49,3 +49,6 @@ study/data/hostset/
 
 # uv writes this when run without --no-project; the package has no dependencies to lock
 uv.lock
+
+# other sessions' scratch worktrees; never ours to commit
+.claude/worktrees/

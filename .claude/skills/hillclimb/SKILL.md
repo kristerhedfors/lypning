@@ -253,23 +253,54 @@ iteration 15); five hypotheses were built and measured before it became clear
 that most of it was the optimiser, not the code.
 
 So when a reading moves by single-digit percent, find out what the *build* is
-worth first. Rebuild the **unchanged** source three more times with a comment
-added to an unrelated file, and measure the spread:
+worth first — but perturb it with something that **reaches codegen**.
+
+> **The old recipe here was a no-op, corrected 2026-09-07 (iteration 79).** It
+> said to append a comment to an unrelated file and rebuild. On macOS arm64 with
+> this profile, four builds carrying `// probe P` … `// probe SSSS` in `json.rs`
+> came out **byte-identical by sha256**, and identical to the unperturbed build.
+> A comment cannot reach codegen, so that recipe timed one binary four times and
+> called the result a build band. Two independent agents reproduced it. Every
+> band quoted in this ledger before iteration 79 was measured that way — re-take
+> one before trusting it.
+
+Use a semantically neutral edit that actually changes code — a never-taken early
+return in `main.rs`, at three different string lengths so the probe builds differ
+from each other as well as from the base:
 
 ```bash
-for tag in P Q R; do
-  printf '\n// probe %s\n' "$tag" >> src/lypning/assets/rust/src/json.rs
-  cargo build --release --manifest-path src/lypning/assets/rust/Cargo.toml \
-        --target x86_64-unknown-linux-musl
-  cp src/lypning/assets/rust/target/x86_64-unknown-linux-musl/release/lypning $B/base$tag
+for tag in p qq rrr; do
+  git checkout -- src/lypning/assets/rust/src/main.rs
+  perl -0pi -e 's/(fn main\(\) \{)/$1\n    if std::env::args().nth(1).as_deref() == Some("--probe-TAG") { return; }/' \
+      src/lypning/assets/rust/src/main.rs
+  perl -0pi -e "s/--probe-TAG/--probe-$tag/" src/lypning/assets/rust/src/main.rs
+  PYTHONPATH=src python3 -m lypning build --rust
+  cp "$LYPNING_HOME/bin/lypning" "$B/base-$tag"
 done
-git checkout -- src/lypning/assets/rust/src/json.rs
+git checkout -- src/lypning/assets/rust/src/main.rs
+shasum -a 256 $B/base-*   # they MUST differ — if they match, the probe did nothing
 ```
 
-Then time the same program on all four and on your change. Measured here:
-baseline `48.85 49.31 49.55 49.18` against changed `51.39 52.81 52.91 53.41` —
-non-overlapping, so real. Overlapping bands mean you have nothing, and an
-afternoon spent on it is an afternoon spent on the linker.
+Then time every base build and your changed build **interleaved round-robin**,
+and take the band as the spread across the base builds. Two protocol rules that
+are not optional, both paid for in iteration 79:
+
+- **Interleave over three to five cases per round.** An eight-binary run over all
+  32 cases drifts far enough *within* a round that the startup subtraction
+  dominates — a 0.5 ms case clamped to 0.000 and the first binary came out
+  systematically slowest on every row.
+- **Read `uptime` before every timing run**, and re-take it if the one-minute
+  average is above 4. Other sessions share this machine.
+
+A change is accepted only when its **worst** build beats the base's **best** build
+on that row. Overlapping bands mean you have nothing, and an afternoon spent on
+it is an afternoon spent on the linker.
+
+And prefer a *mechanism* you can point at over a number you cannot explain:
+iteration 79's win was believable because every row whose loop calls a method
+moved in proportion to how many calls it makes per iteration, and every row that
+calls none stayed inside its band. An optimiser shuffle does not sort itself
+that way.
 
 Two attributes are worth trying when a hot path slows down for no reason you can
 see, and both earned their place here: `#[inline(never)]` on a *cold* arm of a

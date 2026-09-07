@@ -1188,6 +1188,10 @@ def library_binary_drift(programs: Sequence[str] = DRIFT_PROBES,
     the last ULP of a libm result, so float-sensitive probes stay out of the
     default set.
 
+    The binary arm is the LARGEST variant, because that is the one the library
+    is compiled from; comparing the frozen core against it measures the
+    spectrum, not drift.
+
     ``None`` means NOT MEASURED — the binary or a usable library is absent, so
     there was one artifact to ask. It is not an empty list on purpose: "agree"
     and "could not compare" are different facts, and a caller that rendered the
@@ -1198,7 +1202,13 @@ def library_binary_drift(programs: Sequence[str] = DRIFT_PROBES,
         return None
     out: list[tuple[str, str, str]] = []
     for program in programs:
-        binary = run(LYPNING, program, timeout=timeout)
+        # SPECTRUM[-1], not LYPNING: `build_lib` compiles the library with
+        # `variant_feature(SPECTRUM[-1])`, so the library IS the largest variant.
+        # Probing the 1 MB core against it reports every capability the core
+        # does not have as drift — `9007199254740993 / 3` refused by the core
+        # and answered by the library is two artifacts doing their jobs, not
+        # one built from an older tree.
+        binary = run(SPECTRUM[-1], program, timeout=timeout)
         library = run_library(program)
         b, l = _verdict(binary), _verdict(library)
         if b != l:

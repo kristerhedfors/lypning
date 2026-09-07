@@ -20,6 +20,50 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-07** — Round 79: the method table stops calling `memcmp`, the barrier can be taken back, and the grader stops hiding disagreements
+
+- **`lypning perf`, seven rows outside their band**: `str-methods` −20.9%,
+  `str-of-scalar` −19.8%, `str-slice` −11.1%, `str-split` −10.9%,
+  `call-method` −10.2%, `str-scan` −10.0%, `list-append` −5.1%.
+  `methods::method_name` binary-searched with `<str as Ord>::cmp`, which on
+  macOS arm64 is a branch through a dyld stub into `libsystem_platform.dylib` —
+  20% of a method-call loop by sampling. It is a spelled-out search over an
+  inlined byte comparator now. Two controls that reach no static table
+  (`name-lookup`, `dict-get`) stayed inside their bands, and every moved row
+  moved in proportion to its method calls per iteration.
+  **This overturns the ledger's standing answer**: allocation was already dead
+  on that path (119 allocations for both a 1,000- and a 2,000-iteration loop).
+  Iteration 4's "a scan is not worth shortening" was measured on musl x86_64,
+  where `memcmp` is a leaf call in the same image.
+- **The perturbation recipe in `.claude/skills/hillclimb/SKILL.md` was a no-op.**
+  Four rebuilds with a comment appended to `json.rs` are byte-identical by
+  sha256 — a comment cannot reach codegen — so the recipe timed one binary four
+  times and called it a build band. Two agents reproduced it independently. The
+  skill now uses a never-taken `argv` early return at three string lengths, and
+  says every band quoted before today was measured the broken way.
+- **Issue #51, the barrier, is fixed**: `os.mkdir` no longer forces
+  `mark_committed`, because the barrier keeps an undo log. Staging was measured
+  and rejected — `glob.rs`'s `real_dir` is `canonicalize`, which fails for a
+  directory not on disk. The safety property is re-proved: a program never runs
+  its side effects twice.
+- **Issue #57: `conformance` graded differently depending on whether
+  `PYTHONPATH` was absolute.** Each entry runs in its own temp cwd, so a
+  relative path broke the *reference* CPython the same way it broke the engine,
+  and the grader read that as agreement. `engines.child_env` resolves every
+  path-like variable now. **The blind spot was 88 entries wide** — all dying
+  with `ModuleNotFoundError` — though only one changed grade, because the other
+  87 were already refused. `MISMATCH 0` on this host had been an artefact.
+- The defect it hid was an **invariant 2 violation**: `lambda *a, **k` gave a
+  traceback at exit 1 where the contract requires a clean exit-90 refusal.
+  Fixed by SERVING it — `def` and `lambda` are one grammar under two
+  terminators, so the change **deletes a reader** rather than adding one.
+- `doctor`'s `core/library agreement` compared the **1 MB core** against a
+  library compiled from the largest variant, so every capability the core lacks
+  read as drift. It probes `SPECTRUM[-1]` now.
+- `lypning` 62.7% / `lypning-l` 80.2%, MISMATCH 0 under both spellings, UNSAFE 0,
+  monotone 0, dispatchers agree 2504/2504, doctor 0 FAIL, gate PASS, 6,760 tests
+  passing. Core 7 of its 8 blocks.
+
 **2026-09-07** — `cap-hashlib` and `cap-base64` on lypning-l: two capabilities, one method hatch · [#56]
 
 - `lypning-l` MATCH 1992 → **2009**, coverage 79.6% → **80.2%**. MISMATCH 0,
