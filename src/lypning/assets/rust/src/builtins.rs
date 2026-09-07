@@ -190,6 +190,35 @@ pub fn class_name(n: &str) -> Option<&'static str> {
     None
 }
 
+/// How CPython SPELLS the class `n` names inside `repr`, or `None` when this
+/// crate cannot prove which class it is holding.
+///
+/// Not [`class_name`], and the gap between the two is the whole of this
+/// function. `class_name` answers `tp_name`, which is what an `AttributeError`
+/// prints. `type.__repr__` prints `<class '{__module__}.{__qualname__}'>` and
+/// elides the module only for `builtins` — so `Counter`, whose `tp_name` is
+/// bare, reprs as `collections.Counter`. Read off CPython 3.14.5 on 2026-09-07
+/// by running it, not by recalling it, because the two spellings differ for
+/// exactly the entries a reimplementation would assume they agree on.
+///
+/// **Two names are deliberately absent, and both are ALIASES this crate
+/// collapses onto one value.** `modules.rs` answers `Value::Builtin("Path")`
+/// for `pathlib.Path` AND `pathlib.PosixPath`, and `Value::Builtin("ValueError")`
+/// for `ValueError` AND `json.JSONDecodeError`. The collapse is right where it
+/// was made — `isinstance` and `except` cannot tell the members of either pair
+/// apart — and wrong here, because `repr` can: CPython says `pathlib.PosixPath`
+/// and `json.decoder.JSONDecodeError` for the second of each pair. One value,
+/// two spellings, and nothing in the value says which, so both refuse
+/// (invariant 1). `IOError` is NOT such a pair: `IOError is OSError` is one
+/// class under two names, and `repr(IOError)` really is `<class 'OSError'>`.
+pub fn class_repr_name(n: &str) -> Option<&'static str> {
+    match class_name(n)? {
+        "Path" | "ValueError" => None,
+        "Counter" => Some("collections.Counter"),
+        other => Some(other),
+    }
+}
+
 /// The names in [`BUILTINS`] that are TYPE OBJECTS rather than functions.
 ///
 /// Sixteen of the thirty-nine, read off CPython 3.14.5 by asking

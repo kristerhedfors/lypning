@@ -239,6 +239,30 @@ pub fn repr(v: &Value) -> R<String> {
                 format!("{kind}({})", str_repr(msg)?)
             }
         }
+        // `<class 'int'>`, `<class 'collections.Counter'>` — the one shape of
+        // CPython's six callable reprs that carries neither a heap address nor
+        // a filesystem path, and so the only one a second implementation can
+        // write at all. `repr(len)` is `<built-in function len>` and would be
+        // reproducible too, but `repr(json.dumps)` is `<function dumps at
+        // 0x…>`, `repr(x.append)` is `<built-in method append of list object at
+        // 0x…>` and `repr(json)` is `<module 'json' from '/…'>`: an address and
+        // a path this process cannot make agree with another's. Those keep the
+        // refusal below, which is the arm this one was carved out of.
+        //
+        // `Value::Builtin` is BOTH `int` and `len`, so the name decides, and
+        // only through `class_repr_name` — the closed table that knows which
+        // names this crate can prove it is holding one class for. A name it
+        // will not vouch for falls through to the same refusal with the same
+        // detail it always had, so no `--plan` row changes its text.
+        Value::Builtin(n) => match crate::builtins::class_repr_name(n) {
+            Some(q) => format!("<class '{q}'>"),
+            None => {
+                return Err(unsupported(
+                    "repr",
+                    &format!("repr() of a {}", type_name(v)),
+                ))
+            }
+        },
         other => {
             return Err(unsupported(
                 "repr",
