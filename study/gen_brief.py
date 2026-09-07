@@ -33,7 +33,16 @@ def fmt(names) -> str:
 
 
 def main() -> int:
-    builtins = table(Path("builtins.rs"), "BUILTINS")
+    # Alphabetical, which `BUILTINS` itself is not: it is ordered by corpus
+    # frequency because `builtins::builtin` scans it from the front on every
+    # name a program reads. This brief is prose for a reader, so the list in it
+    # is a SET and its order is presentational — and letting an engine-internal
+    # performance decision rewrite a prompt that four measured treatments depend
+    # on is a study result silently re-based on a speed change. Sorting here
+    # decouples them: re-ranking the scan leaves the brief byte-identical. Every
+    # other table below is emitted in the order it is written in, because for
+    # those two orders are the same and nothing is being decoupled.
+    builtins = sorted(table(Path("builtins.rs"), "BUILTINS"))
     modules = table(Path("modules.rs"), "MODULES")
     mp_modules = table(Path("route.rs"), "MICROPYTHON_MODULES")
     s = table(Path("methods.rs"), "STR_METHODS")
