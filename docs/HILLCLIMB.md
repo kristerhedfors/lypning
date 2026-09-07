@@ -26,6 +26,122 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-09-07 · iteration 79 — the instrument was wrong twice, and the wins are real anyway
+
+Host: macOS arm64, host-target build (no rustup; musl unmeasured). Corpus 3,688
+loaded, 2,504 graded. Reference CPython 3.14.5. Two of this round's four
+findings are about the measuring, not the measured, and they invalidate numbers
+this file has been quoting for seventy-odd iterations.
+
+### The perturbation recipe in this loop's own skill was a no-op
+
+§"Before you believe a small regression" said to append a comment to an
+unrelated file and rebuild three times. On this toolchain four such builds are
+**byte-identical by sha256**, and identical to the unperturbed build — a comment
+cannot reach codegen. So the recipe timed ONE binary four times and called the
+spread a build band. Two agents reproduced it independently.
+
+The replacement, now in the skill: a never-taken `argv[1] == "--probe-p"` early
+return in `main.rs` at three different string lengths, every build verified
+distinct by hash. Real band widths on unchanged source: **1.9–9.3%** of the
+midpoint depending on the row. **Every band this ledger quotes before today was
+measured the broken way** — including iterations 66–68's three reverts. Re-take
+one before trusting it.
+
+Second protocol correction: interleave over **three to five cases per round**.
+An eight-binary run over all 32 cases drifted so far within a round that the
+startup subtraction dominated — a 0.5 ms case clamped to 0.000 and the first
+binary came out systematically slowest on every row.
+
+### `MISMATCH 0` was partly an artefact (#57)
+
+Every entry runs in its own temp cwd (invariant 4). Under the documented
+`PYTHONPATH=src` — a RELATIVE path — an entry doing `from lypning import x`
+breaks the **reference CPython** too, so both sides exit 1 with empty stdout and
+the grader scores MATCH. A relative path HIDES disagreements by breaking the
+reference the same way it breaks the engine.
+
+Two agents got MISMATCH 0 and MISMATCH 2 on the same tree and both were right.
+`engines.child_env` now resolves every path-like variable before either arm is
+spawned, and the verdicts are byte-identical under `src`, `$PWD/src` and
+`./src/../src`.
+
+**The blind spot was 88 entries wide** — all dying with `ModuleNotFoundError`.
+Only one changed grade, because the other 87 are refused before `classify`
+compares anything: coverage, not correctness. But the `mixture` arm's 88 MATCHes
+were two tracebacks agreeing. A useful negative alongside it: of 1,039 MATCHes
+where both sides exit non-zero, only 106 differ in error class and 105 of those
+are `json.decoder.JSONDecodeError` vs `JSONDecodeError`. The agree-by-crashing
+mechanism is not otherwise leaking.
+
+### The defect it hid, and the fix that deleted code
+
+`lambda *a, **k` gave a traceback at exit 1 where the contract requires a clean
+exit-90 refusal — invariant 2, the one that has only ever broken silently.
+`ast::Params` already carried `star`/`dstar` and `eval::call_func_inner` already
+bound both; the whole gap was `parse::params` not being called from the lambda
+arm. `def` and `lambda` are one grammar under two terminators, so serving it
+**removed a reader**: `param_list(terminator)` serves both and
+`ternary_tail_free` is gone. Lambda also gains `/`, the `kwonly` refusal, and
+the `def` default parser.
+
+### Seven perf rows outside their band
+
+| row | delta | prevalence |
+|---|---:|---:|
+| `str-methods` | **−20.9%** | 38% |
+| `str-of-scalar` | −19.8% | 17% |
+| `str-slice` | −11.1% | 34% |
+| `str-split` | −10.9% | 16% |
+| `call-method` | −10.2% | 92% |
+| `str-scan` | −10.0% | 11% |
+| `list-append` | −5.1% | 14% |
+
+`methods::method_name` binary-searched with `<str as Ord>::cmp` — on macOS arm64
+a branch through a dyld stub into `libsystem_platform.dylib`'s `memcmp`, 20% of
+a method-call loop by `sample(1)`. Now a spelled-out search over an inlined byte
+comparator (spelled out because `binary_search_by`'s closure need not inline at
+`opt-level = "s"`).
+
+**This overturns the standing answer.** An instrumented allocator counted 119
+allocations for a 1,000-iteration call loop and 119 for 2,000 — allocation was
+already dead there. Iteration 4's "a scan is not worth shortening" was measured
+on musl x86_64, where `memcmp` is a leaf call inside the same image.
+
+What makes it believable is not the mean: **every row whose loop calls a method
+moved in proportion to how many calls per iteration, and both controls
+(`name-lookup`, `dict-get`, which reach no static table) stayed inside their
+bands.** An optimiser shuffle does not sort itself that way. Equivalence checked
+by ~109,000 generated programs across both variants, 0 differ.
+
+The two wins turned out orthogonal rather than additive — one makes the
+comparison cheap, the other keeps it inline — and only `str-methods` compounds.
+
+### Issue #51 closed, and the shape held
+
+`os.mkdir` no longer forces `mark_committed`; the barrier keeps an undo log.
+Staging was measured and rejected: `glob.rs`'s `real_dir` is `canonicalize`,
+which fails for a directory not on disk, and `isdir`/`lexists`/`listdir` are all
+built on it. Five adversary holes closed, none of them a double-execution hole,
+and the safety property re-proved — a program never runs its side effects twice.
+The blocking one was `rewind()` calling `discard()` BEFORE attempting removals,
+so the one answer that makes the caller commit arrived with nothing to commit.
+
+### Also
+
+`doctor`'s `core/library agreement` compared the 1 MB core against a library
+compiled from `SPECTRUM[-1]`, so every capability the core lacks read as drift.
+`value::type_name` now answers six CPython types across three call sites that
+word them differently. `cap-unicodedata` REJECTED by mine: the corpus demand
+needs the full character database, which a zero-dependency crate with a byte
+budget cannot carry.
+
+**Next.** `--plan`'s reachable rows are `math` 14 (rejected once at 0.67),
+`datetime` 9, `textwrap` 6. `lambda *a, **k` is fixed but `py-cd598c0d0e44`'s
+family is worth a sweep: the grading fix means the battery can now see
+disagreements it never could, and the 87 refused entries in that blind spot have
+never been graded against a working reference.
+
 ## 2026-09-07 · iteration 78 — four capabilities, three instrument debts, and a defect three of them found at once
 
 Host: macOS arm64, host-target build (no rustup; musl unmeasured). Corpus 3,688
