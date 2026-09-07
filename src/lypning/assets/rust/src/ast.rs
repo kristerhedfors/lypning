@@ -170,6 +170,10 @@ pub struct Params {
     pub star: Option<usize>,
     /// Index of `**kwargs`, if any.
     pub dstar: Option<usize>,
+    /// How many leading names precede a `/` — the positional-only parameters,
+    /// which a keyword argument may not name. Zero when there is no `/`, which
+    /// is what `Default` gives and what every parameter list without one means.
+    pub posonly: usize,
 }
 
 #[derive(Debug, Clone)]

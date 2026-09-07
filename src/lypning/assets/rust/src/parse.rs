@@ -434,20 +434,50 @@ impl Parser {
 
     fn params(&mut self) -> R<Params> {
         self.expect_op("(")?;
+        let p = self.param_list(")")?;
+        self.expect_op(")")?;
+        Ok(p)
+    }
+
+    /// The parameter list of a `def` **and** of a `lambda`, which are the same
+    /// grammar under two different terminators — `)` for one, `:` for the
+    /// other.
+    ///
+    /// They were two readers, and the lambda one knew less: it had no `**kw`,
+    /// no `/`, and no refusal for the keyword-only forms, so
+    /// `lambda *a, **k: 1` died on `expected a name, found '**'` — a
+    /// SyntaxError at exit 1, the PROGRAM's own number, which the chain does
+    /// not retry. CPython answers that lambda, so the caller got a failure
+    /// where an answer was one tier away. Nothing downstream of `Params` had
+    /// to change to fix it: `call_func_inner` has always bound `star` and
+    /// `dstar` without asking which keyword produced them, so the whole gap
+    /// was this function not being called from both places.
+    ///
+    /// `terminator` is the operator that ends the list. Everything else is
+    /// shared deliberately — a second argument parser is how the first gap
+    /// happened.
+    fn param_list(&mut self, terminator: &str) -> R<Params> {
+        let lambda = terminator == ":";
         let mut p = Params::default();
         loop {
-            if self.is_op(")") {
+            if self.is_op(terminator) {
                 break;
             }
             if self.eat_op("/") {
-                // positional-only marker: accepted and ignored
+                // Positional-only marker. The names before it may not be given
+                // by keyword, which is `posonly`; before that field existed the
+                // marker was accepted and IGNORED, so `def f(x, /, y)` called
+                // `f(x=1, y=2)` answered `(1, 2)` at exit 0 where CPython
+                // raises. A wrong answer, not a refusal — the shape this
+                // repository exists to not have.
+                p.posonly = p.names.len();
                 if !self.eat_op(",") {
                     break;
                 }
                 continue;
             }
             if self.eat_op("*") {
-                if self.is_op(",") || self.is_op(")") {
+                if self.is_op(",") || self.is_op(terminator) {
                     return Err(unsupported("kwonly", "keyword-only parameters"));
                 }
                 p.star = Some(p.names.len());
@@ -478,7 +508,9 @@ impl Parser {
                     return Err(unsupported("kwonly", "keyword-only parameters"));
                 }
                 let n = self.ident()?;
-                if self.eat_op(":") {
+                // A lambda has no annotations, and there the `:` is the
+                // terminator — reading one here would eat the body's colon.
+                if !lambda && self.eat_op(":") {
                     self.expr()?; // annotation, discarded
                 }
                 let d = if self.eat_op("=") {
@@ -493,7 +525,6 @@ impl Parser {
                 break;
             }
         }
-        self.expect_op(")")?;
         Ok(p)
     }
 
@@ -807,26 +838,7 @@ impl Parser {
         // exiting 1, which is the decision iteration 14 made on purpose.
         if self.is_kw("lambda") {
             self.bump();
-            let mut p = Params::default();
-            while !self.is_op(":") {
-                if self.eat_op("*") {
-                    p.star = Some(p.names.len());
-                    p.names.push(self.ident()?);
-                    p.defaults.push(None);
-                } else {
-                    let n = self.ident()?;
-                    let d = if self.eat_op("=") {
-                        Some(self.ternary_tail_free()?)
-                    } else {
-                        None
-                    };
-                    p.names.push(n);
-                    p.defaults.push(d);
-                }
-                if !self.eat_op(",") {
-                    break;
-                }
-            }
+            let p = self.param_list(":")?;
             self.expect_op(":")?;
             let body = self.expr()?;
             return Ok(Expr::Lambda {
@@ -853,12 +865,6 @@ impl Parser {
             });
         }
         Ok(e)
-    }
-
-    /// A default value inside a lambda parameter list — no top-level ternary,
-    /// because the `:` would be ambiguous with the lambda body.
-    fn ternary_tail_free(&mut self) -> R<Expr> {
-        self.or_test()
     }
 
     fn or_test(&mut self) -> R<Expr> {
