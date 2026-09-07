@@ -487,12 +487,7 @@ impl Interp {
                 let i = norm_index(crate::eval::int_val(idx)?, n as usize, "range object")?;
                 ival(a + (i as i64) * st)
             }
-            other => {
-                return Err(type_err(format!(
-                    "'{}' object is not subscriptable",
-                    type_name(other)
-                )))
-            }
+            other => return Err(not_subscriptable(other)),
         })
     }
 
@@ -683,12 +678,7 @@ impl Interp {
                     fits(st128 * step128)?,
                 )
             }
-            other => {
-                return Err(type_err(format!(
-                    "'{}' object is not subscriptable",
-                    type_name(other)
-                )))
-            }
+            other => return Err(not_subscriptable(other)),
         })
     }
 
@@ -776,6 +766,18 @@ impl Interp {
                 "dict" => Some(Value::Dict(Rc::new(RefCell::new(Dict::new())))),
                 "set" => Some(Value::Set(Rc::new(RefCell::new(Set::new())))),
                 "bytes" => Some(Value::Bytes(Rc::new(Vec::new()))),
+                // `tuple.count`, `tuple.index` and `float.is_integer` were the
+                // three names left out of this probe, and leaving them out was
+                // not a refusal: `str.partition` RETURNS a tuple, so
+                // `map(tuple.count, rows)` and `[*map(float.is_integer, xs)]`
+                // both reached the fallthrough below and raised
+                // `AttributeError` at exit 1 — the program's OWN exit, which
+                // the dispatcher returns unchanged and the chain never retries,
+                // where CPython answers. `tuple` resolves its two methods here;
+                // `float` has none in this engine and every name CPython gives
+                // it is in `methods::FLOAT_MISSING`, so it leaves by exit 90.
+                "tuple" => Some(Value::Tuple(Rc::new(Vec::new()))),
+                "float" => Some(Value::Float(0.0)),
                 // `int` and `bool` have no methods here, so neither resolves an
                 // unbound one — they are probed for the OTHER half of this
                 // block. `int.from_bytes(b'\x01' * 16, 'big')` is a classmethod
@@ -937,10 +939,32 @@ impl Interp {
                 &format!("{}.{name}, which is part of Python's data model", type_name(base)),
             ));
         }
-        Err(attr_err(format!(
-            "'{}' object has no attribute '{name}'",
-            type_name(base)
-        )))
+        // NOT `attr_err` of `type_name`: a class and a `method` word this
+        // message differently, and `value::attr_error` is the renderer that
+        // knows which (`value::Callable`).
+        Err(crate::value::attr_error(base, name))
+    }
+}
+
+/// `x[...]` where `x` is not a sequence — and a CLASS is not just a wording.
+///
+/// This is the third call site whose rules are not [`type_name`]'s
+/// (`value::attr_error` is the second), and here the difference is not the
+/// message — it is that CPython ANSWERS. `list[int]` and `dict[str, int]` build
+/// a `types.GenericAlias`, a value this engine does not have, and it raised
+/// `TypeError` at exit 1 for them: the program's OWN exit, which the dispatcher
+/// returns unchanged and the chain never retries, so `print(list[int])` simply
+/// died where CPython prints `list[int]`. The classes CPython does NOT
+/// subscript word it their own way too — `type 'str' is not subscriptable`,
+/// never `'type' object …` — so no single message here is right for both
+/// halves. Refusing is right for both: one spawn, and CPython then answers or
+/// raises exactly as it would.
+fn not_subscriptable(v: &Value) -> LypningError {
+    match crate::value::callable_kind(v) {
+        Some(crate::value::Callable::Class(cls)) => {
+            unsupported("class-subscript", &format!("{cls}[...], a class subscript"))
+        }
+        _ => type_err(format!("'{}' object is not subscriptable", type_name(v))),
     }
 }
 

@@ -394,7 +394,46 @@ TYPED = [
     ("pattern-sub-is-vectorcall", "import re\np = re.compile('a')", "p.sub"),
 
     # ---- `type`: not a function at all ------------------------------------
+    #
+    # `Value::Builtin` is one variant over TWO CPython types — `str` is a class
+    # and `len` is a function — so sixteen of the thirty-nine builtins, every
+    # one of the twenty-five exception classes and the three classes the
+    # capabilities export answered `builtin_function_or_method` where CPython
+    # says `type`. `builtins::class_name` is the closed set that decides it.
     ("csv-dictreader-is-a-class", "import csv", "csv.DictReader"),
+    ("str-the-type-object-is-a-class", "", "str"),
+    ("int-the-type-object-is-a-class", "", "int"),
+    ("dict-the-type-object-is-a-class", "", "dict"),
+    ("range-the-type-object-is-a-class", "", "range"),
+    ("map-is-a-class-not-a-function", "", "map"),
+    ("zip-is-a-class-not-a-function", "", "zip"),
+    ("an-exception-class-is-a-class", "", "ValueError"),
+    ("counter-the-class", "import collections", "collections.Counter"),
+    ("defaultdict-the-class", "import collections", "collections.defaultdict"),
+    ("path-the-class", "import pathlib", "pathlib.Path"),
+    ("posixpath-is-the-same-class", "import pathlib", "pathlib.PosixPath"),
+
+    # ---- ...and the builtins beside them that really ARE functions ---------
+    ("len-is-a-builtin-function", "", "len"),
+    ("print-is-a-builtin-function", "", "print"),
+    ("open-is-a-builtin-function", "", "open"),
+    ("sorted-is-a-builtin-function", "", "sorted"),
+
+    # ---- a Counter INSTANCE: three names are `collections.py`'s own -------
+    ("counter-most-common-is-python",
+     "from collections import Counter\nc = Counter('ab')", "c.most_common"),
+    ("counter-copy-is-python", "from collections import Counter\nc = Counter('ab')", "c.copy"),
+    ("counter-update-is-python", "from collections import Counter\nc = Counter('ab')", "c.update"),
+    ("counter-get-is-inherited-from-dict",
+     "from collections import Counter\nc = Counter('ab')", "c.get"),
+    ("counter-items-is-inherited-from-dict",
+     "from collections import Counter\nc = Counter('ab')", "c.items"),
+    ("defaultdict-copy-is-c-unlike-counters",
+     "from collections import defaultdict\ndd = defaultdict(int)", "dd.copy"),
+
+    # ---- the three survivors of the unbound-method probe -------------------
+    ("tuple-count-off-the-type", "", "tuple.count"),
+    ("tuple-index-off-the-type", "", "tuple.index"),
 ]
 
 #: The messages the name reaches. Every one of these is a `TypeError` CPython
@@ -447,3 +486,115 @@ def test_the_type_of_a_bound_method_agrees_with_cpython(engine, binary, row):
                got.stderr.strip()[-200:], ref.stdout, ref.returncode))
     if answered == 0:
         pytest.skip("%s refuses every message shape for %s" % (engine, expr))
+
+
+# ---------------------------------------------------------------------------
+# The SECOND question `Callable` answers, which is not the type's name.
+#
+# `type_name` and the `AttributeError` wording are two renderers of one fact and
+# they disagree on two of the six kinds. A `method` forwards the whole lookup to
+# its `__func__` (`classobject.c`, `method_getattro`), so `Path('a').exists.x`
+# reports `'function'` and never `'method'`; and a class does not use the
+# `'%s' object` shape at all — it says `type object 'X' has no attribute`, with
+# a DOTTED name for `collections.defaultdict` and a bare one for the rest.
+# Reading `type_name` into the one shape got both wrong, at exit 0, through
+# `except AttributeError as e: print(e)`.
+#
+# Measured on CPython 3.11.15 and 3.14.5 on 2026-09-07.
+
+
+@pytest.mark.parametrize("engine,binary", BINARIES, ids=IDS)
+@pytest.mark.parametrize("row", TYPED, ids=[i for i, _, _ in TYPED])
+def test_a_missing_attribute_is_worded_the_way_cpython_words_it(engine, binary, row):
+    """`Path('a').exists.nope` says `'function'`, and `str.nope` names the class."""
+    if binary is None:
+        pytest.skip("%s is not built (`lypning build --rust`)" % engine)
+    _, setup, expr = row
+    program = ("".join(line + "\n" for line in (setup,) if line)
+               + "try:\n    %s.zznosuch\nexcept AttributeError as e:\n    print(e)\n" % expr)
+    got = _run([str(binary)], program)
+    if got.returncode == engines.UNSUPPORTED_EXIT:
+        problem = _refusal_problem(got, engine)
+        assert problem is None, "%s\n  program: %r" % (problem, program)
+        pytest.skip("%s refuses this row: %s" % (engine, got.stderr.strip()[:160]))
+    ref = _run([sys.executable], program)
+    if ref.returncode != 0 or not ref.stdout:
+        pytest.skip("CPython did not raise AttributeError here")
+    assert (got.stdout, got.returncode) == (ref.stdout, ref.returncode), (
+        "%s disagrees with CPython.\n  program:  %r\n  %s: %r exit %d %s\n"
+        "  cpython:   %r exit %d"
+        % (program, expr, engine, got.stdout, got.returncode,
+           got.stderr.strip()[-200:], ref.stdout, ref.returncode))
+
+
+#: The unbound methods `ops::get_attr`'s probe did not cover. Each is a name
+#: CPython ANSWERS and this engine raised `AttributeError` for — exit 1, the
+#: program's OWN exit, which the dispatcher returns unchanged and the chain
+#: never retries, so unlike a refusal it could not be answered one spawn later.
+#: `str.partition` returns a tuple and `sum()/len()` returns a float, so none of
+#: these needs the type object spelled in the program to be reachable.
+PROBE_SURVIVORS = [
+    ("tuple-count-as-a-value", "print(tuple.count)"),
+    ("tuple-index-as-a-value", "print(tuple.index)"),
+    ("tuple-count-through-map", "print(list(map(tuple.count, [(1, 1)], [1])))"),
+    ("float-is-integer-as-a-value", "print(float.is_integer)"),
+    ("float-is-integer-through-map", "print(list(map(float.is_integer, [1.0, 2.5])))"),
+    ("float-hex-as-a-value", "print(float.hex)"),
+    ("float-is-integer-off-an-instance", "print((1.5).is_integer())"),
+    ("float-as-integer-ratio-off-an-instance", "print((1.5).as_integer_ratio())"),
+    ("float-real-off-an-instance", "print((1.5).real)"),
+]
+
+
+@pytest.mark.parametrize("engine,binary", BINARIES, ids=IDS)
+@pytest.mark.parametrize("program", [p for _, p in PROBE_SURVIVORS],
+                         ids=[i for i, _ in PROBE_SURVIVORS])
+def test_the_probe_survivors_answer_or_refuse_but_never_exit_1(engine, binary, program):
+    """Never `AttributeError` at exit 1 for a name CPython has."""
+    if binary is None:
+        pytest.skip("%s is not built (`lypning build --rust`)" % engine)
+    got = _run([str(binary)], program)
+    assert got.returncode in (0, engines.UNSUPPORTED_EXIT), (
+        "%s exited %d for a name CPython answers — exit 1 is the program's own "
+        "and the chain never retries it.\n  program: %r\n  %s"
+        % (engine, got.returncode, program, got.stderr.strip()[-200:]))
+    if got.returncode == engines.UNSUPPORTED_EXIT:
+        problem = _refusal_problem(got, engine)
+        assert problem is None, "%s\n  program: %r" % (problem, program)
+        return
+    ref = _run([sys.executable], program)
+    assert (got.stdout, got.returncode) == (ref.stdout, ref.returncode), (
+        "%s: %r exit %d, cpython: %r exit %d\n  program: %r"
+        % (engine, got.stdout, got.returncode, ref.stdout, ref.returncode, program))
+
+
+#: Subscripting a CLASS. `list[int]` is a `types.GenericAlias` in CPython and
+#: this engine has no value for one, so it raised `TypeError` at exit 1 — the
+#: program's own exit, which the chain never retries — where CPython prints
+#: `list[int]`. The classes CPython does not subscript raise their own wording
+#: (`type 'str' is not subscriptable`, never `'type' object …`), so one message
+#: cannot be right for both halves and the refusal is right for both.
+CLASS_SUBSCRIPTS = [
+    ("generic-alias-list", "print(list[int])"),
+    ("generic-alias-dict", "print(dict[str, int])"),
+    ("generic-alias-through-a-name", "T = list[int]\nprint(T)"),
+    ("a-class-cpython-does-not-subscript", "print(str[0])"),
+    ("an-exception-class-subscripted", "print(ValueError[0])"),
+    ("a-class-sliced", "print(list[0:1])"),
+]
+
+
+@pytest.mark.parametrize("engine,binary", BINARIES, ids=IDS)
+@pytest.mark.parametrize("program", [p for _, p in CLASS_SUBSCRIPTS],
+                         ids=[i for i, _ in CLASS_SUBSCRIPTS])
+def test_subscripting_a_class_refuses_rather_than_raising_at_exit_1(engine, binary, program):
+    if binary is None:
+        pytest.skip("%s is not built (`lypning build --rust`)" % engine)
+    got = _run([str(binary)], program)
+    assert got.returncode == engines.UNSUPPORTED_EXIT, (
+        "%s exited %d for %r; CPython answers or raises its own message, and "
+        "exit 1 here is the program's own exit, which the chain never retries.\n  %s"
+        % (engine, got.returncode, program, got.stderr.strip()[-200:]))
+    problem = _refusal_problem(got, engine)
+    assert problem is None, "%s\n  program: %r" % (problem, program)
+    assert ": class-subscript: " in got.stderr, got.stderr.strip()[:200]

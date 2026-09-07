@@ -537,11 +537,18 @@ pub fn type_name(v: &Value) -> &'static str {
         Value::Range(..) => "range",
         Value::File(_) => "TextIOWrapper",
         Value::Module(_) => "module",
-        Value::Builtin(_) => "builtin_function_or_method",
-        // NOT one name — see [`bound_type`]. `json.dumps` is a `function` and
-        // `os.getcwd` a `builtin_function_or_method`, and this string reaches
-        // stdout at exit 0 through every message that names an operand's type.
-        Value::Bound(recv, name) => bound_type(recv, name),
+        // NOT one name for either — see [`Callable`]. `json.dumps` is a
+        // `function`, `os.getcwd` a `builtin_function_or_method` and `str` a
+        // `type`, and this string reaches stdout at exit 0 through every
+        // message that names an operand's type.
+        Value::Builtin(_) | Value::Bound(..) => match callable_kind(v) {
+            Some(Callable::Function) => "function",
+            Some(Callable::Method) => "method",
+            Some(Callable::Descriptor) => "method_descriptor",
+            Some(Callable::Vectorcall) => "builtin_method",
+            Some(Callable::Class(_)) => "type",
+            _ => "builtin_function_or_method",
+        },
         Value::Func(_) => "function",
         Value::Gen(_) => "generator",
         Value::IterObj(_, k) => k,
@@ -1033,46 +1040,85 @@ fn num_eq(a: Num, b: Num) -> bool {
     }
 }
 
-// ---- bound methods --------------------------------------------------------
+// ---- callables ------------------------------------------------------------
 //
 // `json.dumps` and `x.append` are one value here, `Value::Bound(receiver,
-// name)`, and CPython has SIX types behind them. They agree on every question
-// this section asks — equality is the FUNCTION and the receiver's IDENTITY
-// (`meth_richcompare` compares `m_self` by pointer, `method_richcompare`
-// compares `__self__` by `is`); the hash is built from the same pair; and `is`
-// is False between two accesses unless the attribute is one that is stored
-// rather than built — and they disagree about the one question `type_name`
-// asks, which is [`bound_type`]. Every fact in this section was measured by
-// running CPython rather than read from the manual: the identity and equality
-// rules on 3.14.5 on 2026-09-06, the type names on 3.9.6, 3.11.15, 3.12.13,
-// 3.13.13 and 3.14.5 on 2026-09-07.
+// name)`, and `str`, `len` and `ValueError` are another, `Value::Builtin(name)`.
+// CPython has SIX types behind the two. They agree on every question the
+// IDENTITY half of this section asks — equality is the FUNCTION and the
+// receiver's IDENTITY (`meth_richcompare` compares `m_self` by pointer,
+// `method_richcompare` compares `__self__` by `is`); the hash is built from the
+// same pair; and `is` is False between two accesses unless the attribute is one
+// that is stored rather than built — and they disagree about everything
+// [`Callable`] is for. Every fact in this section was measured by running
+// CPython rather than read from the manual: the identity and equality rules on
+// 3.14.5 on 2026-09-06, the type names and the `AttributeError` wording on
+// 3.11.15 and 3.14.5 on 2026-09-07.
 
-/// The name of the CPython type of `<recv>.<name>`.
+/// Which CPython type a callable VALUE has — a closed set of six.
 ///
-/// One `Value::Bound` covers six CPython types, and the difference is not
-/// message decoration: `object of type 'function' has no len()` reaches stdout
-/// at exit 0 through the ordinary `try: … except TypeError as e: print(e)`
-/// idiom, and so does every other message that names an operand's type — the
-/// binary operators, `not iterable`, `not subscriptable`, `not callable`,
-/// `str.join`, `json.dumps`. Answering one name for all six was fifteen silent
-/// wrong answers per receiver.
+/// One `Value::Bound` covers all six and `Value::Builtin` covers two of them,
+/// and the difference is not message decoration: `object of type 'function' has
+/// no len()` reaches stdout at exit 0 through the ordinary `try: … except
+/// TypeError as e: print(e)` idiom, and so does every other message that names
+/// an operand's type — the binary operators, `not iterable`, `not
+/// subscriptable`, `not callable`, `str.join`, `json.dumps`.
+///
+/// This is an enum and not a name because the crate asks TWO questions about
+/// it and CPython does not answer them with the same string. [`type_name`]
+/// wants `tp_name`; [`attr_error`] wants the wording of the `AttributeError`
+/// that a missing attribute raises, and that wording is a DIFFERENT function of
+/// the same fact — a `method` forwards the lookup to its `__func__` and so
+/// reports `'function'`, and a class does not use the `'%s' object` shape at
+/// all. One classifier, two renderers; a single table that tried to answer both
+/// got one of them wrong for every `method` and every class.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Callable {
+    /// A `def` in a `.py` module: `json.dumps`, `re.search`, `os.path.join`.
+    Function,
+    /// A `def` on a class, reached through an instance or through a
+    /// classmethod: `p.exists`, `Path.cwd`, `random.choice` (the module
+    /// function is a bound method of one hidden `Random`), `c.most_common`.
+    Method,
+    /// A C function: `os.getcwd`, `x.append`, `hashlib.md5`, `len`.
+    Builtin,
+    /// The same C function read off the TYPE rather than an instance:
+    /// `str.upper`, which `map(str.upper, xs)` uses.
+    Descriptor,
+    /// A C method using the vectorcall protocol — a type CPython 3.11 added:
+    /// `re.compile('a').match`.
+    Vectorcall,
+    /// Not a function at all. Carries CPython's `tp_name` for the class, which
+    /// is the only one of the six whose `AttributeError` names the object
+    /// rather than its type — and which is DOTTED for some C types
+    /// (`collections.defaultdict`) and bare for the rest (`str`, `Counter`).
+    Class(&'static str),
+}
+
+/// The `Callable` a value is, or `None` for everything that is not one.
+pub fn callable_kind(v: &Value) -> Option<Callable> {
+    match v {
+        Value::Bound(recv, name) => Some(bound_kind(recv, name)),
+        // `Value::Builtin` is BOTH `str` and `len`: the name decides, and the
+        // set of names is closed (`builtins::BUILTINS`, `builtins::EXCEPTIONS`
+        // and the three classes the capabilities export), so this is a fact the
+        // crate can prove rather than a table it has to keep guessing at.
+        Value::Builtin(n) => Some(match crate::builtins::class_name(n) {
+            Some(cls) => Callable::Class(cls),
+            None => Callable::Builtin,
+        }),
+        _ => None,
+    }
+}
+
+/// Which `Callable` `<recv>.<name>` is.
 ///
 /// What decides it is the receiver and the name together, because what decides
-/// it in CPython is how that one function is *implemented*:
-///
-///   * a function defined in a `.py` module is a `function` — `json.dumps`,
-///     `re.search`, `os.path.join`;
-///   * a `def` on a class, reached through an instance or through a
-///     classmethod, is a `method` — `p.exists`, `Path.cwd`, `random.choice`
-///     (the module function is a bound method of one hidden `Random`);
-///   * a C function is a `builtin_function_or_method` — `os.getcwd`,
-///     `x.append`, `hashlib.md5`;
-///   * the same C function read off the TYPE rather than an instance is a
-///     `method_descriptor` — `str.upper`, which `map(str.upper, xs)` uses;
-///   * a C method using the vectorcall protocol is a `builtin_method`, a type
-///     CPython 3.11 added — `re.compile('a').match`;
-///   * and a class is a `type` — `csv.DictReader`, which is a class and not a
-///     function at all.
+/// it in CPython is how that one function is *implemented*. Every arm below was
+/// read off a running interpreter; the rows are enumerated from the crate's own
+/// tables (`modules::get_attr`, `methods`' seven tables, `re::PATTERN_METHODS`,
+/// `pathlib::METHODS`, `collections::COUNTER_METHODS`, `hashlib::HASH_ATTRS`),
+/// not from a guess about which names a module has.
 ///
 /// **Two cells are disputed and are answered for the reference interpreter**
 /// (`README.md`: `cpython` is 3.14.5), with the split written down rather than
@@ -1080,65 +1126,119 @@ fn num_eq(a: Num, b: Num) -> bool {
 /// and is a `function` on 3.9–3.11; the six vectorcall `re.Pattern` methods are
 /// `builtin_function_or_method` on 3.9 and 3.10, before `builtin_method`
 /// existed. Refusing instead would have to refuse at attribute access, which is
-/// the only choke point cheaper than making `type_name` fallible at its 94 call
-/// sites — and that would refuse `map(p.match, lines)` and `f =
+/// the only choke point cheaper than making `type_name` fallible at its ~100
+/// call sites — and that would refuse `map(p.match, lines)` and `f =
 /// os.path.normpath`, which run here today, to buy exactness in a case that
 /// needs the bound method to be an operand of a TypeError.
-fn bound_type(recv: &Value, name: &str) -> &'static str {
+///
+/// **`os.environ` is the one receiver this cannot decide, and it is NOT a hole
+/// in the table.** CPython's is an `os._Environ`, a pure-Python `MutableMapping`
+/// whose methods are `method`; this engine materialises it as a plain
+/// `Value::Dict` (`modules::get_attr`), which is indistinguishable from `{}` —
+/// and `{}.get` really is a `builtin_function_or_method`. The receiver is
+/// mis-typed at the ROOT, not at its methods: measured 2026-09-07 on 3.14.5,
+/// `type(os.environ).__name__` is `_Environ` and this says `dict`,
+/// `os.environ + 1` says `'_Environ' and 'int'` and this says `'dict' and
+/// 'int'`, and `str(os.environ)` is `environ({…})` where this prints `{…}`.
+/// Answering `method` here would fix the smallest of those four by guessing —
+/// the guess is wrong for every plain dict — and refusing here would refuse
+/// every `d.get` in the corpus to pay for a defect that lives in how
+/// `os.environ` is BUILT. Give it a receiver of its own and this arm follows;
+/// until then it is one wrong name on a value that already has three.
+fn bound_kind(recv: &Value, name: &str) -> Callable {
+    use Callable::*;
     match recv {
         Value::Module(m) => match (*m, name) {
             // Pure Python, every name: `json`, and the three below it.
-            ("json", _) => "function",
+            ("json", _) => Function,
             #[cfg(feature = "cap-re")]
-            ("re", _) => "function",
+            ("re", _) => Function,
             #[cfg(feature = "cap-glob")]
-            ("glob", _) => "function",
+            ("glob", _) => Function,
             #[cfg(feature = "cap-base64")]
-            ("base64", _) => "function",
+            ("base64", _) => Function,
             // `os` is `posix` re-exported, so its names are C — except the two
             // served here that `os.py` defines itself.
-            ("os", "makedirs" | "getenv") => "function",
+            ("os", "makedirs" | "getenv") => Function,
             // `posixpath` is Python, and `normpath` is the one name 3.12 took
             // into C (disputed; see above).
-            ("os.path", "normpath") => "builtin_function_or_method",
-            ("os.path", _) => "function",
+            ("os.path", "normpath") => Builtin,
+            ("os.path", _) => Function,
             // `random`'s module functions are the bound methods of one hidden
             // `random.Random`. The two served here that are NOT are the two
             // that come straight off the C `_random.Random`: `random()` and
             // `getrandbits()`.
-            ("random", "seed" | "randint" | "randrange" | "choice") => "method",
+            ("random", "seed" | "randint" | "randrange" | "choice") => Method,
             // The receiver `ops::get_attr` gives `Path.cwd`, a classmethod —
             // and a classmethod read off the class is a bound method of it.
             #[cfg(feature = "cap-pathlib")]
-            ("pathlib", _) => "method",
+            ("pathlib", _) => Method,
             // `csv.DictReader` is a CLASS. `csv.reader` beside it is a C
             // function, and falls through with `sys.exit`, `sys.stdout.write`
             // and `hashlib.md5`.
             #[cfg(feature = "cap-csv")]
-            ("csv", "DictReader") => "type",
-            _ => "builtin_function_or_method",
+            ("csv", "DictReader") => Class("DictReader"),
+            _ => Builtin,
         },
         // The UNBOUND method off a type object — `str.upper`, which
-        // `ops::get_attr` builds for the seven probed builtin types. Every name
-        // in `methods`' tables is an ordinary method there, so none of them is
-        // the `builtin_function_or_method` a classmethod would be
-        // (`int.from_bytes` and `dict.fromkeys` are, and both refuse before
-        // they can become a value here).
-        Value::Builtin(_) => "method_descriptor",
+        // `ops::get_attr` builds for the probed builtin types. Every name in
+        // `methods`' tables is an ordinary method there, so none of them is the
+        // `builtin_function_or_method` a classmethod would be
+        // (`int.from_bytes`, `dict.fromkeys` and `float.fromhex` are, and all
+        // three refuse before they can become a value here).
+        Value::Builtin(_) => Descriptor,
         // `pathlib` is pure Python, so a method off a Path INSTANCE is a
         // `method` exactly as `Path.cwd` off the class is.
         #[cfg(feature = "cap-pathlib")]
-        Value::Path(..) => "method",
+        Value::Path(..) => Method,
         // `_sre.SRE_Pattern`'s six vectorcall methods (disputed; see above).
         // `findall` and `split` are METH_VARARGS and stay the ordinary name.
         #[cfg(feature = "cap-re")]
         Value::Pattern(_) => match name {
-            "findall" | "split" => "builtin_function_or_method",
-            _ => "builtin_method",
+            "findall" | "split" => Builtin,
+            _ => Vectorcall,
+        },
+        // A `Counter` is a dict SUBCLASS written in `collections.py`, so the
+        // three names it overrides are `method` and the seven it inherits are
+        // `dict`'s own C functions. `defaultdict` overrides none of them — it
+        // is `_collections.defaultdict`, a C type — so it needs no arm and its
+        // ten names fall through below.
+        #[cfg(feature = "cap-collections")]
+        Value::Dict(d) => match crate::collections::kind_of(d) {
+            Some(crate::collections::Kind::Counter)
+                if matches!(name, "copy" | "most_common" | "update") =>
+            {
+                Method
+            }
+            _ => Builtin,
         },
         // A method off an INSTANCE of a C type: a list, a str, a dict, a file,
         // a `_hashlib.HASH`, a `re.Match`.
-        _ => "builtin_function_or_method",
+        _ => Builtin,
+    }
+}
+
+/// The `AttributeError` CPython raises for a missing attribute on `base`.
+///
+/// The SECOND renderer of [`Callable`], and it does not agree with
+/// [`type_name`] on two of the six. `type_object`'s error names the object
+/// (`type object 'DictReader' has no attribute 'x'`), and a `method` forwards
+/// the whole lookup to its `__func__` (`classobject.c`, `method_getattro`), so
+/// `Path('a').exists.x` reports `'function'` and never `'method'`. Reading the
+/// type name into the one message shape got both of those wrong — at exit 0,
+/// through `except AttributeError as e: print(e)`.
+pub fn attr_error(base: &Value, name: &str) -> crate::err::LypningError {
+    match callable_kind(base) {
+        Some(Callable::Class(cls)) => crate::err::attr_err(format!(
+            "type object '{cls}' has no attribute '{name}'"
+        )),
+        Some(Callable::Method) => crate::err::attr_err(format!(
+            "'function' object has no attribute '{name}'"
+        )),
+        _ => crate::err::attr_err(format!(
+            "'{}' object has no attribute '{name}'",
+            type_name(base)
+        )),
     }
 }
 
