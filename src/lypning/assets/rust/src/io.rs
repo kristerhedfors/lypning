@@ -26,9 +26,13 @@
 //!
 //! **What cannot be taken back** is then a short list, and it is what
 //! [`mark_committed`] is for: bytes past `COMMIT_THRESHOLD`, which have already
-//! left the process; and `os.rmdir` of a directory this run did not make, whose
-//! mode, timestamps and ownership `create_dir` cannot restore. A later
-//! `unsupported` is then reported as a hard error rather than a routing signal.
+//! left the process; `os.rmdir` of a directory this run did not make, whose
+//! mode, timestamps and ownership `create_dir` cannot restore; and a [`rewind`]
+//! that could not remove one. A later `unsupported` is then reported as a hard
+//! error rather than a routing signal — naming WHICH of the three happened,
+//! through [`commit_reason`], because a diagnostic that guesses is a bug report
+//! filed against the wrong mechanism. And a run that cannot be taken back keeps
+//! everything it produced: the refusal costs it its routing, never its output.
 //! `os.mkdir` was on that list until issue #51 — three capability rounds each
 //! met it through a different refusal kind, each worked around it in the
 //! ROUTER, and the fourth moved the barrier instead.
@@ -124,6 +128,8 @@ thread_local! {
     static ERRBUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     static PENDING: RefCell<Pending> = RefCell::new(Pending::default());
     static COMMITTED: RefCell<bool> = const { RefCell::new(false) };
+    /// WHY it committed — see [`commit_reason`].
+    static COMMIT_WHY: RefCell<&'static str> = const { RefCell::new("") };
     /// Every directory this run has created, canonicalised, in creation order.
     /// The barrier's UNDO log — see [`make_dir`] and [`rewind`].
     static MADE: RefCell<Vec<std::path::PathBuf>> = const { RefCell::new(Vec::new()) };
@@ -131,22 +137,52 @@ thread_local! {
         RefCell::new(crate::hash::Set::with_hasher(crate::hash::BuildFnv));
 }
 
-/// Record that something irreversible happened outside the staging area.
+/// The bytes have left the process.
+pub const WHY_FLUSHED: &str = "output was already flushed";
+/// [`remove_dir`] took a directory this run did not make.
+pub const WHY_FOREIGN_RMDIR: &str = "os.rmdir removed a directory this run did not make";
+/// [`rewind`] could not give a directory back.
+pub const WHY_DIR_STUCK: &str = "a directory this run created could not be removed";
+
+/// Record that something irreversible happened outside the staging area, and
+/// WHAT it was.
 ///
-/// Two callers, and they are the whole list: the early flush past
-/// [`COMMIT_THRESHOLD`], where bytes have left the process; and
-/// [`remove_dir`] of a directory this run did not make, whose mode, timestamps
-/// and ownership are gone with it. Both are effects nothing can give back, so
-/// the run stops claiming it can be re-run.
+/// Three callers, and they are the whole list: the early flush past
+/// [`COMMIT_THRESHOLD`], where bytes have left the process; [`remove_dir`] of a
+/// directory this run did not make, whose mode, timestamps and ownership are
+/// gone with it; and a [`rewind`] that could not remove one. All three are
+/// effects nothing can give back, so the run stops claiming it can be re-run.
 ///
-/// `os.mkdir` used to be the third, and it is the one this barrier now takes
+/// The reason is an argument because the refusal line quotes it — `reached
+/// after {why}, so the run cannot be routed onward` — and a bool cannot say
+/// which of three things happened. It said "output was already flushed" after
+/// an `os.rmdir` that had flushed nothing, which is a diagnostic pointing at a
+/// cause that never occurred. The FIRST reason is the one kept: it is where the
+/// run stopped being reversible, and anything after it is a consequence.
+///
+/// `os.mkdir` used to be on this list, and it is the one this barrier now takes
 /// back instead — see [`make_dir`].
-pub fn mark_committed() {
+pub fn mark_committed(why: &'static str) {
     COMMITTED.with(|c| *c.borrow_mut() = true);
+    COMMIT_WHY.with(|w| {
+        let mut w = w.borrow_mut();
+        if w.is_empty() {
+            *w = why;
+        }
+    });
 }
 
 pub fn is_committed() -> bool {
     COMMITTED.with(|c| *c.borrow())
+}
+
+/// What made this run irreversible, or `""` while it can still be taken back.
+///
+/// The ONE source of the refusal line's `reached after …` clause, read by
+/// `main.rs::finish` and `embed.rs::finish` alike: two renderings of one reason
+/// are two things that can drift, and this one already had.
+pub fn commit_reason() -> &'static str {
+    COMMIT_WHY.with(|w| *w.borrow())
 }
 
 pub fn write_out(b: &[u8]) -> R<()> {
@@ -195,13 +231,13 @@ fn maybe_commit() -> R<()> {
         }
         if !is_committed() && staged_len() > COMMIT_THRESHOLD {
             commit()?;
-            COMMITTED.with(|c| *c.borrow_mut() = true);
+            mark_committed(WHY_FLUSHED);
         }
         return Ok(());
     }
     if !is_committed() && buffered_len() > COMMIT_THRESHOLD {
         commit()?;
-        COMMITTED.with(|c| *c.borrow_mut() = true);
+        mark_committed(WHY_FLUSHED);
     }
     Ok(())
 }
@@ -284,22 +320,47 @@ pub fn commit() -> R<()> {
 /// outside this process filled it, or unreadable. Then the run really did
 /// leave something behind, it is [`mark_committed`], and the caller must report
 /// the refusal as its own error rather than a routing signal.
+///
+/// **A failed undo costs the program nothing it already had.** The removals go
+/// first and [`discard`] only after every one of them succeeded, because
+/// `discard` throws away the staged stdout, the staged writes and the staged
+/// deletes — and the caller answers a `false` by COMMITTING, which is then a
+/// commit of nothing. Discarding before the answer was known handed back an
+/// exit 1 with empty stdout where the barrier this replaced handed back the
+/// program's own output at the same exit 1: a fix that made the unfixable case
+/// worse than it was. Anything already removed on the way to a failure is put
+/// back, for the same reason and by the same rule the rest of this module
+/// follows: a run that has committed KEEPS its directories.
 pub fn rewind() -> bool {
-    discard();
     let made = MADE.with(|m| std::mem::take(&mut *m.borrow_mut()));
+    let mut undone: Vec<std::path::PathBuf> = Vec::new();
     let mut clean = true;
     for d in made.iter().rev() {
         match std::fs::remove_dir(d) {
-            Ok(()) => {}
+            Ok(()) => undone.push(d.clone()),
             // Already gone is nothing left behind, which is all this asks.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => clean = false,
+            Err(_) => {
+                clean = false;
+                break;
+            }
         }
     }
     if !clean {
-        mark_committed();
+        // Shallowest last out, so a re-created parent exists before its child.
+        // These are the run's OWN directories, made by `create_dir` and still
+        // empty — every file written into them is staged — so putting them back
+        // reproduces exactly the tree the program built, which is the tree the
+        // commit below is about to flush its writes into.
+        for d in undone.iter().rev() {
+            let _ = std::fs::create_dir(d);
+        }
+        MADE.with(|m| *m.borrow_mut() = made);
+        mark_committed(WHY_DIR_STUCK);
+        return false;
     }
-    clean
+    discard();
+    true
 }
 
 /// Throw away everything staged — the run is being routed onward.
@@ -351,6 +412,7 @@ pub fn effective_content(path: &str) -> R<Option<Vec<u8>>> {
         None => Ok(None),
         Some((buf, append)) => {
             if append {
+                require_regular_file(path)?;
                 let mut base = std::fs::read(path).unwrap_or_default();
                 base.extend_from_slice(&buf);
                 Ok(Some(base))
@@ -358,6 +420,35 @@ pub fn effective_content(path: &str) -> R<Option<Vec<u8>>> {
                 Ok(Some(buf))
             }
         }
+    }
+}
+
+/// A read this engine must not START unless it can finish.
+///
+/// Every path this module reads it reads WHOLE — `open()` snapshots the bytes
+/// and `.read(n)` then slices the snapshot — so `open('/dev/zero').read(1)`
+/// asks `std::fs::read` for an infinite file and the process never comes back.
+/// CPython streams and answers `b'\x00'`. A hang is the one outcome worse than
+/// a wrong answer here: a wrong answer is still an answer, and the dispatcher
+/// cannot reach the next tier from inside a hang — no exit code, no refusal
+/// line, nothing to route on. So only a REGULAR file is read, and everything
+/// else refuses before the read starts.
+///
+/// A directory is let through deliberately: `std::fs::read` fails on it at
+/// once, and the error it raises is the one this engine already answers with.
+/// A path that cannot be stat'ed is let through too, so that the caller's own
+/// read reports it and the exception text stays the one it already produced.
+pub fn require_regular_file(path: &str) -> R<()> {
+    match std::fs::metadata(path) {
+        Ok(md) if md.is_file() || md.is_dir() => Ok(()),
+        Ok(_) => Err(unsupported(
+            "open-special",
+            &format!(
+                "reading '{path}', which is not a regular file — this engine reads a path whole \
+                 and a device or a pipe has no end"
+            ),
+        )),
+        Err(_) => Ok(()),
     }
 }
 
@@ -455,6 +546,7 @@ pub fn make_dir(path: &str, parents: bool, exist_ok: bool) -> R<()> {
             cur = a.parent();
         }
         for a in missing.iter().rev() {
+            staged_delete_blocks(&a.to_string_lossy())?;
             match std::fs::create_dir(a) {
                 Ok(()) => note_made(a),
                 // Already there: `os.makedirs` makes every parent with
@@ -475,6 +567,7 @@ pub fn make_dir(path: &str, parents: bool, exist_ok: bool) -> R<()> {
             format!("[Errno 17] File exists: '{path}'"),
         ));
     }
+    staged_delete_blocks(path)?;
     match std::fs::create_dir(p) {
         Ok(()) => {
             note_made(p);
@@ -483,6 +576,44 @@ pub fn make_dir(path: &str, parents: bool, exist_ok: bool) -> R<()> {
         Err(e) if exist_ok && e.kind() == std::io::ErrorKind::AlreadyExists && p.is_dir() => Ok(()),
         Err(e) => Err(os_error(path, &e)),
     }
+}
+
+/// The one place `make_dir`'s two layers can disagree, and it is refused rather
+/// than decided.
+///
+/// The existence test is [`path_exists`], which merges staging; the creation is
+/// `std::fs::create_dir`, which can only ask the disk. A path this run has
+/// staged a DELETE of is free to the first and taken by the second, and BOTH
+/// orders of that disagreement were a wrong answer at the wrong exit code:
+///
+/// ```text
+///   touch F;  os.remove('F'); os.mkdir('F')   FileExistsError, exit 1
+///   open('F','w'); os.remove('F'); os.mkdir('F')
+///                                             'ok' AND a PermissionError, exit 1
+/// ```
+///
+/// where CPython removes the file, makes the directory and exits 0 for both.
+/// The second is the worse one and shows why the disagreement cannot be
+/// patched at either end: the disk lets `create_dir` through, and the staged
+/// delete then arrives at [`commit`] to `remove_file` a path that has become a
+/// directory.
+///
+/// Neither layer can serve it alone — honouring staging needs the delete to
+/// have HAPPENED, which the barrier will not do before a commit, and honouring
+/// the disk is a wrong answer — so the engine refuses and CPython does both for
+/// real, one spawn later. The test is the staging layer's alone, so the two
+/// halves of a `mkdir` now consult exactly one.
+fn staged_delete_blocks(path: &str) -> R<()> {
+    if is_staged_deleted(path) {
+        return Err(unsupported(
+            "mkdir",
+            &format!(
+                "mkdir('{path}') over a path this run removed but has not committed — the \
+                 staging layer says it is free and the disk has not been told yet"
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// Remember a directory this run made, by the path the KERNEL knows it as.
@@ -521,7 +652,7 @@ pub fn remove_dir(path: &str) -> R<()> {
         })
         .unwrap_or(false);
     if !ours {
-        mark_committed();
+        mark_committed(WHY_FOREIGN_RMDIR);
     }
     Ok(())
 }
@@ -566,6 +697,7 @@ pub fn open_file(path: &str, mode: &str, binary: bool) -> R<FileObj> {
                         format!("[Errno 2] No such file or directory: '{path}'"),
                     ));
                 }
+                require_regular_file(path)?;
                 std::fs::read(path).map_err(|e| os_error(path, &e))?
             }
         }
@@ -813,6 +945,7 @@ pub fn reset() {
     // previous run's directories — if it committed — are the host's now.
     MADE.with(|m| m.borrow_mut().clear());
     COMMITTED.with(|c| *c.borrow_mut() = false);
+    COMMIT_WHY.with(|w| *w.borrow_mut() = "");
     STDIN.with(|s| *s.borrow_mut() = None);
     STDIN_POS.with(|p| *p.borrow_mut() = 0);
     #[cfg(feature = "cap-csv")]
@@ -900,6 +1033,120 @@ mod tests {
         assert!(!is_committed(), "made and unmade is a no-op over the run");
         remove_dir(theirs.to_str().unwrap()).unwrap();
         assert!(is_committed(), "someone else's directory cannot be put back");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The regression the fix introduced, and the shape that closes it.
+    ///
+    /// A `rewind` that cannot finish must cost the program its ROUTING and
+    /// nothing else. It used to `discard()` first, so the answer `false` — the
+    /// answer that makes the caller commit — arrived with nothing left to
+    /// commit: exit 1 with an empty stdout, where the barrier this replaced
+    /// gave exit 1 with the program's own output.
+    #[test]
+    fn a_failed_rewind_keeps_everything_the_run_produced() {
+        let d = scratch("kept");
+        let made = d.join("D");
+        make_dir(made.to_str().unwrap(), false, false).unwrap();
+        write_out(b"BEFORE\n").unwrap();
+        let staged = made.join("f");
+        stage_write(staged.to_str().unwrap(), b"x".to_vec());
+        std::fs::write(made.join("planted"), b"not ours").unwrap();
+
+        assert!(!rewind(), "the plant makes the directory unremovable");
+        assert_eq!(take_out(), b"BEFORE\n", "a failed undo threw away the output");
+        commit().unwrap();
+        assert_eq!(std::fs::read(&staged).unwrap(), b"x", "and the staged write with it");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// …and what it already removed on the way to the failure goes back.
+    ///
+    /// Without it a staged write into the directory that DID come off is lost
+    /// at the commit the `false` provokes. A run that has committed keeps its
+    /// directories, which is the rule the rest of this module follows.
+    #[test]
+    fn a_failed_rewind_puts_back_what_it_had_already_taken() {
+        let d = scratch("partial-undo");
+        let a = d.join("a");
+        let b = a.join("b");
+        make_dir(a.to_str().unwrap(), false, false).unwrap();
+        make_dir(b.to_str().unwrap(), false, false).unwrap();
+        // In `a`, not in `b`: `b` comes off first and only `a` then fails.
+        std::fs::write(a.join("planted"), b"not ours").unwrap();
+
+        assert!(!rewind());
+        assert!(b.is_dir(), "the directory that came off was not put back");
+        assert!(a.is_dir());
+        assert!(is_committed());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The line says `reached after {why}`, and `why` has three producers.
+    #[test]
+    fn the_run_names_the_thing_that_made_it_irreversible() {
+        let d = scratch("why");
+        assert_eq!(commit_reason(), "", "a fresh run has nothing to explain");
+        let theirs = d.join("theirs");
+        std::fs::create_dir(&theirs).unwrap();
+        remove_dir(theirs.to_str().unwrap()).unwrap();
+        assert_eq!(commit_reason(), WHY_FOREIGN_RMDIR);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_stuck_directory_names_its_own_reason() {
+        let d = scratch("why-stuck");
+        let made = d.join("D");
+        make_dir(made.to_str().unwrap(), false, false).unwrap();
+        std::fs::write(made.join("planted"), b"not ours").unwrap();
+        assert!(!rewind());
+        assert_eq!(commit_reason(), WHY_DIR_STUCK);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// `path_exists` says free, the disk says taken. Neither layer can serve
+    /// it, so it refuses rather than raising the disk's `FileExistsError` over
+    /// CPython's exit 0.
+    #[test]
+    fn mkdir_over_a_delete_this_run_has_not_committed_refuses() {
+        let d = scratch("staged-delete");
+        let f = d.join("F");
+        std::fs::write(&f, b"here").unwrap();
+        stage_delete(f.to_str().unwrap());
+        let e = make_dir(f.to_str().unwrap(), false, false).unwrap_err();
+        assert!(format!("{e}").contains("unsupported: mkdir"), "{e}");
+        assert!(f.is_file(), "and the file the delete has not reached is untouched");
+        discard();
+
+        // The other order, and the worse one: the file was never on disk, so
+        // `create_dir` would SUCCEED and the staged delete would then reach
+        // `commit` to unlink a directory.
+        let g = d.join("G");
+        stage_write(g.to_str().unwrap(), b"x".to_vec());
+        stage_delete(g.to_str().unwrap());
+        let e = make_dir(g.to_str().unwrap(), false, false).unwrap_err();
+        assert!(format!("{e}").contains("unsupported: mkdir"), "{e}");
+        assert!(!g.exists(), "and nothing was made under a name a commit would unlink");
+        discard();
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A read this engine cannot finish is refused before it starts: every
+    /// path here is read WHOLE, and a character device has no end.
+    #[test]
+    fn a_path_with_no_end_is_refused_before_it_is_read() {
+        let d = scratch("regular");
+        let f = d.join("f");
+        std::fs::write(&f, b"abc").unwrap();
+        require_regular_file(f.to_str().unwrap()).unwrap();
+        require_regular_file(d.to_str().unwrap()).unwrap();
+        require_regular_file(d.join("missing").to_str().unwrap()).unwrap();
+        #[cfg(unix)]
+        {
+            let e = require_regular_file("/dev/zero").unwrap_err();
+            assert!(format!("{e}").contains("open-special"), "{e}");
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 

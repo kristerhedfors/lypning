@@ -287,11 +287,11 @@ fn finish(r: Result<(), LypningError>) -> Outcome {
             // `main.rs::finish` asks the same question in the same order, and
             // the two must keep agreeing: `rewind` undoes the staging AND the
             // directories the run made, and only a run it cannot undo is the
-            // host's error rather than a refusal (#51).
-            let why = if io::is_committed() {
-                "output was already flushed"
-            } else if !io::rewind() {
-                "a directory this run created could not be removed"
+            // host's error rather than a refusal (#51). The reason text is
+            // `io::commit_reason` in both, so there is one wording to agree on
+            // rather than two.
+            let why = if io::is_committed() || !io::rewind() {
+                io::commit_reason()
             } else {
                 ""
             };

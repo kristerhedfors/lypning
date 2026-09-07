@@ -200,10 +200,14 @@ fn finish(r: Result<(), LypningError>, report_refusal: bool, kind: &mut String, 
             // refusal the program's own error (#51). Short-circuited on
             // purpose: a run that already flushed must not then start deleting
             // directories the retry it can no longer have would have kept.
-            let why = if io::is_committed() {
-                "output was already flushed"
-            } else if !io::rewind() {
-                "a directory this run created could not be removed"
+            //
+            // The WORDS come from `io::commit_reason`, not from here: three
+            // different things end a run's reversibility and each names its
+            // own, so an `os.rmdir` is no longer reported as a flush that never
+            // happened. A failed `rewind` marks itself committed, so one call
+            // answers both arms.
+            let why = if io::is_committed() || !io::rewind() {
+                io::commit_reason()
             } else {
                 ""
             };

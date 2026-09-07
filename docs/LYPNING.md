@@ -242,7 +242,7 @@ read consults the staged writes first, so `open(p,'w').write(x)` followed by
 `open(p).read()` behaves exactly as in CPython. `os.path.exists`, `getsize`,
 `isfile`, `remove` and `rename` all see the overlay too.
 
-Two escape hatches in lypning's own barrier, both handled rather than assumed
+Four escape hatches in lypning's own barrier, all handled rather than assumed
 away:
 
 - **Size.** Past 8 MiB of buffered output the run commits early and *loses* its
@@ -251,9 +251,29 @@ away:
 - **`os.rmdir`** of a directory this run did not make. `create_dir` cannot give
   back a mode, a timestamp or an owner, so that one commits — where `os.rmdir`
   of the run's *own* directory is a no-op over the run and stays routable.
+- **A directory that will not come off.** Only something outside the process can
+  arrange it — the run's own directories are empty when the refusal arrives — but
+  when `io::rewind` cannot remove one it puts back whatever it had already taken,
+  keeps the staged output and writes, and commits. The refusal is then the
+  program's own exit 1 **with its output intact**: a barrier that cannot undo
+  must cost the program its routing and nothing else, which is exactly the
+  behaviour `os.mkdir` had before #51.
 - **stdin.** A consumed pipe cannot be rewound. If lypning already read stdin
   before refusing, the dispatcher forks instead of exec'ing and replays the
   captured bytes.
+
+Each of the first three names itself in the refusal line — `reached after
+{why}, so the run cannot be routed onward`, from `io::commit_reason` — because
+one bool cannot say which of three things happened, and a diagnostic that
+guesses sends the reader to the wrong mechanism.
+
+`open()` reads a path **whole** and `.read(n)` slices the snapshot, so a path
+with no end (`/dev/zero`, `/dev/random`) is refused before the read starts
+(`open-special`). A hang is the one outcome worse than a wrong answer: it has no
+exit code, so the dispatcher cannot even reach the next tier. `os.mkdir` and
+`os.makedirs` refuse `mode=` and every keyword CPython does not take, rather
+than accepting and dropping it (`mkdir`); `create_dir` hands the kernel `0o777`
+and the umask decides, which is CPython's default and nothing else.
 
 `os.mkdir` was a fourth until issue #51: it committed the run the moment it ran,
 so every later refusal — `builtin: eval`, `builtin: complex`, `bigint`, any of

@@ -87,6 +87,14 @@ def _tree(root) -> list:
     return sorted(str(q.relative_to(root)) for q in root.rglob("*"))
 
 
+def _fresh(parent, name):
+    """A cwd of its own per engine, so the second cannot read back what the
+    first wrote — the same rule the corpus battery runs under."""
+    d = parent / name
+    d.mkdir()
+    return d
+
+
 @pytest.mark.parametrize("program, _answer", MKDIR_THEN_REFUSE,
                          ids=["eval", "complex", "bigint"])
 def test_a_refusal_after_mkdir_is_a_refusal(lypning_bin, tmp_path, program, _answer) -> None:
@@ -189,3 +197,216 @@ def test_dispatcher_contains_the_leak(micropython_bin) -> None:
     assert d.result.returncode == 0
     assert d.result.stdout.count("BEFORE") == 1, "a refused tier's output was replayed"
     assert all(a.unsupported for a in d.attempts)
+
+
+# ---- the holes an adversary found in the #51 barrier -----------------------
+#
+# The undo log itself held: nothing below reopens double execution. What the
+# fix had not covered was the arm where the undo FAILS, the reads it made
+# reachable, and the two halves of `os.mkdir` that were never CPython's.
+
+
+def test_a_failed_rewind_costs_the_program_only_its_routing(lypning_bin, tmp_path) -> None:
+    """The one arm that must degrade to the OLD behaviour and no further.
+
+    `rewind` used to `discard()` FIRST and try the removals after, so a
+    directory it could not take back — only something outside the process can
+    arrange that — cost the program its stdout as well: exit 1 with an empty
+    stream, where the barrier this replaced reported the same exit 1 with the
+    program's own output intact. A fix may not make its unfixable case worse
+    than the defect it fixes.
+
+    The outside actor is this test: it waits for `D`, plants a file in it, and
+    only then lets the program past the `sys.stdin.read()` that is holding it.
+    """
+    import subprocess
+    import time
+
+    cwd = tmp_path / "stuck"
+    cwd.mkdir()
+    program = 'import os, sys; os.mkdir("D"); print("BEFORE"); sys.stdin.read(); print(eval("1"))'
+    p = subprocess.Popen(
+        [str(lypning_bin), "-c", program], cwd=str(cwd),
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    for _ in range(500):
+        if (cwd / "D").is_dir():
+            break
+        time.sleep(0.01)
+    (cwd / "D" / "planted").write_text("not ours")
+    out, err = p.communicate("", timeout=30)
+
+    assert p.returncode == 1, err
+    assert out == "BEFORE\n", "a failed undo threw away output the program had already produced"
+    assert "cannot be routed onward" in err
+    assert _tree(cwd) == ["D", "D/planted"], "nothing is forced, and nothing else is taken"
+
+
+def test_the_refusal_names_the_cause_it_actually_had(lypning_bin, tmp_path) -> None:
+    """`is_committed()` has three producers and the line quotes one of them.
+
+    An `os.rmdir` of a foreign directory was reported as `reached after output
+    was already flushed` — a diagnostic naming a mechanism that never ran.
+    """
+    cwd = tmp_path / "why"
+    (cwd / "gone").mkdir(parents=True)
+    r = engines.run(engines.LYPNING, 'import os; os.rmdir("gone"); print(eval("1"))', cwd=cwd)
+    assert r.returncode == 1
+    assert "os.rmdir removed a directory this run did not make" in r.stderr
+    assert "flushed" not in r.stderr
+
+
+#: `open()` reads the path WHOLE and slices the snapshot, so a stream with no
+#: end never returns. A hang is the one outcome worse than a wrong answer: it
+#: has no exit code, so the dispatcher cannot even reach the next tier.
+ENDLESS = [
+    (engines.LYPNING, 'print(open("/dev/zero").read(1))'),
+    (engines.LYPNING, 'print(open("/dev/random").read(1))'),
+    (engines.LYPNING, 'print(open("/dev/null").read())'),
+    (engines.LYPNING, 'open("/dev/zero", "a"); print(open("/dev/zero").read(1))'),
+    # `Path.read_bytes` and `os.rename` reach a different `fs::read` each, and
+    # both used to be unbounded. `pathlib` is a `lypning-l` capability.
+    (engines.LYPNING_L, 'import pathlib; print(pathlib.Path("/dev/zero").read_bytes()[:1])'),
+    (engines.LYPNING, 'import os; os.rename("/dev/zero", "z"); print("renamed")'),
+]
+
+
+@pytest.mark.parametrize("engine, program", ENDLESS,
+                         ids=["read", "random", "null", "append-base", "pathlib", "rename"])
+def test_a_stream_with_no_end_refuses_rather_than_hangs(lypning_bin, engine, program) -> None:
+    r = engines.run(engine, program, timeout=20)
+    assert not r.timed_out, "the read never came back"
+    assert r.returncode == UNSUPPORTED_EXIT, r.stderr
+    assert "open-special" in r.stderr
+
+
+def test_a_regular_file_is_untouched_by_the_bound(lypning_bin, tmp_path) -> None:
+    (tmp_path / "g").write_text("abc")
+    r = engines.run(engines.LYPNING, 'print(open("g").read(2))', cwd=tmp_path)
+    assert (r.returncode, r.stdout) == (0, "ab\n")
+
+
+#: Every one of these was exit 0 with an answer CPython does not give.
+#: `exist_ok` is not a `mkdir` keyword at all — CPython raises TypeError — and
+#: `mode=` reached `create_dir`, which hands the kernel 0o777 and lets the umask
+#: decide, so the directory existed with the wrong permissions.
+MKDIR_SIGNATURE = [
+    'import os; os.mkdir("D", exist_ok=True); print("ok")',
+    'import os; os.makedirs("D", nonsense=1); print("ok")',
+    'import os; os.makedirs("D", mode=0o700); print(oct(os.stat("D").st_mode & 0o777))',
+    'import os; os.mkdir("D", 0o700); print(oct(os.stat("D").st_mode & 0o777))',
+]
+
+
+@pytest.mark.parametrize("program", MKDIR_SIGNATURE, ids=["mkdir-kw", "unknown-kw", "kw-mode", "positional-mode"])
+def test_mkdir_serves_its_signature_exactly_or_refuses_it(lypning_bin, program) -> None:
+    r = engines.run(engines.LYPNING, program)
+    assert r.returncode == UNSUPPORTED_EXIT, r.stderr
+    assert r.stderr.startswith("lypning: unsupported: mkdir: ")
+
+
+@pytest.mark.parametrize("program", MKDIR_SIGNATURE, ids=["mkdir-kw", "unknown-kw", "kw-mode", "positional-mode"])
+def test_the_chain_answers_the_mkdir_signature_as_cpython_does(tmp_path, program) -> None:
+    got = engines.dispatch(program, cwd=_fresh(tmp_path, "chain"))
+    ref = engines.run(engines.CPYTHON, program, cwd=_fresh(tmp_path, "alone"))
+    assert (got.result.returncode, got.result.stdout) == (ref.returncode, ref.stdout)
+    assert _tree(tmp_path / "chain") == _tree(tmp_path / "alone")
+
+
+def test_a_mkdir_over_this_runs_own_delete_refuses(lypning_bin, tmp_path) -> None:
+    """The two halves of `make_dir` consult different layers.
+
+    The existence test is `path_exists`, which honours a staged delete; the
+    creation is `create_dir`, which can only see the disk the delete has not
+    reached yet. So `os.remove('F'); os.mkdir('F')` raised FileExistsError at
+    exit 1 where CPython exits 0 with a directory. Neither layer can serve it,
+    so it refuses — and the chain then does both for real.
+    """
+    program = 'import os; os.remove("F"); os.mkdir("F"); print("ok")'
+    cwd = _fresh(tmp_path, "engine")
+    (cwd / "F").write_text("")
+    r = engines.run(engines.LYPNING, program, cwd=cwd)
+    assert r.returncode == UNSUPPORTED_EXIT, r.stderr
+    assert r.stderr.startswith("lypning: unsupported: mkdir: ")
+    assert (cwd / "F").is_file(), "the refusal left the staged delete undone"
+
+    chain, alone = _fresh(tmp_path, "chain"), _fresh(tmp_path, "alone")
+    (chain / "F").write_text("")
+    (alone / "F").write_text("")
+    got = engines.dispatch(program, cwd=chain)
+    ref = engines.run(engines.CPYTHON, program, cwd=alone)
+    assert (got.result.returncode, got.result.stdout) == (ref.returncode, ref.stdout)
+    assert (chain / "F").is_dir() and _tree(chain) == _tree(alone)
+
+
+def test_a_mkdir_over_a_delete_of_a_file_never_on_disk_refuses(lypning_bin, tmp_path) -> None:
+    """The same disagreement the other way round, and the worse half.
+
+    Here `create_dir` SUCCEEDS — the staged file never reached the disk — and
+    the staged delete then arrives at the commit to unlink a path that has
+    become a directory, so the program printed its answer AND a
+    `PermissionError` traceback at exit 1 where CPython exits 0.
+    """
+    program = 'open("F","w").write("x")\nimport os\nos.remove("F")\nos.mkdir("F")\nprint("ok")\n'
+    r = engines.run(engines.LYPNING, program, cwd=_fresh(tmp_path, "engine"))
+    assert r.returncode == UNSUPPORTED_EXIT, r.stderr
+    assert r.stdout == "", "a refusal must not print"
+
+    chain, alone = _fresh(tmp_path, "chain"), _fresh(tmp_path, "alone")
+    got = engines.dispatch(program, cwd=chain)
+    ref = engines.run(engines.CPYTHON, program, cwd=alone)
+    assert (got.result.returncode, got.result.stdout) == (ref.returncode, ref.stdout), \
+        got.result.stderr
+    assert _tree(chain) == _tree(alone) == ["F"]
+
+
+# ---- the safety property, once more, over every shape ----------------------
+#
+# `mark_committed` exists for one reason: a program must never run its side
+# effects twice. Each program below makes a directory and then goes on to do
+# something with it, half of them ending in a refusal the chain has to fall
+# through. `os.mkdir` raises FileExistsError the second time, so a chain that
+# re-ran the side effect could not agree with CPython — which is what makes
+# comparing the two the whole proof.
+
+#: `(program, how many `D` the run should leave)`. The count is the half a
+#: comparison against CPython cannot make on its own: the two agreeing on an
+#: EMPTY tree is also what a barrier that removed too much would produce.
+NEVER_TWICE = [
+    ('import os; os.mkdir("D"); print(eval("1"))', 1, "mkdir-then-refuse"),
+    ('import os; os.mkdir("D"); print("made")', 1, "mkdir-then-succeed"),
+    ('import os; os.makedirs("D/x/y"); print(eval("1"))', 1, "nested-makedirs"),
+    ('import os; os.makedirs("D/x/y"); print("deep")', 1, "nested-makedirs-ok"),
+    ('import os; os.mkdir("D"); open("D/f","w").write("x"); print(eval("1"))', 1,
+     "write-then-refuse"),
+    ('import os; os.mkdir("D"); open("D/f","w").write("x"); print("wrote")', 1,
+     "write-then-succeed"),
+    ('import os, os.path; os.mkdir("D"); print(os.path.isdir("D"), eval("1"))', 1,
+     "isdir-then-refuse"),
+    ('import os, os.path; os.mkdir("D"); print(os.path.isdir("D"))', 1, "isdir"),
+    ('import os; os.mkdir("D"); print(sorted(os.listdir(".")))', 1, "listdir-parent"),
+    ('import os, glob; os.mkdir("D"); open("D/f","w").write("x"); print(sorted(glob.glob("D/*")))',
+     1, "glob-into-it"),
+    # The two that end with nothing on disk. Running the side effect twice is
+    # still visible: the second `os.mkdir` raises where the first did not.
+    ('import os; os.mkdir("D"); os.rmdir("D"); print(eval("1"))', 0, "rmdir-then-refuse"),
+    ('import os; os.mkdir("D"); os.rmdir("D"); print("gone")', 0, "rmdir"),
+]
+
+
+@pytest.mark.parametrize("program, made, _id", NEVER_TWICE, ids=[i for _, _n, i in NEVER_TWICE])
+def test_the_chain_runs_the_side_effect_exactly_once(tmp_path, program, made, _id) -> None:
+    """The whole reason `mark_committed` exists, held over every shape.
+
+    `os.mkdir` raises FileExistsError the second time, so a chain that re-ran
+    the program could not agree with CPython on stdout and the exit code — and
+    the tree comparison catches the other direction, a barrier that took back
+    more than the run made.
+    """
+    chain, alone = _fresh(tmp_path, "chain"), _fresh(tmp_path, "alone")
+    got = engines.dispatch(program, cwd=chain)
+    ref = engines.run(engines.CPYTHON, program, cwd=alone)
+    assert got.result.stdout == ref.stdout, got.result.stderr
+    assert got.result.returncode == ref.returncode, got.result.stderr
+    assert _tree(chain) == _tree(alone)
+    assert _tree(chain).count("D") == made, "the side effect did not run exactly once"
