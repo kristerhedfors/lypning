@@ -142,6 +142,65 @@ pub fn is_exception_name(n: &str) -> bool {
     EXCEPTIONS.iter().any(|e| name_eq(e, n))
 }
 
+/// CPython's `tp_name` for a `Value::Builtin` that is a CLASS, or `None` for a
+/// builtin FUNCTION.
+///
+/// `Value::Builtin` is one variant over two CPython types: `str`, `int` and
+/// `ValueError` are `type` objects and `len`, `print` and `open` are
+/// `builtin_function_or_method`, and answering the second name for the first
+/// was wrong in every message that names a type — `len(str)` prints `object of
+/// type 'type' has no len()` in CPython and printed
+/// `builtin_function_or_method` here, at exit 0. `value::Callable` is the
+/// reader; `value::attr_error` needs the NAME as well as the fact, because a
+/// class is the one callable whose `AttributeError` names the object rather
+/// than its type.
+///
+/// This is a closed set and therefore provable rather than open-ended: the two
+/// tables above are the whole builtin namespace this engine has, and the three
+/// classes below are every class a served module exports. The names were read
+/// off CPython 3.14.5 on 2026-09-07, `tp_name` included — which is DOTTED for
+/// `collections.defaultdict` and bare for everything else, and `IOError` is
+/// `OSError` rather than a class of its own.
+pub fn class_name(n: &str) -> Option<&'static str> {
+    if let Some(t) = TYPE_OBJECTS.iter().find(|t| **t == n) {
+        return Some(t);
+    }
+    if n == "IOError" {
+        // `IOError is OSError` — one class under two names, and the message
+        // CPython prints is the one class's.
+        return Some("OSError");
+    }
+    if let Some(e) = EXCEPTIONS.iter().find(|e| **e == n) {
+        return Some(e);
+    }
+    #[cfg(feature = "cap-pathlib")]
+    if n == "Path" {
+        return Some("Path");
+    }
+    #[cfg(feature = "cap-collections")]
+    if n == "Counter" {
+        return Some("Counter");
+    }
+    #[cfg(feature = "cap-collections")]
+    if n == "defaultdict" {
+        // The one dotted `tp_name` in the set: it is `_collections.defaultdict`
+        // in C and CPython prints `collections.defaultdict`.
+        return Some("collections.defaultdict");
+    }
+    None
+}
+
+/// The names in [`BUILTINS`] that are TYPE OBJECTS rather than functions.
+///
+/// Sixteen of the thirty-nine, read off CPython 3.14.5 by asking
+/// `type(getattr(builtins, n)).__name__` rather than by reading the manual. The
+/// other twenty-three — `abs`, `len`, `open`, `print`, `sorted` and their
+/// neighbours — really are `builtin_function_or_method`.
+const TYPE_OBJECTS: &[&str] = &[
+    "bool", "bytes", "dict", "enumerate", "filter", "float", "int", "list", "map", "range",
+    "reversed", "set", "str", "tuple", "type", "zip",
+];
+
 /// Is `t` a dict SUBCLASS that `isinstance(x, dict)` must answer True for?
 ///
 /// `Counter` and `defaultdict` are, and `isinstance(c, dict)` answering False

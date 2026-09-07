@@ -235,6 +235,21 @@ fn cased_all(s: &str, want: fn(char) -> bool) -> bool {
 /// like every other table here (`tests/test_method_tables.py` holds them to it).
 const RANGE_MISSING: &[&str] = &["count", "index"];
 
+/// Every non-dunder name CPython's `float` has, none of which this engine does.
+///
+/// `float` has no row in [`method_name`] at all, so before this table
+/// `(1.5).is_integer()` and `float.is_integer` were `AttributeError` at exit 1
+/// — the program's own exit, which the chain does not retry — where CPython
+/// answers `False` and a `method_descriptor`. Read off `dir(float)` on CPython
+/// 3.14.5 on 2026-09-07; `from_number` is 3.14's and refusing it on an older
+/// interpreter costs a spawn on a name that raises there anyway, which is the
+/// safe direction. `real` and `imag` are attributes rather than methods and are
+/// here for the same reason `RANGE_MISSING` carries `count`: CPython answers
+/// them and this does not.
+const FLOAT_MISSING: &[&str] = &[
+    "as_integer_ratio", "conjugate", "from_number", "fromhex", "hex", "imag", "is_integer", "real",
+];
+
 /// Methods `int` has in CPython and this engine does not implement.
 ///
 /// The table exists because `cap-bigint` makes the programs that reach for them
@@ -262,6 +277,7 @@ pub fn missing_method(recv: &Value, name: &str) -> bool {
         // later; that error was not.
         Value::Range(..) => RANGE_MISSING,
         Value::Int(_) | Value::Bool(_) => INT_MISSING,
+        Value::Float(_) => FLOAT_MISSING,
         _ => return false,
     };
     table.iter().any(|m| name_eq(m, name))
@@ -528,15 +544,9 @@ pub fn call_method(
             // `d.keys()` is a view, and `.keys().foo()` is not a thing agents
             // type; the one real case is a set-like op, which is refused.
             let _ = (d, kind);
-            Err(attr_err(format!(
-                "'{}' object has no attribute '{name}'",
-                type_name(recv)
-            )))
+            Err(crate::value::attr_error(recv, name))
         }
-        other => Err(attr_err(format!(
-            "'{}' object has no attribute '{name}'",
-            type_name(other)
-        ))),
+        other => Err(crate::value::attr_error(other, name)),
     }
 }
 
