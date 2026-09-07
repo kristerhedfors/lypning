@@ -1221,7 +1221,18 @@ impl Interp {
             }
             let mut leftover = Dict::new();
             for (k, v) in kw {
-                match p.names[..npos].iter().position(|n| *n == k) {
+                // FROM `posonly`, not from zero: a name before the `/` is
+                // positional-only and a keyword may not fill it. Searching the
+                // whole prefix bound it anyway, so `def f(x, /, y)` called
+                // `f(x=1, y=2)` answered `(1, 2)` at exit 0 where CPython
+                // raises TypeError. Skipping them lands the name on `**kw` if
+                // there is one — which is CPython's rule, `f(1, x=2)` giving
+                // `{'x': 2}` — and on the unexpected-keyword error if not.
+                match p.names[p.posonly..npos]
+                    .iter()
+                    .position(|n| *n == k)
+                    .map(|i| i + p.posonly)
+                {
                     Some(i) => {
                         // A KEYWORD CANNOT REFILL A PARAMETER THE POSITIONAL
                         // ARGUMENTS ALREADY FILLED. Without this check the
