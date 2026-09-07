@@ -18,11 +18,36 @@ use std::rc::Rc;
 
 /// Every name resolvable as a builtin. Kept as one table so `route.rs` can ask
 /// "would lypning know this name?" without executing anything.
+///
+/// **Ordered by how often the corpus names it, commonest first — not
+/// alphabetically.** [`builtin`] walks this table from the front on every
+/// builtin name a program reads, so the order is the expected length of that
+/// walk and nothing else: no reader of this table depends on it, and every one
+/// of the names is unique, so `find` returns the same entry whatever the order.
+///
+/// Counted by parsing the corpus and walking each AST for `Name` nodes in this
+/// set, with a word scan as the fallback on the 47 programs that do not parse:
+/// **3,688 loaded on 2026-09-07, 17,208 sightings.** The mean walk over that
+/// distribution is **25.31 compares alphabetically and 4.64 here**, and the top
+/// three names alone — `print` 6,888, `open` 2,733, `len` 1,720 — are 66% of
+/// every sighting while sitting 28th, 26th and 19th in the alphabet. `input` is
+/// last because the corpus never names it; the count is a property of this
+/// corpus on this date, and CLAUDE.md invariant 3 applies to it like any other.
+///
+/// This is the third thing tried on this scan and the first that helped. The
+/// other two changed its SHAPE and both lost: `binary_search` measured 2%
+/// worse with disjoint bands (`docs/HILLCLIMB.md` iterations 4 and 42 — a
+/// perfectly predicted walk of a cache-resident table beats five unpredictable
+/// branches), and routing the two tables through a first-byte test made
+/// `builtin-sum-len` 15% slower by moving inlining (iteration 68). Reordering
+/// changes no branch, no code and no byte of the binary — only which entry is
+/// found first — which is why it is the one that survives. If a name's
+/// frequency changes enough to matter, re-count it; do not re-sort it.
 pub const BUILTINS: &[&str] = &[
-    "abs", "all", "any", "bin", "bool", "bytes", "chr", "dict", "divmod", "enumerate", "filter",
-    "float", "format", "hex", "input", "int", "isinstance", "iter", "len", "list", "map", "max",
-    "min", "next", "oct", "open", "ord", "print", "range", "repr", "reversed", "round", "set",
-    "sorted", "str", "sum", "tuple", "type", "zip",
+    "print", "open", "len", "isinstance", "repr", "sorted", "range", "str", "int", "dict", "set",
+    "list", "sum", "type", "min", "chr", "enumerate", "any", "bool", "float", "zip", "round",
+    "max", "divmod", "bytes", "hex", "iter", "next", "tuple", "format", "ord", "abs", "all",
+    "bin", "map", "filter", "reversed", "oct", "input",
 ];
 
 /// f64 -> i64 the way CPython converts, refusing where it cannot.
@@ -227,6 +252,23 @@ pub fn builtin(name: &str) -> Option<Value> {
     // measured binary search over this table and it bought no wall clock); what
     // changes is that a comparison is now bytes inline instead of a call out to
     // `memcmp`, which was 5.2% of self time on its own. See `value::name_eq`.
+    //
+    // The scan's LENGTH is the table's order, and `BUILTINS` is sorted by
+    // corpus frequency for that reason — see its doc comment, and do not
+    // re-alphabetise it. What the order is worth was measured as an A/B of the
+    // whole engine (`docs/HILLCLIMB.md`, and the commit that reordered it): the
+    // interpreter arm of `perf`'s `str-of-scalar` fell 16.3% and
+    // `file-write-read` 3.7%, worst build against best build, while rows whose
+    // hot loop names no builtin did not move. An earlier ablation here — timing
+    // `abs` at index 0 against `len` at index 18 in the same loop — is NOT that
+    // number and is left out of the estimate: the two calls differ in their
+    // argument type as well as their position, so it prices `length()` on a
+    // `str` along with the walk.
+    //
+    // `EXCEPTIONS` below is deliberately NOT reordered: a name that reaches it
+    // has already walked all of `BUILTINS`, so its own order buys nothing on
+    // this path, and `call_builtin`'s `is_exception_name` scans it in full for
+    // every builtin that is not an exception whatever order it is in.
     if let Some(b) = BUILTINS.iter().find(|b| name_eq(b, name)) {
         return Some(Value::Builtin(b));
     }
