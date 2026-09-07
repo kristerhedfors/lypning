@@ -263,7 +263,7 @@ pub fn missing_method(recv: &Value, name: &str) -> bool {
         Value::Int(_) | Value::Bool(_) => INT_MISSING,
         _ => return false,
     };
-    table.contains(&name)
+    table.iter().any(|m| name_eq(m, name))
 }
 
 /// Is `name` a method of `recv`? Returns the interned name so the caller can
@@ -296,7 +296,11 @@ pub fn method_name(recv: &Value, name: &str) -> Option<&'static str> {
     // it — an unsorted table would make binary search MISS a method that exists,
     // which is an AttributeError where CPython answers, and invariant 1 says
     // that is the failure that matters.
-    table.binary_search(&name).ok().map(|i| table[i])
+    // `binary_search_by` with `name_cmp` rather than `binary_search`: same
+    // ordering, same answer, no `memcmp` call per probe. See `value::name_cmp`
+    // — this one line was 17% of the interpreter's self time on a loop that
+    // calls three string methods.
+    table.binary_search_by(|p| name_cmp(p, name)).ok().map(|i| table[i])
 }
 
 fn kwget(kw: &[(Rc<str>, Value)], name: &str) -> Option<Value> {

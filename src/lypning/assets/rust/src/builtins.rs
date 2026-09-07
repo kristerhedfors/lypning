@@ -139,7 +139,7 @@ pub const EXCEPTIONS: &[&str] = &[
 ];
 
 pub fn is_exception_name(n: &str) -> bool {
-    EXCEPTIONS.contains(&n)
+    EXCEPTIONS.iter().any(|e| name_eq(e, n))
 }
 
 /// Is `t` a dict SUBCLASS that `isinstance(x, dict)` must answer True for?
@@ -158,14 +158,20 @@ fn dict_subclass(_want: &str, _have: &str) -> bool {
 }
 
 pub fn exception_static(n: &str) -> &'static str {
-    EXCEPTIONS.iter().find(|e| **e == n).copied().unwrap_or("Exception")
+    EXCEPTIONS.iter().find(|e| name_eq(e, n)).copied().unwrap_or("Exception")
 }
 
 pub fn builtin(name: &str) -> Option<Value> {
-    if let Some(b) = BUILTINS.iter().find(|b| **b == name) {
+    // Reached on EVERY read of a builtin name — `len`, `print`, `str` — because
+    // a builtin is not in any scope, so `Interp::lookup` misses every map first
+    // and arrives here. The scan stays a scan (`docs/HILLCLIMB.md` iteration 4
+    // measured binary search over this table and it bought no wall clock); what
+    // changes is that a comparison is now bytes inline instead of a call out to
+    // `memcmp`, which was 5.2% of self time on its own. See `value::name_eq`.
+    if let Some(b) = BUILTINS.iter().find(|b| name_eq(b, name)) {
         return Some(Value::Builtin(b));
     }
-    if let Some(e) = EXCEPTIONS.iter().find(|b| **b == name) {
+    if let Some(e) = EXCEPTIONS.iter().find(|b| name_eq(b, name)) {
         return Some(Value::Builtin(e));
     }
     match name {
