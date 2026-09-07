@@ -13,7 +13,9 @@ three things:
                    line-ending disagreement on either side (issue #50). Of
                    stderr, what is compared is the exception TYPE and the fact
                    of raising, plus the non-traceback part, which is the
-                   program's own writing; the traceback body and the message
+                   program's own writing — all of it but CPython's own warning
+                   lines, which no engine here has the machinery to emit
+                   (:data:`_WARNING_RE`). The traceback body and the message
                    wording are not, because CPython rewords them between 3.11,
                    3.12 and 3.14 (:func:`stderr_shape`). Every verdict records
                    which of the three it actually rested on
@@ -1181,19 +1183,61 @@ def _clip(s: str) -> str:
 #: the contract puts the refusal at the head and puts nothing else there.
 _UNSUPPORTED_RE = re.compile(r"^([\w.-]+): unsupported: ([\w-]+): (.+)$")
 
-#: One CPython warning as it lands on stderr: ``<file>:<line>: <Kind>Warning:
-#: <message>``, then — when the file is readable, so never for ``-c`` — the
-#: offending source line echoed under it with a two-space indent. Advisory
-#: only: the interpreter carries on and exits 0, so it is not a failure the
-#: engine was expected to reproduce (see :func:`classify`). Python 3.14 added
-#: one for ``return`` inside ``finally`` (PEP 765), which is how a corpus program
-#: with identical stdout and exit code came to be scored MISMATCH.
-_WARNING_RE = re.compile(r"^[^\n:]+:\d+: \w+Warning: .*\n(?:  .*\n)?", re.M)
+#: The warning categories CPython's own machinery raises — every one of them a
+#: built-in name, so the set is closed and cannot drift with a rewording, which
+#: is the half of a warning this project deliberately refuses to track. No
+#: engine here has warnings machinery at all: a Rust variant emits none of
+#: these ever, and the ones that reach the mixture arm are CPython's own,
+#: relayed by the fallback.
+_WARNING_CATEGORIES = (
+    "BytesWarning", "DeprecationWarning", "EncodingWarning", "FutureWarning",
+    "ImportWarning", "PendingDeprecationWarning", "ResourceWarning",
+    "RuntimeWarning", "SyntaxWarning", "UnicodeWarning", "UserWarning",
+)
+
+#: One CPython warning as it lands on stderr, and nothing else:
+#: ``<string>:<line>: <Category>: <message>``. Advisory only — the interpreter
+#: prints it and carries on — so it is not a failure the engine was expected to
+#: reproduce (see :func:`classify`). Python 3.14 added one for ``return`` inside
+#: ``finally`` (PEP 765), which is how a corpus program with identical stdout
+#: and exit code came to be scored MISMATCH.
+#:
+#: Both anchors are load-bearing, and both were missing until 2026-09-07, when
+#: the pattern was ``^[^\n:]+:\d+: \w+Warning: .*\n(?:  .*\n)?``:
+#:
+#: * ``<string>`` is the only file a reference run compiles, because
+#:   :func:`engines._argv_for` gives every arm of this battery ``-c`` and never
+#:   a script path — only the fuzzer takes the other branch, and it does not
+#:   come through here. A warning line naming any OTHER file was written by the
+#:   program, and the program's own stderr is compared, not deleted.
+#:   ``[^\n:]+`` matched every filename there is and therefore matched the
+#:   program's too — on BOTH arms, so a program printing ``foo.py:1:
+#:   MyWarning: …`` had that line deleted from the engine's stderr and from
+#:   CPython's, and no disagreement in it could be seen.
+#: * the category is a closed list rather than ``\w+Warning``, which matched any
+#:   word ending in ``Warning`` — a class the program had defined itself
+#:   included.
+#:
+#: The trailing ``(?:  .*\n)?`` is gone with them. It was there for the source
+#: line CPython echoes under a warning when it can read the file, which for
+#: ``-c`` it never can (checked on 3.14.5, 2026-09-07: no echo for any of the
+#: 30 warnings the corpus reference emits). What it actually did was swallow one
+#: further indented line of whatever the program had written next.
+_WARNING_RE = re.compile(
+    r"^<string>:\d+: (?:%s): .*\n" % "|".join(_WARNING_CATEGORIES), re.M)
 
 
 def _without_warnings(stderr: str) -> str:
-    """``stderr`` with CPython's warning blocks removed, so what is left is
-    the part that meant something went wrong."""
+    """``stderr`` with CPython's own warning lines removed, so what is left is
+    the part that meant something went wrong.
+
+    Applied to both arms, and it has to be: the mixture arm's warnings are
+    CPython's, reached through the fallback, so stripping the reference alone
+    would score every relayed one a MISMATCH (27 such lines on this tree,
+    2026-09-07). Symmetric stripping of a pattern only CPython can produce is
+    the same thing as stripping the arm that emits what the other cannot —
+    where both arms carry the line it compares equal either way.
+    """
     return _WARNING_RE.sub("", stderr or "")
 
 
@@ -1352,10 +1396,13 @@ def classify(ref: eng.Result, got: eng.Result, engine: str, entry: Any) -> Verdi
     the exception type is the part that is API. See :func:`stderr_shape`.
 
     A CPython *warning* is not a failure — the interpreter prints it and carries
-    on — so warning blocks are stripped from BOTH arms before either is read;
+    on — so its warning lines are stripped from both arms before either is read;
     otherwise a new advisory in the reference interpreter (3.14's PEP 765
     ``SyntaxWarning``) would score an engine that agreed everywhere else as a
-    MISMATCH.
+    MISMATCH. Only CPython's own: ``<string>:<line>:`` and one of the built-in
+    categories, which is a shape no engine here can produce and a program has to
+    go out of its way to imitate. Anything else a program writes to stderr is
+    compared (:data:`_WARNING_RE`).
     """
     entry_id = getattr(entry, "id", "")
     # BYTES, on both sides. `Result.stdout` is decoded for a reader, and that

@@ -172,7 +172,7 @@ engine could be caught disagreeing (issue #50). The verdicts are `README.md`
 | `contract` | exit 90 after bytes reached stdout, or exit 90 with no line | unless CPython exited 90 too (`sys.exit(90)`), which compares like any exit code |
 | `stdout` | stdout differs **as bytes**, line endings included | the first differing line, from text decoded but not newline-normalised; not compared when the entry is tagged `nondeterministic`, matches `_RUN_SPECIFIC` or `_IMPLEMENTATION_DEFINED`, draws from `random` unseeded, or differs only in set order — the verdict then reads `MATCH` with `stdout uncompared` |
 | `exit` | the exit code differs | `exit N, CPython gave M` |
-| `stderr` | CPython reported an error and the engine was silent | CPython's warning blocks are stripped first (`conformance._without_warnings`) |
+| `stderr` | CPython reported an error and the engine was silent | CPython's own warning lines are stripped first, from both arms — `<string>:<line>:` and a built-in category, which is a shape no engine here can emit and the mixture arm only relays (`conformance._WARNING_RE`, `_without_warnings`). Any other warning-shaped line is the program's writing and is compared |
 | `stderr-exc` | the two arms disagree about which exception ended the run, or about whether one did | the type only, spelled by its last dotted component; frames, preamble and message wording are normalised away (`conformance.stderr_shape`) |
 | `stderr-text` | the non-traceback part of stderr differs | that part is the program's own writing, so it is compared like stdout — and waived like it |
 
@@ -188,15 +188,15 @@ lypning conformance --plan > plan.txt; echo $?; head -3 plan.txt
 lypning conformance --engine lypning-mp --limit 5 | grep '^note'; echo $?
 # EXPECTED — lypning conformance · 2026-09-07 · 3688 loaded, 2504 graded
 engine       MATCH  UNSUPPORTED  MISMATCH   coverage
-lypning      1547          956         1     61.8%
-lypning-l    1984          519         1     79.2%
+lypning      1546          958         0     61.7%
+lypning-l    1983          521         0     79.2%
 mixture      2504            0         0    100.0%
 what the MATCHes compared — an agreement about nothing is still an agreement, but not the same one:
 engine       MATCH  stdout  stderr  exit only  both failed
 # … | vdiff c3-conformance
 # differs: every count (the corpus grows and capabilities land), the reference path, <s>
 # must not: `UNSAFE 0`, `monotone violations 0 over N`, `dispatchers agree N/N` (N = N), `ranked by ->cpy` when the mixture arm ran, the `what the MATCHes compared` table
-# MISMATCH is 1 per Rust arm as of 2026-09-07 (py-771e5de335fc, `stderr-exc`) — the first run in which stderr was compared at all. Invariant 1 still says it must be 0; it is not, and the entry is an engine defect awaiting a fix, not an instrument one.
+# MISMATCH is 0 again as of 2026-09-07. It was 1 per Rust arm for one round (py-771e5de335fc, `stderr-exc`) — the first run in which stderr was compared at all, and an engine defect, not an instrument one. The fix is in `lex.rs`: an indent no suite asked for is refused from the layout pass, where CPython's tokenizer stops, instead of being left for the parser behind whatever the rest of the file lexes to. It refuses rather than naming an error because CPython has no single answer to name — `python -c` dedents the command from 3.13 on, so the same text runs on 3.14 and raises IndentationError on 3.11. Two entries move to UNSUPPORTED per Rust arm; the mixture is unchanged at 2504/0/0.
 # --plan prints the build order instead of the table, so a MISMATCH in that run shows only as exit 1: re-run without it to see which entry
 ```
 

@@ -247,6 +247,82 @@ def test_a_method_cpython_has_refuses_instead_of_raising(case_id, program, lypni
     assert ": unsupported: " in r.stderr, r.stderr
 
 
+# --- indentation, where CPython's answer is not one answer --------------------
+
+#: One row per shape a leading indent can take, and what CPython does with it.
+#: ``refuses`` is what lypning must do; the rest are run differentially against
+#: the reference like every other case in this file.
+#:
+#: The shape exists as a corpus entry because agents paste fragments:
+#: ``py-771e5de335fc`` is the tail of a Python list, indented, whose last line
+#: is an unterminated string. CPython stops at the indent on line 1 and lypning
+#: stopped at the string on line 6 — the same program, a different cause named,
+#: which the exit code (1 either way) could not give away.
+#:
+#: Every indented row refuses rather than naming an error, and the reason is
+#: that CPython does not have one answer to give. ``python -c`` dedents the
+#: command before compiling it from 3.13 on, so a common indent is simply
+#: removed: measured 2026-09-07, ``python3.14 -c " print(1)"`` prints 1 where
+#: ``python3.11`` raises IndentationError, and for
+#: ``"  print(1)\n  print('x\n"`` 3.11 answers IndentationError on line 1 and
+#: 3.14 an unterminated string on line 2. A binary that does not know which
+#: CPython the chain will fall through to cannot pick between them — and even
+#: where the versions agree it cannot know the indent is the FIRST thing wrong,
+#: because CPython's tokenizer has errors this one does not (corpus
+#: ``py-50e65eaca71f`` is a commit message CPython rejects four lines above the
+#: first indent, for leading zeros in ``2026-08-21``). So it refuses, and the
+#: reference answers.
+INDENT_SHAPES = [
+    ("leading-space-on-line-1", " print(1)\nprint(2)\n", True),
+    ("leading-tab-on-line-1", "\tprint(1)\nprint(2)\n", True),
+    ("leading-space-on-an-otherwise-valid-program", " print(1)\n", True),
+    ("indented-line-1-then-a-well-formed-rest", "  x = 1\ny = 2\nprint(y)\n", True),
+    ("a-comment-line-before-the-indent", "# c\n  print(1)\n", True),
+    ("a-blank-line-before-the-indent", "\n  print(1)\n", True),
+    ("the-whole-program-indented", "  print(1)\n  print(2)\n", True),
+    ("indented-and-an-unterminated-string", "  print(1)\n  print('x\n", True),
+    ("an-unexpected-indent-below-column-0", "print(1)\n print(2)\n", True),
+    ("an-unexpected-indent-and-a-later-lexical-error",
+     "print(1)\n print(2)\nprint('x\n", True),
+    ("an-unexpected-indent-inside-a-block", "if 1:\n  print(1)\n    print(2)\n", True),
+    # And the other side: an indent a suite asked for is not an error at all,
+    # nor is one inside brackets, and neither may be dragged into the refusal.
+    ("an-indented-block", "if 1:\n    print(1)\nprint(2)\n", False),
+    ("a-block-body-after-a-comment-line", "if 1:\n# c\n    print(4)\n", False),
+    ("a-block-body-after-a-backslash-continuation",
+     "if 1 and \\\n   2:\n    print(3)\n", False),
+    ("an-indent-inside-brackets", "x = [\n  1,\n  2]\nprint(x)\n", False),
+    ("a-bracket-continuation-then-column-0", "x = (1 +\n  2)\nprint(x)\n", False),
+    # An unterminated string with no indent above it keeps its SyntaxError: the
+    # refusal is about the indent, and must not have widened to every bad parse.
+    ("an-unterminated-string-with-no-indent", "print('abc\n", False),
+]
+
+
+@pytest.mark.parametrize("case_id,program,refuses", INDENT_SHAPES,
+                         ids=[c[0] for c in INDENT_SHAPES])
+def test_an_indent_refuses_or_agrees_but_never_names_another_cause(
+        case_id, program, refuses, lypning_bin):
+    from lypning.conformance import stderr_shape
+
+    ours = engines.run(engines.LYPNING, program, binary=lypning_bin)
+    if refuses:
+        assert ours.returncode == UNSUPPORTED_EXIT, ours.stderr
+        assert ours.stdout == "", "the refusal contract is nothing at all on stdout"
+        lines = ours.stderr.strip().splitlines()
+        assert len(lines) == 1, "the contract is exactly one line on stderr"
+        # Head and kind through `refusal_line`, never a literal: a variant that
+        # wrote a sibling's name would misroute the dispatcher silently.
+        assert lines[0].startswith(eng.refusal_line(eng.LYPNING, "indent", "")), lines[0]
+        return
+    theirs = engines.run(engines.CPYTHON, program)
+    if theirs.returncode == 127:
+        pytest.skip("no reference CPython")
+    assert (ours.returncode, ours.stdout) == (theirs.returncode, theirs.stdout)
+    assert stderr_shape(ours.stderr)[1] == stderr_shape(theirs.stderr)[1], (
+        "a traceback naming a different cause is the thing this grid is for")
+
+
 #: ``(id, program)`` run with bytes on stdin, differentially, exactly as above.
 #:
 #: Split out because these need an input and the cases above do not. The reason

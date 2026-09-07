@@ -3,6 +3,12 @@
 //! Layout handling (INDENT/DEDENT) is done here rather than in the parser so
 //! the parser can stay a plain recursive-descent walk over a flat token slice.
 //!
+//! Layout is also where the ORDER of two errors is decided. CPython's tokenizer
+//! reads a line's indentation before it lexes that line and stops there, so an
+//! indent no suite asked for hides everything after it; this lexer runs to the
+//! end of the source before the parser sees a token, so it has to raise on the
+//! indent itself, from `layout`, or it names the wrong cause.
+//!
 //! Anything the lexer cannot represent EXACTLY becomes an `Unsupported` error
 //! rather than a guess. A tokenizer that quietly mis-reads a literal is the
 //! silent-divergence failure mode the whole project exists to avoid (the lypning-mp
@@ -203,6 +209,9 @@ impl<'a> Lexer<'a> {
             }
             let cur = *self.indents.last().unwrap();
             if col > cur {
+                if !self.indent_opens_a_suite() {
+                    return Err(self.unexpected_indent());
+                }
                 self.indents.push(col);
                 self.push(Tok::Indent);
             } else if col < cur {
@@ -216,6 +225,72 @@ impl<'a> Lexer<'a> {
             }
             return Ok(true);
         }
+    }
+
+    /// Is the INDENT about to be pushed one a suite asked for?
+    ///
+    /// Python has exactly one rule that takes an INDENT — `block: NEWLINE
+    /// INDENT statements DEDENT` — and `block` appears only after the `:` that
+    /// opens a suite, so the two tokens already emitted answer the question
+    /// without the lexer knowing any grammar beyond that. Blank and
+    /// comment-only lines emit nothing, so `if x:` followed by a comment and
+    /// then the body still ends `: NEWLINE` here.
+    fn indent_opens_a_suite(&self) -> bool {
+        let n = self.out.len();
+        n >= 2
+            && matches!(self.out[n - 1].tok, Tok::Newline)
+            && matches!(self.out[n - 2].tok, Tok::Op(":"))
+    }
+
+    /// The indentation at the head of THIS line, when no suite asked for it.
+    ///
+    /// Raised from the layout pass, at the moment the indent is read, rather
+    /// than left for the parser to trip over the `Indent` token later — and the
+    /// timing is half the point. CPython's tokenizer reads a logical line's
+    /// indentation before it lexes that line, and the parser fails on the INDENT
+    /// before anything further down is tokenized at all, so a lexical problem
+    /// later in the file never gets the chance to be reported. This lexer
+    /// tokenizes the whole source up front, so it was reporting the later
+    /// problem instead: corpus `py-771e5de335fc` is an indented paste whose last
+    /// line is an unterminated string, and CPython stops at the indent on line 1
+    /// while this engine stopped at the string on line 6. Same program, a
+    /// different cause named — the silent-divergence shape invariant 1 exists
+    /// for, and both being errors is why no exit code gave it away.
+    ///
+    /// It is a REFUSAL and not this engine's own `IndentationError`, because
+    /// neither half of what CPython would say here is knowable from inside a
+    /// binary that does not know which CPython it is paired with:
+    ///
+    /// * **Whether it is an error at all.** Since 3.13 `python -c` dedents the
+    ///   command before compiling it, so an indent common to every line is
+    ///   simply removed: `python3.14 -c " print(1)"` prints 1 and `python3.11
+    ///   -c` on the same text raises `IndentationError`. The two also disagree
+    ///   about which error a bad program gets — for `"  print(1)\n  print('x\n"`
+    ///   3.11 answers `IndentationError` on line 1 and 3.14 an unterminated
+    ///   string on line 2 (measured 2026-09-07 on 3.11.15 and 3.14.5).
+    /// * **Whether the indent is even the FIRST thing wrong.** CPython's
+    ///   tokenizer has lexical errors this one does not, so an indent this lexer
+    ///   reaches may sit behind one CPython stopped at already. Corpus
+    ///   `py-50e65eaca71f` is a commit message: CPython rejects `2026-08-21` on
+    ///   line 4 (leading zeros in a decimal literal), where this lexer reads
+    ///   `08` as 8 and carries on to the indent on line 14. Naming the indent
+    ///   there would be as wrong as naming the string was, one line number
+    ///   further on.
+    ///
+    /// So the program leaves by the exit-90 contract and the reference answers
+    /// it. That is invariant 1: the answer arrives one spawn later and the
+    /// caller reads it, where a guess at CPython's wording would not be noticed.
+    fn unexpected_indent(&self) -> LypningError {
+        unsupported(
+            "indent",
+            &format!(
+                "line {} is indented and no suite opened a block; `python -c` \
+                 dedents the command on 3.13+ but not before, so whether this is \
+                 an error at all — and which one — is the reference \
+                 interpreter's to say",
+                self.line
+            ),
+        )
     }
 
     fn operator(&mut self) -> Result<(), LypningError> {
