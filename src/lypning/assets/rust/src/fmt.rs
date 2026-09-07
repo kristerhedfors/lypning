@@ -152,6 +152,16 @@ pub fn repr(v: &Value) -> R<String> {
             if b.coll.is_some() {
                 return crate::collections::repr(&b);
             }
+            // `os.environ` is a third tagged dict and the one whose repr is NOT
+            // a dict's: `_Environ.__repr__` writes `environ({…})`. Printing the
+            // braces alone was a wrong answer at exit 0 on a program whose
+            // author would not look twice — the same shape as `<class 'dict'>`
+            // for `type(os.environ)`, and refused for the same reason. Serving
+            // it would mean claiming this process's `environ` array is ordered
+            // the way the reference interpreter's is.
+            if b.environ {
+                return Err(unsupported("repr", "repr() of os.environ"));
+            }
             dict_repr(&b)?
         }
         // See value.rs: CPython's set order is a property of its hashing, so a
@@ -174,6 +184,12 @@ pub fn repr(v: &Value) -> R<String> {
         }
         Value::DictView(d, kind) => {
             let d = d.borrow();
+            // A view OF `os.environ` reprs as `KeysView(environ({…}))`, not as
+            // `dict_keys([…])`: the wrapper names the mapping, so the refusal
+            // above has to reach through it as well.
+            if d.environ {
+                return Err(unsupported("repr", "repr() of an os.environ view"));
+            }
             let items: Vec<Value> = match *kind {
                 "keys" => d.keys(),
                 "values" => d.values(),
@@ -239,6 +255,30 @@ pub fn repr(v: &Value) -> R<String> {
                 format!("{kind}({})", str_repr(msg)?)
             }
         }
+        // `<class 'int'>`, `<class 'collections.Counter'>` — the one shape of
+        // CPython's six callable reprs that carries neither a heap address nor
+        // a filesystem path, and so the only one a second implementation can
+        // write at all. `repr(len)` is `<built-in function len>` and would be
+        // reproducible too, but `repr(json.dumps)` is `<function dumps at
+        // 0x…>`, `repr(x.append)` is `<built-in method append of list object at
+        // 0x…>` and `repr(json)` is `<module 'json' from '/…'>`: an address and
+        // a path this process cannot make agree with another's. Those keep the
+        // refusal below, which is the arm this one was carved out of.
+        //
+        // `Value::Builtin` is BOTH `int` and `len`, so the name decides, and
+        // only through `class_repr_name` — the closed table that knows which
+        // names this crate can prove it is holding one class for. A name it
+        // will not vouch for falls through to the same refusal with the same
+        // detail it always had, so no `--plan` row changes its text.
+        Value::Builtin(n) => match crate::builtins::class_repr_name(n) {
+            Some(q) => format!("<class '{q}'>"),
+            None => {
+                return Err(unsupported(
+                    "repr",
+                    &format!("repr() of a {}", type_name(v)),
+                ))
+            }
+        },
         other => {
             return Err(unsupported(
                 "repr",

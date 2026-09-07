@@ -400,6 +400,28 @@ pub struct Dict {
     /// short list of places a subclass differs, and nothing else reads this.
     #[cfg(feature = "cap-collections")]
     pub coll: Option<crate::collections::Kind>,
+    /// **Is this the mapping `os.environ` handed back?**
+    ///
+    /// `modules::get_attr` materialises `os.environ` as a real `Dict`, which is
+    /// right for every operation that reads it — `d['HOME']`, `.get`, `in`,
+    /// iteration, `dict(os.environ)` — and wrong for every operation that NAMES
+    /// it, because CPython's is an `os._Environ` and not a dict at all. Before
+    /// this flag nothing in the value said so, and the four places that ask got
+    /// four wrong answers at exit 0 (measured 2026-09-07 on CPython 3.14.5):
+    /// `type(os.environ)` said `<class 'dict'>` for `<class 'os._Environ'>`,
+    /// `str(os.environ)` said `{…}` for `environ({…})`,
+    /// `isinstance(os.environ, dict)` said True for False, and
+    /// `json.dumps(os.environ)` serialised what CPython refuses to.
+    ///
+    /// One bool, not a `Value` variant, for the reason `coll` above is one: a
+    /// variant would need an arm in `eq`, `hash`, `bool`, `len`, `iter` and the
+    /// dozen more that `Value::Dict` already has right, and every one of those
+    /// answers is the same for `os.environ` as for the dict it is modelled on.
+    /// What differs is only the NAME, so only the name is stored. It is set in
+    /// exactly one place and never propagated: `dict(os.environ)` and
+    /// `os.environ.copy()` build a fresh `Dict`, which is what CPython returns
+    /// for both.
+    pub environ: bool,
 }
 
 impl Dict {
@@ -516,6 +538,15 @@ pub fn set_order_refused(what: &str) -> crate::err::LypningError {
 
 // ---- helpers --------------------------------------------------------------
 
+/// Is this mapping the one `os.environ` handed back? See [`Dict::environ`].
+///
+/// `try_borrow`, never `borrow`, for the reason `collections::kind_of` gives:
+/// this runs on error paths a live `borrow_mut` may already hold, and a panic
+/// there is an abort — the one outcome the exit-90 contract cannot survive.
+pub fn is_environ(d: &Rc<RefCell<Dict>>) -> bool {
+    d.try_borrow().map_or(false, |b| b.environ)
+}
+
 pub fn type_name(v: &Value) -> &'static str {
     match v {
         Value::None => "NoneType",
@@ -532,6 +563,15 @@ pub fn type_name(v: &Value) -> &'static str {
             #[cfg(feature = "cap-collections")]
             if let Some(k) = crate::collections::kind_of(_d) {
                 return crate::collections::kind_name(k);
+            }
+            // `_Environ` and not `os._Environ`: this is `tp_name`, which is what
+            // an AttributeError and an operand message print, and CPython's is
+            // bare. The dotted spelling is `type.__repr__`'s, which nothing
+            // serves — `type(os.environ)` falls to the refusal in `type()`
+            // BECAUSE the name is not a builtin one, which is the whole point of
+            // naming it here rather than at each of the four sites that ask.
+            if is_environ(_d) {
+                return "_Environ";
             }
             "dict"
         }
@@ -1201,20 +1241,15 @@ pub fn callable_kind(v: &Value) -> Option<Callable> {
 /// os.path.normpath`, which run here today, to buy exactness in a case that
 /// needs the bound method to be an operand of a TypeError.
 ///
-/// **`os.environ` is the one receiver this cannot decide, and it is NOT a hole
-/// in the table.** CPython's is an `os._Environ`, a pure-Python `MutableMapping`
-/// whose methods are `method`; this engine materialises it as a plain
-/// `Value::Dict` (`modules::get_attr`), which is indistinguishable from `{}` —
-/// and `{}.get` really is a `builtin_function_or_method`. The receiver is
-/// mis-typed at the ROOT, not at its methods: measured 2026-09-07 on 3.14.5,
-/// `type(os.environ).__name__` is `_Environ` and this says `dict`,
-/// `os.environ + 1` says `'_Environ' and 'int'` and this says `'dict' and
-/// 'int'`, and `str(os.environ)` is `environ({…})` where this prints `{…}`.
-/// Answering `method` here would fix the smallest of those four by guessing —
-/// the guess is wrong for every plain dict — and refusing here would refuse
-/// every `d.get` in the corpus to pay for a defect that lives in how
-/// `os.environ` is BUILT. Give it a receiver of its own and this arm follows;
-/// until then it is one wrong name on a value that already has three.
+/// **`os.environ` was the one receiver this could not decide, and the fix was
+/// the one the previous note asked for.** CPython's is an `os._Environ`, a
+/// pure-Python `MutableMapping` whose methods are `method`; this engine
+/// materialises it as a `Value::Dict` (`modules::get_attr`), which was
+/// indistinguishable from `{}` — and `{}.get` really is a
+/// `builtin_function_or_method`, so answering `method` here would have been a
+/// guess that is wrong for every plain dict. The receiver was mis-typed at the
+/// ROOT, not at its methods, and [`Dict::environ`] now names the root: this arm
+/// simply follows it.
 fn bound_kind(recv: &Value, name: &str) -> Callable {
     use Callable::*;
     match recv {
@@ -1273,15 +1308,34 @@ fn bound_kind(recv: &Value, name: &str) -> Callable {
         // `dict`'s own C functions. `defaultdict` overrides none of them — it
         // is `_collections.defaultdict`, a C type — so it needs no arm and its
         // ten names fall through below.
+        //
+        // `os.environ` is the other tagged dict and its arm is NOT gated:
+        // CPython's is an `os._Environ`, a pure-Python `MutableMapping`, so
+        // every name on it — `.get`, `.items`, `.keys`, `.pop` … — is a
+        // `method`, where the same name on a plain dict is C.
         #[cfg(feature = "cap-collections")]
-        Value::Dict(d) => match crate::collections::kind_of(d) {
-            Some(crate::collections::Kind::Counter)
-                if matches!(name, "copy" | "most_common" | "update") =>
-            {
+        Value::Dict(d) => {
+            if is_environ(d) {
                 Method
+            } else {
+                match crate::collections::kind_of(d) {
+                    Some(crate::collections::Kind::Counter)
+                        if matches!(name, "copy" | "most_common" | "update") =>
+                    {
+                        Method
+                    }
+                    _ => Builtin,
+                }
             }
-            _ => Builtin,
-        },
+        }
+        #[cfg(not(feature = "cap-collections"))]
+        Value::Dict(d) => {
+            if is_environ(d) {
+                Method
+            } else {
+                Builtin
+            }
+        }
         // A method off an INSTANCE of a C type: a list, a str, a dict, a file,
         // a `_hashlib.HASH`, a `re.Match`.
         _ => Builtin,

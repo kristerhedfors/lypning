@@ -765,53 +765,9 @@ impl Interp {
                 }
                 list(v)
             }
-            Expr::Set(items) => {
-                let mut s = Set::new();
-                for x in items {
-                    let v = self.eval(x)?;
-                    s.add(v)?;
-                }
-                Value::Set(Rc::new(RefCell::new(s)))
-            }
-            Expr::Dict(pairs) => {
-                let mut d = Dict::new();
-                for (k, v) in pairs {
-                    let kv = self.eval(k)?;
-                    let vv = self.eval(v)?;
-                    d.insert(kv, vv)?;
-                }
-                Value::Dict(Rc::new(RefCell::new(d)))
-            }
-            Expr::DictUnpack(items) => {
-                let mut d = Dict::new();
-                for it in items {
-                    match it {
-                        DictItem::Pair(k, v) => {
-                            let kv = self.eval(k)?;
-                            let vv = self.eval(v)?;
-                            d.insert(kv, vv)?;
-                        }
-                        DictItem::Unpack(e) => {
-                            let v = self.eval(e)?;
-                            let Value::Dict(src) = &v else {
-                                return Err(type_err(format!(
-                                    "argument of type '{}' is not a mapping",
-                                    type_name(&v)
-                                )));
-                            };
-                            let pairs: Vec<(Value, Value)> = src
-                                .borrow()
-                                .iter()
-                                .map(|(k, v)| (k.clone(), v.clone()))
-                                .collect();
-                            for (k, v) in pairs {
-                                d.insert(k, v)?;
-                            }
-                        }
-                    }
-                }
-                Value::Dict(Rc::new(RefCell::new(d)))
-            }
+            Expr::Set(items) => self.set_literal(items)?,
+            Expr::Dict(pairs) => self.dict_literal(pairs)?,
+            Expr::DictUnpack(items) => self.dict_unpack_literal(items)?,
             Expr::Bin(op, a, b) => {
                 let av = self.eval(a)?;
                 let bv = self.eval(b)?;
@@ -1101,6 +1057,83 @@ impl Interp {
         r
     }
 
+    /// The three MAPPING LITERALS, out of line — and `#[inline(never)]` is the
+    /// whole reason they are functions at all.
+    ///
+    /// A `Dict` and a `Set` are containers BY VALUE. Inlined into
+    /// [`Interp::eval`]'s match they sat on the frame of every expression this
+    /// runtime evaluates — three of them at once, whether or not the expression
+    /// was a literal — and recursion pays that once per level.
+    ///
+    /// The margin that hid it was 0.5%. Measured 2026-09-07 on a macOS arm64
+    /// host build, with the deepest recursion `MAX_DEPTH` admits (`f(179)`, the
+    /// program `tests/test_embed.py` pins as `ok`) run on a
+    /// `threading.stack_size(N)` thread — the shape a musl pthread and a Node
+    /// worker hand an embedder — and `N` bisected to 6 KB:
+    ///
+    /// * literals inline: needs **> 1,014 KB and <= 1,020 KB**, against the
+    ///   1,024 KB the test gives it.
+    /// * literals out of line: needs **> 894 KB and <= 900 KB**.
+    ///
+    /// So ONE added byte in `Dict` was enough to turn that program into a stack
+    /// overflow, and a stack overflow under `panic = "abort"` is a killed
+    /// process — no exit code, so not even the refusal the guard exists to
+    /// produce. Moving the literals out returns ~120 KB of that frame to every
+    /// program, which is what makes a field on `Dict` affordable again.
+    #[inline(never)]
+    fn set_literal(&mut self, items: &[Expr]) -> R<Value> {
+        let mut s = Set::new();
+        for x in items {
+            let v = self.eval(x)?;
+            s.add(v)?;
+        }
+        Ok(Value::Set(Rc::new(RefCell::new(s))))
+    }
+
+    #[inline(never)]
+    fn dict_literal(&mut self, pairs: &[(Expr, Expr)]) -> R<Value> {
+        let mut d = Dict::new();
+        for (k, v) in pairs {
+            let kv = self.eval(k)?;
+            let vv = self.eval(v)?;
+            d.insert(kv, vv)?;
+        }
+        Ok(Value::Dict(Rc::new(RefCell::new(d))))
+    }
+
+    #[inline(never)]
+    fn dict_unpack_literal(&mut self, items: &[DictItem]) -> R<Value> {
+        let mut d = Dict::new();
+        for it in items {
+            match it {
+                DictItem::Pair(k, v) => {
+                    let kv = self.eval(k)?;
+                    let vv = self.eval(v)?;
+                    d.insert(kv, vv)?;
+                }
+                DictItem::Unpack(e) => {
+                    let v = self.eval(e)?;
+                    let Value::Dict(src) = &v else {
+                        return Err(type_err(format!(
+                            "argument of type '{}' is not a mapping",
+                            type_name(&v)
+                        )));
+                    };
+                    let pairs: Vec<(Value, Value)> =
+                        src.borrow().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                    for (k, v) in pairs {
+                        d.insert(k, v)?;
+                    }
+                }
+            }
+        }
+        Ok(Value::Dict(Rc::new(RefCell::new(d))))
+    }
+
+    /// `#[inline(never)]` for the reason [`Interp::set_literal`] gives, and with
+    /// more to gain from it: a comprehension's accumulators are FOUR containers
+    /// by value — a `Vec`, a `Dict`, a `Set` and the iterator stack.
+    #[inline(never)]
     fn comp_loop(
         &mut self,
         kind: CompKind,
