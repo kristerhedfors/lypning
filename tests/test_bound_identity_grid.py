@@ -319,3 +319,131 @@ def test_the_two_variants_answer_a_bound_method_alike():
         assert (a.stdout, a.returncode) == (b.stdout, b.returncode), (
             "%s: the core said %r exit %d, lypning-l said %r exit %d"
             % (name, a.stdout, a.returncode, b.stdout, b.returncode))
+
+
+# ---------------------------------------------------------------------------
+# The TYPE of a bound method, which is a different question from its identity.
+#
+# One `Value::Bound` covers six CPython types, and `value::type_name` answered
+# `builtin_function_or_method` for all six. That is not message decoration: the
+# name reaches stdout at exit 0 through the ordinary
+# `try: … except TypeError as e: print(e)` idiom, and through every other
+# message that names an operand's type. Measured before this file: 164 of the
+# 296 (receiver, method) shapes this engine can build disagreed with CPython on
+# `len(f)` alone, on `lypning-l`, at exit 0.
+#
+# Every name below was read off CPython 3.9.6, 3.11.15, 3.12.13, 3.13.13 and
+# 3.14.5 on 2026-09-07. The two rows the five do not agree about are marked
+# DISPUTED and are answered for the reference interpreter (`README.md`:
+# `cpython` is 3.14.5), which is also the one these rows run against.
+
+#: `(id, setup, expression)` — the expression is a bound method, and the row
+#: asks CPython for its type name through a message the program can print.
+TYPED = [
+    # ---- `function`: defined in a `.py` module ----------------------------
+    ("json-dumps-is-a-function", "import json", "json.dumps"),
+    ("re-search-is-a-function", "import re", "re.search"),
+    ("glob-glob-is-a-function", "import glob", "glob.glob"),
+    ("base64-b64encode-is-a-function", "import base64", "base64.b64encode"),
+    ("os-path-join-is-a-function", "import os.path", "os.path.join"),
+    ("posixpath-join-is-the-same-function", "import posixpath", "posixpath.join"),
+    ("os-makedirs-is-a-python-wrapper", "import os", "os.makedirs"),
+    ("os-getenv-is-a-python-wrapper", "import os", "os.getenv"),
+
+    # ---- `builtin_function_or_method`: a C function ----------------------
+    ("os-getcwd-is-a-c-function", "import os", "os.getcwd"),
+    ("os-listdir-is-a-c-function", "import os", "os.listdir"),
+    # DISPUTED: 3.12 replaced `posixpath.normpath` with `posix._path_normpath`;
+    # 3.9-3.11 answer `function`.
+    ("os-path-normpath-went-into-c-in-3-12", "import os.path", "os.path.normpath"),
+    ("sys-exit-is-a-c-function", "import sys", "sys.exit"),
+    ("hashlib-md5-is-a-c-constructor", "import hashlib", "hashlib.md5"),
+    ("csv-reader-is-a-c-function", "import csv", "csv.reader"),
+    ("random-random-comes-off-the-c-random", "import random", "random.random"),
+    ("random-getrandbits-comes-off-the-c-random", "import random", "random.getrandbits"),
+    ("list-append-off-an-instance", "x = [1]", "x.append"),
+    ("dict-get-off-an-instance", "d = {'a': 1}", "d.get"),
+    ("str-upper-off-an-instance", "s = ''.join(['a'])", "s.upper"),
+    ("file-write-off-an-instance", "f = open('f.txt', 'w')", "f.write"),
+    ("sys-stdout-write-off-the-stream", "import sys", "sys.stdout.write"),
+    ("sys-stdin-read-off-the-stream", "import sys", "sys.stdin.read"),
+    ("hash-update-off-a-hash-object", "import hashlib\nh = hashlib.md5()", "h.update"),
+    ("match-group-off-a-match", "import re\nm = re.match('a', 'a')", "m.group"),
+    ("pattern-findall-is-meth-varargs", "import re\np = re.compile('a')", "p.findall"),
+    ("pattern-split-is-meth-varargs", "import re\np = re.compile('a')", "p.split"),
+
+    # ---- `method`: a `def` on a class, through an instance or a classmethod
+    ("path-cwd-is-a-classmethod", "from pathlib import Path", "Path.cwd"),
+    ("path-exists-off-an-instance", "from pathlib import Path\np = Path('a')", "p.exists"),
+    ("path-read-text-off-an-instance", "from pathlib import Path\np = Path('a')", "p.read_text"),
+    ("random-seed-is-a-hidden-instances-method", "import random", "random.seed"),
+    ("random-choice-is-a-hidden-instances-method", "import random", "random.choice"),
+    ("random-randint-is-a-hidden-instances-method", "import random", "random.randint"),
+
+    # ---- `method_descriptor`: the same C function off the TYPE ------------
+    ("str-upper-off-the-type", "", "str.upper"),
+    ("list-append-off-the-type", "", "list.append"),
+    ("dict-get-off-the-type", "", "dict.get"),
+    ("set-add-off-the-type", "", "set.add"),
+    ("bytes-decode-off-the-type", "", "bytes.decode"),
+
+    # ---- `builtin_method`: vectorcall, a type CPython 3.11 added ----------
+    # DISPUTED: 3.9 and 3.10 answer `builtin_function_or_method` for all six.
+    ("pattern-match-is-vectorcall", "import re\np = re.compile('a')", "p.match"),
+    ("pattern-search-is-vectorcall", "import re\np = re.compile('a')", "p.search"),
+    ("pattern-sub-is-vectorcall", "import re\np = re.compile('a')", "p.sub"),
+
+    # ---- `type`: not a function at all ------------------------------------
+    ("csv-dictreader-is-a-class", "import csv", "csv.DictReader"),
+]
+
+#: The messages the name reaches. Every one of these is a `TypeError` CPython
+#: raises and the program catches, so the type name is on **stdout at exit 0**.
+#: `len()` alone is the cheap sweep; the rest reach the same name from a
+#: different call site in the crate (`ops`, `iter`, `methods`, `json`), which is
+#: what "check every message that interpolates it" means. The second field is an
+#: import the message itself needs, never the row's.
+TYPE_MESSAGES = [
+    ("len", "len(F)", ""),
+    ("add", "F + 1", ""),
+    ("subscript", "F[0]", ""),
+    ("iterate", "list(F)", ""),
+    ("unary-minus", "-F", ""),
+    ("compare", "F < 1", ""),
+    ("join", "','.join([F])", ""),
+    ("json-serialise", "json.dumps(F)", "import json"),
+]
+
+
+def _typed_program(setup: str, expr: str, message: str, need: str) -> str:
+    head = "".join(line + "\n" for line in (need, setup) if line)
+    return head + "try:\n    %s\nexcept TypeError as e:\n    print(e)\n" % message.replace("F", expr)
+
+
+@pytest.mark.parametrize("engine,binary", BINARIES, ids=IDS)
+@pytest.mark.parametrize("row", TYPED, ids=[i for i, _, _ in TYPED])
+def test_the_type_of_a_bound_method_agrees_with_cpython(engine, binary, row):
+    """`len(json.dumps)` says `function`, not `builtin_function_or_method`."""
+    if binary is None:
+        pytest.skip("%s is not built (`lypning build --rust`)" % engine)
+    _, setup, expr = row
+    answered = 0
+    for msg_id, message, need in TYPE_MESSAGES:
+        program = _typed_program(setup, expr, message, need)
+        got = _run([str(binary)], program)
+        if got.returncode == engines.UNSUPPORTED_EXIT:
+            # Allowed and never a bug (invariant 1), but it must be CLEAN.
+            problem = _refusal_problem(got, engine)
+            assert problem is None, "%s\n  program: %r" % (problem, program)
+            continue
+        ref = _run([sys.executable], program)
+        if ref.returncode != 0 or not ref.stdout:
+            continue  # CPython raised nothing here; there is no name to compare
+        answered += 1
+        assert (got.stdout, got.returncode) == (ref.stdout, ref.returncode), (
+            "%s/%s disagrees with CPython.\n  program:  %r\n  %s: %r exit %d %s\n"
+            "  cpython:   %r exit %d"
+            % (engine, msg_id, program, engine, got.stdout, got.returncode,
+               got.stderr.strip()[-200:], ref.stdout, ref.returncode))
+    if answered == 0:
+        pytest.skip("%s refuses every message shape for %s" % (engine, expr))

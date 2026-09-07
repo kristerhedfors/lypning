@@ -537,7 +537,11 @@ pub fn type_name(v: &Value) -> &'static str {
         Value::Range(..) => "range",
         Value::File(_) => "TextIOWrapper",
         Value::Module(_) => "module",
-        Value::Builtin(_) | Value::Bound(..) => "builtin_function_or_method",
+        Value::Builtin(_) => "builtin_function_or_method",
+        // NOT one name — see [`bound_type`]. `json.dumps` is a `function` and
+        // `os.getcwd` a `builtin_function_or_method`, and this string reaches
+        // stdout at exit 0 through every message that names an operand's type.
+        Value::Bound(recv, name) => bound_type(recv, name),
         Value::Func(_) => "function",
         Value::Gen(_) => "generator",
         Value::IterObj(_, k) => k,
@@ -1032,13 +1036,111 @@ fn num_eq(a: Num, b: Num) -> bool {
 // ---- bound methods --------------------------------------------------------
 //
 // `json.dumps` and `x.append` are one value here, `Value::Bound(receiver,
-// name)`, and CPython has two types behind them — `builtin_function_or_method`
-// and `method` — that agree on every question this file asks. Equality is the
-// FUNCTION and the receiver's IDENTITY (`meth_richcompare` compares `m_self` by
-// pointer, `method_richcompare` compares `__self__` by `is`); the hash is built
-// from the same pair; and `is` is False between two accesses unless the
-// attribute is one that is stored rather than built. Every fact below was
-// measured on CPython 3.14.5 on 2026-09-06 rather than read from the manual.
+// name)`, and CPython has SIX types behind them. They agree on every question
+// this section asks — equality is the FUNCTION and the receiver's IDENTITY
+// (`meth_richcompare` compares `m_self` by pointer, `method_richcompare`
+// compares `__self__` by `is`); the hash is built from the same pair; and `is`
+// is False between two accesses unless the attribute is one that is stored
+// rather than built — and they disagree about the one question `type_name`
+// asks, which is [`bound_type`]. Every fact in this section was measured by
+// running CPython rather than read from the manual: the identity and equality
+// rules on 3.14.5 on 2026-09-06, the type names on 3.9.6, 3.11.15, 3.12.13,
+// 3.13.13 and 3.14.5 on 2026-09-07.
+
+/// The name of the CPython type of `<recv>.<name>`.
+///
+/// One `Value::Bound` covers six CPython types, and the difference is not
+/// message decoration: `object of type 'function' has no len()` reaches stdout
+/// at exit 0 through the ordinary `try: … except TypeError as e: print(e)`
+/// idiom, and so does every other message that names an operand's type — the
+/// binary operators, `not iterable`, `not subscriptable`, `not callable`,
+/// `str.join`, `json.dumps`. Answering one name for all six was fifteen silent
+/// wrong answers per receiver.
+///
+/// What decides it is the receiver and the name together, because what decides
+/// it in CPython is how that one function is *implemented*:
+///
+///   * a function defined in a `.py` module is a `function` — `json.dumps`,
+///     `re.search`, `os.path.join`;
+///   * a `def` on a class, reached through an instance or through a
+///     classmethod, is a `method` — `p.exists`, `Path.cwd`, `random.choice`
+///     (the module function is a bound method of one hidden `Random`);
+///   * a C function is a `builtin_function_or_method` — `os.getcwd`,
+///     `x.append`, `hashlib.md5`;
+///   * the same C function read off the TYPE rather than an instance is a
+///     `method_descriptor` — `str.upper`, which `map(str.upper, xs)` uses;
+///   * a C method using the vectorcall protocol is a `builtin_method`, a type
+///     CPython 3.11 added — `re.compile('a').match`;
+///   * and a class is a `type` — `csv.DictReader`, which is a class and not a
+///     function at all.
+///
+/// **Two cells are disputed and are answered for the reference interpreter**
+/// (`README.md`: `cpython` is 3.14.5), with the split written down rather than
+/// discovered later. `os.path.normpath` became `posix._path_normpath` in 3.12
+/// and is a `function` on 3.9–3.11; the six vectorcall `re.Pattern` methods are
+/// `builtin_function_or_method` on 3.9 and 3.10, before `builtin_method`
+/// existed. Refusing instead would have to refuse at attribute access, which is
+/// the only choke point cheaper than making `type_name` fallible at its 94 call
+/// sites — and that would refuse `map(p.match, lines)` and `f =
+/// os.path.normpath`, which run here today, to buy exactness in a case that
+/// needs the bound method to be an operand of a TypeError.
+fn bound_type(recv: &Value, name: &str) -> &'static str {
+    match recv {
+        Value::Module(m) => match (*m, name) {
+            // Pure Python, every name: `json`, and the three below it.
+            ("json", _) => "function",
+            #[cfg(feature = "cap-re")]
+            ("re", _) => "function",
+            #[cfg(feature = "cap-glob")]
+            ("glob", _) => "function",
+            #[cfg(feature = "cap-base64")]
+            ("base64", _) => "function",
+            // `os` is `posix` re-exported, so its names are C — except the two
+            // served here that `os.py` defines itself.
+            ("os", "makedirs" | "getenv") => "function",
+            // `posixpath` is Python, and `normpath` is the one name 3.12 took
+            // into C (disputed; see above).
+            ("os.path", "normpath") => "builtin_function_or_method",
+            ("os.path", _) => "function",
+            // `random`'s module functions are the bound methods of one hidden
+            // `random.Random`. The two served here that are NOT are the two
+            // that come straight off the C `_random.Random`: `random()` and
+            // `getrandbits()`.
+            ("random", "seed" | "randint" | "randrange" | "choice") => "method",
+            // The receiver `ops::get_attr` gives `Path.cwd`, a classmethod —
+            // and a classmethod read off the class is a bound method of it.
+            #[cfg(feature = "cap-pathlib")]
+            ("pathlib", _) => "method",
+            // `csv.DictReader` is a CLASS. `csv.reader` beside it is a C
+            // function, and falls through with `sys.exit`, `sys.stdout.write`
+            // and `hashlib.md5`.
+            #[cfg(feature = "cap-csv")]
+            ("csv", "DictReader") => "type",
+            _ => "builtin_function_or_method",
+        },
+        // The UNBOUND method off a type object — `str.upper`, which
+        // `ops::get_attr` builds for the seven probed builtin types. Every name
+        // in `methods`' tables is an ordinary method there, so none of them is
+        // the `builtin_function_or_method` a classmethod would be
+        // (`int.from_bytes` and `dict.fromkeys` are, and both refuse before
+        // they can become a value here).
+        Value::Builtin(_) => "method_descriptor",
+        // `pathlib` is pure Python, so a method off a Path INSTANCE is a
+        // `method` exactly as `Path.cwd` off the class is.
+        #[cfg(feature = "cap-pathlib")]
+        Value::Path(..) => "method",
+        // `_sre.SRE_Pattern`'s six vectorcall methods (disputed; see above).
+        // `findall` and `split` are METH_VARARGS and stay the ordinary name.
+        #[cfg(feature = "cap-re")]
+        Value::Pattern(_) => match name {
+            "findall" | "split" => "builtin_function_or_method",
+            _ => "builtin_method",
+        },
+        // A method off an INSTANCE of a C type: a list, a str, a dict, a file,
+        // a `_hashlib.HASH`, a `re.Match`.
+        _ => "builtin_function_or_method",
+    }
+}
 
 /// Does CPython hand back the SAME object every time `<recv>.<name>` is read?
 ///
