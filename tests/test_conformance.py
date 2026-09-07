@@ -119,14 +119,60 @@ def test_a_silent_engine_where_cpython_reported_an_error():
 def test_a_cpython_warning_is_not_an_error_the_engine_had_to_reproduce():
     # Python 3.14 warns on `return` inside `finally` (PEP 765) and carries on.
     # stdout and exit code agree, so an engine that says nothing is right, not
-    # silent about a failure.
-    ref = _res(stderr="/tmp/p.py:109: SyntaxWarning: 'return' in a 'finally' block\n"
-                      "  return \"b\"\n", engine=eng.CPYTHON)
+    # silent about a failure. `<string>` is the file every arm of this battery
+    # compiles, because they are all run with `-c`, and the shape has no source
+    # echo under it.
+    ref = _res(stderr="<string>:109: SyntaxWarning: 'return' in a 'finally' block\n",
+               engine=eng.CPYTHON)
     assert _classify(_res(), ref=ref).verdict == MATCH
-    # The -c shape has no source echo under it.
     ref = _res(stderr="<string>:1: SyntaxWarning: \"\\d\" is an invalid escape sequence.\n",
                engine=eng.CPYTHON)
     assert _classify(_res(), ref=ref).verdict == MATCH
+
+
+#: Lines a program can write to stderr that the strip must NOT reach. Added
+#: 2026-09-07: the pattern was `^[^\n:]+:\d+: \w+Warning: .*\n(?:  .*\n)?`, which
+#: matched any filename and any word ending in `Warning`, and it was applied to
+#: BOTH arms — so a program printing any of these had the line deleted from
+#: CPython's stderr and from the engine's, and no disagreement inside it could
+#: be seen. Each is paired with what the engine wrote instead.
+NOT_CPYTHONS_WARNINGS = [
+    # A linter-shaped one-liner. The filename is the program's, not the
+    # compiler's, and this is the shape an agent actually types.
+    ("a-real-filename", "src/x.py:12: DeprecationWarning: old\n",
+     "src/x.py:12: DeprecationWarning: new\n"),
+    # A category the program defined itself: `\w+Warning` matched it too.
+    ("a-home-made-category", "<string>:1: BogusWarning: a\n",
+     "<string>:1: BogusWarning: b\n"),
+    # The trailing `(?:  .*\n)?` swallowed one further indented line, so the
+    # line AFTER a warning-shaped one was uncompared as well.
+    ("the-line-under-it", "<string>:1: UserWarning: w\n  detail A\n",
+     "<string>:1: UserWarning: w\n  detail B\n"),
+]
+
+
+@pytest.mark.parametrize("case_id,theirs,ours", NOT_CPYTHONS_WARNINGS,
+                         ids=[c[0] for c in NOT_CPYTHONS_WARNINGS])
+def test_a_warning_shaped_line_a_program_wrote_is_still_compared(case_id, theirs, ours):
+    ref = _res(stderr=theirs, engine=eng.CPYTHON)
+    v = _classify(_res(stderr=ours), ref=ref)
+    assert v.verdict == MISMATCH, "the engine wrote something else and it went unseen"
+    assert v.kind == "stderr-text"
+    # ...and the same text on both arms is still agreement, so the comparison
+    # is of the line and not merely of its presence.
+    assert _classify(_res(stderr=theirs), ref=ref).verdict == MATCH
+
+
+def test_cpythons_own_warning_is_stripped_from_both_arms():
+    # It has to be symmetric: the mixture arm's warnings ARE CPython's, relayed
+    # by the fallback, so stripping the reference alone would score every one of
+    # those a MISMATCH.
+    w = "<string>:1: DeprecationWarning: 'count' is passed as positional argument\n"
+    assert conformance._without_warnings(w) == ""
+    ref = _res(stderr=w, engine=eng.CPYTHON)
+    assert _classify(_res(stderr=w, engine=conformance.MIXTURE), ref=ref,
+                     engine=conformance.MIXTURE).verdict == MATCH
+    assert _classify(_res(stderr=""), ref=ref).verdict == MATCH
 
 
 def test_a_warning_does_not_hide_the_error_beside_it():
