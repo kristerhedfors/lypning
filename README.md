@@ -314,15 +314,18 @@ opt-in by `--engine`. Each answer is one of three:
 
 | verdict | meaning | failure? |
 |---|---|---|
-| **MATCH** | stdout and exit code identical to CPython | no |
+| **MATCH** | stdout, exit code and the exception (if either arm raised) identical to CPython | no |
 | **UNSUPPORTED** | exit `90` with `<engine>: unsupported: <kind>: <detail>` on stderr | **no** — this is coverage, and it is the build order |
 | **MISMATCH** | anything else | **yes, always** |
 
 MISMATCH is the gate and UNSUPPORTED is a coverage number; never clear a
 MISMATCH by widening a capability table (`CLAUDE.md` invariant 1). Programs
 whose output cannot be equal on two interpreters — timestamps, pids, set order
-— run with stdout uncompared and are graded on exit code alone
-(`conformance.is_nondeterministic`); reference and engine share one deadline, so
+— run with stdout uncompared (`conformance.is_nondeterministic`, decided on the
+program's AST so a name inside a string or a comment does not buy the waiver).
+The report says what each arm's MATCHes rested on — `stdout`, `stderr`, `exit
+only`, `both failed` — because a verdict that compared nothing is not equal in
+standing to one that compared output; reference and engine share one deadline, so
 a reference timeout leaves the measurement and an engine-only timeout is a
 MISMATCH. The same run grades the routes — IDEAL, WASTED, LATE, UNSAFE
 (`routing.py`); UNSAFE must be 0, and `accuracy` is a census, not a cost model:

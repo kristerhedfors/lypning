@@ -137,9 +137,23 @@ MISMATCH by widening a capability table. **CODE HOME.**
 `conformance.DEFAULT_ARMS` (`engines.SPECTRUM` plus `mixture`);
 `conformance.OPT_IN_ARMS` (`lypning-mp`, `library`, `mixture-rust`: measured
 only when named); `conformance.classify`; `conformance.is_nondeterministic`,
-`_RUN_SPECIFIC`, `_IMPLEMENTATION_DEFINED`, `draws_from_random`,
-`only_set_order_differs`, `is_seeded_stream` (a seeded `random` stream is
-compared on every arm but the oracle); `conformance.DEFAULT_TIMEOUT`;
+`_RUN_SPECIFIC`, `_RUN_SPECIFIC_LITERAL` (the one class matched against the
+program text, because what it is about IS a quoted path),
+`_IMPLEMENTATION_DEFINED`, `draws_from_random`, `only_set_order_differs`,
+`is_seeded_stream` (a seeded `random` stream is compared on every arm but the
+oracle); `conformance.code_view` and `waiver_basis` (the waiver tables are
+matched against the program's AST with every literal blanked, not against its
+text — a name inside a string or a comment is not a call; a program that does
+not parse falls back to the text and is counted); `stats_an_ambient_file` (the
+size of a file the program itself wrote is not run-specific);
+`conformance.stderr_shape` (the exception type and the program's own stderr,
+with the traceback body and message wording discarded);
+`conformance.seed_files` and `_run_entry`'s two-phase reference run (the empty
+sandbox breaks the reference exactly as it breaks the engine, and two identical
+`FileNotFoundError`s were read as agreement; a seed is applied only where the
+unseeded reference died of a missing file); `Verdict.compared` and
+`EngineReport.match_stdout` / `match_stderr` / `match_exit_only` /
+`match_both_failed`; `conformance.DEFAULT_TIMEOUT`;
 `conformance.plan`, `plan_cost` (ranked by `->cpy`); `cli.cmd_conformance`
 (exit 1 unless the report and the routing grade are both ok).
 `engines.Result.stdout_bytes` is **what is compared** and `engines.exact_text`
@@ -159,19 +173,30 @@ engine could be caught disagreeing (issue #50). The verdicts are `README.md`
 | `stdout` | stdout differs **as bytes**, line endings included | the first differing line, from text decoded but not newline-normalised; not compared when the entry is tagged `nondeterministic`, matches `_RUN_SPECIFIC` or `_IMPLEMENTATION_DEFINED`, draws from `random` unseeded, or differs only in set order — the verdict then reads `MATCH` with `stdout uncompared` |
 | `exit` | the exit code differs | `exit N, CPython gave M` |
 | `stderr` | CPython reported an error and the engine was silent | CPython's warning blocks are stripped first (`conformance._without_warnings`) |
+| `stderr-exc` | the two arms disagree about which exception ended the run, or about whether one did | the type only, spelled by its last dotted component; frames, preamble and message wording are normalised away (`conformance.stderr_shape`) |
+| `stderr-text` | the non-traceback part of stderr differs | that part is the program's own writing, so it is compared like stdout — and waived like it |
+
+`contract` also covers exit 90 whose refusal line is not at the **head** of
+stderr, or has bytes after it: invariant 2 is one line and nothing else. A
+reference that itself exited 90 with a refusal-shaped line means the *program*
+wrote it — CPython is not a tier and cannot refuse — so the entry is compared
+like any other rather than counted as coverage.
 ```bash
 # CHECK — `c3-conformance.sh`.
 lypning conformance --mixture both; echo $?
 lypning conformance --plan > plan.txt; echo $?; head -3 plan.txt
 lypning conformance --engine lypning-mp --limit 5 | grep '^note'; echo $?
-# EXPECTED — lypning conformance · 2026-09-04 · 437056c · 3688 loaded
+# EXPECTED — lypning conformance · 2026-09-07 · 3688 loaded, 2504 graded
 engine       MATCH  UNSUPPORTED  MISMATCH   coverage
-lypning      1573          931         0     62.8%
-lypning-l    1741          763         0     69.5%
+lypning      1547          956         1     61.8%
+lypning-l    1984          519         1     79.2%
 mixture      2504            0         0    100.0%
+what the MATCHes compared — an agreement about nothing is still an agreement, but not the same one:
+engine       MATCH  stdout  stderr  exit only  both failed
 # … | vdiff c3-conformance
 # differs: every count (the corpus grows and capabilities land), the reference path, <s>
-# must not: `MISMATCH 0 — ok`, `UNSAFE 0`, `monotone violations 0 over N`, `dispatchers agree N/N` (N = N), `ranked by ->cpy` when the mixture arm ran, exit 0
+# must not: `UNSAFE 0`, `monotone violations 0 over N`, `dispatchers agree N/N` (N = N), `ranked by ->cpy` when the mixture arm ran, the `what the MATCHes compared` table
+# MISMATCH is 1 per Rust arm as of 2026-09-07 (py-771e5de335fc, `stderr-exc`) — the first run in which stderr was compared at all. Invariant 1 still says it must be 0; it is not, and the entry is an engine defect awaiting a fix, not an instrument one.
 # --plan prints the build order instead of the table, so a MISMATCH in that run shows only as exit 1: re-run without it to see which entry
 ```
 

@@ -29,16 +29,26 @@ same run. No timing from the run of record is quoted (the host was shared);
 `docs/BENCH-LEDGER.md` carries the dated ones.
 
 ```
-lypning conformance · 2026-09-04 · 437056c · 3688 loaded
+lypning conformance · 2026-09-07 · 3688 loaded, 2504 graded
 engine       MATCH  UNSUPPORTED  MISMATCH   coverage
-lypning      1573          931         0     62.8%
-lypning-l    1741          763         0     69.5%
+lypning      1547          956         1     61.8%
+lypning-l    1984          519         1     79.2%
 mixture      2504            0         0    100.0%
-lypning status · same run · on Darwin arm64:  lypning 818,080 B, 7 blocks;  lypning-l 867,744 B, 7 blocks;  lypning-mp not built
+what the MATCHes compared:
+lypning      1547     487     899        172          900
+lypning-l    1984     645    1168        194         1169
+                    stdout  stderr  exit only  both failed
+lypning status · same run · on Darwin arm64:  lypning 868,000 B, 7 blocks;  lypning-l 1,033,680 B, 8 blocks;  lypning-mp not built
 ```
 
-The counts grow with the corpus and move with every capability; `MISMATCH 0`
-does not. The bytes are host builds, not the musl bytes CI gates. Run a battery
+The counts grow with the corpus and move with every capability. `MISMATCH 0` is
+supposed not to move, and on 2026-09-07 it did: the run above is the first in
+which stderr was compared at all, and one entry (`py-771e5de335fc`) had been
+scored MATCH with CPython raising `IndentationError` and the engine raising
+`SyntaxError`. That is an engine defect the instrument could not see, not a
+softened gate — see `docs/VERIFICATION.md` §C3. The second table is why the
+first cannot be read alone: 172 of `lypning`'s MATCHes compared nothing but an
+exit code. The bytes are host builds, not the musl bytes CI gates. Run a battery
 only in a worktree with its own `LYPNING_HOME` (`docs/VERIFICATION.md` §C8).
 
 ## 2. Conformance
@@ -48,7 +58,7 @@ engine's result is one of three things (`conformance.classify`):
 
 | verdict | meaning | is it a failure? |
 |---|---|---|
-| MATCH | stdout + exit code identical to CPython | no |
+| MATCH | stdout + exit code + the exception, if either arm raised, identical to CPython | no |
 | UNSUPPORTED | exit **90** with `<engine>: unsupported: <kind>: <detail>` | **no** — this is coverage, and the build order |
 | MISMATCH | anything else | **yes, always** |
 
@@ -56,9 +66,14 @@ engine's result is one of three things (`conformance.classify`):
 at all**, because the agent that typed the one-liner will not notice. That is
 why MISMATCH is the gate and UNSUPPORTED is not.
 
-A MISMATCH carries a sub-kind: `stdout`, `exit`, `stderr`, `timeout` (one
-deadline on both sides; only the engine hit it), `unbuilt`, and `contract` —
-exit 90 after bytes reached stdout, or exit 90 without the line.
+A MISMATCH carries a sub-kind: `stdout`, `exit`, `stderr` (CPython reported an
+error, the engine was silent), `stderr-exc` (the two arms disagree about which
+exception ended the run), `stderr-text` (the non-traceback part of stderr, which
+is the program's own writing, differs), `timeout` (one deadline on both sides;
+only the engine hit it), `unbuilt`, and `contract` — exit 90 after bytes reached
+stdout or stderr, or exit 90 without the line at the head of stderr. Traceback
+frames and message wording are never compared: they drift between CPython
+versions, and the exception type is the part that is API.
 `conformance.DEFAULT_ARMS` is `engines.SPECTRUM` plus `mixture`, the Python
 dispatcher end to end; `lypning-mp`, `library` and `mixture-rust` are
 `conformance.OPT_IN_ARMS`, and an unbuilt arm is a `note:` line, never a
