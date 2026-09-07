@@ -135,7 +135,7 @@ pub fn method_name(k: Kind, name: &str) -> Option<&'static str> {
         Kind::Counter => COUNTER_METHODS,
         Kind::Default(_) => DEFAULT_METHODS,
     };
-    t.binary_search(&name).ok().map(|i| t[i])
+    crate::methods::find_sorted(t, name)
 }
 
 fn empty(k: Kind) -> Dict {

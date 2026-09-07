@@ -14,6 +14,7 @@ use crate::io as mio;
 use crate::ops;
 use crate::value::*;
 use std::cell::RefCell;
+use std::cmp::Ordering;
 use std::rc::Rc;
 
 const STR_METHODS: &[&str] = &[
@@ -263,7 +264,7 @@ pub fn missing_method(recv: &Value, name: &str) -> bool {
         Value::Int(_) | Value::Bool(_) => INT_MISSING,
         _ => return false,
     };
-    table.contains(&name)
+    table.iter().any(|m| name_eq(m, name))
 }
 
 /// Is `name` a method of `recv`? Returns the interned name so the caller can
@@ -289,14 +290,49 @@ pub fn method_name(recv: &Value, name: &str) -> Option<&'static str> {
         Value::File(_) => FILE_METHODS,
         _ => return None,
     };
-    // Binary search, not a scan: `.foo()` appears in most corpus programs and
-    // STR_METHODS alone is 37 entries, so a linear miss cost dozens of string
-    // compares on the hottest attribute path there is. Every table above is
-    // written in sorted order and `tests/test_method_tables.py` holds them to
-    // it — an unsorted table would make binary search MISS a method that exists,
-    // which is an AttributeError where CPython answers, and invariant 1 says
-    // that is the failure that matters.
-    table.binary_search(&name).ok().map(|i| table[i])
+    find_sorted(table, name)
+}
+
+/// Look `name` up in a sorted method table, returning the table's own
+/// `&'static str` so the caller can name the method without allocating.
+///
+/// Binary search, not a scan: `.foo()` appears in most corpus programs and
+/// `STR_METHODS` alone is 37 entries, so a linear miss cost dozens of string
+/// compares on the hottest attribute path there is. Every table here is written
+/// in sorted order and `tests/test_method_tables.py` holds them to it — an
+/// unsorted table would make binary search MISS a method that exists, which is
+/// an AttributeError where CPython answers, and invariant 1 says that is the
+/// failure that matters.
+///
+/// **Two separate things have to hold for this search to stop calling
+/// `memcmp`, and each was found by its own measurement.**
+///
+/// 1. The comparison is [`name_cmp`], a byte loop, not `<&str as Ord>::cmp`,
+///    which bottoms out in `memcmp` — on this target a branch through a dyld
+///    stub into `libsystem_platform.dylib`, for a name of three to eleven
+///    bytes. See `value::name_cmp` for the profile: 22.4% of self time on a
+///    loop of three string methods, 20% on a loop of one.
+/// 2. The search is SPELLED OUT rather than `slice::binary_search_by`, which
+///    takes a closure that `opt-level = "s"` is under no obligation to inline.
+///    An out-of-line comparator is a call per probe — exactly the call point 1
+///    exists to remove, reintroduced where nothing would fail loudly.
+///
+/// Point 1 alone measured a win, because this build did inline the closure. It
+/// is not obliged to, and there is no gate that would notice when it stops; the
+/// spelled-out loop is what makes point 1 hold on purpose rather than by luck.
+/// Same probe sequence as `binary_search`, same answer.
+#[inline]
+pub fn find_sorted(table: &[&'static str], name: &str) -> Option<&'static str> {
+    let (mut lo, mut hi) = (0usize, table.len());
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        match name_cmp(table[mid], name) {
+            Ordering::Less => lo = mid + 1,
+            Ordering::Greater => hi = mid,
+            Ordering::Equal => return Some(table[mid]),
+        }
+    }
+    None
 }
 
 fn kwget(kw: &[(Rc<str>, Value)], name: &str) -> Option<Value> {

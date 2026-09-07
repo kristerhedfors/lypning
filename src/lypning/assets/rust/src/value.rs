@@ -691,6 +691,74 @@ fn ascii1(b: u8) -> Rc<str> {
     })
 }
 
+/// Compare a name against a static table entry **without calling `memcmp`**.
+///
+/// This is not a micro-optimisation of a scan; it is the largest single cost in
+/// the interpreter's method-call path, and it was invisible until it was
+/// profiled. `sample(1)` on `t.strip().lower().replace('o','0')` in a loop,
+/// macOS arm64, 2026-09-07, 716 samples:
+///
+/// ```text
+///   _platform_memcmp + its dyld stub          22.4% of self time
+///     called from slice::binary_search        12.0%   (methods::method_name)
+///     called from builtins::builtin            5.2%   (every builtin NAME read)
+///   slice::binary_search itself                 5.2%
+///   builtins::builtin itself                    3.6%
+///   __rust_alloc + __rust_dealloc + RawVec      9.5%
+/// ```
+///
+/// So resolving `strip`, `lower`, `replace` and `len` **by string content, on
+/// every call** was about a quarter of the run — nearly three times what the
+/// allocator costs. That inverts the standing answer in `docs/HILLCLIMB.md`
+/// §2b, which was measured on musl's mallocng before `alloc.rs` existed: with a
+/// free-list allocator underneath, an `Rc<str>` is nearly free (`'x'.strip()`
+/// that trims and one that does not now cost the same to within the noise) and
+/// the name tables are what is left.
+///
+/// The cost is not the comparison, it is the CALL: `<&str as Ord>::cmp` and
+/// `<str as PartialEq>::eq` both bottom out in `memcmp`, which on this target is
+/// reached through a dyld stub — a dynamic call, for names of three to eleven
+/// bytes, five or six times per binary search. A byte loop that stops at the
+/// first mismatch is a handful of instructions and no call at all.
+///
+/// **Byte-lexicographic, exactly like `str::cmp`.** Not a cheaper ordering: the
+/// tables stay sorted the way `tests/test_method_tables.py` holds them, and
+/// binary search over them keeps finding what it found before. A different
+/// order here would make the search MISS a method that exists, which is an
+/// `AttributeError` where CPython answers — invariant 1's failure, not a
+/// slowdown.
+#[inline]
+pub fn name_cmp(probe: &str, target: &str) -> std::cmp::Ordering {
+    let (x, y) = (probe.as_bytes(), target.as_bytes());
+    let n = if x.len() < y.len() { x.len() } else { y.len() };
+    let mut i = 0;
+    while i < n {
+        if x[i] != y[i] {
+            return x[i].cmp(&y[i]);
+        }
+        i += 1;
+    }
+    x.len().cmp(&y.len())
+}
+
+/// `==` for the same tables, and the same reason. The length test first is what
+/// `str`'s own `eq` does; what it does not do is stop before the call.
+#[inline]
+pub fn name_eq(a: &str, b: &str) -> bool {
+    let (x, y) = (a.as_bytes(), b.as_bytes());
+    if x.len() != y.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < x.len() {
+        if x[i] != y[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 /// Structural equality with Python's numeric-tower rules (`1 == 1.0 == True`).
 /// CPython compares container elements with `x is y or x == y` — IDENTITY
 /// first — and that shortcut is observable for exactly one value: a NaN, which
