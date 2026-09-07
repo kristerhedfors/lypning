@@ -463,6 +463,85 @@ def library_ready() -> tuple[bool, str]:
         return False, str(e)
 
 
+# --- the environment a child runs in -----------------------------------------
+
+#: Where a relative path in the environment is resolved FROM, captured at import
+#: instead of read per call. The library arm chdirs into its sandbox under a lock
+#: while the spawned arms run on other threads, so ``os.getcwd()`` at spawn time
+#: would resolve one arm's ``PYTHONPATH`` against another arm's sandbox, at
+#: random. This is the directory lypning was launched in, which is the directory
+#: the caller spelled the variable in.
+LAUNCH_CWD = os.getcwd()
+
+#: Environment variables holding a path, or an ``os.pathsep``-joined list of
+#: them. Each is made absolute before any child sees it, because every arm runs
+#: in a temp cwd of its own (CLAUDE.md invariant 4) and a relative value names a
+#: DIFFERENT directory in each of them — the CPython reference included, which is
+#: the half that made this silent. Under the documented ``PYTHONPATH=src``,
+#: ``from lypning import routing`` failed to import in the reference exactly as
+#: it failed in the engine, and two identical failures are what
+#: :func:`lypning.conformance.classify` reads as agreement: a battery whose
+#: MISMATCH count depended on how the caller spelled one variable (issue #57).
+PATH_LIKE_ENV = (
+    # The interpreter's own. ``PATH`` because a relative entry in it decides
+    # WHICH python3 a fall-through finds, and ``TMPDIR`` because it decides
+    # where a program's temp files land.
+    "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE",
+    "PYTHONPYCACHEPREFIX", "PATH", "TMPDIR",
+    # Ours: the state dir, the capture log, the C ABI, the pool socket, the
+    # transcript root — and the project directory, which is what aims the
+    # conformance restore net.
+    "LYPNING_HOME", "LYPNING_LOG", "LYPNING_LIB", "LYPNING_POOL",
+    "LYPNING_TRANSCRIPTS", "CLAUDE_PROJECT_DIR", "OPENHANDS_PROJECT_DIR",
+) + tuple(env_var_for(e) for e in ENGINE_ORDER + ORACLES)
+
+
+def absolute_env_value(value: str) -> str:
+    """One path-like value with every relative element resolved.
+
+    Split on ``os.pathsep`` because the ones that matter are lists
+    (``PYTHONPATH``, ``PATH``); a single path is a list of one and needs no
+    special case. An element that is already absolute comes back byte for byte —
+    no ``normpath`` — so nothing that already worked can change spelling. An
+    EMPTY element is POSIX for "the current directory", which is the one thing
+    that must not differ between arms, so it resolves too. ``~`` is left alone:
+    the interpreter does not expand it in ``PYTHONPATH`` either, and a harness
+    that quietly did would be answering a different question than the shell.
+    """
+    if not value:
+        return value
+    return os.pathsep.join(
+        part if os.path.isabs(part)
+        else os.path.join(LAUNCH_CWD, part) if part
+        else LAUNCH_CWD
+        for part in value.split(os.pathsep))
+
+
+def child_env(env: dict[str, str] | None = None) -> dict[str, str]:
+    """The environment every child of this package runs under. Built in ONE place.
+
+    This process's environment, then ``LYPNING_CAPTURE=0`` — a nested capture
+    would log a battery's own corpus back into the corpus — then the caller's
+    overrides, and only then the path-like variables made absolute. That order
+    matters: an override is resolved by the same rule the inherited value is, so
+    a caller cannot reintroduce the divergence by passing one in.
+
+    Every spawn in the package comes through here (:func:`run`, :func:`route`,
+    the pool client, the bench and perf timers), which is what makes "the
+    reference and the engine see the same environment" a property of the tree
+    rather than of each call site.
+    """
+    full = dict(os.environ)
+    full["LYPNING_CAPTURE"] = "0"
+    if env:
+        full.update(env)
+    for name in PATH_LIKE_ENV:
+        value = full.get(name)
+        if value:
+            full[name] = absolute_env_value(value)
+    return full
+
+
 def run_library(
     program: str = "",
     *,
@@ -499,8 +578,15 @@ def run_library(
         return Result(LIBRARY, "", 127, "", "lypning: %s\n" % e, 0)
 
     data = (stdin or "").encode("utf-8")
-    saved_env = {k: os.environ.get(k) for k in (env or {})}
     with _CHDIR_LOCK:
+        # Inside the lock, because `child_env` reads the environment this block
+        # is about to write to. The overrides a spawn would get, minus what this
+        # process already has set that way: `child_env` resolves the path-like
+        # variables, so this arm — which chdirs into the sandbox — reads
+        # `PYTHONPATH` the way the reference does and not the way the sandbox
+        # does (issue #57).
+        applied = {k: v for k, v in child_env(env).items() if os.environ.get(k) != v}
+        saved_env = {k: os.environ.get(k) for k in applied}
         previous = os.getcwd()
         try:
             if cwd:
@@ -512,8 +598,7 @@ def run_library(
             # than in the CPython reference it is being compared against, which
             # is a MISMATCH reported against the runtime for a difference the
             # battery itself created.
-            if env:
-                os.environ.update(env)
+            os.environ.update(applied)
             t0 = time.perf_counter_ns()
             try:
                 out = lib.run(program, args=list(argv_tail), stdin=data, step_limit=step_limit)
@@ -602,14 +687,10 @@ def _run_via_pool(program: str, socket_path: str, *, argv_tail: Sequence[str] = 
     divergence the harness invented (`conformance._env_for`).
     """
     from . import pool as _pool
-    child_env = dict(os.environ)
-    child_env["LYPNING_CAPTURE"] = "0"
-    if env:
-        child_env.update(env)
     t0 = time.perf_counter_ns()
     try:
         reply = _pool.Client(socket_path).run(program, cwd=cwd, argv_tail=argv_tail,
-                                              stdin=stdin, env=child_env)
+                                              stdin=stdin, env=child_env(env))
     except Exception:
         # A pool that is down, wedged or speaking nonsense must cost a caller
         # nothing but a cold spawn: this tier exists to be faster than CPython,
@@ -664,12 +745,7 @@ def run(
     cmd = _argv_for(engine, Path(b), program, script)
     cmd[1:1] = list(prefix)
     cmd.extend(argv_tail)
-    full_env = dict(os.environ)
-    # A nested capture would log the conformance run's own corpus back into the
-    # corpus. Disable it for every engine invocation we make ourselves.
-    full_env["LYPNING_CAPTURE"] = "0"
-    if env:
-        full_env.update(env)
+    full_env = child_env(env)
     t0 = time.perf_counter_ns()
     try:
         proc = subprocess.run(
@@ -796,7 +872,7 @@ def route(program: str, *, binary: Path | None = None, timeout: float | None = 3
             [str(b), "route", "--json", "-c", program],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             check=False, timeout=timeout,
-            env={**os.environ, "LYPNING_CAPTURE": "0", **(env or {})},
+            env=child_env(env),
         )
     except subprocess.TimeoutExpired:
         return Route(CPYTHON, "route-failed", "the classifier did not answer within %gs" % timeout)
@@ -1026,7 +1102,7 @@ def dispatch(
     session's own traffic pass ``ledger=False``, for the reason
     :func:`lypning.conformance._env_for` redirects the capture log. There is no
     ``ledger=`` on the Rust side to pass, so the switch that covers BOTH writers
-    is ``LYPNING_CAPTURE=0``, which :func:`run` sets in every child it spawns.
+    is ``LYPNING_CAPTURE=0``, which :func:`child_env` sets in every child.
     """
     r = routed if routed is not None else route(program, timeout=timeout, env=env)
     attempts: list[Result] = []
