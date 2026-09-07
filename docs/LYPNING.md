@@ -221,7 +221,17 @@ file is written twice, or half. So a lypning run is transactional
 - stdout and stderr accumulate in memory and are written once, at a successful
   exit;
 - file writes accumulate per path, and deletes and renames are staged;
-- exit 90 discards all of it, so the program is observably a no-op.
+- a directory is made for **real** and recorded in an undo log;
+- exit 90 undoes all of it, so the program is observably a no-op.
+
+**Two techniques, and the third line is why.** Content can be staged, so it is.
+A directory cannot — `os.mkdir` has no content to hold back — and modelling one
+instead would put a second directory tree behind `os.path.isdir`, `glob`'s
+`readdir` and every write into it, any one of which could disagree with the disk
+at exit 0. So `io::make_dir` creates it and remembers it, and `io::rewind`
+removes it newest-first if the run has to fall onward. That always works from
+inside one run: every file the program wrote is still staged, so the run's own
+directories are empty when the refusal arrives.
 
 `lypning-mp` has no barrier: it streams stdout, so a refusal after a `print`
 is graded `MISMATCH contract` — one reason it is an oracle and not a rung
@@ -232,15 +242,49 @@ read consults the staged writes first, so `open(p,'w').write(x)` followed by
 `open(p).read()` behaves exactly as in CPython. `os.path.exists`, `getsize`,
 `isfile`, `remove` and `rename` all see the overlay too.
 
-Two escape hatches in lypning's own barrier, both handled rather than assumed
+Four escape hatches in lypning's own barrier, all handled rather than assumed
 away:
 
 - **Size.** Past 8 MiB of buffered output the run commits early and *loses* its
   ability to fall back; a later refusal is then reported as a hard error rather
   than a routing signal. Nothing in the corpus comes close.
+- **`os.rmdir`** of a directory this run did not make. `create_dir` cannot give
+  back a mode, a timestamp or an owner, so that one commits — where `os.rmdir`
+  of the run's *own* directory is a no-op over the run and stays routable.
+- **A directory that will not come off.** Only something outside the process can
+  arrange it — the run's own directories are empty when the refusal arrives — but
+  when `io::rewind` cannot remove one it puts back whatever it had already taken,
+  keeps the staged output and writes, and commits. The refusal is then the
+  program's own exit 1 **with its output intact**: a barrier that cannot undo
+  must cost the program its routing and nothing else, which is exactly the
+  behaviour `os.mkdir` had before #51.
 - **stdin.** A consumed pipe cannot be rewound. If lypning already read stdin
   before refusing, the dispatcher forks instead of exec'ing and replays the
   captured bytes.
+
+Each of the first three names itself in the refusal line — `reached after
+{why}, so the run cannot be routed onward`, from `io::commit_reason` — because
+one bool cannot say which of three things happened, and a diagnostic that
+guesses sends the reader to the wrong mechanism.
+
+`open()` reads a path **whole** and `.read(n)` slices the snapshot, so a path
+with no end (`/dev/zero`, `/dev/random`) is refused before the read starts
+(`open-special`). A hang is the one outcome worse than a wrong answer: it has no
+exit code, so the dispatcher cannot even reach the next tier. `os.mkdir` and
+`os.makedirs` refuse `mode=` and every keyword CPython does not take, rather
+than accepting and dropping it (`mkdir`); `create_dir` hands the kernel `0o777`
+and the umask decides, which is CPython's default and nothing else.
+
+`os.mkdir` was a fourth until issue #51: it committed the run the moment it ran,
+so every later refusal — `builtin: eval`, `builtin: complex`, `bigint`, any of
+them — was `lypning: error: … cannot be routed onward` at exit 1, with the
+directory on disk and no answer, where CPython answers at exit 0. Three
+capability rounds each met it through a different refusal kind and each worked
+around it in the router; `bigint` is why that could not finish the job, because
+its refusals depend on a value and no static walk can hoist them. Pinned by
+`tests/test_commit_barrier.py::test_the_chain_makes_the_directory_exactly_once`
+— `os.mkdir` raises the second time, so exit 0 through the chain is itself the
+proof that the retry saw a clean directory.
 
 The threshold is `io.rs:COMMIT_THRESHOLD`. A refusal after bytes reached stdout
 is `MISMATCH contract` (§2; the oracle's `commit-barrier` family), pinned by

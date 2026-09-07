@@ -93,6 +93,7 @@ lypning-l: unsupported: module: import subprocess
 # PINNED BY
 tests/test_engines.py::test_live_engine_emits_the_refusal_contract  tests/test_cli.py::test_run_passes_a_program_s_own_exit_code_through  tests/test_commit_barrier.py::test_rust_core_refuses_with_stdout_untouched
 tests/test_conformance.py::test_exit_90_without_the_contract_line_is_a_mismatch  tests/test_verification.py::test_every_refusal_probe_exits_and_prints_as_the_table_says
+tests/test_commit_barrier.py::test_a_refusal_after_mkdir_is_a_refusal  tests/test_commit_barrier.py::test_the_chain_makes_the_directory_exactly_once  tests/test_commit_barrier.py::test_removing_a_directory_the_run_did_not_make_still_commits
 ```
 ## 2. C2 — Build asserts C1
 **STATEMENT.** Invariant 2: the contract is asserted on the binary that was

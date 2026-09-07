@@ -1143,8 +1143,9 @@ struct Requirements {
     /// the blocker slot alone routes the program to a sibling that refuses it.
     /// One wasted spawn when the sibling refuses cleanly; **exit 1** when it
     /// does not, because the chain reaches that sibling with `-c` and its
-    /// refusal then fires at RUNTIME, which after a committed `os.makedirs` is
-    /// a number invariant 2 forbids retrying. That is issue #48, and this slot
+    /// refusal then fires at RUNTIME, which past an effect the barrier cannot
+    /// take back is a number invariant 2 forbids retrying. That is issue #48,
+    /// and this slot
     /// is the whole of the answer to it: every variant computes the spectrum's
     /// verdict, so there is still exactly ONE routing decision.
     ///
@@ -1427,8 +1428,8 @@ fn walk_stmt(s: &Stmt, req: &mut Requirements) {
                 // names are already blocked correctly by both variants — the
                 // arm below spells `module` in the core and `module-attr` on
                 // lypning-l — but only the BLOCKER slot; the RUN needs its own
-                // stop, or `os.mkdir(); from base64 import b32encode` refuses
-                // past a committed barrier at exit 1.
+                // stop, or `from base64 import b32encode` refuses one spawn
+                // into the chain rather than in the router that sent it there.
                 #[cfg(feature = "cap-base64")]
                 "base64" => {
                     for (n, bind) in names {
@@ -2004,9 +2005,9 @@ fn literal_type(e: &Expr) -> Option<&'static str> {
 ///
 /// It is the same refusal `re.compile` would raise one in-process run later,
 /// moved to where a walk can see it — and the move is the point. A runtime
-/// refusal that lands after a side effect the commit barrier has already let
-/// through (`os.makedirs` before `re.sub`) cannot fall onward: it becomes exit
-/// 1, which the chain never retries. `route.rs` learned that from the `re`
+/// refusal has already cost the spawn the router decided, and past a side
+/// effect the barrier cannot take back it cannot fall onward at all: it becomes
+/// exit 1, which the chain never retries. `route.rs` learned that from the `re`
 /// surface's first shape, where the whole matcher was a static row for exactly
 /// this reason.
 ///
@@ -2024,8 +2025,9 @@ fn literal_type(e: &Expr) -> Option<&'static str> {
 /// import re`, read `cap-re` off `lypning-l`'s row and sent the program there;
 /// the chain hands a rung its program with `-c`, not `run`, so `lypning-l` was
 /// never asked to route it either, and the block fired at RUNTIME instead —
-/// after `os.makedirs()` had committed the barrier, which is exit 1 and a
-/// chain that cannot fall onward. The pattern parser is `repat.rs` for exactly
+/// one spawn already spent, and, while `os.makedirs()` still committed the
+/// barrier (issue #51), exit 1 and a chain that could not fall onward at all.
+/// The pattern parser is `repat.rs` for exactly
 /// this reason, and the verdict goes in the SPECTRUM STOP slot rather than the
 /// blocker slot, because in the core the blocker is `module: import re` and
 /// `lypning-l` answers that one.
@@ -2076,9 +2078,9 @@ fn re_pattern_block(
 // `glob.glob()` returns a list whose ORDER is the filesystem's, so the whole
 // question the capability has to answer is: can this program see the order?
 // It is decided HERE, in the walk, before anything runs — never at runtime,
-// because a runtime refusal reached after `os.makedirs` has committed the
-// barrier is exit 1 with the output discarded, and the chain never retries
-// that. `glob.rs` says the rest.
+// because a runtime refusal has already spent the spawn the router chose, and
+// past an effect the barrier cannot take back it is exit 1 with the output
+// discarded and the chain never retries it. `glob.rs` says the rest.
 //
 // **None of it is behind `cfg(feature = "cap-glob")`, and that is deliberate.**
 // It is pure walker logic — a position test over the AST with no glob
@@ -2107,10 +2109,10 @@ fn re_pattern_block(
 /// for every permutation, but the SET is then handed back to the program, and
 /// this engine's `Value::Set` is insertion-ordered where CPython's is
 /// hash-ordered — so `print(set(glob.glob('*.py')))` is a RUNTIME `set-order`
-/// refusal. Runtime is the one place this rule may not land: after
-/// `os.mkdir("D")` has committed the write barrier a refusal is exit 1 with the
-/// directory left behind and no answer, where the core refused cleanly at 90
-/// and the chain got the answer from CPython. Every other name here answers a
+/// refusal. Runtime is the one place this rule costs a spawn — and, until issue
+/// #51 made a directory reversible, `os.mkdir("D")` before it meant exit 1 with
+/// the directory left behind and no answer, where the core refused cleanly at
+/// 90 and the chain got the answer from CPython. Every other name here answers a
 /// SCALAR (`bool`, `len`, `min`, `max`, `any`, `all`, `sum`, and `in` in
 /// [`walk_expr`]) or a sorted list (`sorted`), and a scalar has no order to
 /// leak. `frozenset` was already excluded for this shape; `set` is the same
@@ -2286,12 +2288,14 @@ fn base64_func(func: &Expr, req: &Requirements) -> Option<&'static str> {
 /// Every refusal a `base64` call can raise that a walk can decide, hoisted out
 /// of the run and into the walk.
 ///
-/// This is issue #51 answered for this capability. Serving the module means the
-/// program STARTS here — and a refusal reached after `os.mkdir` has committed
-/// the write barrier (`io.rs`) is exit 1 with the directory on disk and no
-/// answer, which the chain never retries, where the core without `cap-base64`
-/// refused cleanly at 90 and CPython gave the answer. `docs/HILLCLIMB.md`
-/// iterations 76 and 77 rejected two capabilities for exactly that shape.
+/// This is issue #51 answered for this capability, and it was the mitigation
+/// rather than the fix: serving the module means the program STARTS here, and
+/// while `os.mkdir` committed the write barrier a refusal after one was exit 1
+/// with the directory on disk and no answer. The barrier itself now takes a
+/// directory back (`io::rewind`), so what this buys is what a static block
+/// always buys — the refusal costs no spawn, and it still holds past the two
+/// effects nothing can give back. `docs/HILLCLIMB.md` iterations 76 and 77
+/// rejected two capabilities for exactly that shape.
 ///
 /// Five things are literal in the source and therefore decidable here, in the
 /// order [`crate::base64::call`] asks them, so a program is refused with the
@@ -2377,9 +2381,9 @@ fn base64_call_block(
 /// `<bin> -c PROG` is not routed at all, and that is exactly how the chain
 /// reaches this binary once the core has picked it (#48). It runs BEFORE the
 /// first statement, so the refusal is exit 90 with an empty stdout and an
-/// untouched disk, never the exit 1 a refusal reached after `os.mkdir` would
-/// have been. Only for a source that mentions the module, so every other
-/// program pays one substring search.
+/// untouched disk, and no statement of the program has run. Only for a source
+/// that mentions the module, so every other program pays one substring
+/// search.
 #[cfg(feature = "cap-base64")]
 pub fn base64_static_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
     if !src.contains("base64") {
@@ -2402,10 +2406,11 @@ pub fn base64_static_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
 /// [`resolve_module`] answers `None` for `glob.` in the one binary
 /// `engines.route()` asks. A program that reached `glob.translate` was
 /// therefore routed to `lypning-l` on the strength of `module: import glob`,
-/// ran until the attribute was touched, and refused THERE — after `os.mkdir`
-/// had committed the write barrier, which is exit 1 with the directory left
-/// behind and no answer, where the core without `cap-glob` refused cleanly at
-/// 90 and the chain got the answer from CPython. A router can only read a
+/// ran until the attribute was touched, and refused THERE — one spawn spent,
+/// and, while `os.mkdir` still committed the write barrier (issue #51), exit 1
+/// with the directory left behind and no answer, where the core without
+/// `cap-glob` refused cleanly at 90 and the chain got the answer from CPython.
+/// A router can only read a
 /// routing table, so the attribute surface is one; `glob::SERVED` is this list
 /// and not a second copy of it.
 pub const GLOB_SERVED: &[&str] = &["escape", "glob", "has_magic", "iglob"];
@@ -2582,11 +2587,11 @@ fn glob_arg(e: &Expr, req: &Requirements) -> Option<(&'static str, Option<std::r
 ///
 /// This is the class the position rule left open. `sorted(glob.glob(P, …))` is
 /// a blessed position, so the order rule serves it and the program STARTS — and
-/// then a refusal reached after `os.mkdir` has committed the write barrier is
-/// exit 1 with the directory on disk and no answer, which the chain never
-/// retries. `docs/HILLCLIMB.md` iteration 76 rejected the first `cap-glob`
-/// attempt for exactly that shape. A static blocker costs the program nothing:
-/// it was never started here.
+/// a refusal there has already spent a spawn, and past an effect the barrier
+/// cannot take back is exit 1 with no answer, which the chain never retries.
+/// `docs/HILLCLIMB.md` iteration 76 rejected the first `cap-glob` attempt for
+/// exactly that shape, when `os.mkdir` was still one of those effects (#51).
+/// A static blocker costs the program nothing: it was never started here.
 ///
 /// The three that a walk can see are the three that are LITERAL in the source:
 ///
@@ -2660,8 +2665,9 @@ fn glob_call_block(
 /// after `import hashlib as h`, a bare `sha256` bound by
 /// `from hashlib import sha256`, and `f` after `f = hashlib.md5` are one
 /// function under four names, and the last two used to fall through to the
-/// runtime backstop — which past a committed `os.mkdir` is exit 1 with the
-/// output discarded, the exact shape [`hash_call_block`] exists to prevent.
+/// runtime backstop — a spawn spent, and past an effect the barrier cannot take
+/// back exit 1 with the output discarded, the exact shape [`hash_call_block`]
+/// exists to prevent.
 ///
 /// The bound names are read out of the binding table rather than a list of
 /// their own: `PatLit::HashCtor` is recorded by
@@ -2864,22 +2870,23 @@ fn glob_bless(
 /// `['qqq.py', 'bbb.py', 'aaa.py', 'mmm.py', 'zzz.py']` and exit 0.
 ///
 /// It runs BEFORE the first statement, so the refusal is exit 90 with an empty
-/// stdout and an untouched disk — never the exit 1 a refusal reached after
-/// `os.makedirs()` would have been. Only for a source that mentions `glob`, so
+/// stdout and an untouched disk, and no statement of the program has run. Only
+/// for a source that mentions `glob`, so
 /// every other program pays one substring search: `re`'s stops are not why this
 /// exists (the matcher refuses them at runtime, which is a backstop `glob` has
 /// none of), and widening the guard to catch them would put a second AST walk
 /// in front of every in-process run to buy an exit code on a path the chain can
 /// no longer reach. A program that mentions `glob` and stops on `re` first is
-/// refused here with the `re` line, which is the same line one statement later
-/// and one committed write earlier.
+/// refused here with the `re` line, which is the same line one statement
+/// earlier.
 ///
 /// `cap-hashlib` widened the guard to `hashlib` for the same reason `glob` is
 /// in it: the core routes `import hashlib` INTO `lypning-l`, which enters the
 /// program as `-c` and never walks it, so a constructor or attribute only the
-/// walk could refuse would land at RUNTIME — and a runtime refusal after
-/// `os.mkdir` has committed the barrier is exit 1 with the output discarded
-/// (issue #51). Asked here, it is exit 90 with an untouched disk.
+/// walk could refuse would land at RUNTIME — a spawn spent, and past an effect
+/// the barrier cannot take back exit 1 with the output discarded (issue #51,
+/// which took `os.mkdir` off that list). Asked here, it is exit 90 with an
+/// untouched disk, and the router spent the refusal instead of a spawn.
 #[cfg(any(feature = "cap-glob", feature = "cap-hashlib"))]
 pub fn static_stop_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
     if !src.contains("glob") && !src.contains("hashlib") {

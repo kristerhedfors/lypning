@@ -502,42 +502,52 @@ pub fn call_module_method(
         }
         ("os", "makedirs" | "mkdir") => {
             let p = s(0)?;
-            let exist_ok = kw
-                .iter()
-                .find(|(k, _)| k.as_ref() == "exist_ok")
-                .map(|(_, v)| truthy(v))
-                .transpose()?
-                .unwrap_or(false);
-            let r = if name == "makedirs" {
-                std::fs::create_dir_all(&p)
-            } else {
-                std::fs::create_dir(&p)
-            };
-            match r {
-                Ok(()) => {
-                    // A directory cannot be staged — there is no content to
-                    // hold back — so making one is a real effect the barrier
-                    // cannot take back. Whether that ends the run's
-                    // reversibility depends on whether DOING IT TWICE differs
-                    // from doing it once:
-                    //
-                    //   * `exist_ok=True` is idempotent. A retry on CPython
-                    //     makes the same directory and carries on, so the run
-                    //     is still routable and must stay that way — the whole
-                    //     `os.makedirs(..., exist_ok=True)` / `os.listdir()`
-                    //     shape in the corpus depends on falling onward from
-                    //     the listdir refusal that comes after it.
-                    //   * without it, the retry raises FileExistsError for a
-                    //     program that works, so the run has to stop claiming
-                    //     it can be re-run.
-                    if !exist_ok {
-                        mio::mark_committed();
+            // CPython's two signatures are `os.mkdir(path, mode=0o777, *,
+            // dir_fd=None)` and `os.makedirs(name, mode=0o777,
+            // exist_ok=False)`, and this arm used to search the keywords for
+            // `exist_ok` and DROP everything else — so `os.mkdir("D",
+            // exist_ok=True)` was exit 0 where CPython raises TypeError
+            // (`exist_ok` is not a `mkdir` keyword at all) and
+            // `os.makedirs("D", nonsense=1)` was exit 0 where CPython raises
+            // it too. Ignoring a keyword is answering a question the caller
+            // did not ask.
+            //
+            // `mode` is refused rather than served, and the reason is the undo
+            // log: `std::fs::create_dir` hands the kernel 0o777 and the umask
+            // decides, which is exactly CPython's default and nothing else, so
+            // `mode=0o700` exits 0 with permissions that differ. It is also
+            // what keeps `io::rewind` honest — a directory it has to put back
+            // after a failed undo is re-made by `create_dir`, and a mode
+            // `create_dir` cannot spell is a mode the rewind would lose.
+            //
+            // Refused rather than raised, like `sys.exit()`'s keyword check
+            // above: the TypeError text is version-shaped, and CPython prints
+            // its own one spawn later.
+            let mut exist_ok = false;
+            for (k, v) in kw.iter() {
+                match k.as_ref() {
+                    "exist_ok" if name == "makedirs" => exist_ok = truthy(v)?,
+                    other => {
+                        return Err(unsupported(
+                            "mkdir",
+                            &format!("os.{name}({other}=...)"),
+                        ))
                     }
-                    Value::None
                 }
-                Err(e) if exist_ok && e.kind() == std::io::ErrorKind::AlreadyExists => Value::None,
-                Err(e) => return Err(mio::os_error(&p, &e)),
             }
+            if args.len() > 1 {
+                return Err(unsupported(
+                    "mkdir",
+                    &format!("os.{name}() with a mode argument"),
+                ));
+            }
+            // The barrier's own, because a directory this run makes is a
+            // directory this run can un-make: `io::rewind` removes it if a
+            // later refusal has to fall onward, so `os.mkdir` no longer ends
+            // the run's reversibility (issue #51). It is also the only place
+            // that knows which parents `makedirs` actually created.
+            mio::make_dir(&p, name == "makedirs", exist_ok)?;
+            Value::None
         }
         ("os", "remove" | "unlink") => {
             let p = s(0)?;
@@ -552,10 +562,9 @@ pub fn call_module_method(
         }
         ("os", "rmdir") => {
             let p = s(0)?;
-            std::fs::remove_dir(&p).map_err(|e| mio::os_error(&p, &e))?;
-            // Removing a directory is not staged either, and it is the less
-            // recoverable half: the retry would find it already gone.
-            mio::mark_committed();
+            // Reversible only when it undoes this run's own `mkdir`; anyone
+            // else's directory cannot be put back as it was, so that commits.
+            mio::remove_dir(&p)?;
             Value::None
         }
         ("os", "rename" | "replace") => {
@@ -569,6 +578,10 @@ pub fn call_module_method(
                             format!("[Errno 2] No such file or directory: '{a}'"),
                         ));
                     }
+                    // `os.rename` here COPIES: it stages the bytes under the
+                    // new name and stages a delete of the old one. So it reads
+                    // whole files too, and a device would never finish.
+                    mio::require_regular_file(&a)?;
                     std::fs::read(&a).map_err(|e| mio::os_error(&a, &e))?
                 }
             };

@@ -151,9 +151,11 @@ fn execute_inner(src: &str, report_refusal: bool, kind: &mut String, detail: &mu
         return finish(Err(e), report_refusal, kind, detail);
     }
     // The same, for `base64`: every refusal a served call can raise that the
-    // SOURCE spells is decided here, so `os.mkdir("D"); base64.b64decode(b"a")`
-    // is exit 90 with an untouched cwd rather than exit 1 with the directory on
-    // disk and no answer (#51).
+    // SOURCE spells is decided here, so `base64.b64decode(b"a")` costs the
+    // router a walk rather than the chain a spawn. It was #51's mitigation
+    // while `os.mkdir` still committed the barrier; the barrier itself now
+    // takes a directory back (`io::rewind`), and this stays for what a static
+    // block was always worth.
     #[cfg(feature = "cap-base64")]
     if let Err(e) = route::base64_static_check(&body, src) {
         return finish(Err(e), report_refusal, kind, detail);
@@ -192,19 +194,33 @@ fn finish(r: Result<(), LypningError>, report_refusal: bool, kind: &mut String, 
                 detail.clear();
                 detail.push_str(d);
             }
-            if io::is_committed() {
-                // Output already left the process, so this cannot be retried.
+            // `rewind` IS the question — can this run still be routed onward?
+            // — so it is asked here and nowhere else. It undoes the staging and
+            // removes the directories the run made; only when it cannot is the
+            // refusal the program's own error (#51). Short-circuited on
+            // purpose: a run that already flushed must not then start deleting
+            // directories the retry it can no longer have would have kept.
+            //
+            // The WORDS come from `io::commit_reason`, not from here: three
+            // different things end a run's reversibility and each names its
+            // own, so an `os.rmdir` is no longer reported as a flush that never
+            // happened. A failed `rewind` marks itself committed, so one call
+            // answers both arms.
+            let why = if io::is_committed() || !io::rewind() {
+                io::commit_reason()
+            } else {
+                ""
+            };
+            if !why.is_empty() {
                 // Say so plainly rather than emitting a 90 the dispatcher would
                 // act on by running the program a second time.
                 let _ = io::commit();
                 let _ = writeln!(
                     std::io::stderr(),
-                    "lypning: error: {e} — reached after output was already flushed, so the run \
-                     cannot be routed onward"
+                    "lypning: error: {e} — reached after {why}, so the run cannot be routed onward"
                 );
                 return 1;
             }
-            io::discard();
             // Under `lypning run` the refusal is an internal routing signal, not
             // something the caller asked to see: the next engine is about to
             // answer the question. Printing it would put a line on stderr that

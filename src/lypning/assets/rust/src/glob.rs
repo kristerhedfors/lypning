@@ -39,10 +39,12 @@
 //!      in-place-extend arm; `g += [...]` rebound instead of mutating and left
 //!      every alias stale, at exit 0.
 //!   2. **The refusal happens before anything runs.** A runtime `glob-order`
-//!      reached after `os.makedirs()` has committed the barrier is exit 1 with
-//!      the output discarded, which the chain never retries — the first attempt
-//!      turned correct programs into failures exactly that way. A static
-//!      blocker costs the program nothing: it was never started here.
+//!      is a refusal the ROUTER could have spent instead: the chain hands the
+//!      program to this rung with `-c`, so the spawn is already paid for when
+//!      the refusal arrives. A static blocker costs the program nothing — it
+//!      was never started here — and it is also the only kind that survives a
+//!      barrier the run has committed (`os.rmdir`, or an output stream past
+//!      `io::COMMIT_THRESHOLD`), where a refusal is exit 1 and never retried.
 //!
 //! **`glob.iglob` is served and returns the same list**, in the positions that
 //! CONSUME it. A generator can never be BOUND here, because binding is not an
@@ -86,14 +88,15 @@
 //! not valid UTF-8, and a `**` walk deeper than this engine follows.
 //! `route::glob_call_block` has the list.
 //!
-//! **Every one of those four still lands past a committed barrier, and that is
-//! not a glob property.** `os.mkdir` and `os.makedirs` call
-//! [`crate::io::mark_committed`] the moment they run (`modules.rs`), so from
-//! there on ANY refusal this engine raises is exit 1 with the side effect on
-//! disk rather than a 90 the chain could act on — `builtin: eval`,
-//! `builtin: complex` and `set-order` behave exactly the same way, with no glob
-//! in the program. Hoisting a refusal into the walk is how an admitted glob
-//! call stops REACHING that door; it does not close the door.
+//! **None of those four is a glob problem once the barrier can take a
+//! directory back.** They used to be: `os.mkdir` committed the run the moment
+//! it ran, so from there on ANY refusal — `builtin: eval`, `builtin: complex`,
+//! `set-order`, with no glob in the program — was exit 1 with the side effect on
+//! disk. Issue #51 moved that: `io::make_dir` records the directory and
+//! `io::rewind` removes it, so a refusal after one is a 90 again. Hoisting a
+//! refusal into the walk is still worth what it always was — the spawn it saves
+//! — and it is still the only kind that survives the two effects nothing can
+//! give back, an early flush and `os.rmdir` of someone else's directory.
 //!
 //! **The barrier is not invisible to a listing, so the listing merges it.**
 //! `io.rs` stages every write until the run ends, which is what lets a refusal
