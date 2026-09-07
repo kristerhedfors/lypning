@@ -119,3 +119,71 @@ pub fn map_with_capacity<K, V>(n: usize) -> Map<K, V> {
 pub fn set<T>() -> Set<T> {
     Set::default()
 }
+
+/// A set of identifiers with a one-word membership filter in front of it.
+///
+/// The set is still the answer. The word is only ever allowed to say **no** —
+/// a clear bit means the name was never inserted, so [`Names::contains`] can
+/// return `false` without hashing anything or touching the table at all. A set
+/// bit means "maybe", and the table settles it.
+///
+/// It exists for one caller: [`crate::eval::Interp::lookup`] probes the current
+/// function's assigned-name set on every name that is not a local, purely to
+/// decide whether the answer is `UnboundLocalError`. That probe is a hash and a
+/// table walk, and for the name it is asked about most — a global function
+/// being called from inside another function, which is what recursion IS — the
+/// answer is always no. Measured on this host on 2026-09-07: deleting that
+/// probe outright (wrong, but it prices it) took `fib(26)` from 46.9 ms to
+/// 45.6 ms, 2.8%.
+///
+/// [`bit`](Names::bit) is length and the two end bytes rather than a hash,
+/// because a hash of the name is most of what the table probe costs and a
+/// filter that costs the thing it is skipping is not a filter. Identifiers that
+/// collide simply pay today's price; a name whose bit is CLEAR is not in the
+/// set, and that is the only direction this is allowed to answer in.
+pub struct Names {
+    filter: u64,
+    names: Set<std::rc::Rc<str>>,
+}
+
+impl Names {
+    #[inline]
+    pub fn new() -> Self {
+        Names {
+            filter: 0,
+            names: set(),
+        }
+    }
+
+    /// Which bit of the filter this name claims. Length and the first and last
+    /// byte — three loads and no multiply.
+    #[inline]
+    fn bit(name: &str) -> u64 {
+        let b = name.as_bytes();
+        let first = u64::from(*b.first().unwrap_or(&0));
+        let last = u64::from(*b.last().unwrap_or(&0));
+        let h = (b.len() as u64).wrapping_add(first << 2).wrapping_add(last << 5);
+        1u64 << (h & 63)
+    }
+
+    pub fn insert(&mut self, name: std::rc::Rc<str>) {
+        self.filter |= Self::bit(&name);
+        self.names.insert(name);
+    }
+
+    /// The filter first, and it is exact in the direction it answers: a name
+    /// whose bit is clear is not in the set.
+    #[inline]
+    pub fn contains(&self, name: &str) -> bool {
+        self.filter & Self::bit(name) != 0 && self.names.contains(name)
+    }
+
+    /// How many names, for sizing the scope map that will hold them.
+    pub fn len(&self) -> usize {
+        self.names.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.names.is_empty()
+    }
+}

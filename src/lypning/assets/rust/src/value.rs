@@ -202,8 +202,10 @@ pub struct FuncObj {
     pub lambda: Option<Rc<crate::ast::Expr>>,
     /// The scope chain this function was defined in — its closure.
     pub env: Vec<crate::eval::Scope>,
-    /// Every name the body assigns; see `eval::assigned_names`.
-    pub assigned: Rc<crate::hash::Set<Rc<str>>>,
+    /// Every name the body assigns; see `eval::assigned_names`. A `Names`
+    /// rather than a plain set because `Interp::lookup` probes it on every
+    /// name read that is not a local and the answer is almost always no.
+    pub assigned: Rc<crate::hash::Names>,
 }
 
 // ---- hashable keys --------------------------------------------------------
