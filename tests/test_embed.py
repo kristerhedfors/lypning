@@ -335,15 +335,42 @@ def test_a_format_spec_too_wide_is_a_value_error_not_an_abort(lypning_lib):
     assert b"ValueError" in out.stderr
 
 
-def test_a_directory_made_is_a_commit(lypning_lib, tmp_path, monkeypatch):
-    """`os.mkdir` cannot be staged — there is no content to hold back — so the
-    run stops being reversible there. Reported as committed, or the host re-runs
-    it on CPython and the second mkdir raises for a program that works."""
+def test_a_directory_made_is_taken_back(lypning_lib, tmp_path, monkeypatch):
+    """`os.mkdir` cannot be STAGED — there is no content to hold back — so the
+    barrier keeps an undo log instead: the directory is real while the program
+    runs, and `io::rewind` removes it when the run has to fall onward. It can,
+    because every file the program wrote is still staged, so the directory is
+    empty when the refusal arrives.
+
+    This used to assert the opposite (issue #51): the run reported committed,
+    the host could not re-run it anywhere, and the answer was lost."""
     monkeypatch.chdir(tmp_path)
     out = lypning_lib.run("import os\nos.mkdir('d')\nimport subprocess")
-    assert (tmp_path / "d").is_dir()
+    assert out.status == embed.UNSUPPORTED
+    assert not (tmp_path / "d").exists(), "the barrier left a directory behind"
+    assert out.committed is False
+    assert out.fall_onward is True
+
+
+def test_removing_a_directory_the_run_did_not_make_is_a_commit(
+    lypning_lib, tmp_path, monkeypatch
+):
+    """The half that stays irreversible, and must: `create_dir` cannot give back
+    a mode, a timestamp or an owner. So the host is told it cannot re-run this
+    one — where `os.rmdir` of the run's OWN directory is a no-op over the run
+    and stays routable."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "gone").mkdir()
+    out = lypning_lib.run("import os\nos.rmdir('gone')\nimport subprocess")
     assert out.committed is True
     assert out.fall_onward is False
+
+    (tmp_path / "keep").mkdir()
+    mine = lypning_lib.run("import os\nos.mkdir('d')\nos.rmdir('d')\nimport subprocess")
+    assert mine.committed is False
+    assert mine.fall_onward is True
+    assert not (tmp_path / "d").exists()
+    assert (tmp_path / "keep").is_dir(), "a rewind removes the run's own directories, not a tree"
 
 
 def test_a_refusal_in_finally_is_not_swallowed_by_a_break(lypning_lib):

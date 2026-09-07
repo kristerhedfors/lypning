@@ -56,10 +56,12 @@
 //! LITERAL that this engine cannot compile is the program's blocker in
 //! `route::re_pattern_block`, decided by a walk before anything runs — the same
 //! refusal `re.compile` would raise one in-process run later. The move is not
-//! cosmetic: a runtime refusal that lands after a side effect the commit
-//! barrier has already let through (`os.makedirs` before `re.sub`) cannot fall
-//! onward, so it becomes exit 1, the program's own exit, which the chain never
-//! retries. The walk therefore reads the pattern wherever it honestly can —
+//! cosmetic: the runtime refusal costs a spawn the router had already decided,
+//! and past a side effect the barrier cannot take back — an early flush, or
+//! `os.rmdir` — it is exit 1, the program's own exit, which the chain never
+//! retries. (`os.makedirs` before `re.sub` was the standing example until issue
+//! #51; a directory is reversible now.) The walk reads the pattern wherever it
+//! honestly can —
 //! the pattern argument, the `pattern=` keyword, a literal bound to a name
 //! above the call, and a `bytes` literal in any of those, which refuses
 //! whatever its content. A pattern BUILT at runtime has nothing for a walk to

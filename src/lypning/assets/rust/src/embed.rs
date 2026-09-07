@@ -284,15 +284,26 @@ fn finish(r: Result<(), LypningError>) -> Outcome {
                 ErrKind::Unsupported { kind, detail } => (kind.clone(), detail.clone()),
                 _ => (String::new(), String::new()),
             };
-            if io::is_committed() {
-                // Output already left the process, so the host cannot re-run
-                // this anywhere. Say so as an error rather than as a refusal
-                // the host would act on by running the program twice.
+            // `main.rs::finish` asks the same question in the same order, and
+            // the two must keep agreeing: `rewind` undoes the staging AND the
+            // directories the run made, and only a run it cannot undo is the
+            // host's error rather than a refusal (#51).
+            let why = if io::is_committed() {
+                "output was already flushed"
+            } else if !io::rewind() {
+                "a directory this run created could not be removed"
+            } else {
+                ""
+            };
+            if !why.is_empty() {
+                // The host cannot re-run this anywhere. Say so as an error
+                // rather than as a refusal it would act on by running the
+                // program twice.
                 let _ = io::commit();
                 return Outcome {
                     stderr: format!(
-                        "lypning: error: {e} — reached after output was already flushed, so the \
-                         run cannot be routed onward\n"
+                        "lypning: error: {e} — reached after {why}, so the run cannot be routed \
+                         onward\n"
                     )
                     .into_bytes(),
                     committed: true,
@@ -301,9 +312,6 @@ fn finish(r: Result<(), LypningError>) -> Outcome {
                     ..Outcome::empty(Status::Error, 1)
                 };
             }
-            // The barrier makes the refusal a no-op: staged output and staged
-            // writes go away, and the host may run the program anywhere.
-            io::discard();
             Outcome {
                 // Exactly the line the CLI puts on stderr, newline included, so
                 // a host that logs it sees what a terminal would have shown.
@@ -338,10 +346,9 @@ fn panicked(payload: Box<dyn std::any::Any + Send>) -> Outcome {
         .map(|s| s.to_string())
         .or_else(|| payload.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "panic".to_string());
-    let committed = io::is_committed();
-    if !committed {
-        io::discard();
-    }
+    // A panic is not a reason to leave a directory behind either, and
+    // `rewind` reports the case where it had to.
+    let committed = io::is_committed() || !io::rewind();
     Outcome {
         stderr: format!("lypning: internal error: {what}\n").into_bytes(),
         committed,

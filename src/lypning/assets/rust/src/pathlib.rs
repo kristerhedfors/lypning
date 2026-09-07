@@ -515,25 +515,11 @@ fn fs_effect(s: &str, name: &str, args: &mut Args, kw: &[(Rc<str>, Value)]) -> R
             other => return Err(refuse(&format!("PosixPath.mkdir({other}=…)"))),
         }
     }
-    let r = if parents {
-        std::fs::create_dir_all(s)
-    } else {
-        std::fs::create_dir(s)
-    };
-    match r {
-        Ok(()) => {
-            // A directory cannot be staged, so making one is a real effect —
-            // and whether the run is still re-runnable depends on whether doing
-            // it twice differs from doing it once. `modules.rs` carries the
-            // whole argument; this is the same rule for the same reason.
-            if !exist_ok {
-                crate::io::mark_committed();
-            }
-            Ok(Value::None)
-        }
-        Err(e) if exist_ok && e.kind() == std::io::ErrorKind::AlreadyExists => Ok(Value::None),
-        Err(e) => Err(crate::io::os_error(s, &e)),
-    }
+    // The same call `os.mkdir` makes, which is the point: the undo log the
+    // barrier rewinds from has one writer, so a pathlib program is exactly as
+    // routable as the `os` one beside it.
+    crate::io::make_dir(s, parents, exist_ok)?;
+    Ok(Value::None)
 }
 
 // ---- the operators the interpreter hands here -----------------------------

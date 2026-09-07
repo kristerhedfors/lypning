@@ -11,8 +11,9 @@
 //! `cap-re` off `lypning-l`'s row, and predicted `lypning-l` for a program
 //! `lypning-l` refuses before it starts — one wasted spawn each, or worse: the
 //! chain hands the program to `lypning-l` with `-c`, so `lypning-l` refuses at
-//! RUNTIME, and a runtime refusal past a committed `os.makedirs` is exit 1,
-//! which the chain never retries.
+//! RUNTIME — one spawn already spent, and past an effect the barrier cannot
+//! take back (an early flush, `os.rmdir`) exit 1, which the chain never
+//! retries. `os.makedirs` was on that list until issue #51.
 //!
 //! **Only the parser, and that is the whole economy of the split.** Every
 //! refusal a pattern can raise — an unservable construct, a pattern CPython

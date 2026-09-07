@@ -55,7 +55,9 @@
 //! and a literal whose decode would raise are all decided STATICALLY, by
 //! [`crate::route::base64_call_block`], from the walk. `route::base64_static_check`
 //! runs that walk before the first statement of a `-c` run, so nothing here is
-//! reached after `os.mkdir` has committed the barrier (`io.rs`, issue #51).
+//! reached after a side effect at all — which is what kept these programs
+//! answerable while `os.mkdir` still committed the barrier (`io.rs`, issue #51,
+//! now fixed at the barrier itself).
 //!
 //! The walk decides the WHOLE program, so a base64 call the run would never
 //! reach — one behind `if False:`, or the unused arm of a ternary — is decided
@@ -63,7 +65,7 @@
 //! loss and never a wrong answer: the chain hands it to CPython for one spawn.
 //! `static_stop_check` has the identical property and for the identical reason,
 //! and the alternative — deciding only what the run reaches — is the runtime
-//! refusal past a committed barrier this whole design exists to avoid.
+//! refusal, one spawn already spent, that this whole design exists to avoid.
 //!
 //! What is left at runtime is the residue no walk could read: an argument whose
 //! VALUE is computed. That is one refusal kind (`base64`) and it is the

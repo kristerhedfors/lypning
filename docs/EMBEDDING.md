@@ -23,9 +23,11 @@ lypning_result_free(r);
 `LYPNING_UNSUPPORTED` is not an error: lypning executed nothing and the program
 needs CPython; a harness that reports it as a failure fails silently on a
 correct program (`CLAUDE.md` invariant 1). The commit barrier (`io.rs`) makes a
-refused run a no-op — output and writes staged, stdin replayable;
-`lypning_result_committed()` is true once a run finished or made a directory
-with `os.mkdir`, the one effect it cannot stage.
+refused run a no-op — output and writes staged, directories made and recorded
+so `io::rewind` can remove them, stdin replayable;
+`lypning_result_committed()` is true once a run finished, flushed past the
+output threshold, or removed a directory it did not create — the effects nothing
+can give back.
 
 `should_fall_onward()` folds that in, which is why it is the call to branch on
 rather than the status. It is true for three outcomes, not one: a refusal, a

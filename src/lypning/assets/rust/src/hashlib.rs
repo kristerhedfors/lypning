@@ -45,8 +45,10 @@
 //! # What is refused, and where it is decided
 //!
 //! Everything a static walk can see is refused in `route.rs`, before the
-//! interpreter exists, because a refusal reached after `os.mkdir` has committed
-//! the barrier is exit 1 with the output discarded and no answer (issue #51):
+//! interpreter exists, so the ROUTER spends the refusal rather than a spawn —
+//! and so it still holds past the effects the barrier cannot give back (an
+//! early flush, `os.rmdir`), where a refusal is exit 1 and no answer. `os.mkdir`
+//! was on that list until issue #51 made a directory reversible:
 //!
 //!   * every module attribute outside [`SERVED`] — `new`, `algorithms_guaranteed`,
 //!     `blake2b`, `shake_128`, `sha3_256`, `sha224`, `sha384`, `pbkdf2_hmac`,
