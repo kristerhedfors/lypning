@@ -2,13 +2,24 @@
 
 Every corpus program is run twice — once by the real CPython, which is the
 reference by definition, and once by each engine — and the two are compared on
-stdout and exit code. Each engine's result is one of three things:
+stdout, exit code, and what stderr says happened. Each engine's result is one of
+three things:
 
-  ``MATCH``        stdout and exit code identical to CPython. Identical as
-                   BYTES: what the process wrote, before any decode. A grader
-                   that compared decoded text was comparing two strings Python
-                   had already run universal-newline translation over, and could
-                   not see a line-ending disagreement on either side (issue #50).
+  ``MATCH``        stdout, exit code, and the exception (if either arm raised)
+                   identical to CPython. stdout is identical as BYTES: what the
+                   process wrote, before any decode. A grader that compared
+                   decoded text was comparing two strings Python had already run
+                   universal-newline translation over, and could not see a
+                   line-ending disagreement on either side (issue #50). Of
+                   stderr, what is compared is the exception TYPE and the fact
+                   of raising, plus the non-traceback part, which is the
+                   program's own writing; the traceback body and the message
+                   wording are not, because CPython rewords them between 3.11,
+                   3.12 and 3.14 (:func:`stderr_shape`). Every verdict records
+                   which of the three it actually rested on
+                   (:attr:`Verdict.compared`), because an agreement about an
+                   exit code and an agreement about a page of output are not
+                   the same fact and must not print as one number.
   ``UNSUPPORTED``  exit 90 with a ``<engine>: unsupported: <kind>: <detail>``
                    line on stderr. **Not a failure.** It is coverage, and
                    :func:`plan` turns it into the build order.
@@ -44,6 +55,9 @@ engine that printed the wrong thing.
 
 from __future__ import annotations
 
+import ast
+import copy
+import functools
 import hashlib
 import os
 import re
@@ -52,9 +66,10 @@ import subprocess
 import tempfile
 import threading
 import time
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import corpus
@@ -142,23 +157,9 @@ _RUN_SPECIFIC = tuple(re.compile(p) for p in (
     r"\btime\s*\.\s*(?:time|time_ns|monotonic|monotonic_ns|perf_counter|perf_counter_ns"
     r"|process_time|process_time_ns|ctime|asctime|localtime|gmtime)\b",
     r"\bos\s*\.\s*(?:getpid|getppid|urandom|times|fstat|cpu_count|getcwd|getlogin)\b",
-    # The size or timestamps of an ambient file are the RUN's, not the
-    # interpreter's: a program printing the capture log's own size can never
-    # match a reference taken a moment earlier — the log grew in between.
-    r"\bos\.path\s*\.\s*(?:getsize|getmtime|getatime|getctime)\b",
-    # The CONTENT of the harness's own live state is the run's too. The capture
-    # log under ~/.lypning grows on every python spawn — including the
-    # reference spawn the battery itself just made — and the transcripts under
-    # ~/.claude grow as the session that is running the battery types. A
-    # program that counts records in either can never match a reference taken
-    # a moment earlier; on 2026-09-05 one such program (py-627dabb6be55) read
-    # 7180 distinct commands for the reference and 7181 for the arm, both from
-    # CPython. Only the two harness directories are named: a program reading
-    # any other file under ~ is graded, because that file is not ours to grow.
-    r"""(?:expanduser\(\s*['"]~/\.(?:lypning|claude)\b"""
-    r"""|Path\.home\(\)\s*/\s*['"]\.(?:lypning|claude)\b"""
-    r"""|\$HOME/\.(?:lypning|claude)\b"""
-    r"""|HOME['"]\]\s*\+\s*['"]/\.(?:lypning|claude)\b)""",
+    # `os.path.getsize` and its siblings are NOT here: whether they are
+    # run-specific depends on WHICH file, which is a question about the program
+    # rather than about a name in it. :func:`stats_an_ambient_file` answers it.
     # A subprocess's output belongs to the environment it ran in. The corpus
     # holds a probe that spawns python3 three hundred times with
     # PYTHONHASHSEED deliberately REMOVED to count both set orders — its own
@@ -174,6 +175,28 @@ _RUN_SPECIFIC = tuple(re.compile(p) for p in (
     r"\bid\s*\(",
 ))
 
+# The one class that must be matched against the program TEXT, quotes and all,
+# because what it is about IS the quoted path. The CONTENT of the harness's own
+# live state is the run's: the capture log under ~/.lypning grows on every
+# python spawn — including the reference spawn the battery itself just made —
+# and the transcripts under ~/.claude grow as the session running the battery
+# types. A program that counts records in either can never match a reference
+# taken a moment earlier; on 2026-09-05 one such program (py-627dabb6be55) read
+# 7180 distinct commands for the reference and 7181 for the arm, both from
+# CPython. Only the two harness directories are named: a program reading any
+# other file under ~ is graded, because that file is not ours to grow.
+#
+# The residual is accepted knowingly: one of these paths quoted inside a
+# docstring still buys a waiver, because there is no way to ask about a path
+# without reading the quotes. It is the smallest possible carve-out from the
+# rule above it and it is one pattern wide.
+_RUN_SPECIFIC_LITERAL = tuple(re.compile(p) for p in (
+    r"""(?:expanduser\(\s*['"]~/\.(?:lypning|claude)\b"""
+    r"""|Path\.home\(\)\s*/\s*['"]\.(?:lypning|claude)\b"""
+    r"""|\$HOME/\.(?:lypning|claude)\b"""
+    r"""|HOME['"]\]\s*\+\s*['"]/\.(?:lypning|claude)\b)""",
+))
+
 # Quantities Python itself declines to specify, so two conformant
 # implementations may legitimately disagree. This class must stay SMALL and each
 # member must be justified by a written standard rather than by convenience —
@@ -183,6 +206,275 @@ _IMPLEMENTATION_DEFINED = tuple(re.compile(p) for p in (
     # CPython's zlib, 11 under MicroPython's deflate. Both are valid.
     r"len\s*\(\s*(?:zlib|gzip)\s*\.\s*compress",
 ))
+
+
+# --- reading the program, not the text of it ---------------------------------
+#
+# Every table above is a regex over the program's SOURCE, and a regex over
+# source cannot tell a call from a quotation. This corpus is one-liners captured
+# from agent sessions: it is full of programs that rewrite files and quote code
+# they never execute — `subprocess.run` inside a patch body, `__file__` inside a
+# triple-quoted string, `datetime.now` inside a docstring. Every one of those
+# bought a waiver, and a waiver means stdout is not compared at all. Measured on
+# this tree on 2026-09-07 over 3,688 loaded: 634 programs waived on the text,
+# 582 on the AST — 52 whose stdout nothing had ever looked at.
+#
+# So the tables are matched against a CODE VIEW instead — the program parsed and
+# printed back with every string and bytes literal blanked. A name inside a
+# string is gone; a name inside an f-string's `{...}` survives, because that one
+# really is evaluated. The text is only fallen back to when the program does not
+# parse, which is a real corpus population (captured shell fragments, truncated
+# heredocs) and is reported by :func:`waiver_basis` rather than hidden.
+
+
+class _BlankLiterals(ast.NodeTransformer):
+    """Every string/bytes constant replaced by an empty one of the same type.
+
+    The tree keeps its shape, so ``ast.unparse`` still renders every call and
+    attribute exactly where it was; what disappears is the contents of the
+    quotes, which is the only place a false waiver has ever come from.
+    """
+
+    def visit_Constant(self, node: ast.Constant) -> ast.Constant:
+        if isinstance(node.value, bytes):
+            return ast.copy_location(ast.Constant(value=b""), node)
+        if isinstance(node.value, str):
+            return ast.copy_location(ast.Constant(value=""), node)
+        return node
+
+
+#: Serialises the one call that has to touch a global. `ast.parse` runs the
+#: tokenizer, which raises `SyntaxWarning` for things like `"\d"` — advisory,
+#: about a corpus program rather than about us, and invariant 8 says library
+#: code does not print. `catch_warnings` swaps `warnings.filters` process-wide,
+#: so it is held under a lock; the parses it serialises are microseconds each
+#: and memoised, while every other thread here is waiting on a subprocess.
+_PARSE_LOCK = threading.Lock()
+
+
+@functools.lru_cache(maxsize=4096)
+def _tree(src: str) -> Optional[ast.AST]:
+    """The program's AST, or None when it does not parse under this interpreter."""
+    try:
+        with _PARSE_LOCK, warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return ast.parse(src)
+    except (SyntaxError, ValueError, MemoryError, RecursionError):
+        return None
+
+
+@functools.lru_cache(maxsize=4096)
+def code_view(src: str) -> Optional[str]:
+    """``src`` with the inside of every literal removed, or None if it will not parse."""
+    tree = _tree(src)
+    if tree is None:
+        return None
+    try:
+        return ast.unparse(_BlankLiterals().visit(copy.deepcopy(tree)))
+    except Exception:  # unparse is best-effort; a tree it cannot print is a text case
+        return None
+
+
+def waiver_basis(entry: Any) -> str:
+    """``"ast"`` or ``"text"`` — which view the waiver tables were matched against.
+
+    Reported rather than silent: a program graded on the text view carries the
+    old false-waiver risk, and a reader who cannot see which programs those were
+    cannot tell a shrinking waiver count from a shrinking parse rate.
+    """
+    src = getattr(entry, "program", "") or ""
+    return "ast" if code_view(src) is not None else "text"
+
+
+def _view(entry: Any) -> str:
+    src = getattr(entry, "program", "") or ""
+    view = code_view(src)
+    return src if view is None else view
+
+
+def _dotted(node: Any) -> str:
+    """``os.path.getsize`` for the attribute chain of a call target, else ``""``."""
+    parts: List[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+        return ".".join(reversed(parts))
+    return ""
+
+
+def _string_env(tree: ast.AST) -> Dict[str, str]:
+    """``name -> literal`` for the simplest possible assignments, ``p = "out.txt"``.
+
+    Deliberately not a constant folder: one level, string constants only, and a
+    name assigned twice is dropped rather than guessed at. It exists so that the
+    two-statement spelling of a thing — write to ``p``, then ask about ``p`` —
+    is read the same way as the one-statement spelling.
+    """
+    env: Dict[str, str] = {}
+    shadowed = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            t, val = node.targets[0], node.value
+            if isinstance(t, ast.Name) and isinstance(val, ast.Constant) and isinstance(val.value, str):
+                if t.id in env and env[t.id] != val.value:
+                    shadowed.add(t.id)
+                env[t.id] = val.value
+            elif isinstance(t, ast.Name):
+                shadowed.add(t.id)
+    for name in shadowed:
+        env.pop(name, None)
+    return env
+
+
+def _literal_str(node: Any, env: Dict[str, str]) -> Optional[str]:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name):
+        return env.get(node.id)
+    return None
+
+
+#: ``open()``'s mode argument means "this call creates or truncates the file".
+_WRITES = set("wxa+")
+
+
+def _open_call(node: ast.Call) -> Optional[Tuple[Any, str]]:
+    """``(path node, mode)`` for a call that is ``open``/``io.open``, else None."""
+    name = _dotted(node.func)
+    if name not in ("open", "io.open", "codecs.open"):
+        return None
+    if not node.args:
+        return None
+    mode = "r"
+    if len(node.args) > 1 and isinstance(node.args[1], ast.Constant) \
+            and isinstance(node.args[1].value, str):
+        mode = node.args[1].value
+    for kw in node.keywords:
+        if kw.arg == "mode" and isinstance(kw.value, ast.Constant) \
+                and isinstance(kw.value.value, str):
+            mode = kw.value.value
+    return node.args[0], mode
+
+
+#: Methods that put bytes on disk under a path the receiver already names.
+_PATH_WRITERS = ("write_text", "write_bytes", "touch", "mkdir", "rename", "replace", "unlink")
+_PATH_READERS = ("read_text", "read_bytes")
+
+
+def _path_arg(node: Any, env: Dict[str, str]) -> Optional[str]:
+    """The literal inside ``Path("x")`` when ``node`` is that call."""
+    if isinstance(node, ast.Call) and _dotted(node.func) in ("Path", "pathlib.Path", "PurePath"):
+        if node.args:
+            return _literal_str(node.args[0], env)
+    return None
+
+
+def paths_written(src: str) -> frozenset:
+    """Relative paths the program itself creates, truncates or removes.
+
+    Only literals — a path built at runtime is unknowable from here, and
+    guessing at one would be worse than admitting it is unknown.
+    """
+    tree = _tree(src)
+    if tree is None:
+        return frozenset()
+    env = _string_env(tree)
+    out = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        opened = _open_call(node)
+        if opened is not None and set(opened[1]) & _WRITES:
+            lit = _literal_str(opened[0], env)
+            if lit:
+                out.add(lit)
+            continue
+        if isinstance(node.func, ast.Attribute) and node.func.attr in _PATH_WRITERS:
+            lit = _path_arg(node.func.value, env) or _literal_str(node.func.value, env)
+            if lit:
+                out.add(lit)
+        if _dotted(node.func) in ("os.remove", "os.unlink", "os.rename", "os.replace",
+                                  "os.mkdir", "os.makedirs", "shutil.rmtree"):
+            if node.args:
+                lit = _literal_str(node.args[0], env)
+                if lit:
+                    out.add(lit)
+    return frozenset(out)
+
+
+def paths_read(src: str) -> frozenset:
+    """Relative paths the program reads the CONTENT of and does not itself write.
+
+    Content, not existence: seeding a file an ``os.path.exists`` asks about
+    would answer a question the program was entitled to hear "no" to, whereas a
+    program that opens a file for reading has already assumed it is there.
+    """
+    tree = _tree(src)
+    if tree is None:
+        return frozenset()
+    env = _string_env(tree)
+    out = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        opened = _open_call(node)
+        if opened is not None and not (set(opened[1]) & _WRITES):
+            lit = _literal_str(opened[0], env)
+            if lit:
+                out.add(lit)
+            continue
+        if isinstance(node.func, ast.Attribute) and node.func.attr in _PATH_READERS:
+            lit = _path_arg(node.func.value, env) or _literal_str(node.func.value, env)
+            if lit:
+                out.add(lit)
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "open":
+            lit = _path_arg(node.func.value, env)
+            if lit and not (node.args and isinstance(node.args[0], ast.Constant)
+                            and isinstance(node.args[0].value, str)
+                            and set(node.args[0].value) & _WRITES):
+                out.add(lit)
+    return frozenset(out) - paths_written(src)
+
+
+#: The metadata calls whose answer is about a FILE rather than about a program.
+_FILE_STAT_CALLS = ("os.path.getsize", "os.path.getmtime", "os.path.getatime",
+                    "os.path.getctime", "os.stat", "os.lstat")
+_FILE_STAT_TEXT = re.compile(r"\bos\.path\s*\.\s*(?:getsize|getmtime|getatime|getctime)\b")
+
+
+def stats_an_ambient_file(entry: Any) -> bool:
+    """Does the program ask the filesystem about a file it did not itself write?
+
+    The size or timestamp of an *ambient* file is the run's, not the
+    interpreter's — a program printing the capture log's own size can never
+    match a reference taken a moment earlier, because the log grew in between.
+    The size of a file the program created three statements earlier is nothing
+    of the sort: it is a deterministic function of what the program wrote, and
+    waiving stdout for it hid six spellings of ``open("out.txt","w")
+    .write("hello world"); print(os.path.getsize("out.txt"))`` — CPython prints
+    ``12`` every time, and an engine printing anything at all scored MATCH.
+    """
+    src = getattr(entry, "program", "") or ""
+    tree = _tree(src)
+    if tree is None:
+        # No AST to ask, so the old, blunter answer: any such call is ambient.
+        return bool(_FILE_STAT_TEXT.search(src))
+    written = paths_written(src)
+    env = _string_env(tree)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if _dotted(node.func) in _FILE_STAT_CALLS:
+            lit = _literal_str(node.args[0], env) if node.args else None
+            if lit is None or lit not in written:
+                return True  # unknown or not ours: ambient, and stdout is waived
+        elif isinstance(node.func, ast.Attribute) and node.func.attr in ("stat", "lstat"):
+            lit = _path_arg(node.func.value, env) or _literal_str(node.func.value, env)
+            if lit is None or lit not in written:
+                return True
+    return False
 
 
 def _tags(entry: Any) -> Tuple[str, ...]:
@@ -207,10 +499,18 @@ def is_nondeterministic(entry: Any) -> bool:
 
 
 def is_run_specific(entry: Any) -> bool:
-    src = getattr(entry, "program", "") or ""
-    if draws_from_random(src) and not is_seeded_stream(entry):
+    """Matched against :func:`code_view`, not the program text — see that
+    function. ``os.path.getsize`` is asked about per FILE by
+    :func:`stats_an_ambient_file` rather than per name."""
+    view = _view(entry)
+    if draws_from_random(view) and not is_seeded_stream(entry):
         return True
-    return any(p.search(src) for p in _RUN_SPECIFIC)
+    if any(p.search(view) for p in _RUN_SPECIFIC):
+        return True
+    src = getattr(entry, "program", "") or ""
+    if any(p.search(src) for p in _RUN_SPECIFIC_LITERAL):
+        return True
+    return stats_an_ambient_file(entry)
 
 
 _RANDOM_DOTTED = re.compile(r"\brandom\s*\.\s*\w+")
@@ -267,19 +567,18 @@ def is_seeded_stream(entry: Any) -> bool:
     its own unseeded reference — a false alarm somebody reads, never a wrong
     answer nobody does.
     """
-    src = getattr(entry, "program", "") or ""
     if "seeded" in _tags(entry):
         return True
-    return bool(draws_from_random(src) and _SEEDS.search(src))
+    view = _view(entry)
+    return bool(draws_from_random(view) and _SEEDS.search(view))
 
 
 def is_interpreter_specific(entry: Any) -> bool:
-    src = getattr(entry, "program", "") or ""
     if "interpreter-specific" in _tags(entry):
         return True
     # `sys.argv` and `sys.stdin` are about the RUN, not the interpreter, and must
     # still be compared — so the patterns above name attributes, never bare `sys`.
-    if any(p.search(src) for p in _INTERPRETER_SPECIFIC):
+    if any(p.search(_view(entry)) for p in _INTERPRETER_SPECIFIC):
         return True
     return is_implementation_defined(entry)
 
@@ -287,8 +586,7 @@ def is_interpreter_specific(entry: Any) -> bool:
 def is_implementation_defined(entry: Any) -> bool:
     if "implementation-defined" in _tags(entry):
         return True
-    src = getattr(entry, "program", "") or ""
-    return any(p.search(src) for p in _IMPLEMENTATION_DEFINED)
+    return any(p.search(_view(entry)) for p in _IMPLEMENTATION_DEFINED)
 
 
 _BRACE = re.compile(r"\{[^{}]*\}")
@@ -449,12 +747,24 @@ class Verdict:
     detail: str = ""
     expected_stdout: str = ""
     actual_stdout: str = ""
+    #: Kept for the same reason and on the same terms as the stdout pair: a
+    #: stderr verdict whose evidence is not printed is a verdict nobody can act
+    #: on, and for a program with empty stdout stderr is the whole answer.
+    expected_stderr: str = ""
+    actual_stderr: str = ""
     expected_rc: int = 0
     actual_rc: int = 0
     wall_ns: int = 0
     #: A digest of the whole stdout, kept for every verdict so two arms can be
     #: compared for agreement without carrying the bytes (`dispatchers agree`).
     stdout_digest: str = ""
+    #: What the verdict actually rested on: ``"exit"``, plus ``"stdout"`` when
+    #: either arm wrote any and it was not waived, plus ``"stderr"`` when either
+    #: arm said anything after warnings — or ``"refusal"`` for coverage. A
+    #: MATCH reading ``"exit"`` alone is two runs agreeing that a program
+    #: failed, which is worth strictly less than two runs agreeing on an answer
+    #: and must not be presented as the same number.
+    compared: str = "exit"
 
     @property
     def failed(self) -> bool:
@@ -479,6 +789,39 @@ class EngineReport:
 
     def failures(self) -> List[Verdict]:
         return [v for v in self.verdicts if v.verdict == MISMATCH]
+
+    def _matches(self) -> List[Verdict]:
+        return [v for v in self.verdicts if v.verdict == MATCH]
+
+    @property
+    def match_stdout(self) -> int:
+        """MATCHes where stdout was actually compared and had bytes in it."""
+        return sum(1 for v in self._matches() if "stdout" in v.compared)
+
+    @property
+    def match_stderr(self) -> int:
+        """MATCHes where stderr had something to compare on one arm or both."""
+        return sum(1 for v in self._matches() if "stderr" in v.compared)
+
+    @property
+    def match_exit_only(self) -> int:
+        """MATCHes decided on an exit code and nothing else.
+
+        The number the battery could not previously print, and the one that says
+        how much of ``coverage`` is an opinion about output rather than about a
+        return value.
+        """
+        return sum(1 for v in self._matches() if v.compared == "exit")
+
+    @property
+    def match_both_failed(self) -> int:
+        """MATCHes where both arms exited non-zero with the same code.
+
+        Agreement, and real — but agreement that a program did not work, which
+        is the cheapest kind of agreement there is and the one a sandbox
+        missing the program's files manufactures in bulk.
+        """
+        return sum(1 for v in self._matches() if v.actual_rc and v.actual_rc == v.expected_rc)
 
 
 @dataclass
@@ -528,6 +871,13 @@ class Report:
     unbuilt_why: Dict[str, str] = field(default_factory=dict)
     reference: str = ""
     total: int = 0
+    #: ``(entries seeded, files written per sandbox)`` — see :func:`seed_files`.
+    seeded: Tuple[int, int] = (0, 0)
+    #: Entries whose waiver was decided on the program TEXT because the program
+    #: does not parse (:func:`waiver_basis`). Reported because those carry the
+    #: old false-waiver risk and a reader has to be able to tell a shrinking
+    #: waiver count from a shrinking parse rate.
+    text_view: int = 0
     #: ``(agreed, compared)`` over the entries both dispatcher arms ran, and the
     #: entries where they did not agree. Only when both arms were requested.
     dispatchers: Optional[Tuple[int, int]] = None
@@ -827,7 +1177,9 @@ def _clip(s: str) -> str:
     return s if len(s) <= _STDOUT_CLIP else s[:_STDOUT_CLIP] + "\n…[clipped]"
 
 
-_UNSUPPORTED_RE = re.compile(r"^([\w.-]+): unsupported: ([\w-]+): (.+)$", re.M)
+#: Anchored, and matched against ONE line rather than searched across stderr:
+#: the contract puts the refusal at the head and puts nothing else there.
+_UNSUPPORTED_RE = re.compile(r"^([\w.-]+): unsupported: ([\w-]+): (.+)$")
 
 #: One CPython warning as it lands on stderr: ``<file>:<line>: <Kind>Warning:
 #: <message>``, then — when the file is readable, so never for ``-c`` — the
@@ -845,6 +1197,94 @@ def _without_warnings(stderr: str) -> str:
     return _WARNING_RE.sub("", stderr or "")
 
 
+# --- what stderr says, minus what it is not entitled to be believed about -----
+#
+# Until 2026-09-07 stderr was compared in one direction and one direction only:
+# CPython said something and the engine said nothing. One byte of anything
+# satisfied it. An engine that kept stdout and the exit code and replaced its
+# whole stderr with an invented `RuntimeError` kept every MATCH it had; one that
+# appended a banner to every run was invisible. And for a MATCH with empty
+# stdout — 1,060 of `lypning`'s 1,547 on this tree on 2026-09-07 — stderr IS
+# the whole answer the agent reads.
+#
+# The reason it was left uncompared is real, though: CPython's message wording
+# drifts between 3.11, 3.12 and 3.14, and this project deliberately refuses
+# error paths rather than chase it. So what is compared is what does NOT drift:
+#
+#   * the fact of raising — a run that ended in an exception, on both arms;
+#   * the exception TYPE, which is API and does not get reworded;
+#   * the part of stderr that is not a traceback at all, which is the program's
+#     own output and is as comparable as stdout.
+#
+# What is NOT compared is the traceback body — the preamble, the frames, the
+# source echoes, the `^^^^` markers, the message text. lypning prints a
+# deliberately shorter traceback than CPython (`Traceback (most recent call
+# last):` and then straight to the exception line, with no frames, and `  line
+# N` where CPython writes `  File "<string>", line N`); CPython prints no
+# preamble at all for a SyntaxError under `-c`. Both are normalised away by
+# taking the exception line and the text above the block, and nothing between.
+
+_TRACEBACK_OPENER = "Traceback (most recent call last):"
+
+#: CPython's two connectors between chained tracebacks. They belong to the
+#: block, not to the program's own output, so they are peeled with it.
+_CHAIN_LINES = (
+    "During handling of the above exception, another exception occurred:",
+    "The above exception was the direct cause of the following exception:",
+)
+
+#: The last line of a traceback: a dotted exception name, then optionally a
+#: colon and a message. Bare (``KeyboardInterrupt``) and messaged
+#: (``ValueError: x``) are both this.
+_EXC_HEADER = re.compile(r"^([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?::(?:\s.*)?)?$")
+
+
+def stderr_shape(stderr: str) -> Tuple[str, str]:
+    """``(what the program itself wrote, the exception type that ended the run)``.
+
+    Traceback blocks are peeled off the tail — as many as chaining left there —
+    and only the type of the outermost one survives, spelled by its last dotted
+    component: CPython qualifies a non-builtin exception with the module it was
+    defined in, and two implementations that agree on the exception may lay its
+    module out differently.
+
+    A line that *looks* like an exception header but has no frame and no
+    preamble above it is not one; it is a program writing to stderr, and it
+    stays in the first half of the pair where it can be compared as bytes.
+    """
+    lines = _without_warnings(stderr or "").splitlines()
+    exc = ""
+    while True:
+        end = len(lines)
+        while end and (not lines[end - 1].strip() or lines[end - 1].strip() in _CHAIN_LINES):
+            end -= 1
+        if not end:
+            lines = lines[:end]
+            break
+        m = _EXC_HEADER.match(lines[end - 1])
+        if m is None:
+            lines = lines[:end]
+            break
+        start = end - 1
+        while start > 0:
+            above = lines[start - 1]
+            if above.strip() == _TRACEBACK_OPENER:
+                start -= 1
+                break
+            if above[:1] in (" ", "\t"):
+                start -= 1
+                continue
+            break
+        if start == end - 1:
+            # Nothing framed it: the program wrote this line itself.
+            lines = lines[:end]
+            break
+        if not exc:
+            exc = m.group(1).rsplit(".", 1)[-1]
+        lines = lines[:start]
+    return "\n".join(lines).rstrip(), exc
+
+
 #: An in-process run cannot be killed, so the library arm's stand-in for the
 #: battery's timeout is a step budget: a program that will not stop refuses
 #: instead of hanging the run. Far above anything a one-liner does — the whole
@@ -855,38 +1295,67 @@ LIBRARY_STEP_LIMIT = 100_000_000
 
 
 def _refusal(engine: str, stderr: str) -> Optional[Tuple[str, str]]:
-    """``(kind, detail)`` from the shared refusal line, or None.
+    """``(kind, detail)`` from the refusal line at the HEAD of stderr, or None.
+
+    Invariant 2 defines a refusal as *exactly one* ``<engine>: unsupported:
+    <kind>: <detail>`` line on stderr and nothing on stdout, so that is the
+    shape matched: the first line, written by a tier whose name this arm may
+    speak with. Until 2026-09-07 the match was ``re.M`` and floated anywhere in
+    stderr, which meant a program could print one halfway through its own
+    output and have its exit 90 counted as coverage.
 
     The mixture arm relays whichever tier answered, so its line may carry any
     engine's name — but it must carry one of them, or the "refusal" is a program
     printing something that looks like one.
     """
-    for m in _UNSUPPORTED_RE.finditer(stderr or ""):
-        who = m.group(1)
-        # The library writes lypning's own line, because it IS lypning — the
-        # arm name is ours, for the report, and never reaches the runtime.
-        if (who == engine
-                or (engine in (MIXTURE, MIXTURE_RUST) and who in eng.ENGINE_ORDER)
-                or (engine == LIBRARY and who == eng.SPECTRUM[-1])):
-            return m.group(2), m.group(3)
+    head = (stderr or "").split("\n", 1)[0]
+    m = _UNSUPPORTED_RE.match(head)
+    if m is None:
+        return None
+    who = m.group(1)
+    # The library writes lypning's own line, because it IS lypning — the
+    # arm name is ours, for the report, and never reaches the runtime.
+    if (who == engine
+            or (engine in (MIXTURE, MIXTURE_RUST) and who in eng.ENGINE_ORDER)
+            or (engine == LIBRARY and who == eng.SPECTRUM[-1])):
+        return m.group(2), m.group(3)
     return None
+
+
+def _looks_like_a_refusal(stderr: str) -> bool:
+    """Is the head of ``stderr`` refusal-shaped, whoever it names?
+
+    Asked of the REFERENCE, where the answer can only mean one thing: CPython
+    is not a tier and never refuses, so a contract line coming out of it was
+    written by the program.
+    """
+    return _UNSUPPORTED_RE.match((stderr or "").split("\n", 1)[0]) is not None
 
 
 def classify(ref: eng.Result, got: eng.Result, engine: str, entry: Any) -> Verdict:
     """Score one engine's run against the reference run of the same program.
 
-    stdout and the exit code must match exactly — those are what a shell
-    pipeline and an agent loop actually consume. stderr is compared only in one
-    direction, and only when the reference itself wrote something: traceback
-    text carries file paths, line numbers and interpreter internals that a
-    subset runtime has no business reproducing byte for byte. What matters is
-    that a program that fails under CPython also fails under the engine, and the
-    exit code already says that. A CPython *warning* is not a failure — the
-    interpreter prints it and carries on — so warning blocks are stripped from
-    the reference's stderr before deciding whether it "reported an error";
+    Four things are compared, and :attr:`Verdict.compared` records which of them
+    this particular verdict actually rested on — because they are not all
+    present in every program and a MATCH that compared nothing is not the same
+    fact as a MATCH that compared output.
+
+    **The exit code**, always. **stdout**, as BYTES on both sides, unless the
+    program is one whose output cannot be reproduced (:func:`is_nondeterministic`).
+    **The exception**, if either arm ended in one: its type, and the fact of
+    there being one. **The rest of stderr**, which is the program's own writing
+    and is compared like stdout.
+
+    What is deliberately not compared is traceback text — the preamble, the
+    frames, the message wording. CPython rewords its messages between 3.11,
+    3.12 and 3.14 and this project refuses error paths rather than track that;
+    the exception type is the part that is API. See :func:`stderr_shape`.
+
+    A CPython *warning* is not a failure — the interpreter prints it and carries
+    on — so warning blocks are stripped from BOTH arms before either is read;
     otherwise a new advisory in the reference interpreter (3.14's PEP 765
-    ``SyntaxWarning``) would score an engine that agreed byte-for-byte on
-    stdout and exit code as a MISMATCH.
+    ``SyntaxWarning``) would score an engine that agreed everywhere else as a
+    MISMATCH.
     """
     entry_id = getattr(entry, "id", "")
     # BYTES, on both sides. `Result.stdout` is decoded for a reader, and that
@@ -897,13 +1366,37 @@ def classify(ref: eng.Result, got: eng.Result, engine: str, entry: Any) -> Verdi
     # same bytes, decoded but not normalised, so a CRLF divergence prints as one.
     want, mine = ref.stdout_bytes, got.stdout_bytes
 
+    skip_stdout = is_nondeterministic(entry) or (
+        engine == eng.MICROPYTHON and is_seeded_stream(entry))
+    ref_head, ref_exc = stderr_shape(ref.stderr)
+    got_head, got_exc = stderr_shape(got.stderr)
+
+    # What this verdict rests on, recorded on every verdict and reported per arm.
+    # Before stderr was compared at all, a MATCH with empty stdout on both arms
+    # rested on an exit code and nothing else. Measured on this tree on
+    # 2026-09-07, after the fixes below: of `lypning`'s 1,547 MATCHes only 487
+    # compare stdout, so 1,060 would have been that — 900 of them two arms
+    # failing with the same non-zero code, and 172 with nothing on either
+    # stream at all. Those are still MATCHes and still worth having; they are
+    # not the same MATCH as one that compared a page of output, and a report
+    # that prints one number for both cannot be read.
+    evidence_of: List[str] = ["exit"]
+    if not skip_stdout and (want or mine):
+        evidence_of.append("stdout")
+    if ref_head or got_head or ref_exc or got_exc:
+        evidence_of.append("stderr")
+    compared = ",".join(evidence_of)
+
     def v(verdict: str, kind: str = "", detail: str = "", evidence: bool = False) -> Verdict:
         return Verdict(
             engine=engine, entry_id=entry_id, verdict=verdict, kind=kind, detail=detail,
             expected_stdout=_clip(eng.exact_text(want)) if evidence else "",
             actual_stdout=_clip(eng.exact_text(mine)) if evidence else "",
+            expected_stderr=_clip(ref.stderr or "") if evidence else "",
+            actual_stderr=_clip(got.stderr or "") if evidence else "",
             expected_rc=ref.returncode, actual_rc=got.returncode, wall_ns=got.wall_ns,
             stdout_digest=hashlib.sha256(mine).hexdigest()[:16],
+            compared=compared if verdict != UNSUPPORTED else "refusal",
         )
 
     if got.timed_out:
@@ -913,8 +1406,17 @@ def classify(ref: eng.Result, got: eng.Result, engine: str, entry: Any) -> Verdi
     if not got.binary:
         return v(MISMATCH, "unbuilt", "engine not available")
 
-    refusal = _refusal(engine, got.stderr)
-    if got.returncode == eng.UNSUPPORTED_EXIT:
+    # The reference decides first, and it has to: CPython is not a tier and
+    # cannot refuse, so an exit 90 WITH a contract line coming out of it means
+    # the PROGRAM wrote that line and chose that code. Reading it as coverage
+    # was a way to buy `--plan` rows and an `ok` report with a two-line program
+    # — `sys.stderr.write("lypning: unsupported: forged: …"); sys.exit(90)`
+    # graded UNSUPPORTED although CPython had run it identically and the honest
+    # verdict is MATCH. The fall-through three lines below existed for exactly
+    # this case and was unreachable, because the refusal branch returned first.
+    forged = ref.returncode == eng.UNSUPPORTED_EXIT and _looks_like_a_refusal(ref.stderr)
+    refusal = None if forged else _refusal(engine, got.stderr)
+    if got.returncode == eng.UNSUPPORTED_EXIT and not forged:
         if refusal:
             if mine:
                 # A refusal is only interchangeable with the next tier's answer
@@ -929,6 +1431,14 @@ def classify(ref: eng.Result, got: eng.Result, engine: str, entry: Any) -> Verdi
                 return v(MISMATCH, "contract",
                          "refused after %d byte(s) had already reached stdout"
                          % len(mine), evidence=True)
+            extra = (got.stderr or "").split("\n", 1)[1].strip() if "\n" in (got.stderr or "") else ""
+            if extra:
+                # Same argument, one stream over: the contract is one line and
+                # nothing else, and a caller who then gets CPython's answer sees
+                # the refusing tier's stderr in front of it.
+                return v(MISMATCH, "contract",
+                         "refused after %d byte(s) had already reached stderr"
+                         % len(extra), evidence=True)
             return v(UNSUPPORTED, refusal[0], refusal[1])
         if ref.returncode != eng.UNSUPPORTED_EXIT:
             # Exit 90 without the contract line is itself a contract violation;
@@ -940,8 +1450,6 @@ def classify(ref: eng.Result, got: eng.Result, engine: str, entry: Any) -> Verdi
         # as a broken contract accuses an engine of a bug for agreeing with the
         # reference. Fall through and compare it like any other exit code.
 
-    skip_stdout = is_nondeterministic(entry) or (
-        engine == eng.MICROPYTHON and is_seeded_stream(entry))
     if not skip_stdout and mine != want:
         # The one excuse, and it is applied to the UNNORMALISED text: a set
         # display may legitimately reorder (see :func:`only_set_order_differs`),
@@ -956,7 +1464,89 @@ def classify(ref: eng.Result, got: eng.Result, engine: str, entry: Any) -> Verdi
     if _without_warnings(ref.stderr) and not got.stderr:
         return v(MISMATCH, "stderr", "CPython reported an error, this engine was silent",
                  evidence=True)
+    if ref_exc != got_exc:
+        return v(MISMATCH, "stderr-exc", "CPython %s, this engine %s"
+                 % ("raised " + ref_exc if ref_exc else "raised nothing",
+                    "raised " + got_exc if got_exc else "raised nothing"), evidence=True)
+    if not skip_stdout and ref_head != got_head:
+        # The non-traceback part of stderr is the program's own writing, so it
+        # is compared exactly like stdout — and waived exactly like it, because
+        # a program whose stdout is a wall clock puts a wall clock on stderr too.
+        return v(MISMATCH, "stderr-text", first_diff(ref_head, got_head), evidence=True)
     return v(MATCH, "", "stdout uncompared" if skip_stdout else "")
+
+
+#: What a seeded file contains, by suffix. Small, fixed, and the same in every
+#: sandbox — the point is that both arms read identical bytes, not that the bytes
+#: resemble whatever the agent's own tree held when the one-liner was captured.
+_SEED_CONTENT: Dict[str, bytes] = {
+    ".json": b'{"name": "seed", "items": [1, 2, 3]}\n',
+    ".jsonl": (b'{"id": "py-seed-1", "program": "print(1)"}\n'
+               b'{"id": "py-seed-2", "program": "print(2)"}\n'),
+    ".csv": b"a,b,c\n1,2,3\n4,5,6\n",
+    ".tsv": b"a\tb\tc\n1\t2\t3\n",
+    ".py": b"x = 1\n\n\ndef f(n):\n    return n + 1\n",
+    ".rs": b"fn main() {\n    println!(\"seed\");\n}\n",
+    ".md": b"# seed\n\nalpha\nbeta\n",
+    ".toml": b"[seed]\na = 1\n",
+    ".yml": b"a: 1\nb: 2\n",
+    ".yaml": b"a: 1\nb: 2\n",
+    ".bin": b"\x00\x01\x02\x03",
+}
+_SEED_DEFAULT = b"alpha\nbeta\ngamma\n"
+
+#: A ceiling, because a program is free to name a hundred paths and a sandbox is
+#: built once per run per arm.
+_SEED_LIMIT = 32
+
+#: The exceptions an empty cwd manufactures, and the only ones a seed is allowed
+#: to answer. A program that fails for its own reasons is left failing.
+_MISSING_FILE = ("FileNotFoundError", "IsADirectoryError", "NotADirectoryError")
+
+
+def seed_files(program: str) -> Dict[str, bytes]:
+    """The files to put in the sandbox before running ``program``, and their bytes.
+
+    Every entry gets a fresh empty cwd, which is what keeps the corpus off the
+    repository — and which also means a program that opens ``data.csv`` fails to
+    find it. That failure is *symmetric*: the reference misses the file exactly
+    as the engine does, both raise ``FileNotFoundError``, and the grader reads
+    two identical failures as agreement. The entries naming an ABSOLUTE path —
+    the ones that would have found their file — are skipped, so the skip rule is
+    precisely what leaves this class in. Measured on this tree on 2026-09-07:
+    363 entries were seeded with 399 files between them, and 23 verdicts per
+    Rust arm moved from MATCH to UNSUPPORTED as a result.
+
+    Seeding is not a fidelity claim. The bytes are invented; what is real is that
+    the program gets far enough to make the engine do something, and whatever it
+    then does is compared against CPython doing the same. Re-grading the class
+    this way surfaced refusals that were never counted, in a table ``--plan``
+    ranks the build order by — the blind spot corrupted the roadmap, not just
+    the verdict.
+
+    This function only says which files an entry COULD be given.
+    :func:`_run_entry` decides whether to give them, and only does so when the
+    reference run in an empty sandbox died of a missing file: seeding a program
+    that deliberately opens something it expects to be absent would delete the
+    branch it was written to test.
+
+    Only paths whose CONTENT is read, only string literals, and never one the
+    program itself writes: seeding a file a program is about to create with
+    ``open(p, "x")`` would invent a failure rather than remove one.
+    """
+    out: Dict[str, bytes] = {}
+    for rel in sorted(paths_read(program)):
+        if len(out) >= _SEED_LIMIT:
+            break
+        pure = PurePosixPath(rel)
+        if pure.is_absolute() or not rel or rel.startswith("~") or len(rel) > 200:
+            continue
+        if any(part in ("..", "") for part in pure.parts) or len(pure.parts) > 8:
+            continue
+        if "\\" in rel or "\x00" in rel:
+            continue
+        out[rel] = _SEED_CONTENT.get(pure.suffix.lower(), _SEED_DEFAULT)
+    return out
 
 
 class _Sandbox:
@@ -964,14 +1554,29 @@ class _Sandbox:
 
     Per *run*, not per entry: the reference and each engine get their own, or the
     second one to run would read back the file the first one created and "match"
-    without having written anything.
+    without having written anything. ``seed`` is written into each of them
+    identically — see :func:`seed_files` for why an empty cwd is not neutral.
     """
 
-    def __init__(self, tag: str) -> None:
+    def __init__(self, tag: str, seed: Optional[Dict[str, bytes]] = None) -> None:
         self.tag = tag
+        self.seed = seed or {}
 
     def __enter__(self) -> Path:
         self.path = Path(tempfile.mkdtemp(prefix="lypning-conf-%s-" % self.tag))
+        for rel, data in self.seed.items():
+            target = self.path / rel
+            try:
+                # Belt to seed_files' braces: a path that resolves outside the
+                # sandbox is dropped, never written.
+                target.resolve().relative_to(self.path.resolve())
+            except ValueError:
+                continue
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+            except OSError:
+                pass
         return self.path
 
     def __exit__(self, *exc: Any) -> None:
@@ -1016,6 +1621,8 @@ class _EntryResult:
     route_kind: str = ""
     route_detail: str = ""
     skip: Optional[Skip] = None
+    #: How many files were written into every sandbox for this entry.
+    seeded: int = 0
 
 
 def _run_entry(
@@ -1056,6 +1663,15 @@ def _run_entry(
         out.skip = Skip(out.entry_id, "absolute path outside the sandbox: %s" % outside[0])
         return out
 
+    # The reference runs FIRST in an empty sandbox, and the seed is applied only
+    # if that run says the sandbox is what broke it. Seeding unconditionally
+    # trades one blind spot for another: py-dbfc5ba3b7a3 opens a file it expects
+    # to be missing and prints what it caught, and a seeded `nope.txt` deletes
+    # the branch the program was written to exercise. So the rule is narrow —
+    # seed only where the REFERENCE itself died of `FileNotFoundError`, which is
+    # exactly the class the empty cwd manufactures and nothing else.
+    seed = seed_files(program)
+
     with _Sandbox("ref") as cwd:
         ref = eng.run(CPYTHON, program, binary=ref_bin, argv_tail=argv_tail, stdin=stdin,
                       cwd=cwd, timeout=timeout, env=_env_for(cwd))
@@ -1064,6 +1680,20 @@ def _run_entry(
         # slow, not an engine being wrong. Scoring it either way would be a lie.
         out.skip = Skip(out.entry_id, "reference timed out after %gs" % timeout)
         return out
+    if seed and ref.returncode and stderr_shape(ref.stderr)[1] in _MISSING_FILE:
+        with _Sandbox("ref", seed) as cwd:
+            seeded_ref = eng.run(CPYTHON, program, binary=ref_bin, argv_tail=argv_tail,
+                                 stdin=stdin, cwd=cwd, timeout=timeout, env=_env_for(cwd))
+        if seeded_ref.timed_out:
+            # The seed turned a program that failed instantly into one that runs
+            # forever. Drop the seed rather than the entry: the unseeded pair is
+            # still a comparison, and a timeout would throw the entry away.
+            seed = {}
+        else:
+            ref = seeded_ref
+            out.seeded = len(seed)
+    else:
+        seed = {}
 
     for arm in arms:
         if arm == CPYTHON:
@@ -1074,7 +1704,7 @@ def _run_entry(
                                         wall_ns=ref.wall_ns)
             continue
         if arm == MIXTURE:
-            with _Sandbox("mix") as cwd:
+            with _Sandbox("mix", seed) as cwd:
                 # `env=` and not the ambient environment, which is the whole
                 # point of _env_for and the one arm that used to skip it. A
                 # mixture child without PYTHONHASHSEED=0 disagrees with the
@@ -1104,7 +1734,7 @@ def _run_entry(
             # siblings and the other tiers are pinned the way the Python
             # dispatcher's are, so the two walk the same ladder over the same
             # binaries — a disagreement is then the dispatcher, never the build.
-            with _Sandbox("mixr") as cwd:
+            with _Sandbox("mixr", seed) as cwd:
                 env = _env_for(cwd)
                 if ref_bin:
                     env[eng.env_var_for(CPYTHON)] = str(ref_bin)
@@ -1120,12 +1750,12 @@ def _run_entry(
             # In-process, so there is no child to give a cwd to: `run_library`
             # chdirs under a lock instead, which is why this arm serialises
             # while the spawned arms do not.
-            with _Sandbox("lib") as cwd:
+            with _Sandbox("lib", seed) as cwd:
                 got = eng.run_library(program, argv_tail=argv_tail, stdin=stdin, cwd=cwd,
                                       step_limit=LIBRARY_STEP_LIMIT, env=_env_for(cwd))
             out.verdicts[arm] = classify(ref, got, LIBRARY, entry)
             continue
-        with _Sandbox(arm) as cwd:
+        with _Sandbox(arm, seed) as cwd:
             got = eng.run(arm, program, binary=binaries.get(arm), argv_tail=argv_tail,
                           stdin=stdin, cwd=cwd, timeout=timeout, env=_env_for(cwd))
         out.verdicts[arm] = classify(ref, got, arm, entry)
@@ -1160,6 +1790,8 @@ def run(
 
     pool: List[Any] = []
     arms: List[str] = []
+    seeded: Tuple[int, int] = (0, 0)
+    text_view = 0
     unbuilt: List[str] = []
     unbuilt_why: Dict[str, str] = {}
     ref_bin: Optional[Path] = None
@@ -1286,6 +1918,8 @@ def run(
             monotone = (len(monotone_violations), compared)
         routes = {r.entry_id: eng.Route(r.predicted, r.route_kind, r.route_detail)
                   for r in scored if r.predicted}
+        seeded = (sum(1 for r in results if r.seeded), sum(r.seeded for r in results))
+        text_view = sum(1 for e in pool if waiver_basis(e) == "text")
     finally:
         damage = close_net(root, before)
 
@@ -1304,6 +1938,8 @@ def run(
         unbuilt_why=unbuilt_why,
         reference=str(ref_bin or ""),
         total=len(pool),
+        seeded=seeded,
+        text_view=text_view,
     )
 
 
@@ -1504,6 +2140,29 @@ def render(report: Report, plan: bool = False) -> str:
                            % (_pad(name, 10), v.entry_id, v.kind, v.detail))
     if shown > 25:
         out.append("  … %d more" % (shown - 25))
+
+    # What the MATCHes rested on. A coverage percentage is unreadable without
+    # it: two runs agreeing that a program raised FileNotFoundError is a MATCH,
+    # and it is not the same fact as two runs agreeing on a page of output.
+    out.append("")
+    out.append("what the MATCHes compared — an agreement about nothing is still an"
+               " agreement, but not the same one:")
+    out.append("engine       MATCH  stdout  stderr  exit only  both failed")
+    for name, r in report.engines.items():
+        out.append("%s %s  %s  %s  %s  %s" % (
+            _pad(name, 11), str(r.match).rjust(5), str(r.match_stdout).rjust(6),
+            str(r.match_stderr).rjust(6), str(r.match_exit_only).rjust(9),
+            str(r.match_both_failed).rjust(11)))
+    out.append("  exit only    = neither arm wrote anything on either stream; the exit"
+               " code is the whole verdict")
+    out.append("  both failed  = both arms exited non-zero with the same code — real"
+               " agreement, cheapest kind")
+    if report.seeded[0]:
+        out.append("  seeded %d entries with %d files so the sandbox was not the reason"
+                   " both arms failed" % report.seeded)
+    if report.text_view:
+        out.append("  %d programs do not parse: their stdout waiver was decided on the"
+                   " program text, not its AST" % report.text_view)
 
     if report.skipped:
         out.append("")

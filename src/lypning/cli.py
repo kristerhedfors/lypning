@@ -1368,6 +1368,9 @@ def cmd_conformance(ns: argparse.Namespace) -> int:
             "damage": report.damage,
             "ok": report.ok,
             "mismatches": report.mismatches,
+            "seeded_entries": report.seeded[0],
+            "seeded_files": report.seeded[1],
+            "text_view": report.text_view,
             "skipped": [_plain(s) for s in report.skipped],
             "routing_errors": [_plain(r) for r in report.routing_errors],
             "routing": {
@@ -1392,6 +1395,12 @@ def cmd_conformance(ns: argparse.Namespace) -> int:
             obj["engines"][name] = {
                 "match": er.match, "unsupported": er.unsupported,
                 "mismatch": er.mismatch, "total": er.total, "coverage": er.coverage,
+                # What the MATCHes actually rested on. A coverage percentage
+                # cannot be read without it: an agreement about an exit code and
+                # an agreement about a page of output are not the same number.
+                "match_stdout": er.match_stdout, "match_stderr": er.match_stderr,
+                "match_exit_only": er.match_exit_only,
+                "match_both_failed": er.match_both_failed,
                 "failures": [_plain(v) for v in er.failures()],
             }
         if ns.plan:

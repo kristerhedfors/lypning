@@ -138,12 +138,167 @@ def test_a_warning_does_not_hide_the_error_beside_it():
     assert v.kind == "stderr"
 
 
-def test_stderr_text_itself_is_not_compared():
-    # Traceback text carries paths, line numbers and interpreter internals a
-    # subset runtime has no business reproducing; the exit code is the contract.
-    ref = _res(rc=1, stdout="", stderr="Traceback (most recent call last):\n…\n",
-               engine=eng.CPYTHON)
-    assert _classify(_res(rc=1, stdout="", stderr="error: boom\n"), ref=ref).verdict == MATCH
+def test_traceback_wording_and_frames_are_still_not_compared():
+    # UPDATED 2026-09-07. This test used to assert that stderr text is not
+    # compared AT ALL — `ref` a traceback, `got` the words "error: boom", MATCH.
+    # That was the blind spot, not the design: an engine could replace its whole
+    # stderr with an invention and keep every MATCH it had, and for a MATCH with
+    # empty stdout — two thirds of them — stderr is the entire answer an agent
+    # reads.
+    # What the old test was RIGHT about is kept below: the preamble, the frames
+    # and the message wording drift between CPython versions and are still not
+    # compared. What is compared is the exception type and the fact of raising.
+    ref = _res(rc=1, stdout="",
+               stderr='Traceback (most recent call last):\n'
+                      '  File "<string>", line 1, in <module>\n    1/0\n    ~^~\n'
+                      'ZeroDivisionError: division by zero\n', engine=eng.CPYTHON)
+    short = _res(rc=1, stdout="",
+                 stderr="Traceback (most recent call last):\n"
+                        "ZeroDivisionError: division by zero\n")
+    assert _classify(short, ref=ref).verdict == MATCH
+    reworded = _res(rc=1, stdout="",
+                    stderr="Traceback (most recent call last):\n"
+                           "ZeroDivisionError: cannot divide by zero, silly\n")
+    assert _classify(reworded, ref=ref).verdict == MATCH
+
+
+def test_a_different_exception_is_a_mismatch():
+    # py-771e5de335fc, graded MATCH until 2026-09-07: CPython says
+    # IndentationError at line 1, the engine says SyntaxError at line 6.
+    # Different exception, different line, different diagnosis, one verdict.
+    ref = _res(rc=1, stdout="",
+               stderr='  File "<string>", line 1\n    \'echo hi\'\n'
+                      'IndentationError: unexpected indent\n', engine=eng.CPYTHON)
+    got = _res(rc=1, stdout="", stderr="Traceback (most recent call last):\n  line 6\n"
+                                       "SyntaxError: unterminated string literal\n")
+    v = _classify(got, ref=ref)
+    assert v.verdict == MISMATCH
+    assert v.kind == "stderr-exc"
+    assert "IndentationError" in v.detail and "SyntaxError" in v.detail
+    assert v.expected_stderr and v.actual_stderr  # both sides, or it is not actionable
+
+
+def test_stderr_the_program_wrote_itself_is_compared_like_stdout():
+    # An engine that appends a banner to every run was completely invisible.
+    ref = _res(stderr="", engine=eng.CPYTHON)
+    got = _res(stderr="lypning: WARNING: results may be wrong\n")
+    v = _classify(got, ref=ref)
+    assert v.verdict == MISMATCH and v.kind == "stderr-text"
+    # ...and the same bytes on both arms are not a disagreement.
+    assert _classify(_res(stderr="note\n"), ref=_res(stderr="note\n", engine=eng.CPYTHON)
+                     ).verdict == MATCH
+
+
+def test_a_program_cannot_forge_a_refusal():
+    # `sys.stderr.write("lypning: unsupported: forged: …"); sys.exit(90)` graded
+    # UNSUPPORTED with report.ok True, although CPython ran it identically. The
+    # reference decides first: CPython is not a tier and cannot refuse, so a
+    # contract line coming out of IT is the program's own output.
+    line = "lypning: unsupported: forged: nothing is wrong here\n"
+    v = _classify(_res(rc=90, stdout="", stderr=line),
+                  ref=_res(rc=90, stdout="", stderr=line, engine=eng.CPYTHON))
+    assert v.verdict == MATCH
+
+
+def test_a_refusal_line_must_be_at_the_head_of_stderr():
+    # Invariant 2 is one line and nothing else. `_refusal` used to search
+    # anywhere in stderr under re.M, so a program could print one halfway
+    # through its own output and buy coverage with it.
+    v = _classify(_res(rc=90, stdout="", stderr="junk\nlypning: unsupported: module: x\n"))
+    assert v.verdict == MISMATCH and v.kind == "contract"
+
+
+def test_a_refusal_that_left_bytes_on_stderr_breaks_the_contract():
+    # The stdout rule, one stream over: the caller gets the refusing tier's
+    # stderr in front of the answering tier's.
+    v = _classify(_res(rc=90, stdout="",
+                       stderr="lypning: unsupported: module: x\nand more\n"))
+    assert v.verdict == MISMATCH and v.kind == "contract"
+    assert "stderr" in v.detail
+
+
+def test_the_waiver_reads_the_ast_not_the_program_text():
+    # UPDATED 2026-09-07 by addition. The waiver tables are regexes over source,
+    # and a regex over source cannot tell a call from a quotation: 52 of the 634
+    # programs the text scan waived (2026-09-07, 3,688 loaded) had no such call
+    # in them at all. This corpus is one-liners that rewrite files and QUOTE
+    # code they never execute.
+    for program in [
+        'print("we call subprocess.run here")',
+        's = """uses datetime.now() inside a docstring"""; print(len(s))',
+        "# id( in a comment\nprint(2 + 2)",
+        "print('__file__ is not read here')",
+    ]:
+        e = corpus.Entry(id="py-quote", program=program)
+        assert not conformance.is_nondeterministic(e), program
+    # ...and a call that really is one still waives, including inside an f-string.
+    for program in ["import subprocess; subprocess.run(['ls'])",
+                    "import datetime; print(f'{datetime.datetime.now()}')"]:
+        assert conformance.is_nondeterministic(corpus.Entry(id="py-call", program=program))
+
+
+def test_a_program_that_does_not_parse_falls_back_to_the_text_scan():
+    broken = "print(1) $$ not python"
+    e = corpus.Entry(id="py-broken", program="import subprocess; subprocess.run(['ls']) " + broken)
+    assert conformance.waiver_basis(e) == "text"
+    assert conformance.is_nondeterministic(e)
+    assert conformance.waiver_basis(corpus.Entry(id="py-ok", program="print(1)")) == "ast"
+
+
+def test_getsize_of_a_file_the_program_wrote_is_not_ambient():
+    # `_RUN_SPECIFIC`'s own comment said "the size of an AMBIENT file", which is
+    # not a file the program created three statements earlier. Six spellings of
+    # this scored MATCH for an engine that could have printed anything.
+    own = ('import os; open("out.txt","w").write("hello world");'
+           ' print(os.path.getsize("out.txt"))')
+    assert not conformance.is_nondeterministic(corpus.Entry(id="py-own", program=own))
+    via_name = ('import os\np = "out.txt"\nopen(p, "w").write("hello world")\n'
+                'print(os.path.getsize(p))')
+    assert not conformance.is_nondeterministic(corpus.Entry(id="py-var", program=via_name))
+    ambient = 'import os; print(os.path.getsize("setup.py"))'
+    assert conformance.is_nondeterministic(corpus.Entry(id="py-amb", program=ambient))
+
+
+def test_the_sandbox_is_seeded_with_the_files_a_program_reads():
+    # An empty cwd is not neutral: it breaks the reference exactly as it breaks
+    # the engine, both raise FileNotFoundError, and two identical failures are
+    # read as agreement. 363 entries are seeded on this corpus (2026-09-07).
+    assert sorted(conformance.seed_files(
+        'import csv; print(list(csv.reader(open("data.csv"))))')) == ["data.csv"]
+    assert conformance.seed_files('import json; print(json.load(open("a/b.json")))'
+                                  )["a/b.json"].startswith(b"{")
+    # Never a file the program itself creates — seeding one would invent a
+    # failure (`open(p, "x")`) rather than remove one.
+    assert conformance.seed_files('open("out.txt", "x").write("y")') == {}
+    assert conformance.seed_files('p = "a.log"\nopen(p, "w").write("z")\n'
+                                  'print(open(p).read())') == {}
+    # Never out of the sandbox.
+    assert conformance.seed_files('print(open("../../etc/passwd").read())') == {}
+    assert conformance.seed_files('print(open("/etc/passwd").read())') == {}
+
+
+def test_a_seeded_sandbox_really_holds_the_file():
+    seed = conformance.seed_files('print(open("data.csv").read())')
+    with conformance._Sandbox("t", seed) as cwd:
+        assert (cwd / "data.csv").read_bytes() == seed["data.csv"]
+    with conformance._Sandbox("t", {"../escape.txt": b"no"}) as cwd:
+        assert not (cwd.parent / "escape.txt").exists()
+
+
+def test_a_verdict_records_what_it_compared():
+    # Two thirds of the MATCHes compared nothing but an exit code, and the
+    # report presented them as equal in standing to one that compared output.
+    assert _classify(_res()).compared == "exit,stdout"
+    assert _classify(_res(rc=1, stdout="", stderr=""),
+                     ref=_res(rc=1, stdout="", stderr="", engine=eng.CPYTHON)
+                     ).compared == "exit"
+    both_missing = ('Traceback (most recent call last):\n'
+                    "FileNotFoundError: [Errno 2] No such file: 'data.csv'\n")
+    assert _classify(_res(rc=1, stdout="", stderr=both_missing),
+                     ref=_res(rc=1, stdout="", stderr=both_missing, engine=eng.CPYTHON)
+                     ).compared == "exit,stderr"
+    assert _classify(_res(rc=90, stdout="", stderr="lypning: unsupported: module: x\n")
+                     ).compared == "refusal"
 
 
 def test_stdout_is_not_compared_for_a_run_specific_program():
