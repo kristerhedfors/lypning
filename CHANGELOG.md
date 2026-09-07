@@ -20,6 +20,53 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-07** — Round 81: `repr()` of a type at 46 programs per KB, a `zip()` that never returned, and 224 builtin arity divergences
+
+- **`repr()` of a type**, the row the corrected grader put on the board: it was
+  0 until round 80 found the battery counting 23 refusals per arm as MATCHes,
+  and it landed at rank 6. `lypning-l` 79.2% → **79.8%** for **+304 B** of
+  `__text` — **46 programs per KB**, eleven times the densest row previously
+  landed (`pathlib` 4.08) and ~50x the ~11 KiB floor round 80 established.
+  All fifteen programs are one shape, `print(type(d))` after `json.load`.
+- Two traps, both settled by running CPython rather than recalling it. The table
+  is **not `tp_name`**: `type.__repr__` prints `<class '{__module__}.{__qualname__}'>`
+  with `builtins` elided, so `repr(Counter)` is `<class 'collections.Counter'>`
+  where its `tp_name` is bare `Counter`. And a value the engine cannot
+  distinguish must REFUSE: `modules.rs` answers one `Value::Builtin` for both
+  `pathlib.Path`/`PosixPath` and for `ValueError`/`json.JSONDecodeError`, so
+  both refuse. The control that keeps this measured rather than superstitious:
+  `IOError is OSError` really is one class, so `repr(IOError)` is served.
+- An adversary found a third instance the author missed — `type(os.environ)`
+  answered `<class 'dict'>` because `modules.rs` models it as a bare
+  `Value::Dict`. Fixed by tagging the mapping where it is built, which also
+  closed three more exit-0 wrong answers a docstring had recorded as unfixable:
+  `print(os.environ)`, `isinstance(os.environ, dict)` and
+  `json.dumps(os.environ)`.
+- **`zip()` with zero iterables never terminated** — `Iter::Zip` built its output
+  by looping over the iterables, so with none it never signalled exhaustion and
+  yielded `()` forever. A hang gives the chain no exit code to retry on. Fixed
+  at the root, so `zip(*[])` is covered too. Pre-existing; 0 corpus occurrences,
+  fixed anyway.
+- **`bytes(-1)`** silently returned empty where CPython raises
+  `ValueError: negative count`.
+- **Builtin arity: 224 divergences → 0.** All 39 names in `builtins::BUILTINS`
+  swept against CPython 3.14.5 over 0–4 arguments. Nine answered at exit 0 where
+  CPython raises; ~20 more raised with the wrong text. `arity()` now carries a
+  wording column, because CPython spells the same `(1,1)` three different ways
+  and a right count with wrong text still disagrees on graded stderr.
+- **A sixth defect the fix itself uncovered:** one added byte in `Dict` turned
+  `f(179)` — the deepest recursion `MAX_DEPTH` admits — into a killed process
+  where the guard is supposed to produce a refusal. `eval`'s match held two
+  `Dict`s and a `Set` **by value** on the frame of every expression evaluated.
+  Stack headroom went from **0.5% to ~12%**; that guard had been one byte from
+  failing for a long time.
+- `lypning-l` crosses into **device block 9** (1,050,208 B of a 32-block budget);
+  the frozen core stays at 7 of its 8. MISMATCH 0, UNSAFE 0, monotone 0,
+  dispatchers agree 2504/2504.
+- Also landed: `file-write-read` addressed by reordering `BUILTINS` by measured
+  corpus frequency instead of alphabetically — **zero bytes**, `__text`
+  identical. Profiling disagreed with iteration 68's callgrind reading again.
+
 **2026-09-07** — Round 80: the grader could not see most disagreements, and `MISMATCH 0` was not true
 
 - **Four confirmed blind spots in `lypning conformance`**, each with a

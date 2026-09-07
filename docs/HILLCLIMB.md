@@ -26,6 +26,93 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-09-07 · iteration 81 — the densest row ever measured, and a guard that was one byte from failing
+
+Host: macOS arm64, host-target build. Corpus 3,688 loaded, 2,504 graded.
+Reference CPython 3.14.5. Run as TRACK A of a two-session split (see the shared
+`session-coordination.md`): this track owns `src/lypning/assets/rust/**` and
+`tests/test_*_grid.py`, a peer owns the Python harness. File ownership, not
+topic, is what prevents the merge pain.
+
+### `repr()` of a type — 46 programs per KB
+
+| | before | after |
+|---|---|---|
+| `lypning-l` | 1983 / 521 / 0 — 79.2% | **1996 / 508 / 0 — 79.7%** |
+| `__text` | 819,736 | 820,040 (+304 B) |
+
+Eleven times the densest row previously landed (`pathlib` 4.08) and ~50x the
+~11 KiB floor iteration 80 established. **This row did not exist until iteration
+80 fixed the grader** — the battery had been counting 23 refusals per arm as
+MATCHes, and correcting that put `repr: repr() of a type` on the board at 0 → 15,
+rank 6. All fifteen programs are one shape: `print(type(d))` after `json.load`,
+needing three spellings (`dict` x14, `str` x2, `list` x1).
+
+Two traps, both settled by RUNNING CPython:
+
+- **The table is not `tp_name`.** `type.__repr__` prints
+  `<class '{__module__}.{__qualname__}'>` with `builtins` elided, so
+  `repr(Counter)` is `<class 'collections.Counter'>` while its `tp_name` is bare
+  `Counter`. Reusing `class_name` would have printed the wrong thing at exit 0.
+- **A value the engine cannot distinguish must refuse.** `modules.rs` answers ONE
+  `Value::Builtin` for both `pathlib.Path`/`PosixPath` and for
+  `ValueError`/`json.JSONDecodeError`; CPython spells each pair differently and
+  nothing in the value says which is held. Both refuse. The control that keeps
+  the rule measured rather than superstitious: `IOError is OSError` really is one
+  class, so `repr(IOError)` is served.
+
+The adversary found a THIRD instance the author missed — `type(os.environ)`
+answered `<class 'dict'>`, because `modules.rs` models it as a bare
+`Value::Dict`. Tagging the mapping where it is built also closed three more
+exit-0 wrong answers a docstring had recorded as unfixable.
+
+### A hang, and 224 arity divergences
+
+**`zip()` with zero iterables never returned.** `Iter::Zip` builds its output by
+looping over the iterables; with none, nothing ever signals exhaustion and it
+yields `()` forever. A hang is worse than a wrong answer because it produces no
+exit code for the chain to retry on. Fixed at the root so `zip(*[])` is covered.
+Zero corpus occurrences — fixed anyway.
+
+**Builtin arity: 224 divergences over 39 names x 0-4 arguments, now 0.** Nine
+answered at exit 0 where CPython raises (`map(abs)`, `type("C",(),{})`,
+`str(1,0)` …); ~20 more raised with the wrong text. `arity()` needed a WORDING
+column, because CPython spells the same `(1,1)` three ways — `len() takes exactly
+one argument (2 given)` / `sorted expected 1 argument, got 2` / `enumerate()
+takes at most 2 arguments (3 given)` — and a right count with wrong text still
+disagrees now that stderr is graded. Only one corpus verdict moved; the rest are
+hand-reachable only.
+
+### The finding the fix produced
+
+One added byte in `Dict` turned `f(179)` — the deepest recursion `MAX_DEPTH`
+admits, pinned `ok` by `test_deep_programs_stay_refusals_on_a_small_host_stack` —
+into a **killed process** where the guard is supposed to produce a refusal. The
+margin was never the recursion guard's: `eval`'s match held two `Dict`s and a
+`Set` **by value**, on the frame of every expression evaluated. Moving the three
+mapping literals into `#[inline(never)]` helpers returned ~120 KB of stack.
+
+    before  needs > 1,014 KB of the 1,024 KB the embed test gives it — 0.5% margin
+    after   needs >   894 KB                                        — ~12% margin
+
+That guard had been one byte from failing for a long time, and nothing would have
+called it a regression: the test would simply have started killing the process.
+**A test that passes with a 0.5% margin is not passing, it is waiting.**
+
+### Cost, stated
+
+`lypning-l` crosses into **device block 9** (1,050,208 B of a 32-block budget).
+The frozen core stays at 7 of its 8. The `file-write-read` perf row was addressed
+by reordering `BUILTINS` by measured corpus frequency rather than alphabetically —
+**zero bytes**, `__text` identical to the byte — and profiling disagreed with
+iteration 68's callgrind reading, which is twice now that `sample(1)` on a
+symbolicated build has overturned a standing answer.
+
+**Next.** Track B (the Python harness) has seven filed items and they are one
+defect class: a number or a row that is absent or wrong in a way nothing shouts
+about — five grader blind spots, `bench.resolve_arms` silently dropping a name
+the caller typed, and README's published counts decaying with no test to catch it.
+
 ## 2026-09-07 · iteration 80 — the grader could not see most disagreements
 
 Host: macOS arm64, host-target build. Corpus 3,688 loaded, 2,504 graded.
