@@ -59,7 +59,7 @@ model:
 
 checkpoint:
   enabled: true
-  checkpoint_dir: /mnt/ckpt
+  checkpoint_dir: /data/ckpt
   model_save_format: safetensors
   save_consolidated: final
 
@@ -83,16 +83,20 @@ distributed:
 loss_fn:
   _target_: nemo_automodel.components.loss.masked_ce.MaskedCrossEntropy
 
+# ChatDataset reads OpenAI `messages` JSONL straight off disk, which is exactly
+# the shape `nt sample` already writes. Verified against
+# examples/llm_finetune/qwen/qwen2_5_7b_instruct_chat.yaml in the Automodel tree
+# (2026-09-11). A custom dataset target would be one more thing to fail 15
+# minutes into a paid job.
 dataset:
-  _target_: nemo_automodel.components.datasets.llm.ntx_sft.make_ntx_dataset
-  path: /mnt/data/sft.jsonl
-  split: train
+  _target_: nemo_automodel.components.datasets.llm.chat_dataset.ChatDataset
+  path_or_dataset_id: /data/sft.jsonl
+  mask_generation_prompt: true
 
 validation_dataset:
-  _target_: nemo_automodel.components.datasets.llm.ntx_sft.make_ntx_dataset
-  path: /mnt/data/sft_val.jsonl
-  split: validation
-  num_samples_limit: 32
+  _target_: nemo_automodel.components.datasets.llm.chat_dataset.ChatDataset
+  path_or_dataset_id: /data/sft_val.jsonl
+  mask_generation_prompt: true
 
 packed_sequence:
   packed_sequence_size: 0
