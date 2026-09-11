@@ -1,4 +1,6 @@
 {
+  "authorship_undecided": 0,
+  "authorship_undecided_cases": [],
   "cases_evaluated": 74,
   "cases_planned": 74,
   "ci95": {
@@ -13,6 +15,9 @@
     "lo": 0.19373547108022535
   },
   "ci_disagreement": 0.0012656321512027058,
+  "engine_mismatch_cases": [],
+  "engine_mismatch_detail": {},
+  "engine_mismatches": 0,
   "extraction_by_kind": {
     "fenced-python": 33,
     "none": 41
@@ -22,12 +27,21 @@
     "syntax-error": 2,
     "wrong-output": 10
   },
+  "failures_by_reason": {
+    "exit": 2,
+    "no-code": 41,
+    "refused": 8,
+    "stdout": 2
+  },
   "harness_errors": 0,
   "holdout_manifest_sha256": "80b2fc522202a0ece3b84b299791761c86dd07983596a46650f9bfcb733ce588",
   "label": "stock baseline",
   "model": "nemotron",
   "n_attempts": 74,
+  "n_attempts_billed": 74,
   "n_cases": 74,
+  "non_genuine_cases": [],
+  "non_genuine_passes": 0,
   "pass_at_k": {
     "headroom": 0.0,
     "k": 1,
@@ -123,7 +137,7 @@
     "top_p": 0.95
   },
   "spend_usd": 0.3296,
-  "summarized_at": "2026-09-11T22:10:33Z",
+  "summarized_at": "2026-09-11T22:43:17Z",
   "tokens_out": 233296,
   "wall_s": 3673.5
 }

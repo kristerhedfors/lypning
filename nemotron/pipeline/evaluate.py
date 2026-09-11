@@ -1,6 +1,6 @@
 """Step 2. pass@1 over the frozen held-out split, and the number everything else is measured against.
 
-FOUR THINGS THIS REFUSES TO DO, each of which would quietly break comparability:
+SIX THINGS THIS REFUSES TO DO, each of which would quietly break comparability:
 
 1. Run against a drifted split. :func:`split.verify` is checked first, and a
    mismatch aborts. A pass rate over a different set of cases is a different
@@ -15,12 +15,23 @@ FOUR THINGS THIS REFUSES TO DO, each of which would quietly break comparability:
 4. Lose work. Every attempt is appended and fsynced as it completes, so a run
    killed at any point — a spot preemption, a closed laptop — resumes from what
    it already has instead of starting over and re-spending.
+5. Score an engine mismatch as a failed program. An engine that RUNS a program
+   and disagrees with CPython is invariant 1 — always a bug in this repository,
+   never the model's — so the attempt leaves the denominator exactly as a harness
+   error does, and is counted and named on its own line instead of being dropped.
+   A fine-tune that trips a new mismatch must not read as a worse model.
+6. Resolve an unproven cheat either way. A pass the discriminator calls
+   not-genuine is recorded as its own outcome — it reproduced the expected bytes
+   without computing them, which is neither a pass nor a wrong answer — and a
+   pass it cannot judge is scored exactly as it stands, with the doubt written
+   down. See :func:`judge_authorship` for why the doubt falls that way.
 """
 
 from __future__ import annotations
 
 import concurrent.futures
 import datetime as _dt
+import inspect
 import threading
 import time
 from collections import Counter, defaultdict
@@ -29,7 +40,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import split as splitmod
 from . import stats
-from .acceptance import run_test
+from .acceptance import Verdict, run_test
 from .backends import BackendError, ChatBackend
 from .classify import classify
 from .extract import extract_program
@@ -94,6 +105,155 @@ def load_holdout(data_dir: Path) -> List[Dict[str, Any]]:
     lock = splitmod.load_lock(data_dir) or {"holdout": []}
     held = {e["id"] for e in lock["holdout"]}
     return [c for c in read_jsonl(corpus) if c["id"] in held]
+
+
+# ------------------------------------------------ who wrote the answer
+
+GENUINE = "genuine"
+NOT_GENUINE = "not-genuine"
+UNDECIDED = "undecided"
+
+# The discriminator lives in :mod:`pipeline.sample`, which owns the question
+# "did this program compute the answer or carry it?". This is only the seam, and
+# it names the contract rather than the implementation: the first of these that
+# `sample` defines is asked, and anything else it answers is doubt.
+_ENTRY_POINTS = ("authorship_verdict", "grade_authorship", "judge_authorship",
+                 "looks_like_literal_output")
+
+_VERDICT_WORDS = {
+    "genuine": GENUINE, "computed": GENUINE, "ok": GENUINE, "pass": GENUINE,
+    "not-genuine": NOT_GENUINE, "not_genuine": NOT_GENUINE, "recited": NOT_GENUINE,
+    "recitation": NOT_GENUINE, "literal-output": NOT_GENUINE, "cheat": NOT_GENUINE,
+    "undecided": UNDECIDED, "unknown": UNDECIDED, "cannot-tell": UNDECIDED,
+    "unsure": UNDECIDED,
+}
+
+
+def _discriminator():
+    """The function :mod:`pipeline.sample` exposes, or None.
+
+    Imported late because `sample` imports this module for the prompt; at module
+    scope that is a cycle.
+    """
+    from . import sample
+    for name in _ENTRY_POINTS:
+        fn = getattr(sample, name, None)
+        if callable(fn):
+            return fn
+    return None
+
+
+def _arguments(case: Dict[str, Any], program: str) -> Dict[str, Any]:
+    """Everything a discriminator could ask for, keyed by parameter name."""
+    test = case.get("test") or {}
+    return {
+        "case": case, "test": test, "program": program,
+        "prompt": case.get("prompt") or "",
+        "expected_stdout": test.get("expect_stdout") or "",
+        "expect_stdout": test.get("expect_stdout") or "",
+    }
+
+
+def _invoke(fn, case: Dict[str, Any], program: str) -> Any:
+    """Call the discriminator in whatever shape it declares."""
+    args = _arguments(case, program)
+    try:
+        params = list(inspect.signature(fn).parameters.values())
+    except (TypeError, ValueError):
+        return fn(case, program)
+    wanted = [p for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD,
+                                              p.KEYWORD_ONLY)]
+    if any(p.name not in args and p.default is p.empty for p in wanted):
+        return fn(case, program)
+    named = [p for p in wanted if p.name in args]
+    if any(p.kind is p.POSITIONAL_ONLY for p in named):
+        return fn(*[args[p.name] for p in named])
+    return fn(**{p.name: args[p.name] for p in named})
+
+
+def _read_verdict(answer: Any) -> Tuple[str, str]:
+    """Normalize a discriminator's answer to (status, detail).
+
+    An answer that does not name one of :data:`_VERDICT_WORDS` is read as doubt,
+    including a bare "yes" — see :func:`judge_authorship`.
+    """
+    if answer is None:
+        return UNDECIDED, "the discriminator returned nothing"
+    detail = ""
+    if isinstance(answer, (tuple, list)) and len(answer) == 2:
+        answer, detail = answer[0], str(answer[1] or "")
+    if isinstance(answer, dict):
+        detail = detail or str(answer.get("detail") or answer.get("reason") or "")
+        answer = answer.get("verdict", answer.get("status", UNDECIDED))
+    elif not isinstance(answer, (str, bool)):
+        detail = detail or str(getattr(answer, "detail", "")
+                               or getattr(answer, "reason", "") or "")
+        answer = getattr(answer, "verdict", getattr(answer, "status", answer))
+    if isinstance(answer, bool):
+        return UNDECIDED, detail or "the discriminator answered yes/no"
+    text = str(answer or "").strip()
+    if not text:
+        return GENUINE, detail
+    word = _VERDICT_WORDS.get(text.lower())
+    if word is None:
+        return UNDECIDED, text[:200]
+    return word, detail
+
+
+def judge_authorship(case: Dict[str, Any], program: str) -> Tuple[str, str]:
+    """Did the model compute this answer or carry it? (status, detail).
+
+    THE DEFAULT LEANS TOWARD THE MODEL, DELIBERATELY. The two errors are not
+    symmetric: a missed cheat costs one attempt and still shows up in the
+    undecided count, while a false accusation makes a frozen held-out case
+    unpassable by a correct program and then prints that accusation as a finding.
+    Measured on this corpus, the purely syntactic guard fired on six correct
+    programs for every real cheat it caught, because the dominant task shape here
+    is "rewrite this program without <module>" and a faithful rewrite keeps the
+    literals it was given. So only an answer that explicitly names a verdict may
+    flip a pass; everything else — an unreadable answer, a two-state guard that
+    cannot say "cannot tell", a discriminator that is absent or raises — is
+    recorded as :data:`UNDECIDED` and the attempt is scored as it stands.
+    """
+    fn = _discriminator()
+    if fn is None:
+        return UNDECIDED, "pipeline.sample exposes no discriminator"
+    try:
+        return _read_verdict(_invoke(fn, case, program))
+    except Exception as exc:  # a broken discriminator may not fail a paid run
+        return UNDECIDED, "the discriminator raised: %s: %s" % (type(exc).__name__, exc)
+
+
+def score_verdict(case: Dict[str, Any], program: str, verdict: Verdict) -> Dict[str, Any]:
+    """The recorded outcome of one graded attempt, as fields to merge into it.
+
+    The single place a verdict becomes a score, so that a replay of stored
+    completions cannot reach a different answer than the run that produced them.
+    """
+    if verdict.harness_error:
+        return {"harness_error": verdict.harness_error, "passed": False}
+    if verdict.reason == "malformed-test":
+        # The test spec is what failed to hold up, so this is our defect: the
+        # attempt leaves the denominator rather than scoring the model a zero.
+        return {"harness_error": "malformed test: %s" % verdict.detail[:300],
+                "passed": False}
+    if verdict.passed:
+        status, why = judge_authorship(case, program)
+        if status == NOT_GENUINE:
+            # Its own outcome: it reproduced the expected bytes, so it is not a
+            # wrong answer, and it did not compute them, so it is not a pass.
+            return {"passed": False, "reason": "not-genuine", "detail": why[:500],
+                    "failure_category": "not-genuine", "authorship": NOT_GENUINE}
+        if status == UNDECIDED:
+            return {"passed": True, "reason": "pass", "detail": "",
+                    "failure_category": "", "authorship": UNDECIDED,
+                    "authorship_detail": why[:300]}
+        return {"passed": True, "reason": "pass", "detail": "", "failure_category": ""}
+    # An engine mismatch is recorded like any other failed attempt and is
+    # subtracted by reason in summarize_run. Unlike a harness error it is never
+    # retried: the attempt completed, and only the engine is at fault.
+    return {"passed": False, "reason": verdict.reason, "detail": verdict.detail[:500],
+            "failure_category": classify(verdict, had_code=True)}
 
 
 def _recorded_gpu_cost(run_dir: Path) -> float:
@@ -253,14 +413,7 @@ class Evaluation:
                         detail="no extractable program (finish=%s)" % comp.finish_reason,
                         failure_category="no-code")
 
-        verdict = run_test(case["test"], program)
-        if verdict.harness_error:
-            return dict(rec, harness_error=verdict.harness_error, passed=False)
-        if verdict.passed:
-            return dict(rec, passed=True, reason="pass", detail="", failure_category="")
-        return dict(rec, passed=False, reason=verdict.reason,
-                    detail=verdict.detail[:500],
-                    failure_category=classify(verdict, had_code=True))
+        return dict(rec, **score_verdict(case, program, run_test(case["test"], program)))
 
     # ----------------------------------------------------------- reporting
 
@@ -285,6 +438,21 @@ class Evaluation:
         return summarize_run(self.run_dir, self.cases, gpu_cost=self._gpu_cost())
 
 
+def is_engine_mismatch(attempt: Dict[str, Any]) -> bool:
+    """True when the engine, not the model, failed this attempt (invariant 1).
+
+    Keyed on the recorded reason rather than the label, so that attempts written
+    before this rule existed re-summarize correctly.
+    """
+    return attempt.get("reason") == "engine-mismatch"
+
+
+def scored_attempts(attempts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The attempts the model is measured on. One rule, for every reader of a run."""
+    return [a for a in attempts
+            if not a.get("harness_error") and not is_engine_mismatch(a)]
+
+
 def summarize_run(run_dir: Path, cases: Optional[List[Dict[str, Any]]] = None,
                   gpu_cost: Optional[float] = None) -> Dict[str, Any]:
     """Fold attempts.jsonl into the run's headline number. Pure; safe to re-run."""
@@ -292,9 +460,16 @@ def summarize_run(run_dir: Path, cases: Optional[List[Dict[str, Any]]] = None,
     meta = read_json(run_dir / "meta.json") if (run_dir / "meta.json").exists() else {}
     good = [a for a in attempts if not a.get("harness_error")]
     harness_errors = len(attempts) - len(good)
+    # Invariant 1: an engine that ran a program and disagreed with CPython is a
+    # bug in this repository, so scoring it would charge the model for our
+    # defect. It leaves the denominator like a harness error, and is reported
+    # rather than dropped because it is the loudest finding a run can produce.
+    mismatched = [a for a in good if is_engine_mismatch(a)]
+    scored = scored_attempts(attempts)
+    doubted = [a for a in scored if a.get("authorship") == UNDECIDED]
 
     per_case: Dict[str, List[int]] = defaultdict(list)
-    for a in good:
+    for a in scored:
         per_case[a["case_id"]].append(1 if a.get("passed") else 0)
     scores = [sum(v) / len(v) for _, v in sorted(per_case.items())]
 
@@ -311,13 +486,37 @@ def summarize_run(run_dir: Path, cases: Optional[List[Dict[str, Any]]] = None,
         "prompt_sha": meta.get("prompt_sha"),
         "holdout_manifest_sha256": meta.get("holdout_manifest_sha256"),
         "sampling": meta.get("sampling"),
-        "n_attempts": len(good),
+        "n_attempts": len(scored),
+        # What the run paid for, which is the right denominator for a per-attempt
+        # cost and the wrong one for a pass rate.
+        "n_attempts_billed": len(good),
         "harness_errors": harness_errors,
+        "engine_mismatches": len(mismatched),
+        "engine_mismatch_cases": sorted({a["case_id"] for a in mismatched}),
+        # Keyed by case as well as detail: two different mismatches collapse into
+        # one line otherwise, and neither can be traced back to a case.
+        "engine_mismatch_detail": dict(Counter(
+            "%s: %s" % (a["case_id"], a.get("detail") or "?") for a in mismatched)),
+        "non_genuine_passes": sum(1 for a in scored if a.get("reason") == "not-genuine"),
+        "non_genuine_cases": sorted({a["case_id"] for a in scored
+                                     if a.get("reason") == "not-genuine"}),
+        # Scored as they stand. A number here is a question about the
+        # discriminator, not an accusation against the model.
+        "authorship_undecided": len(doubted),
+        "authorship_undecided_cases": sorted({a["case_id"] for a in doubted}),
         "cases_evaluated": len(per_case),
         "cases_planned": meta.get("n_cases"),
+        # The engine's own word for why an attempt failed, straight off the
+        # attempt. `failure_category` beside it is a DERIVED label, and for every
+        # run recorded before 2026-09-11 it was derived by a classify() with no
+        # `refused` arm, which collapsed 376 refusals into "wrong-output". The
+        # reason was always right, so reporting it costs nothing and makes the
+        # diagnostics of an already-paid-for run correct without re-grading.
+        "failures_by_reason": dict(Counter(
+            a.get("reason") or "?" for a in good if not a.get("passed"))),
         "failures_by_category": dict(Counter(
-            a.get("failure_category") or "?" for a in good if not a.get("passed"))),
-        "extraction_by_kind": dict(Counter(a.get("how") or "?" for a in good)),
+            a.get("failure_category") or "?" for a in scored if not a.get("passed"))),
+        "extraction_by_kind": dict(Counter(a.get("how") or "?" for a in scored)),
         "spend_usd": round(sum(a.get("cost_usd", 0.0) for a in good)
                            + (gpu_cost if gpu_cost is not None
                               else _recorded_gpu_cost(run_dir)), 4),

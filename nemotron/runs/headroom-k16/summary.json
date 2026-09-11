@@ -1,41 +1,61 @@
 {
+  "authorship_undecided": 0,
+  "authorship_undecided_cases": [],
   "cases_evaluated": 74,
   "cases_planned": 74,
   "ci95": {
-    "hi": 0.4577702702702703,
+    "hi": 0.4585585585585586,
     "lo": 0.2635135135135135,
     "method": "bootstrap-percentile",
     "resamples": 10000,
     "seed": 20260911
   },
   "ci95_wilson": {
-    "hi": 0.4735584823384407,
-    "lo": 0.2598740571544648
+    "hi": 0.4739574033815932,
+    "lo": 0.2602245225464729
   },
-  "ci_disagreement": 0.019427668427219102,
+  "ci_disagreement": 0.018687835790075213,
+  "engine_mismatch_cases": [
+    "ntx-0e7d23426c28",
+    "ntx-4f5b30dcdfe5"
+  ],
+  "engine_mismatch_detail": {
+    "ntx-0e7d23426c28: lypning disagrees with CPython: exit: want 0, got 1: exit 1: NameError: name '__file__' is not defined": 2,
+    "ntx-4f5b30dcdfe5: lypning disagrees with CPython: exit: want 0, got 1: exit 1: NameError: name '__file__' is not defined": 1
+  },
+  "engine_mismatches": 3,
   "extraction_by_kind": {
-    "fenced-python": 1184
+    "fenced-python": 1181
   },
   "failures_by_category": {
     "resource": 1,
     "runtime-error": 69,
     "syntax-error": 24,
-    "wrong-output": 664
+    "wrong-output": 661
+  },
+  "failures_by_reason": {
+    "engine-mismatch": 3,
+    "exit": 94,
+    "refused": 376,
+    "stdout": 285
   },
   "harness_errors": 0,
   "holdout_manifest_sha256": "80b2fc522202a0ece3b84b299791761c86dd07983596a46650f9bfcb733ce588",
   "label": "held-out pass@16, thinking off",
   "model": "nemotron",
-  "n_attempts": 1184,
+  "n_attempts": 1181,
+  "n_attempts_billed": 1184,
   "n_cases": 74,
+  "non_genuine_cases": [],
+  "non_genuine_passes": 0,
   "pass_at_k": {
-    "headroom": 0.1266891891891892,
+    "headroom": 0.12577522484381082,
     "k": 16,
     "n": 74,
-    "pass_at_1": 0.3597972972972973,
+    "pass_at_1": 0.3607112616426757,
     "pass_at_k": 0.4864864864864865
   },
-  "pass_rate": 0.3597972972972973,
+  "pass_rate": 0.36019144144144144,
   "per_case": {
     "ntx-059d9b73eb47": 1.0,
     "ntx-0618c2eeed40": 0.0,
@@ -63,7 +83,7 @@
     "ntx-4bf956899386": 1.0,
     "ntx-4c3ce026fadf": 0.3125,
     "ntx-4d8c690c4f2e": 0.0,
-    "ntx-4f5b30dcdfe5": 0.4375,
+    "ntx-4f5b30dcdfe5": 0.4666666666666667,
     "ntx-54e4d29fe4b0": 1.0,
     "ntx-5607e7b17b22": 0.0,
     "ntx-5bce5a934d5d": 1.0,
@@ -123,7 +143,7 @@
     "top_p": 0.95
   },
   "spend_usd": 0.2764,
-  "summarized_at": "2026-09-11T22:10:33Z",
+  "summarized_at": "2026-09-11T22:43:17Z",
   "tokens_out": 358377,
   "wall_s": 11876.2
 }

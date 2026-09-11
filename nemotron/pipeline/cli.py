@@ -24,7 +24,8 @@ from . import split as splitmod
 from . import stats
 from .adapters import parse_source
 from .backends import BackendError, ChatBackend
-from .evaluate import Evaluation, load_holdout, summarize_run
+from .evaluate import (Evaluation, load_holdout, score_verdict, scored_attempts,
+                       summarize_run)
 from .harvest import harvest
 from .jsonio import read_json, read_jsonl, write_json
 
@@ -288,6 +289,13 @@ def _eval_foreground(args: argparse.Namespace, run_id: str) -> int:
     return 0
 
 
+def _ids(names: Optional[List[str]], limit: int = 8) -> str:
+    """Name them, but never let one line become the whole report."""
+    names = names or []
+    head = ", ".join(names[:limit])
+    return head if len(names) <= limit else "%s (+%d more)" % (head, len(names) - limit)
+
+
 def render_summary(s: Dict[str, Any], elapsed: Optional[float] = None) -> str:
     out = [
         "run        %s  %s" % (s["run_id"], s.get("label") or ""),
@@ -303,6 +311,20 @@ def render_summary(s: Dict[str, Any], elapsed: Optional[float] = None) -> str:
     if s.get("harness_errors"):
         out.append("harness    %d attempt(s) excluded — server or sandbox, not the model"
                    % s["harness_errors"])
+    if s.get("engine_mismatches"):
+        # The denominator shrank; say so and say which cases, or the loudest
+        # finding a run can produce becomes an unexplained gap in the count.
+        out.append("MISMATCH   %d attempt(s) excluded — an engine disagreed with CPython, "
+                   "which is a bug here, not the model: %s"
+                   % (s["engine_mismatches"], _ids(s.get("engine_mismatch_cases"))))
+    if s.get("non_genuine_passes"):
+        out.append("recited    %d attempt(s) reproduced the expected output without "
+                   "computing it, scored as not-genuine: %s"
+                   % (s["non_genuine_passes"], _ids(s.get("non_genuine_cases"))))
+    if s.get("authorship_undecided"):
+        out.append("undecided  %d pass(es) the discriminator could not judge — scored as "
+                   "they stand: %s"
+                   % (s["authorship_undecided"], _ids(s.get("authorship_undecided_cases"))))
     if s.get("failures_by_category"):
         out.append("failures   " + "  ".join(
             "%s=%d" % (k, v) for k, v in sorted(s["failures_by_category"].items(),
@@ -323,7 +345,6 @@ def cmd_grade(args: argparse.Namespace) -> int:
     then costs nothing and needs no GPU at all.
     """
     from .acceptance import run_test
-    from .classify import classify
     from .extract import extract_program
     from .jsonio import append_jsonl
 
@@ -364,14 +385,9 @@ def cmd_grade(args: argparse.Namespace) -> int:
         if program is None:
             rec.update(passed=False, reason="no-code", detail="", failure_category="no-code")
         else:
-            v = run_test(case["test"], program)
-            if v.harness_error:
-                rec.update(harness_error=v.harness_error, passed=False)
-            elif v.passed:
-                rec.update(passed=True, reason="pass", detail="", failure_category="")
-            else:
-                rec.update(passed=False, reason=v.reason, detail=v.detail[:500],
-                           failure_category=classify(v, had_code=True))
+            # The same scorer the eval runs, so that a replay of stored
+            # completions cannot report a different pass rate than the run did.
+            rec.update(score_verdict(case, program, run_test(case["test"], program)))
         append_jsonl(run_dir / "attempts.jsonl", rec)
         if i % 200 == 0:
             print("  graded %d/%d" % (i, len(comps)), flush=True)
@@ -546,8 +562,7 @@ def cmd_results(args: argparse.Namespace) -> int:
 
 
 def _per_case(run_id: str) -> Dict[str, float]:
-    attempts = [a for a in read_jsonl(RUNS / run_id / "attempts.jsonl")
-                if not a.get("harness_error")]
+    attempts = scored_attempts(read_jsonl(RUNS / run_id / "attempts.jsonl"))
     agg: Dict[str, List[float]] = {}
     for a in attempts:
         agg.setdefault(a["case_id"], []).append(1.0 if a.get("passed") else 0.0)
@@ -595,7 +610,7 @@ def cmd_slices(args: argparse.Namespace) -> int:
     """
     from .classify import stratum
     run_dir = RUNS / args.run_id
-    attempts = [a for a in read_jsonl(run_dir / "attempts.jsonl") if not a.get("harness_error")]
+    attempts = scored_attempts(read_jsonl(run_dir / "attempts.jsonl"))
     corpus = {c["id"]: c for c in read_jsonl(DATA / "corpus.jsonl")}
 
     counts: Dict[str, Dict[str, List[int]]] = {}

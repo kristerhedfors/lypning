@@ -39,7 +39,7 @@ AS_REPORTED = {
     "baseline-nemotron35-bf16-t12k": 0.35135135135135137,
     "baseline-nemotron35-bf16": 0.28378378378378377,
     "headroom-k16": 0.3597972972972973,
-    "replay-check": 0.35810810810810811,
+    "replay-check": 0.3581081081081081,
     "stock-nothinking": 0.35135135135135137,
 }
 BASELINE_RUN = "baseline-nemotron35-bf16-t12k"
@@ -110,3 +110,44 @@ def test_every_graded_attempt_belongs_to_the_frozen_holdout():
         ids = {a["case_id"] for a in read_jsonl(RUNS / run_id / "attempts.jsonl")}
         assert ids <= held, "%s graded %d case(s) outside the holdout" % (
             run_id, len(ids - held))
+
+
+# --- what the current code derives, as distinct from what was published -------
+#
+# AS_REPORTED above is history and never moves. These are what the pipeline
+# produces TODAY. A fix that moves one fails here until the new value is written
+# down in the same commit — which is the only difference between correcting a
+# number and losing track of one.
+RE_DERIVED = {
+    "baseline-nemotron35-bf16-t12k": 0.35135135135135137,
+    "baseline-nemotron35-bf16": 0.28378378378378377,
+    "headroom-k16": 0.36019144144144144,      # +0.04pp: 3 engine-mismatch attempts
+    "replay-check": 0.3585022522522523,      # +0.04pp: same 3
+    "stock-nothinking": 0.35135135135135137,
+}
+
+
+@pytest.mark.parametrize("run_id", sorted(RE_DERIVED))
+def test_the_current_code_still_derives_the_value_it_derived_last_commit(run_id):
+    from pipeline.evaluate import summarize_run
+    s = summarize_run(RUNS / run_id)
+    assert s["pass_rate"] == pytest.approx(RE_DERIVED[run_id], abs=1e-9), (
+        "%s: re-derived %.9f, expected %.9f. If your change was meant to move "
+        "this, update RE_DERIVED in the same commit." % (
+            run_id, s["pass_rate"], RE_DERIVED[run_id]))
+
+
+def test_an_engine_mismatch_never_counts_against_the_model():
+    """Invariant 1 in the metric: an engine bug is not the model's failure."""
+    from pipeline.evaluate import summarize_run
+    s = summarize_run(RUNS / "headroom-k16")
+    assert s["engine_mismatches"] == 3
+    assert s["n_attempts"] == 1184 - 3
+
+
+def test_the_engines_own_reason_is_reported_beside_the_derived_label():
+    """376 refusals were recorded as wrong-output; the reason field was right."""
+    from pipeline.evaluate import summarize_run
+    s = summarize_run(RUNS / "headroom-k16")
+    assert s["failures_by_reason"]["refused"] == 376
+    assert s["failures_by_reason"]["engine-mismatch"] == 3
