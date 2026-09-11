@@ -18,7 +18,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import split as splitmod
 from . import stats
@@ -313,6 +313,119 @@ def render_summary(s: Dict[str, Any], elapsed: Optional[float] = None) -> str:
     return "\n".join(out)
 
 
+def cmd_grade(args: argparse.Namespace) -> int:
+    """Grade completions produced elsewhere. The GPU box generates; this grades.
+
+    The acceptance tests need the lypning engines and a sandbox, and both are
+    CPU work. Renting eight H100s to run them would cost roughly twelve times
+    what the same seconds cost here, so the box writes completions to a file and
+    stops. Re-grading afterwards — after an engine rebuild, after a fixed test —
+    then costs nothing and needs no GPU at all.
+    """
+    from .acceptance import run_test
+    from .classify import classify
+    from .extract import extract_program
+    from .jsonio import append_jsonl
+
+    comps = read_jsonl(args.completions)
+    if not comps:
+        print("no completions in %s" % args.completions, file=sys.stderr)
+        return 1
+    try:
+        cases = {c["id"]: c for c in load_holdout(DATA)}
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    unknown = {c["case_id"] for c in comps} - set(cases)
+    if unknown:
+        print("completions reference %d case(s) not in the frozen held-out split: %s"
+              % (len(unknown), sorted(unknown)[:3]), file=sys.stderr)
+        return 1
+
+    run_dir = RUNS / args.run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "attempts.jsonl").unlink(missing_ok=True)
+    meta = {"run_id": args.run_id, "label": args.label,
+            "backend": {"model": args.model or "(generated elsewhere)",
+                        "base_url": "replay:%s" % args.completions},
+            "prompt_sha": __import__("pipeline.evaluate", fromlist=["x"]).prompt_signature(),
+            "holdout_manifest_sha256": (splitmod.load_lock(DATA) or {}).get("manifest_sha256", ""),
+            "n_cases": len(cases), "sampling": {"replayed": True},
+            "started_at": __import__("pipeline.evaluate", fromlist=["x"])._now()}
+    write_json(run_dir / "meta.json", meta)
+
+    for i, c in enumerate(comps, 1):
+        case = cases[c["case_id"]]
+        program, how = extract_program(c.get("text") or "", c.get("reasoning"))
+        rec = {"run_id": args.run_id, "case_id": c["case_id"], "sample": c.get("sample", 0),
+               "how": how, "program": program or "",
+               "completion_tokens": c.get("completion_tokens", 0),
+               "cost_usd": 0.0, "ts": meta["started_at"]}
+        if program is None:
+            rec.update(passed=False, reason="no-code", detail="", failure_category="no-code")
+        else:
+            v = run_test(case["test"], program)
+            if v.harness_error:
+                rec.update(harness_error=v.harness_error, passed=False)
+            elif v.passed:
+                rec.update(passed=True, reason="pass", detail="", failure_category="")
+            else:
+                rec.update(passed=False, reason=v.reason, detail=v.detail[:500],
+                           failure_category=classify(v, had_code=True))
+        append_jsonl(run_dir / "attempts.jsonl", rec)
+        if i % 200 == 0:
+            print("  graded %d/%d" % (i, len(comps)), flush=True)
+
+    print(render_summary(summarize_run(run_dir)))
+    return 0
+
+
+def cmd_sample(args: argparse.Namespace) -> int:
+    """Rejection-sample verified SFT targets from the TRAIN split only."""
+    from .sample import sample_targets, train_cases
+    try:
+        cases = train_cases(DATA)
+    except (ValueError, AssertionError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    if args.limit:
+        cases = cases[: args.limit]
+    try:
+        backend = _backend(args)
+    except BackendError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    out_dir = DATA / "sft" / (args.name or "v1")
+    print("sampling %d train cases x k=%d  (held-out %d cases are excluded by the lock)"
+          % (len(cases), args.k, len((splitmod.load_lock(DATA) or {}).get("holdout", []))))
+
+    def progress(done: int, total: int, rec: Dict[str, Any]) -> None:
+        if done % 100 == 0:
+            print("  %d/%d" % (done, total), flush=True)
+
+    rep = sample_targets(
+        backend, cases, out_dir, k=args.k, keep=args.keep,
+        temperature=args.temperature, top_p=args.top_p, max_tokens=args.max_tokens,
+        enable_thinking=not args.no_thinking, concurrency=args.concurrency,
+        price_hour=args.price_hour, max_spend=args.max_spend, progress=progress)
+    print()
+    print("cases with a verified solution  %d / %d   (%.1f%%)"
+          % (rep["cases_with_a_verified_solution"], rep["cases"], 100 * rep["yield_rate"]))
+    print("SFT examples written            %d" % rep["sft_examples"])
+    print("per-draw pass rate              %.1f%%" % (100 * rep["draw_pass_rate"]))
+    print("rejected by reason:")
+    for r, n in list(rep["rejected_by_reason"].items())[:8]:
+        print("   %-18s %5d" % (r, n))
+    print("\nyield by category:")
+    for cat, e in list(rep["by_category"].items())[:12]:
+        print("   %-26s %2d/%-2d  %5.0f%%" % (cat, e["solved"], e["cases"], 100 * e["yield"]))
+    print("\n-> %s" % (out_dir / "sft.jsonl"))
+    if rep.get("aborted"):
+        print("ABORTED: %s" % rep["aborted"], file=sys.stderr)
+        return 1
+    return 0
+
+
 def cmd_summarize(args: argparse.Namespace) -> int:
     run_dir = RUNS / args.run_id
     if not run_dir.exists():
@@ -432,6 +545,40 @@ def cmd_results(args: argparse.Namespace) -> int:
     return 0
 
 
+def _per_case(run_id: str) -> Dict[str, float]:
+    attempts = [a for a in read_jsonl(RUNS / run_id / "attempts.jsonl")
+                if not a.get("harness_error")]
+    agg: Dict[str, List[float]] = {}
+    for a in attempts:
+        agg.setdefault(a["case_id"], []).append(1.0 if a.get("passed") else 0.0)
+    return {k: sum(v) / len(v) for k, v in agg.items()}
+
+
+def cmd_compare(args: argparse.Namespace) -> int:
+    """Paired delta between two runs over the cases both measured."""
+    before, after = _per_case(args.before), _per_case(args.after)
+    d = stats.paired_delta(before, after)
+    if not d.get("n_pairs"):
+        print("no cases in common", file=sys.stderr)
+        return 1
+    print("before %s   after %s" % (args.before, args.after))
+    print("paired delta %+.1fpp   95%% CI [%+.1f, %+.1f]pp   over %d cases"
+          % (100 * d["delta"], 100 * d["ci95"]["lo"], 100 * d["ci95"]["hi"], d["n_pairs"]))
+    print("gained %d   lost %d   McNemar p=%.4f   %s"
+          % (d["gained"], d["lost"], d["mcnemar_p"],
+             "SIGNIFICANT" if d["significant"] else "not separable from noise"))
+    if args.ids:
+        print("gained:", ", ".join(d["gained_ids"]))
+        print("lost  :", ", ".join(d["lost_ids"]))
+    base = read_json(BASELINE) if BASELINE.exists() else None
+    if base:
+        a = read_json(RUNS / args.after / "summary.json")
+        print("unpaired rule: CI-low %s vs baseline point %s -> %s"
+              % (_pct(a["ci95"]["lo"]), _pct(base["pass_rate"]),
+                 "WIN" if stats.beats(a, base["pass_rate"]) else "no"))
+    return 0
+
+
 def cmd_slices(args: argparse.Namespace) -> int:
     """Pass rate per stratum. The blended number hides where the headroom is.
 
@@ -439,25 +586,42 @@ def cmd_slices(args: argparse.Namespace) -> int:
     cases the model mostly fails, ceiling cases it should and does pass by
     falling back, and a saturated task bank. One average over the three is not a
     number anyone can act on.
+
+    The bootstrap resamples CASES, never attempts. With k draws per case the
+    attempts are not independent — k samples of one easy case are one easy case
+    seen k times — and resampling them would report an interval several times
+    too narrow. Each case contributes its mean over its own draws, and that mean
+    is the unit that gets resampled.
     """
     from .classify import stratum
     run_dir = RUNS / args.run_id
     attempts = [a for a in read_jsonl(run_dir / "attempts.jsonl") if not a.get("harness_error")]
     corpus = {c["id"]: c for c in read_jsonl(DATA / "corpus.jsonl")}
-    groups: Dict[str, List[float]] = {}
+
+    counts: Dict[str, Dict[str, List[int]]] = {}
     for a in attempts:
         case = corpus.get(a["case_id"])
         if case is None:
             continue
         key = case["category"] if args.fine else stratum(case["category"])
-        groups.setdefault(key, []).append(1.0 if a.get("passed") else 0.0)
-    print("run %s" % args.run_id)
-    print("%-26s %7s %9s %-20s" % ("slice", "n", "pass@1", "95% CI (bootstrap)"))
-    for key, scores in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+        c = counts.setdefault(key, {}).setdefault(a["case_id"], [0, 0])
+        c[1] += 1
+        if a.get("passed"):
+            c[0] += 1
+
+    print("run %s   (bootstrap resamples cases, not attempts)" % args.run_id)
+    print("%-26s %5s %6s %9s %-20s %8s %9s"
+          % ("slice", "cases", "draws", "pass@1", "95% CI (bootstrap)", "pass@k", "headroom"))
+    for key, per_case in sorted(counts.items(), key=lambda kv: -len(kv[1])):
+        scores = [c[0] / c[1] for c in per_case.values()]
+        draws = sum(c[1] for c in per_case.values())
         b = stats.summarize(scores)
-        print("%-26s %7d %9s [%s, %s]"
-              % (key, len(scores), _pct(b["pass_rate"]),
-                 _pct(b["ci95"]["lo"]).strip(), _pct(b["ci95"]["hi"]).strip()))
+        pk = stats.pass_at_k([(c[0], c[1]) for c in per_case.values()])
+        print("%-26s %5d %6d %9s [%s, %s] %8s %9s"
+              % (key, len(scores), draws, _pct(b["pass_rate"]),
+                 _pct(b["ci95"]["lo"]).strip(), _pct(b["ci95"]["hi"]).strip(),
+                 _pct(pk["pass_at_k"]) if pk["k"] > 1 else "-",
+                 ("%+.1fpp" % (100 * pk["headroom"])) if pk["k"] > 1 else "-"))
     return 0
 
 
@@ -535,6 +699,26 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--foreground", action="store_true", help="used by the tmux launcher")
     e.set_defaults(fn=cmd_eval)
 
+    sp = sub.add_parser("sample", help="rejection-sample verified SFT targets (train split only)")
+    sp.add_argument("--k", type=int, default=16)
+    sp.add_argument("--keep", type=int, default=2, help="max targets kept per case")
+    sp.add_argument("--name", default="v1")
+    sp.add_argument("--limit", type=int, default=0)
+    sp.add_argument("--concurrency", type=int, default=16)
+    sp.add_argument("--temperature", type=float, default=1.0)
+    sp.add_argument("--top-p", type=float, default=0.95)
+    sp.add_argument("--max-tokens", type=int, default=2048)
+    sp.add_argument("--no-thinking", action="store_true")
+    sp.add_argument("--price-hour", type=float, default=0.0)
+    sp.add_argument("--max-spend", type=float, default=0.0)
+    sp.add_argument("--base-url"); sp.add_argument("--model")
+    sp.set_defaults(fn=cmd_sample)
+
+    gr = sub.add_parser("grade", help="grade completions generated elsewhere (no GPU needed)")
+    gr.add_argument("run_id"); gr.add_argument("--completions", required=True)
+    gr.add_argument("--label", default=""); gr.add_argument("--model", default="")
+    gr.set_defaults(fn=cmd_grade)
+
     sm = sub.add_parser("summarize", help="recompute a run's summary from its attempts")
     sm.add_argument("run_id"); sm.set_defaults(fn=cmd_summarize)
 
@@ -546,6 +730,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     rs = sub.add_parser("results", help="leaderboard sorted by delta vs baseline")
     rs.set_defaults(fn=cmd_results)
+
+    cp = sub.add_parser("compare", help="paired delta between two runs")
+    cp.add_argument("before"); cp.add_argument("after")
+    cp.add_argument("--ids", action="store_true", help="list the cases that moved")
+    cp.set_defaults(fn=cmd_compare)
 
     sl = sub.add_parser("slices", help="pass rate per stratum for a run")
     sl.add_argument("run_id"); sl.add_argument("--fine", action="store_true",

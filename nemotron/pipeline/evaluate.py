@@ -299,6 +299,11 @@ def summarize_run(run_dir: Path, cases: Optional[List[Dict[str, Any]]] = None,
     scores = [sum(v) / len(v) for _, v in sorted(per_case.items())]
 
     body = stats.summarize(scores)
+    # pass@k beside pass@1: what the model CAN do beside what it DOES. The gap
+    # between them is the entire budget a rejection-sampling SFT run has to work
+    # with, so it is recorded on every multi-sample run rather than derived later.
+    body["pass_at_k"] = stats.pass_at_k(
+        [(sum(v), len(v)) for _, v in sorted(per_case.items())])
     body.update({
         "run_id": run_dir.name,
         "label": meta.get("label", ""),
