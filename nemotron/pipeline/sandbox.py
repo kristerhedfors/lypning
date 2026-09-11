@@ -2,8 +2,9 @@
 
 WHAT THIS IS. Model-generated Python is arbitrary code written by something that
 was not thinking about your filesystem. Every program gets: its own temporary
-working directory, a scrubbed environment (no HF_TOKEN, no cloud credentials, no
-PYTHONPATH), a wall-clock timeout enforced by killing the whole process *group*,
+working directory holding nothing of ours but the script itself, a scrubbed
+environment (no HF_TOKEN, no cloud credentials, no inherited PYTHON* of any
+kind), a wall-clock timeout enforced by killing the whole process *group*,
 a CPU-time rlimit so a spin loop dies even if the killer is wedged, an address
 space cap, a file-size cap that also bounds stdout, and — where the kernel allows
 it — its own empty network namespace.
@@ -20,6 +21,16 @@ dir could not be made, the interpreter is missing. It is never set because the
 program misbehaved. A case is only ever dropped or scored on a run whose
 ``harness_error`` is None; anything else is our bug and must be fixed, not
 counted.
+
+THE CHILD IS THE ORACLE. CPython here is not just a runner, it is the reference
+every rewrite is graded against, so two things have to hold at once and they
+pull apart. The run must be *reproducible* — the same program must give the same
+answer on the next run and on someone else's machine — and it must still be the
+*same interpreter* a plain ``python3 solution.py`` would give. So the child's
+PYTHON* settings are chosen one at a time, each with its reason, in
+:func:`_scrubbed_env`: a setting earns its place only by removing a source of
+drift, and one that would also move the oracle is pinned to whatever the
+ambient default already was rather than to the tidier value.
 """
 
 from __future__ import annotations
@@ -42,8 +53,11 @@ DEFAULT_TIMEOUT_S = 10.0
 DEFAULT_MEM_MB = 1024
 DEFAULT_OUTPUT_CAP = 8 * 1024 * 1024  # also the RLIMIT_FSIZE, so stdout is bounded
 
-# Kept out of the child's environment no matter what the parent has. The eval
-# driver holds an inference API key; generated code must never see it.
+# The whole of the child's inherited environment: `env=` replaces it wholesale,
+# so anything not named here simply is not there. The eval driver holds an
+# inference API key; generated code must never see it. No PYTHON* name may ever
+# join this tuple — the child's interpreter settings are ours to decide, and a
+# harness whose oracle moves with the operator's shell is measuring the shell.
 _ENV_KEEP = ("PATH", "LANG", "LC_ALL", "TZ", "TMPDIR")
 
 
@@ -115,10 +129,38 @@ def _scrubbed_env(workdir: Path, extra: Optional[Dict[str, str]] = None) -> Dict
     env.setdefault("PATH", "/usr/bin:/bin")
     env["HOME"] = str(workdir)
     env["TMPDIR"] = str(workdir)
-    env["PYTHONIOENCODING"] = "utf-8"
+    # Each of these reaches the child for real (the spawn below does not pass
+    # -E), so each is a deliberate choice about the oracle, not decoration.
+    #
+    # A generated program must not be flaky on set or dict-view order: without
+    # this, the same program grades differently on consecutive runs and every
+    # pass@k is a coin flip on order-sensitive cases.
+    env["PYTHONHASHSEED"] = "0"
+    # Importing a case's setup module otherwise drops __pycache__/ into the
+    # program's own working directory: a file the program can see that was not
+    # there on the first run, so run 1 and run 2 of one program differ.
     env["PYTHONDONTWRITEBYTECODE"] = "1"
-    env["PYTHONHASHSEED"] = "0"       # a generated program must not be flaky on dict order
-    env["PYTHONUNBUFFERED"] = "1"
+    # Pin the text encoding so a program emitting non-ASCII is graded the same
+    # everywhere, but pin the *error handler* to what an unconfigured CPython
+    # already does here rather than to the stricter default: plain "utf-8" would
+    # move sys.stdout.errors from surrogateescape to strict and turn a program
+    # that writes a lone surrogate from exit 0 into a UnicodeEncodeError. That
+    # is the oracle changing under us, which no determinism fix may buy.
+    env["PYTHONIOENCODING"] = "utf-8:surrogateescape"
+    # Same reasoning one level down: LANG and LC_ALL are inherited, so without
+    # this the filesystem encoding and open()'s default follow the operator's
+    # shell. Under this repo's own C locale CPython already coerces to UTF-8
+    # mode, so this pins the behaviour we have instead of introducing one.
+    env["PYTHONUTF8"] = "1"
+    # Deliberately NOT set: PYTHONUNBUFFERED. It buys only partial stdout from a
+    # program we SIGKILL, and a killed run is scored `timeout` without its stdout
+    # ever being compared — while it does flip sys.stdout.write_through, which
+    # order-of-output programs can observe.
+    # Deliberately NOT set: PYTHONPATH. The script runs from the directory it
+    # sits in, so sys.path[0] already reaches the case's setup files; pointing
+    # PYTHONPATH at the program's working directory would additionally let a
+    # program shadow a stdlib module for every later child, the acceptance
+    # checker included.
     env["NO_COLOR"] = "1"
     if extra:
         env.update(extra)
@@ -187,15 +229,23 @@ def run_python(
     way it went nowhere, so if you need to *assert* isolation, call
     :func:`netns_available` yourself and refuse.
 
-    ``scratch_dir`` puts the script and the captured streams somewhere other than
-    the working directory. That matters for an acceptance checker asserting on
-    the files a program created: with everything in one directory, a plain
-    ``os.listdir()`` returns the harness's own files alongside the program's, and
-    the checker is wrong through no fault of its author.
+    The captured streams are never in the working directory — always a private
+    directory of ours, removed on the way out. They are pure harness artefacts:
+    a program that can see them counts them in ``os.listdir()``, and a program
+    that can unlink and rewrite ``.ntx-stdout`` replaces its own recorded stdout
+    with whatever it likes, which we would read back as its output and score.
+
+    The entry script, by contrast, stays in the working directory, because that
+    is where a plain ``python3 solution.py`` puts it: it is what ``sys.path[0]``
+    and ``__file__`` mean, and what the model is told to expect. ``scratch_dir``
+    moves it out for a caller that needs the working directory to hold nothing
+    but the program's own files — the ``script`` kind, whose checker asserts on
+    exactly that.
     """
     started = time.time()
     tmp = keep_workdir
     made_tmp = False
+    capture: Optional[Path] = None
     try:
         if tmp is None:
             tmp = Path(tempfile.mkdtemp(prefix="ntx-run-"))
@@ -213,8 +263,12 @@ def run_python(
         entry_path = scratch / entry
         entry_path.write_text(source, encoding="utf-8")
 
-        out_path = scratch / ".ntx-stdout"
-        err_path = scratch / ".ntx-stderr"
+        try:
+            capture = Path(tempfile.mkdtemp(prefix="ntx-cap-"))
+        except OSError as exc:
+            return RunResult(None, "", "", 0.0, harness_error="mkdtemp: %s" % exc)
+        out_path = capture / ".ntx-stdout"
+        err_path = capture / ".ntx-stderr"
 
         cmd: List[str] = []
         if isolate_network and netns_available():
@@ -224,9 +278,13 @@ def run_python(
             # Rust core would reject them as program arguments.
             cmd += [str(x) for x in interpreter] + [str(entry_path)]
         else:
-            # -E -s, not -I: -I also drops the script's own directory from
-            # sys.path, which breaks a case whose test imports the solution.
-            cmd += [sys.executable, "-E", "-s", str(entry_path)]
+            # -s alone. Not -E: `env=` above already replaces the environment
+            # wholesale, so -E protects against nothing that can still reach us
+            # and instead voids the PYTHON* settings we just chose — including
+            # the PYTHONHASHSEED that keeps set and dict order reproducible.
+            # Not -I either: it implies -E, and drops the script's own directory
+            # from sys.path, which breaks a case whose test imports the solution.
+            cmd += [sys.executable, "-s", str(entry_path)]
         cmd += [str(a) for a in (argv or [])]
 
         proc = None
@@ -262,10 +320,23 @@ def run_python(
         sig = -rc if (rc is not None and rc < 0) else None
         stdout, t1 = _read_capped(out_path, output_cap)
         stderr, t2 = _read_capped(err_path, output_cap)
+        # The entry script is excluded by identity, not by name: a program is
+        # free to write its own `solution.py`, or a `sub/solution.py`, and the
+        # listing has to say so.
+        try:
+            ours = entry_path.resolve()
+        except OSError:
+            ours = entry_path
         listing = {}
         try:
             for p in sorted(tmp.rglob("*")):
-                if p.is_file() and not p.name.startswith(".ntx-") and p.name != entry:  # noqa: E501
+                if not p.is_file():
+                    continue
+                try:
+                    same = p.resolve() == ours
+                except OSError:
+                    same = False
+                if not same:
                     listing[str(p.relative_to(tmp))] = p.stat().st_size
         except OSError:
             pass
@@ -280,6 +351,8 @@ def run_python(
             workdir_files=listing,
         )
     finally:
+        if capture is not None:
+            shutil.rmtree(capture, ignore_errors=True)
         if made_tmp and tmp is not None:
             shutil.rmtree(tmp, ignore_errors=True)
 
