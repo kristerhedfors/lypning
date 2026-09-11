@@ -89,6 +89,61 @@ def cmd_harvest(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_classify(args: argparse.Namespace) -> int:
+    """Run the real corpus through CPython and the engines, once, and write it down."""
+    import concurrent.futures
+    from .jsonio import append_jsonl
+    from .lypning_source import classify_entry
+
+    corpus_paths = args.corpus or [
+        str(ROOT.parent / "src" / "lypning" / "assets" / "corpus" / "corpus.jsonl"),
+        str(ROOT.parent / "src" / "lypning" / "assets" / "corpus" / "seed-corpus.jsonl"),
+    ]
+    entries: List[Dict[str, Any]] = []
+    for cp in corpus_paths:
+        entries.extend(read_jsonl(cp))
+    if args.limit:
+        entries = entries[: args.limit]
+    out = DATA / "classified.jsonl"
+    done = {r["entry"]["id"] for r in read_jsonl(out)} if out.exists() else set()
+    todo = [e for e in entries if e.get("id") not in done]
+    print("corpus %d entries loaded from %d file(s); %d already classified, %d to do"
+          % (len(entries), len(corpus_paths), len(done), len(todo)))
+
+    counts: Dict[str, int] = {}
+    lock = __import__("threading").Lock()
+
+    def one(entry: Dict[str, Any]) -> Dict[str, Any]:
+        outcome, info = classify_entry(entry, timeout_s=args.timeout)
+        return {"entry": entry, "outcome": outcome, "info": info}
+
+    n = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
+        for rec in pool.map(one, todo):
+            with lock:
+                append_jsonl(out, rec)
+                counts[rec["outcome"]] = counts.get(rec["outcome"], 0) + 1
+                n += 1
+                if n % 250 == 0:
+                    print("  %d/%d  %s" % (n, len(todo), counts), flush=True)
+    allrecs = read_jsonl(out)
+    tally: Dict[str, int] = {}
+    kinds: Dict[str, int] = {}
+    for r in allrecs:
+        tally[r["outcome"]] = tally.get(r["outcome"], 0) + 1
+        if r["outcome"] == "refused":
+            k = r["info"]["kind"]
+            kinds[k] = kinds.get(k, 0) + 1
+    print("\nclassified %d entries" % len(allrecs))
+    for k, v in sorted(tally.items(), key=lambda kv: -kv[1]):
+        print("  %-10s %5d" % (k, v))
+    print("\nrefusals by kind (the stratification key):")
+    for k, v in sorted(kinds.items(), key=lambda kv: -kv[1]):
+        print("  %-14s %5d" % (k, v))
+    print("\n-> %s" % out)
+    return 0
+
+
 def cmd_split(args: argparse.Namespace) -> int:
     corpus = DATA / "corpus.jsonl"
     if not corpus.exists():
@@ -413,6 +468,13 @@ def build_parser() -> argparse.ArgumentParser:
                         "(their tests cannot be shown to work)")
     h.add_argument("-v", "--verbose", action="store_true")
     h.set_defaults(fn=cmd_harvest)
+
+    cl = sub.add_parser("classify", help="run the real corpus through CPython and the engines")
+    cl.add_argument("--corpus", action="append")
+    cl.add_argument("--jobs", type=int, default=8)
+    cl.add_argument("--timeout", type=float, default=10.0)
+    cl.add_argument("--limit", type=int, default=0)
+    cl.set_defaults(fn=cmd_classify)
 
     s = sub.add_parser("split", help="freeze the 70/30 stratified held-out split")
     s.add_argument("--fraction", type=float, default=splitmod.DEFAULT_FRACTION)

@@ -57,5 +57,23 @@ def classify(verdict: Verdict, *, had_code: bool = True) -> str:
     return "wrong-output"
 
 
+# The engine names its own refusals (`module`, `bigint`, `set-order`, `builtin`,
+# ...), and those names are the stratification key for this corpus. They are
+# admitted under a prefix rather than copied into CATEGORIES, because the list
+# belongs to `conformance --plan` and a copy here would drift from the build
+# order it ranks.
+_PREFIXES = ("refused:", "ceiling:")
+
+
 def is_category(name: str) -> bool:
-    return name in CATEGORIES
+    if name in CATEGORIES:
+        return True
+    return any(name.startswith(p) and len(name) > len(p) for p in _PREFIXES)
+
+
+def stratum(name: str) -> str:
+    """The coarse bucket a category belongs to, for a report that has to fit."""
+    for p in _PREFIXES:
+        if name.startswith(p):
+            return p.rstrip(":")
+    return name

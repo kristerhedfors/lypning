@@ -151,8 +151,26 @@ def jsonl_adapter(spec: Dict[str, Any]) -> Iterator[Candidate]:
         }
 
 
+def lypning_adapter(spec: Dict[str, Any]) -> Iterator[Candidate]:
+    """Refused entries from `nt classify`'s cache. Classification is separate on
+    purpose: it executes several thousand programs and is the expensive half, so
+    it is done once, written down, and re-read by every later harvest."""
+    from .lypning_source import is_tooling, to_candidate
+    cache = Path(spec.get("cache") or "data/classified.jsonl")
+    if not cache.exists():
+        raise ValueError("no %s: run `nt classify` first" % cache)
+    for rec in read_jsonl(cache):
+        if rec.get("outcome") != "refused":
+            continue
+        info = rec["info"]
+        if is_tooling(info["kind"], info["detail"]):
+            continue
+        yield to_candidate(rec["entry"], info)
+
+
 ADAPTERS: Dict[str, Callable[[Dict[str, Any]], Iterator[Candidate]]] = {
     "study": study_adapter,
+    "lypning": lypning_adapter,
     "evalfail": evalfail_adapter,
     "jsonl": jsonl_adapter,
 }

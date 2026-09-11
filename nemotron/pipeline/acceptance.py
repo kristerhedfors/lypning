@@ -22,8 +22,28 @@ measuring something other than the bug we harvested.
 TEST KINDS. ``stdout`` compares stdout and exit code after a named
 normalization. ``script`` hands an arbitrary stdlib checker the observation
 (stdout, stderr, exit, the files the program left behind) on stdin and reads its
-exit code. ``pytest`` runs a test file against ``solution.py``. All three run
-through :mod:`pipeline.sandbox`, so all three get the same net.
+exit code. ``pytest`` runs a test file against ``solution.py``. ``lypning`` is
+this project's own, and is described below. All four run through
+:mod:`pipeline.sandbox`, so all four get the same net.
+
+THE ``lypning`` KIND, AND WHY CORRECTNESS IS CHECKED FIRST. This repository's
+subset runtime answers a one-liner in-process; a program that leaves the subset
+refuses with exit 90 and costs a full CPython spawn instead. So a program here
+is graded on two axes: it must produce CPython's answer, and it should stay on
+the cheap engine. **Correctness is evaluated first and a failure there ends the
+attempt**, because the one thing this project exists to prevent is a plausible
+wrong answer produced to stay inside the subset. A model that hand-rolls SHA-256
+rather than importing hashlib has lost, not won, and this test says so.
+
+``require_tier1: false`` marks a *ceiling* case — one whose task cannot be done
+inside the subset (arbitrary-precision integers, set iteration order,
+``os.listdir`` order). There the correct behaviour is to fall back, and the case
+is scored on correctness alone. Those cases are the control that keeps the metric
+honest: without them, "stay in the subset" has no counterweight.
+
+An engine that RUNS a program and disagrees with CPython is not a model failure.
+It is a MISMATCH — invariant 1, always a bug — and it is reported under its own
+category so it can never be quietly counted as the model getting something wrong.
 """
 
 from __future__ import annotations
@@ -37,9 +57,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
+from . import engines as eng
 from .sandbox import DEFAULT_TIMEOUT_S, RunResult, run_python
 
-KINDS = ("stdout", "script", "pytest")
+KINDS = ("stdout", "script", "pytest", "lypning")
 EMPTY_PROGRAM = "pass\n"
 
 # The normalizations a `stdout` test may name. Anything else is a malformed test.
@@ -103,6 +124,15 @@ def validate_test_spec(test: Dict[str, Any]) -> Optional[str]:
     elif kind == "pytest":
         if not (test.get("test_file") or "").strip():
             return "pytest test needs a non-empty test_file"
+    elif kind == "lypning":
+        if "expect_stdout" not in test:
+            return "lypning test needs expect_stdout (CPython's answer)"
+        engines = test.get("engines") or list(eng.DEFAULT_CHAIN)
+        if not isinstance(engines, list) or not engines:
+            return "engines must be a non-empty list"
+        missing = [e for e in engines if eng.engine_path(e) is None]
+        if missing:
+            return "engine not built: %s (run `lypning build --rust`)" % ", ".join(missing)
     return None
 
 
@@ -126,6 +156,8 @@ def run_test(test: Dict[str, Any], program: str) -> Verdict:
         return _run_stdout(test, program)
     if kind == "script":
         return _run_script(test, program)
+    if kind == "lypning":
+        return _run_lypning(test, program)
     return _run_pytest(test, program)
 
 
@@ -314,3 +346,68 @@ def gate_case(
     gates["stable"] = "ok"
 
     return GateReport(True, "kept", "", gates)
+
+
+# ------------------------------------------------- the lypning kind
+
+
+def _matches(test: Dict[str, Any], r: RunResult) -> Optional[str]:
+    """None if the run reproduced CPython's answer, else why not."""
+    if r.timed_out:
+        return "timeout"
+    want_exit = test.get("expect_exit", 0)
+    if want_exit is not None and r.exit_code != want_exit:
+        return "exit: want %s, got %s: %s" % (want_exit, r.exit_code, r.brief())
+    norm = NORMALIZERS[test.get("normalize", "exact")]
+    if norm(r.stdout) != norm(test["expect_stdout"]):
+        return "stdout: want %r, got %r" % (
+            norm(test["expect_stdout"])[:160], norm(r.stdout)[:160])
+    return None
+
+
+def _engine_run(test: Dict[str, Any], program: str, binary: str) -> RunResult:
+    return run_python(
+        program,
+        argv=test.get("argv") or [],
+        stdin=test.get("stdin"),
+        files=test.get("files") or {},
+        timeout_s=float(test.get("timeout_s", DEFAULT_TIMEOUT_S)),
+        mem_mb=int(test.get("mem_mb", 1024)),
+        interpreter=[binary],
+    )
+
+
+def _run_lypning(test: Dict[str, Any], program: str) -> Verdict:
+    # 1. Correctness, on CPython, first and decisively.
+    ref = _solution_run(test, program, None)
+    if ref.harness_error:
+        return Verdict(False, "harness-error", ref.harness_error, run=ref)
+    why = _matches(test, ref)
+    if why:
+        kind = why.split(":", 1)[0]
+        return Verdict(False, "timeout" if kind == "timeout" else kind, why, run=ref)
+
+    if not test.get("require_tier1", True):
+        # A ceiling case: falling back IS the right answer. Correct is enough.
+        return Verdict(True, "pass", "ceiling case: correct, route not required", run=ref)
+
+    # 2. Routing, only now that the answer is known to be right.
+    last = ""
+    for name in (test.get("engines") or list(eng.DEFAULT_CHAIN)):
+        binary = eng.engine_path(name)
+        if binary is None:
+            return Verdict(False, "harness-error", "engine not built: %s" % name, run=ref)
+        r = _engine_run(test, program, binary)
+        if r.harness_error:
+            return Verdict(False, "harness-error", r.harness_error, run=ref, check=r)
+        if r.exit_code == eng.REFUSAL_EXIT:
+            last = (r.stderr or "").strip().splitlines()[-1] if r.stderr.strip() else "exit 90"
+            continue
+        bad = _matches(test, r)
+        if bad:
+            # The engine ran it and disagreed with CPython. Invariant 1: always a
+            # bug, and never the model's.
+            return Verdict(False, "engine-mismatch",
+                           "%s disagrees with CPython: %s" % (name, bad), run=ref, check=r)
+        return Verdict(True, "pass", "tier-1 on %s" % name, run=ref, check=r)
+    return Verdict(False, "refused", last or "every engine refused", run=ref)

@@ -174,6 +174,7 @@ def run_python(
     output_cap: int = DEFAULT_OUTPUT_CAP,
     nproc: int = 0,
     entry: str = "solution.py",
+    interpreter: Optional[Sequence[str]] = None,
     isolate_network: bool = True,
     env_extra: Optional[Dict[str, str]] = None,
     keep_workdir: Optional[Path] = None,
@@ -218,9 +219,15 @@ def run_python(
         cmd: List[str] = []
         if isolate_network and netns_available():
             cmd += [shutil.which("unshare") or "unshare", "-n", "--"]
-        # -E -s, not -I: -I also drops the script's own directory from sys.path,
-        # which breaks any case whose test imports the solution as a module.
-        cmd += [sys.executable, "-E", "-s", str(entry_path)] + [str(a) for a in (argv or [])]
+        if interpreter:
+            # An engine binary. No -E/-s: those are CPython's flags, and the
+            # Rust core would reject them as program arguments.
+            cmd += [str(x) for x in interpreter] + [str(entry_path)]
+        else:
+            # -E -s, not -I: -I also drops the script's own directory from
+            # sys.path, which breaks a case whose test imports the solution.
+            cmd += [sys.executable, "-E", "-s", str(entry_path)]
+        cmd += [str(a) for a in (argv or [])]
 
         proc = None
         timed_out = False
