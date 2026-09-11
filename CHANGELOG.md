@@ -20,6 +20,38 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-11** — A baseline for the thing the project is actually about: 35.1% pass@1, and a rewrite slice at 17.3% (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **The corpus is the refusals.** `nt classify` put all **3688** corpus entries
+  (run of 2026-09-11) through CPython and both engines: 441 already tier-1,
+  1186 skipped by the repository's own rules, 1753 with no clean CPython answer
+  to compare against, and **308 refused** — the failing population. Minus the 45
+  that drive lypning itself, **249 cases**, split **175 train / 74 held-out**,
+  stratified over 30 refusal kinds.
+- **Baseline, stock `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16`**, served on
+  vLLM 0.27.1 on one A100 80GB, thinking on, 12,288-token budget, temp 1.0 /
+  top_p 0.95 (run `baseline-nemotron35-bf16-t12k`, 2026-09-11): **pass@1 35.1%,
+  95% CI [24.3%, 45.9%]** over 74 held-out cases.
+- **The blend hides the headroom, so `nt slices` was added.** Rewrite cases
+  **17.3%** [7.7, 28.8] over 52; ceiling controls 64.3% over 14; the old 26-task
+  study bank 100% over 8 — saturated, and evidence that bank cannot measure a
+  training effect.
+- **The first baseline attempt measured its own token cap.** At 4096 tokens,
+  41 of 74 attempts returned no program and *every one* of them stopped at
+  exactly 4096 with `finish_reason: length`. Raising the budget to 12,288 moved
+  pass@1 28.4% → 35.1% and no-code 41 → 24. The remaining 24 are still at the
+  cap: on a third of these cases the model does not stop reasoning.
+- **Reasoning bought nothing here and cost 23x.** Thinking off scored the same
+  35.1% on 22,254 output tokens in 61 s, against 505,576 tokens in 17m21s with
+  it on. The two arms pass 26 cases each and agree on only 20, so they are
+  indistinguishable at this n — but they are not interchangeable per slice:
+  thinking helps the rewrite cases (17.3% vs 9.6%) and its lower ceiling score
+  is the truncation above, not fabrication.
+- A `lypning` test kind grades correctness **first** and routing second, so a
+  program that stays in the subset by guessing scores zero. Ceiling cases carry
+  the rule as a control. An engine that runs a program and disagrees with
+  CPython is `engine-mismatch`, never a model failure.
+
 **2026-09-11** — `nemotron/`: a corpus that drops what it cannot test, and a held-out split that is frozen by a file rather than by intention (branch `claude/nemotron-lora-pipeline-1zczi2`)
 
 - **Steps 1 and 2 of a LoRA pipeline** for

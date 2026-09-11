@@ -18,6 +18,7 @@ training config is proposed until there is a baseline to beat.
 ## One-line commands
 
 ```bash
+./nt classify           # run the real corpus through CPython + both engines, once
 ./nt harvest            # step 1: sources -> corpus.jsonl + drops.jsonl
 ./nt split              # freeze the 70/30 stratified held-out split
 ./nt verify             # re-check the frozen split against its lock
@@ -25,6 +26,7 @@ training config is proposed until there is a baseline to beat.
 ./nt eval --baseline    # step 2, detached under tmux; returns immediately
 ./nt status             # one screen: corpus, baseline, running, spend, ETA
 ./nt results            # leaderboard by delta vs baseline
+./nt slices RUN         # pass rate per stratum — the blended number hides the headroom
 ./nt show RUN --failed-only   # the programs, and why each failed
 ```
 
@@ -53,10 +55,49 @@ The third gate is the one that pays for itself: the failing generation is a
 negative control you already have, and a test it passes is measuring something
 other than the bug you harvested.
 
-**Sources** are adapters (`pipeline/adapters.py`). Shipped: `study` (this
-repository's 26-task bank), `evalfail` (the failures of a step-2 run — the loop
-that actually produces "previously-failing cases"), and `jsonl` (anything else,
-with `--map dst->src` to rename fields). A new source is one function.
+**Sources** are adapters (`pipeline/adapters.py`). Shipped: `lypning` (the real
+thing — see below), `study` (this repository's 26-task bank), `evalfail` (the
+failures of a step-2 run), and `jsonl` (anything else, with `--map dst->src` to
+rename fields). A new source is one function.
+
+### The `lypning` source: what "previously-failing" means here
+
+A failing case is a python invocation **this runtime refused** — exit 90, one
+`unsupported:` line, and a full CPython spawn instead of an in-process answer.
+`./nt classify` runs every entry of `assets/corpus/corpus.jsonl` through CPython
+and both engines and writes the verdict down once; the harvester reads that file.
+Skip rules (absolute paths, battery-spawning, nondeterminism) are imported from
+`lypning.conformance`, not reimplemented.
+
+Two case shapes come out, and the split is the point:
+
+- **rewrite** — the refusal may be dodgeable. The case asks for an equivalent
+  program that stays on the engine. The original is the *negative control*: it is
+  correct and still fails the routing leg. There is no reference solution, so the
+  `satisfiable` gate records `unproven-no-reference` rather than pretending.
+- **ceiling** — the refusal cannot be dodged (arbitrary-precision integers,
+  `os.listdir` order, the modules nobody should reimplement). Falling back IS the
+  right answer, so `require_tier1` is false, the original is the *reference*, and
+  the case is scored on correctness alone.
+
+Stratification is by the engine's own refusal kind (`module`, `bigint`,
+`set-order`, `builtin`, …) rather than a taxonomy invented here, so the strata
+stay aligned with `conformance --plan` — the build order those refusals rank.
+
+### The `lypning` test kind
+
+Two axes, and the order is the whole point:
+
+1. **Correctness on CPython, checked first.** A failure here ends the attempt.
+2. **Routing**, only once the answer is known to be right.
+
+Because the one thing this project exists to prevent is a plausible wrong answer
+produced to stay inside the subset. A model that hand-rolls SHA-256 rather than
+importing `hashlib` must score zero, and it does. The ceiling cases are the
+counterweight: without them "stay in the subset" has nothing pulling against it.
+
+An engine that *runs* a program and disagrees with CPython is reported as
+`engine-mismatch` — invariant 1, always a bug — and never as a model failure.
 
 ```bash
 ./nt harvest --source 'jsonl:path=/path/to/failures.jsonl'

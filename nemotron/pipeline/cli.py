@@ -432,6 +432,35 @@ def cmd_results(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_slices(args: argparse.Namespace) -> int:
+    """Pass rate per stratum. The blended number hides where the headroom is.
+
+    This corpus mixes three populations with wildly different ceilings: rewrite
+    cases the model mostly fails, ceiling cases it should and does pass by
+    falling back, and a saturated task bank. One average over the three is not a
+    number anyone can act on.
+    """
+    from .classify import stratum
+    run_dir = RUNS / args.run_id
+    attempts = [a for a in read_jsonl(run_dir / "attempts.jsonl") if not a.get("harness_error")]
+    corpus = {c["id"]: c for c in read_jsonl(DATA / "corpus.jsonl")}
+    groups: Dict[str, List[float]] = {}
+    for a in attempts:
+        case = corpus.get(a["case_id"])
+        if case is None:
+            continue
+        key = case["category"] if args.fine else stratum(case["category"])
+        groups.setdefault(key, []).append(1.0 if a.get("passed") else 0.0)
+    print("run %s" % args.run_id)
+    print("%-26s %7s %9s %-20s" % ("slice", "n", "pass@1", "95% CI (bootstrap)"))
+    for key, scores in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+        b = stats.summarize(scores)
+        print("%-26s %7d %9s [%s, %s]"
+              % (key, len(scores), _pct(b["pass_rate"]),
+                 _pct(b["ci95"]["lo"]).strip(), _pct(b["ci95"]["hi"]).strip()))
+    return 0
+
+
 def cmd_show(args: argparse.Namespace) -> int:
     """Inspect what actually happened on a case: the program and why it failed."""
     run_dir = RUNS / args.run_id
@@ -517,6 +546,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     rs = sub.add_parser("results", help="leaderboard sorted by delta vs baseline")
     rs.set_defaults(fn=cmd_results)
+
+    sl = sub.add_parser("slices", help="pass rate per stratum for a run")
+    sl.add_argument("run_id"); sl.add_argument("--fine", action="store_true",
+                                               help="every refusal kind, not just the group")
+    sl.set_defaults(fn=cmd_slices)
 
     sh = sub.add_parser("show", help="print the programs a run produced")
     sh.add_argument("run_id"); sh.add_argument("--case"); sh.add_argument("--limit", type=int, default=5)
