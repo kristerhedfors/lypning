@@ -411,6 +411,7 @@ src/lypning/   cli.py (the front door) · engines.py (find, run, route, dispatch
 | `docs/MICROPYTHON.md` | `lypning-mp`, the oracle: what a second reimplementation got wrong, and the cost model both were built against |
 | `docs/SANDBOX-PERFORMANCE.md` | the cost model — cold blocks, the exec floor, spawns — measured upstream, dated |
 | `docs/PROMPTING.md` | can an agent be *asked* into the subset? nine prompt treatments, measured 2026-08-23 |
+| `docs/STEERING.md` | the plan (2026-09-11): a per-model census of what leaves the subset and did not have to, the verified example pairs, where to feed them, the training set they become, and the fine-tuning factory |
 | `docs/COMPARISON.md` | against ADK-Rust CodeAct + Monty: one instrument over the corpus, both columns measured |
 | `docs/PAPER.md` | the write-up: what coding agents actually emit, and CPython / PyPy / MicroPython / Monty / lypning benchmarked on it |
 | `docs/EXECUTIVE-SUMMARY.md` | the verdict: where lypning improves, where it regresses, where it loses, and the biases that flatter it |

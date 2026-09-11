@@ -20,6 +20,30 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-11** — The steering plan: which programs to teach a model, how to feed the examples, the training set, and the fine-tuning factory · [branch `claude/python-model-finetuning-plan-uev8u6`](https://github.com/kristerhedfors/lypning/compare/main...claude/python-model-finetuning-plan-uev8u6)
+
+- **`docs/STEERING.md`, a plan and nothing built.** It separates the two ways
+  a program leaves the subset — through the classifier, or hard at run time —
+  and shows on this date's run that the steerable population is almost
+  entirely imports; it proposes a `lypning steer` census ranked the way
+  `conformance --plan` ranks, sliced by the corpus's `models` histogram, with a
+  hand-kept `rewrite` / `wanted` / `fallback` / `engine-work` decision per
+  refusal; a corpus → task → pair pipeline reusing the study's task shape and
+  the cookbook's three assertions, plus two more gates (no reimplementation,
+  redaction); the feeds, with a reactive `PostToolUse` recipe recommended
+  first; a training-set schema tagged `evoked_by` and `rewrite_by` with the
+  fall-back answer as a first-class label; and a factory under `study/` for
+  Nemotron 3.5 Lightning over the Colab CLI, with the facts read that day and
+  the authentication question left open until verified.
+- **What the run behind it showed.** `lypning corpus --stats` on this tree:
+  every program unattributed, so the per-model census is one row until the
+  transcripts' machines re-harvest (milestone M0). And a pre-existing
+  MISMATCH on the floor and on `lypning-l` — `print(1.7976931348623157e308 **
+  0.5)` prints a last digit off — which is an engine defect, not this
+  change's, and is excluded from any example set by construction.
+- Indexed in `README.md` §9 and on the site; no code, no test, no asset
+  changed.
+
 **2026-09-07** — Round 81: `repr()` of a type at 46 programs per KB, a `zip()` that never returned, and 224 builtin arity divergences
 
 - **`repr()` of a type**, the row the corrected grader put on the board: it was
