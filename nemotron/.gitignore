@@ -1,0 +1,6 @@
+# Eval runs are reproducible from the corpus and the backend; their attempts can
+# be large and they are per-machine. The corpus, the lock and the baseline are
+# the committed evidence — see README.md "What is committed".
+runs/
+data/train.jsonl
+data/holdout.jsonl

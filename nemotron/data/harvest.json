@@ -1,0 +1,16 @@
+{
+  "candidates": 26,
+  "corpus_sha256": "e68b2951526afe8be0426e35489aefe686a8dcd38689b80b5afa26bce9d621d2",
+  "dropped": 0,
+  "drops_by_gate": {},
+  "harvested_at": "2026-09-11T07:29:44Z",
+  "kept": 26,
+  "kept_by_category": {
+    "unobserved": 26
+  },
+  "kept_by_source": {
+    "study": 26
+  },
+  "with_negative": 0,
+  "with_reference": 26
+}

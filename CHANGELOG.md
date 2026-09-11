@@ -20,6 +20,41 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-11** — `nemotron/`: a corpus that drops what it cannot test, and a held-out split that is frozen by a file rather than by intention (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **Steps 1 and 2 of a LoRA pipeline** for
+  `nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16`, in a new top-level
+  `nemotron/` that imports nothing from `lypning` and adds no dependency to it.
+  Steps 3 (training) and 4 (sweep) are deliberately not started: no training
+  config is proposed before there is a baseline to beat.
+- **A case is kept only if its test runs and discriminates.** Four gates, and a
+  drop is written with the gate that rejected it rather than patched: the
+  reference solution must pass, the empty program must fail, the *recorded
+  failing generation* must fail, and the verdict must repeat. The third gate is
+  the one that pays for itself — the failure that put a case in the corpus is a
+  negative control you already have, and a test it passes is measuring something
+  else.
+- **Frozen means checkable.** `holdout.lock.json` pins every held-out case by
+  SHA-256 with a manifest hash over the list; `nt verify` recomputes both, step 2
+  refuses to measure a drifted split, and `nt results` marks a run whose prompt
+  or manifest differs from the baseline's `n/c` instead of subtracting two
+  different measurements. Growth after the freeze lands in train only.
+- **A harness error is not a failed program.** A 500 from the server, a timeout
+  talking to it, a sandbox fault — excluded from the denominator and counted
+  separately, so a flaky endpoint cannot read as a worse model.
+- **The Wilson interval beside the bootstrap is not decoration.** At small n the
+  percentile bootstrap degenerates; with every case passing it reports a
+  zero-width interval, which is false. The summary carries both and flags their
+  disagreement.
+- The sandbox is the same posture as invariant 4 — own temp cwd, scrubbed
+  environment (`HF_TOKEN` included), process-*group* kill on timeout, CPU,
+  address-space and file-size rlimits, and an empty network namespace via
+  `unshare -n` where the kernel allows it. Still a net, not a sandbox: an
+  absolute path still escapes it.
+- Stdlib only, `>=3.9`, `from __future__ import annotations` throughout, so the
+  same code gives the same verdict on a laptop, in CI and in the GPU container.
+  54 tests under `nemotron/tests`.
+
 **2026-09-07** — Round 81: `repr()` of a type at 46 programs per KB, a `zip()` that never returned, and 224 builtin arity divergences
 
 - **`repr()` of a type**, the row the corrected grader put on the board: it was

@@ -1,0 +1,50 @@
+{
+  "fraction": 0.3,
+  "frozen_at": "2026-09-11T07:29:45Z",
+  "holdout": [
+    {
+      "id": "ntx-059d9b73eb47",
+      "sha256": "371d31580004690b20a1ccc338f290ffdb8e423f08a68d342235e462c2249326"
+    },
+    {
+      "id": "ntx-165313db5d42",
+      "sha256": "a98383c9cc1c869ad6d681e20212028464ff84077b6709d02dd20585ad994133"
+    },
+    {
+      "id": "ntx-4051281f1a3a",
+      "sha256": "b6142fef7b909b9c5acdfcfdb6ded712a94521253eb94819773282633080e10b"
+    },
+    {
+      "id": "ntx-aaff7d8f86df",
+      "sha256": "05169cd3b03f31628d2173815bf4a1d5c4210fc54ce389060a16cbdd6399bdc6"
+    },
+    {
+      "id": "ntx-b840c98a9b42",
+      "sha256": "6fe6ea131960381ddcce8b73c07c4affc0546f5db2e1a6bf4e886d209e8fce3a"
+    },
+    {
+      "id": "ntx-bdb7ef0dfd39",
+      "sha256": "c32ac2903b318406975bf07395c084b4282f5a9d90cf463ae9909689d68364b6"
+    },
+    {
+      "id": "ntx-c900b8059e76",
+      "sha256": "57d8d1543685a9c6370ccf2d9486f78d11845e118781e840377f9a34ef36c374"
+    },
+    {
+      "id": "ntx-fb1554cd2e88",
+      "sha256": "307889170557897ee6c89118fae5b7fd92b1e11560b2f7ffd06e837c1afab215"
+    }
+  ],
+  "manifest_sha256": "0d9296167ca7b409e7b19336edca208c87ffe8722faba2099f699bdc461f839f",
+  "n_corpus": 26,
+  "n_holdout": 8,
+  "n_train": 18,
+  "refrozen_from": null,
+  "salt": "ntx-holdout-v1",
+  "strata": {
+    "unobserved": {
+      "holdout": 8,
+      "total": 26
+    }
+  }
+}
