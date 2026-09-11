@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Phone-facing. One line each, and `down` is always safe to type.
+set -uo pipefail
+cd "$(dirname "$(readlink -f "$0")")/gpu"
+case "${1:-status}" in
+  plan)   "$@" >/dev/null 2>&1; ./launch.sh ;;                  # dry run, prints cost
+  up)     YES=1 ./launch.sh ;;
+  down|reap) ./reap.sh ;;
+  status)
+    gcloud compute instances list --filter="labels.ntx-autoreap=true" \
+      --format="table(name,zone,status,lastStartTimestamp)" 2>/dev/null
+    [ -n "${GCS:-}" ] && for f in phase spend.json; do
+      echo "--- $f"; gsutil cat "$GCS"/*/$f 2>/dev/null | tail -12
+    done ;;
+  *) echo "usage: nt-gpu {plan|up|status|down}" >&2; exit 2 ;;
+esac

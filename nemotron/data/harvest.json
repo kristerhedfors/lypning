@@ -1,0 +1,49 @@
+{
+  "candidates": 252,
+  "corpus_sha256": "137325af530838c015a014a1130f9d2bb7e1488455048bb468bcc985922f73b0",
+  "dropped": 3,
+  "drops_by_gate": {
+    "satisfiable": 3
+  },
+  "harvested_at": "2026-09-11T09:55:55Z",
+  "kept": 249,
+  "kept_by_category": {
+    "ceiling:module": 26,
+    "ceiling:module-attr": 19,
+    "refused:argument": 1,
+    "refused:base64": 2,
+    "refused:builtin": 17,
+    "refused:class": 12,
+    "refused:collections": 1,
+    "refused:decorator": 4,
+    "refused:del": 1,
+    "refused:dict-view": 5,
+    "refused:exception-chaining": 1,
+    "refused:float-sum": 1,
+    "refused:format": 2,
+    "refused:generator": 4,
+    "refused:glob-order": 7,
+    "refused:json": 1,
+    "refused:module": 57,
+    "refused:module-attr": 12,
+    "refused:nan-identity": 4,
+    "refused:nonlocal": 1,
+    "refused:os-listdir": 2,
+    "refused:percent-format": 2,
+    "refused:random": 2,
+    "refused:re": 11,
+    "refused:recursion": 1,
+    "refused:repr-unicode": 4,
+    "refused:set-method": 1,
+    "refused:set-order": 11,
+    "refused:str-method": 3,
+    "refused:type": 8,
+    "unobserved": 26
+  },
+  "kept_by_source": {
+    "lypning-corpus": 223,
+    "study": 26
+  },
+  "with_negative": 178,
+  "with_reference": 71
+}

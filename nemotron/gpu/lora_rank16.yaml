@@ -1,0 +1,123 @@
+# Rank-16 LoRA for Nemotron-3.5-Lightning-30B-A3B-BF16 on one 8xH100 node.
+#
+# Derived from the official cookbook recipe
+# (usage-cookbook/Nemotron-3.5-Lightning/lora-text2sql/nemo-automodel/
+#  nemotron_mtp_lightning35_hellaswag_peft.yaml). Three deliberate departures,
+# and nothing else:
+#
+#   dim: 8 -> 16        asked for. alpha stays 32, so the LoRA scale halves
+#                       (alpha/dim 4 -> 2); that is the intended reading of
+#                       "rank 16", not "same scale at twice the rank".
+#   max_steps           derived from the dataset, not fixed at 100 — see below.
+#   ckpt_every_steps    25, not 1000. This runs on SPOT: a checkpoint cadence
+#                       longer than the expected time to preemption means the
+#                       run restarts from nothing.
+#
+# `ep_size: 8` MUST equal --nproc-per-node. The cookbook is explicit that this
+# is a single-node 8-GPU recipe; the one-GPU variant in dgx-station-recipes
+# assumes a GB300's memory, not an H100's 80 GB.
+#
+# HYPERPARAMETERS ARE FIXED ACROSS EVERY RUN OF THE SWEEP. The swept variable is
+# the data mixture. If lr, batch size or step count move between arms, a
+# difference in pass rate is not attributable to the mixture and the sweep has
+# measured nothing.
+
+recipe: TrainFinetuneRecipeForNextTokenPrediction
+
+step_scheduler:
+  global_batch_size: 16
+  local_batch_size: 1
+  ckpt_every_steps: 25
+  val_every_steps: 25
+  max_steps: 48          # ~3 epochs over 154 examples at gbs 16. Brief on purpose.
+
+dist_env:
+  backend: nccl
+  timeout_minutes: 10
+
+rng:
+  _target_: nemo_automodel.components.training.rng.StatefulRNG
+  seed: 1111
+  ranked: true
+
+model:
+  _target_: nemo_automodel.NeMoAutoModelForCausalLM.from_pretrained
+  pretrained_model_name_or_path: nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16
+  # MTP is auto-enabled from the checkpoint config; the HF export keeps only the
+  # physical depth, so the iteration count is set explicitly. Straight from the
+  # cookbook — do not "simplify" these three.
+  num_nextn_predict_layers: 2
+  mtp_use_repeated_layer: true
+  mtp_loss_scaling_factor: 0.1
+  backend:
+    _target_: nemo_automodel.components.models.common.BackendConfig
+    attn: te
+    linear: te
+    rms_norm: te
+    experts: gmm
+    dispatcher: deepep
+
+checkpoint:
+  enabled: true
+  checkpoint_dir: /data/ckpt
+  model_save_format: safetensors
+  save_consolidated: final
+
+peft:
+  _target_: nemo_automodel.components._peft.lora.PeftConfig
+  # Mamba layers consume out_proj.weight directly in a custom kernel, so a LoRA
+  # there is silently bypassed. The cookbook excludes it; so do we.
+  exclude_modules: ["*.out_proj"]
+  dim: 16
+  alpha: 32
+  use_triton: true
+
+distributed:
+  strategy: fsdp2
+  dp_size: none
+  tp_size: 1
+  cp_size: 1
+  ep_size: 8
+  sequence_parallel: false
+
+loss_fn:
+  _target_: nemo_automodel.components.loss.masked_ce.MaskedCrossEntropy
+
+# ChatDataset reads OpenAI `messages` JSONL straight off disk, which is exactly
+# the shape `nt sample` already writes. Verified against
+# examples/llm_finetune/qwen/qwen2_5_7b_instruct_chat.yaml in the Automodel tree
+# (2026-09-11). A custom dataset target would be one more thing to fail 15
+# minutes into a paid job.
+dataset:
+  _target_: nemo_automodel.components.datasets.llm.chat_dataset.ChatDataset
+  path_or_dataset_id: /data/sft.jsonl
+  mask_generation_prompt: true
+
+validation_dataset:
+  _target_: nemo_automodel.components.datasets.llm.chat_dataset.ChatDataset
+  path_or_dataset_id: /data/sft_val.jsonl
+  mask_generation_prompt: true
+
+packed_sequence:
+  packed_sequence_size: 0
+
+dataloader:
+  _target_: torchdata.stateful_dataloader.StatefulDataLoader
+  collate_fn: nemo_automodel.components.datasets.utils.default_collater
+  shuffle: true
+
+validation_dataloader:
+  _target_: torchdata.stateful_dataloader.StatefulDataLoader
+  collate_fn: nemo_automodel.components.datasets.utils.default_collater
+
+optimizer:
+  _target_: torch.optim.AdamW
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  lr: 1.0e-4
+  weight_decay: 0.1
+
+lr_scheduler:
+  lr_decay_style: cosine
+  lr_warmup_steps: 5
+  min_lr: 1.0e-5

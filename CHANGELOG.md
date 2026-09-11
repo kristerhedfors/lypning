@@ -20,6 +20,113 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-11** — The measurement pipeline audited: 52 findings, 33 survived, and the corpus does not need to be bigger (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **A green suite measures the cases someone thought of.** Six independent lenses
+  over `nemotron/pipeline/`, every finding then handed to two refute-by-default
+  skeptics: 52 raised, **33 survived**, 19 refuted, every survivor confirmed by
+  running a repro. The 62 passing tests caught none of them. Written up in
+  `nemotron/AUDIT.md`.
+- **`-E` silently voided the harness's own determinism.** `run_python` spawned
+  CPython with `-E`, which ignores every `PYTHON*` variable — including the
+  `PYTHONHASHSEED=0` set nine lines earlier against exactly this. Found
+  independently by three lenses. One case, one stored program, twelve identical
+  runs: `[T,F,F,T,F,F,F,T,T,T,F,T]`. Set ordering was a coin flip on every
+  reference capture, every gate run and every graded attempt, so some cases were
+  frozen to an expect_stdout no correct program can reproduce.
+- **An engine MISMATCH was scored as a model failure** — invariant 1 inverted, in
+  the metric. Three attempts in `headroom-k16` are the engine bug
+  `NameError: __file__` filed as `wrong-output`. A tune that tripped a *new*
+  mismatch would have read as a worse model.
+- **The eval path had no degenerate-solution guard.** `print(<expected output>)`
+  was a full pass; one of the 26 passing baseline attempts is exactly that. The
+  sampler's guard was never wired into grading — and its own
+  `_LITERAL_MIN_CHARS = 12` plus a shortest-wins selector made it a cheat-seeking
+  selector for short outputs: for one case, seven passing programs were drawn
+  including an 805-char genuine implementation, and the two chosen as training
+  targets were both the hardcoded literal.
+- **Corpus recovery was measured and recommended against, five times out of five.**
+  FileNotFoundError 1201 entries → **7** cases; no-stdout 205 → 3; json-decode 111
+  → **0**; IndexError 62 → 7; import/syntax 78 → 57 but from three captures in one
+  session. The prior estimate of a few hundred recoverable cases was wrong by an
+  order of magnitude.
+- **The critic found what the lenses could not.** The SFT set is drawn with
+  thinking off, so a tune will have near-zero truncation by construction — while
+  24 of the published baseline's 74 cases scored zero on budget exhaustion, worth
+  up to **+6.8pp of free movement** toward the win bar with no capability gain.
+  And arm identity is a free-text string: both shipped runs record model
+  `nemotron` and were different endpoints.
+- **The instrument's null floor, measured.** Same checkpoint, same prompt, same
+  holdout, thinking on vs off: both 26/74, `gained 6 / lost 6`. Twelve of
+  seventy-four cases flip when nothing changed.
+
+**2026-09-11** — A baseline for the thing the project is actually about: 35.1% pass@1, and a rewrite slice at 17.3% (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **The corpus is the refusals.** `nt classify` put all **3688** corpus entries
+  (run of 2026-09-11) through CPython and both engines: 441 already tier-1,
+  1186 skipped by the repository's own rules, 1753 with no clean CPython answer
+  to compare against, and **308 refused** — the failing population. Minus the 45
+  that drive lypning itself, **249 cases**, split **175 train / 74 held-out**,
+  stratified over 30 refusal kinds.
+- **Baseline, stock `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16`**, served on
+  vLLM 0.27.1 on one A100 80GB, thinking on, 12,288-token budget, temp 1.0 /
+  top_p 0.95 (run `baseline-nemotron35-bf16-t12k`, 2026-09-11): **pass@1 35.1%,
+  95% CI [24.3%, 45.9%]** over 74 held-out cases.
+- **The blend hides the headroom, so `nt slices` was added.** Rewrite cases
+  **17.3%** [7.7, 28.8] over 52; ceiling controls 64.3% over 14; the old 26-task
+  study bank 100% over 8 — saturated, and evidence that bank cannot measure a
+  training effect.
+- **The first baseline attempt measured its own token cap.** At 4096 tokens,
+  41 of 74 attempts returned no program and *every one* of them stopped at
+  exactly 4096 with `finish_reason: length`. Raising the budget to 12,288 moved
+  pass@1 28.4% → 35.1% and no-code 41 → 24. The remaining 24 are still at the
+  cap: on a third of these cases the model does not stop reasoning.
+- **Reasoning bought nothing here and cost 23x.** Thinking off scored the same
+  35.1% on 22,254 output tokens in 61 s, against 505,576 tokens in 17m21s with
+  it on. The two arms pass 26 cases each and agree on only 20, so they are
+  indistinguishable at this n — but they are not interchangeable per slice:
+  thinking helps the rewrite cases (17.3% vs 9.6%) and its lower ceiling score
+  is the truncation above, not fabrication.
+- A `lypning` test kind grades correctness **first** and routing second, so a
+  program that stays in the subset by guessing scores zero. Ceiling cases carry
+  the rule as a control. An engine that runs a program and disagrees with
+  CPython is `engine-mismatch`, never a model failure.
+
+**2026-09-11** — `nemotron/`: a corpus that drops what it cannot test, and a held-out split that is frozen by a file rather than by intention (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **Steps 1 and 2 of a LoRA pipeline** for
+  `nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16`, in a new top-level
+  `nemotron/` that imports nothing from `lypning` and adds no dependency to it.
+  Steps 3 (training) and 4 (sweep) are deliberately not started: no training
+  config is proposed before there is a baseline to beat.
+- **A case is kept only if its test runs and discriminates.** Four gates, and a
+  drop is written with the gate that rejected it rather than patched: the
+  reference solution must pass, the empty program must fail, the *recorded
+  failing generation* must fail, and the verdict must repeat. The third gate is
+  the one that pays for itself — the failure that put a case in the corpus is a
+  negative control you already have, and a test it passes is measuring something
+  else.
+- **Frozen means checkable.** `holdout.lock.json` pins every held-out case by
+  SHA-256 with a manifest hash over the list; `nt verify` recomputes both, step 2
+  refuses to measure a drifted split, and `nt results` marks a run whose prompt
+  or manifest differs from the baseline's `n/c` instead of subtracting two
+  different measurements. Growth after the freeze lands in train only.
+- **A harness error is not a failed program.** A 500 from the server, a timeout
+  talking to it, a sandbox fault — excluded from the denominator and counted
+  separately, so a flaky endpoint cannot read as a worse model.
+- **The Wilson interval beside the bootstrap is not decoration.** At small n the
+  percentile bootstrap degenerates; with every case passing it reports a
+  zero-width interval, which is false. The summary carries both and flags their
+  disagreement.
+- The sandbox is the same posture as invariant 4 — own temp cwd, scrubbed
+  environment (`HF_TOKEN` included), process-*group* kill on timeout, CPU,
+  address-space and file-size rlimits, and an empty network namespace via
+  `unshare -n` where the kernel allows it. Still a net, not a sandbox: an
+  absolute path still escapes it.
+- Stdlib only, `>=3.9`, `from __future__ import annotations` throughout, so the
+  same code gives the same verdict on a laptop, in CI and in the GPU container.
+  54 tests under `nemotron/tests`.
+
 **2026-09-07** — Round 81: `repr()` of a type at 46 programs per KB, a `zip()` that never returned, and 224 builtin arity divergences
 
 - **`repr()` of a type**, the row the corrected grader put on the board: it was

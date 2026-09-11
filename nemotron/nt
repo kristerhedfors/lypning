@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# One line, every time. Everything long-running goes to tmux and returns.
+set -euo pipefail
+cd "$(dirname "$(readlink -f "$0")")"
+exec python3 -m pipeline.cli "$@"

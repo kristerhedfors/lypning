@@ -1,0 +1,178 @@
+{
+  "aborted": null,
+  "by_category": {
+    "ceiling:module": {
+      "cases": 18,
+      "solved": 18,
+      "yield": 1.0
+    },
+    "ceiling:module-attr": {
+      "cases": 13,
+      "solved": 13,
+      "yield": 1.0
+    },
+    "refused:argument": {
+      "cases": 1,
+      "solved": 0,
+      "yield": 0.0
+    },
+    "refused:base64": {
+      "cases": 1,
+      "solved": 0,
+      "yield": 0.0
+    },
+    "refused:builtin": {
+      "cases": 12,
+      "solved": 3,
+      "yield": 0.25
+    },
+    "refused:class": {
+      "cases": 8,
+      "solved": 1,
+      "yield": 0.125
+    },
+    "refused:collections": {
+      "cases": 1,
+      "solved": 0,
+      "yield": 0.0
+    },
+    "refused:decorator": {
+      "cases": 3,
+      "solved": 0,
+      "yield": 0.0
+    },
+    "refused:del": {
+      "cases": 1,
+      "solved": 0,
+      "yield": 0.0
+    },
+    "refused:dict-view": {
+      "cases": 3,
+      "solved": 1,
+      "yield": 0.3333333333333333
+    },
+    "refused:exception-chaining": {
+      "cases": 1,
+      "solved": 0,
+      "yield": 0.0
+    },
+    "refused:float-sum": {
+      "cases": 1,
+      "solved": 0,
+      "yield": 0.0
+    },
+    "refused:format": {
+      "cases": 1,
+      "solved": 0,
+      "yield": 0.0
+    },
+    "refused:generator": {
+      "cases": 3,
+      "solved": 0,
+      "yield": 0.0
+    },
+    "refused:glob-order": {
+      "cases": 5,
+      "solved": 2,
+      "yield": 0.4
+    },
+    "refused:json": {
+      "cases": 1,
+      "solved": 0,
+      "yield": 0.0
+    },
+    "refused:module": {
+      "cases": 40,
+      "solved": 16,
+      "yield": 0.4
+    },
+    "refused:module-attr": {
+      "cases": 8,
+      "solved": 0,
+      "yield": 0.0
+    },
+    "refused:nan-identity": {
+      "cases": 3,
+      "solved": 1,
+      "yield": 0.3333333333333333
+    },
+    "refused:nonlocal": {
+      "cases": 1,
+      "solved": 1,
+      "yield": 1.0
+    },
+    "refused:os-listdir": {
+      "cases": 1,
+      "solved": 0,
+      "yield": 0.0
+    },
+    "refused:percent-format": {
+      "cases": 1,
+      "solved": 0,
+      "yield": 0.0
+    },
+    "refused:random": {
+      "cases": 1,
+      "solved": 1,
+      "yield": 1.0
+    },
+    "refused:re": {
+      "cases": 8,
+      "solved": 3,
+      "yield": 0.375
+    },
+    "refused:recursion": {
+      "cases": 1,
+      "solved": 0,
+      "yield": 0.0
+    },
+    "refused:repr-unicode": {
+      "cases": 3,
+      "solved": 0,
+      "yield": 0.0
+    },
+    "refused:set-method": {
+      "cases": 1,
+      "solved": 0,
+      "yield": 0.0
+    },
+    "refused:set-order": {
+      "cases": 8,
+      "solved": 5,
+      "yield": 0.625
+    },
+    "refused:str-method": {
+      "cases": 2,
+      "solved": 0,
+      "yield": 0.0
+    },
+    "refused:type": {
+      "cases": 6,
+      "solved": 0,
+      "yield": 0.0
+    },
+    "unobserved": {
+      "cases": 18,
+      "solved": 18,
+      "yield": 1.0
+    }
+  },
+  "cases": 175,
+  "cases_with_a_verified_solution": 83,
+  "draw_pass_rate": 0.3171428571428571,
+  "draws": 2800,
+  "k": 16,
+  "keep": 2,
+  "rejected_by_reason": {
+    "engine-mismatch": 12,
+    "exit": 214,
+    "literal-output": 53,
+    "refused": 972,
+    "stdout": 650,
+    "timeout": 11
+  },
+  "sampled_at": "2026-09-11T11:42:22Z",
+  "sft_examples": 154,
+  "spend_usd": 0.5073,
+  "yield_rate": 0.4742857142857143
+}
