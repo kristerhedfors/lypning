@@ -165,3 +165,31 @@ def test_a_resumed_run_carries_its_earlier_gpu_spend(tmp_path):
     write_json(run / "progress.json", {"spend_gpu_usd": 4.25})
     ev = Evaluation(ChatBackend("http://x/v1", "m"), [], run, price_hour=3.69)
     assert ev._gpu_cost() >= 4.25
+
+
+def test_the_sampler_refuses_to_touch_the_frozen_holdout(tmp_path):
+    from pipeline import split as S
+    from pipeline.sample import train_cases
+    cases = [make_case(prompt="p%d" % i, test={"kind": "stdout", "expect_stdout": "%d\n" % i},
+                       reference="print(%d)" % i, category="wrong-output") for i in range(20)]
+    write_jsonl(tmp_path / "corpus.jsonl", cases)
+    lock = S.freeze(tmp_path / "corpus.jsonl")
+    held = {e["id"] for e in lock["holdout"]}
+    train = train_cases(tmp_path)
+    assert train and not ({c["id"] for c in train} & held)
+    assert len(train) == 20 - len(held)
+
+
+def test_sampling_without_a_frozen_split_is_refused(tmp_path):
+    from pipeline.sample import train_cases
+    write_jsonl(tmp_path / "corpus.jsonl", [make_case(
+        prompt="p", test={"kind": "stdout", "expect_stdout": "x"}, category="timeout")])
+    with pytest.raises(ValueError, match="not frozen"):
+        train_cases(tmp_path)
+
+
+def test_the_literal_output_guard_catches_printing_the_answer():
+    from pipeline.sample import looks_like_literal_output as L
+    assert L('print("alpha 1\\nbeta 22\\ngamma 333")', "alpha 1\nbeta 22\ngamma 333")
+    assert not L("print(6*7)", "42")
+    assert not L("print(sum(range(10)))", "45")

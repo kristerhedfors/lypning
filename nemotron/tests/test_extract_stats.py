@@ -67,3 +67,39 @@ def test_the_win_rule_needs_the_lower_bound_above_the_baseline_point():
 
 def test_empty_scores_do_not_raise():
     assert summarize([])["n_cases"] == 0
+
+
+def test_paired_delta_separates_what_the_unpaired_rule_cannot():
+    """The real situation: 52 cases, baseline 11.5%, four more solved and none lost.
+
+    That is the effect size the held-out rewrite slice can actually produce, and
+    the two instruments disagree on it. The paired interval excludes zero; the
+    unpaired rule does not clear the baseline point, because it pays twice for
+    the shared difficulty of 48 cases that did not move at all.
+    """
+    from pipeline.stats import beats, paired_delta, summarize
+    before = {"c%d" % i: (1.0 if i < 6 else 0.0) for i in range(52)}
+    after = dict(before)
+    for i in range(6, 10):
+        after["c%d" % i] = 1.0
+    d = paired_delta(before, after)
+    assert d["gained"] == 4 and d["lost"] == 0
+    assert d["significant"], "paired bootstrap should exclude zero"
+    assert not beats(summarize(list(after.values())),
+                     sum(before.values()) / len(before)), \
+        "the pre-registered unpaired rule should NOT fire at this effect size"
+
+
+def test_mcnemar_is_exact_and_symmetric():
+    from pipeline.stats import _mcnemar
+    assert _mcnemar(0, 0) == 1.0
+    assert _mcnemar(8, 1) == _mcnemar(1, 8)
+    assert _mcnemar(8, 1) < 0.05 < _mcnemar(3, 1)
+
+
+def test_pass_at_k_is_the_gap_between_can_and_does():
+    from pipeline.stats import pass_at_k
+    r = pass_at_k([(0, 16), (1, 16), (16, 16), (0, 16)])
+    assert r["pass_at_k"] == 0.5
+    assert abs(r["pass_at_1"] - 17 / 64) < 1e-9
+    assert r["headroom"] > 0
