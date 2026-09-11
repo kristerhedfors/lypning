@@ -20,6 +20,46 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-11** — The measurement pipeline audited: 52 findings, 33 survived, and the corpus does not need to be bigger (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **A green suite measures the cases someone thought of.** Six independent lenses
+  over `nemotron/pipeline/`, every finding then handed to two refute-by-default
+  skeptics: 52 raised, **33 survived**, 19 refuted, every survivor confirmed by
+  running a repro. The 62 passing tests caught none of them. Written up in
+  `nemotron/AUDIT.md`.
+- **`-E` silently voided the harness's own determinism.** `run_python` spawned
+  CPython with `-E`, which ignores every `PYTHON*` variable — including the
+  `PYTHONHASHSEED=0` set nine lines earlier against exactly this. Found
+  independently by three lenses. One case, one stored program, twelve identical
+  runs: `[T,F,F,T,F,F,F,T,T,T,F,T]`. Set ordering was a coin flip on every
+  reference capture, every gate run and every graded attempt, so some cases were
+  frozen to an expect_stdout no correct program can reproduce.
+- **An engine MISMATCH was scored as a model failure** — invariant 1 inverted, in
+  the metric. Three attempts in `headroom-k16` are the engine bug
+  `NameError: __file__` filed as `wrong-output`. A tune that tripped a *new*
+  mismatch would have read as a worse model.
+- **The eval path had no degenerate-solution guard.** `print(<expected output>)`
+  was a full pass; one of the 26 passing baseline attempts is exactly that. The
+  sampler's guard was never wired into grading — and its own
+  `_LITERAL_MIN_CHARS = 12` plus a shortest-wins selector made it a cheat-seeking
+  selector for short outputs: for one case, seven passing programs were drawn
+  including an 805-char genuine implementation, and the two chosen as training
+  targets were both the hardcoded literal.
+- **Corpus recovery was measured and recommended against, five times out of five.**
+  FileNotFoundError 1201 entries → **7** cases; no-stdout 205 → 3; json-decode 111
+  → **0**; IndexError 62 → 7; import/syntax 78 → 57 but from three captures in one
+  session. The prior estimate of a few hundred recoverable cases was wrong by an
+  order of magnitude.
+- **The critic found what the lenses could not.** The SFT set is drawn with
+  thinking off, so a tune will have near-zero truncation by construction — while
+  24 of the published baseline's 74 cases scored zero on budget exhaustion, worth
+  up to **+6.8pp of free movement** toward the win bar with no capability gain.
+  And arm identity is a free-text string: both shipped runs record model
+  `nemotron` and were different endpoints.
+- **The instrument's null floor, measured.** Same checkpoint, same prompt, same
+  holdout, thinking on vs off: both 26/74, `gained 6 / lost 6`. Twelve of
+  seventy-four cases flip when nothing changed.
+
 **2026-09-11** — A baseline for the thing the project is actually about: 35.1% pass@1, and a rewrite slice at 17.3% (branch `claude/nemotron-lora-pipeline-1zczi2`)
 
 - **The corpus is the refusals.** `nt classify` put all **3688** corpus entries
