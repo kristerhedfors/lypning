@@ -1,6 +1,13 @@
-# Eval runs are reproducible from the corpus and the backend; their attempts can
-# be large and they are per-machine. The corpus, the lock and the baseline are
-# the committed evidence — see README.md "What is committed".
-runs/
+# The evidence is committed. `runs/` holds the attempts behind every reported
+# number, and re-grading them under a repaired harness is free where regenerating
+# them costs GPU money — so 3.2 MB of history buys back every measurement this
+# project has paid for. It was ignored until 2026-09-11, which meant the raw
+# evidence for a measured baseline lived in one container and died with it.
+#
+# summary.json is DERIVED and is re-derived by every fix that moves a number.
+# summary.as-reported.json beside it is what was actually published, and is never
+# rewritten: it is the pin that makes a moved number a visible diff.
+
+# Derived views of the corpus; the corpus and its lock are the authority.
 data/train.jsonl
 data/holdout.jsonl
