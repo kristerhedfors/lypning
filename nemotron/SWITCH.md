@@ -47,12 +47,22 @@ export NTX_MODEL="Qwen/Qwen3.8-27B:novita"
 
 `exclude_modules: ["*.out_proj", "*visual*"]`.
 
-`*.out_proj` is not carried over by analogy: `qwen3_5/model.py:430` hands
-`self.linear_attn.out_proj` straight into the gated-delta-net kernel, which
-consumes the weight directly, so a LoRA there is silently bypassed. That is the
-same trap the Nemotron cookbook documents for its Mamba layers, confirmed in this
-model's own source. `*visual*` freezes a vision tower that plays no part in
-generating python.
+`*visual*` freezes a vision tower that plays no part in generating python.
+
+**Corrected 2026-09-12.** This file previously also excluded `*.out_proj`, citing
+`qwen3_5/model.py:430` as proof that the weight goes straight into the
+gated-delta-net kernel. That citation was wrong: line 430 sits inside
+`for linear in (...): nn.init.trunc_normal_(linear.weight, ...)`, a weight
+initialiser, with `out_proj` listed beside four `nn.Linear` siblings. The real
+call sites are `output = self.out_proj(core_attn_out)` at `cp_linear_attn.py:343`
+and `:715` — an ordinary module call, so a LoRA there applies normally.
+
+The Nemotron exclusion it was copied from IS correct for Nemotron:
+`nemotron_v3/layers.py:454-455` really does pass `outproj_weight=self.out_proj.weight`
+into a fused kernel. Qwen3.5 does not, and the two were conflated. The cost of
+the error was ~56 of the widest projections in the model frozen for no reason,
+weakening the very intervention the training run is meant to measure — found by
+an independent agent re-checking a claim this file asserted as verified.
 
 ## What survives the switch, and what does not
 

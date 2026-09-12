@@ -67,12 +67,25 @@ checkpoint:
 
 peft:
   _target_: nemo_automodel.components._peft.lora.PeftConfig
-  # `*.out_proj`: qwen3_5/model.py:430 hands `self.linear_attn.out_proj` straight
-  # into the gated-delta-net kernel, which consumes the weight directly. A LoRA
-  # there is silently bypassed — exactly the trap the Nemotron cookbook documents
-  # for its Mamba layers, confirmed in this model's source rather than assumed.
-  # `*visual*`: the vision tower plays no part in generating python.
-  exclude_modules: ["*.out_proj", "*visual*"]
+  # ONLY the vision tower. `*.out_proj` was excluded here until 2026-09-12 on a
+  # rationale that was checked against the wrong line and was wrong for this
+  # model.
+  #
+  # The Nemotron cookbook excludes it for a real reason: nemotron_v3/layers.py
+  # passes `outproj_weight=self.out_proj.weight` INTO a fused kernel (layers.py
+  # :454-455), so a LoRA wrapping the module is bypassed. Qwen3.5 does no such
+  # thing — `output = self.out_proj(core_attn_out)` at cp_linear_attn.py:343 and
+  # :715 is an ordinary module call on both paths, so a LoRA there applies
+  # normally. The line originally cited as proof, qwen3_5/model.py:430, is inside
+  # `for linear in (...): nn.init.trunc_normal_(linear.weight, ...)` — a weight
+  # initialiser, not a kernel call, with out_proj listed beside four nn.Linear
+  # siblings.
+  #
+  # Excluding it froze ~56 of the widest projections in the model and weakened
+  # the intervention this run exists to measure. out_proj is absent from vLLM's
+  # packed_modules_mapping and present unpacked in the checkpoint index, so
+  # adapting it is safe to merge and to serve.
+  exclude_modules: ["*visual*"]
   dim: 16
   alpha: 32
   use_triton: true
