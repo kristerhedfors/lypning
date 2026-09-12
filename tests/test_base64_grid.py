@@ -15,30 +15,34 @@ two ways:
 `validate=False` mode **DISCARDS** every byte outside the 64-character
 alphabet, and the discarding is what decides the padding. A naive decoder
 raises on ``b"a!Gk="`` and on ``b"aG k="``; CPython answers ``b'hi'`` for both.
-Worse, a per-quad decoder ANSWERS where CPython raises: ``b"aGk=aGk="`` looks
-like two padded quads and is really the six data characters ``aGkaGk`` with no
-trailing pad at all, which is a `binascii.Error`. The rule, derived from 150,000
-differential rows against CPython 3.14.5 on 2026-09-06 and stated once in
-`base64.rs`:
+The rule is a state machine, stated once in `base64.rs` and summarised here:
+carry `quad_pos` (alphabet bytes of the current quad, 0–3) and `pads` (``=``
+bytes since the last alphabet byte); a non-alphabet byte is discarded and does
+NOT reset `pads`; an alphabet byte resets it and advances the quad; and a ``=``
+counts only while `quad_pos >= 2`, which is why ``b"===="`` is ``b''``. A quad
+left holding one character at the end of the input is the "cannot be 1 more
+than a multiple of 4" error and one left holding two or three with too few pads
+is `"Incorrect padding"` — both `binascii.Error`, both refused here.
 
-  1. `data` is the subsequence of input bytes in ``A-Za-z0-9+/``. ``=`` is not
-     in it, and neither is whitespace, punctuation, NUL or any byte above 127.
-  2. ``len(data) % 4 == 0`` always decodes — ``b"===="`` and ``b"-_--"`` are
-     both ``b''``, because neither holds one alphabet byte.
-  3. ``% 4 == 1`` always raises: six bits cannot make a byte.
-  4. ``% 4`` of 2 or 3 decodes only if at least ``4 - rem`` ``=`` bytes follow
-     the LAST alphabet byte — counted over the whole input, never per quad.
-
-`PADDING` below is that rule as a table, and every row of it was run under
-`python3 -c` before this file was written.
+**The part this file got wrong until 2026-09-12, and it was a MISMATCH at exit
+0.** It stated clause 4 as "at least ``4 - rem`` ``=`` bytes follow the LAST
+alphabet byte, counted over the whole input", and pinned ``b"AA==AA=="`` at
+``b'\x00\x00\x00'``. That is CPython **3.13-and-later's** answer. On 3.11 and
+3.12 the ``=`` that CLOSES a quad is a `goto done`: the decode ends at that byte
+and ``b"AA==AA=="`` is ``b'\x00'``. Both are shipping — the 3.11, 3.12, 3.13,
+3.14 and `main` sources were read on 2026-09-12 and the table is in `base64.rs`
+— so the engine answers only where they agree and refuses where they do not.
+`VERSION_SPLIT` below is that set, and the agreement rule ("no alphabet byte
+after the pad that closed a quad") was enumerated against both models over
+296,105 rows with zero counterexamples.
 
 **The MicroPython half of the trap.** Three corpus programs (py-16c1663c6170,
 py-2d9c1f2c80f4, py-5313beb3de72, mined 2026-09-06) are differential harnesses
 an agent typed against `extmod/modbinascii.c`, whose `a2b_base64` counts pads
-PER QUAD and stops at the first complete one. That is the wrong answer in both
-directions and it is the answer a reimplementation reaches for. `.github/
-known-mismatches.json` has no base64 family because those harnesses were how the
-question got asked; the rows here are what they were asking.
+PER QUAD. Its answers are a third set again — ``b'hihi'`` for ``b"aGk=aGk="``,
+which no CPython gives. `.github/known-mismatches.json` has no base64 family
+because those harnesses were how the question got asked; the rows here are what
+they were asking.
 
 **Every `binascii.Error` is a refusal, not a raise.** The class does not exist
 here and the message text is CPython's, which moves between releases — so a
@@ -89,7 +93,9 @@ PADDING = [
     b"aGkx", b"abcd", b"ab", b"abc", b"A", b"AB", b"ABC", b"ABCD",
     # `=` is not an alphabet byte, so a run of them is an EMPTY input
     b"=", b"==", b"===", b"====", b"aGk=====",
-    # the per-quad decoder's two wrong answers, in both directions
+    # the pad that CLOSES a quad, with and without an alphabet byte after it —
+    # the first is where the CPythons split and this engine refuses, and a row
+    # that refuses is skipped rather than asserted
     b"aGk=aGk=", b"AA==AA==", b"AB==CD==", b"AA==AA", b"AAA=A", b"AB=CD",
     b"ABC=D", b"AA==A", b"AA==AAA", b"AA==AAAA", b"ABC=DE", b"ABC=DEF",
     b"ABC=DEFG", b"AB=C", b"A=A=", b"A==A", b"=A=A", b"AAA=AB", b"AAA=ABC",
@@ -101,6 +107,15 @@ PADDING = [
     b"-_--", b"+/++", b"/+/+", b"++==", b"a-_b",
     # one more than a multiple of four, at several lengths
     b"aGkxx", b"aGkxaGk", b"aaaaa=", b"aaaaaa=", b"aaaaaaa=", b"aaaa=",
+    # Well-formed base64 at every remainder, which is what the corpus actually
+    # hands this function. These are here because `test_no_table_of_answers_
+    # quietly_became_a_table_of_refusals` holds `DECODE` to a floor of served
+    # rows and the version-split refusals took it below one — and the answer to
+    # a coverage floor is to measure more, never to lower the floor. Every one
+    # of them decodes identically on every CPython: no `=` closes a quad with
+    # an alphabet byte still to come.
+    b"QQ==", b"YWI=", b"YWJj", b"aGVsbG8=", b"aGVsbG8gd29ybGQ=", b"MTIz",
+    b"Kys=", b"Ly8v", b"AAAA", b"////", b"+w==", b"AP8=",
 ]
 
 #: The same inputs through both decoders, and through the `str` spelling that
@@ -158,7 +173,6 @@ KEYWORDS = [
     B + "print(base64.b64decode(b'aGk=', altchars=None))",
     B + "print(base64.b64decode(b'aGk=', validate=False))",
     B + "print(base64.b64decode(b'aGk=', validate=0))",
-    B + "print(base64.b64decode(b'aGk=', validate=None))",
     B + "print(base64.b64decode(b'aGk=', altchars=None, validate=False))",
     B + "print(base64.b64decode(b'aGk=', **{'validate': False}))",
     B + "print(base64.b64encode(*[b'hi']))",
@@ -168,7 +182,6 @@ KEYWORDS = [
     B + "print(base64.b64decode(b'aGk=', **{'altchars': None}))",
     # every falsy `validate`, because that predicate is the one that stays
     B + "print(base64.b64decode(b'a!G k=', validate=0))",
-    B + "print(base64.b64decode('aGk=', validate=None))",
 ]
 
 #: **Hole 1, both directions.** One `falsy` predicate was answering two
@@ -314,10 +327,11 @@ REFUSED = [
     # `validate=` and `altchars=` on the urlsafe pair are CPython TypeErrors
     B + "print(base64.urlsafe_b64decode(b'aGk=', validate=False))",
     B + "print(base64.urlsafe_b64encode(b'hi', altchars=None))",
-    # every decode CPython raises a binascii.Error for
+    # every decode CPython raises a binascii.Error for. `b'aGk=aGk='` was here
+    # and moved to `VERSION_SPLIT`: on 3.11 and 3.12 it is not an error, it is
+    # `b'hi'`, and it refuses for the other reason.
     B + "print(base64.b64decode(b'aGk'))",
     B + "print(base64.b64decode(b'a'))",
-    B + "print(base64.b64decode(b'aGk=aGk='))",
     B + "print(base64.b64decode(b'aGkxx'))",
     B + "print(base64.b64decode('aGk'))",
     B + "print(base64.urlsafe_b64decode(b'_-'))",
@@ -557,37 +571,113 @@ ROUTED_TO_LYPNING_L = [
     B + "import pathlib\nprint(base64.b64encode(pathlib.Path('a/b.txt').name.encode()))",
 ]
 
-#: The MicroPython trap, as four literal values rather than a diff against
-#: CPython — because the whole point is that a reimplementation's answer is
-#: *plausible*, and a table that only says "agree with CPython" reads the same
-#: whether the rule was derived or guessed. `extmod/modbinascii.c` counts pads
-#: PER QUAD and stops at the first complete one, which is wrong in BOTH
-#: directions: it answers `b'hihi'` for `b"aGk=aGk="`, where CPython raises,
-#: and it answers two bytes for `b"AA==AA=="`, where CPython gives three.
+#: The decode, as literal values rather than a diff against CPython — because
+#: the whole point is that a reimplementation's answer is *plausible*, and a
+#: table that only says "agree with CPython" reads the same whether the rule
+#: was derived or guessed.
+#:
+#: **Every row that used to be here was wrong on this host, and one of them was
+#: wrong on every host.** The table asserted `b"AA==AA=="` is `b'\x00\x00\x00'`
+#: and that `b"aGk=aGk="` raises, from a model that counted alphabet bytes and
+#: trailing pads over the WHOLE input. That is CPython **3.13-and-later's**
+#: answer, in a file graded against whichever `python3` is installed — so on
+#: this container's CPython 3.11.15 it was a MISMATCH at exit 0. See
+#: `VERSION_SPLIT` below for the half that no single answer can fix; the rows
+#: here are the half that holds on every live CPython, each run under
+#: `python3 -c` on 2026-09-12.
 PER_QUAD = [
-    # four data characters, two pad runs, THREE bytes out — never two
-    (B + "print(base64.b64decode(b'AA==AA=='))", "b'\\x00\\x00\\x00'\n"),
-    # the pad run is reset by a later alphabet byte
+    # a pad while the quad holds fewer than two characters is neither counted
+    # nor an error, so a run of them is an EMPTY input
+    (B + "print(base64.b64decode(b'===='))", "b''\n"),
+    # the pad run is reset by an ALPHABET byte and by nothing else, so the
+    # newline here does not break it
     (B + "print(base64.b64decode(b'aa=\\n='))", "b'i'\n"),
     # non-alphabet bytes are gone before anything is counted
     (B + "print(base64.b64decode(b'a!G k='))", "b'hi'\n"),
     # `-` and `_` are not in the STANDARD alphabet
     (B + "print(base64.b64decode(b'-_--'))", "b''\n"),
-    # two pad runs mid-input, four data characters, three bytes out — the
-    # per-quad decoder reads two padded quads here and answers TWO bytes
-    (B + "print(base64.b64decode(b'AB==CD=='))", "b'\\x00\\x10\\x83'\n"),
-    (B + "print(base64.b64decode(b'ABC=D'))", "b'\\x00\\x10\\x83'\n"),
-    (B + "print(base64.b64decode(b'AAA=A'))", "b'\\x00\\x00\\x00'\n"),
+    # more pads than the quad needs, and trailing bytes that are not alphabet
+    # bytes: nothing here separates the two CPython families
+    (B + "print(base64.b64decode(b'aGk=='))", "b'hi'\n"),
+    (B + "print(base64.b64decode(b'aGk====='))", "b'hi'\n"),
+    (B + "print(base64.b64decode(b'aGk=\\n'))", "b'hi'\n"),
+    (B + "print(base64.b64decode(b'aGk=!!!'))", "b'hi'\n"),
 ]
 
-#: …and the direction the per-quad decoder ANSWERS where CPython raises. Six
-#: data characters and ONE trailing pad where a quad boundary needs two.
+#: The other side of the same rule: what CPython RAISES, so this engine refuses.
+#: A quad left holding one character is the length error; one left holding two
+#: or three with too few pads to close it is `"Incorrect padding"`. Each row was
+#: run under `python3 -c` on 2026-09-12 and the test asserts CPython fails it,
+#: so a row that stopped raising cannot sit here quietly.
+#:
+#: `b"AB=C"` is the row that survived the 2026-09-12 correction unchanged: the
+#: `=` arrives while the quad holds two characters and needs a second pad, the
+#: `C` resets the run, and the input ends mid-quad. `b"aGk=aGk="` is the row
+#: that LEFT — it is not an error on this interpreter, it is the version split.
 PER_QUAD_REFUSED = [
-    B + "print(base64.b64decode(b'aGk=aGk='))",
-    B + "print(base64.b64decode(b'aGk=aGk'))",
-    B + "print(base64.b64decode(b'AA==A'))",
     B + "print(base64.b64decode(b'AB=C'))",
-    B + "print(base64.b64decode(b'AAA=AB'))",
+    B + "print(base64.b64decode(b'aGk'))",
+    B + "print(base64.b64decode(b'AA='))",
+    B + "print(base64.b64decode(b'=AA='))",
+    B + "print(base64.b64decode(b'a'))",
+    B + "print(base64.b64decode(b'A==='))",
+    B + "print(base64.b64decode(b'aGkxx'))",
+]
+
+#: **The inputs no single answer can be right about**, and therefore the ones
+#: this engine refuses on purpose.
+#:
+#: `Modules/binascii.c` changed what a lenient `=` that CLOSES a quad does, and
+#: both answers are shipping. Read from the branch tips on 2026-09-12:
+#:
+#: * **3.11, 3.12** — `quad_pos >= 2 && quad_pos + ++pads >= 4` is a `goto
+#:   done`: the decode ends at that byte and everything after it is never read.
+#: * **3.13, 3.14, main** — the pad is ignored like any non-alphabet byte and
+#:   the verdict is taken at the end, from `quad_pos != 0 && quad_pos + pads < 4`.
+#:
+#: So `b"AA==AA=="` is `b'\x00'` on one pair and `b'\x00\x00\x00'` on the other,
+#: and `b"aGk=aGk="` is `b'hi'` on one pair and `Incorrect padding` on the
+#: other. The engine has ONE answer, this file is graded against whichever
+#: interpreter is installed, and a program in the corpus routes to whichever
+#: interpreter the agent has — so answering either way is a wrong answer
+#: somewhere, and the refusal is the only thing that is right everywhere. The
+#: chain spends one CPython spawn and that CPython is right by construction.
+#:
+#: The two families agree EXACTLY when no alphabet byte follows the pad that
+#: closed a quad — both models enumerated on 2026-09-12 over 296,105 rows
+#: (exhaustive to length 4 over ``ABC=!-_+\n\0/``, plus 280,000 random rows of
+#: length 5–17), zero counterexamples in either direction. That lookahead is the
+#: whole of the refusal, which is why `b"aGk=!!!"` and `b"aGk====="` are in
+#: `PER_QUAD` above and these are here.
+#:
+#: The comment on each row is `3.11/3.12 answer / 3.13+ answer`. Nothing here
+#: runs on the reference interpreter — the assertion is the REFUSAL — because a
+#: differential row can only pin what CPython holds still, and this is the one
+#: thing it did not. `tests/test_shims.py` reached the same conclusion for the
+#: MicroPython tier and dropped `b"aGk=aGk="` from its differential cases for
+#: the same reason.
+VERSION_SPLIT = [
+    B + "print(base64.b64decode(b'AA==AA=='))",     # b'\x00'     / b'\x00\x00\x00'
+    B + "print(base64.b64decode(b'AB==CD=='))",     # b'\x00'     / b'\x00\x10\x83'
+    B + "print(base64.b64decode(b'AAA=A'))",        # b'\x00\x00' / b'\x00\x00\x00'
+    B + "print(base64.b64decode(b'ABC=D'))",        # b'\x00\x10' / b'\x00\x10\x83'
+    B + "print(base64.b64decode(b'AA==A'))",        # b'\x00'     / Incorrect padding
+    B + "print(base64.b64decode(b'aGk=aGk='))",     # b'hi'       / Incorrect padding
+    B + "print(base64.b64decode(b'aGk=aGk'))",      # b'hi'       / Incorrect padding
+    B + "print(base64.b64decode(b'AAA=AB'))",       # b'\x00\x00' / Incorrect padding
+    B + "print(base64.urlsafe_b64decode(b'AA==AA=='))",
+    B + "print(base64.b64decode('AA==AA=='))",
+    # `validate=None`, moved here from KEYWORDS 2026-09-12. It sat in the table
+    # of rows "CPython answers", and on this interpreter CPython does not:
+    #   3.9      `if validate and ...` in Python — None is merely falsy -> b'hi'
+    #   3.11+    `a2b_base64(s, strict_mode=validate)`, converted as an int, so
+    #            None is TypeError: 'NoneType' object cannot be interpreted as
+    #            an integer
+    # Measured on 3.11.15. The engine answered b'hi' — right on 3.9 and a wrong
+    # answer at exit 0 on every interpreter since — and refuses now like every
+    # other row here.
+    B + "print(base64.b64decode(b'aGk=', validate=None))",   # b'hi' / TypeError
+    B + "print(base64.b64decode('aGk=', validate=None))",    # b'hi' / TypeError
 ]
 
 
@@ -883,16 +973,16 @@ def test_the_narrowing_did_not_take_the_capability_with_it(program: str) -> None
 
 @needs_l
 @pytest.mark.parametrize("program,want", PER_QUAD, ids=range(len(PER_QUAD)))
-def test_the_decoder_counts_pads_over_the_input_and_never_per_quad(
+def test_the_decode_is_a_state_machine_and_not_a_count_over_the_input(
     program: str, want: str,
 ) -> None:
-    """The MicroPython trap, pinned as literal bytes.
+    """The rule, pinned as literal bytes on the inputs every live CPython
+    agrees about.
 
-    `extmod/modbinascii.c` counts pads PER QUAD and stops at the first complete
-    one. `b"AA==AA=="` is four data characters and THREE bytes out; a per-quad
-    decoder gives two. Asserted against the value rather than against CPython,
-    because a table that only says "agree with CPython" reads the same whether
-    the rule was derived or guessed."""
+    Asserted against the value rather than only against CPython, because a
+    table that only says "agree with CPython" reads the same whether the rule
+    was derived or guessed — and then asserted against CPython too, so a row
+    whose reference moved says so instead of quietly pinning a stale answer."""
     got = _run([str(BINARY)], program)
     assert (got.returncode, got.stdout) == (0, want), (
         "program: %r\n  got: %r exit %d %s\n  want: %r"
@@ -904,13 +994,14 @@ def test_the_decoder_counts_pads_over_the_input_and_never_per_quad(
 
 @needs_l
 @pytest.mark.parametrize("program", PER_QUAD_REFUSED, ids=range(len(PER_QUAD_REFUSED)))
-def test_the_per_quad_decoders_other_direction_refuses_rather_than_answers(
+def test_a_quad_left_open_is_a_binascii_error_and_therefore_a_refusal(
     program: str,
 ) -> None:
-    """`b"aGk=aGk="` is the six data characters `aGkaGk` with ONE trailing pad
-    where a quad boundary needs two — a `binascii.Error`, which this engine
-    does not word and therefore refuses. A per-quad decoder answers `b'hihi'`
-    here, at exit 0, which is the wrong answer the chain cannot catch."""
+    """`b"AB=C"` leaves its quad holding three characters with the pad run
+    reset, and `b"a"` leaves one holding a single character — a
+    `binascii.Error` either way, whose CLASS this engine does not have and
+    whose text moves between releases, so it refuses. An answer here would be a
+    wrong one at exit 0, which the chain cannot catch."""
     got = _run([str(BINARY)], program)
     problem = _refusal_problem(got)
     assert problem is None, (
@@ -919,6 +1010,37 @@ def test_the_per_quad_decoders_other_direction_refuses_rather_than_answers(
     )
     ref = _run([sys.executable], program)
     assert ref.returncode != 0, "this row is only interesting if CPython raises"
+
+
+@needs_l
+@pytest.mark.parametrize("program", VERSION_SPLIT, ids=range(len(VERSION_SPLIT)))
+def test_an_input_the_cpythons_answer_differently_gets_no_answer_here(
+    program: str,
+) -> None:
+    """The refusal that exists because there is no right answer to give.
+
+    CPython 3.11 and 3.12 end the decode at the pad that closes a quad; 3.13,
+    3.14 and main read straight through it. Both are shipping, the engine has
+    one answer, and the program in front of it routes to whichever interpreter
+    the agent installed — so on these inputs it refuses, and the chain spends
+    one spawn on the interpreter that owns the question.
+
+    Deliberately NOT differential: the assertion is the refusal. A row here
+    passes on a 3.11 host and on a 3.14 host, which is the whole point, and a
+    differential assertion could not do that. The engine-side rule is enumerated
+    against both models in `base64.rs`; what this pins is that the refusal is a
+    CLEAN one — exit 90, empty stdout — so it costs a spawn and not a failure.
+    """
+    got = _run([str(BINARY)], program)
+    problem = _refusal_problem(got)
+    assert problem is None, (
+        "an input the CPythons disagree about must refuse, not answer: %s\n"
+        "  program: %r\n  stdout: %r" % (problem, program, got.stdout[:200])
+    )
+    assert "unsupported: base64: " in got.stderr, (
+        "expected a base64 refusal\n  program: %r\n  stderr: %r"
+        % (program, got.stderr[:200])
+    )
 
 
 #: The sub-tables that must run COMPLETELY. `DECODE` is not among them and

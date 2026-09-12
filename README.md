@@ -253,6 +253,7 @@ caller-defined output, every other subcommand takes `--json`.
 | `lypning build` | build the spectrum into `~/.lypning/bin`; `--lib` the C ABI, `--micropython` the oracle | yes |
 | `lypning lib` | the flags a C or C++ host needs to link liblypning | yes |
 | `lypning pool` | a warm CPython backstop for the chain — opt-in, `LYPNING_POOL` points at it | yes |
+| `lypning overview` | the map, every contract and whether it is pinned, and each variant against its OWN budget; `--deep` runs every pin and the suite | yes |
 | `lypning status` | what is built, wired and captured | yes |
 | `lypning doctor` | the same with an opinion; exit 1 on any FAIL | yes |
 | `lypning install` | wire capture into a coding harness (`--harness claude,opencode,openhands`) | yes |
@@ -398,6 +399,13 @@ src/lypning/   cli.py (the front door) · engines.py (find, run, route, dispatch
                node/ go/ swift/ lua/ (one quickstart each) · micropython/ (the oracle's build) · corpus/ · prompt/ · claude/ opencode/
                openhands/ shim/ scripts/ (what install writes)   —   docs/ · site/ (Pages) · study/ · tests/ · Makefile (`make help`)
 ```
+
+**Start with `lypning overview`.** It prints the map above from the tree itself,
+every contract `docs/VERIFICATION.md` declares with whether it is pinned and by
+what, and each variant measured against *its own* block budget. `--deep` runs
+every pin and the whole suite and replaces each `not measured` with a verdict.
+Nothing in it is a remembered number (invariant 3), and a contract declared with
+no runner or no pin shows up there as a hole rather than as silence.
 
 | doc | what |
 |---|---|

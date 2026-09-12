@@ -118,20 +118,40 @@ def _unestablished(field: str, have_baseline: bool, have_run: bool) -> Dict[str,
 
 
 def _arm(baseline: Dict[str, Any], run: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """The one arm-identity question this record can actually answer.
+    """Two runs generated on different serving stacks are not a delta.
 
     A model name is free text chosen by whoever launched the run, so it is not
     an identity: in this tree's own recorded runs two different endpoints both
-    answer to "nemotron". When the names match and the endpoints do not, the
-    record cannot say which weights produced which number — that withholds the
-    delta. When the names differ, the endpoint difference is the arm under test.
+    answer to "nemotron".
+
+    THIS USED TO FIRE ONLY WHEN THE NAMES MATCHED, on the reasoning that a
+    different name means the weights are the thing under test. That reasoning
+    has a hole, and the fine-tune walked straight into it: the stock baseline was
+    generated on a hosted provider's stack and a tuned arm is generated on our
+    own vLLM, so the names differ AND the stacks differ, and the difference
+    between the numbers is weights PLUS kernels PLUS sampling implementation
+    PLUS tokenizer handling with nothing to separate them. Under the old rule
+    that pair was waved through as "the endpoint difference IS the arm".
+    
+    So any known difference in endpoint withholds the subtraction now. The
+    module's own rule is that an unknown is a reason to withhold and never a
+    reason to assert, and a confound is a stronger reason than an unknown. The
+    remedy is not a flag: it is to generate both arms on one stack, which is
+    what `PREREGISTRATION.md` §5 requires and what one vLLM process with
+    `--enable-lora` gives for free.
     """
-    b_url = (baseline.get("backend") or {}).get("base_url")
-    r_url = (run.get("backend") or {}).get("base_url")
-    name = baseline.get("model")
-    if b_url and r_url and b_url != r_url and name and name == run.get("model"):
-        return [{"field": "backend.base_url", "baseline": b_url, "run": r_url,
-                 "established": True, "same_model_name": run.get("model")}]
+    b_url = ((baseline.get("backend") or {}).get("base_url")
+             or (baseline.get("backend") or {}).get("endpoint"))
+    r_url = ((run.get("backend") or {}).get("base_url")
+             or (run.get("backend") or {}).get("endpoint"))
+    if b_url and r_url and b_url != r_url:
+        rec = {"field": "backend.base_url", "baseline": b_url, "run": r_url,
+               "established": True}
+        if baseline.get("model") and baseline.get("model") == run.get("model"):
+            # The stronger shape: one name, two stacks, so the record cannot even
+            # say which weights produced which number.
+            rec["same_model_name"] = run.get("model")
+        return [rec]
     return []
 
 
@@ -363,8 +383,7 @@ def power_curve(
         return means[int(0.025 * resamples)]
 
     for lift in POWER_GRID:
-        unpaired = 0
-        paired = 0
+        unpaired = boot = mcnemar = both = 0
         for _ in range(trials):
             before: List[float] = []
             after: List[float] = []
@@ -374,12 +393,23 @@ def power_curve(
                 after.append(sum(1 for _ in range(k) if rng.random() < p) / k)
             if bootstrap_ci(after, resamples=resamples, seed=rng.randrange(1 << 30))["lo"] > base_point:
                 unpaired += 1
-            if _boot_lo([a - b for a, b in zip(after, before)]) > 0:
-                paired += 1
+            # BOTH LEGS, because the pre-registered rule is the CONJUNCTION and
+            # simulating one of them answers a question nobody asked. Counted the
+            # way `paired_delta` counts: a case is discordant when its mean moved.
+            leg_boot = _boot_lo([a - b for a, b in zip(after, before)]) > 0
+            gained = sum(1 for a, b in zip(after, before) if a > b)
+            lost = sum(1 for a, b in zip(after, before) if a < b)
+            leg_mcnemar = _mcnemar(gained, lost) < 0.05
+            boot += leg_boot
+            mcnemar += leg_mcnemar
+            both += leg_boot and leg_mcnemar
         rows.append({
             "lift": lift,
             "unpaired_power": unpaired / trials,
-            "paired_power": paired / trials,
+            "bootstrap_power": boot / trials,
+            "mcnemar_power": mcnemar / trials,
+            # The name the caller reads for "the primary rule".
+            "paired_power": both / trials,
         })
     return {
         "n_cases": len(scores),
@@ -388,8 +418,24 @@ def power_curve(
         "baseline_point": base_point,
         "never_passes": sum(1 for s in scores if s == 0.0),
         "always_passes": sum(1 for s in scores if s == 1.0),
+        # THE DISCRETE FLOOR UNDER THE WHOLE RULE. Exact two-sided McNemar over
+        # b gained and c lost is 2*P(X <= min(b,c)) under Binomial(b+c, 1/2), so
+        # with NOTHING lost it is 2/2**b: p = 0.0625 at five cases and 0.03125
+        # at six. **A fine-tune that flips five cases and loses none cannot fire
+        # this rule at any effect size.** Reported beside the curve because a
+        # percentage-point MDE hides it — the rule is shape-dependent, and the
+        # shape that matters is how many CASES moved, not how far the mean did.
+        "min_gained_if_none_lost": _min_discordant(),
         "rows": rows,
     }
+
+
+def _min_discordant(alpha: float = 0.05, cap: int = 64) -> Optional[int]:
+    """Fewest gained cases that fire exact McNemar when nothing is lost."""
+    for b in range(1, cap + 1):
+        if _mcnemar(b, 0) < alpha:
+            return b
+    return None
 
 
 def minimum_detectable(curve: Dict[str, Any], rule: str, want: float = 0.8) -> Optional[float]:

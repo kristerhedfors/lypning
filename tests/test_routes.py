@@ -161,17 +161,87 @@ def test_a_discarded_store_renders_as_a_hole_and_says_why():
 
 # --- the write must be unable to hurt anything -------------------------------
 
+#: Why a mode-bit test can be skipped, in the words of the thing that skipped it.
+#: The reason names root on purpose: a test that silently passed under root would
+#: be worse than one that says out loud which half of the pair did not run.
+_BYPASSED = (
+    "chmod did not bite this process (euid %d): a caller holding "
+    "CAP_DAC_OVERRIDE — which is every process in a container running as root — "
+    "is exempt from the file mode bits, so %s and the OSError this test is built "
+    "on cannot happen. THE PERMISSION PATH IS NOT CHECKED HERE. The same "
+    "contract is checked by %s, which uses an errno root cannot bypass."
+)
+
+
+def _write_denied(directory: Path) -> bool:
+    """True only when the kernel really refuses this process a write in `directory`.
+
+    `chmod` is a request, not a guarantee. Probing the actual answer is the only
+    way to tell a test that checked something from one that was exempted.
+    """
+    probe = directory / ".probe"
+    try:
+        probe.touch()
+    except OSError:
+        return True
+    probe.unlink()
+    return False
+
+
+def _read_denied(path: Path) -> bool:
+    """True only when the kernel really refuses this process a read of `path`.
+
+    `os.access` is no good here: it answers for the real uid and is documented to
+    say yes to root regardless. An open is the thing the code under test does.
+    """
+    try:
+        with open(path, "rb"):
+            return False
+    except OSError:
+        return True
+
 
 def test_the_write_survives_an_unwritable_directory(tmp_path, monkeypatch):
     locked = tmp_path / "locked"
     locked.mkdir()
     locked.chmod(0o500)
     try:
+        if not _write_denied(locked):
+            pytest.skip(_BYPASSED % (
+                os.geteuid(), "a 0o500 directory is still writable",
+                "test_the_write_survives_a_store_path_that_is_not_a_directory"))
         monkeypatch.setattr(paths, "routes_dir", lambda: locked / "routes")
         assert routes.note(CORE, BIGINT, "bigint", "beyond 64-bit") is False
         assert routes.load(CORE).present is False
     finally:
         locked.chmod(0o700)
+
+
+def test_the_write_survives_a_store_path_that_is_not_a_directory(tmp_path, monkeypatch):
+    """The same contract as the test above, through an errno root cannot bypass.
+
+    `ENOTDIR` is not a permission: the kernel will not walk through a regular
+    file for anybody, CAP_DAC_OVERRIDE included, so this half of the pair runs
+    for every user and is the half that actually executes in a root container.
+    It reaches the same arm — `note`'s blanket `except`, via
+    `paths.ensure_dir` — and asserts the same two things: the call returns False
+    instead of raising into a caller who is in the middle of dispatching
+    somebody's program, and nothing landed.
+
+    What it does NOT assert is the other test's `load(CORE).present is False`,
+    because under `ENOTDIR` that would be a false claim: the parent is in the
+    way, `read_text` raises an OSError that is not `FileNotFoundError`, and
+    `load` correctly reports the store as unreadable rather than absent — a
+    hole, never a zero. The thing the test means is `the record did not land`,
+    so it says that directly.
+    """
+    notdir = tmp_path / "notadir"
+    notdir.write_text("a regular file, standing where a directory must be\n",
+                      encoding="utf-8")
+    monkeypatch.setattr(paths, "routes_dir", lambda: notdir / "routes")
+    assert routes.note(CORE, BIGINT, "bigint", "beyond 64-bit") is False
+    assert not routes.store_path(CORE).exists()
+    assert routes.load(CORE).records == []
 
 
 def test_the_write_survives_a_corrupt_file():
@@ -406,21 +476,55 @@ def test_an_unreadable_store_is_not_an_empty_one(tmp_path):
     permission fault then read as "no routes learned yet", which is the exact
     confusion the rendering contract exists to prevent, and it hid the fault for
     as long as it lasted.
+
+    The `if store.present:` guard this test carried was inverted and checked
+    nothing on the machine it was written for. Under root `read_text` SUCCEEDS,
+    so `present` is True and `unreadable` is False, and the guard ran the
+    assertions in exactly the case it meant to excuse — which is how this became
+    a failure rather than a silent pass. The probe below is the same question
+    asked correctly.
     """
     p = tmp_path / "x.jsonl"
     p.write_text(json.dumps(routes.header(CORE)) + "\n", encoding="utf-8")
     p.chmod(0o000)
     try:
+        if not _read_denied(p):
+            pytest.skip(_BYPASSED % (
+                os.geteuid(), "a 0o000 file is still readable",
+                "test_an_unreadable_store_is_not_an_empty_one_whatever_the_uid"))
         store = routes.load(CORE, path=p)
-        if store.present:  # a root-ish CI user can read it anyway
-            assert store.unreadable
-            assert not store.stale
-            text = routes.render([store])
-            assert "UNREADABLE" in text
-            assert "no routes learned yet" not in text
-            assert "UNREADABLE" in routes.status_line([store])
+        assert store.present
+        assert store.unreadable
+        assert not store.stale
+        text = routes.render([store])
+        assert "UNREADABLE" in text
+        assert "no routes learned yet" not in text
+        assert "UNREADABLE" in routes.status_line([store])
     finally:
         p.chmod(0o600)
+
+
+def test_an_unreadable_store_is_not_an_empty_one_whatever_the_uid(tmp_path):
+    """The same contract, through `EISDIR` — which root cannot bypass either.
+
+    `load`'s branch under test is `except OSError` *after* `except
+    FileNotFoundError`: something is at the path and cannot be read as a file.
+    A directory standing where the store belongs reaches that branch for every
+    user, so the distinction the renderer is built on — UNREADABLE is a
+    different hole from absent, and neither is a zero — is checked here even on
+    a machine where `chmod 000` is advisory.
+    """
+    p = tmp_path / "x.jsonl"
+    p.mkdir()
+    store = routes.load(CORE, path=p)
+    assert store.present
+    assert store.unreadable
+    assert not store.stale
+    assert store.records == []
+    text = routes.render([store])
+    assert "UNREADABLE" in text
+    assert "no routes learned yet" not in text
+    assert "UNREADABLE" in routes.status_line([store])
 
 
 def test_an_absent_store_still_reads_as_absent(tmp_path):

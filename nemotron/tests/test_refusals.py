@@ -180,3 +180,38 @@ def test_minimum_detectable_reads_the_first_row_that_clears_the_bar():
     assert stats.minimum_detectable(curve, "paired") == 0.05
     assert stats.minimum_detectable(curve, "unpaired") == 0.20
     assert stats.minimum_detectable(curve, "unpaired", want=0.99) is None
+
+
+def test_the_power_curve_simulates_both_legs_of_the_rule_not_one():
+    """The defect an adversarial re-check found in this very analysis.
+
+    `PREREGISTRATION.md` makes the primary rule the CONJUNCTION — the paired
+    bootstrap CI lower bound above 0 AND exact McNemar p < 0.05 — and the curve
+    counted only the bootstrap leg. So `nt power`'s headline was the power of
+    half the rule, and the number the pre-registration rests on was measured
+    against a rule nobody registered.
+    """
+    from pipeline import stats
+
+    scores = [0.0] * 20 + [1.0] * 8 + [i / 16 for i in range(2, 15)] * 2
+    curve = stats.power_curve(scores, 16, trials=8, resamples=150)
+    for row in curve["rows"]:
+        assert set(row) >= {"lift", "unpaired_power", "bootstrap_power",
+                            "mcnemar_power", "paired_power"}
+        # the conjunction can never beat either leg it is made of
+        assert row["paired_power"] <= row["bootstrap_power"] + 1e-9
+        assert row["paired_power"] <= row["mcnemar_power"] + 1e-9
+
+
+def test_the_discrete_floor_under_the_rule_is_reported():
+    """Exact McNemar over b gained and nothing lost is 2/2**b, so five flipped
+    cases give p = 0.0625 and cannot fire the rule at ANY effect size. A
+    percentage-point MDE hides that entirely; it is the shape of the effect,
+    not its size, that decides."""
+    from pipeline import stats
+
+    assert stats._mcnemar(5, 0) == pytest.approx(0.0625)
+    assert stats._mcnemar(6, 0) == pytest.approx(0.03125)
+    assert stats._min_discordant() == 6
+    curve = stats.power_curve([0.0] * 10 + [0.5] * 10, 16, trials=4, resamples=100)
+    assert curve["min_gained_if_none_lost"] == 6

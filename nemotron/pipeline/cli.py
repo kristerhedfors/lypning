@@ -962,16 +962,30 @@ def cmd_power(args: argparse.Namespace) -> int:
           % (curve["baseline_point"], curve["never_passes"], curve["always_passes"],
              curve["n_cases"] - curve["never_passes"] - curve["always_passes"]))
     print()
-    print("  %-10s %-24s %s" % ("true lift", "unpaired (the headline)", "paired (same cases)"))
+    print("  %-10s %9s   %9s %9s %9s" % ("true lift", "unpaired",
+                                          "boot-leg", "McNemar", "PRIMARY"))
     for row in curve["rows"]:
-        print("  %+8.0fpp %18.0f%%      %18.0f%%"
-              % (100 * row["lift"], 100 * row["unpaired_power"], 100 * row["paired_power"]))
+        print("  %+8.0fpp %9.0f%%   %9.0f%% %9.0f%% %9.0f%%"
+              % (100 * row["lift"], 100 * row["unpaired_power"],
+                 100 * row["bootstrap_power"], 100 * row["mcnemar_power"],
+                 100 * row["paired_power"]))
     print()
     for rule in ("unpaired", "paired"):
         mde = stats.minimum_detectable(curve, rule)
         print("  %-9s reaches 80%% power at %s"
-              % (rule, ("%+.0fpp" % (100 * mde)) if mde is not None else
+              % ("PRIMARY" if rule == "paired" else rule,
+                 ("%+.0fpp" % (100 * mde)) if mde is not None else
                  "no lift on this grid — it cannot see one"))
+    floor = curve.get("min_gained_if_none_lost")
+    if floor:
+        print()
+        print("  AND A DISCRETE FLOOR THE PERCENTAGE HIDES. The primary rule is the")
+        print("  CONJUNCTION of both legs, and exact McNemar over b gained and c lost")
+        print("  is 2/2**b when nothing is lost: p = 0.0625 at five cases, %.5f at %d."
+              % (stats._mcnemar(floor, 0), floor))
+        print("  So a fine-tune that flips FEWER THAN %d cases and loses none cannot" % floor)
+        print("  fire this rule at any effect size. The question the rule really asks")
+        print("  is how many CASES moved, not how far the mean did.")
     print()
     print("  The lift is applied uniformly to every case, which is the most")
     print("  favourable shape an improvement can take, so these are an UPPER")

@@ -45,7 +45,16 @@ AS_REPORTED = {
 # Moved 2026-09-12 when the target model changed to Qwen3.8-27B. The pin caught
 # the move, which is what it is for: a baseline that changes without a line in a
 # diff is the failure this file exists to prevent.
-BASELINE_RUN = "qwen38-baseline-k16"
+#
+# Moved again 2026-09-12, deliberately and in this diff. The engine gained math,
+# type() of any class, int/float methods and %-precision AFTER
+# `qwen38-baseline-k16` was graded, and every `lypning`-kind acceptance test
+# checks that lypning ACCEPTS the program — so the same completions score
+# differently now. `qwen38-regrade-20260912` is those same 1,184 completions
+# re-graded at engine b092935 with no new inference; the reconstruction
+# round-trips 1184/1184 to byte-identical programs. Comparing a fine-tune
+# against the old 40.4% would have credited it with a day of engine work.
+BASELINE_RUN = "qwen38-regrade-20260912"
 HOLDOUT_MANIFEST = "80b2fc522202a0ece3b84b299791761c86dd07983596a46650f9bfcb733ce588"
 N_CORPUS, N_HOLDOUT, N_TRAIN = 249, 74, 175
 
@@ -137,6 +146,19 @@ RE_DERIVED = {
     # harness on 2026-09-12. This is the number every tuned Qwen arm is measured
     # against; the Nemotron baselines above are history from before the switch.
     "qwen38-baseline-k16": 0.40371621621621623,
+    # THE REFERENCE EVERY TUNED QWEN ARM IS MEASURED AGAINST. The same
+    # completions as the line above, re-graded at the 2026-09-12 engine. The
+    # +3.4pp between them is a day of engine work and not a model change, which
+    # is exactly why the baseline had to move before anything was trained.
+    #
+    # Read it on the PRE-REGISTERED denominators, never on this one alone
+    # (PREREGISTRATION.md §2(b)):
+    #   all 74 (secondary)         40.37% -> 43.75%  +3.38pp  p=0.0312  FIRES
+    #   70 non-degenerate (PRIMARY) 41.16% -> 42.86%  +1.70pp  p=0.2500  does not
+    # The rule not firing on the primary denominator while firing on the naive
+    # one is the null test for this whole experiment: engine drift alone must
+    # not look like a win.
+    "qwen38-regrade-20260912": 0.4375,
     "baseline-regraded": 0.33783783783783783,
 }
 

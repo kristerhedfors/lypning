@@ -46,7 +46,7 @@ PROG = "lypning"
 COMMANDS = (
     "run", "route", "build", "lib", "pool", "status", "doctor", "install", "uninstall",
     "shim", "hook", "conformance", "fuzz", "bench", "corpus-time", "perf", "gate",
-    "harvest", "corpus", "oracle", "routes",
+    "harvest", "corpus", "oracle", "routes", "overview",
 )
 
 #: The only dash-flags this CLI keeps for itself. Every other flag belongs to
@@ -1164,6 +1164,130 @@ def _doctor_checks() -> List[Tuple[str, str, str]]:
     return checks
 
 
+def cmd_overview(ns: argparse.Namespace) -> int:
+    """What is in this repository, and which of its claims hold today.
+
+    `doctor` answers whether the INSTALL is sound. This answers whether the
+    PROJECT is — which contracts are checked, which hold, and what is red. The
+    two are separate questions and were both being asked of doctor.
+    """
+    from . import overview as ov
+
+    if ns.json:
+        payload = {
+            "map": ov.component_map(),
+            "binaries": ov.binaries(),
+            "contracts": ov.contracts(),
+            "corpus": ov.corpus_size(),
+        }
+        if ns.deep:
+            nodes = sorted({n for c in payload["contracts"] for n in c["pinned"]})
+            payload["pins"] = ov.run_pins(nodes)
+            payload["suite"] = ov.suite()
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+
+    out = []
+    out.append("lypning — overview")
+    out.append("")
+
+    out.append("THE MAP")
+    for c in ov.component_map():
+        if not c["present"]:
+            out.append("  %-9s %-34s ABSENT" % (c["name"], c["path"]))
+            continue
+        out.append("  %-9s %-34s %3d files  %6s lines"
+                   % (c["name"], c["path"], c["files"], "{:,}".format(c["lines"])))
+        out.append("            %s" % c["summary"])
+    out.append("")
+
+    out.append("THE BINARIES — each against its OWN budget")
+    for b in ov.binaries():
+        if not b["built"]:
+            note = ("the ORACLE: measured, never routed to. Absent is a hole, "
+                    "never a zero" if b["oracle"] else "not built")
+            out.append("  %-11s not built    %s" % (b["name"], note))
+            continue
+        verdict = "OVER by %d" % (b["blocks"] - b["budget"]) if b["over"] else "under"
+        out.append("  %-11s %11s B  %2d blocks  budget %-3s %s"
+                   % (b["name"], "{:,}".format(b["bytes"]), b["blocks"],
+                      b["budget"] if b["budget"] is not None else "-", verdict))
+    out.append("")
+
+    cs = ov.contracts()
+    out.append("THE CONTRACTS — read out of docs/VERIFICATION.md, not listed here")
+    holes = [c for c in cs if not c["check"] or not c["pinned"] or c["pins_missing_file"]]
+    if not cs:
+        out.append("  docs/VERIFICATION.md is not in this tree")
+    else:
+        verdicts = {}
+        if ns.deep:
+            nodes = sorted({n for c in cs for n in c["pinned"]})
+            res = ov.run_pins(nodes)
+            if res["ran"]:
+                failed = set(res["failed"])
+                for c in cs:
+                    bad = [n for n in c["pinned"] if n in failed]
+                    verdicts[c["id"]] = ("RED (%d pin%s)" % (len(bad), "" if len(bad) == 1 else "s")
+                                         if bad else "held")
+            else:
+                out.append("  pins did not run: %s" % res["reason"])
+        for c in cs:
+            v = verdicts.get(c["id"], "not measured")
+            flag = "" if (c["check"] and c["pinned"] and not c["pins_missing_file"]) else "  <-- HOLE"
+            out.append("  %-4s %-30s %-16s %2d pins  %s%s"
+                       % (c["id"], c["title"][:30], v, len(c["pinned"]),
+                          c["check"] or "NO RUNNER", flag))
+        out.append("")
+        out.append("  A pin holding says the contract's MECHANISM is right. It does not say")
+        out.append("  this tree passes: C6's pins check that `device_blocks` rounds up and")
+        out.append("  that a variant is measured against its own budget, and they hold while")
+        out.append("  `lypning gate` is red because the binary above is over. Live state is")
+        out.append("  in THE BINARIES and in WHAT IS RED.")
+        if not ns.deep:
+            out.append("")
+            out.append("  Nothing above was executed by this run. `lypning overview --deep`")
+            out.append("  runs every pin and the whole suite, and replaces `not measured`.")
+    if holes:
+        out.append("")
+        out.append("  %d contract(s) declared with no runner, no pin, or a pin whose file is"
+                   % len(holes))
+        out.append("  gone. That is the shape a contract stops being checked in.")
+    out.append("")
+
+    if ns.deep:
+        out.append("WHAT IS RED")
+        over = [b for b in ov.binaries() if b.get("over")]
+        for b in over:
+            out.append("  gate    %s is %d blocks against its budget of %d."
+                       % (b["name"], b["blocks"], b["budget"]))
+            out.append("          `lypning gate` substitutes this binary when the oracle is")
+            out.append("          absent, which is how its own overrun read as another arm's.")
+        res = ov.suite()
+        if not res["ran"]:
+            out.append("  suite   did not run: %s" % res["reason"])
+        elif not res["failed"]:
+            out.append("  suite   green — %s" % res["summary"])
+        else:
+            out.append("  suite   %s" % res["summary"])
+            for f, k in sorted(res["by_file"].items(), key=lambda kv: -kv[1]):
+                out.append("          %4d  %s" % (k, f))
+        if not over and res["ran"] and not res["failed"]:
+            out.append("  nothing")
+        out.append("")
+
+    n = ov.corpus_size()
+    out.append("THE CORPUS")
+    out.append("  %s programs, through corpus.load_default() — the count this run"
+               % ("{:,}".format(n) if n is not None else "unreadable"))
+    out.append("  loaded, never a remembered one (invariant 3).")
+    out.append("")
+    out.append("  Not measured here, and each costs real time: `lypning conformance`")
+    out.append("  (MISMATCH must be 0), `lypning gate`, `pytest tests`.")
+    print("\n".join(out))
+    return 0
+
+
 def cmd_doctor(ns: argparse.Namespace) -> int:
     checks = _doctor_checks()
     if ns.json:
@@ -2055,6 +2179,22 @@ Reads only. `--json` is the same data for a machine.
 """, "examples:\n  lypning status\n  lypning status --json | jq .engines")
     s.add_argument("--json", action="store_true", help="machine-readable")
     s.set_defaults(func=cmd_status)
+
+    # overview
+    s = _sub(subs, "overview", "what is in this tree, and which of its claims hold", """
+`doctor` answers whether the INSTALL is sound; this answers whether the PROJECT
+is. The map is prose because architecture changes slowly. Every verdict is
+computed, because invariant 3 exists: this project has been wrong about its own
+numbers before, and a document can say `MISMATCH 0` where only a run can mean it.
+
+The contract list is read out of `docs/VERIFICATION.md` rather than restated
+here — a second copy is the one that goes stale, and a contract declared there
+with no runner or no pin shows up as a hole rather than as silence.
+""", "examples:\n  lypning overview\n  lypning overview --deep")
+    s.add_argument("--deep", action="store_true",
+                   help="run every contract's pinned tests and the whole suite")
+    s.add_argument("--json", action="store_true", help="machine-readable")
+    s.set_defaults(func=cmd_overview)
 
     # doctor
     s = _sub(subs, "doctor", "check the install and say what to do about it", """
