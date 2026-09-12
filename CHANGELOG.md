@@ -20,6 +20,44 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-12** — The standing MISMATCH closed: `**` on floats now answers what the reference libm answers (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **`1.7976931348623157e308 ** 0.5` answered `1.3407807929942597e+154` where
+  CPython answers `…596`.** One ulp, exit 0, nothing on stderr — the one number
+  invariant 1 says is never traded, standing in the corpus as `py-ab7286f43b7a`
+  and waived in `.github/known-mismatches.json` as unfixable. It was fixable.
+- **It was never float formatting.** `fmt::float_repr` is shortest-round-trip
+  and prints both neighbours correctly; the wrong bits came out of the multiply.
+- **musl's `pow` and glibc's `pow` are the same routine compiled twice.** Both
+  are Arm's optimized-routines double-precision power. Re-running the reference
+  under `GLIBC_TUNABLES=glibc.cpu.hwcaps=-FMA,-AVX2` made its answers
+  bit-identical to musl's over 18,000 pairs — 16 disagreements to 0. The whole
+  gap is fused multiply-add.
+- **New `pow.rs`: that routine with the fusions put back.** Both kinds — the
+  `#if __FP_FAST_FMA` arms and the `a*b + c` contractions the C compiler makes
+  on its own, which Rust never makes. Taking only the first still reproduced
+  musl exactly; that is why the second is written out call by call.
+- **Verified by enumeration, not by argument.** 6,302,592 `(x, y)` pairs across
+  the overflow edge, the subnormal band, either side of the 2^-65 and 2^63
+  cutoffs, bases within forty ulp of 1.0, subnormal bases, negative bases at
+  integer powers and the full IEEE-special cross product: **0 disagreements**
+  against the host libm, and 400,000 of them re-checked end to end through the
+  binary. An earlier version was wrong 30 times in 3,002,592 — all in one
+  function, all from fusing a product the C compiler reads twice.
+- **Measured 2026-09-12 on this container.** Corpus 3688 loaded, 2504 graded:
+  MATCH 1558 → 1559, UNSUPPORTED 945 unchanged, **MISMATCH 1 → 0**, coverage
+  62.2% → 62.3%. Binary 1,114,320 → 1,118,416 B, **9 device blocks either
+  side** — +4,096 B of the 65,328 B that were left before a tenth block.
+  `fuzz` 0 counterexamples, `doctor` 0 FAIL, pytest failures identical before
+  and after (189, none of them float-shaped). `gate` FAILs on 9 blocks against
+  an 8-block budget before and after: that is the absent oracle, not this.
+- **The cost is stated, not hidden.** `mul_add` is a call into musl's software
+  `fma` on a baseline x86-64 build, so `**` on floats goes ~22 ns → ~277 ns.
+  It is in single digits of corpus programs and in no `perf` row. Building
+  with `-C target-feature=+fma` would take it back and is a separate step,
+  because it raises the CPU floor for the whole binary.
+- **Re-measured independently before landing**, on a different 52,000-pair corpus with its own seed: **22 disagreements without `pow.rs`, 0 with it**. That also clears the 44 adjacent-duplicate rows in the transcribed `LOG_TAB` — an `invc` rounded onto a coarse grid repeats, and the sample crosses every subinterval a few hundred times.
+
 **2026-09-12** — Two silent wrong answers, found by running the engine over what a language model writes (branch `claude/nemotron-lora-pipeline-1zczi2`)
 
 - **A `try` with no `except` and no `finally` ran its body and exited 0.** CPython's

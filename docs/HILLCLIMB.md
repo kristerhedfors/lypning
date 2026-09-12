@@ -26,6 +26,72 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-09-12 · iteration 82 — the standing MISMATCH was not the printer, it was the multiply
+
+Host: Linux x86-64, `x86_64-unknown-linux-musl` build. Corpus 3,688 loaded,
+2,504 graded. Reference `/usr/bin/python3.11`.
+
+### `**` on floats, answered the way the reference libm answers it
+
+| | before | after |
+|---|---|---|
+| `lypning` conformance | 1558 / 945 / **1** — 62.2% | **1559 / 945 / 0** — 62.3% |
+| `lypning` binary | 1,114,320 B, 9 blocks | 1,118,416 B (+4,096), **9 blocks** |
+| `lypning-l` binary | 1,294,544 B, 10 blocks | 1,294,544 B (+0), 10 blocks |
+| `.text` | 854,807 B | 856,087 B (+1,280) |
+
+`py-ab7286f43b7a` — `print(1.7976931348623157e308 ** 0.5)` — answered
+`1.3407807929942597e+154` against CPython's `…596`. It had been waived on three
+arms in `.github/known-mismatches.json` since 2026-08-28 as "a C library
+property, not this tree's code". That was true and it was still fixable.
+
+**Two dead ends worth keeping.** The brief called this float formatting.
+`fmt::float_repr` is shortest-round-trip and prints `…596` and `…597` correctly
+from their own bit patterns — enumerated before anything was touched. And
+`x ** 0.5 -> x.sqrt()` is worse, not better: CPython's own `x ** 0.5` differs
+from `math.sqrt(x)` for 406 of 500,000 random doubles, so *correct* rounding
+here buys a different wrong answer. Agreement with the reference is the
+specification; accuracy is not.
+
+**What it actually was, and the experiment that said so.** musl and glibc ship
+the SAME `pow` — Arm's optimized-routines. Re-running the reference under
+`GLIBC_TUNABLES=glibc.cpu.hwcaps=-FMA,-AVX2` made its answers bit-identical to
+musl's across 18,000 pairs: 16 disagreements to 0. One algorithm, two builds,
+and the only difference is fused multiply-add.
+
+**The fix is that routine ported with the fusions put back** — `pow.rs`, called
+from `ops.rs` instead of `f64::powf`. Two kinds of fusion and the second is the
+one that costs an afternoon: the `#if __FP_FAST_FMA` arms the source selects,
+AND the `a*b + c` contractions GCC performs on its own under
+`-ffp-contract=fast`, which Rust never performs. **Taking only the first
+reproduced musl exactly** — all 16 still wrong. The contraction rule, learned by
+measurement rather than read: a product is fused only where it has ONE use, so
+`specialcase`'s `scale * tmp`, which C computes once and reads twice, stays
+unfused. Fusing it was 30 wrong answers in 3,002,592, every one of them in that
+function.
+
+**6,302,592 pairs, 0 disagreements** against the host libm — full-range random
+bit patterns, exponents aimed at the overflow edge and the subnormal band,
+either side of the 2^-65 and 2^63 cutoffs, bases within forty ulp of 1.0,
+subnormal bases, negative bases at integer powers, the IEEE-special cross
+product; 400,000 of them re-run end to end through the binary and `cmp`-equal.
+
+**Cost, stated.** `mul_add` is a call into musl's software `fma` on a baseline
+x86-64 build: `**` on floats goes ~22 ns → ~277 ns (2 M iterations, this
+container, this date). It is in single digits of corpus programs and in no
+`perf` row, so a rare operator got slower in exchange for not being wrong.
+`-C target-feature=+fma` would take it back and is its own step — it raises the
+CPU floor for the whole binary, which is not a thing to slip into a bug fix.
+
+Gates: `build --rust` ok (contract asserted), `conformance` **MISMATCH 0**,
+`fuzz` 0 counterexamples (seed 21799964, 500 programs), `doctor` 0 FAIL,
+pytest 189 failures before and 189 after — the same 189, `diff`-identical, none
+float-shaped. `gate` FAILs at 9 blocks against an 8-block budget **before and
+after**: that is `lypning-mp` being absent and `gate` substituting `lypning`
+against the oracle's budget, not this change. No block boundary crossed;
++4,096 B of the 65,328 B that stood before a tenth block.
+
+
 ## 2026-09-07 · iteration 81 — the densest row ever measured, and a guard that was one byte from failing
 
 Host: macOS arm64, host-target build. Corpus 3,688 loaded, 2,504 graded.

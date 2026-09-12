@@ -1111,7 +1111,7 @@ fn num_binop(op: BinOp, a: Num, b: Num, both_bool: bool) -> R<Value> {
             }
             Pow => {
                 if y < 0 {
-                    Value::Float((x as f64).powf(y as f64))
+                    Value::Float(crate::pow::pow(x as f64, y as f64))
                 } else {
                     let mut acc: i64 = 1;
                     let mut base = x;
@@ -1234,7 +1234,9 @@ fn num_binop(op: BinOp, a: Num, b: Num, both_bool: bool) -> R<Value> {
             Value::Float(m)
         }
         Pow => {
-            // Three cases Rust's powf answers and Python does not.
+            // Three cases C's `pow` answers and Python does not. The fourth
+            // — one ulp wrong because musl's libm is not the reference's —
+            // is `pow::pow`, which this calls instead of `f64::powf`.
             if x == 0.0 && y < 0.0 {
                 return Err(zero_div("0.0 cannot be raised to a negative power"));
             }
@@ -1247,7 +1249,7 @@ fn num_binop(op: BinOp, a: Num, b: Num, both_bool: bool) -> R<Value> {
                     "a negative float raised to a fractional power (Python returns a complex number)",
                 ));
             }
-            let r = x.powf(y);
+            let r = crate::pow::pow(x, y);
             if r.is_infinite() && x.is_finite() && y.is_finite() {
                 return Err(overflow_err("(34, 'Numerical result out of range')"));
             }

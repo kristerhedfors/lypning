@@ -67,6 +67,11 @@ pub mod methods;
 pub mod modules;
 pub mod ops;
 pub mod parse;
+/// `x ** y` on two floats, bit-for-bit as the reference interpreter's libm
+/// computes it. Not a capability and not gated: it is the arithmetic itself,
+/// and `f64::powf` disagreeing with CPython in the last ulp is a MISMATCH
+/// rather than a refusal.
+pub mod pow;
 /// `pathlib.Path` — the `cap-pathlib` capability. Absent from the smaller
 /// variant entirely, not merely unreachable in it.
 #[cfg(feature = "cap-pathlib")]
