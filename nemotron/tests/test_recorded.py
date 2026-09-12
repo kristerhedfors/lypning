@@ -165,3 +165,20 @@ def test_the_engines_own_reason_is_reported_beside_the_derived_label():
     s = summarize_run(RUNS / "headroom-k16")
     assert s["failures_by_reason"]["refused"] == 376
     assert s["failures_by_reason"]["engine-mismatch"] == 3
+
+
+def test_folding_a_run_twice_writes_the_same_bytes():
+    """A derived file that changes on every read dirties the tree forever.
+
+    harvest.py's docstring states the rule this repository already paid for: an
+    export is a pure function of its inputs, and running it twice must not touch
+    the file on disk. summarize_run carried a `summarized_at` timestamp, so every
+    test run rewrote all seven summaries and `git status` was never clean.
+    """
+    from pipeline.evaluate import summarize_run
+    run = RUNS / "qwen38-baseline-k16"
+    first = summarize_run(run)
+    before = (run / "summary.json").read_bytes()
+    second = summarize_run(run)
+    assert first == second
+    assert (run / "summary.json").read_bytes() == before

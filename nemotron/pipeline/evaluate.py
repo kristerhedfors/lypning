@@ -536,7 +536,11 @@ def summarize_run(run_dir: Path, cases: Optional[List[Dict[str, Any]]] = None,
         "tokens_out": sum(a.get("completion_tokens", 0) for a in good),
         "wall_s": round(sum(a.get("latency_s", 0.0) for a in good), 1),
         "per_case": {cid: sum(v) / len(v) for cid, v in sorted(per_case.items())},
-        "summarized_at": _now(),
+        # No timestamp. A summary is a PURE FUNCTION of its attempts file, and
+        # `harvest.py` already paid for the alternative: a derived file carrying
+        # the moment it was written is rewritten on every read, and then shows up
+        # in `git status` forever. When the run happened is in meta.json, which
+        # is written once. Folding twice now produces byte-identical output.
     })
     write_json(run_dir / "summary.json", body)
     return body
