@@ -96,3 +96,70 @@ def test_verify_without_a_lock_fails_rather_than_inventing_one(tmp_path):
     p, _ = _corpus(tmp_path)
     ok, problems = S.verify(p)
     assert not ok and "never been frozen" in problems[0]
+
+
+# --- cross-split leakage -----------------------------------------------------
+
+
+def test_disjoint_ids_are_not_an_independence_proof():
+    """The defect this whole check exists for, as the smallest example of it.
+
+    Two cases with different ids, the same question, one in each split. The old
+    assertion in `sample.train_cases` filtered by held id and then asserted no
+    held id had survived — true however leaky the split is.
+    """
+    from pipeline import split as splitmod
+
+    train = [
+        {"id": "t1", "prompt": "Rewrite this program so it avoids `import math`:\n\nprint(math.sqrt(16))"},
+        {"id": "t2", "prompt": "Something else entirely, about reading a csv file by hand."},
+    ]
+    holdout = [
+        {"id": "h1", "prompt": "Rewrite this program so it avoids `import math`:\n\nprint(math.sqrt(25))"},
+    ]
+    report = splitmod.cross_split_leaks(train, holdout)
+    ids = {row["id"] for row in report["leaks"]}
+    assert "t1" in ids, "a reworded twin across the split was not caught"
+    assert "t2" not in ids, "an unrelated case was dropped"
+    assert report["clean"] == ["t2"]
+
+
+def test_an_identical_expected_output_leaks_even_when_the_prompt_differs():
+    from pipeline import split as splitmod
+
+    train = [{"id": "t1", "prompt": "wholly different wording, no overlap at all",
+              "test": {"expect_stdout": "4.0 2 3\n"}}]
+    holdout = [{"id": "h1", "prompt": "zzzz", "test": {"expect_stdout": "4.0 2 3\n"}}]
+    report = splitmod.cross_split_leaks(train, holdout)
+    assert [r["id"] for r in report["leaks"]] == ["t1"]
+    assert "identical expect_stdout" in report["leaks"][0]["why"]
+
+
+def test_an_identical_negative_program_leaks():
+    from pipeline import split as splitmod
+
+    prog = "import datetime\nprint(datetime.datetime.now().isoformat())"
+    train = [{"id": "t1", "prompt": "aaaa", "negatives": [{"program": prog}]}]
+    holdout = [{"id": "h1", "prompt": "bbbb", "negatives": [{"program": prog}]}]
+    report = splitmod.cross_split_leaks(train, holdout)
+    assert [r["id"] for r in report["leaks"]] == ["t1"]
+    assert "identical program" in report["leaks"][0]["why"]
+
+
+def test_the_sampler_cannot_be_handed_a_leaking_case_by_default():
+    """`train_cases` excludes them unless asked not to, and the reporter is the
+    only caller that asks."""
+    from pathlib import Path
+
+    from pipeline.sample import train_cases
+
+    data = Path(__file__).resolve().parents[1] / "data"
+    if not (data / "holdout.lock.json").exists():
+        pytest.skip("no frozen split in this checkout")
+    clean = {c["id"] for c in train_cases(data)}
+    everything = {c["id"] for c in train_cases(data, allow_leaks=True)}
+    assert clean < everything, "the default path is not excluding anything"
+    assert len(everything - clean) == 58, (
+        "the number of leaking train cases moved; that is a corpus change and "
+        "belongs in a commit that says so (was 58 on 2026-09-12)"
+    )

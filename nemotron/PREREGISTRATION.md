@@ -50,6 +50,49 @@ of them fails** (0/59). `max_tokens` stays at 2048 for both arms: raising it for
 the fine-tuned arm alone is a confound, and a model that learns to write shorter
 subset-conforming programs should be allowed to show that as a win.
 
+**(d) The held-out set was leaking into train, and ids did not show it.** Added
+2026-09-12, still before any adapter exists. `nt leaks` measures three ways a
+train case can be the same question as a held-out one:
+
+| test | held-out cases affected |
+|---|---|
+| prompt similarity >= 0.85 to a train case | **27 of 74** |
+| >= 0.95 | 11 |
+| expected stdout byte-identical to a train case's | 11 |
+| negative program byte-identical | 1 |
+
+Disjoint ids buy nothing here. The corpus is capture-derived, so one agent
+hitting the same wall twice in a session produces two entries differing in a
+variable name, and `freeze` puts one in each split. Three of the 154 rows in the
+first SFT set were verified solutions to two HELD-OUT cases.
+
+> Decided now: **58 of the 175 train cases are excluded from sampling**, by the
+> mechanical union of the three tests at a ceiling of 0.85 fixed in
+> `split.SIMILARITY_CEILING`. 117 remain. The held-out set is NOT re-cut — the
+> lock stays — so the cost falls entirely on the training side, which is the
+> right side for it: a train case wrongly dropped costs a few examples, a train
+> case wrongly kept costs the defensibility of the number.
+>
+> `sample.train_cases()` now excludes them by default. Its previous assertion
+> was tautological — it filtered by held id, then asserted no held id had
+> survived the filter.
+
+**(e) Five held-out cases are unsatisfiable.** `nt usable` runs each case's own
+negative — correct python by the corpus's definition — and asks whether it
+reproduces the expected output. Five do not: a frozen `datetime.now()`,
+a benchmark's timings, a set's iteration order captured under another hash seed,
+a `TypeError` worded by another CPython, and an `os.listdir()` count of a
+directory nothing seeds. Nothing passes them: not the model, not a human, not
+CPython. They sit in the "never passes" column looking exactly like hard cases.
+
+> **65 of 74 cases can measure a model** — 74 less 4 degenerate less 5
+> unsatisfiable, with no overlap. `nt usable` names all nine.
+
+**(f) The spend cap was decorative.** `ChatBackend.cost()` multiplies by
+`NTX_PRICE_IN`/`NTX_PRICE_OUT`, which are unset by default, so every draw of the
+first SFT set recorded `cost_usd: 0.0` and `--max-spend` could never trip. Both
+must be exported before any sampling run.
+
 ## 3. The rules, fixed now
 
 Run `nt power qwen38-baseline-k16` — 74 cases, k=16, 34 never pass, 16 always
@@ -106,3 +149,13 @@ Every run records `max_spend_usd` in its `meta.json` and aborts on it.
 **The experiment is abandoned, not rescued, if:** the re-graded baseline leaves
 fewer than 15 movable cases; verified on-policy SFT yields fewer than 150
 examples; or the safety gate fails on the fine-tuned arm.
+
+Over the 65 usable cases the baseline point is 0.4433 (still graded by this
+morning's engine, so it will move again on the re-grade), with 27 that never
+pass, 16 that always do, and **22 movable**. Power is unchanged by the
+exclusions: paired 80% at +4pp, unpaired 80% at +15pp.
+
+Sampling 117 clean train cases at k=16, keep=2 is projected to yield well under
+150 examples. **The sampling run therefore uses k=32 and keep=4**, decided here
+rather than after seeing a thin result — roughly 3,700 draws, about $6 at the
+novita price, and the abandon threshold above stands.

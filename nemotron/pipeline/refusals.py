@@ -217,3 +217,81 @@ def on_policy_report(result: Dict[str, Any], *, limit: int = 12) -> str:
     for blocker, count in ranked[:limit]:
         lines.append("  %5d  %s" % (count, blocker[:98]))
     return "\n".join(lines)
+
+
+# --- satisfiability: a case nothing can pass is not headroom ------------------
+
+
+def satisfiable(case: Dict[str, Any], *, timeout_s: float = 10.0) -> Dict[str, str]:
+    """Can ANY program pass this case? Answered by running its own negative.
+
+    THE NEGATIVE IS CORRECT PYTHON BY THE CORPUS'S OWN DEFINITION — it is the
+    program an agent really ran, refused for its constructs and not for its
+    answer. So if running it does not reproduce `expect_stdout`, the expected
+    output is not reproducible on this machine and NOTHING can pass the case:
+    not the model, not a human, not the reference interpreter.
+
+    Five of the 74 held-out cases fail this on 2026-09-12 — a frozen
+    `datetime.now()`, a benchmark's timings, a set's iteration order captured
+    under a different hash seed, a TypeError worded by a different CPython, and
+    an `os.listdir()` count of a directory that is not seeded. Each sits in the
+    "never passes" column looking exactly like a hard case, which is how a
+    corpus quietly overstates its own headroom.
+
+    `harvest.py`'s `satisfiable` gate records `unproven-no-reference` for these
+    rather than claiming anything, and it is right not to claim — this runs the
+    experiment that gate declined to run.
+    """
+    test = case.get("test") or {}
+    if test.get("kind") != "lypning" or "expect_stdout" not in test:
+        return {"verdict": "not-a-stdout-case", "detail": ""}
+    negatives = case.get("negatives") or []
+    if not negatives:
+        return {"verdict": "no-negative", "detail": ""}
+    from . import sandbox
+
+    kw = dict(argv=test.get("argv"), stdin=test.get("stdin"),
+              files=test.get("files"), timeout_s=timeout_s)
+    first = sandbox.run_python(negatives[0]["program"], **kw)
+    second = sandbox.run_python(negatives[0]["program"], **kw)
+    want = test["expect_stdout"]
+    if first.stdout != second.stdout:
+        return {"verdict": "unstable",
+                "detail": "two runs of its own negative disagree: %r vs %r"
+                          % (first.stdout[:40], second.stdout[:40])}
+    if first.stdout != want:
+        i = next((j for j in range(min(len(want), len(first.stdout)))
+                  if want[j] != first.stdout[j]), min(len(want), len(first.stdout)))
+        return {"verdict": "unreproducible",
+                "detail": "at char %d: want %r, its own negative gives %r"
+                          % (i, want[max(0, i - 16):i + 24], first.stdout[max(0, i - 16):i + 24])}
+    return {"verdict": "ok", "detail": ""}
+
+
+def usable_cases(cases: List[Dict[str, Any]], engine: str) -> Dict[str, Any]:
+    """Split a held-out set into what can measure a model and what cannot.
+
+    Two ways a case stops measuring anything, and they are different:
+
+    *Degenerate* — the engine now RUNS the program the case asks the model to
+    rewrite, so returning the input unchanged passes. Every one of these is an
+    engine improvement showing up as a model improvement.
+
+    *Unsatisfiable* — nothing passes it, see :func:`satisfiable`.
+
+    Both are named mechanically and both are reported, because excluding cases
+    after seeing a score is how a delta gets manufactured.
+    """
+    degenerate, unsat, usable = [], [], []
+    for case in cases:
+        negatives = case.get("negatives") or []
+        if negatives and probe(negatives[0]["program"], engine) is None:
+            degenerate.append(case["id"])
+            continue
+        verdict = satisfiable(case)
+        if verdict["verdict"] in ("unstable", "unreproducible"):
+            unsat.append({"id": case["id"], **verdict})
+            continue
+        usable.append(case["id"])
+    return {"n": len(cases), "degenerate": degenerate, "unsatisfiable": unsat,
+            "usable": usable}

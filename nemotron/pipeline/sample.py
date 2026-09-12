@@ -527,8 +527,24 @@ def perturbations(cases: Sequence[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     return dict((c["id"], perturbation(c)) for c in cases)
 
 
-def train_cases(data_dir: Path) -> List[Dict[str, Any]]:
-    """The training split, with the frozen held-out set asserted absent."""
+def train_cases(data_dir: Path, *, allow_leaks: bool = False) -> List[Dict[str, Any]]:
+    """The training split, with every case that is a held-out case absent.
+
+    THE OLD ASSERTION HERE WAS TAUTOLOGICAL: it filtered by held id and then
+    asserted no held id had survived the filter, which is true however leaky the
+    split is. It is kept below because the lock still has to be there, and it is
+    no longer the check that matters.
+
+    The check that matters is `splitmod.cross_split_leaks`. Disjoint ids do not
+    make two cases independent: the corpus is capture-derived, so the same agent
+    hitting the same wall twice produces two entries that differ in a variable
+    name, and `freeze` puts one in each split. Measured 2026-09-12, 27 of 74
+    held-out cases have a train neighbour at >= 0.85 prompt similarity and three
+    rows of the first SFT set were verified solutions to held-out cases.
+
+    `allow_leaks` exists for one purpose — the reporter that prints what is being
+    dropped — and never for sampling.
+    """
     lock = splitmod.load_lock(data_dir)
     if lock is None:
         raise ValueError("the split is not frozen; refusing to sample")
@@ -538,7 +554,12 @@ def train_cases(data_dir: Path) -> List[Dict[str, Any]]:
     leaked = held & {c["id"] for c in train}
     if leaked:
         raise AssertionError("held-out cases reached the sampler: %s" % sorted(leaked)[:5])
-    return train
+    if allow_leaks:
+        return train
+    holdout = [c for c in cases if c["id"] in held]
+    report = splitmod.cross_split_leaks(train, holdout)
+    drop = {row["id"] for row in report["leaks"]}
+    return [c for c in train if c["id"] not in drop]
 
 
 def _now() -> str:

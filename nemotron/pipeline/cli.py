@@ -979,6 +979,67 @@ def cmd_power(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_leaks(args: argparse.Namespace) -> int:
+    """Train cases that are the same question as a held-out one.
+
+    Disjoint ids are not an independence proof. Run this before sampling, and
+    read it as a property of the CORPUS rather than of the splitter: a
+    capture-derived corpus contains the same wall hit twice.
+    """
+    cases = list(read_jsonl(DATA / "corpus.jsonl"))
+    lock = splitmod.load_lock(DATA)
+    if lock is None:
+        print("the split is not frozen", file=sys.stderr)
+        return 1
+    held = {e["id"] for e in lock["holdout"]}
+    report = splitmod.cross_split_leaks([c for c in cases if c["id"] not in held],
+                                        [c for c in cases if c["id"] in held],
+                                        ceiling=args.ceiling)
+    print("train %d, held-out %d, similarity ceiling %.2f"
+          % (report["n_train"], report["n_holdout"], report["ceiling"]))
+    print("%d train cases leak; %d are clean and may be sampled"
+          % (len(report["leaks"]), len(report["clean"])))
+    if args.verbose:
+        print()
+        for row in sorted(report["leaks"], key=lambda r: -r["similarity"]):
+            print("  %s  ~  %s   %s" % (row["id"], row["twin"], row["why"]))
+    return 0
+
+
+def cmd_usable(args: argparse.Namespace) -> int:
+    """Which held-out cases can still measure a model, and which cannot.
+
+    Run before a comparison, never after: a case dropped once a score is visible
+    is a case dropped for its score.
+    """
+    from . import refusals
+    engine = args.engine or eng.engine_path("lypning-l") or eng.engine_path("lypning")
+    if not engine:
+        print("no lypning binary: run `lypning build --rust`, or pass --engine",
+              file=sys.stderr)
+        return 1
+    cases = list(read_jsonl(DATA / ("holdout.jsonl" if not args.train else "train.jsonl")))
+    r = refusals.usable_cases(cases, engine)
+    print("%d cases   %d usable   %d degenerate   %d unsatisfiable"
+          % (r["n"], len(r["usable"]), len(r["degenerate"]), len(r["unsatisfiable"])))
+    if r["degenerate"]:
+        print()
+        print("DEGENERATE — the engine now runs the program the case asks the model to")
+        print("rewrite, so returning the input unchanged passes:")
+        for cid in r["degenerate"]:
+            print("  %s" % cid)
+    if r["unsatisfiable"]:
+        print()
+        print("UNSATISFIABLE — the case's own negative does not reproduce the expected")
+        print("output, so nothing passes it: not the model, not a human, not CPython:")
+        for row in r["unsatisfiable"]:
+            print("  %s  %s" % (row["id"], row["verdict"]))
+            print("      %s" % row["detail"])
+    print()
+    print("%d of %d cases can measure a model." % (len(r["usable"]), r["n"]))
+    return 0
+
+
 def cmd_refusals(args: argparse.Namespace) -> int:
     """Rank what the engine still refuses by how much of the corpus it blocks.
 
@@ -1136,6 +1197,16 @@ def build_parser() -> argparse.ArgumentParser:
     pw.add_argument("--trials", type=int, default=200,
                     help="simulated runs per lift (default 200)")
     pw.set_defaults(fn=cmd_power)
+
+    lk = sub.add_parser("leaks", help="train cases that are the same question as a held-out one")
+    lk.add_argument("--ceiling", type=float, default=splitmod.SIMILARITY_CEILING)
+    lk.add_argument("--verbose", action="store_true")
+    lk.set_defaults(fn=cmd_leaks)
+
+    us = sub.add_parser("usable", help="which held-out cases can still measure a model")
+    us.add_argument("--engine")
+    us.add_argument("--train", action="store_true", help="the train split instead")
+    us.set_defaults(fn=cmd_usable)
 
     rf = sub.add_parser("refusals", help="rank what the engine still refuses, by corpus weight")
     rf.add_argument("--engine", help="binary to probe (default: the widest built variant)")

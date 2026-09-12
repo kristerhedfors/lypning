@@ -137,3 +137,92 @@ def materialize(corpus_path: Path) -> Dict[str, int]:
     write_jsonl(out_dir / "train.jsonl", train)
     write_jsonl(out_dir / "holdout.jsonl", holdout)
     return {"train": len(train), "holdout": len(holdout)}
+
+
+# --- cross-split leakage: an id is not an independence proof ------------------
+
+#: How similar a train prompt may be to a held-out one before the train case is
+#: treated as the same question. Fixed here rather than passed in, so it cannot
+#: be tuned once someone has seen what it costs them.
+#:
+#: 0.85 is conservative on purpose. The asymmetry is the whole argument: a train
+#: case wrongly dropped costs a few training examples, and a train case wrongly
+#: kept costs the defensibility of the final number. Measured on 2026-09-12 it
+#: drops 58 of 175 train cases.
+SIMILARITY_CEILING = 0.85
+
+
+def cross_split_leaks(
+    train: List[Dict[str, Any]],
+    holdout: List[Dict[str, Any]],
+    *,
+    ceiling: float = SIMILARITY_CEILING,
+) -> Dict[str, Any]:
+    """Train cases that are the same question as a held-out one, by three tests.
+
+    DISJOINT IDS BUY NOTHING HERE, and this is the defect that would have voided
+    the whole comparison. The corpus is capture-derived: the same agent, hitting
+    the same wall twice in one session, produces two entries that differ in a
+    variable name. `freeze` splits those by id, so one lands in train and its
+    twin in held-out, and a model trained on the first has seen the second.
+
+    Measured on 2026-09-12 over the frozen split: **27 of 74 held-out cases have
+    a train neighbour at >= 0.85 prompt similarity**, 11 at >= 0.95, and 11 train
+    cases carry an expected stdout byte-identical to a held-out case's. Three of
+    the 154 rows in the first SFT set were verified solutions to two held-out
+    cases.
+
+    Three tests, because each catches a shape the others miss: prompt
+    similarity finds the reworded twin, an identical `expect_stdout` finds the
+    same task under a different prompt, and an identical negative program finds
+    the same capture harvested twice.
+
+    The held-out set is NOT re-cut — the lock is the integrity guarantee and
+    re-cutting it after seeing a baseline is how a split gets chosen for its
+    score. The training side shrinks instead.
+    """
+    import difflib
+
+    held_prompts = [(c["id"], c.get("prompt") or "") for c in holdout]
+    held_stdout = {
+        (c.get("test") or {}).get("expect_stdout"): c["id"]
+        for c in holdout
+        if (c.get("test") or {}).get("expect_stdout")
+    }
+    held_programs: Dict[str, str] = {}
+    for c in holdout:
+        for neg in c.get("negatives") or []:
+            held_programs.setdefault(neg["program"].strip(), c["id"])
+
+    leaks: List[Dict[str, Any]] = []
+    for case in train:
+        why: List[str] = []
+        twin = ""
+        prompt = case.get("prompt") or ""
+        best, best_id = 0.0, ""
+        for hid, hp in held_prompts:
+            ratio = difflib.SequenceMatcher(None, prompt, hp).ratio()
+            if ratio > best:
+                best, best_id = ratio, hid
+        if best >= ceiling:
+            why.append("prompt %.3f" % best)
+            twin = best_id
+        want = (case.get("test") or {}).get("expect_stdout")
+        if want and want in held_stdout:
+            why.append("identical expect_stdout")
+            twin = twin or held_stdout[want]
+        for neg in case.get("negatives") or []:
+            if neg["program"].strip() in held_programs:
+                why.append("identical program")
+                twin = twin or held_programs[neg["program"].strip()]
+                break
+        if why:
+            leaks.append({"id": case["id"], "twin": twin, "why": ", ".join(why),
+                          "similarity": round(best, 4)})
+    return {
+        "ceiling": ceiling,
+        "n_train": len(train),
+        "n_holdout": len(holdout),
+        "leaks": leaks,
+        "clean": [c["id"] for c in train if c["id"] not in {r["id"] for r in leaks}],
+    }
