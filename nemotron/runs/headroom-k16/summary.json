@@ -49,11 +49,14 @@
   "non_genuine_cases": [],
   "non_genuine_passes": 0,
   "pass_at_k": {
-    "headroom": 0.12577522484381082,
+    "headroom": 0.12629504504504507,
     "k": 16,
+    "k_min": 14,
     "n": 74,
-    "pass_at_1": 0.3607112616426757,
-    "pass_at_k": 0.4864864864864865
+    "pass_at_1": 0.36019144144144144,
+    "pass_at_1_draw_weighted": 0.3607112616426757,
+    "pass_at_k": 0.4864864864864865,
+    "ragged": true
   },
   "pass_rate": 0.36019144144144144,
   "per_case": {
@@ -143,7 +146,7 @@
     "top_p": 0.95
   },
   "spend_usd": 0.2764,
-  "summarized_at": "2026-09-12T07:34:43Z",
+  "summarized_at": "2026-09-12T07:35:05Z",
   "tokens_out": 358377,
   "wall_s": 11876.2
 }

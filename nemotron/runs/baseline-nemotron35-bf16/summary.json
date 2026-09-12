@@ -45,9 +45,12 @@
   "pass_at_k": {
     "headroom": 0.0,
     "k": 1,
+    "k_min": 1,
     "n": 74,
     "pass_at_1": 0.28378378378378377,
-    "pass_at_k": 0.28378378378378377
+    "pass_at_1_draw_weighted": 0.28378378378378377,
+    "pass_at_k": 0.28378378378378377,
+    "ragged": false
   },
   "pass_rate": 0.28378378378378377,
   "per_case": {
@@ -137,7 +140,7 @@
     "top_p": 0.95
   },
   "spend_usd": 0.3296,
-  "summarized_at": "2026-09-12T07:34:42Z",
+  "summarized_at": "2026-09-12T07:35:04Z",
   "tokens_out": 233296,
   "wall_s": 3673.5
 }

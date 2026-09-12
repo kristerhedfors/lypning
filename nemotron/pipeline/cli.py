@@ -39,6 +39,127 @@ def _pct(x: float) -> str:
     return "n/a" if x != x else "%5.1f%%" % (100.0 * x)
 
 
+def _progress(run_id: str) -> Dict[str, Any]:
+    """A run's progress record, or an empty one — an absent file states nothing."""
+    p = RUNS / run_id / "progress.json"
+    if not p.exists():
+        return {}
+    try:
+        return read_json(p)
+    except (ValueError, OSError):
+        return {}
+
+
+def _backend_of(run_id: str) -> Dict[str, Any]:
+    """What meta.json says answered this run; summary.json keeps only the model name."""
+    p = RUNS / run_id / "meta.json"
+    if not p.exists():
+        return {}
+    try:
+        return read_json(p).get("backend") or {}
+    except (ValueError, OSError):
+        return {}
+
+
+def _armed(summary: Dict[str, Any]) -> Dict[str, Any]:
+    """A summary with the backend identity its run directory still remembers.
+
+    Copied rather than mutated: these dicts come straight off disk and nothing
+    here is entitled to write a recorded measurement back.
+    """
+    if not summary or summary.get("backend"):
+        return summary
+    b = _backend_of(summary.get("run_id") or "")
+    return dict(summary, backend=b) if b else summary
+
+
+def _summary_of(run_id: str) -> Optional[Dict[str, Any]]:
+    p = RUNS / run_id / "summary.json"
+    if not p.exists():
+        return None
+    try:
+        return _armed(read_json(p))
+    except (ValueError, OSError):
+        return None
+
+
+def _arm(summary: Dict[str, Any]) -> str:
+    b = summary.get("backend") or {}
+    return "%s @ %s" % (summary.get("model") or "model not recorded",
+                        b.get("base_url") or b.get("source") or "endpoint not recorded")
+
+
+def _val(v: Any) -> str:
+    """One side of a difference, short enough to read. A trailing … marks a cut."""
+    s = "%s" % v
+    if len(s) > 16 and all(ch in "0123456789abcdef" for ch in s.lower()):
+        return s[:12] + "…"
+    return s if len(s) <= 48 else s[:45] + "…"
+
+
+def _render_incomparable(recs: List[Dict[str, Any]],
+                         left: str = "baseline", right: str = "run") -> List[str]:
+    """Name the field and both its values — and never call an unknown a difference.
+
+    "Unrecorded on both sides" when only one side is unrecorded is the same
+    category of error as the silent subtraction this guard exists to stop.
+    """
+    out = []
+    for d in recs:
+        pair = "%s %s, %s %s" % (left, _val(d["baseline"]), right, _val(d["run"]))
+        if not d.get("established"):
+            missing = [name for name, side in ((left, "baseline"), (right, "run"))
+                       if d[side] == stats.UNRECORDED]
+            if len(missing) > 1:
+                out.append("%s recorded by neither (%s)" % (d["field"], pair))
+            else:
+                out.append("%s not recorded by %s (%s)" % (d["field"], missing[0], pair))
+        elif d.get("same_model_name"):
+            out.append("different %s under one model name %s (%s)"
+                       % (d["field"], d["same_model_name"], pair))
+        else:
+            out.append("different %s (%s)" % (d["field"], pair))
+    return out
+
+
+def _render_incomplete(recs: List[Dict[str, Any]]) -> List[str]:
+    out = []
+    for d in recs:
+        if d["field"] == "cases_evaluated":
+            out.append("partial run: %s of %s cases evaluated"
+                       % (d["actual"], d["expected"]))
+        elif d["field"] == "harness_errors":
+            out.append("%s of %s cases evaluated; every missing one is inside the %s "
+                       "attempt(s) excluded as harness errors — server or sandbox, "
+                       "not the model"
+                       % (d["actual"], d["expected"], d.get("harness_errors")))
+        elif d["field"] == "aborted":
+            out.append("aborted: %s" % d["actual"])
+        else:
+            out.append("run state %s, not done" % d["actual"])
+    return out
+
+
+def _promotion_bars(s: Dict[str, Any]) -> List[str]:
+    """Why a run may not become the denominator of every later claim.
+
+    A baseline is subtracted from for the life of the project, so the two things
+    a candidate can never recover from once promoted are checked here: a number
+    that does not cover the whole split, and a run that never wrote down how it
+    sampled — which makes every later run n/c against it, with no way out but
+    promoting something else.
+    """
+    why = _render_incomplete(stats.blocking(
+        stats.completeness(s, _progress(s.get("run_id") or ""))))
+    samp = s.get("sampling")
+    samp = samp if isinstance(samp, dict) else {}
+    missing = [k for k in stats.SAMPLING_KEYS if k not in samp]
+    if missing:
+        why.append("sampling not recorded (missing %s): every later run would be "
+                   "not-comparable against it" % ", ".join(missing))
+    return why
+
+
 def _dur(s: Optional[float]) -> str:
     if s is None:
         return "?"
@@ -283,6 +404,17 @@ def _eval_foreground(args: argparse.Namespace, run_id: str) -> int:
     print()
     print(render_summary(summary, elapsed=time.time() - t0))
     if args.baseline:
+        # The same bar `nt promote` applies. A run that aborted on its spend cap
+        # still reaches this line with a summary in hand, and the flag that asks
+        # for a baseline must not be a way around the check that guards one.
+        bars = _promotion_bars(_armed(summary))
+        if bars:
+            print("\nNOT written as the baseline:", file=sys.stderr)
+            for w in bars:
+                print("  %s" % w, file=sys.stderr)
+            print("the run itself is recorded; fix what is named above and promote it "
+                  "with `nt promote %s`" % summary["run_id"], file=sys.stderr)
+            return 1
         write_json(BASELINE, summary)
         print("\nbaseline written to %s" % BASELINE)
         print("every later run is measured against pass_rate = %.4f" % summary["pass_rate"])
@@ -335,6 +467,60 @@ def render_summary(s: Dict[str, Any], elapsed: Optional[float] = None) -> str:
     return "\n".join(out)
 
 
+SAMPLING_HELP = (
+    "state it one of three ways: --sampling '{\"temperature\": 1.0, ...}' (or a path "
+    "to such a file) as an operator declaration; a header line {\"sampling\": {...}} "
+    "with no case_id at the top of the completions file; or a \"sampling\" block on "
+    "every completion record. Required keys: " + ", ".join(stats.SAMPLING_KEYS))
+
+
+def _split_header(comps: List[Dict[str, Any]]) -> Tuple[Dict[str, Any],
+                                                        List[Dict[str, Any]]]:
+    """A leading record with no case_id is the file's header, not a completion."""
+    if comps and "case_id" not in comps[0]:
+        return comps[0], comps[1:]
+    return {}, comps
+
+
+def _declared_sampling(header: Dict[str, Any], comps: List[Dict[str, Any]],
+                       override: str) -> Tuple[Optional[Dict[str, Any]], str]:
+    """How these completions were sampled, from the operator or from the file.
+
+    Returns the sampling block and an empty reason, or None and the reason it
+    could not be established. Only the box that generated the completions knows
+    how it sampled them, and inventing a record here would let a run differing
+    from the baseline in nothing but max_tokens be subtracted from it as if it
+    were a model. An operator declaration is accepted because someone who knows
+    can always assert it; it is recorded as a declaration so the summary says
+    which of the two it was.
+    """
+    if override:
+        try:
+            text = override if override.lstrip().startswith("{") else \
+                Path(override).read_text(encoding="utf-8")
+            samp = json.loads(text)
+        except (ValueError, OSError) as exc:
+            return None, "--sampling is not readable JSON (%s)" % exc
+        source = "operator"
+    elif isinstance(header.get("sampling"), dict):
+        samp, source = header["sampling"], "completions header"
+    else:
+        stated = [c["sampling"] for c in comps if isinstance(c.get("sampling"), dict)]
+        if not stated or len(stated) != len(comps):
+            return None, "the completions file does not state how it was sampled"
+        if any(s != stated[0] for s in stated[1:]):
+            return None, "the completions file states more than one sampling config"
+        samp, source = stated[0], "completions records"
+    if isinstance(samp, dict) and isinstance(samp.get("sampling"), dict):
+        samp = samp["sampling"]
+    if not isinstance(samp, dict):
+        return None, "the declared sampling is not a JSON object"
+    missing = [k for k in stats.SAMPLING_KEYS if k not in samp]
+    if missing:
+        return None, "the declared sampling is missing %s" % ", ".join(missing)
+    return dict(samp, declared_by=source), ""
+
+
 def cmd_grade(args: argparse.Namespace) -> int:
     """Grade completions produced elsewhere. The GPU box generates; this grades.
 
@@ -348,9 +534,26 @@ def cmd_grade(args: argparse.Namespace) -> int:
     from .extract import extract_program
     from .jsonio import append_jsonl
 
-    comps = read_jsonl(args.completions)
+    header, comps = _split_header(read_jsonl(args.completions))
     if not comps:
         print("no completions in %s" % args.completions, file=sys.stderr)
+        return 1
+    # Refused rather than warned, because a warning here buys a run that can
+    # never be compared with anything: the arm and the decode budget are the two
+    # facts the grader cannot recover from the completions. Re-grading is free
+    # (that is the whole point of this command), so the cost of refusing is one
+    # command, and the cost of accepting is a GPU run nobody may subtract.
+    sampling, why = _declared_sampling(header, comps, args.sampling)
+    if sampling is None:
+        print("refusing to grade %s: %s" % (args.completions, why), file=sys.stderr)
+        print("a run whose sampling is unrecorded can never be compared with the "
+              "baseline — " + SAMPLING_HELP, file=sys.stderr)
+        return 1
+    model = args.model or header.get("model")
+    if not model:
+        print("refusing to grade %s: --model is required — it names the weights that "
+              "produced these completions, and a run that cannot name its arm cannot "
+              "be one" % args.completions, file=sys.stderr)
         return 1
     try:
         cases = {c["id"]: c for c in load_holdout(DATA)}
@@ -366,12 +569,17 @@ def cmd_grade(args: argparse.Namespace) -> int:
     run_dir = RUNS / args.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "attempts.jsonl").unlink(missing_ok=True)
-    meta = {"run_id": args.run_id, "label": args.label,
-            "backend": {"model": args.model or "(generated elsewhere)",
-                        "base_url": "replay:%s" % args.completions},
+    # base_url is written only when someone states it. Left absent it is an
+    # unknown that withholds a delta; filled in with the replay path it would be
+    # a false endpoint that makes two grades of one arm look like two arms.
+    backend = {"model": model, "source": "replay:%s" % args.completions}
+    endpoint = args.endpoint or header.get("base_url")
+    if endpoint:
+        backend["base_url"] = endpoint
+    meta = {"run_id": args.run_id, "label": args.label, "backend": backend,
             "prompt_sha": __import__("pipeline.evaluate", fromlist=["x"]).prompt_signature(),
             "holdout_manifest_sha256": (splitmod.load_lock(DATA) or {}).get("manifest_sha256", ""),
-            "n_cases": len(cases), "sampling": {"replayed": True},
+            "n_cases": len(cases), "sampling": dict(sampling, replayed=True),
             "started_at": __import__("pipeline.evaluate", fromlist=["x"])._now()}
     write_json(run_dir / "meta.json", meta)
 
@@ -462,9 +670,18 @@ def cmd_promote(args: argparse.Namespace) -> int:
     if not (run_dir / "summary.json").exists():
         print("run has no summary: %s" % args.run_id, file=sys.stderr)
         return 1
-    s = read_json(run_dir / "summary.json")
+    s = _armed(read_json(run_dir / "summary.json"))
+    bars = _promotion_bars(s)
+    if bars:
+        print("refusing to promote %s:" % args.run_id, file=sys.stderr)
+        for w in bars:
+            print("  %s" % w, file=sys.stderr)
+        print("a baseline is the denominator of every later claim — re-run or re-grade "
+              "this one, do not widen the check", file=sys.stderr)
+        return 1
     write_json(BASELINE, s)
-    print("baseline := %s   pass@1 %s" % (args.run_id, _pct(s["pass_rate"])))
+    print("baseline := %s   pass@1 %s   arm %s"
+          % (args.run_id, _pct(s["pass_rate"]), _arm(s)))
     return 0
 
 
@@ -516,38 +733,45 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_results(args: argparse.Namespace) -> int:
-    base = read_json(BASELINE) if BASELINE.exists() else None
+    base = _armed(read_json(BASELINE)) if BASELINE.exists() else None
     rows: List[Dict[str, Any]] = []
     for p in sorted(RUNS.glob("*/summary.json")):
         try:
-            rows.append(read_json(p))
+            rows.append(_armed(read_json(p)))
         except (ValueError, OSError):
             continue
     if not rows:
         print("no finished runs yet")
         return 0
-    bp = base["pass_rate"] if base else None
-    base_manifest = (base or {}).get("holdout_manifest_sha256")
-    base_prompt = (base or {}).get("prompt_sha")
-    incomparable: List[Dict[str, Any]] = []
+    # Every number on this board is measured against the baseline, so a baseline
+    # that does not cover the split makes every delta wrong rather than one.
+    base_bars = _render_incomplete(stats.blocking(stats.completeness(
+        base, _progress(base.get("run_id") or "")))) if base else []
+    bp = base["pass_rate"] if (base and not base_bars) else None
     for r in rows:
         # A delta is only a delta if both numbers came from the same held-out
-        # set and the same prompt. Otherwise it is two different measurements
-        # subtracted, which is worse than no number at all.
-        why = []
-        if base_manifest and r.get("holdout_manifest_sha256") != base_manifest:
-            why.append("different held-out split")
-        if base_prompt and r.get("prompt_sha") != base_prompt:
-            why.append("different prompt")
-        r["_why"] = "; ".join(why)
-        r["_delta"] = (r["pass_rate"] - bp) if (bp is not None and not why) else 0.0
-        r["_win"] = bool(bp is not None and not why and stats.beats(r, bp))
-        if why:
-            incomparable.append(r)
+        # set, the same prompt and the same sampling config, from arms the record
+        # can tell apart, and if both runs finished. Otherwise it is two
+        # different measurements subtracted, which is worse than no number.
+        r["_vs_base"] = (_render_incomparable(stats.comparability(base, r))
+                         if (base and not base_bars) else [])
+        own = stats.completeness(r, _progress(r.get("run_id") or ""))
+        r["_bars"] = _render_incomplete(stats.blocking(own))
+        r["_notes"] = _render_incomplete([d for d in own if not d.get("blocks")])
+        r["_why"] = "; ".join(r["_vs_base"] + r["_bars"])
+        ok = not r["_why"]
+        r["_delta"] = (r["pass_rate"] - bp) if (bp is not None and ok) else 0.0
+        r["_win"] = bool(bp is not None and ok and stats.beats(r, bp))
     rows.sort(key=lambda r: (bool(r["_why"]), -r["_delta"]))
     if base:
         print("baseline   %s   run %s   (a win needs CI-low above this)"
               % (_pct(base["pass_rate"]), base["run_id"]))
+        print("           arm %s" % _arm(base))
+    for w in base_bars:
+        print("baseline   UNUSABLE — %s" % w)
+    if base_bars:
+        print("           no delta on this board means anything until the baseline "
+              "is re-run and re-promoted")
     print("%-26s %8s %-18s %8s %6s %8s"
           % ("run", "pass@1", "95% CI", "delta", "win", "cost"))
     for r in rows:
@@ -558,8 +782,19 @@ def cmd_results(args: argparse.Namespace) -> int:
                   ("%+.1fpp" % (100 * r["_delta"])) if bp is not None else "-"),
                  "yes" if r["_win"] else "",
                  "$%.2f" % r.get("spend_usd", 0.0)))
-    for r in incomparable:
-        print("  n/c %s: %s — not comparable to the baseline" % (r["run_id"], r["_why"]))
+    for r in rows:
+        for w in r["_bars"]:
+            print("  n/c %s: %s" % (r["run_id"], w))
+        for w in r["_vs_base"]:
+            print("  n/c %s: not comparable to the baseline — %s" % (r["run_id"], w))
+        for w in r["_notes"]:
+            print("  note %s: %s" % (r["run_id"], w))
+    if any(r["_why"] for r in rows):
+        print("  a withheld delta is not a zero: those runs measured something else.")
+    print("\narms (as requested; the model name is free text and two endpoints here "
+          "answer to one)")
+    for r in rows:
+        print("  %-26s %s" % (r["run_id"][:26], _arm(r)))
     comparable = [r for r in rows if not r["_why"]]
     if bp is not None and comparable and not any(r["_win"] for r in comparable):
         print("\nno run clears the bar: a win needs its CI lower bound above %s."
@@ -582,21 +817,63 @@ def cmd_compare(args: argparse.Namespace) -> int:
     if not d.get("n_pairs"):
         print("no cases in common", file=sys.stderr)
         return 1
+    b_sum, a_sum = _summary_of(args.before), _summary_of(args.after)
+    bars: List[str] = []
+    for run_id, s in ((args.before, b_sum), (args.after, a_sum)):
+        if s is not None:
+            bars.extend("%s: %s" % (run_id, w) for w in _render_incomplete(
+                stats.blocking(stats.completeness(s, _progress(run_id)))))
+    if b_sum is not None and a_sum is not None:
+        bars.extend(_render_incomparable(stats.comparability(b_sum, a_sum),
+                                         left="before", right="after"))
     print("before %s   after %s" % (args.before, args.after))
-    print("paired delta %+.1fpp   95%% CI [%+.1f, %+.1f]pp   over %d cases"
-          % (100 * d["delta"], 100 * d["ci95"]["lo"], 100 * d["ci95"]["hi"], d["n_pairs"]))
+    if bars and not args.anyway:
+        print("refusing to compare %s with %s — they did not measure the same thing:"
+              % (args.before, args.after), file=sys.stderr)
+        for w in bars:
+            print("  %s" % w, file=sys.stderr)
+        print("  --anyway prints the arithmetic, which is then the difference between "
+              "two runs and not a delta attributable to the model", file=sys.stderr)
+        return 1
+    for w in bars:
+        print("WARNING  %s" % w)
+    dropped = d["dropped_before_only"] + d["dropped_after_only"]
+    print("paired delta %+.1fpp   95%% CI [%+.1f, %+.1f]pp   over %d cases%s"
+          % (100 * d["delta"], 100 * d["ci95"]["lo"], 100 * d["ci95"]["hi"], d["n_pairs"],
+             ("   (%d case(s) dropped: %d only in %s, %d only in %s)"
+              % (dropped, d["dropped_before_only"], args.before,
+                 d["dropped_after_only"], args.after)) if dropped else ""))
+    # Separability is a property of the numbers and holds either way; which model
+    # it is a verdict ON is exactly what an incomparable pair does not establish.
+    if bars:
+        verdict = ("separable from noise, but between runs that differ as above"
+                   if d["significant"] else "not separable from noise")
+    else:
+        verdict = {"improvement": "SIGNIFICANT IMPROVEMENT",
+                   "regression": "SIGNIFICANT REGRESSION",
+                   "none": "not separable from noise"}[d["direction"]]
     print("gained %d   lost %d   McNemar p=%.4f   %s"
-          % (d["gained"], d["lost"], d["mcnemar_p"],
-             "SIGNIFICANT" if d["significant"] else "not separable from noise"))
+          % (d["gained"], d["lost"], d["mcnemar_p"], verdict))
     if args.ids:
         print("gained:", ", ".join(d["gained_ids"]))
         print("lost  :", ", ".join(d["lost_ids"]))
-    base = read_json(BASELINE) if BASELINE.exists() else None
-    if base:
-        a = read_json(RUNS / args.after / "summary.json")
+    base = _armed(read_json(BASELINE)) if BASELINE.exists() else None
+    if base is None or a_sum is None:
+        return 0
+    # The unpaired rule is a second comparison — after against the BASELINE, not
+    # against before — so it carries its own refusal. `nt results` and this line
+    # ran off the same files and printed opposite verdicts until it did.
+    stop = _render_incomparable(stats.comparability(base, a_sum), right="after")
+    stop += ["%s: %s" % (args.after, w) for w in _render_incomplete(
+        stats.blocking(stats.completeness(a_sum, _progress(args.after))))]
+    stop += ["baseline %s: %s" % (base.get("run_id"), w) for w in _render_incomplete(
+        stats.blocking(stats.completeness(base, _progress(base.get("run_id") or ""))))]
+    if stop:
+        print("unpaired rule: n/c against the baseline — %s" % "; ".join(stop))
+    else:
         print("unpaired rule: CI-low %s vs baseline point %s -> %s"
-              % (_pct(a["ci95"]["lo"]), _pct(base["pass_rate"]),
-                 "WIN" if stats.beats(a, base["pass_rate"]) else "no"))
+              % (_pct(a_sum["ci95"]["lo"]), _pct(base["pass_rate"]),
+                 "WIN" if stats.beats(a_sum, base["pass_rate"]) else "no"))
     return 0
 
 
@@ -634,7 +911,11 @@ def cmd_slices(args: argparse.Namespace) -> int:
     print("%-26s %5s %6s %9s %-20s %8s %9s"
           % ("slice", "cases", "draws", "pass@1", "95% CI (bootstrap)", "pass@k", "headroom"))
     for key, per_case in sorted(counts.items(), key=lambda kv: -len(kv[1])):
-        scores = [c[0] / c[1] for c in per_case.values()]
+        # Ordered by case id, as summarize_run orders it. The bootstrap draws
+        # from this sequence with a fixed seed, so an order that follows thread
+        # completion made the published interval depend on which attempt landed
+        # first — the one thing stats.py's docstring promises it does not.
+        scores = [c[0] / c[1] for _, c in sorted(per_case.items())]
         draws = sum(c[1] for c in per_case.values())
         b = stats.summarize(scores)
         pk = stats.pass_at_k([(c[0], c[1]) for c in per_case.values()])
@@ -643,6 +924,12 @@ def cmd_slices(args: argparse.Namespace) -> int:
                  _pct(b["ci95"]["lo"]).strip(), _pct(b["ci95"]["hi"]).strip(),
                  _pct(pk["pass_at_k"]) if pk["k"] > 1 else "-",
                  ("%+.1fpp" % (100 * pk["headroom"])) if pk["k"] > 1 else "-"))
+        # "pass@k" names the largest k any case got. When the draws are ragged
+        # the short cases had fewer chances and the column overstates nothing
+        # about them — it just is not one k.
+        if pk["ragged"]:
+            print("%-26s   draws per case run %d..%d, so the pass@k column is not "
+                  "one k" % ("", pk["k_min"], pk["k"]))
     return 0
 
 
@@ -738,6 +1025,11 @@ def build_parser() -> argparse.ArgumentParser:
     gr = sub.add_parser("grade", help="grade completions generated elsewhere (no GPU needed)")
     gr.add_argument("run_id"); gr.add_argument("--completions", required=True)
     gr.add_argument("--label", default=""); gr.add_argument("--model", default="")
+    gr.add_argument("--sampling", default="",
+                    help="JSON, or a path to it, stating %s for these completions"
+                         % ", ".join(stats.SAMPLING_KEYS))
+    gr.add_argument("--endpoint", default="",
+                    help="where the completions were generated; recorded as the arm")
     gr.set_defaults(fn=cmd_grade)
 
     sm = sub.add_parser("summarize", help="recompute a run's summary from its attempts")
@@ -755,6 +1047,9 @@ def build_parser() -> argparse.ArgumentParser:
     cp = sub.add_parser("compare", help="paired delta between two runs")
     cp.add_argument("before"); cp.add_argument("after")
     cp.add_argument("--ids", action="store_true", help="list the cases that moved")
+    cp.add_argument("--anyway", action="store_true",
+                    help="print the arithmetic for two runs that measured different "
+                         "things; it is then not a delta attributable to the model")
     cp.set_defaults(fn=cmd_compare)
 
     sl = sub.add_parser("slices", help="pass rate per stratum for a run")
