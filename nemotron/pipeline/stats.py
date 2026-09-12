@@ -445,3 +445,50 @@ def minimum_detectable(curve: Dict[str, Any], rule: str, want: float = 0.8) -> O
         if float(row[key]) >= want:  # type: ignore[index]
             return float(row["lift"])  # type: ignore[index]
     return None
+
+
+# --- the pre-registered verdict, as code rather than a paragraph -------------
+
+
+def decide(before: Dict[str, float], after: Dict[str, float],
+           *, exclude: Optional[Sequence[str]] = None,
+           **kw) -> Dict[str, object]:
+    """The pre-registered rule, applied to one denominator.
+
+    THE RULE IS THE CONJUNCTION and that is the whole reason this exists.
+    `PREREGISTRATION.md` §3 makes a win require BOTH the paired bootstrap CI
+    lower bound above 0 AND exact McNemar p < 0.05, and until this function the
+    rule lived only in that paragraph — every time it was applied it was applied
+    by a hand-written script, twice by the session that wrote the paragraph.
+    A rule with no implementation is a rule nobody can be held to, and this
+    project has already shipped one seam that was wired, live and never
+    consulted.
+
+    `exclude` is the denominator: the case ids that cannot measure a model. It
+    is passed in rather than computed here because the criterion is mechanical
+    and lives in `refusals.usable_cases` — degenerate (the engine now runs the
+    program the case asks the model to rewrite, so echoing the input passes) and
+    unsatisfiable (nothing passes it). Deciding which cases to drop by looking
+    at scores is how a delta gets manufactured; deciding it from the engine is
+    not.
+    """
+    drop = set(exclude or ())
+    b = {k: v for k, v in before.items() if k not in drop}
+    a = {k: v for k, v in after.items() if k not in drop}
+    if not b or not a:
+        return {"n_pairs": 0, "fires": False, "why": "no cases left in this denominator"}
+    d = paired_delta(b, a, **kw)
+    leg_ci = d["ci95"]["lo"] > 0                    # type: ignore[index]
+    leg_mcnemar = float(d["mcnemar_p"]) < 0.05      # type: ignore[arg-type]
+    return dict(
+        d,
+        before_point=sum(b.values()) / len(b),
+        after_point=sum(a.values()) / len(a),
+        leg_ci=leg_ci,
+        leg_mcnemar=leg_mcnemar,
+        fires=bool(leg_ci and leg_mcnemar),
+        why=("" if leg_ci and leg_mcnemar else
+             "; ".join(([] if leg_ci else ["CI lower bound is not above 0"])
+                       + ([] if leg_mcnemar else
+                          ["McNemar p=%.4f is not < 0.05" % d["mcnemar_p"]]))),
+    )

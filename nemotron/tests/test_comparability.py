@@ -259,6 +259,12 @@ def _put_run(root: Path, summary, progress=None, per_case=None, meta=True):
 class _Args(object):
     ids = False
     anyway = False
+    # The pre-registered denominators need a built engine and a real holdout
+    # file, and these fixtures have neither — they are about the ARITHMETIC of
+    # comparison, which is a separate question from which cases count. The flag
+    # is a real one on the parser, so the default here is off rather than the
+    # command being made tolerant of a namespace that lacks it.
+    no_rule = True
 
 
 def test_results_withholds_the_delta_when_only_the_token_budget_differs(nt, tmp_path, capsys):
@@ -719,3 +725,53 @@ def test_the_endpoint_key_is_read_under_either_spelling():
     # These minimal summaries also lack a sampling block, which is its own
     # unestablished reason; the endpoint must be among the reasons, not the only.
     assert "backend.base_url" in [r["field"] for r in stats.comparability(base, after)]
+
+
+# --- the pre-registered rule, as code ----------------------------------------
+
+
+def test_a_win_needs_both_legs_and_neither_alone():
+    """`PREREGISTRATION.md` §3 makes the rule a CONJUNCTION.
+
+    Until `stats.decide` existed the rule lived only in that paragraph and was
+    applied by a hand-written script every time — including twice by the session
+    that wrote the paragraph. A rule with no implementation is a rule nobody can
+    be held to, and this project has already shipped one seam that was wired,
+    live and never consulted.
+    """
+    from pipeline import stats
+
+    # Six cases flip cleanly and nothing regresses: McNemar 2/2**6 = 0.03125,
+    # and a consistent gain puts the CI lower bound above zero. Both legs.
+    before = {"c%d" % i: 0.0 for i in range(20)}
+    after = dict(before, **{"c%d" % i: 1.0 for i in range(6)})
+    v = stats.decide(before, after)
+    assert v["leg_ci"] and v["leg_mcnemar"] and v["fires"]
+
+    # Five flips: p = 0.0625. The CI leg can still pass and the rule must not.
+    after5 = dict(before, **{"c%d" % i: 1.0 for i in range(5)})
+    v5 = stats.decide(before, after5)
+    assert v5["mcnemar_p"] == pytest.approx(0.0625)
+    assert not v5["leg_mcnemar"] and not v5["fires"]
+    assert "McNemar" in v5["why"]
+
+
+def test_the_denominator_is_an_exclusion_and_not_a_recount():
+    """Dropping cases must drop them from BOTH arms and from the point estimates,
+    or the delta is between two different populations."""
+    from pipeline import stats
+
+    before = {"a": 0.0, "b": 0.0, "junk": 1.0}
+    after = {"a": 1.0, "b": 1.0, "junk": 1.0}
+    full = stats.decide(before, after)
+    cut = stats.decide(before, after, exclude=["junk"])
+    assert full["n_pairs"] == 3 and cut["n_pairs"] == 2
+    assert cut["before_point"] == pytest.approx(0.0)
+    assert cut["after_point"] == pytest.approx(1.0)
+
+
+def test_an_empty_denominator_says_so_rather_than_dividing_by_zero():
+    from pipeline import stats
+
+    v = stats.decide({"a": 0.0}, {"a": 1.0}, exclude=["a"])
+    assert v["fires"] is False and v["n_pairs"] == 0 and v["why"]
