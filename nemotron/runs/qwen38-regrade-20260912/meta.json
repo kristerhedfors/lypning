@@ -1,0 +1,31 @@
+{
+  "backend": {
+    "endpoint": "https://router.huggingface.co/v1",
+    "model": "Qwen/Qwen3.8-27B:novita",
+    "source": "replay:runs/qwen38-baseline-k16/attempts.jsonl"
+  },
+  "holdout_manifest_sha256": "80b2fc522202a0ece3b84b299791761c86dd07983596a46650f9bfcb733ce588",
+  "label": "Qwen3.8-27B stock, re-graded at the 2026-09-12 engine",
+  "n_cases": 74,
+  "prompt_sha": "cbb7be44937a6b41",
+  "regrade": {
+    "completions_generated_at": "2026-09-12T07:59:36Z",
+    "no_new_inference": true,
+    "of": "qwen38-baseline-k16",
+    "regraded_at_engine": "85cc638",
+    "round_trip": "1184/1184 reconstructed completions re-extract to byte-identical programs",
+    "why": "the engine gained math, type() of any class, int/float methods and %-precision after those completions were graded, and every lypning-kind acceptance test checks that lypning ACCEPTS the program \u2014 so the same programs score differently now"
+  },
+  "run_id": "qwen38-regrade-20260912",
+  "sampling": {
+    "declared_by": "completions header",
+    "enable_thinking": false,
+    "max_tokens": 2048,
+    "replayed": true,
+    "samples": 16,
+    "seed": 1234,
+    "temperature": 1.0,
+    "top_p": 0.95
+  },
+  "started_at": "2026-09-12T15:24:15Z"
+}

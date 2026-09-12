@@ -39,10 +39,6 @@
     "ntx-e2ea0df635c8",
     "ntx-fb1554cd2e88"
   ],
-  "backend": {
-    "model": "Qwen/Qwen3.8-27B:novita",
-    "source": "replay:/tmp/claude-0/-home-user-lypning/05e2ce2d-c800-5df6-a220-b3efcfe06b17/scratchpad/regrade-completions.jsonl"
-  },
   "cases_evaluated": 74,
   "cases_planned": 74,
   "ci95": {
