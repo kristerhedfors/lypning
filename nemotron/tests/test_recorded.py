@@ -130,6 +130,10 @@ RE_DERIVED = {
     # 25/74 by hand; the behavioural discriminator found the same attempt on its
     # own, and did NOT flag ntx-ca1a768f3164, the honest textwrap rewrite that
     # the syntactic guard convicted.
+    # The Qwen3.8-27B baseline, k=16 thinking-off, measured through the repaired
+    # harness on 2026-09-12. This is the number every tuned Qwen arm is measured
+    # against; the Nemotron baselines above are history from before the switch.
+    "qwen38-baseline-k16": 0.40371621621621623,
     "baseline-regraded": 0.33783783783783783,
 }
 

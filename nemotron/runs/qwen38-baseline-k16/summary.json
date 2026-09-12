@@ -36,10 +36,6 @@
     "ntx-e2ea0df635c8",
     "ntx-fb1554cd2e88"
   ],
-  "backend": {
-    "base_url": "https://router.huggingface.co/v1",
-    "model": "Qwen/Qwen3.8-27B:novita"
-  },
   "cases_evaluated": 74,
   "cases_planned": 74,
   "ci95": {
@@ -217,7 +213,7 @@
     "top_p": 0.95
   },
   "spend_usd": 0.0,
-  "summarized_at": "2026-09-12T08:11:48Z",
+  "summarized_at": "2026-09-12T08:13:31Z",
   "tokens_out": 582061,
   "wall_s": 11199.4
 }

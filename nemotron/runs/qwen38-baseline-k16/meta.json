@@ -1,0 +1,27 @@
+{
+  "backend": {
+    "base_url": "https://router.huggingface.co/v1",
+    "model": "Qwen/Qwen3.8-27B:novita"
+  },
+  "holdout_manifest_sha256": "80b2fc522202a0ece3b84b299791761c86dd07983596a46650f9bfcb733ce588",
+  "label": "Qwen3.8-27B stock baseline, thinking off, repaired harness",
+  "max_spend_usd": 15.0,
+  "n_attempts_planned": 1184,
+  "n_cases": 74,
+  "pricing": {
+    "gpu_per_hour": 0.0,
+    "in_per_m": 0.0,
+    "out_per_m": 0.0
+  },
+  "prompt_sha": "cbb7be44937a6b41",
+  "run_id": "qwen38-baseline-k16",
+  "sampling": {
+    "enable_thinking": false,
+    "max_tokens": 2048,
+    "samples": 16,
+    "seed": 1234,
+    "temperature": 1.0,
+    "top_p": 0.95
+  },
+  "started_at": "2026-09-12T07:59:36Z"
+}

@@ -1,0 +1,14 @@
+{
+  "aborted": null,
+  "done": 1184,
+  "elapsed_s": 731.6,
+  "eta_s": 0.0,
+  "label": "Qwen3.8-27B stock baseline, thinking off, repaired harness",
+  "run_id": "qwen38-baseline-k16",
+  "spend_gpu_usd": 0.0,
+  "spend_tokens_usd": 0.0,
+  "spend_usd": 0.0,
+  "state": "done",
+  "total": 1184,
+  "updated_at": "2026-09-12T08:11:48Z"
+}
