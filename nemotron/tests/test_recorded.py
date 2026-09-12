@@ -42,7 +42,10 @@ AS_REPORTED = {
     "replay-check": 0.3581081081081081,
     "stock-nothinking": 0.35135135135135137,
 }
-BASELINE_RUN = "baseline-nemotron35-bf16-t12k"
+# Moved 2026-09-12 when the target model changed to Qwen3.8-27B. The pin caught
+# the move, which is what it is for: a baseline that changes without a line in a
+# diff is the failure this file exists to prevent.
+BASELINE_RUN = "qwen38-baseline-k16"
 HOLDOUT_MANIFEST = "80b2fc522202a0ece3b84b299791761c86dd07983596a46650f9bfcb733ce588"
 N_CORPUS, N_HOLDOUT, N_TRAIN = 249, 74, 175
 
@@ -86,7 +89,7 @@ def test_as_reported_is_never_rewritten(run_id):
 def test_the_baseline_names_a_run_whose_evidence_is_present():
     b = read_json(DATA / "baseline.json")
     assert b["run_id"] == BASELINE_RUN
-    assert b["pass_rate"] == pytest.approx(AS_REPORTED[BASELINE_RUN], abs=1e-12)
+    assert b["pass_rate"] == pytest.approx(RE_DERIVED[BASELINE_RUN], abs=1e-9)
     assert (RUNS / b["run_id"] / "attempts.jsonl").exists()
 
 
