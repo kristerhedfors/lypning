@@ -1,0 +1,108 @@
+# Pre-registration: does a LoRA make Qwen3.8-27B write lypning-supported python?
+
+Written **2026-09-12, before any fine-tuned model exists** — no adapter has been
+trained, no training data has been sampled, and no post-fine-tune number has been
+seen by anyone. Engine at `0f61407` (2026-09-12T12:46:26Z). Every number below is
+reproducible by the command printed beside it; none is remembered (invariant 3).
+
+The point of writing this first is narrow and specific: three of the decisions
+here — which rule is primary, which cases count, and what the comparison is
+measured against — all move the answer, and all of them would be unfalsifiable
+if taken after the result was visible.
+
+## 1. The claim under test
+
+Rank-16 LoRA on Qwen3.8-27B, trained only on programs the model itself wrote and
+that the engine verified, makes it produce more python that lypning can run
+**without making it produce wrong python**. The second half is not decoration:
+a model that learns to emit `print(1)` for everything would win the first half.
+
+## 2. The instrument, and the three things wrong with it today
+
+**The held-out split is frozen** at 74 cases,
+`holdout.lock.json`, manifest `80b2fc52…733ce588`, pinned by
+`tests/test_recorded.py::HOLDOUT_MANIFEST`. It does not move.
+
+**(a) The baseline is stale and must be re-graded.** `runs/qwen38-baseline-k16`
+was graded this morning against an engine that has since gained `math`, `type()`
+of any class, int/float methods and `%`-precision. Every `lypning`-kind
+acceptance test checks that lypning ACCEPTS the program, so the same programs
+score differently now. **The baseline is re-graded against the engine the
+fine-tuned model will be evaluated on, from the recorded completions, with no
+new inference.** Comparing a fine-tune against the un-regraded 0.4037 would
+credit it with a day of engine work.
+
+**(b) Four held-out cases are now degenerate.** `nt refusals --held-out` says the
+engine now RUNS the original program of `ntx-1eb18c506d05`, `ntx-3eb388881928`,
+`ntx-4f5b30dcdfe5`, `ntx-9533782459ac` — `import math` twice, `type()` once,
+`%.2d` once, which are precisely the refusals closed today. On those a model can
+return the input unchanged and pass. Two of them scored **0/16** this morning.
+
+> Decided now: the delta is reported over **all 74** and over the **70
+> non-degenerate** cases, and the 70-case figure is primary. The split itself is
+> not re-frozen — the lock is the integrity guarantee and it stays — and the
+> exclusion criterion is mechanical (`refusals --held-out` names them) rather
+> than chosen by looking at scores.
+
+**(c) 5% of draws are truncated.** 59 of 1,184 attempts stopped at
+`max_tokens: 2048` with `finish_reason: length`, across 19 cases, and **every one
+of them fails** (0/59). `max_tokens` stays at 2048 for both arms: raising it for
+the fine-tuned arm alone is a confound, and a model that learns to write shorter
+subset-conforming programs should be allowed to show that as a win.
+
+## 3. The rules, fixed now
+
+Run `nt power qwen38-baseline-k16` — 74 cases, k=16, 34 never pass, 16 always
+pass, 24 movable:
+
+| true lift | unpaired (CI lower bound clears baseline point) | paired (same cases) |
+|---|---|---|
+| +2pp | 0% | 45% |
+| +4pp | 0% | 92% |
+| +8pp | 1% | 100% |
+| +12pp | 43% | 100% |
+| +15pp | 97% | 100% |
+
+**The standing unpaired rule reaches 80% power only at +15pp.** Moving a 74-case
+mean that far means taking about eleven cases from never-passing to
+always-passing — a third of the 34 that never pass. An experiment whose rule
+cannot see a plausible effect reports "no win" whatever happens, and the money is
+spent either way.
+
+- **PRIMARY:** the paired test. The two arms run on the *same* frozen cases, so
+  they are paired by construction and the unpaired rule pays for the shared
+  per-case difficulty twice. A win requires **both** the bootstrap 95% CI lower
+  bound of the per-case delta to be above 0 **and** exact two-sided McNemar
+  p < 0.05 on the case-level flips. Both are already implemented
+  (`stats.paired_delta`, `stats._mcnemar`); neither was written for this.
+- **SECONDARY, always reported:** the unpaired rule, `stats.beats`, unchanged.
+  It was fixed before any run happened and it stays in the table. **Where the two
+  disagree, the disagreement is the finding and is reported as one** — not
+  resolved in favour of whichever is kinder.
+- **The safety gate, which is not a statistic.** `conformance` MISMATCH must be 0
+  and routing UNSAFE must be 0 on the engine used for both arms, and
+  `nt refusals --run <eval>` must report MISMATCH 0 over the fine-tuned model's
+  own output. A pass-rate gain bought with a silent wrong answer is a loss.
+
+## 4. What would make a positive result a lie
+
+| confound | the check | status |
+|---|---|---|
+| engine differs between arms | both graded at `0f61407`; `nt compare` blocks on `holdout_manifest_sha256` + `prompt_sha` | covered |
+| degenerate cases | 70-case primary figure, cases named mechanically above | covered |
+| model echoes the input | the corpus's negative control: the original program is recorded per case, and an output equal to it is a fail by construction on non-degenerate cases | covered |
+| model games the acceptance test | `sample.discriminate()` perturbs the input and requires the candidate to follow the mutation | **sampling path only — NOT wired into eval** |
+| prompt drift | `prompt_sha` recorded per run, compared by `stats.comparability` | covered |
+| grading nondeterminism | re-grade the same attempts twice and diff | to be run before the comparison |
+| training contamination | train split only; `holdout.lock.json` verified before sampling and again before training | to be run |
+
+## 5. Spend
+
+Sampling and evaluation go through the HF router at the novita price for
+`Qwen/Qwen3.8-27B` — $0.42/M in, $3.00/M out, read from `/v1/models` on
+2026-09-12. Training goes to HF Jobs under a platform-enforced `--timeout`.
+Every run records `max_spend_usd` in its `meta.json` and aborts on it.
+
+**The experiment is abandoned, not rescued, if:** the re-graded baseline leaves
+fewer than 15 movable cases; verified on-policy SFT yields fewer than 150
+examples; or the safety gate fails on the fine-tuned arm.

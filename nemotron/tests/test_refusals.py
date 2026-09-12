@@ -126,3 +126,57 @@ def test_on_policy_with_nothing_wrong_says_so_without_the_mismatch_block():
     finally:
         refusals.grade_against_engine = original
     assert "MISMATCH" not in refusals.on_policy_report(result)
+
+
+# --- power: the rule has to be able to see the effect being paid for ---------
+
+
+def test_the_power_curve_reports_both_rules_and_is_deterministic():
+    """Two runs of the same curve must agree, or the number is not a number.
+
+    The seed is the whole reason: a power analysis that moves between runs is a
+    number someone can re-roll until it says what they want, which is the exact
+    failure `PREREGISTRATION.md` exists to prevent.
+    """
+    from pipeline import stats
+
+    # range stops at 15/16 on purpose: a 16/16 here would be an
+    # always-passing case and the counts below would be about the
+    # arithmetic rather than the function.
+    scores = [0.0] * 30 + [1.0] * 10 + [i / 16 for i in range(1, 16)] * 2
+    a = stats.power_curve(scores, 16, trials=6, resamples=120)
+    b = stats.power_curve(scores, 16, trials=6, resamples=120)
+    assert a == b, "the power curve is not deterministic"
+    assert [r["lift"] for r in a["rows"]] == list(stats.POWER_GRID)
+    assert a["n_cases"] == len(scores)
+    assert a["never_passes"] == 30 and a["always_passes"] == 10
+
+
+def test_the_paired_rule_is_never_weaker_than_the_unpaired_one():
+    """The claim `PREREGISTRATION.md` rests on, checked rather than asserted.
+
+    Pairing cancels the per-case difficulty both arms share. If a grid ever
+    showed the unpaired rule winning a row, the argument for making the paired
+    test primary would be gone and this file should say so first.
+    """
+    from pipeline import stats
+
+    scores = [0.0] * 34 + [1.0] * 16 + [i / 16 for i in range(2, 15, 3)] * 6
+    curve = stats.power_curve(scores[:74], 16, trials=8, resamples=150)
+    for row in curve["rows"]:
+        assert row["paired_power"] >= row["unpaired_power"], (
+            "at a %+.0fpp lift the unpaired rule beat the paired one (%.2f vs %.2f) — "
+            "the premise of the primary rule has gone"
+            % (100 * row["lift"], row["unpaired_power"], row["paired_power"])
+        )
+
+
+def test_minimum_detectable_reads_the_first_row_that_clears_the_bar():
+    from pipeline import stats
+
+    curve = {"rows": [{"lift": 0.02, "paired_power": 0.4, "unpaired_power": 0.0},
+                      {"lift": 0.05, "paired_power": 0.9, "unpaired_power": 0.1},
+                      {"lift": 0.20, "paired_power": 1.0, "unpaired_power": 0.95}]}
+    assert stats.minimum_detectable(curve, "paired") == 0.05
+    assert stats.minimum_detectable(curve, "unpaired") == 0.20
+    assert stats.minimum_detectable(curve, "unpaired", want=0.99) is None

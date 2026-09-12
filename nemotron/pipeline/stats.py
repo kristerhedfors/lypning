@@ -317,3 +317,85 @@ def pass_at_k(per_case_counts: Sequence[Tuple[int, int]]) -> Dict[str, float]:
         "ragged": k_min != k_max,
         "headroom": pass_k - (pass_1 if pass_1 == pass_1 else 0.0),
     }
+
+
+# --- power: what this instrument can and cannot see --------------------------
+
+#: The lifts the power curve is reported at, in absolute pass-rate points. The
+#: grid is fixed so the answer is a table rather than a number someone chose
+#: after seeing it.
+POWER_GRID = (0.02, 0.03, 0.04, 0.05, 0.06, 0.08, 0.10, 0.12, 0.15, 0.20)
+
+
+def power_curve(
+    scores: Sequence[float],
+    k: int,
+    *,
+    trials: int = 200,
+    resamples: int = 1500,
+    seed: int = SEED,
+) -> Dict[str, object]:
+    """How large a true improvement must be before each rule can see it.
+
+    WHY THIS IS NOT OPTIONAL. A rule that cannot detect the effect you are
+    paying for is an experiment that will report "no win" whatever happens, and
+    the money is spent either way. Both rules in this file are simulated against
+    the baseline's OWN per-case scores, so the answer is about this held-out set
+    and not about a textbook one.
+
+    The simulation lifts every case's underlying rate by the same absolute
+    amount (capped at 1), redraws ``k`` Bernoulli attempts per case for both
+    arms, and asks each rule whether it fires. That is deliberately the most
+    favourable shape an improvement can take — a uniform lift — so the numbers
+    here are an UPPER bound on power, not an estimate of it.
+
+    Run it before the run, not after: a rule chosen once the outcome is visible
+    is not a rule.
+    """
+    rng = random.Random(seed)
+    base_point = sum(scores) / len(scores) if scores else 0.0
+    rows: List[Dict[str, object]] = []
+
+    def _boot_lo(diffs: List[float]) -> float:
+        m = len(diffs)
+        means = [sum(rng.choices(diffs, k=m)) / m for _ in range(resamples)]
+        means.sort()
+        return means[int(0.025 * resamples)]
+
+    for lift in POWER_GRID:
+        unpaired = 0
+        paired = 0
+        for _ in range(trials):
+            before: List[float] = []
+            after: List[float] = []
+            for s in scores:
+                p = min(1.0, s + lift)
+                before.append(sum(1 for _ in range(k) if rng.random() < s) / k)
+                after.append(sum(1 for _ in range(k) if rng.random() < p) / k)
+            if bootstrap_ci(after, resamples=resamples, seed=rng.randrange(1 << 30))["lo"] > base_point:
+                unpaired += 1
+            if _boot_lo([a - b for a, b in zip(after, before)]) > 0:
+                paired += 1
+        rows.append({
+            "lift": lift,
+            "unpaired_power": unpaired / trials,
+            "paired_power": paired / trials,
+        })
+    return {
+        "n_cases": len(scores),
+        "k": k,
+        "trials": trials,
+        "baseline_point": base_point,
+        "never_passes": sum(1 for s in scores if s == 0.0),
+        "always_passes": sum(1 for s in scores if s == 1.0),
+        "rows": rows,
+    }
+
+
+def minimum_detectable(curve: Dict[str, Any], rule: str, want: float = 0.8) -> Optional[float]:
+    """The smallest lift on the grid at which ``rule`` reaches ``want`` power."""
+    key = "%s_power" % rule
+    for row in curve["rows"]:  # type: ignore[index]
+        if float(row[key]) >= want:  # type: ignore[index]
+            return float(row["lift"])  # type: ignore[index]
+    return None

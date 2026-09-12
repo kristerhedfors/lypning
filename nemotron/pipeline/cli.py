@@ -934,6 +934,51 @@ def cmd_slices(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_power(args: argparse.Namespace) -> int:
+    """What this held-out set can see, before anything is spent on making it move.
+
+    A rule that cannot detect the effect being paid for reports "no win"
+    whatever happens, and the money goes either way. Run this BEFORE the run:
+    a rule chosen once the outcome is visible is not a rule.
+    """
+    run_dir = RUNS / args.run_id
+    attempts = scored_attempts(read_jsonl(run_dir / "attempts.jsonl"))
+    per: Dict[str, List[int]] = {}
+    for a in attempts:
+        c = per.setdefault(a["case_id"], [0, 0])
+        c[1] += 1
+        if a.get("passed"):
+            c[0] += 1
+    scores = [p / n for _, (p, n) in sorted(per.items())]
+    if not scores:
+        print("no scored attempts in %s" % args.run_id, file=sys.stderr)
+        return 1
+    k = max(n for _, n in per.values())
+    curve = stats.power_curve(scores, k, trials=args.trials)
+
+    print("power of the held-out set, from %s (%d cases, k=%d, %d simulated runs per row)"
+          % (args.run_id, curve["n_cases"], curve["k"], curve["trials"]))
+    print("  baseline point %.4f   never passes %d   always passes %d   movable %d"
+          % (curve["baseline_point"], curve["never_passes"], curve["always_passes"],
+             curve["n_cases"] - curve["never_passes"] - curve["always_passes"]))
+    print()
+    print("  %-10s %-24s %s" % ("true lift", "unpaired (the headline)", "paired (same cases)"))
+    for row in curve["rows"]:
+        print("  %+8.0fpp %18.0f%%      %18.0f%%"
+              % (100 * row["lift"], 100 * row["unpaired_power"], 100 * row["paired_power"]))
+    print()
+    for rule in ("unpaired", "paired"):
+        mde = stats.minimum_detectable(curve, rule)
+        print("  %-9s reaches 80%% power at %s"
+              % (rule, ("%+.0fpp" % (100 * mde)) if mde is not None else
+                 "no lift on this grid — it cannot see one"))
+    print()
+    print("  The lift is applied uniformly to every case, which is the most")
+    print("  favourable shape an improvement can take, so these are an UPPER")
+    print("  bound on power rather than an estimate of it.")
+    return 0
+
+
 def cmd_refusals(args: argparse.Namespace) -> int:
     """Rank what the engine still refuses by how much of the corpus it blocks.
 
@@ -1085,6 +1130,12 @@ def build_parser() -> argparse.ArgumentParser:
     sl.add_argument("run_id"); sl.add_argument("--fine", action="store_true",
                                                help="every refusal kind, not just the group")
     sl.set_defaults(fn=cmd_slices)
+
+    pw = sub.add_parser("power", help="what effect size this held-out set could detect")
+    pw.add_argument("run_id")
+    pw.add_argument("--trials", type=int, default=200,
+                    help="simulated runs per lift (default 200)")
+    pw.set_defaults(fn=cmd_power)
 
     rf = sub.add_parser("refusals", help="rank what the engine still refuses, by corpus weight")
     rf.add_argument("--engine", help="binary to probe (default: the widest built variant)")
