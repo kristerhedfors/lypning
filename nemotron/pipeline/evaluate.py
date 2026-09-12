@@ -117,8 +117,14 @@ UNDECIDED = "undecided"
 # "did this program compute the answer or carry it?". This is only the seam, and
 # it names the contract rather than the implementation: the first of these that
 # `sample` defines is asked, and anything else it answers is doubt.
+# `discriminate` comes FIRST and `looks_like_literal_output` last, which is the
+# order of evidence: the behavioural discriminator proves authorship by running
+# the program against a mutated input, the syntactic guard only reports that the
+# answer appears in the source. Integration caught them disagreeing by one
+# letter — the seam asked for names `sample` did not define and read words it did
+# not emit — so the discriminator was live, wired, and never once consulted.
 _ENTRY_POINTS = ("authorship_verdict", "grade_authorship", "judge_authorship",
-                 "looks_like_literal_output")
+                 "discriminate", "looks_like_literal_output")
 
 _VERDICT_WORDS = {
     "genuine": GENUINE, "computed": GENUINE, "ok": GENUINE, "pass": GENUINE,
@@ -126,6 +132,9 @@ _VERDICT_WORDS = {
     "recitation": NOT_GENUINE, "literal-output": NOT_GENUINE, "cheat": NOT_GENUINE,
     "undecided": UNDECIDED, "unknown": UNDECIDED, "cannot-tell": UNDECIDED,
     "unsure": UNDECIDED,
+    "computes": GENUINE,
+    "recites": NOT_GENUINE,
+    "undecidable": UNDECIDED,
 }
 
 
@@ -248,7 +257,11 @@ def score_verdict(case: Dict[str, Any], program: str, verdict: Verdict) -> Dict[
             return {"passed": True, "reason": "pass", "detail": "",
                     "failure_category": "", "authorship": UNDECIDED,
                     "authorship_detail": why[:300]}
-        return {"passed": True, "reason": "pass", "detail": "", "failure_category": ""}
+        # Recorded explicitly rather than left absent: "the discriminator looked
+        # and found nothing" and "nothing looked" are different claims, and an
+        # attempt that cannot tell them apart cannot be audited later.
+        return {"passed": True, "reason": "pass", "detail": "",
+                "failure_category": "", "authorship": GENUINE}
     # An engine mismatch is recorded like any other failed attempt and is
     # subtracted by reason in summarize_run. Unlike a harness error it is never
     # retried: the attempt completed, and only the engine is at fault.

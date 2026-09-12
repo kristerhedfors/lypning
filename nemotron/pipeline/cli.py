@@ -432,6 +432,12 @@ def cmd_sample(args: argparse.Namespace) -> int:
     print("rejected by reason:")
     for r, n in list(rep["rejected_by_reason"].items())[:8]:
         print("   %-18s %5d" % (r, n))
+    disc = rep.get("discrimination") or {}
+    if disc:
+        print("kept draws by discrimination:   %s"
+              % ", ".join("%s %d" % kv for kv in disc["kept_draws_by_verdict"].items()))
+        print("SFT rows on textual evidence alone (no input to perturb)   %d of %d"
+              % (disc["sft_rows_on_textual_evidence_only"], rep["sft_examples"]))
     print("\nyield by category:")
     for cat, e in list(rep["by_category"].items())[:12]:
         print("   %-26s %2d/%-2d  %5.0f%%" % (cat, e["solved"], e["cases"], 100 * e["yield"]))

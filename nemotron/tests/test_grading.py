@@ -17,7 +17,7 @@ from pipeline import evaluate as E
 from pipeline import sample as S
 from pipeline.acceptance import Verdict
 from pipeline.classify import ATTEMPT_CATEGORIES, classify, is_category, stratum
-from pipeline.evaluate import (GENUINE, UNDECIDED, judge_authorship, score_verdict,
+from pipeline.evaluate import (GENUINE, NOT_GENUINE, UNDECIDED, judge_authorship, score_verdict,
                                summarize_run)
 from pipeline.jsonio import read_jsonl, write_jsonl
 from pipeline.sandbox import RunResult
@@ -63,16 +63,38 @@ def _attempts(tmp_path, rows):
 
 
 def test_a_faithful_rewrite_is_not_a_cheat_just_because_it_quotes_its_input():
+    """The regression two reviewers reproduced, now closed at the source.
+
+    Held-out case ntx-ca1a768f3164 asks for textwrap.fill to be rewritten without
+    the import. Every line of the expected output is a substring of the input
+    string the prompt handed over, so the SYNTACTIC guard called this honest
+    reimplementation a cheat -- six false positives for every real catch, and it
+    made a frozen held-out case unpassable by a correct program.
+
+    This test originally pinned the workaround: the guard still fired and the
+    seam declined to let it decide the score. The behavioural discriminator no
+    longer fires at all, so the assertion moved from "we ignore the wrong answer"
+    to "the answer is right", which is what the test's name always claimed.
+    """
     case = _case("ntx-ca1a768f3164")
     want = case["test"]["expect_stdout"]
-    # The syntactic guard fires on this program -- every line of the expected
-    # output is a substring of the input the prompt handed over -- and that is
-    # exactly why its answer may not decide a score.
-    assert S.looks_like_literal_output(HONEST_REWRITE, want)
+    assert S.looks_like_literal_output(HONEST_REWRITE, want) == ""
     rec = score_verdict(case, HONEST_REWRITE, Verdict(True, "pass", "tier-1 on lypning"))
     assert rec["passed"] is True and rec["failure_category"] == ""
+    # UNDECIDED, not GENUINE: this case has no input, so the perturbation cannot
+    # run and nothing PROVED the program computed its answer. Doubt is the honest
+    # record, and it does not cost the attempt its pass.
     assert rec["authorship"] == UNDECIDED
-    assert "verbatim" in rec["authorship_detail"]
+
+
+def test_a_program_that_spells_the_answer_out_is_still_caught():
+    """The other half: closing the false positives may not open a false negative."""
+    case = _case("ntx-ca1a768f3164")
+    want = case["test"]["expect_stdout"]
+    cheat = "print(%r)" % want.rstrip("\n")
+    assert S.looks_like_literal_output(cheat, want) != ""
+    rec = score_verdict(case, cheat, Verdict(True, "pass", "tier-1 on lypning"))
+    assert rec["passed"] is False and rec["authorship"] == NOT_GENUINE
 
 
 @pytest.mark.skipif(__import__("pipeline.engines", fromlist=["x"]).engine_path("lypning") is None,
@@ -111,7 +133,9 @@ def test_a_clean_answer_carries_no_doubt(monkeypatch):
                         raising=False)
     rec = score_verdict({"prompt": "p", "test": {"expect_stdout": "x\n"}},
                         "print(6*7)", Verdict(True, "pass"))
-    assert rec["passed"] is True and "authorship" not in rec
+    # Recorded explicitly: "looked and found nothing" must be distinguishable
+    # from "nothing looked", or the attempt cannot be audited afterwards.
+    assert rec["passed"] is True and rec["authorship"] == GENUINE
 
 
 def test_a_yes_no_answer_is_doubt_and_never_a_verdict(monkeypatch):

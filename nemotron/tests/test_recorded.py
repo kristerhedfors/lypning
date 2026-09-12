@@ -124,6 +124,13 @@ RE_DERIVED = {
     "headroom-k16": 0.36019144144144144,      # +0.04pp: 3 engine-mismatch attempts
     "replay-check": 0.3585022522522523,      # +0.04pp: same 3
     "stock-nothinking": 0.35135135135135137,
+    # The corrected baseline. 35.1% -> 33.8%: one of the 26 passing held-out
+    # attempts (ntx-3238ce407be8) reproduced the expected bytes with
+    # print(repr('"a","b"\r\n')) and never computed them. The audit predicted
+    # 25/74 by hand; the behavioural discriminator found the same attempt on its
+    # own, and did NOT flag ntx-ca1a768f3164, the honest textwrap rewrite that
+    # the syntactic guard convicted.
+    "baseline-regraded": 0.33783783783783783,
 }
 
 

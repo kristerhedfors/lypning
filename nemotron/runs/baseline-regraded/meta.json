@@ -1,0 +1,15 @@
+{
+  "backend": {
+    "base_url": "replay:/tmp/comp-baseline.jsonl",
+    "model": "(generated elsewhere)"
+  },
+  "holdout_manifest_sha256": "80b2fc522202a0ece3b84b299791761c86dd07983596a46650f9bfcb733ce588",
+  "label": "baseline re-graded under the repaired harness",
+  "n_cases": 74,
+  "prompt_sha": "cbb7be44937a6b41",
+  "run_id": "baseline-regraded",
+  "sampling": {
+    "replayed": true
+  },
+  "started_at": "2026-09-12T07:34:02Z"
+}
