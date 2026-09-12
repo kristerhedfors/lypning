@@ -363,8 +363,7 @@ def power_curve(
         return means[int(0.025 * resamples)]
 
     for lift in POWER_GRID:
-        unpaired = 0
-        paired = 0
+        unpaired = boot = mcnemar = both = 0
         for _ in range(trials):
             before: List[float] = []
             after: List[float] = []
@@ -374,12 +373,23 @@ def power_curve(
                 after.append(sum(1 for _ in range(k) if rng.random() < p) / k)
             if bootstrap_ci(after, resamples=resamples, seed=rng.randrange(1 << 30))["lo"] > base_point:
                 unpaired += 1
-            if _boot_lo([a - b for a, b in zip(after, before)]) > 0:
-                paired += 1
+            # BOTH LEGS, because the pre-registered rule is the CONJUNCTION and
+            # simulating one of them answers a question nobody asked. Counted the
+            # way `paired_delta` counts: a case is discordant when its mean moved.
+            leg_boot = _boot_lo([a - b for a, b in zip(after, before)]) > 0
+            gained = sum(1 for a, b in zip(after, before) if a > b)
+            lost = sum(1 for a, b in zip(after, before) if a < b)
+            leg_mcnemar = _mcnemar(gained, lost) < 0.05
+            boot += leg_boot
+            mcnemar += leg_mcnemar
+            both += leg_boot and leg_mcnemar
         rows.append({
             "lift": lift,
             "unpaired_power": unpaired / trials,
-            "paired_power": paired / trials,
+            "bootstrap_power": boot / trials,
+            "mcnemar_power": mcnemar / trials,
+            # The name the caller reads for "the primary rule".
+            "paired_power": both / trials,
         })
     return {
         "n_cases": len(scores),
@@ -388,8 +398,24 @@ def power_curve(
         "baseline_point": base_point,
         "never_passes": sum(1 for s in scores if s == 0.0),
         "always_passes": sum(1 for s in scores if s == 1.0),
+        # THE DISCRETE FLOOR UNDER THE WHOLE RULE. Exact two-sided McNemar over
+        # b gained and c lost is 2*P(X <= min(b,c)) under Binomial(b+c, 1/2), so
+        # with NOTHING lost it is 2/2**b: p = 0.0625 at five cases and 0.03125
+        # at six. **A fine-tune that flips five cases and loses none cannot fire
+        # this rule at any effect size.** Reported beside the curve because a
+        # percentage-point MDE hides it — the rule is shape-dependent, and the
+        # shape that matters is how many CASES moved, not how far the mean did.
+        "min_gained_if_none_lost": _min_discordant(),
         "rows": rows,
     }
+
+
+def _min_discordant(alpha: float = 0.05, cap: int = 64) -> Optional[int]:
+    """Fewest gained cases that fire exact McNemar when nothing is lost."""
+    for b in range(1, cap + 1):
+        if _mcnemar(b, 0) < alpha:
+            return b
+    return None
 
 
 def minimum_detectable(curve: Dict[str, Any], rule: str, want: float = 0.8) -> Optional[float]:

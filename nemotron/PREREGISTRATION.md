@@ -96,15 +96,26 @@ must be exported before any sampling run.
 ## 3. The rules, fixed now
 
 Run `nt power qwen38-baseline-k16` — 74 cases, k=16, 34 never pass, 16 always
-pass, 24 movable:
+pass, 24 movable. **Corrected 2026-09-12, still before any adapter exists:** the
+curve first simulated only the bootstrap leg, so the headline was the power of
+half a rule the pre-registration defines as a conjunction. Both legs now:
 
-| true lift | unpaired (CI lower bound clears baseline point) | paired (same cases) |
-|---|---|---|
-| +2pp | 0% | 45% |
-| +4pp | 0% | 92% |
-| +8pp | 1% | 100% |
-| +12pp | 43% | 100% |
-| +15pp | 97% | 100% |
+| true lift | unpaired | bootstrap leg | McNemar leg | **PRIMARY (both)** |
+|---|---|---|---|---|
+| +2pp | 0% | 45% | 62% | 42% |
+| +4pp | 0% | 92% | 97% | **90%** |
+| +8pp | 1% | 100% | 100% | 100% |
+| +12pp | 43% | 100% | 100% | 100% |
+| +15pp | 97% | 100% | 100% | 100% |
+
+**AND A DISCRETE FLOOR THE PERCENTAGE HIDES.** Exact two-sided McNemar over `b`
+gained and `c` lost is `2/2**b` when nothing is lost: p = 0.0625 at five cases
+and 0.03125 at six. **A fine-tune that flips fewer than six cases and loses none
+cannot fire this rule at any effect size.** The +4pp above is the power of a
+uniform smear across many cases, which is the most favourable shape an
+improvement can take; a fine-tune that completely solves three previously
+hopeless cases is +4.3pp on this denominator and fires nothing. The rule asks
+how many CASES moved, not how far the mean did, and both numbers are reported.
 
 **The standing unpaired rule reaches 80% power only at +15pp.** Moving a 74-case
 mean that far means taking about eleven cases from never-passing to
@@ -126,6 +137,32 @@ spent either way.
   and routing UNSAFE must be 0 on the engine used for both arms, and
   `nt refusals --run <eval>` must report MISMATCH 0 over the fine-tuned model's
   own output. A pass-rate gain bought with a silent wrong answer is a loss.
+
+## 3b. The rule, run against the engine drift it was written to survive
+
+Recorded 2026-09-12 after re-grading the frozen baseline completions at the
+current engine — no new inference, and still before any adapter exists. This is
+the **null** for this experiment: the same model, the same completions, a newer
+engine. If the rule fired here it would fire on engine work alone.
+
+| denominator | before | after | paired delta | 95% CI | McNemar | rule fires |
+|---|---|---|---|---|---|---|
+| all 74 | 0.4037 | 0.4382 | +3.45pp | [+0.8, +6.6] | p = 0.0312 | **yes** |
+| **70 non-degenerate (PRIMARY)** | 0.4116 | 0.4286 | **+1.70pp** | [0.0000, +4.37] | **p = 0.25** | **no** |
+
+The primary denominator holds and the all-74 one does not, which is precisely
+what §2(b) was written for: the four degenerate cases carry more than half the
+apparent gain, and a model can pass three of them by echoing its input. Measured
+on those three, **11 of 23 newly-passing draws still contain the very construct
+the prompt asked the model to remove, and 4 draws are verbatim echoes** — the
+stock model is already exploiting the degeneracy, so this is not a hypothetical.
+
+Type-I, measured over 400 null trials on the re-graded rates: bootstrap leg 4.0%,
+McNemar leg 1.5%, conjunction ~1%. The conjunction is conservative, as intended.
+
+Two of the four degenerate cases share a byte-identical negative program — the 52
+rewrite cases hold only 51 distinct ones — so two of the six apparent gains are
+one program counted twice.
 
 ## 4. What would make a positive result a lie
 
