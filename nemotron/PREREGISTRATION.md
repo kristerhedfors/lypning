@@ -178,10 +178,35 @@ one program counted twice.
 
 ## 5. Spend
 
-Sampling and evaluation go through the HF router at the novita price for
+Hugging Face for everything, decided 2026-09-12: training on HF Jobs, weights on
+the Hub, evaluation inference on HF. `RUNBOOK.md` has the arithmetic; the whole
+run is ~$16.
+
+**SAMPLING** goes through the HF router at the novita price for
 `Qwen/Qwen3.8-27B` — $0.42/M in, $3.00/M out, read from `/v1/models` on
-2026-09-12. Training goes to HF Jobs under a platform-enforced `--timeout`.
-Every run records `max_spend_usd` in its `meta.json` and aborts on it.
+2026-09-12 — bounded by `--max-spend`, which needs `NTX_PRICE_IN` and
+`NTX_PRICE_OUT` exported or it is a no-op.
+
+**TRAINING AND EVALUATION** go to HF Jobs on **one `h200`** ($5.00/hr, 141 GB),
+under a platform-enforced `--timeout`. The checkpoint is 55.6 GB and rank-16 LoRA
+adds ~1.5 GB of optimizer state, so it fits on a single card with room to spare
+and there is no sharding — `distributed: fsdp2` comes out, and with it the
+largest class of config error in the run.
+
+**AND THE ARMS COME OUT OF ONE vLLM INSTANCE.** This amends §2(a). The baseline
+re-graded above was GENERATED on novita's serving stack through the router; a
+tuned arm served from our own vLLM would differ in kernels, sampling and
+tokenizer handling, so a delta between them would be part weights and part
+stack with nothing to separate the two. The evaluation is therefore one Job, one
+vLLM process, two arms — base `Qwen/Qwen3.8-27B` with `--enable-lora`, the
+held-out split generated twice, once without the adapter and once with it, same
+seed and same decode budget.
+
+So `qwen38-regrade-20260912` is **not** the reference the fine-tune is measured
+against. It keeps its job — it is the engine-drift null test in §3b, where both
+arms genuinely are one stack and it is the right instrument. The fine-tune's
+reference is the no-adapter arm of the eval Job, which costs nothing extra
+because it is the same Job.
 
 **The experiment is abandoned, not rescued, if:** the re-graded baseline leaves
 fewer than 15 movable cases; verified on-policy SFT yields fewer than 150
