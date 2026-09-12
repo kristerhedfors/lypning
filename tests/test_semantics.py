@@ -195,6 +195,165 @@ CASES = [
         "for s in ['\\u65e5\\u672c', 'abc', 'ABC', '\\u65e5\\u672ca', '\\u01c5', '\\u01c5abc', '123']:\n"
         "    print(s.islower(), s.isupper(), s.isalpha())\n",
     ),
+    (
+        # A `try` block with no `except` and no `finally` is a SyntaxError in
+        # CPython's grammar, and so is one with an `else` but no `except`. This
+        # parser accepted both, ran the body, and exited 0 — the quiet half of a
+        # wrong answer, because a program that prints nothing and exits 0 looks
+        # exactly like one that worked.
+        #
+        # No human types a handler-less `try`, which is why no corpus program
+        # and no fuzzer seed had ever produced one. A language MODEL types one
+        # every time the token cap cuts it off inside the block, and that is
+        # where this came from: a completion in runs/qwen38-baseline-k16 that
+        # stopped mid-`try`, which CPython refused to compile and lypning ran.
+        "a-try-with-no-handler-is-a-syntax-error",
+        "try:\n    print('body')",
+    ),
+    (
+        "a-try-with-an-else-and-no-except-is-a-syntax-error",
+        "try:\n    print('body')\nelse:\n    print('else')",
+    ),
+    (
+        # The shapes next door, which must go on working: the refusal above is
+        # narrowed to the two CPython's grammar actually rejects.
+        "the-try-shapes-cpython-does-accept-still-run",
+        "try:\n    x = 1 // 0\nexcept ZeroDivisionError:\n    print('caught')\n"
+        "try:\n    print('a')\nfinally:\n    print('b')\n"
+        "try:\n    print('c')\nexcept ValueError:\n    print('no')\nelse:\n    print('d')\n"
+        "try:\n    print('e')\nexcept ValueError:\n    print('no')\nfinally:\n    print('f')",
+    ),
+    (
+        # `type(e).__name__` inside an `except` is the commonest thing anyone
+        # writes about an error they just caught, and it refused for every
+        # exception class: `type()` answered from nine hardcoded arms and an
+        # exception was in none of them. It answers from `builtins::class_name`
+        # now — the closed set of every class this engine can name — so the
+        # nine became every class, including all twenty-four exceptions.
+        #
+        # Ranked first among the `type` rows by the census of what a model
+        # actually writes: 30 of the 1,173 programs in
+        # `nemotron/runs/qwen38-baseline-k16` refused here.
+        "type-of-an-exception-names-its-class",
+        "cases = [ValueError('v'), TypeError('t'), KeyError('k'), IndexError('i'),\n"
+        "         ZeroDivisionError('z'), AttributeError('a'), RuntimeError('r'),\n"
+        "         OSError('o'), FileNotFoundError('f'), StopIteration('s'),\n"
+        "         AssertionError('x'), NameError('n'), OverflowError('w')]\n"
+        "for e in cases:\n"
+        "    print(type(e).__name__, type(e) is type(e), repr(type(e)))\n"
+        "try:\n"
+        "    1 / 0\n"
+        "except Exception as e:\n"
+        "    print('caught', type(e).__name__)\n"
+        "try:\n"
+        "    {}['k']\n"
+        "except Exception as e:\n"
+        "    print('caught', type(e).__name__, type(e) is KeyError)\n"
+        "try:\n"
+        "    int('z')\n"
+        "except Exception as e:\n"
+        "    print('%s: %s' % (type(e).__name__, e))",
+    ),
+    (
+        # The other half of the same change: `json.JSONDecodeError` stopped
+        # being spelled `ValueError`. One `Value::Builtin` stood for both on the
+        # reasoning that `isinstance` and `except` cannot tell them apart —
+        # true, and not the whole surface. `__name__` and `is` can, and both
+        # answered for the wrong class at exit 0.
+        "the-json-error-is-its-own-class-not-value-error",
+        "import json\n"
+        "print(json.JSONDecodeError.__name__, ValueError.__name__)\n"
+        "print(ValueError is json.JSONDecodeError, json.JSONDecodeError is ValueError)\n"
+        "print(repr(ValueError), repr(json.JSONDecodeError))\n"
+        "try:\n"
+        "    json.loads('{bad')\n"
+        "except ValueError:\n"
+        "    print('a ValueError catches it')\n"
+        "try:\n"
+        "    json.loads('{bad')\n"
+        "except json.JSONDecodeError:\n"
+        "    print('and so does its own name')",
+    ),
+    (
+        # `IOError is EnvironmentError is OSError` — one class under three
+        # names — so `__name__` is `OSError` for all of them. It answered
+        # `IOError`, while `repr` next door already said `<class 'OSError'>`.
+        "the-oserror-aliases-all-name-one-class",
+        "print(IOError.__name__, OSError.__name__, repr(IOError), IOError is OSError)",
+    ),
+    (
+        # `repr(float)` wrote a decimal that does not read back as the value it
+        # was printing. `shortest_digits` asks Rust's `{:e}` for the digit COUNT
+        # and then re-renders at that width with `{:.*e}`, because a genuine TIE
+        # — two spellings that both round-trip — is resolved to even by CPython
+        # and away from zero by Rust. That part is right. What was missing is
+        # that rounding the exact decimal expansion to the same width is a
+        # different operation from choosing between two round-tripping
+        # candidates, and where they differ it lands on neither:
+        #
+        #     2**-24 is exactly 5.9604644775390625e-08
+        #       shortest round-trip  5.960464477539063e-08
+        #       `{:.15e}` half-even  5.960464477539062e-08  — a DIFFERENT double
+        #
+        # 46 of 4,239 structured doubles and 0 of 40,000 uniform random ones,
+        # which is why no fuzz seed had found it: the defect lives where the
+        # mantissa is short. Found by an adversarial re-check of a change that
+        # had declared this function exonerated.
+        #
+        # Every value here is chosen so CPython and the engine must agree on the
+        # SPELLING, and the round-trip is asserted inside the program as well,
+        # so a future divergence says which of the two it is.
+        "float-repr-round-trips-and-does-not-round-half-even-off-the-value",
+        "vals = [2.0 ** -24, 2.0 ** -25, 7.120236347223045e-307,\n"
+        "        7.291122019556398e-304, 5.641232424577593e-278,\n"
+        "        6.290184345309701e-235, 5.225680706521042e-200,\n"
+        "        1.0 / 2 ** 24, 1e16, 1e-300, 0.1, 1.0 / 3]\n"
+        "for v in vals:\n"
+        "    print(repr(v), float(repr(v)) == v)\n"
+        "# the tie the re-render exists for: both spellings round-trip and\n"
+        "# CPython picks the even one.\n"
+        "print((1 / -143.0) * 1e17)",
+    ),
+    (
+        # Three answers that were wrong at exit 0 in code landed EARLIER TODAY,
+        # found by an adversarial gate agent re-checking it after it shipped.
+        #
+        # `-1` is all sign bits, so sign-extending it into zero bytes loses
+        # nothing and CPython answers `b''`; this raised OverflowError. It is
+        # the only value in -3..3, +-256, +-257, 255 and i64::MIN that breaks.
+        #
+        # And CPython validates `byteorder` BEFORE the length, so a negative
+        # length with a bad byteorder is the byteorder's sentence.
+        "to-bytes-edges-agree-with-cpython",
+        "for n in (0, 1, 2, 8):\n"
+        "    for v in (-3, -2, -1, 0, 1, 2, 3, -256, 255):\n"
+        "        for sg in (True, False):\n"
+        "            for order in ('big', 'little'):\n"
+        "                try:\n"
+        "                    print(n, v, sg, order, (v).to_bytes(n, order, signed=sg))\n"
+        "                except (OverflowError, ValueError) as e:\n"
+        "                    print(n, v, sg, order, type(e).__name__, e)\n"
+        "try:\n"
+        "    (5).to_bytes(-1, 'middle')\n"
+        "except ValueError as e:\n"
+        "    print('order checked first:', e)",
+    ),
+    (
+        # The unbound calls that must go on working, next to the ones that must
+        # not: the descriptor check is narrow enough to keep every shape the
+        # engine serves. `bool` is an `int` and a `Counter` is a `dict`, which
+        # are the only two subclass relations this engine models.
+        "an-unbound-method-still-works-where-the-descriptor-applies",
+        "print(str.upper('ab'), str.strip('  x  '), str.split('a b'))\n"
+        "print(int.bit_length(5), int.bit_length(True), float.is_integer(2.0))\n"
+        "print(float.as_integer_ratio(0.75), int.as_integer_ratio(7))\n"
+        "print(list.count([1, 2, 1], 1), tuple.count((1, 1, 2), 1))\n"
+        "print(bytes.upper(b'a'), dict.get({'a': 1}, 'a'))\n"
+        "print(int.to_bytes(5, 2, 'big'), int.from_bytes(b'\\x01\\x00', 'big'))\n"
+        "x = [3, 1]\n"
+        "list.sort(x)\n"
+        "print(x)",
+    ),
 ]
 
 
@@ -466,6 +625,43 @@ def test_identity_still_answers_where_it_is_a_fact_and_not_an_interning_question
     assert out("x = 'ab'\nprint(x is x)") == "True"
     assert out("x = (1, 2)\nprint(x is x)") == "True"
     assert out("print(1 is 'a', 1000 is 1001)") == "False False"
+
+
+def test_is_over_a_nan_refuses_rather_than_answering_false(lypning_bin):
+    """The value the interning guard above cannot see, because it is the one
+    value not equal to itself.
+
+    `identity` refuses `is` between two EQUAL immutables, because CPython's
+    answer there is interning's. A NaN never reaches that arm: `eq` says false,
+    so the guard did not fire and the fall-through answered False — while
+    CPython answers True for `n is n`, which is one object however unequal it is
+    to itself. A float carries no `Rc`, so nothing here can tell one NaN object
+    from two, and refusing is the only answer that is not a guess.
+
+    It reached the engine the way these always do — a model routing AROUND the
+    existing refusal. `n in l` over a NaN was already `nan-identity`; the
+    completion in runs/qwen38-baseline-k16 spelled the identical question as
+    `any(x is n for x in l)` and went straight through. A refusal that can be
+    reworded into a wrong answer is not a guard.
+    """
+    for program in (
+        'n = float("nan")\nprint(n is n)',
+        'n = float("nan")\nprint(n is not n)',
+        'n = float("nan")\nm = float("nan")\nprint(n is m)',
+        'n = float("nan")\nl = [n]\nprint(any(x is n for x in l))',
+        'n = float("nan")\nl = [n]\nprint(l[0] is n)',
+    ):
+        r = engines.run(engines.LYPNING, program, binary=lypning_bin)
+        assert r.returncode == UNSUPPORTED_EXIT, "answered %r instead of refusing" % r.stdout
+        assert r.stdout == "", "output escaped before the refusal"
+        assert "nan-identity" in r.stderr, r.stderr
+
+    # ...and the float shapes next door still answer, because a refusal is a
+    # spawn and this one is narrowed to the NaN.
+    r = engines.run(engines.LYPNING, 'print(1.5 is None, float("inf") is None)',
+                    binary=lypning_bin)
+    assert not r.refused, r.stderr
+    assert r.stdout.strip() == "False False"
 
 
 #: Every method name `str` and `bytes` both implement. All five drifts a grid

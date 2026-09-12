@@ -1,0 +1,14 @@
+{
+  "aborted": null,
+  "done": 74,
+  "elapsed_s": 61.7,
+  "eta_s": 0.0,
+  "label": "stock, thinking OFF (reference arm, not the baseline)",
+  "run_id": "stock-nothinking",
+  "spend_gpu_usd": 0.0428,
+  "spend_tokens_usd": 0.0,
+  "spend_usd": 0.0428,
+  "state": "done",
+  "total": 74,
+  "updated_at": "2026-09-11T10:34:10Z"
+}

@@ -63,10 +63,21 @@ pub mod io;
 pub mod iter;
 pub mod json;
 pub mod lex;
+/// `math` — the exactly-defined subset, in EVERY variant, because nothing in it
+/// is a capability: it is IEEE-754 and integer arithmetic, and putting it in the
+/// cheapest binary is what keeps a `math.floor` program out of a second spawn.
+/// The transcendentals are refused there and not merely absent; `math.rs` says
+/// why they must stay that way.
+pub mod math;
 pub mod methods;
 pub mod modules;
 pub mod ops;
 pub mod parse;
+/// `x ** y` on two floats, bit-for-bit as the reference interpreter's libm
+/// computes it. Not a capability and not gated: it is the arithmetic itself,
+/// and `f64::powf` disagreeing with CPython in the last ulp is a MISMATCH
+/// rather than a refusal.
+pub mod pow;
 /// `pathlib.Path` — the `cap-pathlib` capability. Absent from the smaller
 /// variant entirely, not merely unreachable in it.
 #[cfg(feature = "cap-pathlib")]

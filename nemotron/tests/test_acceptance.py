@@ -80,3 +80,14 @@ def test_the_checker_sees_the_program_files_and_nothing_of_the_harness():
          "checker": "import os;assert_(sorted(os.listdir('.'))==['out.txt'], "
                     "sorted(os.listdir('.')))"}
     assert run_test(t, "open('out.txt','w').write('x')").passed
+
+
+def test_a_program_cannot_shadow_a_stdlib_module_the_checker_imports():
+    # The checker runs in the program's working directory, so anything that put
+    # that directory on the checker's import path -- a PYTHONPATH pointed at it,
+    # say -- would let a program named `json.py` decide its own verdict.
+    prog = "open('json.py','w').write('raise SystemExit(3)\\n')\nprint('done')\n"
+    t = {"kind": "script",
+         "checker": "assert_(stdout.strip()=='done')\n"
+                    "assert_(os.path.exists('json.py'))\n"}
+    assert run_test(t, prog).passed

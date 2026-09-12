@@ -1,0 +1,1 @@
+{"key":"py-873a6a37de0d","id":"py-873a6a37de0d","program":"import hashlib;print(hashlib.sha256(open('work/data.csv','rb').read()).hexdigest())","argv_tail":[],"source":"shim","session":"ses_f6b5536a1ffeubFgqz5HkrIIBV","first_seen":"2026-09-12T08:11:33.691Z","count":2,"stdin_sample":null}

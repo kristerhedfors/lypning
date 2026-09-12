@@ -1,0 +1,27 @@
+{
+  "backend": {
+    "base_url": "https://ebro2v0fa9zgvjs9.us-east-1.aws.endpoints.huggingface.cloud/v1",
+    "model": "nemotron"
+  },
+  "holdout_manifest_sha256": "80b2fc522202a0ece3b84b299791761c86dd07983596a46650f9bfcb733ce588",
+  "label": "held-out pass@16, thinking off",
+  "max_spend_usd": 15.0,
+  "n_attempts_planned": 1184,
+  "n_cases": 74,
+  "pricing": {
+    "gpu_per_hour": 2.5,
+    "in_per_m": 0.0,
+    "out_per_m": 0.0
+  },
+  "prompt_sha": "cbb7be44937a6b41",
+  "run_id": "headroom-k16",
+  "sampling": {
+    "enable_thinking": false,
+    "max_tokens": 2048,
+    "samples": 16,
+    "seed": 1234,
+    "temperature": 1.0,
+    "top_p": 0.95
+  },
+  "started_at": "2026-09-11T11:22:21Z"
+}

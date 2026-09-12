@@ -445,12 +445,47 @@ CASES = [
     ("pct-c-out-of-range-overflows", "print('%c' % -1)"),
     ("format-c-out-of-range-overflows", "print(format(1114112, 'c'))"),
     ("format-c-width-right-aligns", "print(repr(format(65, '5c')), repr(format(65, '<5c')))"),
-    # A precision on an integer conversion is minimum DIGITS. lypning refuses the
-    # cases where that adds digits (see the ledger) and must keep answering the
-    # ones where it does not — deciding that needs the VALUE, so these pin the
-    # boundary rather than the refusal.
+    # A precision on an integer conversion is minimum DIGITS, and it was refused
+    # when it actually added any. The three fills land in three different slots
+    # and CPython orders them precision, `0` flag, width — so the sign is not
+    # one of the minimum digits (`'%.2d' % -5` is `'-05'`), the `0` flag widens
+    # the same run of zeros rather than adding a second one (`'%05.7d' % -5` is
+    # `'-0000005'`, seven digits and not five), and `#` prefixes inside the sign
+    # (`'%#08.3x' % -5` is `'-0x00005'`).
+    ("pct-int-precision-pads", "print(repr('%.2d' % 5), repr('%.2d' % -5), repr('%.7d' % 0))"),
+    ("pct-int-precision-radix", "print(repr('%.3x' % 5), repr('%.3X' % 255), repr('%.3o' % -5))"),
+    ("pct-int-precision-alt", "print(repr('%#.3x' % -5), repr('%#08.3x' % -5), repr('%#.5o' % 5))"),
+    ("pct-int-precision-width", "print(repr('%8.3x' % -5), repr('%-8.3x' % -5), repr('%05.2d' % -5))"),
+    ("pct-int-precision-zero-flag", "print(repr('%05.7d' % -5), repr('%08.3d' % 123), repr('%+08.3d' % 5))"),
+    ("pct-int-precision-sign", "print(repr('%+.2d' % 5), repr('% .2d' % 5), repr('%+.2d' % -5))"),
+    ("pct-int-precision-bool", "print(repr('%.3d' % True), repr('%.3d' % False))"),
+    ("pct-int-precision-i64-edge", "print(repr('%.2d' % (-9223372036854775807 - 1)), repr('%.25d' % 9223372036854775807))"),
+    # …and the ones where it adds nothing, which took a different path and must
+    # keep answering: deciding between them needs the VALUE.
     ("pct-int-precision-already-satisfied", "print(repr('%.2d' % 42), repr('%.2d' % -42), repr('%.2x' % 255))"),
-    ("pct-int-precision-zero", "print(repr('%.0d' % 1), repr('%.d' % 1))"),
+    ("pct-int-precision-zero", "print(repr('%.0d' % 1), repr('%.d' % 1), repr('%.0d' % 0))"),
+    # An integer presentation type on a value that is not an integer is a
+    # ValueError in CPython, and `format()` and `%` DISAGREE about it: the
+    # operator truncates (`'%d' % 2.7` is `'2'`) where the mini-language
+    # rejects. Raising the ValueError is what these pin; the `%` side still
+    # refuses, which `test_refuses_rather_than_answering` cannot pin because
+    # CPython answers it. The MESSAGE is the assertion, so each case catches and
+    # prints it: `CASES` compares stdout and the exit code, and two ValueErrors
+    # with different sentences share both. The `except ValueError` clause is
+    # what pins the TYPE — a different one would not be caught, and the exit
+    # code would say so.
+    ("format-int-code-on-float",
+     "try:\n    format(2.0, 'd')\nexcept ValueError as e:\n    print(e)"),
+    ("format-int-code-on-float-braces",
+     "try:\n    '{:d}'.format(2.0)\nexcept ValueError as e:\n    print(e)"),
+    ("format-int-code-on-float-radix",
+     "for c in 'xXob':\n    try:\n        format(-2.5, c)\n    except ValueError as e:\n        print(c, e)"),
+    ("format-int-code-on-float-precision-first",
+     "try:\n    format(0.0, '.2d')\nexcept ValueError as e:\n    print(e)"),
+    ("format-int-code-on-str",
+     "try:\n    format('ab', 'd')\nexcept ValueError as e:\n    print(e)"),
+    ("format-int-code-on-float-fstring",
+     "v = 2.0\ntry:\n    f'{v:08d}'\nexcept ValueError as e:\n    print(e)"),
     ("pct-precision-on-c-is-ignored", "print(repr('%.2c' % 65))"),
     ("pct-precision-on-str-truncates", "print(repr('%.2s' % 'abc'), repr('%5.2s' % 'abc'))"),
     # `count`/`find`/`rfind`/`index`/`rindex` take a byte-scan fast path for a
@@ -573,7 +608,13 @@ CASES = [
     ("keyerror-str-quotes", 'print(KeyError("f"), repr(KeyError("f")))'),
     ("keyerror-int-key", "print(str(KeyError(1)), repr(KeyError(1)))"),
     ("keyerror-from-lookup", 'try:\n    {}["k"]\nexcept KeyError as e:\n    print(str(e), repr(e))'),
-    ("keyerror-empty", "print(repr(KeyError()), repr(ValueError()))"),
+    # `KeyError()` and `ValueError()` were pinned here as answers until
+    # 2026-09-12 and REFUSE now, deliberately. `Value::Exc` is a class name and
+    # one `Rc<str>`, which spells the no-argument form exactly as it spells
+    # `ValueError("")` — so `ValueError().args` answered `('',)` where CPython
+    # says `()`. One shape, two meanings; neither may answer. The case moves to
+    # the refusal side rather than being deleted, because what it pins is still
+    # worth pinning: the shape must not drift back into answering.
     ("other-exceptions-unquoted", 'print(str(ValueError("v")), repr(ValueError("v")))'),
     # A bare `raise` in a handler re-raises what that handler caught, and a
     # nested try/except inside the handler must not lose it.
@@ -756,7 +797,89 @@ REFUSES = [
     # AttributeError is exit 1 — the program's own — so a handler that inspects
     # the context died here instead of being answered one spawn later.
     ("exception-context", 'try:\n    raise ValueError("v")\nexcept ValueError as e:\n    print(e.__context__)'),
+    # THE `args` TUPLE, which the same flat `(kind, message)` pair cannot hold.
+    # CPython's exception keeps the objects it was constructed from, and three
+    # things read them back: `e.args`, `repr(e)` (which reprs each one) and
+    # `str(e)` (empty for none, `str(arg)` for one, the tuple's repr for more).
+    # Exactly one string survives that round trip through a message, so every
+    # other shape refuses at construction — after answering nine wrong answers
+    # at exit 0, none of them in the corpus and all of them found in the 1,173
+    # programs of `nemotron/runs/qwen38-baseline-k16`.
+    ("exc-no-args", "print(ValueError().args)"),
+    ("exc-no-args-repr", "print(repr(KeyError()), repr(ValueError()))"),
+    ("exc-int-arg", "print(repr(ValueError(42)))"),
+    ("exc-int-arg-args", "print(ValueError(42).args)"),
+    ("exc-two-args", 'print(ValueError("a", "b").args)'),
+    ("exc-two-args-str", 'print(str(ValueError("a", "b")))'),
+    # `OSError(2, "x")` is a `FileNotFoundError` in CPython — the errno picks a
+    # SUBCLASS — so this is a different object, not a different rendering.
+    ("oserror-errno-pair", 'print(repr(OSError(2, "x")))'),
+    ("oserror-errno-one", "print(repr(OSError(2)))"),
+    # `KeyError` stores `repr(key)` so that `str(e)` can be `"'k'"`; the key
+    # itself is therefore not recoverable and only `args` refuses. `str` and
+    # `repr` of the same value still answer — see `keyerror-str-quotes` above.
+    ("keyerror-args", 'print(KeyError("k").args)'),
 ]
+
+
+#: Programs CPython does NOT answer either — so they cannot go in `REFUSES`,
+#: whose contract is "lypning must refuse where CPython answers". What these pin
+#: is the OTHER half of invariant 2: whatever lypning does with one, it leaves
+#: by the refusal contract — exit 90, one line on stderr, nothing on stdout —
+#: and never by a wrong answer and never by an abort.
+#:
+#: Every one of them shipped in this session and was found by an adversarial
+#: re-check AFTER it shipped, not by the grids that came with it.
+NO_ANSWER_EITHER = [
+    # A `%` width or precision past this runtime's allocation ceiling. CPython
+    # caps both at INT_MAX and says "precision too big"; below that it churns
+    # through gigabytes or raises MemoryError. Answering built a two-gigabyte
+    # string at exit 0, and one digit further ABORTED the process — exit 134,
+    # "memory allocation of 9223372036854775807 bytes failed", which is not the
+    # exit-90 contract and reaches a caller as an unexplained death.
+    ("pct-precision-too-big", "print('%.2147483648d' % 5)"),
+    ("pct-precision-at-int-max", "print('%.2147483647d' % 5)"),
+    ("pct-precision-aborts", "print('%.9223372036854775807d' % 5)"),
+    ("pct-precision-usize-max", "print('%.18446744073709551615d' % 5)"),
+    ("pct-width-too-big", "print('%18446744073709551615.3d' % 5)"),
+    # An unbound method whose descriptor does not apply to the receiver.
+    # `T.m(x)` is a TypeError in CPython when `x` is not a `T`; this dispatched
+    # on the shifted VALUE and ran the other type's implementation, which was
+    # invisible until `as_integer_ratio` became the first name on two types.
+    ("descriptor-int-on-float", "print(int.as_integer_ratio(1.5))"),
+    ("descriptor-float-on-int", "print(float.as_integer_ratio(5))"),
+    ("descriptor-bool-on-float", "print(bool.as_integer_ratio(2.5))"),
+    ("descriptor-list-on-tuple", "print(list.count((1, 2, 1), 1))"),
+    ("descriptor-str-on-bytes", 'print(str.upper(b"a"))'),
+    # A non-str byteorder is a TypeError in CPython and was a ValueError here —
+    # a different CLASS, so `except ValueError` caught it here and not there.
+    ("to-bytes-byteorder-type", "print((5).to_bytes(-1, 2))"),
+]
+
+
+@needs_engine
+@pytest.mark.parametrize("name,program", NO_ANSWER_EITHER,
+                         ids=[c[0] for c in NO_ANSWER_EITHER])
+def test_a_program_cpython_rejects_leaves_by_the_contract_not_by_an_abort(
+    name: str, program: str,
+) -> None:
+    """Exit 90, one line, nothing on stdout — or CPython's own exit 1.
+
+    What is forbidden is the third thing. `'%.9223372036854775807d' % 5` exited
+    **134** with `memory allocation of 9223372036854775807 bytes failed` on
+    stderr: not a refusal, not the program's own error, and a caller sees an
+    unexplained death. One digit fewer and it ANSWERED, at exit 0, having built
+    a two-gigabyte string CPython refuses to build.
+    """
+    got = engines.run(engines.LYPNING, program, timeout=60)
+    assert got.returncode in (90, 1), (
+        "%s left by exit %d — the contract is 90 (a refusal) or 1 (the "
+        "program's own error), never an abort and never an answer. stdout %r"
+        % (name, got.returncode, got.stdout[:200])
+    )
+    if got.returncode == 90:
+        assert got.refused, "%s: exit 90 without the contract line: %r" % (name, got.stderr[:200])
+        assert got.stdout == "", "%s wrote %r before refusing" % (name, got.stdout[:200])
 
 
 @needs_engine

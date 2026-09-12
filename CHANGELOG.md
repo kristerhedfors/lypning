@@ -20,6 +20,294 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-12** — Four defects shipped earlier the same day, and the float `repr` that was wrong before any of them (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **`repr(float)` wrote a decimal that does not read back as the value.**
+  `shortest_digits` asks Rust's `{:e}` for a digit COUNT and re-renders at that
+  width with `{:.*e}`, because a genuine TIE — two spellings that both
+  round-trip — is broken to even by CPython and away from zero by Rust. That
+  part is right. Rounding the exact decimal expansion to the same width is a
+  DIFFERENT operation from choosing between two round-tripping candidates, and
+  where they differ it lands on neither: `2**-24` is exactly
+  `5.9604644775390625e-08`, whose shortest round-trip is `…063e-08` and whose
+  half-even render at 16 digits is `…062e-08`, a different double.
+  **46 of 4,239 structured doubles, 0 of ~40,000 uniform random ones** — the
+  defect lives where the mantissa is short, which is why no fuzz seed had
+  reached it. The re-render is kept only when it parses back to the same bits
+  now; 0 disagreements in 118,290, against 123 on the engine this morning.
+  Pre-existing, and asserted *exonerated* by the change that fixed `**`.
+- **A `%` precision or width past the allocation ceiling answered, then
+  aborted.** `'%.2147483648d' % 5` built a two-gigabyte string and printed it at
+  exit 0 where CPython raises `ValueError: precision too big`; one digit further
+  the process died with `memory allocation of 9223372036854775807 bytes failed`,
+  **exit 134** — not the exit-90 contract, and an unexplained death to a caller.
+  The whole range `[INT_MAX + 1, usize::MAX]` was unguarded. Both fields refuse
+  past the ceiling now.
+- **An unbound method ran the wrong type's implementation.** `T.m(x)` is a
+  TypeError in CPython when `x` is not a `T`; this dispatched on the shifted
+  VALUE, so `int.as_integer_ratio(1.5)` answered `(3, 2)`. Harmless while no
+  name lived on two types — `as_integer_ratio` is the first — and the same hole
+  the file already documents for `dict.update` on a Counter, reached by a second
+  door. The descriptor check closes two PRE-EXISTING instances as well:
+  `list.count((1,2,1), 1)` and `str.upper(b'a')`.
+- **`(-1).to_bytes(0, 'big', signed=True)` is `b''`**, not an OverflowError: -1
+  is all sign bits and extending it into zero bytes loses nothing. The only
+  value in −3..3, ±256, ±257, 255 and `i64::MIN` that broke. And CPython checks
+  `byteorder` BEFORE the length, so a negative length with a bad byteorder is
+  the byteorder's sentence — and with a non-str byteorder a TypeError, a
+  different CLASS, which `except ValueError` caught here and not there.
+- **How they were found, which is the part worth keeping.** A verification stage
+  re-checked each landed mechanism adversarially and rejected three of four. The
+  grids that shipped with them were large and clean — 304,722 `%` cells, 326
+  numeric-method cells — and every case in them was one a person would write.
+  Each defect is at an edge the author had explicitly bounded and dismissed.
+- Measured: conformance MATCH 1571, MISMATCH 0, UNSAFE 0. On-policy 509 of
+  1,173 (43.4%), MISMATCH 0. Bytes unchanged: 1,130,704 / 9 blocks and
+  1,310,928 / 11. pytest: the same 57 as the session baseline.
+
+**2026-09-12** — Six numeric methods: `int.bit_length`, `int.to_bytes`, `int.from_bytes`, `int.as_integer_ratio`, `float.as_integer_ratio`, `float.is_integer`
+
+- **`int` and `float` had no method table at all**, so every one of those names
+  was `unsupported: int-method` / `float-method` — a refusal and a CPython
+  spawn. `methods::INT_METHODS` and `FLOAT_METHODS` are the two new tables, read
+  by the same `find_sorted` every other type uses and probed by
+  `route::known_method`, which is the half that makes the walk route the
+  programs instead of blocking them.
+- **Chosen because every one of them is exact.** A bit count, two base-256
+  conversions and a rational read out of the mantissa: nothing here rounds, so
+  there is no input where a naive version quietly differs from CPython. That
+  rules out the neighbours — `float.hex` and `float.fromhex` stay refusals.
+- **`int.as_integer_ratio` is here because `float`'s is.** `route::known_method`
+  is a union over probe types and cannot see a receiver, so serving the float
+  spelling admits the int spelling to the walk too; leaving it missing would
+  have moved `(1).as_integer_ratio()` from a blocker decided before the program
+  starts to a refusal reached at runtime, past a committed barrier (#51). It is
+  `(n, 1)` at every width, so answering closes the hole for four lines.
+  `int.bit_count()` (3.10) and `int.is_integer()` (3.12) still lose their static
+  block for the same reason, and still refuse: a version-grown method answered
+  here would be a wrong answer on an older reference interpreter.
+- **A result past 64 bits is the existing `bigint` refusal, never a wrap.**
+  `int.from_bytes` of nine bytes, `(1e300).as_integer_ratio()`'s numerator and
+  `(5e-324)`'s denominator all refuse; the core has no wide integer, so the
+  refusal is what routes the `from_bytes` half to `lypning-l`, which answers it.
+- **Three shapes refuse rather than answer, each for a stated reason.** The
+  `byteorder`/`length` DEFAULTS are CPython 3.11's and this engine is graded
+  against whatever CPython the caller has, so a call that leans on one is exit
+  90. `bool.from_bytes` is a classmethod whose result is a `bool`, not an
+  `int`.
+- **Three grid tables used these names as the stand-in for "a method nothing on
+  the spectrum has"** and are re-pointed at `bit_count`, `conjugate`,
+  `numerator` and `denominator`, which are still outside `known_method`:
+  `test_bigint_grid.py`'s `REFUSED`, `test_hashlib_grid.py`'s `HIDDEN_BLOCKER`,
+  `test_base64_grid.py`'s `ROUTED_PAST_LYPNING_L`. The mechanisms they pin are
+  unchanged; the examples stopped being examples.
+- 326 shapes — zero, negative, `i64::MIN`, the empty `bytes`, `-0.0`, NaN, both
+  infinities, the signed/unsigned and big/little cross-product — diffed against
+  CPython 3.11.15 on both binaries: **0 mismatches**, 39 clean refusals on the
+  core and 23 on `lypning-l`.
+- Bytes: `lypning` 1,114,320 → 1,122,512 (+8,192, **9 blocks either way**);
+  `lypning-l` 1,294,544 → 1,298,640 (+4,096, 10 blocks either way). No device
+  block crossed. `conformance` over the 3,688-entry corpus loaded on this date
+  is unmoved at MATCH 1558 / UNSUPPORTED 945 / MISMATCH 1 (the pre-existing
+  `py-ab7286f43b7a` float repr): no corpus program is blocked FIRST on a
+  numeric method, and `--plan` has no `int-method` or `float-method` row. This
+  feature is paid for by the held-out model set, not by the corpus.
+
+**2026-09-12** — a precision on an integer conversion, and an integer format code on a float · [#59]
+
+- **`'%.2d' % 5` is `'05'`, and it used to refuse.** A precision on an integer
+  `%` conversion is a MINIMUM DIGIT COUNT, which the `format()` mini-language
+  cannot spell — so the translated spec could not carry it, and the conversion
+  left by the refusal contract whenever the precision actually added a digit. It
+  is rendered directly now. Three fills in three slots, in CPython's order: the
+  precision's zeros go between the `0x` and the digits, the `0` flag widens that
+  same run to the field width (`'%05.7d' % -5` is `'-0000005'`, seven digits and
+  not five), and the width's spaces go outside everything. The sign is not one
+  of the minimum digits, which is why the rendering needs the value.
+- **`format(2.0, 'd')` raises CPython's ValueError instead of refusing.** An
+  integer presentation type on a value that is not an integer is `Unknown format
+  code 'd' for object of type 'float'`, and CPython matches the code against the
+  object before it reads anything else in the spec — so `format(0.0, '.2d')`
+  names the code and not the precision.
+- **The `%` operator keeps refusing there, deliberately.** The two grammars
+  disagree: `'%d' % 2.7` is `'2'` — the operator truncates — `'%d' % 1e30`
+  truncates into a bignum, and `'%x' % 2.7` is a TypeError with a third
+  sentence. None of that is implemented, so only the `format()` side raises.
+- Verified by enumerating 71,032 formatting programs against live CPython on
+  stdout, exit code **and the exception sentence** — conformance compares only
+  the exception type. 30 divergences fell out; all 30 reproduce on the unchanged
+  binary and none is in the code this entry changes.
+[#59]: https://github.com/kristerhedfors/lypning/pull/59
+
+> **Both of the above were measured alone and each stayed inside its block.**
+> Landed together on top of `math` and `type()`, `lypning-l` crosses one:
+> 1,294,544 B (10 device blocks) at the start of the day to 1,310,928 B
+> (11), which is 208 B past the ten-block line. That is a whole 131,072 B
+> block of cold read, bought by four features. `lypning`, the hot path,
+> is unchanged at 9 blocks, and `gate.VARIANT_BLOCK_BUDGET` gives
+> `lypning-l` 32 — so nothing is over budget, and the cost is recorded
+> rather than discovered later.
+
+**2026-09-12** — `type()` of any class the engine can name, and five wrong answers the old refusal was hiding (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **`type(e).__name__` inside an `except` now answers.** It is the commonest
+  thing anyone writes about an error they just caught and it refused for every
+  exception class, because `type()` answered from nine hardcoded arms and an
+  exception was in none of them. It reads `builtins::class_name` now — the
+  closed set of every class this engine can name — so the nine became every
+  class, all twenty-four exceptions included. Ranked first among the `type` rows
+  by `nt refusals --run`: **30 of the 1,173 programs a model wrote**.
+- **`json.JSONDecodeError` stopped being spelled `ValueError`.** One
+  `Value::Builtin` stood for both, justified on the grounds that `isinstance`
+  and `except` cannot tell them apart. True, and not the whole surface:
+  `json.JSONDecodeError.__name__` answered `ValueError`, and `is` between them
+  answered True in both directions. Three wrong answers at exit 0. It has its
+  own `Value::Builtin` now (`builtins::MODULE_EXCEPTIONS`), it is still not in
+  the builtin namespace so a bare `JSONDecodeError` is still a NameError, and
+  `except ValueError` still catches it because `eval::exc_matches` always knew.
+  `repr(ValueError)` is served as a side effect — the pair it could not spell
+  is gone.
+- **`IOError.__name__` said `IOError` and `IOError is OSError` said False.**
+  They are ONE class under three names in CPython, so both answer `OSError` and
+  True. One map, `builtins::canonical_class`, read by `__name__`, by `eq` and by
+  `is_same` — because a name that decides what `__name__` prints and a name that
+  decides what `is` answers are the same name.
+- **An exception carries `args`, and this value cannot.** `Value::Exc` is a
+  class name and one `Rc<str>`; CPython keeps the objects it was constructed
+  from, and `e.args`, `repr(e)` and `str(e)` all read them back. Exactly one
+  string survives that round trip, so `ValueError(42)`, `ValueError()`,
+  `ValueError('a','b')` and `OSError(2,'x')` refuse at construction now instead
+  of answering from a message that had lost the argument — nine wrong answers,
+  none of them in the corpus. `KeyError.args` refuses too: that class stores
+  `repr(key)` so `str(e)` can be `"'k'"`, which makes the key unrecoverable.
+  An exception raised by the ENGINE is untouched, so
+  `except ZeroDivisionError as e: e.args` still answers.
+- **`__builtins__` refused rather than NameError'd.** It is a global CPython
+  injects into every module, so a program reaching for it got
+  `NameError: name '__builtins__' is not defined` where CPython gives an
+  `AttributeError` — an UNSAFE route of exactly the kind `err.rs` documents,
+  and the last MISMATCH in the on-policy census.
+- **The two corpus programs that regressed are the reason the rest was found.**
+  They pass `type(e).__name__`, so the `type` refusal had been routing them past
+  the `args` defect. A refusal covering a defect it is not about covers it only
+  until someone lifts it for an unrelated reason.
+- Measured: conformance MATCH 1565 → 1568, MISMATCH 0 throughout, UNSAFE 0,
+  dispatchers agree 2504/2504. On-policy MATCH **468 → 484 of 1,173 (39.9% →
+  41.3%)**, the `type` kind 60 → 25, MISMATCH 1 → 0. Bytes 1,118,416 →
+  1,126,608, still **9 device blocks**. pytest: the same 57 failures as the
+  session baseline, diffed by name.
+
+**2026-09-12** — `math`, bounded to the functions that have one answer (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **`import math` was the top row of `conformance --plan` on both lists** — the
+  corpus's and a fine-tune's held-out set. The module is now served by **every**
+  variant, core included, because nothing in it is a capability: the served
+  subset is IEEE-754 and integer arithmetic, and a larger sibling would answer
+  it identically.
+- **What is served:** `pi`, `e`, `tau`, `inf`, `nan`; `floor`, `ceil`, `trunc`
+  (an **int**, as Python 3 returns, and an int argument comes back unchanged);
+  `fabs`, `sqrt`, `copysign`, `fmod`; `isqrt`, `gcd` (variadic), `factorial`;
+  `isfinite`, `isinf`, `isnan`.
+- **What is refused, and why it must stay refused:** every transcendental —
+  `sin`, `cos`, `tan`, `exp`, `log`, `log2`, `log10`, `pow`, `hypot`, `atan2` —
+  is libm's answer, and libm is not correctly rounded, so musl's last ulp is not
+  glibc's or Apple's. They refuse at `modules::get_attr`, which the walk reads,
+  so the block is static and costs a route rather than a spawn. `fsum` is
+  refused too: it is exactly specified and is the obvious next step, but it is a
+  second mechanism.
+- **Every error path refuses rather than raises**, on `random.rs`'s rule: a
+  domain error, a `TypeError` on a non-number, a wrong argument count are all
+  message text CPython owns. The three exceptions are the three
+  `builtins::float_to_int` already spells exactly — `floor(nan)` a `ValueError`,
+  `floor(inf)` an `OverflowError`, `floor(1e300)` the `bigint` refusal.
+  `factorial` past 20! and `gcd(-2**63)` raise `bigint` rather than wrap.
+- **Verified by enumeration, not by the battery**: 1,017 programs over the
+  constants, both signed zeroes, both infinities, NaN, the 64-bit boundary, the
+  full 16x16 `fmod` grid and every argument type, diffed against CPython 3.11.15
+  — 812 agreed, 205 refused, **0 mismatches**. The `fmod` domain rule refuses on
+  exactly the 69 of 256 pairs where CPython raises, and answers the other 187
+  bit-for-bit.
+- Measured 2026-09-12, x86_64 musl, corpus 3,688 loaded / 2,504 graded, CPython
+  3.11.15: `lypning` 1,114,320 -> 1,122,512 B (+8,192; 9 device blocks either
+  side). `conformance --engine lypning` MATCH 1,558 -> 1,564, UNSUPPORTED 945 ->
+  939. `import math` leaves the build order entirely. MISMATCH unchanged at 1
+  (`py-ab7286f43b7a`, `1.79e308 ** 0.5` — the float-power path, not this
+  change). Routing safety UNSAFE unchanged at 1, the same entry; WASTED 93 ->
+  99, the six programs whose refusal moved from the static import blocker to a
+  runtime one.
+- **One test went red and it was the test that was wrong.** `test_a_construct_the_runtime_table_would_escalate_is_kept_off_the_tier_statically` asserted these programs route straight to CPython because a NaN literal is visible in the source. No such static marker exists — the `MICROPYTHON_UNSAFE` markers were deleted with the tier they served, which is why this test's own sibling is already retired two lines below it. It passed only because `import math` was an unserved module and the module blocker stood in for the marker. Rewritten to assert what is actually guaranteed: tier 1 refuses at run time, nothing reaches stdout first, and the answer matches CPython — from CPython for `nan-identity`, from `lypning-l` for `int-div-precision`, which left `ONLY_CPYTHON_REFUSALS` when `cap-bigint` landed. WASTED, not UNSAFE.
+
+**2026-09-12** — The standing MISMATCH closed: `**` on floats now answers what the reference libm answers (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **`1.7976931348623157e308 ** 0.5` answered `1.3407807929942597e+154` where
+  CPython answers `…596`.** One ulp, exit 0, nothing on stderr — the one number
+  invariant 1 says is never traded, standing in the corpus as `py-ab7286f43b7a`
+  and waived in `.github/known-mismatches.json` as unfixable. It was fixable.
+- **It was never float formatting.** `fmt::float_repr` is shortest-round-trip
+  and prints both neighbours correctly; the wrong bits came out of the multiply.
+- **musl's `pow` and glibc's `pow` are the same routine compiled twice.** Both
+  are Arm's optimized-routines double-precision power. Re-running the reference
+  under `GLIBC_TUNABLES=glibc.cpu.hwcaps=-FMA,-AVX2` made its answers
+  bit-identical to musl's over 18,000 pairs — 16 disagreements to 0. The whole
+  gap is fused multiply-add.
+- **New `pow.rs`: that routine with the fusions put back.** Both kinds — the
+  `#if __FP_FAST_FMA` arms and the `a*b + c` contractions the C compiler makes
+  on its own, which Rust never makes. Taking only the first still reproduced
+  musl exactly; that is why the second is written out call by call.
+- **Verified by enumeration, not by argument.** 6,302,592 `(x, y)` pairs across
+  the overflow edge, the subnormal band, either side of the 2^-65 and 2^63
+  cutoffs, bases within forty ulp of 1.0, subnormal bases, negative bases at
+  integer powers and the full IEEE-special cross product: **0 disagreements**
+  against the host libm, and 400,000 of them re-checked end to end through the
+  binary. An earlier version was wrong 30 times in 3,002,592 — all in one
+  function, all from fusing a product the C compiler reads twice.
+- **Measured 2026-09-12 on this container.** Corpus 3688 loaded, 2504 graded:
+  MATCH 1558 → 1559, UNSUPPORTED 945 unchanged, **MISMATCH 1 → 0**, coverage
+  62.2% → 62.3%. Binary 1,114,320 → 1,118,416 B, **9 device blocks either
+  side** — +4,096 B of the 65,328 B that were left before a tenth block.
+  `fuzz` 0 counterexamples, `doctor` 0 FAIL, pytest failures identical before
+  and after (189, none of them float-shaped). `gate` FAILs on 9 blocks against
+  an 8-block budget before and after: that is the absent oracle, not this.
+- **The cost is stated, not hidden.** `mul_add` is a call into musl's software
+  `fma` on a baseline x86-64 build, so `**` on floats goes ~22 ns → ~277 ns.
+  It is in single digits of corpus programs and in no `perf` row. Building
+  with `-C target-feature=+fma` would take it back and is a separate step,
+  because it raises the CPU floor for the whole binary.
+- **Re-measured independently before landing**, on a different 52,000-pair corpus with its own seed: **22 disagreements without `pow.rs`, 0 with it**. That also clears the 44 adjacent-duplicate rows in the transcribed `LOG_TAB` — an `invc` rounded onto a coarse grid repeats, and the sample crosses every subinterval a few hundred times.
+
+**2026-09-12** — Two silent wrong answers, found by running the engine over what a language model writes (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **A `try` with no `except` and no `finally` ran its body and exited 0.** CPython's
+  grammar has no such statement — `SyntaxError: expected 'except' or 'finally'
+  block` — and neither does one with an `else` but no `except`. The parser
+  accepted both. It is the quiet half of a wrong answer: a program that prints
+  nothing and exits 0 is indistinguishable from one that worked.
+- **`n is n` over a NaN answered `False`.** `ops::identity` refuses `is` between
+  two equal immutables because CPython decides that by interning — and a NaN is
+  the one value that never reaches the guard, because it is the one value not
+  equal to itself. It fell through to `false`, where CPython answers `True` for
+  any object compared with itself. A float carries no `Rc`, so nothing in the
+  engine can tell one NaN object from two; it refuses as `nan-identity` now,
+  narrowed to the NaN so `1.5 is None` still answers.
+- **Neither shape is in the corpus, and neither ever would be.** No human types a
+  handler-less `try`; a generation cut off by a token cap types one every time.
+  The NaN arrived from a model routing *around* the existing refusal — `n in l`
+  over a NaN was already `nan-identity`, so the model rewrote the same question
+  as `any(x is n for x in l)` and went straight through. A refusal that can be
+  reworded into a wrong answer is not a guard.
+- **The instrument was the 1,173 programs Qwen3.8-27B wrote** in
+  `nemotron/runs/qwen38-baseline-k16`, each run against lypning and CPython:
+  462 MATCH, 709 UNSUPPORTED, **2 MISMATCH** — these two. `conformance` grades
+  the corpus, not the language, and the corpus's blind spots are shaped like its
+  capture mechanism.
+- **Zero byte cost** (1,114,320 B, 9 device blocks — unchanged), conformance
+  MATCH 1558 / UNSUPPORTED 945 unchanged, and the Python suite has the same 57
+  failures before and after, diffed by name rather than by count.
+- **`nt refusals`** ranks what the engine still refuses by how many corpus cases
+  each kind blocks, and marks which are not a backlog: 139 cases blocked by open
+  kinds, 39 by kinds in `ONLY_CPYTHON_REFUSALS`, where the engine's job is to go
+  on refusing.
+
 **2026-09-11** — The measurement pipeline audited: 52 findings, 33 survived, and the corpus does not need to be bigger (branch `claude/nemotron-lora-pipeline-1zczi2`)
 
 - **A green suite measures the cases someone thought of.** Six independent lenses

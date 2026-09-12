@@ -1052,7 +1052,14 @@ pub fn eq(a: &Value, b: &Value) -> R<bool> {
             }
         }
         (Value::Module(x), Value::Module(y)) => x == y,
-        (Value::Builtin(x), Value::Builtin(y)) => x == y,
+        // Through `canonical_class`, not by name: `IOError` and `OSError` are
+        // ONE class in CPython, so `==` between them is True and comparing the
+        // spellings answered False. A builtin FUNCTION is its own name and is
+        // unaffected — the map has three entries and all three are classes.
+        // `is_same` reads the same map for the same reason.
+        (Value::Builtin(x), Value::Builtin(y)) => {
+            crate::builtins::canonical_class(x) == crate::builtins::canonical_class(y)
+        }
         // A bound method compares by the FUNCTION and the receiver's IDENTITY,
         // and both of CPython's two method types say so in the same words:
         // `meth_richcompare` tests `m_self` by POINTER and then `m_ml`,
@@ -1528,7 +1535,13 @@ pub fn is_same(a: &Value, b: &Value) -> bool {
         (Value::File(x), Value::File(y)) => Rc::ptr_eq(x, y),
         (Value::Func(x), Value::Func(y)) => Rc::ptr_eq(x, y),
         (Value::Module(x), Value::Module(y)) => x == y,
-        (Value::Builtin(x), Value::Builtin(y)) => x == y,
+        // One class, three names: `IOError is EnvironmentError is OSError` is
+        // True in CPython and answered False here, because this compared the
+        // spelling rather than the class. `builtins::canonical_class` is the
+        // one map, read by `eq` above and by `ops::get_attr`'s `__name__`.
+        (Value::Builtin(x), Value::Builtin(y)) => {
+            crate::builtins::canonical_class(x) == crate::builtins::canonical_class(y)
+        }
         // A bound method is a NEW object on every attribute access, so
         // `x.append is x.append` is False in CPython — and `f = x.append; f is
         // f` is True, because that is one access and one object. The `Rc` this

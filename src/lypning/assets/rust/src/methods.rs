@@ -246,9 +246,35 @@ const RANGE_MISSING: &[&str] = &["count", "index"];
 /// safe direction. `real` and `imag` are attributes rather than methods and are
 /// here for the same reason `RANGE_MISSING` carries `count`: CPython answers
 /// them and this does not.
-const FLOAT_MISSING: &[&str] = &[
-    "as_integer_ratio", "conjugate", "from_number", "fromhex", "hex", "imag", "is_integer", "real",
-];
+const FLOAT_MISSING: &[&str] = &["conjugate", "from_number", "fromhex", "hex", "imag", "real"];
+
+/// Is `value` an instance of the type named `t`, for the unbound-method check?
+///
+/// The subclass relations this engine actually models, and no others: `bool` is
+/// an `int`, and `Counter` and `defaultdict` are `dict`s. Anything it cannot
+/// prove is not one — the caller turns a false here into a refusal, so an
+/// unmodelled relation costs a CPython spawn and never an answer.
+fn descriptor_applies(t: &str, value: &Value) -> bool {
+    let have = crate::value::type_name(value);
+    if have == t {
+        return true;
+    }
+    match t {
+        "int" => have == "bool",
+        #[cfg(feature = "cap-collections")]
+        "dict" => matches!(have, "Counter" | "defaultdict"),
+        _ => false,
+    }
+}
+
+/// The two `float` methods this engine answers.
+///
+/// Both are EXACT and neither touches libm: `is_integer` is a comparison, and
+/// `as_integer_ratio` reads the mantissa and exponent straight out of the bits.
+/// That is why these two are here and `hex`/`fromhex` are not — a method whose
+/// answer is a rounded double is a MISMATCH waiting for the right input, and
+/// one whose answer is an integer pair is not.
+const FLOAT_METHODS: &[&str] = &["as_integer_ratio", "is_integer"];
 
 /// Methods `int` has in CPython and this engine does not implement.
 ///
@@ -261,9 +287,31 @@ const FLOAT_MISSING: &[&str] = &[
 /// because "an AttributeError is not a refusal" is the refusal contract and not
 /// a capability. `bool` reaches it too: `True.bit_length()` is 1 there.
 const INT_MISSING: &[&str] = &[
-    "as_integer_ratio", "bit_count", "bit_length", "conjugate", "denominator", "from_bytes",
-    "imag", "is_integer", "numerator", "real", "to_bytes",
+    "bit_count", "conjugate", "denominator", "imag", "is_integer", "numerator", "real",
 ];
+
+/// The four `int` methods this engine answers — a bit count, the two base-256
+/// conversions, and the ratio. All four are exact and none of them is libm.
+///
+/// `as_integer_ratio` is here because `float`'s is: [`known_method`] is a union
+/// over the probe types and cannot see a receiver, so serving the float
+/// spelling admits the INT spelling to the walk as well. Leaving it in
+/// `INT_MISSING` would have turned `(1).as_integer_ratio()` from a blocker the
+/// walk decides before the program starts into a refusal it reaches at
+/// runtime — past a committed barrier, which is exit 1 with the side effect on
+/// disk (#51). It is `(n, 1)` for every integer, wide ones included, so
+/// answering costs four lines and closes the hole instead.
+///
+/// **What is left in [`INT_MISSING`] is left there on purpose, and the rule is
+/// the one `FLOAT_MISSING` states about `from_number`: a method CPython GREW is
+/// a wrong answer on an older reference interpreter.** `int.bit_count()` is
+/// 3.10 and `int.is_integer()` is 3.12, so serving either would answer where a
+/// 3.9 CPython raises `AttributeError` — and this engine is graded against
+/// whatever interpreter the caller has, not the newest one. The same rule
+/// governs the DEFAULTS of the two conversions below: `byteorder` defaulting to
+/// `'big'` and `length` to 1 are 3.11's, so a call that leans on either refuses
+/// rather than answers (see [`byteorder`]).
+const INT_METHODS: &[&str] = &["as_integer_ratio", "bit_length", "from_bytes", "to_bytes"];
 
 pub fn missing_method(recv: &Value, name: &str) -> bool {
     let table: &[&str] = match recv {
@@ -304,6 +352,14 @@ pub fn method_name(recv: &Value, name: &str) -> Option<&'static str> {
         Value::Bytes(_) => BYTES_METHODS,
         Value::Tuple(_) => TUPLE_METHODS,
         Value::File(_) => FILE_METHODS,
+        // `bool` is a subclass of `int` and reads `int`'s table: `True.to_bytes(1,
+        // 'big')` is `b'\x01'` in CPython and `True.bit_length()` is 1. The one
+        // place the subclass shows through is `from_bytes`, a CLASSMETHOD whose
+        // result is `cls` — `bool.from_bytes(b'\x02', 'big')` is `True`, not
+        // `2` — and [`int_method`] refuses that receiver rather than answer an
+        // int for it.
+        Value::Int(_) | Value::Bool(_) => INT_METHODS,
+        Value::Float(_) => FLOAT_METHODS,
         _ => return None,
     };
     find_sorted(table, name)
@@ -378,6 +434,11 @@ fn accepts_kw(ty: &str, name: &str) -> bool {
         "bytes" => matches!(name, "decode" | "split" | "rsplit" | "splitlines" | "hex"),
         "list" => name == "sort",
         "dict" => name == "update",
+        // `signed=` is keyword-ONLY on both conversions, and CPython takes
+        // `length=` and `byteorder=` by name as well — so the TypeError this
+        // predicate would otherwise produce would be wrong for all three.
+        // [`int_method`] reads the keywords it serves and REFUSES the rest.
+        "int" => matches!(name, "from_bytes" | "to_bytes"),
         _ => false,
     }
 }
@@ -485,6 +546,13 @@ pub fn call_method(
     // An unbound method (`str.upper`) arrives with the TYPE as receiver; the
     // real receiver is the first argument, exactly as CPython does it.
     if let Value::Builtin(t) = recv {
+        // `int.from_bytes(b, 'big')` is a CLASSMETHOD: the TYPE is the receiver,
+        // so the first argument is the bytes and must not be shifted off as
+        // one. Reached through `get_attr`'s `int`/`bool` probe, which reads the
+        // same table off the type object that an instance reads off itself.
+        if name == "from_bytes" && matches!(*t, "int" | "bool") {
+            return int_method(recv, name, args, &kw);
+        }
         let mut args = args;
         if args.is_empty() {
             return Err(type_err(format!(
@@ -505,6 +573,35 @@ pub fn call_method(
                     return dict_method(it, d, name, args, kw);
                 }
             }
+        }
+        // THE DESCRIPTOR HAS TO APPLY TO THE RECEIVER. `T.m(x)` is
+        // `TypeError: descriptor 'm' for 'T' objects doesn't apply to a 'U'
+        // object` in CPython whenever `x` is not a `T`, and this dispatched on
+        // the shifted VALUE and ran whatever type it actually was:
+        //
+        //     int.as_integer_ratio(1.5)    CPython TypeError, here (3, 2)
+        //     float.as_integer_ratio(5)    CPython TypeError, here (5, 1)
+        //     list.count((1, 2, 1), 1)     CPython TypeError, here 2
+        //     str.upper(b'a')              CPython TypeError, here an answer
+        //
+        // Harmless while no name lived on two types — the wrong-type call found
+        // no method and died with the type's own error. `as_integer_ratio` is
+        // on both `int` and `float`, so it found one, and the comment three
+        // lines up already describes the identical defect for `dict.update` on
+        // a Counter. The same hole, reached by a second door.
+        //
+        // Refused rather than answered with CPython's sentence: the message
+        // names the descriptor, the type and the object, and getting one of
+        // three wordings wrong is the failure this whole file is about. One
+        // spawn, and CPython words it.
+        if !descriptor_applies(t, &real) {
+            return Err(unsupported(
+                "method",
+                &format!(
+                    "{t}.{name}() called on a {}, which is not a {t}",
+                    crate::value::type_name(&real)
+                ),
+            ));
         }
         return call_method(it, &real, name, args, kw);
     }
@@ -529,6 +626,8 @@ pub fn call_method(
         Value::Set(s) => set_method(it, s, name, args, kw),
         Value::Bytes(b) => bytes_method(it, b, name, args, kw),
         Value::Tuple(t) => tuple_method(t, name, args),
+        Value::Int(_) | Value::Bool(_) => int_method(recv, name, args, &kw),
+        Value::Float(f) => float_method(*f, name, args, &kw),
         Value::File(f) => file_method(it, f, name, args, kw),
         Value::Module(m) => crate::modules::call_module_method(it, m, name, args, kw),
         // Unreachable through `get_attr`, which refuses every attribute on a
@@ -1732,6 +1831,388 @@ fn tuple_method(t: &Rc<Vec<Value>>, name: &str, args: &mut Args) -> R<Value> {
             Err(value_err("tuple.index(x): x not in tuple"))
         }
         other => Err(unsupported("tuple-method", &format!("tuple.{other}()"))),
+    }
+}
+
+// ---- int and float --------------------------------------------------------
+//
+// Six methods, chosen because every one of them is EXACT: a bit count, two
+// base-256 conversions and two ratios — one of them read straight out of a
+// double's mantissa. Nothing here rounds, so there is no input at which a naive
+// version quietly differs from CPython, which is the whole of why these are the
+// numeric methods served and `float.hex` and `float.fromhex` are not.
+//
+// **Where a naive version WOULD have differed, and what each one does instead:**
+//
+//   * a result past 64 bits — `int.from_bytes` of nine bytes, the numerator of
+//     `(1e300).as_integer_ratio()`, the denominator of `(5e-324)`'s — is the
+//     existing `bigint` refusal, never a wrapped `as i64`. The core has no wide
+//     integer at all, so the refusal is what routes those programs to
+//     `lypning-l` (from_bytes) or to CPython;
+//   * the ARITY error message is CPython's own, which is "takes no arguments
+//     (1 given)" and not the "takes exactly 0 arguments" `check_arity` would
+//     produce — so these use [`no_args`] rather than the `arity` table;
+//   * the DEFAULTS of `to_bytes`/`from_bytes` are CPython 3.11's, so a call
+//     that leans on one refuses (see [`byteorder`]);
+//   * `bool.from_bytes` answers a `bool` and not an `int`, and refuses here;
+//   * `-0.0`, `0.0`, infinities and NaN each have their own arm in
+//     [`as_integer_ratio`], and CPython RAISES for the last two rather than
+//     answering.
+
+/// CPython's arity wording for a method that takes none, which is not
+/// `check_arity`'s: `(5).bit_length(1)` is `int.bit_length() takes no arguments
+/// (1 given)`, where the table would say "exactly 0 arguments".
+fn no_args(ty: &str, name: &str, args: &Args) -> R<()> {
+    if args.is_empty() {
+        return Ok(());
+    }
+    Err(type_err(format!(
+        "{ty}.{name}() takes no arguments ({} given)",
+        args.len()
+    )))
+}
+
+/// The `byteorder` argument of `int.to_bytes` / `int.from_bytes`: `true` for
+/// little-endian.
+///
+/// `None` is a REFUSAL and not the `'big'` CPython 3.11 made the default. The
+/// default arrived in 3.11 and this engine is graded against whatever CPython
+/// the caller has: answering `1` for `int.from_bytes(b'\x01')` would be a
+/// silent wrong answer on a 3.9 or 3.10 reference, where that call is a
+/// TypeError. A refusal is right on every version — CPython answers it or
+/// raises it one spawn later, exactly as it would have.
+fn byteorder(v: Option<&Value>, m: &str) -> R<bool> {
+    match v {
+        Some(Value::Str(s)) => match s.as_ref() {
+            "little" => Ok(true),
+            "big" => Ok(false),
+            _ => Err(value_err("byteorder must be either 'little' or 'big'")),
+        },
+        None => Err(unsupported(
+            "int-method",
+            &format!("int.{m}() without a byteorder, whose default is CPython 3.11's"),
+        )),
+        // CPython's TypeError names the type it was given; refusing costs one
+        // spawn and lets CPython word its own message.
+        Some(_) => Err(unsupported(
+            "int-method",
+            &format!("int.{m}() with a byteorder that is not a str"),
+        )),
+    }
+}
+
+/// The `signed=` keyword, and a refusal for every other keyword.
+///
+/// CPython takes `length=`, `byteorder=` and `bytes=` by name too. Serving
+/// `signed` alone is the smallest version that covers what gets typed;
+/// everything else leaves by exit 90 rather than by a TypeError this engine
+/// would be inventing.
+fn signed_kw(m: &str, kw: &[(Rc<str>, Value)]) -> R<bool> {
+    let mut signed = false;
+    for (k, v) in kw {
+        if k.as_ref() != "signed" {
+            return Err(unsupported(
+                "int-method",
+                &format!("int.{m}() with the {k}= keyword"),
+            ));
+        }
+        match v {
+            Value::Bool(b) => signed = *b,
+            // CPython runs the argument through `PyObject_IsTrue`, so
+            // `signed=1` is `signed=True` there. Refused rather than guessed:
+            // it is not a spelling anybody types and a refusal cannot be wrong.
+            _ => {
+                return Err(unsupported(
+                    "int-method",
+                    &format!("int.{m}() with a signed= that is not a bool"),
+                ))
+            }
+        }
+    }
+    Ok(signed)
+}
+
+/// The widest `bytes` either conversion will build or read.
+///
+/// `int.from_bytes(b'\x00' * 10_000_000, 'big')` is 0 in CPython and would be
+/// ten million bytes of limbs here; `(0).to_bytes(10**9, 'big')` is a gigabyte
+/// of zeros there. Both refuse past this, which is over-refusal by design — the
+/// widths agents actually type are two, four, eight and sixteen.
+const MAX_BYTES: i64 = 4096;
+
+/// `Value::Int` from a sign and a little-endian base-2**32 magnitude, demoting
+/// to an `i64` where one fits and refusing where the core cannot hold it.
+fn int_from_mag(neg: bool, mag: Vec<u32>) -> R<Value> {
+    #[cfg(feature = "cap-bigint")]
+    {
+        return Ok(Value::Int(crate::bigint::norm(neg, mag)));
+    }
+    // The frozen core has no wide integer, so the same value that `lypning-l`
+    // answers is the `bigint` refusal here — which is exactly what routes the
+    // program to the sibling that has one.
+    #[cfg(not(feature = "cap-bigint"))]
+    {
+        let mut m = &mag[..];
+        while m.last() == Some(&0) {
+            m = &m[..m.len() - 1];
+        }
+        if m.len() <= 2 {
+            let mut v: u128 = 0;
+            for (i, l) in m.iter().enumerate() {
+                v |= (*l as u128) << (32 * i);
+            }
+            if neg {
+                if v <= i64::MAX as u128 + 1 {
+                    return Ok(ival((v as i128).wrapping_neg() as i64));
+                }
+            } else if v <= i64::MAX as u128 {
+                return Ok(ival(v as i64));
+            }
+        }
+        Err(unsupported(
+            "bigint",
+            "int.from_bytes() of a value past 64 bits",
+        ))
+    }
+}
+
+fn int_method(recv: &Value, name: &str, args: &mut Args, kw: &[(Rc<str>, Value)]) -> R<Value> {
+    reject_kw("int", name, kw)?;
+    match name {
+        // An integer IS its own numerator over 1, at every width — no
+        // decomposition, so nothing to get wrong. `True.as_integer_ratio()` is
+        // `(1, 1)`: the bool widens to its int, and the PAIR is ints either way.
+        "as_integer_ratio" => {
+            no_args("int", name, args)?;
+            let n = match recv {
+                Value::Int(n) => Value::Int(n.clone()),
+                Value::Bool(b) => ival(*b as i64),
+                other => return Err(crate::value::attr_error(other, name)),
+            };
+            Ok(Value::Tuple(Rc::new(vec![n, ival(1)])))
+        }
+        "bit_length" => {
+            no_args("int", name, args)?;
+            Ok(ival(match recv {
+                // The length of the ABSOLUTE value, so `(-5).bit_length()` is 3
+                // and `(0).bit_length()` is 0. `unsigned_abs` is what makes
+                // `i64::MIN` — whose negation is not an `i64` — answer 64
+                // rather than panic in debug or wrap in release.
+                Value::Int(Int::S(i)) => 64 - i.unsigned_abs().leading_zeros() as i64,
+                #[cfg(feature = "cap-bigint")]
+                Value::Int(Int::B(b)) => crate::bigint::bit_length(b) as i64,
+                Value::Bool(b) => *b as i64,
+                other => return Err(crate::value::attr_error(other, name)),
+            }))
+        }
+        "to_bytes" => {
+            let signed = signed_kw(name, kw)?;
+            if args.len() != 2 {
+                return Err(unsupported(
+                    "int-method",
+                    &format!(
+                        "int.to_bytes() with {} positional {}, not (length, byteorder)",
+                        args.len(),
+                        plural(args.len())
+                    ),
+                ));
+            }
+            // BYTEORDER FIRST. `longobject.c` checks it before it looks at the
+            // length, so `(5).to_bytes(-1, 'middle')` is the byteorder's
+            // ValueError and not the length's — and with a non-str byteorder it
+            // is a TypeError, a different CLASS, which an `except ValueError`
+            // catches here and not there. This read the length first and
+            // answered the wrong sentence for every negative length crossed
+            // with a bad byteorder.
+            let little = byteorder(args.get(1), name)?;
+            let n = int_val(&args[0])?;
+            if n < 0 {
+                return Err(value_err("length argument must be non-negative"));
+            }
+            if n > MAX_BYTES {
+                return Err(unsupported(
+                    "int-method",
+                    &format!("int.to_bytes() of {n} bytes, past this engine's {MAX_BYTES}"),
+                ));
+            }
+            let v = int_val(recv)?;
+            let n = n as usize;
+            // CPython's two OverflowErrors, which are different sentences: a
+            // negative value into an unsigned field names the sign, and
+            // everything else names the width.
+            if !signed && v < 0 {
+                return Err(overflow_err("can't convert negative int to unsigned"));
+            }
+            let fits = if n >= 8 {
+                // Every `i64` fits eight bytes, signed or not — the unsigned
+                // case has already rejected the negatives.
+                true
+            } else if n == 0 {
+                // `(0).to_bytes(0, 'big')` is `b''`, and so is
+                // `(-1).to_bytes(0, 'big', signed=True)`: -1 is all sign bits,
+                // and sign-extending it into zero bytes loses nothing. CPython
+                // answers `b''` for it and this raised OverflowError — the one
+                // value in -3..3, ±256, ±257, 255 and i64::MIN that breaks, in
+                // both byteorders, and reached by `~0`, `0 - 1` and `int('-1')`
+                // alike. Nothing else fits in no bytes at all.
+                v == 0 || (signed && v == -1)
+            } else if signed {
+                let lim = 1i64 << (8 * n as u32 - 1);
+                v >= -lim && v < lim
+            } else {
+                (v as u64) < (1u64 << (8 * n as u32))
+            };
+            if !fits {
+                return Err(overflow_err("int too big to convert"));
+            }
+            // Sign-extend past the eight bytes an `i64` has, which is what
+            // `(-1).to_bytes(16, 'big', signed=True)` is sixteen 0xff of.
+            let mut out = vec![if v < 0 { 0xffu8 } else { 0 }; n];
+            let bits = v as u64;
+            for (i, b) in out.iter_mut().enumerate().take(8) {
+                *b = (bits >> (8 * i)) as u8;
+            }
+            if !little {
+                out.reverse();
+            }
+            Ok(Value::Bytes(Rc::new(out)))
+        }
+        "from_bytes" => {
+            // The classmethod's result is `cls`, so `bool.from_bytes(b'\x02',
+            // 'big')` is `True` where this would answer `2`. One spawn, and
+            // CPython gives the bool.
+            if matches!(recv, Value::Bool(_) | Value::Builtin("bool")) {
+                return Err(unsupported(
+                    "int-method",
+                    "bool.from_bytes(), whose result is a bool and not an int",
+                ));
+            }
+            let signed = signed_kw(name, kw)?;
+            if args.len() != 2 {
+                return Err(unsupported(
+                    "int-method",
+                    &format!(
+                        "int.from_bytes() with {} positional {}, not (bytes, byteorder)",
+                        args.len(),
+                        plural(args.len())
+                    ),
+                ));
+            }
+            // Asked BEFORE the byteorder, so a call that is wrong in both ways
+            // refuses rather than raising a ValueError CPython might not be the
+            // one to raise. CPython also takes a bytearray and any iterable of
+            // ints; those refuse, and it answers them one spawn later.
+            let Some(Value::Bytes(b)) = args.first() else {
+                return Err(unsupported(
+                    "int-method",
+                    "int.from_bytes() of something that is not bytes",
+                ));
+            };
+            if b.len() as i64 > MAX_BYTES {
+                return Err(unsupported(
+                    "int-method",
+                    &format!(
+                        "int.from_bytes() of {} bytes, past this engine's {MAX_BYTES}",
+                        b.len()
+                    ),
+                ));
+            }
+            let little = byteorder(args.get(1), name)?;
+            let mut le: Vec<u8> = if little {
+                b.as_ref().clone()
+            } else {
+                b.iter().rev().copied().collect()
+            };
+            // Two's complement, read exactly as wide as the input: the sign is
+            // the top bit of the top byte, and the magnitude of a negative is
+            // `~u + 1` over those same n bytes, which never carries out of them.
+            let neg = signed && le.last().is_some_and(|t| t & 0x80 != 0);
+            if neg {
+                let mut carry = 1u16;
+                for x in le.iter_mut() {
+                    let v = (!*x) as u16 + carry;
+                    *x = v as u8;
+                    carry = v >> 8;
+                }
+            }
+            let mut mag: Vec<u32> = Vec::with_capacity(le.len() / 4 + 1);
+            for ch in le.chunks(4) {
+                let mut w = 0u32;
+                for (i, x) in ch.iter().enumerate() {
+                    w |= (*x as u32) << (8 * i);
+                }
+                mag.push(w);
+            }
+            int_from_mag(neg, mag)
+        }
+        other => Err(crate::value::attr_error(recv, other)),
+    }
+}
+
+/// `(numerator, denominator)` in lowest terms, or the refusal for a pair an
+/// `i64` cannot hold.
+///
+/// A double is `m * 2**e` with `m` an integer, so the ratio is exact before it
+/// is reduced and the reduction is shifting the trailing zeros out of `m` — no
+/// gcd, and no rounding anywhere. CPython raises for the two non-finite cases
+/// rather than answering, with a different exception for each.
+fn as_integer_ratio(x: f64) -> R<Value> {
+    if x.is_nan() {
+        return Err(value_err("cannot convert NaN to integer ratio"));
+    }
+    if x.is_infinite() {
+        return Err(overflow_err("cannot convert Infinity to integer ratio"));
+    }
+    let bits = x.to_bits();
+    let exp = ((bits >> 52) & 0x7ff) as i32;
+    let frac = bits & ((1u64 << 52) - 1);
+    // A subnormal has no implicit leading 1 and a fixed exponent; every other
+    // finite value has both. 1075 is 52 (the fraction's width) plus the 1023
+    // bias.
+    let (mut m, mut e) = if exp == 0 {
+        (frac, -1074i32)
+    } else {
+        (frac | (1u64 << 52), exp - 1075)
+    };
+    // Both zeros, and `-0.0` is `(0, 1)` in CPython exactly like `0.0`.
+    if m == 0 {
+        return Ok(Value::Tuple(Rc::new(vec![ival(0), ival(1)])));
+    }
+    while m & 1 == 0 {
+        m >>= 1;
+        e += 1;
+    }
+    let refuse = |what: &str| {
+        Err(unsupported(
+            "bigint",
+            &format!("float.as_integer_ratio() whose {what} is past 64 bits"),
+        ))
+    };
+    let (num, den) = if e >= 0 {
+        if e as u32 + (64 - m.leading_zeros()) > 63 {
+            return refuse("numerator");
+        }
+        ((m << e) as i64, 1i64)
+    } else {
+        if -e > 62 {
+            return refuse("denominator");
+        }
+        (m as i64, 1i64 << -e)
+    };
+    let num = if bits >> 63 == 1 { -num } else { num };
+    Ok(Value::Tuple(Rc::new(vec![ival(num), ival(den)])))
+}
+
+fn float_method(x: f64, name: &str, args: &mut Args, kw: &[(Rc<str>, Value)]) -> R<Value> {
+    reject_kw("float", name, kw)?;
+    no_args("float", name, args)?;
+    match name {
+        // `inf` and `nan` are both False in CPython, which `is_finite` is what
+        // says here — `fract()` of an infinity is NaN, and `NaN == 0.0` is
+        // false, so the guard is belt and braces rather than the whole answer.
+        "is_integer" => Ok(Value::Bool(x.is_finite() && x.fract() == 0.0)),
+        "as_integer_ratio" => as_integer_ratio(x),
+        other => Err(crate::value::attr_error(&Value::Float(x), other)),
     }
 }
 

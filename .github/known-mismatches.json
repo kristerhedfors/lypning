@@ -24,11 +24,13 @@
     "together, and makes a fixed family visible as a block of lines to delete",
     "rather than as an unexplained drop in a number.",
     "",
-    "THE ONE lypning-ARM ENTRY IS NOT A DEFECT IN THIS TREE. py-ab7286f43b7a is",
-    "`1.797e308 ** 0.5`, wrong in the last ulp - and the library arm, buildable",
-    "again since 2026-08-25, proves why: the same source compiled against glibc's",
-    "libm matches CPython exactly and against musl's does not. It is recorded",
-    "here because it reproduces, not because anything here can fix it.",
+    "py-ab7286f43b7a WAS CARRIED HERE ON THREE ARMS AND IS NOW ON ONE. `1.797e308",
+    "** 0.5` was wrong in the last ulp on lypning and therefore on the mixture,",
+    "waived as a C library property nothing here could fix. On 2026-09-12 it was",
+    "fixed: `pow.rs` reproduces the reference libm's fused arithmetic and both",
+    "arms now MATCH, so both lines are gone. The lypning-mp line stays because",
+    "the oracle is not built here and nothing measured it - an unrun arm is not",
+    "a fixed one.",
     "",
     "Families, by size:",
     "  commit-barrier                 7",
@@ -60,14 +62,6 @@
     "  dict-mutation-not-detected     1"
   ],
   "accepted": [
-    {
-      "engine": "lypning",
-      "entry_id": "py-ab7286f43b7a",
-      "kind": "stdout",
-      "family": "float-pow-last-bit",
-      "class": "defect",
-      "why": "1.7976931348623157e308 ** 0.5 differs in the LAST ULP. Measured against the library arm on 2026-08-25: the same source compiled against glibc's libm matches CPython exactly and against musl's does not. It is a C library property, not this tree's code."
-    },
     {
       "engine": "lypning-mp",
       "entry_id": "py-01cce1fc0e31",
@@ -743,14 +737,6 @@
     {
       "engine": "mixture",
       "entry_id": "py-87397d74221f",
-      "kind": "stdout",
-      "family": "float-pow-last-bit",
-      "class": "defect",
-      "why": "1.7976931348623157e308 ** 0.5 differs in the LAST ULP. Measured against the library arm on 2026-08-25: the same source compiled against glibc's libm matches CPython exactly and against musl's does not. It is a C library property, not this tree's code."
-    },
-    {
-      "engine": "mixture",
-      "entry_id": "py-ab7286f43b7a",
       "kind": "stdout",
       "family": "float-pow-last-bit",
       "class": "defect",

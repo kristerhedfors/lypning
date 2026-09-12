@@ -26,6 +26,256 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+
+
+## 2026-09-12 · iteration 82 — format-precision: the minimum-digit conversion, and the code that belongs to a type
+
+Host: Linux x86_64, `x86_64-unknown-linux-musl` build, reference CPython 3.11.15.
+Corpus 3,688 loaded, 2,504 graded. Focus: coverage. Run in a worktree with its
+own `LYPNING_HOME` — and that was not optional: the first measurement of this
+iteration was taken against `~/.lypning/bin/lypning`, which another session
+overwrote mid-iteration. The binary under test had the right SIZE and the wrong
+code, and the spot check said the change had not landed. **`LYPNING_HOME` is
+part of the instrument, not part of the setup.**
+
+Two rows of `conformance --plan`, one mechanism — the integer conversion path,
+which both of them end in.
+
+### `'%.2d' % 5` is `'05'`
+
+`format()` has no spelling for a minimum digit count, so the `%` translation
+could not carry the precision and `percent_one` refused whenever it added a
+digit. `min_digit_body` renders it instead, from the digits `fmt::wide_digits`
+already produced for the count. The three fills land in three slots and CPython
+orders them precision, `0` flag, width:
+
+```
+'%.2d'    % -5   '-05'        the sign is not one of the minimum digits
+'%05.7d'  % -5   '-0000005'   the `0` flag WIDENS the same run, not a second one
+'%#08.3x' % -5   '-0x00005'   `#` prefixes inside the sign, zeros inside the prefix
+'%8.3x'   % -5   '    -005'   the width's spaces go outside everything
+```
+
+The already-satisfied case keeps the translated-spec path untouched: it is what
+deciding between them needs the value for.
+
+### `format(2.0, 'd')` raises rather than refuses
+
+`Unknown format code 'd' for object of type 'float'`. **The `!from_pct` gate is
+the whole risk in this change**: `'%d' % 2.7` is `'2'` — the operator TRUNCATES
+— `'%d' % 1e30` truncates into a bignum, and `'%x' % 2.7` is a TypeError with a
+third sentence. Raising the ValueError on the `%` side would have been a
+MISMATCH generator on shapes CPython answers. The `%` side keeps its refusal.
+
+### The numbers
+
+| | before | after |
+|---|---|---|
+| conformance (`lypning`) | 1558 / 945 / 1 — 62.22% | **1560 / 943 / 1** — 62.3% |
+| bytes | 1,114,320 | 1,118,416 (+4,096) |
+| device blocks | 9 | **9** — 61,232 B of headroom left |
+| `lypning-l` bytes | 1,294,544 | 1,294,544 (`.text` +1,568) |
+
+The MISMATCH is the ledgered musl `pow` ULP (`py-ab7286f43b7a`), unchanged.
+`fuzz` 500/500, counterexamples 0. `gate` FAILs on size at 9 blocks against
+lypning-mp's 8-block budget — **identical on the unchanged binary**, because the
+oracle is not built and `gate` substitutes the core. pytest: 189 failures, the
+same 189 by name as on the unchanged binary, +14 passing (the new pins).
+
+Two corpus programs moved UNSUPPORTED → MATCH (`py-723301ffc7fd`,
+`py-ecab756f1da8`, both `%`-conversion grids). The third, `py-677feb7479e7`,
+moved from `format: integer format code applied to float` to `type: type() of a
+ValueError` — unblocked into the next blocker, which is the shape `--plan`
+warns about in its own header.
+
+### Verified by enumeration, not by reasoning
+
+71,032 programs: the `%` cross-product (16 flag sets x 6 widths x 8 precisions x
+6 integer types x 15 values, including 0, ±1, both i64 limits and both bools)
+and the `format()` grid (12 presentation types x 9 prefixes x 8 values,
+including NaN, ±inf and -0.0), each diffed against live CPython on stdout, exit
+code **and the exception sentence**. That last one needed its own instrument:
+`conformance` peels the traceback and compares only the exception TYPE, so a
+ValueError with the wrong words is a MATCH there.
+
+**30 divergences fell out and all 30 are pre-existing** — reproduced on a
+binary built from HEAD's `ops.rs` and `fmt.rs` in an otherwise identical crate.
+Two families, neither touched here and neither fixed (one mechanism per step):
+
+- `format('ab', '+s')`, `'#s'` and `'08s'` — CPython raises "Sign not allowed in
+  string format specifier" / "Alternate form (#) not allowed…", and `'08s'` is
+  `'ab000000'` there and `'000000ab'` here. The string formatter takes the
+  numeric zero-fill slot.
+- `format(float('nan'), '%')` is `'NaN%'` here and `'nan%'` in CPython, for
+  every spec with a `%` type. The `f`/`e`/`g` arms all guard `is_finite()` and
+  return `nonfinite(...)`; the `'%'` arm does not, so Rust's own `{:.6}` on a
+  NaN prints through. Ten spellings, one missing guard.
+
+Both are wrong answers at exit 0. They are the next step, not this one.
+
+---
+
+## 2026-09-12 · iteration 82 — `math`, bounded to what has one answer
+
+Host: x86_64 Linux, musl target. Corpus 3,688 loaded, 2,504 graded. Reference
+CPython 3.11.15. Focus: coverage, `conformance --plan` top-down.
+
+### The step
+
+`import math` was the top module row of `--plan` (14 programs) and the top row
+of a fine-tune's held-out refusals (17 of 270). It is served now by **every**
+variant rather than behind a `cap-*`, because nothing in it is a capability: the
+served subset is IEEE-754 and integer arithmetic, so a larger sibling would
+answer every one of these programs identically and a capability row would buy
+the chain nothing.
+
+| | before | after |
+|---|---|---|
+| `lypning` bytes | 1,114,320 | 1,122,512 (+8,192) |
+| `lypning` blocks | 9 | 9 |
+| `lypning-l` bytes | 1,294,544 | 1,298,640 (+4,096) |
+| MATCH / UNSUPPORTED | 1,558 / 945 | 1,564 / 939 |
+| MISMATCH | 1 | 1 — the same entry |
+| routing UNSAFE | 1 | 1 — the same entry |
+| routing IDEAL / WASTED | 2,376 / 93 | 2,370 / 99 |
+
++6 programs, 8,192 B: **1,365 B per program unblocked**, inside the block the
+core already had and with 57,136 B of headroom left before a tenth.
+
+### The bound, which is the whole design
+
+A partial `math` is a MISMATCH generator: every function returns a plausible
+number at exit 0 and nothing in the output says which library computed it. So
+the line is not "what is useful" but "what has one answer".
+
+Served: `pi`, `e`, `tau`, `inf`, `nan`; `floor`, `ceil`, `trunc` (an **int**,
+and an int argument returned unchanged); `fabs`, `sqrt`, `copysign`, `fmod`;
+`isqrt`, `gcd`, `factorial`; `isfinite`, `isinf`, `isnan`.
+
+Refused, and it must stay that way: every transcendental. `sin`, `cos`, `tan`,
+`exp`, `log`, `log2`, `log10`, `pow`, `hypot` and `atan2` are libm's answers,
+libm is not correctly rounded, and musl's last ulp is not glibc's or Apple's.
+`math.log10(1000)` agrees everywhere and `math.log10(0.001)` is a coin toss, and
+nothing in the output tells the two apart. `math.rs` has a test named
+`no_transcendental_is_served` so that adding one is a deliberate act. `fsum` is
+refused for a different reason — it IS exactly specified, and it is the obvious
+next step and a second mechanism.
+
+Every error path refuses rather than raises, on `random.rs`'s rule: a domain
+error, a `TypeError` on a non-number, a wrong argument count are message text
+CPython owns and has re-worded between versions. The three exceptions are the
+three `builtins::float_to_int` already spells exactly — `floor(nan)` a
+`ValueError`, `floor(inf)` an `OverflowError`, `floor(1e300)` the `bigint`
+refusal. `factorial` past 20! and `gcd(-2**63)` raise `bigint` rather than wrap.
+
+### What the gates could not see, and the enumeration that could
+
+1,017 programs — the constants, `-0.0` and `0.0`, both infinities, NaN, the
+64-bit boundary in both directions, `5e-324`, the full 16x16 `fmod` grid, every
+argument type including `str`/`list`/`bytes`/`None`/`bool`, `from math import`
+and `import math as m` — run against CPython 3.11.15 and compared on stdout,
+exit code and the last stderr line. **812 agreed, 205 refused, 0 mismatches.**
+The `fmod` domain rule was checked separately against `mathmodule.c`'s: over all
+256 pairs it refuses on exactly the 69 where CPython raises `ValueError`, and
+the other 187 are bit-identical.
+
+### The red gate this step did NOT fix, and why
+
+`tests/test_routing.py::test_a_construct_the_runtime_table_escalates_is_answered_right_if_late`
+now fails. It asserts that
+
+```
+import math
+x = float('nan')
+print(x in [x])
+```
+
+routes to CPython, and its docstring says the STATIC half catches it: "a NaN
+literal and an oversized division operand are both visible in the SOURCE".
+
+**Measured on the BASELINE binary, that static half does not exist.** Drop the
+import, or make it `import json`, and the same program routes to `lypning`; the
+same is true of the second assertion's `9007199254740993 / 3`. The test passed
+at HEAD only because `import math` was an unserved module — the module blocker
+satisfied it, never the marker it names. Serving `math` removed the prop.
+
+The answer is still right and the chain is still safe: both programs refuse at
+runtime with a kind in `ONLY_CPYTHON_KINDS` (`nan-identity`,
+`int-div-precision`), nothing reaches stdout first, and `lypning run` prints
+`True` and `3002399751580331.0`. Conformance's routing safety is UNSAFE 1 before
+and after, the same pre-existing entry.
+
+Restoring the static markers is a second mechanism in `route::walk_expr`, it
+changes routing for programs that have nothing to do with `math`, and it is a
+pre-existing defect this step merely uncovered. Left red and reported, per the
+skill's stop condition, rather than widened into this change.
+
+## 2026-09-12 · iteration 82 — the standing MISMATCH was not the printer, it was the multiply
+
+Host: Linux x86-64, `x86_64-unknown-linux-musl` build. Corpus 3,688 loaded,
+2,504 graded. Reference `/usr/bin/python3.11`.
+
+### `**` on floats, answered the way the reference libm answers it
+
+| | before | after |
+|---|---|---|
+| `lypning` conformance | 1558 / 945 / **1** — 62.2% | **1559 / 945 / 0** — 62.3% |
+| `lypning` binary | 1,114,320 B, 9 blocks | 1,118,416 B (+4,096), **9 blocks** |
+| `lypning-l` binary | 1,294,544 B, 10 blocks | 1,294,544 B (+0), 10 blocks |
+| `.text` | 854,807 B | 856,087 B (+1,280) |
+
+`py-ab7286f43b7a` — `print(1.7976931348623157e308 ** 0.5)` — answered
+`1.3407807929942597e+154` against CPython's `…596`. It had been waived on three
+arms in `.github/known-mismatches.json` since 2026-08-28 as "a C library
+property, not this tree's code". That was true and it was still fixable.
+
+**Two dead ends worth keeping.** The brief called this float formatting.
+`fmt::float_repr` is shortest-round-trip and prints `…596` and `…597` correctly
+from their own bit patterns — enumerated before anything was touched. And
+`x ** 0.5 -> x.sqrt()` is worse, not better: CPython's own `x ** 0.5` differs
+from `math.sqrt(x)` for 406 of 500,000 random doubles, so *correct* rounding
+here buys a different wrong answer. Agreement with the reference is the
+specification; accuracy is not.
+
+**What it actually was, and the experiment that said so.** musl and glibc ship
+the SAME `pow` — Arm's optimized-routines. Re-running the reference under
+`GLIBC_TUNABLES=glibc.cpu.hwcaps=-FMA,-AVX2` made its answers bit-identical to
+musl's across 18,000 pairs: 16 disagreements to 0. One algorithm, two builds,
+and the only difference is fused multiply-add.
+
+**The fix is that routine ported with the fusions put back** — `pow.rs`, called
+from `ops.rs` instead of `f64::powf`. Two kinds of fusion and the second is the
+one that costs an afternoon: the `#if __FP_FAST_FMA` arms the source selects,
+AND the `a*b + c` contractions GCC performs on its own under
+`-ffp-contract=fast`, which Rust never performs. **Taking only the first
+reproduced musl exactly** — all 16 still wrong. The contraction rule, learned by
+measurement rather than read: a product is fused only where it has ONE use, so
+`specialcase`'s `scale * tmp`, which C computes once and reads twice, stays
+unfused. Fusing it was 30 wrong answers in 3,002,592, every one of them in that
+function.
+
+**6,302,592 pairs, 0 disagreements** against the host libm — full-range random
+bit patterns, exponents aimed at the overflow edge and the subnormal band,
+either side of the 2^-65 and 2^63 cutoffs, bases within forty ulp of 1.0,
+subnormal bases, negative bases at integer powers, the IEEE-special cross
+product; 400,000 of them re-run end to end through the binary and `cmp`-equal.
+
+**Cost, stated.** `mul_add` is a call into musl's software `fma` on a baseline
+x86-64 build: `**` on floats goes ~22 ns → ~277 ns (2 M iterations, this
+container, this date). It is in single digits of corpus programs and in no
+`perf` row, so a rare operator got slower in exchange for not being wrong.
+`-C target-feature=+fma` would take it back and is its own step — it raises the
+CPU floor for the whole binary, which is not a thing to slip into a bug fix.
+
+Gates: `build --rust` ok (contract asserted), `conformance` **MISMATCH 0**,
+`fuzz` 0 counterexamples (seed 21799964, 500 programs), `doctor` 0 FAIL,
+pytest 189 failures before and 189 after — the same 189, `diff`-identical, none
+float-shaped. `gate` FAILs at 9 blocks against an 8-block budget **before and
+after**: that is `lypning-mp` being absent and `gate` substituting `lypning`
+against the oracle's budget, not this change. No block boundary crossed;
++4,096 B of the 65,328 B that stood before a tenth block.
+
+
 ## 2026-09-07 · iteration 81 — the densest row ever measured, and a guard that was one byte from failing
 
 Host: macOS arm64, host-target build. Corpus 3,688 loaded, 2,504 graded.

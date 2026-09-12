@@ -226,7 +226,7 @@ def _served() -> dict:
     probes = set(
         sum((_named(METHODS, t) for t in
              ("STR_METHODS", "LIST_METHODS", "DICT_METHODS", "SET_METHODS",
-              "BYTES_METHODS")), [])
+              "BYTES_METHODS", "INT_METHODS", "FLOAT_METHODS")), [])
     )
     coll = set(_named(RUST / "collections.rs", "COUNTER_METHODS"))
     coll |= set(_named(RUST / "collections.rs", "DEFAULT_METHODS"))

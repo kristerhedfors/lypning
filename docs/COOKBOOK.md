@@ -165,9 +165,9 @@ def first(xs: list) -> int:
     return xs[0] if xs else None
 print(first([7]), first([]))
 ```
-<!-- recipe id=math-prod kind=module detail="import math" -->
+<!-- recipe id=math-prod kind=module-attr detail="math.prod" -->
 ```python
-# before — lypning: unsupported: module: import math
+# before — lypning: unsupported: module-attr: math.prod
 import math
 print(math.prod([2, 3, 7]))
 ```

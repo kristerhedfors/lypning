@@ -1,0 +1,14 @@
+{
+  "aborted": null,
+  "done": 1184,
+  "elapsed_s": 398.0,
+  "eta_s": 0.0,
+  "label": "held-out pass@16, thinking off",
+  "run_id": "headroom-k16",
+  "spend_gpu_usd": 0.2764,
+  "spend_tokens_usd": 0.0,
+  "spend_usd": 0.2764,
+  "state": "done",
+  "total": 1184,
+  "updated_at": "2026-09-11T11:28:59Z"
+}

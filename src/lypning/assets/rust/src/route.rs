@@ -865,6 +865,11 @@ pub const ONLY_CPYTHON_KINDS: &[&str] = &[
     // its answer is the same wrong text this engine refused to print.
     "iterator-type-name",
     "json",
+    // Every refusal `math.rs` raises: a domain error, a `TypeError` on a
+    // non-number, a wrong argument count. Each is a message text CPython owns,
+    // and EVERY variant carries the same `math.rs` — so falling to a larger
+    // sibling would spend a spawn to be told no in the same words.
+    "math",
     "nan-identity",
     // A sort over a NaN is the sort algorithm's answer, not Python's, and
     // lypning-mp's algorithm differs from timsort: `sorted([3,1,nan,2])` is
@@ -1178,6 +1183,11 @@ struct Requirements {
     /// program refused cleanly at 90 before the module was served and CPython
     /// answered it one spawn later. `verdicts` re-checks the IMPORTS against a
     /// larger rung and nothing else, so this is the second thing it re-checks.
+    ///
+    /// `int.to_bytes` is SERVED now (`methods::INT_METHODS`), so that exact
+    /// program routes and answers. The example is kept as the record of the
+    /// defect — the mechanism it describes is unchanged, and every name still
+    /// outside [`known_method`] reaches it the same way.
     method_stop: Option<String>,
     /// Which order-blind wrappers are still the BUILTIN, one bit per index into
     /// [`ORDER_BLIND`]. `sorted` rebound to something that shows its argument's
@@ -1718,6 +1728,13 @@ fn known_method(name: &str) -> bool {
         .is_some()
         || crate::methods::method_name(&crate::value::Value::Bytes(std::rc::Rc::new(Vec::new())), name)
             .is_some()
+        // The numeric probes. `bool` reads `int`'s table, so probing `int`
+        // covers both; `.bit_length()`, `.to_bytes()`, `.from_bytes()`,
+        // `.is_integer()` and `.as_integer_ratio()` are the names they add, and
+        // without them here the walk blocks every program that types one — the
+        // very programs the tables were added to run.
+        || crate::methods::method_name(&crate::value::ival(0), name).is_some()
+        || crate::methods::method_name(&crate::value::Value::Float(0.0), name).is_some()
         || matches!(
             name,
             "read" | "readline" | "readlines" | "write" | "writelines" | "close" | "seek" | "tell"
@@ -1832,6 +1849,9 @@ fn cap_method(name: &str, imports: &[String]) -> bool {
 /// (`.most_common` under `import collections`, `.group` under `import re`,
 /// `.with_suffix` under `import pathlib` — a name only the variant that HAS the
 /// capability can answer) and lets go of every program it was not.
+///
+/// `.to_bytes` is in [`known_method`] now and that program routes and answers;
+/// the example is the record of the defect, not a claim about today's tables.
 fn method_wide_stop(method: Option<String>, imports: &[String]) -> Option<(String, String)> {
     let name = method?;
     if cap_method(&name, imports) {

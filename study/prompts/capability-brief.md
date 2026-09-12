@@ -9,12 +9,19 @@ fallback.
 
 ## Modules you may import
 
-Only these: `sys`, `os`, `os.path`, `io`, `json`, `posixpath`, `random`.
+Only these: `sys`, `os`, `os.path`, `io`, `json`, `math`, `posixpath`, `random`.
 
-Nothing else. In particular there is **no** `re`, `collections`, `math`,
+Nothing else. In particular there is **no** `re`, `collections`,
 `csv`, `pathlib`, `hashlib`, `datetime`, `struct`, `base64`, `itertools`,
 `functools`, `textwrap`, `glob`, `statistics`, `subprocess`, `urllib`,
 `shutil`, `tempfile`, `time` or `argparse`.
+
+`math` is the exactly-defined subset only: `pi`, `e`, `tau`, `inf`, `nan`,
+`floor`, `ceil`, `trunc`, `fabs`, `sqrt`, `isqrt`, `gcd`, `factorial`, `fmod`,
+`copysign`, `isfinite`, `isinf` and `isnan`. No `sin`, `cos`, `tan`, `exp`,
+`log`, `log2`, `log10`, `pow`, `hypot`, `atan2` or `fsum` — a transcendental is
+the platform's libm rather than one answer, so it falls back rather than round
+differently from CPython.
 
 `random` is the seeded-integer subset only: `seed(<int>)` first, then
 `random()`, `randint(a, b)`, `randrange(n)` / `randrange(a, b)`, `choice(<list,

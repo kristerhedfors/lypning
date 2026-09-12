@@ -197,26 +197,57 @@ def test_the_rust_dispatcher_still_falls_through_for_a_capability_gap(lypning_bi
     assert got.stdout.strip() == "1180591620717411303424"
 
 
-def test_a_construct_the_runtime_table_would_escalate_is_kept_off_the_tier_statically(lypning_bin):
-    """The hole between the two tables, and the shape that gets through it.
+def test_a_construct_the_runtime_table_escalates_is_answered_right_if_late(lypning_bin):
+    """The hole between the two tables, and what is actually guaranteed across it.
 
-    `engines.ONLY_CPYTHON_REFUSALS` is the RUNTIME half: it fires on a refusal
-    tier 1 actually emitted. But tier 1 only runs when the classifier sends the
-    program there, and a program whose FIRST blocker is an ordinary capability
-    gap goes straight to lypning-mp — so tier 1 never refuses, the runtime table
-    never sees the kind, and the tier answers wrongly at exit 0.
+    This test used to assert these two programs route STRAIGHT to CPython, on
+    the claim that a NaN literal and an oversized division operand are visible
+    in the SOURCE so a static marker catches what the runtime table cannot.
+    There is no such marker. The ones that existed were the `MICROPYTHON_UNSAFE`
+    AST markers, deleted with the tier they existed for — see the note below,
+    which retired this test's own sibling for exactly that reason.
 
-    An unused import is enough to open it::
+    The assertion passed anyway, for a reason that had nothing to do with what
+    it said: `import math` was an unserved module, so the static MODULE blocker
+    sent the program to CPython and the marker was never consulted. Serving
+    `math` removed the prop and the claim fell over. Measured on the binary
+    before `math.rs` landed, the same programs with the import dropped, or with
+    `import json` in its place, already routed to `lypning` — so the marker was
+    never there.
 
-        import math
-        x = float("nan")
-        print(x in [x])      # CPython True, lypning-mp False
-
-    A NaN literal and an oversized division operand are both visible in the
-    SOURCE, so the static half can catch what the runtime half cannot.
+    What IS guaranteed, and is what the mixture actually promises: the chain's
+    ANSWER matches CPython's. Tier 1 refuses at run time, nothing reaches stdout
+    before the refusal, and some rung above answers correctly. That costs one
+    tier-1 spawn — `WASTED`, not `UNSAFE`, which is the distinction this file's
+    vocabulary exists to draw. Restoring a static marker would buy that spawn
+    back; it is a change to `route::walk_expr` touching programs with nothing to
+    do with `math`, and it is a separate step.
     """
-    assert _route("import math\nx = float('nan')\nprint(x in [x])").engine == eng.CPYTHON
-    assert _route("import math\nprint(9007199254740993 / 3)").engine == eng.CPYTHON
+    # The rung each one lands on differs, and the difference is itself the
+    # point: `nan-identity` is in ONLY_CPYTHON_REFUSALS so it skips every Rust
+    # variant, while `int-div-precision` left that set when `cap-bigint` landed
+    # — `bigint.div_exact` rounds once from the integers, so `lypning-l` answers
+    # it and one spawn is saved. Both are WASTED, neither is UNSAFE.
+    for program, expect_kind, expect_engine in (
+        ("import math\nx = float('nan')\nprint(x in [x])", "nan-identity", eng.CPYTHON),
+        ("import math\nprint(9007199254740993 / 3)", "int-div-precision", eng.LYPNING_L),
+    ):
+        # tier 1 refuses at run time, with the kind that decides the chain...
+        kind = _refusal_kind(program)
+        assert kind == expect_kind, "%r refused as %r" % (program, kind)
+
+        # ...nothing escapes before the refusal, so the rerun cannot double up...
+        r = eng.run(eng.LYPNING, program, binary=lypning_bin)
+        assert r.stdout == "", "output escaped ahead of a refusal"
+
+        # ...and the answer the caller actually gets is CPython's.
+        theirs = eng.run(eng.CPYTHON, program)
+        if theirs.returncode == 127:
+            pytest.skip("no reference CPython")
+        ours = eng.dispatch(program).result
+        assert ours.stdout == theirs.stdout
+        assert ours.returncode == theirs.returncode
+        assert ours.engine == expect_engine
 
 
 # `test_the_static_markers_are_narrow_enough_to_be_worth_their_spawns` is gone with its subject: the MICROPYTHON_UNSAFE AST markers existed only to keep a program off the MicroPython tier, which left the chain

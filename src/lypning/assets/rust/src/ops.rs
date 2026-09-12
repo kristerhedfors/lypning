@@ -827,6 +827,20 @@ impl Interp {
                     };
                     return Ok(Value::Tuple(Rc::new(a)));
                 }
+                // `KeyError` is the one class whose message is not its
+                // argument: it stores `repr(key)` so that `str(e)` can be
+                // `"'k'"` and a missing `''` stays distinguishable from a
+                // missing `' '`. `args` wants the key itself, and un-`repr`ing
+                // a string is not a thing this can do correctly — `KeyError(1)`
+                // and `KeyError('1')` both store `1` and `'1'` respectively,
+                // but a key that is a tuple or a float has no round trip here.
+                // So `args` refuses on this one class and answers on the rest.
+                "args" if *kind == "KeyError" => {
+                    return Err(unsupported(
+                        "exception",
+                        "KeyError.args, whose key this value keeps only as its repr",
+                    ))
+                }
                 "args" => return Ok(Value::Tuple(Rc::new(vec![Value::Str(msg.clone())]))),
                 // OSError-family exceptions carry `.errno`/`.strerror`/
                 // `.filename`, and the message we build always has the shape
@@ -917,7 +931,21 @@ impl Interp {
         // by accident. Answering here keeps them where the answer is right.
         if name == "__name__" {
             if let Value::Builtin(b) = base {
-                return Ok(Value::Str((*b).into()));
+                // `__name__` is `__qualname__` and is BARE for every class this
+                // engine holds — `tp_name`'s dotted spellings
+                // (`collections.defaultdict`, `json.decoder.JSONDecodeError`)
+                // are what `repr` prints, not this, so `class_name` is the
+                // wrong source here and using it would trade one wrong answer
+                // for two.
+                //
+                // The one correction is the alias CPython collapses:
+                // `IOError is EnvironmentError is OSError` — one class under
+                // three names — so all three answer `OSError`, and this
+                // answered `IOError` at exit 0. Read off CPython 3.11 by
+                // running it. `EnvironmentError` is not in `BUILTINS` at all
+                // and refuses before it reaches here; the arm carries it anyway
+                // so that adding the name later cannot reintroduce the defect.
+                return Ok(Value::Str(crate::builtins::canonical_class(b).into()));
             }
         }
         if name.starts_with("__") && name.ends_with("__") && name.len() > 4 {
@@ -1111,7 +1139,7 @@ fn num_binop(op: BinOp, a: Num, b: Num, both_bool: bool) -> R<Value> {
             }
             Pow => {
                 if y < 0 {
-                    Value::Float((x as f64).powf(y as f64))
+                    Value::Float(crate::pow::pow(x as f64, y as f64))
                 } else {
                     let mut acc: i64 = 1;
                     let mut base = x;
@@ -1234,7 +1262,9 @@ fn num_binop(op: BinOp, a: Num, b: Num, both_bool: bool) -> R<Value> {
             Value::Float(m)
         }
         Pow => {
-            // Three cases Rust's powf answers and Python does not.
+            // Three cases C's `pow` answers and Python does not. The fourth
+            // — one ulp wrong because musl's libm is not the reference's —
+            // is `pow::pow`, which this calls instead of `f64::powf`.
             if x == 0.0 && y < 0.0 {
                 return Err(zero_div("0.0 cannot be raised to a negative power"));
             }
@@ -1247,7 +1277,7 @@ fn num_binop(op: BinOp, a: Num, b: Num, both_bool: bool) -> R<Value> {
                     "a negative float raised to a fractional power (Python returns a complex number)",
                 ));
             }
-            let r = x.powf(y);
+            let r = crate::pow::pow(x, y);
             if r.is_infinite() && x.is_finite() && y.is_finite() {
                 return Err(overflow_err("(34, 'Numerical result out of range')"));
             }
@@ -1373,6 +1403,30 @@ fn identity(a: &Value, b: &Value) -> R<bool> {
             "identity",
             "`is` between two equal immutable values, which CPython answers from interning",
         ));
+    }
+    // A NaN is the one value the guard above cannot see, because it is the one
+    // value not equal to itself: `eq` answers false, the interning arm never
+    // fires, and this fell through to `Ok(false)` — so `n is n` answered False
+    // where CPython answers True. The float carries no `Rc`, so `is_same` has
+    // no arm for it and there is nothing here that can tell one NaN object from
+    // two. Refusing is the only answer that is not a guess, and `nan-identity`
+    // is already a kind no reimplementation may have.
+    //
+    // Not `identity`: the reason is not interning, it is that equality cannot
+    // stand in for identity over a value that is not equal to itself.
+    //
+    // Found in a program a model wrote to route AROUND the `in`-over-a-NaN
+    // refusal, by spelling the same question as `any(x is n for x in l)`. The
+    // sequence guard caught the first spelling and this one went straight
+    // through — a refusal that can be reworded into a wrong answer is not a
+    // guard, and the corpus is full of models doing the rewording.
+    if let (Value::Float(x), Value::Float(y)) = (a, b) {
+        if x.is_nan() || y.is_nan() {
+            return Err(unsupported(
+                "nan-identity",
+                "`is` over a NaN, which is not equal to itself, so CPython decides it by object identity",
+            ));
+        }
     }
     Ok(false)
 }
@@ -1836,7 +1890,7 @@ fn percent_format(f: &str, arg: &Value) -> R<String> {
     let mut out = String::with_capacity(f.len() + 8 * pct);
     // One buffer for every conversion in this format string.
     let mut spec = String::new();
-    let mut min_digits = 0usize;
+    let mut pct = IntPrec::default();
     let mut ai = 0;
     let mut i = 0;
     while i < b.len() {
@@ -1870,11 +1924,11 @@ fn percent_format(f: &str, arg: &Value) -> R<String> {
                 .get(&Value::Str(key.into()))?
                 .ok_or_else(|| key_err(format!("'{key}'")))?;
             i = j + 1;
-            i = read_spec(f, b, i, &mut spec, &mut min_digits)?;
-            out.push_str(&percent_one(&v, &spec, min_digits)?);
+            i = read_spec(f, b, i, &mut spec, &mut pct)?;
+            out.push_str(&percent_one(&v, &spec, &pct)?);
             continue;
         }
-        i = read_spec(f, b, i, &mut spec, &mut min_digits)?;
+        i = read_spec(f, b, i, &mut spec, &mut pct)?;
         let v = args
             .get(ai)
             .ok_or_else(|| type_err("not enough arguments for format string"))?;
@@ -1885,11 +1939,11 @@ fn percent_format(f: &str, arg: &Value) -> R<String> {
         // with a width, a flag or another type takes the full path unchanged.
         match (spec.as_str(), v) {
             ("s", Value::Str(sv)) => out.push_str(sv),
-            ("d", Value::Int(n)) if min_digits == 0 && n.small().is_some() => {
+            ("d", Value::Int(n)) if pct.min_digits == 0 && n.small().is_some() => {
                 use std::fmt::Write;
                 let _ = write!(out, "{}", n.small().unwrap_or(0));
             }
-            _ => out.push_str(&percent_one(v, &spec, min_digits)?),
+            _ => out.push_str(&percent_one(v, &spec, &pct)?),
         }
     }
     // The leftover-argument check is skipped for anything CPython considers a
@@ -1908,6 +1962,28 @@ fn percent_format(f: &str, arg: &Value) -> R<String> {
     Ok(out)
 }
 
+/// The parts of a `%` conversion that a MINIMUM-DIGIT precision has to put back
+/// together itself, because the `format()` mini-language has no spelling for
+/// "at least P digits" and the translated spec therefore cannot carry it.
+///
+/// Everything else about a conversion travels in the translated spec. These six
+/// fields exist only for the path in [`percent_one`] that renders the padded
+/// body directly: the zero fill goes BETWEEN the `0x` and the digits, the sign
+/// goes in front of both, and the outer width is applied last — three slots the
+/// translated spec would have to be reparsed to find.
+#[derive(Default)]
+struct IntPrec {
+    /// The precision of an integer conversion: a minimum digit count. Zero when
+    /// the conversion has none, which is every other conversion there is.
+    min_digits: usize,
+    width: usize,
+    left: bool,
+    zero: bool,
+    /// `'+'`, `' '`, or `'\0'` for neither.
+    sign: char,
+    alt: bool,
+}
+
 /// Read one printf conversion and translate it into a `format()` spec, written
 /// into `spec` rather than returned. Returns the index just past the conversion.
 ///
@@ -1920,10 +1996,10 @@ fn read_spec(
     b: &[u8],
     mut i: usize,
     spec: &mut String,
-    min_digits: &mut usize,
+    pct: &mut IntPrec,
 ) -> R<usize> {
     spec.clear();
-    *min_digits = 0;
+    *pct = IntPrec::default();
     let flag0 = i;
     while i < b.len() && matches!(b[i], b'-' | b'+' | b' ' | b'#' | b'0') {
         i += 1;
@@ -2010,15 +2086,69 @@ fn read_spec(
     // meant the precision was silently ignored: 3,724 cells of the conversion
     // grid answered without it, at exit 0.
     //
-    // The DECISION is `percent_one`'s, because it needs the value: a precision
-    // that asks for no more digits than the number already has changes nothing,
-    // and refusing those would give away coverage for free (`'%.2d' % 42` is
-    // `'42'` either way). Reported here, acted on there.
+    // The RENDERING is `percent_one`'s, because it needs the value: the sign is
+    // not one of the minimum digits, so how many zeros go in front depends on
+    // whether the number is negative. Reported here, acted on there.
     //
     // `%.0d` and `%.d` never reach it — zero minimum digits is what every value
-    // already has — and neither does `%.Nc`, which CPython ignores.
-    if !prec.is_empty() && !bare_dot && prec != ".0" && matches!(ty, "d" | "x" | "X" | "o" | "b") {
-        *min_digits = prec[1..].parse().unwrap_or(0);
+    // already has — and neither does `%.Nc`, which CPython ignores. `%b` is not
+    // a conversion CPython has at all, so it is not in the list.
+    //
+    // A width or a precision too large for a `usize` is left in the spec for
+    // `parse_spec` to reject with CPython's own sentence, rather than parsed to
+    // a silent zero here.
+    //
+    // AND SO IS ONE THAT FITS A `usize` BUT NOT CPython's CAP. `%`-conversion
+    // width and precision are `int` in `unicodeobject.c`, so anything past
+    // `INT_MAX` is `ValueError: precision too big` / `width too big` there.
+    // Reading them as a `usize` and believing it made `'%.2147483648d' % 5`
+    // build a two-gigabyte string and print it at exit 0, and
+    // `'%.9223372036854775807d' % 5` abort the process — `memory allocation of
+    // 9223372036854775807 bytes failed`, exit 134, which is not the exit-90
+    // contract and reaches a caller as an unexplained death. The whole range
+    // `[INT_MAX + 1, usize::MAX]` was unguarded; `usize::MAX` itself parsed
+    // fine and then overflowed `String::with_capacity`.
+    //
+    // Found by an adversarial re-check of this arm AFTER it shipped, not by the
+    // grid that came with it: 304,722 `%` cells all passed, because every one
+    // of them had a precision a human would write.
+    // Both are capped BEFORE anything sizes an allocation from them, and the
+    // cap is this runtime's allocation ceiling rather than CPython's `INT_MAX`,
+    // because the two failures want different answers and only one of them is
+    // ours to give. Past `INT_MAX` CPython says `ValueError: precision too
+    // big`; between the ceiling and `INT_MAX` it says `MemoryError` or churns
+    // through gigabytes. A refusal is right for both: it is always acceptable,
+    // it costs one spawn, and CPython then gives whichever sentence is its own.
+    let ceiling = MAX_ALLOC_BYTES;
+    for (field, text) in [("precision", prec.strip_prefix('.').unwrap_or("")), ("width", width)] {
+        if text.len() > 10 || text.parse::<usize>().map_or(false, |n| n > ceiling) {
+            return Err(unsupported(
+                "percent-format",
+                &format!(
+                    "a {field} of {text} in a % conversion — over this runtime's {ceiling} ceiling"
+                ),
+            ));
+        }
+    }
+    let w = if width.is_empty() { Ok(0) } else { width.parse::<usize>() };
+    if !prec.is_empty() && !bare_dot && prec != ".0" && matches!(ty, "d" | "x" | "X" | "o") {
+        match (prec[1..].parse::<usize>(), w) {
+            (Ok(p), Ok(w)) => {
+                pct.min_digits = p;
+                pct.width = w;
+                pct.left = left;
+                pct.zero = flags.contains('0') && !left;
+                pct.sign = if flags.contains('+') {
+                    '+'
+                } else if flags.contains(' ') {
+                    ' '
+                } else {
+                    '\0'
+                };
+                pct.alt = flags.contains('#');
+            }
+            _ => spec.push_str(prec),
+        }
     } else {
         spec.push_str(prec);
     }
@@ -2029,22 +2159,70 @@ fn read_spec(
     Ok(i)
 }
 
-/// `min_digits` is the precision of an INTEGER conversion, which `format()` has
-/// no spelling for: `'%.2d' % 1` is `'01'` and `'%.7d' % -42` is `'-0000042'`.
+/// The body of an integer conversion that a MINIMUM-DIGIT precision has made
+/// longer than its own digits: `'%#08.3x' % -5` is `'-0x00005'`.
 ///
-/// It is honoured when the value already satisfies it and **refused** when it
-/// does not. That split is the whole point of deciding here rather than in
-/// `read_spec`: only a value knows how many digits it has, so `'%.2d' % 42`
-/// keeps working and only `'%.2d' % 1` leaves.
+/// Three fills in three different slots, and CPython puts them in this order —
+/// which is the whole reason this is not one `format()` call:
 ///
-/// Refused rather than implemented, deliberately. It IS expressible — the body
-/// is `format(v, "0{P + 1 if signed}d")`, and the outer width composes on top,
-/// collapsing to a single call of width `max(P + signlen, W)` when the `0` flag
-/// is set. That is three composition rules to get exactly right on a construct
-/// the corpus barely contains, and this session has already shipped one bug by
-/// being clever on an error path (ledger, iteration 28). A refusal costs one
-/// spawn and CPython answers it; a wrong answer costs the caller's trust.
-fn percent_one(v: &Value, spec: &str, min_digits: usize) -> R<String> {
+/// 1. the precision's zeros go between the `0x` and the digits;
+/// 2. the `0` flag's zeros go in the SAME slot, widening the run to the field
+///    width — so `'%05.7d' % -5` is `'-0000005'`, seven digits, not five;
+/// 3. the width's spaces go outside everything, on the left unless `-`.
+///
+/// A `-` beats a `0` (`read_spec` has already cleared `pct.zero` for it), and
+/// `#` prefixes only the radix conversions — `'%#.3d' % 5` is `'005'`.
+///
+/// Every part is ASCII, so `len()` is the character count CPython pads to.
+fn min_digit_body(digits: &str, neg: bool, pct: &IntPrec, ty: char) -> String {
+    let prefix = if pct.alt {
+        match ty {
+            'x' => "0x",
+            'X' => "0X",
+            'o' => "0o",
+            _ => "",
+        }
+    } else {
+        ""
+    };
+    let sign = if neg {
+        "-"
+    } else if pct.sign == '+' {
+        "+"
+    } else if pct.sign == ' ' {
+        " "
+    } else {
+        ""
+    };
+    let head = sign.len() + prefix.len();
+    let mut zeros = pct.min_digits - digits.len();
+    if pct.zero {
+        zeros += pct.width.saturating_sub(head + zeros + digits.len());
+    }
+    let body = head + zeros + digits.len();
+    let spaces = pct.width.saturating_sub(body);
+    let mut out = String::with_capacity(body + spaces);
+    if spaces > 0 && !pct.left {
+        out.extend(std::iter::repeat(' ').take(spaces));
+    }
+    out.push_str(sign);
+    out.push_str(prefix);
+    out.extend(std::iter::repeat('0').take(zeros));
+    out.push_str(digits);
+    if spaces > 0 && pct.left {
+        out.extend(std::iter::repeat(' ').take(spaces));
+    }
+    out
+}
+
+/// `pct.min_digits` is the precision of an INTEGER conversion, which `format()`
+/// has no spelling for: `'%.2d' % 1` is `'01'` and `'%.7d' % -42` is
+/// `'-0000042'`.
+///
+/// A value that already has that many digits needs nothing done to it and takes
+/// the ordinary translated-spec path; only the short ones are rendered by
+/// [`min_digit_body`], which is why the decision is here and not in `read_spec`.
+fn percent_one(v: &Value, spec: &str, pct: &IntPrec) -> R<String> {
     // A flag under `%`: the `s` and `r` conversions are `str()`/`repr()` and
     // then padding — `'%s' % re.I` and `'%-20s' % re.I` print `re.IGNORECASE`
     // on every CPython, and the two arms below do exactly that — so they pass.
@@ -2072,48 +2250,46 @@ fn percent_one(v: &Value, spec: &str, min_digits: usize) -> R<String> {
             _ => return Err(type_err("%c requires int or char")),
         }
     }
-    if min_digits > 0 {
-        let radix = match spec.chars().last() {
-            Some('x') | Some('X') => 16,
-            Some('o') => 8,
-            Some('b') => 2,
-            _ => 10,
+    if pct.min_digits > 0 {
+        let ty = spec.chars().last().unwrap_or('d');
+        let (radix, upper) = match ty {
+            'x' => (16, false),
+            'X' => (16, true),
+            'o' => (8, false),
+            _ => (10, false),
         };
         // A WIDE INTEGER HAS DIGITS TOO, AND THEY ARE THE ANSWER HERE. This
         // asked `Int::get()` for a machine word first, so `'%.3d' % (2**100,)`
         // refused where `'%d' % (2**100,)` answers — a precision narrowed the
         // conversion rather than widening it, for a value whose 31 digits
         // satisfy the minimum several times over. The digits come from the same
-        // function the `d` and `x` arms of `fmt` use, so the count is the one
-        // that will be printed and not an estimate of it.
-        let have = match fmt::wide_digits(v, radix, false)? {
-            Some(d) => d.len(),
+        // function the `d` and `x` arms of `fmt` use, so they are the ones that
+        // will be printed and not an estimate of them.
+        let (digits, neg) = match fmt::wide_digits(v, radix, upper)? {
+            Some(d) => (d, matches!(v, Value::Int(i) if i.sign() < 0)),
             None => {
                 let n = match v {
                     Value::Int(i) => i.get()?,
                     Value::Bool(b) => *b as i64,
-                    // A float or anything else here is already the `integer
-                    // format code applied to …` refusal one line down; let it
-                    // produce its message.
-                    _ => 0,
+                    // A float or anything else under `%d` is a refusal the
+                    // ordinary path below produces; let it produce its message
+                    // rather than answer a padded one here.
+                    _ => return fmt::format_value_pct(v, spec),
                 };
                 let a = n.unsigned_abs();
-                match radix {
-                    16 => format!("{a:x}").len(),
-                    8 => format!("{a:o}").len(),
-                    2 => format!("{a:b}").len(),
-                    _ => a.to_string().len(),
-                }
+                let d = match (radix, upper) {
+                    (16, false) => format!("{a:x}"),
+                    (16, true) => format!("{a:X}"),
+                    (8, _) => format!("{a:o}"),
+                    _ => a.to_string(),
+                };
+                (d, n < 0)
             }
         };
-        if have < min_digits {
-            return Err(unsupported(
-                "percent-format",
-                &format!(
-                    "%.{min_digits}{} — a precision on an integer conversion is minimum digits",
-                    spec.chars().last().unwrap_or('d')
-                ),
-            ));
+        // A precision that asks for no more digits than the value already has
+        // changes nothing, and the translated spec renders those exactly.
+        if digits.len() < pct.min_digits {
+            return Ok(min_digit_body(&digits, neg, pct, ty));
         }
     }
     if let Some(rest) = spec.strip_suffix('r') {

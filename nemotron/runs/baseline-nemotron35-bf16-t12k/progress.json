@@ -1,0 +1,14 @@
+{
+  "aborted": null,
+  "done": 74,
+  "elapsed_s": 1041.1,
+  "eta_s": 0.0,
+  "label": "stock baseline",
+  "run_id": "baseline-nemotron35-bf16-t12k",
+  "spend_gpu_usd": 0.723,
+  "spend_tokens_usd": 0.0,
+  "spend_usd": 0.723,
+  "state": "done",
+  "total": 74,
+  "updated_at": "2026-09-11T10:32:34Z"
+}
