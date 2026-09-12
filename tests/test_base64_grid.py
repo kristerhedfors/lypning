@@ -500,21 +500,30 @@ RUNTIME_BACKSTOP = [
 #: Each row is asserted twice — it must ROUTE to CPython, and lypning-l must
 #: still fail it, because a row lypning-l learned to answer would be a coverage
 #: loss quietly asserted as a fix.
+#: Every row here named `.to_bytes()`, `.bit_length()` or `.is_integer()`, and
+#: `methods::INT_METHODS` / `FLOAT_METHODS` now SERVE all three — so they route
+#: and answer, which is the point of serving them. The hole this table pins is
+#: unchanged, so the rows are re-pointed at `.bit_count()` (CPython 3.10) and
+#: `.conjugate()`: names CPython answers, `INT_MISSING`/`FLOAT_MISSING` decline,
+#: and no capability on the spectrum adds. Nothing here runs on the reference
+#: interpreter — the assertions are the ROUTE and that lypning-l fails — so
+#: `bit_count` is safe in this table where `test_hashlib_grid.py`'s cannot use
+#: it.
 ROUTED_PAST_LYPNING_L = [
-    B + "print(base64.b64encode((255).to_bytes(2, 'big')))",
-    B + "print(int.from_bytes(base64.b64decode(b'AAAB'), 'big'))",
+    B + "print(base64.b64encode(str((255).bit_count()).encode()))",
+    B + "print(base64.b64encode(str(int.from_bytes(base64.b64decode(b'AAAB'), 'big').bit_count()).encode()))",
     B + "print(base64.b64encode(b'hi').nosuchmethod())",
-    B + "x = 1.5\nprint(base64.b64encode(str(x.is_integer()).encode()))",
-    B + "print(base64.b64encode(str((7).bit_length()).encode()))",
-    "from base64 import b64encode\nprint(b64encode((255).to_bytes(2, 'big')))",
+    B + "x = 1.5\nprint(base64.b64encode(str(x.conjugate()).encode()))",
+    B + "print(base64.b64encode(str((7).bit_count()).encode()))",
+    "from base64 import b64encode\nprint(b64encode(str((255).bit_count()).encode()))",
     # …and row 0 again, once per method-bearing import
-    "import base64, re\nprint(base64.b64encode((255).to_bytes(2, 'big')))",
-    "import base64, collections\nprint(base64.b64encode((255).to_bytes(2, 'big')))",
-    "import base64, pathlib\nprint(base64.b64encode((255).to_bytes(2, 'big')))",
+    "import base64, re\nprint(base64.b64encode(str((255).bit_count()).encode()))",
+    "import base64, collections\nprint(base64.b64encode(str((255).bit_count()).encode()))",
+    "import base64, pathlib\nprint(base64.b64encode(str((255).bit_count()).encode()))",
     "from collections import Counter\n" + B
-    + "print(base64.b64encode((255).to_bytes(2, 'big')))",
+    + "print(base64.b64encode(str((255).bit_count()).encode()))",
     # …and the same hole with no base64 in it at all
-    "import re\nprint((255).to_bytes(2, 'big'))",
+    "import re\nprint((255).bit_count())",
 ]
 
 #: The other half of the same rule, and the reason this table is as long as the

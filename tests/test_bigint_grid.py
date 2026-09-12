@@ -331,7 +331,38 @@ DIVISION = [
     for b in (2**53 + 1, 2**62, -(2**62), 3)
 ]
 
-GRID = ARITHMETIC + SIGNS + RENDERING + WIRING + SMALL + DIVISION
+#: `methods::INT_METHODS`, over the width where this capability is the reason
+#: the program runs at all.
+#:
+#: `bit_length` and the two base-256 conversions are served by BOTH variants —
+#: they are `int` methods, not a capability — but `cap-bigint` is what decides
+#: whether the ANSWER exists here or is a refusal: `(2**100).bit_length()` is
+#: 101 on this binary and `unsupported: bigint` on the core, and
+#: `int.from_bytes` of nine bytes is the same split read the other way. The
+#: rows below are therefore graded against CPython on `lypning-l` and are the
+#: half of the method tables this file is the right place for; the arity,
+#: byteorder and `signed=` shapes that need no wide integer are enumerated in
+#: the shell against CPython instead (CHANGELOG, this date).
+NUMERIC = [
+    "print((2**100).bit_length())",
+    "print((2**100 - 1).bit_length(), (-(2**100)).bit_length())",
+    "print((0).bit_length(), (-5).bit_length(), (5).bit_length())",
+    "print(True.bit_length(), False.bit_length())",
+    "print(int.bit_length(5))",
+    "print((255).to_bytes(2, 'big'))",
+    "print(int.to_bytes(255, 2, 'big'))",
+    "print((-1).to_bytes(4, 'little', signed=True))",
+    "print(int.from_bytes(b'\\x01' * 16, 'big'))",
+    "print(int.from_bytes(b'\\xff' * 8, 'big'), int.from_bytes(b'\\xff' * 8, 'big', signed=True))",
+    "print(int.from_bytes(b'\\x01' + b'\\x00' * 12, 'big') == 2**96)",
+    "print((0.1).as_integer_ratio(), (2.5).as_integer_ratio())",
+    "print((-0.0).as_integer_ratio(), (0.0).as_integer_ratio())",
+    "print((1.5).is_integer(), (2.0).is_integer(), float('nan').is_integer())",
+    "print((2**100).as_integer_ratio())",
+    "print((5).as_integer_ratio(), (-5).as_integer_ratio(), True.as_integer_ratio())",
+]
+
+GRID = ARITHMETIC + SIGNS + RENDERING + WIRING + SMALL + DIVISION + NUMERIC
 
 # ---- the refusals ----------------------------------------------------------
 
@@ -413,25 +444,25 @@ REFUSED = [
     "print((2**100) ^ 1)",
     "print(~(2**100))",
     "print(1 & (2**100))",
-    # int methods this engine does not implement — an AttributeError here would
-    # be exit 1, which the chain never retries. `cap-bigint` is what makes these
-    # programs reachable at all, so the table is part of the capability.
-    "print((2**100).bit_length())",
-    "print((255).to_bytes(2, 'big'))",
+    # int methods this engine STILL does not implement — an AttributeError here
+    # would be exit 1, which the chain never retries. `cap-bigint` is what makes
+    # these programs reachable at all, so the table is part of the capability.
+    #
+    # `bit_length`, `to_bytes` and `from_bytes` left this list when
+    # `INT_METHODS` was added; they are in `NUMERIC` below, graded against
+    # CPython rather than asserted to refuse. What is left is the version
+    # question and the properties: `bit_count` is 3.10 and `is_integer` is
+    # 3.12, and answering either would be a wrong answer on an older reference
+    # interpreter, which is exactly the trade `FLOAT_MISSING`'s `from_number`
+    # row states.
     "print((5).bit_count())",
-    "print((5).as_integer_ratio())",
     "print((5).numerator, (5).denominator)",
     "print((5).real, (5).imag, (5).conjugate())",
     "print((5).is_integer())",
-    "print(True.bit_length())",
-    # …and the same names read off the TYPE OBJECT rather than off a value.
-    # `INT_MISSING` closed the instance spelling; `int.from_bytes(...)` reached
-    # `Value::Builtin("int")` instead and was an AttributeError at exit 1 for a
-    # classmethod CPython answers. Refused, not served: serving it is bytes in
-    # a binary, and a refusal is answered one spawn later.
-    "print(int.from_bytes(b'\\x01' * 16, 'big'))",
-    "print(int.to_bytes(255, 2, 'big'))",
-    "print(int.bit_length(5))",
+    # `int.from_bytes` read off the TYPE OBJECT is a CLASSMETHOD, and the
+    # classmethod's result is `cls` — so `bool.from_bytes` is a `bool` where
+    # this engine's table would answer an `int`. That one stays a refusal
+    # whatever `int` serves.
     "print(int.from_bytes)",
     "print(bool.from_bytes(b'\\x01', 'big'))",
     # …and the OTHER half of the same rule, which a differential sweep over
@@ -475,7 +506,17 @@ RUNTIME_BACKSTOP = [
     ("bigint", "print(2 ** (10**9))"),
     ("bigint", "print(str(10**4300)[:3])"),
     ("bigint", "n = 1\nfor i in range(1, 40):\n    n *= i\nprint(n / 3)"),
-    ("int-method", "print((2**100).bit_length())"),
+    # `bit_length` was this row until `INT_METHODS` served it. The kind still
+    # has a runtime backstop and it is still value-dependent: `bit_count` is a
+    # name `int` does not have here (it is CPython 3.10's, and answering it
+    # would be a wrong answer on an older reference interpreter), and only
+    # `cap-bigint` makes a program that reaches it on a wide value run far
+    # enough to ask.
+    ("int-method", "print((2**100).bit_count())"),
+    # `to_bytes` of a wide integer needs a machine word this engine does not
+    # have for it — served for an `i64` receiver, refused past one, never
+    # truncated.
+    ("bigint", "print((2**100).to_bytes(16, 'big'))"),
 ]
 
 #: The refusals a walk CAN see, because the digits are in the source. A literal

@@ -20,6 +20,89 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-12** — Six numeric methods: `int.bit_length`, `int.to_bytes`, `int.from_bytes`, `int.as_integer_ratio`, `float.as_integer_ratio`, `float.is_integer`
+
+- **`int` and `float` had no method table at all**, so every one of those names
+  was `unsupported: int-method` / `float-method` — a refusal and a CPython
+  spawn. `methods::INT_METHODS` and `FLOAT_METHODS` are the two new tables, read
+  by the same `find_sorted` every other type uses and probed by
+  `route::known_method`, which is the half that makes the walk route the
+  programs instead of blocking them.
+- **Chosen because every one of them is exact.** A bit count, two base-256
+  conversions and a rational read out of the mantissa: nothing here rounds, so
+  there is no input where a naive version quietly differs from CPython. That
+  rules out the neighbours — `float.hex` and `float.fromhex` stay refusals.
+- **`int.as_integer_ratio` is here because `float`'s is.** `route::known_method`
+  is a union over probe types and cannot see a receiver, so serving the float
+  spelling admits the int spelling to the walk too; leaving it missing would
+  have moved `(1).as_integer_ratio()` from a blocker decided before the program
+  starts to a refusal reached at runtime, past a committed barrier (#51). It is
+  `(n, 1)` at every width, so answering closes the hole for four lines.
+  `int.bit_count()` (3.10) and `int.is_integer()` (3.12) still lose their static
+  block for the same reason, and still refuse: a version-grown method answered
+  here would be a wrong answer on an older reference interpreter.
+- **A result past 64 bits is the existing `bigint` refusal, never a wrap.**
+  `int.from_bytes` of nine bytes, `(1e300).as_integer_ratio()`'s numerator and
+  `(5e-324)`'s denominator all refuse; the core has no wide integer, so the
+  refusal is what routes the `from_bytes` half to `lypning-l`, which answers it.
+- **Three shapes refuse rather than answer, each for a stated reason.** The
+  `byteorder`/`length` DEFAULTS are CPython 3.11's and this engine is graded
+  against whatever CPython the caller has, so a call that leans on one is exit
+  90. `bool.from_bytes` is a classmethod whose result is a `bool`, not an
+  `int`.
+- **Three grid tables used these names as the stand-in for "a method nothing on
+  the spectrum has"** and are re-pointed at `bit_count`, `conjugate`,
+  `numerator` and `denominator`, which are still outside `known_method`:
+  `test_bigint_grid.py`'s `REFUSED`, `test_hashlib_grid.py`'s `HIDDEN_BLOCKER`,
+  `test_base64_grid.py`'s `ROUTED_PAST_LYPNING_L`. The mechanisms they pin are
+  unchanged; the examples stopped being examples.
+- 326 shapes — zero, negative, `i64::MIN`, the empty `bytes`, `-0.0`, NaN, both
+  infinities, the signed/unsigned and big/little cross-product — diffed against
+  CPython 3.11.15 on both binaries: **0 mismatches**, 39 clean refusals on the
+  core and 23 on `lypning-l`.
+- Bytes: `lypning` 1,114,320 → 1,122,512 (+8,192, **9 blocks either way**);
+  `lypning-l` 1,294,544 → 1,298,640 (+4,096, 10 blocks either way). No device
+  block crossed. `conformance` over the 3,688-entry corpus loaded on this date
+  is unmoved at MATCH 1558 / UNSUPPORTED 945 / MISMATCH 1 (the pre-existing
+  `py-ab7286f43b7a` float repr): no corpus program is blocked FIRST on a
+  numeric method, and `--plan` has no `int-method` or `float-method` row. This
+  feature is paid for by the held-out model set, not by the corpus.
+
+**2026-09-12** — a precision on an integer conversion, and an integer format code on a float · [#59]
+
+- **`'%.2d' % 5` is `'05'`, and it used to refuse.** A precision on an integer
+  `%` conversion is a MINIMUM DIGIT COUNT, which the `format()` mini-language
+  cannot spell — so the translated spec could not carry it, and the conversion
+  left by the refusal contract whenever the precision actually added a digit. It
+  is rendered directly now. Three fills in three slots, in CPython's order: the
+  precision's zeros go between the `0x` and the digits, the `0` flag widens that
+  same run to the field width (`'%05.7d' % -5` is `'-0000005'`, seven digits and
+  not five), and the width's spaces go outside everything. The sign is not one
+  of the minimum digits, which is why the rendering needs the value.
+- **`format(2.0, 'd')` raises CPython's ValueError instead of refusing.** An
+  integer presentation type on a value that is not an integer is `Unknown format
+  code 'd' for object of type 'float'`, and CPython matches the code against the
+  object before it reads anything else in the spec — so `format(0.0, '.2d')`
+  names the code and not the precision.
+- **The `%` operator keeps refusing there, deliberately.** The two grammars
+  disagree: `'%d' % 2.7` is `'2'` — the operator truncates — `'%d' % 1e30`
+  truncates into a bignum, and `'%x' % 2.7` is a TypeError with a third
+  sentence. None of that is implemented, so only the `format()` side raises.
+- Verified by enumerating 71,032 formatting programs against live CPython on
+  stdout, exit code **and the exception sentence** — conformance compares only
+  the exception type. 30 divergences fell out; all 30 reproduce on the unchanged
+  binary and none is in the code this entry changes.
+[#59]: https://github.com/kristerhedfors/lypning/pull/59
+
+> **Both of the above were measured alone and each stayed inside its block.**
+> Landed together on top of `math` and `type()`, `lypning-l` crosses one:
+> 1,294,544 B (10 device blocks) at the start of the day to 1,310,928 B
+> (11), which is 208 B past the ten-block line. That is a whole 131,072 B
+> block of cold read, bought by four features. `lypning`, the hot path,
+> is unchanged at 9 blocks, and `gate.VARIANT_BLOCK_BUDGET` gives
+> `lypning-l` 32 — so nothing is over budget, and the cost is recorded
+> rather than discovered later.
+
 **2026-09-12** — `type()` of any class the engine can name, and five wrong answers the old refusal was hiding (branch `claude/nemotron-lora-pipeline-1zczi2`)
 
 - **`type(e).__name__` inside an `except` now answers.** It is the commonest

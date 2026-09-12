@@ -305,33 +305,6 @@ fn dict_subclass(_want: &str, _have: &str) -> bool {
     false
 }
 
-/// The `&'static str` the tables hold for a class name, so `type()` can build a
-/// `Value::Builtin` without leaking one. `class_name` answers `tp_name`, which
-/// is DOTTED for `collections.defaultdict` and is not the name a value carries;
-/// this answers the entry as spelled in the table the rest of the engine
-/// compares against.
-fn interned_class(n: &str) -> R<&'static str> {
-    BUILTINS
-        .iter()
-        .chain(EXCEPTIONS.iter())
-        .chain(MODULE_EXCEPTIONS.iter())
-        .chain(EXTRA_CLASSES.iter())
-        .find(|b| **b == n)
-        .copied()
-        .ok_or_else(|| unsupported("type", &format!("type() of a {n}")))
-}
-
-/// Class names that live in a module rather than the builtin namespace, and so
-/// are in neither table above. One list, read only by [`interned_class`].
-const EXTRA_CLASSES: &[&str] = &[
-    #[cfg(feature = "cap-pathlib")]
-    "Path",
-    #[cfg(feature = "cap-collections")]
-    "Counter",
-    #[cfg(feature = "cap-collections")]
-    "defaultdict",
-];
-
 /// The name CPython would give the class `n` — its `__qualname__`, and its
 /// IDENTITY.
 ///
@@ -1935,9 +1908,13 @@ pub fn call_builtin(
             // `__name__` answers, `repr` refuses for exactly the pair it
             // cannot spell, `is` compares by name, and calling it constructs.
             // No new surface, which is why this costs 96 bytes.
+            // `type_name` is already the `&'static str` the tables compare
+            // against, so the class object is that name and nothing has to be
+            // looked up twice — `class_name` is asked only WHETHER this engine
+            // can name the class, never what to call it.
             let tn = type_name(&v);
             match class_name(tn) {
-                Some(_) if tn != "Path" => Value::Builtin(interned_class(tn)?),
+                Some(_) if tn != "Path" => Value::Builtin(tn),
                 _ => {
                     return Err(unsupported(
                         "type",

@@ -504,14 +504,25 @@ HEX_SEPARATOR = [H + x for x in [
 #: shape on `int`, `float` and `str`, and one where the missing method is
 #: reached BEFORE anything is printed, so the failure is not merely a partial
 #: stdout.
+#: Five of these rows named `.to_bytes()`, `.bit_length()`, `.from_bytes()`,
+#: `.is_integer()` and `.as_integer_ratio()`, and `methods::INT_METHODS` /
+#: `FLOAT_METHODS` now SERVE all five — so they stopped being blockers the
+#: router could not see and became answers. The mechanism is unchanged and the
+#: rows are re-pointed at names still outside `route::known_method`:
+#: `bit_count` (3.10), `conjugate`, `numerator` and `denominator`, each of
+#: which CPython answers and `INT_MISSING`/`FLOAT_MISSING` decline.
 HIDDEN_BLOCKER = [
-    "print(hashlib.md5((255).to_bytes(2, 'big')).hexdigest())",
-    "print(hashlib.md5(b'a').hexdigest())\nprint((5).bit_length())",
+    # `conjugate` and not `bit_count`: this row RUNS on the reference
+    # interpreter, and `uv run` supplies CPython 3.9, where `int.bit_count`
+    # (3.10) does not exist — which is the same version rule `INT_MISSING`
+    # states and the reason row 5 below has always failed under 3.9.
+    "print(hashlib.md5(str((255).conjugate()).encode()).hexdigest())",
+    "print(hashlib.md5(b'a').hexdigest())\nprint((5).conjugate())",
     "print(hashlib.sha1(b'a').hexdigest())\nprint('x'.isascii())",
-    "print(hashlib.sha256(int.from_bytes(b'\\x01', 'big').to_bytes(1, 'big')).hexdigest())",
-    "print((2.5).is_integer(), hashlib.md5(b'a').hexdigest())",
+    "print(hashlib.sha256(b'a').hexdigest())\nprint((10).denominator)",
+    "print((2.5).conjugate(), hashlib.md5(b'a').hexdigest())",
     "from hashlib import sha256\nprint(sha256(b'a').hexdigest())\nprint((7).bit_count())",
-    "h = hashlib.sha256()\nh.update(b'a')\nprint(h.hexdigest())\nprint((1).as_integer_ratio())",
+    "h = hashlib.sha256()\nh.update(b'a')\nprint(h.hexdigest())\nprint((1).numerator)",
 ]
 
 #: The refusals a walk genuinely CANNOT decide, pinned so they stay a residue.

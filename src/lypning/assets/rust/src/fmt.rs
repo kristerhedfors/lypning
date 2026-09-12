@@ -905,7 +905,7 @@ fn format_inner(v: &Value, spec_src: &str, from_pct: bool) -> R<String> {
                     ));
                 }
             }
-            let n = int_of(v)?;
+            let n = int_of(v, ty, from_pct)?;
             // CPython raises **OverflowError** here, with this exact message, for
             // both `format(x, 'c')` and `'%c' % x` — it is the same code path
             // there and it names `%c` in both. A ValueError was the wrong type
@@ -924,7 +924,7 @@ fn format_inner(v: &Value, spec_src: &str, from_pct: bool) -> R<String> {
         'd' => {
             let digits = match wide_digits(v, 10, false)? {
                 Some(d) => d,
-                None => int_of(v)?.unsigned_abs().to_string(),
+                None => int_of(v, ty, from_pct)?.unsigned_abs().to_string(),
             };
             group(&digits, sp.grouping, 3)
         }
@@ -937,7 +937,7 @@ fn format_inner(v: &Value, spec_src: &str, from_pct: bool) -> R<String> {
             let mut s = match wide_digits(v, radix_of, ty == 'X')? {
                 Some(d) => d,
                 None => {
-                    let a = int_of(v)?.unsigned_abs();
+                    let a = int_of(v, ty, from_pct)?.unsigned_abs();
                     match ty {
                         'x' => format!("{a:x}"),
                         'X' => format!("{a:X}"),
@@ -1139,14 +1139,34 @@ pub(crate) fn wide_digits(v: &Value, radix: u32, upper: bool) -> R<Option<String
     Ok(None)
 }
 
-fn int_of(v: &Value) -> R<i64> {
+/// The value as an `i64` for one of the integer presentation types, or the
+/// answer CPython gives when it is not one.
+///
+/// **The two grammars disagree here and the difference is not cosmetic.**
+/// `format(2.0, 'd')` is a ValueError naming the code and the type — raising it
+/// is a MATCH, where refusing was an UNSUPPORTED for a program CPython answers
+/// in one line. But `'%d' % 2.7` is `'2'`: the `%` operator TRUNCATES toward
+/// zero rather than rejecting, `'%d' % 1e30` truncates into a bignum, and
+/// `'%x' % 2.7` is a TypeError with a third sentence again. None of that is
+/// implemented, so the `%` side keeps the refusal and only the `format()` side
+/// raises.
+fn int_of(v: &Value, ty: char, from_pct: bool) -> R<i64> {
     match v {
         Value::Int(i) => i.get(),
         Value::Bool(b) => Ok(*b as i64),
-        _ => Err(unsupported(
+        _ if from_pct => Err(unsupported(
             "format",
             &format!("integer format code applied to {}", type_name(v)),
         )),
+        // CPython checks the code against the object before it looks at
+        // anything else in the spec, which is why this fires for `format(2.0,
+        // '.2d')` too — "Unknown format code 'd'", not a complaint about the
+        // precision. The checks above are gated on an integer VALUE so that
+        // they leave this one first.
+        _ => Err(value_err(format!(
+            "Unknown format code '{ty}' for object of type '{}'",
+            type_name(v)
+        ))),
     }
 }
 fn float_of(v: &Value) -> R<f64> {

@@ -445,12 +445,47 @@ CASES = [
     ("pct-c-out-of-range-overflows", "print('%c' % -1)"),
     ("format-c-out-of-range-overflows", "print(format(1114112, 'c'))"),
     ("format-c-width-right-aligns", "print(repr(format(65, '5c')), repr(format(65, '<5c')))"),
-    # A precision on an integer conversion is minimum DIGITS. lypning refuses the
-    # cases where that adds digits (see the ledger) and must keep answering the
-    # ones where it does not — deciding that needs the VALUE, so these pin the
-    # boundary rather than the refusal.
+    # A precision on an integer conversion is minimum DIGITS, and it was refused
+    # when it actually added any. The three fills land in three different slots
+    # and CPython orders them precision, `0` flag, width — so the sign is not
+    # one of the minimum digits (`'%.2d' % -5` is `'-05'`), the `0` flag widens
+    # the same run of zeros rather than adding a second one (`'%05.7d' % -5` is
+    # `'-0000005'`, seven digits and not five), and `#` prefixes inside the sign
+    # (`'%#08.3x' % -5` is `'-0x00005'`).
+    ("pct-int-precision-pads", "print(repr('%.2d' % 5), repr('%.2d' % -5), repr('%.7d' % 0))"),
+    ("pct-int-precision-radix", "print(repr('%.3x' % 5), repr('%.3X' % 255), repr('%.3o' % -5))"),
+    ("pct-int-precision-alt", "print(repr('%#.3x' % -5), repr('%#08.3x' % -5), repr('%#.5o' % 5))"),
+    ("pct-int-precision-width", "print(repr('%8.3x' % -5), repr('%-8.3x' % -5), repr('%05.2d' % -5))"),
+    ("pct-int-precision-zero-flag", "print(repr('%05.7d' % -5), repr('%08.3d' % 123), repr('%+08.3d' % 5))"),
+    ("pct-int-precision-sign", "print(repr('%+.2d' % 5), repr('% .2d' % 5), repr('%+.2d' % -5))"),
+    ("pct-int-precision-bool", "print(repr('%.3d' % True), repr('%.3d' % False))"),
+    ("pct-int-precision-i64-edge", "print(repr('%.2d' % (-9223372036854775807 - 1)), repr('%.25d' % 9223372036854775807))"),
+    # …and the ones where it adds nothing, which took a different path and must
+    # keep answering: deciding between them needs the VALUE.
     ("pct-int-precision-already-satisfied", "print(repr('%.2d' % 42), repr('%.2d' % -42), repr('%.2x' % 255))"),
-    ("pct-int-precision-zero", "print(repr('%.0d' % 1), repr('%.d' % 1))"),
+    ("pct-int-precision-zero", "print(repr('%.0d' % 1), repr('%.d' % 1), repr('%.0d' % 0))"),
+    # An integer presentation type on a value that is not an integer is a
+    # ValueError in CPython, and `format()` and `%` DISAGREE about it: the
+    # operator truncates (`'%d' % 2.7` is `'2'`) where the mini-language
+    # rejects. Raising the ValueError is what these pin; the `%` side still
+    # refuses, which `test_refuses_rather_than_answering` cannot pin because
+    # CPython answers it. The MESSAGE is the assertion, so each case catches and
+    # prints it: `CASES` compares stdout and the exit code, and two ValueErrors
+    # with different sentences share both. The `except ValueError` clause is
+    # what pins the TYPE — a different one would not be caught, and the exit
+    # code would say so.
+    ("format-int-code-on-float",
+     "try:\n    format(2.0, 'd')\nexcept ValueError as e:\n    print(e)"),
+    ("format-int-code-on-float-braces",
+     "try:\n    '{:d}'.format(2.0)\nexcept ValueError as e:\n    print(e)"),
+    ("format-int-code-on-float-radix",
+     "for c in 'xXob':\n    try:\n        format(-2.5, c)\n    except ValueError as e:\n        print(c, e)"),
+    ("format-int-code-on-float-precision-first",
+     "try:\n    format(0.0, '.2d')\nexcept ValueError as e:\n    print(e)"),
+    ("format-int-code-on-str",
+     "try:\n    format('ab', 'd')\nexcept ValueError as e:\n    print(e)"),
+    ("format-int-code-on-float-fstring",
+     "v = 2.0\ntry:\n    f'{v:08d}'\nexcept ValueError as e:\n    print(e)"),
     ("pct-precision-on-c-is-ignored", "print(repr('%.2c' % 65))"),
     ("pct-precision-on-str-truncates", "print(repr('%.2s' % 'abc'), repr('%5.2s' % 'abc'))"),
     # `count`/`find`/`rfind`/`index`/`rindex` take a byte-scan fast path for a

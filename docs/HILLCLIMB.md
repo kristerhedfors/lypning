@@ -26,6 +26,95 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+
+
+## 2026-09-12 · iteration 82 — format-precision: the minimum-digit conversion, and the code that belongs to a type
+
+Host: Linux x86_64, `x86_64-unknown-linux-musl` build, reference CPython 3.11.15.
+Corpus 3,688 loaded, 2,504 graded. Focus: coverage. Run in a worktree with its
+own `LYPNING_HOME` — and that was not optional: the first measurement of this
+iteration was taken against `~/.lypning/bin/lypning`, which another session
+overwrote mid-iteration. The binary under test had the right SIZE and the wrong
+code, and the spot check said the change had not landed. **`LYPNING_HOME` is
+part of the instrument, not part of the setup.**
+
+Two rows of `conformance --plan`, one mechanism — the integer conversion path,
+which both of them end in.
+
+### `'%.2d' % 5` is `'05'`
+
+`format()` has no spelling for a minimum digit count, so the `%` translation
+could not carry the precision and `percent_one` refused whenever it added a
+digit. `min_digit_body` renders it instead, from the digits `fmt::wide_digits`
+already produced for the count. The three fills land in three slots and CPython
+orders them precision, `0` flag, width:
+
+```
+'%.2d'    % -5   '-05'        the sign is not one of the minimum digits
+'%05.7d'  % -5   '-0000005'   the `0` flag WIDENS the same run, not a second one
+'%#08.3x' % -5   '-0x00005'   `#` prefixes inside the sign, zeros inside the prefix
+'%8.3x'   % -5   '    -005'   the width's spaces go outside everything
+```
+
+The already-satisfied case keeps the translated-spec path untouched: it is what
+deciding between them needs the value for.
+
+### `format(2.0, 'd')` raises rather than refuses
+
+`Unknown format code 'd' for object of type 'float'`. **The `!from_pct` gate is
+the whole risk in this change**: `'%d' % 2.7` is `'2'` — the operator TRUNCATES
+— `'%d' % 1e30` truncates into a bignum, and `'%x' % 2.7` is a TypeError with a
+third sentence. Raising the ValueError on the `%` side would have been a
+MISMATCH generator on shapes CPython answers. The `%` side keeps its refusal.
+
+### The numbers
+
+| | before | after |
+|---|---|---|
+| conformance (`lypning`) | 1558 / 945 / 1 — 62.22% | **1560 / 943 / 1** — 62.3% |
+| bytes | 1,114,320 | 1,118,416 (+4,096) |
+| device blocks | 9 | **9** — 61,232 B of headroom left |
+| `lypning-l` bytes | 1,294,544 | 1,294,544 (`.text` +1,568) |
+
+The MISMATCH is the ledgered musl `pow` ULP (`py-ab7286f43b7a`), unchanged.
+`fuzz` 500/500, counterexamples 0. `gate` FAILs on size at 9 blocks against
+lypning-mp's 8-block budget — **identical on the unchanged binary**, because the
+oracle is not built and `gate` substitutes the core. pytest: 189 failures, the
+same 189 by name as on the unchanged binary, +14 passing (the new pins).
+
+Two corpus programs moved UNSUPPORTED → MATCH (`py-723301ffc7fd`,
+`py-ecab756f1da8`, both `%`-conversion grids). The third, `py-677feb7479e7`,
+moved from `format: integer format code applied to float` to `type: type() of a
+ValueError` — unblocked into the next blocker, which is the shape `--plan`
+warns about in its own header.
+
+### Verified by enumeration, not by reasoning
+
+71,032 programs: the `%` cross-product (16 flag sets x 6 widths x 8 precisions x
+6 integer types x 15 values, including 0, ±1, both i64 limits and both bools)
+and the `format()` grid (12 presentation types x 9 prefixes x 8 values,
+including NaN, ±inf and -0.0), each diffed against live CPython on stdout, exit
+code **and the exception sentence**. That last one needed its own instrument:
+`conformance` peels the traceback and compares only the exception TYPE, so a
+ValueError with the wrong words is a MATCH there.
+
+**30 divergences fell out and all 30 are pre-existing** — reproduced on a
+binary built from HEAD's `ops.rs` and `fmt.rs` in an otherwise identical crate.
+Two families, neither touched here and neither fixed (one mechanism per step):
+
+- `format('ab', '+s')`, `'#s'` and `'08s'` — CPython raises "Sign not allowed in
+  string format specifier" / "Alternate form (#) not allowed…", and `'08s'` is
+  `'ab000000'` there and `'000000ab'` here. The string formatter takes the
+  numeric zero-fill slot.
+- `format(float('nan'), '%')` is `'NaN%'` here and `'nan%'` in CPython, for
+  every spec with a `%` type. The `f`/`e`/`g` arms all guard `is_finite()` and
+  return `nonfinite(...)`; the `'%'` arm does not, so Rust's own `{:.6}` on a
+  NaN prints through. Ten spellings, one missing guard.
+
+Both are wrong answers at exit 0. They are the next step, not this one.
+
+---
+
 ## 2026-09-12 · iteration 82 — `math`, bounded to what has one answer
 
 Host: x86_64 Linux, musl target. Corpus 3,688 loaded, 2,504 graded. Reference
