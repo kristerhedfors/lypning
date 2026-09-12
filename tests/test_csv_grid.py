@@ -607,20 +607,53 @@ needs_l = pytest.mark.skipif(
 )
 
 
+#: The largest program this harness will hand over on the COMMAND LINE.
+#:
+#: Linux caps one `execve` argument at `MAX_ARG_STRLEN` — 32 pages, 131,072 B on
+#: every page size this runs on — and a `-c PROGRAM` past it does not reach the
+#: engine at all: `execve` returns `E2BIG` and Python raises
+#: ``OSError: [Errno 7] Argument list too long`` before either arm has started.
+#: That is a limit of the KERNEL, not a property of the engine, and it hit both
+#: arms identically — `python3 -c` failed the same way — so a row over it was
+#: measuring nothing at all.
+#:
+#: The one row here that crosses it is the field-size-limit row, whose whole
+#: point is a field larger than `csv.field_size_limit()`, which CPython defaults
+#: to exactly 131,072: the program CANNOT be made short enough and stay the row
+#: it is. So a long one goes over as a FILE (`lypning FILE` and `python3 FILE`,
+#: which both arms support) instead. The threshold is well under the cliff
+#: because argv also carries the binary path and the total is capped too, and
+#: staying on `-c` below it keeps every other row's invocation byte-identical to
+#: what it was.
+_ARGV_MAX = 96 * 1024
+
+
 def _run(argv: list[str], program: str, stdin: str = "") -> subprocess.CompletedProcess:
     """One program, in a temp cwd of its own, captured as BYTES.
 
-    Two things here are load-bearing and neither is ceremonial. The temp cwd is
-    invariant 4 — these rows really do write files. And `text=False` is trap 9:
+    Three things here are load-bearing and none is ceremonial. The temp cwd is
+    invariant 4 — these rows really do write files. `text=False` is trap 9:
     `text=True` decodes a captured stream with universal newlines, so a stdout
     of `b'a\\r\\n'` and one of `b'a\\n'` arrive identical and every row about a
     carriage return quietly stops measuring anything. The battery
     (`engines.run_engine`) still captures both arms with `text=True` and so
     still cannot see this class of difference; this file can, which is the only
-    reason the rows are worth writing."""
+    reason the rows are worth writing.
+
+    And a program past :data:`_ARGV_MAX` is handed over as a file rather than on
+    the command line — see that constant. The script is written OUTSIDE the temp
+    cwd so that a row which lists or globs its own directory sees exactly what it
+    saw before, and both arms are invoked the same way, which is what makes the
+    comparison a comparison."""
     with tempfile.TemporaryDirectory() as d:
-        return subprocess.run(argv + ["-c", program], capture_output=True,
-                              cwd=d, timeout=60, input=stdin.encode())
+        if len(program.encode("utf-8")) <= _ARGV_MAX:
+            return subprocess.run(argv + ["-c", program], capture_output=True,
+                                  cwd=d, timeout=60, input=stdin.encode())
+        with tempfile.TemporaryDirectory() as hold:
+            script = Path(hold) / "program.py"
+            script.write_text(program, encoding="utf-8")
+            return subprocess.run(argv + [str(script)], capture_output=True,
+                                  cwd=d, timeout=60, input=stdin.encode())
 
 
 def _err(got: subprocess.CompletedProcess) -> str:
