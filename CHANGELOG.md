@@ -20,6 +20,40 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-12** — Nine answers were worded for one CPython; the package supports five (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **The engine spoke a CPython the host was not running.** Its message tables
+  were read off 3.14.5 and `pyproject.toml` says `requires-python = ">=3.9"`, so
+  on a 3.11 host `min([])` said *iterable argument is empty* where CPython says
+  *arg is an empty sequence*, `str(b'x','u','s','e')` said *str expected at most
+  3 arguments, got 4* where CPython says *str() takes at most 3 arguments (4
+  given)*, and `type(os.path.normpath)` said `builtin_function_or_method` where
+  CPython says `function`. 13 tests said so.
+- **`build.rs` now asks the reference interpreter what version it is** and
+  compiles the answer in as `err::REF_PY_MINOR`; nine sites branch on it.
+  `lypning build --rust` passes `LYPNING_REF_PY` from `engines.find_cpython()` —
+  the interpreter `conformance` grades against and the dispatcher falls through
+  to — and a bare `cargo build` asks `python3` itself. With no python reachable
+  the fallback is the version the tables were written against, so such a build
+  is the behaviour that shipped before.
+- **The rule is not "this construct is version-dependent" — it is "the ANSWER
+  differs across 3.9 … 3.13".** Every boundary was measured on all five with
+  `uv run --python X` and three of them were a version off in the tree's own
+  comments: `str`/`int` arity moved at 3.13, not 3.12; `os.path.normpath` at
+  3.13, not 3.12; `re.Pattern.match`'s type at 3.10, not 3.11. The table is
+  `docs/SUBSET.md` §6a.
+- **No refusal was added and nothing stopped being answered.**
+  `conformance --engine lypning` is MATCH 1571 / UNSUPPORTED 933 / MISMATCH 0
+  over 2,504 corpus programs (3,688 loaded) before and after, and `--plan`'s 108
+  blockers and its whole by-kind list are unchanged.
+  `sorted([3, 1], strict_mode=True)` still exits 1 with CPython's own TypeError,
+  which is the case a broader rule would have refused.
+- **It cost negative bytes.** Every branch is against a compile-time constant,
+  so one wording survives per build and five duplicated `format!` sites became
+  one helper: `lypning` 1,130,704 B / 9 blocks unchanged with 866,983 → 866,919
+  B of code, `lypning-l` 1,310,928 B / 11 blocks unchanged with 1,010,247 →
+  1,010,199 B.
+
 **2026-09-12** — Four defects shipped earlier the same day, and the float `repr` that was wrong before any of them (branch `claude/nemotron-lora-pipeline-1zczi2`)
 
 - **`repr(float)` wrote a decimal that does not read back as the value.**

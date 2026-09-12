@@ -476,6 +476,31 @@ def _ensure_rust_target(triple: str, verbose: bool) -> tuple[str, str]:
     return triple, "installed rust std for %s" % triple
 
 
+def reference_python_env() -> dict[str, str]:
+    """``LYPNING_REF_PY`` for a cargo run: which CPython the binary must agree with.
+
+    A handful of CPython's own messages — and one type name — are not the same
+    on every version ``pyproject.toml`` supports, so the crate branches on this
+    at compile time (``err::REF_PY_MINOR``). The value has to be the interpreter
+    the engine stands in FRONT of, which is :func:`engines.find_cpython`: the
+    one ``conformance`` grades against and the dispatcher falls through to.
+
+    Never raises and never blocks a build. With no reachable python the variable
+    is simply not set, and ``build.rs`` asks the same question itself before
+    falling back to the version the crate's tables were read off.
+    """
+    try:
+        exe = engines.find_cpython()
+    except Exception:
+        return {}
+    if exe is None:
+        return {}
+    rc, out = _run([str(exe), "-c",
+                    "import sys;print('%d.%d' % sys.version_info[:2])"], timeout=30.0)
+    line = out.strip().splitlines()[-1].strip() if (rc == 0 and out.strip()) else ""
+    return {"LYPNING_REF_PY": line} if re.fullmatch(r"3\.\d+", line) else {}
+
+
 def build_rust(target: str = "musl", jobs: int | None = None,
                verbose: bool = False, dry_run: bool = False,
                variant: str = engines.LYPNING) -> BuildResult:
@@ -562,7 +587,7 @@ def build_rust(target: str = "musl", jobs: int | None = None,
             skipped_reason="dry run: nothing was built", dry_run=True,
         )
 
-    rc, out = _run(cmd, cwd=workdir, timeout=_CARGO_TIMEOUT)
+    rc, out = _run(cmd, cwd=workdir, env=reference_python_env(), timeout=_CARGO_TIMEOUT)
     if rc != 0:
         return BuildResult(variant, target=triple or "host",
                            seconds=time.perf_counter() - t0,
@@ -700,7 +725,10 @@ def build_lib(target: str = "host", jobs: int | None = None,
             skipped_reason="dry run: nothing was built", dry_run=True,
         )
 
-    rc, out = _run(cmd, cwd=workdir, timeout=_CARGO_TIMEOUT)
+    # The same reference as the binary: `conformance --engine library` holds the
+    # C ABI to the answers the spectrum gives, so a library built for a
+    # different CPython than the binary would fail that arm and nothing else.
+    rc, out = _run(cmd, cwd=workdir, env=reference_python_env(), timeout=_CARGO_TIMEOUT)
     if rc != 0:
         return BuildResult(engines.LYPNING, artifact="lib", target=triple or "host",
                            seconds=time.perf_counter() - t0,

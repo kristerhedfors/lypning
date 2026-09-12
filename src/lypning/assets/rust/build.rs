@@ -43,7 +43,72 @@ fn main() {
         .collect();
     caps.sort();
     println!("cargo:rustc-env=LYPNING_CAPS={}", caps.join(","));
+    // The REFERENCE CPython's minor version, because a handful of CPython's own
+    // answers are not the same on every version this package supports
+    // (`pyproject.toml`: `requires-python = ">=3.9"`), and the interpreter this
+    // binary stands in front of is the one it has to agree with. `err::REF_PY_MINOR`
+    // reads it back; `builtins` and `value::bound_kind` are the sites that
+    // branch on it, each with the measured version boundary written down.
+    //
+    // `lypning build --rust` passes it, computed from `engines.find_cpython()` — the
+    // very interpreter `conformance` grades against and the dispatcher falls
+    // through to. A bare `cargo build` has no such caller, so ask the same
+    // question here rather than guess: `$LYPNING_CPYTHON` if it is set (the pin
+    // `engines.find_cpython()` honours), otherwise `python3`. With neither, fall back
+    // to the newest calibrated version, so a build on a host with no python at
+    // all answers exactly what this crate answered before this constant existed.
+    println!("cargo:rerun-if-env-changed=LYPNING_REF_PY");
+    println!("cargo:rerun-if-env-changed=LYPNING_CPYTHON");
+    let ref_py = std::env::var("LYPNING_REF_PY")
+        .ok()
+        .filter(|s| parse_minor(s).is_some())
+        .or_else(probe_python)
+        .unwrap_or_else(|| REF_PY_FALLBACK.to_string());
+    println!("cargo:rustc-env=LYPNING_REF_PY={ref_py}");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         println!("cargo:rustc-cdylib-link-arg=-Wl,-install_name,@rpath/liblypning.dylib");
     }
+}
+
+/// The version this crate's message tables were read off, and what a build with
+/// no reachable python answers. Every site that branches on the reference
+/// version treats this as "newest", so such a build keeps the behaviour that
+/// shipped before the branch existed.
+const REF_PY_FALLBACK: &str = "3.13";
+
+/// `3.11` -> `Some(11)`. Anything that is not `3.<digits>` is not a version
+/// this can act on, and goes to the fallback rather than being parsed half-way.
+fn parse_minor(s: &str) -> Option<u32> {
+    let rest = s.trim().strip_prefix("3.")?;
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// Ask the reference interpreter what it is. A missing python, a python that
+/// does not run, or an answer this cannot parse all come back `None` — a build
+/// is never FAILED over this, because the fallback is the version the tables
+/// were written against and so is a correct answer, not a guess.
+fn probe_python() -> Option<String> {
+    let pin = std::env::var("LYPNING_CPYTHON").ok().filter(|s| !s.trim().is_empty());
+    let names: Vec<String> = match pin {
+        Some(p) => vec![p],
+        None => vec!["python3".to_string(), "python".to_string()],
+    };
+    for name in names {
+        let out = std::process::Command::new(&name)
+            .args(["-c", "import sys;print('%d.%d' % sys.version_info[:2])"])
+            .output();
+        if let Ok(out) = out {
+            if out.status.success() {
+                let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if parse_minor(&text).is_some() {
+                    return Some(text);
+                }
+            }
+        }
+    }
+    None
 }

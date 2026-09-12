@@ -297,3 +297,36 @@ def test_the_measured_code_size_reaches_the_result_object(tmp_path, monkeypatch)
     r = build.BuildResult(engines.LYPNING, ok=True, size_bytes=1, **dict(
         zip(("text_bytes", "text_note"), build._text(tmp_path))))
     assert r.text_bytes == 4242 and r.text_note == ".text only"
+
+
+def test_the_build_tells_the_crate_which_cpython_it_stands_in_front_of():
+    # A handful of CPython's own messages, and one type name, are not the same
+    # on every version `pyproject.toml` supports (`docs/SUBSET.md` §6a), so the
+    # crate compiles the reference version in. The value must be the interpreter
+    # `conformance` grades against and the dispatcher falls through to — NOT
+    # `sys.version_info`, which is whichever python happens to be running this
+    # build and can be a different one entirely (`uv run --python 3.9 -m
+    # lypning build` on a 3.11 host was exactly that mistake waiting to happen).
+    env = build.reference_python_env()
+    ref = engines.find_cpython()
+    if ref is None:                       # no python at all: build.rs asks, then falls back
+        assert env == {}
+        return
+    import subprocess
+    want = subprocess.run(
+        [str(ref), "-c", "import sys;print('%d.%d' % sys.version_info[:2])"],
+        capture_output=True, text=True, timeout=30).stdout.strip()
+    assert env == {"LYPNING_REF_PY": want}, (
+        "the crate would be built for %r while %s is %r" % (env, ref, want))
+
+
+def test_a_reference_python_that_cannot_answer_sets_nothing(monkeypatch):
+    # Never fails a build and never guesses: with no usable answer the variable
+    # is absent, `build.rs` asks for itself, and its fallback is the version the
+    # crate's tables were read off.
+    monkeypatch.setattr(build, "_run", lambda *a, **k: (1, "boom"))
+    assert build.reference_python_env() == {}
+    monkeypatch.setattr(build, "_run", lambda *a, **k: (0, "3.11.15\n"))
+    assert build.reference_python_env() == {}      # "3.11.15" is not "3.<minor>"
+    monkeypatch.setattr(build, "_run", lambda *a, **k: (0, "warning: x\n3.13\n"))
+    assert build.reference_python_env() == {"LYPNING_REF_PY": "3.13"}

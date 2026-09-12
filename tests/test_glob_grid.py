@@ -224,7 +224,11 @@ ORDER_BLIND = [G + x for x in [
     "print(sum(glob.iglob('*.py')))",
     # An empty match set is the NORMAL answer for a glob, and `min`/`max` are
     # served over it — so CPython's ValueError text is reachable from an
-    # advertised position. 3.9 said "min() arg is an empty sequence".
+    # advertised position — and CPython does not word it the same on every
+    # version this package supports: 3.9, 3.10 and 3.11 say "min() arg is an
+    # empty sequence", 3.12 and 3.13 "min() iterable argument is empty"
+    # (measured 2026-09-12). The engine words it for the host, so these two rows
+    # grade against whichever one the reference here says.
     "try:\n    print(min(glob.glob('nope*')))\nexcept ValueError as e:\n    print(e)",
     "try:\n    print(max(glob.iglob('nope*')))\nexcept ValueError as e:\n    print(e)",
     # nested: the argument of an order-blind wrapper is order-blind whatever

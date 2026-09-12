@@ -159,13 +159,19 @@ CASES = [
         "    print(repr(format(v, '_')), repr(format(v, ',')))\n",
     ),
     (
-        # CPython 3.12 rewrote this message and lypning still spelled 3.9's:
-        # "min() arg is an empty sequence" against the reference's
-        # "min() iterable argument is empty". Caught here rather than by the
-        # corpus battery because both sides exit 1 with an empty stdout, so
-        # only a program that PRINTS the message can see the difference — and
-        # `cap-glob` made the empty case an advertised position, since an empty
-        # match set is the normal answer for a glob.
+        # CPython 3.12 rewrote this message, so BOTH spellings are live across
+        # the versions `pyproject.toml` supports: 3.9 … 3.11 say "min() arg is
+        # an empty sequence" and 3.12 … 3.13 "min() iterable argument is empty"
+        # (measured 2026-09-12). lypning spelled the newer one on every host and
+        # was therefore wrong on three of the five; it is worded for the host
+        # now (`err::REF_PY_MINOR`, `docs/SUBSET.md` §6a) and this row asks the
+        # reference rather than naming a version.
+        #
+        # Caught here rather than by the corpus battery because
+        # `conformance.stderr_shape` keeps the exception TYPE and discards the
+        # wording — only a program that PRINTS the message puts it on stdout,
+        # where it is compared. `cap-glob` made the empty case an advertised
+        # position, since an empty match set is the normal answer for a glob.
         "min-max-of-an-empty-iterable-say-what-cpython-says",
         "for f in (min, max):\n"
         "    for empty in ([], (), '', set(), range(0)):\n"

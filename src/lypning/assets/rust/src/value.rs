@@ -1237,16 +1237,20 @@ pub fn callable_kind(v: &Value) -> Option<Callable> {
 /// `pathlib::METHODS`, `collections::COUNTER_METHODS`, `hashlib::HASH_ATTRS`),
 /// not from a guess about which names a module has.
 ///
-/// **Two cells are disputed and are answered for the reference interpreter**
-/// (`README.md`: `cpython` is 3.14.5), with the split written down rather than
-/// discovered later. `os.path.normpath` became `posix._path_normpath` in 3.12
-/// and is a `function` on 3.9–3.11; the six vectorcall `re.Pattern` methods are
-/// `builtin_function_or_method` on 3.9 and 3.10, before `builtin_method`
-/// existed. Refusing instead would have to refuse at attribute access, which is
-/// the only choke point cheaper than making `type_name` fallible at its ~100
-/// call sites — and that would refuse `map(p.match, lines)` and `f =
-/// os.path.normpath`, which run here today, to buy exactness in a case that
-/// needs the bound method to be an operand of a TypeError.
+/// **Two cells move inside the supported range, and both are now answered for
+/// the HOST rather than for one version.** They were answered for CPython
+/// 3.14.5 and called disputed; `err::REF_PY_MINOR` is what a compile-time
+/// constant costs to settle them instead, and the boundaries were re-measured
+/// on 2026-09-12 because the note here had both of them a version early:
+/// `os.path.normpath` is a `function` on 3.9 … 3.12 and a
+/// `builtin_function_or_method` on **3.13**, and the six vectorcall
+/// `re.Pattern` methods are `builtin_function_or_method` on **3.9** alone,
+/// before `builtin_method` existed. Refusing instead would have to refuse at
+/// attribute access, which is the only choke point cheaper than making
+/// `type_name` fallible at its ~100 call sites — and that would refuse
+/// `map(p.match, lines)` and `f = os.path.normpath`, which run here today, to
+/// buy exactness in a case that needs the bound method to be an operand of a
+/// TypeError.
 ///
 /// **`os.environ` was the one receiver this could not decide, and the fix was
 /// the one the previous note asked for.** CPython's is an `os._Environ`, a
@@ -1272,9 +1276,20 @@ fn bound_kind(recv: &Value, name: &str) -> Callable {
             // `os` is `posix` re-exported, so its names are C — except the two
             // served here that `os.py` defines itself.
             ("os", "makedirs" | "getenv") => Function,
-            // `posixpath` is Python, and `normpath` is the one name 3.12 took
-            // into C (disputed; see above).
-            ("os.path", "normpath") => Builtin,
+            // `posixpath` is Python, and `normpath` is the one name that went
+            // into C — in **3.13**, not 3.12 as the note above used to say.
+            // Measured with `type(os.path.normpath).__name__` on 2026-09-12:
+            //
+            //   3.9 3.10 3.11 3.12   function
+            //   3.13                 builtin_function_or_method
+            //
+            // This is the only TYPE NAME in this file that moves inside the
+            // supported range, and it is the one cell `bound_kind`'s note calls
+            // disputed: it is now answered for the host rather than for one
+            // version, which costs one comparison against a compile-time
+            // constant and no refusal.
+            ("os.path", "normpath") if crate::err::REF_PY_MINOR >= 13 => Builtin,
+            ("os.path", "normpath") => Function,
             ("os.path", _) => Function,
             // `random`'s module functions are the bound methods of one hidden
             // `random.Random`. The two served here that are NOT are the two
@@ -1303,11 +1318,21 @@ fn bound_kind(recv: &Value, name: &str) -> Callable {
         // `method` exactly as `Path.cwd` off the class is.
         #[cfg(feature = "cap-pathlib")]
         Value::Path(..) => Method,
-        // `_sre.SRE_Pattern`'s six vectorcall methods (disputed; see above).
-        // `findall` and `split` are METH_VARARGS and stay the ordinary name.
+        // `_sre.SRE_Pattern`'s six vectorcall methods. `findall` and `split` are
+        // METH_VARARGS and stay the ordinary name.
+        //
+        // The second cell the note above calls disputed, and the same
+        // correction: `builtin_method` did not exist before **3.10**, not 3.11.
+        // Measured with `type(re.compile('a').match).__name__` on 2026-09-12:
+        //
+        //   3.9                    builtin_function_or_method
+        //   3.10 3.11 3.12 3.13    builtin_method
+        //
+        // so on a 3.9 host these six are the same name as `findall` beside them.
         #[cfg(feature = "cap-re")]
         Value::Pattern(_) => match name {
             "findall" | "split" => Builtin,
+            _ if crate::err::REF_PY_MINOR < 10 => Builtin,
             _ => Vectorcall,
         },
         // A `Counter` is a dict SUBCLASS written in `collections.py`, so the

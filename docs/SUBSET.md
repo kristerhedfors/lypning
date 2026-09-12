@@ -83,7 +83,7 @@ divergence, and every row is **exact, or exit 90** — never approximate.
 | `dict` | insertion-ordered; repr `{'a': 1, 'b': 2}` with the exact spacing | `dictcomp`, `dict-items-loop` | exact — insertion-ordered natively |
 | `sorted` | **stable** | `sorted-stability` | exact |
 | container repr | `print(list)` shows element `repr`s: `[1, 'b']`, tuples as `('k', '=', 'v=w')`, `None`/`True` bare | `repr-vs-str`, `str-partition-splitlines` | exact; a set with more than one element exits 90 (`set-order`) |
-| exception messages | verbatim: `invalid literal for int() with base 10: 'abc'`, `KeyError` printing as `'missing'` | `except-generic-message`, `json-keyerror-guard` | exact, or exit 90 where the text drifts across CPython versions |
+| exception messages | verbatim: `invalid literal for int() with base 10: 'abc'`, `KeyError` printing as `'missing'`; where CPython's own text differs across 3.9–3.13 it is worded for the **host** (§6a) | `except-generic-message`, `json-keyerror-guard`, `min-max-of-an-empty-iterable-say-what-cpython-says` | exact |
 | exception hierarchy | `JSONDecodeError` ⊂ `ValueError`; `FileNotFoundError` ⊂ `OSError` with `.errno == 2` | `json-bad-input-exit`, `file-missing-raises` | exact |
 | `json.dumps` defaults | `ensure_ascii=True` (so `"åäö"` → `å…`), separators `", "` / `": "`, `indent` emits no trailing spaces | `json-dumps-unicode`, `stdin-json-pretty` | exact (`json.rs`) |
 | `csv.writer` | terminates rows with `\r\n` and doubles embedded quotes | `csv-writer-quoting` | exit 90 `module: import csv` → cpython |
@@ -94,6 +94,47 @@ divergence, and every row is **exact, or exit 90** — never approximate.
 | `random` | a seeded stream is CPython's MT19937 bit for bit; an unseeded draw exits 90 (`random.rs`) | `random-seeded` | exact or refuse |
 | `set` order | order-independent operations work; anything exposing an order exits 90 (`value.rs:set_order_refused`) | `setcomp-ops` | exact or refuse |
 | NaN identity | `n in [n]` is True by identity; two NaNs in one comparison exit 90 (`nan-identity`) | — | refuse → cpython |
+
+### 6a. Where CPython does not agree with itself
+
+`pyproject.toml` says `requires-python = ">=3.9"`, and CPython's own answer is
+not the same on all of those versions. **The engine is worded for the host** —
+`build.rs` asks the interpreter `engines.find_cpython()` names what version it
+is and compiles it in as `err::REF_PY_MINOR`, which `builtins.rs` and
+`value.rs` branch on. No refusal and no runtime cost: every branch is against a
+compile-time constant, so each build carries one wording and the optimiser drops
+the others (the crate got 64 bytes of code *smaller*, 2026-09-12).
+
+The rule that decides whether a site gets a branch is narrower than "this is
+version-dependent": it is **the ANSWER differs across 3.9 … 3.13**, each
+boundary measured on all five with `uv run --python X` and written down at the
+site. Where all five agree the constant is not consulted and the engine keeps
+answering — `sorted([3, 1], strict_mode=True)` is the case that pins the
+distinction in the other direction: its text *does* differ (3.13 rewrote it), so
+it is worded per host and still exits 1 with CPython's own `TypeError` on every
+one of them.
+
+| what | 3.9 | 3.10 | 3.11 | 3.12 | 3.13 |
+|---|---|---|---|---|---|
+| `min([])` | `min() arg is an empty sequence` | ← | ← | `min() iterable argument is empty` | ← |
+| `int('1', 16, 0)` | `int() takes at most 2 arguments (3 given)` | ← | ← | ← | `int expected at most 2 arguments, got 3` |
+| `sorted(xs, bogus=1)` | `'bogus' is an invalid keyword argument for sort()` | ← | ← | ← | `sort() got an unexpected keyword argument 'bogus'` |
+| `zip([1], bogus=1)` | `zip() takes no keyword arguments` | the invalid-keyword form | ← | ← | the unexpected-keyword form |
+| `enumerate()` | `… required argument 'iterable' (pos 1)` | ← | `… required argument 'iterable'` | ← | ← |
+| `str(1, 0)` | `str() argument 2 must be str, not int` | `str() argument 'encoding' must be str, not int` | ← | ← | ← |
+| `iter([1], 0)` | `iter(v, w): v must be callable` | ← | ← | `iter(object, sentinel): object must be callable` | back to `iter(v, w)` |
+| `type(os.path.normpath)` | `function` | ← | ← | ← | `builtin_function_or_method` |
+| `type(re.compile('a').match)` | `builtin_function_or_method` | `builtin_method` | ← | ← | ← |
+
+Four further divergences in the same range are **capability** differences, not
+wordings, and are left as they are rather than approximated: `NameError`'s
+`Did you mean: …?` suggestion (3.10+, the engine says the bare 3.9 form and is
+therefore wrong on four hosts out of five whenever a near-miss name exists),
+`str | None` at runtime (PEP 604, 3.10+), `str.replace(count=…)` (3.13+), and
+the `match` statement (3.10+, a `SyntaxError` here — `route.rs` sends it to
+CPython, so the chain is right and only the bare engine arm is not). A
+suggestion engine guessed at is a MISMATCH generator; these belong to whoever
+implements them, with the same five-way measurement.
 
 ## 7. Failure modes: the unsupported contract
 
