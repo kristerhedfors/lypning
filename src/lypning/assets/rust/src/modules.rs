@@ -307,7 +307,11 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
         ("json", "loads" | "dumps" | "load" | "dump") => {
             Value::Bound(Rc::new(m.clone()), interned(name)?)
         }
-        ("json", "JSONDecodeError") => Value::Builtin("ValueError"),
+        // Its own name, not `ValueError`'s. It IS a ValueError subclass and
+        // `eval::exc_matches` says so, which is what keeps `except ValueError`
+        // catching it; what it is not is the same CLASS, and `__name__` and
+        // `is` both notice. See `builtins::MODULE_EXCEPTIONS`.
+        ("json", "JSONDecodeError") => Value::Builtin("JSONDecodeError"),
         // The two names 83 corpus programs import `collections` for. They are
         // TYPES, not module functions, so they are `Value::Builtin` — the same
         // shape `int` and `list` have, which is what makes

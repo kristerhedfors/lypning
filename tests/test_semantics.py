@@ -223,6 +223,64 @@ CASES = [
         "try:\n    print('c')\nexcept ValueError:\n    print('no')\nelse:\n    print('d')\n"
         "try:\n    print('e')\nexcept ValueError:\n    print('no')\nfinally:\n    print('f')",
     ),
+    (
+        # `type(e).__name__` inside an `except` is the commonest thing anyone
+        # writes about an error they just caught, and it refused for every
+        # exception class: `type()` answered from nine hardcoded arms and an
+        # exception was in none of them. It answers from `builtins::class_name`
+        # now — the closed set of every class this engine can name — so the
+        # nine became every class, including all twenty-four exceptions.
+        #
+        # Ranked first among the `type` rows by the census of what a model
+        # actually writes: 30 of the 1,173 programs in
+        # `nemotron/runs/qwen38-baseline-k16` refused here.
+        "type-of-an-exception-names-its-class",
+        "cases = [ValueError('v'), TypeError('t'), KeyError('k'), IndexError('i'),\n"
+        "         ZeroDivisionError('z'), AttributeError('a'), RuntimeError('r'),\n"
+        "         OSError('o'), FileNotFoundError('f'), StopIteration('s'),\n"
+        "         AssertionError('x'), NameError('n'), OverflowError('w')]\n"
+        "for e in cases:\n"
+        "    print(type(e).__name__, type(e) is type(e), repr(type(e)))\n"
+        "try:\n"
+        "    1 / 0\n"
+        "except Exception as e:\n"
+        "    print('caught', type(e).__name__)\n"
+        "try:\n"
+        "    {}['k']\n"
+        "except Exception as e:\n"
+        "    print('caught', type(e).__name__, type(e) is KeyError)\n"
+        "try:\n"
+        "    int('z')\n"
+        "except Exception as e:\n"
+        "    print('%s: %s' % (type(e).__name__, e))",
+    ),
+    (
+        # The other half of the same change: `json.JSONDecodeError` stopped
+        # being spelled `ValueError`. One `Value::Builtin` stood for both on the
+        # reasoning that `isinstance` and `except` cannot tell them apart —
+        # true, and not the whole surface. `__name__` and `is` can, and both
+        # answered for the wrong class at exit 0.
+        "the-json-error-is-its-own-class-not-value-error",
+        "import json\n"
+        "print(json.JSONDecodeError.__name__, ValueError.__name__)\n"
+        "print(ValueError is json.JSONDecodeError, json.JSONDecodeError is ValueError)\n"
+        "print(repr(ValueError), repr(json.JSONDecodeError))\n"
+        "try:\n"
+        "    json.loads('{bad')\n"
+        "except ValueError:\n"
+        "    print('a ValueError catches it')\n"
+        "try:\n"
+        "    json.loads('{bad')\n"
+        "except json.JSONDecodeError:\n"
+        "    print('and so does its own name')",
+    ),
+    (
+        # `IOError is EnvironmentError is OSError` — one class under three
+        # names — so `__name__` is `OSError` for all of them. It answered
+        # `IOError`, while `repr` next door already said `<class 'OSError'>`.
+        "the-oserror-aliases-all-name-one-class",
+        "print(IOError.__name__, OSError.__name__, repr(IOError), IOError is OSError)",
+    ),
 ]
 
 

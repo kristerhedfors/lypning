@@ -245,10 +245,17 @@ REFUSED = [
 #: ``(program, left, right)`` — `test_the_aliased_names_really_are_two_classes`
 #: runs the reference to prove `repr(left) != repr(right)` before asserting the
 #: engine refuses, so the refusal is justified by measurement and not by memory.
+#:
+#: **The `ValueError`/`JSONDecodeError` pair left this table on 2026-09-12** and
+#: is now pinned by `test_a_pair_that_stopped_being_aliased_is_served` below.
+#: The collapse was justified here on the grounds that `isinstance` and `except`
+#: cannot tell the two apart — which is true, and was not the whole surface:
+#: `json.JSONDecodeError.__name__` answered `ValueError` and
+#: `ValueError is json.JSONDecodeError` answered True, both at exit 0. Giving it
+#: its own `Value::Builtin` (`builtins::MODULE_EXCEPTIONS`) made the refusal
+#: unnecessary rather than lifting it, which is the only way a refusal in this
+#: table may go.
 ALIASED = [
-    ("print(ValueError)", "ValueError", "__import__('json').JSONDecodeError"),
-    ("import json\nprint(json.JSONDecodeError)", "ValueError",
-     "__import__('json').JSONDecodeError"),
     ("import pathlib\nprint(pathlib.Path)", "__import__('pathlib').Path",
      "__import__('pathlib').PosixPath"),
     ("import pathlib\nprint(pathlib.PosixPath)", "__import__('pathlib').Path",
@@ -404,10 +411,14 @@ AFTER_A_BARRIER = [
     ("repr", "print(len)"),
     ("repr", "print(str.upper)"),
     ("repr", "print([].append)"),
-    ("repr", "print(ValueError)"),
+    # `print(ValueError)` and `print(json.JSONDecodeError)` were here until
+    # 2026-09-12 and are served now — the two stopped being one value, so
+    # neither repr refuses and neither can reach a barrier. `print(pathlib.Path)`
+    # replaces them: that pair is still collapsed, so it is still a class repr
+    # that refuses, which is what this test needs one of.
+    ("repr", "import pathlib\nprint(pathlib.Path)"),
     ("repr", "import json\nprint(json.dumps)"),
     ("repr", "import json\nprint(json)"),
-    ("repr", "import json\nprint(json.JSONDecodeError)"),
     ("repr", "import sys\nprint(sys)"),
     ("format", "print(f'{int:>30}')"),
     ("format", "print(format(int, '<8'))"),
@@ -610,6 +621,31 @@ def test_the_aliased_names_really_are_two_classes_so_the_engine_refuses(
             % (engine, left, right, one, two, program, got.stderr.strip()[:200]))
 
 
+
+@needs_engine
+@on_each
+def test_a_pair_that_stopped_being_aliased_is_served(engine: str, binary: Path) -> None:
+    """The other way a row leaves `ALIASED`: the collapse goes, not the refusal.
+
+    `json.JSONDecodeError` was one `Value::Builtin` with `ValueError` until
+    2026-09-12, and both reprs refused because nothing in the value said which
+    spelling to print. It has its own now, so both spellings are available and
+    both are served — and the three answers that had been silently wrong while
+    the values were one (`__name__`, and `is` in either direction) are checked
+    here too, because they are what the collapse actually cost.
+    """
+    probe = ("import json\n"
+             "print(repr(ValueError))\n"
+             "print(repr(json.JSONDecodeError))\n"
+             "print(ValueError.__name__, json.JSONDecodeError.__name__)\n"
+             "print(ValueError is json.JSONDecodeError, json.JSONDecodeError is ValueError)\n")
+    ref = _run([sys.executable], probe)
+    assert ref.returncode == 0, ref.stderr
+    got = _run([str(binary)], probe)
+    assert got.returncode == 0, "%s refused a pair it can now spell: %s" % (
+        engine, got.stderr.strip()[:200])
+    assert got.stdout == ref.stdout, "%s: %r != %r" % (engine, got.stdout, ref.stdout)
+
 @needs_engine
 @on_each
 def test_the_alias_that_is_really_one_class_is_served(engine: str, binary: Path) -> None:
@@ -744,6 +780,17 @@ def test_every_refusal_a_class_repr_can_raise_lands_before_the_barrier(
     without this arm already gave."""
     program = _barriered(call)
     got, before, after = _run_snapshot(binary, program)
+    if ": module: " in got.stderr and ": %s: " % kind not in got.stderr:
+        # This variant does not carry the module the row needs, so the walk
+        # blocks the program before it runs and there is no runtime refusal to
+        # time against the barrier. Skipped rather than dropped: the row is
+        # `pathlib.Path`, the last class whose repr still refuses, and it is the
+        # only subject this assertion has left — the `ValueError` pair it used
+        # to use stopped being collapsed on 2026-09-12 and is served now. If a
+        # new collapsed pair ever appears in the core, give this row its
+        # program and the skip goes away.
+        pytest.skip("%s blocks %r statically: %s"
+                    % (engine, call.splitlines()[0], got.stderr.strip()[:80]))
     assert _refusal_problem(engine, got) is None, (
         "%s\n  program: %r\n  stderr: %r"
         % (_refusal_problem(engine, got), program, got.stderr.strip()[:200]))

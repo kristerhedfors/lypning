@@ -573,7 +573,13 @@ CASES = [
     ("keyerror-str-quotes", 'print(KeyError("f"), repr(KeyError("f")))'),
     ("keyerror-int-key", "print(str(KeyError(1)), repr(KeyError(1)))"),
     ("keyerror-from-lookup", 'try:\n    {}["k"]\nexcept KeyError as e:\n    print(str(e), repr(e))'),
-    ("keyerror-empty", "print(repr(KeyError()), repr(ValueError()))"),
+    # `KeyError()` and `ValueError()` were pinned here as answers until
+    # 2026-09-12 and REFUSE now, deliberately. `Value::Exc` is a class name and
+    # one `Rc<str>`, which spells the no-argument form exactly as it spells
+    # `ValueError("")` — so `ValueError().args` answered `('',)` where CPython
+    # says `()`. One shape, two meanings; neither may answer. The case moves to
+    # the refusal side rather than being deleted, because what it pins is still
+    # worth pinning: the shape must not drift back into answering.
     ("other-exceptions-unquoted", 'print(str(ValueError("v")), repr(ValueError("v")))'),
     # A bare `raise` in a handler re-raises what that handler caught, and a
     # nested try/except inside the handler must not lose it.
@@ -756,6 +762,28 @@ REFUSES = [
     # AttributeError is exit 1 — the program's own — so a handler that inspects
     # the context died here instead of being answered one spawn later.
     ("exception-context", 'try:\n    raise ValueError("v")\nexcept ValueError as e:\n    print(e.__context__)'),
+    # THE `args` TUPLE, which the same flat `(kind, message)` pair cannot hold.
+    # CPython's exception keeps the objects it was constructed from, and three
+    # things read them back: `e.args`, `repr(e)` (which reprs each one) and
+    # `str(e)` (empty for none, `str(arg)` for one, the tuple's repr for more).
+    # Exactly one string survives that round trip through a message, so every
+    # other shape refuses at construction — after answering nine wrong answers
+    # at exit 0, none of them in the corpus and all of them found in the 1,173
+    # programs of `nemotron/runs/qwen38-baseline-k16`.
+    ("exc-no-args", "print(ValueError().args)"),
+    ("exc-no-args-repr", "print(repr(KeyError()), repr(ValueError()))"),
+    ("exc-int-arg", "print(repr(ValueError(42)))"),
+    ("exc-int-arg-args", "print(ValueError(42).args)"),
+    ("exc-two-args", 'print(ValueError("a", "b").args)'),
+    ("exc-two-args-str", 'print(str(ValueError("a", "b")))'),
+    # `OSError(2, "x")` is a `FileNotFoundError` in CPython — the errno picks a
+    # SUBCLASS — so this is a different object, not a different rendering.
+    ("oserror-errno-pair", 'print(repr(OSError(2, "x")))'),
+    ("oserror-errno-one", "print(repr(OSError(2)))"),
+    # `KeyError` stores `repr(key)` so that `str(e)` can be `"'k'"`; the key
+    # itself is therefore not recoverable and only `args` refuses. `str` and
+    # `repr` of the same value still answer — see `keyerror-str-quotes` above.
+    ("keyerror-args", 'print(KeyError("k").args)'),
 ]
 
 

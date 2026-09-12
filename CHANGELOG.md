@@ -20,6 +20,55 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-12** — `type()` of any class the engine can name, and five wrong answers the old refusal was hiding (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **`type(e).__name__` inside an `except` now answers.** It is the commonest
+  thing anyone writes about an error they just caught and it refused for every
+  exception class, because `type()` answered from nine hardcoded arms and an
+  exception was in none of them. It reads `builtins::class_name` now — the
+  closed set of every class this engine can name — so the nine became every
+  class, all twenty-four exceptions included. Ranked first among the `type` rows
+  by `nt refusals --run`: **30 of the 1,173 programs a model wrote**.
+- **`json.JSONDecodeError` stopped being spelled `ValueError`.** One
+  `Value::Builtin` stood for both, justified on the grounds that `isinstance`
+  and `except` cannot tell them apart. True, and not the whole surface:
+  `json.JSONDecodeError.__name__` answered `ValueError`, and `is` between them
+  answered True in both directions. Three wrong answers at exit 0. It has its
+  own `Value::Builtin` now (`builtins::MODULE_EXCEPTIONS`), it is still not in
+  the builtin namespace so a bare `JSONDecodeError` is still a NameError, and
+  `except ValueError` still catches it because `eval::exc_matches` always knew.
+  `repr(ValueError)` is served as a side effect — the pair it could not spell
+  is gone.
+- **`IOError.__name__` said `IOError` and `IOError is OSError` said False.**
+  They are ONE class under three names in CPython, so both answer `OSError` and
+  True. One map, `builtins::canonical_class`, read by `__name__`, by `eq` and by
+  `is_same` — because a name that decides what `__name__` prints and a name that
+  decides what `is` answers are the same name.
+- **An exception carries `args`, and this value cannot.** `Value::Exc` is a
+  class name and one `Rc<str>`; CPython keeps the objects it was constructed
+  from, and `e.args`, `repr(e)` and `str(e)` all read them back. Exactly one
+  string survives that round trip, so `ValueError(42)`, `ValueError()`,
+  `ValueError('a','b')` and `OSError(2,'x')` refuse at construction now instead
+  of answering from a message that had lost the argument — nine wrong answers,
+  none of them in the corpus. `KeyError.args` refuses too: that class stores
+  `repr(key)` so `str(e)` can be `"'k'"`, which makes the key unrecoverable.
+  An exception raised by the ENGINE is untouched, so
+  `except ZeroDivisionError as e: e.args` still answers.
+- **`__builtins__` refused rather than NameError'd.** It is a global CPython
+  injects into every module, so a program reaching for it got
+  `NameError: name '__builtins__' is not defined` where CPython gives an
+  `AttributeError` — an UNSAFE route of exactly the kind `err.rs` documents,
+  and the last MISMATCH in the on-policy census.
+- **The two corpus programs that regressed are the reason the rest was found.**
+  They pass `type(e).__name__`, so the `type` refusal had been routing them past
+  the `args` defect. A refusal covering a defect it is not about covers it only
+  until someone lifts it for an unrelated reason.
+- Measured: conformance MATCH 1565 → 1568, MISMATCH 0 throughout, UNSAFE 0,
+  dispatchers agree 2504/2504. On-policy MATCH **468 → 484 of 1,173 (39.9% →
+  41.3%)**, the `type` kind 60 → 25, MISMATCH 1 → 0. Bytes 1,118,416 →
+  1,126,608, still **9 device blocks**. pytest: the same 57 failures as the
+  session baseline, diffed by name.
+
 **2026-09-12** — `math`, bounded to the functions that have one answer (branch `claude/nemotron-lora-pipeline-1zczi2`)
 
 - **`import math` was the top row of `conformance --plan` on both lists** — the

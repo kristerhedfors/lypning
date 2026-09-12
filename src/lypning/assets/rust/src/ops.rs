@@ -827,6 +827,20 @@ impl Interp {
                     };
                     return Ok(Value::Tuple(Rc::new(a)));
                 }
+                // `KeyError` is the one class whose message is not its
+                // argument: it stores `repr(key)` so that `str(e)` can be
+                // `"'k'"` and a missing `''` stays distinguishable from a
+                // missing `' '`. `args` wants the key itself, and un-`repr`ing
+                // a string is not a thing this can do correctly — `KeyError(1)`
+                // and `KeyError('1')` both store `1` and `'1'` respectively,
+                // but a key that is a tuple or a float has no round trip here.
+                // So `args` refuses on this one class and answers on the rest.
+                "args" if *kind == "KeyError" => {
+                    return Err(unsupported(
+                        "exception",
+                        "KeyError.args, whose key this value keeps only as its repr",
+                    ))
+                }
                 "args" => return Ok(Value::Tuple(Rc::new(vec![Value::Str(msg.clone())]))),
                 // OSError-family exceptions carry `.errno`/`.strerror`/
                 // `.filename`, and the message we build always has the shape
@@ -917,7 +931,21 @@ impl Interp {
         // by accident. Answering here keeps them where the answer is right.
         if name == "__name__" {
             if let Value::Builtin(b) = base {
-                return Ok(Value::Str((*b).into()));
+                // `__name__` is `__qualname__` and is BARE for every class this
+                // engine holds — `tp_name`'s dotted spellings
+                // (`collections.defaultdict`, `json.decoder.JSONDecodeError`)
+                // are what `repr` prints, not this, so `class_name` is the
+                // wrong source here and using it would trade one wrong answer
+                // for two.
+                //
+                // The one correction is the alias CPython collapses:
+                // `IOError is EnvironmentError is OSError` — one class under
+                // three names — so all three answer `OSError`, and this
+                // answered `IOError` at exit 0. Read off CPython 3.11 by
+                // running it. `EnvironmentError` is not in `BUILTINS` at all
+                // and refuses before it reaches here; the arm carries it anyway
+                // so that adding the name later cannot reintroduce the defect.
+                return Ok(Value::Str(crate::builtins::canonical_class(b).into()));
             }
         }
         if name.starts_with("__") && name.ends_with("__") && name.len() > 4 {

@@ -163,8 +163,33 @@ pub const EXCEPTIONS: &[&str] = &[
     "ZeroDivisionError",
 ];
 
+/// Exception classes that exist but are NOT in the builtin namespace.
+///
+/// `JSONDecodeError` is a real class with its own name, its own identity and
+/// its own `repr`, reachable only as `json.JSONDecodeError` — a BARE
+/// `JSONDecodeError` is a `NameError` in CPython and must stay one here. That
+/// is the whole reason this is a second list rather than three more entries in
+/// `EXCEPTIONS`: `builtin()` walks `EXCEPTIONS` to RESOLVE a bare name, and a
+/// name in it becomes visible everywhere.
+///
+/// It was spelled `Value::Builtin("ValueError")` until 2026-09-12, on the
+/// reasoning in [`class_repr_name`] that `isinstance` and `except` cannot tell
+/// the pair apart. They cannot — but `__name__` and `is` can, and both were
+/// answering for the wrong class at exit 0:
+///
+/// ```text
+/// json.JSONDecodeError.__name__      CPython JSONDecodeError, here ValueError
+/// ValueError is json.JSONDecodeError CPython False,           here True
+/// json.JSONDecodeError is ValueError CPython False,           here True
+/// ```
+///
+/// Three silent wrong answers, none of which any gate could see: no corpus
+/// program asks a caught exception for its class. `nt refusals --run` found
+/// them, in the population that does — 1,173 programs a model wrote.
+pub const MODULE_EXCEPTIONS: &[&str] = &["JSONDecodeError"];
+
 pub fn is_exception_name(n: &str) -> bool {
-    EXCEPTIONS.iter().any(|e| name_eq(e, n))
+    EXCEPTIONS.iter().any(|e| name_eq(e, n)) || MODULE_EXCEPTIONS.iter().any(|e| name_eq(e, n))
 }
 
 /// CPython's `tp_name` for a `Value::Builtin` that is a CLASS, or `None` for a
@@ -196,6 +221,11 @@ pub fn class_name(n: &str) -> Option<&'static str> {
         return Some("OSError");
     }
     if let Some(e) = EXCEPTIONS.iter().find(|e| **e == n) {
+        return Some(e);
+    }
+    // Bare in an AttributeError — CPython says `type object 'JSONDecodeError'
+    // has no attribute ...`, not the dotted spelling `repr` uses. Measured.
+    if let Some(e) = MODULE_EXCEPTIONS.iter().find(|e| **e == n) {
         return Some(e);
     }
     #[cfg(feature = "cap-pathlib")]
@@ -238,8 +268,13 @@ pub fn class_name(n: &str) -> Option<&'static str> {
 /// class under two names, and `repr(IOError)` really is `<class 'OSError'>`.
 pub fn class_repr_name(n: &str) -> Option<&'static str> {
     match class_name(n)? {
-        "Path" | "ValueError" => None,
+        // `pathlib.Path` and `pathlib.PosixPath` are still one value here and
+        // CPython reprs them differently, so that pair still refuses.
+        // `ValueError` left this arm when `JSONDecodeError` stopped being
+        // spelled with its name: it is one class under one name again.
+        "Path" => None,
         "Counter" => Some("collections.Counter"),
+        "JSONDecodeError" => Some("json.decoder.JSONDecodeError"),
         other => Some(other),
     }
 }
@@ -270,8 +305,57 @@ fn dict_subclass(_want: &str, _have: &str) -> bool {
     false
 }
 
+/// The `&'static str` the tables hold for a class name, so `type()` can build a
+/// `Value::Builtin` without leaking one. `class_name` answers `tp_name`, which
+/// is DOTTED for `collections.defaultdict` and is not the name a value carries;
+/// this answers the entry as spelled in the table the rest of the engine
+/// compares against.
+fn interned_class(n: &str) -> R<&'static str> {
+    BUILTINS
+        .iter()
+        .chain(EXCEPTIONS.iter())
+        .chain(MODULE_EXCEPTIONS.iter())
+        .chain(EXTRA_CLASSES.iter())
+        .find(|b| **b == n)
+        .copied()
+        .ok_or_else(|| unsupported("type", &format!("type() of a {n}")))
+}
+
+/// Class names that live in a module rather than the builtin namespace, and so
+/// are in neither table above. One list, read only by [`interned_class`].
+const EXTRA_CLASSES: &[&str] = &[
+    #[cfg(feature = "cap-pathlib")]
+    "Path",
+    #[cfg(feature = "cap-collections")]
+    "Counter",
+    #[cfg(feature = "cap-collections")]
+    "defaultdict",
+];
+
+/// The name CPython would give the class `n` — its `__qualname__`, and its
+/// IDENTITY.
+///
+/// `IOError is EnvironmentError is OSError`: one class under three names, so
+/// all three are one object and all three answer `OSError`. Everything else
+/// answers itself. Two readers — `ops::get_attr`'s `__name__` and
+/// `value::is_same` — because a name that decides what `__name__` prints and a
+/// name that decides what `is` answers are the same name, and having them agree
+/// by coincidence is how `IOError.__name__` came to say `IOError` while
+/// `repr(IOError)` said `<class 'OSError'>` one line away.
+pub fn canonical_class(n: &str) -> &str {
+    match n {
+        "IOError" | "EnvironmentError" => "OSError",
+        other => other,
+    }
+}
+
 pub fn exception_static(n: &str) -> &'static str {
-    EXCEPTIONS.iter().find(|e| name_eq(e, n)).copied().unwrap_or("Exception")
+    EXCEPTIONS
+        .iter()
+        .chain(MODULE_EXCEPTIONS.iter())
+        .find(|e| name_eq(e, n))
+        .copied()
+        .unwrap_or("Exception")
 }
 
 pub fn builtin(name: &str) -> Option<Value> {
@@ -597,7 +681,53 @@ pub fn call_builtin(
         if name == "SystemExit" {
             return Ok(Value::Exc("SystemExit", system_exit_msg(args)?.into()));
         }
+        // WHAT THIS VALUE CAN CARRY, and therefore what it must refuse.
+        //
+        // `Value::Exc` is a class name and ONE `Rc<str>`. CPython's exception
+        // carries `args`, a tuple of the objects it was constructed from, and
+        // three observable things read it back: `e.args`, `repr(e)` (which
+        // reprs each arg) and `str(e)` (empty for none, `str(arg)` for one, the
+        // repr of the whole tuple for more). A single string is the only shape
+        // that survives the round trip, and everything else was answering from
+        // a message that had already lost the argument:
+        //
+        // ```text
+        // repr(ValueError(42))     CPython ValueError(42),       here ValueError('42')
+        // ValueError(42).args      CPython (42,),                here ('42',)
+        // ValueError().args        CPython (),                   here ('',)
+        // ValueError('a','b').args CPython ('a', 'b'),           here ('a',)
+        // str(ValueError('a','b')) CPython ("a", "b") as a tuple, here a
+        // OSError(2,'x')           CPython FileNotFoundError(2, 'x'), here OSError('2')
+        // ```
+        //
+        // Nine wrong answers at exit 0, every one of them reachable without any
+        // construct this engine refuses, and none in the corpus — so every gate
+        // was green over them. They were found when `type()` stopped refusing
+        // exceptions (this date) and two corpus programs that had been ROUTED
+        // PAST the defect stopped being routed past it. The refusal that was
+        // covering them was covering them by accident and about something else.
+        //
+        // So the shape refuses, at construction, where the loss happens — the
+        // rule `SystemExit` already follows one arm up, for the same reason and
+        // in the same words. An exception raised by the ENGINE is untouched:
+        // those carry exactly one string by construction, so
+        // `except ZeroDivisionError as e: e.args` still answers.
+        //
+        // `OSError` refuses at two args as well as at a non-string one, and
+        // would even if the args were carried: CPython maps the errno onto a
+        // SUBCLASS, so `OSError(2, 'x')` IS a `FileNotFoundError` and its
+        // `str()` is `[Errno 2] x`. That is a different object, not a different
+        // rendering.
         let msg = match args.first() {
+            _ if args.len() > 1 => {
+                return Err(unsupported(
+                    "exception",
+                    &format!(
+                        "{name}() with {} arguments, whose `args` tuple this value cannot carry",
+                        args.len()
+                    ),
+                ))
+            }
             // `str(KeyError('f'))` is `"'f'"`, not `"f"`: KeyError shows the
             // REPR of its key, so that a missing `''` is distinguishable from a
             // missing `' '`. Every site that raises one from a real lookup
@@ -605,8 +735,28 @@ pub fn call_builtin(
             // string, so the two disagreed and `repr()` then quoted the lookup
             // form a second time (`KeyError("'k'")`).
             Some(v) if name == "KeyError" => fmt::repr(v)?,
-            Some(v) => fmt::to_str(v)?,
-            None => String::new(),
+            Some(Value::Str(s)) => s.to_string(),
+            Some(other) => {
+                return Err(unsupported(
+                    "exception",
+                    &format!(
+                        "{name}({}), whose argument is not a string and so cannot be read back                          from the message",
+                        fmt::repr(other)?
+                    ),
+                ))
+            }
+            // `ValueError()` really is representable — `args` is `()` and
+            // `str` is `""` — but not by THIS value, which spells it the same
+            // way `ValueError("")` is spelled and would answer `('',)` for one
+            // of the two. One shape, two meanings, so neither may answer.
+            None => {
+                return Err(unsupported(
+                    "exception",
+                    &format!(
+                        "{name}() with no arguments, which this value cannot tell from {name}(\"\")"
+                    ),
+                ))
+            }
         };
         return Ok(Value::Exc(exception_static(name), msg.into()));
     }
@@ -1762,23 +1912,39 @@ pub fn call_builtin(
                 return Err(type_err("type() takes 1 or 3 arguments"));
             }
             let v = arg1(name, &args)?;
-            Value::Builtin(match type_name(&v) {
-                "int" => "int",
-                "str" => "str",
-                "float" => "float",
-                "bool" => "bool",
-                "list" => "list",
-                "dict" => "dict",
-                "set" => "set",
-                "tuple" => "tuple",
-                "bytes" => "bytes",
-                other => {
+            // `class_name` is the whole answer and the whole bound: it is the
+            // closed set of every class this engine can NAME, so a value whose
+            // type is not one of them still refuses. What it buys over the nine
+            // hardcoded arms this replaces is every exception — and
+            // `type(e).__name__` inside an `except` is the commonest thing a
+            // model writes about an error it just caught. Measured over the
+            // 1,173 programs in runs/qwen38-baseline-k16: 30 attempts refused
+            // here, more than any other row of the `type` kind.
+            //
+            // Two things make the substitution safe rather than convenient.
+            // `Value::Exc` carries the instance's OWN class name
+            // (`value::type_name`), so a `JSONDecodeError` answers
+            // `JSONDecodeError` and not the `ValueError` it used to be spelled
+            // as — see `MODULE_EXCEPTIONS`, without which this arm would have
+            // inherited that wrong answer. And `Path` is still not in
+            // `class_name`'s reach from an instance: a `Value::Path` types as
+            // `PosixPath` in CPython and `Path` here, so it stays refused.
+            //
+            // What comes back is an ordinary class object, so everything that
+            // already decides what one of those does decides here too:
+            // `__name__` answers, `repr` refuses for exactly the pair it
+            // cannot spell, `is` compares by name, and calling it constructs.
+            // No new surface, which is why this costs 96 bytes.
+            let tn = type_name(&v);
+            match class_name(tn) {
+                Some(_) if tn != "Path" => Value::Builtin(interned_class(tn)?),
+                _ => {
                     return Err(unsupported(
                         "type",
-                        &format!("type() of a {other}"),
+                        &format!("type() of a {tn}"),
                     ))
                 }
-            })
+            }
         }
         "isinstance" => {
             let v = arg1(name, &args)?;

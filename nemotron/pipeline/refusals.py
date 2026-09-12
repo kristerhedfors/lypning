@@ -142,7 +142,9 @@ def grade_against_engine(program: str, engine: str, timeout_s: float = 10.0) -> 
     got = sandbox.run_python(program, timeout_s=timeout_s, interpreter=[engine])
     if got.exit_code == eng.REFUSAL_EXIT:
         parsed = eng.parse_refusal(got.stderr)
-        return {"verdict": "UNSUPPORTED", "detail": parsed[1] if parsed else "?"}
+        return {"verdict": "UNSUPPORTED",
+                "detail": parsed[1] if parsed else "?",
+                "blocker": ("%s: %s" % (parsed[1], parsed[2])) if parsed else "?"}
     if got.harness_error or truth.harness_error:
         return {"verdict": "ERROR", "detail": got.harness_error or truth.harness_error or ""}
     if (got.exit_code, got.stdout) == (truth.exit_code, truth.stdout):
@@ -167,6 +169,7 @@ def on_policy(attempts: List[Dict[str, Any]], engine: str) -> Dict[str, Any]:
     rows: List[Dict[str, Any]] = []
     tally: Dict[str, int] = {}
     details: Dict[str, int] = {}
+    blockers: Dict[str, int] = {}
     for attempt in attempts:
         program = attempt.get("program")
         if not program:
@@ -177,8 +180,14 @@ def on_policy(attempts: List[Dict[str, Any]], engine: str) -> Dict[str, Any]:
         tally[graded["verdict"]] = tally.get(graded["verdict"], 0) + 1
         if graded["verdict"] == "UNSUPPORTED":
             details[graded["detail"]] = details.get(graded["detail"], 0) + 1
+            # The kind is the table row; the BLOCKER is the build order. `module`
+            # says nothing about what to write next, `module: import datetime`
+            # does, and the two rank differently because one kind can hold a
+            # dozen unrelated features.
+            blocker = graded.get("blocker") or graded["detail"]
+            blockers[blocker] = blockers.get(blocker, 0) + 1
     return {"engine": engine, "programs": len(rows), "tally": tally,
-            "details": details, "rows": rows}
+            "details": details, "blockers": blockers, "rows": rows}
 
 
 def on_policy_report(result: Dict[str, Any], *, limit: int = 12) -> str:
@@ -200,4 +209,11 @@ def on_policy_report(result: Dict[str, Any], *, limit: int = 12) -> str:
     lines.append("what it refused, by kind:")
     for kind, count in sorted(result["details"].items(), key=lambda kv: -kv[1])[:limit]:
         lines.append("  %-20s %5d" % (kind, count))
+    closed = closed_kinds()
+    lines.append("")
+    lines.append("the build order — one missing feature per row, open kinds only:")
+    ranked = [(b, n) for b, n in sorted(result.get("blockers", {}).items(), key=lambda kv: -kv[1])
+              if b.split(":")[0] not in closed]
+    for blocker, count in ranked[:limit]:
+        lines.append("  %5d  %s" % (count, blocker[:98]))
     return "\n".join(lines)

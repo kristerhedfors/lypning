@@ -246,7 +246,11 @@ REFUSED = [
     'from collections import Counter\nprint(Counter("aab").most_common("2"))',
     'from collections import Counter\nprint(Counter("aab").most_common(1.5))',
     'from collections import Counter\nprint(Counter({1,2}))',
-    'from collections import Counter\nprint(type(Counter()))',
+    # `print(type(Counter()))` was here until 2026-09-12. `type()` now
+    # answers from `builtins::class_name`, the closed set of every class this
+    # engine can name, and `class_repr_name` already knew Counter's dotted
+    # spelling — so it prints `<class 'collections.Counter'>`, which is what
+    # CPython prints. Checked against the reference, not assumed.
     'from collections import Counter\nprint(Counter({"a": "x"}))',
     'from collections import Counter\nprint(Counter({"a": 1.5}).most_common())',
     'from collections import Counter\nc=Counter()\nc["a"]=9223372036854775807\nc.update("a")\nprint(c)',

@@ -206,6 +206,16 @@ static CPYTHON_BUILTINS: &[&str] = &[
     "UnboundLocalError", "UnicodeDecodeError", "UnicodeEncodeError",
     "UnicodeError", "UnicodeTranslateError", "UnicodeWarning", "UserWarning",
     "ValueError", "Warning", "ZeroDivisionError", "__build_class__",
+    // `__builtins__` is not a member of the `builtins` module — it is a global
+    // CPython injects into every module's namespace, and the language reference
+    // calls it an implementation detail. It belongs here anyway, because this
+    // list is about names that RESOLVE in CPython and not here, which is what
+    // decides between a refusal and a NameError. It resolved to a NameError:
+    // `__builtins__.get('eval', eval)` printed `NameError: name '__builtins__'
+    // is not defined` where CPython prints `AttributeError: module 'builtins'
+    // has no attribute 'get'` — the exact UNSAFE route the paragraph above
+    // describes, found in a model's completion rather than in the corpus.
+    "__builtins__",
     "__debug__", "__doc__", "__import__", "__loader__", "__package__",
     "__spec__", "abs", "aiter", "all",
     "anext", "any", "ascii", "bin", "bool", "breakpoint", "bytearray", "bytes",
