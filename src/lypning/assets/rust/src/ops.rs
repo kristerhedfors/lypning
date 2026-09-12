@@ -2097,6 +2097,39 @@ fn read_spec(
     // A width or a precision too large for a `usize` is left in the spec for
     // `parse_spec` to reject with CPython's own sentence, rather than parsed to
     // a silent zero here.
+    //
+    // AND SO IS ONE THAT FITS A `usize` BUT NOT CPython's CAP. `%`-conversion
+    // width and precision are `int` in `unicodeobject.c`, so anything past
+    // `INT_MAX` is `ValueError: precision too big` / `width too big` there.
+    // Reading them as a `usize` and believing it made `'%.2147483648d' % 5`
+    // build a two-gigabyte string and print it at exit 0, and
+    // `'%.9223372036854775807d' % 5` abort the process — `memory allocation of
+    // 9223372036854775807 bytes failed`, exit 134, which is not the exit-90
+    // contract and reaches a caller as an unexplained death. The whole range
+    // `[INT_MAX + 1, usize::MAX]` was unguarded; `usize::MAX` itself parsed
+    // fine and then overflowed `String::with_capacity`.
+    //
+    // Found by an adversarial re-check of this arm AFTER it shipped, not by the
+    // grid that came with it: 304,722 `%` cells all passed, because every one
+    // of them had a precision a human would write.
+    // Both are capped BEFORE anything sizes an allocation from them, and the
+    // cap is this runtime's allocation ceiling rather than CPython's `INT_MAX`,
+    // because the two failures want different answers and only one of them is
+    // ours to give. Past `INT_MAX` CPython says `ValueError: precision too
+    // big`; between the ceiling and `INT_MAX` it says `MemoryError` or churns
+    // through gigabytes. A refusal is right for both: it is always acceptable,
+    // it costs one spawn, and CPython then gives whichever sentence is its own.
+    let ceiling = MAX_ALLOC_BYTES;
+    for (field, text) in [("precision", prec.strip_prefix('.').unwrap_or("")), ("width", width)] {
+        if text.len() > 10 || text.parse::<usize>().map_or(false, |n| n > ceiling) {
+            return Err(unsupported(
+                "percent-format",
+                &format!(
+                    "a {field} of {text} in a % conversion — over this runtime's {ceiling} ceiling"
+                ),
+            ));
+        }
+    }
     let w = if width.is_empty() { Ok(0) } else { width.parse::<usize>() };
     if !prec.is_empty() && !bare_dot && prec != ".0" && matches!(ty, "d" | "x" | "X" | "o") {
         match (prec[1..].parse::<usize>(), w) {

@@ -248,6 +248,25 @@ const RANGE_MISSING: &[&str] = &["count", "index"];
 /// them and this does not.
 const FLOAT_MISSING: &[&str] = &["conjugate", "from_number", "fromhex", "hex", "imag", "real"];
 
+/// Is `value` an instance of the type named `t`, for the unbound-method check?
+///
+/// The subclass relations this engine actually models, and no others: `bool` is
+/// an `int`, and `Counter` and `defaultdict` are `dict`s. Anything it cannot
+/// prove is not one — the caller turns a false here into a refusal, so an
+/// unmodelled relation costs a CPython spawn and never an answer.
+fn descriptor_applies(t: &str, value: &Value) -> bool {
+    let have = crate::value::type_name(value);
+    if have == t {
+        return true;
+    }
+    match t {
+        "int" => have == "bool",
+        #[cfg(feature = "cap-collections")]
+        "dict" => matches!(have, "Counter" | "defaultdict"),
+        _ => false,
+    }
+}
+
 /// The two `float` methods this engine answers.
 ///
 /// Both are EXACT and neither touches libm: `is_integer` is a comparison, and
@@ -554,6 +573,35 @@ pub fn call_method(
                     return dict_method(it, d, name, args, kw);
                 }
             }
+        }
+        // THE DESCRIPTOR HAS TO APPLY TO THE RECEIVER. `T.m(x)` is
+        // `TypeError: descriptor 'm' for 'T' objects doesn't apply to a 'U'
+        // object` in CPython whenever `x` is not a `T`, and this dispatched on
+        // the shifted VALUE and ran whatever type it actually was:
+        //
+        //     int.as_integer_ratio(1.5)    CPython TypeError, here (3, 2)
+        //     float.as_integer_ratio(5)    CPython TypeError, here (5, 1)
+        //     list.count((1, 2, 1), 1)     CPython TypeError, here 2
+        //     str.upper(b'a')              CPython TypeError, here an answer
+        //
+        // Harmless while no name lived on two types — the wrong-type call found
+        // no method and died with the type's own error. `as_integer_ratio` is
+        // on both `int` and `float`, so it found one, and the comment three
+        // lines up already describes the identical defect for `dict.update` on
+        // a Counter. The same hole, reached by a second door.
+        //
+        // Refused rather than answered with CPython's sentence: the message
+        // names the descriptor, the type and the object, and getting one of
+        // three wordings wrong is the failure this whole file is about. One
+        // spawn, and CPython words it.
+        if !descriptor_applies(t, &real) {
+            return Err(unsupported(
+                "method",
+                &format!(
+                    "{t}.{name}() called on a {}, which is not a {t}",
+                    crate::value::type_name(&real)
+                ),
+            ));
         }
         return call_method(it, &real, name, args, kw);
     }
@@ -1969,6 +2017,14 @@ fn int_method(recv: &Value, name: &str, args: &mut Args, kw: &[(Rc<str>, Value)]
                     ),
                 ));
             }
+            // BYTEORDER FIRST. `longobject.c` checks it before it looks at the
+            // length, so `(5).to_bytes(-1, 'middle')` is the byteorder's
+            // ValueError and not the length's — and with a non-str byteorder it
+            // is a TypeError, a different CLASS, which an `except ValueError`
+            // catches here and not there. This read the length first and
+            // answered the wrong sentence for every negative length crossed
+            // with a bad byteorder.
+            let little = byteorder(args.get(1), name)?;
             let n = int_val(&args[0])?;
             if n < 0 {
                 return Err(value_err("length argument must be non-negative"));
@@ -1979,7 +2035,6 @@ fn int_method(recv: &Value, name: &str, args: &mut Args, kw: &[(Rc<str>, Value)]
                     &format!("int.to_bytes() of {n} bytes, past this engine's {MAX_BYTES}"),
                 ));
             }
-            let little = byteorder(args.get(1), name)?;
             let v = int_val(recv)?;
             let n = n as usize;
             // CPython's two OverflowErrors, which are different sentences: a
@@ -1993,9 +2048,14 @@ fn int_method(recv: &Value, name: &str, args: &mut Args, kw: &[(Rc<str>, Value)]
                 // case has already rejected the negatives.
                 true
             } else if n == 0 {
-                // `(0).to_bytes(0, 'big')` is `b''`; nothing else fits in no
-                // bytes at all.
-                v == 0
+                // `(0).to_bytes(0, 'big')` is `b''`, and so is
+                // `(-1).to_bytes(0, 'big', signed=True)`: -1 is all sign bits,
+                // and sign-extending it into zero bytes loses nothing. CPython
+                // answers `b''` for it and this raised OverflowError — the one
+                // value in -3..3, ±256, ±257, 255 and i64::MIN that breaks, in
+                // both byteorders, and reached by `~0`, `0 - 1` and `int('-1')`
+                // alike. Nothing else fits in no bytes at all.
+                v == 0 || (signed && v == -1)
             } else if signed {
                 let lim = 1i64 << (8 * n as u32 - 1);
                 v >= -lim && v < lim

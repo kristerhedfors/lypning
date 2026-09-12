@@ -388,12 +388,34 @@ fn fixed_from_digits(digits: &str, decpt: i32) -> String {
 /// The exponent is re-read from that second render rather than carried over
 /// from the first: rounding at the chosen width can carry (9.99 -> 1.0e+1) and
 /// move the decimal point with it.
+///
+/// **AND THE RE-RENDER IS ONLY KEPT WHEN IT STILL ROUND-TRIPS**, which it does
+/// not always do — the half of this that was missing until 2026-09-12. A tie is
+/// the case where BOTH spellings are shortest and both read back as `x`, and
+/// there half-to-even is the right chooser. Rounding the exact decimal
+/// expansion to the same width is not the same operation, and where the two
+/// differ it can land on a string that is not `x` at all:
+///
+/// ```text
+/// 2**-24 is exactly 5.9604644775390625e-08
+///   shortest round-trip  5.960464477539063e-08   (CPython, and Rust's `{:e}`)
+///   `{:.15e}` half-even  5.960464477539062e-08   — a DIFFERENT double
+/// ```
+///
+/// `print(2.0 ** -24)` therefore wrote a decimal that does not read back as the
+/// value it was printing: 46 of 4,239 structured doubles (powers of two, `1eN`,
+/// small reciprocals), 0 of ~40,000 uniform random ones, which is why no fuzz
+/// seed had found it. Parsing the candidate back and keeping it only if the
+/// bits match costs one `parse::<f64>` per float printed and is the whole fix;
+/// the fall-back is Rust's own shortest digits, which round-trip by
+/// construction.
 fn shortest_digits(x: f64) -> (String, i32) {
     let shortest = format!("{:e}", x); // e.g. "1.2345e3", "1e-5"
     let (mant, _) = shortest.split_once('e').unwrap();
     let ndigits = mant.chars().filter(|c| c.is_ascii_digit()).count().max(1);
 
-    let s = format!("{:.*e}", ndigits - 1, x);
+    let even = format!("{:.*e}", ndigits - 1, x);
+    let s = if even.parse::<f64>() == Ok(x) { even } else { shortest };
     let (mant, exp) = s.split_once('e').unwrap();
     let exp: i32 = exp.parse().unwrap();
     let digits: String = mant.chars().filter(|c| c.is_ascii_digit()).collect();

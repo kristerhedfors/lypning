@@ -281,6 +281,79 @@ CASES = [
         "the-oserror-aliases-all-name-one-class",
         "print(IOError.__name__, OSError.__name__, repr(IOError), IOError is OSError)",
     ),
+    (
+        # `repr(float)` wrote a decimal that does not read back as the value it
+        # was printing. `shortest_digits` asks Rust's `{:e}` for the digit COUNT
+        # and then re-renders at that width with `{:.*e}`, because a genuine TIE
+        # — two spellings that both round-trip — is resolved to even by CPython
+        # and away from zero by Rust. That part is right. What was missing is
+        # that rounding the exact decimal expansion to the same width is a
+        # different operation from choosing between two round-tripping
+        # candidates, and where they differ it lands on neither:
+        #
+        #     2**-24 is exactly 5.9604644775390625e-08
+        #       shortest round-trip  5.960464477539063e-08
+        #       `{:.15e}` half-even  5.960464477539062e-08  — a DIFFERENT double
+        #
+        # 46 of 4,239 structured doubles and 0 of 40,000 uniform random ones,
+        # which is why no fuzz seed had found it: the defect lives where the
+        # mantissa is short. Found by an adversarial re-check of a change that
+        # had declared this function exonerated.
+        #
+        # Every value here is chosen so CPython and the engine must agree on the
+        # SPELLING, and the round-trip is asserted inside the program as well,
+        # so a future divergence says which of the two it is.
+        "float-repr-round-trips-and-does-not-round-half-even-off-the-value",
+        "vals = [2.0 ** -24, 2.0 ** -25, 7.120236347223045e-307,\n"
+        "        7.291122019556398e-304, 5.641232424577593e-278,\n"
+        "        6.290184345309701e-235, 5.225680706521042e-200,\n"
+        "        1.0 / 2 ** 24, 1e16, 1e-300, 0.1, 1.0 / 3]\n"
+        "for v in vals:\n"
+        "    print(repr(v), float(repr(v)) == v)\n"
+        "# the tie the re-render exists for: both spellings round-trip and\n"
+        "# CPython picks the even one.\n"
+        "print((1 / -143.0) * 1e17)",
+    ),
+    (
+        # Three answers that were wrong at exit 0 in code landed EARLIER TODAY,
+        # found by an adversarial gate agent re-checking it after it shipped.
+        #
+        # `-1` is all sign bits, so sign-extending it into zero bytes loses
+        # nothing and CPython answers `b''`; this raised OverflowError. It is
+        # the only value in -3..3, +-256, +-257, 255 and i64::MIN that breaks.
+        #
+        # And CPython validates `byteorder` BEFORE the length, so a negative
+        # length with a bad byteorder is the byteorder's sentence.
+        "to-bytes-edges-agree-with-cpython",
+        "for n in (0, 1, 2, 8):\n"
+        "    for v in (-3, -2, -1, 0, 1, 2, 3, -256, 255):\n"
+        "        for sg in (True, False):\n"
+        "            for order in ('big', 'little'):\n"
+        "                try:\n"
+        "                    print(n, v, sg, order, (v).to_bytes(n, order, signed=sg))\n"
+        "                except (OverflowError, ValueError) as e:\n"
+        "                    print(n, v, sg, order, type(e).__name__, e)\n"
+        "try:\n"
+        "    (5).to_bytes(-1, 'middle')\n"
+        "except ValueError as e:\n"
+        "    print('order checked first:', e)",
+    ),
+    (
+        # The unbound calls that must go on working, next to the ones that must
+        # not: the descriptor check is narrow enough to keep every shape the
+        # engine serves. `bool` is an `int` and a `Counter` is a `dict`, which
+        # are the only two subclass relations this engine models.
+        "an-unbound-method-still-works-where-the-descriptor-applies",
+        "print(str.upper('ab'), str.strip('  x  '), str.split('a b'))\n"
+        "print(int.bit_length(5), int.bit_length(True), float.is_integer(2.0))\n"
+        "print(float.as_integer_ratio(0.75), int.as_integer_ratio(7))\n"
+        "print(list.count([1, 2, 1], 1), tuple.count((1, 1, 2), 1))\n"
+        "print(bytes.upper(b'a'), dict.get({'a': 1}, 'a'))\n"
+        "print(int.to_bytes(5, 2, 'big'), int.from_bytes(b'\\x01\\x00', 'big'))\n"
+        "x = [3, 1]\n"
+        "list.sort(x)\n"
+        "print(x)",
+    ),
 ]
 
 

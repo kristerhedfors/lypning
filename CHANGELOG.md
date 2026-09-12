@@ -20,6 +20,51 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-12** — Four defects shipped earlier the same day, and the float `repr` that was wrong before any of them (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **`repr(float)` wrote a decimal that does not read back as the value.**
+  `shortest_digits` asks Rust's `{:e}` for a digit COUNT and re-renders at that
+  width with `{:.*e}`, because a genuine TIE — two spellings that both
+  round-trip — is broken to even by CPython and away from zero by Rust. That
+  part is right. Rounding the exact decimal expansion to the same width is a
+  DIFFERENT operation from choosing between two round-tripping candidates, and
+  where they differ it lands on neither: `2**-24` is exactly
+  `5.9604644775390625e-08`, whose shortest round-trip is `…063e-08` and whose
+  half-even render at 16 digits is `…062e-08`, a different double.
+  **46 of 4,239 structured doubles, 0 of ~40,000 uniform random ones** — the
+  defect lives where the mantissa is short, which is why no fuzz seed had
+  reached it. The re-render is kept only when it parses back to the same bits
+  now; 0 disagreements in 118,290, against 123 on the engine this morning.
+  Pre-existing, and asserted *exonerated* by the change that fixed `**`.
+- **A `%` precision or width past the allocation ceiling answered, then
+  aborted.** `'%.2147483648d' % 5` built a two-gigabyte string and printed it at
+  exit 0 where CPython raises `ValueError: precision too big`; one digit further
+  the process died with `memory allocation of 9223372036854775807 bytes failed`,
+  **exit 134** — not the exit-90 contract, and an unexplained death to a caller.
+  The whole range `[INT_MAX + 1, usize::MAX]` was unguarded. Both fields refuse
+  past the ceiling now.
+- **An unbound method ran the wrong type's implementation.** `T.m(x)` is a
+  TypeError in CPython when `x` is not a `T`; this dispatched on the shifted
+  VALUE, so `int.as_integer_ratio(1.5)` answered `(3, 2)`. Harmless while no
+  name lived on two types — `as_integer_ratio` is the first — and the same hole
+  the file already documents for `dict.update` on a Counter, reached by a second
+  door. The descriptor check closes two PRE-EXISTING instances as well:
+  `list.count((1,2,1), 1)` and `str.upper(b'a')`.
+- **`(-1).to_bytes(0, 'big', signed=True)` is `b''`**, not an OverflowError: -1
+  is all sign bits and extending it into zero bytes loses nothing. The only
+  value in −3..3, ±256, ±257, 255 and `i64::MIN` that broke. And CPython checks
+  `byteorder` BEFORE the length, so a negative length with a bad byteorder is
+  the byteorder's sentence — and with a non-str byteorder a TypeError, a
+  different CLASS, which `except ValueError` caught here and not there.
+- **How they were found, which is the part worth keeping.** A verification stage
+  re-checked each landed mechanism adversarially and rejected three of four. The
+  grids that shipped with them were large and clean — 304,722 `%` cells, 326
+  numeric-method cells — and every case in them was one a person would write.
+  Each defect is at an edge the author had explicitly bounded and dismissed.
+- Measured: conformance MATCH 1571, MISMATCH 0, UNSAFE 0. On-policy 509 of
+  1,173 (43.4%), MISMATCH 0. Bytes unchanged: 1,130,704 / 9 blocks and
+  1,310,928 / 11. pytest: the same 57 as the session baseline.
+
 **2026-09-12** — Six numeric methods: `int.bit_length`, `int.to_bytes`, `int.from_bytes`, `int.as_integer_ratio`, `float.as_integer_ratio`, `float.is_integer`
 
 - **`int` and `float` had no method table at all**, so every one of those names

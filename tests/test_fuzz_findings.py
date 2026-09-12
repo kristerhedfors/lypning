@@ -822,6 +822,66 @@ REFUSES = [
 ]
 
 
+#: Programs CPython does NOT answer either — so they cannot go in `REFUSES`,
+#: whose contract is "lypning must refuse where CPython answers". What these pin
+#: is the OTHER half of invariant 2: whatever lypning does with one, it leaves
+#: by the refusal contract — exit 90, one line on stderr, nothing on stdout —
+#: and never by a wrong answer and never by an abort.
+#:
+#: Every one of them shipped in this session and was found by an adversarial
+#: re-check AFTER it shipped, not by the grids that came with it.
+NO_ANSWER_EITHER = [
+    # A `%` width or precision past this runtime's allocation ceiling. CPython
+    # caps both at INT_MAX and says "precision too big"; below that it churns
+    # through gigabytes or raises MemoryError. Answering built a two-gigabyte
+    # string at exit 0, and one digit further ABORTED the process — exit 134,
+    # "memory allocation of 9223372036854775807 bytes failed", which is not the
+    # exit-90 contract and reaches a caller as an unexplained death.
+    ("pct-precision-too-big", "print('%.2147483648d' % 5)"),
+    ("pct-precision-at-int-max", "print('%.2147483647d' % 5)"),
+    ("pct-precision-aborts", "print('%.9223372036854775807d' % 5)"),
+    ("pct-precision-usize-max", "print('%.18446744073709551615d' % 5)"),
+    ("pct-width-too-big", "print('%18446744073709551615.3d' % 5)"),
+    # An unbound method whose descriptor does not apply to the receiver.
+    # `T.m(x)` is a TypeError in CPython when `x` is not a `T`; this dispatched
+    # on the shifted VALUE and ran the other type's implementation, which was
+    # invisible until `as_integer_ratio` became the first name on two types.
+    ("descriptor-int-on-float", "print(int.as_integer_ratio(1.5))"),
+    ("descriptor-float-on-int", "print(float.as_integer_ratio(5))"),
+    ("descriptor-bool-on-float", "print(bool.as_integer_ratio(2.5))"),
+    ("descriptor-list-on-tuple", "print(list.count((1, 2, 1), 1))"),
+    ("descriptor-str-on-bytes", 'print(str.upper(b"a"))'),
+    # A non-str byteorder is a TypeError in CPython and was a ValueError here —
+    # a different CLASS, so `except ValueError` caught it here and not there.
+    ("to-bytes-byteorder-type", "print((5).to_bytes(-1, 2))"),
+]
+
+
+@needs_engine
+@pytest.mark.parametrize("name,program", NO_ANSWER_EITHER,
+                         ids=[c[0] for c in NO_ANSWER_EITHER])
+def test_a_program_cpython_rejects_leaves_by_the_contract_not_by_an_abort(
+    name: str, program: str,
+) -> None:
+    """Exit 90, one line, nothing on stdout — or CPython's own exit 1.
+
+    What is forbidden is the third thing. `'%.9223372036854775807d' % 5` exited
+    **134** with `memory allocation of 9223372036854775807 bytes failed` on
+    stderr: not a refusal, not the program's own error, and a caller sees an
+    unexplained death. One digit fewer and it ANSWERED, at exit 0, having built
+    a two-gigabyte string CPython refuses to build.
+    """
+    got = engines.run(engines.LYPNING, program, timeout=60)
+    assert got.returncode in (90, 1), (
+        "%s left by exit %d — the contract is 90 (a refusal) or 1 (the "
+        "program's own error), never an abort and never an answer. stdout %r"
+        % (name, got.returncode, got.stdout[:200])
+    )
+    if got.returncode == 90:
+        assert got.refused, "%s: exit 90 without the contract line: %r" % (name, got.stderr[:200])
+        assert got.stdout == "", "%s wrote %r before refusing" % (name, got.stdout[:200])
+
+
 @needs_engine
 @pytest.mark.parametrize("name,program", REFUSES, ids=[c[0] for c in REFUSES])
 def test_refuses_rather_than_answering(name: str, program: str) -> None:
