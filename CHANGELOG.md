@@ -20,6 +20,39 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-12** — Two silent wrong answers, found by running the engine over what a language model writes (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **A `try` with no `except` and no `finally` ran its body and exited 0.** CPython's
+  grammar has no such statement — `SyntaxError: expected 'except' or 'finally'
+  block` — and neither does one with an `else` but no `except`. The parser
+  accepted both. It is the quiet half of a wrong answer: a program that prints
+  nothing and exits 0 is indistinguishable from one that worked.
+- **`n is n` over a NaN answered `False`.** `ops::identity` refuses `is` between
+  two equal immutables because CPython decides that by interning — and a NaN is
+  the one value that never reaches the guard, because it is the one value not
+  equal to itself. It fell through to `false`, where CPython answers `True` for
+  any object compared with itself. A float carries no `Rc`, so nothing in the
+  engine can tell one NaN object from two; it refuses as `nan-identity` now,
+  narrowed to the NaN so `1.5 is None` still answers.
+- **Neither shape is in the corpus, and neither ever would be.** No human types a
+  handler-less `try`; a generation cut off by a token cap types one every time.
+  The NaN arrived from a model routing *around* the existing refusal — `n in l`
+  over a NaN was already `nan-identity`, so the model rewrote the same question
+  as `any(x is n for x in l)` and went straight through. A refusal that can be
+  reworded into a wrong answer is not a guard.
+- **The instrument was the 1,173 programs Qwen3.8-27B wrote** in
+  `nemotron/runs/qwen38-baseline-k16`, each run against lypning and CPython:
+  462 MATCH, 709 UNSUPPORTED, **2 MISMATCH** — these two. `conformance` grades
+  the corpus, not the language, and the corpus's blind spots are shaped like its
+  capture mechanism.
+- **Zero byte cost** (1,114,320 B, 9 device blocks — unchanged), conformance
+  MATCH 1558 / UNSUPPORTED 945 unchanged, and the Python suite has the same 57
+  failures before and after, diffed by name rather than by count.
+- **`nt refusals`** ranks what the engine still refuses by how many corpus cases
+  each kind blocks, and marks which are not a backlog: 139 cases blocked by open
+  kinds, 39 by kinds in `ONLY_CPYTHON_REFUSALS`, where the engine's job is to go
+  on refusing.
+
 **2026-09-11** — The measurement pipeline audited: 52 findings, 33 survived, and the corpus does not need to be bigger (branch `claude/nemotron-lora-pipeline-1zczi2`)
 
 - **A green suite measures the cases someone thought of.** Six independent lenses

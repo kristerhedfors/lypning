@@ -195,6 +195,34 @@ CASES = [
         "for s in ['\\u65e5\\u672c', 'abc', 'ABC', '\\u65e5\\u672ca', '\\u01c5', '\\u01c5abc', '123']:\n"
         "    print(s.islower(), s.isupper(), s.isalpha())\n",
     ),
+    (
+        # A `try` block with no `except` and no `finally` is a SyntaxError in
+        # CPython's grammar, and so is one with an `else` but no `except`. This
+        # parser accepted both, ran the body, and exited 0 — the quiet half of a
+        # wrong answer, because a program that prints nothing and exits 0 looks
+        # exactly like one that worked.
+        #
+        # No human types a handler-less `try`, which is why no corpus program
+        # and no fuzzer seed had ever produced one. A language MODEL types one
+        # every time the token cap cuts it off inside the block, and that is
+        # where this came from: a completion in runs/qwen38-baseline-k16 that
+        # stopped mid-`try`, which CPython refused to compile and lypning ran.
+        "a-try-with-no-handler-is-a-syntax-error",
+        "try:\n    print('body')",
+    ),
+    (
+        "a-try-with-an-else-and-no-except-is-a-syntax-error",
+        "try:\n    print('body')\nelse:\n    print('else')",
+    ),
+    (
+        # The shapes next door, which must go on working: the refusal above is
+        # narrowed to the two CPython's grammar actually rejects.
+        "the-try-shapes-cpython-does-accept-still-run",
+        "try:\n    x = 1 // 0\nexcept ZeroDivisionError:\n    print('caught')\n"
+        "try:\n    print('a')\nfinally:\n    print('b')\n"
+        "try:\n    print('c')\nexcept ValueError:\n    print('no')\nelse:\n    print('d')\n"
+        "try:\n    print('e')\nexcept ValueError:\n    print('no')\nfinally:\n    print('f')",
+    ),
 ]
 
 
@@ -466,6 +494,43 @@ def test_identity_still_answers_where_it_is_a_fact_and_not_an_interning_question
     assert out("x = 'ab'\nprint(x is x)") == "True"
     assert out("x = (1, 2)\nprint(x is x)") == "True"
     assert out("print(1 is 'a', 1000 is 1001)") == "False False"
+
+
+def test_is_over_a_nan_refuses_rather_than_answering_false(lypning_bin):
+    """The value the interning guard above cannot see, because it is the one
+    value not equal to itself.
+
+    `identity` refuses `is` between two EQUAL immutables, because CPython's
+    answer there is interning's. A NaN never reaches that arm: `eq` says false,
+    so the guard did not fire and the fall-through answered False — while
+    CPython answers True for `n is n`, which is one object however unequal it is
+    to itself. A float carries no `Rc`, so nothing here can tell one NaN object
+    from two, and refusing is the only answer that is not a guess.
+
+    It reached the engine the way these always do — a model routing AROUND the
+    existing refusal. `n in l` over a NaN was already `nan-identity`; the
+    completion in runs/qwen38-baseline-k16 spelled the identical question as
+    `any(x is n for x in l)` and went straight through. A refusal that can be
+    reworded into a wrong answer is not a guard.
+    """
+    for program in (
+        'n = float("nan")\nprint(n is n)',
+        'n = float("nan")\nprint(n is not n)',
+        'n = float("nan")\nm = float("nan")\nprint(n is m)',
+        'n = float("nan")\nl = [n]\nprint(any(x is n for x in l))',
+        'n = float("nan")\nl = [n]\nprint(l[0] is n)',
+    ):
+        r = engines.run(engines.LYPNING, program, binary=lypning_bin)
+        assert r.returncode == UNSUPPORTED_EXIT, "answered %r instead of refusing" % r.stdout
+        assert r.stdout == "", "output escaped before the refusal"
+        assert "nan-identity" in r.stderr, r.stderr
+
+    # ...and the float shapes next door still answer, because a refusal is a
+    # spawn and this one is narrowed to the NaN.
+    r = engines.run(engines.LYPNING, 'print(1.5 is None, float("inf") is None)',
+                    binary=lypning_bin)
+    assert not r.refused, r.stderr
+    assert r.stdout.strip() == "False False"
 
 
 #: Every method name `str` and `bytes` both implement. All five drifts a grid

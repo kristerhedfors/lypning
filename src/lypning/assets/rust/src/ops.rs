@@ -1374,6 +1374,30 @@ fn identity(a: &Value, b: &Value) -> R<bool> {
             "`is` between two equal immutable values, which CPython answers from interning",
         ));
     }
+    // A NaN is the one value the guard above cannot see, because it is the one
+    // value not equal to itself: `eq` answers false, the interning arm never
+    // fires, and this fell through to `Ok(false)` — so `n is n` answered False
+    // where CPython answers True. The float carries no `Rc`, so `is_same` has
+    // no arm for it and there is nothing here that can tell one NaN object from
+    // two. Refusing is the only answer that is not a guess, and `nan-identity`
+    // is already a kind no reimplementation may have.
+    //
+    // Not `identity`: the reason is not interning, it is that equality cannot
+    // stand in for identity over a value that is not equal to itself.
+    //
+    // Found in a program a model wrote to route AROUND the `in`-over-a-NaN
+    // refusal, by spelling the same question as `any(x is n for x in l)`. The
+    // sequence guard caught the first spelling and this one went straight
+    // through — a refusal that can be reworded into a wrong answer is not a
+    // guard, and the corpus is full of models doing the rewording.
+    if let (Value::Float(x), Value::Float(y)) = (a, b) {
+        if x.is_nan() || y.is_nan() {
+            return Err(unsupported(
+                "nan-identity",
+                "`is` over a NaN, which is not equal to itself, so CPython decides it by object identity",
+            ));
+        }
+    }
     Ok(false)
 }
 

@@ -385,6 +385,32 @@ impl Parser {
             } else {
                 Vec::new()
             };
+            // CPython's grammar has no bare `try`: the block needs at least one
+            // `except` or a `finally`, and an `else` without an `except` is a
+            // SyntaxError too. Accepting either ran the body and exited 0 on a
+            // program CPython will not compile — silent, and the worse half of
+            // invariant 1, since nothing on stdout looks exactly like success.
+            //
+            // Found in a model completion cut off mid-`try` by the token cap,
+            // which is how the shape reaches an engine in the first place: no
+            // human types a handler-less `try`, and a truncated generation
+            // types one every time it is interrupted inside the block.
+            //
+            // An absent clause and an empty one are the same `Vec` here because
+            // python has no empty block — `finally:` with nothing under it is
+            // already the indentation error above.
+            if handlers.is_empty() && finally.is_empty() {
+                return Err(LypningError::syntax(
+                    self.line(),
+                    "expected 'except' or 'finally' block",
+                ));
+            }
+            if handlers.is_empty() && !els.is_empty() {
+                return Err(LypningError::syntax(
+                    self.line(),
+                    "expected 'except' or 'finally' block",
+                ));
+            }
             return Ok(Stmt::Try {
                 body,
                 handlers,
