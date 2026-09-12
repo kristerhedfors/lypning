@@ -63,6 +63,12 @@ pub mod io;
 pub mod iter;
 pub mod json;
 pub mod lex;
+/// `math` — the exactly-defined subset, in EVERY variant, because nothing in it
+/// is a capability: it is IEEE-754 and integer arithmetic, and putting it in the
+/// cheapest binary is what keeps a `math.floor` program out of a second spawn.
+/// The transcendentals are refused there and not merely absent; `math.rs` says
+/// why they must stay that way.
+pub mod math;
 pub mod methods;
 pub mod modules;
 pub mod ops;

@@ -20,6 +20,46 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-12** — `math`, bounded to the functions that have one answer (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **`import math` was the top row of `conformance --plan` on both lists** — the
+  corpus's and a fine-tune's held-out set. The module is now served by **every**
+  variant, core included, because nothing in it is a capability: the served
+  subset is IEEE-754 and integer arithmetic, and a larger sibling would answer
+  it identically.
+- **What is served:** `pi`, `e`, `tau`, `inf`, `nan`; `floor`, `ceil`, `trunc`
+  (an **int**, as Python 3 returns, and an int argument comes back unchanged);
+  `fabs`, `sqrt`, `copysign`, `fmod`; `isqrt`, `gcd` (variadic), `factorial`;
+  `isfinite`, `isinf`, `isnan`.
+- **What is refused, and why it must stay refused:** every transcendental —
+  `sin`, `cos`, `tan`, `exp`, `log`, `log2`, `log10`, `pow`, `hypot`, `atan2` —
+  is libm's answer, and libm is not correctly rounded, so musl's last ulp is not
+  glibc's or Apple's. They refuse at `modules::get_attr`, which the walk reads,
+  so the block is static and costs a route rather than a spawn. `fsum` is
+  refused too: it is exactly specified and is the obvious next step, but it is a
+  second mechanism.
+- **Every error path refuses rather than raises**, on `random.rs`'s rule: a
+  domain error, a `TypeError` on a non-number, a wrong argument count are all
+  message text CPython owns. The three exceptions are the three
+  `builtins::float_to_int` already spells exactly — `floor(nan)` a `ValueError`,
+  `floor(inf)` an `OverflowError`, `floor(1e300)` the `bigint` refusal.
+  `factorial` past 20! and `gcd(-2**63)` raise `bigint` rather than wrap.
+- **Verified by enumeration, not by the battery**: 1,017 programs over the
+  constants, both signed zeroes, both infinities, NaN, the 64-bit boundary, the
+  full 16x16 `fmod` grid and every argument type, diffed against CPython 3.11.15
+  — 812 agreed, 205 refused, **0 mismatches**. The `fmod` domain rule refuses on
+  exactly the 69 of 256 pairs where CPython raises, and answers the other 187
+  bit-for-bit.
+- Measured 2026-09-12, x86_64 musl, corpus 3,688 loaded / 2,504 graded, CPython
+  3.11.15: `lypning` 1,114,320 -> 1,122,512 B (+8,192; 9 device blocks either
+  side). `conformance --engine lypning` MATCH 1,558 -> 1,564, UNSUPPORTED 945 ->
+  939. `import math` leaves the build order entirely. MISMATCH unchanged at 1
+  (`py-ab7286f43b7a`, `1.79e308 ** 0.5` — the float-power path, not this
+  change). Routing safety UNSAFE unchanged at 1, the same entry; WASTED 93 ->
+  99, the six programs whose refusal moved from the static import blocker to a
+  runtime one.
+- **One test went red and it was the test that was wrong.** `test_a_construct_the_runtime_table_would_escalate_is_kept_off_the_tier_statically` asserted these programs route straight to CPython because a NaN literal is visible in the source. No such static marker exists — the `MICROPYTHON_UNSAFE` markers were deleted with the tier they served, which is why this test's own sibling is already retired two lines below it. It passed only because `import math` was an unserved module and the module blocker stood in for the marker. Rewritten to assert what is actually guaranteed: tier 1 refuses at run time, nothing reaches stdout first, and the answer matches CPython — from CPython for `nan-identity`, from `lypning-l` for `int-div-precision`, which left `ONLY_CPYTHON_REFUSALS` when `cap-bigint` landed. WASTED, not UNSAFE.
+
 **2026-09-12** — The standing MISMATCH closed: `**` on floats now answers what the reference libm answers (branch `claude/nemotron-lora-pipeline-1zczi2`)
 
 - **`1.7976931348623157e308 ** 0.5` answered `1.3407807929942597e+154` where

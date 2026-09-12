@@ -26,6 +26,101 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-09-12 · iteration 82 — `math`, bounded to what has one answer
+
+Host: x86_64 Linux, musl target. Corpus 3,688 loaded, 2,504 graded. Reference
+CPython 3.11.15. Focus: coverage, `conformance --plan` top-down.
+
+### The step
+
+`import math` was the top module row of `--plan` (14 programs) and the top row
+of a fine-tune's held-out refusals (17 of 270). It is served now by **every**
+variant rather than behind a `cap-*`, because nothing in it is a capability: the
+served subset is IEEE-754 and integer arithmetic, so a larger sibling would
+answer every one of these programs identically and a capability row would buy
+the chain nothing.
+
+| | before | after |
+|---|---|---|
+| `lypning` bytes | 1,114,320 | 1,122,512 (+8,192) |
+| `lypning` blocks | 9 | 9 |
+| `lypning-l` bytes | 1,294,544 | 1,298,640 (+4,096) |
+| MATCH / UNSUPPORTED | 1,558 / 945 | 1,564 / 939 |
+| MISMATCH | 1 | 1 — the same entry |
+| routing UNSAFE | 1 | 1 — the same entry |
+| routing IDEAL / WASTED | 2,376 / 93 | 2,370 / 99 |
+
++6 programs, 8,192 B: **1,365 B per program unblocked**, inside the block the
+core already had and with 57,136 B of headroom left before a tenth.
+
+### The bound, which is the whole design
+
+A partial `math` is a MISMATCH generator: every function returns a plausible
+number at exit 0 and nothing in the output says which library computed it. So
+the line is not "what is useful" but "what has one answer".
+
+Served: `pi`, `e`, `tau`, `inf`, `nan`; `floor`, `ceil`, `trunc` (an **int**,
+and an int argument returned unchanged); `fabs`, `sqrt`, `copysign`, `fmod`;
+`isqrt`, `gcd`, `factorial`; `isfinite`, `isinf`, `isnan`.
+
+Refused, and it must stay that way: every transcendental. `sin`, `cos`, `tan`,
+`exp`, `log`, `log2`, `log10`, `pow`, `hypot` and `atan2` are libm's answers,
+libm is not correctly rounded, and musl's last ulp is not glibc's or Apple's.
+`math.log10(1000)` agrees everywhere and `math.log10(0.001)` is a coin toss, and
+nothing in the output tells the two apart. `math.rs` has a test named
+`no_transcendental_is_served` so that adding one is a deliberate act. `fsum` is
+refused for a different reason — it IS exactly specified, and it is the obvious
+next step and a second mechanism.
+
+Every error path refuses rather than raises, on `random.rs`'s rule: a domain
+error, a `TypeError` on a non-number, a wrong argument count are message text
+CPython owns and has re-worded between versions. The three exceptions are the
+three `builtins::float_to_int` already spells exactly — `floor(nan)` a
+`ValueError`, `floor(inf)` an `OverflowError`, `floor(1e300)` the `bigint`
+refusal. `factorial` past 20! and `gcd(-2**63)` raise `bigint` rather than wrap.
+
+### What the gates could not see, and the enumeration that could
+
+1,017 programs — the constants, `-0.0` and `0.0`, both infinities, NaN, the
+64-bit boundary in both directions, `5e-324`, the full 16x16 `fmod` grid, every
+argument type including `str`/`list`/`bytes`/`None`/`bool`, `from math import`
+and `import math as m` — run against CPython 3.11.15 and compared on stdout,
+exit code and the last stderr line. **812 agreed, 205 refused, 0 mismatches.**
+The `fmod` domain rule was checked separately against `mathmodule.c`'s: over all
+256 pairs it refuses on exactly the 69 where CPython raises `ValueError`, and
+the other 187 are bit-identical.
+
+### The red gate this step did NOT fix, and why
+
+`tests/test_routing.py::test_a_construct_the_runtime_table_would_escalate_is_kept_off_the_tier_statically`
+now fails. It asserts that
+
+```
+import math
+x = float('nan')
+print(x in [x])
+```
+
+routes to CPython, and its docstring says the STATIC half catches it: "a NaN
+literal and an oversized division operand are both visible in the SOURCE".
+
+**Measured on the BASELINE binary, that static half does not exist.** Drop the
+import, or make it `import json`, and the same program routes to `lypning`; the
+same is true of the second assertion's `9007199254740993 / 3`. The test passed
+at HEAD only because `import math` was an unserved module — the module blocker
+satisfied it, never the marker it names. Serving `math` removed the prop.
+
+The answer is still right and the chain is still safe: both programs refuse at
+runtime with a kind in `ONLY_CPYTHON_KINDS` (`nan-identity`,
+`int-div-precision`), nothing reaches stdout first, and `lypning run` prints
+`True` and `3002399751580331.0`. Conformance's routing safety is UNSAFE 1 before
+and after, the same pre-existing entry.
+
+Restoring the static markers is a second mechanism in `route::walk_expr`, it
+changes routing for programs that have nothing to do with `math`, and it is a
+pre-existing defect this step merely uncovered. Left red and reported, per the
+skill's stop condition, rather than widened into this change.
+
 ## 2026-09-12 · iteration 82 — the standing MISMATCH was not the printer, it was the multiply
 
 Host: Linux x86-64, `x86_64-unknown-linux-musl` build. Corpus 3,688 loaded,

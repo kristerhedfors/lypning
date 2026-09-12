@@ -865,6 +865,11 @@ pub const ONLY_CPYTHON_KINDS: &[&str] = &[
     // its answer is the same wrong text this engine refused to print.
     "iterator-type-name",
     "json",
+    // Every refusal `math.rs` raises: a domain error, a `TypeError` on a
+    // non-number, a wrong argument count. Each is a message text CPython owns,
+    // and EVERY variant carries the same `math.rs` — so falling to a larger
+    // sibling would spend a spawn to be told no in the same words.
+    "math",
     "nan-identity",
     // A sort over a NaN is the sort algorithm's answer, not Python's, and
     // lypning-mp's algorithm differs from timsort: `sorted([3,1,nan,2])` is

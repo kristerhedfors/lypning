@@ -2,6 +2,12 @@
 //! `cap-*` feature for it, `collections`, `pathlib`, `re`, `csv`, `glob` and
 //! `base64` and `hashlib`.
 //!
+//! `math` is here rather than behind a `cap-*` because nothing in it is a
+//! capability: the served subset is IEEE-754 and integer arithmetic, and the
+//! transcendentals are refused on purpose rather than merely absent, so a
+//! larger variant would answer every `math` program exactly as the core does.
+//! `math.rs` is the bound, and the reason there has to be one.
+//!
 //! Chosen from the corpus, in frequency order: `sys` (82 imports), `json` (74),
 //! `io` (63 — almost entirely `io.open(p, encoding='utf-8').read()`, which is
 //! the file-read idiom agents actually type), `os` (21). `re` is on the larger
@@ -37,7 +43,7 @@ use std::rc::Rc;
     feature = "cap-glob",
     feature = "cap-base64"
 )))]
-pub const MODULES: &[&str] = &["sys", "os", "os.path", "io", "json", "posixpath", "random"];
+pub const MODULES: &[&str] = &["sys", "os", "os.path", "io", "json", "math", "posixpath", "random"];
 #[cfg(all(
     feature = "cap-collections",
     not(feature = "cap-pathlib"),
@@ -47,7 +53,7 @@ pub const MODULES: &[&str] = &["sys", "os", "os.path", "io", "json", "posixpath"
     not(feature = "cap-base64")
 ))]
 pub const MODULES: &[&str] =
-    &["sys", "os", "os.path", "io", "json", "posixpath", "random", "collections"];
+    &["sys", "os", "os.path", "io", "json", "math", "posixpath", "random", "collections"];
 #[cfg(all(
     feature = "cap-pathlib",
     not(feature = "cap-collections"),
@@ -57,7 +63,7 @@ pub const MODULES: &[&str] =
     not(feature = "cap-base64")
 ))]
 pub const MODULES: &[&str] =
-    &["sys", "os", "os.path", "io", "json", "posixpath", "random", "pathlib"];
+    &["sys", "os", "os.path", "io", "json", "math", "posixpath", "random", "pathlib"];
 #[cfg(all(
     feature = "cap-collections",
     feature = "cap-pathlib",
@@ -67,7 +73,7 @@ pub const MODULES: &[&str] =
     not(feature = "cap-base64")
 ))]
 pub const MODULES: &[&str] = &[
-    "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib",
+    "sys", "os", "os.path", "io", "json", "math", "posixpath", "random", "collections", "pathlib",
 ];
 #[cfg(all(
     feature = "cap-collections",
@@ -78,7 +84,8 @@ pub const MODULES: &[&str] = &[
     not(feature = "cap-base64")
 ))]
 pub const MODULES: &[&str] = &[
-    "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib", "re",
+    "sys", "os", "os.path", "io", "json", "math", "posixpath", "random", "collections",
+    "pathlib", "re",
 ];
 #[cfg(all(
     feature = "cap-collections",
@@ -89,7 +96,8 @@ pub const MODULES: &[&str] = &[
     not(feature = "cap-base64")
 ))]
 pub const MODULES: &[&str] = &[
-    "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib", "re",
+    "sys", "os", "os.path", "io", "json", "math", "posixpath", "random", "collections",
+    "pathlib", "re",
     "csv",
 ];
 #[cfg(all(
@@ -102,7 +110,8 @@ pub const MODULES: &[&str] = &[
     not(feature = "cap-hashlib")
 ))]
 pub const MODULES: &[&str] = &[
-    "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib", "re",
+    "sys", "os", "os.path", "io", "json", "math", "posixpath", "random", "collections",
+    "pathlib", "re",
     "csv", "glob",
 ];
 #[cfg(all(
@@ -115,7 +124,8 @@ pub const MODULES: &[&str] = &[
     not(feature = "cap-hashlib")
 ))]
 pub const MODULES: &[&str] = &[
-    "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib", "re",
+    "sys", "os", "os.path", "io", "json", "math", "posixpath", "random", "collections",
+    "pathlib", "re",
     "csv", "glob", "base64",
 ];
 #[cfg(all(
@@ -128,7 +138,8 @@ pub const MODULES: &[&str] = &[
     feature = "cap-hashlib"
 ))]
 pub const MODULES: &[&str] = &[
-    "sys", "os", "os.path", "io", "json", "posixpath", "random", "collections", "pathlib", "re",
+    "sys", "os", "os.path", "io", "json", "math", "posixpath", "random", "collections",
+    "pathlib", "re",
     "csv", "glob", "base64", "hashlib",
 ];
 // The rows above are the build-order CHAIN, not every subset: each capability
@@ -286,6 +297,13 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
         ("random", "seed" | "random" | "randint" | "randrange" | "choice" | "getrandbits") => {
             Value::Bound(Rc::new(m.clone()), interned(name)?)
         }
+        // The exactly-defined subset: five constants and thirteen functions,
+        // every one of them IEEE-754 or integer arithmetic. Every other name —
+        // `sin`, `log10`, `exp`, `fsum`, `comb` — refuses with the
+        // `module-attr` kind, which is a STATIC block: the walk resolves
+        // `math.<n>` through this very function, so a program reaching for a
+        // transcendental never starts. `math.rs` says why it must not have one.
+        ("math", _) => return crate::math::module_attr(name),
         ("json", "loads" | "dumps" | "load" | "dump") => {
             Value::Bound(Rc::new(m.clone()), interned(name)?)
         }
@@ -424,6 +442,7 @@ pub fn call_module_method(
         #[cfg(feature = "cap-hashlib")]
         ("hashlib", _) => return crate::hashlib::call(it, name, args, &kw),
         ("random", _) => return crate::random::call(it, name, args, &kw),
+        ("math", _) => return crate::math::call(it, name, args, &kw),
         // `Path.cwd()`. A classmethod on the type object, reached through
         // `ops::get_attr`, which spells it as a method on the module so that
         // the one `filesystem_allowed` gate above covers it exactly as it
