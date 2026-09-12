@@ -97,10 +97,31 @@ def test_two_endpoints_under_one_model_name_cannot_be_told_apart():
     assert why[0]["same_model_name"] == "nemotron"
 
 
-def test_two_endpoints_under_two_model_names_are_the_arm_under_test():
-    assert stats.comparability(
+def test_two_endpoints_under_two_model_names_are_still_not_a_delta():
+    """Rewritten 2026-09-12. This asserted the opposite, and the opposite is wrong.
+
+    The old rule was: when the model names match and the endpoints differ the
+    record cannot say which weights produced which number, so withhold; but when
+    the NAMES differ, the endpoint difference *is* the arm under test, so allow.
+
+    The second half has a hole. A stock baseline generated on a hosted provider
+    and a tuned arm generated on our own vLLM differ in name AND in stack, and
+    the gap between their numbers is weights plus kernels plus sampling
+    implementation plus tokenizer handling — four things, one number, nothing to
+    separate them. The old rule waved exactly that pair through, and the
+    fine-tune comparison this repository is built for is exactly that pair.
+
+    So a known endpoint difference withholds the subtraction whatever the names
+    say. The remedy is not a flag: generate both arms on ONE stack, which one
+    vLLM process with `--enable-lora` gives for free — `PREREGISTRATION.md` §5.
+    """
+    why = stats.comparability(
         _summary("base"),
-        _summary("tuned", model="nemotron-lora-v1", base_url="https://other/v1")) == []
+        _summary("tuned", model="nemotron-lora-v1", base_url="https://other/v1"))
+    assert [d["field"] for d in why] == ["backend.base_url"]
+    # ...and without the stronger `same_model_name` detail, which belongs only to
+    # the one-name-two-stacks shape the test above covers.
+    assert "same_model_name" not in why[0]
 
 
 def test_an_unrecorded_endpoint_is_not_reported_as_a_difference():
@@ -648,3 +669,53 @@ def test_a_graded_run_that_declares_itself_is_comparable(nt, tmp_path):
     graded["backend"] = {"model": "nemotron-lora-v1", "source": "replay:/tmp/c.jsonl"}
     assert stats.comparability(_summary("base"), graded) == []
     assert nt._promotion_bars(graded) == []
+
+
+def test_two_serving_stacks_are_not_a_delta_even_when_the_models_differ():
+    """The hole the fine-tune walked into.
+
+    This fired only when the model NAMES matched, on the reasoning that a
+    different name means the weights are what is under test. But the stock
+    baseline was generated on a hosted provider and a tuned arm is generated on
+    our own vLLM: the names differ AND the stacks differ, so the gap between the
+    numbers is weights plus kernels plus sampling implementation plus tokenizer
+    handling, with nothing to separate them.
+    """
+    from pipeline import stats
+
+    base = {"run_id": "stock-on-a-provider", "model": "Qwen/Qwen3.8-27B:novita",
+            "backend": {"base_url": "https://router.huggingface.co/v1"}}
+    after = {"run_id": "tuned-on-our-vllm", "model": "lypning/qwen38-lora-v1",
+             "backend": {"base_url": "http://127.0.0.1:8000/v1"}}
+    fields = [r["field"] for r in stats.comparability(base, after)]
+    assert "backend.base_url" in fields, (
+        "two different serving stacks were subtracted from each other"
+    )
+
+
+def test_one_stack_two_arms_is_comparable():
+    """The design PREREGISTRATION §5 requires: one vLLM process, adapter off and
+    on. Same endpoint, so the endpoint is not a reason to withhold anything."""
+    from pipeline import stats
+
+    common = {"holdout_manifest_sha256": "abc", "prompt_sha": "def",
+              "sampling": {"enable_thinking": False, "max_tokens": 2048,
+                           "samples": 16, "temperature": 1.0, "top_p": 0.95}}
+    base = dict(common, run_id="eval-base", model="Qwen/Qwen3.8-27B",
+                backend={"base_url": "http://127.0.0.1:8000/v1"})
+    after = dict(common, run_id="eval-lora", model="Qwen/Qwen3.8-27B+lora-v1",
+                 backend={"base_url": "http://127.0.0.1:8000/v1"})
+    assert stats.comparability(base, after) == []
+
+
+def test_the_endpoint_key_is_read_under_either_spelling():
+    """`grade` writes `backend.source`/`backend.endpoint`; `eval` writes
+    `backend.base_url`. A check that read only one of them would pass a
+    cross-stack pair by looking in the wrong place."""
+    from pipeline import stats
+
+    base = {"run_id": "a", "model": "m", "backend": {"endpoint": "https://one/v1"}}
+    after = {"run_id": "b", "model": "m", "backend": {"base_url": "https://two/v1"}}
+    # These minimal summaries also lack a sampling block, which is its own
+    # unestablished reason; the endpoint must be among the reasons, not the only.
+    assert "backend.base_url" in [r["field"] for r in stats.comparability(base, after)]

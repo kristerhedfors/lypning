@@ -118,20 +118,40 @@ def _unestablished(field: str, have_baseline: bool, have_run: bool) -> Dict[str,
 
 
 def _arm(baseline: Dict[str, Any], run: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """The one arm-identity question this record can actually answer.
+    """Two runs generated on different serving stacks are not a delta.
 
     A model name is free text chosen by whoever launched the run, so it is not
     an identity: in this tree's own recorded runs two different endpoints both
-    answer to "nemotron". When the names match and the endpoints do not, the
-    record cannot say which weights produced which number — that withholds the
-    delta. When the names differ, the endpoint difference is the arm under test.
+    answer to "nemotron".
+
+    THIS USED TO FIRE ONLY WHEN THE NAMES MATCHED, on the reasoning that a
+    different name means the weights are the thing under test. That reasoning
+    has a hole, and the fine-tune walked straight into it: the stock baseline was
+    generated on a hosted provider's stack and a tuned arm is generated on our
+    own vLLM, so the names differ AND the stacks differ, and the difference
+    between the numbers is weights PLUS kernels PLUS sampling implementation
+    PLUS tokenizer handling with nothing to separate them. Under the old rule
+    that pair was waved through as "the endpoint difference IS the arm".
+    
+    So any known difference in endpoint withholds the subtraction now. The
+    module's own rule is that an unknown is a reason to withhold and never a
+    reason to assert, and a confound is a stronger reason than an unknown. The
+    remedy is not a flag: it is to generate both arms on one stack, which is
+    what `PREREGISTRATION.md` §5 requires and what one vLLM process with
+    `--enable-lora` gives for free.
     """
-    b_url = (baseline.get("backend") or {}).get("base_url")
-    r_url = (run.get("backend") or {}).get("base_url")
-    name = baseline.get("model")
-    if b_url and r_url and b_url != r_url and name and name == run.get("model"):
-        return [{"field": "backend.base_url", "baseline": b_url, "run": r_url,
-                 "established": True, "same_model_name": run.get("model")}]
+    b_url = ((baseline.get("backend") or {}).get("base_url")
+             or (baseline.get("backend") or {}).get("endpoint"))
+    r_url = ((run.get("backend") or {}).get("base_url")
+             or (run.get("backend") or {}).get("endpoint"))
+    if b_url and r_url and b_url != r_url:
+        rec = {"field": "backend.base_url", "baseline": b_url, "run": r_url,
+               "established": True}
+        if baseline.get("model") and baseline.get("model") == run.get("model"):
+            # The stronger shape: one name, two stacks, so the record cannot even
+            # say which weights produced which number.
+            rec["same_model_name"] = run.get("model")
+        return [rec]
     return []
 
 
