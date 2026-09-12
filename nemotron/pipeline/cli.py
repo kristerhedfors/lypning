@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from . import engines as eng
 from . import split as splitmod
 from . import stats
 from .adapters import parse_source
@@ -933,6 +934,29 @@ def cmd_slices(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_refusals(args: argparse.Namespace) -> int:
+    """Rank what the engine still refuses by how much of the corpus it blocks.
+
+    This is the $0 instrument between eval runs. `eval` measures the model
+    against a fixed engine; this measures the ENGINE against a fixed corpus, and
+    the two move the same number from opposite ends — a construct delivered here
+    retires the cases that asked the model to route around it.
+    """
+    from . import refusals
+    engine = args.engine or eng.engine_path("lypning-l") or eng.engine_path("lypning")
+    if not engine:
+        print("no lypning binary on this machine: run `lypning build --rust`, "
+              "or pass --engine", file=sys.stderr)
+        return 1
+    cases = list(read_jsonl(DATA / "corpus.jsonl"))
+    if args.held_out or args.train:
+        held = {c["id"] for c in read_jsonl(DATA / "holdout.jsonl")}
+        cases = [c for c in cases if (c["id"] in held) == bool(args.held_out)]
+    print(refusals.report(refusals.census(cases, engine),
+                          limit=args.limit, show_details=args.details))
+    return 0
+
+
 def cmd_show(args: argparse.Namespace) -> int:
     """Inspect what actually happened on a case: the program and why it failed."""
     run_dir = RUNS / args.run_id
@@ -1056,6 +1080,15 @@ def build_parser() -> argparse.ArgumentParser:
     sl.add_argument("run_id"); sl.add_argument("--fine", action="store_true",
                                                help="every refusal kind, not just the group")
     sl.set_defaults(fn=cmd_slices)
+
+    rf = sub.add_parser("refusals", help="rank what the engine still refuses, by corpus weight")
+    rf.add_argument("--engine", help="binary to probe (default: the widest built variant)")
+    rf.add_argument("--details", action="store_true", help="the exact refusal line under each kind")
+    rf.add_argument("--limit", type=int, default=0, help="show only the top N kinds")
+    g = rf.add_mutually_exclusive_group()
+    g.add_argument("--held-out", action="store_true", help="only the frozen held-out split")
+    g.add_argument("--train", action="store_true", help="only the train split")
+    rf.set_defaults(fn=cmd_refusals)
 
     sh = sub.add_parser("show", help="print the programs a run produced")
     sh.add_argument("run_id"); sh.add_argument("--case"); sh.add_argument("--limit", type=int, default=5)
