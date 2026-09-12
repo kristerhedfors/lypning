@@ -419,6 +419,25 @@ pub(crate) fn bad_kw(func: &str, k: &str) -> LypningError {
     })
 }
 
+/// How `int()` and `float()` name the numbers they accept. CPython 3.10
+/// inserted "real" into both sentences at once, so both sites read it from
+/// here. Measured on 2026-09-12 with `int([])` and `float([])`:
+///
+///   3.9            int() argument must be a string, a bytes-like object or A NUMBER
+///   3.10 .. 3.13   … or A REAL NUMBER
+///
+/// The rest of each sentence is fixed on all five, and `int()`'s names a
+/// bytes-like object this subset converts before it can reach the message —
+/// CPython's wording is still CPython's wording, and the engine's job is to
+/// repeat it, not to describe itself.
+fn real_number() -> &'static str {
+    if REF_PY_MINOR >= 10 {
+        "a real number"
+    } else {
+        "a number"
+    }
+}
+
 pub fn key_arg(kw: &[(Rc<str>, Value)], name: &str) -> Option<Value> {
     match kwget(kw, name) {
         Some(Value::None) | None => None,
@@ -1072,7 +1091,8 @@ pub fn call_builtin(
                 }
                 Some(other) => {
                     return Err(type_err(format!(
-                        "int() argument must be a string or a number, not '{}'",
+                        "int() argument must be a string, a bytes-like object or {}, not '{}'",
+                        real_number(),
                         type_name(other)
                     )))
                 }
@@ -1126,7 +1146,8 @@ pub fn call_builtin(
             Some(Value::Float(f)) => Value::Float(*f),
             Some(other) => {
                 return Err(type_err(format!(
-                    "float() argument must be a string or a real number, not '{}'",
+                    "float() argument must be a string or {}, not '{}'",
+                    real_number(),
                     type_name(other)
                 )))
             }

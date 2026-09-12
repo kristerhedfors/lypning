@@ -986,6 +986,38 @@ def _doctor_checks() -> List[Tuple[str, str, str]]:
     checks.append((OK if py else FAIL, "cpython",
                    "%s" % py if py else "no real CPython found — the last tier is missing"))
 
+    # 2b. Which CPython the core was BUILT to agree with, against the one it
+    #     falls through to. Nine of its answers are CPython's own and CPython
+    #     does not word them the same on every version this package supports
+    #     (`docs/SUBSET.md` §6a), so a core built elsewhere answers correctly
+    #     for a host this is not: `min([])` says what no interpreter here says,
+    #     the grids fail by the dozen, and every one of them names the engine.
+    #     That is the state nobody can attribute, so it is a FAIL and not a
+    #     note — a measured disagreement, not a hole. A core that does not say
+    #     which CPython it was built for predates the field and is a WARN: an
+    #     older install is not a broken one, and there is nothing to compare.
+    core = found.get(engines.LYPNING)
+    if core is not None and build is not None:
+        built_for = engines.reference_minor(core)
+        falls_to = build.reference_python_env().get("LYPNING_REF_PY")
+        if built_for is None:
+            checks.append((WARN, "reference cpython",
+                           "this core does not say which CPython it was built to agree with — "
+                           "it predates `err::REF_PY_MINOR`; `lypning build --rust` rebuilds it"))
+        elif falls_to is None:
+            checks.append((NOTE, "reference cpython",
+                           "built for CPython %s; no reference CPython answered, so there is "
+                           "nothing to compare it against" % built_for))
+        elif built_for == falls_to:
+            checks.append((OK, "reference cpython",
+                           "built for CPython %s, which is what %s is" % (built_for, py)))
+        else:
+            checks.append((FAIL, "reference cpython",
+                           "built for CPython %s but falls through to %s, which is %s — the "
+                           "version-dependent answers (`docs/SUBSET.md` §6a) are %s's on a %s "
+                           "host, and every one of them reads as an engine defect. Run "
+                           "`lypning build --rust`" % (built_for, py, falls_to, built_for, falls_to)))
+
     # 3. the refusal contract, on each installed variant — with ITS OWN name at
     # the head of the line. A variant that writes a sibling's name misroutes the
     # dispatcher silently, so the check is per variant or it is not a check.

@@ -20,6 +20,90 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-12** — The binary now says which CPython it was built for, and three things read it (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **A binary built for one CPython and graded against another was invisible.**
+  Nine answers became compile-time-version-dependent when `err::REF_PY_MINOR`
+  landed, and nothing in the tree reported which version a given binary carried:
+  a fresh worktree where `uv` resolved `requires-python = ">=3.9"` down to 3.9
+  against an engine built for the host's 3.11 fails 137 tests (2026-09-12), not
+  one of them an engine defect. `--version` now ends `for cpython 3.11`,
+  printed from the constant the branches read, and that is the only new fact —
+  `doctor` and the suite ask the artefact rather than re-deriving it.
+- **`lypning doctor` gained one row, `reference cpython`.** OK when the core was
+  built for the CPython it falls through to; FAIL, naming both and `lypning
+  build --rust`, when they differ; WARN for a core that predates the field; NOTE
+  when no CPython answered. It is a FAIL and not a note because it is a measured
+  disagreement, not a hole. `lypning --version` was left alone: it is the
+  package's version, answered without a filesystem or a spawn and with no binary
+  needed, and a state question belongs in `status`/`doctor` (invariant 8).
+- **`build.rs` no longer guesses behind a stale pin.** A `$LYPNING_CPYTHON` that
+  does not run dropped straight to `REF_PY_FALLBACK`; it now falls through to
+  `python3`, and only a host with no python at all gets the fallback. Measured
+  on this 3.11 host, `env -u LYPNING_REF_PY LYPNING_CPYTHON=/nonexistent/python3
+  cargo build --release`: `for cpython 3.13` and `min() iterable argument is
+  empty` before, `for cpython 3.11` and `min() arg is an empty sequence` (what
+  the host says) after; with no python on `$PATH` at all, still 3.13. The Python
+  side needed nothing — `engines.find_cpython()` raises on a pin that is not
+  there and `build.reference_python_env()` returns `{}`, verified.
+- **One test was vacuous and one did not exist.**
+  `test_the_build_tells_the_crate_which_cpython_it_stands_in_front_of` compared
+  `find_cpython()` with `sys.version_info`, which agree under every harness
+  (`uv run --python X` puts X first on `$PATH`), so it would have held for the
+  implementation it forbids; it is now pinned against a stand-in interpreter
+  answering `3.99`. And
+  `test_the_suite_and_the_engine_it_grades_speak_the_same_cpython` is the line
+  that was missing: the grids take their oracle from `sys.executable`, so it
+  asks the BINARY what it was built for and fails with a sentence naming both
+  interpreters and what to run. In the 137-failure worktree above it is the one
+  that says why — and a core really built for 3.13 (`env -u LYPNING_REF_PY
+  LYPNING_CPYTHON=/nonexistent/python3 cargo build`) turns `doctor` red on the
+  same fact rather than leaving it to the grids.
+- **No engine answer moved.** `conformance --engine lypning` is MATCH 1571 /
+  UNSUPPORTED 933 / MISMATCH 0 over 2,504 corpus programs (3,688 loaded) before
+  and after, `--plan` is byte-identical, and both binaries are the same size to
+  the byte (`lypning` 1,130,704 B / 9 blocks, `lypning-l` 1,310,928 B / 11) with
+  16 B more `.text` each — the `--version` string and its one `{}`.
+
+**2026-09-12** — Three more answers were worded for one CPython, and §6a stopped calling itself a list of everything (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **Three wordings the mechanism that landed hours earlier had missed.**
+  `1 % 0` said *integer division or modulo by zero* where 3.11, 3.12 and 3.13
+  say *integer modulo by zero*; `float([])` said the 3.10+ wording on a 3.9
+  host; and `int([])` matched NO supported CPython at all — it had dropped the
+  *bytes-like object* clause that 3.9's and 3.10+'s wordings both carry, so it
+  was a plain bug wearing a skew's clothes. All three reach STDOUT through
+  `except … as e: print(e)`, which is why `conformance` cannot see them:
+  `stderr_shape` keeps the exception TYPE and throws the message away, so only
+  a program that PRINTS the message is graded.
+- **The same mechanism, not a new one.** `err::int_mod_by_zero` and
+  `builtins::real_number` are two more compile-time branches on
+  `err::REF_PY_MINOR`, read by four sites. Each boundary was measured on
+  3.9.23, 3.10.20, 3.11.15, 3.12.3 and 3.13.12 and written down at the site,
+  and 3.10 is the host that proves they are two boundaries and not one: `%`
+  takes the old wording there and `int()`/`float()` take the new one. No
+  refusal was added — every one of these is an answer CPython gives.
+- **`%` is one operator, not the family.** `1 // 0` and `divmod(1, 0)` keep the
+  long sentence on all five versions, so the branch is `%`'s alone — in
+  `ops.rs` for machine integers and in `bigint.rs` for the wide ones
+  `lypning-l` reaches. The new row in `tests/test_semantics.py` prints the
+  neighbours beside the fix, so widening the branch breaks it.
+- **`docs/SUBSET.md` §6a no longer claims a completeness it never had.** Its
+  closing paragraph read as an enumeration — "four further divergences in the
+  same range" — and these three were outside it. A differential sweep of
+  14,808 generated one-liners on the engine and on all five interpreters
+  (2026-09-12; one-off, not checked in) found 622 programs whose answer differs
+  across the five CPythons in 202 patterns — the engine refuses 62 of those
+  patterns, matches its host on 67 and answers differently on 73 — and 1,461 of
+  11,777 answered programs on a message the host does not write, from 28 of the
+  crate's 225 message literals. §6a now says the table is the list of
+  divergences the engine HANDLES, and names the residue for whoever takes it.
+- **Byte-neutral.** `lypning` 1,130,704 B / 9 blocks and `lypning-l`
+  1,310,928 B / 11 blocks unchanged, with 866,919 → 866,999 B and
+  1,010,199 → 1,010,391 B of code. `conformance --engine lypning` is MATCH 1571
+  / UNSUPPORTED 933 / MISMATCH 0 over 2,504 corpus programs (3,688 loaded) on
+  both builds, and `--plan`'s 108 blockers are byte-identical.
+
 **2026-09-12** — Nine answers were worded for one CPython; the package supports five (branch `claude/nemotron-lora-pipeline-1zczi2`)
 
 - **The engine spoke a CPython the host was not running.** Its message tables

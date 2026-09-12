@@ -54,9 +54,11 @@ fn main() {
     // very interpreter `conformance` grades against and the dispatcher falls
     // through to. A bare `cargo build` has no such caller, so ask the same
     // question here rather than guess: `$LYPNING_CPYTHON` if it is set (the pin
-    // `engines.find_cpython()` honours), otherwise `python3`. With neither, fall back
-    // to the newest calibrated version, so a build on a host with no python at
-    // all answers exactly what this crate answered before this constant existed.
+    // `engines.find_cpython()` honours) and then `python3` either way, because a
+    // pin that no longer runs is stale and not an instruction to guess. With no
+    // python reachable at all, fall back to the newest calibrated version, so
+    // such a build answers exactly what this crate answered before this
+    // constant existed.
     println!("cargo:rerun-if-env-changed=LYPNING_REF_PY");
     println!("cargo:rerun-if-env-changed=LYPNING_CPYTHON");
     let ref_py = std::env::var("LYPNING_REF_PY")
@@ -91,12 +93,20 @@ fn parse_minor(s: &str) -> Option<u32> {
 /// does not run, or an answer this cannot parse all come back `None` — a build
 /// is never FAILED over this, because the fallback is the version the tables
 /// were written against and so is a correct answer, not a guess.
+///
+/// A `$LYPNING_CPYTHON` that no longer runs is a STALE PIN, not an instruction
+/// to guess, so it is the FIRST candidate and never the only one: dropping
+/// straight to the fallback behind a dead pin is how a bare `cargo build` on a
+/// 3.11 host compiles 3.13's wordings and `min([])` answers what no host says.
+/// The pin, then `python3`, then the fallback — the guess is the last resort,
+/// which is the order `engines.find_cpython()` has on the Python side once its
+/// own refusal to honour a pin that is not there has been caught.
 fn probe_python() -> Option<String> {
     let pin = std::env::var("LYPNING_CPYTHON").ok().filter(|s| !s.trim().is_empty());
-    let names: Vec<String> = match pin {
-        Some(p) => vec![p],
-        None => vec!["python3".to_string(), "python".to_string()],
-    };
+    let names: Vec<String> = pin
+        .into_iter()
+        .chain(["python3", "python"].iter().map(|s| s.to_string()))
+        .collect();
     for name in names {
         let out = std::process::Command::new(&name)
             .args(["-c", "import sys;print('%d.%d' % sys.version_info[:2])"])

@@ -54,7 +54,7 @@
 //! file, screens `int(s)` by exactly the same test.
 
 use crate::ast::BinOp;
-use crate::err::{unsupported, value_err, zero_div, LypningError, R};
+use crate::err::{int_mod_by_zero, unsupported, value_err, zero_div, LypningError, R};
 use crate::value::{Int, Value};
 use std::cmp::Ordering;
 use std::rc::Rc;
@@ -563,7 +563,14 @@ fn int_op(op: BinOp, a: &Int, b: &Int) -> R<Value> {
         }
         FloorDiv | Mod => {
             if bm.is_empty() {
-                return Err(zero_div("integer division or modulo by zero"));
+                // The same split as the machine-integer path in `ops.rs`: a
+                // wide `%` by zero is still `%`, and CPython words it the
+                // shorter way from 3.11 on.
+                return Err(if matches!(op, Mod) {
+                    int_mod_by_zero()
+                } else {
+                    zero_div("integer division or modulo by zero")
+                });
             }
             let (q, r) = floor_divmod(an, &am, bn, &bm)?;
             Value::Int(if matches!(op, FloorDiv) { q } else { r })

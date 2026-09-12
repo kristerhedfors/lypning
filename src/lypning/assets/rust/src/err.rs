@@ -305,6 +305,24 @@ pub fn zero_div(msg: &str) -> LypningError {
     LypningError::exc("ZeroDivisionError", msg)
 }
 
+/// CPython's ZeroDivisionError for integer `%` by zero, which is the ONE
+/// operator of the family whose text moved. Measured on 2026-09-12 with
+/// `1 % 0`, `1 // 0` and `divmod(1, 0)`:
+///
+///   3.9 3.10       integer division or modulo by zero
+///   3.11 3.12 3.13 integer modulo by zero
+///
+/// `//` and `divmod` keep the long sentence on all five, so they call
+/// `zero_div` directly and this function is `%`'s alone — widening it to the
+/// family would break two correct messages to fix one wrong one.
+pub fn int_mod_by_zero() -> LypningError {
+    zero_div(if REF_PY_MINOR >= 11 {
+        "integer modulo by zero"
+    } else {
+        "integer division or modulo by zero"
+    })
+}
+
 
 // ---- the stack, and why running out of it is a refusal ----------------------
 //

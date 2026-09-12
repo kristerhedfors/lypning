@@ -360,6 +360,49 @@ CASES = [
         "list.sort(x)\n"
         "print(x)",
     ),
+    (
+        # Three wordings the engine had read off ONE CPython, all of them
+        # reaching stdout through `print(e)` and therefore invisible to the
+        # conformance battery, which keeps the exception TYPE and throws the
+        # message away. Measured on 3.9.23 / 3.10.20 / 3.11.15 / 3.12.3 /
+        # 3.13.12 on 2026-09-12:
+        #
+        #   `1 % 0`      3.9 3.10 "integer division or modulo by zero";
+        #                3.11 .. 3.13 "integer modulo by zero"
+        #   `float([])`  3.9 "a string or a number"; 3.10+ "a real number"
+        #   `int([])`    3.9 "a string, a bytes-like object or a number";
+        #                3.10+ "… or a real number" — and the engine matched
+        #                NEITHER, having dropped the bytes-like clause
+        #
+        # The neighbours are here on purpose, and they are the half that keeps
+        # the fix honest: `//` and `divmod` did NOT move with `%`, so widening
+        # the integer-modulo branch to the family — the obvious next edit —
+        # breaks this row instead of passing it.
+        #
+        # The float `%` is deliberately NOT a row. 3.13 rewrote it too ("float
+        # modulo" -> "float modulo by zero", measured the same day) and the
+        # engine still says the older form on every host, so pinning it here
+        # would fail on a 3.13 reference for a defect this change did not set
+        # out to fix. It is one line of the residue `docs/SUBSET.md` §6a now
+        # records instead of claiming does not exist.
+        "zero-division-and-conversion-wordings-say-what-the-host-says",
+        "def show(label, fn):\n"
+        "    try:\n"
+        "        fn()\n"
+        "        print(label, 'no error')\n"
+        "    except Exception as e:\n"
+        "        print(label, '|', type(e).__name__, '|', e)\n"
+        "show('int %', lambda: 1 % 0)\n"
+        "show('int % neg', lambda: -7 % 0)\n"
+        "show('int //', lambda: 1 // 0)\n"
+        "show('divmod', lambda: divmod(1, 0))\n"
+        "show('int /', lambda: 1 / 0)\n"
+        "show('float /', lambda: 1.0 / 0)\n"
+        "show('float //', lambda: 1.0 // 0)\n"
+        "for v in ([], None, {}, (), 'nope'):\n"
+        "    show('float()', lambda: float(v))\n"
+        "    show('int()', lambda: int(v))\n",
+    ),
 ]
 
 

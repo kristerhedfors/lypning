@@ -100,10 +100,20 @@ divergence, and every row is **exact, or exit 90** — never approximate.
 `pyproject.toml` says `requires-python = ">=3.9"`, and CPython's own answer is
 not the same on all of those versions. **The engine is worded for the host** —
 `build.rs` asks the interpreter `engines.find_cpython()` names what version it
-is and compiles it in as `err::REF_PY_MINOR`, which `builtins.rs` and
-`value.rs` branch on. No refusal and no runtime cost: every branch is against a
-compile-time constant, so each build carries one wording and the optimiser drops
-the others (the crate got 64 bytes of code *smaller*, 2026-09-12).
+is and compiles it in as `err::REF_PY_MINOR`, which `builtins.rs`, `value.rs`,
+`ops.rs`, `bigint.rs` and `err.rs` itself branch on. No refusal and no runtime
+cost: every branch is against a compile-time constant, so each build carries
+one wording and the optimiser drops the others (the crate got 64 bytes of code
+*smaller*, 2026-09-12).
+
+Which version a given binary was built for is legible from outside it, because
+a binary built for one CPython and graded against another is wrong in the one
+shape that reads as an engine defect: `lypning --version` ends `for cpython
+3.11`, `lypning doctor`'s `reference cpython` row compares that with the
+interpreter the binary falls through to and FAILs when they differ, and
+`tests/test_build.py::test_the_suite_and_the_engine_it_grades_speak_the_same_cpython`
+fails in one line when the suite grades it with another. `docs/VERIFICATION.md`
+§C7.
 
 The rule that decides whether a site gets a branch is narrower than "this is
 version-dependent": it is **the ANSWER differs across 3.9 … 3.13**, each
@@ -125,16 +135,47 @@ one of them.
 | `iter([1], 0)` | `iter(v, w): v must be callable` | ← | ← | `iter(object, sentinel): object must be callable` | back to `iter(v, w)` |
 | `type(os.path.normpath)` | `function` | ← | ← | ← | `builtin_function_or_method` |
 | `type(re.compile('a').match)` | `builtin_function_or_method` | `builtin_method` | ← | ← | ← |
+| `1 % 0` | `integer division or modulo by zero` | ← | `integer modulo by zero` | ← | ← |
+| `float([])` | `… must be a string or a number` | `… or a real number` | ← | ← | ← |
+| `int([])` | `… a string, a bytes-like object or a number` | `… or a real number` | ← | ← | ← |
 
-Four further divergences in the same range are **capability** differences, not
-wordings, and are left as they are rather than approximated: `NameError`'s
-`Did you mean: …?` suggestion (3.10+, the engine says the bare 3.9 form and is
-therefore wrong on four hosts out of five whenever a near-miss name exists),
-`str | None` at runtime (PEP 604, 3.10+), `str.replace(count=…)` (3.13+), and
-the `match` statement (3.10+, a `SyntaxError` here — `route.rs` sends it to
-CPython, so the chain is right and only the bare engine arm is not). A
-suggestion engine guessed at is a MISMATCH generator; these belong to whoever
-implements them, with the same five-way measurement.
+The last three rows were found after the first nine, and they are why the
+paragraph that used to close this section — "four further divergences in the
+same range" — no longer claims to be a list of what exists. `1 % 0` is one
+operator and not a family: `1 // 0` and `divmod(1, 0)` keep the long sentence on
+all five, so `err::int_mod_by_zero` is `%`'s alone and the pinning row in
+`tests/test_semantics.py` fails if that branch is ever widened. `int([])` is the
+odd one out in the other direction: the engine's text matched NO supported
+CPython, having dropped the bytes-like clause both wordings carry, so it was a
+plain bug wearing a skew's clothes.
+
+**This table is the list of divergences the engine HANDLES, not the list that
+exists.** A differential sweep on 2026-09-12 — 14,808 generated one-liners over
+the engine's own argument and operator grid, each run as `try: … except
+Exception as e: print(e)` on the engine and on 3.9.23, 3.10.20, 3.11.15, 3.12.3
+and 3.13.12 — found 622 programs whose answer is not the same on all five
+CPythons, in 202 distinct five-way patterns. The engine refuses 62 of those
+patterns (coverage, invariant 1), matches its host on 67, and answers
+differently on 73. Against the host alone the same sweep put 1,461 of 11,777
+answered programs on a message CPython 3.11 does not write, from 28 of the
+crate's message literals. The sweep is not checked in: *measured 2026-09-12 with
+a one-off differential sweep; not reproducible from this tree.* What it covers
+is one generated cross-product, and what it cannot reach is everything the
+generator does not spell — multi-statement programs, the module surfaces beyond
+the calls listed in it, and any message whose literal no generated program
+raises (98 of 225 were reached).
+
+Some of the residue is **capability**, not wording, and is left alone rather
+than approximated: `NameError`'s `Did you mean: …?` suggestion (3.10+, the
+engine says the bare 3.9 form and is therefore wrong on four hosts out of five
+whenever a near-miss name exists), `str | None` at runtime (PEP 604, 3.10+),
+`str.replace(count=…)` (3.13+), and the `match` statement (3.10+, a
+`SyntaxError` here — `route.rs` sends it to CPython, so the chain is right and
+only the bare engine arm is not). A suggestion engine guessed at is a MISMATCH
+generator. The rest is wording, and the largest pieces of it are named in the
+`Unreleased` entry of `CHANGELOG.md` for whoever takes them next: each needs the
+same five-way measurement, and none of them may become a refusal, because every
+one is an answer CPython gives.
 
 ## 7. Failure modes: the unsupported contract
 
