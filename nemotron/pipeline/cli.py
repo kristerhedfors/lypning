@@ -948,6 +948,11 @@ def cmd_refusals(args: argparse.Namespace) -> int:
         print("no lypning binary on this machine: run `lypning build --rust`, "
               "or pass --engine", file=sys.stderr)
         return 1
+    if args.run:
+        attempts = list(read_jsonl(RUNS / args.run / "attempts.jsonl"))
+        result = refusals.on_policy(attempts, engine)
+        print(refusals.on_policy_report(result, limit=args.limit or 12))
+        return 1 if result["tally"].get("MISMATCH") else 0
     cases = list(read_jsonl(DATA / "corpus.jsonl"))
     if args.held_out or args.train:
         held = {c["id"] for c in read_jsonl(DATA / "holdout.jsonl")}
@@ -1085,6 +1090,10 @@ def build_parser() -> argparse.ArgumentParser:
     rf.add_argument("--engine", help="binary to probe (default: the widest built variant)")
     rf.add_argument("--details", action="store_true", help="the exact refusal line under each kind")
     rf.add_argument("--limit", type=int, default=0, help="show only the top N kinds")
+    rf.add_argument("--run", metavar="RUN_ID",
+                    help="census the programs a MODEL wrote in this run, not the corpus "
+                         "negatives — the population `conformance` cannot see. Exits 1 on "
+                         "any MISMATCH.")
     g = rf.add_mutually_exclusive_group()
     g.add_argument("--held-out", action="store_true", help="only the frozen held-out split")
     g.add_argument("--train", action="store_true", help="only the train split")

@@ -76,3 +76,53 @@ def test_a_program_the_engine_accepts_retires_its_case():
         refusals.probe = original
     assert result["accepted"] == ["a"]
     assert result["refused"] == 0
+
+
+def test_on_policy_tallies_and_reports_mismatches_first():
+    """The population `conformance` cannot see, and the line that matters in it.
+
+    Two live MISMATCHes were found this way on 2026-09-12 — a `try` truncated by
+    a token cap and an `is` over a NaN written to route around an existing
+    refusal — with every gate green. So this pins that a MISMATCH is counted,
+    named with its case and sample, and reported above the refusal tally rather
+    than buried under it.
+    """
+    attempts = [
+        {"case_id": "a", "sample": 0, "passed": True, "program": "p-match"},
+        {"case_id": "b", "sample": 3, "passed": False, "program": "p-refused"},
+        {"case_id": "c", "sample": 1, "passed": False, "program": "p-wrong"},
+        {"case_id": "d", "sample": 0, "passed": False, "program": ""},
+    ]
+    graded = {
+        "p-match": {"verdict": "MATCH", "detail": ""},
+        "p-refused": {"verdict": "UNSUPPORTED", "detail": "module"},
+        "p-wrong": {"verdict": "MISMATCH", "detail": "exit 1 vs 0"},
+    }
+    original = refusals.grade_against_engine
+    try:
+        refusals.grade_against_engine = lambda program, engine, timeout_s=10.0: graded[program]
+        result = refusals.on_policy(attempts, "fake-engine")
+    finally:
+        refusals.grade_against_engine = original
+
+    # The attempt with no program is not a verdict about the engine.
+    assert result["programs"] == 3
+    assert result["tally"] == {"MATCH": 1, "UNSUPPORTED": 1, "MISMATCH": 1}
+    assert result["details"] == {"module": 1}
+
+    text = refusals.on_policy_report(result)
+    assert "c sample 1" in text, "a MISMATCH must name the attempt that produced it"
+    assert text.index("MISMATCH is never traded") < text.index("what it refused"), \
+        "the refusal tally must not be printed above the wrong answers"
+
+
+def test_on_policy_with_nothing_wrong_says_so_without_the_mismatch_block():
+    attempts = [{"case_id": "a", "sample": 0, "passed": True, "program": "p"}]
+    original = refusals.grade_against_engine
+    try:
+        refusals.grade_against_engine = lambda program, engine, timeout_s=10.0: {
+            "verdict": "MATCH", "detail": ""}
+        result = refusals.on_policy(attempts, "fake-engine")
+    finally:
+        refusals.grade_against_engine = original
+    assert "MISMATCH" not in refusals.on_policy_report(result)

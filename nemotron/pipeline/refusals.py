@@ -128,3 +128,76 @@ def report(result: Dict[str, Any], *, limit: int = 0, show_details: bool = False
                  % result["closed_cases"])
     lines.append("   and the engine's job is to go on refusing them")
     return "\n".join(lines)
+
+def grade_against_engine(program: str, engine: str, timeout_s: float = 10.0) -> Dict[str, str]:
+    """One program, judged against CPython: MATCH, UNSUPPORTED, MISMATCH or ERROR.
+
+    Behind the sandbox, because unlike :func:`probe` this RUNS what the engine
+    accepts, and what it is pointed at is model output rather than a vetted
+    corpus entry — the one population nobody has read.
+    """
+    from . import sandbox
+
+    truth = sandbox.run_python(program, timeout_s=timeout_s)
+    got = sandbox.run_python(program, timeout_s=timeout_s, interpreter=[engine])
+    if got.exit_code == eng.REFUSAL_EXIT:
+        parsed = eng.parse_refusal(got.stderr)
+        return {"verdict": "UNSUPPORTED", "detail": parsed[1] if parsed else "?"}
+    if got.harness_error or truth.harness_error:
+        return {"verdict": "ERROR", "detail": got.harness_error or truth.harness_error or ""}
+    if (got.exit_code, got.stdout) == (truth.exit_code, truth.stdout):
+        return {"verdict": "MATCH", "detail": ""}
+    return {"verdict": "MISMATCH",
+            "detail": "exit %s vs %s" % (truth.exit_code, got.exit_code)}
+
+
+def on_policy(attempts: List[Dict[str, Any]], engine: str) -> Dict[str, Any]:
+    """What the engine makes of the programs a MODEL wrote, not the ones it was given.
+
+    THE CORPUS'S BLIND SPOTS ARE SHAPED LIKE ITS CAPTURE MECHANISM. `conformance`
+    grades programs real agents typed, so `MISMATCH 0` there means no
+    disagreement among the shapes a human reached for. A model reaches for
+    others: a `try` block truncated by a token cap, and an `is` comparison
+    written to route around a refusal it already met. Both were live MISMATCHes
+    in this engine with every gate green, and both are in here.
+
+    It is also the number the fine-tune is trying to move, measured from the
+    other end — the engine side of `pass@1` on a `lypning`-kind acceptance test.
+    """
+    rows: List[Dict[str, Any]] = []
+    tally: Dict[str, int] = {}
+    details: Dict[str, int] = {}
+    for attempt in attempts:
+        program = attempt.get("program")
+        if not program:
+            continue
+        graded = grade_against_engine(program, engine)
+        rows.append({"case_id": attempt.get("case_id"), "sample": attempt.get("sample"),
+                     "passed": bool(attempt.get("passed")), **graded})
+        tally[graded["verdict"]] = tally.get(graded["verdict"], 0) + 1
+        if graded["verdict"] == "UNSUPPORTED":
+            details[graded["detail"]] = details.get(graded["detail"], 0) + 1
+    return {"engine": engine, "programs": len(rows), "tally": tally,
+            "details": details, "rows": rows}
+
+
+def on_policy_report(result: Dict[str, Any], *, limit: int = 12) -> str:
+    """Render an on-policy census. MISMATCH is the line that matters."""
+    tally = result["tally"]
+    n = result["programs"] or 1
+    lines = ["engine %s   %d programs a model wrote" % (result["engine"], result["programs"])]
+    for verdict in ("MATCH", "UNSUPPORTED", "MISMATCH", "ERROR"):
+        if verdict in tally:
+            lines.append("  %-12s %5d  %5.1f%%" % (verdict, tally[verdict], 100.0 * tally[verdict] / n))
+    if tally.get("MISMATCH"):
+        lines.append("")
+        lines.append("MISMATCH is never traded (invariant 1). Each one is a silent wrong")
+        lines.append("answer this engine gave a program CPython answers differently:")
+        for row in result["rows"]:
+            if row["verdict"] == "MISMATCH":
+                lines.append("  %s sample %s  %s" % (row["case_id"], row["sample"], row["detail"]))
+    lines.append("")
+    lines.append("what it refused, by kind:")
+    for kind, count in sorted(result["details"].items(), key=lambda kv: -kv[1])[:limit]:
+        lines.append("  %-20s %5d" % (kind, count))
+    return "\n".join(lines)
