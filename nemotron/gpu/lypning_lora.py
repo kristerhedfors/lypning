@@ -728,7 +728,20 @@ def main():
 
     try:
         # --- phase 1 ---------------------------------------------------------
-        smoke(device, dtype, args)
+        # The smoke TRAINS a LoRA on a 4-layer random model and checks every
+        # targeted leaf got a gradient. That is the right gate before a training
+        # run and proves nothing about a generation-only one -- and it costs
+        # more than nothing to run: `loss.backward()` on a gated-delta-net needs
+        # `chunk_bwd_dqkwg`, which fla's Triton kernels compute INCORRECTLY on
+        # Hopper (upstream #640), so an eval that only ever runs forward died in
+        # its own preflight. Disabling fla to get past it would hand generation
+        # the reference kernels for 1,184 completions, which is the wrong trade:
+        # the bug is backward-only and forward is exactly what this job does.
+        if args.no_train:
+            log("phase 1: skipped -- nothing is being trained, and the smoke is "
+                "a gradient check (fla kernels stay on for generation)")
+        else:
+            smoke(device, dtype, args)
         if args.verify:
             with open(comp_path, "a", encoding="utf-8") as fh:
                 for p in prompts[:2]:
