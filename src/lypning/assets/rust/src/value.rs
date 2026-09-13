@@ -992,6 +992,38 @@ pub fn eq(a: &Value, b: &Value) -> R<bool> {
             let (n1, n2) = (range_len(*a1, *b1, *c1), range_len(*a2, *b2, *c2));
             n1 == n2 && (n1 == 0 || (a1 == a2 && (n1 == 1 || c1 == c2)))
         }
+        // A set-like view against a real set. `dict_keys` and `dict_items`
+        // implement the full set protocol, so CPython answers
+        // `{"a": 1}.keys() == {"a"}` with True; this engine had no arm for the
+        // mixed pair at all and fell through to the catch-all False, at exit 0.
+        // `dict_values` is NOT set-like and keeps falling through, which is the
+        // same answer CPython gives for it. Found by the corpus fold of
+        // 2026-09-13 (py-4c72f8d885b8).
+        (Value::DictView(d, k), Value::Set(s)) | (Value::Set(s), Value::DictView(d, k))
+            if *k != "values" =>
+        {
+            let elems = {
+                let dd = d.borrow();
+                if *k == "keys" { dd.keys() } else { dd.items() }
+            };
+            let other = s.borrow();
+            if elems.len() != other.len() {
+                false
+            } else {
+                // `Set::contains` is the hashed lookup the set already owns; a
+                // pairwise scan here would be quadratic and would also disagree
+                // with the set's own notion of membership, which is the one
+                // that decides what `len()` counted.
+                let mut same = true;
+                for e in &elems {
+                    if !other.contains(e)? {
+                        same = false;
+                        break;
+                    }
+                }
+                same
+            }
+        }
         (Value::DictView(x, kx), Value::DictView(y, ky)) => {
             // The three views do NOT compare alike, and treating them alike was
             // wrong in both directions at once: `d.values() == d.values()` said
@@ -1580,6 +1612,13 @@ pub fn is_same(a: &Value, b: &Value) -> bool {
         // True. [`attr_cached`] is that half, and it is a function rather than
         // a `matches!` because two receivers spelled `Value::Module` are not
         // modules at all.
+        // A generator is a heap object with identity, and it had no arm here at
+        // all — two names for one generator fell through to the catch-all and
+        // answered False. That is what made `iter(g) is g` wrong even after
+        // `iter` learned to hand the generator back: CPython's generator
+        // defines `__iter__` as `return self`, so the identity is the whole
+        // observable. Found by the corpus fold of 2026-09-13 (py-7ef2ba28fe22).
+        (Value::Gen(x), Value::Gen(y)) => Rc::ptr_eq(x, y),
         (Value::Bound(x, nx), Value::Bound(y, ny)) => {
             nx == ny && (Rc::ptr_eq(x, y) || (attr_cached(x) && is_same(x, y)))
         }

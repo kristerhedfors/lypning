@@ -1863,6 +1863,16 @@ pub fn call_builtin(
             if let Value::IterObj(..) = v {
                 return Ok(v);
             }
+            // A generator IS its own iterator, so `iter(g)` is `g` — CPython's
+            // generator type defines `__iter__` as `return self`. Wrapping it in
+            // a fresh `IterObj` below preserved every value it yields and broke
+            // the one thing a caller can observe about the wrapper: identity.
+            // `print(iter(g) is g)` answered False where CPython says True, at
+            // exit 0, which is the silent shape. Found by the corpus fold of
+            // 2026-09-13 (py-7ef2ba28fe22).
+            if let Value::Gen(_) = v {
+                return Ok(v);
+            }
             let inner = it.make_iter(v)?;
             Value::IterObj(Rc::new(RefCell::new(inner)), "iterator")
         }
