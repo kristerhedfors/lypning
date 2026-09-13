@@ -45,10 +45,23 @@ THE TWO TRAPS THIS FILE IS SHAPED AROUND
        file names Qwen3_5ForConditionalGeneration, whose key set matches the
        checkpoint exactly (verified: 0 missing, 0 unexpected, 15 `mtp.*` tensors
        ignored by the class's own _keys_to_ignore_on_load_unexpected).
-    2. `*.out_proj` on the gated-delta-net layers is consumed by the kernel
-       directly, so a LoRA there is silently bypassed. It is not in the target
-       list, and `check_adapted_modules` asserts that after the fact rather than
-       trusting the list.
+    2. A LoRA on a module a fused kernel consumes by WEIGHT is silently bypassed:
+       it trains, it merges, and it changes nothing. `*.out_proj` was excluded
+       here for that reason until 2026-09-13, on a rationale copied from the
+       Nemotron cookbook -- where it is correct, because nemotron_v3/layers.py
+       :454-455 passes `outproj_weight=self.out_proj.weight` into the kernel.
+       Qwen3.5 does not. In the implementation this file actually loads,
+       transformers' Qwen3_5GatedDeltaNet, the kernel takes query/key/value/g/
+       beta and returns `core_attn_out`, and the projection is an ordinary module
+       call afterwards: `output = self.out_proj(core_attn_out)`, modeling_qwen3_5
+       .py:662, declared `nn.Linear` at :540. So a LoRA there applies normally,
+       and excluding it froze the 48 widest projections in the text tower (1.51B
+       params) and cut the adapter by 8.0%.
+       The belief is now a MEASUREMENT rather than a list: phase 1 requires every
+       targeted leaf name to carry a nonzero gradient on a 4-layer random model.
+       If a future kernel does start swallowing one of these weights, that fails
+       on cpu-basic for a tenth of a cent instead of producing a quietly weaker
+       adapter for $5.
 """
 from __future__ import annotations
 
@@ -115,19 +128,20 @@ except Exception:
 
 BASE_MODEL = "Qwen/Qwen3.8-27B"
 
-# Every nn.Linear in the text tower except `out_proj` and `lm_head`. Written out
-# rather than given as a regex so that the set is readable and so that a name
-# that appears in a future checkpoint is NOT silently adapted.
+# Every nn.Linear in the text tower except `lm_head`. Written out rather than
+# given as a regex so that the set is readable and so that a name that appears in
+# a future checkpoint is NOT silently adapted.
 TARGET_MODULES = [
     "q_proj", "k_proj", "v_proj", "o_proj",              # 16 full-attention layers
     "in_proj_qkv", "in_proj_a", "in_proj_b", "in_proj_z",  # 48 gated-delta-net layers
+    "out_proj",                                          # 48, and see trap 2 above
     "gate_proj", "up_proj", "down_proj",                 # 64 MLPs
 ]
-# Inert given the list above -- PEFT will say so, and that warning is the point:
-# it is evidence that the target list, not the exclusion, is doing the work. It
-# stays because it is what stops a future widening of TARGET_MODULES from
-# quietly putting a LoRA where the kernel cannot see it.
-EXCLUDE_MODULES = [".*out_proj", ".*visual.*"]
+# The vision tower plays no part in generating python and is 333 of the 1,199
+# tensors. None of its leaf names (`qkv`, `proj`, `linear_fc1`, `linear_fc2`)
+# appear above, so this is belt and braces -- and it stays for that reason: it is
+# what stops a future widening of TARGET_MODULES from reaching it.
+EXCLUDE_MODULES = [".*visual.*"]
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +246,7 @@ def attach_lora(model, rank, alpha, dropout):
 def check_adapted_modules(pm):
     """Invariant, asserted on the object rather than read off the config."""
     adapted = sorted({n.rsplit(".lora_A", 1)[0] for n, _ in pm.named_modules() if n.endswith("lora_A")})
-    bad = [a for a in adapted if a.split(".")[-1] == "out_proj" or "visual" in a]
+    bad = [a for a in adapted if "visual" in a]
     if bad:
         raise SystemExit("LoRA landed on %d forbidden module(s): %s" % (len(bad), bad[:5]))
     if not adapted:
@@ -240,6 +254,12 @@ def check_adapted_modules(pm):
     leaves = {}
     for a in adapted:
         leaves[a.split(".")[-1]] = leaves.get(a.split(".")[-1], 0) + 1
+    # A name in TARGET_MODULES that matched nothing is a typo or a renamed
+    # checkpoint, and PEFT does not fail on it -- it just adapts less of the
+    # model than the manifest says. Named here rather than counted later.
+    missed = [name for name in TARGET_MODULES if name not in leaves]
+    if missed:
+        raise SystemExit("target_modules matched no module for: %s" % missed)
     trainable = sum(p.numel() for p in pm.parameters() if p.requires_grad)
     log("adapted %d modules %s; trainable %.1fM params"
         % (len(adapted), json.dumps(leaves, sort_keys=True), trainable / 1e6))
@@ -294,9 +314,33 @@ def smoke(device, dtype, args):
              if p.requires_grad and p.grad is not None and float(p.grad.abs().sum()) > 0)
     if got == 0 or nz == 0:
         raise SystemExit("smoke: %d adapter tensors carried a gradient, %d of them nonzero" % (got, nz))
+    # PER LEAF, and this is the check that replaced a belief. A LoRA on a module
+    # whose weight a fused kernel consumes directly still trains and still merges;
+    # it just never reaches the loss, and the only visible symptom is an adapter
+    # that does less than its parameter count says. lora_B is zero-initialised, so
+    # on the first step every reached module has exactly one nonzero tensor
+    # (lora_B) and one flat one (lora_A) -- a leaf with ZERO nonzero tensors is a
+    # leaf the graph did not reach. `out_proj` is the one this run cares about
+    # (trap 2), and the check is over every targeted name so the next one is
+    # caught the same way.
+    live = {}
+    for name, param in pm.named_parameters():
+        if ".lora_B" not in name or not param.requires_grad:
+            continue
+        leaf = name.split(".lora_B")[0].split(".")[-1]
+        hit = param.grad is not None and float(param.grad.abs().sum()) > 0
+        live[leaf] = live.get(leaf, 0) + (1 if hit else 0)
+    dead = sorted(leaf for leaf, n in live.items() if n == 0)
+    if dead:
+        raise SystemExit(
+            "smoke: LoRA on %s carried NO gradient -- the forward pass does not go "
+            "through the module, so an adapter there would train and merge and "
+            "change nothing. Remove it from TARGET_MODULES." % dead)
     opt.step()
     opt.zero_grad(set_to_none=True)
-    log("smoke: loss %.4f, %d adapter tensors with grads, %d of them nonzero" % (float(loss), got, nz))
+    log("smoke: loss %.4f, %d adapter tensors with grads, %d of them nonzero; "
+        "every targeted leaf reached the loss: %s"
+        % (float(loss), got, nz, json.dumps(live, sort_keys=True)))
     merged = pm.merge_and_unload()
     set_gen_mode(merged)
     p_ids = torch.randint(10, 1000, (2, 16), device=device)
@@ -591,13 +635,28 @@ def main():
     # string is what is recorded.
     arm = ("%s@%s (base, unadapted, in-container)" % (BASE_MODEL, args.run_id) if args.base_arm
            else "%s@%s (sft=%s#%s)" % (args.out_repo, args.run_id, args.sft, sft_sha[:8]))
+    # THE SERVING STACK, WRITTEN DOWN. `stats._arm` withholds the subtraction when
+    # two runs' `backend.base_url` differ -- that is the guard against comparing a
+    # provider-served baseline with an arm served here. It reads a field, and
+    # nothing on this path wrote one: both arms graded as `replay:<file>` with no
+    # base_url made the guard silently inert, so it would not have fired if the
+    # two arms HAD been produced by different stacks. This is the field. Two arms
+    # meant to be identical produce identical strings; an arm that quietly ran on
+    # another GPU, another torch, or the torch reference kernels instead of fla
+    # produces a different one and `nt results` marks the pair n/c.
+    stack = "incontainer://transformers-%s+torch-%s+%s/%s" % (
+        __import__("transformers").__version__, torch.__version__,
+        KERNELS.replace(" ", "-"),
+        torch.cuda.get_device_name(0).replace(" ", "-") if torch.cuda.is_available() else "cpu")
     with open(comp_path, "w", encoding="utf-8") as fh:
         fh.write(json.dumps(dict(sampling={k: v for k, v in sampling.items()},
                                  model=arm, run_id=args.run_id, sft_sha256=sft_sha,
                                  sft_path=args.sft, base_model=BASE_MODEL,
+                                 base_url=stack,
                                  prompt_sha=head.get("prompt_sha")),
                             sort_keys=True) + "\n")
     manifest["arm"] = arm
+    manifest["stack"] = stack
 
     def put(local, name):
         api.upload_file(path_or_fileobj=local, path_in_repo=prefix + name,

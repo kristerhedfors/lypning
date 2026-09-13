@@ -38,6 +38,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from . import engines as eng
 from . import split as splitmod
 from . import stats
 from .acceptance import Verdict, run_test
@@ -344,6 +345,9 @@ class Evaluation:
             },
             "prompt_sha": prompt_signature(),
             "holdout_manifest_sha256": holdout_manifest,
+            # WHICH ENGINE GRADED THIS. Half of what a `lypning`-kind pass rate
+            # is a statement about, and until 2026-09-13 no run recorded it.
+            "engine": eng.identity(),
             "n_cases": len(self.cases),
             "n_attempts_planned": len(self.cases) * self.samples,
             "pricing": {"in_per_m": self.backend.price_in,

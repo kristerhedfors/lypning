@@ -223,7 +223,7 @@ def on_policy_report(result: Dict[str, Any], *, limit: int = 12) -> str:
 
 
 def satisfiable(case: Dict[str, Any], *, timeout_s: float = 10.0) -> Dict[str, str]:
-    """Can ANY program pass this case? Answered by running its own negative.
+    """Can ANY program pass this case? Answered by running the program it came with.
 
     THE NEGATIVE IS CORRECT PYTHON BY THE CORPUS'S OWN DEFINITION — it is the
     program an agent really ran, refused for its constructs and not for its
@@ -241,29 +241,38 @@ def satisfiable(case: Dict[str, Any], *, timeout_s: float = 10.0) -> Dict[str, s
     `harvest.py`'s `satisfiable` gate records `unproven-no-reference` for these
     rather than claiming anything, and it is right not to claim — this runs the
     experiment that gate declined to run.
+
+    A CEILING CASE HAS NO NEGATIVE — its original program is the *reference*,
+    because falling back is the right answer there — so the reference is what
+    gets run for it. Without that this returns ``no-negative`` for every ceiling
+    and every ``unobserved`` case, which reads like "checked, fine" and is
+    "not checked": 45 of the 249 corpus cases on 2026-09-13. Running their
+    references found none unsatisfiable, which is the point — a blind spot
+    measured and empty is worth more than a blind spot assumed empty.
     """
     test = case.get("test") or {}
     if test.get("kind") != "lypning" or "expect_stdout" not in test:
         return {"verdict": "not-a-stdout-case", "detail": ""}
     negatives = case.get("negatives") or []
-    if not negatives:
+    witness = negatives[0]["program"] if negatives else case.get("reference")
+    if not witness:
         return {"verdict": "no-negative", "detail": ""}
     from . import sandbox
 
     kw = dict(argv=test.get("argv"), stdin=test.get("stdin"),
               files=test.get("files"), timeout_s=timeout_s)
-    first = sandbox.run_python(negatives[0]["program"], **kw)
-    second = sandbox.run_python(negatives[0]["program"], **kw)
+    first = sandbox.run_python(witness, **kw)
+    second = sandbox.run_python(witness, **kw)
     want = test["expect_stdout"]
     if first.stdout != second.stdout:
         return {"verdict": "unstable",
-                "detail": "two runs of its own negative disagree: %r vs %r"
+                "detail": "two runs of the program it came with disagree: %r vs %r"
                           % (first.stdout[:40], second.stdout[:40])}
     if first.stdout != want:
         i = next((j for j in range(min(len(want), len(first.stdout)))
                   if want[j] != first.stdout[j]), min(len(want), len(first.stdout)))
         return {"verdict": "unreproducible",
-                "detail": "at char %d: want %r, its own negative gives %r"
+                "detail": "at char %d: want %r, the program it came with gives %r"
                           % (i, want[max(0, i - 16):i + 24], first.stdout[max(0, i - 16):i + 24])}
     return {"verdict": "ok", "detail": ""}
 

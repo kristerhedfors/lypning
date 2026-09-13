@@ -226,3 +226,68 @@ def cross_split_leaks(
         "leaks": leaks,
         "clean": [c["id"] for c in train if c["id"] not in {r["id"] for r in leaks}],
     }
+
+
+def sft_solves_holdout(rows: List[Dict[str, Any]],
+                       holdout: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """SFT rows that are, as written, a verified solution to a HELD-OUT case.
+
+    THE LAST TEST, AND THE ONLY ONE THAT ASKS THE QUESTION DIRECTLY. Everything
+    above measures whether two *cases* are the same question. This runs each
+    training target against the held-out cases themselves and asks whether the
+    program about to be trained on already passes one of them — which is what
+    "contaminated" means, however the two cases were worded.
+
+    Measured 2026-09-13 over the 154 rows of ``data/sft/v1/sft.jsonl`` (sampled
+    before the similarity filter existed): 16 rows are verified solutions to 7
+    held-out cases. Every train case behind them is dropped by
+    :data:`SIMILARITY_CEILING`, and the same draws re-folded over the clean pool
+    solve none — which is the check that the filter actually excludes, rather
+    than the tautology of filtering by held id and then asking for held ids.
+
+    Cheap on purpose: a program can only pass a case whose answer it reproduces,
+    so each program is run once per distinct *input* among the held-out cases
+    (nine of them across 74 cases on 2026-09-13) and only the stdout matches pay
+    for a full acceptance run.
+    """
+    import json as _json
+
+    from .acceptance import run_test
+    from .sandbox import run_python
+
+    def _inputs(test: Dict[str, Any]) -> str:
+        return _json.dumps({"argv": test.get("argv") or [], "stdin": test.get("stdin"),
+                            "files": test.get("files") or {}}, sort_keys=True)
+
+    groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for case in holdout:
+        groups[_inputs(case.get("test") or {})].append(case)
+    programs: Dict[str, List[str]] = defaultdict(list)
+    for row in rows:
+        if row.get("program"):
+            programs[row["program"]].append(row.get("case_id", "?"))
+
+    hits: List[Dict[str, Any]] = []
+    for shape, cases in groups.items():
+        spec = _json.loads(shape)
+        for program, owners in programs.items():
+            r = run_python(program, argv=spec["argv"], stdin=spec["stdin"],
+                           files=spec["files"], timeout_s=10.0)
+            if r.harness_error or r.timed_out:
+                continue
+            for case in cases:
+                test = case.get("test") or {}
+                if r.stdout != test.get("expect_stdout"):
+                    continue
+                if r.exit_code != test.get("expect_exit", 0):
+                    continue
+                if not run_test(test, program).passed:
+                    continue
+                for owner in sorted(set(owners)):
+                    hits.append({"row_case_id": owner, "holdout_id": case["id"],
+                                 "program": program})
+    solving = set(h["program"] for h in hits)
+    return {"rows": len(rows), "n_holdout": len(holdout), "inputs_probed": len(groups),
+            "solved": hits,
+            "rows_solving": sum(1 for r in rows if r.get("program") in solving),
+            "holdout_cases_solved": sorted(set(h["holdout_id"] for h in hits))}

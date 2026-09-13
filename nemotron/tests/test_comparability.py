@@ -775,3 +775,116 @@ def test_an_empty_denominator_says_so_rather_than_dividing_by_zero():
 
     v = stats.decide({"a": 0.0}, {"a": 1.0}, exclude=["a"])
     assert v["fires"] is False and v["n_pairs"] == 0 and v["why"]
+
+
+# ------------------------------------------------------- which engine graded it
+
+ENGINE_A = {"chain": {"lypning": {"sha256": "a" * 64, "version":
+                                  "lypning 0.1.0 (lypning) for cpython 3.11",
+                                  "found": True},
+                      "lypning-l": {"sha256": "b" * 64, "version":
+                                    "lypning 0.1.0 (lypning-l) for cpython 3.11",
+                                    "found": True}},
+            "oracle_python": "3.11.15", "fingerprint": "1111111111111111"}
+ENGINE_B = {"chain": {"lypning": {"sha256": "c" * 64, "version":
+                                  "lypning 0.1.0 (lypning) for cpython 3.11",
+                                  "found": True},
+                      "lypning-l": {"sha256": "b" * 64, "version":
+                                    "lypning 0.1.0 (lypning-l) for cpython 3.11",
+                                    "found": True}},
+            "oracle_python": "3.11.15", "fingerprint": "2222222222222222"}
+
+
+def test_two_engines_are_not_a_delta():
+    """The confound that has already moved a published baseline once.
+
+    `qwen38-baseline-k16` and `qwen38-regrade-20260912` are the SAME 1,184
+    completions: 40.37% against one engine and 43.75% against the next day's.
+    Every `lypning`-kind acceptance test asks whether the engine accepts the
+    program, so an engine gaining a feature moves the pass rate with no model
+    anywhere near it. That re-grade was noticed by a person reading a paragraph.
+    """
+    fields = [r["field"] for r in stats.comparability(
+        dict(_summary("before"), engine=ENGINE_A),
+        dict(_summary("after"), engine=ENGINE_B))]
+    assert fields == ["engine.lypning"], (
+        "two runs graded by two different engines were subtracted from each other")
+
+
+def test_the_engine_difference_names_both_sides(nt):
+    why = [r for r in stats.comparability(dict(_summary("b"), engine=ENGINE_A),
+                                          dict(_summary("a"), engine=ENGINE_B))]
+    assert why[0]["established"] is True
+    assert why[0]["baseline"] == "a" * 64 and why[0]["run"] == "c" * 64
+    assert "different engine.lypning" in nt._render_incomparable(why)[0]
+
+
+def test_one_engine_two_arms_is_comparable():
+    """The shape the pre-registration requires: one engine, both arms."""
+    assert stats.comparability(dict(_summary("stock"), engine=ENGINE_A),
+                               dict(_summary("tuned"), engine=ENGINE_A)) == []
+
+
+def test_the_same_binaries_under_two_cpythons_are_two_engines():
+    """The dependency PR #61 introduced, in the metric.
+
+    The engine answers as the CPython it was built for and the acceptance test's
+    correctness leg runs on `sys.executable`, so a grade is a statement about a
+    PAIR of interpreters. Identical binaries graded beside two different oracles
+    are not one measurement.
+    """
+    other = dict(ENGINE_A, oracle_python="3.9.23", fingerprint="3333333333333333")
+    fields = [r["field"] for r in stats.comparability(
+        dict(_summary("b"), engine=ENGINE_A), dict(_summary("a"), engine=other))]
+    assert fields == ["engine.oracle_python"]
+
+
+def test_an_unrecorded_engine_is_not_reported_as_a_difference():
+    """`_arm`'s rule, not the sampling block's: an unknown withholds nothing.
+
+    Every run recorded before this field existed lacks it, and inventing a
+    difference for them would retroactively void comparisons that were made
+    honestly — including the engine-drift null test in PREREGISTRATION.md §3b,
+    whose whole job is to compare two grades of one set of completions.
+    """
+    assert stats.comparability(_summary("b"), dict(_summary("a"), engine=ENGINE_A)) == []
+    assert stats.comparability(dict(_summary("b"), engine=ENGINE_A), _summary("a")) == []
+    assert stats.comparability(_summary("b"), _summary("a")) == []
+
+
+def test_a_fingerprint_that_differs_over_nothing_still_withholds():
+    """A refusal that can name no reason is still a refusal, not a pass."""
+    opaque = dict(ENGINE_A, fingerprint="9999999999999999")
+    fields = [r["field"] for r in stats.comparability(
+        dict(_summary("b"), engine=ENGINE_A), dict(_summary("a"), engine=opaque))]
+    assert fields == ["engine"]
+
+
+def test_a_run_carries_the_engine_its_meta_recorded(nt, tmp_path):
+    """summary.json keeps the model name only; the engine lives in meta.json,
+    and the comparison has to see it — the same path `backend` already takes."""
+    s = _summary("graded")
+    d = _put_run(tmp_path, s)
+    (d / "meta.json").write_text(json.dumps({"backend": s["backend"], "engine": ENGINE_A}))
+    armed = nt._summary_of("graded")
+    assert armed["engine"]["fingerprint"] == ENGINE_A["fingerprint"]
+
+
+def test_identity_reads_the_binary_and_not_a_version_string(tmp_path, monkeypatch):
+    """`0.1.0` is every build this project has ever made, so it is not an id."""
+    from pipeline import engines as eng
+
+    binary = tmp_path / "bin" / "lypning"
+    binary.parent.mkdir()
+    binary.write_bytes(b"#!/bin/sh\necho 'lypning 0.1.0 (lypning) for cpython 3.11'\n")
+    binary.chmod(0o755)
+    monkeypatch.setenv("LYPNING_HOME", str(tmp_path))
+    ident = eng.identity(chain=("lypning",))
+    assert ident["chain"]["lypning"]["found"] is True
+    assert ident["chain"]["lypning"]["version"].endswith("for cpython 3.11")
+    assert ident["chain"]["lypning"]["sha256"] == __import__("hashlib").sha256(
+        binary.read_bytes()).hexdigest()
+    binary.write_bytes(b"#!/bin/sh\necho 'lypning 0.1.0 (lypning) for cpython 3.11'\n#\n")
+    binary.chmod(0o755)
+    assert eng.identity(chain=("lypning",))["fingerprint"] != ident["fingerprint"], (
+        "two different binaries answering the same --version got one identity")

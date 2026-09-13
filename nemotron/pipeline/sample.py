@@ -8,13 +8,28 @@ would be graded by the same kind of thing that wrote it.
 So the targets are *sampled and verified*: draw k completions from the base model
 at temperature, run each through the real acceptance test, and keep what passes.
 Every training example is then a program that provably reproduces CPython's
-output and provably runs on the engine. On-policy, verified by execution, and
-free of any grader.
+output, and — on a case whose test demands tier-1 — provably runs on the engine.
+On-policy, verified by execution, and free of any grader.
+
+THAT SECOND CLAUSE IS NOT DECORATION, AND IT IS WHY :func:`population` EXISTS.
+The corpus holds three populations that are not the same task, and a case's own
+test is what says which: a ``lypning`` test with ``require_tier1`` true wants the
+program REWRITTEN into the subset (the thing being fine-tuned), the same test
+with ``require_tier1`` false is a *ceiling* case whose right answer KEEPS the
+import and accepts the fallback, and a test of any other kind never asks an
+engine anything. A target kept from a ceiling case is verified correct and
+verified NOT to route — measured 2026-09-13 over ``data/sft/v1/sft.jsonl``, all
+60 ceiling rows are refused by both engines. Mixed in unlabelled, they are 62 of
+that file's 154 rows, and nothing downstream can tell them apart afterwards.
 
 The method also scopes the corpus for free. A case with no tier-1 solution yields
 nothing however hard you sample, so it simply does not enter training — which
 settles by measurement the question of which refusals are fair targets and which
-are engine coverage gaps.
+are engine coverage gaps. But it scopes it *by yield*, and yield runs the wrong
+way: a ceiling case passes whenever the model can copy, so it yields ~100% while
+the rewrite cases yield ~20%. Left alone, the mixture is decided by which cases
+are easiest, which is the opposite of the ordering wanted. :func:`sampling_pool`
+decides it on purpose instead, and :func:`fold_draws` reports what it got.
 
 TWO GUARDS, both of which this would be worthless without.
 
@@ -59,6 +74,7 @@ import base64 as _b64
 import binascii as _binascii
 import concurrent.futures
 import datetime as _dt
+import json
 import re as _re
 import threading
 from dataclasses import asdict, dataclass
@@ -70,7 +86,7 @@ from .acceptance import NORMALIZERS, run_test
 from .backends import BackendError, ChatBackend
 from .evaluate import render_messages
 from .extract import extract_program
-from .jsonio import append_jsonl, read_jsonl, write_json, write_jsonl
+from .jsonio import append_jsonl, read_json, read_jsonl, write_json, write_jsonl
 from .sandbox import DEFAULT_TIMEOUT_S, RunResult, run_python
 
 # ------------------------------------------------------------ discrimination
@@ -527,6 +543,99 @@ def perturbations(cases: Sequence[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     return dict((c["id"], perturbation(c)) for c in cases)
 
 
+# --- the three populations, read off each case's own test --------------------
+
+#: Populations that may enter training, and why the third one may not.
+#:
+#: ``rewrite`` is the task. ``ceiling`` is the counterweight: train only on
+#: "rewrite it" and the model learns to rewrite everything, which is exactly the
+#: damage the ceiling cases in the held-out set exist to catch (14 of the 70
+#: primary cases, baseline mean 0.893 on 2026-09-13). ``unobserved`` is neither:
+#: its test kind is not ``lypning``, so no engine is ever asked about it, and a
+#: target kept from one teaches nothing about the subset in either direction.
+TRAINABLE = ("rewrite", "ceiling")
+
+#: Targets kept per ceiling case. One, because a second is the same answer typed
+#: twice: measured over the recorded v1 draws on 2026-09-13, distinct kept
+#: programs within one ceiling case are 0.865 mean pairwise similar (median
+#: 0.893) — above `split.SIMILARITY_CEILING`, the number this repository already
+#: uses to call two things the same question — against 0.427 within a rewrite
+#: case, where a second kept program is a genuinely different rewrite.
+CEILING_KEEP = 1
+
+
+def population(case: Dict[str, Any]) -> str:
+    """``"rewrite"``, ``"ceiling"`` or ``"unobserved"``, from the case's own test.
+
+    Mechanically, never from the category name: the name is written by the
+    harvester and the test is what the eval actually runs, so when the two
+    disagree the test is the one that decides what was measured. (They agree on
+    all 249 corpus cases as of 2026-09-13, which is a fact to keep checking
+    rather than one to rely on.)
+    """
+    test = case.get("test") or {}
+    if test.get("kind") != "lypning":
+        return "unobserved"
+    return "rewrite" if test.get("require_tier1", True) else "ceiling"
+
+
+def census(cases: Sequence[Dict[str, Any]]) -> Dict[str, int]:
+    """How many cases of each population, in the order they are argued about."""
+    counts = dict((name, 0) for name in ("rewrite", "ceiling", "unobserved"))
+    for case in cases:
+        counts[population(case)] = counts.get(population(case), 0) + 1
+    return counts
+
+
+def sampling_pool(data_dir: Path, engine: str, *,
+                  populations: Sequence[str] = TRAINABLE) -> Dict[str, Any]:
+    """The cases worth spending a sampling run on, and what was dropped and why.
+
+    Four exclusions, each mechanical and each measured rather than assumed:
+
+    *Leaks* — :func:`train_cases`, unchanged: a train case that is the same
+    question as a held-out one.
+
+    *Population* — ``unobserved`` by default. See :data:`TRAINABLE`.
+
+    *Degenerate* — the engine now RUNS the program the prompt hands over, so the
+    program the prompt hands over passes the case's own acceptance test. Measured
+    2026-09-13 that is true of all five such cases in the clean pool, and nothing
+    downstream stops the sampler keeping that echo as the target: a row whose
+    prompt says "rewrite it so it does not use X" and whose answer uses X. This
+    is the train-side twin of `PREREGISTRATION.md` §2(b), which excludes the same
+    shape from the eval's denominator.
+
+    *Unsatisfiable* — nothing passes it (:func:`refusals.satisfiable`), so the
+    only draw that can ever be kept from one is a draw that reproduced the
+    expected bytes without computing them.
+
+    Returns data. The caller renders it — and should, because the pool is a
+    function of the engine binary it was measured against.
+    """
+    from . import refusals
+
+    every = train_cases(data_dir, allow_leaks=True)
+    clean = train_cases(data_dir)
+    clean_ids = set(c["id"] for c in clean)
+    wanted = [c for c in clean if population(c) in populations]
+
+    verdicts = refusals.usable_cases(wanted, engine)
+    unusable = set(verdicts["degenerate"]) | set(r["id"] for r in verdicts["unsatisfiable"])
+    pool = [c for c in wanted if c["id"] not in unusable]
+    return {
+        "engine": engine,
+        "train": len(every),
+        "train_census": census(every),
+        "dropped_leaking": [c["id"] for c in every if c["id"] not in clean_ids],
+        "dropped_population": [c["id"] for c in clean if population(c) not in populations],
+        "dropped_degenerate": list(verdicts["degenerate"]),
+        "dropped_unsatisfiable": list(verdicts["unsatisfiable"]),
+        "cases": pool,
+        "census": census(pool),
+    }
+
+
 def train_cases(data_dir: Path, *, allow_leaks: bool = False) -> List[Dict[str, Any]]:
     """The training split, with every case that is a held-out case absent.
 
@@ -548,6 +657,16 @@ def train_cases(data_dir: Path, *, allow_leaks: bool = False) -> List[Dict[str, 
     lock = splitmod.load_lock(data_dir)
     if lock is None:
         raise ValueError("the split is not frozen; refusing to sample")
+    # Loading the lock is not verifying it. `PREREGISTRATION.md` §4 promises the
+    # lock is verified "before sampling and again before training"; only the eval
+    # path did it (`evaluate.load_holdout`). A corpus edited after the freeze
+    # keeps the lock's ids while their content moves, so the ids excluded here
+    # are no longer the cases that were held out, and the exclusion silently
+    # stops excluding. Refusing costs one command; not refusing costs the run.
+    ok, problems = splitmod.verify(data_dir / "corpus.jsonl")
+    if not ok:
+        raise ValueError("held-out split does not match its lock; refusing to sample.\n  "
+                         + "\n  ".join(problems[:5]))
     held = {e["id"] for e in lock["holdout"]}
     cases = read_jsonl(data_dir / "corpus.jsonl")
     train = [c for c in cases if c["id"] not in held]
@@ -566,6 +685,67 @@ def _now() -> str:
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+
+def _claim_draws_dir(out_dir: Path, backend: ChatBackend,
+                     sampling: Optional[Dict[str, Any]] = None) -> None:
+    """Refuse to add draws to a file another model wrote. Nothing spent yet.
+
+    Rejection sampling is on-policy by definition: the targets have to come from
+    the model being trained, which is why a change of target model voids the
+    previous SFT set. ``draws.jsonl`` is append-only and :func:`fold_draws` reads
+    all of it, so pointing a new model at a directory that already holds another
+    model's draws silently folds both into one SFT file -- no error, no warning,
+    a training set that is part off-policy and a yield report that is a blend.
+    That is not hypothetical: `data/sft/v1/draws.jsonl` is in the tree, is the
+    default `--name`, and was drawn from a model this project no longer targets.
+
+    Draws recorded before this file existed cannot name their model, so they are
+    an unknown, and an unknown is a reason to refuse rather than to assume.
+
+    THE MODEL IS NOT THE WHOLE ARM, which this guard learned the expensive way
+    on 2026-09-13. `sample_targets` defaults `enable_thinking=False`; `cli.py`
+    passes `not args.no_thinking`, so the CLI default is the opposite of the
+    library's and the opposite of the arm the baseline was drawn with
+    (`enable_thinking: false`). A run launched without `--no-thinking` therefore
+    drew the right model in the wrong mode -- mean completion 2,771 tokens
+    against the baseline's 230, a projected \$25.05 against a \$6 budget -- and
+    nothing recorded the setting, so the SFT set would have been off-policy
+    against the very arm it was built to beat with nothing in the report to show
+    it. The sampling dict is part of the claim now, for the same reason the
+    model is.
+    """
+    stamp = out_dir / "backend.json"
+    # `identity()` is ChatBackend's; a test double is a duck with `complete` and
+    # `cost`, and asking it for an identity it does not have would make this
+    # guard a reason the suite cannot use a double.
+    ident = getattr(backend, "identity", None)
+    mine = ident() if callable(ident) else {
+        "base_url": getattr(backend, "base_url", None),
+        "model": getattr(backend, "model", None)}
+    if sampling:
+        mine = dict(mine, sampling=dict(sampling))
+    prior = read_json(stamp) if stamp.exists() else None
+    if prior is None:
+        if (out_dir / "draws.jsonl").exists():
+            raise ValueError(
+                "%s already holds draws and no backend.json says which model drew "
+                "them.\n  Rejection sampling is on-policy: folding another model's "
+                "draws into this run's SFT file is off-policy training data with "
+                "nothing in the report to show it.\n  Sample into a fresh --name, or "
+                "move the directory aside." % out_dir)
+        write_json(stamp, dict(mine, first_drawn_at=_now()))
+        return
+    same = all(prior.get(k) == mine.get(k) for k in mine)
+    if not same:
+        raise ValueError(
+            "%s was drawn from a different backend.\n  recorded: %s\n  now:      %s\n"
+            "  Rejection sampling is on-policy; mixing the two is off-policy "
+            "training data. Use a fresh --name." % (
+                out_dir,
+                json.dumps({k: prior.get(k) for k in mine}, sort_keys=True),
+                json.dumps(mine, sort_keys=True)))
+
+
 def sample_targets(
     backend: ChatBackend,
     cases: Sequence[Dict[str, Any]],
@@ -573,6 +753,7 @@ def sample_targets(
     *,
     k: int = 16,
     keep: int = 2,
+    ceiling_keep: int = CEILING_KEEP,
     temperature: float = 1.0,
     top_p: float = 0.95,
     max_tokens: int = 2048,
@@ -580,11 +761,31 @@ def sample_targets(
     concurrency: int = 16,
     price_hour: float = 0.0,
     max_spend: float = 0.0,
+    resume: bool = False,
     progress=None,
 ) -> Dict[str, Any]:
-    """Draw k, verify each, and keep the ``keep`` that best survive discrimination."""
+    """Draw k, verify each, and keep the ``keep`` that best survive discrimination.
+
+    ``resume`` is what makes a sampling run survive dying in the middle of
+    itself. ``draws.jsonl`` is appended to, and :func:`fold_draws` reads all of
+    it, so a second run over the same directory without this flag re-draws every
+    (case, draw) pair and folds BOTH copies -- paying twice and reporting a
+    per-draw rate over a file that holds two runs. With it, the pairs already
+    recorded are not redrawn: a run that died at draw 2,900 of 2,976 costs the
+    76 that are missing. A draw recorded as a harness error is not a draw and is
+    retried, because that is exactly what the eval's own attempts file does with
+    one (`nemotron/README.md` step 2, rule 2).
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     draws_path = out_dir / "draws.jsonl"
+    _claim_draws_dir(out_dir, backend, {
+        "enable_thinking": enable_thinking, "max_tokens": max_tokens,
+        "temperature": temperature, "top_p": top_p})
+    already: "set" = set()
+    if resume and draws_path.exists():
+        for prior in read_jsonl(draws_path):
+            if not prior.get("harness_error"):
+                already.add((prior.get("case_id"), prior.get("draw")))
     # Up front and single-threaded: a perturbation depends only on the case, and
     # the run that proves it usable must not be paid for once per draw.
     perturbed = perturbations(cases)
@@ -626,7 +827,7 @@ def sample_targets(
             return dict(rec, kept=False, reason="recites", detail=disc.detail)
         return dict(rec, kept=True, reason="pass")
 
-    jobs = [(c, i) for c in cases for i in range(k)]
+    jobs = [(c, i) for c in cases for i in range(k) if (c["id"], i) not in already]
     done = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
         for rec in pool.map(one, jobs):
@@ -641,8 +842,9 @@ def sample_targets(
             if progress:
                 progress(done, len(jobs), rec)
 
-    return fold_draws(out_dir, cases, k=k, keep=keep,
-                      spend=round(budget(), 4), aborted=(aborted[0] if aborted else None))
+    return fold_draws(out_dir, cases, k=k, keep=keep, ceiling_keep=ceiling_keep,
+                      spend=round(budget(), 4), aborted=(aborted[0] if aborted else None),
+                      drawn_now=len(jobs), resumed=len(already))
 
 
 def _passed_acceptance(draw: Dict[str, Any]) -> bool:
@@ -670,13 +872,24 @@ def _rank(draw: Dict[str, Any], fraction: float) -> Tuple[int, float, int, str]:
 
 def fold_draws(out_dir: Path, cases: Sequence[Dict[str, Any]], *,
                k: int, keep: int, spend: float = 0.0,
-               aborted: Optional[str] = None) -> Dict[str, Any]:
+               ceiling_keep: int = CEILING_KEEP,
+               aborted: Optional[str] = None,
+               drawn_now: Optional[int] = None,
+               resumed: int = 0) -> Dict[str, Any]:
     """Turn the draws into an SFT file and a yield report. Pure; safe to re-run.
 
     The textual guard is applied *here*, not baked into the draws file, so that
     re-folding re-decides with the current guard in both directions — a draw the
     sampler rejected is re-admitted if today's guard clears it. A behavioural
     verdict is not re-decided: it cost a subprocess and this function runs none.
+
+    ``keep`` is per case and ``ceiling_keep`` overrides it for ceiling cases, so
+    that the mixture is not simply whatever the easiest population yielded. See
+    :data:`CEILING_KEEP`. The report says what came out by population, and names
+    the rewrite rows separately: the pre-registered "fewer than 150 verified
+    examples and the run is abandoned" is a claim about the population the
+    experiment is about, and a total that counts ceiling rows can clear it while
+    that population does not.
     """
     by_id = {c["id"]: c for c in cases}
     draws = [d for d in read_jsonl(out_dir / "draws.jsonl") if not d.get("harness_error")]
@@ -711,16 +924,19 @@ def fold_draws(out_dir: Path, cases: Sequence[Dict[str, Any]], *,
     rows: List[Dict[str, Any]] = []
     for cid, ranked in sorted(passing.items()):
         case = by_id[cid]
+        pop = population(case)
+        limit = ceiling_keep if pop == "ceiling" else keep
         seen = set()
         for _, d in sorted(ranked, key=lambda item: item[0]):
             program = d["program"]
             if program in seen:
                 continue
             seen.add(program)
-            if len(seen) > keep:
+            if len(seen) > limit:
                 break
             rows.append({
                 "case_id": cid,
+                "population": pop,
                 "category": case["category"],
                 "messages": render_messages(case) + [
                     {"role": "assistant", "content": "```python\n%s\n```" % program.strip()}],
@@ -732,12 +948,25 @@ def fold_draws(out_dir: Path, cases: Sequence[Dict[str, Any]], *,
 
     solved = [cid for cid, (p, _) in counts.items() if p > 0]
     undecidable = [r for r in rows if r["discrimination"] != "computes"]
+    by_population: Dict[str, Dict[str, int]] = {}
+    for name in ("rewrite", "ceiling", "unobserved"):
+        ids = [cid for cid in counts if cid in by_id and population(by_id[cid]) == name]
+        if not ids:
+            continue
+        by_population[name] = {
+            "cases": len(ids),
+            "solved": sum(1 for cid in ids if counts[cid][0] > 0),
+            "rows": sum(1 for r in rows if r["population"] == name),
+        }
     report = {
-        "sampled_at": _now(), "k": k, "keep": keep,
+        "sampled_at": _now(), "k": k, "keep": keep, "ceiling_keep": ceiling_keep,
         "cases": len(counts),
         "cases_with_a_verified_solution": len(solved),
         "yield_rate": (len(solved) / len(counts)) if counts else 0.0,
         "sft_examples": len(rows),
+        # The mixture, and the one number the abandon threshold is about.
+        "by_population": by_population,
+        "sft_examples_on_task": sum(1 for r in rows if r["population"] == "rewrite"),
         "draws": len(draws),
         "draw_pass_rate": sum(p for p, _ in counts.values()) / max(1, len(draws)),
         "rejected_by_reason": dict(sorted(reasons.items(), key=lambda kv: -kv[1])),
@@ -751,6 +980,11 @@ def fold_draws(out_dir: Path, cases: Sequence[Dict[str, Any]], *,
         },
         "spend_usd": spend,
         "aborted": aborted,
+        # What this invocation paid for, beside what the file already held. A
+        # fold is pure and re-runnable, so `draws` alone cannot say whether the
+        # file is one run or three.
+        "drawn_this_run": drawn_now,
+        "resumed_draws": resumed,
         "by_category": _by_category(by_id, counts),
     }
     write_json(out_dir / "sample.json", report)

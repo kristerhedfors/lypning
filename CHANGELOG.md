@@ -20,6 +20,168 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-13** — The test statistic was chosen before the data, and the choice is written down as a change of rule (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **The pre-registered rule had 12% power against the effect it was bought to
+  detect.** `stats.paired_delta` called a case discordant when its per-case
+  *mean* moved. At k=16 that counts one Bernoulli draw of noise the same as an
+  outright acquisition, so against the shape a rejection-sampling LoRA actually
+  produces — a handful of previously-hopeless cases solved — the rule would have
+  reported "no win" almost whatever happened.
+- **Discordance is now solved / not-solved**, which is what §3's own words
+  ("case-level flips", "how many CASES moved") and its `2/2**b` arithmetic
+  always described. Measured against the re-graded baseline's own per-case
+  scores at the primary n=70, 400 trials, k=16: six solved cases 12% → **27%**,
+  eight 20% → **60%**, ten 32% → **90%**, while the uniform shapes are unchanged
+  (+2pp 31/31, +4pp 84/85, +6pp 99/99) and the null fires at 0% under both. At
+  four solved cases it is slightly worse, 6% → 4%, which is recorded rather than
+  omitted.
+- **It is a CHANGE OF RULE, not a clarification, and it was made after seeing a
+  power curve.** What makes it admissible is when: no adapter exists, no SFT set
+  has been sampled, no dollar has been spent, no treatment arm has been graded.
+  §3c records the decision, its date and its author, and keeps that sentence at
+  the top permanently.
+- **The evidence it is not the statistic that flatters us: it makes the null
+  test harder to fire.** Engine drift alone — the same 1,184 completions
+  re-graded — fired the old rule on the naive all-74 denominator at p=0.0312.
+  Amended, that comparison gives p=0.2500 and does not fire; the primary
+  denominator moves p=0.2500 → p=0.5000. A rule chosen to produce wins would not
+  close a false positive on a known null.
+- **Both counts stay reported** (`moved_up`, `moved_down`,
+  `mcnemar_p_mean_moved`) — a rule whose alternative you can no longer see is a
+  rule nobody can check — and `power_curve` now simulates the definition the
+  rule uses, having previously simulated one leg of a two-leg rule. Two tests
+  pin it: one builds six acquisitions against nine noise-jitters and shows the
+  amended rule fires at exactly `2/2**6` where the superseded one cannot fire at
+  any effect size; the other pins that a conjunction never exceeds either leg.
+
+**2026-09-13** — The pre-registration, audited against the tree it claims to describe (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **The primary rule is near-blind to the shape this fine-tune will produce, and
+  §3's "six flips" floor is not the binding constraint.** `paired_delta` calls a
+  case gained when its per-case *mean* moved, so at k=16 sampling noise loses
+  ~9.5 of the 70 cases every run — `c == 0` in 0 of 2,000 null trials, against a
+  floor whose premise is `c == 0`. Measured on the primary 70 at the re-graded
+  rates, 600 trials per row: a fine-tune that solves six previously-hopeless
+  cases outright (+8.6pp) fires the rule 14% of the time, twelve 49%, fifteen
+  71%; k=32 and k=64 change nothing. A uniform +4pp is 80% and +6pp on the
+  rewrite stratum 96%, so the design is well-powered against a broad style shift
+  and underpowered against a concentrated one. New §3c states this, states the
+  free fix (binarise the discordance: six solved → 49%, eight → 83%, ten → 97%,
+  null 0%), and does **not** adopt it — that is a change of rule and is owed a
+  dated human decision before the sampling run.
+- **The engine is now pinned as part of the pre-registration** (new §3d).
+  `stats._engine` is silent, not withholding, when either side recorded no
+  fingerprint, and both runs on disk record none; the primary denominator is also
+  computed by whatever binary is on the box at `nt compare` time. Fingerprint,
+  both binary hashes and the oracle CPython written down.
+- Corrections, all clarifications and none to a verdict: §2(b)'s rewrite figures
+  were the all-74 ones inside the paragraph that excludes the degenerate cases
+  (0.202 and 17 movable, not 0.232 and 20); §2(d)'s stdout row counted train
+  cases in the held-out column (7, not 11) and the 0.85 row recounts to 26;
+  §3b's all-74 row reads 0.4375 / +3.38pp, which is what the run's own
+  `summary.json` says; §5's "one vLLM instance, one Job" is not what
+  `gpu/lypning_lora.py` implements, though the one-stack requirement it stands
+  for survives.
+- Verified unchanged against a fresh build at `7846191`: 74 cases, 4 degenerate,
+  5 unsatisfiable, 65 usable; 58 train cases leak and 117 are clean; the sampling
+  pool is 93 cases (66 rewrite, 27 ceiling); 59 of 1,184 draws truncated across
+  19 cases, 0 passing; the §3b null still fires on all-74 (p = 0.0312) and still
+  does not on the primary 70 (p = 0.2500).
+
+**2026-09-13** — The money path, walked without spending: four guards, one wrong LoRA target set (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **`nt sample` would have folded another model's draws into the Qwen SFT set.**
+  `--name` defaults to `v1`, `data/sft/v1/draws.jsonl` is committed and was drawn
+  from Nemotron, `draws.jsonl` is append-only and `fold_draws` reads all of it.
+  Measured 2026-09-13: 1,488 of its 2,800 rows belong to all 93 cases of the
+  current pool, 457 of them already passing. Sampling now claims its directory in
+  `backend.json` and refuses both an unclaimed one and one another model drew —
+  before the first request.
+- **A sampling run that died restarted from zero and paid twice.** `--resume`
+  skips the `(case, draw)` pairs already recorded and retries the ones recorded
+  as harness errors; the report says how many of each. `--dry-run` prints the
+  pool, the draw count and the ceiling cost and sends nothing. `--max-spend` with
+  no prices exported is now an error rather than a cap that cannot fire
+  (`nemotron/PREREGISTRATION.md` §2(f)).
+- **The lock is verified before sampling, which §4 has promised since it was
+  written.** Only `evaluate.load_holdout` did it; `sample.train_cases` loaded the
+  lock without checking the corpus against it, so a corpus edited after the
+  freeze left the exclusion excluding ids that were no longer the held-out cases.
+- **`gpu/lypning_lora.py` still excluded `out_proj`** — the file `hf jobs` runs,
+  as opposed to the YAML the 2026-09-12 correction was written against. In HF
+  transformers' `Qwen3_5GatedDeltaNet` the kernel takes query/key/value/g/beta
+  and `output = self.out_proj(core_attn_out)` is an ordinary module call
+  (`modeling_qwen3_5.py:662`, declared at `:540`), so a LoRA there applies. The
+  exclusion froze 48 projections carrying 1,509,949,440 base parameters and cut
+  the adapter from 116,727,808 to 108,077,056 trainable parameters. The belief is
+  replaced by a measurement: the smoke test now requires every targeted leaf to
+  carry a nonzero gradient, on `cpu-basic`, before the checkpoint downloads.
+- **`stats._arm` was inert on the planned eval.** It withholds a delta on
+  differing `backend.base_url`, and nothing on the GPU path wrote one — so it
+  would not have fired if the two arms really had come off different stacks. The
+  completions header now names the stack (transformers, torch, kernels, device).
+- `nemotron/RUNBOOK.md` §1 re-derives the memory arithmetic in one unit against
+  the script that runs, and adds the generation cache it had no line for; §2 records that
+  the implementation is `transformers`, not vLLM, and two Jobs, not one.
+
+**2026-09-13** — A run records which engine graded it, and a cross-engine delta is refused (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **The baseline was pinned by its pass rate; the engine that produces it was
+  not pinned at all.** `qwen38-regrade-20260912` exists because an engine that
+  gained `math` and `type()` moved the same 1,184 completions from 40.37% to
+  43.75% with no model anywhere near it. That was caught by a person reading a
+  paragraph, and nothing stopped it recurring.
+- **`engines.identity()` writes the engine down on every run** — the sha256 and
+  `--version` line of each binary in the chain plus the oracle CPython the
+  acceptance test's correctness leg runs on, since the engine started answering
+  as the CPython it was built for (#61). The hash, not the version: `0.1.0` is
+  every build this project has made. Two clean builds of `7846191` are
+  byte-identical here (measured 2026-09-13), so it does not fire on a rebuild
+  that changed nothing.
+- **`stats._engine` withholds the subtraction on any difference**, in `_arm`'s
+  shape and for `_arm`'s reason: a known difference blocks, an unrecorded engine
+  is an unknown and blocks nothing, so every run graded before the field existed
+  compares exactly as it did.
+- **And the third engine, which is in neither run:** `nt compare` computes the
+  pre-registered denominators from the *live* binary, so it now refuses when
+  that is not the engine the runs were graded by.
+- **The baseline was re-measured at HEAD rather than argued about.** The 1,184
+  completions reconstruct byte-identically from the recorded attempts and
+  re-grade to pass_rate 0.4375 at engine `7846191` — 0 of 1,184 attempt flags
+  changed, 0 of 74 per-case rates moved. Run against both builds directly,
+  1 of 1,184 programs gets a different answer and the difference is a refusal's
+  wording on stderr, which no acceptance test reads.
+
+**2026-09-13** — The SFT mixture is chosen, not yielded: three populations, and the hazards made loud (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **The training set was three tasks in one file, and yield was picking the
+  mixture.** `sample.population` reads the population off each case's own test —
+  `lypning`+`require_tier1` (rewrite, the task), `lypning` without it (ceiling,
+  where keeping the import is the right answer), any other kind (unobserved, no
+  engine is ever asked). Folding the recorded `data/sft/v1` draws over the 117
+  clean train cases gives 113 rows, 27 of them rewrite — and 208 rows, 47 of
+  them rewrite, at the keep the run was to use: a ceiling case passes
+  whenever the model can copy, so the easiest population was buying most of the
+  training set. All 60 ceiling rows in the shipped SFT file are refused by both
+  engines (measured 2026-09-13) — verified correct, verified not to route.
+- **`nt sample` prints its pool before it spends.** `sample.sampling_pool` drops
+  the leaks it already dropped, the unobserved population, the 5 clean train
+  cases the engine now RUNS — where the program the prompt hands over passes the
+  case's own test as-is, so the sampler can learn to echo its input — and the 3
+  nothing passes. 175 -> 93 cases, 66 rewrite and 27 ceiling.
+- **A ceiling case keeps one target, not four.** Distinct kept programs within
+  one ceiling case are 0.865 mean pairwise similar, above the 0.85 at which
+  `split.SIMILARITY_CEILING` calls two cases the same question; within a rewrite
+  case, 0.427.
+- **`nt leaks --sft` asks the targets, not the cases.** 16 of the 154 rows in
+  `data/sft/v1` are verified solutions to 7 held-out cases; every train case
+  behind them is dropped by the similarity filter and the clean re-fold solves
+  none — the first non-tautological evidence that the exclusion excludes.
+- **The abandon threshold now reads on the population it is about.**
+  `sft_examples_on_task`; `nemotron/PREREGISTRATION.md` §2(g) and §2(b) re-run at HEAD's
+  engine — the 70-case primary denominator holds, same four degenerate ids.
+
 **2026-09-12** — The binary now says which CPython it was built for, and three things read it (branch `claude/nemotron-lora-pipeline-1zczi2`)
 
 - **A binary built for one CPython and graded against another was invisible.**

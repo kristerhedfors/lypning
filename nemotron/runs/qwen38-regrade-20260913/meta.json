@@ -1,0 +1,39 @@
+{
+  "backend": {
+    "base_url": "https://router.huggingface.co/v1",
+    "model": "Qwen/Qwen3.8-27B:novita",
+    "source": "replay:/tmp/claude-0/-home-user-lypning/05e2ce2d-c800-5df6-a220-b3efcfe06b17/scratchpad/regrade-completions.jsonl"
+  },
+  "engine": {
+    "chain": {
+      "lypning": {
+        "found": true,
+        "sha256": "609f933898705d7e7df3ba0e011b2a19f475233b7b60413c107d51c7cffdc7f1",
+        "version": "lypning 0.1.0 (lypning) for cpython 3.11"
+      },
+      "lypning-l": {
+        "found": true,
+        "sha256": "bf16bd084d75eb5f4df569cf5ba78ec817d1837d1116bca6a50726d7a820c3b2",
+        "version": "lypning 0.1.0 (lypning-l) for cpython 3.11"
+      }
+    },
+    "fingerprint": "42ab2d3b7608dfe1",
+    "oracle_python": "3.11.15"
+  },
+  "holdout_manifest_sha256": "80b2fc522202a0ece3b84b299791761c86dd07983596a46650f9bfcb733ce588",
+  "label": "Qwen3.8-27B stock, re-graded at the 2026-09-13 engine (7846191)",
+  "n_cases": 74,
+  "prompt_sha": "cbb7be44937a6b41",
+  "run_id": "qwen38-regrade-20260913",
+  "sampling": {
+    "declared_by": "operator",
+    "enable_thinking": false,
+    "max_tokens": 2048,
+    "replayed": true,
+    "samples": 16,
+    "seed": 1234,
+    "temperature": 1.0,
+    "top_p": 0.95
+  },
+  "started_at": "2026-09-13T08:25:32Z"
+}

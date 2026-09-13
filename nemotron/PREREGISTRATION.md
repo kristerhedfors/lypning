@@ -44,6 +44,26 @@ return the input unchanged and pass. Two of them scored **0/16** this morning.
 > exclusion criterion is mechanical (`refusals --held-out` names them) rather
 > than chosen by looking at scores.
 
+**Re-run 2026-09-13 at the engine at HEAD** (`nt usable`): 74 cases, the same
+four degenerate ids and no others, five unsatisfiable, 65 usable. **The 70-case
+primary denominator holds unchanged.** What it is made of, which §2(g) makes
+newly relevant: 48 rewrite, 14 ceiling, 8 unobserved, at re-graded baseline
+per-case means of 0.202, 0.893 and 0.977 — 31% of the primary denominator is
+populations the fine-tune is not for, and the 17 movable rewrite cases are where
+the claim can actually be won or lost. (**CLARIFICATION, corrected 2026-09-13**:
+this sentence first read 0.232 and 20 movable, which are the rewrite figures over
+all **52** rewrite cases — the all-74 denominator, three of whose four degenerate
+cases are movable rewrites and are exactly what the paragraph around it excludes.
+Mixing the two denominators inside the paragraph announcing the exclusion is the
+error the exclusion exists to prevent. The counts 48/14/8 were already the primary
+denominator's and do not move.) The denominator is **not** changed for
+that; it was knowable when it was fixed, and moving it now is the thing this
+document exists to prevent. It does fix what the training mixture must be
+consistent with: **ceiling cases are trained on** (they are 14 of the cases that
+grade the model, and training only on rewrites is exactly the damage they
+detect), and **unobserved cases are not** (they are the damage detector for
+general coding, and a detector you have trained against detects nothing).
+
 **(c) 5% of draws are truncated.** 59 of 1,184 attempts stopped at
 `max_tokens: 2048` with `finish_reason: length`, across 19 cases, and **every one
 of them fails** (0/59). `max_tokens` stays at 2048 for both arms: raising it for
@@ -54,12 +74,30 @@ subset-conforming programs should be allowed to show that as a win.
 2026-09-12, still before any adapter exists. `nt leaks` measures three ways a
 train case can be the same question as a held-out one:
 
-| test | held-out cases affected |
-|---|---|
-| prompt similarity >= 0.85 to a train case | **27 of 74** |
-| >= 0.95 | 11 |
-| expected stdout byte-identical to a train case's | 11 |
-| negative program byte-identical | 1 |
+| test | held-out cases affected | train cases affected |
+|---|---|---|
+| prompt similarity >= 0.85 to a train case | **26 of 74** | 56 of 175 |
+| >= 0.95 | 11 | — |
+| expected stdout byte-identical to a train case's | 10 | 11 |
+| negative program byte-identical | 1 | 1 |
+
+**CLARIFICATION, corrected 2026-09-13, and corrected again the same day.** The
+stdout row read 11 in the held-out column; 11 is the count of *train* cases
+carrying a held-out case's expected stdout (`split.cross_split_leaks`'s own
+docstring says so). The first correction put 7 there, which is also wrong, and
+wrong in a way worth naming because it is how the 11 got there in the first
+place: 7 counts `cross_split_leaks`'s `twin` field, which undercounts twice over
+— `twin = twin or held_stdout[want]` never fires once a prompt twin has claimed
+the row, and `held_stdout` is keyed on the stdout itself, so two held-out cases
+with the same expected output collapse into one. Counted directly over
+`data/corpus.jsonl` against the lock, the answer is **10** held-out cases
+(`ntx-1eb18c506d05`, `293fe1680aa3`, `4bf956899386`, `4f5b30dcdfe5`,
+`5bce5a934d5d`, `5d3a1e41f193`, `b840c98a9b42`, `bdb7ef0dfd39`, `dc8e8190ab84`,
+`f72ddbdfe8f7`) behind 11 train cases. The 0.85 row reads 26 when recounted
+today against the corpus on disk, not 27. Neither number is an input to anything: the
+**decision** below is the union over train cases, and that union is unchanged at
+58 dropped / 117 clean, which is what `nt leaks` prints and what
+`sample.train_cases()` acts on.
 
 Disjoint ids buy nothing here. The corpus is capture-derived, so one agent
 hitting the same wall twice in a session produces two entries differing in a
@@ -77,6 +115,15 @@ first SFT set were verified solutions to two HELD-OUT cases.
 > was tautological — it filtered by held id, then asserted no held id had
 > survived the filter.
 
+**Checked 2026-09-13 by asking the targets rather than the cases**
+(`nt leaks --sft data/sft/v1`, `split.sft_solves_holdout`): of the 154 rows in
+the SFT file on disk, **16 are verified solutions to 7 held-out cases** — they
+pass those cases' own acceptance tests as written. All nine train cases behind
+them are dropped by the 0.85 filter, and the same draws re-folded over the clean
+117 leave **zero**. That is the first non-tautological evidence that the
+exclusion excludes; it is a check that runs, and it runs on the file that would
+otherwise have been trained on.
+
 **(e) Five held-out cases are unsatisfiable.** `nt usable` runs each case's own
 negative — correct python by the corpus's definition — and asks whether it
 reproduces the expected output. Five do not: a frozen `datetime.now()`,
@@ -88,10 +135,104 @@ CPython. They sit in the "never passes" column looking exactly like hard cases.
 > **65 of 74 cases can measure a model** — 74 less 4 degenerate less 5
 > unsatisfiable, with no overlap. `nt usable` names all nine.
 
+**Re-run 2026-09-13 at HEAD's engine: unchanged, 65 usable and the same nine.**
+The test was also widened that day, before any adapter exists: it ran a case's
+*negative*, so for a ceiling case — which has a reference and no negative — it
+returned `no-negative`, which reads like "checked" and was "not checked", for 45
+of the 249 cases. It now runs whichever of the two the case carries. Running the
+45 references found none unsatisfiable, so the nine above and the denominators
+built on them do not move; the point is that the blind spot is now measured
+rather than assumed.
+
 **(f) The spend cap was decorative.** `ChatBackend.cost()` multiplies by
 `NTX_PRICE_IN`/`NTX_PRICE_OUT`, which are unset by default, so every draw of the
 first SFT set recorded `cost_usd: 0.0` and `--max-spend` could never trip. Both
 must be exported before any sampling run.
+
+**(g) The training set is three populations, and yield was choosing the
+mixture between them.** Added 2026-09-13, still before any adapter exists and before the
+sampling run is paid for. The corpus holds three populations, told apart by each
+case's own test rather than by its name (`sample.population`): **rewrite** — a
+`lypning` test with `require_tier1` true, the thing being fine-tuned; **ceiling**
+— the same test with `require_tier1` false, where the right answer keeps the
+import and takes the fallback; **unobserved** — a test of any other kind, where
+no engine is ever asked anything. Run `nt sample` (it prints the pool before it
+spends) and `uv run --with pytest pytest nemotron/tests/test_mixture.py`.
+
+| | corpus | train | held out |
+|---|---|---|---|
+| rewrite | 178 | 126 | 52 |
+| ceiling | 45 | 31 | 14 |
+| unobserved | 26 | 18 | 8 |
+| | **249** | **175** | **74** |
+
+Yield runs the wrong way. A ceiling case passes whenever the model can copy the
+program the prompt handed it, and an unobserved case is a plain coding task the
+stock model already answers; a rewrite case is the hard one. Folding the recorded
+`data/sft/v1` draws over the 117 clean train cases gives **113 rows: 27 rewrite,
+54 ceiling, 32 unobserved** — 24% of the training set is the task. At the
+pre-registered `keep=4` the same draws give **208 rows of which 47 are the task**
+(23%): a run that clears the 150-example abandon threshold three times over on
+rows the experiment is not about. Of the 154 rows in the SFT file on disk, **all
+60 ceiling rows are refused by both engines** — verified correct, verified not
+to route.
+
+> Decided now, mechanically and before the spend: sampling draws from
+> **rewrite + ceiling only**, less the cases that cannot teach — the 5 clean
+> train cases the engine now RUNS (the program the prompt hands over passes the
+> case's own test as-is, measured on all five: the train-side twin of §2(b)) and
+> the 3 that nothing passes (§2(e), train side). **The pool is 93 cases: 66
+> rewrite, 27 ceiling.** Ceiling cases keep **one** target each, not four,
+> because a second is the same answer typed twice — distinct kept programs
+> within one ceiling case are 0.865 mean pairwise similar, above the 0.85 at
+> which `split.SIMILARITY_CEILING` calls two cases the same question, against
+> 0.427 within a rewrite case. That is ~3,000 draws at k=32 rather than ~3,700,
+> so the sampling step costs about $5 rather than $6.
+
+**What would say this mixture is wrong, decided now so it cannot be decided
+later.** (i) The tuned arm *loses* held-out ceiling cases — `nt slices` per
+stratum, and `nt compare`'s per-case flips — means the counterweight was too
+light and 27 ceiling rows were not enough. (ii) The tuned arm gains nothing on
+the rewrite stratum while the ceiling stratum holds: the mixture was not what was
+in the way, and the next lever is the engine, not the data. (iii) The tuned arm's
+own output on ceiling prompts starts hand-rolling what it should import —
+`nt refusals --run <eval>` sees the programs, and a MISMATCH there fails the
+safety gate outright. Each is read off the run that already has to happen; none
+of them costs another dollar.
+
+**And the abandon threshold now reads on the population it is about.** "Fewer
+than 150 verified examples" (§5) was being cleared by rows that are not the task.
+`sample.json` reports `sft_examples_on_task`.
+
+**CORRECTED 2026-09-13, before the spend.** The projection first written here
+folded `data/sft/v1/draws.jsonl` and reported 14 solved cases and 39 rows at
+`keep=4`. That file is Nemotron's (`SWITCH.md` §98 says so in this same tree:
+"off-policy for Qwen … must be re-sampled"), so it was Nemotron's yield
+presented as a property of a Qwen run — the same substitution this document
+exists to prevent, made inside it. An on-policy control was already on disk:
+`runs/headroom-k16` and `runs/qwen38-baseline-k16` are the same 74 held-out
+cases, the same `holdout_manifest_sha256`, the same `prompt_sha`, and
+byte-identical sampling dicts; only the model differs. Over the 43 clean
+(non-degenerate, non-unsatisfiable) held-out **rewrite** cases, from the recorded
+flags, 2026-09-13:
+
+| run | model | cases solved | per-draw | rows at `keep=4` |
+|---|---|---|---|---|
+| `headroom-k16` | Nemotron | 12 of 43 (27.9%) | 0.119 | ~43 |
+| `qwen38-baseline-k16` | Qwen3.8-27B | **16 of 43 (37.2%)** | **0.198** | **~55** |
+
+Qwen out-yields Nemotron by 1.33x on cases solved and 1.66x per draw, so the
+original figure understates the run it describes. Scaling the Qwen held-out rate
+onto the 66-case pool gives roughly **85 on-task rows at k=16**, not 39, and k=32
+is higher by an amount nothing here measures.
+
+**The conclusion is therefore weaker than it was first written, and is left
+weaker rather than restated.** ~85 at k=16 is still short of 150, so the abandon
+condition may well fire — but "projected to produce well under 150" was asserted
+on the wrong model's yield, and the honest statement is that the on-task count is
+not known before the sampling run and **must be read off `sft_examples_on_task`
+after it**. That read is free: sampling is step one, and the threshold is
+evaluated before a GPU is rented.
 
 ## 3. The rules, fixed now
 
@@ -117,6 +258,19 @@ improvement can take; a fine-tune that completely solves three previously
 hopeless cases is +4.3pp on this denominator and fires nothing. The rule asks
 how many CASES moved, not how far the mean did, and both numbers are reported.
 
+> **§3c corrected this paragraph, and then the rule was amended to match it.**
+> The paragraph says the rule "asks how many CASES moved". It did not: until
+> 2026-09-13 `paired_delta` called a case gained when its per-case *mean* moved,
+> and at k=16 noise alone loses ~9.5 of these 70 cases in every run — measured
+> `c == 0` in **0 of 2,000** null trials — so six-and-none-lost was unreachable
+> and the real requirement was twelve to fifteen outright-solved cases.
+> **Since the §3c amendment of 2026-09-13 the rule does what this paragraph
+> always said**: discordance is solved / not-solved, so the `2/2**b` arithmetic
+> and the six-case floor describe the implementation rather than an intention.
+> The amendment is a CHANGE OF RULE made before any adapter existed; §3c states
+> it as one, shows the re-measured power, and shows that it makes §3b's null test
+> harder to fire rather than easier. Read §3c before spending.
+
 **The standing unpaired rule reaches 80% power only at +15pp.** Moving a 74-case
 mean that far means taking about eleven cases from never-passing to
 always-passing — a third of the 34 that never pass. An experiment whose rule
@@ -127,7 +281,8 @@ spent either way.
   they are paired by construction and the unpaired rule pays for the shared
   per-case difficulty twice. A win requires **both** the bootstrap 95% CI lower
   bound of the per-case delta to be above 0 **and** exact two-sided McNemar
-  p < 0.05 on the case-level flips. Both are already implemented
+  p < 0.05 on the case-level flips, where a flip is **solved / not-solved**
+  (§3c, amended 2026-09-13). Both are already implemented
   (`stats.paired_delta`, `stats._mcnemar`); neither was written for this.
 - **SECONDARY, always reported:** the unpaired rule, `stats.beats`, unchanged.
   It was fixed before any run happened and it stays in the table. **Where the two
@@ -145,10 +300,29 @@ current engine — no new inference, and still before any adapter exists. This i
 the **null** for this experiment: the same model, the same completions, a newer
 engine. If the rule fired here it would fire on engine work alone.
 
-| denominator | before | after | paired delta | 95% CI | McNemar | rule fires |
-|---|---|---|---|---|---|---|
-| all 74 | 0.4037 | 0.4382 | +3.45pp | [+0.8, +6.6] | p = 0.0312 | **yes** |
-| **70 non-degenerate (PRIMARY)** | 0.4116 | 0.4286 | **+1.70pp** | [0.0000, +4.37] | **p = 0.25** | **no** |
+Re-run 2026-09-13 under the §3c amendment, `nt compare qwen38-baseline-k16
+qwen38-regrade-20260913 --anyway`, engine `42ab2d3b7608dfe1`. Both the rule as
+originally pre-registered and the amended rule are shown, because the whole point
+of a null test is that it be checkable:
+
+| denominator | before | after | paired delta | 95% CI | McNemar, mean-moved | McNemar, **amended** | fires |
+|---|---|---|---|---|---|---|---|
+| all 74 | 0.4037 | 0.4375 | +3.38pp | [+0.84, +6.59] | p = 0.0312 → **would fire** | **p = 0.2500** | no |
+| **70 non-degenerate (PRIMARY)** | 0.4116 | 0.4286 | **+1.70pp** | [+0.00, +4.38] | p = 0.2500 | **p = 0.5000** | **no** |
+| 65 usable | 0.4433 | 0.4615 | +1.83pp | [+0.00, +4.71] | p = 0.2500 | p = 0.5000 | no |
+
+**The amendment closes a false positive rather than opening one.** The old
+definition fired on the naive all-74 denominator against a comparison that is
+pure engine drift — the same model, the same 1,184 completions. The amended one
+does not fire on any denominator here. That is the direction a change of rule
+must move a known null if it is to be believed, and it is why the §3c amendment
+is recorded as admissible rather than merely declared so.
+
+**CLARIFICATION, corrected 2026-09-13** (`nt compare qwen38-baseline-k16
+qwen38-regrade-20260912`, engine `7846191`, built here today): the all-74 row
+read 0.4382 / +3.45pp and the run's own `summary.json` says `pass_rate 0.4375`,
+which is also what the paragraph four below it already said. The verdict column
+does not move, in either row, and it is the verdict that is pre-registered.
 
 The primary denominator holds and the all-74 one does not, which is precisely
 what §2(b) was written for: the four degenerate cases carry more than half the
@@ -164,11 +338,173 @@ Two of the four degenerate cases share a byte-identical negative program — the
 rewrite cases hold only 51 distinct ones — so two of the six apparent gains are
 one program counted twice.
 
+**Re-measured 2026-09-13 at engine `7846191`, and 0.4375 does not move.** PR #60
+and PR #61 changed what the engine answers again — a base64 refusal, fifteen
+error wordings and a `type()` kind-flip — so the §2(a) argument was re-run rather
+than assumed. The 1,184 completions reconstruct from
+`runs/qwen38-baseline-k16/attempts.jsonl` (1184/1184 re-extract byte-identical,
+checked before grading) and re-grade to **pass_rate 0.4375, with 0 of 1,184
+attempt flags changed and 0 of 74 per-case rates moved**. Graded twice, the two
+grades agree on every verdict. Run directly against both builds, exactly one of
+the 1,184 programs gets a different answer out of the engine, and the difference
+is the wording of a refusal on stderr at the same exit 90 — which no acceptance
+test reads, because `_matches` compares exit code and stdout and nothing else.
+**The baseline does not move, and `qwen38-regrade-20260912` keeps its job.**
+
+## 3c. The discrete floor is not where §3 says it is, and the rule is near-blind to the shape this fine-tune will produce
+
+Measured 2026-09-13, before any adapter exists, before the sampling run is paid
+for, on the **primary 70** at the **re-graded** per-case rates (`nt compare`
+denominator, `qwen38-regrade-20260912`), 600 simulated runs per row, k=16. §3's
+power table is computed on the **all-74, pre-regrade** scores and lifts every
+case by the same amount; this is the same simulation pointed at the denominator
+the rule is actually pre-registered on, and at effect **shapes** rather than one.
+
+**The floor arithmetic is right and its premise never happens.** `stats._mcnemar(b, 0)`
+is `2/2**b` — 0.0625 at five, 0.03125 at six, and `stats._min_discordant()`
+returns **6**, so §3's sentence is arithmetically exact. But `paired_delta` calls
+a case *gained* when its per-case **mean** moved, and at k=16 sampling noise alone
+moves means in both directions: over 2,000 null trials on these 70 cases the mean
+discordant counts are **b = 9.5, c = 9.5**, and **`c == 0` occurred 0 times out of
+2,000**. Six gains and nothing lost is not a stringent case; it is an
+unreachable one. With c ≈ 9 the exact test needs **b >= 21** (`_mcnemar(21, 9) =
+0.043`) — twenty-one of seventy cases moving up against nine moving down.
+
+| what the fine-tune does | overall lift | **rule as implemented** | boot leg alone |
+|---|---|---|---|
+| uniform +2pp on all 70 | +2.0pp | 32% | 37% |
+| uniform +4pp on all 70 | +4.0pp | **80%** | 81% |
+| +6pp on the 48 rewrite cases only | +4.1pp | **96%** | 96% |
+| solves 3 hopeless rewrite cases outright | +4.3pp | **4%** | 39% |
+| solves 6 | +8.6pp | **14%** | 98% |
+| solves 8 | +11.4pp | **24%** | 100% |
+| solves 12 | +17.1pp | **49%** | 100% |
+| solves 15 | +21.4pp | **71%** | 100% |
+
+**Read the last five rows before spending anything.** A rejection-sampling LoRA
+trained on verified rewrites of specific refusals is far likelier to produce the
+bottom shape — a handful of previously-hopeless cases solved outright — than a
+uniform smear across seventy cases including the sixteen that already always
+pass. Against that shape the rule needs **twelve to fifteen** completely solved
+cases for 50–70% power, not six; §3's "fewer than six flips cannot fire" reads as
+a floor and is in fact an understatement by a factor of about two and a half. In
+every one of those rows the bootstrap leg is at 98–100% and the McNemar leg is
+what refuses: **the conjunction is, in this regime, the McNemar leg alone.**
+
+**And more samples do not fix it.** Re-run at k=32 and k=64 the same rows give
+12%/13% at six solved and 45%/45% at twelve — flat, because a finer-grained
+per-case mean makes *more* pairs discordant, not fewer (c rises from 9.5 to 10.8).
+Buying a second eval Job would buy nothing here.
+
+**What would fix it, and it is free.** Count a case's flip as a case-level
+**binary** outcome — solved / not solved — instead of a move in its mean, which
+is what §3's own words ("case-level flips", "how many CASES moved") and its
+`2/2**b` arithmetic already describe, and what makes the six-case floor the real
+floor. Simulated the same way, binarising on *solved at least once in k*: null
+0% (conservative, against a nominal 5%), six solved **49%**, eight **83%**, ten
+**97%**, and none of the top four rows loses anything (uniform +4pp stays 80%,
+rewrite +6pp stays 96%). It is a change to one comparison in
+`stats.paired_delta` and it costs $0.
+
+> **ADOPTED 2026-09-13 by Krister Hedfors, on option (ii). THIS IS A CHANGE OF
+> RULE, NOT A CLARIFICATION, AND IT WAS MADE AFTER SEEING A POWER CURVE.** That
+> sentence stays at the top of this amendment permanently, because it is the
+> fact a reader most needs and the one most easily lost. What makes it
+> admissible rather than fatal is *when*: no adapter exists, no SFT set has been
+> sampled, no dollar has been spent, and no treatment arm has been graded. There
+> is no outcome to choose a statistic in favour of. Writing the same change after
+> the arms were graded would be choosing the test that fires, and would be
+> indefensible.
+>
+> `stats.paired_delta` now counts a case discordant when it crosses
+> **solved / not-solved** (`after > 0 and before == 0`, and its mirror), not when
+> its per-case mean moves. The mean-moved counts survive beside it as
+> `moved_up` / `moved_down` / `mcnemar_p_mean_moved` and are printed, because a
+> rule whose alternative you can no longer see is a rule nobody can check.
+>
+> **Re-measured independently on landing**, 400 trials per row, k=16, against
+> `qwen38-regrade-20260913`'s own per-case scores at the primary n=70 (30 cases
+> at 0.0, 16 at 1.0). These numbers are lower than the 49%/83% quoted in the
+> paragraph above, which were simulated at a different post-solve rate; the
+> measured ones are what this amendment claims:
+>
+> | scenario | mean-moved | **solved/not-solved** |
+> |---|---|---|
+> | 4 hopeless cases solved | 6% | 4% |
+> | 6 hopeless cases solved | 12% | **27%** |
+> | 8 hopeless cases solved | 20% | **60%** |
+> | 10 hopeless cases solved | 32% | **90%** |
+> | uniform +2pp | 31% | 31% |
+> | uniform +4pp | 84% | 85% |
+> | uniform +6pp | 99% | 99% |
+> | null: no change at all | 0% | 0% |
+>
+> So it buys the concentrated shape, costs nothing on the broad shapes the rule
+> already saw, and does not inflate the null. At four solved cases it is
+> *slightly worse*, which is recorded here rather than omitted.
+>
+> **The evidence that this is not the statistic that flatters us: it makes §3b's
+> null test HARDER to fire, not easier.** Engine drift alone — the same 1,184
+> completions re-graded — fired the old rule on the naive all-74 denominator at
+> p=0.0312. Under the amended definition that same comparison gives p=0.2500 and
+> does not fire, and the primary denominator moves from p=0.2500 to p=0.5000.
+> A change of rule chosen to produce wins would not close a false positive on a
+> known null. Re-run both after landing; the table in §3b is the amended one.
+
+**The honest summary of what $16 can buy.** If the LoRA broadly shifts style so
+that most rewrite cases get a little better, this design sees it (96% at +6pp on
+the rewrite stratum). If it instead solves a specific handful of refusals — the
+shape §2(g) points at — on-policy, 34 of the 52 held-out rewrite cases (65%) have
+never once passed in Qwen's 16 draws; the "55 of 66" first written here was
+Nemotron's rate on the train pool and overstated it — this design reports "no
+win" for anything short of about eight to ten
+solved cases under the §3c amendment (60% at eight, 90% at ten), where before the
+amendment it needed twelve to fifteen. The other pre-registered abandon
+condition (§2(g), fewer than 150 on-task SFT examples) bites first and is the
+cheaper place to stop.
+
+## 3d. The engine is part of the pre-registration and was not named as one
+
+Added 2026-09-13, before any adapter exists. §4's first row says a differing
+engine is "covered". Audited against the code, it is covered **only between two
+runs that both recorded one**, and there is a third engine in the room that
+neither run records.
+
+- `stats._engine` returns no reason at all when either side's fingerprint is
+  missing (`if not (b.get("fingerprint") and r.get("fingerprint")): return []`).
+  That is deliberate and documented — an unknown must not assert a difference —
+  but it means the guard is **silent, not withholding**, and both runs on disk
+  (`qwen38-baseline-k16`, `qwen38-regrade-20260912`) have `engine: null`. Every
+  comparison published so far is unguarded. `nt eval` and `nt grade` both write
+  `eng.identity()` now, so the two eval arms will be guarded — provided both are
+  graded after today and neither is compared against a pre-2026-09-13 run.
+- The **denominator** is computed live. `cli._denominators` asks the binary on
+  this box which held-out cases are degenerate, so which cases are in the primary
+  70 is decided by whatever engine is installed when `nt compare` runs — after
+  the data is visible. `cmd_compare` does compare the live fingerprint against
+  each run's, and that check is silent for the same reason: the runs record none.
+
+> Decided now, and it is a **CLARIFICATION** — the intent was always one engine
+> for both arms: **the engine is pinned as part of this pre-registration.** Both
+> arms are graded by one build, the primary denominator is computed by that same
+> build, and the run that reports the verdict prints the fingerprint it used. The
+> build is the one in this tree at `7846191`; built fresh into an empty
+> `LYPNING_HOME` on 2026-09-13 it reports `engines.identity()` fingerprint
+> **`42ab2d3b7608dfe1`** over `lypning 609f9338…cffdc7f1` and
+> `lypning-l bf16bd08…a820c3b2` at `oracle_python 3.11.15`, both binaries saying
+> `for cpython 3.11`. It is written down here so that a later build can be *seen*
+> to differ rather than assumed to match, and it is re-read from
+> `engines.identity()` rather than remembered (invariant 3). `lypning doctor`'s
+> `reference cpython` row must read OK, not WARN. If the engine moves before the
+> eval, the re-grade is free and both arms move together; what is not permitted is
+> two arms, or an arm and a denominator, at two fingerprints.
+
 ## 4. What would make a positive result a lie
 
 | confound | the check | status |
 |---|---|---|
-| engine differs between arms | both graded at `0f61407`; `nt compare` blocks on `holdout_manifest_sha256` + `prompt_sha` | covered |
+| engine differs between arms | `engines.identity()` records the graded-against binaries and the oracle CPython on every run; `stats._engine` withholds the subtraction on any difference, and `nt compare` also refuses when the live engine computing the denominators is not the one the runs were graded by | **covered only where both sides recorded a fingerprint — silent, not withholding, where either did not, which is every run on disk today. §3d pins the engine and says what to check.** |
+| statistical rule cannot see the effect | `nt power`, both legs, on the pre-registered denominator and at more than one effect shape | **§3c: near-blind to a concentrated win; a decision is owed before the spend** |
 | degenerate cases | 70-case primary figure, cases named mechanically above | covered |
 | model echoes the input | the corpus's negative control: the original program is recorded per case, and an output equal to it is a fail by construction on non-degenerate cases | covered |
 | model games the acceptance test | `sample.discriminate()` perturbs the input and requires the candidate to follow the mutation | **sampling path only — NOT wired into eval** |
@@ -202,6 +538,20 @@ vLLM process, two arms — base `Qwen/Qwen3.8-27B` with `--enable-lora`, the
 held-out split generated twice, once without the adapter and once with it, same
 seed and same decode budget.
 
+**CLARIFICATION, 2026-09-13: "one vLLM instance" is not what runs, and the
+requirement it stands for survives anyway.** `gpu/lypning_lora.py` — the only
+executable form of this step — serves both arms from HF `transformers`
+(`Qwen3_5ForConditionalGeneration`, `model.generate`), and `--base-arm` is a flag
+on the whole invocation, so the control arm is a **second** Job with its own
+55.56 GB pull rather than a second pass inside one. The pre-registered
+requirement is **one stack for both arms**, not one process, and the script meets
+it and writes the stack down: `backend.base_url` becomes
+`incontainer://transformers-<v>+torch-<v>+<kernels>/<gpu>`, so two arms that did
+not come off identical software land as a `stats._arm` difference and `nt compare`
+refuses. The cost consequence is not a clarification and belongs to `RUNBOOK.md`,
+which carries the arithmetic; the "costs nothing extra: it is the same Job"
+sentence below is true of the vLLM design and false of the script.
+
 So `qwen38-regrade-20260912` is **not** the reference the fine-tune is measured
 against. It keeps its job — it is the engine-drift null test in §3b, where both
 arms genuinely are one stack and it is the right instrument. The fine-tune's
@@ -216,6 +566,15 @@ Over the 65 usable cases the baseline point is 0.4433 (still graded by this
 morning's engine, so it will move again on the re-grade), with 27 that never
 pass, 16 that always do, and **22 movable**. Power is unchanged by the
 exclusions: paired 80% at +4pp, unpaired 80% at +15pp.
+
+**Re-measured 2026-09-13**, all four figures verified as written on
+`qwen38-baseline-k16`, and the re-grade does move them: at
+`qwen38-regrade-20260912` the 65-usable point is **0.4615** with 25 never, 16
+always, **24 movable**, and the primary-70 point is **0.4286** with 30 never, 16
+always, **24 movable**. The 15-movable abandon condition is not tripped on any
+denominator. "+4pp" is the *uniform-smear* lift and §3c is the qualification it
+needs: that same 80% becomes 14% against a fine-tune that solves six
+previously-hopeless cases outright.
 
 Sampling 117 clean train cases at k=16, keep=2 is projected to yield well under
 150 examples. **The sampling run therefore uses k=32 and keep=4**, decided here

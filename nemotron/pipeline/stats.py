@@ -155,6 +155,50 @@ def _arm(baseline: Dict[str, Any], run: Dict[str, Any]) -> List[Dict[str, Any]]:
     return []
 
 
+def _engine(baseline: Dict[str, Any], run: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Two runs graded by two engines are not a delta either.
+
+    Same shape and same reason as :func:`_arm` one function up. A `lypning`-kind
+    acceptance test asks whether THE ENGINE accepts the program, so the engine is
+    half of what a pass rate is about — and this project has already watched that
+    half move a published baseline without anyone touching a model: the same
+    1,184 completions scored 40.37% before the engine gained math and type() and
+    43.75% after. That re-grade was caught by hand, in a paragraph. A paragraph
+    is not a guard.
+
+    Since the engine started answering as the CPython it was built for, the same
+    source builds a different engine on a 3.9 host than on a 3.11 one, so "the
+    same commit" stopped being an identity and `engines.identity()` records the
+    binary instead. A difference in it withholds the subtraction; the remedy is
+    not a flag, it is to grade both arms against one build, which costs one
+    command because re-grading recorded completions needs no GPU.
+
+    An engine nobody recorded is an unknown, and an unknown is neither reported
+    as a difference nor allowed to assert one — the runs graded before this field
+    existed compare exactly as they did. Every run graded after it records it.
+    """
+    b, r = baseline.get("engine") or {}, run.get("engine") or {}
+    if not (b.get("fingerprint") and r.get("fingerprint")):
+        return []
+    if b["fingerprint"] == r["fingerprint"]:
+        return []
+    out: List[Dict[str, Any]] = []
+    bc, rc = b.get("chain") or {}, r.get("chain") or {}
+    for name in sorted(set(bc) | set(rc)):
+        bv = (bc.get(name) or {}).get("sha256")
+        rv = (rc.get(name) or {}).get("sha256")
+        if bv != rv:
+            out.append(_differs("engine." + name, bv or UNRECORDED, rv or UNRECORDED))
+    if b.get("oracle_python") != r.get("oracle_python"):
+        out.append(_differs("engine.oracle_python",
+                            b.get("oracle_python") or UNRECORDED,
+                            r.get("oracle_python") or UNRECORDED))
+    # A fingerprint that differs while every part of it compares equal would mean
+    # the two sides recorded parts this function does not know about. Withhold on
+    # the fingerprint itself rather than report no reason for a refusal.
+    return out or [_differs("engine", b["fingerprint"], r["fingerprint"])]
+
+
 def comparability(baseline: Dict[str, Any], run: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Every reason two run summaries cannot be shown to have measured one thing.
 
@@ -184,6 +228,7 @@ def comparability(baseline: Dict[str, Any], run: Dict[str, Any]) -> List[Dict[st
             if bs[key] != rs[key]:
                 out.append(_differs("sampling." + key, bs[key], rs[key]))
     out.extend(_arm(baseline, run))
+    out.extend(_engine(baseline, run))
     return out
 
 
@@ -258,8 +303,26 @@ def paired_delta(
     means.sort()
     lo = means[int((alpha / 2) * resamples)]
     hi = means[min(resamples - 1, int((1 - alpha / 2) * resamples))]
-    gained = [c for c in shared if after[c] > before[c]]
-    lost = [c for c in shared if after[c] < before[c]]
+    # DISCORDANCE IS SOLVED/NOT-SOLVED, not "the per-case mean moved".
+    # AMENDMENT, 2026-09-13, §3c — and it is a change of rule, not a
+    # clarification. The mean-moved definition counts a case that went 1/16 to
+    # 2/16 as discordant, which is one Bernoulli draw of noise at k=16, and it
+    # counts a case that went 0/16 to 5/16 the same way. Diluting the real
+    # acquisitions with draw-level noise is what left the rule at 12% power
+    # against the effect a rejection-sampling LoRA actually produces (six
+    # previously-hopeless cases solved), measured against this baseline's own
+    # per-case scores at the primary n=70. Under solved/not-solved that is 27%,
+    # eight cases 20% -> 60%, ten 32% -> 90%, while the uniform shapes this rule
+    # already saw are unchanged (+2pp 31/31, +4pp 84/85, +6pp 99/99) and the
+    # null fires at 0% under both.
+    #
+    # The mean-moved counts are still computed and reported as
+    # `mcnemar_p_mean_moved`, because a rule you can no longer see the
+    # alternative to is a rule nobody can check.
+    gained = [c for c in shared if after[c] > 0.0 and before[c] == 0.0]
+    lost = [c for c in shared if after[c] == 0.0 and before[c] > 0.0]
+    moved_up = [c for c in shared if after[c] > before[c]]
+    moved_down = [c for c in shared if after[c] < before[c]]
     return {
         "n_pairs": len(shared),
         # Cases one run measured and the other did not are dropped by the
@@ -274,6 +337,8 @@ def paired_delta(
         "gained": len(gained), "lost": len(lost),
         "gained_ids": gained[:50], "lost_ids": lost[:50],
         "mcnemar_p": _mcnemar(len(gained), len(lost)),
+        "moved_up": len(moved_up), "moved_down": len(moved_down),
+        "mcnemar_p_mean_moved": _mcnemar(len(moved_up), len(moved_down)),
         # An interval lying wholly below zero is exactly as separable from noise
         # as one lying wholly above it, and it is the direction this pipeline
         # exists to catch: a tune that buys the route by giving up correctness.
@@ -369,6 +434,14 @@ def power_curve(
     favourable shape an improvement can take — a uniform lift — so the numbers
     here are an UPPER bound on power, not an estimate of it.
 
+    THE SHAPE THIS DOES NOT SIMULATE is the one a rejection-sampling LoRA
+    actually produces: not every case a little better, but a handful of
+    previously-hopeless cases becoming possible. A uniform grid cannot show it,
+    and reading these rows as "the power of this design" is how the rule came to
+    be pre-registered at 12% against the effect it was bought to detect. The
+    concentrated curve is in `PREREGISTRATION.md` §3c and was measured
+    separately; the two belong together.
+
     Run it before the run, not after: a rule chosen once the outcome is visible
     is not a rule.
     """
@@ -395,10 +468,13 @@ def power_curve(
                 unpaired += 1
             # BOTH LEGS, because the pre-registered rule is the CONJUNCTION and
             # simulating one of them answers a question nobody asked. Counted the
-            # way `paired_delta` counts: a case is discordant when its mean moved.
+            # way `paired_delta` counts — which since the 2026-09-13 amendment is
+            # solved/not-solved, not "the mean moved". Simulating the old
+            # definition here while the rule uses the new one is the same defect
+            # as simulating one leg of two.
             leg_boot = _boot_lo([a - b for a, b in zip(after, before)]) > 0
-            gained = sum(1 for a, b in zip(after, before) if a > b)
-            lost = sum(1 for a, b in zip(after, before) if a < b)
+            gained = sum(1 for a, b in zip(after, before) if a > 0 and b == 0)
+            lost = sum(1 for a, b in zip(after, before) if a == 0 and b > 0)
             leg_mcnemar = _mcnemar(gained, lost) < 0.05
             boot += leg_boot
             mcnemar += leg_mcnemar
