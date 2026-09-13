@@ -239,8 +239,34 @@ def tiny_config(cfg):
 def attach_lora(model, rank, alpha, dropout):
     lc = LoraConfig(r=rank, lora_alpha=alpha, lora_dropout=dropout, bias="none",
                     task_type="CAUSAL_LM", target_modules=TARGET_MODULES,
-                    exclude_modules=EXCLUDE_MODULES)
+                    exclude_modules=EXCLUDE_MODULES,
+                    # The model is loaded from a snapshot DIRECTORY, so peft
+                    # records that local path as the base model and writes it
+                    # into the README it generates -- which the Hub then rejects
+                    # ("is not valid. Use a model id"). The first checkpoint
+                    # upload is at --save-every, so a run dies ten steps in,
+                    # after the 55 GB pull and the training that mattered.
+                    # Naming the base model here is the one place it is known.
+                    base_model_name_or_path=BASE_MODEL)
     return get_peft_model(model, lc)
+
+
+def save_adapter(pm, out_dir):
+    """`save_pretrained`, with the base model named as the Hub knows it.
+
+    peft writes a README whose `base_model:` comes from
+    `peft_config.base_model_name_or_path`, and the model was loaded from a
+    snapshot DIRECTORY, so that field is a local path like
+    `/root/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B/snapshots/1d4bf0f...`.
+    The Hub rejects it -- "is not valid. Use a model id" -- and because the first
+    checkpoint is at `--save-every`, the run dies ten steps in, AFTER the 55 GB
+    pull and after the training that mattered. Setting it in `LoraConfig` is not
+    enough on its own: `get_peft_model` re-reads the loaded model's
+    `name_or_path`, so it is re-stamped here, immediately before every write.
+    """
+    for cfg in pm.peft_config.values():
+        cfg.base_model_name_or_path = BASE_MODEL
+    pm.save_pretrained(out_dir)
 
 
 def check_adapted_modules(pm):
@@ -757,14 +783,14 @@ def main():
             flush()
 
             def on_step(step, h):
-                pm.save_pretrained(os.path.join(work, "adapter"))
+                save_adapter(pm, os.path.join(work, "adapter"))
                 api.upload_folder(folder_path=os.path.join(work, "adapter"), repo_id=args.out_repo,
                                   path_in_repo=prefix + "adapter", repo_type="model",
                                   commit_message="%s adapter @ step %d" % (args.run_id, step))
                 flush()
 
             train(pm, tr, va, args, tok.pad_token_id, device, on_step, hist)
-            pm.save_pretrained(os.path.join(work, "adapter"))
+            save_adapter(pm, os.path.join(work, "adapter"))
             api.upload_folder(folder_path=os.path.join(work, "adapter"), repo_id=args.out_repo,
                               path_in_repo=prefix + "adapter", repo_type="model",
                               commit_message="%s final adapter" % args.run_id)
