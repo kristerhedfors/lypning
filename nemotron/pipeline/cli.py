@@ -1380,7 +1380,17 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--temperature", type=float, default=1.0)
     sp.add_argument("--top-p", type=float, default=0.95)
     sp.add_argument("--max-tokens", type=int, default=2048)
-    sp.add_argument("--no-thinking", action="store_true")
+    # THE DEFAULT IS NO THINKING, because the arm this SFT set is built to beat
+    # was drawn with `enable_thinking: false` and rejection sampling is on-policy
+    # or it is nothing. Until 2026-09-13 this flag defaulted the other way, which
+    # is the opposite of `sample.sample_targets`'s own default and cost a
+    # projected $25.05 against a $6 budget before the first minute was out.
+    # `--thinking` is still reachable, deliberately, for an arm drawn that way.
+    sp.add_argument("--no-thinking", dest="no_thinking", action="store_true",
+                    default=True)
+    sp.add_argument("--thinking", dest="no_thinking", action="store_false",
+                    help="draw with enable_thinking=true; only for an arm that "
+                         "was itself sampled that way")
     sp.add_argument("--price-hour", type=float, default=0.0)
     sp.add_argument("--max-spend", type=float, default=0.0)
     sp.add_argument("--base-url"); sp.add_argument("--model")

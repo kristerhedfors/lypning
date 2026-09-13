@@ -200,3 +200,49 @@ def test_the_smoke_test_proves_every_targeted_leaf_reaches_the_loss():
     src = (Path(__file__).resolve().parents[1] / "gpu" / "lypning_lora.py").read_text()
     assert "carried NO gradient" in src
     assert "def smoke(" in src and src.index("def smoke(") < src.index("carried NO gradient")
+
+
+def test_the_arm_is_the_model_AND_how_it_was_sampled(tmp_path):
+    """2026-09-13, paid for at $0.13 before it was caught.
+
+    `_claim_draws_dir` guarded the model and not the mode. The CLI default was
+    `enable_thinking=true` while `sample_targets`'s own default, and the arm the
+    baseline was drawn with, are both false — so a run drew the right model in
+    the wrong mode, at 2,771 completion tokens a draw against the baseline's 230
+    and a projected $25.05 against a $6 budget, and nothing recorded the setting.
+    Rejection sampling is on-policy or it is nothing, and the mode is part of the
+    policy.
+    """
+    class _Backend:
+        base_url, model = "https://example.invalid/v1", "some/model"
+
+        def identity(self):
+            return {"base_url": self.base_url, "model": self.model}
+
+    d = tmp_path / "draws"
+    d.mkdir()
+    thinking = {"enable_thinking": True, "max_tokens": 2048,
+                "temperature": 1.0, "top_p": 0.95}
+    quiet = dict(thinking, enable_thinking=False)
+
+    sample_mod._claim_draws_dir(d, _Backend(), quiet)          # claims it
+    sample_mod._claim_draws_dir(d, _Backend(), quiet)          # same arm: fine
+
+    with pytest.raises(ValueError) as e:
+        sample_mod._claim_draws_dir(d, _Backend(), thinking)
+    assert "different backend" in str(e.value)
+    assert "enable_thinking" in str(e.value)
+
+
+def test_sampling_defaults_to_the_mode_the_baseline_arm_used():
+    """The CLI default must not contradict the library default. It did."""
+    import inspect
+    assert inspect.signature(sample_mod.sample_targets).parameters[
+        "enable_thinking"].default is False
+    args = nt.build_parser().parse_args(
+        ["sample", "--name", "x", "--dry-run"])
+    assert args.no_thinking is True, (
+        "nt sample would draw with thinking on, which is off-policy against a "
+        "baseline sampled with enable_thinking=false")
+    assert nt.build_parser().parse_args(
+        ["sample", "--name", "x", "--thinking"]).no_thinking is False

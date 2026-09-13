@@ -686,7 +686,8 @@ def _now() -> str:
 
 
 
-def _claim_draws_dir(out_dir: Path, backend: ChatBackend) -> None:
+def _claim_draws_dir(out_dir: Path, backend: ChatBackend,
+                     sampling: Optional[Dict[str, Any]] = None) -> None:
     """Refuse to add draws to a file another model wrote. Nothing spent yet.
 
     Rejection sampling is on-policy by definition: the targets have to come from
@@ -700,6 +701,18 @@ def _claim_draws_dir(out_dir: Path, backend: ChatBackend) -> None:
 
     Draws recorded before this file existed cannot name their model, so they are
     an unknown, and an unknown is a reason to refuse rather than to assume.
+
+    THE MODEL IS NOT THE WHOLE ARM, which this guard learned the expensive way
+    on 2026-09-13. `sample_targets` defaults `enable_thinking=False`; `cli.py`
+    passes `not args.no_thinking`, so the CLI default is the opposite of the
+    library's and the opposite of the arm the baseline was drawn with
+    (`enable_thinking: false`). A run launched without `--no-thinking` therefore
+    drew the right model in the wrong mode -- mean completion 2,771 tokens
+    against the baseline's 230, a projected \$25.05 against a \$6 budget -- and
+    nothing recorded the setting, so the SFT set would have been off-policy
+    against the very arm it was built to beat with nothing in the report to show
+    it. The sampling dict is part of the claim now, for the same reason the
+    model is.
     """
     stamp = out_dir / "backend.json"
     # `identity()` is ChatBackend's; a test double is a duck with `complete` and
@@ -709,6 +722,8 @@ def _claim_draws_dir(out_dir: Path, backend: ChatBackend) -> None:
     mine = ident() if callable(ident) else {
         "base_url": getattr(backend, "base_url", None),
         "model": getattr(backend, "model", None)}
+    if sampling:
+        mine = dict(mine, sampling=dict(sampling))
     prior = read_json(stamp) if stamp.exists() else None
     if prior is None:
         if (out_dir / "draws.jsonl").exists():
@@ -763,7 +778,9 @@ def sample_targets(
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     draws_path = out_dir / "draws.jsonl"
-    _claim_draws_dir(out_dir, backend)
+    _claim_draws_dir(out_dir, backend, {
+        "enable_thinking": enable_thinking, "max_tokens": max_tokens,
+        "temperature": temperature, "top_p": top_p})
     already: "set" = set()
     if resume and draws_path.exists():
         for prior in read_jsonl(draws_path):
