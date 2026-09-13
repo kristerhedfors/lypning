@@ -438,6 +438,45 @@ pub fn effective_content(path: &str) -> R<Option<Vec<u8>>> {
 /// once, and the error it raises is the one this engine already answers with.
 /// A path that cannot be stat'ed is let through too, so that the caller's own
 /// read reports it and the exception text stays the one it already produced.
+/// The directory a write would land in, checked the moment `open()` is called.
+///
+/// Only the parent's existence and directory-ness are asserted: that is what
+/// CPython's `open(p,'w')` can discover without writing, and asserting more
+/// (permissions, free space) would refuse programs CPython runs. A path with no
+/// parent component is a bare filename in the cwd, which exists by construction.
+fn require_writable_parent(path: &str) -> R<()> {
+    let parent = match std::path::Path::new(path).parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => return Ok(()),
+    };
+    // Directories are NOT staged: `os.mkdir`/`makedirs` call `create_dir` for
+    // real and only file CONTENTS are held back, so a directory this program
+    // just made is on disk and `metadata` sees it. No pending-set to consult.
+    // A parent that is itself a file this run has STAGED is not on disk yet, so
+    // `metadata` cannot see it and would report the wrong errno: CPython says
+    // NotADirectoryError for `open('f.txt/nested','w')` when `f.txt` is a file,
+    // and this engine said FileNotFoundError because the staged write had not
+    // landed. The staged set is the other half of what exists.
+    let staged_file = PENDING.with(|p| p.borrow().files.contains_key(&*parent.to_string_lossy()));
+    if staged_file {
+        return Err(LypningError::exc(
+            "NotADirectoryError",
+            format!("[Errno 20] Not a directory: '{path}'"),
+        ));
+    }
+    match std::fs::metadata(parent) {
+        Ok(md) if md.is_dir() => Ok(()),
+        Ok(_) => Err(LypningError::exc(
+            "NotADirectoryError",
+            format!("[Errno 20] Not a directory: '{path}'"),
+        )),
+        Err(_) => Err(LypningError::exc(
+            "FileNotFoundError",
+            format!("[Errno 2] No such file or directory: '{path}'"),
+        )),
+    }
+}
+
 pub fn require_regular_file(path: &str) -> R<()> {
     match std::fs::metadata(path) {
         Ok(md) if md.is_file() || md.is_dir() => Ok(()),
@@ -702,8 +741,16 @@ pub fn open_file(path: &str, mode: &str, binary: bool) -> R<FileObj> {
             }
         }
     } else {
-        // `open(p,'w')` TRUNCATES and `open(p,'a')` moves the end, and both are
-        // writes an open read handle over the same path cannot see.
+        // CPython OPENS the file here, so a parent directory that does not exist
+        // is a FileNotFoundError raised BY `open()` — before any later statement
+        // on the line runs. Staging the write (below) is what makes `open(p,'w')`
+        // reversible under invariant 4's net and is deliberate, but it also
+        // deferred that error to commit time, so `open('gen/x','w').write(d);
+        // print(len(rows))` printed the count CPython never reaches, at exit 0
+        // with output CPython does not produce. The staging stays; the CHECK
+        // moves to where CPython does it. Found by the corpus fold of 2026-09-13
+        // (py-15af5ed84a43 and three siblings).
+        require_writable_parent(path)?;
         note_write(path);
         // Staging the write means the file is not truncated until commit; that
         // is intentional, and it is also what makes `open(p,'w')` reversible.
