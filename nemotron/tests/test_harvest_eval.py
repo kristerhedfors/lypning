@@ -10,6 +10,7 @@ from pipeline import split as S
 from pipeline.adapters import _study_files, _test_from_convenience, parse_source
 from pipeline.evaluate import (SYSTEM_PROMPT, load_holdout, prompt_signature,
                                render_contract, render_messages, summarize_run)
+from pipeline import harvest as harvestmod
 from pipeline.harvest import collect, harvest
 from pipeline.jsonio import read_json, read_jsonl, write_jsonl
 from pipeline.schema import case_id, make_case, validate_case
@@ -193,3 +194,55 @@ def test_the_literal_output_guard_catches_printing_the_answer():
     assert L('print("alpha 1\\nbeta 22\\ngamma 333")', "alpha 1\nbeta 22\ngamma 333")
     assert not L("print(6*7)", "42")
     assert not L("print(sum(range(10)))", "45")
+
+
+def test_a_bare_harvest_does_not_destroy_the_corpus(tmp_path, monkeypatch):
+    """2026-09-13: `nt harvest` with no --source rebuilt the corpus from `study`
+    alone -- 26 cases replacing 249 -- and took four frozen held-out cases with
+    it. The lock broke and only a later `nt verify` said so.
+
+    Two things are pinned here. The default must be able to rebuild what is on
+    disk, and a harvest that would drop frozen held-out cases must refuse BEFORE
+    writing rather than leave `nt split` to discover it afterwards.
+    """
+    from pipeline import cli as nt
+    assert "lypning" in nt.DEFAULT_SOURCES, (
+        "the default source set must include the adapter that produced most of "
+        "the corpus, or the bare command is a delete")
+
+    out = tmp_path
+    (out / "holdout.lock.json").write_text(json.dumps(
+        {"holdout": [{"id": "ntx-keepme"}, {"id": "ntx-alsokeep"}]}), encoding="utf-8")
+    corpus = out / "corpus.jsonl"
+    corpus.write_text("sentinel\n", encoding="utf-8")
+
+    def _one_case(spec):
+        yield {"prompt": "p", "test": {"kind": "stdout", "expect_stdout": "x\n"},
+               "source": "fake", "source_id": "1", "negative": "", "reference": "print('x')"}
+
+    monkeypatch.setitem(harvestmod.ADAPTERS, "fake", _one_case)
+    with pytest.raises(ValueError) as e:
+        harvestmod.harvest([{"name": "fake"}], out_dir=out, jobs=1,
+                           allow_no_witness=True)
+    assert "ntx-keepme" in str(e.value) and "ntx-alsokeep" in str(e.value)
+    assert "Nothing has been written" in str(e.value)
+    assert corpus.read_text(encoding="utf-8") == "sentinel\n", (
+        "the corpus was replaced despite the refusal")
+
+
+def test_the_holdout_guard_can_be_overridden_deliberately(tmp_path, monkeypatch):
+    """The refusal is a seatbelt, not a wall: re-freezing is a legitimate thing
+    to do. It must be said out loud, because it voids every baseline."""
+    out = tmp_path
+    (out / "holdout.lock.json").write_text(json.dumps(
+        {"holdout": [{"id": "ntx-gone"}]}), encoding="utf-8")
+
+    def _one_case(spec):
+        yield {"prompt": "p", "test": {"kind": "stdout", "expect_stdout": "x\n"},
+               "source": "fake", "source_id": "1", "negative": "", "reference": "print('x')"}
+
+    monkeypatch.setitem(harvestmod.ADAPTERS, "fake", _one_case)
+    ledger = harvestmod.harvest([{"name": "fake"}], out_dir=out, jobs=1,
+                                allow_no_witness=True, allow_holdout_loss=True)
+    assert ledger["kept"] == 1
+    assert (out / "corpus.jsonl").exists()

@@ -973,7 +973,7 @@ pub fn call_builtin(
                             if digits.starts_with('0') && digits.chars().any(|c| c != '0') {
                                 return Err(value_err(format!(
                                     "invalid literal for int() with base 0: {}",
-                                    fmt::str_repr(s)?
+                                    int_literal_repr(s)?
                                 )));
                             }
                         }
@@ -990,7 +990,7 @@ pub fn call_builtin(
                     if !underscores_are_between_digits(t2, base as u32, t2.len() < t.len()) {
                         return Err(value_err(format!(
                             "invalid literal for int() with base {reported}: {}",
-                            fmt::str_repr(s)?
+                            int_literal_repr(s)?
                         )));
                     }
                     let cleaned: String = t2.chars().filter(|c| *c != '_').collect();
@@ -1071,7 +1071,7 @@ pub fn call_builtin(
                         Err(_) => {
                             return Err(value_err(format!(
                                 "invalid literal for int() with base {reported}: {}",
-                                fmt::str_repr(s)?
+                                int_literal_repr(s)?
                             )))
                         }
                     }
@@ -1863,6 +1863,20 @@ pub fn call_builtin(
             if let Value::IterObj(..) = v {
                 return Ok(v);
             }
+            // A generator IS its own iterator, so `iter(g)` is `g` — CPython's
+            // generator type defines `__iter__` as `return self`. Wrapping it in
+            // a fresh `IterObj` below preserved every value it yields and broke
+            // the one thing a caller can observe about the wrapper: identity.
+            // `print(iter(g) is g)` answered False where CPython says True, at
+            // exit 0, which is the silent shape. Found by the corpus fold of
+            // 2026-09-13 (py-7ef2ba28fe22).
+            if let Value::Gen(_) = v {
+                return Ok(v);
+            }
+            // Same rule, same reason: `iter(f) is f` for a file object.
+            if let Value::File(_) = v {
+                return Ok(v);
+            }
             let inner = it.make_iter(v)?;
             Value::IterObj(Rc::new(RefCell::new(inner)), "iterator")
         }
@@ -1871,6 +1885,26 @@ pub fn call_builtin(
             let mut i = match &v {
                 Value::IterObj(inner, _) => Iter::Shared(inner.clone()),
                 Value::Gen(g) => Iter::Gen(g.clone()),
+                // A file IS its own iterator in CPython -- `next(f)` is the next
+                // line and `for line in f` is the same object advancing -- and
+                // this arm was missing, so `next(f)` raised `'TextIOWrapper'
+                // object is not an iterator` for a stream `for` iterates
+                // happily one line above. The `Iter::Lines` the loop already
+                // uses is the same reader. (py-9df101de3e90, py-d0f7eb84ef96)
+                Value::File(f) => {
+                    // CPython's file iterator reads AHEAD into a buffer, which
+                    // is why `f.tell()` after `next(f)` is
+                    // `OSError: telling position disabled by next() call` on a
+                    // text stream until the iteration ends or the stream is
+                    // seeked. This engine cannot reproduce the buffer's exact
+                    // boundary, so it records that telling is no longer
+                    // meaningful and `tell()` refuses -- one spawn, and never a
+                    // position CPython would not have given.
+                    if !f.borrow().binary {
+                        f.borrow_mut().telling = false;
+                    }
+                    Iter::Lines(f.clone())
+                }
                 other => {
                     return Err(type_err(format!(
                         "'{}' object is not an iterator",
@@ -2154,10 +2188,18 @@ pub fn call_builtin(
                         return Err(unsupported("encoding", &format!("bytes(str, '{e}')")));
                     }
                     if e == "ascii" && !s.is_ascii() {
-                        return Err(LypningError::exc(
-                            "UnicodeEncodeError",
-                            "'ascii' codec can't encode character",
-                        ));
+                        // The THIRD argument -- `errors` -- was read by the
+                        // parser and thrown away, so this arm always encoded
+                        // strictly while `str.encode` on the same two arguments
+                        // honoured the handler. `bytes(s, 'ascii', 'ignore')` is
+                        // `b'hllo'` in CPython and raised here, at exit 1, which
+                        // the dispatcher hands straight back as the program's
+                        // own number. One home for the handlers now.
+                        // (py-fde666bb0d42)
+                        let errors = crate::args::bind(&args, &kw, 2, "errors", "bytes")?;
+                        return Ok(Value::Bytes(Rc::new(
+                            crate::methods::ascii_encode_errors(s, errors.as_ref())?,
+                        )));
                     }
                     Value::Bytes(Rc::new(s.as_bytes().to_vec()))
                 }
@@ -2208,6 +2250,23 @@ pub fn call_builtin(
                 &format!("builtin function {other}()"),
             ))
         }
+    })
+}
+
+/// `repr(s)` as CPython prints it inside `invalid literal for int()`.
+///
+/// The format string is `%.200R`, so the REPR is cut to 200 characters -- which
+/// for a long literal takes the closing quote with it, and CPython's message
+/// really does end mid-string with no quote and no ellipsis. Printing the whole
+/// repr gave a message that grew without bound: 242 characters for a 200-x
+/// literal where CPython gives 240, and 252 for a 210-x one where CPython still
+/// gives 240. Measured across n = 100, 200, 210, 220 and 5000 on this box's
+/// CPython. (py-b00b60452eac)
+fn int_literal_repr(s: &str) -> R<String> {
+    let r = fmt::str_repr(s)?;
+    Ok(match r.char_indices().nth(200) {
+        Some((cut, _)) => r[..cut].to_string(),
+        None => r,
     })
 }
 

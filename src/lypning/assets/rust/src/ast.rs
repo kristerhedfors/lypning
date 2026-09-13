@@ -21,6 +21,15 @@ pub enum BinOp {
     BitXor,
     LShift,
     RShift,
+    /// `a @ b`. No type this engine serves implements `__matmul__` -- the
+    /// operator exists for NumPy and torch -- so evaluating it is always
+    /// CPython's own TypeError. It is PARSED because a program that uses it is
+    /// usually a program that also imports the library that gives it meaning:
+    /// refusing at the lexer turned `A @ B` into a SyntaxError at exit 1, where
+    /// CPython parses the file and then raises ModuleNotFoundError for the
+    /// import at the top. A syntax error for valid syntax is a wrong answer
+    /// about the program, not about the operator. (py-994a5fcb5ed3)
+    MatMul,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,6 +183,17 @@ pub struct Params {
     /// which a keyword argument may not name. Zero when there is no `/`, which
     /// is what `Default` gives and what every parameter list without one means.
     pub posonly: usize,
+    /// Every annotation on this `def`, parameters then the return, in source
+    /// order — EVALUATED when the `def` runs and the results thrown away.
+    ///
+    /// CPython evaluates annotations at definition time unless `from __future__
+    /// import annotations` is in force, and this engine refuses that import, so
+    /// there is no second case to distinguish: here they always evaluate. They
+    /// were parsed and dropped, with a comment claiming CPython drops them too,
+    /// so `def f() -> Undefined: pass` ran to exit 0 where CPython raises
+    /// `NameError` — a whole statement's worth of behaviour missing, and with it
+    /// any side effect the expression has. (py-d08f841abc57)
+    pub anns: Vec<Expr>,
 }
 
 #[derive(Debug, Clone)]

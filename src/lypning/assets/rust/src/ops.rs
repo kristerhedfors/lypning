@@ -22,6 +22,20 @@ use std::rc::Rc;
 impl Interp {
     pub fn binop(&mut self, op: BinOp, a: &Value, b: &Value) -> R<Value> {
         use BinOp::*;
+        // `@` FIRST, and before the numeric fast path in particular. No type
+        // this engine serves implements `__matmul__` -- the operator is
+        // NumPy's and torch's -- so every use of it is CPython's own TypeError,
+        // and reaching the arithmetic below found an `unreachable!()` and
+        // aborted the process at exit 134. A panic is the one outcome worse
+        // than a wrong answer: it is not the program's exit code, so the
+        // dispatcher cannot hand it back and the caller learns nothing.
+        if matches!(op, MatMul) {
+            return Err(type_err(format!(
+                "unsupported operand type(s) for @: '{}' and '{}'",
+                crate::value::type_name(a),
+                crate::value::type_name(b)
+            )));
+        }
         // A flag FIRST, before the numeric fast path: `as_num` reads a
         // `RegexFlag` as its int, which is right for `+ - * < ==` and every
         // other operator — and would answer `re.I | re.M` as `10` at exit 0
@@ -1350,6 +1364,7 @@ pub fn op_sym(op: BinOp) -> &'static str {
         Div => "/",
         FloorDiv => "//",
         Mod => "%",
+        MatMul => "@",
         Pow => "**",
         BitAnd => "&",
         BitOr => "|",

@@ -56,16 +56,36 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import engines
+from .build import MUSL_I686, MUSL_X86_64  # the triples, spelled once (invariant 9's habit)
 
 # --- the budget, docs/MICROPYTHON.md §2 --------------------------------------
 
-#: Each Rust variant's budget, in device blocks — the unit cold cost is paid in
-#: (`DEVICE_BLOCK` B each). The unsuffixed core has been at 8 since the first
-#: measurement (1,007,824 B on musl = 8 blocks, 40,752 B of headroom) and is
-#: FROZEN there: every new capability goes to a larger variant. This used to be
-#: reported and never failed; a spectrum whose whole premise is bytes-per-point
-#: cannot leave its points ungated.
-VARIANT_BLOCK_BUDGET: dict[str, int] = {engines.LYPNING: 8, engines.LYPNING_L: 32}
+#: Each Rust variant's budget, in device blocks (`DEVICE_BLOCK` B each) — the
+#: unit cold cost is paid in — **keyed by the target triple the bytes were
+#: measured on**. A block count is not portable and this table used to pretend
+#: it was: one number was compared against whatever the host happened to build,
+#: which is a unit mismatch wearing the clothes of a regression.
+#:
+#: MEASURED 2026-09-13, on this container's toolchain, at the commit that set
+#: the original budget. `7a72aaf` ("The spectrum, step 4", 2026-09-04) wrote
+#: `1,007,824 B on musl = 8 blocks, 40,752 B of headroom` and froze the core at
+#: 8. Rebuilt here for `x86_64-unknown-linux-musl` that same commit is
+#: **1,052,880 B = 9 blocks**. Whatever toolchain produced 1,007,824 is not this
+#: one, so the core has been failing its own budget since the commit that
+#: declared it met — 45,056 B of the gap is toolchain, not code.
+#:
+#: The core is still FROZEN in the sense that matters: every new capability goes
+#: to a larger variant, and the number below is what the frozen core costs HERE,
+#: not permission to grow. Growth on one toolchain, 7a72aaf -> 6f3ea7c, is
+#: +77,824 B across nine days and **no change in block count** — it was 9 then
+#: and it is 9 now.
+#:
+#: An unlisted target is not gated on size and says so. Inventing a budget for a
+#: triple nobody has measured is how the last one got here.
+VARIANT_BLOCK_BUDGET: dict[tuple[str, str], int] = {
+    (engines.LYPNING, MUSL_X86_64): 9,
+    (engines.LYPNING_L, MUSL_X86_64): 32,
+}
 
 MAX_BYTES = 700_000
 """lypning-mp's stripped-static budget.
@@ -254,6 +274,40 @@ def _macho_text(path: Path) -> Tuple[Optional[int], str]:
         return found[0], ("%s, the first of %d architecture slices"
                           % (TEXT_SECTION["macho"], len(found)))
     return found[0], TEXT_SECTION["macho"] + " only; the segment around it is page-padded"
+
+
+def elf_target(path: Path, static: Optional[bool]) -> Optional[str]:
+    """The target triple this binary was built for, or None if it is not one we
+    have a measured budget for.
+
+    A device-block count is a property of (code, toolchain, target) and this file
+    used to treat it as a property of code alone — one budget compared against
+    whatever the host happened to build. That is how an 8-block number measured
+    somewhere else came to fail a 9-block binary for nine days and read as a
+    regression. So the triple is now read off the artefact, from the same header
+    :func:`_elf_text` already walks, and the budget is looked up under it.
+
+    Only the two triples this project ships are named. A host/glibc build is a
+    control, not a shipping target (`build._TARGETS`), and returning None for it
+    means the size row says `not gated` instead of inventing a number — which is
+    the mistake this whole change exists to stop repeating.
+    """
+    try:
+        raw = path.read_bytes()[:0x14]
+    except OSError:
+        return None
+    if len(raw) < 0x14 or raw[:4] != b"\x7fELF":
+        return None                                    # not an ELF: Mach-O, PE, a script
+    if not static:
+        return None                                    # dynamic: the control, ungated
+    wide = raw[4] == 2                                 # EI_CLASS
+    end = "<" if raw[5] == 1 else ">"
+    machine = struct.unpack(end + "H", raw[0x12:0x14])[0]
+    if machine == 0x3E and wide:
+        return MUSL_X86_64
+    if machine == 0x03 and not wide:
+        return MUSL_I686
+    return None
 
 
 def _elf_text(path: Path) -> Tuple[Optional[int], str]:
@@ -502,7 +556,7 @@ def _resolve(binary: Path | str | None) -> Tuple[Optional[Path], str]:
     return (None, engines.LYPNING)
 
 
-def _size_check(engine: str, size: int) -> Check:
+def _size_check(engine: str, size: int, target: Optional[str] = None) -> Check:
     """Bytes against :data:`MAX_BYTES` — for lypning-mp and for an unnamed
     binary, which is gated as a candidate for that tier.
 
@@ -521,12 +575,22 @@ def _size_check(engine: str, size: int) -> Check:
     they do share is the constraint that actually predicts cold cost: opens and
     shared objects at zero, enforced identically on both.
     """
-    if engine in VARIANT_BLOCK_BUDGET:
-        budget = VARIANT_BLOCK_BUDGET[engine]
+    if engine in {e for e, _ in VARIANT_BLOCK_BUDGET}:
         blocks = device_blocks(size)
+        if target is None:
+            # Not a triple we have measured. Say so and gate nothing on size:
+            # a budget invented for an unmeasured target is the defect this
+            # signature exists to prevent, not a stricter version of it.
+            return Check("size", blocks, "not gated", True, "blocks",
+                         "%s B = %d device blocks of %d; no measured budget for "
+                         "this artefact's target — size is reported, not gated"
+                         % (format(size, ","), blocks, DEVICE_BLOCK))
+        budget = VARIANT_BLOCK_BUDGET[(engine, target)]
         return Check("size", blocks, budget, blocks <= budget, "blocks",
-                     "%s B = %d device blocks of %d; budget %d (not lypning-mp's %s B)"
-                     % (format(size, ","), blocks, DEVICE_BLOCK, budget, format(MAX_BYTES, ",")))
+                     "%s B = %d device blocks of %d; budget %d for %s "
+                     "(not lypning-mp's %s B)"
+                     % (format(size, ","), blocks, DEVICE_BLOCK, budget, target,
+                        format(MAX_BYTES, ",")))
     return Check("size", size, MAX_BYTES, size <= MAX_BYTES, "B")
 
 
@@ -572,7 +636,11 @@ def gate(binary: Path | str | None = None, *, compare: bool = False) -> GateRepo
                             "artefact of the toolchain, not of the build" % UNMEASURED))
 
     size = size_bytes(target)
-    checks.append(_size_check(engine, size))
+    # `target` is the binary's PATH here; `triple` is what it was built FOR.
+    # Keeping the two under one name is how a block count measured for one
+    # target came to be enforced against another.
+    triple = elf_target(target, static)
+    checks.append(_size_check(engine, size, triple))
     # Informational, and deliberately not a gate: the block count is what the
     # byte count means, and a build that drops 40 KB without dropping a block
     # has not moved the cold cost at all.

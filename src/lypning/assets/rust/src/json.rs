@@ -423,7 +423,7 @@ fn write_value(out: &mut String, v: &Value, o: &Opts, depth: usize) -> R<()> {
                     type_name(v)
                 )));
             }
-            let mut pairs: Vec<(String, Value)> = Vec::new();
+            let mut pairs: Vec<(String, Value, Value)> = Vec::new();
             for (k, val) in d.borrow().iter() {
                 let ks = match k {
                     Value::Str(s) => s.to_string(),
@@ -440,17 +440,97 @@ fn write_value(out: &mut String, v: &Value, o: &Opts, depth: usize) -> R<()> {
                         )))
                     }
                 };
-                pairs.push((ks, val.clone()));
+                pairs.push((ks, val.clone(), k.clone()));
             }
             if o.sort_keys {
-                pairs.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+                // CPython sorts the ORIGINAL key objects, not their JSON
+                // spellings, so `json.dumps({'a': 1, 2: 3}, sort_keys=True)` is
+                // `TypeError: '<' not supported between instances of 'int' and
+                // 'str'`. Sorting the stringified keys answered
+                // `{"2": 3, "a": 1}` instead -- a document CPython refuses to
+                // produce, at exit 0. The ordering among like keys is unchanged;
+                // only the mixed case, which never had a defined order, moves.
+                // (py-cb51528e7b2a)
+                let kind = |v: &Value| match v {
+                    Value::Str(_) => 0u8,
+                    Value::Int(_) | Value::Float(_) | Value::Bool(_) => 1,
+                    _ => 2, // None, and anything else that reached here
+                };
+                let mut seen: Option<(&Value, u8)> = None;
+                for (_, _, k) in &pairs {
+                    let kk = kind(k);
+                    match seen {
+                        Some((prev, pk)) if pk != kk => {
+                            // CPython names the pair in the order the failing
+                            // comparison saw them, which is (later, earlier).
+                            return Err(type_err(format!(
+                                "'<' not supported between instances of '{}' and '{}'",
+                                type_name(k),
+                                type_name(prev)
+                            )));
+                        }
+                        None => seen = Some((k, kk)),
+                        _ => {}
+                    }
+                }
+                // Within a class the ordering is the KEYS', not their JSON
+                // spellings: CPython gives `{2: 1, 10: 2}` in that order and
+                // sorting the strings put "10" first. Strings sort by code
+                // point, which for UTF-8 is byte order, so those are already
+                // right; numbers need the number.
+                if seen.map(|(_, k)| k) == Some(1) {
+                    let num = |v: &Value| -> R<f64> {
+                        Ok(match v {
+                            Value::Bool(b) => {
+                                if *b {
+                                    1.0
+                                } else {
+                                    0.0
+                                }
+                            }
+                            Value::Float(f) => *f,
+                            Value::Int(i) => match i.small() {
+                                Some(n) => n as f64,
+                                // A wide integer has no f64 that orders it
+                                // faithfully against its neighbours, and
+                                // guessing an order is how a document comes out
+                                // in an order CPython would not produce.
+                                None => {
+                                    return Err(unsupported(
+                                        "bigint",
+                                        "sort_keys over an integer key too wide for an exact \
+                                         comparison",
+                                    ))
+                                }
+                            },
+                            _ => 0.0,
+                        })
+                    };
+                    let mut err = None;
+                    pairs.sort_by(|a, b| {
+                        match (num(&a.2), num(&b.2)) {
+                            (Ok(x), Ok(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
+                            (Err(e), _) | (_, Err(e)) => {
+                                if err.is_none() {
+                                    err = Some(e);
+                                }
+                                std::cmp::Ordering::Equal
+                            }
+                        }
+                    });
+                    if let Some(e) = err {
+                        return Err(e);
+                    }
+                } else {
+                    pairs.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+                }
             }
             if pairs.is_empty() {
                 out.push_str("{}");
                 return Ok(());
             }
             out.push('{');
-            for (i, (k, val)) in pairs.iter().enumerate() {
+            for (i, (k, val, _)) in pairs.iter().enumerate() {
                 if i > 0 {
                     out.push_str(&o.item_sep);
                 }

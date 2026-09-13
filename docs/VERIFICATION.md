@@ -325,7 +325,7 @@ larger variant (invariant 9). **CODE HOME.** The constants, each written once:
 | constant | value | enforced by |
 |---|---|---|
 | the device block | 131,072 B (`gate.DEVICE_BLOCK`; `build.CHEERPX_BLOCK` is the same number for the build table) | `gate.device_blocks`, rounding up |
-| the block budgets | lypning 8, lypning-l 32 blocks (`gate.VARIANT_BLOCK_BUDGET`) | `gate._size_check` |
+| the block budgets | **per target**: lypning 9, lypning-l 32 blocks on `x86_64-unknown-linux-musl` (`gate.VARIANT_BLOCK_BUDGET`, keyed by `(engine, triple)`). A block count is a property of code AND toolchain AND target, and this table held one number for all three until 2026-09-13: the core's `8` was a figure from another toolchain, so `gate` read FAIL for nine days against a binary that had never been under it. Rebuilding `7a72aaf`, the commit that set the 8 and recorded `40,752 B of headroom`, gives **1,052,880 B = 9 blocks** here. An unlisted target is reported and not gated. | `gate._size_check`, `gate.elf_target` |
 | shared objects | 0 (`gate.MAX_SHARED_OBJECTS`) — a precondition, not a budget | `gate._needed` |
 | file opens on `-c 'pass'` | 3 (`gate.MAX_OPENS`) | `gate.file_opens`, only where `strace` runs |
 | the oracle's byte budget | 700,000 B (`gate.MAX_BYTES`) — only when `lypning-mp` is the binary named | `gate._size_check` |
@@ -336,13 +336,21 @@ larger variant (invariant 9). **CODE HOME.** The constants, each written once:
 lypning gate; echo $?
 lypning gate ~/.lypning/bin/lypning-l | grep -E '^  ok   size|^PASS|^FAIL'; echo $?
 lypning gate /no/such/binary; echo $?
-# EXPECTED — lypning gate · 2026-09-04 · 437056c · 3688 loaded
-  --   shared objects     unmeasured             want <= 0
-  ok   size               7 blocks               want <= 8 blocks
-PASS  (3 of 7 checks unmeasured)
+# EXPECTED — lypning gate · 2026-09-13 · 19026be · 3688 loaded · x86_64-unknown-linux-musl
+  ok   shared objects     0                      want <= 0
+  ok   size               9 blocks               want <= 9 blocks
+PASS
 # … | vdiff c6-gate
-# differs: byte and block counts while under budget; the `code section` row, which is a measurement and not a budget; which rows are `--` (a check nobody took: no strace, readelf, file(1) or size(1) — never a pass, never a zero; CI has strace); the target row, absent once the oracle is built and named
-# must not: PASS, the two `want <=` budgets, exit 0; exit 2 for a path that is not a file
+# differs: byte and block counts while under budget; the `code section` row, which is a measurement and not a budget; the BuildID; which rows are `--` (a check nobody took: no strace, readelf, file(1) or size(1) — never a pass, never a zero); the target row, absent once the oracle is built and named
+# must not: PASS, exit 0, and the size row NAMING the target its budget was measured on; exit 2 for a path that is not a file
+#
+# The previous run of record was Darwin arm64 (818,080 B = 7 blocks, three
+# checks unmeasured because that host has no file(1), readelf or strace) and
+# this check replays on musl with all three present, so it could not hold and
+# was red until 2026-09-13. Those numbers are kept once, here, as
+# `measured upstream on 2026-09-04; not reproducible from this tree`
+# (invariant 3's carve-out) — they are a real measurement of a different
+# target, not a wrong one.
 ```
 
 | FAILURE MODES — what regressed | what it prints | which gate turns red |

@@ -379,3 +379,61 @@ Aggravating it: the win rule is computed on the **blended 74**, while the experi
 ### Do not fix
 
 Everything in the REFUTED list, and none of the four recovery studies — all four recommend against themselves (7, 2, 0 and 57-but-contaminated cases), and each adds a second copy of a seeding rule the host repo deliberately keeps in one place. The corpus does not need to be bigger before this experiment. It needs its existing 74 cases to mean what they say.
+
+## 2026-09-13 — The pool cannot be widened, and the reason is that lypning got better
+
+Asked to widen the sampling pool 25x. It is not available, and the measurement
+that says so is worth more than the request was: **the engine's coverage and the
+fine-tune's training material are the same depleting resource.**
+
+**A rewrite case requires a program the engine refuses.** Measured today against
+`lypning-l` built at 6f3ea7c, over the whole classify cache (3,688 entries, the
+count the tool loaded):
+
+| | count |
+|---|---|
+| entries classified | 3,688 |
+| refused by `lypning-l` | 308 |
+| dropped as tooling | 49 |
+| **candidate rewrite cases — the hard ceiling** | **259** |
+| rewrite cases already in the corpus | 178 |
+
+So the ceiling is 259 and 178 are already taken. 25x of the 93-case pool is 2,325
+cases; the material does not exist and cannot be conjured.
+
+**Worse, it is shrinking.** Of the 178 rewrite cases, the negative program of
+**10 no longer refuses** on today's engine — a fresh harvest yields 168, not 178.
+Four of those ten are held-out, and they are exactly the four `nt usable` calls
+DEGENERATE. That classification is not a corpus quirk: **a case becomes
+degenerate precisely when lypning learns to run the program the case exists to
+have rewritten.** Every refusal closed this session (PR #59, #60, #61 — twelve
+wordings, three more, the base64 STOP loop, `type()` of a class) is one fewer
+case the fine-tune can be trained on.
+
+**The one real lever is leakage, and it costs the baseline.** The pool accounting
+from `nt sample --dry-run`:
+
+    train 175 cases  rewrite 126  ceiling 31  unobserved 18
+      -58   the same question as a held-out case     <- 52 of these are rewrite
+      -16   not the task
+      -5    degenerate: the given program passes as-is
+      -3    unsatisfiable: nothing passes it
+    pool  93 cases  rewrite 66  ceiling 27
+
+Resolving the leakage takes the rewrite pool from 74 to 126, **1.70x** — the
+largest widening available from this corpus by a wide margin, and it requires
+`nt split --refreeze`, which "voids every baseline" in its own words. The
+promoted baseline (`qwen38-regrade-20260913`, engine 42ab2d3b7608dfe1) is graded
+on the current 74 held-out cases; a new holdout needs new completions, which is
+fresh inference rather than a free replay.
+
+**And `keep` pulls against the threshold.** Lowering `keep` is right on quality
+— distinct kept targets within one case are 0.865 mean pairwise similar, above
+the 0.85 at which `split.SIMILARITY_CEILING` calls two cases the same question —
+but `sft_examples_on_task` counts ROWS, and the abandon threshold is 150 rows.
+`k=32, keep=4` produced 91 rows from 25 distinct solved cases. `keep=2` on the
+same solved set is ~46. A better training set clears the threshold by less.
+
+**The honest conclusion.** The subset now covers enough of what real agents type
+that there is not enough refusal material left to fine-tune against — which is a
+result about lypning, and a good one, arrived at for $5.73.

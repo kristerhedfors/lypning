@@ -992,6 +992,38 @@ pub fn eq(a: &Value, b: &Value) -> R<bool> {
             let (n1, n2) = (range_len(*a1, *b1, *c1), range_len(*a2, *b2, *c2));
             n1 == n2 && (n1 == 0 || (a1 == a2 && (n1 == 1 || c1 == c2)))
         }
+        // A set-like view against a real set. `dict_keys` and `dict_items`
+        // implement the full set protocol, so CPython answers
+        // `{"a": 1}.keys() == {"a"}` with True; this engine had no arm for the
+        // mixed pair at all and fell through to the catch-all False, at exit 0.
+        // `dict_values` is NOT set-like and keeps falling through, which is the
+        // same answer CPython gives for it. Found by the corpus fold of
+        // 2026-09-13 (py-4c72f8d885b8).
+        (Value::DictView(d, k), Value::Set(s)) | (Value::Set(s), Value::DictView(d, k))
+            if *k != "values" =>
+        {
+            let elems = {
+                let dd = d.borrow();
+                if *k == "keys" { dd.keys() } else { dd.items() }
+            };
+            let other = s.borrow();
+            if elems.len() != other.len() {
+                false
+            } else {
+                // `Set::contains` is the hashed lookup the set already owns; a
+                // pairwise scan here would be quadratic and would also disagree
+                // with the set's own notion of membership, which is the one
+                // that decides what `len()` counted.
+                let mut same = true;
+                for e in &elems {
+                    if !other.contains(e)? {
+                        same = false;
+                        break;
+                    }
+                }
+                same
+            }
+        }
         (Value::DictView(x, kx), Value::DictView(y, ky)) => {
             // The three views do NOT compare alike, and treating them alike was
             // wrong in both directions at once: `d.values() == d.values()` said
@@ -1078,8 +1110,13 @@ pub fn eq(a: &Value, b: &Value) -> R<bool> {
         // as a ValueError at exit 1. That is the SAME defect iteration 74
         // recorded against `Value::CsvWriter`, on a value this capability did
         // not add: `is_same` says the two are one object and `eq` did not
-        // agree. Gated with the arm in `is_same` and for the same reason.
-        #[cfg(any(feature = "cap-csv", feature = "cap-hashlib"))]
+        // agree.
+        //
+        // UNGATED 2026-09-13 with its twin in `is_same`, and for the same
+        // measured reason: both arms together change the file by 0 bytes and no
+        // device block. Leaving `eq` gated while `is_same` is not would be the
+        // worse of both worlds -- the two would disagree about whether one
+        // iterator is one object, which is the defect the note above describes.
         (Value::IterObj(x, _), Value::IterObj(y, _)) => Rc::ptr_eq(x, y),
         _ => false,
     })
@@ -1580,6 +1617,13 @@ pub fn is_same(a: &Value, b: &Value) -> bool {
         // True. [`attr_cached`] is that half, and it is a function rather than
         // a `matches!` because two receivers spelled `Value::Module` are not
         // modules at all.
+        // A generator is a heap object with identity, and it had no arm here at
+        // all — two names for one generator fell through to the catch-all and
+        // answered False. That is what made `iter(g) is g` wrong even after
+        // `iter` learned to hand the generator back: CPython's generator
+        // defines `__iter__` as `return self`, so the identity is the whole
+        // observable. Found by the corpus fold of 2026-09-13 (py-7ef2ba28fe22).
+        (Value::Gen(x), Value::Gen(y)) => Rc::ptr_eq(x, y),
         (Value::Bound(x, nx), Value::Bound(y, ny)) => {
             nx == ny && (Rc::ptr_eq(x, y) || (attr_cached(x) && is_same(x, y)))
         }
@@ -1609,7 +1653,16 @@ pub fn is_same(a: &Value, b: &Value) -> bool {
         // `DictView` is deliberately NOT here: `d.keys() is d.keys()` is False
         // in CPython — two view objects over one dict — and the `Rc` these
         // carry is the DICT's, so `ptr_eq` would answer True.
-        #[cfg(any(feature = "cap-csv", feature = "cap-hashlib"))]
+        //
+        // UNGATED 2026-09-13. This arm was `#[cfg(any(cap-csv, cap-hashlib))]`,
+        // so the FROZEN CORE answered False for `f = enumerate(x); f is f` --
+        // not just `iter(e) is e` but a plain alias -- and the note above
+        // accepted that as the price of the core's byte budget. Measured rather
+        // than assumed: re-gating it changes the file by 0 bytes and no device
+        // block, because the core sits 48,944 B inside the 9 it is budgeted.
+        // The trade the gate was making does not exist, and a silent wrong
+        // answer at exit 0 on `enumerate`, `zip`, `map` and `filter` is not
+        // worth bytes nobody is spending. (py-e79789f4f2f4)
         (Value::IterObj(x, _), Value::IterObj(y, _)) => Rc::ptr_eq(x, y),
         // Small-int caching is an implementation detail agents should not rely
         // on and we will not reproduce; refusing beats guessing either way.

@@ -662,6 +662,29 @@ fn sarg(args: &[Value], i: usize, m: &str) -> R<Rc<str>> {
 
 // ---- str ------------------------------------------------------------------
 
+/// The keyword arguments each `str` method actually takes.
+///
+/// `None` means "anything", which is true of exactly one method: `str.format`
+/// passes its keywords to the template. Everything else has a closed set, and
+/// most C-implemented string methods take no keywords at all -- `"a b".split("
+/// ", 1, foo=1)` is a TypeError in CPython and this engine DROPPED the unknown
+/// keyword and answered `['a', 'b']`, at exit 0. A dropped argument is the
+/// caller's instruction thrown away in silence. (py-cf23a7551bab)
+fn str_kw_allowed(name: &str) -> Option<&'static [&'static str]> {
+    Some(match name {
+        "format" => return None,
+        "split" | "rsplit" => &["sep", "maxsplit"],
+        "encode" => &["encoding", "errors"],
+        "splitlines" => &["keepends"],
+        "expandtabs" => &["tabsize"],
+        // `str.replace(count=)` is legal from 3.13 and a TypeError before it,
+        // which `err::REF_PY_MINOR` already decides for the message tables; the
+        // same boundary decides whether the name is admissible at all.
+        "replace" if crate::err::REF_PY_MINOR >= 13 => &["count"],
+        _ => &[],
+    })
+}
+
 fn str_method(
     it: &mut Interp,
     s: &Rc<str>,
@@ -669,6 +692,25 @@ fn str_method(
     args: &mut Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
+    if let Some(allowed) = str_kw_allowed(name) {
+        for (k, _) in &kw {
+            if !allowed.contains(&k.as_ref()) {
+                // CPython words these two cases differently, and the difference
+                // is which sentence a caller gets: a method that takes NO
+                // keywords says so by name -- `str.strip() takes no keyword
+                // arguments` -- while one that takes some and not this one gets
+                // the invalid-keyword sentence `bad_kw` spells (itself version
+                // dependent, see `err::REF_PY_MINOR`). Pinned by
+                // tests/test_keyword_grid.py, which caught this arm using the
+                // second sentence for all of them.
+                return Err(if allowed.is_empty() {
+                    type_err(format!("str.{name}() takes no keyword arguments"))
+                } else {
+                    crate::builtins::bad_kw(name, k)
+                });
+            }
+        }
+    }
     reject_kw("str", name, &kw)?;
     check_arity("str", name, args, &kw)?;
     Ok(match name {
@@ -1141,35 +1183,7 @@ fn str_method(
                 // surrogate for the handler to be asked about.
                 Value::Bytes(Rc::new(s.as_bytes().to_vec()))
             } else {
-                let e = match errors.as_ref() {
-                    Some(v) => fmt::to_str(v)?,
-                    None => "strict".to_string(),
-                };
-                match e.as_str() {
-                    "strict" => {
-                        return Err(LypningError::exc(
-                            "UnicodeEncodeError",
-                            "'ascii' codec can't encode character",
-                        ))
-                    }
-                    // Every byte of a non-ASCII character has the high bit set,
-                    // so dropping the non-ASCII BYTES drops exactly the
-                    // characters CPython's `ignore` handler drops.
-                    "ignore" => Value::Bytes(Rc::new(
-                        s.bytes().filter(u8::is_ascii).collect::<Vec<u8>>(),
-                    )),
-                    // One `?` per CODE POINT, which is why this walks chars.
-                    "replace" => Value::Bytes(Rc::new(
-                        s.chars()
-                            .map(|c| if c.is_ascii() { c as u8 } else { b'?' })
-                            .collect::<Vec<u8>>(),
-                    )),
-                    // `backslashreplace`, `xmlcharrefreplace`, `namereplace` and
-                    // `surrogateescape` each have an exact output this engine
-                    // would have to reproduce byte for byte — `namereplace`
-                    // needs the Unicode name table. Refused, not approximated.
-                    _ => return Err(unsupported("encoding", &format!("encode(errors='{e}')"))),
-                }
+                Value::Bytes(Rc::new(ascii_encode_errors(s, errors.as_ref())?))
             }
         }
         "format" => Value::Str(str_format(it, s, &args, &kw)?.into()),
@@ -1179,6 +1193,42 @@ fn str_method(
                 &format!("str.{other}()"),
             ))
         }
+    })
+}
+
+/// `str` -> `bytes` under an ASCII codec that some character does not fit.
+///
+/// One home for the error handlers, because `str.encode(enc, errors)` and
+/// `bytes(str, enc, errors)` are the same operation spelled twice and CPython
+/// answers them identically. `bytes()` used to DISCARD its third argument, so
+/// `bytes('h\u00e9llo', 'ascii', 'ignore')` raised UnicodeEncodeError at exit 1
+/// where CPython answers `b'hllo'` -- and `.encode` on the same string and the
+/// same two arguments answered correctly, one call away. (py-fde666bb0d42)
+pub(crate) fn ascii_encode_errors(s: &str, errors: Option<&Value>) -> R<Vec<u8>> {
+    let e = match errors {
+        Some(v) => fmt::to_str(v)?,
+        None => "strict".to_string(),
+    };
+    Ok(match e.as_str() {
+        "strict" => {
+            return Err(LypningError::exc(
+                "UnicodeEncodeError",
+                "'ascii' codec can't encode character",
+            ))
+        }
+        // Every byte of a non-ASCII character has the high bit set, so dropping
+        // the non-ASCII BYTES drops exactly the characters CPython drops.
+        "ignore" => s.bytes().filter(u8::is_ascii).collect::<Vec<u8>>(),
+        // One `?` per CODE POINT, which is why this walks chars.
+        "replace" => s
+            .chars()
+            .map(|c| if c.is_ascii() { c as u8 } else { b'?' })
+            .collect::<Vec<u8>>(),
+        // `backslashreplace`, `xmlcharrefreplace`, `namereplace` and
+        // `surrogateescape` each have an exact output this engine would have to
+        // reproduce byte for byte -- `namereplace` needs the Unicode name
+        // table. Refused, not approximated.
+        _ => return Err(unsupported("encoding", &format!("encode(errors='{e}')"))),
     })
 }
 
@@ -1627,6 +1677,19 @@ pub(crate) fn dict_method(
         }
         "pop" => {
             let k = args.first().cloned().unwrap_or(Value::None);
+            // An EMPTY dict never hashes the key. CPython's lookup returns
+            // "absent" the moment it sees `ma_used == 0`, so `{}.pop([], None)`
+            // is None and `{}.pop([])` is `KeyError: []` -- an unhashable key
+            // reaches neither. Hashing first made both a TypeError, which is
+            // CPython's answer only once the dict has something in it (and
+            // `{"a":1}.pop([], None)` does raise, here and there alike).
+            // (py-227b0ddde391)
+            if d.borrow().len() == 0 {
+                return match args.get(1) {
+                    Some(v) => Ok(v.clone()),
+                    None => Err(key_err(fmt::repr(&k)?)),
+                };
+            }
             match d.borrow_mut().remove(&k)? {
                 Some(v) => v,
                 None => match args.get(1) {
@@ -2888,17 +2951,31 @@ fn tell_exact(fo: &mio::FileObj) -> R<()> {
     Ok(())
 }
 
+/// The core's half of the check above.
+///
+/// The newline-mode arithmetic needs `FileObj::newline_mode`, which is a `csv`
+/// capability and genuinely absent here -- but the `telling` half is not, and
+/// this stub used to answer `Ok(())` to everything. So the frozen core gave a
+/// POSITION after `next(f)` where CPython raises
+/// `OSError: telling position disabled by next() call`: a wrong answer at exit
+/// 0, where the larger variant refuses. Ungated 2026-09-13 with the field it
+/// reads; it costs 0 bytes of file. (py-9df101de3e90)
 #[cfg(not(feature = "cap-csv"))]
-fn tell_exact(_fo: &mio::FileObj) -> R<()> {
+fn tell_exact(fo: &mio::FileObj) -> R<()> {
+    if !fo.telling {
+        return Err(unsupported(
+            "file-tell",
+            "tell() after the stream has been iterated (CPython raises OSError until the \
+             iteration ends or the stream is seeked)",
+        ));
+    }
     Ok(())
 }
 
-#[cfg(feature = "cap-csv")]
 fn telling_of(f: &Rc<RefCell<mio::FileObj>>) -> bool {
     f.borrow().telling
 }
 
-#[cfg(feature = "cap-csv")]
 fn restore_telling(f: &Rc<RefCell<mio::FileObj>>, on: bool) {
     f.borrow_mut().telling = on;
 }
@@ -2907,12 +2984,6 @@ fn restore_telling(f: &Rc<RefCell<mio::FileObj>>, on: bool) {
 // before this capability existed, which is why both halves take the `Rc` and
 // do their own borrowing: a `&mut FileObj` at the call site is a borrow the
 // core would still have to check.
-#[cfg(not(feature = "cap-csv"))]
-fn telling_of(_f: &Rc<RefCell<mio::FileObj>>) {}
-
-#[cfg(not(feature = "cap-csv"))]
-fn restore_telling(_f: &Rc<RefCell<mio::FileObj>>, _on: ()) {}
-
 #[cfg(feature = "cap-csv")]
 fn seek_restores_telling(f: &Rc<RefCell<mio::FileObj>>) {
     f.borrow_mut().telling = true;

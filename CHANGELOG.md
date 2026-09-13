@@ -20,6 +20,96 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-13** — The last four the fold found, and `conformance` is back to MISMATCH 0 (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **Annotations are evaluated when the `def` runs.** `parse.rs` dropped them with
+  a comment saying CPython drops them too; CPython evaluates them at definition
+  time unless `from __future__ import annotations` is in force, and this engine
+  refuses that import, so there is no second case. `def f() -> Undefined: pass`
+  ran to exit 0 where CPython raises `NameError`, and any side effect the
+  expression had was lost with it. Parameters left to right, then the return,
+  which is CPython's order and is pinned by a side-effecting test.
+- **`str` methods reject keywords they do not take.** `"a b".split(" ", 1, foo=1)`
+  answered `['a', 'b']`. The allowed set is a table now, with `str.format`
+  exempt because it really does take arbitrary keywords. `tests/test_keyword_grid.py`
+  immediately caught the first attempt using one sentence for both cases:
+  CPython says `str.strip() takes no keyword arguments` for a method that takes
+  none and the invalid-keyword sentence for one that takes some.
+- **`int()`'s error message truncates like CPython's.** The format is `%.200R`,
+  so the repr is cut at 200 characters — taking the closing quote with it, which
+  is why CPython's message for a long literal ends mid-string. Printing the whole
+  repr grew without bound: 252 characters where CPython gives 240. Checked at
+  n = 100, 200, 210, 220 and 5000.
+- **`@` parses.** No type here implements `__matmul__`, so every use is CPython's
+  own TypeError — but the file has to PARSE to get there, and refusing at the
+  lexer made `A @ B` a SyntaxError at exit 1 for a program CPython reads and then
+  rejects for a missing import. Parsing it first found something worse: the
+  numeric fast path reached an `unreachable!()` and **aborted the process at exit
+  134**, which is not the program's exit code and so is the one outcome a
+  dispatcher cannot hand back. `@` now raises before any arithmetic.
+- **`conformance` MISMATCH 19 → 0** over 6,323 programs, MATCH 2,911 → 2,927.
+  Suite 7,680 passed, 0 failed; `gate` PASS; `doctor` 0 FAIL.
+- Known and not fixed: `x @= 2` reports `for @` where CPython says `for @=`, the
+  same exception type with one character different, and threading an
+  augmented-flag through the binop path for it is not worth the coupling.
+
+**2026-09-13** — `nt harvest` with no arguments was a delete (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **The default source was `study` alone.** That adapter yields 26 cases; the
+  corpus it replaces is 223 `lypning` cases and 26 `study` ones. A bare
+  `nt harvest` therefore rebuilt 249 cases into 26, took four frozen held-out
+  cases with it, and broke the split lock — discovered here by running it, and
+  recovered from git. A default that cannot rebuild what is on disk is not a
+  default. It is `["lypning", "study"]` now.
+- **The `lypning` adapter was not in `--source`'s help at all**, so the source of
+  most of the corpus was undiscoverable from the CLI. Listed, with its
+  `cache=PATH` option.
+- **A harvest that would drop frozen held-out cases now refuses before writing.**
+  `split.freeze` already declines to honour a lock whose cases have vanished, but
+  it finds out at the *next* `nt split` — after the corpus that dropped them is
+  on disk, from a different command, with nothing linking the two. The refusal
+  names the casualties, says nothing was written, and points at
+  `--allow-holdout-loss` for the case where re-freezing is the intent. Verified
+  by re-running the exact command that caused the loss: it now exits 1, names the
+  four ids, and the corpus md5 is unchanged.
+- Which four is itself the finding: they are the cases whose programs the engine
+  has since learned to run. The guard surfaces corpus depletion as a refusal
+  instead of as silent data loss.
+
+**2026-09-13** — A block count is not portable, and `gate` had been saying so in the wrong direction for nine days (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **`lypning gate` read FAIL against a binary that had never been under its
+  budget.** `VARIANT_BLOCK_BUDGET` held one number per variant and compared it
+  against whatever the host built. The core's `8` came with the claim
+  `1,007,824 B on musl = 8 blocks, 40,752 B of headroom`; rebuilding `7a72aaf`,
+  the commit that wrote that sentence and froze the core, gives **1,052,880 B =
+  9 blocks** on this container's toolchain. 45,056 B of the gap is toolchain,
+  not code, and the gate was reporting a unit mismatch as a size regression.
+- **The budget is keyed by `(engine, target triple)` now**, and `gate.elf_target`
+  reads the triple off the artefact's own ELF header rather than assuming the
+  host's. The size row names it: `budget 9 for x86_64-unknown-linux-musl`. A
+  triple nobody has measured is reported and **not gated**, and says so — a
+  budget invented for an unmeasured target is the defect this change exists to
+  stop, not a stricter version of it.
+- **Growth, on one toolchain, is not the story the old number told.** `7a72aaf`
+  to `6f3ea7c` is +77,824 B across nine days with **no change in block count**:
+  it was 9 then and it is 9 now. The core is still frozen in the sense that
+  matters — new capability goes to the larger variant — and the number recorded
+  is what the frozen core costs here.
+- **§C6's run of record was Darwin arm64** (818,080 B = 7 blocks, three checks
+  unmeasured because that host has no `file(1)`, `readelf` or `strace`) and the
+  test replays it on musl with all three present, so it could never hold. Re-taken
+  on this container; the Darwin numbers are kept once under invariant 3's
+  `measured upstream` carve-out, because they are a real measurement of a
+  different target rather than a wrong one.
+- **The manifest pins the property, not the number.** `want <= 8 blocks$` pinned
+  a count from another machine into a test that runs here; it now pins that the
+  size row NAMES the target its budget was measured on, which is the absence that
+  let one number be enforced against another. Two tests added: an unmeasured
+  target is reported and not gated and must say so, and the triple comes from the
+  artefact rather than the host.
+- The suite is green: **7,680 passed, 0 failed**, and `lypning gate` PASSes.
+
 **2026-09-13** — The test statistic was chosen before the data, and the choice is written down as a change of rule (branch `claude/nemotron-lora-pipeline-1zczi2`)
 
 - **The pre-registered rule had 12% power against the effect it was bought to
