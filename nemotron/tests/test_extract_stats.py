@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 from pipeline.extract import compiles, extract_program, strip_reasoning
+from pipeline import stats
 from pipeline.stats import beats, bootstrap_ci, summarize, wilson_ci
 
 
@@ -103,3 +106,54 @@ def test_pass_at_k_is_the_gap_between_can_and_does():
     assert r["pass_at_k"] == 0.5
     assert abs(r["pass_at_1"] - 17 / 64) < 1e-9
     assert r["headroom"] > 0
+
+
+def test_a_case_flip_is_solved_not_solved_and_not_a_move_in_its_mean():
+    """The §3c amendment of 2026-09-13, pinned so it cannot revert silently.
+
+    Until that date `paired_delta` called a case discordant when its per-case
+    MEAN moved. At k=16 that counts one Bernoulli draw of noise the same as an
+    outright acquisition, which left the pre-registered rule at 12% power
+    against six previously-hopeless cases solved — the shape a rejection-sampling
+    LoRA actually produces — and fired it on the naive all-74 denominator
+    against pure engine drift.
+
+    The rule now asks what §3 always said it asked: did this case cross from
+    never-solved to solved. The mean-moved counts stay reported beside it so the
+    alternative remains visible, and this pins BOTH — reverting the definition,
+    or quietly dropping the second opinion, fails here.
+    """
+    # Six cases acquired outright; nothing lost a solution. Nine already-solved
+    # cases jitter by one draw in each direction, which is what k=16 sampling
+    # noise looks like and is the whole reason the old definition was blind.
+    before = {"win%d" % i: 0.0 for i in range(6)}
+    after = {"win%d" % i: 5 / 16 for i in range(6)}
+    for i in range(5):
+        before["up%d" % i], after["up%d" % i] = 0.5, 0.5 + 1 / 16
+    for i in range(9):
+        before["dn%d" % i], after["dn%d" % i] = 0.5, 0.5 - 1 / 16
+    d = stats.paired_delta(before, after, resamples=400)
+
+    # Amended: six acquisitions, nothing un-solved. This is the 2/2**6 floor
+    # §3 has always described, and it fires.
+    assert d["gained"] == 6 and d["lost"] == 0
+    assert d["mcnemar_p"] == pytest.approx(2 / 2 ** 6)
+    assert d["mcnemar_p"] < 0.05
+
+    # Superseded: the same data, counted by mean-moved, is 11 up against 9 down
+    # and cannot fire at any effect size. That gap is the amendment.
+    assert d["moved_up"] == 11 and d["moved_down"] == 9
+    assert d["mcnemar_p_mean_moved"] > 0.05
+
+
+def test_the_conjunction_can_never_exceed_either_leg_it_is_made_of():
+    """`power_curve` once simulated ONE leg of a two-leg rule, and a
+    pre-registration was written on that number. This is the cheap invariant
+    that would have caught it: a conjunction fires no more often than its
+    rarer half, whatever the definitions underneath."""
+    scores = [0.0] * 30 + [0.5] * 24 + [1.0] * 16
+    rows = stats.power_curve(scores, 16, trials=40, resamples=200)["rows"]
+    assert rows
+    for r in rows:
+        assert r["paired_power"] <= r["bootstrap_power"] + 1e-9, r
+        assert r["paired_power"] <= r["mcnemar_power"] + 1e-9, r

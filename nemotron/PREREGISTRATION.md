@@ -258,12 +258,18 @@ improvement can take; a fine-tune that completely solves three previously
 hopeless cases is +4.3pp on this denominator and fires nothing. The rule asks
 how many CASES moved, not how far the mean did, and both numbers are reported.
 
-> **§3c corrects this paragraph and it is the correction that matters.** "Loses
-> none" does not happen: `paired_delta` calls a case gained when its per-case
-> *mean* moved, and at k=16 noise alone loses ~9.5 of these 70 cases in every
-> run — measured `c == 0` in **0 of 2,000** null trials. Six is therefore not the
-> floor; measured, the rule needs **twelve to fifteen** outright-solved cases for
-> 50–70% power, and more samples do not help. Read §3c before spending.
+> **§3c corrected this paragraph, and then the rule was amended to match it.**
+> The paragraph says the rule "asks how many CASES moved". It did not: until
+> 2026-09-13 `paired_delta` called a case gained when its per-case *mean* moved,
+> and at k=16 noise alone loses ~9.5 of these 70 cases in every run — measured
+> `c == 0` in **0 of 2,000** null trials — so six-and-none-lost was unreachable
+> and the real requirement was twelve to fifteen outright-solved cases.
+> **Since the §3c amendment of 2026-09-13 the rule does what this paragraph
+> always said**: discordance is solved / not-solved, so the `2/2**b` arithmetic
+> and the six-case floor describe the implementation rather than an intention.
+> The amendment is a CHANGE OF RULE made before any adapter existed; §3c states
+> it as one, shows the re-measured power, and shows that it makes §3b's null test
+> harder to fire rather than easier. Read §3c before spending.
 
 **The standing unpaired rule reaches 80% power only at +15pp.** Moving a 74-case
 mean that far means taking about eleven cases from never-passing to
@@ -275,7 +281,8 @@ spent either way.
   they are paired by construction and the unpaired rule pays for the shared
   per-case difficulty twice. A win requires **both** the bootstrap 95% CI lower
   bound of the per-case delta to be above 0 **and** exact two-sided McNemar
-  p < 0.05 on the case-level flips. Both are already implemented
+  p < 0.05 on the case-level flips, where a flip is **solved / not-solved**
+  (§3c, amended 2026-09-13). Both are already implemented
   (`stats.paired_delta`, `stats._mcnemar`); neither was written for this.
 - **SECONDARY, always reported:** the unpaired rule, `stats.beats`, unchanged.
   It was fixed before any run happened and it stays in the table. **Where the two
@@ -293,11 +300,23 @@ current engine — no new inference, and still before any adapter exists. This i
 the **null** for this experiment: the same model, the same completions, a newer
 engine. If the rule fired here it would fire on engine work alone.
 
-| denominator | before | after | paired delta | 95% CI | McNemar | rule fires |
-|---|---|---|---|---|---|---|
-| all 74 | 0.4037 | 0.4375 | +3.38pp | [+0.84, +6.59] | p = 0.0312 | **yes** |
-| **70 non-degenerate (PRIMARY)** | 0.4116 | 0.4286 | **+1.70pp** | [+0.00, +4.38] | **p = 0.2500** | **no** |
-| 65 usable | 0.4433 | 0.4615 | +1.83pp | [+0.00, +4.71] | p = 0.2500 | no |
+Re-run 2026-09-13 under the §3c amendment, `nt compare qwen38-baseline-k16
+qwen38-regrade-20260913 --anyway`, engine `42ab2d3b7608dfe1`. Both the rule as
+originally pre-registered and the amended rule are shown, because the whole point
+of a null test is that it be checkable:
+
+| denominator | before | after | paired delta | 95% CI | McNemar, mean-moved | McNemar, **amended** | fires |
+|---|---|---|---|---|---|---|---|
+| all 74 | 0.4037 | 0.4375 | +3.38pp | [+0.84, +6.59] | p = 0.0312 → **would fire** | **p = 0.2500** | no |
+| **70 non-degenerate (PRIMARY)** | 0.4116 | 0.4286 | **+1.70pp** | [+0.00, +4.38] | p = 0.2500 | **p = 0.5000** | **no** |
+| 65 usable | 0.4433 | 0.4615 | +1.83pp | [+0.00, +4.71] | p = 0.2500 | p = 0.5000 | no |
+
+**The amendment closes a false positive rather than opening one.** The old
+definition fired on the naive all-74 denominator against a comparison that is
+pure engine drift — the same model, the same 1,184 completions. The amended one
+does not fire on any denominator here. That is the direction a change of rule
+must move a known null if it is to be believed, and it is why the §3c amendment
+is recorded as admissible rather than merely declared so.
 
 **CLARIFICATION, corrected 2026-09-13** (`nt compare qwen38-baseline-k16
 qwen38-regrade-20260912`, engine `7846191`, built here today): the all-74 row
@@ -387,16 +406,50 @@ floor. Simulated the same way, binarising on *solved at least once in k*: null
 rewrite +6pp stays 96%). It is a change to one comparison in
 `stats.paired_delta` and it costs $0.
 
-> **NOT ADOPTED HERE. This is a CHANGE OF RULE and needs a dated decision by a
-> person, taken now, before the sampling run.** Writing it in after the arms are
-> graded would be choosing the test statistic that fires, which is the single
-> thing this document exists to prevent. Two honest options, and both must be
-> decided before the spend: (i) keep the rule as implemented and accept that the
-> experiment is well-powered against a broad style shift (+4pp uniform, +6pp on
-> the rewrite stratum) and underpowered against a concentrated one — and say so in
-> the result; or (ii) amend the discordance definition to the binary one, dated
-> and justified here, before any adapter exists. What is **not** available is
-> leaving §3 reading as though six flips were the binding constraint.
+> **ADOPTED 2026-09-13 by Krister Hedfors, on option (ii). THIS IS A CHANGE OF
+> RULE, NOT A CLARIFICATION, AND IT WAS MADE AFTER SEEING A POWER CURVE.** That
+> sentence stays at the top of this amendment permanently, because it is the
+> fact a reader most needs and the one most easily lost. What makes it
+> admissible rather than fatal is *when*: no adapter exists, no SFT set has been
+> sampled, no dollar has been spent, and no treatment arm has been graded. There
+> is no outcome to choose a statistic in favour of. Writing the same change after
+> the arms were graded would be choosing the test that fires, and would be
+> indefensible.
+>
+> `stats.paired_delta` now counts a case discordant when it crosses
+> **solved / not-solved** (`after > 0 and before == 0`, and its mirror), not when
+> its per-case mean moves. The mean-moved counts survive beside it as
+> `moved_up` / `moved_down` / `mcnemar_p_mean_moved` and are printed, because a
+> rule whose alternative you can no longer see is a rule nobody can check.
+>
+> **Re-measured independently on landing**, 400 trials per row, k=16, against
+> `qwen38-regrade-20260913`'s own per-case scores at the primary n=70 (30 cases
+> at 0.0, 16 at 1.0). These numbers are lower than the 49%/83% quoted in the
+> paragraph above, which were simulated at a different post-solve rate; the
+> measured ones are what this amendment claims:
+>
+> | scenario | mean-moved | **solved/not-solved** |
+> |---|---|---|
+> | 4 hopeless cases solved | 6% | 4% |
+> | 6 hopeless cases solved | 12% | **27%** |
+> | 8 hopeless cases solved | 20% | **60%** |
+> | 10 hopeless cases solved | 32% | **90%** |
+> | uniform +2pp | 31% | 31% |
+> | uniform +4pp | 84% | 85% |
+> | uniform +6pp | 99% | 99% |
+> | null: no change at all | 0% | 0% |
+>
+> So it buys the concentrated shape, costs nothing on the broad shapes the rule
+> already saw, and does not inflate the null. At four solved cases it is
+> *slightly worse*, which is recorded here rather than omitted.
+>
+> **The evidence that this is not the statistic that flatters us: it makes §3b's
+> null test HARDER to fire, not easier.** Engine drift alone — the same 1,184
+> completions re-graded — fired the old rule on the naive all-74 denominator at
+> p=0.0312. Under the amended definition that same comparison gives p=0.2500 and
+> does not fire, and the primary denominator moves from p=0.2500 to p=0.5000.
+> A change of rule chosen to produce wins would not close a false positive on a
+> known null. Re-run both after landing; the table in §3b is the amended one.
 
 **The honest summary of what $16 can buy.** If the LoRA broadly shifts style so
 that most rewrite cases get a little better, this design sees it (96% at +6pp on
@@ -404,8 +457,9 @@ the rewrite stratum). If it instead solves a specific handful of refusals — th
 shape §2(g) points at — on-policy, 34 of the 52 held-out rewrite cases (65%) have
 never once passed in Qwen's 16 draws; the "55 of 66" first written here was
 Nemotron's rate on the train pool and overstated it — this design reports "no
-win" for anything short of twelve solved
-cases, and reports it whatever the truth is. The other pre-registered abandon
+win" for anything short of about eight to ten
+solved cases under the §3c amendment (60% at eight, 90% at ten), where before the
+amendment it needed twelve to fifteen. The other pre-registered abandon
 condition (§2(g), fewer than 150 on-task SFT examples) bites first and is the
 cheaper place to stop.
 

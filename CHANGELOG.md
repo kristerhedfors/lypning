@@ -20,6 +20,41 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-13** — The test statistic was chosen before the data, and the choice is written down as a change of rule (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **The pre-registered rule had 12% power against the effect it was bought to
+  detect.** `stats.paired_delta` called a case discordant when its per-case
+  *mean* moved. At k=16 that counts one Bernoulli draw of noise the same as an
+  outright acquisition, so against the shape a rejection-sampling LoRA actually
+  produces — a handful of previously-hopeless cases solved — the rule would have
+  reported "no win" almost whatever happened.
+- **Discordance is now solved / not-solved**, which is what §3's own words
+  ("case-level flips", "how many CASES moved") and its `2/2**b` arithmetic
+  always described. Measured against the re-graded baseline's own per-case
+  scores at the primary n=70, 400 trials, k=16: six solved cases 12% → **27%**,
+  eight 20% → **60%**, ten 32% → **90%**, while the uniform shapes are unchanged
+  (+2pp 31/31, +4pp 84/85, +6pp 99/99) and the null fires at 0% under both. At
+  four solved cases it is slightly worse, 6% → 4%, which is recorded rather than
+  omitted.
+- **It is a CHANGE OF RULE, not a clarification, and it was made after seeing a
+  power curve.** What makes it admissible is when: no adapter exists, no SFT set
+  has been sampled, no dollar has been spent, no treatment arm has been graded.
+  §3c records the decision, its date and its author, and keeps that sentence at
+  the top permanently.
+- **The evidence it is not the statistic that flatters us: it makes the null
+  test harder to fire.** Engine drift alone — the same 1,184 completions
+  re-graded — fired the old rule on the naive all-74 denominator at p=0.0312.
+  Amended, that comparison gives p=0.2500 and does not fire; the primary
+  denominator moves p=0.2500 → p=0.5000. A rule chosen to produce wins would not
+  close a false positive on a known null.
+- **Both counts stay reported** (`moved_up`, `moved_down`,
+  `mcnemar_p_mean_moved`) — a rule whose alternative you can no longer see is a
+  rule nobody can check — and `power_curve` now simulates the definition the
+  rule uses, having previously simulated one leg of a two-leg rule. Two tests
+  pin it: one builds six acquisitions against nine noise-jitters and shows the
+  amended rule fires at exactly `2/2**6` where the superseded one cannot fire at
+  any effect size; the other pins that a conjunction never exceeds either leg.
+
 **2026-09-13** — The pre-registration, audited against the tree it claims to describe (branch `claude/nemotron-lora-pipeline-1zczi2`)
 
 - **The primary rule is near-blind to the shape this fine-tune will produce, and
