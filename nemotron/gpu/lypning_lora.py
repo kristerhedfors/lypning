@@ -251,6 +251,21 @@ def attach_lora(model, rank, alpha, dropout):
     return get_peft_model(model, lc)
 
 
+#: The generated model card is never uploaded.
+#:
+#: peft writes a README whose `base_model:` is the path the base model was
+#: LOADED from -- a local snapshot directory -- and the Hub validates that field
+#: and rejects it: "is not valid. Use a model id". Re-stamping
+#: `base_model_name_or_path` before saving fixes `adapter_config.json`, which is
+#: what a loader reads, and does NOT fix the README, which peft composes its own
+#: way. Two full-price runs died at step 10 -- the first `--save-every` upload,
+#: after the 55 GB pull and after the training -- learning that twice.
+#:
+#: Verified from a laptop for $0 before spending a third: the same folder
+#: uploads with this and fails without it. An adapter does not need a model card
+#: and the Hub renders one from `adapter_config.json` anyway.
+NO_MODEL_CARD = ["README.md"]
+
 def save_adapter(pm, out_dir):
     """`save_pretrained`, with the base model named as the Hub knows it.
 
@@ -786,6 +801,7 @@ def main():
                 save_adapter(pm, os.path.join(work, "adapter"))
                 api.upload_folder(folder_path=os.path.join(work, "adapter"), repo_id=args.out_repo,
                                   path_in_repo=prefix + "adapter", repo_type="model",
+                                  ignore_patterns=NO_MODEL_CARD,
                                   commit_message="%s adapter @ step %d" % (args.run_id, step))
                 flush()
 
@@ -793,6 +809,7 @@ def main():
             save_adapter(pm, os.path.join(work, "adapter"))
             api.upload_folder(folder_path=os.path.join(work, "adapter"), repo_id=args.out_repo,
                               path_in_repo=prefix + "adapter", repo_type="model",
+                              ignore_patterns=NO_MODEL_CARD,
                               commit_message="%s final adapter" % args.run_id)
             log("phase 3 ok: adapter at %s/%sadapter" % (args.out_repo, prefix))
 
