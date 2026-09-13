@@ -415,11 +415,26 @@ impl<'a> Lexer<'a> {
             .to_string();
         if (self.peek() == b'"' || self.peek() == b'\'') && word.len() <= 2 {
             let lower = word.to_ascii_lowercase();
+            // The prefix set is CLOSED, and testing it with `contains` was not
+            // testing it at all: `bb"abc"` contains a 'b' and lexed as a bytes
+            // literal, `rr"abc"` as a raw one, where CPython raises SyntaxError
+            // for both. Accepting a literal CPython rejects is the worst
+            // direction for a parser to be wrong in -- the program runs and
+            // answers, at exit 0, and no chain retries it.
+            //
+            // What CPython admits: one of r, b, f, u alone, or the pairs rb/br
+            // and rf/fr, in any case. `u` combines with nothing (it is the 2.x
+            // spelling kept for source compatibility) and `b` with `f` is a
+            // bytes f-string, which does not exist. (py-ab889058c3ba)
+            let known = matches!(
+                lower.as_str(),
+                "r" | "b" | "f" | "u" | "rb" | "br" | "rf" | "fr"
+            );
             let (raw, bytes, fstr, uni) = (
-                lower.contains('r'),
-                lower.contains('b'),
-                lower.contains('f'),
-                lower.contains('u'),
+                known && lower.contains('r'),
+                known && lower.contains('b'),
+                known && lower.contains('f'),
+                known && lower.contains('u'),
             );
             if raw || bytes || fstr || uni {
                 if fstr {

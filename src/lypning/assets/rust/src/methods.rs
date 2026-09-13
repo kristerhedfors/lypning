@@ -1627,6 +1627,19 @@ pub(crate) fn dict_method(
         }
         "pop" => {
             let k = args.first().cloned().unwrap_or(Value::None);
+            // An EMPTY dict never hashes the key. CPython's lookup returns
+            // "absent" the moment it sees `ma_used == 0`, so `{}.pop([], None)`
+            // is None and `{}.pop([])` is `KeyError: []` -- an unhashable key
+            // reaches neither. Hashing first made both a TypeError, which is
+            // CPython's answer only once the dict has something in it (and
+            // `{"a":1}.pop([], None)` does raise, here and there alike).
+            // (py-227b0ddde391)
+            if d.borrow().len() == 0 {
+                return match args.get(1) {
+                    Some(v) => Ok(v.clone()),
+                    None => Err(key_err(fmt::repr(&k)?)),
+                };
+            }
             match d.borrow_mut().remove(&k)? {
                 Some(v) => v,
                 None => match args.get(1) {
