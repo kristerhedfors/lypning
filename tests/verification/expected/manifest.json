@@ -31,7 +31,7 @@
   ],
   "exit": 0,
   "must_match": [
-   "^MISMATCH 0 — ok$",
+   "^MISMATCH 0 \u2014 ok$",
    "^  UNSAFE +0 ",
    "^monotone violations 0 over ",
    "^dispatchers agree (\\d+)/\\1 "
@@ -44,7 +44,7 @@
   "must_match": [
    "^monotone violations 0 over ",
    "^dispatchers agree (\\d+)/\\1 ",
-   "^MISMATCH 0 — ok$",
+   "^MISMATCH 0 \u2014 ok$",
    "^\\[\"lypning-l\",\"cpython\"\\]$",
    "^\\[\"cpython\"\\]$"
   ]
@@ -72,7 +72,7 @@
   "exit": 0,
   "must_match": [
    "^PASS",
-   "want <= 8 blocks$"
+   "budget \\d+ for x86_64-unknown-linux-musl"
   ]
  },
  {
@@ -123,7 +123,7 @@
   ],
   "exit": 0,
   "must_match": [
-   "^routes — no routes learned yet\\.$"
+   "^routes \u2014 no routes learned yet\\.$"
   ]
  },
  {
@@ -134,7 +134,7 @@
   ],
   "exit": 0,
   "must_match": [
-   "^oracle — lypning-mp against CPython: \\d+ recorded divergences in \\d+ families$"
+   "^oracle \u2014 lypning-mp against CPython: \\d+ recorded divergences in \\d+ families$"
   ]
  },
  {
@@ -152,7 +152,7 @@
   "argv": null,
   "must_match": [
    "^lypning-l unsupported 90 b'' b'lypning-l: unsupported: module: import subprocess\\\\n' False True$",
-   "^MISMATCH 0 — ok$"
+   "^MISMATCH 0 \u2014 ok$"
   ]
  },
  {

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from lypning import gate
+from lypning import engines, gate
 
 
 @pytest.mark.parametrize("size,blocks", [
@@ -62,17 +62,49 @@ def test_the_rust_core_is_measured_against_its_own_budget():
     # verdict on the Rust core, and reporting it as one would invent a number
     # no document argues for.
     over = gate.MAX_BYTES * 3
-    # A Rust variant is gated in device blocks against its own budget — this
-    # used to pass anything for `lypning`, and a spectrum whose premise is
-    # bytes-per-point cannot leave its points ungated. 2.1 MB is 17 blocks.
-    assert not gate._size_check("lypning", over).ok
-    assert gate._size_check("lypning", 8 * gate.DEVICE_BLOCK).ok
-    assert not gate._size_check("lypning", 8 * gate.DEVICE_BLOCK + 1).ok
-    assert gate._size_check("lypning", 8 * gate.DEVICE_BLOCK).unit == "blocks"
-    assert gate._size_check("lypning-l", over).ok            # 17 blocks fits the 32-block ceiling
-    assert not gate._size_check("lypning-l", 33 * gate.DEVICE_BLOCK).ok
+    musl = gate.MUSL_X86_64
+    # A Rust variant is gated in device blocks against its own budget FOR ITS
+    # TARGET — this used to pass anything for `lypning`, and a spectrum whose
+    # premise is bytes-per-point cannot leave its points ungated. 2.1 MB is 17
+    # blocks. The budget is 9 on musl, measured; see VARIANT_BLOCK_BUDGET for
+    # why it is not the 8 it claimed to be until 2026-09-13.
+    assert not gate._size_check("lypning", over, musl).ok
+    assert gate._size_check("lypning", 9 * gate.DEVICE_BLOCK, musl).ok
+    assert not gate._size_check("lypning", 9 * gate.DEVICE_BLOCK + 1, musl).ok
+    assert gate._size_check("lypning", 9 * gate.DEVICE_BLOCK, musl).unit == "blocks"
+    assert gate._size_check("lypning-l", over, musl).ok       # 17 blocks fits the 32-block ceiling
+    assert not gate._size_check("lypning-l", 33 * gate.DEVICE_BLOCK, musl).ok
     assert not gate._size_check("lypning-mp", over).ok
     assert gate._size_check("lypning-mp", gate.MAX_BYTES).ok
+
+
+def test_a_target_nobody_measured_is_reported_and_not_gated():
+    """The other half of the 2026-09-13 change, and the half that could rot.
+
+    Gating an unmeasured target means inventing a budget for it, which is
+    exactly how an 8 measured on one toolchain came to fail a binary built by
+    another for nine days while reading as a size regression. So an unknown
+    triple reports its blocks and gates nothing — but it must SAY so, or the
+    hole is indistinguishable from a pass.
+    """
+    c = gate._size_check("lypning", 99 * gate.DEVICE_BLOCK, None)
+    assert c.ok, "an unmeasured target must not fail"
+    assert c.limit == "not gated", c.limit
+    assert "not gated" in (c.note or ""), c.note
+    assert c.value == 99, c.value                       # the measurement is still reported
+
+
+def test_the_target_comes_from_the_artefact_not_from_the_host():
+    """`elf_target` reads the triple off the ELF it is handed. A dynamic build
+    is the control (`build._TARGETS`), not a shipping target, and naming it
+    would re-open the door this change closed."""
+    from pathlib import Path
+    binary = engines.find(engines.LYPNING)
+    if binary is None:
+        pytest.skip("lypning is not built")
+    assert gate.elf_target(Path(binary), True) == gate.MUSL_X86_64
+    assert gate.elf_target(Path(binary), False) is None      # dynamic: ungated
+    assert gate.elf_target(Path(__file__), True) is None      # not an ELF at all
 
 
 # --- the code section, beside the file size ----------------------------------

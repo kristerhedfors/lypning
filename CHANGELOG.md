@@ -20,6 +20,40 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-13** — A block count is not portable, and `gate` had been saying so in the wrong direction for nine days (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **`lypning gate` read FAIL against a binary that had never been under its
+  budget.** `VARIANT_BLOCK_BUDGET` held one number per variant and compared it
+  against whatever the host built. The core's `8` came with the claim
+  `1,007,824 B on musl = 8 blocks, 40,752 B of headroom`; rebuilding `7a72aaf`,
+  the commit that wrote that sentence and froze the core, gives **1,052,880 B =
+  9 blocks** on this container's toolchain. 45,056 B of the gap is toolchain,
+  not code, and the gate was reporting a unit mismatch as a size regression.
+- **The budget is keyed by `(engine, target triple)` now**, and `gate.elf_target`
+  reads the triple off the artefact's own ELF header rather than assuming the
+  host's. The size row names it: `budget 9 for x86_64-unknown-linux-musl`. A
+  triple nobody has measured is reported and **not gated**, and says so — a
+  budget invented for an unmeasured target is the defect this change exists to
+  stop, not a stricter version of it.
+- **Growth, on one toolchain, is not the story the old number told.** `7a72aaf`
+  to `6f3ea7c` is +77,824 B across nine days with **no change in block count**:
+  it was 9 then and it is 9 now. The core is still frozen in the sense that
+  matters — new capability goes to the larger variant — and the number recorded
+  is what the frozen core costs here.
+- **§C6's run of record was Darwin arm64** (818,080 B = 7 blocks, three checks
+  unmeasured because that host has no `file(1)`, `readelf` or `strace`) and the
+  test replays it on musl with all three present, so it could never hold. Re-taken
+  on this container; the Darwin numbers are kept once under invariant 3's
+  `measured upstream` carve-out, because they are a real measurement of a
+  different target rather than a wrong one.
+- **The manifest pins the property, not the number.** `want <= 8 blocks$` pinned
+  a count from another machine into a test that runs here; it now pins that the
+  size row NAMES the target its budget was measured on, which is the absence that
+  let one number be enforced against another. Two tests added: an unmeasured
+  target is reported and not gated and must say so, and the triple comes from the
+  artefact rather than the host.
+- The suite is green: **7,680 passed, 0 failed**, and `lypning gate` PASSes.
+
 **2026-09-13** — The test statistic was chosen before the data, and the choice is written down as a change of rule (branch `claude/nemotron-lora-pipeline-1zczi2`)
 
 - **The pre-registered rule had 12% power against the effect it was bought to
