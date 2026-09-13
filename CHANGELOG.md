@@ -20,6 +20,39 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-13** — The last four the fold found, and `conformance` is back to MISMATCH 0 (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **Annotations are evaluated when the `def` runs.** `parse.rs` dropped them with
+  a comment saying CPython drops them too; CPython evaluates them at definition
+  time unless `from __future__ import annotations` is in force, and this engine
+  refuses that import, so there is no second case. `def f() -> Undefined: pass`
+  ran to exit 0 where CPython raises `NameError`, and any side effect the
+  expression had was lost with it. Parameters left to right, then the return,
+  which is CPython's order and is pinned by a side-effecting test.
+- **`str` methods reject keywords they do not take.** `"a b".split(" ", 1, foo=1)`
+  answered `['a', 'b']`. The allowed set is a table now, with `str.format`
+  exempt because it really does take arbitrary keywords. `tests/test_keyword_grid.py`
+  immediately caught the first attempt using one sentence for both cases:
+  CPython says `str.strip() takes no keyword arguments` for a method that takes
+  none and the invalid-keyword sentence for one that takes some.
+- **`int()`'s error message truncates like CPython's.** The format is `%.200R`,
+  so the repr is cut at 200 characters — taking the closing quote with it, which
+  is why CPython's message for a long literal ends mid-string. Printing the whole
+  repr grew without bound: 252 characters where CPython gives 240. Checked at
+  n = 100, 200, 210, 220 and 5000.
+- **`@` parses.** No type here implements `__matmul__`, so every use is CPython's
+  own TypeError — but the file has to PARSE to get there, and refusing at the
+  lexer made `A @ B` a SyntaxError at exit 1 for a program CPython reads and then
+  rejects for a missing import. Parsing it first found something worse: the
+  numeric fast path reached an `unreachable!()` and **aborted the process at exit
+  134**, which is not the program's exit code and so is the one outcome a
+  dispatcher cannot hand back. `@` now raises before any arithmetic.
+- **`conformance` MISMATCH 19 → 0** over 6,323 programs, MATCH 2,911 → 2,927.
+  Suite 7,680 passed, 0 failed; `gate` PASS; `doctor` 0 FAIL.
+- Known and not fixed: `x @= 2` reports `for @` where CPython says `for @=`, the
+  same exception type with one character different, and threading an
+  augmented-flag through the binop path for it is not worth the coupling.
+
 **2026-09-13** — `nt harvest` with no arguments was a delete (branch `claude/nemotron-lora-pipeline-1zczi2`)
 
 - **The default source was `study` alone.** That adapter yields 26 cases; the

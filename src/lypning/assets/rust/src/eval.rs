@@ -356,6 +356,12 @@ impl Interp {
                 });
             }
             Stmt::Def { name, params, body } => {
+                // Annotations run when the `def` does, and their VALUES are
+                // discarded -- what survives is whatever they raised or printed
+                // on the way. Before the defaults, as CPython orders it.
+                for a in &params.anns {
+                    self.eval(a)?;
+                }
                 let mut defaults = Vec::with_capacity(params.defaults.len());
                 for d in &params.defaults {
                     defaults.push(match d {

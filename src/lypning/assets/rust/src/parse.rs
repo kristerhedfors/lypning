@@ -298,9 +298,12 @@ impl Parser {
         }
         if self.eat_kw("def") {
             let name = self.ident()?;
-            let params = self.params()?;
+            let mut params = self.params()?;
             if self.eat_op("->") {
-                self.expr()?; // return annotation: parsed and discarded, as CPython does at runtime
+                // The return annotation evaluates AFTER the parameters', which
+                // is the order CPython's compiler emits them in.
+                let ret = self.expr()?;
+                params.anns.push(ret);
             }
             let body = self.block()?;
             if contains_yield(&body) {
@@ -537,7 +540,8 @@ impl Parser {
                 // A lambda has no annotations, and there the `:` is the
                 // terminator — reading one here would eat the body's colon.
                 if !lambda && self.eat_op(":") {
-                    self.expr()?; // annotation, discarded
+                    let ann = self.expr()?;
+                    p.anns.push(ann);
                 }
                 let d = if self.eat_op("=") {
                     Some(self.expr()?)
@@ -665,6 +669,7 @@ impl Parser {
             ("/=", BinOp::Div),
             ("//=", BinOp::FloorDiv),
             ("%=", BinOp::Mod),
+            ("@=", BinOp::MatMul),
             ("**=", BinOp::Pow),
             ("&=", BinOp::BitAnd),
             ("|=", BinOp::BitOr),
@@ -1026,6 +1031,12 @@ impl Parser {
                 ("/", BinOp::Div),
                 ("//", BinOp::FloorDiv),
                 ("%", BinOp::Mod),
+                // `@` binds like `*`. No type this engine serves implements it,
+                // so every use is CPython's own TypeError -- but the file has to
+                // PARSE to get there, and refusing at the lexer made `A @ B` a
+                // SyntaxError at exit 1 for a program CPython reads fine and
+                // then rejects for a missing import. (py-994a5fcb5ed3)
+                ("@", BinOp::MatMul),
             ],
             Self::unary,
         )

@@ -973,7 +973,7 @@ pub fn call_builtin(
                             if digits.starts_with('0') && digits.chars().any(|c| c != '0') {
                                 return Err(value_err(format!(
                                     "invalid literal for int() with base 0: {}",
-                                    fmt::str_repr(s)?
+                                    int_literal_repr(s)?
                                 )));
                             }
                         }
@@ -990,7 +990,7 @@ pub fn call_builtin(
                     if !underscores_are_between_digits(t2, base as u32, t2.len() < t.len()) {
                         return Err(value_err(format!(
                             "invalid literal for int() with base {reported}: {}",
-                            fmt::str_repr(s)?
+                            int_literal_repr(s)?
                         )));
                     }
                     let cleaned: String = t2.chars().filter(|c| *c != '_').collect();
@@ -1071,7 +1071,7 @@ pub fn call_builtin(
                         Err(_) => {
                             return Err(value_err(format!(
                                 "invalid literal for int() with base {reported}: {}",
-                                fmt::str_repr(s)?
+                                int_literal_repr(s)?
                             )))
                         }
                     }
@@ -2250,6 +2250,23 @@ pub fn call_builtin(
                 &format!("builtin function {other}()"),
             ))
         }
+    })
+}
+
+/// `repr(s)` as CPython prints it inside `invalid literal for int()`.
+///
+/// The format string is `%.200R`, so the REPR is cut to 200 characters -- which
+/// for a long literal takes the closing quote with it, and CPython's message
+/// really does end mid-string with no quote and no ellipsis. Printing the whole
+/// repr gave a message that grew without bound: 242 characters for a 200-x
+/// literal where CPython gives 240, and 252 for a 210-x one where CPython still
+/// gives 240. Measured across n = 100, 200, 210, 220 and 5000 on this box's
+/// CPython. (py-b00b60452eac)
+fn int_literal_repr(s: &str) -> R<String> {
+    let r = fmt::str_repr(s)?;
+    Ok(match r.char_indices().nth(200) {
+        Some((cut, _)) => r[..cut].to_string(),
+        None => r,
     })
 }
 

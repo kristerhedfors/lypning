@@ -662,6 +662,29 @@ fn sarg(args: &[Value], i: usize, m: &str) -> R<Rc<str>> {
 
 // ---- str ------------------------------------------------------------------
 
+/// The keyword arguments each `str` method actually takes.
+///
+/// `None` means "anything", which is true of exactly one method: `str.format`
+/// passes its keywords to the template. Everything else has a closed set, and
+/// most C-implemented string methods take no keywords at all -- `"a b".split("
+/// ", 1, foo=1)` is a TypeError in CPython and this engine DROPPED the unknown
+/// keyword and answered `['a', 'b']`, at exit 0. A dropped argument is the
+/// caller's instruction thrown away in silence. (py-cf23a7551bab)
+fn str_kw_allowed(name: &str) -> Option<&'static [&'static str]> {
+    Some(match name {
+        "format" => return None,
+        "split" | "rsplit" => &["sep", "maxsplit"],
+        "encode" => &["encoding", "errors"],
+        "splitlines" => &["keepends"],
+        "expandtabs" => &["tabsize"],
+        // `str.replace(count=)` is legal from 3.13 and a TypeError before it,
+        // which `err::REF_PY_MINOR` already decides for the message tables; the
+        // same boundary decides whether the name is admissible at all.
+        "replace" if crate::err::REF_PY_MINOR >= 13 => &["count"],
+        _ => &[],
+    })
+}
+
 fn str_method(
     it: &mut Interp,
     s: &Rc<str>,
@@ -669,6 +692,25 @@ fn str_method(
     args: &mut Args,
     kw: Vec<(Rc<str>, Value)>,
 ) -> R<Value> {
+    if let Some(allowed) = str_kw_allowed(name) {
+        for (k, _) in &kw {
+            if !allowed.contains(&k.as_ref()) {
+                // CPython words these two cases differently, and the difference
+                // is which sentence a caller gets: a method that takes NO
+                // keywords says so by name -- `str.strip() takes no keyword
+                // arguments` -- while one that takes some and not this one gets
+                // the invalid-keyword sentence `bad_kw` spells (itself version
+                // dependent, see `err::REF_PY_MINOR`). Pinned by
+                // tests/test_keyword_grid.py, which caught this arm using the
+                // second sentence for all of them.
+                return Err(if allowed.is_empty() {
+                    type_err(format!("str.{name}() takes no keyword arguments"))
+                } else {
+                    crate::builtins::bad_kw(name, k)
+                });
+            }
+        }
+    }
     reject_kw("str", name, &kw)?;
     check_arity("str", name, args, &kw)?;
     Ok(match name {
