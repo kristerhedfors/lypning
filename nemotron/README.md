@@ -22,6 +22,8 @@ training config is proposed until there is a baseline to beat.
 ./nt harvest            # step 1: sources -> corpus.jsonl + drops.jsonl
 ./nt split              # freeze the 70/30 stratified held-out split
 ./nt verify             # re-check the frozen split against its lock
+./nt leaks --sft data/sft/v1   # does a training target already pass a held-out case
+./nt sample --dry-run   # the pool, the draw count, the ceiling cost; spends nothing
 ./nt probe              # one cheap request; is the backend reachable
 ./nt eval --baseline    # step 2, detached under tmux; returns immediately
 ./nt status             # one screen: corpus, baseline, running, spend, ETA
@@ -116,6 +118,44 @@ Three test kinds: `stdout` (exact or regex, after a **named** normalization),
 `script` (an arbitrary stdlib checker that sees stdout, stderr, exit code and the
 files the program left behind), and `pytest` (a test file run against
 `solution.py`).
+
+### Three populations, and the mixture that is not a default
+
+The corpus is not one task, and which one a case is comes from **its own test**
+(`sample.population`), never from its name:
+
+| population | the test | the right answer | trained on |
+|---|---|---|---|
+| **rewrite** | `lypning`, `require_tier1` true | rewrite it into the subset | yes |
+| **ceiling** | `lypning`, `require_tier1` false | keep the import, take the fallback | yes, one target per case |
+| **unobserved** | any other kind | no engine is ever asked | no |
+
+Left alone, the mixture is decided by yield, and yield runs backwards: a ceiling
+case passes whenever the model can copy, an unobserved case is a plain coding
+task the stock model already answers, and the rewrite cases — the ones the
+fine-tune exists for — are the hard ones. So the pool is chosen instead.
+`nt sample` prints it before it spends anything, and drops four kinds of case:
+one that is the same question as a held-out case, one whose population is not
+the task, one the engine now RUNS (the program the prompt hands over passes the
+case's own test, so the sampler would happily learn to echo it — the train-side
+twin of the degenerate held-out cases), and one that nothing passes.
+
+Ceiling cases stay, and keep exactly one target each. They are the counterweight:
+train only on "rewrite it" and the model learns to rewrite everything, which is
+the damage the ceiling cases in the held-out set exist to catch. But a second
+ceiling target is the same answer typed twice — by this repository's own
+similarity ceiling, the one it uses to call two cases the same question.
+
+`nt sample` claims its output directory in `backend.json` and refuses one that
+another model drew: rejection sampling is on-policy by construction, `draws.jsonl`
+is append-only and `fold_draws` reads all of it, so two models pointed at one
+directory is off-policy training data with nothing in the report to show it.
+`--resume` continues an interrupted run without redrawing what it already has.
+
+`sample.json` reports the mixture and names the rewrite rows separately, because
+the abandon threshold in `PREREGISTRATION.md` is a claim about the population the
+experiment is about, and a total that counts ceiling rows can clear it while that
+population does not.
 
 ## Step 1b — the frozen split
 

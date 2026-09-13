@@ -1,5 +1,14 @@
 # Rank-16 LoRA for Qwen/Qwen3.8-27B on one 8-GPU node.
 #
+# NOT THE RUN. The platform decision (../RUNBOOK.md, 2026-09-12) is one `h200`
+# on HF Jobs and `lypning_lora.py`, which reads none of this file. The
+# `distributed:` block below still says `dp_size: none  # shard across all 8`,
+# which contradicts that decision outright; it is left rather than edited
+# because editing a config nothing loads produces a file that looks checked.
+# Kept for its module-set reasoning and its hyperparameters, both of which
+# `lypning_lora.py` carries independently. Facts below are about the
+# checkpoint and remain true.
+#
 # The target model as of 2026-09-11. Facts established from the checkpoint and
 # from the NeMo AutoModel source, not from the model card:
 #

@@ -45,11 +45,12 @@ export NTX_MODEL="Qwen/Qwen3.8-27B:novita"
 
 ## LoRA targets
 
-`exclude_modules: ["*.out_proj", "*visual*"]`.
+`exclude_modules: ["*visual*"]` — the vision tower and nothing else. It plays no
+part in generating python.
 
-`*visual*` freezes a vision tower that plays no part in generating python.
-
-**Corrected 2026-09-12.** This file previously also excluded `*.out_proj`, citing
+**Corrected 2026-09-12 in prose, 2026-09-13 in the code that runs.** This file
+previously also excluded `*.out_proj` — the line above said so for a day after
+the paragraph below retracted it — citing
 `qwen3_5/model.py:430` as proof that the weight goes straight into the
 gated-delta-net kernel. That citation was wrong: line 430 sits inside
 `for linear in (...): nn.init.trunc_normal_(linear.weight, ...)`, a weight
@@ -60,9 +61,28 @@ and `:715` — an ordinary module call, so a LoRA there applies normally.
 The Nemotron exclusion it was copied from IS correct for Nemotron:
 `nemotron_v3/layers.py:454-455` really does pass `outproj_weight=self.out_proj.weight`
 into a fused kernel. Qwen3.5 does not, and the two were conflated. The cost of
-the error was ~56 of the widest projections in the model frozen for no reason,
+the error was 48 of the widest projections in the model — one per
+gated-delta-net layer, counted from `model.safetensors.index.json` on
+2026-09-13 — frozen for no reason,
 weakening the very intervention the training run is meant to measure — found by
 an independent agent re-checking a claim this file asserted as verified.
+
+**And the code was still wrong on 2026-09-13.** `gpu/lypning_lora.py` — the file
+`hf jobs` actually runs, as opposed to the retired NeMo YAML this correction was
+written against — still omitted `out_proj` from `TARGET_MODULES`, still listed
+`.*out_proj` in `EXCLUDE_MODULES`, and still carried the retracted rationale in
+its docstring; the `verify/manifest.json` already on the Hub records that target
+set. Re-checked against the implementation that file loads, HF transformers'
+`Qwen3_5GatedDeltaNet`: `out_proj` is declared `nn.Linear(value_dim, hidden_size)`
+at `modeling_qwen3_5.py:540` and called as `output = self.out_proj(core_attn_out)`
+at `:662`, after the kernel has already returned — the kernel takes
+query/key/value/g/beta and no weight. So a LoRA there applies. The exclusion
+froze the 48 widest projections in the text tower (1,509,949,440 base parameters)
+and cut the adapter from 116,727,808 to 108,077,056 trainable parameters, 8.0%.
+It is fixed, and the belief is now a measurement: phase 1 of the smoke test
+requires every targeted leaf name to carry a nonzero gradient on a 4-layer random
+model, so the next kernel that swallows a weight fails on `cpu-basic` for a tenth
+of a cent instead of producing a quietly weaker adapter for $5.
 
 ## What survives the switch, and what does not
 
@@ -77,7 +97,11 @@ changes**.
   measuring through a harness with 33 known defects would waste the number twice.
 - `data/sft/v1/` — rejection-sampled from Nemotron, so off-policy for Qwen. The
   whole point of rejection sampling is that targets come from the model being
-  trained. Must be re-sampled.
+  trained. Must be re-sampled. `--name` defaulted to `v1` and `fold_draws` reads
+  the whole of `draws.jsonl`, so the default invocation would have folded them
+  back in: measured 2026-09-13, 1,488 of its 2,800 draws belong to all 93 cases
+  of the current pool. `nt sample` now refuses a directory whose draws no
+  `backend.json` claims, and refuses to resume one drawn from another model.
 - `gpu/lora_rank16.yaml` — Nemotron-specific (`ep_size: 8`, `experts: gmm`,
   `dispatcher: deepep`, MTP repeated-layer overrides). Kept for reference;
   `gpu/lora_qwen38_27b.yaml` replaces it.

@@ -54,7 +54,25 @@ AS_REPORTED = {
 # re-graded at engine b092935 with no new inference; the reconstruction
 # round-trips 1184/1184 to byte-identical programs. Comparing a fine-tune
 # against the old 40.4% would have credited it with a day of engine work.
-BASELINE_RUN = "qwen38-regrade-20260912"
+#
+# Moved a third time 2026-09-13, deliberately and in this diff, and this move is
+# the opposite kind: the pass rate did not change at all. PR #61 made the engine
+# answer as the CPython it was built for, so the same source is a different
+# grader on a different host and "the engine at commit X" stopped being an
+# identity. `qwen38-regrade-20260913` is the same 1,184 completions re-graded at
+# 7846191 (round-trip 1184/1184 byte-identical again, cost $0.0000), and it is
+# byte-equal to its predecessor: pass_rate 0.4375 to ten decimals,
+# `failures_by_reason` and `failures_by_category` identical. That equality is
+# the point rather than a disappointment — PR #61's wordings reach only stderr,
+# and `acceptance._matches` compares timed_out, exit_code and normalised stdout,
+# so they are structurally incapable of moving a `lypning`-kind flag.
+#
+# What the new run has that the old one lacks is `engine.fingerprint`
+# (42ab2d3b7608dfe1). `stats._engine` withholds a subtraction only where BOTH
+# sides recorded one, and the promoted baseline recorded `null` — so the
+# comparison the tuned arm will actually make was the one comparison the guard
+# could not see. Re-grading cost nothing and closes it before any money is spent.
+BASELINE_RUN = "qwen38-regrade-20260913"
 HOLDOUT_MANIFEST = "80b2fc522202a0ece3b84b299791761c86dd07983596a46650f9bfcb733ce588"
 N_CORPUS, N_HOLDOUT, N_TRAIN = 249, 74, 175
 
@@ -159,6 +177,7 @@ RE_DERIVED = {
     # one is the null test for this whole experiment: engine drift alone must
     # not look like a win.
     "qwen38-regrade-20260912": 0.4375,
+    "qwen38-regrade-20260913": 0.4375,
     "baseline-regraded": 0.33783783783783783,
 }
 

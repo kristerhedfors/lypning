@@ -9,11 +9,14 @@ that has to notice.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
+import subprocess
+import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 REFUSAL_EXIT = 90
 DEFAULT_CHAIN = ("lypning", "lypning-l")
@@ -57,3 +60,72 @@ def refusal_category(stderr: str) -> str:
     """
     parsed = parse_refusal(stderr)
     return "refused:" + parsed[1] if parsed else "refused:unknown"
+
+
+def _sha256_of_file(path: str) -> str:
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+    except OSError:
+        return ""
+    return h.hexdigest()
+
+
+def _version_line(binary: str) -> str:
+    """``lypning 0.1.0 (lypning) for cpython 3.11`` — the human half of the id."""
+    try:
+        p = subprocess.run([binary, "--version"], stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    out = (p.stdout or b"").decode("utf-8", "replace").strip()
+    return out.splitlines()[0] if out else ""
+
+
+def identity(chain=DEFAULT_CHAIN) -> Dict[str, Any]:
+    """Which engine graded this run — tight enough that two cannot be confused.
+
+    A pass rate on a `lypning` case is a statement about an ENGINE as much as
+    about a model: every acceptance test asks whether lypning accepts the
+    program, so the same completions score differently against two builds. That
+    has already moved a published baseline once (40.37% -> 43.75%, the engine
+    gaining math and type()), and nothing in a run's metadata recorded which
+    engine it was. `stats.comparability` can only withhold a subtraction over a
+    field that somebody wrote down, so this is the field.
+
+    The binary's sha256 is the identity and the version line is the label. The
+    hash rather than a version string because the version is `0.1.0` across
+    every build this project has ever made, and rather than a git commit because
+    the run may be graded from a wheel with no repository behind it. Two clean
+    builds of one commit are byte-identical here, so the hash does not fire on a
+    rebuild that changed nothing.
+
+    `oracle_python` is the second interpreter in the room and belongs to the
+    same fact. The engine is built for one CPython and answers as that one; the
+    acceptance test's correctness leg runs the program on `sys.executable`. A
+    run graded where those two differ is measuring the gap between them, and
+    since the engine started carrying its reference CPython (``for cpython
+    3.11``) both halves are recorded here.
+    """
+    from .jsonio import sha256_of
+
+    engines: Dict[str, Any] = {}
+    for name in chain:
+        binary = engine_path(name)
+        engines[name] = ({"sha256": "", "version": "", "found": False} if not binary
+                         else {"sha256": _sha256_of_file(binary),
+                               "version": _version_line(binary), "found": True})
+    oracle = "%d.%d.%d" % sys.version_info[:3]
+    # A chain where nothing was found is not an identity, it is the absence of
+    # one, and it must not certify: hashing it yields a perfectly stable
+    # fingerprint that every engine-less box computes alike, so two runs graded
+    # against no engine at all would compare as "the same engine" and
+    # `stats._engine` would withhold nothing. An empty fingerprint is the value
+    # `_engine` already reads as unrecorded, which is what this is.
+    found = [v["sha256"] for v in engines.values() if v["found"]]
+    fingerprint = "" if not found else sha256_of(
+        {"chain": {k: v["sha256"] for k, v in engines.items()},
+         "oracle_python": oracle})[:16]
+    return {"chain": engines, "oracle_python": oracle, "fingerprint": fingerprint}

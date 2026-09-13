@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import engines as eng
+from . import sample as sample_mod
 from . import split as splitmod
 from . import stats
 from .adapters import parse_source
@@ -62,16 +63,38 @@ def _backend_of(run_id: str) -> Dict[str, Any]:
         return {}
 
 
+def _engine_of(run_id: str) -> Dict[str, Any]:
+    """Which engine graded this run, from meta.json. Absent for runs graded
+    before the field existed, and an absent engine is an unknown, never a
+    difference — `stats._engine` says why."""
+    p = RUNS / run_id / "meta.json"
+    if not p.exists():
+        return {}
+    try:
+        return read_json(p).get("engine") or {}
+    except (ValueError, OSError):
+        return {}
+
+
 def _armed(summary: Dict[str, Any]) -> Dict[str, Any]:
-    """A summary with the backend identity its run directory still remembers.
+    """A summary with the backend and engine identities its run directory still
+    remembers.
 
     Copied rather than mutated: these dicts come straight off disk and nothing
     here is entitled to write a recorded measurement back.
     """
-    if not summary or summary.get("backend"):
+    if not summary:
         return summary
-    b = _backend_of(summary.get("run_id") or "")
-    return dict(summary, backend=b) if b else summary
+    out = summary
+    if not out.get("backend"):
+        b = _backend_of(out.get("run_id") or "")
+        if b:
+            out = dict(out, backend=b)
+    if not out.get("engine"):
+        e = _engine_of(out.get("run_id") or "")
+        if e:
+            out = dict(out, engine=e)
+    return out
 
 
 def _summary_of(run_id: str) -> Optional[Dict[str, Any]]:
@@ -550,6 +573,21 @@ def cmd_grade(args: argparse.Namespace) -> int:
         print("a run whose sampling is unrecorded can never be compared with the "
               "baseline — " + SAMPLING_HELP, file=sys.stderr)
         return 1
+    # The generating box states which prompt it rendered; this box stamps the run
+    # with the prompt IT would render. Left uncompared, a GPU job running an older
+    # template produces a run whose recorded prompt_sha is a prompt it never sent,
+    # and `stats.comparability`'s prompt-drift guard reads the stamp, so it sees
+    # nothing. Both arms drift together, so the paired delta survives -- but it is
+    # then a delta on an unrecorded prompt, and every comparison against a run
+    # graded at another template is wrong while claiming to be checked.
+    local_sha = __import__("pipeline.evaluate", fromlist=["x"]).prompt_signature()
+    stated_sha = header.get("prompt_sha")
+    if stated_sha and stated_sha != local_sha:
+        print("refusing to grade %s: it was generated from prompt %s and this tree "
+              "renders %s.\n  The run would be stamped with a prompt it never saw. "
+              "Grade at the tree that generated it, or regenerate."
+              % (args.completions, stated_sha, local_sha), file=sys.stderr)
+        return 1
     model = args.model or header.get("model")
     if not model:
         print("refusing to grade %s: --model is required — it names the weights that "
@@ -578,8 +616,11 @@ def cmd_grade(args: argparse.Namespace) -> int:
     if endpoint:
         backend["base_url"] = endpoint
     meta = {"run_id": args.run_id, "label": args.label, "backend": backend,
-            "prompt_sha": __import__("pipeline.evaluate", fromlist=["x"]).prompt_signature(),
+            "prompt_sha": local_sha,
             "holdout_manifest_sha256": (splitmod.load_lock(DATA) or {}).get("manifest_sha256", ""),
+            # Re-grading is free, so it happens often, and every re-grade is a
+            # different engine until someone proves otherwise. This is the proof.
+            "engine": eng.identity(),
             "n_cases": len(cases), "sampling": dict(sampling, replayed=True),
             "started_at": __import__("pipeline.evaluate", fromlist=["x"])._now()}
     write_json(run_dir / "meta.json", meta)
@@ -605,13 +646,42 @@ def cmd_grade(args: argparse.Namespace) -> int:
     return 0
 
 
+def _mixture(census: Dict[str, int]) -> str:
+    """A population census, always in the same order, never as a bare total."""
+    return "  ".join("%s %d" % (name, census.get(name, 0))
+                     for name in ("rewrite", "ceiling", "unobserved"))
+
+
 def cmd_sample(args: argparse.Namespace) -> int:
-    """Rejection-sample verified SFT targets from the TRAIN split only."""
-    from .sample import sample_targets, train_cases
+    """Rejection-sample verified SFT targets from the TRAIN split only.
+
+    The pool is printed before a dollar is spent, because the mixture is the
+    experiment: three populations live in this corpus and only one of them is
+    the task (`sample.population`).
+    """
+    from .sample import sample_targets, sampling_pool
+    engine = args.engine or eng.engine_path("lypning-l") or eng.engine_path("lypning")
+    if not engine:
+        print("no lypning binary: run `lypning build --rust`, or pass --engine",
+              file=sys.stderr)
+        return 1
     try:
-        cases = train_cases(DATA)
+        pool = sampling_pool(DATA, engine)
     except (ValueError, AssertionError) as exc:
         print(str(exc), file=sys.stderr)
+        return 1
+    cases = pool["cases"]
+    print("train %d cases  %s" % (pool["train"], _mixture(pool["train_census"])))
+    for label, ids in (("the same question as a held-out case", pool["dropped_leaking"]),
+                       ("not the task (see sample.TRAINABLE)", pool["dropped_population"]),
+                       ("degenerate: the given program passes as-is", pool["dropped_degenerate"]),
+                       ("unsatisfiable: nothing passes it", pool["dropped_unsatisfiable"])):
+        if ids:
+            print("  -%-4d %s" % (len(ids), label))
+    print("pool  %d cases  %s   (engine %s)"
+          % (len(cases), _mixture(pool["census"]), pool["engine"]))
+    if not cases:
+        print("nothing left to sample", file=sys.stderr)
         return 1
     if args.limit:
         cases = cases[: args.limit]
@@ -620,23 +690,72 @@ def cmd_sample(args: argparse.Namespace) -> int:
     except BackendError as exc:
         print(str(exc), file=sys.stderr)
         return 1
+    # The cap that is not a cap. `ChatBackend.cost()` multiplies by NTX_PRICE_IN
+    # and NTX_PRICE_OUT; unset they are 0.0, every draw records cost_usd 0.0, and
+    # `--max-spend` can never trip -- which is how the first SFT set was drawn
+    # (`PREREGISTRATION.md` §2(f)). A cap the operator believes in and that
+    # cannot fire is worse than no cap, so it is an error rather than a warning.
+    if args.max_spend and not (backend.price_in or backend.price_out or args.price_hour):
+        print("--max-spend $%.2f cannot fire: NTX_PRICE_IN/NTX_PRICE_OUT are unset and "
+              "--price-hour is 0, so every draw costs a recorded $0.00.\n"
+              "  export NTX_PRICE_IN and NTX_PRICE_OUT (per 1M tokens), or pass "
+              "--price-hour, or drop --max-spend and say out loud that the run is "
+              "unbounded." % args.max_spend, file=sys.stderr)
+        return 2
     out_dir = DATA / "sft" / (args.name or "v1")
-    print("sampling %d train cases x k=%d  (held-out %d cases are excluded by the lock)"
+    prior = out_dir / "draws.jsonl"
+    n_prior = sum(1 for _ in open(prior, encoding="utf-8")) if prior.exists() else 0
+    print("sampling %d cases x k=%d  (held-out %d cases are excluded by the lock)"
           % (len(cases), args.k, len((splitmod.load_lock(DATA) or {}).get("holdout", []))))
+    if n_prior and not args.resume:
+        print("%s already holds %d draws.\n"
+              "  fold_draws reads ALL of them, so sampling here mixes them into this "
+              "run's sft.jsonl and into its yield report.\n"
+              "  --resume to continue that run (same model only), or --name something "
+              "else to start a new one." % (prior, n_prior), file=sys.stderr)
+        return 1
+    if args.dry_run:
+        planned = len(cases) * args.k
+        print("DRY RUN: %d draws would be sent to %s (%s); nothing has been spent"
+              % (planned, backend.base_url, backend.model))
+        if backend.price_in or backend.price_out:
+            # max_tokens is a ceiling, so this is the ceiling too, and is labelled
+            # as one rather than offered as an estimate nobody can hold anyone to.
+            ceiling = planned * (backend.price_out * args.max_tokens) / 1e6
+            print("        at NTX_PRICE_OUT=%s that is at most $%.2f of completion "
+                  "tokens (every draw hitting --max-tokens %d), plus prompt tokens"
+                  % (backend.price_out, ceiling, args.max_tokens))
+        else:
+            print("        cost unknown: NTX_PRICE_IN/NTX_PRICE_OUT are unset")
+        return 0
 
     def progress(done: int, total: int, rec: Dict[str, Any]) -> None:
         if done % 100 == 0:
             print("  %d/%d" % (done, total), flush=True)
 
-    rep = sample_targets(
-        backend, cases, out_dir, k=args.k, keep=args.keep,
-        temperature=args.temperature, top_p=args.top_p, max_tokens=args.max_tokens,
-        enable_thinking=not args.no_thinking, concurrency=args.concurrency,
-        price_hour=args.price_hour, max_spend=args.max_spend, progress=progress)
+    try:
+        rep = sample_targets(
+            backend, cases, out_dir, k=args.k, keep=args.keep,
+            ceiling_keep=args.ceiling_keep, temperature=args.temperature,
+            top_p=args.top_p, max_tokens=args.max_tokens,
+            enable_thinking=not args.no_thinking, concurrency=args.concurrency,
+            price_hour=args.price_hour, max_spend=args.max_spend, resume=args.resume,
+            progress=progress)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     print()
+    if rep.get("resumed_draws"):
+        print("resumed: %d draws were already recorded, %d were drawn now"
+              % (rep["resumed_draws"], rep.get("drawn_this_run") or 0))
     print("cases with a verified solution  %d / %d   (%.1f%%)"
           % (rep["cases_with_a_verified_solution"], rep["cases"], 100 * rep["yield_rate"]))
     print("SFT examples written            %d" % rep["sft_examples"])
+    print("   of them ON TASK (rewrite)    %d   <- the number the abandon "
+          "threshold is about" % rep["sft_examples_on_task"])
+    for name, e in sorted(rep.get("by_population", {}).items()):
+        print("   %-26s %3d rows from %d/%d cases"
+              % (name, e["rows"], e["solved"], e["cases"]))
     print("per-draw pass rate              %.1f%%" % (100 * rep["draw_pass_rate"]))
     print("rejected by reason:")
     for r, n in list(rep["rejected_by_reason"].items())[:8]:
@@ -848,6 +967,22 @@ def cmd_compare(args: argparse.Namespace) -> int:
     if b_sum is not None and a_sum is not None:
         bars.extend(_render_incomparable(stats.comparability(b_sum, a_sum),
                                          left="before", right="after"))
+    # And a THIRD engine, which is easy to miss because it is not in either run:
+    # `_denominators` asks the live binary which held-out cases are degenerate,
+    # so a box whose engine has moved since the runs were graded defines the
+    # PRIMARY denominator with one engine and fills it with scores from another.
+    if not args.no_rule:
+        live_id = eng.identity()
+        live = (live_id.get("fingerprint") if any(
+            v.get("found") for v in (live_id.get("chain") or {}).values()) else "")
+        for run_id, s in ((args.before, b_sum), (args.after, a_sum)):
+            fp = ((s or {}).get("engine") or {}).get("fingerprint")
+            if live and fp and fp != live:
+                bars.append(
+                    "%s was graded by engine %s, and the denominators below are "
+                    "computed by %s, the engine on this box — re-grade against "
+                    "one engine, or pass --no-rule and lose the rule"
+                    % (run_id, fp, live))
     print("before %s   after %s" % (args.before, args.after))
     if bars and not args.anyway:
         print("refusing to compare %s with %s — they did not measure the same thing:"
@@ -1056,6 +1191,24 @@ def cmd_leaks(args: argparse.Namespace) -> int:
         print("the split is not frozen", file=sys.stderr)
         return 1
     held = {e["id"] for e in lock["holdout"]}
+    if args.sft:
+        # The direct question, asked of the targets themselves rather than of
+        # the cases they came from: does a program we are about to train on
+        # already pass a held-out case? Exit 1 if any does — it is the one
+        # finding here that must stop a training run.
+        rows = list(read_jsonl(Path(args.sft) if Path(args.sft).suffix == ".jsonl"
+                               else Path(args.sft) / "sft.jsonl"))
+        r = splitmod.sft_solves_holdout(rows, [c for c in cases if c["id"] in held])
+        print("%d SFT rows against %d held-out cases (%d distinct inputs probed)"
+              % (r["rows"], r["n_holdout"], r["inputs_probed"]))
+        if not r["solved"]:
+            print("no training target passes a held-out case")
+            return 0
+        print("CONTAMINATED: %d of %d rows are verified solutions to %d held-out cases"
+              % (r["rows_solving"], r["rows"], len(r["holdout_cases_solved"])))
+        for pair in sorted(set((h["holdout_id"], h["row_case_id"]) for h in r["solved"])):
+            print("  held-out %s  is solved by a target sampled for %s" % pair)
+        return 1
     report = splitmod.cross_split_leaks([c for c in cases if c["id"] not in held],
                                         [c for c in cases if c["id"] in held],
                                         ceiling=args.ceiling)
@@ -1209,8 +1362,20 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("sample", help="rejection-sample verified SFT targets (train split only)")
     sp.add_argument("--k", type=int, default=16)
     sp.add_argument("--keep", type=int, default=2, help="max targets kept per case")
+    sp.add_argument("--ceiling-keep", type=int, default=sample_mod.CEILING_KEEP,
+                    help="max targets kept per CEILING case; the counterweight is "
+                         "anchored by how many such cases there are, not by how "
+                         "many near-identical targets each one yields")
+    sp.add_argument("--engine", help="the binary the pool is measured against")
     sp.add_argument("--name", default="v1")
-    sp.add_argument("--limit", type=int, default=0)
+    sp.add_argument("--limit", type=int, default=0,
+                    help="sample only the first N cases of the pool; --limit 1 --k 1 "
+                         "--name smoke is one row for the price of one row")
+    sp.add_argument("--dry-run", action="store_true",
+                    help="print the pool, the draw count and the ceiling cost, send nothing")
+    sp.add_argument("--resume", action="store_true",
+                    help="continue an interrupted run: draws already recorded for a "
+                         "(case, draw) pair are not redrawn")
     sp.add_argument("--concurrency", type=int, default=16)
     sp.add_argument("--temperature", type=float, default=1.0)
     sp.add_argument("--top-p", type=float, default=0.95)
@@ -1266,6 +1431,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     lk = sub.add_parser("leaks", help="train cases that are the same question as a held-out one")
     lk.add_argument("--ceiling", type=float, default=splitmod.SIMILARITY_CEILING)
+    lk.add_argument("--sft", default="", help="an sft.jsonl (or its directory): run every "
+                                              "target against the held-out cases themselves")
     lk.add_argument("--verbose", action="store_true")
     lk.set_defaults(fn=cmd_leaks)
 
