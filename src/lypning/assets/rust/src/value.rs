@@ -1110,8 +1110,13 @@ pub fn eq(a: &Value, b: &Value) -> R<bool> {
         // as a ValueError at exit 1. That is the SAME defect iteration 74
         // recorded against `Value::CsvWriter`, on a value this capability did
         // not add: `is_same` says the two are one object and `eq` did not
-        // agree. Gated with the arm in `is_same` and for the same reason.
-        #[cfg(any(feature = "cap-csv", feature = "cap-hashlib"))]
+        // agree.
+        //
+        // UNGATED 2026-09-13 with its twin in `is_same`, and for the same
+        // measured reason: both arms together change the file by 0 bytes and no
+        // device block. Leaving `eq` gated while `is_same` is not would be the
+        // worse of both worlds -- the two would disagree about whether one
+        // iterator is one object, which is the defect the note above describes.
         (Value::IterObj(x, _), Value::IterObj(y, _)) => Rc::ptr_eq(x, y),
         _ => false,
     })
@@ -1648,7 +1653,16 @@ pub fn is_same(a: &Value, b: &Value) -> bool {
         // `DictView` is deliberately NOT here: `d.keys() is d.keys()` is False
         // in CPython — two view objects over one dict — and the `Rc` these
         // carry is the DICT's, so `ptr_eq` would answer True.
-        #[cfg(any(feature = "cap-csv", feature = "cap-hashlib"))]
+        //
+        // UNGATED 2026-09-13. This arm was `#[cfg(any(cap-csv, cap-hashlib))]`,
+        // so the FROZEN CORE answered False for `f = enumerate(x); f is f` --
+        // not just `iter(e) is e` but a plain alias -- and the note above
+        // accepted that as the price of the core's byte budget. Measured rather
+        // than assumed: re-gating it changes the file by 0 bytes and no device
+        // block, because the core sits 48,944 B inside the 9 it is budgeted.
+        // The trade the gate was making does not exist, and a silent wrong
+        // answer at exit 0 on `enumerate`, `zip`, `map` and `filter` is not
+        // worth bytes nobody is spending. (py-e79789f4f2f4)
         (Value::IterObj(x, _), Value::IterObj(y, _)) => Rc::ptr_eq(x, y),
         // Small-int caching is an implementation detail agents should not rely
         // on and we will not reproduce; refusing beats guessing either way.
