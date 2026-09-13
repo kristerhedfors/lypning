@@ -406,8 +406,47 @@ pub fn os_error(path: &str, e: &std::io::Error) -> LypningError {
 /// own write. The barrier has to be invisible to the program and visible only
 /// to the dispatcher; that is what makes it a safety mechanism rather than a
 /// behaviour change.
+/// The key a staged write is filed under: one spelling per file.
+///
+/// The staging maps were indexed by the LITERAL path string, so `s.txt`,
+/// `./s.txt` and `/cwd/s.txt` were three different files. A program that wrote
+/// one spelling and read another -- `open('s.txt','w').write(x)` then
+/// `open(os.path.abspath('s.txt')).read()`, which is what a copy written by an
+/// agent looks like -- got FileNotFoundError where CPython answers the bytes it
+/// just wrote. (py-3c73a033f9a9)
+///
+/// Lexical, not `fs::canonicalize`: the file usually does not exist yet, which
+/// is the whole point of staging, and `canonicalize` fails on a path that is not
+/// there. `..` is resolved textually, which differs from the kernel's answer
+/// only through a symlink; both spellings still land on ONE key, and a key is
+/// all this is. The real filesystem operations keep using the caller's own path.
+fn stage_key(path: &str) -> String {
+    let p = std::path::Path::new(path);
+    let abs = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        match std::env::current_dir() {
+            Ok(cwd) => cwd.join(p),
+            // No cwd is not a reason to lose the write; the literal spelling is
+            // still consistent with itself for the rest of this run.
+            Err(_) => return path.to_string(),
+        }
+    };
+    let mut out = std::path::PathBuf::new();
+    for c in abs.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out.to_string_lossy().into_owned()
+}
+
 pub fn effective_content(path: &str) -> R<Option<Vec<u8>>> {
-    let staged = PENDING.with(|p| p.borrow().files.get(path).cloned());
+    let staged = PENDING.with(|p| p.borrow().files.get(&stage_key(path)).cloned());
     match staged {
         None => Ok(None),
         Some((buf, append)) => {
@@ -457,7 +496,8 @@ fn require_writable_parent(path: &str) -> R<()> {
     // NotADirectoryError for `open('f.txt/nested','w')` when `f.txt` is a file,
     // and this engine said FileNotFoundError because the staged write had not
     // landed. The staged set is the other half of what exists.
-    let staged_file = PENDING.with(|p| p.borrow().files.contains_key(&*parent.to_string_lossy()));
+    let staged_file =
+        PENDING.with(|p| p.borrow().files.contains_key(&stage_key(&parent.to_string_lossy())));
     if staged_file {
         return Err(LypningError::exc(
             "NotADirectoryError",
@@ -493,7 +533,7 @@ pub fn require_regular_file(path: &str) -> R<()> {
 
 /// Paths this run has deleted or renamed away but not yet committed.
 pub fn is_staged_deleted(path: &str) -> bool {
-    DELETED.with(|d| d.borrow().contains(path))
+    DELETED.with(|d| d.borrow().contains(&stage_key(path)))
 }
 
 /// Is the barrier holding anything back at all?
@@ -528,27 +568,29 @@ pub fn staged_delete_paths() -> Vec<String> {
 /// over a file the program then removes goes on yielding on both, and refusing
 /// it would cost a spawn for a divergence that does not exist.
 pub fn stage_delete(path: &str) {
+    let k = stage_key(path);
     PENDING.with(|p| {
         let mut p = p.borrow_mut();
-        p.files.remove(path);
-        p.order.retain(|x| x != path);
+        p.files.remove(&k);
+        p.order.retain(|x| *x != k);
     });
     DELETED.with(|d| {
-        d.borrow_mut().insert(path.to_string());
+        d.borrow_mut().insert(k);
     });
 }
 
 pub fn stage_write(path: &str, bytes: Vec<u8>) {
     note_write(path);
+    let k = stage_key(path);
     DELETED.with(|d| {
-        d.borrow_mut().remove(path);
+        d.borrow_mut().remove(&k);
     });
     PENDING.with(|p| {
         let mut p = p.borrow_mut();
-        if !p.files.contains_key(path) {
-            p.order.push(path.to_string());
+        if !p.files.contains_key(&k) {
+            p.order.push(k.clone());
         }
-        p.files.insert(path.to_string(), (bytes, false));
+        p.files.insert(k, (bytes, false));
     });
 }
 
@@ -701,7 +743,8 @@ pub fn path_exists(path: &str) -> bool {
     if is_staged_deleted(path) {
         return false;
     }
-    PENDING.with(|p| p.borrow().files.contains_key(path)) || std::path::Path::new(path).exists()
+    PENDING.with(|p| p.borrow().files.contains_key(&stage_key(path)))
+        || std::path::Path::new(path).exists()
 }
 
 pub fn open_file(path: &str, mode: &str, binary: bool) -> R<FileObj> {
@@ -754,14 +797,15 @@ pub fn open_file(path: &str, mode: &str, binary: bool) -> R<FileObj> {
         note_write(path);
         // Staging the write means the file is not truncated until commit; that
         // is intentional, and it is also what makes `open(p,'w')` reversible.
+        let k = stage_key(path);
         DELETED.with(|d| {
-            d.borrow_mut().remove(path);
+            d.borrow_mut().remove(&k);
         });
         PENDING.with(|p| {
             let mut p = p.borrow_mut();
-            if !p.files.contains_key(path) {
-                p.files.insert(path.to_string(), (Vec::new(), m == Mode::Append));
-                p.order.push(path.to_string());
+            if !p.files.contains_key(&k) {
+                p.files.insert(k.clone(), (Vec::new(), m == Mode::Append));
+                p.order.push(k);
             }
         });
         Vec::new()
@@ -849,7 +893,7 @@ pub fn file_write(f: &FileObj, bytes: &[u8]) -> R<usize> {
     note_write(&f.path);
     PENDING.with(|p| {
         let mut p = p.borrow_mut();
-        if let Some((buf, _)) = p.files.get_mut(&f.path) {
+        if let Some((buf, _)) = p.files.get_mut(&stage_key(&f.path)) {
             buf.extend_from_slice(bytes);
         }
     });

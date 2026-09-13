@@ -2164,10 +2164,18 @@ pub fn call_builtin(
                         return Err(unsupported("encoding", &format!("bytes(str, '{e}')")));
                     }
                     if e == "ascii" && !s.is_ascii() {
-                        return Err(LypningError::exc(
-                            "UnicodeEncodeError",
-                            "'ascii' codec can't encode character",
-                        ));
+                        // The THIRD argument -- `errors` -- was read by the
+                        // parser and thrown away, so this arm always encoded
+                        // strictly while `str.encode` on the same two arguments
+                        // honoured the handler. `bytes(s, 'ascii', 'ignore')` is
+                        // `b'hllo'` in CPython and raised here, at exit 1, which
+                        // the dispatcher hands straight back as the program's
+                        // own number. One home for the handlers now.
+                        // (py-fde666bb0d42)
+                        let errors = crate::args::bind(&args, &kw, 2, "errors", "bytes")?;
+                        return Ok(Value::Bytes(Rc::new(
+                            crate::methods::ascii_encode_errors(s, errors.as_ref())?,
+                        )));
                     }
                     Value::Bytes(Rc::new(s.as_bytes().to_vec()))
                 }

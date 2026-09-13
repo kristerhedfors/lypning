@@ -1141,35 +1141,7 @@ fn str_method(
                 // surrogate for the handler to be asked about.
                 Value::Bytes(Rc::new(s.as_bytes().to_vec()))
             } else {
-                let e = match errors.as_ref() {
-                    Some(v) => fmt::to_str(v)?,
-                    None => "strict".to_string(),
-                };
-                match e.as_str() {
-                    "strict" => {
-                        return Err(LypningError::exc(
-                            "UnicodeEncodeError",
-                            "'ascii' codec can't encode character",
-                        ))
-                    }
-                    // Every byte of a non-ASCII character has the high bit set,
-                    // so dropping the non-ASCII BYTES drops exactly the
-                    // characters CPython's `ignore` handler drops.
-                    "ignore" => Value::Bytes(Rc::new(
-                        s.bytes().filter(u8::is_ascii).collect::<Vec<u8>>(),
-                    )),
-                    // One `?` per CODE POINT, which is why this walks chars.
-                    "replace" => Value::Bytes(Rc::new(
-                        s.chars()
-                            .map(|c| if c.is_ascii() { c as u8 } else { b'?' })
-                            .collect::<Vec<u8>>(),
-                    )),
-                    // `backslashreplace`, `xmlcharrefreplace`, `namereplace` and
-                    // `surrogateescape` each have an exact output this engine
-                    // would have to reproduce byte for byte — `namereplace`
-                    // needs the Unicode name table. Refused, not approximated.
-                    _ => return Err(unsupported("encoding", &format!("encode(errors='{e}')"))),
-                }
+                Value::Bytes(Rc::new(ascii_encode_errors(s, errors.as_ref())?))
             }
         }
         "format" => Value::Str(str_format(it, s, &args, &kw)?.into()),
@@ -1179,6 +1151,42 @@ fn str_method(
                 &format!("str.{other}()"),
             ))
         }
+    })
+}
+
+/// `str` -> `bytes` under an ASCII codec that some character does not fit.
+///
+/// One home for the error handlers, because `str.encode(enc, errors)` and
+/// `bytes(str, enc, errors)` are the same operation spelled twice and CPython
+/// answers them identically. `bytes()` used to DISCARD its third argument, so
+/// `bytes('h\u00e9llo', 'ascii', 'ignore')` raised UnicodeEncodeError at exit 1
+/// where CPython answers `b'hllo'` -- and `.encode` on the same string and the
+/// same two arguments answered correctly, one call away. (py-fde666bb0d42)
+pub(crate) fn ascii_encode_errors(s: &str, errors: Option<&Value>) -> R<Vec<u8>> {
+    let e = match errors {
+        Some(v) => fmt::to_str(v)?,
+        None => "strict".to_string(),
+    };
+    Ok(match e.as_str() {
+        "strict" => {
+            return Err(LypningError::exc(
+                "UnicodeEncodeError",
+                "'ascii' codec can't encode character",
+            ))
+        }
+        // Every byte of a non-ASCII character has the high bit set, so dropping
+        // the non-ASCII BYTES drops exactly the characters CPython drops.
+        "ignore" => s.bytes().filter(u8::is_ascii).collect::<Vec<u8>>(),
+        // One `?` per CODE POINT, which is why this walks chars.
+        "replace" => s
+            .chars()
+            .map(|c| if c.is_ascii() { c as u8 } else { b'?' })
+            .collect::<Vec<u8>>(),
+        // `backslashreplace`, `xmlcharrefreplace`, `namereplace` and
+        // `surrogateescape` each have an exact output this engine would have to
+        // reproduce byte for byte -- `namereplace` needs the Unicode name
+        // table. Refused, not approximated.
+        _ => return Err(unsupported("encoding", &format!("encode(errors='{e}')"))),
     })
 }
 
