@@ -101,7 +101,12 @@ pub struct FileObj {
     /// that ends the iteration, or at the next `seek()`. So `for line in f:`
     /// run to the end leaves `tell()` working and a `break` out of it does not,
     /// which is measured (`methods::tell_exact`) rather than reasoned about.
-    #[cfg(feature = "cap-csv")]
+    /// UNGATED 2026-09-13. Gating this on `cap-csv` left the FROZEN CORE with
+    /// no way to record that a stream had been iterated, so `f.tell()` after
+    /// `next(f)` answered a position where CPython raises
+    /// `OSError: telling position disabled by next() call` -- a wrong ANSWER at
+    /// exit 0, which is worse than the refusal the larger variant gives.
+    /// (py-9df101de3e90)
     pub telling: bool,
 }
 
@@ -821,7 +826,6 @@ pub fn open_file(path: &str, mode: &str, binary: bool) -> R<FileObj> {
         newline_mode: NEWLINE_UNIVERSAL,
         #[cfg(feature = "cap-csv")]
         write_gen: write_gen(path),
-        #[cfg(feature = "cap-csv")]
         telling: true,
     })
 }

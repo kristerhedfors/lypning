@@ -1873,6 +1873,10 @@ pub fn call_builtin(
             if let Value::Gen(_) = v {
                 return Ok(v);
             }
+            // Same rule, same reason: `iter(f) is f` for a file object.
+            if let Value::File(_) = v {
+                return Ok(v);
+            }
             let inner = it.make_iter(v)?;
             Value::IterObj(Rc::new(RefCell::new(inner)), "iterator")
         }
@@ -1881,6 +1885,26 @@ pub fn call_builtin(
             let mut i = match &v {
                 Value::IterObj(inner, _) => Iter::Shared(inner.clone()),
                 Value::Gen(g) => Iter::Gen(g.clone()),
+                // A file IS its own iterator in CPython -- `next(f)` is the next
+                // line and `for line in f` is the same object advancing -- and
+                // this arm was missing, so `next(f)` raised `'TextIOWrapper'
+                // object is not an iterator` for a stream `for` iterates
+                // happily one line above. The `Iter::Lines` the loop already
+                // uses is the same reader. (py-9df101de3e90, py-d0f7eb84ef96)
+                Value::File(f) => {
+                    // CPython's file iterator reads AHEAD into a buffer, which
+                    // is why `f.tell()` after `next(f)` is
+                    // `OSError: telling position disabled by next() call` on a
+                    // text stream until the iteration ends or the stream is
+                    // seeked. This engine cannot reproduce the buffer's exact
+                    // boundary, so it records that telling is no longer
+                    // meaningful and `tell()` refuses -- one spawn, and never a
+                    // position CPython would not have given.
+                    if !f.borrow().binary {
+                        f.borrow_mut().telling = false;
+                    }
+                    Iter::Lines(f.clone())
+                }
                 other => {
                     return Err(type_err(format!(
                         "'{}' object is not an iterator",

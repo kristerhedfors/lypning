@@ -2909,17 +2909,31 @@ fn tell_exact(fo: &mio::FileObj) -> R<()> {
     Ok(())
 }
 
+/// The core's half of the check above.
+///
+/// The newline-mode arithmetic needs `FileObj::newline_mode`, which is a `csv`
+/// capability and genuinely absent here -- but the `telling` half is not, and
+/// this stub used to answer `Ok(())` to everything. So the frozen core gave a
+/// POSITION after `next(f)` where CPython raises
+/// `OSError: telling position disabled by next() call`: a wrong answer at exit
+/// 0, where the larger variant refuses. Ungated 2026-09-13 with the field it
+/// reads; it costs 0 bytes of file. (py-9df101de3e90)
 #[cfg(not(feature = "cap-csv"))]
-fn tell_exact(_fo: &mio::FileObj) -> R<()> {
+fn tell_exact(fo: &mio::FileObj) -> R<()> {
+    if !fo.telling {
+        return Err(unsupported(
+            "file-tell",
+            "tell() after the stream has been iterated (CPython raises OSError until the \
+             iteration ends or the stream is seeked)",
+        ));
+    }
     Ok(())
 }
 
-#[cfg(feature = "cap-csv")]
 fn telling_of(f: &Rc<RefCell<mio::FileObj>>) -> bool {
     f.borrow().telling
 }
 
-#[cfg(feature = "cap-csv")]
 fn restore_telling(f: &Rc<RefCell<mio::FileObj>>, on: bool) {
     f.borrow_mut().telling = on;
 }
@@ -2928,12 +2942,6 @@ fn restore_telling(f: &Rc<RefCell<mio::FileObj>>, on: bool) {
 // before this capability existed, which is why both halves take the `Rc` and
 // do their own borrowing: a `&mut FileObj` at the call site is a borrow the
 // core would still have to check.
-#[cfg(not(feature = "cap-csv"))]
-fn telling_of(_f: &Rc<RefCell<mio::FileObj>>) {}
-
-#[cfg(not(feature = "cap-csv"))]
-fn restore_telling(_f: &Rc<RefCell<mio::FileObj>>, _on: ()) {}
-
 #[cfg(feature = "cap-csv")]
 fn seek_restores_telling(f: &Rc<RefCell<mio::FileObj>>) {
     f.borrow_mut().telling = true;
