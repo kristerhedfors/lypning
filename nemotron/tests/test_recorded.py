@@ -72,9 +72,30 @@ AS_REPORTED = {
 # sides recorded one, and the promoted baseline recorded `null` — so the
 # comparison the tuned arm will actually make was the one comparison the guard
 # could not see. Re-grading cost nothing and closes it before any money is spent.
-BASELINE_RUN = "qwen38-regrade-20260913"
+# Moved a FOURTH time 2026-09-13, and this one is not byte-equal like the last.
+# The corpus fold (3395cbb) and the 19 engine fixes it exposed changed what the
+# engine answers, so the same 1,184 completions score 42.57% where they scored
+# 43.75%. Exactly ONE case moved: ntx-09a8ae3281f0, 0.875 -> 0.000.
+#
+# And it did not move because of an engine fix. That case's program READS THE
+# CORPUS AND PRINTS ITS SIZE, and its expected stdout begins "3688" -- the count
+# before the fold. `nt usable` now classifies it UNSATISFIABLE ("want 3688...
+# gives 9064") and it is a case no model, human or CPython can pass. Invariant 3
+# says never quote a remembered corpus size; a held-out case had one baked into
+# its expectation, and growing the corpus invalidated it.
+#
+# It stays in the pre-registered primary-70 denominator, where both arms score 0
+# on it. Dropping it after seeing the data is the move PREREGISTRATION section
+# 3c exists to forbid.
+BASELINE_RUN = "qwen38-regrade-20260913b"
 HOLDOUT_MANIFEST = "80b2fc522202a0ece3b84b299791761c86dd07983596a46650f9bfcb733ce588"
-N_CORPUS, N_HOLDOUT, N_TRAIN = 249, 74, 175
+# 249 -> 517 on 2026-09-13, deliberately and in this diff. `lypning harvest`
+# derived the corpus from 7,243 published sightings that had never been folded
+# in (3395cbb), so the case count roughly doubled. N_HOLDOUT does NOT move: the
+# split lock is frozen, growth lands in train by construction (split.freeze:
+# "Growth is allowed; it lands in train"), and `nt verify` still reports manifest
+# 80b2fc522202a0ec. That is what keeps the promoted baseline comparable.
+N_CORPUS, N_HOLDOUT, N_TRAIN = 517, 74, 443
 
 
 def _fold(run_dir: Path) -> "tuple[float, int, int]":
@@ -178,6 +199,7 @@ RE_DERIVED = {
     # not look like a win.
     "qwen38-regrade-20260912": 0.4375,
     "qwen38-regrade-20260913": 0.4375,
+    "qwen38-regrade-20260913b": 0.42567567567567566,
     "baseline-regraded": 0.33783783783783783,
 }
 
