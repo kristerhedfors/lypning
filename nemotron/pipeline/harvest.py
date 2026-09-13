@@ -17,6 +17,7 @@ import concurrent.futures
 import datetime as _dt
 from collections import Counter, OrderedDict
 from pathlib import Path
+import json
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .acceptance import gate_case
@@ -93,12 +94,26 @@ def _drop_record(cand: Dict[str, Any], gate: str, detail: str) -> Dict[str, Any]
     }
 
 
+def _holdout_losses(out_dir: Path, kept_ids: "set") -> List[str]:
+    """Frozen held-out ids that would not survive this harvest. Empty when there
+    is no lock yet, which is the first harvest and has nothing to protect."""
+    lock = out_dir / "holdout.lock.json"
+    if not lock.exists():
+        return []
+    try:
+        frozen = [e["id"] for e in json.loads(lock.read_text(encoding="utf-8"))["holdout"]]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []                      # unreadable lock is split's problem, not ours
+    return [i for i in frozen if i not in kept_ids]
+
+
 def harvest(
     sources: Iterable[Dict[str, Any]],
     *,
     out_dir: Path,
     jobs: int = 4,
     allow_no_witness: bool = False,
+    allow_holdout_loss: bool = False,
     progress=None,
 ) -> Dict[str, Any]:
     cases, drops = collect(sources)
@@ -128,6 +143,23 @@ def harvest(
 
     kept.sort(key=lambda c: c["id"])
     out_dir.mkdir(parents=True, exist_ok=True)
+    # THE FROZEN SPLIT IS A CONTRACT AND THIS COMMAND REPLACES ITS SUBJECT.
+    # `split.freeze` already refuses a lock whose held-out cases have vanished,
+    # but it finds out at the next `nt split` -- after the corpus that dropped
+    # them is on disk, from a different command, with nothing linking the two.
+    # On 2026-09-13 a bare `nt harvest` (whose default source was `study`
+    # alone, 26 cases) replaced a 249-case corpus and took four held-out cases
+    # with it; the lock broke and only `nt verify` said so. Refuse here, before
+    # the write, naming them.
+    lost = _holdout_losses(out_dir, {c["id"] for c in kept})
+    if lost and not allow_holdout_loss:
+        raise ValueError(
+            "this harvest would drop %d frozen held-out case(s) from the corpus: "
+            "%s\n  The split is a contract: a baseline graded on those cases "
+            "cannot be compared to anything afterwards.\n  Nothing has been "
+            "written. Add the source that produces them, or pass "
+            "allow_holdout_loss=True and expect to re-freeze and re-baseline."
+            % (len(lost), ", ".join(lost[:6]) + (" ..." if len(lost) > 6 else "")))
     write_jsonl(out_dir / "corpus.jsonl", kept)
     write_jsonl(out_dir / "drops.jsonl", drops)
     ledger = {

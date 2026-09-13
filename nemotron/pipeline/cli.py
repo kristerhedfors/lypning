@@ -198,9 +198,17 @@ def _dur(s: Optional[float]) -> str:
 # ------------------------------------------------------------------ step 1
 
 
+#: What `nt harvest` runs when told nothing. It used to be `["study"]` alone,
+#: which is 26 cases; the corpus it replaces was 223 `lypning` cases and 26
+#: `study` ones, so the bare command silently destroyed 90% of the corpus and
+#: broke the held-out lock (2026-09-13, recovered from git). A default that
+#: cannot rebuild what is on disk is not a default, it is a trap.
+DEFAULT_SOURCES = ["lypning", "study"]
+
+
 def cmd_harvest(args: argparse.Namespace) -> int:
     try:
-        sources = [parse_source(s) for s in (args.source or ["study"])]
+        sources = [parse_source(s) for s in (args.source or DEFAULT_SOURCES)]
     except ValueError as exc:
         print("usage: %s" % exc, file=sys.stderr)
         return 2
@@ -214,8 +222,14 @@ def cmd_harvest(args: argparse.Namespace) -> int:
         if args.verbose:
             print("  [%3d/%3d] %s %s" % (done, total, cid, gate), file=sys.stderr)
 
-    ledger = harvest(sources, out_dir=DATA, jobs=args.jobs,
-                     allow_no_witness=args.allow_no_witness, progress=progress)
+    try:
+        ledger = harvest(sources, out_dir=DATA, jobs=args.jobs,
+                         allow_no_witness=args.allow_no_witness,
+                         allow_holdout_loss=args.allow_holdout_loss,
+                         progress=progress)
+    except ValueError as exc:
+        print("%s" % exc, file=sys.stderr)
+        return 1
     print("harvest  kept %d   dropped %d   (candidates %d)"
           % (ledger["kept"], ledger["dropped"], ledger["candidates"]))
     if ledger["drops_by_gate"]:
@@ -1313,8 +1327,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     h = sub.add_parser("harvest", help="step 1: build the corpus from failing cases")
     h.add_argument("--source", action="append",
-                   help="adapter spec, repeatable: study | evalfail:attempts=PATH | "
-                        "jsonl:path=PATH[,map=dst->src]")
+                   help="adapter spec, repeatable; default %s. "
+                        "lypning[:cache=PATH] (refusals from `nt classify`, the "
+                        "source of most of this corpus) | study | "
+                        "evalfail:attempts=PATH | jsonl:path=PATH[,map=dst->src]"
+                        % " ".join(DEFAULT_SOURCES))
+    h.add_argument("--allow-holdout-loss", action="store_true",
+                   help="write a corpus that drops frozen held-out cases. Voids "
+                        "every baseline graded on them; you will need to "
+                        "re-freeze and re-establish one")
     h.add_argument("--jobs", type=int, default=4)
     h.add_argument("--allow-no-witness", action="store_true",
                    help="keep cases with neither a reference nor a recorded failure "

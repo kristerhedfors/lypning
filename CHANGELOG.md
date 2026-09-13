@@ -20,6 +20,29 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-13** — `nt harvest` with no arguments was a delete (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **The default source was `study` alone.** That adapter yields 26 cases; the
+  corpus it replaces is 223 `lypning` cases and 26 `study` ones. A bare
+  `nt harvest` therefore rebuilt 249 cases into 26, took four frozen held-out
+  cases with it, and broke the split lock — discovered here by running it, and
+  recovered from git. A default that cannot rebuild what is on disk is not a
+  default. It is `["lypning", "study"]` now.
+- **The `lypning` adapter was not in `--source`'s help at all**, so the source of
+  most of the corpus was undiscoverable from the CLI. Listed, with its
+  `cache=PATH` option.
+- **A harvest that would drop frozen held-out cases now refuses before writing.**
+  `split.freeze` already declines to honour a lock whose cases have vanished, but
+  it finds out at the *next* `nt split` — after the corpus that dropped them is
+  on disk, from a different command, with nothing linking the two. The refusal
+  names the casualties, says nothing was written, and points at
+  `--allow-holdout-loss` for the case where re-freezing is the intent. Verified
+  by re-running the exact command that caused the loss: it now exits 1, names the
+  four ids, and the corpus md5 is unchanged.
+- Which four is itself the finding: they are the cases whose programs the engine
+  has since learned to run. The guard surfaces corpus depletion as a refusal
+  instead of as silent data loss.
+
 **2026-09-13** — A block count is not portable, and `gate` had been saying so in the wrong direction for nine days (branch `claude/nemotron-lora-pipeline-1zczi2`)
 
 - **`lypning gate` read FAIL against a binary that had never been under its
