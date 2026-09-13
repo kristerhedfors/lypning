@@ -1126,7 +1126,10 @@ fn num_binop(op: BinOp, a: Num, b: Num, both_bool: bool) -> R<Value> {
             }
             Mod => {
                 if y == 0 {
-                    return Err(zero_div("integer division or modulo by zero"));
+                    // `%` alone, not `//` above and not `divmod`, which reaches
+                    // the zero through `FloorDiv` first: `int_mod_by_zero`
+                    // carries the boundary and the measurement.
+                    return Err(int_mod_by_zero());
                 }
                 // Python's % has the SIGN OF THE DIVISOR; Rust's has the sign
                 // of the dividend.

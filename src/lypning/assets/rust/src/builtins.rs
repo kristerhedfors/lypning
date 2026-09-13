@@ -387,15 +387,55 @@ fn kwget(kw: &[(Rc<str>, Value)], name: &str) -> Option<Value> {
 /// says `sort()` in its message, which is why the reported name is a parameter.
 /// `sorted([3, 1], strict_mode=True)` answered `[1, 3]` — the caller asked for
 /// a stricter mode and silently got the default one.
+///
+/// **3.13 rewrote this sentence for every name that reaches here**, so both
+/// wordings are live across the supported range. Measured with
+/// `sorted([3, 1], strict_mode=True)` and eleven siblings on 2026-09-12:
+///
+///   3.9 … 3.12   'strict_mode' is an invalid keyword argument for sort()
+///   3.13         sort() got an unexpected keyword argument 'strict_mode'
+///
+/// CPython changed the SENTENCE, not the names, so the branch belongs here and
+/// at the four sites that spell the same sentence for themselves (`print`,
+/// `int`, `round`, `zip`). **`enumerate` is the exception and must not get it**:
+/// measured the same day, `enumerate([1], bogus=1)` says the older form on 3.13
+/// too, so its site is left alone.
 fn reject_unknown_kw(func: &str, kw: &[(Rc<str>, Value)], allowed: &[&str]) -> R<()> {
     for (k, _) in kw {
         if !allowed.contains(&k.as_ref()) {
-            return Err(type_err(format!(
-                "'{k}' is an invalid keyword argument for {func}()"
-            )));
+            return Err(bad_kw(func, k));
         }
     }
     Ok(())
+}
+
+/// The sentence itself, in one place, so the five sites that raise it cannot
+/// drift apart across a version boundary the way they would as five literals.
+pub(crate) fn bad_kw(func: &str, k: &str) -> LypningError {
+    type_err(if REF_PY_MINOR >= 13 {
+        format!("{func}() got an unexpected keyword argument '{k}'")
+    } else {
+        format!("'{k}' is an invalid keyword argument for {func}()")
+    })
+}
+
+/// How `int()` and `float()` name the numbers they accept. CPython 3.10
+/// inserted "real" into both sentences at once, so both sites read it from
+/// here. Measured on 2026-09-12 with `int([])` and `float([])`:
+///
+///   3.9            int() argument must be a string, a bytes-like object or A NUMBER
+///   3.10 .. 3.13   … or A REAL NUMBER
+///
+/// The rest of each sentence is fixed on all five, and `int()`'s names a
+/// bytes-like object this subset converts before it can reach the message —
+/// CPython's wording is still CPython's wording, and the engine's job is to
+/// repeat it, not to describe itself.
+fn real_number() -> &'static str {
+    if REF_PY_MINOR >= 10 {
+        "a real number"
+    } else {
+        "a number"
+    }
 }
 
 pub fn key_arg(kw: &[(Rc<str>, Value)], name: &str) -> Option<Value> {
@@ -510,10 +550,21 @@ fn arity(name: &str) -> Option<(usize, usize, Say)> {
         "sorted" | "reversed" => (1, 1, Say::Bare),
         "bool" | "float" | "list" | "tuple" | "set" | "dict" => (0, 1, Say::Bare),
         "divmod" | "isinstance" | "filter" => (2, 2, Say::Bare),
-        "int" => (0, 2, Say::Bare),
+        // `int` and `str` are the two names in this table whose WORDING moved
+        // inside the supported range: 3.13 converted both to Argument Clinic
+        // and they changed form with it. Measured with `int('10', 16, 0)` and
+        // `str(b'x', 'u', 's', 'e')` on 2026-09-12:
+        //
+        //   3.9 … 3.12   int() takes at most 2 arguments (3 given)   Say::Paren
+        //   3.13         int expected at most 2 arguments, got 3     Say::Bare
+        //
+        // Every other row of this table said the same thing on all five, which
+        // is why only these two carry the branch. Their FLOORS are zero, so the
+        // ceiling is the only text either of them can reach.
+        "int" => (0, 2, if REF_PY_MINOR >= 13 { Say::Bare } else { Say::Paren }),
         "next" | "iter" => (1, 2, Say::Bare),
         "input" => (0, 1, Say::Bare),
-        "str" => (0, 3, Say::Bare),
+        "str" => (0, 3, if REF_PY_MINOR >= 13 { Say::Bare } else { Say::Paren }),
         // `round` and `sum` have a CEILING and no floor HERE, because their
         // zero-argument messages are neither of the two forms below —
         // `round() missing required argument 'number' (pos 1)` and
@@ -806,9 +857,7 @@ pub fn call_builtin(
             };
             for (k, _) in &kw {
                 if !matches!(k.as_ref(), "sep" | "end" | "file" | "flush") {
-                    return Err(type_err(format!(
-                        "'{k}' is an invalid keyword argument for print()"
-                    )));
+                    return Err(bad_kw("print", k));
                 }
             }
             // One argument is the shape almost every `print` has: take the
@@ -873,9 +922,7 @@ pub fn call_builtin(
             // and this arm used to IGNORE the keyword and fall through to the
             // no-argument case, so `int(x='5')` answered **0** at exit 0.
             if let Some((k, _)) = kw.iter().find(|(k, _)| k.as_ref() != "base") {
-                return Err(type_err(format!(
-                    "'{k}' is an invalid keyword argument for int()"
-                )));
+                return Err(bad_kw("int", k));
             }
             let base_arg = crate::args::bind(&args, &kw, 1, "base", "int")?;
             let explicit_base = base_arg.is_some();
@@ -1044,7 +1091,8 @@ pub fn call_builtin(
                 }
                 Some(other) => {
                     return Err(type_err(format!(
-                        "int() argument must be a string or a number, not '{}'",
+                        "int() argument must be a string, a bytes-like object or {}, not '{}'",
+                        real_number(),
                         type_name(other)
                     )))
                 }
@@ -1098,7 +1146,8 @@ pub fn call_builtin(
             Some(Value::Float(f)) => Value::Float(*f),
             Some(other) => {
                 return Err(type_err(format!(
-                    "float() argument must be a string or a real number, not '{}'",
+                    "float() argument must be a string or {}, not '{}'",
+                    real_number(),
                     type_name(other)
                 )))
             }
@@ -1412,14 +1461,20 @@ pub fn call_builtin(
             if items.is_empty() {
                 return match default {
                     Some(d) => Ok(d),
-                    // CPython 3.12 rewrote this message: 3.9 said
-                    // "min() arg is an empty sequence" and the reference this
-                    // repository grades against (3.14.5) says
-                    // "min() iterable argument is empty". An empty match set is
-                    // the NORMAL case for a glob and `min`/`max` are positions
-                    // `route.rs` admits, so the older wording became reachable
-                    // from an advertised one.
-                    None => Err(value_err(format!("{name}() iterable argument is empty"))),
+                    // CPython 3.12 rewrote this message, and both wordings are
+                    // live on hosts this package supports. Measured with
+                    // `min([])` on 2026-09-12:
+                    //
+                    //   3.9 3.10 3.11  min() arg is an empty sequence
+                    //   3.12 3.13      min() iterable argument is empty
+                    //
+                    // An empty match set is the NORMAL case for a glob and
+                    // `min`/`max` are positions `route.rs` admits, so this text
+                    // is reachable from an advertised one on every host.
+                    None if REF_PY_MINOR >= 12 => {
+                        Err(value_err(format!("{name}() iterable argument is empty")))
+                    }
+                    None => Err(value_err(format!("{name}() arg is an empty sequence"))),
                 };
             }
             let mut best = items[0].clone();
@@ -1522,9 +1577,7 @@ pub fn call_builtin(
                 .iter()
                 .find(|(k, _)| !matches!(k.as_ref(), "number" | "ndigits"))
             {
-                return Err(type_err(format!(
-                    "'{k}' is an invalid keyword argument for round()"
-                )));
+                return Err(bad_kw("round", k));
             }
             let v = crate::args::bind(&args, &kw, 0, "number", "round")?
                 .ok_or_else(|| type_err("round() missing required argument 'number' (pos 1)"))?;
@@ -1630,6 +1683,16 @@ pub fn call_builtin(
             // function's wording and not this one's.
             let v = match args.first() {
                 Some(v) => v.clone(),
+                // 3.11 dropped the position from this sentence. Measured with
+                // `enumerate()` on 2026-09-12: 3.9 and 3.10 say
+                // `… required argument 'iterable' (pos 1)`, 3.11 … 3.13 stop at
+                // the name. `round()` and `open()` below KEPT theirs on all
+                // five, which is why only this one branches.
+                None if REF_PY_MINOR < 11 => {
+                    return Err(type_err(
+                        "enumerate() missing required argument 'iterable' (pos 1)",
+                    ))
+                }
                 None => {
                     return Err(type_err("enumerate() missing required argument 'iterable'"))
                 }
@@ -1659,9 +1722,15 @@ pub fn call_builtin(
                 if k.as_ref() == "strict" {
                     return Err(unsupported("argument", "keyword strict"));
                 }
-                return Err(type_err(format!(
-                    "'{k}' is an invalid keyword argument for zip()"
-                )));
+                // `zip` took no keywords at all before 3.10 (`strict` is what
+                // gave it one), and says so in a sentence of its own. Measured
+                // with `zip([1], bogus=1)` on 2026-09-12: 3.9 `zip() takes no
+                // keyword arguments`; 3.10 … 3.12 the invalid-keyword sentence;
+                // 3.13 the unexpected-keyword one.
+                if REF_PY_MINOR < 10 {
+                    return Err(type_err("zip() takes no keyword arguments"));
+                }
+                return Err(bad_kw("zip", k));
             }
             let mut its = Vec::with_capacity(args.len());
             for i in 0..args.len() {
@@ -1770,7 +1839,16 @@ pub fn call_builtin(
             if args.len() == 2 {
                 let v = arg1(name, &args)?;
                 if !matches!(v, Value::Func(_) | Value::Builtin(_) | Value::Bound(..)) {
-                    return Err(type_err("iter(v, w): v must be callable"));
+                    // The one row in this file where the wording is a SINGLE
+                    // version's. Measured with `iter([1, 2], 0)` on 2026-09-12:
+                    // 3.12 says `iter(object, sentinel): object must be
+                    // callable`; 3.9, 3.10, 3.11 and 3.13 all say the short
+                    // form, so this is a rename and its revert, not a boundary.
+                    return Err(type_err(if REF_PY_MINOR == 12 {
+                        "iter(object, sentinel): object must be callable"
+                    } else {
+                        "iter(v, w): v must be callable"
+                    }));
                 }
                 return Err(unsupported("builtin", "iter(callable, sentinel)"));
             }
@@ -2256,8 +2334,13 @@ fn codec_without_subject(
 ) -> Option<LypningError> {
     if let Some(e) = enc {
         if !matches!(e, Value::Str(_)) {
+            // 3.10 started naming the parameter here. Measured with
+            // `str(1, 0)` and `bytes(2, 0)` on 2026-09-12: 3.9 says
+            // `str() argument 2 must be str, not int`, 3.10 … 3.13 say
+            // `str() argument 'encoding' must be str, not int`.
+            let which: &str = if REF_PY_MINOR >= 10 { "'encoding'" } else { "2" };
             return Some(type_err(format!(
-                "{who}() argument 'encoding' must be str, not {}",
+                "{who}() argument {which} must be str, not {}",
                 type_name(e)
             )));
         }

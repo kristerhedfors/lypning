@@ -58,7 +58,16 @@ fn main() {
 fn run(argv: &[String]) -> i32 {
     let mut i = 1;
     if argv.len() > 1 && (argv[1] == "--version" || argv[1] == "-V") {
-        println!("lypning {} ({})", env!("CARGO_PKG_VERSION"), lypning::err::ENGINE);
+        // The trailing field is not decoration. A handful of this engine's
+        // answers are CPython's own and CPython does not word them the same on
+        // every version this package supports, so the binary carries the one it
+        // was compiled to agree with (`err::REF_PY_MINOR`, `docs/SUBSET.md`
+        // §6a) — and a binary built for one CPython and graded against another
+        // is wrong in the shape that reads as an engine defect. The binary is
+        // the only thing that knows which one it speaks, so it says so, from
+        // the very constant the branches read rather than a second copy of it.
+        println!("lypning {} ({}) for cpython 3.{}", env!("CARGO_PKG_VERSION"),
+                 lypning::err::ENGINE, lypning::err::REF_PY_MINOR);
         return 0;
     }
     if argv.len() > 1 && argv[1] == "route" {

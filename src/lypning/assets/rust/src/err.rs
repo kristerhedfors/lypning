@@ -131,6 +131,49 @@ impl LypningError {
 /// spectrum (`route::SPECTRUM`); the same constant in every target of the crate.
 pub const ENGINE: &str = env!("LYPNING_ENGINE");
 
+/// The REFERENCE CPython's minor version — `11` for a 3.11 host — from
+/// `build.rs`, which asks the same interpreter `engines.find_cpython()` names.
+///
+/// **CPython's answer is not the same on every version this package supports.**
+/// `pyproject.toml` says `requires-python = ">=3.9"`, and across 3.9 … 3.13 the
+/// same program gets a different message, and in one case a different TYPE
+/// NAME, from CPython itself. A subset runtime that has one answer for all of
+/// them is wrong on four hosts out of five, and wrong in the shape that is
+/// hardest to see: exit 1 either way, with one word different on stderr.
+///
+/// So the rule is narrower than "this construct is version-dependent" — it is
+/// **the ANSWER differs across the versions this package supports**, and where
+/// all of them agree, this constant is not consulted and the engine keeps
+/// answering. `sorted([3, 1], strict_mode=True)` is the case that pins the
+/// difference: its message DOES differ (3.13 rewrote it), so it is worded here
+/// per host — and it still exits 1 with CPython's own TypeError on every one of
+/// them, where a refusal keyed on "version-dependent" would have thrown away a
+/// correct answer for a construct no interpreter accepts.
+///
+/// Read the boundaries at their sites, not here: each one carries the five-way
+/// measurement that fixed it.
+pub const REF_PY_MINOR: u32 = parse_minor(env!("LYPNING_REF_PY"));
+
+/// `"3.11"` -> `11`, at compile time. `build.rs` has already refused anything
+/// that is not `3.<digits>`, so this only has to read the digits; a string that
+/// somehow reaches here without them yields 0, which every site below treats as
+/// "older than every boundary" and which no reachable build can produce.
+const fn parse_minor(s: &str) -> u32 {
+    let b = s.as_bytes();
+    let mut i = 0;
+    // Skip the major and its dot: the floor is 3.9 and there is no 4.
+    while i < b.len() && b[i] != b'.' {
+        i += 1;
+    }
+    i += 1;
+    let mut v = 0;
+    while i < b.len() && b[i] >= b'0' && b[i] <= b'9' {
+        v = v * 10 + (b[i] - b'0') as u32;
+        i += 1;
+    }
+    v
+}
+
 /// The refusal line, spelled in exactly one place (CLAUDE.md invariant 2 and 9):
 /// `<engine>: unsupported: <kind>: <detail>`. Everything that writes one — the
 /// error's `Display`, the CLI's option refusal, the embedding's NUL refusal —
@@ -260,6 +303,24 @@ pub fn overflow_err(msg: impl Into<String>) -> LypningError {
 
 pub fn zero_div(msg: &str) -> LypningError {
     LypningError::exc("ZeroDivisionError", msg)
+}
+
+/// CPython's ZeroDivisionError for integer `%` by zero, which is the ONE
+/// operator of the family whose text moved. Measured on 2026-09-12 with
+/// `1 % 0`, `1 // 0` and `divmod(1, 0)`:
+///
+///   3.9 3.10       integer division or modulo by zero
+///   3.11 3.12 3.13 integer modulo by zero
+///
+/// `//` and `divmod` keep the long sentence on all five, so they call
+/// `zero_div` directly and this function is `%`'s alone — widening it to the
+/// family would break two correct messages to fix one wrong one.
+pub fn int_mod_by_zero() -> LypningError {
+    zero_div(if REF_PY_MINOR >= 11 {
+        "integer modulo by zero"
+    } else {
+        "integer division or modulo by zero"
+    })
 }
 
 

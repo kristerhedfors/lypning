@@ -104,8 +104,12 @@ installed, and a cross-target one under a suffixed name, never the plain one.
 `engines.SPECTRUM`); `build.build_rust` (`unsupported contract: held` or
 `BROKEN — <why>`, `ok` false on BROKEN); `build.build_lib` (through
 `embed.check_refusal_contract`); `build.install_binaries` (`--target i686`
-installs `lypning-i686`); `cli.cmd_build` (exit 1 unless every artefact
-built).
+installs `lypning-i686`); `build.reference_python_env` and `build.rs`
+`probe_python` (which CPython the crate is compiled to agree with:
+`engines.find_cpython()` when `lypning build` is the caller, else `$LYPNING_CPYTHON`,
+else `python3`, else the tables' own `REF_PY_FALLBACK` — and a pin that no
+longer runs falls through, it does not select the fallback); `cli.cmd_build`
+(exit 1 unless every artefact built).
 ```bash
 # CHECK — `c2-build.sh`.
 lypning build --rust -v > build.txt; echo $?; grep -E '^(engine|lypning|installed)|unsupported contract' build.txt
@@ -123,6 +127,7 @@ lypning    host    818080  7       <s>   ok  (rustup not found: built for the ho
 |---|---|---|
 | the contract on the fresh binary | `FAILED: the unsupported contract is broken: exit 1, expected 90 (…)` — not installed | build, exit 1 |
 | the binary mis-names itself, or its table drifts | `BROKEN — the binary calls itself 'lypning', expected 'lypning-l'`; `BROKEN — the compiled spectrum […] is not engines.SPECTRUM […]` | build |
+| a build takes the reference CPython from a stale pin's fallback instead of from `python3` | `lypning --version` ends `for cpython 3.13` on a 3.11 host and `min([])` says `min() iterable argument is empty` where the host says `min() arg is an empty sequence` — measured 2026-09-12 with `env -u LYPNING_REF_PY LYPNING_CPYTHON=/nonexistent/python3 cargo build --release` in `src/lypning/assets/rust` | doctor, exit 1 (`FAIL reference cpython`); pytest: `tests/test_build.py::test_the_suite_and_the_engine_it_grades_speak_the_same_cpython` |
 
 ```
 # PINNED BY
@@ -359,7 +364,11 @@ FAIL); `build.check_refusal_contract` (one `refusal contract` row per built
 variant, each with its own name); `embed.check_refusal_contract` (`library
 refusal`); `engines.library_binary_drift` over `engines.DRIFT_PROBES`
 (`core/library agreement`: `None` is a NOTE, a hole; `[]` is OK; a list is
-FAIL); `cli._check_cli_collision` (`lypning on PATH`);
+FAIL); `engines.reference_minor` — the core's own `--version` — against
+`build.reference_python_env` (`reference cpython`: the CPython the binary was
+BUILT to agree with against the one it falls through to; FAIL when they differ,
+WARN when the binary predates the field, NOTE when no CPython answered);
+`cli._check_cli_collision` (`lypning on PATH`);
 `cli._recent_capture_note` (`harness note`, from the log's last 7 days).
 ```bash
 # CHECK — `c7-doctor.sh`.
@@ -370,18 +379,20 @@ OK   refusal contract              exit 90, one line on stderr, clean stdout
 OK   refusal contract (lypning-l)  exit 90, one line on stderr, clean stdout
 OK   library refusal               /tmp/lyp-b1/lib/liblypning.dylib — unsupported status, clean stdout, one line, falls onward
 # … | vdiff c7-doctor   (18 rows, `18 check(s), 0 FAIL, 4 WARN`, `0`, `True []`)
-# differs: paths; the WARN rows, which describe the host and the install; the corpus count; with no library built the two library rows are NOTEs (`liblypning is not built — …`; `not compared — the C ABI or the Rust core is not built, so the frontier probes had one artifact to ask`)
+# differs: paths; the `reference cpython` row, which the 2026-09-04 run predates and which names the host's minor version; the WARN rows, which describe the host and the install; the corpus count; with no library built the two library rows are NOTEs (`liblypning is not built — …`; `not compared — the C ABI or the Rust core is not built, so the frontier probes had one artifact to ask`)
 # must not: `0 FAIL`, exit 0, `OK refusal contract` for every built variant, `OK library refusal` when the library is built
 ```
 
 | FAILURE MODES — what regressed | what it prints | which gate turns red |
 |---|---|---|
 | the core, CPython, a variant's contract, or `$LYPNING_LIB` | `FAIL lypning core  not built — …`; `FAIL cpython  no real CPython found — the last tier is missing`; `FAIL refusal contract (lypning-l)  <why>`; `FAIL library refusal  $LYPNING_LIB points at …, which does not exist — …` | doctor, exit 1 |
+| the core was built for another CPython — a stale binary, a `$LYPNING_CPYTHON` that moved, a wheel built elsewhere | `FAIL reference cpython  built for CPython 3.13 but falls through to /usr/bin/python3.11, which is 3.11 — the version-dependent answers (`docs/SUBSET.md` §6a) are 3.13's on a 3.11 host, and every one of them reads as an engine defect. Run `lypning build --rust`` | doctor, exit 1; pytest: `tests/test_build.py::test_the_suite_and_the_engine_it_grades_speak_the_same_cpython` |
 | the library answers from an older tree (`build --rust` without `--lib`) | `FAIL core/library agreement  N of 7 probes disagree — the C ABI and the binary were built from different trees; run `lypning build --rust --lib`. First: …` — only where a probe in `engines.DRIFT_PROBES` differs | doctor; pytest: `tests/test_embed.py::test_library_agrees_with_the_binary` |
 
 ```
 # PINNED BY — no test drives `lypning doctor` end to end; its predicates are pinned here and by §C1's tests
 tests/test_cli.py::test_status_reports_an_unbuilt_engine_as_not_built  tests/test_embed.py::test_library_agrees_with_the_binary  tests/test_verification.py::test_every_expected_file_holds_against_a_fresh_run
+tests/test_build.py::test_the_suite_and_the_engine_it_grades_speak_the_same_cpython  tests/test_build.py::test_the_build_tells_the_crate_which_cpython_it_stands_in_front_of
 tests/test_embed.py::test_a_named_library_that_is_missing_is_a_bad_override_not_an_absence
 ```
 ## 8. C8 — The net

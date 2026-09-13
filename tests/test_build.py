@@ -11,6 +11,7 @@ Every one of those fails silently, which is why they are pinned here.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -297,3 +298,70 @@ def test_the_measured_code_size_reaches_the_result_object(tmp_path, monkeypatch)
     r = build.BuildResult(engines.LYPNING, ok=True, size_bytes=1, **dict(
         zip(("text_bytes", "text_note"), build._text(tmp_path))))
     assert r.text_bytes == 4242 and r.text_note == ".text only"
+
+
+def test_the_build_tells_the_crate_which_cpython_it_stands_in_front_of(tmp_path, monkeypatch):
+    # A handful of CPython's own messages, and one type name, are not the same
+    # on every version `pyproject.toml` supports (`docs/SUBSET.md` §6a), so the
+    # crate compiles the reference version in. The value must come from the
+    # interpreter `conformance` grades against and the dispatcher falls through
+    # to — `engines.find_cpython()` — and NOT from `sys.version_info`, which is
+    # whichever python happens to be running this build.
+    #
+    # Pinned against a STAND-IN rather than against the real interpreter,
+    # because comparing `find_cpython()` with `sys.version_info` pins nothing:
+    # `find_cpython()` walks $PATH and `uv run --python X` puts X at the head of
+    # it, so the two agree under every harness this suite runs on and the
+    # assertion would hold just as well for the implementation it exists to
+    # forbid. A fake that answers a version no harness can be is the version of
+    # this test that can fail.
+    fake = tmp_path / "python3"
+    fake.write_text("#!/bin/sh\necho 3.99\n", encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setattr(engines, "find_cpython", lambda: fake)
+    assert "3.%d" % sys.version_info[1] != "3.99", "the stand-in must not be the harness"
+    assert build.reference_python_env() == {"LYPNING_REF_PY": "3.99"}
+
+
+def test_the_suite_and_the_engine_it_grades_speak_the_same_cpython(lypning_bin):
+    """The harness mistake that reads as an engine defect, said once.
+
+    Every grid takes its oracle from ``sys.executable`` and compares it with
+    this binary — which answers the wordings of the CPython it was BUILT for
+    (``err::REF_PY_MINOR``, ``docs/SUBSET.md`` §6a). Let those be two versions
+    and every version-dependent row fails for the harness's reason while naming
+    the engine. Measured 2026-09-12 in a fresh worktree where ``uv run --with
+    pytest`` resolved ``requires-python = ">=3.9"`` down to 3.9 against an
+    engine built for the host's 3.11: **137 failures**, not one of them an
+    engine defect. One loud line is the whole fix.
+
+    The ARTEFACT is asked, not :func:`engines.find_cpython` — find_cpython says
+    what the next build would compile in, and a binary built before ``$PATH``
+    last moved does not have to agree with it. A binary is a skip only when
+    there is none (the fixture's job); one that will not say which CPython it
+    speaks cannot be shown to agree with anything, and rebuilding is one line.
+    """
+    built_for = engines.reference_minor(lypning_bin)
+    ours = "3.%d" % sys.version_info[1]
+    assert built_for is not None, (
+        "%s does not say which CPython it was built to agree with, so this suite cannot "
+        "tell whether it agrees with the %s it is graded against (%s). Rebuild it: "
+        "`lypning build --rust`." % (lypning_bin, ours, sys.executable))
+    assert built_for == ours, (
+        "this suite grades with CPython %s (%s) an engine built to answer CPython %s's "
+        "wordings (%s). Every version-dependent row will fail for that reason and blame "
+        "the engine. Rebuild the engine for this interpreter — `%s -m lypning build "
+        "--rust` — or run the suite under CPython %s."
+        % (ours, sys.executable, built_for, lypning_bin, sys.executable, built_for))
+
+
+def test_a_reference_python_that_cannot_answer_sets_nothing(monkeypatch):
+    # Never fails a build and never guesses: with no usable answer the variable
+    # is absent, `build.rs` asks for itself, and its fallback is the version the
+    # crate's tables were read off.
+    monkeypatch.setattr(build, "_run", lambda *a, **k: (1, "boom"))
+    assert build.reference_python_env() == {}
+    monkeypatch.setattr(build, "_run", lambda *a, **k: (0, "3.11.15\n"))
+    assert build.reference_python_env() == {}      # "3.11.15" is not "3.<minor>"
+    monkeypatch.setattr(build, "_run", lambda *a, **k: (0, "warning: x\n3.13\n"))
+    assert build.reference_python_env() == {"LYPNING_REF_PY": "3.13"}

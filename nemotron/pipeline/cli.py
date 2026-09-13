@@ -811,6 +811,27 @@ def _per_case(run_id: str) -> Dict[str, float]:
     return {k: sum(v) / len(v) for k, v in agg.items()}
 
 
+def _denominators(engine: Optional[str]) -> List[Tuple[str, List[str], bool]]:
+    """`(label, excluded ids, is_primary)` — the pre-registered denominators.
+
+    Computed from the engine, never a hardcoded list of ids: the criterion is
+    mechanical (`refusals.usable_cases`) precisely so that which cases count is
+    not a thing anyone chooses after seeing a score.
+    """
+    from . import refusals
+    cases = list(read_jsonl(DATA / "holdout.jsonl"))
+    if not engine:
+        return [("all cases", [], True)]
+    r = refusals.usable_cases(cases, engine)
+    deg = list(r["degenerate"])
+    unsat = [row["id"] for row in r["unsatisfiable"]]
+    return [
+        ("all %d (secondary)" % len(cases), [], False),
+        ("%d non-degenerate (PRIMARY)" % (len(cases) - len(deg)), deg, True),
+        ("%d usable" % len(r["usable"]), deg + unsat, False),
+    ]
+
+
 def cmd_compare(args: argparse.Namespace) -> int:
     """Paired delta between two runs over the cases both measured."""
     before, after = _per_case(args.before), _per_case(args.after)
@@ -858,6 +879,35 @@ def cmd_compare(args: argparse.Namespace) -> int:
     if args.ids:
         print("gained:", ", ".join(d["gained_ids"]))
         print("lost  :", ", ".join(d["lost_ids"]))
+    # THE PRE-REGISTERED RULE, over every denominator it names. It lived only in
+    # PREREGISTRATION.md until 2026-09-12 and was applied by hand each time,
+    # which is the shape of a rule nobody can be held to.
+    if not args.no_rule:
+        engine = eng.engine_path("lypning-l") or eng.engine_path("lypning")
+        if not engine:
+            print("\nrule: n/c — no lypning binary, so the denominators cannot "
+                  "be computed (`lypning build --rust`)")
+        else:
+            print()
+            print("the pre-registered rule — a win needs BOTH legs "
+                  "(PREREGISTRATION.md §3)")
+            print("  %-28s %4s %8s %8s %9s %-18s %8s  %s"
+                  % ("denominator", "n", "before", "after", "delta", "95% CI",
+                     "McNemar", "verdict"))
+            for label, drop, primary in _denominators(engine):
+                v = stats.decide(before, after, exclude=drop)
+                if not v.get("n_pairs"):
+                    print("  %-28s %s" % (label, v.get("why")))
+                    continue
+                print("  %-28s %4d %7.2f%% %7.2f%% %+8.2fpp [%+.2f,%+.2f]%s %7.4f  %s%s"
+                      % (label, v["n_pairs"], 100 * v["before_point"],
+                         100 * v["after_point"], 100 * v["delta"],
+                         100 * v["ci95"]["lo"], 100 * v["ci95"]["hi"], " " * 3,
+                         v["mcnemar_p"],
+                         "WIN" if v["fires"] else "no",
+                         "  <-- primary" if primary else ""))
+                if primary and not v["fires"]:
+                    print("  %-28s   %s" % ("", v["why"]))
     base = _armed(read_json(BASELINE)) if BASELINE.exists() else None
     if base is None or a_sum is None:
         return 0
@@ -1195,6 +1245,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     cp = sub.add_parser("compare", help="paired delta between two runs")
     cp.add_argument("before"); cp.add_argument("after")
+    cp.add_argument("--no-rule", action="store_true",
+                    help="skip the pre-registered denominators (they need the engine)")
     cp.add_argument("--ids", action="store_true", help="list the cases that moved")
     cp.add_argument("--anyway", action="store_true",
                     help="print the arithmetic for two runs that measured different "

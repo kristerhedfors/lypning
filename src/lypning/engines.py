@@ -297,6 +297,39 @@ def find_cpython() -> Path | None:
     return Path(sys.executable).resolve() if sys.executable else None
 
 
+#: ``lypning 0.1.0 (lypning) for cpython 3.11`` — the tail of a built engine's
+#: ``--version``. The compiled-in reference version is legible nowhere else from
+#: outside the binary, and the binary is the only thing that knows it.
+_REFERENCE_MINOR_RE = re.compile(r"for cpython (3\.\d+)")
+
+
+def reference_minor(binary: Path) -> str | None:
+    """Which CPython's wordings the engine at *binary* was compiled to answer.
+
+    ``"3.11"``, or ``None`` for a binary that does not say — one built before
+    the field existed, or one that would not run. A handful of the engine's
+    answers are CPython's own and CPython does not word them the same on every
+    version this package supports (``docs/SUBSET.md`` §6a), so an engine built
+    for one interpreter and graded against another is wrong in the one shape
+    that reads as an engine defect rather than as a stale build. Asking the
+    ARTEFACT is the point: :func:`find_cpython` answers what the next build
+    would compile in, which a binary built before ``$PATH`` last moved does not
+    have to agree with.
+
+    Two readers, one question: ``cli._doctor_checks`` compares this with
+    :func:`build.reference_python_env`, and
+    ``tests/test_build.py::test_the_suite_and_the_engine_it_grades_speak_the_same_cpython``
+    with the interpreter the suite grades against.
+    """
+    try:
+        proc = subprocess.run([str(binary), "--version"], capture_output=True,
+                              text=True, timeout=30.0)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = _REFERENCE_MINOR_RE.search(proc.stdout or "")
+    return m.group(1) if m else None
+
+
 def find_variant(engine: str) -> Path | None:
     """A Rust variant other than the unsuffixed core: its env pin, the state bin
     dir, then PATH — the order `main.rs` `engine_path_named` searches, so the
