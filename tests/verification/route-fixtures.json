@@ -38,8 +38,13 @@
  },
  {
   "program": "import re; print(re.findall(r\"(?P<n>a)\", \"aa\"))",
+  "route": "lypning-l\tmodule: import re",
+  "note": "ASCII named captures are served by lypning-l. The shared pattern parser must admit this slice from the core, which still refuses native import re."
+ },
+ {
+  "program": "import re; print(re.findall(r\"(?P<n>a)(?P=n)\", \"aa\"))",
   "route": "cpython\tmodule: import re",
-  "note": "A pattern outside the slice, and the CORE routes it to CPython: since #48 the pattern PARSER is `repat.rs`, which every variant carries, so the binary that ROUTES answers the question the binary that RUNS would have. The KIND is still the core's own first blocker — `module: import re` is the row `--plan` ranks here — and the VERDICTS are the spectrum's, which is what picks the engine. lypning-l's own walker prints `cpython\tre: pattern '(?P<n>a)': named group (?P<name>…)`, which tests/test_re_grid.py pins. Before #48 this row read `lypning-l\tmodule: import re`: the core was optimistic, the chain handed the program to lypning-l with `-c` rather than `run`, and lypning-l refused at RUNTIME."
+  "note": "Named backreferences remain outside the slice. The shared repat.rs parser routes this pattern directly to CPython from the core, preserving #48's static refusal guarantee without blocking the named captures that L now serves. The core's first blocker remains module: import re."
  },
  {
   "program": "import re, os; os.makedirs(\"d\"); print(re.findall(b\"a\", b\"aa\"))",

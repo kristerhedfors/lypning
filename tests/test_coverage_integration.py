@@ -27,6 +27,11 @@ PROGRAMS = [
     "for row in rows:\n"
     "    if row:\n"
     "        print(re.sub('(?P<letter>[a-z])', lambda m: m['letter'].upper(), row[0]), row[1])\n",
+    "import re, csv\n"
+    "text = '\"a\\rb\",1\\n\"x\\ry\",2\\n'\n"
+    "lines = [m['row'] for m in re.finditer(r'(?P<row>[^\\n]+\\n)', text)]\n"
+    "for row in csv.reader(lines):\n"
+    "    print(row[0], end='|')\n",
 ]
 
 
@@ -39,6 +44,6 @@ def test_csv_and_named_regex_compose_natively(program, monkeypatch):
     reference = engines.run(engines.CPYTHON, program)
     result = engines.run(engines.LYPNING_L, program, binary=binary)
     assert reference.returncode == 0, reference.stderr
-    assert (result.returncode, result.stdout, result.stderr) == (
-        0, reference.stdout, reference.stderr
+    assert (result.returncode, result.stdout_bytes, result.stderr_bytes) == (
+        0, reference.stdout_bytes, reference.stderr_bytes
     )
