@@ -94,17 +94,24 @@ def test_a_target_nobody_measured_is_reported_and_not_gated():
     assert c.value == 99, c.value                       # the measurement is still reported
 
 
-def test_the_target_comes_from_the_artefact_not_from_the_host():
+def test_the_target_comes_from_the_artefact_not_from_the_host(tmp_path):
     """`elf_target` reads the triple off the ELF it is handed. A dynamic build
     is the control (`build._TARGETS`), not a shipping target, and naming it
     would re-open the door this change closed."""
-    from pathlib import Path
-    binary = engines.find(engines.LYPNING)
-    if binary is None:
-        pytest.skip("lypning is not built")
-    assert gate.elf_target(Path(binary), True) == gate.MUSL_X86_64
-    assert gate.elf_target(Path(binary), False) is None      # dynamic: ungated
-    assert gate.elf_target(Path(__file__), True) is None      # not an ELF at all
+    import struct
+
+    # A host build is Mach-O on macOS and ELF on Linux, so discovering whatever
+    # binary happens to be installed makes this test a claim about the host.
+    # Hand the reader the one header field it promises to classify instead.
+    binary = tmp_path / "lypning"
+    header = bytearray(0x14)
+    header[:4], header[4], header[5] = b"\x7fELF", 2, 1
+    struct.pack_into("<H", header, 0x12, 0x3E)       # ELFCLASS64, EM_X86_64
+    binary.write_bytes(header)
+
+    assert gate.elf_target(binary, True) == gate.MUSL_X86_64
+    assert gate.elf_target(binary, False) is None    # dynamic: ungated
+    assert gate.elf_target(tmp_path / "absent", True) is None
 
 
 # --- the code section, beside the file size ----------------------------------

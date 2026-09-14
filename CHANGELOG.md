@@ -14,6 +14,13 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-14** — Gate target detection is tested against the artifact, not the host (direct commit to `main`)
+
+- The target-classification test now supplies an explicit x86-64 ELF header
+  instead of discovering a host binary and requiring a macOS Mach-O build to
+  identify as Linux musl. The gate's artifact-derived behavior is unchanged;
+  the test is deterministic on both supported host platforms.
+
 > Four entries below cite a **commit**, not a pull request: those changes were
 > merged straight to `main` and never had one. The numbers in their merge
 > subjects (`#43`, `#45`–`#47`) do not refer to them — `#43` and `#45` are
