@@ -324,8 +324,8 @@ CASES = [
         # Three answers that were wrong at exit 0 in code landed EARLIER TODAY,
         # found by an adversarial gate agent re-checking it after it shipped.
         #
-        # `-1` is all sign bits, so sign-extending it into zero bytes loses
-        # nothing and CPython answers `b''`; this raised OverflowError. It is
+        # Older CPython accepts signed -1 in zero bytes; some later patch
+        # releases raise OverflowError. The build probes that behavior. It is
         # the only value in -3..3, +-256, +-257, 255 and i64::MIN that breaks.
         #
         # And CPython validates `byteorder` BEFORE the length, so a negative
@@ -379,12 +379,9 @@ CASES = [
         # the integer-modulo branch to the family — the obvious next edit —
         # breaks this row instead of passing it.
         #
-        # The float `%` is deliberately NOT a row. 3.13 rewrote it too ("float
-        # modulo" -> "float modulo by zero", measured the same day) and the
-        # engine still says the older form on every host, so pinning it here
-        # would fail on a 3.13 reference for a defect this change did not set
-        # out to fix. It is one line of the residue `docs/SUBSET.md` §6a now
-        # records instead of claiming does not exist.
+        # Since 3.14, integer and float division/modulo all say "division by
+        # zero". Float modulo changed once earlier, at 3.13. Include both it
+        # and the distinct zero-to-negative-power message to pin the boundary.
         "zero-division-and-conversion-wordings-say-what-the-host-says",
         "def show(label, fn):\n"
         "    try:\n"
@@ -399,6 +396,8 @@ CASES = [
         "show('int /', lambda: 1 / 0)\n"
         "show('float /', lambda: 1.0 / 0)\n"
         "show('float //', lambda: 1.0 // 0)\n"
+        "show('float %', lambda: 1.0 % 0)\n"
+        "show('float pow', lambda: 0.0 ** -1)\n"
         "for v in ([], None, {}, (), 'nope'):\n"
         "    show('float()', lambda: float(v))\n"
         "    show('int()', lambda: int(v))\n",

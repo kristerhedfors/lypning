@@ -174,6 +174,38 @@ generator. The rest is wording, and the largest pieces of it are named in the
 same five-way measurement, and none of them may become a refusal, because every
 one is an answer CPython gives.
 
+#### The 3.14 boundary
+
+CPython 3.14 changed observable results, not only traceback decoration. Its
+[`ceval.c`](https://github.com/python/cpython/blob/v3.14.0/Python/ceval.c)
+includes the actual size in excess-unpacking errors for exact lists, tuples
+and dicts, but not their iterators or dict subclasses. The engine preserves
+that distinction. Ordinary unpacking consumes at most one excess item before
+raising; starred unpacking still consumes the entire tail.
+
+The 3.14 [`list.index`](https://github.com/python/cpython/blob/v3.14.0/Objects/listobject.c)
+failure no longer renders the missing value. Integer and float division and
+modulo errors now use a common sentence, while zero to a negative power keeps
+its own wording; see
+[`longobject.c`](https://github.com/python/cpython/blob/v3.14.0/Objects/longobject.c)
+and [`floatobject.c`](https://github.com/python/cpython/blob/v3.14.0/Objects/floatobject.c).
+`err::zero_div` selects those messages without changing the exception class.
+Earlier hosts keep their own wordings, including float modulo's separate
+3.13 change.
+
+Zero-length signed integer conversion also differs between patch releases:
+`(-1).to_bytes(0, 'big', signed=True)` returned empty bytes on 3.12.13 and
+raised `OverflowError` on 3.13.13 and 3.14.5, measured 2026-09-15. A minor-version
+check cannot represent that history: the reference behavior probe supplies
+`REF_ZERO_NEGATIVE_BYTES_OVERFLOW`. Zero itself still fits; other nonzero
+integers still overflow, and the unsigned-negative error keeps precedence.
+
+`tests/test_version_semantics.py` requires successful, byte-identical answers
+from both core and L against the running interpreter. It checks exact
+containers against other iterables/subclasses, excess-iterator consumption,
+short/starred/nested unpacking, index bounds, zero-width conversion and numeric
+zero-division errors. It never treats refusal as a passing answer.
+
 ## 7. Failure modes: the unsupported contract
 
 When a program uses something an engine does not implement: exit code **90**,

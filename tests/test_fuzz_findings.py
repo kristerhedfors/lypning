@@ -999,7 +999,8 @@ STDERR_CASES = [
     # `list.index` with a range that excludes the element must RAISE, not find
     # it anyway. Pinned as text because the stdout pin cannot tell this
     # ValueError from a different one.
-    ("list-index-stop-excludes", "print([1, 2, 3].index(3, 0, 2))", "3 is not in list"),
+    ("list-index-stop-excludes", "print([1, 2, 3].index(3, 0, 2))",
+     "list.index(x): x not in list" if sys.version_info >= (3, 14) else "3 is not in list"),
     # `enumerate` is exempt from the no-keywords table because `start` is real,
     # and the exemption used to mean no validation at all.
     ("enumerate-bad-keyword", "print(list(enumerate([1], strict=True)))",

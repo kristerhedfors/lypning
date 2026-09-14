@@ -733,6 +733,30 @@ no deadline and uses `conformance.LIBRARY_STEP_LIMIT` instead (§C14). Only
 `lypning run -c` reaches `LYPNING_POOL`; `lypning -c` and the shim do not,
 and a pool that cannot be reached falls back to a cold spawn.
 
+### Version-shaped errors and unpacking (2026-09-15)
+
+`tests/test_version_semantics.py` requires both Rust engines to answer the
+version-sensitive boundary cases; refusal is not a pass. The mechanism and
+CPython source references live in `docs/SUBSET.md` §6a. Build and test against
+the same selected interpreter, in a worktree with its own state directory:
+
+```bash
+export LYPNING_CPYTHON=/absolute/path/to/python3
+export LYPNING_HOME="$PWD/work/compat-state"
+export PATH="$(dirname "$LYPNING_CPYTHON"):$PATH"
+PYTHONPATH=src "$LYPNING_CPYTHON" -m lypning build --rust --target host
+PYTHONPATH=src uv run --no-project --python "$LYPNING_CPYTHON" --with pytest \
+  python -m pytest tests/test_fuzz_findings.py tests/test_semantics.py \
+  tests/test_version_semantics.py -q
+```
+
+On 2026-09-15, fresh native Darwin arm64 builds against CPython 3.12.13,
+3.13.13 and 3.14.5 each gave 465 passed / 1 skipped for that command. The six
+authored `test_version_semantics.CASES` also passed `conformance.run` on core,
+L and both dispatchers under 3.14.5: all six compared stdout, MISMATCH 0,
+dispatchers agreed 6/6. This checks those six programs, not the full harvested
+corpus. `doctor` under the pinned 3.14.5 reported 0 FAIL.
+
 ## 16. C15 — Names
 **STATEMENT.** Invariant 9. Engine strings are exactly the members of
 `engines.ENGINE_ORDER` — the spectrum `lypning`, `lypning-l`, then `cpython`;

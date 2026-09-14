@@ -1600,7 +1600,11 @@ fn list_method(
                 }
                 i += 1;
             }
-            return Err(value_err(format!("{} is not in list", fmt::repr(&v)?)));
+            return Err(value_err(if crate::err::REF_PY_MINOR >= 14 {
+                "list.index(x): x not in list".to_owned()
+            } else {
+                format!("{} is not in list", fmt::repr(&v)?)
+            }));
         }
         "count" => {
             let v = args.first().cloned().unwrap_or(Value::None);
@@ -2111,14 +2115,10 @@ fn int_method(recv: &Value, name: &str, args: &mut Args, kw: &[(Rc<str>, Value)]
                 // case has already rejected the negatives.
                 true
             } else if n == 0 {
-                // `(0).to_bytes(0, 'big')` is `b''`, and so is
-                // `(-1).to_bytes(0, 'big', signed=True)`: -1 is all sign bits,
-                // and sign-extending it into zero bytes loses nothing. CPython
-                // answers `b''` for it and this raised OverflowError — the one
-                // value in -3..3, ±256, ±257, 255 and i64::MIN that breaks, in
-                // both byteorders, and reached by `~0`, `0 - 1` and `int('-1')`
-                // alike. Nothing else fits in no bytes at all.
-                v == 0 || (signed && v == -1)
+                // Zero always fits. Signed -1 is patch-release dependent:
+                // 3.12.13 returns b'', while 3.13.13/3.14.5 raise overflow.
+                // The build's reference probe owns that behavior boundary.
+                v == 0 || (signed && v == -1 && !crate::err::REF_ZERO_NEGATIVE_BYTES_OVERFLOW)
             } else if signed {
                 let lim = 1i64 << (8 * n as u32 - 1);
                 v >= -lim && v < lim
