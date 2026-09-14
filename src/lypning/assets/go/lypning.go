@@ -67,7 +67,7 @@ const (
 	// This IS the program's answer and is never routed onward.
 	Error Status = C.LYPNING_ERROR
 	// Unsupported: lypning refused. NOT a failure. ExitCode 90, Stdout empty,
-	// Stderr exactly one `lypning: unsupported: <kind>: <detail>` line.
+	// Stderr exactly one `<engine>: unsupported: <kind>: <detail>` line.
 	Unsupported Status = C.LYPNING_UNSUPPORTED
 	// Busy: this thread was already running a program. Nothing executed.
 	// Unreachable from Go (see the package comment) but kept, because the
@@ -99,7 +99,7 @@ func (s Status) String() string {
 // Routing is lypning's own front end answering "which interpreter should run
 // this?" after one parse and no execution. See Route.
 type Routing struct {
-	// Engine is "lypning", "lypning-mp" or "cpython".
+	// Engine is a Rust spectrum variant's name or "cpython".
 	Engine string
 	// Kind and Detail name the construct that pushed the program past lypning
 	// ("module", "import re"), or are "" when nothing did.
@@ -182,6 +182,12 @@ func Version() string {
 	return C.GoString(C.lypning_version())
 }
 
+// EngineName is the variant implemented by the linked library.
+func EngineName() string {
+	checkABI()
+	return C.GoString(C.lypning_engine_self())
+}
+
 // ABIVersion is what the loaded library answers, which after checkABI is also
 // the header's LYPNING_ABI_VERSION.
 func ABIVersion() uint32 {
@@ -225,7 +231,7 @@ func onward(detail string) Result {
 		Status:     Unsupported,
 		ExitCode:   UnsupportedExit,
 		Stdout:     []byte{},
-		Stderr:     []byte("lypning: unsupported: source: " + detail + "\n"),
+		Stderr:     []byte(EngineName() + ": unsupported: source: " + detail + "\n"),
 		Kind:       "source",
 		Detail:     detail,
 		FallOnward: true,

@@ -11,7 +11,7 @@
 import XCTest
 import Lypning
 
-let refusalLine = Array("lypning: unsupported: module: import subprocess\n".utf8)
+let refusalLine = Array("\(Lypning.engineName()): unsupported: module: import subprocess\n".utf8)
 
 /// Run with the working directory moved to a fresh temporary directory, so a
 /// program that writes a file writes it somewhere disposable (CLAUDE.md
@@ -183,18 +183,18 @@ final class IsolationTests: XCTestCase {
 final class RouteTests: XCTestCase {
     func testRouteAnswersWithoutRunningAnything() {
         inScratch { dir in
-            let r = Lypning.route("import re\nopen('written.txt', 'w').write('x')")
-            XCTAssertNotEqual(r.engine, "lypning")
+            let r = Lypning.route("import subprocess\nopen('written.txt', 'w').write('x')")
+            XCTAssertEqual(r.engine, "cpython")
             XCTAssertEqual(r.kind, "module")
-            XCTAssertTrue(r.detail.contains("re"))
-            XCTAssertEqual(r.imports, ["re"])
+            XCTAssertEqual(r.detail, "import subprocess")
+            XCTAssertEqual(r.imports, ["subprocess"])
             XCTAssertFalse(FileManager.default.fileExists(atPath: dir + "/written.txt"))
         }
     }
 
     func testRouteAgreesWithRun() {
         for src in ["print(1)", "import re", "async def f(): pass", "import subprocess", "import sys, os; print(os.getcwd())"] {
-            let routed = Lypning.route(src).engine == "lypning"
+            let routed = Lypning.route(src).engine == Lypning.engineName()
             let ran = !Lypning.run(src).fallOnward
             XCTAssertEqual(routed, ran, src)
         }
@@ -215,5 +215,6 @@ final class RouteTests: XCTestCase {
     func testVersions() {
         XCTAssertEqual(Lypning.abiVersion(), 1)
         XCTAssertFalse(Lypning.version().isEmpty)
+        XCTAssertFalse(Lypning.engineName().isEmpty)
     }
 }

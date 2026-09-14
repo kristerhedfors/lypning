@@ -50,7 +50,7 @@ public enum Status: Equatable {
 /// Where a program would go, decided by lypning's own front end after one
 /// parse and no execution.
 public struct Route: Equatable {
-    /// "lypning", "lypning-mp" or "cpython".
+    /// A Rust spectrum variant's name or "cpython".
     public let engine: String
     /// The construct that pushed it past lypning ("module", "async", …), or "".
     public let kind: String
@@ -97,7 +97,7 @@ public struct Result {
     public let exitCode: Int32
     public let stdout: [UInt8]
     /// The traceback, or after a refusal exactly the one
-    /// `lypning: unsupported: <kind>: <detail>` line the binary would print.
+    /// `<engine>: unsupported: <kind>: <detail>` line the binary would print.
     public let stderr: [UInt8]
     /// The refusal's two halves; "" when the run was not a refusal.
     public let kind: String
@@ -116,6 +116,11 @@ public enum Lypning {
     /// The runtime version, e.g. "0.1.0".
     public static func version() -> String {
         return String(cString: lypning_version())
+    }
+
+    /// The variant implemented by the linked library.
+    public static func engineName() -> String {
+        return String(cString: lypning_engine_self())
     }
 
     /// The ABI the loaded library implements.
@@ -214,7 +219,7 @@ public enum Lypning {
         return Result(status: .unsupported,
                       exitCode: Int32(LYPNING_UNSUPPORTED_EXIT),
                       stdout: [],
-                      stderr: Array("lypning: unsupported: \(kind): \(detail)\n".utf8),
+                      stderr: Array("\(engineName()): unsupported: \(kind): \(detail)\n".utf8),
                       kind: kind, detail: detail,
                       committed: false, fallOnward: true)
     }

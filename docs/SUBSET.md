@@ -178,13 +178,20 @@ Some of the residue is **capability**, not wording, and is left alone rather
 than approximated: `NameError`'s `Did you mean: …?` suggestion (3.10+, the
 engine says the bare 3.9 form and is therefore wrong on four hosts out of five
 whenever a near-miss name exists), `str | None` at runtime (PEP 604, 3.10+),
-`str.replace(count=…)` (3.13+), and the `match` statement (3.10+, a
+and the `match` statement (3.10+, a
 `SyntaxError` here — `route.rs` sends it to CPython, so the chain is right and
 only the bare engine arm is not). A suggestion engine guessed at is a MISMATCH
 generator. The rest is wording, and the largest pieces of it are named in the
 `Unreleased` entry of `CHANGELOG.md` for whoever takes them next: each needs the
 same five-way measurement, and none of them may become a refusal, because every
 one is an answer CPython gives.
+
+`str.replace(count=…)`, added in
+[Python 3.13](https://docs.python.org/3.13/library/stdtypes.html#str.replace),
+is served for references from that version onward. Its implementation and
+keyword validator already agreed, but a second method-level allow-list still
+rejected it. String keyword admission now has one source, `str_kw_allowed`;
+the mandatory-answer version tests cover counts, empty patterns and Unicode.
 
 #### The 3.14 boundary
 

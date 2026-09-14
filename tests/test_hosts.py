@@ -310,3 +310,45 @@ def test_quickstart(host: Host, probe: Probe, builds: _Builds, lypning_lib, tmp_
             "%s\n%s must appear exactly once: 0 means the failure was swallowed, "
             "2 means the host retried a program that had already run" % (shown, probe.stderr_has))
     assert b"unsupported" not in r.stderr, "a refusal leaked to stderr:\n" + shown
+
+
+def _run_contract_example(lang: str, tmp_path):
+    """Build the contract demo against the exact library the fixture loaded."""
+    compiler, standard = ("cc", "c11") if lang == "c" else ("c++", "c++17")
+    cc = shutil.which(compiler, path=_BUILD_ENV.get("PATH"))
+    if cc is None:
+        pytest.skip("%s contract example needs %s" % (lang, compiler))
+    binary = tmp_path / (lang + "-contract")
+    command = [cc, "-std=" + standard, "-Wall", "-Wextra", "-Wpedantic",
+               "-I%s" % _incdir(), str(ASSETS / "examples" / lang / ("embed." + lang)),
+               "-L%s" % _libdir(), "-Wl,-rpath,%s" % _libdir(), "-llypning",
+               "-o", str(binary)]
+    built = subprocess.run(command, env=_BUILD_ENV, capture_output=True,
+                           timeout=BUILD_TIMEOUT)
+    assert built.returncode == 0, built.stderr.decode("utf-8", "replace")
+    cwd = tmp_path / "contract-cwd"
+    cwd.mkdir()
+    got = subprocess.run([str(binary)], cwd=cwd, env=_BUILD_ENV,
+                         capture_output=True, timeout=PROBE_TIMEOUT)
+    assert got.returncode == 0, (got.returncode, got.stdout, got.stderr)
+    assert list(cwd.iterdir()) == [], "the example left its demonstration file behind"
+    return got
+
+
+def test_c_contract_example(lypning_lib, tmp_path) -> None:
+    """Quickstarts cannot detect a stale EXPECT_REFUSED demonstration case."""
+    got = _run_contract_example("c", tmp_path)
+    assert b"all assertions held\n" in got.stdout
+    fallback = got.stdout.split(b"== outside the subset", 1)[1].split(b"\n== ", 1)[0]
+    assert b"refused   module: import subprocess\n" in fallback
+    assert b"exit      0 (cpython)\n" in fallback
+    speech = b"the quick brown fox jumps over the lazy dog the fox\n"
+    vowels = sum(c in b"aeiou" for c in speech)
+    assert ("stdout    %d\n" % vowels).encode() in fallback
+
+
+def test_cpp_contract_example(lypning_lib, tmp_path) -> None:
+    """Refusal lines and runs_in_process must name the linked variant."""
+    got = _run_contract_example("cpp", tmp_path)
+    assert b"CONTRACT BROKEN" not in got.stderr
+    assert b"module: import subprocess\n" in got.stdout
