@@ -32,6 +32,14 @@ PROGRAMS = [
     "lines = [m['row'] for m in re.finditer(r'(?P<row>[^\\n]+\\n)', text)]\n"
     "for row in csv.reader(lines):\n"
     "    print(row[0], end='|')\n",
+    "import re, csv\n"
+    "text = 'id,big,fraction\\nitem-1,18446744073709551616,1e-300\\n'\n"
+    "lines = [m['line'] for m in re.finditer(r'(?P<line>[^\\n]+)', text)]\n"
+    "for row in csv.DictReader(lines):\n"
+    "    m = re.fullmatch(r'(?P<kind>[a-z]+)-(?P<index>[0-9]+)', row['id'])\n"
+    "    n = int(row['big'])\n"
+    "    print(m.groupdict(), n.to_bytes(9, 'big').hex())\n"
+    "    print(float(row['fraction']).as_integer_ratio())\n",
 ]
 
 
