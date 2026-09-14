@@ -77,18 +77,23 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   its own output a build order. `nemotron/REVIEW.md` is the response to the
   external review that asked for the endpoint; `nemotron/PREREGISTRATION.md` §7
   registers the rules for a v2 that has not been run.
-- **Left open, and loud: `conformance` reports 2 monotone violations.** With
-  `lypning-l` finally building, two programs show `lypning` MATCH and
-  `lypning-l` UNSUPPORTED — which invariant 10 forbids. The cause is a
-  static/dynamic asymmetry, not a capability gap: `lypning-l`'s `glob-order`
-  refusal is decided before the program runs, while `lypning`'s `module: import
-  glob` refusal fires only when execution reaches the import, so a program that
-  dies first is answered by the smaller engine and refused by the larger one.
-  Minimal case: `open("/nonexistent"); import glob; print(glob.glob("*"))` —
-  `lypning` exit 1 with CPython's traceback, `lypning-l` exit 90. Both fixes
-  (hoist the module refusal to a pre-execution scan, or defer the glob-order
-  refusal to the call site) change the refusal path and change coverage, so
-  neither is bundled here; this needs its own measured step.
+- **The core answered what its own superset refused, and one `#[cfg]` was
+  why.** With `lypning-l` finally building, `conformance` reported 2 monotone
+  violations — `lypning` MATCH, `lypning-l` UNSUPPORTED — which invariant 10
+  forbids. Not a capability gap but a timing one: `route::static_stop_check`
+  refuses `glob-order` before the program runs, and it was gated to the variants
+  that *have* `cap-glob`/`cap-hashlib`, on the reasoning that a core without the
+  capability cannot serve the call anyway. It can't — but it refuses LATER, at
+  the import, so a program that died first was answered by the core and refused
+  by its superset: `open("/nonexistent"); import glob; print(glob.glob("*"))` was
+  exit 1 with CPython's traceback on `lypning` and exit 90 on `lypning-l`. The
+  check is now compiled into every variant. `route.rs` is not gated per variant
+  and `spectrum_stop` is set only where no rung can serve the call, so the core
+  reports the same accurate kind; the substring guard means a program naming
+  neither pays nothing. Measured: monotone violations **2 → 0**, `lypning` MATCH
+  2927 → 2925 (the two that were violating, and nothing else), coverage 46.3%
+  either way, `lypning-l` unmoved at 4554, +736 code bytes and **9 blocks either
+  way**.
 - Bytes: `lypning` 1,142,992 (**9 blocks**), `lypning-l` 1,319,120 (**11
   blocks**) — the first measurement of the latter since #62, because until this
   change there was nothing to measure.

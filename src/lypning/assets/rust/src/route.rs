@@ -2907,7 +2907,15 @@ fn glob_bless(
 /// the barrier cannot take back exit 1 with the output discarded (issue #51,
 /// which took `os.mkdir` off that list). Asked here, it is exit 90 with an
 /// untouched disk, and the router spent the refusal instead of a spawn.
-#[cfg(any(feature = "cap-glob", feature = "cap-hashlib"))]
+///
+/// **Compiled into every variant, including the ones with neither capability.**
+/// A core that cannot serve `glob` refuses it anyway — but at the import, when
+/// execution reaches it, where this refuses before anything runs. A program that
+/// dies first was therefore ANSWERED by the core and REFUSED by its own
+/// superset, which invariant 10 forbids. `spectrum_stop` is only set where no
+/// rung can serve the call, so the core reports the same accurate kind, and the
+/// substring guard above means a program that never mentions either name pays
+/// nothing.
 pub fn static_stop_check(body: &[Stmt], src: &str) -> crate::err::R<()> {
     if !src.contains("glob") && !src.contains("hashlib") {
         return Ok(());

@@ -155,7 +155,20 @@ fn execute_inner(src: &str, report_refusal: bool, kind: &mut String, detail: &mu
     // (`<bin> -c PROG`). The chain no longer arrives here that way (#48), but a
     // typed `-c` and `lypning conformance`'s per-engine arm still do, and
     // `glob-order` has no runtime backstop to catch them.
-    #[cfg(any(feature = "cap-glob", feature = "cap-hashlib"))]
+    //
+    // UNGATED, and that is invariant 10 rather than tidiness. This used to be
+    // `#[cfg(any(feature = "cap-glob", feature = "cap-hashlib"))]`, on the
+    // reasoning that a variant without the capability cannot serve the call
+    // anyway. It can't — but it refuses LATER: `module: import glob` fires when
+    // execution reaches the import, while this fires before anything runs. So a
+    // program that dies before its import was ANSWERED by the core and REFUSED
+    // by its own superset, which is the one thing a spectrum may not do
+    // (`open("/nonexistent"); import glob; print(glob.glob("*"))` — core exit 1
+    // with CPython's traceback, `lypning-l` exit 90). `route.rs` is not gated
+    // per variant and `spectrum_stop` is only set where NO rung can serve the
+    // call, so the core reports the same accurate kind and the check costs it
+    // nothing: the function returns immediately unless the source says "glob"
+    // or "hashlib".
     if let Err(e) = route::static_stop_check(&body, src) {
         return finish(Err(e), report_refusal, kind, detail);
     }
