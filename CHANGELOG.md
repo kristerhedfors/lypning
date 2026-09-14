@@ -24,6 +24,9 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   cache identity and historical-test writes; protect fallback correctness at
   checkpoint selection. Add Linux/macOS verifier CI and the manual next-round
   handoff. Starter data is smoke-only; no training run is launched by this PR.
+- Repair baseline CI's absent-engine barrier fixture, macOS build/test paths,
+  and Python 3.13+ pool traceback parity. Give the CPU-heavy conformance corpus
+  a shared-runner deadline on both arms without changing verdict rules.
 
 **2026-09-14** — Gate target detection is tested against the artifact, not the host (direct commit to `main`)
 
