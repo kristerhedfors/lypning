@@ -1499,6 +1499,9 @@ def cmd_hook(ns: argparse.Namespace) -> int:
 
 
 def cmd_conformance(ns: argparse.Namespace) -> int:
+    workers = getattr(ns, "workers", None)
+    if workers is not None and workers < 1:
+        raise Usage("--workers must be a positive integer")
     conf = _mod("conformance")
     routing = _mod("routing")
     arms = list(ns.engine) if ns.engine else None
@@ -1509,7 +1512,7 @@ def cmd_conformance(ns: argparse.Namespace) -> int:
         elif conf.MIXTURE_RUST not in base:
             base = base + [conf.MIXTURE_RUST]
         arms = base
-    report = conf.run(engines=arms, limit=ns.limit, timeout=ns.timeout,
+    report = conf.run(engines=arms, limit=ns.limit, timeout=ns.timeout, workers=workers,
                       progress=_progress("conformance"))
     # Two gates over one battery, and they fail for different reasons: an engine
     # that disagrees with CPython, and a classifier that sends a program to one
@@ -2410,6 +2413,8 @@ examples:
                    help="print the build order implied by the refusals INSTEAD of the table")
     s.add_argument("--limit", type=int, metavar="N", help="only the first N corpus programs")
     s.add_argument("--timeout", type=float, default=30.0, metavar="S", help="per-program timeout (default 30)")
+    s.add_argument("--workers", type=int, metavar="N",
+                   help="parallel corpus entries (default: up to 8 CPUs); use 1 to avoid CPU contention")
     s.add_argument("--json", action="store_true", help="machine-readable")
     s.set_defaults(func=cmd_conformance)
 

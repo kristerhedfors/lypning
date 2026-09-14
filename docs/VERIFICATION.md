@@ -145,6 +145,12 @@ cover unsupported source/dialect shapes and a late invalid line after staged
 file/directory writes. The full file retains the file/stdin, reader-protocol
 and static writer-refusal checks. No model output or training run is needed.
 
+`conformance --workers N` controls concurrent corpus entries. CI uses
+`--workers 1 --timeout 60` because captured self-timed regex benchmarks compete
+for CPU when several entries run together. Both arms keep the same deadline:
+a timed-out reference is unmeasured, while an engine-only timeout still fails.
+No benchmark entry or verdict is exempted by this scheduling choice.
+
 **STATEMENT.** Invariant 1: MISMATCH is always a bug. UNSUPPORTED never is.
 `lypning conformance` must end at `MISMATCH 0`; a rising UNSUPPORTED count is
 coverage and a build order (`--plan`), not a regression. Never "fix" a

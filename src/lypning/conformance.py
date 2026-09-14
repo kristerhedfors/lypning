@@ -49,10 +49,11 @@ the repository, it only makes the next occurrence loud. It is here because the
 first measurement runs on the upstream project rewrote 34 tracked files and the
 escape route was never pinned down — which is precisely the argument for a net.
 
-**A timeout is never scored as a disagreement.** The reference run and the
-engine runs share one deadline, so a program that is simply slow times out on
-both sides and is dropped from the measurement instead of being recorded as an
-engine that printed the wrong thing.
+**A reference timeout is unmeasured; an engine-only timeout is a mismatch.**
+Both runs share one deadline. If the reference cannot finish, the entry is
+skipped; if only an engine times out, the comparison fails. CPU contention can
+make even two CPython runs straddle a wall-clock deadline: use one worker when
+grading CPU-heavy captures on shared runners, not a weaker timeout verdict.
 """
 
 from __future__ import annotations
