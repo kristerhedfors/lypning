@@ -1,0 +1,40 @@
+{
+  "backend": {
+    "base_url": "incontainer://transformers-5.17.0+torch-2.9.1+cu128+fla-0.5.2/NVIDIA-H200",
+    "model": "headforce/qwen38-27b-lypning-lora-r16@qwen38-lora-r16-v3 (sft=sft/v3/sft.jsonl#e4f5c250)",
+    "source": "replay:/tmp/claude-0/-home-user-lypning/05e2ce2d-c800-5df6-a220-b3efcfe06b17/scratchpad/tuned-completions.jsonl"
+  },
+  "engine": {
+    "chain": {
+      "lypning": {
+        "found": true,
+        "sha256": "da3a28fa186eaf3e0d6c2418b4caf3979e277e2ea7d98afdb81ce576c51ddefe",
+        "version": "lypning 0.1.0 (lypning) for cpython 3.11"
+      },
+      "lypning-l": {
+        "found": true,
+        "sha256": "ea94ccc5a78041ed8d3db22decbc28cc697ddd214435b1d68d2c044ce7af9ebf",
+        "version": "lypning 0.1.0 (lypning-l) for cpython 3.11"
+      }
+    },
+    "fingerprint": "9d412a3131dc6a8a",
+    "oracle_python": "3.11.15"
+  },
+  "holdout_manifest_sha256": "80b2fc522202a0ece3b84b299791761c86dd07983596a46650f9bfcb733ce588",
+  "label": "",
+  "n_cases": 74,
+  "prompt_sha": "cbb7be44937a6b41",
+  "run_id": "qwen38-lora-r16-v3",
+  "sampling": {
+    "declared_by": "completions header",
+    "enable_thinking": false,
+    "max_tokens": 2048,
+    "replayed": true,
+    "samples": 16,
+    "seed": 1111,
+    "temperature": 1.0,
+    "top_k": 0,
+    "top_p": 0.95
+  },
+  "started_at": "2026-09-14T00:25:43Z"
+}
