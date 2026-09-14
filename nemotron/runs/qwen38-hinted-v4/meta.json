@@ -1,0 +1,40 @@
+{
+  "backend": {
+    "base_url": "incontainer://transformers-5.17.0+torch-2.9.1+cu128+torch-reference/NVIDIA-H200",
+    "model": "headforce/qwen38-27b-lypning-lora-r16-hinted@cand-lora-r16-v1 (sft=sft/v4-hinted/sft.jsonl#44673d97)",
+    "source": "replay:/tmp/claude-0/-home-user-lypning/05e2ce2d-c800-5df6-a220-b3efcfe06b17/scratchpad/hinted-completions.jsonl"
+  },
+  "engine": {
+    "chain": {
+      "lypning": {
+        "found": true,
+        "sha256": "6df61ad8fd3fc52268d62c9227f660e2784e3f750129d1be665e59e92511f9a4",
+        "version": "lypning 0.1.0 (lypning) for cpython 3.11"
+      },
+      "lypning-l": {
+        "found": true,
+        "sha256": "7817eacef6aeabfe1a14089d21cd754eb1475b752be2d8df5dd92e81e78efac5",
+        "version": "lypning 0.1.0 (lypning-l) for cpython 3.11"
+      }
+    },
+    "fingerprint": "83bc54b6dcd43f46",
+    "oracle_python": "3.11.15"
+  },
+  "holdout_manifest_sha256": "80b2fc522202a0ece3b84b299791761c86dd07983596a46650f9bfcb733ce588",
+  "label": "",
+  "n_cases": 74,
+  "prompt_sha": "cbb7be44937a6b41",
+  "run_id": "qwen38-hinted-v4",
+  "sampling": {
+    "declared_by": "completions header",
+    "enable_thinking": false,
+    "max_tokens": 2048,
+    "replayed": true,
+    "samples": 16,
+    "seed": 1111,
+    "temperature": 1.0,
+    "top_k": 0,
+    "top_p": 0.95
+  },
+  "started_at": "2026-09-14T15:41:45Z"
+}
