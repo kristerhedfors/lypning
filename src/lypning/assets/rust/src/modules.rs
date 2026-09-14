@@ -275,6 +275,29 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
         // job and stays one. `dict(os.environ)` and `os.environ.copy()` build a
         // fresh untagged `Dict`, which is a plain dict in CPython too.
         ("os", "environ") => {
+            // CPython's `os.environ` is not the process environment this engine
+            // sees. PEP 538: when `LC_CTYPE` is unset, empty, `C` or `POSIX`,
+            // CPython's startup COERCES the C locale and `setenv`s
+            // `LC_CTYPE=C.UTF-8` into its own environment before any Python
+            // runs — so `os.environ` there has a key no other process has.
+            // Measured on this box: 140 keys under CPython, 139 here, and the
+            // one that differs is `LC_CTYPE`.
+            //
+            // Whether the coercion actually fires depends on whether the target
+            // locale can be SET, which needs `setlocale` and therefore libc —
+            // so this engine cannot know, and answering a dict that silently
+            // lacks the key is a wrong answer at exit 0. It refuses in exactly
+            // the state where CPython would have coerced, and serves the exact
+            // environment everywhere else. Zero corpus programs read this
+            // mapping and 49 model-written ones do, which is the on-policy
+            // blind spot in one line.
+            if coercible_c_locale() {
+                return Err(unsupported(
+                    "environ",
+                    "os.environ where CPython's startup would coerce the C locale \
+                     and add LC_CTYPE (PEP 538), which this engine cannot reproduce",
+                ));
+            }
             let mut d = Dict::new();
             for (k, v) in std::env::vars() {
                 d.insert(Value::Str(k.into()), Value::Str(v.into()))?;
@@ -376,6 +399,29 @@ pub fn get_attr(m: &Value, name: &str) -> R<Value> {
 
 /// Method names are stored as `&'static str` in `Value::Bound`; this maps a
 /// borrowed name onto the static one, refusing anything not in the table.
+/// Would CPython's startup have coerced the C locale on this host?
+///
+/// Mirrors the entry conditions of `_Py_CoerceLegacyLocale` as far as they are
+/// visible from the environment alone: `PYTHONCOERCECLOCALE=0` disables it
+/// outright, and otherwise it fires only when the effective `LC_CTYPE` is
+/// unset, empty, `C` or `POSIX`. `LC_ALL` wins over `LC_CTYPE`, which wins over
+/// `LANG`, which is the order `setlocale(LC_CTYPE, "")` reads them in.
+///
+/// Deliberately conservative: it says "yes" whenever the coercion COULD fire,
+/// not only when it would. The cost of a false yes is one refusal and a CPython
+/// spawn; the cost of a false no is a dict that silently lacks a key CPython
+/// has.
+fn coercible_c_locale() -> bool {
+    if std::env::var("PYTHONCOERCECLOCALE").as_deref() == Ok("0") {
+        return false;
+    }
+    let effective = ["LC_ALL", "LC_CTYPE", "LANG"]
+        .iter()
+        .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
+        .unwrap_or_default();
+    matches!(effective.as_str(), "" | "C" | "POSIX")
+}
+
 fn interned(name: &str) -> R<&'static str> {
     const NAMES: &[&str] = &[
         "read", "readline", "readlines", "write", "flush", "exit", "getcwd", "listdir", "makedirs",

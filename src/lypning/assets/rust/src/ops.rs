@@ -30,11 +30,10 @@ impl Interp {
         // than a wrong answer: it is not the program's exit code, so the
         // dispatcher cannot hand it back and the caller learns nothing.
         if matches!(op, MatMul) {
-            return Err(type_err(format!(
-                "unsupported operand type(s) for @: '{}' and '{}'",
+            return Err(crate::err::matmul_type_err(
                 crate::value::type_name(a),
-                crate::value::type_name(b)
-            )));
+                crate::value::type_name(b),
+            ));
         }
         // A flag FIRST, before the numeric fast path: `as_num` reads a
         // `RegexFlag` as its int, which is right for `+ - * < ==` and every
@@ -345,6 +344,43 @@ impl Interp {
                 false
             }
             Value::Dict(d) => d.borrow().contains(needle)?,
+            // A VIEW IS A CONTAINER. Without this arm `'a' in d.keys()` fell to
+            // the generic tail and raised `argument of type 'dict_keys' is not
+            // iterable` at exit 1, where CPython answers True — a silent wrong
+            // answer, and the program's own exit code, so the dispatcher never
+            // retried it. Found on-policy 2026-09-14, in a model's own probe of
+            // dict views; no corpus program asks it.
+            //
+            // The three cases are bounded, which is why this is served rather
+            // than refused. `keys` IS `k in d`, the same lookup. `values` and
+            // `items` scan with `elem_eq`, the identity-first rule this file's
+            // own header describes, so a NaN behaves as it does in a list —
+            // consistent with every other container here rather than with a
+            // second opinion. An `items` needle that is not a 2-tuple is False
+            // in CPython and never an error.
+            Value::DictView(d, kind) => match *kind {
+                "keys" => d.borrow().contains(needle)?,
+                "values" => {
+                    let items: Vec<Value> = d.borrow().values();
+                    let mut found = false;
+                    for v in items {
+                        if crate::value::elem_eq(&v, needle)? {
+                            found = true;
+                            break;
+                        }
+                    }
+                    found
+                }
+                _ => match needle {
+                    Value::Tuple(t) if t.len() == 2 => {
+                        match d.borrow().get(&t[0])? {
+                            Some(v) => crate::value::elem_eq(&v, &t[1])?,
+                            None => false,
+                        }
+                    }
+                    _ => false,
+                },
+            },
             // CPython converts an unhashable SET to a frozenset for the
             // membership test rather than raising: `{1} in {1}` is False, not a
             // TypeError. This subset has no frozenset and its sets cannot hold

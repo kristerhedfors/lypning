@@ -84,6 +84,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from . import split as splitmod
 from .acceptance import NORMALIZERS, run_test
 from .backends import BackendError, ChatBackend
+from . import hints as hints_mod
 from .evaluate import render_messages
 from .extract import extract_program
 from .jsonio import append_jsonl, read_json, read_jsonl, write_json, write_jsonl
@@ -762,6 +763,7 @@ def sample_targets(
     price_hour: float = 0.0,
     max_spend: float = 0.0,
     resume: bool = False,
+    hints_by_case: Optional[Dict[str, str]] = None,
     progress=None,
 ) -> Dict[str, Any]:
     """Draw k, verify each, and keep the ``keep`` that best survive discrimination.
@@ -802,8 +804,17 @@ def sample_targets(
         if aborted:
             return None
         try:
+            # THE ONE SITE THE HINT MAY REACH. `hints.render_hinted_messages`
+            # appends the engine's own refusal line and a worked recipe to the
+            # user turn for the DRAW; the SFT row below and `evaluate` both keep
+            # `render_messages` untouched, which is what makes this context
+            # distillation rather than a prompt that will not be there when the
+            # number is taken. See `hints` for why the asymmetry is the technique.
+            hint = (hints_by_case or {}).get(case["id"])
+            msgs = (hints_mod.render_hinted_messages(case, hint, render_messages)
+                    if hint else render_messages(case))
             comp = backend.complete(
-                render_messages(case), temperature=temperature, top_p=top_p,
+                msgs, temperature=temperature, top_p=top_p,
                 max_tokens=max_tokens, enable_thinking=enable_thinking, seed=1000 + idx,
             )
         except BackendError as exc:
@@ -811,6 +822,11 @@ def sample_targets(
         program, how = extract_program(comp.text, comp.reasoning)
         rec: Dict[str, Any] = {
             "case_id": case["id"], "draw": idx, "how": how,
+            # Recorded per draw, not per run: a resumed run can mix hinted and
+            # unhinted draws into one `draws.jsonl`, and `fold_draws` reads all
+            # of it. Without this the SFT set's lineage is a claim about which
+            # command was typed rather than a fact about the file.
+            "hinted": bool(hint),
             "completion_tokens": comp.completion_tokens,
             "cost_usd": backend.cost(comp.prompt_tokens, comp.completion_tokens),
         }

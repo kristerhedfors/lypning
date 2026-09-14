@@ -20,6 +20,127 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-14** — the serving stack moves subset legality by more than the adapter does (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **v2 run 1: context distillation, and a second null.** `nt sample --hinted`
+  draws with the engine's live refusal and a matching `COOKBOOK` pair in the user
+  turn, and trains on the bare prompt. Correctness `40.71% → 44.55%`, **+3.84pp**
+  95% CI [+0.80, +7.50], McNemar p=1.0000 — bootstrap fires, McNemar does not, no
+  win under §3 for the second time. Legality **ΔSLR −0.21pp** 95% CI [−3.19,
+  +2.67], MDE +3pp not met. Gates all pass: correctness +3.71pp, import retention
+  1.06×, **tokens/program −24.4%**.
+- **And the number that matters is the null.** The same base weights through two
+  kernels — `fla-0.5.2` against the `torch-reference` fallback the Hopper
+  backward bug forces — differ by **ΔSLR +1.57pp** 95% CI [−0.51, +3.89], while
+  correctness moves −0.14pp. Comparing the hinted arm against the stored `fla`
+  base would have read about +1.2pp: a spurious improvement of the wrong sign,
+  manufactured entirely by a kernel swap. The matched control was bought for
+  $5.90 on a decision taken before any number was read, and it is the only reason
+  this reports a null. **The serving stack is now a precondition for the legality
+  endpoint, like the engine fingerprint** — and legality is the more fragile
+  measurement: the same swap that moved it 1.57pp moved correctness 0.14pp.
+- **Two silent wrong answers, found on-policy over 2,360 model-written programs
+  and unreachable from any of the 6,321 corpus programs.** `'a' in d.keys()`
+  raised `TypeError: argument of type 'dict_keys' is not iterable` where CPython
+  answers `True` — `contains` had no `DictView` arm, so every view fell to the
+  generic tail at exit 1, which the dispatcher never retries. Now served: `keys`
+  is the dict's own lookup, `values` and `items` scan with `elem_eq`, sixteen
+  shapes differential-tested with fifteen exact and the sixteenth a correct
+  `nan-identity` refusal. And `print(__file__)` raised `NameError` where CPython
+  prints the path; refused rather than bound, because binding it needs the
+  invocation's path at every entry point and would then be wrong under `-c`.
+- **A completion that spent the whole decode budget was being scored as wrong
+  rather than cut.** 90 completions across three arms hit the 2,048-token cap and
+  none passed, recorded as `syntax-error` (57) and `wrong-output` (31). The cap is
+  not neutral: base 4.3%, tuned-unhinted 1.9%, tuned-hinted 1.4% — a fine-tune
+  that makes the model terser hits it less, so the confound runs the same way the
+  treatment does. `nt grade` now derives truncation from the token count and the
+  header's budget and counts it under its own name; the hinted arm's
+  `syntax-error` count falls 15 → 2 and `pass@1` does not move.
+- Bytes: `lypning` 1,142,992 (**9 blocks**), `lypning-l` 1,323,216 (**11
+  blocks**). `conformance` over the 6,321 corpus programs loaded this date:
+  MISMATCH **0** on every arm, monotone violations **0**, routing UNSAFE **0**.
+  Spend $23.08.
+
+**2026-09-14** — `lypning-l` had not compiled since #63, and two silent wrong answers were hiding behind the stale binary (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **The capability build was broken on `main` for nine days.** #63 added
+  `BinOp::MatMul` and guarded it in `Interp::binop` — correctly, because reaching
+  the numeric fast path with `@` found an `unreachable!()` and aborted at exit
+  134. `bigint::int_op` also matches exhaustively on `BinOp` and lives behind
+  `cap-bigint`, so `variant-m` compiled and `variant-l` did not. `lypning build
+  --rust` printed `FAILED` and returned 1; the table was read and the exit code
+  was not.
+- **Which means every `conformance` run since then graded a stale `lypning-l`.**
+  `engines.find` reads `$LYPNING_HOME/bin` first, and the binary sitting there
+  predated the nineteen wrong answers #63 closed. "MISMATCH 0" on #63 and #64 was
+  true of `lypning` and untested on `lypning-l`.
+- **One home for the `@` TypeError**, `err::matmul_type_err`, called from the
+  guard and from the arm the compiler demands. That arm answers rather than
+  panicking: a panic there is exit 134, which is not the program's own exit code,
+  so the dispatcher cannot hand it back. Deduplicating the format string made
+  `lypning` 48 code bytes smaller.
+- **`round(2.5e25, -25)` answered `2e+25`; CPython answers `3e+25`.** The
+  negative-`ndigits` float path divides by a power of ten first, and the quotient
+  is not the value: `2.5e25 / 1e25` is exactly 2.5 and looks like a tie, while the
+  double is 25000000000000000905969664, above the halfway point. Below 2**53 the
+  tie test is sound and stays; at or above it the engine cannot tell a tie from a
+  near-miss without the exact decimal expansion, and now refuses.
+- **`os.environ` was missing a key CPython puts there.** PEP 538: when `LC_CTYPE`
+  is unset, empty, `C` or `POSIX`, CPython's startup coerces the C locale and
+  `setenv`s `LC_CTYPE=C.UTF-8` into its own environment. Measured on this box:
+  140 keys under CPython, 139 here. Whether the coercion fires depends on whether
+  the locale can be *set*, which needs libc, so the engine refuses in exactly that
+  state and serves the exact environment everywhere else (verified: 140 = 140
+  under `LC_CTYPE=C.UTF-8` and under `PYTHONCOERCECLOCALE=0`).
+- **Both were found on-policy, not by the corpus.** Zero of the 9,064 corpus
+  entries loaded on this date read `os.environ`; 49 of the 2,362 model-written
+  programs in the run of record do. The corpus's blind spots are shaped like its
+  capture mechanism.
+- **A MISMATCH is now checked against a second reference before it is
+  reported.** A MISMATCH claims an engine answered what CPython does not, and
+  that claim is only worth making if CPython answers the same twice.
+  `_RUN_SPECIFIC` screens the program text and cannot see the whole class — a
+  default `repr` prints an address no two processes share without the program
+  naming `id`, `tqdm` writes its own throughput, an HTTP error carries the
+  request id the server just minted. Six entries were being reported as engine
+  bugs on this date, all six captured from agent sessions, none matchable by
+  CPython against itself. The second reference is taken only where a MISMATCH
+  would otherwise be reported (~0.1% of entries) and is compared with
+  `classify`, so it inherits every waiver the arms get.
+- **`nt legality`: the subset-legality endpoint, computed from programs already
+  paid for.** ΔSLR over both arms of the run of record, cluster-bootstrapped by
+  case, with correctness / supported-import-retention / token-length as gates
+  rather than contributors. **ΔSLR −1.00pp, 95% CI [−3.36, +1.51]** against a
+  base-vs-base null of **−0.22pp [−2.46, +2.03]** — the adapter's effect on
+  subset legality is inside the noise floor, while correctness over the same
+  programs moves +4.92pp. Spend $0.00: it replays stored programs. Also
+  `nt grade --require-fingerprint`, and `nt refusals --held-out` no longer calls
+  its own output a build order. `nemotron/REVIEW.md` is the response to the
+  external review that asked for the endpoint; `nemotron/PREREGISTRATION.md` §7
+  registers the rules for a v2 that has not been run.
+- **The core answered what its own superset refused, and one `#[cfg]` was
+  why.** With `lypning-l` finally building, `conformance` reported 2 monotone
+  violations — `lypning` MATCH, `lypning-l` UNSUPPORTED — which invariant 10
+  forbids. Not a capability gap but a timing one: `route::static_stop_check`
+  refuses `glob-order` before the program runs, and it was gated to the variants
+  that *have* `cap-glob`/`cap-hashlib`, on the reasoning that a core without the
+  capability cannot serve the call anyway. It can't — but it refuses LATER, at
+  the import, so a program that died first was answered by the core and refused
+  by its superset: `open("/nonexistent"); import glob; print(glob.glob("*"))` was
+  exit 1 with CPython's traceback on `lypning` and exit 90 on `lypning-l`. The
+  check is now compiled into every variant. `route.rs` is not gated per variant
+  and `spectrum_stop` is set only where no rung can serve the call, so the core
+  reports the same accurate kind; the substring guard means a program naming
+  neither pays nothing. Measured: monotone violations **2 → 0**, `lypning` MATCH
+  2927 → 2925 (the two that were violating, and nothing else), coverage 46.3%
+  either way, `lypning-l` unmoved at 4554, +736 code bytes and **9 blocks either
+  way**.
+- Bytes: `lypning` 1,142,992 (**9 blocks**), `lypning-l` 1,319,120 (**11
+  blocks**) — the first measurement of the latter since #62, because until this
+  change there was nothing to measure.
+
+
 **2026-09-13** — The last four the fold found, and `conformance` is back to MISMATCH 0 (branch `claude/nemotron-lora-pipeline-1zczi2`)
 
 - **Annotations are evaluated when the `def` runs.** `parse.rs` dropped them with
