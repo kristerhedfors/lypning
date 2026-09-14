@@ -879,6 +879,7 @@ def test_identity_reads_the_binary_and_not_a_version_string(tmp_path, monkeypatc
     binary.write_bytes(b"#!/bin/sh\necho 'lypning 0.1.0 (lypning) for cpython 3.11'\n")
     binary.chmod(0o755)
     monkeypatch.setenv("LYPNING_HOME", str(tmp_path))
+    monkeypatch.delenv("NTX_ENGINE_LYPNING", raising=False)
     ident = eng.identity(chain=("lypning",))
     assert ident["chain"]["lypning"]["found"] is True
     assert ident["chain"]["lypning"]["version"].endswith("for cpython 3.11")

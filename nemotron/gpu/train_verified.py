@@ -18,6 +18,7 @@ import argparse
 import hashlib
 import importlib.metadata
 import json
+import math
 import os
 from pathlib import Path
 import random
@@ -27,6 +28,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pipeline.jsonio import append_jsonl, sha256_of, write_json
+from pipeline.training_metrics import CheckpointGate, summarize
 from pipeline.training import (Reward, TrainingError, Verifier, load_bundle,
                                messages, program_from_completion)
 
@@ -82,7 +84,7 @@ def preflight(args):
     if args.output.exists():
         raise TrainingError("--output already exists")
     if min(args.steps, args.eval_every, args.patience, args.rank, args.batch_size,
-           args.max_seq, args.max_new_tokens) <= 0 or (args.lr is not None and args.lr <= 0):
+           args.max_seq, args.max_new_tokens) <= 0 or (args.lr is not None and (not math.isfinite(args.lr) or args.lr <= 0)):
         raise TrainingError("training lengths, rank, learning rate and batches must be positive")
     if args.stage == "grpo" and args.batch_size < 2:
         raise TrainingError("GRPO needs at least two generations per prompt")
@@ -93,6 +95,10 @@ def preflight(args):
     if args.stage != "eval" and args.eval_split != "dev":
         raise TrainingError("test split cannot select a checkpoint")
     bundle = load_bundle(args.bundle, args.engine)
+    if not args.smoke and bundle.get("purpose") != "pilot":
+        raise TrainingError("smoke data cannot launch a real run; prepare an admitted pilot bundle")
+    if not args.smoke and sys.platform != "linux" and not args.plan:
+        raise TrainingError("real runs require the isolated Linux worker, not macOS diagnostic limits")
     if not args.plan and not args.isolated_worker:
         raise TrainingError("generated-code execution requires --isolated-worker; see TRAINING.md")
     if not args.smoke and bundle["limits"]["memory_mb"] == 0 and not args.plan:
@@ -100,11 +106,19 @@ def preflight(args):
     adapter = adapter_identity(args.adapter, args.revision) if args.adapter else None
     if adapter and adapter["experiment"]["bundle_digest"] != bundle["digest"]:
         raise TrainingError("adapter trained with a different experiment/split")
-    if adapter and adapter["experiment"].get("smoke") and not args.smoke:
-        raise TrainingError("a tiny-model smoke adapter is not a production warm start")
+    if adapter and bool(adapter["experiment"].get("smoke")) != args.smoke:
+        raise TrainingError("adapter and model must both be smoke or both be real")
     if adapter and adapter["experiment"]["args"]["rank"] != args.rank and args.stage == "grpo":
         raise TrainingError("GRPO continues the existing adapter rank; --rank does not resize it")
     return bundle, adapter
+
+
+def schedule(args):
+    """One source of effective values for execution, dry plans and manifests."""
+    return {"steps": 2 if args.smoke else args.steps,
+            "eval_every": 1 if args.smoke else args.eval_every,
+            "max_tokens": min(32, args.max_new_tokens) if args.smoke else args.max_new_tokens,
+            "learning_rate": args.lr or (2e-5 if args.stage == "sft" else 1e-6)}
 
 
 def balanced_cases(cases):
@@ -156,6 +170,7 @@ def evaluate(model, tokenizer, cases, verifier, max_tokens, output, step, torch)
             program = program_from_completion(completion) if int(tail[-1]) in eos else None
             score = verifier.score(case, program)
             records.append({"step": step, "case_id": case["case_id"], "family": case["family"],
+                            "population": case["population"],
                             "completion": completion, "reward": score.reward, "status": score.status,
                             "correct": score.reward > 0,
                             "native": score.reward > 0 and score.native_tests == score.total_tests})
@@ -165,12 +180,7 @@ def evaluate(model, tokenizer, cases, verifier, max_tokens, output, step, torch)
         if checkpointing:
             model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
         model.train(was_training)
-    # Family macro average; correctness comes first, never a blended surrogate.
-    families = {r["family"] for r in records}
-    def macro(key):
-        return sum(sum(r[key] for r in records if r["family"] == f) /
-                   sum(r["family"] == f for r in records) for f in families) / len(families)
-    return (macro("correct"), macro("native"))
+    return summarize(records)
 
 
 def run(args, bundle, adapter_info):
@@ -245,6 +255,7 @@ def run(args, bundle, adapter_info):
     manifest = {"base_model": BASE_MODEL, "revision": args.revision, "stage": args.stage,
                 "bundle_digest": bundle["digest"], "adapter": adapter_info,
                 "smoke": args.smoke, "seed": args.seed,
+                "effective": schedule(args),
                 "code_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in
                                 (Path(__file__), Path(core.__file__))},
                 "args": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
@@ -252,13 +263,14 @@ def run(args, bundle, adapter_info):
                              ("torch", "transformers", "peft", "accelerate", "trl", "datasets")}}
     write_json(args.output / "experiment.json", manifest)
     verifier = Verifier(args.engine, **bundle["limits"], identity=bundle["identity"])
-    max_tokens = min(32, args.max_new_tokens) if args.smoke else args.max_new_tokens
+    effective = schedule(args)
+    max_tokens = effective["max_tokens"]
     def measure(step):
         return evaluate(model, tok, dev_cases, verifier, max_tokens,
                         args.output / "evaluations.jsonl", step, torch)
-    best = measure(0)
+    baseline = measure(0)
     if args.stage == "eval":
-        write_json(args.output / "metrics.json", {"correct": best[0], "correct_native": best[1]})
+        write_json(args.output / "metrics.json", baseline)
         return
 
     # Save every candidate separately; 'best.json' selects one without deleting
@@ -268,27 +280,20 @@ def run(args, bundle, adapter_info):
         core.save_adapter(model, str(path))
         write_json(path / "experiment.json", manifest)
     save(0)
-    best_step, stale = 0, 0
-    write_json(args.output / "best.json", {"step": best_step, "correct": best[0],
-                                           "correct_native": best[1]})
+    gate = CheckpointGate(baseline, args.patience)
+    write_json(args.output / "best.json", gate.report())
     def checkpoint(step):
-        nonlocal best, best_step, stale
-        score = measure(step)
+        metrics = measure(step)
         save(step)
-        if score > best:
-            best, best_step, stale = score, step, 0
-        else:
-            stale += 1
-        write_json(args.output / "best.json", {"step": best_step, "correct": best[0],
-                                               "correct_native": best[1]})
-        return stale >= args.patience
+        stop = gate.observe(step, metrics)
+        write_json(args.output / "best.json", gate.report())
+        return stop
 
-    steps = 2 if args.smoke else args.steps
-    every = 1 if args.smoke else args.eval_every
+    steps, every = effective["steps"], effective["eval_every"]
     if args.stage == "sft":
         core.set_train_mode(model)
         params = [p for p in model.parameters() if p.requires_grad]
-        optimizer = torch.optim.AdamW(params, lr=args.lr or 2e-5, weight_decay=0.01)
+        optimizer = torch.optim.AdamW(params, lr=effective["learning_rate"], weight_decay=0.01)
         rng = random.Random(args.seed)
         for step in range(1, steps + 1):
             batch = [rng.choice(examples) for _ in range(args.batch_size)]
@@ -328,7 +333,7 @@ def run(args, bundle, adapter_info):
                 return control
         config = GRPOConfig(
             output_dir=str(args.output / "trainer"), max_steps=steps,
-            learning_rate=args.lr or 1e-6, per_device_train_batch_size=1,
+            learning_rate=effective["learning_rate"], per_device_train_batch_size=1,
             gradient_accumulation_steps=args.batch_size, num_generations=args.batch_size,
             max_completion_length=max_tokens, temperature=1.0, top_p=0.95,
             # No KL: disabling a warm-start adapter would anchor to BASE, not
@@ -353,8 +358,7 @@ def run(args, bundle, adapter_info):
         if actual_prompts != expected_prompts:
             raise TrainingError("TRL changed the task prompt template; SFT/RL/eval must agree")
         trainer.train()
-    write_json(args.output / "best.json", {"step": best_step, "correct": best[0],
-                                           "correct_native": best[1]})
+    write_json(args.output / "best.json", gate.report())
 
 
 def main(argv=None):
@@ -363,6 +367,9 @@ def main(argv=None):
         bundle, adapter = preflight(args)
         if args.plan:
             print(json.dumps({"stage": args.stage, "model": BASE_MODEL, "revision": args.revision,
+                              "purpose": bundle["purpose"], "effective": schedule(args),
+                              "limits": bundle["limits"], "memory_policy": bundle["memory_policy"],
+                              "adapter": adapter, "training_started": False,
                               "bundle_digest": bundle["digest"], "target": bundle["identity"],
                               "cases": {s: sum(c["split"] == s for c in bundle["cases"])
                                         for s in ("train", "dev", "test")}}, indent=2))

@@ -20,6 +20,10 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   SFT preparation and an optional on-policy GRPO runner. Wrong runnable code
   receives no reward; correct fallback retains credit. Preserve the historical
   corpus and grades, and document GPU/data admission gates before real training.
+- Fix the pipeline's process launcher, tracebacks-as-instability bug, replay
+  cache identity and historical-test writes; protect fallback correctness at
+  checkpoint selection. Add Linux/macOS verifier CI and the manual next-round
+  handoff. Starter data is smoke-only; no training run is launched by this PR.
 
 **2026-09-14** — Gate target detection is tested against the artifact, not the host (direct commit to `main`)
 

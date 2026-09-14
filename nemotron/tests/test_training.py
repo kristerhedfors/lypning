@@ -77,7 +77,7 @@ def test_oracle_failure_and_nondeterminism_abort(case):
     verifier, _ = fake_verifier(case, oracle=result(harness_error="failed setup"))
     with pytest.raises(t.VerificationBlocked, match="harness"):
         verifier.score(case, "pass")
-    draws = iter([result("a"), result("b")])
+    draws = iter([result(case["tests"][0]["stdout"]), result("b")])
     with pytest.raises(t.VerificationBlocked, match="unstable"):
         t.Verifier("/engine", runner=lambda *a, **k: next(draws)).score(case, "pass")
     def failed(*args, **kwargs):
@@ -90,6 +90,12 @@ def test_variants_defeat_constant_print(case):
     # Real CPython, but never invoke an engine when the varied-input test fails.
     score = t.Verifier("/not-an-engine", memory_mb=0).score(case, 'print("6")')
     assert score.reward == 0
+
+
+@pytest.mark.parametrize("program", ["print(undefined_name)", "def broken(:", "raise ValueError('bad')"])
+def test_real_model_errors_are_zero_reward_not_unstable_oracle(case, program):
+    score = t.Verifier("/never-called", memory_mb=0).score(case, program)
+    assert score.status == "incorrect" and score.reward == 0
 
 
 @pytest.mark.parametrize("completion", ["print(1)", "```python\nprint(1)",
@@ -199,7 +205,7 @@ def test_gpu_preflight_no_torch_and_hard_split_gates(tmp_path, monkeypatch):
     gpu = gpu_module()
     args = gpu.parser().parse_args(["sft", "--bundle", "bundle.json", "--engine", "engine",
         "--output", str(tmp_path / "run"), "--revision", "a" * 40, "--plan"])
-    bundle = {"digest": "locked", "limits": {"memory_mb": 1024}}
+    bundle = {"digest": "locked", "purpose": "pilot", "limits": {"memory_mb": 1024}}
     monkeypatch.setattr(gpu, "load_bundle", lambda *a: bundle)
     assert gpu.preflight(args) == (bundle, None)
     args.eval_split = "test"
@@ -226,6 +232,39 @@ def test_family_balance():
     balanced = gpu.balanced_cases(cases)
     assert sum(c["family"] == "a" for c in balanced) == sum(c["family"] == "b" for c in balanced)
     assert {c["case_id"] for c in balanced} == {c["case_id"] for c in cases}
+
+
+def test_starter_cannot_admit_a_real_training_round():
+    with pytest.raises(t.TrainingError, match="18 independent"):
+        t.validate_pilot(t.split_cases(starter_cases()))
+
+
+def test_pilot_requires_controls_in_every_split():
+    cases = [dict(family=str(i), split=("train", "dev", "test")[i % 3], population="coverage")
+             for i in range(18)]
+    with pytest.raises(t.TrainingError, match="fallback controls"):
+        t.validate_pilot(cases)
+    for i in range(3):
+        cases[i]["population"] = "fallback-control"
+    t.validate_pilot(cases)
+
+
+def test_real_run_rejects_smoke_bundle_even_in_plan(tmp_path, monkeypatch):
+    gpu = gpu_module()
+    args = gpu.parser().parse_args(["sft", "--bundle", "bundle.json", "--engine", "engine",
+        "--output", str(tmp_path / "run"), "--revision", "a" * 40, "--plan"])
+    monkeypatch.setattr(gpu, "load_bundle", lambda *a: {"purpose": "smoke", "limits": {"memory_mb": 0}})
+    with pytest.raises(t.TrainingError, match="smoke data"):
+        gpu.preflight(args)
+    args.smoke = True
+    gpu.preflight(args)
+    assert gpu.schedule(args)["steps"] == 2 and gpu.schedule(args)["max_tokens"] == 32
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -1])
+def test_verifier_rejects_unbounded_timeouts(value):
+    with pytest.raises(t.TrainingError, match="timeout"):
+        t.Verifier("/engine", timeout_s=value)
 
 
 def test_tiny_trainer_retains_real_tokenizer_vocabulary_and_special_ids():

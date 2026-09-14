@@ -37,8 +37,8 @@ from __future__ import annotations
 
 import base64
 import binascii
+import json
 import os
-import resource
 import shutil
 import signal
 import subprocess
@@ -72,6 +72,8 @@ class RunResult:
     signal: Optional[int] = None
     harness_error: Optional[str] = None
     workdir_files: Dict[str, int] = field(default_factory=dict)
+    memory_exceeded: bool = False
+    memory_policy: str = "none"
 
     @property
     def ok(self) -> bool:
@@ -109,19 +111,41 @@ def netns_available() -> bool:
     return _NETNS_PROBE
 
 
-def _child_setup(timeout_s: float, mem_mb: int, output_cap: int, nproc: int):
-    def setup() -> None:  # pragma: no cover - runs in the forked child
-        os.setsid()
-        cpu = int(timeout_s) + 2
-        resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu + 1))
-        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-        resource.setrlimit(resource.RLIMIT_FSIZE, (output_cap, output_cap))
-        if mem_mb > 0:
-            nbytes = mem_mb * 1024 * 1024
-            resource.setrlimit(resource.RLIMIT_AS, (nbytes, nbytes))
-        if nproc > 0:
-            resource.setrlimit(resource.RLIMIT_NPROC, (nproc, nproc))
-    return setup
+def memory_policy(mem_mb: int) -> str:
+    if mem_mb <= 0:
+        return "none"
+    return "process-group-rss-watchdog" if sys.platform == "darwin" else "rlimit-as"
+
+
+def _group_rss_kb(pid: int) -> int:
+    """macOS diagnostic guard, sampled physical RSS, NOT a hard allocation cap."""
+    p = subprocess.run(["/bin/ps", "-g", str(pid), "-o", "rss="],
+                       capture_output=True, text=True, timeout=2)
+    if p.returncode not in (0, 1):
+        raise OSError("cannot measure child process-group RSS")
+    return sum(int(n) for n in p.stdout.split())
+
+
+def _communicate(proc, data, timeout_s, mem_mb):
+    deadline = time.monotonic() + timeout_s
+    watch = memory_policy(mem_mb) == "process-group-rss-watchdog"
+    first = True
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _kill_group(proc)
+            proc.communicate(timeout=5)
+            return True, False
+        try:
+            proc.communicate(input=data if first else None,
+                             timeout=min(0.02, remaining) if watch else remaining)
+            return False, False
+        except subprocess.TimeoutExpired:
+            first = False
+            if watch and _group_rss_kb(proc.pid) > mem_mb * 1024:
+                _kill_group(proc)
+                proc.communicate(timeout=5)
+                return False, True
 
 
 def _scrubbed_env(workdir: Path, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
@@ -251,6 +275,7 @@ def run_python(
             tmp = Path(tempfile.mkdtemp(prefix="ntx-run-"))
             made_tmp = True
         tmp.mkdir(parents=True, exist_ok=True)
+        tmp = tmp.resolve()
     except OSError as exc:
         return RunResult(None, "", "", 0.0, harness_error="mkdtemp: %s" % exc)
 
@@ -260,6 +285,7 @@ def run_python(
             return RunResult(None, "", "", 0.0, harness_error=err)
         scratch = scratch_dir or tmp
         scratch.mkdir(parents=True, exist_ok=True)
+        scratch = scratch.resolve()
         entry_path = scratch / entry
         entry_path.write_text(source, encoding="utf-8")
 
@@ -289,32 +315,45 @@ def run_python(
 
         proc = None
         timed_out = False
+        memory_exceeded = False
+        error_read, error_write = os.pipe()
         try:
             with out_path.open("wb") as fo, err_path.open("wb") as fe:
+                limits = json.dumps(dict(timeout_s=timeout_s, mem_mb=mem_mb,
+                                         output_cap=output_cap, nproc=nproc))
+                launch = [sys.executable, "-I", "-S", str(Path(__file__).with_name("child_exec.py")),
+                          str(error_write), limits] + cmd
                 proc = subprocess.Popen(
-                    cmd,
+                    launch,
                     cwd=str(tmp),
                     stdin=subprocess.PIPE,
                     stdout=fo,
                     stderr=fe,
                     env=_scrubbed_env(tmp, env_extra),
-                    preexec_fn=_child_setup(timeout_s, mem_mb, output_cap, nproc),
+                    start_new_session=True,
+                    pass_fds=(error_write,),
                     close_fds=True,
                 )
-                try:
-                    proc.communicate(
-                        input=(stdin or "").encode("utf-8"), timeout=timeout_s
-                    )
-                except subprocess.TimeoutExpired:
-                    timed_out = True
+                os.close(error_write)
+                error_write = None
+                timed_out, memory_exceeded = _communicate(
+                    proc, (stdin or "").encode("utf-8"), timeout_s, mem_mb)
+                setup_error = os.read(error_read, 4096).decode("utf-8", "replace")
+                if setup_error:
+                    return RunResult(None, "", "", time.time() - started, harness_error=setup_error)
+        except (OSError, subprocess.SubprocessError) as exc:
+            if proc is not None:
+                if proc.poll() is None:
                     _kill_group(proc)
-                    try:
-                        proc.communicate(timeout=5)
-                    except Exception:
-                        pass
-        except OSError as exc:
+                proc.communicate(timeout=5)
             return RunResult(None, "", "", time.time() - started,
                              harness_error="spawn: %s" % exc)
+        finally:
+            if proc is not None:
+                _kill_group(proc)
+            os.close(error_read)
+            if error_write is not None:
+                os.close(error_write)
 
         rc = proc.returncode if proc is not None else None
         sig = -rc if (rc is not None and rc < 0) else None
@@ -349,6 +388,8 @@ def run_python(
             truncated=t1 or t2,
             signal=sig,
             workdir_files=listing,
+            memory_exceeded=memory_exceeded,
+            memory_policy=memory_policy(mem_mb),
         )
     finally:
         if capture is not None:
@@ -360,7 +401,9 @@ def run_python(
 def _kill_group(proc: "subprocess.Popen") -> None:
     for sig in (signal.SIGKILL,):
         try:
-            os.killpg(os.getpgid(proc.pid), sig)
+            # start_new_session makes pid the group id, even after the group
+            # leader exits. getpgid(pid) would miss surviving descendants then.
+            os.killpg(proc.pid, sig)
         except (ProcessLookupError, PermissionError, OSError):
             try:
                 proc.kill()

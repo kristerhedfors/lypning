@@ -1,5 +1,9 @@
 # Qwen3.8 training for lypning-l
 
+Use [NEXT_ROUND.md](NEXT_ROUND.md) for the manually started next round: current
+admission gates, commands, stop conditions and handback format. No training is
+started by this repository change.
+
 Decision, 2026-09-14: **verified supervised warm start, then execution-verified
 on-policy RL; keep SFT-only and base-model controls.** Target the real
 `Qwen/Qwen3.8-27B` checkpoint, with the `lypning-l` execution surface first.
@@ -135,7 +139,7 @@ These commands do not submit jobs, rent hardware or upload to the Hub:
 # No torch import, checkpoint download, generation or training:
 PYTHONPATH=src:nemotron python nemotron/gpu/train_verified.py sft \
   --bundle work/training-smoke/bundle.json --engine "$LYPNING_L_BIN" \
-  --revision "$QWEN_REV" --output work/sft-plan --plan
+  --revision "$QWEN_REV" --output work/sft-plan --smoke --plan
 
 # On the isolated worker, first exercise tiny-model gradients, tokenisation,
 # actual SFT/GRPO trainer steps, generation and verification. Smoke is not a
@@ -156,6 +160,16 @@ directories or host repo mounts. Deny its outbound networking independently;
 preload weights. A future remote verifier service should keep test registries
 and trainer storage outside the generated program's filesystem namespace.
 Do not run model rollouts in this personal development checkout.
+
+Update, 2026-09-15: resource setup now runs in a fresh launcher, not `preexec_fn`.
+Linux retains the address-space cap; macOS uses a sampled process-group RSS
+watchdog for diagnostics. A host that denies process inspection reports a
+harness failure. The pytest-only `--no-memory-limit` flag explicitly skips that
+guard on a restricted macOS host; CI runs without it. Schema-2 bundles pin the
+launcher/memory policy and distinguish smoke from pilot data. The starter cannot
+launch a real job. Checkpoint selection also protects coverage and fallback
+correctness separately against the dev baseline. Ordinary failing tracebacks
+receive zero reward; only would-be successes are checked for oracle stability.
 
 After the smoke and the real-data admission gates pass: prepare a fresh real
 bundle, run SFT without `--smoke`, then GRPO with `--adapter` pointing to the

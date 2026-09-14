@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import subprocess
 import sys
@@ -18,7 +19,7 @@ from pathlib import Path
 from . import sandbox
 from .jsonio import sha256_of, write_json, write_jsonl
 
-SCHEMA = 1
+SCHEMA = 2
 POLICY = "l-correctness-v1"
 SYSTEM = "Write a Python standard-library program. Return exactly one fenced python code block."
 
@@ -58,7 +59,8 @@ def engine_identity(binary):
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             "oracle": sys.version, "policy": POLICY,
             "verifier_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-            "sandbox_sha256": hashlib.sha256(Path(sandbox.__file__).read_bytes()).hexdigest()}
+            "sandbox_sha256": hashlib.sha256(Path(sandbox.__file__).read_bytes()).hexdigest(),
+            "child_exec_sha256": hashlib.sha256(Path(sandbox.__file__).with_name("child_exec.py").read_bytes()).hexdigest()}
 
 
 def messages(case):
@@ -68,10 +70,12 @@ def messages(case):
 
 
 def validate_cases(cases):
-    if not cases:
+    if not isinstance(cases, list) or not cases:
         raise TrainingError("no training cases")
     ids, prompts = set(), set()
     for case in cases:
+        if not isinstance(case, dict):
+            raise TrainingError("each case must be an object")
         for key in ("case_id", "family", "task", "reference", "provenance"):
             if not isinstance(case.get(key), str) or not case[key].strip():
                 raise TrainingError("case needs nonempty " + key)
@@ -82,10 +86,12 @@ def validate_cases(cases):
         if case.get("population") not in ("coverage", "fallback-control"):
             raise TrainingError("population must be coverage or fallback-control")
         tests = case.get("tests", [])
-        if len(tests) < 3:
+        if not isinstance(tests, list) or len(tests) < 3:
             raise TrainingError("need at least three independently specified tests")
         inputs = set()
         for test in tests:
+            if not isinstance(test, dict):
+                raise TrainingError("each test must be an object")
             if set(test) - {"stdin", "argv", "files", "stdout"}:
                 raise TrainingError("unsupported observable contract")
             if not isinstance(test.get("stdout"), str) or "\ufffd" in test["stdout"]:
@@ -97,6 +103,12 @@ def validate_cases(cases):
                 raise TrainingError("argv must be a list of strings")
             if not isinstance(test.get("files", {}), dict):
                 raise TrainingError("files must be a mapping")
+            for name, content in test.get("files", {}).items():
+                if (not isinstance(name, str) or not name or Path(name).is_absolute()
+                        or ".." in Path(name).parts or name == "solution.py"):
+                    raise TrainingError("unsafe or reserved input file path")
+                if not isinstance(content, str):
+                    raise TrainingError("this verifier accepts UTF-8 input files only")
             inputs.add(sha256_of({k: test.get(k, d) for k, d in
                                  (("stdin", ""), ("argv", []), ("files", {}))}))
         if len(inputs) < 3 or len({t["stdout"] for t in tests}) < 2:
@@ -117,7 +129,7 @@ def split_cases(cases, seed=1111):
 
 def program_from_completion(completion):
     if isinstance(completion, list):
-        if len(completion) != 1 or completion[0].get("role") != "assistant":
+        if len(completion) != 1 or not isinstance(completion[0], dict) or completion[0].get("role") != "assistant":
             return None
         completion = completion[0].get("content", "")
     if not isinstance(completion, str):
@@ -131,11 +143,11 @@ def program_from_completion(completion):
 
 class Verifier:
     def __init__(self, binary, timeout_s=5.0, memory_mb=1024, runner=None, identity=None):
-        if timeout_s <= 0:
+        if not math.isfinite(timeout_s) or timeout_s <= 0:
             raise TrainingError("timeout must be positive")
         self.binary = str(Path(binary).resolve())
         self.timeout_s = timeout_s
-        if memory_mb < 0:
+        if not isinstance(memory_mb, int) or memory_mb < 0:
             raise TrainingError("memory limit cannot be negative")
         self.memory_mb = memory_mb
         self.runner = runner or sandbox.run_python
@@ -155,7 +167,7 @@ class Verifier:
 
     @staticmethod
     def _observed(r):
-        return (r.exit_code, r.stdout, r.stderr, r.timed_out, r.truncated)
+        return (r.exit_code, r.stdout, r.stderr, r.timed_out, r.truncated, r.memory_exceeded)
 
     def score(self, case, program):
         if self.identity is not None and engine_identity(self.binary) != self.identity:
@@ -166,12 +178,15 @@ class Verifier:
         # Correctness gates the ENTIRE program before native coverage is scored.
         for i, test in enumerate(tests):
             oracle = self._run(program, test)
-            repeat = self._run(program, test)
-            if self._observed(oracle) != self._observed(repeat):
-                raise VerificationBlocked("unstable oracle: %s test %d" % (case["case_id"], i))
             if (not oracle.ok or oracle.truncated or oracle.stderr or
                     oracle.stdout != test["stdout"]):
                 return Score(0.0, "incorrect", total_tests=len(tests))
+            # Only a would-be SUCCESS needs a stability check. Tracebacks name
+            # the fresh temporary script path: comparing two failing runs byte
+            # for byte would abort RL on every ordinary model NameError.
+            repeat = self._run(program, test)
+            if self._observed(oracle) != self._observed(repeat):
+                raise VerificationBlocked("unstable oracle: %s test %d" % (case["case_id"], i))
         native_count = 0
         for i, test in enumerate(tests):
             native = self._run(program, test, native=True)
@@ -195,7 +210,16 @@ class Verifier:
         return Score(0.25, "correct-fallback", native_count, len(tests))
 
 
-def prepare(cases, binary, output, seed=1111, timeout_s=5.0, memory_mb=1024):
+def validate_pilot(cases):
+    """An admission floor, not a statistical guarantee of benchmark quality."""
+    if len({c["family"] for c in cases}) < 18:
+        raise TrainingError("pilot needs at least 18 independent semantic families; starter is smoke-only")
+    for split in ("train", "dev", "test"):
+        if {c["population"] for c in cases if c["split"] == split} != {"coverage", "fallback-control"}:
+            raise TrainingError("pilot split %s needs coverage AND fallback controls" % split)
+
+
+def prepare(cases, binary, output, seed=1111, timeout_s=5.0, memory_mb=1024, purpose="smoke"):
     """Verify references then publish a new immutable experiment directory."""
     output = Path(output)
     if output.exists():
@@ -203,6 +227,10 @@ def prepare(cases, binary, output, seed=1111, timeout_s=5.0, memory_mb=1024):
     validate_cases(cases)
     identity = engine_identity(binary)
     cases = split_cases(cases, seed)
+    if purpose not in ("smoke", "pilot"):
+        raise TrainingError("purpose must be smoke or pilot")
+    if purpose == "pilot":
+        validate_pilot(cases)
     verifier = Verifier(binary, timeout_s=timeout_s, memory_mb=memory_mb, identity=identity)
     references = {c["case_id"]: asdict(verifier.score(c, c["reference"])) for c in cases}
     if any(s["reward"] == 0 for s in references.values()):
@@ -212,10 +240,12 @@ def prepare(cases, binary, output, seed=1111, timeout_s=5.0, memory_mb=1024):
         raise TrainingError("engine changed during preparation")
     payload = {"cases": cases, "identity": identity, "seed": seed,
                "schema": SCHEMA, "system": SYSTEM, "reference_scores": references,
+               "purpose": purpose, "memory_policy": sandbox.memory_policy(memory_mb),
                "limits": {"timeout_s": timeout_s, "memory_mb": memory_mb}}
     payload["digest"] = sha256_of(payload)
+    # Publish the manifest LAST: interruption leaves a non-loadable incomplete
+    # directory, never a manifest claiming all exports are complete.
     output.mkdir(parents=True, exist_ok=False)
-    write_json(output / "bundle.json", payload)
     for split in ("train", "dev", "test"):
         subset = [c for c in cases if c["split"] == split]
         write_jsonl(output / (split + "-prompts.jsonl"),
@@ -226,6 +256,7 @@ def prepare(cases, binary, output, seed=1111, timeout_s=5.0, memory_mb=1024):
                         ({"case_id": c["case_id"], "messages": messages(c) + [{
                             "role": "assistant", "content": "```python\n" + c["reference"].rstrip() + "\n```"}]}
                          for c in subset))
+    write_json(output / "bundle.json", payload)
     return payload
 
 
@@ -239,6 +270,12 @@ def load_bundle(path, binary):
     if payload["identity"] != engine_identity(binary):
         raise TrainingError("engine/oracle/policy drift; prepare a new experiment")
     validate_cases(payload["cases"])
+    if payload.get("purpose") not in ("smoke", "pilot"):
+        raise TrainingError("missing experiment purpose")
+    if payload["purpose"] == "pilot":
+        validate_pilot(payload["cases"])
+    if payload["memory_policy"] != sandbox.memory_policy(payload["limits"]["memory_mb"]):
+        raise TrainingError("memory enforcement policy changed")
     if split_cases(payload["cases"], payload["seed"]) != payload["cases"]:
         raise TrainingError("family split changed")
     payload["digest"] = digest

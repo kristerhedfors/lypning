@@ -1525,8 +1525,10 @@ def cmd_training_prepare(args) -> int:
     from .jsonio import read_jsonl
     try:
         cases = starter_cases() if args.starter else read_jsonl(args.cases)
+        if args.starter and args.purpose != "smoke":
+            raise TrainingError("the starter curriculum is smoke-only")
         bundle = prepare(cases, args.engine, args.output, seed=args.seed,
-                         timeout_s=args.timeout, memory_mb=args.memory_mb)
+                         timeout_s=args.timeout, memory_mb=args.memory_mb, purpose=args.purpose)
     except (TrainingError, OSError, subprocess.SubprocessError) as exc:
         print("training preparation blocked: %s" % exc, file=sys.stderr)
         return 1
@@ -1548,6 +1550,7 @@ def build_parser() -> argparse.ArgumentParser:
     tp.add_argument("--engine", type=Path, required=True, help="explicit compiled lypning-l binary")
     tp.add_argument("--output", type=Path, required=True, help="new directory; never overwrite")
     tp.add_argument("--seed", type=int, default=1111)
+    tp.add_argument("--purpose", choices=("smoke", "pilot"), default="smoke")
     tp.add_argument("--timeout", type=float, default=5.0)
     tp.add_argument("--memory-mb", type=int, default=1024,
                     help="child address-space cap; 0 explicitly disables it (macOS smoke only)")
