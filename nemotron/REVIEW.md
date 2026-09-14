@@ -135,14 +135,27 @@ reversed.
 
 That makes the endpoint change *more* worth making, not less. Under §3 the
 verdict was "no win, and the two legs disagree", which leaves open why. Under
-§7 the answer is specific and actionable: the SFT set taught the model to solve
-these tasks slightly better and taught it nothing about the subset. The review's
-F5 says why that is unsurprising and nobody had noticed — the sampling prompt
-never mentions the subset, the refusal, or lypning, in either arm. The adapter
-was trained on programs selected for legality but was never shown the constraint
-that selected them. Context distillation (sample *with* the refusal line in the
-prompt, train on the bare prompt) is the one technique aimed straight at that
-gap, and it has not been tried.
+§7 the answer is specific: the SFT set taught the model to solve these tasks
+slightly better and taught it nothing about the subset.
+
+**And the obvious explanation for that is wrong — checked, and it does not
+hold.** The first version of this section said the prompt never mentions the
+subset, so the adapter was never shown the constraint that selected its training
+data. That is true of `SYSTEM_PROMPT` and `USER_TEMPLATE` and false of the
+`{task}` substituted into them. Every `refused:*` case's own prompt says "this
+runtime refuses it and falls back to a slower interpreter", names the exact
+construct — "It was refused because: `base64: b64decode() over data with
+incorrect padding`" — and asks in so many words for a byte-identical rewrite
+without it. Measured 2026-09-14: **all 52 held-out and all 318 train `refused:*`
+cases carry that text.**
+
+So the constraint was in the input, in both arms, at sampling time and at eval
+time. The model was told, explicitly, per case, and its subset legality still did
+not move. That is a **stronger** negative result than the one above, and it moves
+the weight of this review from F5 to F4 and F3: the problem is not that nobody
+said the rule, it is that saying it does not help, and that an eval set which
+says it cannot measure the deployment quantity at all — where the agent writing
+the one-liner has never heard of lypning. See §6.
 
 ### Reading this number honestly
 
@@ -270,18 +283,27 @@ There is a real hyperparameter finding here, but it is not in F10 — see §4.
 
 ### F4 — "the prompt format must be the agent's format". It already is.
 
-The review reads rev 1 as training on *refused program → rewrite* and asks for
-*task → program*. `evaluate.py:82` renders exactly two messages: a system
-prompt that says "You are a precise Python programmer", and a user turn that is
-the task plus a runtime contract. **Neither mentions lypning, the subset, or a
-refusal.** Both arms see the identical prompt; `prompt_sha` pins it and `nt
-grade` refuses a run whose template drifted.
+**This finding was published wrong on 2026-09-14 and is corrected here.** It
+said `evaluate.py:82` renders two messages that never mention lypning, the
+subset or a refusal, and concluded the adapter had to move the prior with no
+prompt-side help. The two messages are the *wrapper*. The task text substituted
+into them is the case's own prompt, and for a `refused:*` case that prompt is
+already a rewrite instruction naming the refusal (§1). The review reads rev 1 as
+training on *refused program → rewrite* — and on 370 of the 443 refused cases,
+**that is exactly what it is**. The review had this right and the first version
+of this response did not.
 
-So the adapter had to move the prior with no prompt-side help at all — which
-makes the review's F5 recommendation (sample *with* the refusal line in
-context, train on the bare prompt) not a refinement of what was done but an
-untried lever. It survives as the single best-matched unexploited technique,
-and §4 keeps it.
+What survives, and it is the smaller half of F5: the case prompt names the
+construct to avoid and never shows a worked example of avoiding it. Adding one
+from `docs/COOKBOOK.md` at sampling time, and keeping it out of the training row
+and the eval, is few-shot demonstration distilled into weights. That is
+implemented (`pipeline/hints.py`, `nt sample --hinted`) on the corrected,
+narrower rationale.
+
+What does NOT survive is the idea that the prompt format is already the agent's
+format. It is not, for the population that dominates: *refused program +
+refusal line → rewrite* is a repair-loop prompt, and no agent writing a
+one-liner will ever be in it.
 
 ### F3 — "the evaluation population was selected on the outcome". Partly.
 
@@ -373,3 +395,76 @@ v1's lock.
 **It did not touch the ceiling slice's role.** The review's gate B reassigns it
 from contributor to anti-gaming control. That is §7c, and it changes what the
 ceiling slice is *for* in v2 without touching what it did in v1.
+
+---
+
+## 6. The correction, and what it does to the experiment
+
+Added 2026-09-14, after §§0–5 were written, committed and pushed.
+
+### What was wrong
+
+§1 and §3 claimed the prompt never mentions lypning, the subset or a refusal,
+and built a diagnosis on it: that the adapter was trained on programs selected
+for legality without ever being shown the constraint that selected them, and
+that context distillation was therefore the untried lever.
+
+`evaluate.render_messages` renders a system prompt and a user turn built from
+`USER_TEMPLATE.format(task=case["prompt"], contract=…)`. Those two strings are
+silent about the subset. **`case["prompt"]` is not.** For a `refused:*` case it
+is a rewrite instruction that quotes the failing program, names the exact
+refusal, and asks for byte-identical output without that construct.
+
+| population | n (held-out) | n (train) | prompt names the refusal |
+|---|---|---|---|
+| `refused:*` | 52 | 318 | **yes, every one** |
+| `ceiling:*` | 14 | 107 | no |
+| `unobserved` | 8 | 18 | no |
+
+I checked the wrapper and reported on the whole prompt. The test I wrote to pin
+the claim used a one-line synthetic task, so it passed on a fixture easier than
+the data and certified the error.
+
+### What it changes
+
+**The null gets stronger, not weaker.** The model was handed the constraint
+explicitly, per case, in both arms, at sampling time and at eval time — and its
+subset legality still did not move: ΔSLR −1.00pp, 95% CI [−3.36, +1.51]. "Nobody
+told it" is no longer available as the explanation. Telling it, in the most
+direct way the format allows, is what the run of record already did.
+
+**The weight of the review moves from F5 to F4 and F3.** F5 (hinted sampling)
+survives only as its smaller half — the case prompt names the construct to avoid
+and never demonstrates avoiding it, so a worked `COOKBOOK` pair is a real
+addition, and that is what `nt sample --hinted` now does. But F4 is the finding
+this correction promotes: **the prompt format is a repair loop, not an agent's
+format.** *Refused program + refusal line → rewrite* is a prompt no agent writing
+a one-liner will ever be in. On 370 of the 443 refused cases across both splits,
+that is the format, which is what the review said in rev 1 and what §3 of this
+document wrongly denied.
+
+**And the eval set cannot measure the deployment quantity.** SLR over a
+population whose prompts hand the model the refusal and ask for a rewrite is
+measuring *compliance with an instruction*, not a prior. The number is still
+comparable between arms — both arms get the same prompts — so §1's delta stands
+as a delta. It is not, and was never, the fraction of what an unprompted agent
+writes that will run. §7e of `PREREGISTRATION.md` already registers an
+unconditioned task bank as v2's primary population; this is the second,
+independent reason it is needed, and the stronger one.
+
+### Two smaller things the check turned up
+
+**Some prompts instruct the model to avoid a construct that now works.** The
+case prompt quotes the refusal it was harvested with, and the engine keeps
+learning. Probed against `lypning-l` on 2026-09-14: **4 of 52** held-out and
+**6 of 318** train refused cases name a construct the engine now runs — `module:
+import math`, `type: type() of a NameError`, `percent-format: %.2d`. Those
+prompts are now wrong in the direction that costs: they teach a rewrite away
+from something that is already free. `hints.live_refusal` probes rather than
+remembers for exactly this reason, and a case whose negative the engine now runs
+gets no hint at all.
+
+**A worked example is the part that was missing, and only that part.** The case
+prompt states the rule and shows no instance of following it. That is the gap
+`--hinted` fills, and it is a much narrower claim than the one this document
+made before the correction.

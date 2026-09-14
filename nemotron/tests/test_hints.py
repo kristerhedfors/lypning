@@ -47,15 +47,39 @@ def test_render_messages_is_not_mutated_by_rendering_a_hint():
     assert hinted[-1]["content"].startswith(bare[-1]["content"])
 
 
-def test_the_bare_prompt_says_nothing_about_the_subset():
-    """The premise of the whole change, pinned so it cannot drift unnoticed.
+def test_the_wrapper_says_nothing_about_the_subset_but_the_task_may():
+    """The correction, pinned, because the first version of this test hid it.
 
-    If the eval prompt ever starts naming lypning, the hinted/unhinted asymmetry
-    stops being an asymmetry and `hints`'s docstring stops being true.
+    That version asserted the rendered prompt never says "refus" — and passed,
+    because the synthetic CASE above has a one-line task. Every real `refused:*`
+    case's prompt is a rewrite instruction that names the refusal, so the
+    assertion was true of the fixture and false of the corpus. A test whose
+    fixture is easier than the data is a test that certifies a wrong belief.
+
+    What is actually true, and worth holding: the WRAPPER is silent, so the
+    hint's effect is additive and `prompt_signature` does not move. The task
+    text is the case's own and this says nothing about it.
     """
-    text = " ".join(m["content"] for m in evaluate.render_messages(CASE)).lower()
     for word in ("lypning", "subset", "unsupported", "refus"):
-        assert word not in text
+        assert word not in evaluate.SYSTEM_PROMPT.lower()
+        assert word not in evaluate.USER_TEMPLATE.lower()
+
+
+def test_a_real_refused_case_prompt_already_names_its_refusal():
+    """The corpus, not a fixture: this is the fact the first version missed."""
+    import json
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "data" / "holdout.jsonl"
+    if not path.is_file():
+        pytest.skip("no frozen holdout in this tree")
+    rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+    refused = [d for d in rows if str(d.get("category", "")).startswith("refused")]
+    if not refused:
+        pytest.skip("this holdout has no refused cases")
+    # Not "most": every one of them. If that ever stops being true the whole
+    # reading of the null in REVIEW.md changes, and this is where to notice.
+    assert all("refused because" in (d.get("prompt") or "") for d in refused)
 
 
 def test_a_refusal_the_engine_no_longer_gives_yields_no_hint(monkeypatch):

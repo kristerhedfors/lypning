@@ -6,15 +6,43 @@ WHY THIS EXISTS, AND WHAT IT IS FIXING
     -0.22pp (`REVIEW.md` §1). The adapter learned to solve these tasks slightly
     better and learned nothing about the subset.
 
-    Reading the prompt says why, and it is not subtle. `evaluate.render_messages`
-    is two turns: "You are a precise Python programmer", and the task plus a
-    runtime contract. **Neither mentions lypning, the subset, or a refusal**, and
-    the SAME function drew the SFT targets. So every training example was a
-    program selected for being subset-legal, paired with a prompt that never said
-    so. Nothing in the gradient could point at the constraint, because the
-    constraint was never in the input — only in the filter that chose which
-    outputs survived. Rejection sampling on its own sharpens the base model's
-    existing prior; it cannot install one the prompt never mentioned.
+    **A correction, because the first version of this docstring was wrong and it
+    shipped.** It said the prompt never mentions lypning, the subset or a
+    refusal. That is true of `evaluate.SYSTEM_PROMPT` and `USER_TEMPLATE` — the
+    wrapper — and false of the thing that matters, which is the `{task}`
+    substituted into it. A `refused:*` case's own prompt reads:
+
+        The following Python program is correct, but this runtime refuses it and
+        falls back to a slower interpreter: … It was refused because: base64:
+        b64decode() over data with incorrect padding … Rewrite it so it produces
+        byte-identical output without that construct.
+
+    Measured 2026-09-14: **all 52 held-out and all 318 train `refused:*` cases
+    carry that text.** So the constraint WAS in the input, in both arms, at
+    sampling time and at eval time. The adapter was shown it and legality still
+    did not move, which is a stronger negative result than the one first
+    reported, not a weaker one.
+
+WHAT THE HINT ACTUALLY ADDS, NOW THAT THE PREMISE IS CORRECTED
+    Three things the case prompt does not have, and none of them is "the
+    constraint", which it already states:
+
+    1. **A worked before/after pair** for this refusal kind, out of
+       `docs/COOKBOOK.md`. The case prompt names the construct to avoid and
+       shows no example of avoiding it; this is few-shot demonstration of the
+       rewrite, which is the part `REVIEW.md`'s F5 actually asked for.
+    2. **The refusal the engine gives TODAY.** The case prompt quotes the one it
+       was harvested with, and the engine keeps learning: 4 of 52 held-out and 6
+       of 318 train refused cases name a construct the engine now RUNS, so their
+       prompts instruct the model to route around something that already works.
+    3. **The cost framing** — that this is about a process spawn and not about
+       correctness, so a wrong answer inside the subset is worth less than a
+       right answer outside it.
+
+    That is a narrower claim than the one this file first made. It is still the
+    technique `REVIEW.md` F5 names, and it is still worth its money, but it is
+    "add a demonstration to a prompt that already states the rule" rather than
+    "state a rule nobody stated".
 
 THE ASYMMETRY IS THE WHOLE TECHNIQUE
     Sample **with** the hint: the engine's own refusal line for this case, and a
