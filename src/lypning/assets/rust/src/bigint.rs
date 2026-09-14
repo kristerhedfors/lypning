@@ -17,7 +17,8 @@
 //! Exact, at any width: `+ - * ** // % divmod << >>`, unary `-`, `abs`,
 //! `== != < <= > >=` between two integers, `str`/`repr`/`print`/`{}`/`%s`/`%d`,
 //! `bin`/`hex`/`oct`, `bool`, `int(str)` and integer literals of any size,
-//! `json.dumps`, and `sum` over integers.
+//! `json.dumps`, `sum` over integers, fixed-width `int.to_bytes` (up to the
+//! shared 4096-byte conversion cap), and every finite `float.as_integer_ratio`.
 //!
 //! Refused, as `bigint`, with the reason written at each site below: any mixing
 //! of a wide integer with a **float** (including `int / int` when an operand is
@@ -54,7 +55,7 @@
 //! file, screens `int(s)` by exactly the same test.
 
 use crate::ast::BinOp;
-use crate::err::{int_mod_by_zero, unsupported, value_err, zero_div, LypningError, R};
+use crate::err::{int_mod_by_zero, overflow_err, unsupported, value_err, zero_div, LypningError, R};
 use crate::value::{Int, Value};
 use std::cmp::Ordering;
 use std::rc::Rc;
@@ -640,6 +641,62 @@ pub fn abs(n: &Int) -> Value {
 
 pub fn bit_length(b: &Big) -> usize {
     bits_of(&b.mag)
+}
+
+/// A wide integer's fixed-width little-endian two's complement. The caller
+/// checks the shared conversion byte budget before reaching this allocation.
+/// Small integers keep their existing path, including versioned zero-width
+/// behavior for -1. A normalized `Big` is never zero or -1.
+pub fn to_bytes(b: &Big, n: usize, signed: bool) -> R<Vec<u8>> {
+    if b.neg && !signed {
+        return Err(overflow_err("can't convert negative int to unsigned"));
+    }
+    let bits = bit_length(b);
+    let field_bits = n * 8;
+    // A signed negative admits the one extra magnitude 2**(field_bits-1).
+    // Counting set bits detects that boundary without subtracting/allocating.
+    let fits = if !signed {
+        bits <= field_bits
+    } else {
+        bits < field_bits
+            || (b.neg
+                && bits == field_bits
+                && b.mag.iter().map(|w| w.count_ones()).sum::<u32>() == 1)
+    };
+    if !fits {
+        return Err(overflow_err("int too big to convert"));
+    }
+    let mut out = vec![0u8; n];
+    let mut carry = 1u16;
+    for (i, byte) in out.iter_mut().enumerate() {
+        let magnitude = b.mag.get(i / 4).map_or(0, |w| w >> (8 * (i % 4))) as u8;
+        if b.neg {
+            let twos = (!magnitude) as u16 + carry;
+            *byte = twos as u8;
+            carry = twos >> 8;
+        } else {
+            *byte = magnitude;
+        }
+    }
+    Ok(out)
+}
+
+/// A finite binary64 already reduced to odd mantissa * 2**exponent. Its
+/// largest component is only 1075 bits, safely below the bigint budget.
+pub fn float_ratio(mantissa: u64, exponent: i32, negative: bool) -> Value {
+    let mag = vec![mantissa as u32, (mantissa >> 32) as u32];
+    let (num, den) = if exponent >= 0 {
+        (
+            norm(negative, shl_mag(&trim(mag), exponent as usize)),
+            Int::S(1),
+        )
+    } else {
+        (
+            norm(negative, mag),
+            norm(false, shl_mag(&[1], (-exponent) as usize)),
+        )
+    };
+    Value::Tuple(Rc::new(vec![Value::Int(num), Value::Int(den)]))
 }
 
 // ---- int / int, computed from the integers -------------------------------
