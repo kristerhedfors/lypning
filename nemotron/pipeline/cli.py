@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1136,12 +1137,45 @@ def cmd_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def _programs_of(name: str) -> Optional[Path]:
+    """Where the recorded programs of ``name`` are — a run, a draw pool, or a file.
+
+    The train pool is not a run and never was: it is the rejection sampler's own
+    draws, sixteen per case, written beside the SFT set they were filtered into.
+    Reachability is the first question asked of BOTH populations, so resolving
+    both here is what stops the answer for one of them being a second command
+    that drifts.
+    """
+    for path in (RUNS / name / "attempts.jsonl", DATA / "sft" / name / "draws.jsonl",
+                 Path(name)):
+        if path.is_file():
+            return path
+    return None
+
+
+def _case_context(no_context: bool) -> Tuple[Dict[str, Dict[str, Any]],
+                                             Optional[Dict[str, Dict[str, Any]]]]:
+    """Every case this tree knows, and the per-case test context to replay under."""
+    cases: Dict[str, Dict[str, Any]] = {}
+    for path in (DATA / "holdout.jsonl", DATA / "train.jsonl", DATA / "corpus.jsonl"):
+        if path.exists():
+            for c in read_jsonl(path):
+                cases.setdefault(c["id"], c)
+    if no_context:
+        return cases, None
+    return cases, {cid: c.get("test") or {} for cid, c in cases.items()}
+
+
 def cmd_legality(args: argparse.Namespace) -> int:
     """Subset-legality rate between two runs: what fraction of what a model writes runs.
 
     Costs CPU and nothing else. Every program was already generated and paid
     for; this replays them through the pinned engine and asks the question the
     correctness endpoint cannot isolate — not "is it right" but "will it run".
+
+    ``--pass-at-k`` asks the prior question of one population instead of the
+    delta between two: not how often a draw is legal, but whether ANY draw is —
+    which is the ceiling on every reward-based stage and costs the same nothing.
     """
     from . import legality
     engine = args.engine or eng.engine_path("lypning-l") or eng.engine_path("lypning")
@@ -1149,14 +1183,13 @@ def cmd_legality(args: argparse.Namespace) -> int:
         print("no lypning binary on this machine: run `lypning build --rust`, "
               "or pass --engine", file=sys.stderr)
         return 1
-    tests = None
-    cases: Dict[str, Dict[str, Any]] = {}
-    if not args.no_context:
-        for path in (DATA / "holdout.jsonl", DATA / "train.jsonl"):
-            if path.exists():
-                for c in read_jsonl(path):
-                    cases.setdefault(c["id"], c)
-        tests = {cid: c.get("test") or {} for cid, c in cases.items()}
+    cases, tests = _case_context(args.no_context)
+    if args.pass_at_k:
+        return _reachability(args, engine, cases, tests)
+    if not args.after:
+        print("legality needs two runs to compare; one run is `--pass-at-k`",
+              file=sys.stderr)
+        return 2
     arms = {}
     for run_id in (args.before, args.after):
         path = RUNS / run_id / "attempts.jsonl"
@@ -1167,7 +1200,8 @@ def cmd_legality(args: argparse.Namespace) -> int:
         arms[run_id] = legality.arm(list(read_jsonl(path)), engine, tests=tests,
                                     workers=args.jobs, cache=cache)
     try:
-        cmp = legality.compare(arms[args.before], arms[args.after], cases or None,
+        cmp = legality.compare(arms[args.before], arms[args.after],
+                               (None if args.no_context else (cases or None)),
                                engine=engine, gate_a=args.gate_a,
                                gate_b=args.gate_b, gate_c=args.gate_c)
     except ValueError as exc:
@@ -1181,6 +1215,60 @@ def cmd_legality(args: argparse.Namespace) -> int:
         Path(args.json).write_text(
             json.dumps(blob, indent=1, sort_keys=True, default=str), encoding="utf-8")
     return 0 if (cmp["gates_pass"] and not cmp["mismatch"]) else 1
+
+
+def _reachability(args: argparse.Namespace, engine: str,
+                  cases: Dict[str, Dict[str, Any]],
+                  tests: Optional[Dict[str, Dict[str, Any]]]) -> int:
+    """Stage 0a: how much of a pool the model can already reach, by refusal kind.
+
+    Every population named on the command line gets its own table. They are not
+    differenced and deliberately so — the train pool and the held-out set have
+    different case mixes, and a delta between two mixes is a statement about the
+    mixes.
+    """
+    from . import legality
+    held = set()
+    lock = splitmod.load_lock(DATA)
+    if lock:
+        held = {e["id"] for e in lock.get("holdout", [])}
+    kinds = {cid: c.get("category") or "unknown" for cid, c in cases.items()}
+    worst = 0
+    for i, name in enumerate([n for n in (args.before, args.after) if n]):
+        path = _programs_of(name)
+        if path is None:
+            print("no run, draw pool or file called %s" % name, file=sys.stderr)
+            return 1
+        draws = [d for d in read_jsonl(path) if d.get("program")]
+        if not draws:
+            print("%s: no programs recorded" % name, file=sys.stderr)
+            return 1
+        cache = (Path(args.cache) / ("%s.replay.json" % name)) if args.cache else None
+        r = legality.reachability(draws, engine, tests=tests, kinds=kinds,
+                                  workers=args.jobs, cache=cache)
+        if i:
+            print()
+        label = name if str(path) == name else "%s (%s)" % (name, path.name)
+        print(legality.reachability_report(
+            r, label=label, limit=args.limit,
+            floor=args.floor,
+            held_out=bool(held) and {d.get("case_id") for d in draws} <= held))
+        if args.json:
+            out = Path(args.json)
+            if len([n for n in (args.before, args.after) if n]) > 1:
+                # A population can be named by a path, and a path is not a
+                # filename component: `with_name` refuses one, after the replay
+                # it was going to record has already been paid for.
+                slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", Path(name).name) or "arm"
+                out = out.with_name("%s.%s%s" % (out.stem, slug, out.suffix))
+            blob = dict(r)
+            out.write_text(json.dumps(blob, indent=1, sort_keys=True, default=str),
+                           encoding="utf-8")
+        # A pool below the floor is the stop this stage exists to raise, and a
+        # stop the caller cannot see in an exit code is a stop nobody scripts on.
+        if r["mismatch"] or r["reachable"] < args.floor:
+            worst = 1
+    return worst
 
 
 def cmd_slices(args: argparse.Namespace) -> int:
@@ -1570,7 +1658,15 @@ def build_parser() -> argparse.ArgumentParser:
     cp.set_defaults(fn=cmd_compare)
 
     lg = sub.add_parser("legality", help="subset-legality rate between two runs (no GPU, no spend)")
-    lg.add_argument("before"); lg.add_argument("after")
+    lg.add_argument("before"); lg.add_argument("after", nargs="?")
+    lg.add_argument("--pass-at-k", action="store_true",
+                    help="reachability instead of a delta: per case, did ANY draw land "
+                         "in the subset, and did any land there correct. Takes one or "
+                         "two populations — a run id, an SFT draw pool under data/sft, "
+                         "or a path to a JSONL of draws")
+    lg.add_argument("--floor", type=float, default=0.60,
+                    help="reachability floor for --pass-at-k; below it a reward-based "
+                         "stage has nothing to reinforce and the exit code says so")
     lg.add_argument("--engine", help="binary to judge legality with (default: lypning-l)")
     lg.add_argument("--limit", type=int, default=12, help="refusal-kind rows to print")
     lg.add_argument("--mde", type=float, default=0.0,

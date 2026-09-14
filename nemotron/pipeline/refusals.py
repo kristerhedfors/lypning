@@ -150,9 +150,18 @@ def report(result: Dict[str, Any], *, limit: int = 0, show_details: bool = False
     lines.append("   and the engine's job is to go on refusing them")
     return "\n".join(lines)
 
+#: Bumped whenever a verdict's MEANING changes. The replay cache keys on the
+#: engine fingerprint, which cannot see a change on this side of the comparison:
+#: the day UNSTABLE was split out of MISMATCH, every cached census still said
+#: MISMATCH and the fingerprint still matched. A grader is half of a verdict, so
+#: it is half of the cache key.
+GRADER = 2
+
+
 def grade_against_engine(program: str, engine: str, timeout_s: float = 10.0,
                          test: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
-    """One program, judged against CPython: MATCH, UNSUPPORTED, MISMATCH or ERROR.
+    """One program, judged against CPython: MATCH, UNSUPPORTED, MISMATCH,
+    UNSTABLE or ERROR.
 
     Behind the sandbox, because unlike :func:`probe` this RUNS what the engine
     accepts, and what it is pointed at is model output rather than a vetted
@@ -164,6 +173,27 @@ def grade_against_engine(program: str, engine: str, timeout_s: float = 10.0,
     on — so a census taken without the test context systematically UNDERSTATES
     refusals. Left out, the run is context-free, which is what a corpus-wide
     census wants and what an on-policy one does not.
+
+    ``correct`` rides along when the test carries an expected stdout: did the
+    ENGINE'S OWN run reproduce it. It is ``None`` otherwise, and ``None`` is not
+    ``False`` — a case with nothing to compare against is unmeasured, not failed.
+    The recorded ``passed`` of an old run cannot stand in for it: that verdict
+    was reached under whatever engine that run pinned, and pairing it with a
+    legality verdict taken here would be two engines in one number, which is the
+    confound `legality.compare` refuses outright.
+
+    A DISAGREEMENT IS ONLY THE ENGINE'S IF THE PROGRAM AGREES WITH ITSELF, and
+    over model-written programs that is not a formality. Every sandbox run gets
+    its own `mkdtemp`, so `print(os.path.abspath(...))` differs between the two
+    runs BY CONSTRUCTION, and so does anything reading the clock, the hash seed
+    or `random`. Called MISMATCH, each of those is a silent-wrong-answer report
+    against an engine that did nothing wrong — invariant 1's alarm, fired by the
+    harness, on a corpus nobody would think to vet for determinism because a
+    model wrote it. So a first disagreement buys one more CPython run: if the
+    reference disagrees with ITSELF the verdict is ``UNSTABLE``, and only a
+    program that reproduces its own output can convict the engine. The engine
+    still RAN it, so UNSTABLE is legal for any legality rate — it is correctness
+    that is unknowable here, and ``correct`` is None to say so.
     """
     from . import sandbox
 
@@ -176,14 +206,26 @@ def grade_against_engine(program: str, engine: str, timeout_s: float = 10.0,
     got = sandbox.run_python(program, timeout_s=timeout_s, interpreter=[engine], **ctx)
     if got.exit_code == eng.REFUSAL_EXIT:
         parsed = eng.parse_refusal(got.stderr)
-        return {"verdict": "UNSUPPORTED",
+        return {"verdict": "UNSUPPORTED", "correct": None,
                 "detail": parsed[1] if parsed else "?",
                 "blocker": ("%s: %s" % (parsed[1], parsed[2])) if parsed else "?"}
     if got.harness_error or truth.harness_error:
-        return {"verdict": "ERROR", "detail": got.harness_error or truth.harness_error or ""}
+        return {"verdict": "ERROR", "correct": None,
+                "detail": got.harness_error or truth.harness_error or ""}
+    correct = None
+    if test and "expect_stdout" in test:
+        correct = bool(got.stdout == test["expect_stdout"]
+                       and got.exit_code == int(test.get("expect_exit", 0)))
     if (got.exit_code, got.stdout) == (truth.exit_code, truth.stdout):
-        return {"verdict": "MATCH", "detail": ""}
-    return {"verdict": "MISMATCH",
+        return {"verdict": "MATCH", "correct": correct, "detail": ""}
+    again = sandbox.run_python(program, timeout_s=timeout_s, **ctx)
+    if again.harness_error:
+        return {"verdict": "ERROR", "correct": None, "detail": again.harness_error}
+    if (again.exit_code, again.stdout) != (truth.exit_code, truth.stdout):
+        return {"verdict": "UNSTABLE", "correct": None,
+                "detail": "two CPython runs of it disagree: %r vs %r"
+                          % (truth.stdout[:40], again.stdout[:40])}
+    return {"verdict": "MISMATCH", "correct": correct,
             "detail": "exit %s vs %s" % (truth.exit_code, got.exit_code)}
 
 
@@ -245,7 +287,7 @@ def on_policy_report(result: Dict[str, Any], *, limit: int = 12) -> str:
     tally = result["tally"]
     n = result["programs"] or 1
     lines = ["engine %s   %d programs a model wrote" % (result["engine"], result["programs"])]
-    for verdict in ("MATCH", "UNSUPPORTED", "MISMATCH", "ERROR"):
+    for verdict in ("MATCH", "UNSUPPORTED", "MISMATCH", "UNSTABLE", "ERROR"):
         if verdict in tally:
             lines.append("  %-12s %5d  %5.1f%%" % (verdict, tally[verdict], 100.0 * tally[verdict] / n))
     if tally.get("MISMATCH"):

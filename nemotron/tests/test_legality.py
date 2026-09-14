@@ -8,6 +8,7 @@ of resampling is the CASE and not the program, and that the gates can fail.
 
 from __future__ import annotations
 
+import json
 import math
 
 import pytest
@@ -100,3 +101,127 @@ def test_mismatch_makes_the_number_unreportable():
     cmp = legality.compare(a, b)
     assert cmp["mismatch"] == 1
     assert "MISMATCH 1" in legality.report(cmp, before="a", after="b")
+
+
+# --- reachability -------------------------------------------------------------
+
+
+def _census(rows):
+    tally = {}
+    for r in rows:
+        tally[r["verdict"]] = tally.get(r["verdict"], 0) + 1
+    return {"engine": "e", "programs": len(rows), "tally": tally,
+            "details": {}, "blockers": {}, "rows": rows}
+
+
+def _draw(case_id, verdict, correct=None, sample=0):
+    return {"case_id": case_id, "sample": sample, "passed": bool(correct),
+            "verdict": verdict, "correct": correct, "detail": "d", "blocker": "b"}
+
+
+def _reach(rows, tests, monkeypatch):
+    monkeypatch.setattr(legality.refusals, "on_policy",
+                        lambda attempts, engine, tests=None, workers=1: _census(rows))
+    monkeypatch.setattr(legality.eng, "identity", lambda: {"fingerprint": "fp"})
+    monkeypatch.setattr(legality.refusals, "closed_kinds", lambda: frozenset(["set-order"]))
+    attempts = [{"case_id": r["case_id"], "program": "p"} for r in rows]
+    return legality.reachability(attempts, "e", tests=tests,
+                                 kinds={c: "refused:module" for c in
+                                        {r["case_id"] for r in rows}})
+
+
+def test_pass_at_k_is_the_estimator_and_not_c_over_n():
+    """One success in sixteen draws is not a 100% pass@8, and saying so is the
+    whole reason a k appears in the name."""
+    assert legality.pass_at_k(16, 1, 8) == pytest.approx(0.5)
+    assert legality.pass_at_k(16, 0, 4) == 0.0
+    assert legality.pass_at_k(16, 16, 1) == 1.0
+    assert legality.pass_at_k(4, 1, 1) == pytest.approx(0.25)
+    # A budget bigger than the evidence is not an answer, it is a nan.
+    assert legality.pass_at_k(4, 1, 8) != legality.pass_at_k(4, 1, 8)
+
+
+def test_the_three_tiers_come_off_the_test_and_absence_is_not_false():
+    assert legality.tier_of({"require_tier1": True}) == legality.TIER_REQUIRED
+    assert legality.tier_of({"require_tier1": False}) == legality.TIER_FALLBACK
+    # A `stdout`-kind case never mentions the engine. Reading that as "tier 1 not
+    # required" would claim falling back is RIGHT there, which nothing said.
+    assert legality.tier_of({"expect_stdout": "x"}) == legality.TIER_FREE
+    assert legality.tier_of(None) == legality.TIER_FREE
+
+
+def test_the_floor_reads_only_the_cases_that_require_tier_1(monkeypatch):
+    """A ceiling case the model never got into the subset is not a miss.
+
+    Its reference solution IS the program the engine refuses, so folding it in
+    scores the model for failing to do the wrong thing — and moves the headline
+    by the corpus mix rather than by the model.
+    """
+    rows = [_draw("rewrite", "MATCH", True), _draw("rewrite", "UNSUPPORTED"),
+            _draw("ceiling1", "UNSUPPORTED"), _draw("ceiling2", "UNSUPPORTED"),
+            _draw("free", "UNSUPPORTED")]
+    tests = {"rewrite": {"require_tier1": True, "expect_stdout": "x"},
+             "ceiling1": {"require_tier1": False, "expect_stdout": "x"},
+             "ceiling2": {"require_tier1": False, "expect_stdout": "x"},
+             "free": {"expect_stdout": "x"}}
+    r = _reach(rows, tests, monkeypatch)
+    assert r["cases"] == 1 and r["reachable"] == 1.0
+    assert r["fallback"]["cases"] == 2 and r["fallback"]["reached"] == 0
+    assert r["free"]["cases"] == 1
+
+
+def test_a_case_whose_every_draw_was_refused_is_unreachable_not_unmeasured(monkeypatch):
+    """Scorability is a property of the case, not of how its draws came back.
+
+    Reading it off "did any draw report a correct flag" files the very worst
+    cases — the ones nothing legal ever came back for — as blanks in the table.
+    """
+    rows = [_draw("a", "UNSUPPORTED"), _draw("a", "UNSUPPORTED")]
+    r = _reach(rows, {"a": {"require_tier1": True, "expect_stdout": "x"}}, monkeypatch)
+    assert r["scored"] == 1
+    assert r["rewardable"] == 0.0
+    assert r["unreachable"] == ["a"]
+
+
+def test_unstable_is_legal_never_correct_and_never_a_mismatch(monkeypatch):
+    """The engine ran it, so it is legal; nothing reproduces it, so nothing is right."""
+    rows = [_draw("a", "UNSTABLE", None)]
+    r = _reach(rows, {"a": {"require_tier1": True, "expect_stdout": "x"}}, monkeypatch)
+    assert r["reachable"] == 1.0
+    assert r["rewardable"] == 0.0
+    assert r["mismatch"] == 0 and r["unstable"] == 1
+
+
+def test_a_harness_error_leaves_the_denominator(monkeypatch):
+    rows = [_draw("a", "ERROR"), _draw("a", "MATCH", True)]
+    r = _reach(rows, {"a": {"require_tier1": True, "expect_stdout": "x"}}, monkeypatch)
+    assert r["draws"] == 1 and r["errors"] == 1
+    assert r["reachable"] == 1.0
+
+
+def test_the_report_says_below_when_it_is_below(monkeypatch):
+    rows = [_draw("a", "UNSUPPORTED"), _draw("b", "MATCH", True)]
+    tests = {c: {"require_tier1": True, "expect_stdout": "x"} for c in "ab"}
+    r = _reach(rows, tests, monkeypatch)
+    assert r["reachable"] == pytest.approx(0.5)
+    text = legality.reachability_report(r, label="t", floor=0.60)
+    assert "BELOW" in text and "advantage of zero" in text
+    assert "at or above" in legality.reachability_report(r, label="t", floor=0.40)
+
+
+def test_a_replay_cache_is_not_reused_across_a_grader_change(tmp_path, monkeypatch):
+    """The fingerprint is the engine's half of a verdict. The grader is the other.
+
+    The day UNSTABLE was split out of MISMATCH, every cached census still said
+    MISMATCH and every fingerprint still matched.
+    """
+    monkeypatch.setattr(legality.eng, "identity", lambda: {"fingerprint": "fp"})
+    cache = tmp_path / "r.json"
+    cache.write_text(json.dumps({"fingerprint": "fp", "grader": -1,
+                                 "census": {"rows": ["stale"]}}), encoding="utf-8")
+    fresh = _census([_draw("a", "MATCH", True)])
+    monkeypatch.setattr(legality.refusals, "on_policy",
+                        lambda attempts, engine, tests=None, workers=1: fresh)
+    got = legality.replay([{"case_id": "a", "program": "p"}], "e", cache=cache)
+    assert got == fresh
+    assert json.loads(cache.read_text())["grader"] == legality.refusals.GRADER

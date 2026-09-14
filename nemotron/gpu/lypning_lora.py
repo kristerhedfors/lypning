@@ -179,6 +179,18 @@ def build_examples(tok, rows, max_seq):
         if len(fids) > max_seq:
             truncated += 1
             continue
+        # Masking the first len(prompt) tokens is only completion-only loss if the
+        # prompt's tokenisation IS a prefix of the whole turn's. A merge across
+        # that boundary -- the tokeniser fusing the template's last character with
+        # the completion's first -- shifts the mask by a token, which either
+        # trains on the last prompt token or drops the first completion token, and
+        # does it silently on a loss curve that looks perfectly healthy. It costs
+        # one comparison to find out, here, before the weights download.
+        if fids[:len(pids)] != pids:
+            raise ValueError(
+                "%s: the tokeniser merges across the prompt/completion boundary, "
+                "so masking %d tokens is not completion-only loss"
+                % (r.get("case_id"), len(pids)))
         labels = list(fids)
         for i in range(min(len(pids), len(labels))):
             labels[i] = -100
