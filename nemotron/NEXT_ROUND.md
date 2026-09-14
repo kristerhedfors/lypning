@@ -56,17 +56,27 @@ Python 3.12 interpreter and use it for builds, preparation and the GPU script.
 The bundle pins the complete CPython version, so do not prepare with a different
 system interpreter. GPU dependencies are pinned in the script, not the package.
 
+Do not upgrade the pilot oracle to 3.14 on the strength of the starter smoke.
+The 2026-09-15 local broader-suite audit still found compatibility failures in
+tuple-unpack/list-index/modulo wording, `sorted(reverse=None)`, the keyword grid
+and `int.to_bytes` edge cases. Those unchanged runtime/test paths require their
+own differential fixes; the training-verifier tests are not full-runtime certification.
+
 ```bash
 # Repository root on the approved disposable worker.
 export PYTHONPATH=src:nemotron
 export LYPNING_CAPTURE=0 LYPNING_HARVEST=0
 ROUND_PYTHON=$(uv python find 3.12)
+export LYPNING_CPYTHON="$ROUND_PYTHON"
 export LYPNING_HOME="$PWD/work/round-02/engine-home"
 "$ROUND_PYTHON" -m lypning build --rust --target host
 export LYPNING_L_BIN="$LYPNING_HOME/bin/lypning-l"
 "$LYPNING_L_BIN" --version
 git rev-parse HEAD
 ```
+
+`LYPNING_CPYTHON` pins the build's oracle discovery too; invoking the build with
+3.12 alone does not override another `python3` earlier on `PATH`.
 
 Resolve the official model repository's immutable 40-character Hub commit and
 record it as `QWEN_REV`; do not use `main`. Preload packages/weights before
