@@ -57,10 +57,13 @@ The bundle pins the complete CPython version, so do not prepare with a different
 system interpreter. GPU dependencies are pinned in the script, not the package.
 
 Do not upgrade the pilot oracle to 3.14 on the strength of the starter smoke.
-The 2026-09-15 local broader-suite audit still found compatibility failures in
-tuple-unpack/list-index/modulo wording, `sorted(reverse=None)`, the keyword grid
-and `int.to_bytes` edge cases. Those unchanged runtime/test paths require their
-own differential fixes; the training-verifier tests are not full-runtime certification.
+The 2026-09-15 broader-suite audit exposed tuple-unpack/list-index/modulo
+wording, sort reverse conversion and `int.to_bytes` edge cases. They now have
+differential fixes tested against fresh 3.12.13, 3.13.13 and 3.14.5 engines,
+including build-sensitive behavior probes. This is not full-runtime
+certification: keep the pilot's 3.12 pin and perform the admission audit above.
+Rebuild and prepare a new bundle after any engine or oracle change; do not
+reuse verified labels across a coverage expansion.
 
 ```bash
 # Repository root on the approved disposable worker.

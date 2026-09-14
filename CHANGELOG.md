@@ -30,6 +30,9 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 - Calibrate build-sensitive Python behavior against the selected executable,
   not its minor version alone: normpath identity, reverse conversion, iterator
   wording and zero-length signed integer conversion can vary within a release.
+- Fix version-sensitive unpacking, index and numeric error messages; stop
+  non-starred unpacking after one excess item instead of draining iterators.
+  Add Python 3.14 package CI and native compatibility regression checks.
 
 **2026-09-14** — Gate target detection is tested against the artifact, not the host (direct commit to `main`)
 

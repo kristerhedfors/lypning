@@ -32,6 +32,12 @@ jobs:
       - run: python -m pip install -e '.[dev]'
       - name: Build both native engines against this Python
         run: python -m lypning build --rust --target host
+      - name: Native reference-version and build-calibration regressions
+        run: >-
+          python -m pytest tests/test_version_semantics.py tests/test_fuzz_findings.py
+          tests/test_semantics.py tests/test_bound_identity_grid.py
+          tests/test_builtin_arity_grid.py tests/test_keyword_grid.py -q
+          --basetemp="${{ runner.temp }}/version-tests"
       - name: Full pipeline suite, real engine smoke, resource guards enabled
         env:
           NTX_ENGINE_LYPNING: ${{ runner.temp }}/training-home/bin/lypning
