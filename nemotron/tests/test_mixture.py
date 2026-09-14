@@ -64,9 +64,14 @@ def test_the_corpus_census_by_population():
     cases = read_jsonl(corpus)
     counts = census(cases)
     assert sum(counts.values()) == len(cases)
-    assert counts == {"rewrite": 178, "ceiling": 45, "unobserved": 26}, (
-        "the population census moved (was rewrite 178, ceiling 45, unobserved 26 "
-        "over 249 cases on 2026-09-13)")
+    # Moved 2026-09-13 by the corpus fold (3395cbb): `lypning harvest` derived
+    # the corpus from 7,243 published sightings that had never been folded in,
+    # so the case count went 249 -> 517 and both engine-observed populations
+    # roughly doubled. `unobserved` did not move, because it comes from `study`
+    # rather than from captured programs.
+    assert counts == {"rewrite": 370, "ceiling": 121, "unobserved": 26}, (
+        "the population census moved (was rewrite 370, ceiling 121, unobserved "
+        "26 over 517 cases on 2026-09-13)")
 
 
 def test_the_category_name_agrees_with_the_test_today():

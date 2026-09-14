@@ -159,7 +159,11 @@ def test_the_sampler_cannot_be_handed_a_leaking_case_by_default():
     clean = {c["id"] for c in train_cases(data)}
     everything = {c["id"] for c in train_cases(data, allow_leaks=True)}
     assert clean < everything, "the default path is not excluding anything"
-    assert len(everything - clean) == 58, (
+    # 58 -> 121 on 2026-09-13, and this commit says so: the corpus fold
+    # (3395cbb) added 268 cases, and more train cases against the SAME frozen 74
+    # held-out ones means more of them land within the 0.85 similarity ceiling.
+    # The held-out set did not move, so nothing already measured is invalidated.
+    assert len(everything - clean) == 121, (
         "the number of leaking train cases moved; that is a corpus change and "
-        "belongs in a commit that says so (was 58 on 2026-09-12)"
+        "belongs in a commit that says so (was 121 on 2026-09-13)"
     )
