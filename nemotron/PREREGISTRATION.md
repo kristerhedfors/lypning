@@ -580,3 +580,61 @@ Sampling 117 clean train cases at k=16, keep=2 is projected to yield well under
 150 examples. **The sampling run therefore uses k=32 and keep=4**, decided here
 rather than after seeing a thin result — roughly 3,700 draws, about $6 at the
 novita price, and the abandon threshold above stands.
+
+## 6. The outcome, recorded 2026-09-14
+
+A pre-registration without its result is half a document. This section is
+written after the run and says so; everything above it was fixed before.
+
+**The run.** 4,640 draws over the 290-case pool ($8.81), 318 SFT examples of
+which **222 on task** — the §2(g) abandon threshold of 150 did not fire, where
+the same threshold fired at 91 on the previous 93-case pool. The difference is
+not a better model: `lypning harvest` folded 7,243 published sightings that had
+never been derived into the corpus, and the pool went 93 → 290. A rank-16 LoRA
+over 236 examples, 45 steps, 3 epochs, validation loss 0.1133. Both arms
+generated in ONE container and graded by one engine, `9d412a3131dc6a8a`.
+
+**The verdict: no win.**
+
+| primary, 70 non-degenerate | |
+|---|---|
+| base arm | 41.16% |
+| tuned arm | 45.62% |
+| paired delta | **+4.46pp**, 95% CI [+1.52, +7.86] |
+| bootstrap leg | **fires** |
+| McNemar leg | does not — gained 2, lost 2, p = 1.0000 |
+
+**§3 said the disagreement between the legs would be the finding, and it is.**
+The adapter produced a BROAD shift rather than acquisitions: 16 of 70 cases
+improved their per-case rate and 6 got worse, but only two crossed from
+never-solved to solved and two crossed back.
+
+**The §3c amendment did not change the verdict.** It was made on 2026-09-13,
+before this data existed, to gain power against a CONCENTRATED effect — six or
+eight cases solved outright. The effect came out broad instead, which is the
+shape the superseded per-case-mean statistic suited better, and that statistic
+gives **p = 0.0525**: also above 0.05. Neither rule fires. The prediction that
+motivated the amendment was wrong, the amendment cost nothing and bought
+nothing, and the only reason any of that is checkable is that it was dated
+before the arms were graded.
+
+**No slice was traded for another**, which §2(c) exists to detect:
+
+| slice | n | base | tuned | delta |
+|---|---|---|---|---|
+| rewrite | 48 | 20.31% | 24.35% | +4.04pp |
+| ceiling | 14 | 80.36% | 88.39% | **+8.04pp** |
+| unobserved | 8 | 97.66% | 98.44% | +0.78pp |
+
+Ceiling cases catch a model that learns "never import". They rose, so the
+rewrite gain is not bought by damaging them.
+
+**What this does not license.** It does not say the adapter does nothing:
++4.46pp with an interval excluding zero is evidence of something. It says this
+design cannot separate it from noise at the level fixed in advance — and §3c
+measured that in advance too, 27% power at six newly-solved cases and 60% at
+eight. Two is below the floor by construction, so "no win" was the likely
+verdict for a real-but-broad effect before the first dollar was spent.
+
+**Spend: $28.70** — sampling $8.81, training $4.95, tuned eval $3.96, base eval
+$4.75, three failed jobs $1.08, grading and comparison $0.00.
