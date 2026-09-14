@@ -75,8 +75,9 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   and leaves the loss curve looking perfectly healthy.
 - **The documentation checker stopped crying wolf about a second suite.**
   `tests/test_docs.py` matched only the tail of a test path, so a document citing
-  `nemotron/tests/test_x.py` was reported as promising a file that does not
-  exist — while the file did. Paths now resolve as written.
+  a test file under `nemotron/tests/` was reported as promising a file that does
+  not exist — while the file did. Paths now resolve as written, which also means
+  a path named in a document is checked where it actually points.
 - **`nemotron/LADDER.md`** carries the plan these rungs belong to, and the three
   Nemotron numbers that must stop being decision inputs for a Qwen arm.
   `nemotron/README.md` now says on line one that the model is Qwen and the
