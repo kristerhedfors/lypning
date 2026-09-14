@@ -1632,8 +1632,8 @@ pub fn call_builtin(
                         }
                     }
                 }
-                (Value::Float(f), None) => ival(float_to_int(round_half_even(*f, 0), "round")?),
-                (Value::Float(f), Some(n)) => Value::Float(round_half_even(*f, n)),
+                (Value::Float(f), None) => ival(float_to_int(round_half_even(*f, 0)?, "round")?),
+                (Value::Float(f), Some(n)) => Value::Float(round_half_even(*f, n)?),
                 (Value::Bool(b), _) => ival(*b as i64),
                 _ => {
                     return Err(unsupported(
@@ -2482,13 +2482,13 @@ pub fn length(v: &Value) -> R<usize> {
 
 /// Python rounds half to EVEN, and does so on the exact binary value — which is
 /// why `round(2.675, 2)` is 2.67 and not 2.68.
-fn round_half_even(f: f64, ndigits: i64) -> f64 {
+fn round_half_even(f: f64, ndigits: i64) -> R<f64> {
     if !f.is_finite() {
-        return f;
+        return Ok(f);
     }
     if ndigits == 0 {
         let r = f.round();
-        return if (f - f.trunc()).abs() == 0.5 && r % 2.0 != 0.0 {
+        return Ok(if (f - f.trunc()).abs() == 0.5 && r % 2.0 != 0.0 {
             // The half-even correction can land on zero, and `-1.0 - -1.0` is
             // +0.0 in IEEE where CPython keeps `round(-0.5, 0) == -0.0`. The
             // sign of a zero is the only thing this line restores.
@@ -2500,16 +2500,16 @@ fn round_half_even(f: f64, ndigits: i64) -> f64 {
             }
         } else {
             r
-        };
+        });
     }
     // Formatting already rounds half-to-even on the exact value, so reuse it
     // rather than scaling by a power of ten (which introduces its own error).
     if (0..=17).contains(&ndigits) {
         let s = format!("{:.*}", ndigits as usize, f);
-        return s.parse().unwrap_or(f);
+        return Ok(s.parse().unwrap_or(f));
     }
     if ndigits > 17 {
-        return f;
+        return Ok(f);
     }
     // NEGATIVE ndigits rounds to tens, hundreds and so on, and Rust's `round()`
     // breaks ties AWAY FROM ZERO where Python breaks them to even. The
@@ -2520,13 +2520,37 @@ fn round_half_even(f: f64, ndigits: i64) -> f64 {
     let scale = 10f64.powi(-ndigits as i32);
     let q = f / scale;
     let mut r = q.round();
-    if (q - q.trunc()).abs() == 0.5 && r % 2.0 != 0.0 {
-        r -= q.signum();
+    if (q - q.trunc()).abs() == 0.5 {
+        // THE QUOTIENT IS NOT THE VALUE. CPython rounds the exact decimal value
+        // of the double; this divides first, and the division is only correctly
+        // ROUNDED. `2.5e25 / 1e25` is exactly 2.5 and looks like a tie, while
+        // the double written `2.5e25` is 25000000000000000905969664 — above the
+        // halfway point, so CPython answers 3e+25 and the tie rule applied here
+        // answered 2e+25. A silent wrong answer, found on-policy.
+        //
+        // Below 2**53 the tie test is sound and the correction below is right:
+        // the only double within half an ulp of `2.5 * 10**k` there IS
+        // `2.5 * 10**k`, so an apparent tie is a real one. At or above 2**53 the
+        // spacing of doubles exceeds what the test can resolve and this engine
+        // cannot tell a tie from a near-miss without the exact expansion — so it
+        // refuses, which is always acceptable, rather than guessing, which is
+        // not (invariant 1).
+        if f.abs() >= 9_007_199_254_740_992.0 {
+            return Err(unsupported(
+                "round",
+                "round() of a float past 2**53 at an apparent halfway point, \
+                 where the tie cannot be told from a near-miss without the \
+                 exact decimal expansion",
+            ));
+        }
+        if r % 2.0 != 0.0 {
+            r -= q.signum();
+        }
     }
     // And the same zero-sign restoration as above: `round(-5.0, -1)` is `-0.0`,
     // which `repr` shows, and the correction above produces a positive zero.
     if r == 0.0 {
-        return (0.0f64).copysign(f) * scale;
+        return Ok((0.0f64).copysign(f) * scale);
     }
-    r * scale
+    Ok(r * scale)
 }

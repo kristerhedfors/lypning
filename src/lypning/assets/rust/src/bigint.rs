@@ -608,6 +608,12 @@ fn int_op(op: BinOp, a: &Int, b: &Int) -> R<Value> {
                 "float division of an integer past 64 bits, whose quotient needs exact rounding",
             ))
         }
+        // Unreachable: `Interp::binop` answers `@` with this same TypeError
+        // before any numeric path runs. Present because `BinOp` is exhaustive
+        // here, and answering rather than `unreachable!()` because the panic is
+        // what this operator already cost once -- see `err::matmul_type_err`.
+        // Both operands are integers by construction on this path.
+        MatMul => return Err(crate::err::matmul_type_err("int", "int")),
         BitAnd | BitOr | BitXor => {
             // Two's complement over an infinite sign extension. Correct for
             // non-negative operands by limb-wise masking and fiddly for negative

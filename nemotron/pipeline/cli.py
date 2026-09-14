@@ -625,6 +625,22 @@ def cmd_grade(args: argparse.Namespace) -> int:
     # base_url is written only when someone states it. Left absent it is an
     # unknown that withholds a delta; filled in with the replay path it would be
     # a false endpoint that makes two grades of one arm look like two arms.
+    # F2, and the reason it is a PRECONDITION rather than a note. Under a
+    # correctness endpoint a moving engine is a confound the recorded
+    # fingerprint can flag afterwards. Under a legality endpoint it is
+    # DEFINITIONAL — SLR is measured relative to what this binary accepts — so
+    # an arm graded by a different engine is not a comparable arm, and finding
+    # that out after the grade means re-grading both arms or throwing the
+    # comparison away. Pinning costs one flag; not pinning has already cost this
+    # repository two features chosen off a held-out ranking.
+    if args.require_fingerprint:
+        live = eng.identity()["fingerprint"]
+        if live != args.require_fingerprint:
+            print("refusing to grade: this box's engine is %s, and the run was "
+                  "pinned to %s. Rebuild that engine or drop the pin — do not "
+                  "compare two arms across two engines."
+                  % (live, args.require_fingerprint), file=sys.stderr)
+            return 1
     backend = {"model": model, "source": "replay:%s" % args.completions}
     endpoint = args.endpoint or header.get("base_url")
     if endpoint:
@@ -1077,6 +1093,53 @@ def cmd_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_legality(args: argparse.Namespace) -> int:
+    """Subset-legality rate between two runs: what fraction of what a model writes runs.
+
+    Costs CPU and nothing else. Every program was already generated and paid
+    for; this replays them through the pinned engine and asks the question the
+    correctness endpoint cannot isolate — not "is it right" but "will it run".
+    """
+    from . import legality
+    engine = args.engine or eng.engine_path("lypning-l") or eng.engine_path("lypning")
+    if not engine:
+        print("no lypning binary on this machine: run `lypning build --rust`, "
+              "or pass --engine", file=sys.stderr)
+        return 1
+    tests = None
+    cases: Dict[str, Dict[str, Any]] = {}
+    if not args.no_context:
+        for path in (DATA / "holdout.jsonl", DATA / "train.jsonl"):
+            if path.exists():
+                for c in read_jsonl(path):
+                    cases.setdefault(c["id"], c)
+        tests = {cid: c.get("test") or {} for cid, c in cases.items()}
+    arms = {}
+    for run_id in (args.before, args.after):
+        path = RUNS / run_id / "attempts.jsonl"
+        if not path.exists():
+            print("no such run: %s" % run_id, file=sys.stderr)
+            return 1
+        cache = (Path(args.cache) / ("%s.replay.json" % run_id)) if args.cache else None
+        arms[run_id] = legality.arm(list(read_jsonl(path)), engine, tests=tests,
+                                    workers=args.jobs, cache=cache)
+    try:
+        cmp = legality.compare(arms[args.before], arms[args.after], cases or None,
+                               engine=engine, gate_a=args.gate_a,
+                               gate_b=args.gate_b, gate_c=args.gate_c)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(legality.report(cmp, before=args.before, after=args.after,
+                          limit=args.limit, mde=args.mde))
+    if args.json:
+        blob = dict(cmp)
+        blob.pop("gates_pass", None)
+        Path(args.json).write_text(
+            json.dumps(blob, indent=1, sort_keys=True, default=str), encoding="utf-8")
+    return 0 if (cmp["gates_pass"] and not cmp["mismatch"]) else 1
+
+
 def cmd_slices(args: argparse.Namespace) -> int:
     """Pass rate per stratum. The blended number hides where the headroom is.
 
@@ -1294,8 +1357,12 @@ def cmd_refusals(args: argparse.Namespace) -> int:
     if args.held_out or args.train:
         held = {c["id"] for c in read_jsonl(DATA / "holdout.jsonl")}
         cases = [c for c in cases if (c["id"] in held) == bool(args.held_out)]
+    if args.held_out:
+        print(refusals.HELD_OUT_BANNER)
+        print("")
     print(refusals.report(refusals.census(cases, engine),
-                          limit=args.limit, show_details=args.details))
+                          limit=args.limit, show_details=args.details,
+                          held_out=bool(args.held_out)))
     return 0
 
 
@@ -1418,6 +1485,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(fn=cmd_sample)
 
     gr = sub.add_parser("grade", help="grade completions generated elsewhere (no GPU needed)")
+    gr.add_argument("--require-fingerprint", default="",
+                    help="refuse unless this box's engine fingerprint is exactly this. "
+                         "Pin every arm of one comparison to one engine BEFORE grading: "
+                         "a legality number is defined relative to what the engine accepts")
     gr.add_argument("run_id"); gr.add_argument("--completions", required=True)
     gr.add_argument("--label", default=""); gr.add_argument("--model", default="")
     gr.add_argument("--sampling", default="",
@@ -1448,6 +1519,31 @@ def build_parser() -> argparse.ArgumentParser:
                     help="print the arithmetic for two runs that measured different "
                          "things; it is then not a delta attributable to the model")
     cp.set_defaults(fn=cmd_compare)
+
+    lg = sub.add_parser("legality", help="subset-legality rate between two runs (no GPU, no spend)")
+    lg.add_argument("before"); lg.add_argument("after")
+    lg.add_argument("--engine", help="binary to judge legality with (default: lypning-l)")
+    lg.add_argument("--limit", type=int, default=12, help="refusal-kind rows to print")
+    lg.add_argument("--mde", type=float, default=0.0,
+                    help="pre-registered minimum detectable effect, as a fraction "
+                         "(0.03 = the CI lower bound must exceed +3pp)")
+    lg.add_argument("--gate-a", type=float, default=0.02,
+                    help="correctness may not fall more than this (default 2pp)")
+    lg.add_argument("--gate-b", type=float, default=0.80,
+                    help="supported-import retention floor, as a ratio of the base arm")
+    lg.add_argument("--gate-c", type=float, default=0.20,
+                    help="mean completion tokens may not grow more than this")
+    lg.add_argument("--no-context", action="store_true",
+                    help="run each program without its case's argv/stdin/files; this "
+                         "UNDERSTATES refusals and disables gate B")
+    lg.add_argument("--jobs", type=int, default=8,
+                    help="parallel sandbox runs (the work is subprocess-bound)")
+    lg.add_argument("--cache", help="directory of per-run replay verdicts. Reused only "
+                                    "when the engine fingerprint still matches, so the "
+                                    "aggregation can be re-cut without re-running 2,368 "
+                                    "programs")
+    lg.add_argument("--json", help="write the full comparison here")
+    lg.set_defaults(fn=cmd_legality)
 
     sl = sub.add_parser("slices", help="pass rate per stratum for a run")
     sl.add_argument("run_id"); sl.add_argument("--fine", action="store_true",

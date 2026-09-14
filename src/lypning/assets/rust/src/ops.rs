@@ -30,11 +30,10 @@ impl Interp {
         // than a wrong answer: it is not the program's exit code, so the
         // dispatcher cannot hand it back and the caller learns nothing.
         if matches!(op, MatMul) {
-            return Err(type_err(format!(
-                "unsupported operand type(s) for @: '{}' and '{}'",
+            return Err(crate::err::matmul_type_err(
                 crate::value::type_name(a),
-                crate::value::type_name(b)
-            )));
+                crate::value::type_name(b),
+            ));
         }
         // A flag FIRST, before the numeric fast path: `as_num` reads a
         // `RegexFlag` as its int, which is right for `+ - * < ==` and every

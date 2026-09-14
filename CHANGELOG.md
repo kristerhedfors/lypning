@@ -20,6 +20,54 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-14** — `lypning-l` had not compiled since #63, and two silent wrong answers were hiding behind the stale binary (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **The capability build was broken on `main` for nine days.** #63 added
+  `BinOp::MatMul` and guarded it in `Interp::binop` — correctly, because reaching
+  the numeric fast path with `@` found an `unreachable!()` and aborted at exit
+  134. `bigint::int_op` also matches exhaustively on `BinOp` and lives behind
+  `cap-bigint`, so `variant-m` compiled and `variant-l` did not. `lypning build
+  --rust` printed `FAILED` and returned 1; the table was read and the exit code
+  was not.
+- **Which means every `conformance` run since then graded a stale `lypning-l`.**
+  `engines.find` reads `$LYPNING_HOME/bin` first, and the binary sitting there
+  predated the nineteen wrong answers #63 closed. "MISMATCH 0" on #63 and #64 was
+  true of `lypning` and untested on `lypning-l`.
+- **One home for the `@` TypeError**, `err::matmul_type_err`, called from the
+  guard and from the arm the compiler demands. That arm answers rather than
+  panicking: a panic there is exit 134, which is not the program's own exit code,
+  so the dispatcher cannot hand it back. Deduplicating the format string made
+  `lypning` 48 code bytes smaller.
+- **`round(2.5e25, -25)` answered `2e+25`; CPython answers `3e+25`.** The
+  negative-`ndigits` float path divides by a power of ten first, and the quotient
+  is not the value: `2.5e25 / 1e25` is exactly 2.5 and looks like a tie, while the
+  double is 25000000000000000905969664, above the halfway point. Below 2**53 the
+  tie test is sound and stays; at or above it the engine cannot tell a tie from a
+  near-miss without the exact decimal expansion, and now refuses.
+- **`os.environ` was missing a key CPython puts there.** PEP 538: when `LC_CTYPE`
+  is unset, empty, `C` or `POSIX`, CPython's startup coerces the C locale and
+  `setenv`s `LC_CTYPE=C.UTF-8` into its own environment. Measured on this box:
+  140 keys under CPython, 139 here. Whether the coercion fires depends on whether
+  the locale can be *set*, which needs libc, so the engine refuses in exactly that
+  state and serves the exact environment everywhere else (verified: 140 = 140
+  under `LC_CTYPE=C.UTF-8` and under `PYTHONCOERCECLOCALE=0`).
+- **Both were found on-policy, not by the corpus.** Zero of the 9,064 corpus
+  entries loaded on this date read `os.environ`; 49 of the 2,362 model-written
+  programs in the run of record do. The corpus's blind spots are shaped like its
+  capture mechanism.
+- **`nt legality`: the subset-legality endpoint, computed from programs already
+  paid for.** ΔSLR over both arms of the run of record, cluster-bootstrapped by
+  case, with correctness / supported-import-retention / token-length as gates
+  rather than contributors. Spend: $0.00 — it replays stored programs. Also
+  `nt grade --require-fingerprint`, and `nt refusals --held-out` no longer calls
+  its own output a build order. `nemotron/REVIEW.md` is the response to the
+  external review that asked for the endpoint; `nemotron/PREREGISTRATION.md` §7
+  registers the rules for a v2 that has not been run.
+- Bytes: `lypning` 1,142,992 (**9 blocks**), `lypning-l` 1,319,120 (**11
+  blocks**) — the first measurement of the latter since #62, because until this
+  change there was nothing to measure.
+
+
 **2026-09-13** — The last four the fold found, and `conformance` is back to MISMATCH 0 (branch `claude/nemotron-lora-pipeline-1zczi2`)
 
 - **Annotations are evaluated when the `def` runs.** `parse.rs` dropped them with

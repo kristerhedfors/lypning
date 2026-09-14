@@ -101,7 +101,25 @@ def census(cases: List[Dict[str, Any]], engine: str) -> Dict[str, Any]:
     }
 
 
-def report(result: Dict[str, Any], *, limit: int = 0, show_details: bool = False) -> str:
+# The banner a held-out census carries. It is not a style note: a build order
+# read off the held-out set is test-set steering, and under a legality endpoint
+# it is not merely a confound but DEFINITIONAL — SLR is measured relative to
+# what the engine accepts, so serving a module because the held-out set asked
+# for it raises the number with no change to the model at all. This has already
+# happened twice in this repository, in the open, in its own changelog: `math`
+# was served because it "was the top row of `conformance --plan` on both lists —
+# the corpus's and a fine-tune's held-out set", and the numeric-method feature
+# is recorded as "paid for by the held-out model set, not by the corpus".
+HELD_OUT_BANNER = (
+    "THIS IS THE HELD-OUT SET. It is a description, never a build order.\n"
+    "Implementing what it ranks raises the measured legality of every arm\n"
+    "without changing any model, and the fingerprint cannot catch it: a\n"
+    "fingerprint sees drift between two arms, not the choice of what to build.\n"
+    "Draw the build order from train + corpus (`nt refusals`, `--train`).")
+
+
+def report(result: Dict[str, Any], *, limit: int = 0, show_details: bool = False,
+           held_out: bool = False) -> str:
     """Render a census. The open kinds are the build order; the closed ones are not."""
     lines = ["engine %s   %d cases, %d carry a negative program"
              % (result["engine"], result["cases"], result["cases"] - result["no_negative"])]
@@ -123,23 +141,39 @@ def report(result: Dict[str, Any], *, limit: int = 0, show_details: bool = False
         lines.append("%-20s %6s  (%d more kinds not shown)"
                      % ("", "", len(result["kinds"]) - limit))
     lines.append("")
-    lines.append("%d cases blocked by OPEN kinds — the engine build order" % result["open_cases"])
+    lines.append("%d cases blocked by OPEN kinds — %s"
+                 % (result["open_cases"],
+                    "NOT a build order; see the banner above" if held_out
+                    else "the engine build order"))
     lines.append("%d cases blocked by CLOSED kinds — the model's job is to rewrite these,"
                  % result["closed_cases"])
     lines.append("   and the engine's job is to go on refusing them")
     return "\n".join(lines)
 
-def grade_against_engine(program: str, engine: str, timeout_s: float = 10.0) -> Dict[str, str]:
+def grade_against_engine(program: str, engine: str, timeout_s: float = 10.0,
+                         test: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
     """One program, judged against CPython: MATCH, UNSUPPORTED, MISMATCH or ERROR.
 
     Behind the sandbox, because unlike :func:`probe` this RUNS what the engine
     accepts, and what it is pointed at is model output rather than a vetted
     corpus entry — the one population nobody has read.
+
+    ``test`` is the case's own acceptance test, and passing it is not a detail.
+    A program written for ``sys.argv[1]`` dies in ``sys.argv`` without one, and a
+    program that dies early never reaches the construct it would have refused
+    on — so a census taken without the test context systematically UNDERSTATES
+    refusals. Left out, the run is context-free, which is what a corpus-wide
+    census wants and what an on-policy one does not.
     """
     from . import sandbox
 
-    truth = sandbox.run_python(program, timeout_s=timeout_s)
-    got = sandbox.run_python(program, timeout_s=timeout_s, interpreter=[engine])
+    ctx: Dict[str, Any] = {}
+    if test:
+        ctx = {"argv": test.get("argv") or [], "stdin": test.get("stdin"),
+               "files": test.get("files") or {}}
+        timeout_s = float(test.get("timeout_s", timeout_s))
+    truth = sandbox.run_python(program, timeout_s=timeout_s, **ctx)
+    got = sandbox.run_python(program, timeout_s=timeout_s, interpreter=[engine], **ctx)
     if got.exit_code == eng.REFUSAL_EXIT:
         parsed = eng.parse_refusal(got.stderr)
         return {"verdict": "UNSUPPORTED",
@@ -153,7 +187,9 @@ def grade_against_engine(program: str, engine: str, timeout_s: float = 10.0) -> 
             "detail": "exit %s vs %s" % (truth.exit_code, got.exit_code)}
 
 
-def on_policy(attempts: List[Dict[str, Any]], engine: str) -> Dict[str, Any]:
+def on_policy(attempts: List[Dict[str, Any]], engine: str,
+              tests: Optional[Dict[str, Dict[str, Any]]] = None,
+              workers: int = 1) -> Dict[str, Any]:
     """What the engine makes of the programs a MODEL wrote, not the ones it was given.
 
     THE CORPUS'S BLIND SPOTS ARE SHAPED LIKE ITS CAPTURE MECHANISM. `conformance`
@@ -170,11 +206,25 @@ def on_policy(attempts: List[Dict[str, Any]], engine: str) -> Dict[str, Any]:
     tally: Dict[str, int] = {}
     details: Dict[str, int] = {}
     blockers: Dict[str, int] = {}
-    for attempt in attempts:
-        program = attempt.get("program")
-        if not program:
-            continue
-        graded = grade_against_engine(program, engine)
+    work = [a for a in attempts if a.get("program")]
+
+    def _one(attempt: Dict[str, Any]) -> Dict[str, Any]:
+        return grade_against_engine(attempt["program"], engine,
+                                    test=(tests or {}).get(attempt.get("case_id")))
+
+    # Every run is a fresh `mkdtemp` and a subprocess, so the work is I/O-bound
+    # and independent; threads are the whole win and none of the risk. Order is
+    # preserved because `map` returns in submission order — a census that
+    # reordered its rows would still tally the same and would stop being
+    # diffable against the run that produced it.
+    if workers > 1 and len(work) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            graded_all = list(pool.map(_one, work))
+    else:
+        graded_all = [_one(a) for a in work]
+
+    for attempt, graded in zip(work, graded_all):
         rows.append({"case_id": attempt.get("case_id"), "sample": attempt.get("sample"),
                      "passed": bool(attempt.get("passed")), **graded})
         tally[graded["verdict"]] = tally.get(graded["verdict"], 0) + 1

@@ -213,6 +213,18 @@ pub fn type_err(msg: impl Into<String>) -> LypningError {
 pub fn value_err(msg: impl Into<String>) -> LypningError {
     LypningError::exc("ValueError", msg)
 }
+/// CPython's answer to `@` on anything this engine serves, in one place.
+///
+/// Two paths need it and only one of them can ever run: `Interp::binop` guards
+/// `@` before any numeric path (ops.rs), which makes the wide-integer arm in
+/// `bigint::int_op` unreachable — but `BinOp` is exhaustive there and the
+/// compiler still demands the arm. It answers rather than panicking, because a
+/// panic is exit 134: not the program's own exit code, so the dispatcher cannot
+/// hand it back and the caller learns nothing. That is the failure this
+/// operator has already produced once.
+pub fn matmul_type_err(a: &str, b: &str) -> LypningError {
+    type_err(format!("unsupported operand type(s) for @: '{}' and '{}'", a, b))
+}
 /// Every name CPython 3.11 puts in `builtins`, minus the dunders — 149 of them.
 ///
 /// This is the SAME distinction lypning-mp draws in lypning_unsupported.h and for
