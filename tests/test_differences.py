@@ -111,10 +111,19 @@ def _doc() -> str:
     return DOC.read_text(encoding="utf-8")
 
 
-def _fences() -> list:
-    """The plain ``` blocks, in order. The word lists are fences because a list
-    of 38 names is unreadable as prose and unparseable as a table."""
-    return re.findall(r"\n```\n(.*?)\n```\n", _doc(), re.S)
+def _fence_after(marker: str) -> str:
+    """The first plain ``` block after ``marker``.
+
+    Keyed by the sentence that introduces it rather than by position: the word
+    lists are fences because a list of 38 names is unreadable as prose and
+    unparseable as a table, and a fence added above one of them must not
+    silently repoint this test at a different list.
+    """
+    text = _doc()
+    assert marker in text, "docs/DIFFERENCES.md no longer says %r, which is how this test finds the list under it" % marker
+    m = re.search(r"\n```\n(?P<body>.*?)\n```\n", text[text.index(marker):], re.S)
+    assert m, "docs/DIFFERENCES.md: no list under %r" % marker
+    return m.group("body")
 
 
 def _table_rows(after: str) -> list:
@@ -145,19 +154,19 @@ def _fail(what: str, doc: set, crate: set) -> str:
 
 
 def test_the_builtin_list_is_the_engines_own():
-    doc = set(_fences()[0].split())
+    doc = set(_fence_after("These resolve, on both engines").split())
     crate = set(_string_const("builtins.rs", "BUILTINS"))
     assert doc == crate, _fail("the builtins that resolve (§4.1)", doc, crate)
 
 
 def test_the_exception_list_is_the_engines_own():
-    doc = set(_fences()[1].split())
+    doc = set(_fence_after("and these exception names").split())
     crate = set(_string_const("builtins.rs", "EXCEPTIONS"))
     assert doc == crate, _fail("the exception names that resolve (§4.1)", doc, crate)
 
 
 def test_the_module_list_is_the_engines_own():
-    doc = set(_fences()[2].split())
+    doc = set(_fence_after("Both engines serve these and nothing else").split())
     crate = set(_core_modules())
     assert doc == crate, _fail("the modules both engines serve (§4.2)", doc, crate)
 
@@ -210,11 +219,15 @@ def test_the_escalation_list_is_only_cpython_kinds():
     longer happens; one that lands and is not written down is undocumented
     behaviour in the only document that claims to list it."""
     body = _doc().split("## 6.")[1].split("## 7.")[0]
-    doc = set(re.findall(r"`([a-z-]+)`", body.split("One construct")[0]))
+    # The kinds are the one paragraph written as a `·`-separated list, not the
+    # prose around it: three of them are named again in the sentences that
+    # follow, and a test that read those too would pass on a list that had lost
+    # one of the three.
+    listed = [para for para in body.split("\n\n") if " · " in para]
+    assert len(listed) == 1, ("docs/DIFFERENCES.md §6 must hold the kinds in exactly one "
+                              "`·`-separated paragraph; found %d" % len(listed))
+    doc = set(re.findall(r"`([a-z-]+)`", listed[0]))
     crate = set(routing.only_cpython_kinds())
-    doc -= {"lypning-l", "lypning-mp", "route.rs:ONLY_CPYTHON_KINDS",
-            "engines.ONLY_CPYTHON_REFUSALS", "lypning oracle", "os.scandir",
-            "is", "glob", "int('1000') is 1000", "True"}
     assert doc == crate, _fail("the refusals that skip lypning-l (§6)", doc, crate)
     assert "`async`" in body and set(routing.cpython_only_constructs()) == {"async"}, (
         "route.rs:CPYTHON_ONLY_KINDS is %s and §6 names `async` alone"
