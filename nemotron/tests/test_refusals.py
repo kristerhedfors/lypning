@@ -100,7 +100,8 @@ def test_on_policy_tallies_and_reports_mismatches_first():
     }
     original = refusals.grade_against_engine
     try:
-        refusals.grade_against_engine = lambda program, engine, timeout_s=10.0: graded[program]
+        refusals.grade_against_engine = (
+            lambda program, engine, timeout_s=10.0, test=None: graded[program])
         result = refusals.on_policy(attempts, "fake-engine")
     finally:
         refusals.grade_against_engine = original
@@ -120,7 +121,7 @@ def test_on_policy_with_nothing_wrong_says_so_without_the_mismatch_block():
     attempts = [{"case_id": "a", "sample": 0, "passed": True, "program": "p"}]
     original = refusals.grade_against_engine
     try:
-        refusals.grade_against_engine = lambda program, engine, timeout_s=10.0: {
+        refusals.grade_against_engine = lambda program, engine, timeout_s=10.0, test=None: {
             "verdict": "MATCH", "detail": ""}
         result = refusals.on_policy(attempts, "fake-engine")
     finally:
@@ -215,3 +216,52 @@ def test_the_discrete_floor_under_the_rule_is_reported():
     assert stats._min_discordant() == 6
     curve = stats.power_curve([0.0] * 10 + [0.5] * 10, 16, trials=4, resamples=100)
     assert curve["min_gained_if_none_lost"] == 6
+
+
+def test_on_policy_hands_each_program_its_own_case_test():
+    """The census runs a program the way its case runs it, or it undercounts.
+
+    A program written for ``sys.argv[1]`` dies in ``sys.argv`` without one, and a
+    program that dies early never reaches the construct it would have refused
+    on — so a context-free census systematically reports FEWER refusals than the
+    engine would actually give. This pins that `on_policy` threads each case's
+    own test through, and that a case with no entry in the map still gets None
+    rather than another case's.
+    """
+    seen = {}
+
+    original = refusals.grade_against_engine
+    try:
+        def fake(program, engine, timeout_s=10.0, test=None):
+            seen[program] = test
+            return {"verdict": "MATCH", "detail": ""}
+
+        refusals.grade_against_engine = fake
+        attempts = [
+            {"case_id": "c1", "sample": 0, "program": "p1", "passed": True},
+            {"case_id": "c2", "sample": 0, "program": "p2", "passed": True},
+        ]
+        tests = {"c1": {"argv": ["/srv/x.tar.gz"]}}
+        refusals.on_policy(attempts, "e", tests=tests)
+    finally:
+        refusals.grade_against_engine = original
+
+    assert seen == {"p1": {"argv": ["/srv/x.tar.gz"]}, "p2": None}
+
+
+def test_on_policy_without_tests_is_context_free():
+    """The corpus-wide census wants no context; this pins that it still gets none."""
+    seen = []
+
+    original = refusals.grade_against_engine
+    try:
+        def fake(program, engine, timeout_s=10.0, test=None):
+            seen.append(test)
+            return {"verdict": "MATCH", "detail": ""}
+
+        refusals.grade_against_engine = fake
+        refusals.on_policy([{"case_id": "c1", "sample": 0, "program": "p1"}], "e")
+    finally:
+        refusals.grade_against_engine = original
+
+    assert seen == [None]
