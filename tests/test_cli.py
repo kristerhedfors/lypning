@@ -48,6 +48,30 @@ def test_no_arguments_prints_help_and_succeeds(capsys):
     assert "usage: lypning" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("workers", [None, 1, 3])
+def test_conformance_forwards_worker_count(workers, monkeypatch):
+    from lypning import conformance
+
+    class ReachedRunner(Exception):
+        pass
+
+    def run(**kwargs):
+        assert kwargs["workers"] == workers
+        raise ReachedRunner
+
+    monkeypatch.setattr(conformance, "run", run)
+    argv = ["conformance"] + ([] if workers is None else ["--workers", str(workers)])
+    ns = cli.build_parser().parse_args(argv)
+    with pytest.raises(ReachedRunner):
+        cli.cmd_conformance(ns)
+
+
+@pytest.mark.parametrize("workers", ["0", "-1"])
+def test_conformance_rejects_nonpositive_worker_count(workers, capsys):
+    assert cli.main(["conformance", "--workers", workers]) == 2
+    assert "--workers must be a positive integer" in capsys.readouterr().err
+
+
 def test_status_json_is_valid_json(capsys):
     assert cli.main(["status", "--json"]) == 0
     obj = json.loads(capsys.readouterr().out)

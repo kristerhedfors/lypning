@@ -180,12 +180,12 @@ jobs:
         #
         # `lypning` is clean by selection and unconditionally. The third arm,
         # lypning-mp, is known red — see the micropython-conformance job.
-        # py-c9c864a8e18d benchmarks exponential CPython regex backtracking;
-        # it routes directly to CPython. Concurrent corpus workers on shared
-        # runners can push its second run past 30s after the reference finished.
-        # Give BOTH sides 60s; timeout is still a fatal mismatch if only the
-        # engine times out. No result/capability is exempted from comparison.
-        run: lypning conformance --engine lypning --engine mixture --timeout 60
+        # Captured regex benchmarks (py-c9c864a8e18d, py-4cd9100cb501) route
+        # directly to CPython. Parallel CPU-heavy entries can make its second
+        # run cross the deadline after the reference finished. Serialize this
+        # corpus workload instead of raising the deadline again: both arms keep
+        # 60s and an engine-only timeout still fails. No entry is exempted.
+        run: lypning conformance --engine lypning --engine mixture --timeout 60 --workers 1
       # --- the same contract, through the ABI instead of through a process ---
       #
       # The library shares the interpreter with the binary above and does NOT
@@ -229,7 +229,7 @@ jobs:
         # by the rules the spawned arms are scored by. It must reach MISMATCH 0
         # AND agree with the `lypning` arm program for program: the two
         # disagreeing is the drift this arm exists to catch.
-        run: lypning conformance --engine lypning --engine library --timeout 60
+        run: lypning conformance --engine lypning --engine library --timeout 60 --workers 1
       # --- every host over the ABI, each held to the one quickstart contract --
       #
       # docs/EMBEDDING.md section 4 is the table of hosts; the steps below are
@@ -681,7 +681,7 @@ jobs:
           cd "$RUNNER_TEMP/sdist"/lypning-*
           PYTHONPATH=src python -m lypning build --rust
           PYTHONPATH=src python -m lypning gate
-          PYTHONPATH=src python -m lypning conformance --engine lypning --engine mixture --timeout 60
+          PYTHONPATH=src python -m lypning conformance --engine lypning --engine mixture --timeout 60 --workers 1
 
   site:
     # The docs site is a rendering of the repository's own markdown, so a

@@ -135,6 +135,13 @@ tests/test_build.py::test_the_host_build_is_this_machines_engine_and_installs_un
 tests/test_build.py::test_verify_measures_the_binary_that_was_just_built  tests/test_engines.py::test_refusal_line_is_what_the_build_and_the_embedding_pin
 ```
 ## 3. C3 — Conformance
+
+`conformance --workers N` controls concurrent corpus entries. CI uses
+`--workers 1 --timeout 60` because captured self-timed regex benchmarks compete
+for CPU when several entries run together. Both arms keep the same deadline:
+a timed-out reference is unmeasured, while an engine-only timeout still fails.
+No benchmark entry or verdict is exempted by this scheduling choice.
+
 **STATEMENT.** Invariant 1: MISMATCH is always a bug. UNSUPPORTED never is.
 `lypning conformance` must end at `MISMATCH 0`; a rising UNSUPPORTED count is
 coverage and a build order (`--plan`), not a regression. Never "fix" a
