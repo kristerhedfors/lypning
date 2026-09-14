@@ -145,7 +145,8 @@ def test_the_shim_defaults_to_the_same_log_paths_resolves(bin_dir, tmp_path, mon
     real = shutil.which("python3", path="/usr/bin:/bin")
     if not real:
         pytest.skip("no system python3 to exec into")
-    env = dict(os.environ, PATH=os.pathsep.join([str(bin_dir), os.path.dirname(real)]))
+    # Keep shell utilities as well as Python: mkdir lives in /bin on macOS.
+    env = dict(os.environ, PATH=os.pathsep.join([str(bin_dir), os.path.dirname(real), "/bin"]))
     out = subprocess.run([str(bin_dir / "python3"), "-c", "print('shimmed')"],
                          capture_output=True, text=True, env=env, check=False)
     assert out.returncode == 0 and out.stdout == "shimmed\n"

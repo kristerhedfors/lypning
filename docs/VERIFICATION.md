@@ -343,6 +343,8 @@ PASS
 # … | vdiff c6-gate
 # differs: byte and block counts while under budget; the `code section` row, which is a measurement and not a budget; the BuildID; which rows are `--` (a check nobody took: no strace, readelf, file(1) or size(1) — never a pass, never a zero); the target row, absent once the oracle is built and named
 # must not: PASS, exit 0, and the size row NAMING the target its budget was measured on; exit 2 for a path that is not a file
+# This recorded table is checked only against its named artifact target.
+# The test reads the binary header, not the host OS; Mach-O has no musl budget.
 #
 # The previous run of record was Darwin arm64 (818,080 B = 7 blocks, three
 # checks unmeasured because that host has no file(1), readelf or strace) and

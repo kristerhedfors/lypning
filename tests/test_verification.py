@@ -172,6 +172,17 @@ def test_every_expected_file_holds_against_a_fresh_run(entry, capsys):
     tests their contract names under PINNED BY. Skipped, never failed, while a
     variant is unbuilt — an absent binary is a hole (§C12), not a regression."""
     _spectrum_built()
+    if entry.get("artifact_target"):
+        # The recorded byte budget is for an artifact, not for every machine
+        # capable of running pytest. A host Mach-O has no musl size budget.
+        # Inspect the bytes (not sys.platform: a Mac can cross-build musl).
+        from lypning import gate
+        binary, _ = gate._resolve(None)
+        static, _ = gate.is_static(binary)
+        target = gate.elf_target(binary, static)
+        if target != entry["artifact_target"]:
+            pytest.skip("recorded gate target %s; current artifact %s" %
+                        (entry["artifact_target"], target or "unbudgeted host"))
     if entry.get("via") == "binary":  # the binary's own flags: `route --spectrum`, `--next`
         proc = _run([str(engines.find_lypning())] + entry["argv"], timeout=30.0)
         rc, text = proc.returncode, proc.stdout + proc.stderr

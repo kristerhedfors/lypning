@@ -66,6 +66,7 @@
  {
   "file": "c6-gate.txt",
   "contract": "C6",
+  "artifact_target": "x86_64-unknown-linux-musl",
   "argv": [
    "gate"
   ],
