@@ -11,7 +11,7 @@ Every table is re-derivable from your own corpus ([`FORKING.md`](FORKING.md)).
 
 | engine | what it is | where it lives |
 |---|---|---|
-| `lypning` | the Rust core, frozen at 8 blocks (`gate.VARIANT_BLOCK_BUDGET`); it gains no capability | `src/lypning/assets/rust/`, `--features variant-m` (the default) |
+| `lypning` | the capability-frozen Rust core; a 9-block budget on x86-64 musl (`gate.VARIANT_BLOCK_BUDGET`), other targets measured separately | `src/lypning/assets/rust/`, `--features variant-m` (the default) |
 | `lypning-l` | the same crate with `cap-bigint`, `cap-collections`, `cap-csv`, `cap-glob`, `cap-hashlib`, `cap-pathlib` and `cap-re` (`engines.VARIANT_CAPS`), budgeted 32 blocks | `--features variant-l` |
 | `cpython` | the real thing, and the reference every verdict is graded against | the system `python3` (`engines.find_cpython`) |
 
