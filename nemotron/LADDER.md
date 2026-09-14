@@ -187,7 +187,15 @@ Read, in this order: **by-kind churn** (does `module-attr` stop rising when
 `class` falls — the collapse of the swap is the signal, whatever the scalar
 does), then train-pool SLR, then held-out SLR on eval-1.
 
-## Stage 3 — on-policy, with the signal watched live (~$50–80)
+## Stage 3 — historical proposal, superseded before execution
+
+**2026-09-14:** The reward below is retained as proposal history, not an active
+recipe. Paying legal-but-wrong code more than correct fallback reverses the
+correctness requirement. See [TRAINING.md](TRAINING.md) for the new lypning-l-first
+objective, multi-input verifier, task-family splits and executable SFT/GRPO path.
+The historical budget below is not a budget for that new experiment. Finite
+pass@k reachability in Stage 0 is an observed sampling limit, not a proven limit
+on learning or transfer.
 
 GRPO from the best Stage 1/2 checkpoint. The verifier is the reward; there is no
 reward model to train or game.

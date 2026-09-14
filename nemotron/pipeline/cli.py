@@ -1519,9 +1519,39 @@ def cmd_show(args: argparse.Namespace) -> int:
 # ------------------------------------------------------------------ parser
 
 
+def cmd_training_prepare(args) -> int:
+    from .curriculum import starter_cases
+    from .training import prepare, TrainingError
+    from .jsonio import read_jsonl
+    try:
+        cases = starter_cases() if args.starter else read_jsonl(args.cases)
+        bundle = prepare(cases, args.engine, args.output, seed=args.seed,
+                         timeout_s=args.timeout, memory_mb=args.memory_mb)
+    except (TrainingError, OSError, subprocess.SubprocessError) as exc:
+        print("training preparation blocked: %s" % exc, file=sys.stderr)
+        return 1
+    counts = {s: sum(c["split"] == s for c in bundle["cases"]) for s in ("train", "dev", "test")}
+    print(json.dumps({"digest": bundle["digest"], "cases": counts,
+                      "families": len({c["family"] for c in bundle["cases"]}),
+                      "reference_scores": bundle["reference_scores"]}, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="nt", description="Nemotron LoRA pipeline: corpus and eval")
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    tp = sub.add_parser("training-prepare", help="verify a NEW multi-input lypning-l experiment")
+    source = tp.add_mutually_exclusive_group(required=True)
+    source.add_argument("--starter", action="store_true", help="authored smoke tasks, not a benchmark")
+    source.add_argument("--cases", type=Path, help="independently authored multi-input JSONL")
+    tp.add_argument("--engine", type=Path, required=True, help="explicit compiled lypning-l binary")
+    tp.add_argument("--output", type=Path, required=True, help="new directory; never overwrite")
+    tp.add_argument("--seed", type=int, default=1111)
+    tp.add_argument("--timeout", type=float, default=5.0)
+    tp.add_argument("--memory-mb", type=int, default=1024,
+                    help="child address-space cap; 0 explicitly disables it (macOS smoke only)")
+    tp.set_defaults(fn=cmd_training_prepare)
 
     h = sub.add_parser("harvest", help="step 1: build the corpus from failing cases")
     h.add_argument("--source", action="append",

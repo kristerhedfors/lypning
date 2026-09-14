@@ -14,6 +14,13 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-15** — Add a correctness-gated, lypning-l-first Qwen training path
+
+- Add multi-input task-family bundles, explicit engine/oracle pinning, verified
+  SFT preparation and an optional on-policy GRPO runner. Wrong runnable code
+  receives no reward; correct fallback retains credit. Preserve the historical
+  corpus and grades, and document GPU/data admission gates before real training.
+
 **2026-09-14** — Gate target detection is tested against the artifact, not the host (direct commit to `main`)
 
 - The target-classification test now supplies an explicit x86-64 ELF header

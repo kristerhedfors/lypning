@@ -14,16 +14,24 @@ The original target — for reading the history, never for planning:
 hybrid Mamba-2 + MoE + attention, reasoning on by default). The NVFP4 release is
 inference-only and is not the training checkpoint.
 
-Four steps, built strictly in order, because each one is the measuring instrument
-for the next:
+The current lypning-l-first training design and commands are in
+[TRAINING.md](TRAINING.md): verified SFT followed by execution-RL, with matched
+base/SFT controls, multi-input tests and family-held-out evaluation. The new
+`training-prepare` and `gpu/train_verified.py` path is separate from the frozen
+rewrite experiment documented below. Its GPU integration still needs a hardware
+smoke; no quality improvement is claimed from implementing the trainer.
+
+The original pipeline's four stages:
 
 1. **Corpus** — failing generation cases in, executable acceptance tests out.
 2. **Eval** — pass@1 over a frozen held-out split, with a bootstrap 95% CI.
-3. **Training** — rank-16 LoRA via NeMo AutoModel, data composition swept.
+3. **Training** — Qwen rank-16 LoRA; the standalone historical runner is
+   `gpu/lypning_lora.py`, not the earlier Nemotron NeMo recipe.
 4. **Sweep** — one row per run, a win defined before any run happens.
 
-**Steps 1 and 2 are built. Steps 3 and 4 are not started**, by instruction: no
-training config is proposed until there is a baseline to beat.
+Corpus/evaluation and SFT tooling exist. Controlled training experiments and
+the release-quality sweep remain gated on verified data, runtime correctness
+and a comparable baseline; see the current design for those gates.
 
 ## One-line commands
 
@@ -42,8 +50,10 @@ training config is proposed until there is a baseline to beat.
 ./nt show RUN --failed-only   # the programs, and why each failed
 ```
 
-Nothing long-running runs in the foreground. `./nt eval` hands the job to tmux and
+`./nt eval` hands the job to tmux and
 returns a run id; `status` and `results` are the only two commands needed after.
+The separate verified-training runner runs in the foreground on its isolated
+worker so a scheduler/operator owns its lifetime and budget.
 
 ## Step 1 — the corpus, and what it refuses
 
