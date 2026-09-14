@@ -5,8 +5,9 @@ was not thinking about your filesystem. Every program gets: its own temporary
 working directory holding nothing of ours but the script itself, a scrubbed
 environment (no HF_TOKEN, no cloud credentials, no inherited PYTHON* of any
 kind), a wall-clock timeout enforced by killing the whole process *group*,
-a CPU-time rlimit so a spin loop dies even if the killer is wedged, an address
-space cap, a file-size cap that also bounds stdout, and — where the kernel allows
+a CPU-time rlimit so a spin loop dies even if the killer is wedged, a memory
+cap (address space on Linux; sampled process-group RSS on macOS), a file-size
+cap that also bounds stdout, and — where the kernel allows
 it — its own empty network namespace.
 
 WHAT THIS IS NOT. It is not a security boundary. `unshare -n` is real isolation

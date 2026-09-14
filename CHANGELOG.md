@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-15** — Add a correctness-gated, lypning-l-first Qwen training path
+**2026-09-15** — Add a correctness-gated, lypning-l-first Qwen training path ([#69](https://github.com/kristerhedfors/lypning/pull/69))
 
 - Add multi-input task-family bundles, explicit engine/oracle pinning, verified
   SFT preparation and an optional on-policy GRPO runner. Wrong runnable code

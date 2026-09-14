@@ -350,7 +350,7 @@ jobs:
   # pyproject.toml carries `Operating System :: MacOS`, and this job is what
   # makes that a fact rather than a classifier. It is not a mirror of `core`:
   # the static-musl core, its gate and its conformance battery are Linux
-  # artefacts, and `build --rust` on a Mac builds for the host and says so.
+  # artefacts, so the Mac explicitly requests a host build.
   # What a Mac adds is the host Linux cannot run at all (Swift) and the one
   # link detail Linux never sees: the library's install name must be
   # `@rpath/liblypning.dylib`, or every host linked with `lypning lib --libs`
@@ -374,7 +374,7 @@ jobs:
         # they just produced; `lib` and `status` print what was installed and
         # where, which is the line to read when a host step below fails.
         run: |
-          lypning build --rust
+          lypning build --rust --target host
           lypning build --lib
           lypning lib
           lypning status

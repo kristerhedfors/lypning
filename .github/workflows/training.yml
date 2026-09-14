@@ -19,12 +19,13 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     env:
-      LYPNING_HOME: ${{ runner.temp }}/training-home
       LYPNING_CAPTURE: "0"
       LYPNING_HARVEST: "0"
       PYTHONPATH: src:nemotron
     steps:
       - uses: actions/checkout@v4
+      - name: Isolate engine state
+        run: echo "LYPNING_HOME=$RUNNER_TEMP/training-home" >> "$GITHUB_ENV"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
