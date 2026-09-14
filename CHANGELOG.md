@@ -55,14 +55,40 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   entries loaded on this date read `os.environ`; 49 of the 2,362 model-written
   programs in the run of record do. The corpus's blind spots are shaped like its
   capture mechanism.
+- **A MISMATCH is now checked against a second reference before it is
+  reported.** A MISMATCH claims an engine answered what CPython does not, and
+  that claim is only worth making if CPython answers the same twice.
+  `_RUN_SPECIFIC` screens the program text and cannot see the whole class — a
+  default `repr` prints an address no two processes share without the program
+  naming `id`, `tqdm` writes its own throughput, an HTTP error carries the
+  request id the server just minted. Six entries were being reported as engine
+  bugs on this date, all six captured from agent sessions, none matchable by
+  CPython against itself. The second reference is taken only where a MISMATCH
+  would otherwise be reported (~0.1% of entries) and is compared with
+  `classify`, so it inherits every waiver the arms get.
 - **`nt legality`: the subset-legality endpoint, computed from programs already
   paid for.** ΔSLR over both arms of the run of record, cluster-bootstrapped by
   case, with correctness / supported-import-retention / token-length as gates
-  rather than contributors. Spend: $0.00 — it replays stored programs. Also
+  rather than contributors. **ΔSLR −1.00pp, 95% CI [−3.36, +1.51]** against a
+  base-vs-base null of **−0.22pp [−2.46, +2.03]** — the adapter's effect on
+  subset legality is inside the noise floor, while correctness over the same
+  programs moves +4.92pp. Spend $0.00: it replays stored programs. Also
   `nt grade --require-fingerprint`, and `nt refusals --held-out` no longer calls
   its own output a build order. `nemotron/REVIEW.md` is the response to the
   external review that asked for the endpoint; `nemotron/PREREGISTRATION.md` §7
   registers the rules for a v2 that has not been run.
+- **Left open, and loud: `conformance` reports 2 monotone violations.** With
+  `lypning-l` finally building, two programs show `lypning` MATCH and
+  `lypning-l` UNSUPPORTED — which invariant 10 forbids. The cause is a
+  static/dynamic asymmetry, not a capability gap: `lypning-l`'s `glob-order`
+  refusal is decided before the program runs, while `lypning`'s `module: import
+  glob` refusal fires only when execution reaches the import, so a program that
+  dies first is answered by the smaller engine and refused by the larger one.
+  Minimal case: `open("/nonexistent"); import glob; print(glob.glob("*"))` —
+  `lypning` exit 1 with CPython's traceback, `lypning-l` exit 90. Both fixes
+  (hoist the module refusal to a pre-execution scan, or defer the glob-order
+  refusal to the call site) change the refusal path and change coverage, so
+  neither is bundled here; this needs its own measured step.
 - Bytes: `lypning` 1,142,992 (**9 blocks**), `lypning-l` 1,319,120 (**11
   blocks**) — the first measurement of the latter since #62, because until this
   change there was nothing to measure.

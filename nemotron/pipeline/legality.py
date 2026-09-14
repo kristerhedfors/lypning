@@ -139,11 +139,18 @@ def arm(attempts: List[Dict[str, Any]], engine: str,
         passed.setdefault(cid, []).append(bool(a.get("passed")))
         programs.setdefault(cid, []).append(a["program"])
 
+    # A harness error is not a verdict about the program, so it leaves the
+    # denominator rather than counting as legal — the same exclusion the
+    # correctness endpoint already makes. A case whose every draw errored has no
+    # rate at all and drops out of the pairing, which is what `paired_delta`'s
+    # shared-key intersection is for.
+    graded = {c: [r for r in rows if r["verdict"] != "ERROR"] for c, rows in by_case.items()}
+    graded = {c: rows for c, rows in graded.items() if rows}
     legal_rate = {c: sum(1 for r in rows if r["verdict"] != "UNSUPPORTED") / len(rows)
-                  for c, rows in by_case.items()}
+                  for c, rows in graded.items()}
     pass_rate = {c: sum(1 for p in v if p) / len(v) for c, v in passed.items()}
     tok_mean = {c: sum(v) / len(v) for c, v in tokens.items() if v}
-    n = census["programs"] or 1
+    n_graded = sum(len(v) for v in graded.values()) or 1
     degenerate = sum(1 for a in attempts if a.get("failure_category") == "not-genuine")
     return {
         "not_genuine": degenerate,
@@ -151,7 +158,9 @@ def arm(attempts: List[Dict[str, Any]], engine: str,
         "fingerprint": eng.identity()["fingerprint"],
         "programs": census["programs"],
         "cases": len(by_case),
-        "slr": sum(1 for r in census["rows"] if r["verdict"] != "UNSUPPORTED") / n,
+        "graded": sum(len(v) for v in graded.values()),
+        "slr": sum(1 for rows in graded.values()
+                   for r in rows if r["verdict"] != "UNSUPPORTED") / n_graded,
         "mismatch": census["tally"].get("MISMATCH", 0),
         "error": census["tally"].get("ERROR", 0),
         "by_kind": dict(census["details"]),
@@ -247,11 +256,12 @@ def compare(base: Dict[str, Any], tuned: Dict[str, Any],
     by_kind.sort(key=lambda r: (-abs(r["delta"]), -max(r["base"], r["tuned"])))
 
     return {"fingerprint": base["fingerprint"], "delta": delta, "correctness": corr,
+            "not_genuine": base.get("not_genuine", 0) + tuned.get("not_genuine", 0),
             "base_slr": base["slr"], "tuned_slr": tuned["slr"],
             "by_kind": by_kind, "gates": gates,
             "gates_pass": all(g.get("pass") for g in gates),
             "mismatch": base["mismatch"] + tuned["mismatch"],
-            "programs": base["programs"] + tuned["programs"]}
+            "programs": base.get("graded", base["programs"]) + tuned.get("graded", tuned["programs"])}
 
 
 def _pct(x: float) -> str:
@@ -264,7 +274,11 @@ def report(cmp: Dict[str, Any], *, before: str, after: str, limit: int = 12,
     d, c = cmp["delta"], cmp["correctness"]
     out: List[str] = []
     out.append("subset-legality: %s -> %s   @ engine %s" % (before, after, cmp["fingerprint"]))
-    out.append("  %d programs, %d cases, cluster-bootstrapped by case" % (cmp["programs"], d["n_pairs"]))
+    out.append("  %d programs graded, %d cases, cluster-bootstrapped by case"
+               % (cmp["programs"], d["n_pairs"]))
+    if cmp.get("not_genuine"):
+        out.append("  %d of them flagged not-genuine (a hard-coded literal is legal too) "
+                   "— gate A is what answers that" % cmp["not_genuine"])
     out.append("")
     out.append("  SLR   base %s   tuned %s" % (_pct(cmp["base_slr"]), _pct(cmp["tuned_slr"])))
     ci = d.get("ci95") or {}

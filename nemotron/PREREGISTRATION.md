@@ -638,3 +638,162 @@ verdict for a real-but-broad effect before the first dollar was spent.
 
 **Spend: $28.70** — sampling $8.81, training $4.95, tuned eval $3.96, base eval
 $4.75, three failed jobs $1.08, grading and comparison $0.00.
+
+---
+
+## 7. v2: the endpoint changes, and this section is written before the run that will use it
+
+**Status: registered, not started.** Nothing in §7 has been sampled, trained or
+evaluated. It fixes the rules for a run that needs authorisation and money it
+does not have yet; §7f says how much.
+
+### 7a. Disclosure, first, because the order things happened in matters
+
+An external review of this experiment argued that §3's second leg tested the
+wrong hypothesis. Acting on it did **not** require a new run: every program of
+the run of record was stored, so the proposed endpoint was computable from data
+already paid for. That computation was performed **before this section was
+written**, and its result is in `REVIEW.md` §1.
+
+So §7 is not blind. It is written by someone who has already seen what the new
+endpoint says about the old run. Two consequences, and both are constraints on
+what §7 may claim:
+
+1. The `REVIEW.md` §1 numbers are **exploratory re-analysis of a completed run**.
+   They are not a pre-registered result, no verdict of §3 is revised by them,
+   and §6 stands exactly as recorded. What they found is a null — ΔSLR −1.00pp,
+   95% CI [−3.36, +1.51], against a base-vs-base null of −0.22pp [−2.46, +2.03]
+   — so the thresholds below were not chosen to clear a bar this data had
+   already cleared. That is a weaker defence than blindness and it is the only
+   one available.
+2. The thresholds below (an MDE of +3pp, gate A at 2pp, gate B at 0.80, gate C
+   at 20%) were chosen with that re-analysis visible. They are stated here so
+   that a future reader can see they were *not* chosen blind, and can discount
+   them accordingly. They come from the review, which proposed +3pp and 2pp
+   before seeing any legality number at all; the two it did not propose are
+   marked.
+
+This is the same discipline §3c was held to and failed: that amendment was
+dated before the data, and it still predicted the wrong effect shape. Writing
+the provenance down does not make a post-hoc threshold pre-registered. It makes
+it *legible*.
+
+### 7b. The primary endpoint
+
+**Subset-Legality Rate.** Over a fixed task set, k programs per task at fixed
+sampling parameters:
+
+> SLR = programs the pinned engine runs without emitting a refusal
+>       ÷ programs generated
+
+First draft only: no retries, no repair loop, no refusal line fed back — a
+retry loop measures the harness and not the prior. No correctness gate inside
+the number: a program may be legal and wrong, and keeping correctness out is
+what makes SLR isolate the quantity being moved. The denominator is programs;
+the *unit of inference* is the task.
+
+**One leg, not two.** §3's conjunction failed because one conjunct asked an
+acquisition question this project is not asking. §7 replaces it with a single
+primary leg and three gates. A gate that fails **voids** the result; it does not
+discount it.
+
+- **Primary:** ΔSLR, paired, **cluster-bootstrapped by task**. The k draws for
+  one task are one observation of the model's behaviour on that task, not k
+  independent ones; resampling programs would return an interval far too narrow
+  and would report a single task changing its mind as a significant effect.
+  `stats.paired_delta` over per-task rates is exactly this bootstrap and is the
+  same one §3's correctness leg already uses.
+- **Minimum detectable effect:** the lower bound of the 95% CI must exceed
+  **+3pp**. "Excludes zero" is not enough at this n — with thousands of programs
+  it will exclude zero for effects too small to pay for anything.
+- **Reported beside it, never instead of it:** the **by-kind refusal vector**.
+  A scalar SLR can move entirely because the model stopped reaching for `re`
+  while twenty-eight other refusal kinds do not budge. The vector is what
+  predicts generalisation; the scalar is what fits in a headline.
+
+### 7c. The gates
+
+| gate | blocks | rule | source of the threshold |
+|---|---|---|---|
+| **A** correctness non-regression | the empty program, the hard-coded literal | tuned correctness pass rate may not fall more than **2pp** below base | the review |
+| **B** supported-import retention | "never import anything" | on tasks whose reference solution imports a module the engine *serves*, the tuned model must still reach for it at ≥ **0.80×** the base arm's rate | threshold chosen here, not by the review |
+| **C** length non-inflation | paying for legality in output tokens | mean completion tokens may not grow more than **20%** | threshold chosen here, not by the review |
+
+Gate B asks the **engine** which modules it serves. A hand-written table of the
+subset would be invariant 1's failure mode relocated: it describes what you wish
+the engine did, and it goes stale in the direction that flatters the result.
+
+Gate C exists because the economics do not automatically favour the rewrite. A
+refusal costs one CPython spawn, about 12 ms. A tier-1 rewrite that hand-rolls a
+scan instead of calling `re` can cost more in output tokens than the spawn it
+saves, at any SLR including 100%.
+
+The degenerate-literal guard already in `sample.py` stays, and does its work
+under gate A.
+
+### 7d. The engine is frozen first, and the build order never comes from held-out
+
+Under a correctness endpoint a moving engine is a confound a recorded
+fingerprint can flag afterwards. Under a legality endpoint it is
+**definitional**: SLR is measured relative to what this binary accepts, so
+serving one more module raises every arm's SLR with no change to any model.
+
+This repository has already done that twice, in the open, in its own changelog:
+`math` was implemented because it "was the top row of `conformance --plan` on
+both lists — the corpus's and a fine-tune's held-out set", and the numeric-method
+feature is recorded as "paid for by the held-out model set, not by the corpus".
+Both are honest entries. Both are test-set steering, and a fingerprint cannot
+see them: it detects drift *between two arms*, not the choice of what to build.
+
+Four rules, all enforceable:
+
+1. **Freeze before anything runs.** One engine build for the whole window, both
+   arms. `nt grade --require-fingerprint <fp>` refuses to grade against any
+   other, so this is a precondition and not a note. *(Shipped.)*
+2. **The build order comes from train + corpus only.** `nt refusals --held-out`
+   now prints a banner saying its output is a description and never a build
+   order, and drops the words "the engine build order" from its footer.
+   *(Shipped.)*
+3. **Every SLR is quoted with its fingerprint.** `SLR = 61.3% @ 9d412a3131dc6a8a`.
+   A bare SLR is not a number. *(Shipped: `legality.compare` refuses two
+   fingerprints in one comparison and the report leads with it.)*
+4. **Report which held-out tasks changed population** between the frozen
+   baseline and the run.
+
+### 7e. The populations, and why the current one cannot answer the deployment question
+
+Held-out today is 74 cases: 52 `refused:*`, 14 `ceiling:*`, 8 `unobserved`. The
+66 corpus-derived ones exist *because a program refused* — a program **Claude
+Code** wrote, not one the model under test wrote. That is the refusing tail of
+the task distribution. It is a legitimate slice and it is where an effect will
+look largest. It is not what deployment looks like, where an agent writes a
+hundred programs and what matters is the fraction of all hundred that run.
+
+v2 evaluates three populations and names them separately:
+
+| slice | what it is | role |
+|---|---|---|
+| **all tasks** | an unconditioned sample of the task distribution, drawn without regard to whether anything refused | **primary** — the deployment number |
+| **refusing tail** | tasks where the base arm's legality is below some fixed rate | secondary — continuity with v1, largest effect |
+| **the frozen 74** | today's held-out set, untouched | continuity — so v1 and v2 remain comparable |
+
+An unconditioned sample needs a task bank that does not exist, which is 7f.
+
+### 7f. What v2 needs that does not exist, and what it costs
+
+Everything above is rules and costs nothing. The run does not. Stated as
+estimates, to be authorised or refused rather than assumed:
+
+| stage | what | estimate |
+|---|---|---|
+| task bank | reverse-prompt corpus entries into instructions; back-translate tier-1 MATCHes into import-heavy Python; template `docs/COOKBOOK.md`; verify every one against CPython | teacher calls, **~$30** |
+| split | cluster by similarity **before** splitting and assign whole clusters group-wise, stratified on refusal kind at cluster level — nothing is dropped and held-out diversity holds by construction, instead of today's split-then-drop-58-leaks | $0, CPU |
+| baseline | base model, k=16, thinking off (primary) and on @2k (secondary); record SLR, the by-kind vector, correctness, tokens/program, fingerprint | **~$5** |
+| SFT v2 | hinted sampling → unhinted training (context distillation: sample *with* the refusal line and the matching recipe in context, train on the bare prompt), task→program format, completion-masked, 2 epochs, **3 seeds** | **~$30–60** |
+| RLVR | GRPO from the SFT checkpoint, reward per the review's F6 with the gate B and gate C terms folded in | **~$50–150** |
+
+A single-seed ΔSLR is not a result and v2 does not report one: three training
+seeds, per-seed ΔSLR, and the spread quoted with the point estimate.
+
+**Nothing in 7f runs without explicit authorisation.** The rules in 7a–7e are
+in force for whatever runs next regardless of whether 7f is ever funded.

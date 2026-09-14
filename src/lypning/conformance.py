@@ -1806,6 +1806,33 @@ def _run_entry(
             got = eng.run(arm, program, binary=binaries.get(arm), argv_tail=argv_tail,
                           stdin=stdin, cwd=cwd, timeout=timeout, env=_env_for(cwd))
         out.verdicts[arm] = classify(ref, got, arm, entry)
+
+    # A MISMATCH is a claim that this engine gave an answer CPython does not.
+    # That claim is only worth making if CPython gives the same answer twice.
+    #
+    # `_RUN_SPECIFIC` screens the program TEXT for names whose output belongs to
+    # the run, and it cannot see the whole class: a default `repr` prints an
+    # address that no two processes share, without the program naming `id`;
+    # `tqdm` writes its own throughput; an HTTP error carries the request id the
+    # server just minted. Six such entries were being reported as engine bugs on
+    # 2026-09-14 — all six captured from agent sessions, none of them matchable
+    # by CPython against itself.
+    #
+    # So the second reference is taken only when a MISMATCH would otherwise be
+    # reported, which is ~0.1% of entries, and it is compared with `classify` so
+    # that it inherits every waiver the arms get rather than growing a second
+    # comparison that can drift from the first. A reference that disagrees with
+    # itself makes the entry a SKIP: there is nothing here to grade an engine
+    # with, and scoring it either way is a lie about the engine.
+    if any(v.verdict == MISMATCH for v in out.verdicts.values()):
+        with _Sandbox("ref2", seed) as cwd:
+            ref2 = eng.run(CPYTHON, program, binary=ref_bin, argv_tail=argv_tail,
+                           stdin=stdin, cwd=cwd, timeout=timeout, env=_env_for(cwd))
+        if ref2.timed_out or classify(ref, ref2, CPYTHON, entry).verdict != MATCH:
+            out.verdicts.clear()
+            out.skip = Skip(out.entry_id,
+                            "reference is not reproducible: two CPython runs of this "
+                            "program disagree, so nothing here can grade an engine")
     return out
 
 
