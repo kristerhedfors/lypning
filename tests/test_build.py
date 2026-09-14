@@ -320,7 +320,7 @@ def test_the_build_tells_the_crate_which_cpython_it_stands_in_front_of(tmp_path,
     fake.chmod(0o755)
     monkeypatch.setattr(engines, "find_cpython", lambda: fake)
     assert "3.%d" % sys.version_info[1] != "3.99", "the stand-in must not be the harness"
-    assert build.reference_python_env() == {"LYPNING_REF_PY": "3.99"}
+    assert build.reference_python_env() == {"LYPNING_REF_PY": "3.99", "LYPNING_CPYTHON": str(fake)}
 
 
 def test_the_suite_and_the_engine_it_grades_speak_the_same_cpython(lypning_bin):
@@ -364,4 +364,34 @@ def test_a_reference_python_that_cannot_answer_sets_nothing(monkeypatch):
     monkeypatch.setattr(build, "_run", lambda *a, **k: (0, "3.11.15\n"))
     assert build.reference_python_env() == {}      # "3.11.15" is not "3.<minor>"
     monkeypatch.setattr(build, "_run", lambda *a, **k: (0, "warning: x\n3.13\n"))
-    assert build.reference_python_env() == {"LYPNING_REF_PY": "3.13"}
+    assert build.reference_python_env() == {"LYPNING_REF_PY": "3.13", "LYPNING_CPYTHON": str(engines.find_cpython())}
+
+
+def test_reference_behavior_probe_reports_the_selected_interpreter():
+    import subprocess
+    result = subprocess.run([sys.executable, str(paths.RUST_DIR / "reference_probe.py")],
+                            capture_output=True, text=True, check=True, timeout=10)
+    version, normpath, reverse, iterator, zero_bytes = result.stdout.splitlines()
+    assert version == "%d.%d" % sys.version_info[:2]
+    assert {normpath, reverse, iterator, zero_bytes} <= {"0", "1"}
+    import os.path
+    assert normpath == str(int(type(os.path.normpath).__name__ == "builtin_function_or_method"))
+    try:
+        sorted([2, 1], reverse=None)
+    except TypeError:
+        assert reverse == "0"
+    else:
+        assert reverse == "1"
+        assert sorted([2, 1], reverse=[0]) == [2, 1]
+        assert sorted([2, 1], reverse=[]) == [1, 2]
+    try:
+        iter([], None)
+    except TypeError as exc:
+        assert iterator == str(int(str(exc) == "iter(v, w): v must be callable"))
+    try:
+        result = (-1).to_bytes(0, "big", signed=True)
+    except OverflowError:
+        assert zero_bytes == "1"
+    else:
+        assert result == b""
+        assert zero_bytes == "0"

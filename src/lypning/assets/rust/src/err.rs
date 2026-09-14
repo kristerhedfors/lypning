@@ -154,6 +154,13 @@ pub const ENGINE: &str = env!("LYPNING_ENGINE");
 /// measurement that fixed it.
 pub const REF_PY_MINOR: u32 = parse_minor(env!("LYPNING_REF_PY"));
 
+/// Build-dependent facts measured against the selected CPython, not guessed
+/// from its minor version. See reference_probe.py and build.rs.
+pub const REF_NORMPATH_BUILTIN: bool = env!("LYPNING_REF_NORMPATH_BUILTIN").as_bytes()[0] == b'1';
+pub const REF_REVERSE_TRUTH: bool = env!("LYPNING_REF_REVERSE_TRUTH").as_bytes()[0] == b'1';
+pub const REF_ITER_SHORT: bool = env!("LYPNING_REF_ITER_SHORT").as_bytes()[0] == b'1';
+pub const REF_ZERO_NEGATIVE_BYTES_OVERFLOW: bool = env!("LYPNING_REF_ZERO_NEGATIVE_BYTES_OVERFLOW").as_bytes()[0] == b'1';
+
 /// `"3.11"` -> `11`, at compile time. `build.rs` has already refused anything
 /// that is not `3.<digits>`, so this only has to read the digits; a string that
 /// somehow reaches here without them yields 0, which every site below treats as

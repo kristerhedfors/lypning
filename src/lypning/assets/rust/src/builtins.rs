@@ -445,14 +445,12 @@ pub fn key_arg(kw: &[(Rc<str>, Value)], name: &str) -> Option<Value> {
     }
 }
 
-/// The `reverse=` argument, which CPython reads through `__index__` rather than
-/// for truthiness. `sorted(xs, reverse=None)` is a TypeError there and was an
-/// ascending sort here — a wrong answer at exit 0, which is worse than the
-/// error it should have been. Only `bool` and `int` have `__index__` in this
-/// subset, so anything else is refused with CPython's own wording.
+/// CPython builds differ between index conversion and truth testing here.
+/// The build-time oracle probe chooses the contract, including reverse=None.
 pub fn reverse_arg(kw: &[(Rc<str>, Value)]) -> R<bool> {
     match kwget(kw, "reverse") {
         None => Ok(false),
+        Some(v) if crate::err::REF_REVERSE_TRUTH => truthy(&v),
         Some(Value::Bool(b)) => Ok(b),
         Some(Value::Int(i)) => Ok(!i.is_zero()),
         Some(other) => Err(type_err(format!(
@@ -1839,15 +1837,10 @@ pub fn call_builtin(
             if args.len() == 2 {
                 let v = arg1(name, &args)?;
                 if !matches!(v, Value::Func(_) | Value::Builtin(_) | Value::Bound(..)) {
-                    // The one row in this file where the wording is a SINGLE
-                    // version's. Measured with `iter([1, 2], 0)` on 2026-09-12:
-                    // 3.12 says `iter(object, sentinel): object must be
-                    // callable`; 3.9, 3.10, 3.11 and 3.13 all say the short
-                    // form, so this is a rename and its revert, not a boundary.
-                    return Err(type_err(if REF_PY_MINOR == 12 {
-                        "iter(object, sentinel): object must be callable"
-                    } else {
+                    return Err(type_err(if crate::err::REF_ITER_SHORT {
                         "iter(v, w): v must be callable"
+                    } else {
+                        "iter(object, sentinel): object must be callable"
                     }));
                 }
                 return Err(unsupported("builtin", "iter(callable, sentinel)"));

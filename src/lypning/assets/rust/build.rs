@@ -19,6 +19,7 @@
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=Cargo.toml");
+    println!("cargo:rerun-if-changed=reference_probe.py");
     // The variant this build IS, from the one `variant-*` feature cargo turned
     // on. Emitted as an env var so `err::ENGINE` can be a compile-time constant
     // in library code, where `CARGO_BIN_NAME` does not reach. `rustc-env` is
@@ -61,21 +62,34 @@ fn main() {
     // constant existed.
     println!("cargo:rerun-if-env-changed=LYPNING_REF_PY");
     println!("cargo:rerun-if-env-changed=LYPNING_CPYTHON");
+    let probed = probe_python();
     let ref_py = std::env::var("LYPNING_REF_PY")
         .ok()
         .filter(|s| parse_minor(s).is_some())
-        .or_else(probe_python)
+        .or_else(|| probed.as_ref().map(|p| p.0.clone()))
         .unwrap_or_else(|| REF_PY_FALLBACK.to_string());
     println!("cargo:rustc-env=LYPNING_REF_PY={ref_py}");
+    // Minor versions are insufficient: patch/vendor builds can change these
+    // answers without changing 3.x. Compile the selected oracle's actual
+    // behavior into constants; no probing or Python dependency at runtime.
+    let flags = match probed {
+        Some((version, flags)) if version == ref_py => flags,
+        _ => {
+            println!("cargo:warning=reference behavior unmeasured; using legacy minor-version defaults");
+            let minor = parse_minor(&ref_py).unwrap_or(13);
+            [(minor >= 13) as u8, 0, (minor != 12) as u8, 0]
+        }
+    };
+    for (name, flag) in ["NORMPATH_BUILTIN", "REVERSE_TRUTH", "ITER_SHORT", "ZERO_NEGATIVE_BYTES_OVERFLOW"].iter().zip(flags) {
+        println!("cargo:rustc-env=LYPNING_REF_{name}={flag}");
+    }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         println!("cargo:rustc-cdylib-link-arg=-Wl,-install_name,@rpath/liblypning.dylib");
     }
 }
 
-/// The version this crate's message tables were read off, and what a build with
-/// no reachable python answers. Every site that branches on the reference
-/// version treats this as "newest", so such a build keeps the behaviour that
-/// shipped before the branch existed.
+/// Legacy message-table default for builds without a reachable reference.
+/// Such builds warn that their behavior profile is unmeasured.
 const REF_PY_FALLBACK: &str = "3.13";
 
 /// `3.11` -> `Some(11)`. Anything that is not `3.<digits>` is not a version
@@ -89,10 +103,9 @@ fn parse_minor(s: &str) -> Option<u32> {
     digits.parse().ok()
 }
 
-/// Ask the reference interpreter what it is. A missing python, a python that
-/// does not run, or an answer this cannot parse all come back `None` — a build
-/// is never FAILED over this, because the fallback is the version the tables
-/// were written against and so is a correct answer, not a guess.
+/// Measure the reference interpreter's version and build-sensitive behavior.
+/// Missing or unrecognized interpreters return `None`; legacy defaults then
+/// permit a bare Cargo build, but do not establish agreement with an oracle.
 ///
 /// A `$LYPNING_CPYTHON` that no longer runs is a STALE PIN, not an instruction
 /// to guess, so it is the FIRST candidate and never the only one: dropping
@@ -101,7 +114,7 @@ fn parse_minor(s: &str) -> Option<u32> {
 /// The pin, then `python3`, then the fallback — the guess is the last resort,
 /// which is the order `engines.find_cpython()` has on the Python side once its
 /// own refusal to honour a pin that is not there has been caught.
-fn probe_python() -> Option<String> {
+fn probe_python() -> Option<(String, [u8; 4])> {
     let pin = std::env::var("LYPNING_CPYTHON").ok().filter(|s| !s.trim().is_empty());
     let names: Vec<String> = pin
         .into_iter()
@@ -109,13 +122,17 @@ fn probe_python() -> Option<String> {
         .collect();
     for name in names {
         let out = std::process::Command::new(&name)
-            .args(["-c", "import sys;print('%d.%d' % sys.version_info[:2])"])
+            .args(["-c", include_str!("reference_probe.py")])
             .output();
         if let Ok(out) = out {
             if out.status.success() {
-                let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if parse_minor(&text).is_some() {
-                    return Some(text);
+                let text = String::from_utf8_lossy(&out.stdout);
+                let lines: Vec<&str> = text.trim().lines().collect();
+                if lines.len() == 5 && parse_minor(lines[0]).is_some()
+                    && lines[1..].iter().all(|v| *v == "0" || *v == "1") {
+                    return Some((lines[0].to_string(), [
+                        (lines[1] == "1") as u8, (lines[2] == "1") as u8,
+                        (lines[3] == "1") as u8, (lines[4] == "1") as u8]));
                 }
             }
         }

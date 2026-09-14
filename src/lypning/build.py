@@ -477,11 +477,13 @@ def _ensure_rust_target(triple: str, verbose: bool) -> tuple[str, str]:
 
 
 def reference_python_env() -> dict[str, str]:
-    """``LYPNING_REF_PY`` for a cargo run: which CPython the binary must agree with.
+    """Pin Cargo's reference version and executable to the dispatcher's oracle.
 
     A handful of CPython's own messages — and one type name — are not the same
     on every version ``pyproject.toml`` supports, so the crate branches on this
-    at compile time (``err::REF_PY_MINOR``). The value has to be the interpreter
+    at compile time (``err::REF_PY_MINOR`` and behavior-profile constants).
+    Cargo probes build-sensitive differences using the same executable.
+    The value has to be the interpreter
     the engine stands in FRONT of, which is :func:`engines.find_cpython`: the
     one ``conformance`` grades against and the dispatcher falls through to.
 
@@ -498,7 +500,9 @@ def reference_python_env() -> dict[str, str]:
     rc, out = _run([str(exe), "-c",
                     "import sys;print('%d.%d' % sys.version_info[:2])"], timeout=30.0)
     line = out.strip().splitlines()[-1].strip() if (rc == 0 and out.strip()) else ""
-    return {"LYPNING_REF_PY": line} if re.fullmatch(r"3\.\d+", line) else {}
+    # Cargo also probes build-dependent behavior. Pin the SAME interpreter,
+    # not whichever python3 a later PATH lookup happens to find.
+    return {"LYPNING_REF_PY": line, "LYPNING_CPYTHON": str(exe)} if re.fullmatch(r"3\.\d+", line) else {}
 
 
 def build_rust(target: str = "musl", jobs: int | None = None,

@@ -101,6 +101,17 @@ interpreter the binary falls through to and FAILs when they differ, and
 fails in one line when the suite grades it with another. `docs/VERIFICATION.md`
 §C7.
 
+**A minor version is not a complete behavior profile.** On 2026-09-15,
+CPython 3.12.13 exposed a builtin `normpath`, truth-value conversion for sort's
+`reverse`, and the short `iter(v, w)` error, unlike the older 3.12 measurements
+below. `reference_probe.py` measures these behaviors and the zero-length signed
+negative `int.to_bytes` boundary using the exact executable selected by
+`engines.find_cpython()`. Cargo compiles the flags into both engines; no Python
+is invoked at runtime. Rebuild when the reference executable changes, even
+within a minor version: the version/doctor check currently compares only 3.x.
+A bare Cargo build without a usable probe warns and uses legacy defaults;
+that fallback is not evidence of agreement with a particular interpreter.
+
 The rule that decides whether a site gets a branch is narrower than "this is
 version-dependent": it is **the ANSWER differs across 3.9 … 3.13**, each
 boundary measured on all five with `uv run --python X` and written down at the
@@ -118,8 +129,8 @@ one of them.
 | `zip([1], bogus=1)` | `zip() takes no keyword arguments` | the invalid-keyword form | ← | ← | the unexpected-keyword form |
 | `enumerate()` | `… required argument 'iterable' (pos 1)` | ← | `… required argument 'iterable'` | ← | ← |
 | `str(1, 0)` | `str() argument 2 must be str, not int` | `str() argument 'encoding' must be str, not int` | ← | ← | ← |
-| `iter([1], 0)` | `iter(v, w): v must be callable` | ← | ← | `iter(object, sentinel): object must be callable` | back to `iter(v, w)` |
-| `type(os.path.normpath)` | `function` | ← | ← | ← | `builtin_function_or_method` |
+| `iter([1], 0)` | `iter(v, w): v must be callable` | ← | ← | build-dependent, probed | build-dependent, probed |
+| `type(os.path.normpath)` | `function` | ← | ← | build-dependent, probed | build-dependent, probed |
 | `type(re.compile('a').match)` | `builtin_function_or_method` | `builtin_method` | ← | ← | ← |
 | `1 % 0` | `integer division or modulo by zero` | ← | `integer modulo by zero` | ← | ← |
 | `float([])` | `… must be a string or a number` | `… or a real number` | ← | ← | ← |

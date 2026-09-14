@@ -353,15 +353,8 @@ TYPED = [
     # ---- `builtin_function_or_method`: a C function ----------------------
     ("os-getcwd-is-a-c-function", "import os", "os.getcwd"),
     ("os-listdir-is-a-c-function", "import os", "os.listdir"),
-    # Version-dependent, and **3.13** is the boundary — this row said 3.12 and
-    # was wrong, which is why it sat under `builtin_function_or_method` while
-    # failing on a 3.11 reference. Re-measured on 2026-09-12 with
-    # `type(os.path.normpath).__name__` on all five supported interpreters:
-    # `function` on 3.9, 3.10, 3.11 and 3.12; `builtin_function_or_method` on
-    # 3.13. The engine follows the HOST (`err::REF_PY_MINOR`), so this row is in
-    # neither group by right and is graded against whatever CPython answers
-    # here, exactly as every other row is.
-    ("os-path-normpath-went-into-c-in-3-13", "import os.path", "os.path.normpath"),
+    # Build-dependent even within 3.12; the build probes the selected oracle.
+    ("os-path-normpath-reference-build", "import os.path", "os.path.normpath"),
     ("sys-exit-is-a-c-function", "import sys", "sys.exit"),
     ("hashlib-md5-is-a-c-constructor", "import hashlib", "hashlib.md5"),
     ("csv-reader-is-a-c-function", "import csv", "csv.reader"),
