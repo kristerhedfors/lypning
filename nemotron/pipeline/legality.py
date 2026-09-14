@@ -95,6 +95,37 @@ def imports_in(program: str) -> "set[str]":
     return found
 
 
+def replay(attempts: List[Dict[str, Any]], engine: str,
+           tests: Optional[Dict[str, Dict[str, Any]]] = None,
+           workers: int = 1, cache: Optional[Any] = None) -> Dict[str, Any]:
+    """The on-policy census for these programs, from cache when the engine matches.
+
+    One place, because the cache's fingerprint check is the whole safety of it:
+    every caller that replays programs has to be unable to reuse a replay taken
+    under a different binary — or under a different GRADER, which the fingerprint
+    cannot see — and the only way to make that true is to leave them no second
+    door.
+    """
+    if cache is not None and cache.exists():
+        import json as _json
+        stored = _json.loads(cache.read_text(encoding="utf-8"))
+        # A cached replay is only a replay of the SAME engine. Reusing one across
+        # a rebuild is the confound this endpoint is most exposed to, so the
+        # fingerprint is checked rather than trusted.
+        if (stored.get("fingerprint") == eng.identity()["fingerprint"]
+                and stored.get("grader") == refusals.GRADER):
+            return stored["census"]
+    census = refusals.on_policy(attempts, engine, tests=tests, workers=workers)
+    if cache is not None:
+        import json as _json
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(_json.dumps(
+            {"fingerprint": eng.identity()["fingerprint"], "engine": engine,
+             "grader": refusals.GRADER, "census": census}, sort_keys=True),
+            encoding="utf-8")
+    return census
+
+
 def arm(attempts: List[Dict[str, Any]], engine: str,
         tests: Optional[Dict[str, Dict[str, Any]]] = None,
         workers: int = 1, cache: Optional[Any] = None) -> Dict[str, Any]:
@@ -107,23 +138,7 @@ def arm(attempts: List[Dict[str, Any]], engine: str,
     recorded refusal count is *correct-and-refused* and systematically
     undercounts what the engine declined to run.
     """
-    census = None
-    if cache is not None and cache.exists():
-        import json as _json
-        stored = _json.loads(cache.read_text(encoding="utf-8"))
-        # A cached replay is only a replay of the SAME engine. Reusing one across
-        # a rebuild is the confound this endpoint is most exposed to, so the
-        # fingerprint is checked rather than trusted.
-        if stored.get("fingerprint") == eng.identity()["fingerprint"]:
-            census = stored["census"]
-    if census is None:
-        census = refusals.on_policy(attempts, engine, tests=tests, workers=workers)
-        if cache is not None:
-            import json as _json
-            cache.parent.mkdir(parents=True, exist_ok=True)
-            cache.write_text(_json.dumps(
-                {"fingerprint": eng.identity()["fingerprint"], "engine": engine,
-                 "census": census}, sort_keys=True), encoding="utf-8")
+    census = replay(attempts, engine, tests=tests, workers=workers, cache=cache)
     by_case: Dict[str, List[Dict[str, Any]]] = {}
     for row in census["rows"]:
         by_case.setdefault(row["case_id"], []).append(row)
@@ -171,6 +186,298 @@ def arm(attempts: List[Dict[str, Any]], engine: str,
         "programs_by_case": programs,
         "rows": census["rows"],
     }
+
+
+# --- reachability: what the model can already write, given enough tries -------
+
+#: The k values a reachability ladder is cut at. 8 is not decoration: it is the
+#: rollout count a GRPO step is planned at, so pass@8 — not pass@16 — is the
+#: ceiling that on-policy training actually stands on.
+LADDER = (1, 2, 4, 8, 16)
+
+#: Below this, a set of cases is not a training set for anything reward-based.
+REACHABLE_FLOOR = 0.60
+
+
+def pass_at_k(n: int, c: int, k: int) -> float:
+    """Unbiased pass@k for ``c`` successes in ``n`` draws (Chen et al., 2021).
+
+    Not ``c > 0``: that is pass@n reported under a smaller k's name. The
+    estimator answers what a *k*-draw budget would have got from the same
+    distribution, which is the question a rollout count asks.
+    """
+    if k > n or n <= 0:
+        return float("nan")
+    if n - c < k:
+        return 1.0
+    prod = 1.0
+    for i in range(k):
+        prod *= (n - c - i) / (n - i)
+    return 1.0 - prod
+
+
+#: What a case's own test says about tier 1, which is three answers and not two.
+TIER_REQUIRED = "required"   # a rewrite case: the engine must run the program
+TIER_FALLBACK = "fallback"   # a ceiling case: the engine refusing IS the answer
+TIER_FREE = "free"           # a plain task: the test never mentions the engine
+
+
+def tier_of(test: Optional[Dict[str, Any]]) -> str:
+    """Which of the three a case is, read off its test and never off its name.
+
+    The third one is easy to lose and expensive to lose. A `stdout`-kind case —
+    this repository's own task bank — carries no tier clause at all: the model is
+    asked for a program, nothing asks it to stay in the subset, and legality
+    there is a free choice rather than a score. Folding those into the required
+    population raises the headline by the mix (they are the easy ones), and
+    folding them into the fallback population claims the engine refusing is
+    right, which nothing said. They are also the only prompts in this corpus
+    shaped like the deployment question, so they are worth their own line.
+    """
+    if not test:
+        return TIER_FREE
+    if "require_tier1" not in test:
+        return TIER_FREE
+    return TIER_REQUIRED if test["require_tier1"] else TIER_FALLBACK
+
+
+def reachability(attempts: List[Dict[str, Any]], engine: str, *,
+                 tests: Optional[Dict[str, Dict[str, Any]]] = None,
+                 kinds: Optional[Dict[str, str]] = None,
+                 workers: int = 1, cache: Optional[Any] = None,
+                 ladder: Sequence[int] = LADDER) -> Dict[str, Any]:
+    """Per case: did ANY draw land in the subset — and did any land there correct.
+
+    THE CEILING ON EVERYTHING REWARD-BASED. GRPO reinforces what the policy
+    already produces; a case whose every draw the engine refuses hands it a
+    group of identically-scored rollouts, an advantage of zero, and no gradient.
+    So the fraction of cases with at least one legal draw is not a diagnostic
+    beside the training plan, it is the bound on what the training plan can
+    reach — and the by-kind cut says *which* part of the subset is out of reach,
+    which a scalar cannot.
+
+    Two columns, and the second is the strict one. **Reachable** is legality
+    alone: some draw ran on tier 1. **Rewardable** is legal AND reproducing the
+    case's expected stdout, which is the only outcome the reward table pays +1.0
+    for. Reachable-but-never-correct is a case where every positive signal
+    available is the +0.5 consolation row, and a reward curve that climbs on
+    those is climbing toward legal-and-wrong.
+
+    THE POPULATION IS SPLIT, AND THAT IS NOT A PRESENTATION CHOICE. A ceiling
+    case's own test carries ``require_tier1: False`` because falling back IS the
+    right answer there — the reference solution is the program the engine
+    refuses. Averaging those into one reachability rate scores the model for
+    failing to do the wrong thing, and it moves the headline by the mix of the
+    corpus rather than by the model. So the floor is read off the cases that
+    demand tier 1, and the rest are reported beside it, unaveraged, where a legal
+    draw is an option the model took and not a box it ticked.
+
+    Both columns are measured HERE, through the engine passed in, from the
+    engine's own run of the program. Nothing is read out of the run's recorded
+    verdict: that was graded under whatever binary that run pinned, and one
+    number mixing two engines is the confound this whole module refuses.
+    """
+    census = replay(attempts, engine, tests=tests, workers=workers, cache=cache)
+    by_case: Dict[str, List[Dict[str, Any]]] = {}
+    for row in census["rows"]:
+        by_case.setdefault(row["case_id"], []).append(row)
+
+    cases: Dict[str, Dict[str, Any]] = {}
+    for cid, rows in by_case.items():
+        # A harness error is not a verdict about the program; it leaves the
+        # denominator rather than counting as a failure to reach.
+        graded = [r for r in rows if r["verdict"] != "ERROR"]
+        if not graded:
+            continue
+        legal = [r for r in graded if r["verdict"] != "UNSUPPORTED"]
+        # Scorable is a property of the CASE, not of its draws. Reading it off
+        # "did any draw come back with a correct flag" would file a case whose
+        # every draw was refused as *unmeasured* — the one reading that turns the
+        # worst cases in the table into blanks.
+        if tests is not None:
+            measurable = (tests.get(cid) or {}).get("expect_stdout") is not None
+        else:
+            measurable = any(r.get("correct") is not None for r in graded)
+        good = [r for r in legal if r.get("correct") is True]
+        cases[cid] = {
+            "kind": (kinds or {}).get(cid, "unknown"),
+            "tier": tier_of((tests or {}).get(cid)),
+            "draws": len(graded), "errors": len(rows) - len(graded),
+            "legal": len(legal), "rewardable": len(good),
+            "measurable": measurable,
+            "reached": bool(legal), "rewarded": bool(good),
+            "refusals": sorted({r["detail"] for r in graded
+                                if r["verdict"] == "UNSUPPORTED"}),
+        }
+
+    def _roll(rows: Sequence[Dict[str, Any]], key: str, k: int) -> float:
+        vals = [pass_at_k(r["draws"], r[key], k) for r in rows]
+        vals = [v for v in vals if v == v]
+        return sum(vals) / len(vals) if vals else float("nan")
+
+    rows = [r for r in cases.values() if r["tier"] == TIER_REQUIRED]
+    fallback = [r for r in cases.values() if r["tier"] == TIER_FALLBACK]
+    free = [r for r in cases.values() if r["tier"] == TIER_FREE]
+    scored = [r for r in rows if r["measurable"]]
+    kind_rows: Dict[str, List[Dict[str, Any]]] = {}
+    for r in cases.values():
+        kind_rows.setdefault(r["kind"], []).append(r)
+    closed = refusals.closed_kinds()
+    by_kind = []
+    for kind, krows in sorted(kind_rows.items()):
+        kscored = [r for r in krows if r["measurable"]]
+        by_kind.append({
+            "kind": kind,
+            # `refused:set-order` is a kind the engine has DECLARED it will never
+            # answer, so its cases are not headroom and a plan that ranked them
+            # would be ranking work nobody may do.
+            "closed": kind.split(":", 1)[-1] in closed,
+            "cases": len(krows),
+            "tier": (krows[0]["tier"] if len({r["tier"] for r in krows}) == 1
+                     else "mixed"),
+            "reached": sum(1 for r in krows if r["reached"]),
+            "rewarded": sum(1 for r in kscored if r["rewarded"]),
+            "scored": len(kscored),
+            "legal_draws": sum(r["legal"] for r in krows),
+            "draws": sum(r["draws"] for r in krows),
+        })
+    by_kind.sort(key=lambda r: (r["closed"], r["reached"] / (r["cases"] or 1), -r["cases"]))
+
+    allrows = list(cases.values())
+    ks = [k for k in ladder if k <= max([r["draws"] for r in rows] or [0])]
+    return {
+        "engine": engine, "fingerprint": eng.identity()["fingerprint"],
+        "cases": len(rows),
+        "fallback": {"cases": len(fallback),
+                     "reached": sum(1 for r in fallback if r["reached"]),
+                     "rewarded": sum(1 for r in fallback if r["rewarded"])},
+        "free": {"cases": len(free),
+                 "reached": sum(1 for r in free if r["reached"]),
+                 "rewarded": sum(1 for r in free if r["rewarded"]),
+                 "legal_draws": sum(r["legal"] for r in free),
+                 "draws": sum(r["draws"] for r in free)},
+        "draws": sum(r["draws"] for r in allrows),
+        "errors": sum(r["errors"] for r in allrows),
+        "k": min([r["draws"] for r in allrows] or [0]),
+        "k_max": max([r["draws"] for r in allrows] or [0]),
+        "reached": sum(1 for r in rows if r["reached"]),
+        "rewarded": sum(1 for r in scored if r["rewarded"]),
+        "scored": len(scored),
+        "reachable": (sum(1 for r in rows if r["reached"]) / len(rows)) if rows else float("nan"),
+        "rewardable": (sum(1 for r in scored if r["rewarded"]) / len(scored))
+                      if scored else float("nan"),
+        "ladder": [{"k": k, "legal": _roll(rows, "legal", k),
+                    "rewardable": _roll(scored, "rewardable", k)} for k in ks],
+        "mismatch": census["tally"].get("MISMATCH", 0),
+        "unstable": census["tally"].get("UNSTABLE", 0),
+        "by_kind": by_kind, "by_case": cases,
+        "unreachable": sorted(cid for cid, r in cases.items()
+                              if r["tier"] == TIER_REQUIRED and not r["reached"]),
+    }
+
+
+_TIER_MARK = {TIER_FALLBACK: " -", TIER_FREE: " ~"}
+
+
+def reachability_report(r: Dict[str, Any], *, label: str, limit: int = 20,
+                        floor: float = REACHABLE_FLOOR,
+                        held_out: bool = False) -> str:
+    """Render a reachability table. The floor verdict is a stop, not a footnote."""
+    out: List[str] = []
+    out.append("reachability: %s   @ engine %s" % (label, r["fingerprint"]))
+    k = r["k"] if r["k"] == r["k_max"] else r["k_max"]
+    out.append("  %d cases require tier 1, %d are ceiling cases where falling back is "
+               "the answer," % (r["cases"], r["fallback"]["cases"]))
+    out.append("  %d ask for a program and never mention the engine"
+               % r["free"]["cases"])
+    out.append("  %d draws graded%s, k=%d%s"
+               % (r["draws"],
+                  (" (%d harness errors dropped)" % r["errors"]) if r["errors"] else "",
+                  k, "" if r["k"] == r["k_max"] else " at most (%d at least)" % r["k"]))
+    if r.get("unstable"):
+        out.append("  %d of them are not reproducible under the harness — a fresh temp "
+                   "cwd, the clock," % r["unstable"])
+        out.append("  the hash seed. Legal (the engine ran them), never correct "
+                   "(nothing is), never a MISMATCH.")
+    out.append("")
+    out.append("  over the cases that REQUIRE tier 1 — the population the floor reads")
+    out.append("    reachable   %s have >=1 LEGAL draw              (%d/%d)"
+               % (_pct(r["reachable"]), r["reached"], r["cases"]))
+    if r["scored"]:
+        out.append("    rewardable  %s have >=1 legal AND correct draw  (%d/%d)"
+                   % (_pct(r["rewardable"]), r["rewarded"], r["scored"]))
+    else:
+        out.append("    rewardable  not measured: no case here carries an expected stdout")
+    if r["fallback"]["cases"]:
+        out.append("")
+        out.append("  over the %d CEILING cases, where the reference solution is the "
+                   "program the" % r["fallback"]["cases"])
+        out.append("  engine refuses: %d reached the subset anyway, %d of those correct."
+                   % (r["fallback"]["reached"], r["fallback"]["rewarded"]))
+        out.append("    Not a target. A reward that pays for legality here pays the "
+                   "model for")
+        out.append("    working around the right answer, and these rows are where that "
+                   "would show.")
+    if r["free"]["cases"]:
+        fr = r["free"]
+        out.append("")
+        out.append("  over the %d cases that just ask for a program — no rewrite "
+                   "instruction," % fr["cases"])
+        out.append("  no mention of a runtime. The only prompts here shaped like the "
+                   "deployment")
+        out.append("  question, and a preview of what eval-2 will ask at scale:")
+        out.append("    %d of %d reached the subset unprompted, %s of draws legal"
+                   % (fr["reached"], fr["cases"],
+                      _pct(fr["legal_draws"] / fr["draws"]) if fr["draws"] else "n/a"))
+    out.append("")
+    out.append("  what a smaller rollout budget would have reached (unbiased pass@k)")
+    out.append("    %-6s %-12s %s" % ("k", "legal", "legal+correct"))
+    for row in r["ladder"]:
+        out.append("    %-6d %-12s %s" % (row["k"], _pct(row["legal"]),
+                                          _pct(row["rewardable"])))
+    out.append("")
+    out.append("  by the kind the case was refused for, worst first "
+               "(closed kinds last: the engine may never answer those)")
+    out.append("    %-24s %6s %14s %14s %10s"
+               % ("kind", "cases", "reached", "rewarded", "legal/draw"))
+    for row in r["by_kind"][:limit]:
+        reached = "%3d/%-3d %7s" % (row["reached"], row["cases"],
+                                    _pct(row["reached"] / row["cases"]))
+        rewarded = ("%3d/%-3d %7s" % (row["rewarded"], row["scored"],
+                                      _pct(row["rewarded"] / row["scored"]))
+                    if row["scored"] else "%14s" % "no test")
+        out.append("    %-24s %6d %14s %14s %10s"
+                   % (row["kind"] + (" *" if row["closed"] else
+                                     _TIER_MARK.get(row["tier"], "")), row["cases"],
+                      reached, rewarded,
+                      _pct(row["legal_draws"] / row["draws"]) if row["draws"] else "n/a"))
+    if len(r["by_kind"]) > limit:
+        out.append("    (%d more kinds not shown)" % (len(r["by_kind"]) - limit))
+    out.append("")
+    out.append("  * closed kind: the engine has declared no reimplementation may answer it,")
+    out.append("    so the model's job there is to REWRITE and a low row is the corpus")
+    out.append("    working as designed, not a gap to close in the engine.")
+    out.append("  - falling back is the right answer for this kind; ~ nothing asked "
+               "for the subset")
+    out.append("    at all. Neither is in the floor.")
+    out.append("")
+    verdict = "at or above" if r["reachable"] >= floor else "BELOW"
+    out.append("  reachability %s the %s floor: %s"
+               % (verdict, _pct(floor), _pct(r["reachable"])))
+    if r["reachable"] < floor:
+        out.append("  Below the floor, a reward-based stage is reinforcing what the policy")
+        out.append("  cannot produce: the unreachable cases return an advantage of zero.")
+        out.append("  Either a teacher supplies the trajectories or the engine grows toward")
+        out.append("  them — training harder on this pool is the one option ruled out.")
+    if r["mismatch"]:
+        out.append("")
+        out.append("  MISMATCH %d — invariant 1: always a bug, never the model's."
+                   % r["mismatch"])
+        out.append("  No reachability number is reportable until these are closed.")
+    if held_out:
+        out.append("")
+        out.extend("  " + line for line in refusals.HELD_OUT_BANNER.splitlines())
+    return "\n".join(out)
 
 
 def _gate_b(base: Dict[str, Any], tuned: Dict[str, Any], cases: Dict[str, Dict[str, Any]],

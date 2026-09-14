@@ -438,8 +438,8 @@ p = 0.0525, also failing. The prediction behind the amendment was wrong, it
 changed no verdict, and that is checkable only because it was dated first.
 
 Whole run: **$28.70**. The apparatus, the pre-registration and its outcome are
-in `nemotron/` — §6 of `PREREGISTRATION.md` is the result written back against
-the rule it was measured by.
+in `nemotron/` — §6 of `nemotron/PREREGISTRATION.md` is the result written back
+against the rule it was measured by.
 
 ## 8. Credit
 

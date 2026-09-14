@@ -133,6 +133,11 @@ def test_relative_markdown_links_resolve(doc):
         doc.relative_to(ROOT), ", ".join(sorted(set(broken))))
 
 
+#: A test file as a document spells one: `tests/test_x.py`, or with the
+#: directory that holds it — `nemotron/tests/test_x.py`.
+_TEST_PATH = r"(?:[\w.-]+/)*tests/test_\w+\.py"
+
+
 @pytest.mark.parametrize("doc", OWNED, ids=lambda p: str(p.relative_to(ROOT)))
 def test_every_test_file_a_document_promises_exists(doc):
     """The failure this project has actually shipped, three times.
@@ -140,11 +145,16 @@ def test_every_test_file_a_document_promises_exists(doc):
     A document that says "pinned by ``tests/test_x.py``" and no such file is
     worse than silence: it reads as evidence. Fix in whichever direction is
     true — write the test, or stop claiming it.
+
+    The path is resolved AS WRITTEN. This tree has a second suite under
+    `nemotron/tests/`, and matching only the tail of such a path would report a
+    test that exists as missing — a false alarm on a checker whose whole value is
+    that it does not cry wolf.
     """
     text = doc.read_text(encoding="utf-8")
-    missing = sorted({m.group(1) for m in re.finditer(r"`(tests/test_\w+\.py)`", text)
+    missing = sorted({m.group(1) for m in re.finditer(r"`(%s)`" % _TEST_PATH, text)
                       if not (ROOT / m.group(1)).exists()})
-    missing += sorted({m.group(1) for m in re.finditer(r"\b(tests/test_\w+\.py)\b", text)
+    missing += sorted({m.group(1) for m in re.finditer(r"\b(%s)\b" % _TEST_PATH, text)
                        if not (ROOT / m.group(1)).exists()})
     assert not missing, "%s promises a test file that does not exist: %s" % (
         doc.relative_to(ROOT), ", ".join(sorted(set(missing))))

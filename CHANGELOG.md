@@ -27,6 +27,62 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-14** — the ceiling on everything reward-based, measured for $0, and fourteen cases it cost the engine (branch `claude/qwen-adapter-signal-ladder-ra5qbz`)
+
+- **`nt legality --pass-at-k`: reachability, per case, by refusal kind.** Not how
+  often a draw is legal but whether ANY draw is — the bound on every reward-based
+  stage, since a case whose every rollout is refused hands GRPO a group of
+  identically-scored rollouts and no gradient. It generates nothing — the draws
+  were paid for by runs already on disk. Held-out `qwen38-baseline-k16`: **84.62%** of the 52
+  cases that require tier 1 have a legal draw (42.31% legal *and* correct); the
+  290-case train pool **82.38%** (34.72%). Both clear of the 60% floor, so
+  reachability does not block the on-policy stage. Engine `23684d6c40738fcf`,
+  k=16, thinking off, 2026-09-14.
+- **The population is three, not one.** A ceiling case's test says
+  `require_tier1: False` because falling back IS the answer there, so averaging
+  it in scores the model for failing to do the wrong thing; a `stdout`-kind case
+  never mentions the engine at all. The floor reads only the cases that demand
+  tier 1. The third group is worth its own line: 8 held-out cases that just ask
+  for a program reached the subset unprompted on **89.06% of draws** — the only
+  preview here of what eval-2 asks at scale.
+- **pass@8 is the number GRPO stands on, not pass@16** — 75.50% legal held-out
+  against 82.22% at k=16 — so the ladder is reported at k=1,2,4,8,16 with the
+  unbiased estimator rather than as `c > 0` under a smaller k's name.
+- **53 MISMATCHes over 14 cases, found by the replay.** Programs this engine runs
+  and answers differently from CPython, all from the train pool, all now in
+  `nemotron/data/engine-mismatches.jsonl`. Four reduce to one-liners: a
+  `'\udcff'` surrogate escape is a `SyntaxError` here and a string in CPython;
+  `enumerate(iterable=…, start=…)` is rejected here and accepted there; `v is v`
+  for a bound `dict.values()` is False here and True there; `divmod(1.0, 0)` says
+  *float floor division by zero* where CPython says *float divmod()*. Invariant 1:
+  the train-pool row stays provisional until they close. Held-out has none.
+- **And 6 that were the harness, not the engine.** Every sandbox run gets its own
+  `mkdtemp`, so `print(os.path.abspath(...))` differs between the reference run
+  and the engine run by construction — invariant 1's alarm, fired by the harness,
+  on the one corpus nobody vets for determinism because a model wrote it. A first
+  disagreement now buys one more CPython run: if the reference disagrees with
+  itself the verdict is `UNSTABLE` — legal, never correct, never a MISMATCH. The
+  replay cache now keys on a grader version as well as the engine fingerprint,
+  because the fingerprint cannot see a change on this side of the comparison.
+- **The four training-checklist assertions are tests now**
+  (`nemotron/tests/test_sft_rows.py`): completion-only loss, the empty
+  `<think></think>` block byte-for-byte between training and eval, every SFT
+  completion decoding back through the *eval's* extractor to the program the
+  verifier passed, and the MLP projections being in `TARGET_MODULES`. The GPU
+  script is read out of by `ast` rather than imported, which keeps its one-file
+  contract. `build_examples` also now refuses a tokeniser that merges across the
+  prompt/completion boundary — that shifts completion-only masking by one token
+  and leaves the loss curve looking perfectly healthy.
+- **The documentation checker stopped crying wolf about a second suite.**
+  `tests/test_docs.py` matched only the tail of a test path, so a document citing
+  a test file under `nemotron/tests/` was reported as promising a file that does
+  not exist — while the file did. Paths now resolve as written, which also means
+  a path named in a document is checked where it actually points.
+- **`nemotron/LADDER.md`** carries the plan these rungs belong to, and the three
+  Nemotron numbers that must stop being decision inputs for a Qwen arm.
+  `nemotron/README.md` now says on line one that the model is Qwen and the
+  directory name is history.
+
 **2026-09-14** — What differs from Python was written down twice and both copies were stale ([#67](https://github.com/kristerhedfors/lypning/pull/67))
 
 - **`docs/DIFFERENCES.md` is the one home for the delta.** What the engines are

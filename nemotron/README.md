@@ -1,6 +1,16 @@
-# Nemotron 3.5 Lightning — LoRA pipeline
+# LoRA pipeline
 
-Target: `nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16` (30B total, 3B active,
+**The target model is `Qwen/Qwen3.8-27B`. The directory is called `nemotron/` and
+its CLI `nt` for historical reasons only** — the pipeline was built against
+NVIDIA Nemotron 3.5 Lightning and switched on 2026-09-11 (`SWITCH.md`), and the
+names stayed because `CLAUDE.md`, the tests and the site cite them. Renaming them
+would edit a dozen files to change nothing that runs. Every measurement in this
+tree is Qwen's unless its own provenance line says otherwise; a Nemotron number
+is never a decision input for a Qwen arm, and `LADDER.md` §0 lists the three that
+leaked into one anyway.
+
+The original target — for reading the history, never for planning:
+`nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16` (30B total, 3B active,
 hybrid Mamba-2 + MoE + attention, reasoning on by default). The NVFP4 release is
 inference-only and is not the training checkpoint.
 
