@@ -291,6 +291,28 @@ pub fn is_cpython_builtin(name: &str) -> bool {
 
 /// An undefined name: lypning being small, or the program being wrong.
 pub fn name_err(name: &str) -> LypningError {
+    // `__file__` is not a builtin — it is a module global CPython binds when it
+    // runs a FILE, and leaves unbound under `-c`. This engine never binds it, so
+    // the two agree under `-c` and disagree for a script: CPython prints the
+    // path, this raised `NameError` at exit 1, which is the program's own exit
+    // and is never retried. A silent wrong answer, found on-policy 2026-09-14 in
+    // a model's own program that located its package with
+    // `os.path.dirname(os.path.abspath(__file__))`.
+    //
+    // Refused rather than bound, because binding it needs the invocation's path
+    // threaded to every entry point and would then have to be WRONG under `-c`
+    // to stay right for a file. Refusing costs a spawn on a `-c` program that
+    // was about to raise anyway, and buys the correct answer for every script.
+    // The other module dunders (`__doc__`, `__spec__`, `__package__`,
+    // `__loader__`, `__builtins__`, `__debug__`) already take this path through
+    // the builtin table; this one could not, because it is not in it.
+    if name == "__file__" {
+        return unsupported(
+            "dunder-missing",
+            "__file__, which CPython binds to the script path and this engine \
+             has no module path to bind",
+        );
+    }
     if is_cpython_builtin(name) {
         return unsupported("builtin", name);
     }
