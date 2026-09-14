@@ -48,6 +48,8 @@ PAGES = [
     ("docs/VERIFICATION.md", "docs/verification.html", "Verification", "Every contract as a command, its expected output from a dated run of record, and the test that pins it."),
     ("docs/LYPNING.md", "docs/lypning.html", "Design", "The mixture, the classifier, and the commit barrier that makes falling onward safe."),
     ("docs/SUBSET.md", "docs/subset.html", "The subset", "What the engines implement, and the rules that decide what they refuse."),
+    ("docs/DIFFERENCES.md", "docs/differences.html", "vs Python",
+     "How lypning and lypning-l differ from Python: the architecture, the names each one resolves, and what falls through to CPython."),
     ("docs/COOKBOOK.md", "docs/cookbook.html", "Cookbook", "Rewrites for constructs outside the subset — every recipe executed by the test suite."),
     ("docs/MICROPYTHON.md", "docs/micropython.html", "The oracle", "lypning-mp — the oracle: measured, never routed to — and the cost model the runtimes are optimised against."),
     ("docs/RESEARCH.md", "docs/research.html", "Research", "How the runtime was chosen and built, including what was measured and rejected."),

@@ -9,13 +9,18 @@ one-liner on the cheapest interpreter that can actually run it — the chain is
 <p class="cta">
 <a class="btn" href="readme.html#2-installation">Install</a>
 <a class="btn ghost" href="docs/lypning.html">How it works</a>
+<a class="btn ghost" href="docs/differences.html">vs Python</a>
 <a class="btn ghost" href="docs/verification.html">Check it</a>
 <a class="btn ghost" href="https://github.com/kristerhedfors/lypning" rel="noopener">Source</a>
 </p>
 </div>
 
 The router asks the Rust core's own parser which engine can run a program; no
-text heuristics. The subset is sized to what agents type, not to Python.
+text heuristics. The subset is sized to what agents type, not to Python. Exactly how each
+engine differs from CPython — what it is architecturally, which names resolve on
+which one, and which refusals skip straight to CPython — is
+[docs/differences.html](docs/differences.html), and every table on that page is
+pinned to the crate's own tables by a test.
 
 Every tier refuses the same way: **exit `90`, one line on stderr, nothing on
 stdout.** The line is `<engine>: unsupported: <kind>: <detail>`

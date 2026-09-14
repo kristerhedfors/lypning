@@ -87,12 +87,10 @@ CPython (`conformance.plan`): `lypning-l`'s build order. Checks:
 The subset is chosen from the corpus, not from the language reference:
 expressions, statements, comprehensions, f-strings, `%` and `.format()`,
 functions with closures and `lambda`, `try`/`except`, `with`, slicing and
-unpacking. The module surface is `modules.rs:MODULES`, one table per variant:
-
-| variant | modules |
-|---|---|
-| `lypning` | `sys`, `os`, `os.path`, `posixpath`, `io`, `json`, `random` (the seeded-integer subset, MT19937 bit for bit — `random.rs`) |
-| `lypning-l` | the same, plus `collections` (`Counter`, `defaultdict` — `collections.rs`), `pathlib` (`Path` — `pathlib.rs`) and `re` (a matcher — `re.rs`). `cap-bigint` adds no module: it widens the integers (`bigint.rs`) |
+unpacking. The module surface is `modules.rs:MODULES`, one table per variant,
+and which names each variant resolves is `docs/DIFFERENCES.md` — written down
+once, there, and pinned to those tables by `tests/test_differences.py` rather
+than copied into each document that needs it.
 
 `re` is on the larger variant only: the core routes `import re` to
 `lypning-l`. What `re.rs` serves is a SLICE of the pattern language —
