@@ -20,6 +20,31 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-14** — What differs from Python was written down twice and both copies were stale ([#67](https://github.com/kristerhedfors/lypning/pull/67))
+
+- **`docs/DIFFERENCES.md` is the one home for the delta.** What the engines are
+  architecturally — no bytecode, a compiled-in module table instead of an import
+  system, no object model, no introspection, no GC, a native stack whose guard
+  refuses rather than raising `RecursionError` — then the builtins, exception
+  names and modules that resolve, the four modules `lypning-l` serves as a named
+  attribute list, the eight `cap-*` features, the refusals that skip the larger
+  engine, and the constructs that exit 90 before a statement runs.
+- **The copies it replaces had been wrong for six capabilities.**
+  `docs/SUBSET.md` §3.3 and `docs/LYPNING.md` §3 both named `collections` and
+  `pathlib` as the whole of what `lypning-l` adds, written before `cap-re`,
+  `cap-csv`, `cap-glob`, `cap-base64`, `cap-hashlib` and `cap-bigint`;
+  `docs/SUBSET.md` §6 still sent `import csv` and `import re` to CPython. Both
+  tables are now pointers, and those two rows say what `lypning-l` answers.
+- **`tests/test_differences.py` holds the page to the crate.** Every list is
+  read out of `builtins.rs`, `modules.rs`, `route.rs` and `hashlib.rs` rather
+  than restated, and one test fails on any `unsupported: <kind>` the crate does
+  not raise. A stale sentence compiles, links, routes and benches at the same
+  speed as a true one; this is the check that would have caught the two it
+  replaces.
+- **On lypning.dev**: a hero link, a line in the opening paragraph, and its row
+  in the document grid, all three from the one `site/build.py` `PAGES` entry.
+  `site/build.py --check`: 22 pages, every intra-site href resolves.
+
 **2026-09-14** — the serving stack moves subset legality by more than the adapter does (branch `claude/nemotron-lora-pipeline-1zczi2`)
 
 - **v2 run 1: context distillation, and a second null.** `nt sample --hinted`
