@@ -732,6 +732,29 @@ def cmd_sample(args: argparse.Namespace) -> int:
               "--price-hour, or drop --max-spend and say out loud that the run is "
               "unbounded." % args.max_spend, file=sys.stderr)
         return 2
+    hints_by_case = None
+    if args.hinted:
+        from . import hints as hints_mod
+        recipes = hints_mod.load_cookbook()
+        engine_name = Path(engine).name
+        hints_by_case, why = {}, {}
+        for case in cases:
+            hint, reason = hints_mod.hint_for(case, engine, engine_name, recipes)
+            if hint:
+                hints_by_case[case["id"]] = hint
+            why[reason] = why.get(reason, 0) + 1
+        print("hinted sampling: %d of %d cases carry a live refusal from %s "
+              "(%d recipes in the cookbook)"
+              % (len(hints_by_case), len(cases), engine_name, len(recipes)))
+        for reason, n in sorted(why.items(), key=lambda kv: -kv[1])[:8]:
+            print("  %5d  %s" % (n, reason))
+        print("  the hint reaches the DRAW only — the SFT row and the eval keep the "
+              "bare prompt, which is what makes this context distillation")
+        if not hints_by_case:
+            print("no case has a refusal to quote: --hinted would change nothing",
+                  file=sys.stderr)
+            return 1
+
     out_dir = DATA / "sft" / (args.name or "v1")
     prior = out_dir / "draws.jsonl"
     n_prior = sum(1 for _ in open(prior, encoding="utf-8")) if prior.exists() else 0
@@ -770,6 +793,7 @@ def cmd_sample(args: argparse.Namespace) -> int:
             top_p=args.top_p, max_tokens=args.max_tokens,
             enable_thinking=not args.no_thinking, concurrency=args.concurrency,
             price_hour=args.price_hour, max_spend=args.max_spend, resume=args.resume,
+            hints_by_case=hints_by_case,
             progress=progress)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
@@ -1479,6 +1503,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--thinking", dest="no_thinking", action="store_false",
                     help="draw with enable_thinking=true; only for an arm that "
                          "was itself sampled that way")
+    sp.add_argument("--hinted", action="store_true",
+                    help="context distillation: draw WITH the engine's own refusal "
+                         "line and a matching COOKBOOK recipe in the user turn, and "
+                         "train on the bare prompt. The run of record sampled and "
+                         "trained on a prompt that never mentioned the subset, and "
+                         "its legality delta was a null; see pipeline/hints.py")
     sp.add_argument("--price-hour", type=float, default=0.0)
     sp.add_argument("--max-spend", type=float, default=0.0)
     sp.add_argument("--base-url"); sp.add_argument("--model")
