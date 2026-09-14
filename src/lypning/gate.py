@@ -550,9 +550,6 @@ def _resolve(binary: Path | str | None) -> Tuple[Optional[Path], str]:
     rust = engines.find(engines.LYPNING)
     if rust is not None:
         return (rust, engines.LYPNING)
-    mp = engines.find_micropython()
-    if mp is not None:
-        return (mp, engines.MICROPYTHON)
     return (None, engines.LYPNING)
 
 
@@ -601,15 +598,13 @@ def gate(binary: Path | str | None = None, *, compare: bool = False) -> GateRepo
 
     if target is None:
         want = engine or engines.MICROPYTHON
+        build = "lypning build --micropython" if want == engines.MICROPYTHON else "lypning build --rust"
+        if want in engines.SPECTRUM and want != engines.LYPNING:
+            build += " --variant " + want
         return GateReport("", [Check("built", "no", "yes", False, "",
-                                     "%s is not built — `lypning build --micropython`"
-                                     % want)], False, baseline)
+                                     "%s is not built — `%s`" % (want, build))], False, baseline)
 
     checks: List[Check] = []
-    if binary is None and engine != engines.MICROPYTHON:
-        checks.append(Check("target", engine, engines.MICROPYTHON, True, "",
-                            "lypning-mp is not built; gated %s instead — these numbers "
-                            "are not lypning-mp's" % engine))
 
     # A gate that passes a binary which cannot execute `-c 'pass'` has measured
     # a paperweight.

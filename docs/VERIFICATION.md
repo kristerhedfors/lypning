@@ -388,6 +388,11 @@ larger variant (invariant 9). **CODE HOME.** The constants, each written once:
 | the oracle's byte budget | 700,000 B (`gate.MAX_BYTES`) — only when `lypning-mp` is the binary named | `gate._size_check` |
 | the code section | Mach-O `__text` / ELF `.text` (`gate.TEXT_SECTION`) — reported, never budgeted: bytes on disk are what a cold start fetches, code bytes are what a commit added, and a page-padded `__TEXT` makes the two disagree | `gate.text_bytes`, a hole where it cannot be read |
 | CPython's cold anchor | 8573 ms (`gate.CPYTHON_COLD_MS`) — measured upstream, never here | `gate.project_cold_ms`, labelled an estimate |
+
+Linux CI gates both installed Rust variants explicitly against their existing
+budgets. With no path, `gate` requires the core; an installed MicroPython oracle
+does not substitute for a missing core. Name the oracle to measure it.
+
 ```bash
 # CHECK — `c6-gate.sh`.
 lypning gate; echo $?
@@ -398,7 +403,7 @@ lypning gate /no/such/binary; echo $?
   ok   size               9 blocks               want <= 9 blocks
 PASS
 # … | vdiff c6-gate
-# differs: byte and block counts while under budget; the `code section` row, which is a measurement and not a budget; the BuildID; which rows are `--` (a check nobody took: no strace, readelf, file(1) or size(1) — never a pass, never a zero); the target row, absent once the oracle is built and named
+# differs: byte and block counts while under budget; the `code section` row, which is a measurement and not a budget; the BuildID; which rows are `--` (a check nobody took: no strace, readelf, file(1) or size(1) — never a pass, never a zero)
 # must not: PASS, exit 0, and the size row NAMING the target its budget was measured on; exit 2 for a path that is not a file
 # This recorded table is checked only against its named artifact target.
 # The test reads the binary header, not the host OS; Mach-O has no musl budget.

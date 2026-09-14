@@ -1829,9 +1829,8 @@ def cmd_oracle(ns: argparse.Namespace) -> int:
 
 def cmd_gate(ns: argparse.Namespace) -> int:
     gate = _mod("gate")
-    # Checked here rather than in gate(): with nothing named it substitutes one
-    # engine for another and says so, which is right for a default and wrong
-    # for a path the caller typed.
+    # A missing explicit path is a usage error; a missing default core is a
+    # failed build check rendered by gate(), not an oracle substitution.
     if ns.binary and not Path(ns.binary).is_file():
         raise Usage("no such binary: %s" % ns.binary)
     report = gate.gate(ns.binary, compare=ns.compare)

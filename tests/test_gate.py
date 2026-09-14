@@ -57,6 +57,35 @@ def test_size_of_a_binary_that_is_not_there_is_zero(tmp_path):
     assert gate.size_bytes(tmp_path / "absent") == 0
 
 
+def test_default_gate_does_not_substitute_the_oracle(tmp_path, monkeypatch):
+    oracle = tmp_path / engines.MICROPYTHON
+    oracle.write_bytes(b"an installed oracle is not the requested core")
+    monkeypatch.setattr(engines, "find", lambda name: None)
+    monkeypatch.setattr(engines, "find_micropython", lambda: oracle)
+    assert gate._resolve(None) == (None, engines.LYPNING)
+    report = gate.gate()
+    assert not report.ok
+    assert "lypning build --rust" in gate.render(report)
+    assert "--micropython" not in gate.render(report)
+    assert gate._resolve(oracle) == (oracle, engines.MICROPYTHON)
+
+
+def test_default_core_report_does_not_claim_an_oracle_fallback(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    core = tmp_path / engines.LYPNING
+    core.write_bytes(b"mock artifact")
+    monkeypatch.setattr(engines, "find", lambda name: core)
+    monkeypatch.setattr(engines, "run", lambda *a, **k: SimpleNamespace(returncode=0, stderr=""))
+    monkeypatch.setattr(gate, "is_static", lambda p: (True, "measured test fixture"))
+    monkeypatch.setattr(gate, "_needed", lambda p: ([], True))
+    monkeypatch.setattr(gate, "text_bytes", lambda p: (1, "test fixture"))
+    monkeypatch.setattr(gate, "_trace", lambda *a: {"opens": None, "note": "unmeasured test fixture"})
+    report = gate.gate()
+    assert report.binary == str(core)
+    assert not any(c.name == "target" for c in report.checks)
+    assert "gated lypning instead" not in gate.render(report)
+
+
 def test_the_rust_core_is_measured_against_its_own_budget():
     # Two runtimes with different jobs: the lypning-mp byte budget is not a
     # verdict on the Rust core, and reporting it as one would invent a number
