@@ -20,6 +20,48 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 > issues, and `#46` and `#47` were later taken by unrelated pull requests.
 > The commit link is the one that resolves.
 
+**2026-09-14** — the serving stack moves subset legality by more than the adapter does (branch `claude/nemotron-lora-pipeline-1zczi2`)
+
+- **v2 run 1: context distillation, and a second null.** `nt sample --hinted`
+  draws with the engine's live refusal and a matching `COOKBOOK` pair in the user
+  turn, and trains on the bare prompt. Correctness `40.71% → 44.55%`, **+3.84pp**
+  95% CI [+0.80, +7.50], McNemar p=1.0000 — bootstrap fires, McNemar does not, no
+  win under §3 for the second time. Legality **ΔSLR −0.21pp** 95% CI [−3.19,
+  +2.67], MDE +3pp not met. Gates all pass: correctness +3.71pp, import retention
+  1.06×, **tokens/program −24.4%**.
+- **And the number that matters is the null.** The same base weights through two
+  kernels — `fla-0.5.2` against the `torch-reference` fallback the Hopper
+  backward bug forces — differ by **ΔSLR +1.57pp** 95% CI [−0.51, +3.89], while
+  correctness moves −0.14pp. Comparing the hinted arm against the stored `fla`
+  base would have read about +1.2pp: a spurious improvement of the wrong sign,
+  manufactured entirely by a kernel swap. The matched control was bought for
+  $5.90 on a decision taken before any number was read, and it is the only reason
+  this reports a null. **The serving stack is now a precondition for the legality
+  endpoint, like the engine fingerprint** — and legality is the more fragile
+  measurement: the same swap that moved it 1.57pp moved correctness 0.14pp.
+- **Two silent wrong answers, found on-policy over 2,360 model-written programs
+  and unreachable from any of the 6,321 corpus programs.** `'a' in d.keys()`
+  raised `TypeError: argument of type 'dict_keys' is not iterable` where CPython
+  answers `True` — `contains` had no `DictView` arm, so every view fell to the
+  generic tail at exit 1, which the dispatcher never retries. Now served: `keys`
+  is the dict's own lookup, `values` and `items` scan with `elem_eq`, sixteen
+  shapes differential-tested with fifteen exact and the sixteenth a correct
+  `nan-identity` refusal. And `print(__file__)` raised `NameError` where CPython
+  prints the path; refused rather than bound, because binding it needs the
+  invocation's path at every entry point and would then be wrong under `-c`.
+- **A completion that spent the whole decode budget was being scored as wrong
+  rather than cut.** 90 completions across three arms hit the 2,048-token cap and
+  none passed, recorded as `syntax-error` (57) and `wrong-output` (31). The cap is
+  not neutral: base 4.3%, tuned-unhinted 1.9%, tuned-hinted 1.4% — a fine-tune
+  that makes the model terser hits it less, so the confound runs the same way the
+  treatment does. `nt grade` now derives truncation from the token count and the
+  header's budget and counts it under its own name; the hinted arm's
+  `syntax-error` count falls 15 → 2 and `pass@1` does not move.
+- Bytes: `lypning` 1,142,992 (**9 blocks**), `lypning-l` 1,323,216 (**11
+  blocks**). `conformance` over the 6,321 corpus programs loaded this date:
+  MISMATCH **0** on every arm, monotone violations **0**, routing UNSAFE **0**.
+  Spend $23.08.
+
 **2026-09-14** — `lypning-l` had not compiled since #63, and two silent wrong answers were hiding behind the stale binary (branch `claude/nemotron-lora-pipeline-1zczi2`)
 
 - **The capability build was broken on `main` for nine days.** #63 added

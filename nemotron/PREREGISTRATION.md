@@ -797,3 +797,95 @@ seeds, per-seed ΔSLR, and the spread quoted with the point estimate.
 
 **Nothing in 7f runs without explicit authorisation.** The rules in 7a–7e are
 in force for whatever runs next regardless of whether 7f is ever funded.
+
+---
+
+## 8. v2 run 1, recorded 2026-09-14: context distillation, and a confound larger than the effect
+
+Registered in §7, run the same day, $23.08. **No win, and the interesting number
+is not the verdict.**
+
+### What was done
+
+§7f's first line item — hinted sampling → unhinted training. The draw got the
+engine's live refusal for that case plus a matching worked `COOKBOOK` pair; the
+SFT row and the eval kept the bare prompt. 4,640 draws over the same 290-case
+pool as the run of record, k=16, `--keep 4`, $11.35. Trained on one H200, 48
+steps over 3 epochs, 116.7M trainable parameters, $5.53. Both arms generated
+in-container on one stack; grading and both endpoints cost $0.
+
+### The result
+
+```
+correctness, the §3 rule, 70 non-degenerate (PRIMARY)
+  40.71% -> 44.55%   +3.84pp  95% CI [+0.80, +7.50]   McNemar p=1.0000   no win
+
+subset legality, the §7b rule, 2,360 programs over 74 cases
+  SLR 44.13% -> 43.83%   dSLR -0.21pp  95% CI [-3.19, +2.67]   MDE +3pp NOT met
+  gate A  correctness   41.64% -> 45.35%  +3.71pp     PASS
+  gate B  import retention  94.09% -> 100.00%  1.06x  PASS
+  gate C  tokens/program   473 -> 358  -24.4%         PASS
+```
+
+Bootstrap fires, McNemar does not, exactly as in §6. The legality leg is a null
+for the second time, by a different route.
+
+### The finding, which is about the instrument
+
+The same base weights, served through two kernels — `fla-0.5.2` and the
+`torch-reference` fallback forced by the Hopper backward bug — differ by:
+
+```
+dSLR +1.57pp  95% CI [-0.51, +3.89]      (correctness: -0.14pp)
+```
+
+**The serving stack moves subset legality by more than the adapter does.** Had
+the hinted arm been compared against the stored `fla` base arm rather than a
+control regenerated on its own kernel, the delta would have read about +1.2pp —
+a spurious improvement of the wrong sign, entirely manufactured by a kernel
+swap. The decision to spend $5.90 on a matched control was taken before any
+number was read, and it is the only reason this run reports a null instead of a
+win.
+
+Two consequences for every future run:
+
+1. **The serving stack joins the engine fingerprint as a precondition, not a
+   note.** §7d froze the engine because SLR is defined relative to what the
+   binary accepts. This says the same of the kernels: SLR is also defined
+   relative to how the tokens were produced. `stats.comparability` already
+   records `backend.base_url`; what this adds is that a mismatch there is
+   disqualifying for the legality endpoint specifically, at a magnitude that
+   swamps a real effect.
+2. **Correctness and legality have different noise floors.** The kernel swap
+   moved correctness by −0.14pp and legality by +1.57pp. Legality is the more
+   fragile measurement, because a token-level difference changes *which
+   construct* a program reaches for, while correctness survives it. An endpoint
+   that is more sensitive needs more control, not less.
+
+### What it says about the technique
+
+Context distillation changed what the model writes and not whether the engine
+will run it. Of the 61 rewrite cases both sampling runs solved, only 19 kept an
+identical program and 28 differed substantially; the tuned model's programs are
+**24.4% shorter** and it hits the decode cap a third as often (16/1184 against
+51/1184). The by-kind vector moves a lot — `class` refusals −22, `module-attr`
++43 — and nets to nothing.
+
+So the intervention worked on the model and not on the metric. Combined with §6
+of `REVIEW.md` — the case prompt already names the refusal, so the constraint was
+never absent — the reading is that **the format is the binding constraint, not
+the supervision**. *Refused program + refusal line → rewrite* is a repair-loop
+prompt, and every remaining lever in §7f (the unconditioned task bank, RLVR,
+three seeds) is worth less than fixing that first. §7e's task bank moves from
+"registered for v2" to the next thing to build.
+
+### Spend
+
+| | |
+|---|---|
+| hinted sampling, 4,640 draws | $11.35 |
+| training + tuned generation, 66 min H200 | $5.53 |
+| matched control arm, 71 min H200 | $5.90 |
+| two launches that died in phase 0/1, before the 55 GB pull | ~$0.30 |
+| grading, both endpoints, the null test | $0.00 |
+| **total** | **$23.08** |
