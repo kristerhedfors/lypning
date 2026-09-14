@@ -479,6 +479,7 @@ no runner or no pin shows up there as a hole rather than as silence.
 | `docs/VERIFICATION.md` | the QA spine: every contract as a command, its expected output from a dated run of record, the failure text a regression prints, and the test that pins it |
 | `docs/LYPNING.md` | the design: the measurement, the subset, the refusals, the classifier, the dispatcher, the commit barrier |
 | `docs/SUBSET.md` | what the subset must execute, entry by entry |
+| `docs/DIFFERENCES.md` | how `lypning` and `lypning-l` differ from Python: the architecture, the names each one resolves, and the refusals that skip the larger engine |
 | `docs/COOKBOOK.md` | unsupported Python, rewritten — what to type when an engine refuses |
 | `docs/CAPTURE.md` | the two capture feeds, the harvest, and the privacy rules |
 | `docs/HARNESSES.md` | wiring capture into opencode and the OpenHands SDK: what each install writes, what it refuses to write, and what is verified against a real install |
