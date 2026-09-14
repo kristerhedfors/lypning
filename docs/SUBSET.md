@@ -25,32 +25,18 @@ prints the variant's own name; every `-m` is `cli: option -m`; there is no REPL.
 
 ## 3. What the engines implement
 
-### 3.1 Syntax
+The surface — the syntax each engine parses, the builtins and exception names
+that resolve, the modules each one serves and the four it serves only in part —
+is `docs/DIFFERENCES.md`, and it is there rather than here because it is a copy
+of tables in the crate and a copy needs a test: every list on that page is held
+to `builtins.rs`, `modules.rs` and `route.rs` by `tests/test_differences.py`.
+This table was the second copy, and it named `collections` and `pathlib` as the
+whole of what the larger engine adds for as long as it took six more
+capabilities to land.
 
-Literals, operators with CPython's precedence, chained comparison, slicing
-with a step, calls with `*args`/`**kwargs`, assignment and star-unpacking,
-`if`/`for`/`while`, `def` with defaults and closures, `lambda`, imports,
-`with`, `try`/`except`/`finally`, `raise`, `assert`, comprehensions, generator
-expressions, f-strings with format specs (`parse.rs`). `class`, decorators,
-`yield` and `async` are parse-time refusals and a route to `cpython`; `match`
-is a SyntaxError on every variant, exit 1 (`docs/VERIFICATION.md` §C5).
-
-### 3.2 Builtins
-
-`builtins.rs:BUILTINS` is the table, read by the router; `input()` is in it. A
-name CPython has and the table lacks is `unsupported: builtin: <name>`; a name
-neither has keeps CPython's `NameError` and exit 1 (`err.rs:CPYTHON_BUILTINS`).
-
-### 3.3 Stdlib
-
-`modules.rs:MODULES` is one table per variant; `route.rs:CAPS` maps each
-`cap-*` feature to the module it serves.
-
-| variant | modules | source |
-|---|---|---|
-| `lypning` | `sys`, `os`, `os.path`, `posixpath`, `io`, `json`, `random` (seeded-integer subset, MT19937 exactly) | `modules.rs`, `json.rs`, `random.rs` |
-| `lypning-l` | the above plus `collections` (`Counter`, `defaultdict`) and `pathlib` (`Path`) | `collections.rs`, `pathlib.rs` |
-| `cpython` | everything else, one spawn later | — |
+What stays here is the part that is not a list of names: the semantics those
+names must have exactly (§6), what CPython does not agree with itself about
+(§6a), and the contract for leaving the subset (§7).
 
 ## 4. Build order
 
@@ -86,9 +72,9 @@ divergence, and every row is **exact, or exit 90** — never approximate.
 | exception messages | verbatim: `invalid literal for int() with base 10: 'abc'`, `KeyError` printing as `'missing'`; where CPython's own text differs across 3.9–3.13 it is worded for the **host** (§6a) | `except-generic-message`, `json-keyerror-guard`, `min-max-of-an-empty-iterable-say-what-cpython-says` | exact |
 | exception hierarchy | `JSONDecodeError` ⊂ `ValueError`; `FileNotFoundError` ⊂ `OSError` with `.errno == 2` | `json-bad-input-exit`, `file-missing-raises` | exact |
 | `json.dumps` defaults | `ensure_ascii=True` (so `"åäö"` → `å…`), separators `", "` / `": "`, `indent` emits no trailing spaces | `json-dumps-unicode`, `stdin-json-pretty` | exact (`json.rs`) |
-| `csv.writer` | terminates rows with `\r\n` and doubles embedded quotes | `csv-writer-quoting` | exit 90 `module: import csv` → cpython |
+| `csv.writer` | terminates rows with `\r\n` and doubles embedded quotes | `csv-writer-quoting` | `lypning` exits 90 `module: import csv`; `lypning-l` serves the two readers and exits 90 `module-attr: csv.writer` → cpython |
 | text I/O | universal newlines on read; `\n` written as `\n` (no translation); `sys.stdout.write` adds nothing | `stdin-grep-substring` | exact |
-| `re` | leftmost, non-POSIX-longest, backtracking; `match` anchors at 0 while `search` does not; `\d \w \s` are **unicode-aware** by default | `re-match-vs-search`, `stdin-regex-extract` | exit 90 `module: import re` → cpython |
+| `re` | leftmost, non-POSIX-longest, backtracking; `match` anchors at 0 while `search` does not; `\d \w \s` are **unicode-aware** by default | `re-match-vs-search`, `stdin-regex-extract` | `lypning` exits 90 `module: import re`; `lypning-l` serves the slice of the pattern language `re.rs` names and refuses the rest |
 | exit codes | clean end → 0; `sys.exit(n)` → n; uncaught exception → 1 with a traceback on stderr and nothing extra on stdout | `stdin-exit-code-nonzero`, `uncaught-exception-traceback` | exact |
 | iteration over a file/stdin | yields lines *with* their `\n`, lazily (so `break` after 2 lines does not read the rest) | `stdin-head-n` | exact |
 | `random` | a seeded stream is CPython's MT19937 bit for bit; an unseeded draw exits 90 (`random.rs`) | `random-seeded` | exact or refuse |
