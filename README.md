@@ -5,8 +5,10 @@
 `lypning` optimizes the interpreter layer underneath a coding harness: it runs
 a Python program on the cheapest interpreter that can actually run it. The
 architecture is a *mixture of Pythons* — a **spectrum** of from-scratch Python
-subsets written in Rust, built from one crate at two sizes (`lypning`, budgeted
-8 blocks; `lypning-l`, 32 blocks — `gate.VARIANT_BLOCK_BUDGET`), and the real
+subsets written in Rust, built from one crate at two sizes (`lypning` and
+`lypning-l`, budgeted 9 and 32 device blocks on `x86_64-unknown-linux-musl` —
+`gate.VARIANT_BLOCK_BUDGET` is keyed by target, because a block count is a
+property of code AND toolchain AND target), and the real
 CPython for everything they refuse — with a classifier that asks the Rust core's
 own parser which one, per program. The subset is sized not to Python but to the
 one-liners a coding agent actually types, the only reason this is affordable.
@@ -20,6 +22,13 @@ Every tier refuses the same way: exit `90`, one line on stderr, nothing on
 stdout. That is what makes the three interchangeable, and what makes a wrong
 route cost one wasted process spawn instead of a wrong answer. `docs/PAPER.md`
 is the write-up, the baselines that beat us included.
+
+The other direction — teaching a *model* to write the subset, so fewer programs
+need refusing at all — is measured in [§7b](#7b-teaching-a-model-the-subset--and-what-the-measurement-said):
+a rank-16 LoRA moved the held-out pass rate **+4.46pp** [+1.52, +7.86] against a
+same-stack control, and the pre-registered rule still returns **no win**, because
+the effect was broad rather than concentrated. The rule was fixed before the
+adapter existed and the result is written back against it.
 
 ## How a program reaches an interpreter
 
@@ -367,12 +376,70 @@ run `git`. Hooks never block and never fail a session: every one prints
 (`CLAUDE.md` invariant 5; `docs/VERIFICATION.md` §C9). `LYPNING_CAPTURE=0`
 disables both feeds; `LYPNING_HARVEST=0` keeps capturing, stops publishing.
 
-What this tree loads, from one run — `lypning corpus --stats`, 2026-09-04,
-commit 437056c, Darwin arm64: 3688 entries (hook 50.5%, transcript 26.9%, shim
-18.2%, seed 4.4%); `lypning status` that run put `lypning` at 818,080 B and
-`lypning-l` at 867,744 B, 7 blocks each. `hook` and `transcript` are largely
-what sessions *working on lypning* typed, so a build order read off the corpus
-is partly a mirror; the split is printed so it can be read that way.
+What this tree loads, from one run — `lypning corpus --stats`, 2026-09-14,
+commit a33a0c9, Linux x86_64-unknown-linux-musl: **9064 entries** (hook 79.8%,
+transcript 10.9%, shim 7.4%, seed 1.8%); `lypning status` that run put `lypning`
+at 1,142,992 B / 9 blocks and `lypning-l` at 1,319,120 B / 11 blocks. `hook` and
+`transcript` are largely what sessions *working on lypning* typed, so a build
+order read off the corpus is partly a mirror; the split is printed so it can be
+read that way.
+
+**Publishing and deriving are two steps, and only the first is automatic.** The
+Stop hook publishes sightings every session; `lypning harvest` — "run
+deliberately, never from a hook" — is what turns them into `corpus.jsonl`. On
+2026-09-13 that second step had not been run in some time and **7,243 published
+programs were sitting underived**, so every tool in the tree quoted 3,688 loaded
+against a corpus that was really 8,901. Folding them put 5,376 unseen programs in
+front of the engine and `lypning conformance` answered with **19 MISMATCHes** —
+nineteen silent wrong answers, none of them a regression, all of them defects a
+stale denominator had never exercised. They are closed (`CHANGELOG.md`,
+2026-09-13); the lesson worth keeping is that the corpus only argues with the
+engine after somebody runs `lypning harvest`.
+
+## 7b. Teaching a model the subset — and what the measurement said
+
+The engine refuses what it does not implement, and a refusal costs a CPython
+spawn. So: can a model be taught to write the subset instead? `nemotron/` is the
+apparatus that answers that with a number rather than an impression — a frozen
+held-out split, a pre-registration written before any adapter existed, and a
+decision rule fixed in advance.
+
+**Run of record, 2026-09-14.** A rank-16 LoRA over Qwen3.8-27B, trained on 318
+rejection-sampled examples (222 of them the rewrite task) that each provably
+reproduce CPython's output and provably run on the engine. Both arms generated
+in **one container** — same `transformers`, torch, kernels, H200, sampling dict,
+the adapter the only difference — and graded by one engine, fingerprint
+`9d412a3131dc6a8a`.
+
+| primary denominator, 70 non-degenerate held-out cases | |
+|---|---|
+| base arm | 41.16% |
+| tuned arm | 45.62% |
+| paired delta | **+4.46pp**, 95% CI [+1.52, +7.86] |
+| bootstrap leg | **fires** |
+| exact McNemar leg | does not — gained 2, lost 2, p = 1.0000 |
+| **pre-registered verdict** | **no win** |
+
+**The two legs disagree, and `nemotron/PREREGISTRATION.md` §3 registered in
+advance that the disagreement would be the finding.** It is: the adapter shifted
+per-case rates *broadly* — 16 of 70 cases improved, 6 got worse — rather than
+acquiring cases. Only two crossed from never-solved to solved.
+
+Nothing was traded for anything: the rewrite slice went +4.04pp and the
+**ceiling** slice, which exists to catch a model that learns "never import" and
+rewrites what it should leave alone, went **+8.04pp**.
+
+Two things this does *not* say. It does not say the adapter is inert — an
+interval excluding zero is evidence of something. And it does not say the rule
+was tuned to produce this answer: the discordance definition was amended on
+2026-09-13, **before the data existed**, to gain power against a *concentrated*
+effect; the effect came out broad instead, and the superseded statistic gives
+p = 0.0525, also failing. The prediction behind the amendment was wrong, it
+changed no verdict, and that is checkable only because it was dated first.
+
+Whole run: **$28.70**. The apparatus, the pre-registration and its outcome are
+in `nemotron/` — §6 of `PREREGISTRATION.md` is the result written back against
+the rule it was measured by.
 
 ## 8. Credit
 
