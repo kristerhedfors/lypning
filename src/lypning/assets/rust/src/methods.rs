@@ -427,10 +427,9 @@ fn kwget(kw: &[(Rc<str>, Value)], name: &str) -> Option<Value> {
 /// reason this is a per-method allow-list and not a per-type flag.
 fn accepts_kw(ty: &str, name: &str) -> bool {
     match ty {
-        "str" => matches!(
-            name,
-            "split" | "rsplit" | "splitlines" | "encode" | "expandtabs" | "format" | "format_map"
-        ),
+        // One table owns keyword support. A second allow-list here used to
+        // reject replace(count=) after str_kw_allowed had accepted it.
+        "str" => str_kw_allowed(name).map_or(true, |allowed| !allowed.is_empty()),
         "bytes" => matches!(name, "decode" | "split" | "rsplit" | "splitlines" | "hex"),
         "list" => name == "sort",
         "dict" => name == "update",

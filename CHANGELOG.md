@@ -33,6 +33,8 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 - Fix version-sensitive unpacking, index and numeric error messages; stop
   non-starred unpacking after one excess item instead of draining iterators.
   Add Python 3.14 package CI and native compatibility regression checks.
+- Consolidate string keyword admission so the existing Python 3.13+
+  `str.replace(count=...)` implementation is not blocked by a stale second table.
 - Repair embedding examples and C++/Go/Swift host identity handling for the
   linked L variant; fallback demonstrations use genuinely unsupported source
   and retain their output, exit-status and no-duplicate-side-effect assertions.

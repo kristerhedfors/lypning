@@ -15,6 +15,16 @@ from lypning import engines
 
 CASES = [
     (
+        "replace-count-keyword",
+        "for text, old, new in (('a-b-b','b','x'), ('åå','å','ö'), ('ab','','-')):\n"
+        "    for count in (-2,-1,0,1,2,99,True,False,None):\n"
+        "        try:\n"
+        "            print(text.replace(old,new,count=count))\n"
+        "        except TypeError as e:\n"
+        "            print(type(e).__name__, e)\n"
+        "        print(text.replace(old,new,1))\n",
+    ),
+    (
         "unpack-exact-versus-iterable",
         "for xs in ([1,2,3], (1,2,3), {1:0,2:0,3:0}, 'abc', range(3), iter([1,2,3])):\n"
         "    try:\n"
