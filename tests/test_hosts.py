@@ -312,20 +312,15 @@ def test_quickstart(host: Host, probe: Probe, builds: _Builds, lypning_lib, tmp_
     assert b"unsupported" not in r.stderr, "a refusal leaked to stderr:\n" + shown
 
 
-def test_c_contract_example(lypning_lib, tmp_path) -> None:
-    """The demonstration must exercise a real refusal on the linked variant.
-
-    Quickstarts accept arbitrary source and cannot catch stale EXPECT_REFUSED
-    fixtures: the C example used re.findall after the L library implemented it.
-    Build this test from source, link the exact library the fixture loaded,
-    and ensure its fallback really received the sample stdin.
-    """
-    cc = shutil.which("cc", path=_BUILD_ENV.get("PATH"))
+def _run_contract_example(lang: str, tmp_path):
+    """Build the contract demo against the exact library the fixture loaded."""
+    compiler, standard = ("cc", "c11") if lang == "c" else ("c++", "c++17")
+    cc = shutil.which(compiler, path=_BUILD_ENV.get("PATH"))
     if cc is None:
-        pytest.skip("C contract example needs cc")
-    binary = tmp_path / "c-contract"
-    command = [cc, "-std=c11", "-Wall", "-Wextra", "-Wpedantic",
-               "-I%s" % _incdir(), str(ASSETS / "examples" / "c" / "embed.c"),
+        pytest.skip("%s contract example needs %s" % (lang, compiler))
+    binary = tmp_path / (lang + "-contract")
+    command = [cc, "-std=" + standard, "-Wall", "-Wextra", "-Wpedantic",
+               "-I%s" % _incdir(), str(ASSETS / "examples" / lang / ("embed." + lang)),
                "-L%s" % _libdir(), "-Wl,-rpath,%s" % _libdir(), "-llypning",
                "-o", str(binary)]
     built = subprocess.run(command, env=_BUILD_ENV, capture_output=True,
@@ -336,6 +331,13 @@ def test_c_contract_example(lypning_lib, tmp_path) -> None:
     got = subprocess.run([str(binary)], cwd=cwd, env=_BUILD_ENV,
                          capture_output=True, timeout=PROBE_TIMEOUT)
     assert got.returncode == 0, (got.returncode, got.stdout, got.stderr)
+    assert list(cwd.iterdir()) == [], "the example left its demonstration file behind"
+    return got
+
+
+def test_c_contract_example(lypning_lib, tmp_path) -> None:
+    """Quickstarts cannot detect a stale EXPECT_REFUSED demonstration case."""
+    got = _run_contract_example("c", tmp_path)
     assert b"all assertions held\n" in got.stdout
     fallback = got.stdout.split(b"== outside the subset", 1)[1].split(b"\n== ", 1)[0]
     assert b"refused   module: import subprocess\n" in fallback
@@ -343,4 +345,10 @@ def test_c_contract_example(lypning_lib, tmp_path) -> None:
     speech = b"the quick brown fox jumps over the lazy dog the fox\n"
     vowels = sum(c in b"aeiou" for c in speech)
     assert ("stdout    %d\n" % vowels).encode() in fallback
-    assert list(cwd.iterdir()) == [], "the example left its demonstration file behind"
+
+
+def test_cpp_contract_example(lypning_lib, tmp_path) -> None:
+    """Refusal lines and runs_in_process must name the linked variant."""
+    got = _run_contract_example("cpp", tmp_path)
+    assert b"CONTRACT BROKEN" not in got.stderr
+    assert b"module: import subprocess\n" in got.stdout

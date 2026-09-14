@@ -170,7 +170,9 @@ static PROGRAMS: &[Program] = &[
     },
     Program {
         label: "outside the subset — the same stdin, answered by CPython",
-        src: "import re, sys\nprint(len(re.findall(r\"[aeiou]\", sys.stdin.read())))\n",
+        // A deliberate refusal even when built against the larger variant;
+        // this import does not launch a subprocess.
+        src: "import subprocess, sys\nprint(sum(c in 'aeiou' for c in sys.stdin.read()))\n",
         args: &[],
         stdin: Some(SPEECH),
         filesystem: true,
@@ -432,10 +434,11 @@ fn answer(p: &Program) {
 
         // Two things the route could not have told the host, both of which a
         // harness author meets on day one.
-        if routed.engine == Engine::Lypning {
+        if routed.engine.as_str() == lypning::SELF {
             println!(
-                "  note      routing said lypning; only running it could tell. One parse cannot\n\
-                 \x20           see a policy the host set — that is what the run is for"
+                "  note      routing said {}; only running it could tell. One parse cannot\n\
+                 \x20           see a policy the host set — that is what the run is for",
+                lypning::SELF
             );
         } else if p.route_onward && routed.engine != Engine::CPython {
             println!(

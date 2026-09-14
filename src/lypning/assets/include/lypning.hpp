@@ -202,6 +202,9 @@ inline std::uint32_t abi_version() noexcept { return ::lypning_abi_version(); }
 /// The runtime version, e.g. "0.1.0" — the string `lypning --version` prints.
 inline std::string version() { return impl::own(::lypning_version()); }
 
+/// The variant implemented by the linked library; the pointer has static lifetime.
+inline const char *engine_name() noexcept { return ::lypning_engine_self(); }
+
 /// Throw unless the library we are linked against speaks the ABI this header
 /// describes. Worth one call at startup if you `dlopen` instead of linking: a
 /// mismatch there is a deployment bug, which is what `error` is for.
@@ -218,7 +221,7 @@ inline void require_abi() {
 /// strings, and a harness that routes a program keeps the answer far longer
 /// than it wants to keep a pointer.
 struct Route {
-    /// Exactly one of "lypning", "lypning-mp", "cpython".
+    /// A Rust spectrum variant's name or "cpython".
     std::string engine;
     /// The construct that pushed it past lypning ("module", "async"), or "".
     std::string kind;
@@ -233,7 +236,7 @@ struct Route {
     /// Can this run in our own process? A prediction, not a promise: only
     /// running it can catch the rest, so `run()` may still refuse — and when it
     /// does, the `Result` is the truth and this was merely cheap.
-    bool runs_in_process() const noexcept { return engine == "lypning"; }
+    bool runs_in_process() const noexcept { return engine == engine_name(); }
 };
 
 /// Route `src`. Throws `error` if it is not UTF-8 — so is a program CPython
@@ -280,7 +283,7 @@ public:
     const std::string &stdout_bytes() const noexcept { return stdout_; }
 
     /// The program's stderr: its traceback, or after a refusal exactly the one
-    /// `lypning: unsupported: <kind>: <detail>` line the binary would print.
+    /// `<engine>: unsupported: <kind>: <detail>` line the binary would print.
     const std::string &stderr_bytes() const noexcept { return stderr_; }
 
     /// The refusal's two halves, so you can branch on the kind without parsing

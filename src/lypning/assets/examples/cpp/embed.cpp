@@ -76,8 +76,9 @@ static void check_refusal(const lypning::Result &r) {
     must(r.exit_code() == LYPNING_UNSUPPORTED_EXIT, "a refusal must exit 90");
     must(r.stdout_bytes().empty(), "a refusal must have written nothing to stdout");
     must(!r.committed(), "a refusal must have committed nothing");
-    must(r.stderr_bytes() == "lypning: unsupported: " + r.kind() + ": " + r.detail() + "\n",
-         "a refusal must be one `lypning: unsupported: <kind>: <detail>` line");
+    must(r.stderr_bytes() == std::string(lypning::engine_name()) + ": unsupported: "
+         + r.kind() + ": " + r.detail() + "\n",
+         "a refusal must be one `<engine>: unsupported: <kind>: <detail>` line");
 }
 
 /* --- the program a harness wants run, and everything it decides about it --- */
@@ -272,6 +273,8 @@ int main() {
     // A version mismatch is a deployment bug, and the one thing in this file
     // that may throw. Everything about the programs below is a value.
     lypning::require_abi();
+    must(lypning::route("pass").runs_in_process(),
+         "an accepted route must identify the linked library's variant");
 
     const Program programs[] = {
         {"print(sum(range(10)))", {}, "", true, "plain arithmetic"},
@@ -279,8 +282,8 @@ int main() {
          "stdin, handed over as bytes"},
         {"import sys;print(sys.argv[1:])", {"a", "b c"}, "", true, "argv, no shell in between"},
         {"print(1/0)", {}, "", true, "the program's own failure"},
-        {"import re;print(re.findall(r'\\d+','a1b22'))", {}, "", true, "outside the subset"},
-        {"print(f\"{3*7=}\")", {}, "", true, "outside the subset"},
+        {"import subprocess;print(1)", {}, "", true, "outside every variant's subset"},
+        {"print(f\"{3*7=}\")", {}, "", true, "debug f-string"},
         {"print(open('/etc/hosts').read().strip())", {}, "", false, "filesystem denied"},
         {"while True: pass", {}, "", true, "runaway, stopped by the step limit"},
     };
@@ -312,7 +315,7 @@ int main() {
             // with a stack trace is the program's own answer, and re-running it
             // on CPython would only repeat it (and any side effect with it).
             ++in_process;
-            row.answered_by = "lypning";
+            row.answered_by = lypning::engine_name();
             row.why = (r.status() == lypning::Status::Ok) ? p.note : "traceback";
             row.exit_code = r.exit_code();
             // A traceback's last line is the answer; its first is boilerplate.
@@ -358,7 +361,7 @@ int main() {
 
     std::printf("\nwhy the answer came from where it did\n");
     for (const Row &r : rows)
-        if (r.answered_by != "lypning")
+        if (r.answered_by != lypning::engine_name())
             std::printf("  %-44s %s\n", r.program.c_str(), r.why.c_str());
 
     std::printf("\n%d answered in-process, %d fell onward to CPython, %d refused by this host's "
