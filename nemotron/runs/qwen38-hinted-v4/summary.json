@@ -79,10 +79,11 @@
     "refused:set-order": 1,
     "refused:str-method": 4,
     "refused:type": 22,
-    "runtime-error": 14,
-    "syntax-error": 15,
+    "runtime-error": 13,
+    "syntax-error": 2,
     "timeout": 3,
-    "wrong-output": 352
+    "truncated": 16,
+    "wrong-output": 350
   },
   "failures_by_reason": {
     "exit": 30,

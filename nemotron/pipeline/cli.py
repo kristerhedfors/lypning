@@ -655,12 +655,27 @@ def cmd_grade(args: argparse.Namespace) -> int:
             "started_at": __import__("pipeline.evaluate", fromlist=["x"])._now()}
     write_json(run_dir / "meta.json", meta)
 
+    # A completion that spent the whole decode budget was CUT, not finished, and
+    # the replay path has no `finish_reason` to say so — only the token count and
+    # the budget, which together say it exactly. Recorded because the cap is not
+    # neutral between arms and the asymmetry runs the same way the treatment
+    # does: a fine-tune that makes the model terser hits the cap less often, so
+    # scoring a truncation as `syntax-error` credits the tuned arm for the
+    # control's verbosity. Measured 2026-09-14 over the three graded arms: base
+    # 51/1184 (4.3%), tuned 23/1184 (1.9%), hinted 16/1184 (1.4%), and NONE of
+    # the 90 passed. The verdict is unchanged — a program that does not fit the
+    # budget did fail — but it is counted under its own name so the rate is on
+    # the face of the summary instead of buried in two other categories.
+    cap = int(sampling.get("max_tokens") or 0)
+
     for i, c in enumerate(comps, 1):
         case = cases[c["case_id"]]
         program, how = extract_program(c.get("text") or "", c.get("reasoning"))
+        used = int(c.get("completion_tokens") or 0)
+        truncated = bool(cap and used >= cap)
         rec = {"run_id": args.run_id, "case_id": c["case_id"], "sample": c.get("sample", 0),
                "how": how, "program": program or "",
-               "completion_tokens": c.get("completion_tokens", 0),
+               "completion_tokens": used, "truncated": truncated,
                "cost_usd": 0.0, "ts": meta["started_at"]}
         if program is None:
             rec.update(passed=False, reason="no-code", detail="", failure_category="no-code")
@@ -668,6 +683,10 @@ def cmd_grade(args: argparse.Namespace) -> int:
             # The same scorer the eval runs, so that a replay of stored
             # completions cannot report a different pass rate than the run did.
             rec.update(score_verdict(case, program, run_test(case["test"], program)))
+        if truncated and not rec.get("passed"):
+            was = rec.get("failure_category") or "?"
+            rec["failure_category"] = "truncated"
+            rec["detail"] = "cut at the %d-token budget; would have scored %s" % (cap, was)
         append_jsonl(run_dir / "attempts.jsonl", rec)
         if i % 200 == 0:
             print("  graded %d/%d" % (i, len(comps)), flush=True)
