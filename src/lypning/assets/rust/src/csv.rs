@@ -309,17 +309,21 @@ fn check_chars(d: &Dialect) -> R<()> {
 ///
 /// The corpus mine (2026-09-06) says what this has to accept: 15 of the 17
 /// corpus readers read a file object from `open(...)` and 2 read `sys.stdin`.
-/// A list of strings is the other shape `csv.reader` accepts and it is NOT
-/// served — it appears in the corpus only inside two capture-harness programs
-/// that are unroutable for other reasons, and guessing at a shape the mine does
-/// not show is how a capability grows surface nobody measured.
+/// Lists, tuples and strings use the existing lazy in-memory iterators. A
+/// list must remain live: appends and replacements before the next pull are
+/// visible. Each item is one input LINE, not a chunk to split or concatenate;
+/// in particular a bare string supplies one character per line, as in CPython.
+/// Generators and shared iterators still refuse: wrapping a file iterator must
+/// not bypass `next_line`'s stale-file guard, and sharing a list iterator would
+/// also inherit its independently observable exhaustion state.
 ///
 /// The three checks below are CPython's own, at CPython's own moment: `iter()`
 /// of a closed file IS the `ValueError`, raised from the `csv.reader(...)` call
 /// and not from the first row. The other two are refusals, and a refusal may
 /// always be earlier than the error it stands for.
-fn input_lines(v: &Value) -> R<Iter> {
+fn input_lines(it: &mut Interp, v: &Value) -> R<Iter> {
     match v {
+        Value::List(_) | Value::Tuple(_) | Value::Str(_) => it.make_iter(v.clone()),
         Value::File(f) => {
             let fo = f.borrow();
             if fo.closed {
@@ -351,7 +355,7 @@ fn input_lines(v: &Value) -> R<Iter> {
         // this engine invented.
         Value::Module("sys.stdin") => Ok(Iter::Stdin),
         other => Err(refuse(&format!(
-            "csv.reader() over a {} (only a file object and sys.stdin are served)",
+            "csv.reader() over a {} (only a file, sys.stdin, list, tuple or str is served)",
             type_name(other)
         ))),
     }
@@ -382,7 +386,17 @@ fn next_line(it: &mut Interp, lines: &mut Iter) -> R<Option<Rc<str>>> {
             "an input line that is a {} (CPython's csv.Error names a type this engine does not)",
             type_name(&other)
         ))),
-        None => Ok(None),
+        None => {
+            // A Python list iterator stays exhausted even if its list grows
+            // later. Do not change the shared/core iterator implementation to
+            // gain this L-only surface: replace this reader's private cursor
+            // with a permanently empty one. File iterators, unlike list
+            // iterators, can resume after seek(), so leave those untouched.
+            if matches!(lines, Iter::List(..)) {
+                *lines = Iter::Vec(Vec::new(), 0);
+            }
+            Ok(None)
+        }
     }
 }
 
@@ -645,7 +659,9 @@ pub struct CsvIter {
 }
 
 struct DictState {
-    header: Option<Vec<Value>>,
+    // A supplied list stays shared with its caller, just as csv.DictReader's
+    // fieldnames does. Snapshotting at construction loses later mutations.
+    header: Option<Rc<RefCell<Vec<Value>>>>,
     restkey: Value,
     restval: Value,
 }
@@ -701,7 +717,7 @@ fn dict_row(it: &mut Interp, c: &mut CsvIter) -> R<Option<Value>> {
     if matches!(&c.dict, Some(d) if d.header.is_none()) {
         if let Some(h) = row(it, c)? {
             if let Some(d) = c.dict.as_mut() {
-                d.header = Some(h);
+                d.header = Some(Rc::new(RefCell::new(h)));
             }
         }
     }
@@ -717,7 +733,8 @@ fn dict_row(it: &mut Interp, c: &mut CsvIter) -> R<Option<Value>> {
         Some(d) => d,
         None => return Ok(None),
     };
-    let header = ds.header.as_deref().unwrap_or(&[]);
+    let header = ds.header.as_ref().map(|h| h.borrow());
+    let header = header.as_ref().map_or(&[][..], |h| h.as_slice());
     let mut dict = Dict::new();
     for (i, k) in header.iter().enumerate() {
         match values.get(i) {
@@ -749,13 +766,13 @@ fn reader_value(c: CsvIter, kind: &'static str) -> Value {
 /// thing that may fail at this statement is the dialect and the input's type —
 /// and both are refusals at the one point in a csv program that is furthest
 /// from a committed side effect.
-fn reader(_it: &mut Interp, args: &mut Args, kw: &[(Rc<str>, Value)]) -> R<Value> {
+fn reader(it: &mut Interp, args: &mut Args, kw: &[(Rc<str>, Value)]) -> R<Value> {
     let src = args
         .first()
         .cloned()
         .ok_or_else(|| refuse("csv.reader() with no argument"))?;
     let d = dialect_from(args, kw, 1)?;
-    let lines = input_lines(&src)?;
+    let lines = input_lines(it, &src)?;
     Ok(reader_value(CsvIter { lines, d, p: Parser::new(), dict: None }, "reader"))
 }
 
@@ -769,21 +786,21 @@ fn reader(_it: &mut Interp, args: &mut Args, kw: &[(Rc<str>, Value)]) -> R<Value
 /// `.fieldnames` and `.line_num` are attributes, not methods, and no dict has
 /// them — so `route.rs`'s optimistic method union already stops a program that
 /// reads one, statically, before it runs.
-fn dict_reader(_it: &mut Interp, args: &mut Args, kw: &[(Rc<str>, Value)]) -> R<Value> {
+fn dict_reader(it: &mut Interp, args: &mut Args, kw: &[(Rc<str>, Value)]) -> R<Value> {
     let src = args
         .first()
         .cloned()
         .ok_or_else(|| refuse("csv.DictReader() with no argument"))?;
     let mut rest: Vec<(Rc<str>, Value)> = Vec::new();
-    let mut header: Option<Vec<Value>> = None;
+    let mut header = None;
     let mut restkey = Value::None;
     let mut restval = Value::None;
     for (k, v) in kw {
         match k.as_ref() {
             "fieldnames" => match v {
                 Value::None => {}
-                Value::List(l) => header = Some(l.borrow().clone()),
-                Value::Tuple(t) => header = Some((**t).clone()),
+                Value::List(l) => header = Some(l.clone()),
+                Value::Tuple(t) => header = Some(Rc::new(RefCell::new((**t).clone()))),
                 other => {
                     return Err(refuse(&format!(
                         "csv.DictReader(fieldnames=) as a {}",
@@ -797,7 +814,7 @@ fn dict_reader(_it: &mut Interp, args: &mut Args, kw: &[(Rc<str>, Value)]) -> R<
         }
     }
     let d = dialect_from(args, &rest, 1)?;
-    let lines = input_lines(&src)?;
+    let lines = input_lines(it, &src)?;
     Ok(reader_value(
         CsvIter {
             lines,

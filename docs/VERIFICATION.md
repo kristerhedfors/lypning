@@ -135,6 +135,16 @@ tests/test_build.py::test_the_host_build_is_this_machines_engine_and_installs_un
 tests/test_build.py::test_verify_measures_the_binary_that_was_just_built  tests/test_engines.py::test_refusal_line_is_what_the_build_and_the_embedding_pin
 ```
 ## 3. C3 — Conformance
+
+The CSV in-memory coverage gate is
+`python -m pytest tests/test_csv_grid.py -k memory -q`, after building
+`lypning-l` with `LYPNING_CPYTHON` set to that same Python interpreter.
+The native-answer rows compare raw stdout, stderr and exit status against
+CPython; refusal is a failure in those rows, not a skip. Separate refusal rows
+cover unsupported source/dialect shapes and a late invalid line after staged
+file/directory writes. The full file retains the file/stdin, reader-protocol
+and static writer-refusal checks. No model output or training run is needed.
+
 **STATEMENT.** Invariant 1: MISMATCH is always a bug. UNSUPPORTED never is.
 `lypning conformance` must end at `MISMATCH 0`; a rising UNSUPPORTED count is
 coverage and a build order (`--plan`), not a regression. Never "fix" a

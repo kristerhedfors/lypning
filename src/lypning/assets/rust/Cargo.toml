@@ -78,7 +78,8 @@ cap-pathlib = []
 # whole of it; the core gains none of it.
 cap-re = []
 
-# `csv.reader` and `csv.DictReader`, EAGER, as a plain iterator over lists — no
+# `csv.reader` and `csv.DictReader`, LAZY, over files, stdin and in-memory
+# list/tuple/string line sources — no
 # new `Value` variant, which is the one thing the first attempt at this
 # capability got wrong (`docs/HILLCLIMB.md` iteration 74). `csv.writer` and
 # `csv.DictWriter` are absent, so the router's walk stops on `module-attr:

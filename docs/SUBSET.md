@@ -81,6 +81,18 @@ divergence, and every row is **exact, or exit 90** — never approximate.
 | `set` order | order-independent operations work; anything exposing an order exits 90 (`value.rs:set_order_refused`) | `setcomp-ops` | exact or refuse |
 | NaN identity | `n in [n]` is True by identity; two NaNs in one comparison exit 90 (`nan-identity`) | — | refuse → cpython |
 
+The `lypning-l` CSV readers also accept direct lists, tuples and strings of
+lines. Each element is one line, not an arbitrary byte chunk; a string is an
+iterable of single-character lines. Reading stays lazy: list mutations before
+the next pull are visible, but a list iterator that has observed EOF never
+revives after an append. A quoted field may span several input elements.
+An explicit `DictReader(fieldnames=...)` list also remains live when its
+caller changes column names or appends/removes columns between rows.
+Non-string elements, unsupported dialects, shared iterators and generators
+still refuse. In particular, wrapping an arbitrary iterator is not a safe way
+to bypass the stale-file check on file-backed readers. Writers remain static
+refusals; this extension adds no value-object variant or core capability.
+
 ### 6a. Where CPython does not agree with itself
 
 `pyproject.toml` says `requires-python = ">=3.9"`, and CPython's own answer is
