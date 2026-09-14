@@ -310,3 +310,37 @@ def test_quickstart(host: Host, probe: Probe, builds: _Builds, lypning_lib, tmp_
             "%s\n%s must appear exactly once: 0 means the failure was swallowed, "
             "2 means the host retried a program that had already run" % (shown, probe.stderr_has))
     assert b"unsupported" not in r.stderr, "a refusal leaked to stderr:\n" + shown
+
+
+def test_c_contract_example(lypning_lib, tmp_path) -> None:
+    """The demonstration must exercise a real refusal on the linked variant.
+
+    Quickstarts accept arbitrary source and cannot catch stale EXPECT_REFUSED
+    fixtures: the C example used re.findall after the L library implemented it.
+    Build this test from source, link the exact library the fixture loaded,
+    and ensure its fallback really received the sample stdin.
+    """
+    cc = shutil.which("cc", path=_BUILD_ENV.get("PATH"))
+    if cc is None:
+        pytest.skip("C contract example needs cc")
+    binary = tmp_path / "c-contract"
+    command = [cc, "-std=c11", "-Wall", "-Wextra", "-Wpedantic",
+               "-I%s" % _incdir(), str(ASSETS / "examples" / "c" / "embed.c"),
+               "-L%s" % _libdir(), "-Wl,-rpath,%s" % _libdir(), "-llypning",
+               "-o", str(binary)]
+    built = subprocess.run(command, env=_BUILD_ENV, capture_output=True,
+                           timeout=BUILD_TIMEOUT)
+    assert built.returncode == 0, built.stderr.decode("utf-8", "replace")
+    cwd = tmp_path / "contract-cwd"
+    cwd.mkdir()
+    got = subprocess.run([str(binary)], cwd=cwd, env=_BUILD_ENV,
+                         capture_output=True, timeout=PROBE_TIMEOUT)
+    assert got.returncode == 0, (got.returncode, got.stdout, got.stderr)
+    assert b"all assertions held\n" in got.stdout
+    fallback = got.stdout.split(b"== outside the subset", 1)[1].split(b"\n== ", 1)[0]
+    assert b"refused   module: import subprocess\n" in fallback
+    assert b"exit      0 (cpython)\n" in fallback
+    speech = b"the quick brown fox jumps over the lazy dog the fox\n"
+    vowels = sum(c in b"aeiou" for c in speech)
+    assert ("stdout    %d\n" % vowels).encode() in fallback
+    assert list(cwd.iterdir()) == [], "the example left its demonstration file behind"
