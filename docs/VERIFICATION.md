@@ -226,6 +226,53 @@ engine       MATCH  stdout  stderr  exit only  both failed
 tests/test_conformance.py::test_a_refusal_is_coverage_not_a_failure  tests/test_conformance.py::test_a_timeout_is_a_mismatch_not_a_slow_program  tests/test_conformance.py::test_plan_ranks_by_cpython_reach_not_by_block_count
 tests/test_conformance.py::test_stdout_is_not_compared_for_a_run_specific_program  tests/test_conformance.py::test_an_unbuilt_engine_is_an_absent_arm_not_a_failed_one
 ```
+### C3a — ASCII named regex captures (2026-09-15)
+
+`tests/test_re_grid.py::test_named_captures_must_answer_exactly` is a
+mandatory-answer differential grid, not an allowed-refusal coverage test. The
+mechanism and remaining boundaries are in `docs/LYPNING.md` §3. Run from a
+worktree with its own state directory and pin the same CPython for the build,
+tests and dispatcher:
+
+```bash
+export LYPNING_HOME="$PWD/work/regex-check"
+export LYPNING_CPYTHON="$(command -v python3.12)"
+export PYTHONPATH=src
+"$LYPNING_CPYTHON" -m lypning build --rust --target host
+uv run --no-project --python "$LYPNING_CPYTHON" --with pytest python -m pytest \
+  tests/test_re_grid.py tests/test_routing.py tests/test_differences.py \
+  tests/test_method_tables.py -q
+```
+
+Measured on Darwin arm64, CPython 3.12.13, on 2026-09-15: 500 passed,
+13 skipped (the existing broader grid's explicit refusals and optional
+integrations). All 22 named-capture programs answered byte-identically; all
+22 refused on baseline `834f7e7`. The boundary grid covers invalid/duplicate
+names, valid and invalid Unicode names, unknown group access, argument
+binding, still-refused backreferences/templates and an exponential match that
+must refuse at its budget. A dynamically assembled invalid name also pins
+stdout and directory rollback. Core direct execution still refuses `import
+re`; its shared parser routes the served slice to L, and the chain agrees
+with CPython.
+
+The focused corpus check selected the 45 entries containing `(?P<` or
+`.groupdict(` from 9,064 loaded on the same date, through `conformance.run`
+with its normal net, seeding and 30-second deadline. Nine were skipped by
+existing safety rules; 36 were graded. L went from 19 MATCH / 17 UNSUPPORTED
+at `834f7e7` to 26 / 10, with MISMATCH 0 in both runs. Of the new run's 26
+matches, 20 had both programs fail, so this is not 26 successful applications;
+stdout-comparing matches rose from 1 to 8. Both dispatchers agreed on 36/36,
+with MISMATCH 0 and no monotonicity violations. This is a focused result,
+not a full-corpus coverage claim.
+
+Native size, built with the same pinned interpreter and release settings:
+core 917,568 → 917,584 B (code 717,872 → 718,888 B); L 1,083,248 →
+1,083,248 B (code 847,440 → 849,268 B). The shared parser accounts for the
+core change; no capability was added to core. File sizes include Mach-O
+padding. These are **not** static-musl budget measurements; the musl CI gate
+must still pass. `doctor` reported 0 FAIL; native `gate` passed with platform
+checks explicitly unmeasured rather than claimed as a static-budget pass.
+
 ## 4. C4 — Two dispatchers, one answer
 **STATEMENT.** Invariant 10. `route.rs` inside every binary (what the shim
 execs) and `engines.dispatch` (the `lypning run` console script, the `mixture`

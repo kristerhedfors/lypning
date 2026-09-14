@@ -15,7 +15,7 @@ identically on both engines — on a repo-relative file that is not there in the
 sandbox's temp cwd — before they reach their first regex call. Everything below
 grades the LANGUAGE instead, one program per row, against the reference CPython.
 
-Named groups, backreferences, lookaround, `\\z`, atomic groups, possessive
+Non-ASCII group names, backreferences, lookaround, `\\z`, atomic groups, possessive
 quantifiers, bytes patterns and every `re.error` message are outside this slice
 and are in `MATCHER_REFUSED`, which asserts they refuse rather than approximate.
 
@@ -587,7 +587,7 @@ QUANTIFIERS = [
 #: across 3.11–3.14), the Unicode tables, and the step budget.
 MATCHER_REFUSED = [R + x for x in [
     # Later slices, named one construct at a time so `--plan` can rank them.
-    "print(re.search(r'(?P<a>x)','x'))", "print(re.search(r'(?P<n>a)(?P=n)','aa'))",
+    "print(re.search(r'(?P<é>x)','x'))", "print(re.search(r'(?P<n>a)(?P=n)','aa'))",
     "print(re.match(r'(a)\\1','aa'))", "print(re.search(r'(?=a)','a'))",
     "print(re.search(r'(?!b)a','a'))", "print(re.search(r'(?<=a)b','ab'))",
     "print(re.search(r'(?<!a)b','cb'))", "print(re.findall(r'(?i:a)b','Ab'))",
@@ -627,7 +627,7 @@ MATCHER_REFUSED = [R + x for x in [
     "print(re.match(b'(a)',b'ab'))", "print(re.sub('a','b',b'a'))", "print(re.compile(b'a'))",
     # Names of a later slice, and the group lookups CPython answers with an
     # IndexError.
-    "print(re.match('a','a').groupdict())", "print(re.match('a','a').lastindex)",
+    "print(re.match('a','a').groupdict(1, 2))", "print(re.match('a','a').lastindex)",
     "print(re.match('a','a').regs)", "print(re.match('a','a').expand('x'))",
     "print(re.compile('a').groupindex)", "print(re.compile('a').scanner('a'))",
     "print(re.match('a','a').group(1))", "print(re.match(r'(a)','a').group(-1))",
@@ -643,7 +643,7 @@ MATCHER_REFUSED = [R + x for x in [
     "print({re.match('a','a'): 1})", "print(type(re.compile('a')))",
     "import json\nprint(json.dumps(re.compile('a')))",
     # A refusal leaves NOTHING on stdout even when the program printed first.
-    "print('hi')\nprint(re.search(r'(?P<a>x)','x'))",
+    "print('hi')\nprint(re.search(r'(?P<é>x)','x'))",
     "print('hi')\nm = re.search(r'\\d','\\u0663')\nprint(m)",
 ]]
 
@@ -674,7 +674,7 @@ REFUSED = [R + x for x in [
     "try:\n    re.compile('(')\nexcept re.error as e:\n    print(e)",
     "import sys\nprint(sys.modules['re'])",
 ]] + MATCHER_REFUSED + [
-    "from re import search\nprint(search(r'(?P<a>x)', 'x'))",
+    "from re import search\nprint(search(r'(?P<é>x)', 'x'))",
     "import re as r\nprint(r.findall(r'(?<=a)b', 'ab'))",
     "from re import error\nprint(error)",
     "from re import T\nprint(T)",
@@ -699,6 +699,84 @@ SPELLINGS = [
 GRID = (IMPORTS + FLAGS + ESCAPE + PURGE + INT_PARTNERS + MATCHER + EMPTY
         + GROUPS + QUANTIFIERS + ANCHORS + CLASSES + POSENDPOS + NONASCII + SUBSPLIT
         + FLAGS2 + OBJECTS + LINEAR + IDIOMS + SPELLINGS)
+
+
+# The named-capture slice has no new matching opcodes: names refer to the
+# existing numbered slots, including capture retention across repetitions and
+# rollback after failed branches. Unlike the broad grid, these rows MUST answer.
+NAMED_CAPTURES = [
+    (r"(?P<name>a)", ["", "a", "ba", "aa"]),
+    (r"(x)(?P<outer>a(?P<inner>b)?)(c)", ["xac", "xabc", "zxabcz"]),
+    (r"(?P<z>a)|(?P<a>b)", ["", "a", "b", "ab"]),
+    (r"(?P<a>a)?(?P<b>b*)", ["", "b", "abb", "ba"]),
+    (r"(?P<a>a*)*", ["", "aa", "b"]),
+    (r"(?:(?P<a>a)|(?P<b>b))+", ["aba", "bab", "a", "b"]),
+    (r"(?P<a>a)?(?:ab)", ["ab", "aab"]),
+    (r"(?:(?P<a>a)b|ac)", ["ac", "ab"]),
+    (r"(?P<a>a?){3}", ["", "a", "aa", "aaa"]),
+    (r"(?P<_0>)(?P<A1>a*?)", ["", "aaa"]),
+    (r"(?P<word>[é-ê]+)(?P<tail>日)?", ["éê", "é日", "日", "xê"]),
+    (r"(?ai)(?P<word>\w+)", ["AB_2", "éa", "日"]),
+    (r"(?x)(?P<outer> a (?P<inner> b )? )", ["ab", "a", "cab"]),
+    (r"(?P<outer>(?P<inner>a)|b)+", ["ab", "ba", "aaa", "bb"]),
+    (r"(?P<left>a+?)(?P<right>a*)$", ["a", "aa", "aaa"]),
+]
+
+
+def _named_program(pattern: str, subjects: list[str]) -> str:
+    return R + (
+        "p = re.compile(%r)\n"
+        "print(p.groups, p.pattern, p.flags)\n"
+        "for s in %r:\n"
+        "    print(p.findall(s), p.split(s), p.subn('<>', s))\n"
+        "    for m in p.finditer(s):\n"
+        "        print(m.group(), m.groups(), m.groups('missing'))\n"
+        "        print(m.groupdict(), m.groupdict(default='missing'))\n"
+        "        for n in m.groupdict():\n"
+        "            print(n, m[n], m.group(n), m.group(0, n, 1), "
+        "m.start(n), m.end(n), m.span(n))\n"
+        "        d = []\n"
+        "        a = m.groupdict(d)\n"
+        "        d.append('same default object')\n"
+        "        print(a, m.groupdict())\n"
+    ) % (pattern, subjects)
+
+
+NAMED_PROGRAMS = [_named_program(p, subjects) for p, subjects in NAMED_CAPTURES] + [
+    R + "m = re.match('(a)', 'a')\nprint(m.groupdict(), m.groupdict(default=42))",
+    R + "m = re.match('(?P<a>a)', 'a')\na = m.groupdict()\na['a'] = 42\n"
+        "print(a, m.groupdict(), m['a'])",
+    R + "print(re.sub(r'(?P<a>a)(?P<b>b)?', r'\\2-\\g<1>', 'a ab'))",
+    R + "print(re.sub(r'(?P<a>a)', lambda m: m.group('a').upper(), 'aba'))",
+    R + "print(re.compile('(?P<name>a)').search('xaax', 2, 3).span('name'))",
+    R + "print('before')\nprint(re.search('(?P<a>x)', 'x').groupdict())",
+    "from re import search\nprint(search(r'(?P<a>x)', 'x').group('a'))",
+]
+
+
+NAMED_REFUSED = [
+    R + "print('before')\nprint(re.compile(%r))" % p
+    for p in [
+        "(?P<>a)", "(?P<1>a)", "(?P<a-b>a)", "(?P<a b>a)", "(?P<a\n>a)",
+        "(?P<a>a)(?P<a>b)", "(?P<a>(?P<a>b))", "(?P<a", "(?P<a>a", "(?P!a)",
+        # Both valid and invalid Unicode names refuse: str.isidentifier's XID
+        # tables are not approximated by Rust's alphabetic classifications.
+        "(?P<é>a)", "(?P<日>a)", "(?P<á>a)", "(?P<K>a)", "(?P<²>a)", "(?P<😀>a)",
+        "(?P<a>a)(?P=a)", r"(?P<a>a)\1", "(?P<a>a)(?(a)b|c)",
+    ]
+] + [R + "print('before')\n" + p for p in [
+    "print(re.match('(?P<a>a)', 'a').group('missing'))",
+    "print(re.match('(?P<a>a)', 'a')['0'])",
+    "print(re.match('(?P<a>a)', 'a').span('missing'))",
+    "print(re.match('(?P<a>a)', 'a').groupdict(1, 2))",
+    "print(re.match('(?P<a>a)', 'a').groupdict(1, default=2))",
+    "print(re.match('(?P<a>a)', 'a').groupdict(unknown=2))",
+    "print(re.sub('(?P<a>a)', r'\\g<a>', 'a'))",
+    "print(re.compile('(?P<a>a)').groupindex)",
+    # Failure after exponential backtracking must still refuse, never report
+    # a false no-match result. Do not execute this case on the slow oracle.
+    "print(re.match('(?P<a>a+)+$', 'a'*30+'b'))",
+]]
 
 
 def _spectrum(binary: Path) -> dict | None:
@@ -771,6 +849,57 @@ def _refusal_problem(got: subprocess.CompletedProcess) -> str | None:
         return "stderr was %r, expected one %r line" % (line[:160], head)
     return None
 
+
+
+@needs_l
+@pytest.mark.parametrize("program", NAMED_PROGRAMS, ids=range(len(NAMED_PROGRAMS)))
+def test_named_captures_must_answer_exactly(program: str) -> None:
+    got = _run([str(BINARY)], program)
+    ref = _run([sys.executable], program)
+    assert ref.returncode == 0, ref.stderr
+    assert (got.returncode, got.stdout, got.stderr) == (0, ref.stdout, ref.stderr), (
+        program, got.stdout, got.stderr, ref.stdout
+    )
+
+
+@needs_l
+@pytest.mark.parametrize("program", NAMED_REFUSED, ids=range(len(NAMED_REFUSED)))
+def test_named_capture_boundaries_refuse_cleanly(program: str) -> None:
+    got = _run([str(BINARY)], program)
+    assert _refusal_problem(got) is None, (program, got)
+
+
+@needs_l
+def test_named_capture_route_and_dynamic_refusal_rollback() -> None:
+    if CORE is None:
+        pytest.skip("no matching core is built")
+    for source in [
+        R + "print(re.search('(?P<a>x)', 'x').group('a'))",
+        R + "p = '(?P<a>x)'\nprint(re.search(p, 'x').groupdict())",
+        "from re import search\nprint(search('(?P<a>x)', 'x').span('a'))",
+    ]:
+        result = subprocess.run([str(CORE), "route", "-c", source],
+                                capture_output=True, text=True, timeout=60)
+        assert result.stdout.split("\t")[0].strip() == engines.LYPNING_L, result
+        direct = _run([str(CORE)], source)
+        assert (direct.returncode, direct.stdout, direct.stderr.strip()) == (
+            90, "", engines.refusal_line(engines.LYPNING, "module", "import re")
+        )
+        chain = subprocess.run([str(CORE), "run", "-c", source],
+                               capture_output=True, text=True, timeout=60, env=_core_env())
+        reference = _run([sys.executable], source)
+        assert (chain.returncode, chain.stdout, chain.stderr) == (
+            reference.returncode, reference.stdout, reference.stderr
+        )
+    # The invalid name is assembled dynamically so the static parser cannot
+    # protect the barrier for us. Runtime refusal rolls back BOTH writes.
+    source = ("import re, os\nprint('before')\nos.makedirs('created/child')\n"
+              "pat = '(?P<' + '1>a)'\nprint(re.compile(pat))")
+    with tempfile.TemporaryDirectory() as d:
+        result = subprocess.run([str(BINARY), "-c", source], cwd=d,
+                                capture_output=True, text=True, timeout=60)
+        assert _refusal_problem(result) is None, result
+        assert not (Path(d) / "created").exists()
 
 
 @needs_l
@@ -856,7 +985,7 @@ def test_a_runtime_refusal_after_reading_stdin_replays_it_to_the_next_rung() -> 
         pytest.skip("no core carrying this tree's capability table is built")
     env = _core_env()
     for program, stdin, want in [
-        ("import sys, re\npat = '(?P<n>' + r'id=(\\d+)' + ')'\nfor line in sys.stdin:\n"
+        ("import sys, re\npat = '(?P<é>' + r'id=(\\d+)' + ')'\nfor line in sys.stdin:\n"
          "    m = re.search(pat, line)\n    if m:\n        print(m.group(2))",
          "x id=41 y\nnope\nz id=7\n", "41\n7\n"),
         ("import sys, re\npat = '(?<=f)' + 'oo+'\n"
@@ -884,7 +1013,7 @@ def test_a_pattern_literal_outside_the_slice_is_a_static_route_to_cpython() -> N
     retries. Here the route is CPython, exec'd with the pipe inherited and
     untouched: nothing between the producer and the answer."""
     program = ("import sys, re\nd = sys.stdin.read()\n"
-               "print(re.findall(r'(?P<d>\\d)', d))")
+               "print(re.findall(r'(?P<é>\\d)', d))")
     route = subprocess.run([str(BINARY), "route", "-c", program], capture_output=True, text=True,
                            timeout=60, env=_core_env())
     assert route.stdout.split("\t")[0].strip() == engines.CPYTHON, route.stdout
@@ -910,13 +1039,13 @@ def test_a_pattern_literal_outside_the_slice_is_a_static_route_to_cpython() -> N
 #: which must stay the backstop's.
 STATIC_PATTERNS = [
     # A literal in the pattern position: the shape step 2 already decided.
-    (R + "print(re.search(r'(?P<a>x)', 'x'))", engines.CPYTHON, "re: pattern"),
+    (R + "print(re.search(r'(?P<é>x)', 'x'))", engines.CPYTHON, "re: pattern"),
     # A literal bound to a NAME above the call. The compiled pattern is the
     # same one; only the walk had to reach further to find it.
-    (R + "P = r'(?P<a>x)'\nprint(re.search(P, 'x'))", engines.CPYTHON, "re: pattern"),
+    (R + "P = r'(?P<é>x)'\nprint(re.search(P, 'x'))", engines.CPYTHON, "re: pattern"),
     (R + "P = r'a(?=b)'\nprint(re.sub(P, '-', 'ab'))", engines.CPYTHON, "re: pattern"),
     (R + "P = r'(a)\\1'\nprint(re.compile(P).findall('aa'))", engines.CPYTHON, "re: pattern"),
-    ("from re import findall\nP = r'(?P<a>x)'\nprint(findall(P, 'x'))",
+    ("from re import findall\nP = r'(?P<é>x)'\nprint(findall(P, 'x'))",
      engines.CPYTHON, "re: pattern"),
     ("import re as r\nP = r'(?<=a)b'\nprint(r.search(P, 'ab'))", engines.CPYTHON, "re: pattern"),
     # A BYTES pattern: servable by CPython, by nothing here, and refused on
@@ -926,13 +1055,13 @@ STATIC_PATTERNS = [
     (R + "P = rb'\\s'\nprint(re.findall(P, b'a b'))", engines.CPYTHON, "re: bytes pattern"),
     # `pattern=` is the one keyword spelling of the same argument, and this
     # engine and CPython both take it.
-    (R + "print(re.search(pattern=r'(?P<a>x)', string='x'))", engines.CPYTHON, "re: pattern"),
+    (R + "print(re.search(pattern=r'(?P<é>x)', string='x'))", engines.CPYTHON, "re: pattern"),
     # …and the other half. A pattern a walk cannot read keeps the RUNTIME
     # refusal, because a static block here would be a program sent to CPython
     # that this engine runs — the direction that costs a spawn for nothing.
     (R + "for P in ['a', 'b']:\n    print(re.findall(P, 'ab'))", engines.LYPNING_L, None),
-    (R + "P = r'(?P<a>x)'\nP = r'x'\nprint(re.search(P, 'x').span())", engines.LYPNING_L, None),
-    (R + "P = r'(?P<a>x)'\ndef f(P):\n    return re.search(P, 'x')\nprint(f('x').span())",
+    (R + "P = r'(?P<é>x)'\nP = r'x'\nprint(re.search(P, 'x').span())", engines.LYPNING_L, None),
+    (R + "P = r'(?P<é>x)'\ndef f(P):\n    return re.search(P, 'x')\nprint(f('x').span())",
      engines.LYPNING_L, None),
     (R + "print(re.findall('(?P' + '<a>x)', 'x'))", engines.LYPNING_L, None),
     (R + "P = 'x'\nprint(re.findall(P + '+', 'xx'))", engines.LYPNING_L, None),
@@ -984,7 +1113,7 @@ def test_a_static_pattern_block_answers_where_the_runtime_refusal_could_not() ->
     for program, want in [
         ("import re, os\nos.makedirs('d1/d2')\nprint(re.findall(b'a', b'aa'))",
          "[b'a', b'a']\n"),
-        ("import re, os\nP = r'(?P<a>x)'\nos.makedirs('d3')\n"
+        ("import re, os\nP = r'(?P<é>x)'\nos.makedirs('d3')\n"
          "print(re.findall(P, 'xx'))", "['x', 'x']\n"),
     ]:
         route = subprocess.run([str(BINARY), "route", "-c", program],

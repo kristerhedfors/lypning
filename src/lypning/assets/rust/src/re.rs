@@ -22,7 +22,8 @@
 //! negation, `\d \w \s` and their uppercase forms in and out of classes,
 //! `^ $ \A \Z \b \B`, `* + ? {m,n}` greedy and lazy, capturing and `(?:)`
 //! groups, alternation, the flags `I M S X A U` as arguments and as a leading
-//! `(?imsxau)`, and `sub`'s template language. Named groups, `(?P=name)`,
+//! `(?imsxau)`, ASCII named captures with named access and `groupdict`, and
+//! `sub`'s numbered template language. Non-ASCII group names, `(?P=name)`,
 //! `\1` backreferences, lookahead and lookbehind, scoped `(?i:…)`, atomic
 //! groups, possessive quantifiers, conditionals, `\N{…}`, `\z` and bytes
 //! patterns each REFUSE, by name, so that `conformance --plan` ranks them one
@@ -128,10 +129,10 @@ use crate::err::{unsupported, LypningError, R};
 // outside this one raise an `re:` refusal by that path.
 pub(crate) use crate::repat::refuse;
 use crate::repat::{
-    is_word, parse_pattern, show, swap_ascii, At, Class, Node, A, DEBUG, I, L, M, S, U, X,
+    is_word, parse_pattern, show, swap_ascii, At, Class, Node, Parsed, A, DEBUG, I, L, M, S, U, X,
 };
 use crate::eval::Interp;
-use crate::value::{ival, type_name, Value};
+use crate::value::{ival, type_name, Dict, Value};
 use std::rc::Rc;
 
 
@@ -496,6 +497,7 @@ pub struct Pat {
     /// compare equal.
     pub flags: u32,
     pub groups: u32,
+    names: Vec<(Rc<str>, u32)>,
     code: Vec<Op>,
     branches: Vec<u32>,
     classes: Vec<Class>,
@@ -649,7 +651,7 @@ fn fill_peeks(code: &mut Vec<Op>) {
 /// every refusal about a pattern comes from there, so the walker's verdict and
 /// this one are the same function's answer over the same text (issue #48).
 fn build(src: &Rc<str>, given: u32) -> R<Pat> {
-    let (tree, groups, classes, flags) = parse_pattern(src, given)?;
+    let Parsed { tree, groups, names, classes, flags } = parse_pattern(src, given)?;
     let fold = flags & I != 0;
     let mut code = Vec::new();
     let mut branches = Vec::new();
@@ -669,6 +671,7 @@ fn build(src: &Rc<str>, given: u32) -> R<Pat> {
         source: src.clone(),
         flags: eff,
         groups,
+        names,
         code,
         branches,
         classes,
@@ -1333,10 +1336,11 @@ impl MatchObj {
     }
     fn index_of(&self, v: &Value, what: &str) -> R<usize> {
         let g = match v {
-            Value::Str(_) => {
-                return Err(refuse(
-                    "group '<name>': named groups are not served yet",
-                ))
+            Value::Str(name) => {
+                return self.pat.names.iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, g)| *g as usize)
+                    .ok_or_else(|| refuse(&format!("group {}: no such group", show(name))));
             }
             other => as_index(other, what)?,
         };
@@ -2063,12 +2067,12 @@ fn api_of(name: &str) -> Api {
 const PATTERN_METHODS: &[&str] = &[
     "findall", "finditer", "fullmatch", "match", "search", "split", "sub", "subn",
 ];
-/// Methods, sorted. `groupdict` and `expand` need named groups; `lastindex`,
+/// Methods, sorted. `expand` needs template expansion; `lastindex`,
 /// `lastgroup` and `regs` are their own slice — each refuses, and the ROUTER
 /// blocks them statically so the program never starts here. The computed
 /// attributes (`pattern`, `flags`, `groups`; `string`, `re`, `pos`, `endpos`)
 /// are named in `get_attr` itself, because they are values rather than bindings.
-const MATCH_METHODS: &[&str] = &["end", "group", "groups", "span", "start"];
+const MATCH_METHODS: &[&str] = &["end", "group", "groupdict", "groups", "span", "start"];
 pub fn pattern_method(
     it: &mut Interp,
     p: &Rc<Pat>,
@@ -2148,6 +2152,19 @@ pub fn match_method(
                 }
             }
         }
+        "groupdict" => {
+            let a = bind(&disp, args, kw, &["default"])?;
+            let dflt = a[0].clone().unwrap_or(Value::None);
+            let mut out = Dict::new();
+            for (name, g) in &m.pat.names {
+                let value = match m.group_value(*g as usize) {
+                    Value::None => dflt.clone(),
+                    v => v,
+                };
+                out.insert(Value::Str(name.clone()), value)?;
+            }
+            Ok(Value::Dict(Rc::new(RefCell::new(out))))
+        }
         "groups" => {
             let a = bind(&disp, args, kw, &["default"])?;
             let dflt = a[0].clone().unwrap_or(Value::None);
@@ -2199,7 +2216,7 @@ pub fn match_index(m: &Rc<MatchObj>, idx: &Value) -> R<Value> {
 
 /// Attribute access on the two new values. Every name this engine does not
 /// answer refuses rather than raising AttributeError: CPython answers
-/// `.groupdict()`, `.expand()`, `.lastindex` and `.groupindex`, and an
+/// `.expand()`, `.lastindex` and `.groupindex`, and an
 /// AttributeError here is exit 1 — the program's own exit, which the chain
 /// never retries.
 pub fn get_attr(base: &Value, name: &str) -> R<Value> {
@@ -2362,9 +2379,9 @@ mod tests {
         for src in [
             // servable
             "a", "", "a*b+c?", r"\d+", r"[a-z_]{2,4}", "(?:a|b)*c", "^a$", r"\bx\B",
-            "(a)(b)", "(?i)abc", "(?ax)a b", ".", "[^x]", r"a\.b", "x{0,}", "(a|)",
+            "(a)(b)", "(?P<a>x)", "(?i)abc", "(?ax)a b", ".", "[^x]", r"a\.b", "x{0,}", "(a|)",
             // refused, one per category the parser can raise
-            "(?P<a>x)", "(?<=a)b", r"(a)\1", "a{2,1}", "(?=a)", "(", ")", "[z-a]",
+            "(?P<é>x)", "(?P<a>x)(?P<a>y)", "(?<=a)b", r"(a)\1", "a{2,1}", "(?=a)", "(", ")", "[z-a]",
             r"\N{DASH}", "(?P=a)", "(?i:a)", "a{1,2}+", "(?(1)a)", r"\z", "*a", r"\q",
         ] {
             let walker = crate::repat::precompile(src).err().map(|e| e.to_string());
@@ -2445,7 +2462,7 @@ mod tests {
         for n in routed.split_whitespace() {
             assert!(served.contains(&n), "the router admits {n}, which nothing serves");
         }
-        for n in ["groupdict", "expand", "lastindex", "lastgroup", "regs", "groupindex",
+        for n in ["expand", "lastindex", "lastgroup", "regs", "groupindex",
                   "scanner"] {
             assert!(!known_method(n), "{n} is a later slice and must block statically");
         }

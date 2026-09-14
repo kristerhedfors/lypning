@@ -627,7 +627,7 @@ def test_a_pattern_no_rung_can_compile_is_the_cores_verdict_too(lypning_bin):
     """
     for src in [
         'import re; print(re.findall(b"a", b"aa"))',
-        'import re; print(re.search(r"(?P<a>x)", "x"))',
+        'import re; print(re.search(r"(?P<é>x)", "x"))',
         'import re; print(re.findall(r"(?<=a)b", "ab"))',
         'import re, os\nos.makedirs("d")\nprint(re.findall(b"a", b"aa"))',
         'from re import compile as c\nprint(c("a{2,1}"))',

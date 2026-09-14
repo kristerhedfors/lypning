@@ -279,6 +279,7 @@ struct P<'a> {
     i: usize,
     flags: u32,
     groups: u32,
+    names: Vec<(Rc<str>, u32)>,
     classes: Vec<Class>,
     depth: u32,
 }
@@ -517,11 +518,48 @@ impl<'a> P<'a> {
                 }
                 Err(self.bad("missing ), unterminated comment"))
             }
-            Some('P') => Err(self.no(if self.at(1) == Some('=') {
-                "named backreference (?P=name)"
-            } else {
-                "named group (?P<name>…)"
-            })),
+            Some('P') if self.at(1) == Some('<') => {
+                self.i += 2; // 'P<'
+                let start = self.i;
+                while self.peek().is_some() && self.peek() != Some('>') {
+                    self.i += 1;
+                }
+                if self.peek().is_none() {
+                    return Err(self.bad("missing >, unterminated name"));
+                }
+                let name: String = self.s[start..self.i].iter().collect();
+                // CPython validates Unicode identifiers without normalizing
+                // names. Do not substitute Rust's alphabetic test for its XID
+                // tables: valid AND invalid non-ASCII names go to CPython.
+                if !name.is_ascii() {
+                    return Err(self.no("non-ASCII group name (Unicode identifier tables)"));
+                }
+                if name.is_empty()
+                    || !matches!(name.as_bytes()[0], b'a'..=b'z' | b'A'..=b'Z' | b'_')
+                    || !name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+                {
+                    return Err(self.bad("bad character in group name"));
+                }
+                if self.names.iter().any(|(n, _)| n.as_ref() == name) {
+                    return Err(self.bad("redefinition of group name"));
+                }
+                self.i += 1; // '>'
+                self.groups += 1;
+                let idx = self.groups;
+                // Reserve the number and name BEFORE parsing nested groups:
+                // numbering and groupdict order follow opening parentheses.
+                self.names.push((Rc::from(name), idx));
+                let body = self.nested()?;
+                if self.peek() != Some(')') {
+                    return Err(self.bad("missing ), unterminated subpattern"));
+                }
+                self.i += 1;
+                Ok(Some(Node::Group(Some(idx), Box::new(body))))
+            }
+            Some('P') if self.at(1) == Some('=') => {
+                Err(self.no("named backreference (?P=name)"))
+            }
+            Some('P') => Err(self.bad("unknown extension ?P")),
             Some('=') => Err(self.no("lookahead (?=…)")),
             Some('!') => Err(self.no("negative lookahead (?!…)")),
             Some('<') => Err(self.no(match self.at(1) {
@@ -789,13 +827,22 @@ impl<'a> P<'a> {
 }
 
 
+/// Everything the matcher needs after the shared front end accepts a pattern.
+pub(crate) struct Parsed {
+    pub(crate) tree: Node,
+    pub(crate) groups: u32,
+    pub(crate) names: Vec<(Rc<str>, u32)>,
+    pub(crate) classes: Vec<Class>,
+    pub(crate) flags: u32,
+}
+
 /// Parse a pattern, and hand back everything the compiler needs to finish it.
 ///
 /// Split out of `re::build` so that the WALKER can ask the same question the
 /// runtime asks without carrying the answer's machinery: this returns the tree,
-/// the group count, the classes and the EFFECTIVE-so-far flags, and every `Err`
+/// the group count, the ordered names, classes and EFFECTIVE-so-far flags, and every `Err`
 /// this engine can raise about a pattern is raised here.
-pub(crate) fn parse_pattern(src: &Rc<str>, given: u32) -> R<(Node, u32, Vec<Class>, u32)> {
+pub(crate) fn parse_pattern(src: &Rc<str>, given: u32) -> R<Parsed> {
     if given & L != 0 {
         return Err(refuse(
             "flags: re.LOCALE with a str pattern, which CPython answers with a ValueError",
@@ -831,6 +878,7 @@ pub(crate) fn parse_pattern(src: &Rc<str>, given: u32) -> R<(Node, u32, Vec<Clas
         i: head,
         flags,
         groups: 0,
+        names: Vec::new(),
         classes: Vec::new(),
         depth: 0,
     };
@@ -839,5 +887,5 @@ pub(crate) fn parse_pattern(src: &Rc<str>, given: u32) -> R<(Node, u32, Vec<Clas
         // Only a stray `)` can stop the top-level parse early.
         return Err(bad_pattern(src, "unbalanced parenthesis"));
     }
-    Ok((tree, p.groups, p.classes, p.flags))
+    Ok(Parsed { tree, groups: p.groups, names: p.names, classes: p.classes, flags: p.flags })
 }

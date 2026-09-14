@@ -636,7 +636,7 @@ mod spectrum_tests {
         // `lypning: error: … reached after output was already flushed`, exit 1,
         // where CPython answers `[b'a', b'a']` at exit 0.
         for src in [
-            "import re\nprint(re.search(r'(?P<a>x)', 'x'))",
+            "import re\nprint(re.search(r'(?P<é>x)', 'x'))",
             "import re\nprint(re.findall(r'(?<=a)b', 'ab'))",
             "import re as x\nprint(x.sub(r'(a)\\1', 'b', 'aa'))",
             "from re import compile as c\nprint(c('a{2,1}'))",
@@ -1790,7 +1790,7 @@ pub(crate) const CAP_METHODS: &[(&str, &str)] = &[
          with_suffix write_bytes write_text",
     ),
     // `re::PATTERN_METHODS`, `re::MATCH_METHODS` and the seven read-only
-    // attributes. `groupindex`, `scanner`, `expand`, `groupdict`, `lastindex`,
+    // attributes. `groupindex`, `scanner`, `expand`, `lastindex`,
     // `lastgroup` and `regs` are deliberately absent: a shape the engine does
     // not answer is cheaper as a static block — the program goes straight to
     // CPython — than as a runtime refusal, which costs an in-process run first
@@ -1798,7 +1798,7 @@ pub(crate) const CAP_METHODS: &[(&str, &str)] = &[
     // through.
     (
         "re",
-        "end endpos findall finditer flags fullmatch group groups match pattern pos re search \
+        "end endpos findall finditer flags fullmatch group groupdict groups match pattern pos re search \
          span split start string sub subn",
     ),
 ];
