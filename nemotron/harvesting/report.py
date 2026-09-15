@@ -55,6 +55,8 @@ def inspect(path):
             counts["truncated_completions"] += sum(
                 choice.get("finish_reason") == "length" for choice in response.get("choices", []))
     return {"task": manifest["task"]["id"], "run_id": manifest["task"]["run_id"],
+            "catalog": manifest["task"].get("catalog", "unrecorded"),
+            "generation": manifest["task"].get("generation", "unrecorded; inspect proxy ledger"),
             "round": manifest["task"]["round"], "state": manifest["state"],
             "errors": manifest["errors"], "unique_python_sources": len(sources),
             "returned_models": sorted(returned_models), **counts,

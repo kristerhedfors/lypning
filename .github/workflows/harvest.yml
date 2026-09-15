@@ -4,8 +4,22 @@ name: Cerebras OpenCode project harvest
 on:
   workflow_dispatch:
     inputs:
+      catalog:
+        description: 'Reviewed project tasks or question-bank proposal producers'
+        type: choice
+        options: [projects, questions]
+        default: projects
+      profile:
+        description: 'Baseline or matched-budget reasoning comparison (same total token ceiling)'
+        type: choice
+        options: [baseline, compare-none, compare-medium]
+        default: baseline
+      start_index:
+        description: 'First task in the reviewed catalog (zero-based; page larger catalogs)'
+        type: number
+        default: 0
       projects:
-        description: 'Distinct authored projects (1-12)'
+        description: 'Catalog tasks per batch (1-12, must fit selected catalog)'
         type: number
         default: 4
         required: true
@@ -55,8 +69,10 @@ jobs:
           PROJECTS: ${{ inputs.projects }}
           ROUNDS: ${{ inputs.rounds }}
           PARALLELISM: ${{ inputs.parallelism }}
+          CATALOG: ${{ inputs.catalog }}
+          START_INDEX: ${{ inputs.start_index }}
         run: |
-          MATRIX=$(python -m harvesting.runner --plan --projects "$PROJECTS" --rounds "$ROUNDS" --parallelism "$PARALLELISM")
+          MATRIX=$(python -m harvesting.runner --plan --projects "$PROJECTS" --rounds "$ROUNDS" --parallelism "$PARALLELISM" --catalog "$CATALOG" --start-index "$START_INDEX")
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
           echo "parallelism=$PARALLELISM" >> "$GITHUB_OUTPUT"
       - name: Validate exact account-visible Qwen model (no generation)
@@ -77,6 +93,8 @@ jobs:
       PYTHONPATH: src:nemotron
       LYPNING_CAPTURE: '0'
       LYPNING_HARVEST: '0'
+      CATALOG: ${{ inputs.catalog }}
+      GENERATION_PROFILE: ${{ inputs.profile }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -96,6 +114,7 @@ jobs:
           ROUND_INDEX: ${{ matrix.round }}
         run: |
           python -m harvesting.runner --task-index "$TASK_INDEX" --round "$ROUND_INDEX" --output work/harvest \
+            --catalog "$CATALOG" --profile "$GENERATION_PROFILE" \
             --worker-image "$(docker image inspect harvest-worker --format '{{.Id}}')" \
             --proxy-image "$(docker image inspect harvest-proxy --format '{{.Id}}')"
       - name: Exercise the same matrix and container path without any secret or API calls
@@ -105,6 +124,7 @@ jobs:
           ROUND_INDEX: ${{ matrix.round }}
         run: |
           python -m harvesting.runner --smoke --task-index "$TASK_INDEX" --round "$ROUND_INDEX" --output work/harvest \
+            --catalog "$CATALOG" --profile "$GENERATION_PROFILE" \
             --worker-image "$(docker image inspect harvest-worker --format '{{.Id}}')" \
             --proxy-image "$(docker image inspect harvest-proxy --format '{{.Id}}')"
           python -m harvesting.check_smoke work/harvest

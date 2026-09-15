@@ -20,7 +20,7 @@ KEY = "private-provider-secret"
 def running(tmp_path, **kwargs):
     config = ProxyConfig("qwen-exact", kwargs.pop("max_requests", 3),
                          kwargs.pop("max_output_tokens", 100),
-                         kwargs.pop("total_output_tokens", 300), tmp_path / "proxy.jsonl")
+                         kwargs.pop("total_output_tokens", 300), tmp_path / "proxy.jsonl", **kwargs)
     server = ProxyServer(("127.0.0.1", 0), config, KEY)
     seen = []
 
@@ -87,6 +87,23 @@ def test_streaming_is_openai_sse_including_tools_and_usage(tmp_path):
         assert chunks[2]["usage"]["completion_tokens"] == 10
         assert seen[0]["stream"] is False
         assert "stream_options" not in seen[0]
+
+
+def test_operator_reasoning_setting_cannot_be_overridden_by_agent(tmp_path):
+    with running(tmp_path, reasoning_effort="medium") as (server, seen):
+        assert call(server, {"model": "qwen-exact", "messages": [{}],
+                             "reasoning_effort": "none"})[0] == 200
+        assert seen[0]["reasoning_effort"] == "medium"
+    with pytest.raises(ValueError, match="reasoning"):
+        ProxyConfig("qwen", 1, 1, 1, tmp_path / "unused", reasoning_effort="invalid")
+
+
+def test_reasoning_and_answer_are_separate_in_sse():
+    from harvesting.proxy import _sse
+    raw = _sse({"choices": [{"message": {"role": "assistant", "reasoning": "fixture thought",
+                                       "content": "fixture answer"}, "finish_reason": "stop"}]})
+    first = json.loads(raw.decode().splitlines()[0][6:])["choices"][0]["delta"]
+    assert first["reasoning"] == "fixture thought" and first["content"] == "fixture answer"
 
 
 @pytest.mark.parametrize("body", [

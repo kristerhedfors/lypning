@@ -1,0 +1,186 @@
+# Question → answer → verified repair → training
+
+Owner: **this Codex session is the orchestrator**. Fable owns manually initiated
+training loops and their writeups. Updated 2026-09-15. This is the current
+cross-session roadmap; `START_NEXT_ROUND.md` owns execution instructions,
+`HARVESTING.md` owns collection, and `L-TRAINING-ROADMAP.md` owns runtime priorities.
+Historical ladders and reports remain evidence, not overriding launch rules.
+
+## Objective and operating agreement
+
+Make ordinary Qwen answers correct and lypning-l-compatible on the first draft.
+The approximately 10× aggregate performance premise motivates coverage; **there
+is no speed filter on individual scripts**. Every added compatible task matters.
+Volume helps only when it adds reliable behavior, task diversity or meaningful
+contexts. A million paraphrases, unverified teacher answers or repeated easy
+families do not establish optimality.
+
+Codex owns question-bank review, coverage triage, high-quality teacher repairs,
+interpreter priorities, data proposals, experiment decisions and independent
+assessment of Fable's reports. “GPT-level implementation” means Codex authors or
+critically reviews a full solution here; it does not claim an unconfigured GPT
+API was called or that a teacher answer is automatically correct. No new provider
+key, external data transfer or automatic teacher service is implied.
+
+Fable owns approved GPU execution, exact run records, checkpoint selection,
+matched evaluation, failure analysis and its own reflections. Fable must not
+silently change the task, oracle, split, runtime or budget to finish a round.
+Codex then separates agreement, disagreements and additional hypotheses from
+Fable's conclusions and selects the next bounded experiment. Neither session
+changes the other's active frozen artifacts. Git transfers code and sanitized
+writeups; approved private storage transfers data, models and run artifacts.
+
+## Data loop and routing
+
+1. **Propose questions.** Use the bounded Cerebras question catalog, ordinary
+   authorized captures and independently authored tasks. Preserve question
+   generation conditions, model identity, full sources and parent lineage.
+2. **Review specifications before answering at scale.** Resolve ambiguity,
+   rights, deterministic observable contracts, semantic novelty and difficulty.
+   Reject benchmark copies and leaks. Generated families are suggestions, not
+   independent split groups. Review examples and edge cases independently.
+   Promote accepted questions into the reviewed project catalog through code
+   review; no generated JSON is loaded automatically as executable tasks.
+3. **Collect Qwen answers.** Retain every authorized attempt, tool event,
+   failure and final file in the existing private evidence format. Record
+   ordinary versus subset-conditioned prompts and initial versus repaired
+   answer stages separately. An OpenCode project is usually multiple calls.
+4. **Establish a genuine task oracle.** A reviewer specifies expectations from
+   the task, not by copying either Qwen's or Codex's output. Use edge cases,
+   independently calculated examples and appropriate property/differential
+   checks. Select standalone source-to-task mappings explicitly. Current
+   verifier admission requires its existing multi-input observable contract.
+   Multi-file imports and output-file effects wait for a wider verified contract.
+5. **Verify in the pinned container.** CPython correctness/stability precedes
+   native execution. For tasks already in a reviewed pilot, the repair-queue
+   command below binds selected sources to review evidence and TRAIN cases.
+   Novel tasks first need reviewed references and a NEW prepared bundle; there
+   is no shortcut around this prerequisite.
+
+| Verified outcome | Next action | Permitted learning view |
+| --- | --- | --- |
+| Correct and native | Retain success and diverse already-native controls | Reviewed task → code SFT candidate |
+| Correct with a valid L refusal | Codex produces a faithful supported-subset implementation | Verified repaired SFT candidate; potential compatibility preference pair |
+| Incorrect Python | Codex fixes task behavior first, then checks native support | Correctness repair candidate; keep original failure separately |
+| Native mismatch / broken refusal / unstable oracle / infrastructure failure | Stop grading, preserve witness, fix runtime or verifier, regrade under a new identity | None; never teach avoidance of a runtime bug |
+| Correct fallback-control | Keep control; do not force an impossible or unsafe native rewrite | Existing fallback-control view |
+| Unknown, truncated, redacted or incomplete contract | Retain evidence and review gap | None until resolved |
+
+6. **Repair without distorting the task.** Consult `docs/L-COVERAGE.md`, the
+   implementation and pinned runtime. Supply a complete implementation, not
+   an unsupported-construct deletion. Keep original source, teacher conditions,
+   new source hash and change summary. Bound an initial repair campaign to at
+   most two teacher attempts per selected TRAIN task; unresolved tasks become
+   capability requests or retained fallback, never infinite retries.
+7. **Reverify and derive views.** Recheck original and repair against the same
+   independent expectations and runtime. Any new test applies to both and
+   requires a new bundle. Keep teacher prompts/diagnostics separate: the primary
+   SFT row is the **ordinary task → verified final code**, not the repair request.
+   Valid outputs remain candidates until existing data review/admission succeeds.
+8. **Freeze → Fable → Codex review.** Group question seeds, paraphrases, sources,
+   repairs and close semantic relatives before splitting. Use TRAIN only for
+   repair feedback. Do not mine dev/test answers into training or use test
+   failures to iteratively select recipes. Retain all raw observations outside
+   the selected learning view. Fable trains only from approved immutable bundles.
+
+## Which training methods to try, in order
+
+These are experiment priorities, not claims of a universally best recipe.
+
+| Method | Behavior it can encourage | Required comparison / guard |
+| --- | --- | --- |
+| Verified SFT and specification distillation | Make compatible solutions the default response to ordinary requests; teacher may receive a capability card or reason internally | First experiment: broad verified SFT vs pinned base; mask prompt loss; exclude teacher feedback from student prompt; measure ordinary-task first drafts |
+| Iterative rejection-sampled SFT | Reinforce diverse successful on-policy idioms and teach missing ones through reviewed repairs | Add only verified TRAIN successes; cap family/source contribution; retain native and fallback controls; compare against equal-token static SFT |
+| DPO after SFT | Prefer a correct native implementation over a correct refused alternative for the SAME ordinary task | Both solutions independently correct, pinned runtime, complete nontruncated answers; separate correctness preference pairs; no preferences for engine bugs, impossible controls or mere brevity |
+| Execution-reward GRPO / RLVR | Improve selection among behaviors the policy already samples | Fresh train-only informative-reward probe for exact SFT checkpoint; fixed test suites; wrong code gets no compatibility credit; compare SFT-only at matched work |
+| Explicit feedback/repair SFT | Learn to react to diagnostics when a deployment interface actually supplies them | Separate multi-turn data and evaluation; never substitute repaired pass@k for first-draft pass@1 |
+| Continued code pretraining | Potentially shift local syntax/idiom distribution | Low priority: lacks task correctness signal; requires rights-reviewed broad code and retention controls; only try if SFT evidence identifies a representation deficit |
+
+Self-Instruct motivates generating and filtering diverse instructions, not
+trusting synthetic labels: [primary paper](https://arxiv.org/abs/2212.10560).
+DPO learns from paired preferences without a separately trained reward model;
+its published results are not evidence for our interpreter specifically:
+[primary paper](https://arxiv.org/abs/2305.18290).
+DeepSeek-R1 provides evidence for a combination of supervised data, rejection
+sampling, RL and distillation in reasoning models, not a proof that our Qwen
+adapter should skip SFT: [primary paper](https://arxiv.org/abs/2501.12948).
+Sources checked 2026-09-15; recommendations above are our domain-specific
+hypotheses. DPO/continued-pretraining trainers are **not implemented** by this change.
+
+Behavioral emphasis should first change curated data mixtures and sampling,
+not merely LoRA rank. Preregister weights for undercovered capability families,
+compositions, deployment-frequency samples and retention controls; audit losses
+and outcomes by stratum. More adapter capacity/full-weight tuning is a separate
+parameterization ablation. Never overfit one refusal keyword or train universal
+avoidance of useful imports/classes across tasks outside the targeted subset.
+
+## Reasoning and volume experiment
+
+The new `compare-none` and `compare-medium` profiles hold temperature 0.7,
+top-p 0.8, six requests and 8,192 completion tokens/request constant. Each reserves
+49,152 output tokens/session, the same ceiling as the historical baseline's
+24 × 2,048. Reasoning consumes this completion budget; it is not free extra
+capacity. The baseline is retained as a historical/control profile, not a
+matched reasoning arm. [Cerebras reasoning contract](https://inference-docs.cerebras.ai/capabilities/reasoning).
+
+First compare both arms on identical reviewed TRAIN tasks and equal bounded
+rounds. Preserve failed/truncated/rate-limited runs. Report actual input/output
+tokens, useful verified unique-family yield, total requests, repair effort and
+elapsed time. A higher raw response count is not a quality win. The proxy keeps
+reasoning separate from final content; the pinned OpenCode reasoning-history
+round-trip and live medium-mode behavior still need a real pilot before claiming
+equivalence with native Cerebras clients. Do not train reasoning traces by default.
+
+Question-production target: six domain sessions requesting 20 proposals each
+in the first batch (a target of 120, **not a measured count of valid questions**).
+After quality/usage review, use bounded additional rounds and page an expanded
+reviewed catalog. Repeated producer domains or paraphrases do not add independent
+families. Broaden task semantics and capability compositions before raising job
+concurrency or caps. Do not change the current paid manual-only trigger.
+
+## Status and next decision ledger
+
+| ID / owner | Current status | Evidence needed / next action |
+| --- | --- | --- |
+| H1 / Codex | Baseline collection demonstrated; ungraded | Existing pilot [35017084120](https://github.com/kristerhedfors/lypning/actions/runs/35017084120), 2026-09-15. Build queues; review independent contracts before labeling |
+| H2 / Codex | Question catalog and comparison profiles implemented; live question/medium pilot pending | Secret-free integration first; then bounded proposed question batch and matched reasoning arms; report actual valid novelty and usage |
+| D1 / Codex | Review/repair queue implemented; no new training examples admitted | Independently review tasks/oracles, author references, freeze a new container-backed pilot, map reviewed TRAIN sources, grade and repair |
+| T1 / Fable | Active session owns training prerequisites and execution | Supply latest operator status, exact artifacts and report using template below; do not assume a GPU run exists |
+| R1 / Codex | PR #73 assessed; no later training writeup available here | See `reviews/2026-09-15-fable-stage0a.md`; request private artifacts/remaining replay before accepting stronger claims |
+| E1 / Codex + Fable | Verified broad SFT is first training candidate | Once data/model/hardware approvals and smoke pass, Fable compares base vs SFT under fixed identities |
+| E2 / Codex | DPO or GRPO choice not decided | Use SFT results, enough valid pairs and exact-policy reward variation; change one objective at a time |
+
+When a question closes, update its row with dated artifact identity, result,
+decision and next owner/action. Unknown is not failure, and finished code is not
+a finished experiment. **After H2/D1 and training launch gates close: Fable runs
+base vs verified SFT; Codex reviews that report before authorizing the next
+recipe.** Existing authorized Fable work may continue; this is a future bundle,
+not an instruction to reset an active round.
+
+Implementation verification, 2026-09-15: local training/documentation tests at
+`a6ab6ae` completed with 552 passed, 8 skipped and 20 existing non-strict xpasses.
+Four existing pilot archives produced source-linked private queues without
+execution. These results do not certify new questions, repairs or model quality;
+secret-free workflow integration and live pilots have separate evidence gates.
+
+## Fable writeup → Codex assessment contract
+
+Use `FABLE_REPORT_TEMPLATE.md` for each attempt, including failures and no-run
+outcomes. Commit a sanitized writeup or provide its exact path/PR; private
+artifacts require an approved transfer, not invented access. Codex reads the
+writeup and accessible underlying evidence, then commits a separate dated review
+under `nemotron/reviews/`. Assess:
+
+- provenance, runtime/oracle/container/model/tokenizer identities and split integrity;
+- actual first-draft correctness AND native coverage, retention/fallback behavior,
+  grouped uncertainty and matched budgets, not legality or training loss alone;
+- truncation, decode-cap changes, serving-stack nulls, optimizer masking and
+  effective tokens/family mixture; distinguish protocol tests from GPU behavior;
+- mismatch and infrastructure handling; missing artifacts and unreplayed witnesses;
+- Fable's reflections: what evidence supports them, what contradicts them,
+  alternative explanations and a cheapest discriminating next experiment.
+
+The review ends with **continue / revise / hold**, a bounded next action, owner,
+inputs and stop criteria. A report that disproves our expectation is useful.
+No automatic training, model promotion, background polling or budget increase
+is enabled by this document.

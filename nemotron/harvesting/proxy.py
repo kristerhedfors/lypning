@@ -40,6 +40,7 @@ class ProxyConfig:
     total_output_tokens: int
     ledger: Path
     upstream_timeout: float = 120.0
+    reasoning_effort: str = "none"
 
     def __post_init__(self) -> None:
         if not self.model or any(
@@ -49,6 +50,8 @@ class ProxyConfig:
             raise ValueError("an exact model and positive integer budgets are required")
         if not 0 < self.upstream_timeout <= 300:
             raise ValueError("upstream timeout must be in (0, 300]")
+        if self.reasoning_effort not in ("none", "medium"):
+            raise ValueError("unsupported harvest reasoning profile")
 
 
 class Rejected(Exception):
@@ -150,7 +153,7 @@ class ProxyServer(ThreadingHTTPServer):
         outgoing.pop("stream_options", None)
         outgoing["max_tokens"] = tokens
         outgoing["stream"] = False
-        outgoing["reasoning_effort"] = "none"
+        outgoing["reasoning_effort"] = self.config.reasoning_effort
         outgoing["temperature"] = 0.7
         outgoing["top_p"] = 0.8
         try:
@@ -307,9 +310,10 @@ def main(argv: Any = None) -> int:
     parser.add_argument("--max-output-tokens", type=int, required=True)
     parser.add_argument("--total-output-tokens", type=int, required=True)
     parser.add_argument("--ledger", type=Path, required=True)
+    parser.add_argument("--reasoning-effort", choices=("none", "medium"), default="none")
     args = parser.parse_args(argv)
     config = ProxyConfig(args.model, args.max_requests, args.max_output_tokens,
-                         args.total_output_tokens, args.ledger)
+                         args.total_output_tokens, args.ledger, reasoning_effort=args.reasoning_effort)
     key = os.environ.pop("CEREBRAS_API_KEY", "").strip()
     try:
         server = ProxyServer((args.host, args.port), config, key)

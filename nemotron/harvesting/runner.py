@@ -20,6 +20,7 @@ import uuid
 
 from lypning.evidence import snapshot
 from .worker import MODEL, OPENCODE_VERSION
+from .campaign import PROFILES, profile, question_tasks
 
 MAX_ARCHIVE = 64 * 1024 * 1024
 MAX_FILE = 16 * 1024 * 1024
@@ -75,18 +76,33 @@ def command(argv, *, limit=MAX_ARCHIVE, timeout=60, env=None, input_bytes=None):
         process.stderr.close()
 
 
-def load_tasks():
-    tasks = json.loads((CONTEXT / "tasks.json").read_text())
-    if len(tasks) != 12 or len({task["id"] for task in tasks}) != len(tasks):
+def load_tasks(catalog="projects"):
+    if catalog not in ("projects", "questions"):
+        raise ValueError("Unknown reviewed catalog")
+    tasks = question_tasks() if catalog == "questions" else json.loads((CONTEXT / "tasks.json").read_text())
+    if (not isinstance(tasks, list) or not 1 <= len(tasks) <= 256 or
+            any(not isinstance(task, dict) for task in tasks)):
         raise ValueError("Invalid authored catalog")
+    for task in tasks:
+        if (any(not isinstance(task.get(key), str) or not task[key].strip()
+                for key in ("id", "family", "prompt", "rights_basis")) or
+                not isinstance(task.get("capabilities"), list) or not task["capabilities"] or
+                any(not isinstance(value, str) or not value.strip() for value in task["capabilities"]) or
+                len(json.dumps(task).encode()) > 6000):
+            raise ValueError("Invalid or oversized catalog task")
+    if len({task["id"] for task in tasks}) != len(tasks):
+        raise ValueError("Duplicate catalog identity")
     return tasks
 
 
-def plan(projects=4, rounds=1, parallelism=4):
-    if not 1 <= projects <= 12 or not 1 <= rounds <= 4 or not 1 <= parallelism <= 4:
+def plan(projects=4, rounds=1, parallelism=4, *, catalog="projects", start_index=0):
+    if (any(type(value) is not int for value in (projects, rounds, parallelism, start_index)) or
+            not 1 <= projects <= 12 or not 1 <= rounds <= 4 or not 1 <= parallelism <= 4):
         raise ValueError("projects=1..12, rounds=1..4, parallelism=1..4 required")
+    if start_index < 0 or start_index + projects > len(load_tasks(catalog)):
+        raise ValueError("Selected range exceeds reviewed catalog")
     return {"include": [{"task_index": index, "round": repeat}
-                        for repeat in range(rounds) for index in range(projects)]}
+                        for repeat in range(rounds) for index in range(start_index, start_index + projects)]}
 
 
 def collect(tar_bytes, output, prefix, secret=b""):
@@ -194,8 +210,10 @@ def worker_health(records, output):
     return errors
 
 
-def run(task_index, repeat, output, worker_image, proxy_image, *, smoke=False, deadline=900):
-    tasks = load_tasks()
+def run(task_index, repeat, output, worker_image, proxy_image, *, smoke=False, deadline=900,
+        catalog="projects", generation_profile="baseline"):
+    tasks = load_tasks(catalog)
+    generation = profile(generation_profile)
     if not 0 <= task_index < len(tasks) or not 0 <= repeat < 4:
         raise ValueError("Invalid task index or round")
     secret = os.environ.get("CEREBRAS_API_KEY", "")
@@ -207,11 +225,15 @@ def run(task_index, repeat, output, worker_image, proxy_image, *, smoke=False, d
     work_volume, proxy_volume = tag + "-work", tag + "-ledger"
     revision = os.environ.get("GITHUB_SHA", "local-uncommitted")
     task = dict(tasks[task_index], model=MODEL, proxy_url="http://harvest-proxy:8080",
+                catalog=catalog, catalog_sha256=hashlib.sha256(json.dumps(tasks, sort_keys=True).encode()).hexdigest(),
+                generation=generation,
                 run_id=os.environ.get("GITHUB_RUN_ID", tag),
                 run_attempt=os.environ.get("GITHUB_RUN_ATTEMPT", "1"),
                 round=repeat, repo_revision=revision)
     if smoke:
         task["prompt"] = "Create main.py printing 42 and run it with python3."
+    if len(json.dumps(task, indent=2).encode()) > 8192:
+        raise ValueError("Task exceeds trusted bootstrap bound")
     task_path = output / "task.json"
     task_path.write_text(json.dumps(task, indent=2))
     # Authored, nonsecret prompt must be readable by container UID 65534.
@@ -242,8 +264,11 @@ def run(task_index, repeat, output, worker_image, proxy_image, *, smoke=False, d
         else:
             child_env["CEREBRAS_API_KEY"] = secret
             args += ["--env", "CEREBRAS_API_KEY", proxy_image, "--host", "0.0.0.0", "--port", "8080",
-                     "--model", MODEL, "--max-requests", "24", "--max-output-tokens", "2048",
-                     "--total-output-tokens", "49152", "--ledger", "/data/proxy.jsonl"]
+                     "--model", MODEL, "--max-requests", str(generation["requests"]),
+                     "--max-output-tokens", str(generation["output_tokens_per_request"]),
+                     "--reasoning-effort", generation["reasoning_effort"],
+                     "--total-output-tokens", str(generation["reserved_output_tokens"]),
+                     "--ledger", "/data/proxy.jsonl"]
         command(args, env=child_env)
         command(["docker", "network", "connect", "--alias", "harvest-proxy", network, proxy])
         command(["docker", "start", proxy])
@@ -326,8 +351,9 @@ def run(task_index, repeat, output, worker_image, proxy_image, *, smoke=False, d
             "diagnostics": diagnostics,
             "smoke": smoke, "trainable": False, "correctness": "unknown",
             "native_compatibility": "unmeasured; no L runtime in generation container",
-            "records": records, "caps": {"requests": 24, "output_tokens_per_request": 2048,
-                "reserved_output_tokens": 49152, "request_bytes": 262144, "deadline_seconds": deadline}}
+            "records": records, "caps": {key: generation[key] for key in
+                ("requests", "output_tokens_per_request", "reserved_output_tokens")}}
+        manifest["caps"].update(request_bytes=262144, deadline_seconds=deadline)
         (output / "manifest.json").write_text(json.dumps(manifest, indent=2))
         observations = output / "observations.jsonl"
         with observations.open("w") as handle:
@@ -350,6 +376,9 @@ def main(argv=None):
     parser.add_argument("--projects", type=int, default=4)
     parser.add_argument("--rounds", type=int, default=1)
     parser.add_argument("--parallelism", type=int, default=4)
+    parser.add_argument("--catalog", choices=("projects", "questions"), default="projects")
+    parser.add_argument("--start-index", type=int, default=0)
+    parser.add_argument("--profile", choices=tuple(PROFILES), default="baseline")
     parser.add_argument("--task-index", type=int, default=0)
     parser.add_argument("--round", type=int, default=0)
     parser.add_argument("--output", type=Path)
@@ -358,12 +387,14 @@ def main(argv=None):
     parser.add_argument("--smoke", action="store_true")
     args = parser.parse_args(argv)
     if args.plan:
-        print(json.dumps(plan(args.projects, args.rounds, args.parallelism)))
+        print(json.dumps(plan(args.projects, args.rounds, args.parallelism,
+                              catalog=args.catalog, start_index=args.start_index)))
         return 0
     if not args.output or not args.worker_image or not args.proxy_image:
         parser.error("--output, --worker-image and --proxy-image required")
     return run(args.task_index, args.round, args.output, args.worker_image, args.proxy_image,
-               smoke=args.smoke, deadline=120 if args.smoke else 900)
+               smoke=args.smoke, deadline=120 if args.smoke else 900,
+               catalog=args.catalog, generation_profile=args.profile)
 
 
 if __name__ == "__main__":
