@@ -14,6 +14,21 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-15** — Plan demand-driven growth: the wish line, bundled helpers, and the data plan ([branch `claude/nice-bell-b6c4jj`](https://github.com/kristerhedfors/lypning/tree/claude/nice-bell-b6c4jj))
+
+- Add `docs/DEMAND.md`: a `# want: <plain words>` comment the model is asked
+  to type beside — never instead of — the program it wants, ignored by every
+  engine and the router, read by the harvest, so demand that a prompt moved
+  into the subset stops being invisible to `conformance --plan`.
+- Propose a helper vocabulary above the stdlib, shipped as a pure-Python
+  reference in the wheel and as Rust on `lypning-l`, admitted only under the
+  rule that CPython running the wheel stays the oracle; grown by wish
+  clusters, shrunk by a usage census, never a fake of a wide module.
+- Lay out the data plan: for each of the twelve flows the project has now,
+  the record, the demand it carries, what the plan adds and which decision
+  reads it; the six steps, one mechanism each, measuring demand before
+  spending bytes. Nothing is implemented; every number is dated to its run.
+
 **2026-09-15** — Check question delivery and assess the first live proposal pilots ([#78](https://github.com/kristerhedfors/lypning/pull/78))
 
 - Fail missing, incomplete or truncated harvest delivery while retaining partial

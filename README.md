@@ -489,6 +489,7 @@ no runner or no pin shows up there as a hole rather than as silence.
 | `docs/MICROPYTHON.md` | `lypning-mp`, the oracle: what a second reimplementation got wrong, and the cost model both were built against |
 | `docs/SANDBOX-PERFORMANCE.md` | the cost model — cold blocks, the exec floor, spawns — measured upstream, dated |
 | `docs/PROMPTING.md` | can an agent be *asked* into the subset? nine prompt treatments, measured 2026-08-23 |
+| `docs/DEMAND.md` | the plan for demand-driven growth: the `# want:` wish line, helpers bundled with a pure-Python reference, and the data plan across every capture, grading and training flow |
 | `docs/COMPARISON.md` | against ADK-Rust CodeAct + Monty: one instrument over the corpus, both columns measured |
 | `docs/PAPER.md` | the write-up: what coding agents actually emit, and CPython / PyPy / MicroPython / Monty / lypning benchmarked on it |
 | `docs/EXECUTIVE-SUMMARY.md` | the verdict: where lypning improves, where it regresses, where it loses, and the biases that flatter it |
