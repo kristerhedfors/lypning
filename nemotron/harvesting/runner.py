@@ -35,15 +35,21 @@ class ContainerCommandError(RuntimeError):
         self.detail = clean[:4096].decode("utf-8", errors="replace")
 
 
-def command(argv, *, limit=MAX_ARCHIVE, timeout=60, env=None):
+def command(argv, *, limit=MAX_ARCHIVE, timeout=60, env=None, input_bytes=None):
     """Bound Docker transport output and wall time, including malicious logs."""
-    process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    if input_bytes is not None and len(input_bytes) > 8192:
+        raise ValueError("Trusted bootstrap input exceeds pipe bound")
+    process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+                               stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL)
     out, err = bytearray(), bytearray()
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ, out)
     selector.register(process.stderr, selectors.EVENT_READ, err)
     deadline = time.monotonic() + timeout
     try:
+        if input_bytes is not None:
+            process.stdin.write(input_bytes)
+            process.stdin.close()
         while selector.get_map():
             if time.monotonic() >= deadline:
                 raise RuntimeError("Container command deadline exceeded")
@@ -130,6 +136,52 @@ def container_args(name, network, image):
             "--tmpfs", "/work:rw,nosuid,nodev,size=768m,uid=65534,gid=65534,mode=700"]
 
 
+def collect_container(name, directories, output, secret, errors, diagnostics):
+    records = []
+    try:
+        command(["docker", "pause", name])
+    except RuntimeError:
+        # A crashed container loses tmpfs; report the gap, never invent data.
+        errors.append("container_unavailable_for_collection:" + name.rsplit("-", 1)[-1])
+        return records
+    for label, directory in directories:
+        try:
+            payload = command(["docker", "cp", name + ":" + directory, "-"])
+            records.extend(collect(payload, output, label, secret.encode()))
+        except (RuntimeError, ValueError, tarfile.TarError) as exc:
+            errors.append("collection_failed:" + label)
+            if isinstance(exc, ContainerCommandError):
+                diagnostics.append({"operation": exc.operation, "stderr": exc.detail})
+    return records
+
+
+def worker_health(records, output):
+    errors = []
+    worker_rows = [r for r in records if r["collection"] == "output" and r["path"].endswith("/worker.json")]
+    if not worker_rows or not worker_rows[0].get("sha256"):
+        errors.append("worker_report_missing")
+    else:
+        try:
+            report = json.loads((output / "blobs" / worker_rows[0]["sha256"]).read_text())
+            if report.get("exit_code") != 0:
+                errors.append("opencode_nonzero_exit")
+            if not report.get("exports") or any(value != 0 for value in report["exports"].values()):
+                errors.append("session_export_missing_or_failed")
+        except (ValueError, AttributeError):
+            errors.append("invalid_worker_report")
+    for row in records:
+        if row["collection"] == "output" and row["path"].endswith("/events.jsonl") and row.get("sha256"):
+            for line in (output / "blobs" / row["sha256"]).read_text(errors="replace").splitlines():
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(event, dict) and event.get("type") == "error":
+                    errors.append("opencode_error_event")
+                    break
+    return errors
+
+
 def run(task_index, repeat, output, worker_image, proxy_image, *, smoke=False, deadline=900):
     tasks = load_tasks()
     if not 0 <= task_index < len(tasks) or not 0 <= repeat < 4:
@@ -153,6 +205,7 @@ def run(task_index, repeat, output, worker_image, proxy_image, *, smoke=False, d
     # Parent output directory remains private (0700).
     task_path.chmod(0o644)
     records, errors, diagnostics, rule = [], [], [], None
+    started_containers = set()
     state = "infrastructure_failure"
     started = time.time()
     try:
@@ -179,11 +232,18 @@ def run(task_index, repeat, output, worker_image, proxy_image, *, smoke=False, d
         command(args, env=child_env)
         command(["docker", "network", "connect", "--alias", "harvest-proxy", network, proxy])
         command(["docker", "start", proxy])
+        started_containers.add(proxy)
         command(container_args(worker, network, worker_image) + [worker_image])
-        # /work is tmpfs: copy the task after starting via stdin to an image-owned
-        # bootstrap, not docker cp into an unmounted/soon-shadowed tmpfs.
+        # The image-owned entrypoint waits for this nonsecret prompt file.
+        # Copy after mounting /work tmpfs so the file is not shadowed on start.
         command(["docker", "start", worker])
-        command(["docker", "cp", str(task_path), worker + ":/work/task.json"])
+        started_containers.add(worker)
+        # Docker cp INTO a read-only-rootfs container rejects even a writable
+        # tmpfs destination. Feed only authored prompt bytes to fixed image-owned
+        # Python before the agent starts; no bind mount or writable root needed.
+        command(["docker", "exec", "-i", worker, "python3", "-I", "-c",
+                 "import sys; from pathlib import Path; Path('/work/task.json').write_bytes(sys.stdin.buffer.read(8193))"],
+                input_bytes=task_path.read_bytes(), timeout=15, limit=8192)
         until = time.monotonic() + deadline
         state = "deadline"
         while time.monotonic() < until:
@@ -198,46 +258,28 @@ def run(task_index, repeat, output, worker_image, proxy_image, *, smoke=False, d
                 state = "worker_reported_completion"
                 break
             time.sleep(2)
-        command(["docker", "pause", worker])
-        for directory in ("project", "output"):
-            try:
-                payload = command(["docker", "cp", worker + ":/work/" + directory, "-"])
-                records.extend(collect(payload, output, directory, secret.encode()))
-            except (RuntimeError, ValueError, tarfile.TarError):
-                errors.append("collection_failed:" + directory)
-        command(["docker", "pause", proxy])
-        if not smoke:
-            try:
-                payload = command(["docker", "cp", proxy + ":/data", "-"])
-                records.extend(collect(payload, output, "proxy", secret.encode()))
-            except (RuntimeError, ValueError, tarfile.TarError):
-                errors.append("collection_failed:proxy")
-        worker_rows = [r for r in records if r["collection"] == "output" and r["path"].endswith("/worker.json")]
-        if not worker_rows or not worker_rows[0].get("sha256"):
-            errors.append("worker_report_missing")
-        else:
-            try:
-                report = json.loads((output / "blobs" / worker_rows[0]["sha256"]).read_text())
-                if report.get("exit_code") != 0:
-                    errors.append("opencode_nonzero_exit")
-            except (ValueError, AttributeError):
-                errors.append("invalid_worker_report")
-        for row in records:
-            if row["collection"] == "output" and row["path"].endswith("/events.jsonl") and row.get("sha256"):
-                for line in (output / "blobs" / row["sha256"]).read_text(errors="replace").splitlines():
-                    try:
-                        event = json.loads(line)
-                    except ValueError:
-                        continue
-                    if isinstance(event, dict) and event.get("type") == "error":
-                        errors.append("opencode_error_event")
-                        break
+    except KeyboardInterrupt:
+        state = "cancelled"
+        errors.append("cancelled")
     except Exception as exc:
         # No exception text: provider/container failures can echo sensitive data.
         errors.append(type(exc).__name__)
         if isinstance(exc, ContainerCommandError):
             diagnostics.append({"operation": exc.operation, "stderr": exc.detail})
     finally:
+        # Collect before cleanup even after a controller error or cancellation.
+        try:
+            if worker in started_containers:
+                records.extend(collect_container(worker, [("project", "/work/project"), ("output", "/work/output")],
+                                                 output, secret, errors, diagnostics))
+                errors.extend(worker_health(records, output))
+        except Exception as exc:
+            errors.append("worker_collection:" + type(exc).__name__)
+        try:
+            if proxy in started_containers and not smoke:
+                records.extend(collect_container(proxy, [("proxy", "/data")], output, secret, errors, diagnostics))
+        except Exception as exc:
+            errors.append("proxy_collection:" + type(exc).__name__)
         for name in (worker, proxy):
             try:
                 command(["docker", "rm", "--force", name])
