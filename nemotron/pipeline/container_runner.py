@@ -77,7 +77,11 @@ class ContainerRunner:
         if check:
             got = self._request({"protocol": PROTOCOL, "action": "identity"}, 10, 1024)
             expected = {k: identity[k] for k in ("sha256", "version", "oracle", "sandbox_sha256", "child_exec_sha256")}
-            if got != expected:
+            # The worker reports more than the bundle records (its own hash, the
+            # interpreter's); the Docker image is a digest, so those are the
+            # pooled runner's concern. Compare the bundle's fields, never the dict.
+            observed = {k: got.get(k) for k in expected} if isinstance(got, dict) else got
+            if observed != expected:
                 raise TrainingError("container engine/oracle/harness differs from the bundle worker: " + str(got))
 
     def command(self, name, memory_mb):
