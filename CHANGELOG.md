@@ -14,6 +14,13 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-15** — Check question delivery and assess the first live proposal pilots ([#78](https://github.com/kristerhedfors/lypning/pull/78))
+
+- Fail missing, incomplete or truncated harvest delivery while retaining partial
+  evidence; inspect question schemas and source-line identities without execution.
+- Record the measured pilots and independent Fable review, and prepare a smaller
+  question recipe under the same token ceiling. No automatic training admission.
+
 **2026-09-15** — Hillclimb 83: five wrong answers from the un-replayed ledger surfaces, and one home for the earlier model's name ([#77](https://github.com/kristerhedfors/lypning/pull/77))
 
 - Sweep the seven surfaces the ledger's un-replayed witnesses name with

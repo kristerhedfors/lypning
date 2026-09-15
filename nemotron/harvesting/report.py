@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 
 from lypning.evidence import load_snapshot
+from .questions import inspect_records
 
 
 def inspect(path):
@@ -55,6 +56,8 @@ def inspect(path):
             counts["truncated_completions"] += sum(
                 choice.get("finish_reason") == "length" for choice in response.get("choices", []))
     return {"task": manifest["task"]["id"], "run_id": manifest["task"]["run_id"],
+            "question_proposals": {k: v for k, v in inspect_records(manifest["records"], path).items()
+                                   if k != "files"},
             "catalog": manifest["task"].get("catalog", "unrecorded"),
             "generation": manifest["task"].get("generation", "unrecorded; inspect proxy ledger"),
             "round": manifest["task"]["round"], "state": manifest["state"],

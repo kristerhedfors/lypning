@@ -12,7 +12,7 @@ on:
       profile:
         description: 'Baseline or matched-budget reasoning comparison (same total token ceiling)'
         type: choice
-        options: [baseline, compare-none, compare-medium]
+        options: [baseline, compare-none, compare-medium, question-proposals]
         default: baseline
       start_index:
         description: 'First task in the reviewed catalog (zero-based; page larger catalogs)'
