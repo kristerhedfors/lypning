@@ -424,6 +424,22 @@ a sandbox: a write outside the repository is not undone. **CODE HOME.**
 and a program that imports lypning and drives a battery);
 `conformance._snapshot`, `conformance.close_net`, `conformance._restore`;
 `conformance.Report.ok` (damage fails); `bench.skip_reason` (the same skips).
+
+Recognised package-manager mutations and Hugging Face model-download calls are
+also safety-skipped **before the reference runs**, with an `external mutation`
+reason. A fresh cwd cannot contain site-packages changes or external model
+caches: the captured installer `py-ab4bbc603d5e` changed the environment being
+compared and exposed this gap in CI on 2026-09-15. Records stay in the corpus;
+these exclusions produce no MATCH/MISMATCH verdict or coverage credit.
+`corpus_safety.external_mutation` inspects executable AST calls, aliases and
+simple literal commands; comments, quoted patches and read-only package queries
+are not install commands. Dynamic commands, wrappers, arbitrary network access
+and Python reflection are **not** contained by this static net. Replay untrusted
+programs only behind an external filesystem/egress boundary with disposable
+interpreters; testing package installation needs a separate isolated protocol.
+`tests/test_corpus_safety.py` pins both admission and false-positive boundaries,
+and proves installer/download witnesses never reach either interpreter.
+
 ```bash
 # CHECK — `c8-net.sh`. Run a battery only in a worktree with its own state dir (`git worktree add ../lypning-<topic> -b <topic>`, `export LYPNING_HOME=/tmp/lypning-<topic>`), never in a tree anyone is editing — the net restores changed tracked files whoever changed them — and after a battery that crashed mid-way run `git status` yourself: the restore runs only at the end of a run that got there.
 git status --porcelain | wc -l; lypning conformance --limit 200 > /dev/null; echo $?; git status --porcelain | wc -l
