@@ -155,10 +155,12 @@ jobs:
         # Non-zero on any FAIL. Reports WARN for the hooks, the shim and the
         # absent MicroPython tier, which is the correct state for a runner.
         run: lypning doctor
-      - name: gate the core
+      - name: gate both Rust variants
         # static, zero shared objects, zero file opens, and the byte count that
         # the cold cost is a step function of.
-        run: lypning gate
+        run: |
+          lypning gate
+          lypning gate "$HOME/.lypning/bin/lypning-l"
       - name: pytest, now with an engine to spawn
         # The ~100 cases the matrix job skips: everything that runs a program
         # through a tier and compares the answer.

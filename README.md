@@ -480,6 +480,8 @@ no runner or no pin shows up there as a hole rather than as silence.
 | `docs/LYPNING.md` | the design: the measurement, the subset, the refusals, the classifier, the dispatcher, the commit barrier |
 | `docs/SUBSET.md` | what the subset must execute, entry by entry |
 | `docs/DIFFERENCES.md` | how `lypning` and `lypning-l` differ from Python: the architecture, the names each one resolves, and the refusals that skip the larger engine |
+| `docs/L-COVERAGE.md` | the expanded L surfaces, their exact boundaries, and the evidence needed before manually starting the next training round |
+| `docs/BIGINT-NUMERIC.md` | wide byte conversion and exact finite-float ratios: representation, limits, and differential checks |
 | `docs/COOKBOOK.md` | unsupported Python, rewritten — what to type when an engine refuses |
 | `docs/CAPTURE.md` | the two capture feeds, the harvest, and the privacy rules |
 | `docs/HARNESSES.md` | wiring capture into opencode and the OpenHands SDK: what each install writes, what it refuses to write, and what is verified against a real install |

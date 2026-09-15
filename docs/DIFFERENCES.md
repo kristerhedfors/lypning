@@ -169,7 +169,7 @@ either binary):
 | `cap-re` | the `re` module and its matcher | `re.rs` |
 
 `cap-re` serves a **slice** of the pattern language, and the rest of it is
-refusals rather than a best effort: named groups, backreferences, lookaround,
+refusals rather than a best effort: non-ASCII group names, backreferences, lookaround,
 bytes patterns, Unicode `\w`/`\d`/`\s`, Unicode case folding and a backtracking
 step budget all refuse (`docs/LYPNING.md` §3).
 

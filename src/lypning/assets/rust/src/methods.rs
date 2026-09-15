@@ -1914,7 +1914,7 @@ fn tuple_method(t: &Rc<Vec<Value>>, name: &str, args: &mut Args) -> R<Value> {
 //     `(1e300).as_integer_ratio()`, the denominator of `(5e-324)`'s — is the
 //     existing `bigint` refusal, never a wrapped `as i64`. The core has no wide
 //     integer at all, so the refusal is what routes those programs to
-//     `lypning-l` (from_bytes) or to CPython;
+//     `lypning-l`, whose cap-bigint paths handle both conversions and ratios;
 //   * the ARITY error message is CPython's own, which is "takes no arguments
 //     (1 given)" and not the "takes exactly 0 arguments" `check_arity` would
 //     produce — so these use [`no_args`] rather than the `arity` table;
@@ -2101,6 +2101,14 @@ fn int_method(recv: &Value, name: &str, args: &mut Args, kw: &[(Rc<str>, Value)]
                     &format!("int.to_bytes() of {n} bytes, past this engine's {MAX_BYTES}"),
                 ));
             }
+            #[cfg(feature = "cap-bigint")]
+            if let Value::Int(Int::B(b)) = recv {
+                let mut out = crate::bigint::to_bytes(b, n as usize, signed)?;
+                if !little {
+                    out.reverse();
+                }
+                return Ok(Value::Bytes(Rc::new(out)));
+            }
             let v = int_val(recv)?;
             let n = n as usize;
             // CPython's two OverflowErrors, which are different sentences: a
@@ -2212,7 +2220,7 @@ fn int_method(recv: &Value, name: &str, args: &mut Args, kw: &[(Rc<str>, Value)]
 }
 
 /// `(numerator, denominator)` in lowest terms, or the refusal for a pair an
-/// `i64` cannot hold.
+/// `i64` cannot hold on the frozen core; cap-bigint holds every finite ratio.
 ///
 /// A double is `m * 2**e` with `m` an integer, so the ratio is exact before it
 /// is reduced and the reduction is shifting the trailing zeros out of `m` — no
@@ -2244,25 +2252,32 @@ fn as_integer_ratio(x: f64) -> R<Value> {
         m >>= 1;
         e += 1;
     }
-    let refuse = |what: &str| {
-        Err(unsupported(
-            "bigint",
-            &format!("float.as_integer_ratio() whose {what} is past 64 bits"),
-        ))
-    };
-    let (num, den) = if e >= 0 {
-        if e as u32 + (64 - m.leading_zeros()) > 63 {
-            return refuse("numerator");
-        }
-        ((m << e) as i64, 1i64)
-    } else {
-        if -e > 62 {
-            return refuse("denominator");
-        }
-        (m as i64, 1i64 << -e)
-    };
-    let num = if bits >> 63 == 1 { -num } else { num };
-    Ok(Value::Tuple(Rc::new(vec![ival(num), ival(den)])))
+    #[cfg(feature = "cap-bigint")]
+    {
+        return Ok(crate::bigint::float_ratio(m, e, bits >> 63 == 1));
+    }
+    #[cfg(not(feature = "cap-bigint"))]
+    {
+        let refuse = |what: &str| {
+            Err(unsupported(
+                "bigint",
+                &format!("float.as_integer_ratio() whose {what} is past 64 bits"),
+            ))
+        };
+        let (num, den) = if e >= 0 {
+            if e as u32 + (64 - m.leading_zeros()) > 63 {
+                return refuse("numerator");
+            }
+            ((m << e) as i64, 1i64)
+        } else {
+            if -e > 62 {
+                return refuse("denominator");
+            }
+            (m as i64, 1i64 << -e)
+        };
+        let num = if bits >> 63 == 1 { -num } else { num };
+        Ok(Value::Tuple(Rc::new(vec![ival(num), ival(den)])))
+    }
 }
 
 fn float_method(x: f64, name: &str, args: &mut Args, kw: &[(Rc<str>, Value)]) -> R<Value> {

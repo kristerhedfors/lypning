@@ -14,6 +14,20 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-15** — Expand lypning-l CSV, named-regex and exact numeric coverage ([#70](https://github.com/kristerhedfors/lypning/pull/70))
+
+- Add lazy CSV list/tuple/string inputs, preserving source mutation, exhaustion
+  and shared DictReader field names. Add ASCII named regex captures and named
+  match access without admitting unsupported backreferences or templates.
+- Add L-only wide integer byte conversion and exact finite float ratios,
+  retaining the conversion cap and the core's frozen capability set.
+- Verify cross-feature programs as raw bytes, require new capabilities to
+  answer natively, and preserve refusal/rollback tests and route fixtures.
+- Gate both Rust variants in Linux CI against unchanged target-specific
+  budgets. Keep the default core gate distinct from the explicitly named oracle.
+- Document coverage boundaries and dataset-authoring directions for the next
+  manually started training round; require rebuilt engines and fresh bundles.
+
 **2026-09-15** — Add a correctness-gated, lypning-l-first Qwen training path ([#69](https://github.com/kristerhedfors/lypning/pull/69))
 
 - Add multi-input task-family bundles, explicit engine/oracle pinning, verified

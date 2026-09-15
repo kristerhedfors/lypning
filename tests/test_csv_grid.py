@@ -517,9 +517,8 @@ REFUSED = [
     # A `\r` in the middle of an unquoted field, reached through a stream that
     # does not split on it: `new-line character seen in unquoted field`.
     _prog("a\rb\n", "print(list(csv.reader(f)))", ", newline='\\n'"),
-    # The input shapes the mine does not show, refused rather than guessed at.
-    _prog("", "print(list(csv.reader(['a,b'])))"),
-    _prog("", "print(list(csv.reader('a,b')))"),
+    # Shared iterators and generators retain their own source lifecycle, which
+    # the bounded list/tuple/string reader slice deliberately does not wrap.
     _prog("", "print(list(csv.reader(iter(['a,b\\n']))))"),
     _prog("", "print(list(csv.reader(42)))"),
     _prog("", "print(list(csv.reader(None)))"),
@@ -694,6 +693,129 @@ def test_the_csv_grid_agrees_with_cpython(program: str) -> None:
         % (program, got.stdout, got.returncode, _err(got).strip()[-200:],
            ref.stdout, ref.returncode, _err(ref).strip()[-200:])
     )
+
+
+# The in-memory surface is an ANSWER gate, not the permissive grid above.
+# Refusing one of these rows is a coverage regression. Each iterable element
+# is one line: fragments are joined only while a quoted field remains open.
+MEMORY_LINES = (
+    [], [""], ["\n"], ["a,b"], ["a,b\n", "1,2\n"],
+    ["a,b\r\n", "1,2\r\n"], ["a,b\r", "1,2\r"],
+    ['"a,b",c\n'], ['"say ""hi""",x\n'],
+    ['"a\n', 'b",c\n'], ['"ab', 'cd",x'],
+    [",,\n", "\n", '"",x\n'], ["å,東京,🙂\n", "é,ß,λ\n"],
+    ["a;b\n", "c;d\n"], ["a\tb\n"], [" a, b\n"],
+)
+MEMORY_DIALECTS = ("", ", delimiter=';'", ", delimiter='\\t'",
+                   ", skipinitialspace=True", ", quotechar=\"'\"",
+                   ", quoting=csv.QUOTE_NONE, escapechar='\\\\'")
+
+
+def _memory_answer(program: str) -> None:
+    got = _run([str(BINARY)], program)
+    ref = _run([sys.executable], program)
+    assert ref.returncode == 0, (program, ref.stderr)
+    assert (got.returncode, got.stdout, got.stderr) == (0, ref.stdout, ref.stderr), (
+        program, got.returncode, got.stdout, got.stderr, ref.stdout)
+
+
+@needs_l
+@pytest.mark.parametrize("reader", ["reader", "DictReader"])
+@pytest.mark.parametrize("shape", ["list", "tuple"])
+@pytest.mark.parametrize("dialect", MEMORY_DIALECTS)
+@pytest.mark.parametrize("lines", MEMORY_LINES)
+def test_memory_csv_lines_are_native_answers(reader, shape, dialect, lines):
+    program = C + "print(list(csv.%s(%s(%r)%s)))" % (reader, shape, lines, dialect)
+    _memory_answer(program)
+
+
+@needs_l
+@pytest.mark.parametrize("source", ["", "a,b", "å,東", '"ab"', "\n", "a\nb"])
+@pytest.mark.parametrize("reader", ["reader", "DictReader"])
+def test_memory_csv_string_is_an_iterable_of_characters(source, reader):
+    _memory_answer(C + "print(list(csv.%s(%r)))" % (reader, source))
+
+
+MEMORY_LIFECYCLE = (
+    # Construction does not consume or snapshot the list.
+    "lines=['a,b']; r=csv.reader(lines); lines[0]='x,y'; print(next(r))",
+    "lines=['a,b']; r=csv.reader(lines); lines.append('c,d'); print(list(r))",
+    "lines=['a,b','c,d']; r=csv.reader(lines); print(next(r)); "
+    "lines[1]='x,y'; print(next(r)); print(next(r,None))",
+    "lines=['a,b']; r=csv.reader(lines); print(next(r)); "
+    "lines.append('c,d'); print(next(r)); print(next(r,None))",
+    # Once a list iterator has observed EOF, appending must not revive it.
+    "lines=['a,b']; r=csv.reader(lines); print(list(r)); "
+    "lines.append('c,d'); print(list(r))",
+    "lines=[]; r=csv.reader(lines); print(next(r,None)); "
+    "lines.append('a,b'); print(next(r,None))",
+    # Independent readers over one list have independent cursors.
+    "lines=['a,b','c,d']; a=csv.reader(lines); b=csv.reader(lines); "
+    "print(next(a)); print(list(b)); print(list(a))",
+    # DictReader obtains its header lazily and keeps the same source cursor.
+    "lines=['a,b','1,2']; r=csv.DictReader(lines); "
+    "lines[0]='x,y'; print(list(r))",
+    "lines=['a,b']; r=csv.DictReader(lines); print(next(r,None)); "
+    "lines.append('1,2'); print(next(r,None))",
+    "print(list(csv.DictReader(['1','2,3,4',''], "
+    "fieldnames=['a','b'], restkey='extra', restval='missing')))",
+    # Explicit fieldnames remains the caller's list, not a frozen copy.
+    "h=['a','b']; r=csv.DictReader(['1,2'], fieldnames=h); "
+    "h[0]='x'; print(list(r))",
+    "h=['a']; r=csv.DictReader(['1,2','3,4'], fieldnames=h, restkey='tail'); "
+    "print(next(r)); h.append('b'); print(next(r))",
+    "h=['a','b']; r=csv.DictReader(['1,2'], fieldnames=h, restkey='tail'); "
+    "h.clear(); print(next(r))",
+    "print(list(csv.DictReader(['1,2'], fieldnames=('a','b'))))",
+    # The same ownership rule already applies to file-backed readers.
+    "open('data','w').write('1,2\\n'); h=['a','b']; "
+    "r=csv.DictReader(open('data'),fieldnames=h); h[0]='x'; print(list(r))",
+    # QUOTE_NONNUMERIC converts only unquoted nonempty fields.
+    "print(list(csv.reader(['1,2.5,\"3\",', '-4,5e2,\"x\",'], "
+    "quoting=csv.QUOTE_NONNUMERIC)))",
+    # Successful in-memory parsing also works after a real commit barrier.
+    "import os\nos.mkdir('made'); print(list(csv.reader(['a,b']))); "
+    "print(os.path.isdir('made'))",
+)
+
+
+@needs_l
+@pytest.mark.parametrize("body", MEMORY_LIFECYCLE)
+def test_memory_csv_source_lifecycle(body):
+    _memory_answer(C + body)
+
+
+MEMORY_REFUSALS = (
+    "csv.reader(iter(['a,b']))", "csv.reader(x for x in ['a,b'])",
+    "list(csv.reader([b'a,b']))", "list(csv.reader([1]))",
+    "list(csv.DictReader(['a,b', None]))",
+    "list(csv.reader(['a,b\\nc,d']))",
+    "list(csv.reader(['\"unterminated'], strict=True))",
+    "csv.reader(['a,b'], delimiter='::')", "csv.reader(['a,b'], nosuch=True)",
+    "csv.reader(['a,b'], 'excel')", "csv.reader(['a,b'], quoting=9)",
+)
+
+
+@needs_l
+@pytest.mark.parametrize("body", MEMORY_REFUSALS)
+def test_memory_csv_unsupported_shapes_keep_the_refusal_contract(body):
+    # Buffered output must disappear on refusal, including an error reached
+    # lazily from a non-string line rather than from the constructor.
+    got = _run([str(BINARY)], C + "print('not committed')\n" + body)
+    assert _refusal_problem(got) is None, (body, got.returncode, got.stdout, got.stderr)
+
+
+@needs_l
+def test_memory_csv_late_invalid_line_rewinds_files_and_directories(tmp_path):
+    cwd = tmp_path / "csv-run"
+    cwd.mkdir()
+    program = (C + "import os\nos.mkdir('made')\n"
+               "open('made/data', 'w').write('staged')\n"
+               "r=csv.reader(['a,b', 1])\nprint(next(r))\nprint(next(r))")
+    got = subprocess.run([str(BINARY), "-c", program], cwd=cwd,
+                         capture_output=True, timeout=60)
+    assert _refusal_problem(got) is None, (got.returncode, got.stdout, got.stderr)
+    assert list(cwd.iterdir()) == [], "refusal left committed filesystem writes"
 
 
 #: The other input the mine DOES show — `csv.reader(sys.stdin)`, two corpus

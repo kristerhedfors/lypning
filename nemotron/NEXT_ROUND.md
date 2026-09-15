@@ -68,6 +68,8 @@ including build-sensitive behavior probes. This is not full-runtime
 certification: keep the pilot's 3.12 pin and perform the admission audit above.
 Rebuild and prepare a new bundle after any engine or oracle change; do not
 reuse verified labels across a coverage expansion.
+For the newly added CSV, named-regex and numeric surfaces, see the
+[coverage boundaries and dataset-authoring directions](../docs/L-COVERAGE.md).
 
 ```bash
 # Repository root on the approved disposable worker.

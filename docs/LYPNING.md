@@ -11,7 +11,7 @@ Every table is re-derivable from your own corpus ([`FORKING.md`](FORKING.md)).
 
 | engine | what it is | where it lives |
 |---|---|---|
-| `lypning` | the Rust core, frozen at 8 blocks (`gate.VARIANT_BLOCK_BUDGET`); it gains no capability | `src/lypning/assets/rust/`, `--features variant-m` (the default) |
+| `lypning` | the capability-frozen Rust core; a 9-block budget on x86-64 musl (`gate.VARIANT_BLOCK_BUDGET`), other targets measured separately | `src/lypning/assets/rust/`, `--features variant-m` (the default) |
 | `lypning-l` | the same crate with `cap-bigint`, `cap-collections`, `cap-csv`, `cap-glob`, `cap-hashlib`, `cap-pathlib` and `cap-re` (`engines.VARIANT_CAPS`), budgeted 32 blocks | `--features variant-l` |
 | `cpython` | the real thing, and the reference every verdict is graded against | the system `python3` (`engines.find_cpython`) |
 
@@ -97,7 +97,15 @@ than copied into each document that needs it.
 literals, classes, `. ^ $ \b`, the table classes over ASCII, the quantifiers
 greedy and lazy, groups and alternation, `search`/`match`/`fullmatch`/
 `findall`/`finditer`/`compile`/`sub`/`subn`/`split` and the `Pattern` and
-`Match` values. Named groups, backreferences, lookaround, bytes patterns,
+`Match` values. ASCII named captures `(?P<name>...)` use the same numbered
+capture slots: `group(name)`, `m[name]`, `start/end/span(name)` and
+`groupdict(default=None)` answer, including nested numbering, retained captures
+across repetition, unmatched defaults and insertion order. `groupdict` returns
+a fresh dictionary but retains the caller's default object, just like CPython.
+Non-ASCII group names refuse rather than approximate CPython's Unicode
+identifier tables. `Pattern.groupindex` (a read-only mapping proxy),
+`lastindex`/`lastgroup`, named replacement templates and `expand` remain outside
+this slice. Backreferences, lookaround, bytes patterns,
 Unicode `\w`/`\d`/`\s` and Unicode case folding are refusals, and
 `conformance --plan` ranks them. So is a step budget: CPython is exponential
 on `(a+)+$` and so is any backtracker, and a budget that answered "no match"

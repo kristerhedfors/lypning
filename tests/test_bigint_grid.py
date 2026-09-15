@@ -513,10 +513,8 @@ RUNTIME_BACKSTOP = [
     # `cap-bigint` makes a program that reaches it on a wide value run far
     # enough to ask.
     ("int-method", "print((2**100).bit_count())"),
-    # `to_bytes` of a wide integer needs a machine word this engine does not
-    # have for it — served for an `i64` receiver, refused past one, never
-    # truncated.
-    ("bigint", "print((2**100).to_bytes(16, 'big'))"),
+    # Conversion remains bounded even when the receiver is a wide integer.
+    ("int-method", "print((2**100).to_bytes(4097, 'big'))"),
 ]
 
 #: The refusals a walk CAN see, because the digits are in the source. A literal
