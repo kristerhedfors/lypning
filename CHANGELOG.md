@@ -14,6 +14,11 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-15** — Make Cerebras preflight failures diagnosable without secrets ([#74](https://github.com/kristerhedfors/lypning/pull/74))
+
+- Report HTTP status and response type without keys or response bodies; normalize
+  surrounding secret whitespace consistently before any generation is allowed.
+
 **2026-09-15** — Close five engine mismatches found while auditing the Stage 0a ledger ([#73](https://github.com/kristerhedfors/lypning/pull/73))
 
 - `enumerate(iterable=…, start=…)` binds both of Argument Clinic's names, so

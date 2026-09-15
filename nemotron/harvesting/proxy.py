@@ -174,6 +174,7 @@ class ProxyServer(ThreadingHTTPServer):
         request = urllib.request.Request(
             UPSTREAM, json.dumps(body, allow_nan=False).encode(), method="POST",
             headers={"Authorization": "Bearer " + self._api_key,
+                     "User-Agent": "lypning-harvest/1",
                      "Content-Type": "application/json", "Accept": "application/json"},
         )
         # Ignore environment proxy settings: they could receive the real key.
@@ -309,7 +310,7 @@ def main(argv: Any = None) -> int:
     args = parser.parse_args(argv)
     config = ProxyConfig(args.model, args.max_requests, args.max_output_tokens,
                          args.total_output_tokens, args.ledger)
-    key = os.environ.pop("CEREBRAS_API_KEY", "")
+    key = os.environ.pop("CEREBRAS_API_KEY", "").strip()
     try:
         server = ProxyServer((args.host, args.port), config, key)
     except (OSError, ValueError):
