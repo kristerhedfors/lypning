@@ -349,7 +349,7 @@ pub fn zero_div(msg: &str) -> LypningError {
     let msg = match msg {
         "integer division or modulo by zero" | "integer modulo by zero"
         | "float division by zero" | "float floor division by zero"
-        | "float modulo" if REF_PY_MINOR >= 14 => "division by zero",
+        | "float modulo" | "float divmod()" if REF_PY_MINOR >= 14 => "division by zero",
         "0.0 cannot be raised to a negative power" if REF_PY_MINOR >= 14 => {
             "zero to a negative power"
         }

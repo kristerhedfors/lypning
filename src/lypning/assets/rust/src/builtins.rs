@@ -1643,6 +1643,38 @@ pub fn call_builtin(
         }
         "divmod" => {
             let (a, b) = (arg1(name, &args)?, args.get(1).cloned().unwrap_or(Value::None));
+            // `float_divmod` has its own zero-divisor message, `float divmod()`,
+            // and this went through `//` first, which says `float floor
+            // division by zero`: a different message at the same exit 1, and
+            // the program's own exit is never rescued. The integer arm needs
+            // nothing — `integer division or modulo by zero` IS divmod's
+            // wording there. Found by the Stage 0a replay (ntx-cab30d587088);
+            // `zero_div` owns the 3.14 respelling.
+            // ...and the TypeError names `divmod()`, not the `//` it was
+            // computed through: `divmod('a', 1)` is `unsupported operand
+            // type(s) for divmod(): 'str' and 'int'` on 3.10 through 3.13,
+            // measured 2026-09-15.
+            // Not `as_num`: a WIDE integer is deliberately not a `Num`, and
+            // `divmod(2**70, 3)` is exact on `cap-bigint` — `binop` takes it
+            // before any `i64` is asked for.
+            let numeric = |v: &Value| {
+                #[cfg(feature = "cap-re")]
+                if matches!(v, Value::ReFlag(_)) {
+                    return true;
+                }
+                matches!(v, Value::Bool(_) | Value::Int(_) | Value::Float(_))
+            };
+            if !numeric(&a) || !numeric(&b) {
+                return Err(type_err(format!(
+                    "unsupported operand type(s) for divmod(): '{}' and '{}'",
+                    type_name(&a),
+                    type_name(&b)
+                )));
+            }
+            let float_arm = matches!(a, Value::Float(_)) || matches!(b, Value::Float(_));
+            if float_arm && !truthy(&b)? {
+                return Err(zero_div("float divmod()"));
+            }
             let q = it.binop(crate::ast::BinOp::FloorDiv, &a, &b)?;
             let r = it.binop(crate::ast::BinOp::Mod, &a, &b)?;
             Value::Tuple(Rc::new(vec![q, r]))
@@ -1671,7 +1703,15 @@ pub fn call_builtin(
             // everything else was dropped rather than refused, so
             // `enumerate(xs, strict=True)` answered at exit 0 where CPython
             // raises TypeError.
-            if let Some((k, _)) = kw.iter().find(|(k, _)| k.as_ref() != "start") {
+            // Both of Argument Clinic's names are real: `enumerate(iterable=xs,
+            // start=1)` is accepted on every CPython this engine targets, and
+            // the guard below knew only `start`, so the first spelling died at
+            // exit 1 with a TypeError CPython never raises. Found by the Stage
+            // 0a replay (ntx-b47b0b10247f).
+            if let Some((k, _)) = kw
+                .iter()
+                .find(|(k, _)| !matches!(k.as_ref(), "start" | "iterable"))
+            {
                 return Err(type_err(format!(
                     "'{k}' is an invalid keyword argument for enumerate()"
                 )));
@@ -1679,8 +1719,31 @@ pub fn call_builtin(
             // Argument Clinic names the parameter; `arg1` writes the generic
             // `missing 1 required positional argument`, which is a Python-level
             // function's wording and not this one's.
-            let v = match args.first() {
-                Some(v) => v.clone(),
+            //
+            // Two TypeErrors around that name changed wording at 3.11, and
+            // neither is the binder's. Measured on 3.10.20 / 3.11.15 / 3.12.3 /
+            // 3.13.13 on 2026-09-15: `enumerate('ab', iterable='cd')` is the
+            // ordinary given-twice sentence on 3.10 and `'iterable' is an
+            // invalid keyword argument for enumerate()` from 3.11; and
+            // `enumerate(start=1)` — the only keyword-only call the guard above
+            // lets through without an iterable — is `missing required argument
+            // 'iterable' (pos 1)` on 3.10 and `'start' is an invalid keyword
+            // argument for enumerate()` from 3.11. A type's `tp_new` reads its
+            // keywords through a different Clinic path than a function does,
+            // which is why `round(2.5, number=9)` keeps the binder's wording.
+            let named = kw.iter().any(|(k, _)| k.as_ref() == "iterable");
+            if REF_PY_MINOR >= 11 && named && args.first().is_some() {
+                return Err(type_err(
+                    "'iterable' is an invalid keyword argument for enumerate()",
+                ));
+            }
+            if REF_PY_MINOR >= 11 && args.is_empty() && !named && !kw.is_empty() {
+                return Err(type_err(
+                    "'start' is an invalid keyword argument for enumerate()",
+                ));
+            }
+            let v = match crate::args::bind(&args, &kw, 0, "iterable", "enumerate")? {
+                Some(v) => v,
                 // 3.11 dropped the position from this sentence. Measured with
                 // `enumerate()` on 2026-09-12: 3.9 and 3.10 say
                 // `… required argument 'iterable' (pos 1)`, 3.11 … 3.13 stop at

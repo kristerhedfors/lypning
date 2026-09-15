@@ -700,6 +700,17 @@ impl Interp {
             }
             Target::Slice { base, lo, hi } => {
                 let bv = self.eval(base)?;
+                // `d[:2] = v` STORES a slice as a dict key from 3.12 on, a key
+                // this engine has no value for; before 3.12 the key cannot be
+                // hashed. Neither is the `does not support slice assignment`
+                // below, which CPython says of a tuple and never of a dict.
+                // The lookup half is `ops::slice`.
+                if let Value::Dict(_) = &bv {
+                    if REF_PY_MINOR >= 12 {
+                        return Err(unsupported("slice-key", "a slice stored as a dict key"));
+                    }
+                    return Err(type_err("unhashable type: 'slice'"));
+                }
                 let Value::List(l) = &bv else {
                     return Err(type_err(format!(
                         "'{}' object does not support slice assignment",

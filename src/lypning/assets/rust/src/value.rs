@@ -1642,7 +1642,9 @@ pub fn is_same(a: &Value, b: &Value) -> bool {
         //
         // `DictView` is deliberately NOT here: `d.keys() is d.keys()` is False
         // in CPython — two view objects over one dict — and the `Rc` these
-        // carry is the DICT's, so `ptr_eq` would answer True.
+        // carry is the DICT's, so `ptr_eq` would answer True. The catch-all
+        // False below is wrong for the alias (`v = d.keys(); v is v`), so
+        // `ops::identity` refuses the pair as `dict-view` before it gets here.
         //
         // UNGATED 2026-09-13. This arm was `#[cfg(any(cap-csv, cap-hashlib))]`,
         // so the FROZEN CORE answered False for `f = enumerate(x); f is f` --

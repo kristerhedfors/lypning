@@ -603,6 +603,27 @@ impl Interp {
         hi: Option<Value>,
         step: Option<Value>,
     ) -> R<Value> {
+        // `d[:2]` is a SLICE used as a dict KEY, and CPython never validates it
+        // as a slice: the lookup hashes it first. Slices became hashable in
+        // 3.12, so the answer there is `KeyError: slice(None, 2, None)` — the
+        // repr of the three ORIGINAL objects, whatever their types — and before
+        // that the hashing itself is `TypeError: unhashable type: 'slice'`.
+        // This fell through to `not_subscriptable`, a message CPython never
+        // prints for a dict and the wrong CLASS from 3.12 on. Found by the
+        // corpus battery against a 3.12 reference (four sightings slicing a
+        // seeded JSON object), where CI's 3.11 reference agreed on the class.
+        if let Value::Dict(_) = base {
+            if REF_PY_MINOR >= 12 {
+                let r = |v: &Option<Value>| -> R<String> {
+                    match v {
+                        None => Ok("None".to_string()),
+                        Some(x) => fmt::repr(x),
+                    }
+                };
+                return Err(key_err(format!("slice({}, {}, {})", r(&lo)?, r(&hi)?, r(&step)?)));
+            }
+            return Err(type_err("unhashable type: 'slice'"));
+        }
         let step = match &step {
             None | Some(Value::None) => 1i64,
             Some(v) => {
@@ -1481,6 +1502,19 @@ fn identity(a: &Value, b: &Value) -> R<bool> {
                 "`is` over a NaN, which is not equal to itself, so CPython decides it by object identity",
             ));
         }
+    }
+    // A dict view carries the DICT's `Rc`, not its own. CPython builds a new
+    // view on every call, so `d.values() is d.values()` is False, and an alias
+    // is one object, so `v = d.values(); v is v` is True. Nothing here can tell
+    // the two apart: `is_same` has no arm, so both fell through to False, and
+    // an arm over the dict's `Rc` would answer True for both. Found by the
+    // Stage 0a replay (ntx-bd566d4c9697) as a wrong answer at exit 0; refused
+    // under the kind the views already own.
+    if let (Value::DictView(..), Value::DictView(..)) = (a, b) {
+        return Err(unsupported(
+            "dict-view",
+            "`is` between two dict views, whose identity here is the dict's rather than the view's",
+        ));
     }
     Ok(false)
 }

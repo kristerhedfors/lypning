@@ -637,6 +637,17 @@ fn push_char(out: &mut Vec<u8>, v: u32, line: u32) -> Result<(), LypningError> {
             out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
             Ok(())
         }
+        // A lone surrogate is a legal `str` in CPython — `'\udcff'` is how
+        // surrogateescape spells an undecodable byte — and no UTF-8 string can
+        // hold one. That is not a syntax error, because CPython compiles it: it
+        // is a program this engine cannot run. It answered SyntaxError at exit
+        // 1, which the dispatcher returns unchanged as the program's own; a
+        // refusal sends it on to CPython instead. Found by the Stage 0a replay
+        // (ntx-590d4adaea1e). Above U+10FFFF stays a SyntaxError, as in CPython.
+        None if (0xD800..=0xDFFF).contains(&v) => Err(unsupported(
+            "escape",
+            "\\u escape naming a lone surrogate, which no UTF-8 string can hold",
+        )),
         None => Err(LypningError::syntax(line, "invalid unicode escape")),
     }
 }

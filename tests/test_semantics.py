@@ -393,6 +393,12 @@ CASES = [
         "show('int % neg', lambda: -7 % 0)\n"
         "show('int //', lambda: 1 // 0)\n"
         "show('divmod', lambda: divmod(1, 0))\n"
+        # `float_divmod` has its own message — `float divmod()` — and the
+        # engine went through `//` first, so this said `float floor division
+        # by zero`. Stage 0a witness ntx-cab30d587088; both operand orders.
+        "show('float divmod', lambda: divmod(1.0, 0))\n"
+        "show('divmod by float', lambda: divmod(1, 0.0))\n"
+        "show('bool divmod', lambda: divmod(True, 0.0))\n"
         "show('int /', lambda: 1 / 0)\n"
         "show('float /', lambda: 1.0 / 0)\n"
         "show('float //', lambda: 1.0 // 0)\n"
@@ -401,6 +407,49 @@ CASES = [
         "for v in ([], None, {}, (), 'nope'):\n"
         "    show('float()', lambda: float(v))\n"
         "    show('int()', lambda: int(v))\n",
+    ),
+    (
+        # A slice as a dict KEY. CPython hashes the key before it validates
+        # anything, and slices became hashable in 3.12 — so `d[:2]` is
+        # `KeyError: slice(None, 2, None)` there and `TypeError: unhashable
+        # type: 'slice'` before, and the message shows the ORIGINAL objects,
+        # whatever their types. The engine said `'dict' object is not
+        # subscriptable`: the wrong words on every version and the wrong class
+        # from 3.12 on. Four sightings slicing a seeded JSON object found it,
+        # against the 3.12 reference round-02 pins; CI's 3.11 agreed on the
+        # class and never saw it.
+        "a-slice-as-a-dict-key-says-what-the-host-says",
+        "d = {'a': 1}\n"
+        "for label, fn in (('d[:2]', lambda: d[:2]), ('d[1:2:3]', lambda: d[1:2:3]),\n"
+        "                  (\"d['a':]\", lambda: d['a':]), ('d[::0]', lambda: d[::0]),\n"
+        "                  ('d[None:None]', lambda: d[None:None])):\n"
+        "    try:\n"
+        "        fn()\n"
+        "        print(label, 'no error')\n"
+        "    except Exception as e:\n"
+        "        print(label, '|', type(e).__name__, '|', e)\n",
+    ),
+    (
+        # Argument Clinic gives `enumerate` TWO names, and the keyword guard
+        # knew one: `enumerate(iterable=xs, start=1)` died at exit 1 with
+        # `'iterable' is an invalid keyword argument`, a TypeError CPython
+        # never raises. Stage 0a witness ntx-b47b0b10247f. The TypeErrors
+        # CPython DOES raise — given twice, missing, unknown — are printed too,
+        # because their wording changed at 3.11 and is not the binder's; and
+        # `divmod` over a non-number names `divmod()`, not the `//` it is
+        # computed through.
+        "enumerate-takes-iterable-by-name",
+        "print(list(enumerate(iterable='ab', start=1)))\n"
+        "print(list(enumerate(iterable='ab')))\n"
+        "print(list(enumerate('ab', start=1)))\n"
+        "print(list(enumerate(start=2, iterable='ab')))\n"
+        "for fn in (lambda: enumerate('ab', iterable='cd'), lambda: enumerate(start=1),\n"
+        "           lambda: enumerate('ab', strict=True), lambda: divmod('a', 1.0),\n"
+        "           lambda: divmod(1, 'a')):\n"
+        "    try:\n"
+        "        fn()\n"
+        "    except TypeError as e:\n"
+        "        print(repr(str(e)))\n",
     ),
 ]
 
@@ -707,6 +756,78 @@ def test_is_over_a_nan_refuses_rather_than_answering_false(lypning_bin):
     # ...and the float shapes next door still answer, because a refusal is a
     # spawn and this one is narrowed to the NaN.
     r = engines.run(engines.LYPNING, 'print(1.5 is None, float("inf") is None)',
+                    binary=lypning_bin)
+    assert not r.refused, r.stderr
+    assert r.stdout.strip() == "False False"
+
+
+def test_a_lone_surrogate_escape_refuses_rather_than_dying_as_a_syntax_error(lypning_bin):
+    """`'\\udcff'` is a legal str in CPython — it is how surrogateescape spells
+    an undecodable byte — and no UTF-8 string here can hold it.
+
+    The lexer answered SyntaxError at exit 1, which the dispatcher passes
+    through unchanged as the program's own failure, so CPython was never asked.
+    Stage 0a witness ntx-590d4adaea1e. Above U+10FFFF CPython itself raises a
+    SyntaxError, and that one stays a SyntaxError.
+    """
+    for program in (
+        'print(repr("a\\udcff"))',
+        'print(len("\\ud800"))',
+        'x = "\\U0000dfff"\nprint(x)',
+    ):
+        r = engines.run(engines.LYPNING, program, binary=lypning_bin)
+        assert r.returncode == UNSUPPORTED_EXIT, "answered %r instead of refusing" % r.stdout
+        assert r.stdout == "", "output escaped before the refusal"
+        assert "unsupported: escape:" in r.stderr, r.stderr
+
+    r = engines.run(engines.LYPNING, 'print("\\U00110000")', binary=lypning_bin)
+    assert r.returncode == 1 and "SyntaxError" in r.stderr, r.stderr
+    r = engines.run(engines.LYPNING, 'print("\\u00e9\\U0001F600")', binary=lypning_bin)
+    assert not r.refused and r.stdout == "é😀\n", r.stderr
+
+
+def test_storing_a_slice_as_a_dict_key_refuses_or_raises_as_the_host_does(lypning_bin):
+    """`d[:2] = 5` stores a slice key from 3.12 on — a key this engine has no
+    value for — and is `TypeError: unhashable type: 'slice'` before that. The
+    engine answered `'dict' object does not support slice assignment` on every
+    version, a sentence CPython says of a tuple and never of a dict. Which
+    half applies is decided by the reference the binary was built against, so
+    the test asks CPython first rather than pinning a version.
+    """
+    program = "d = {'a': 1}\nd[:2] = 5\nprint(sorted(map(str, d)))"
+    theirs = engines.run(engines.CPYTHON, program)
+    if theirs.returncode == 127:
+        pytest.skip("no reference CPython")
+    ours = engines.run(engines.LYPNING, program, binary=lypning_bin)
+    if theirs.returncode == 0:
+        assert ours.returncode == UNSUPPORTED_EXIT, "answered %r instead of refusing" % ours.stdout
+        assert ours.stdout == "" and "slice-key" in ours.stderr, ours.stderr
+    else:
+        assert ours.returncode == 1 and "unhashable type: 'slice'" in ours.stderr, ours.stderr
+        assert ours.stdout == theirs.stdout
+
+
+def test_is_between_two_dict_views_refuses_rather_than_guessing(lypning_bin):
+    """A view carries the DICT's `Rc`, so neither answer to `is` is a fact.
+
+    CPython builds a new view per call — `d.values() is d.values()` is False —
+    and an alias is one object — `v = d.values(); v is v` is True. `is_same`
+    had no arm, so both answered False; Stage 0a witness ntx-bd566d4c9697 is
+    the alias, a wrong answer at exit 0. The views' own kind takes it to
+    CPython, and `is` against anything that is not a view still answers.
+    """
+    for program in (
+        'd = {"a": 1}\nv = d.values()\nprint(v is v)',
+        'd = {"a": 1}\nprint(d.values() is d.values())',
+        'd = {"a": 1}\nk = d.keys()\nprint(k is not d.keys())',
+        'd = {"a": 1}\nprint(d.items() is d.items())',
+    ):
+        r = engines.run(engines.LYPNING, program, binary=lypning_bin)
+        assert r.returncode == UNSUPPORTED_EXIT, "answered %r instead of refusing" % r.stdout
+        assert r.stdout == "", "output escaped before the refusal"
+        assert "dict-view" in r.stderr, r.stderr
+
+    r = engines.run(engines.LYPNING, 'd = {"a": 1}\nprint(d.values() is None, d.keys() is d)',
                     binary=lypning_bin)
     assert not r.refused, r.stderr
     assert r.stdout.strip() == "False False"
