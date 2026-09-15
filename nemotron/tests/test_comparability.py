@@ -91,7 +91,13 @@ def test_a_run_is_comparable_with_itself_whatever_it_recorded():
 
 
 def test_two_endpoints_under_one_model_name_cannot_be_told_apart():
-    """The audit's arm-identity finding: both shipped runs recorded model 'qwen38'."""
+    """The audit's arm-identity finding, replayed on synthetic summaries.
+
+    Two fixtures that record the same model name at two endpoints. The name is
+    the fixture's, not a claim about any audited run: the shipped runs the
+    audit read recorded the earlier model's name (`SWITCH.md`), and this test
+    is about the rule, which does not care which name it is.
+    """
     why = stats.comparability(_summary("a"), _summary("b", base_url="https://other/v1"))
     assert [d["field"] for d in why] == ["backend.base_url"]
     assert why[0]["same_model_name"] == "qwen38"
