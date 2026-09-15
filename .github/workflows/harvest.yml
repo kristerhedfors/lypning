@@ -19,6 +19,10 @@ on:
         type: number
         default: 4
         required: true
+      dry_run:
+        description: 'Exercise the full parallel matrix with a fake provider; no API secret or spend'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -31,11 +35,12 @@ concurrency:
 
 jobs:
   plan:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || inputs.dry_run
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
+      parallelism: ${{ steps.plan.outputs.parallelism }}
     env:
       PYTHONPATH: src:nemotron
     steps:
@@ -53,7 +58,9 @@ jobs:
         run: |
           MATRIX=$(python -m harvesting.runner --plan --projects "$PROJECTS" --rounds "$ROUNDS" --parallelism "$PARALLELISM")
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "parallelism=$PARALLELISM" >> "$GITHUB_OUTPUT"
       - name: Validate exact account-visible Qwen model (no generation)
+        if: ${{ !inputs.dry_run }}
         env:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
         run: python -m harvesting.preflight
@@ -64,7 +71,7 @@ jobs:
     timeout-minutes: 25
     strategy:
       fail-fast: false
-      max-parallel: ${{ inputs.parallelism }}
+      max-parallel: ${{ fromJSON(needs.plan.outputs.parallelism) }}
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
       PYTHONPATH: src:nemotron
@@ -82,6 +89,7 @@ jobs:
           docker build -f nemotron/harvesting/Dockerfile.opencode -t harvest-worker nemotron/harvesting
           docker build -f nemotron/harvesting/Dockerfile.proxy -t harvest-proxy nemotron/harvesting
       - name: Harvest one isolated project (observations, not labels)
+        if: ${{ !inputs.dry_run }}
         env:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           TASK_INDEX: ${{ matrix.task_index }}
@@ -90,6 +98,16 @@ jobs:
           python -m harvesting.runner --task-index "$TASK_INDEX" --round "$ROUND_INDEX" --output work/harvest \
             --worker-image "$(docker image inspect harvest-worker --format '{{.Id}}')" \
             --proxy-image "$(docker image inspect harvest-proxy --format '{{.Id}}')"
+      - name: Exercise the same matrix and container path without any secret or API calls
+        if: inputs.dry_run
+        env:
+          TASK_INDEX: ${{ matrix.task_index }}
+          ROUND_INDEX: ${{ matrix.round }}
+        run: |
+          python -m harvesting.runner --smoke --task-index "$TASK_INDEX" --round "$ROUND_INDEX" --output work/harvest \
+            --worker-image "$(docker image inspect harvest-worker --format '{{.Id}}')" \
+            --proxy-image "$(docker image inspect harvest-proxy --format '{{.Id}}')"
+          python -m harvesting.check_smoke work/harvest
       - name: Preserve successes, failures and partial runs; no training or upload elsewhere
         uses: actions/upload-artifact@v4
         if: always()
