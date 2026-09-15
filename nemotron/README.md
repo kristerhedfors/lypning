@@ -10,7 +10,9 @@ The current lypning-l-first training design and commands are in
 [TRAINING.md](TRAINING.md): verified SFT, then evidence-gated execution-RL, with
 matched base/SFT controls, multi-input tests and source/family-held-out evaluation.
 Start the other-device Claude Code session with
-[START_NEXT_ROUND.md](START_NEXT_ROUND.md). See
+[START_NEXT_ROUND.md](START_NEXT_ROUND.md); [STATUS.md](STATUS.md) is the
+dated one-page state of the programme: scoreboard, gates, next steps, expected
+movement and whether the instrument can see it. See
 [DATA_PRODUCTION.md](DATA_PRODUCTION.md) for the complete evidence/review/learning
 loop, [NEXT_ROUND.md](NEXT_ROUND.md) for the manual probe/train/eval sequence and
 [L-TRAINING-ROADMAP.md](L-TRAINING-ROADMAP.md) for runtime priorities. The new

@@ -31,6 +31,9 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   risks are written down; a pilot still needs the reviewed dataset.
 - GRPO warmup goes through `warmup_steps`: the pinned TRL has no
   `warmup_ratio`, which the first GPU smoke under these pins found.
+- Add `nemotron/STATUS.md`: the programme's dated scoreboard, gate state,
+  ordered next steps, expected movement, a measurement assessment and the
+  proposed training recipe, for the reviewing session's assessment.
 
 **2026-09-15** — Check question delivery and assess the first live proposal pilots ([#78](https://github.com/kristerhedfors/lypning/pull/78))
 
