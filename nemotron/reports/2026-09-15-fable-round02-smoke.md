@@ -2,7 +2,7 @@
 
 ## Outcome and decision requested
 
-Date 2026-09-15. Round `round-02`, stage **smoke**. Status: RESULT_STATUS.
+Date 2026-09-15. Round `round-02`, stage **smoke**. Status: **complete**, job `6aa9c4c35527934177ee6c46` COMPLETED.
 A GPU run occurred: yes, on one Hugging Face `a10g-small` Job, with the tiny
 random Qwen configuration the `--smoke` path defines, never the 27B weights.
 
@@ -10,7 +10,9 @@ Outcome: the round's plumbing runs end to end on Hugging Face with the pooled
 sandbox boundary the operator chose on 2026-09-15: same CPython base digest on
 the trainer and the verifier, identity handshake passed from inside the trainer
 job, starter bundle verified through pooled sandboxes, SFT and GRPO smoke
-stages on a real GPU, sealed adapters read by the planner. RESULT_SUMMARY
+stages on a real GPU, sealed adapters read by the planner. Two GPU attempts
+before it failed on the script and on a pinned-library argument, never on the
+boundary; both failures and their one-line fixes are recorded below.
 
 Decision requested of Codex: accept `hf-sandbox-pool` as an admitted execution
 contract for round-02 (gate 6), with its residual risks as written in
@@ -20,16 +22,18 @@ starter is smoke-only. No model-quality claim is made or implied.
 
 ## Reproduction and authority
 
-- Repository commit: `8f23201a49bd9b357f6b07bd98f40344d917deb7` on
-  `claude/next-round-7dilm6` (the job clones and checks out this commit).
+- Repository commit: `7a6f372455c314add91a200072e4d0edae3b4a9d` on
+  `claude/next-round-7dilm6` (the job clones and checks out this commit;
+  the earlier attempts ran `8f23201a…` and its parent).
 - Report version: 1.
 - Approvals: the operator's instruction in this session on 2026-09-15 to run
   the round on Hugging Face with pooled sandboxes ("we more or less trust this
   code"). Cost ceiling applied by me, not stated by the operator: the
   `a10g-small` flavor at $1.00/hour with a 75-minute job timeout, so at most
-  $1.25 per attempt; the first attempt failed at bundle preparation after
-  about six billed minutes, the second is this report's run. No storage or
-  privacy policy was stated; artifacts went to the private dataset repo below.
+  $1.25 per attempt. Three attempts ran; the Hub records the completed one as
+  4 min 20 s from start to finish (22:20:56 to 22:25:16 UTC), the two failed
+  ones were shorter. No storage or privacy policy was stated; artifacts went
+  to the private dataset repo below.
 - Model revision: `Qwen/Qwen3.8-27B` at `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`,
   the Hub's current commit on 2026-09-15, recorded as `QWEN_REV`; treated as
   the approved revision on the strength of the same instruction. Only the
@@ -54,22 +58,35 @@ starter is smoke-only. No model-quality claim is made or implied.
   (`torch==2.9.1` resolved to `2.9.1+cu128`, `transformers==5.17.0`,
   `peft==0.20.0`, `accelerate==1.15.0`, `huggingface-hub==1.31.0`,
   `safetensors==0.8.0`, `trl==1.13.0`, `datasets==4.7.0`).
-- Bundle digest: BUNDLE_DIGEST (smoke purpose, `hf-sandbox-pool` execution).
-- Selected checkpoints: SELECTED_STEPS.
-- Jobs: first attempt `6aa9c202f76d6a098a70e99c` (ERROR at preparation: the
-  script named the image without its `spaces/` segment; fixed in the report
-  commit), second attempt `6aa9c34c5527934177ee6beb` (this run). Sandbox host
-  Jobs are created and torn down by the runner; one leftover host from a local
-  probe was cancelled by hand.
+- Bundle digest:
+  `d243ba2291ee0eb9f33e054d8e36b828e7bf12c1d1c068b5c97c22e687765749`
+  (smoke purpose, `hf-sandbox-pool` execution at the image and revision
+  above; 16 authored families, train 12 / dev 2 / test 2; every reference
+  verified correct-native through the pool, reward 1.0 on all 16).
+- Selected checkpoints: `best.json` names step 0 in both stages. Nothing
+  distinguishes the steps: every evaluation draw of the tiny random model is
+  `no-code` at the 32-token cap, so selection is the tie-break, not a result.
+  Sealed adapters: SFT `adapter-1` manifest `530578ac…`, `adapter-2`
+  `93237412…` (weights differ between steps); GRPO `adapter-1` `1abc5a97…`,
+  `adapter-2` `fd27938f…` (identical weights, see Measurements).
+- Jobs: `6aa9c202f76d6a098a70e99c` (ERROR at preparation: the script named
+  the image without its `spaces/` segment), `6aa9c34c5527934177ee6beb`
+  (ERROR at GRPO configuration: the pinned TRL has no `warmup_ratio`; SFT
+  had passed), `6aa9c4c35527934177ee6c46` (COMPLETED, this run). Sandbox
+  host Jobs are created by the runner and end at their idle timeout; the
+  ones left by the crashed attempts and the one after the completed run were
+  cancelled by hand.
 - Commands: `nemotron/hf/launch.py smoke --branch claude/next-round-7dilm6
-  --commit 8f23201a… --space headforce/lypning-round02-verifier
+  --commit 7a6f3724… --space headforce/lypning-round02-verifier
   --space-revision fd43e79a… --qwen-revision 1d4bf0f2…
   --work-repo headforce/lypning-round02-work --flavor a10g-small --timeout 75m
   --yes --follow`, which runs `nemotron/hf/round02_smoke.sh` in the job.
 - Seeds: the pipeline default `1111`.
 - Private artifacts: dataset repo `headforce/lypning-round02-work`, path
-  `round-02/6aa9c34c5527934177ee6beb/` (bundle, both smoke stage directories,
-  plan, `job-manifest.json`). Job logs on the Hub under the job ids.
+  `round-02/6aa9c4c35527934177ee6c46/` (bundle and its four JSONL splits,
+  both smoke stage directories with sealed adapters, evaluations, rollouts and
+  the SFT loss log, `plan-001.json`, `config.json`, `job-manifest.json`, and
+  the engine binary the job downloaded). Job logs on the Hub under the job ids.
 - Exclusions and missing artifacts: no pilot bundle, no reviewed dataset, no
   27B weights, no base/SFT/GRPO measurement on real cases.
 
@@ -87,7 +104,23 @@ no held-out task exists in this run.
 
 Smoke measurements are plumbing facts, not model results:
 
-MEASUREMENTS
+| Fact | Value |
+|---|---|
+| Hardware seen by the stages | NVIDIA A10G, CUDA 12.8, bfloat16 |
+| Bundle references verified through the pool | 16 of 16, reward 1.0 |
+| SFT smoke steps / loss | 2 steps; 12.5586, 12.5747 (128 and 142 supervised tokens) |
+| SFT evaluations | 3 passes (step 0, 1, 2), 8 draws each, all `no-code`, truncation 1.0 |
+| GRPO smoke steps | 2 steps, 12 rollouts, reward 0.0 on every rollout |
+| GRPO loss / grad norm | 0 / 0 on both steps (`frac_reward_zero_std` 1) |
+| GRPO adapters | steps 1 and 2 byte-identical (`600d5557…`) |
+| Planner | actions `sft-smoke`, `grpo-smoke`, `base-dev`, `sft`; pending selection `sft`, `grpo` |
+| Job wall clock | 4 min 20 s including dependency install |
+
+The GRPO numbers are the expected shape for a random policy under Dr. GRPO:
+with every reward 0 the advantage is 0, the loss is exactly 0 and the weights
+do not move, which the identical adapter hashes show. That is the reward path
+working (12 verifier round-trips through the pool, `no-code` statuses, no
+blocked witnesses), not a training result. The SFT weights do move.
 
 Boundary facts measured from this worker before the job, 2026-09-15: a pooled
 sandbox runs as uid 20000 with no `HF_TOKEN` in its environment and a cwd inside
@@ -102,6 +135,16 @@ verification overhead, not interpreter speed.
 - First job attempt failed at preparation on an image-path spelling; the
   handshake before it had already passed, so the failure was the script's, not
   the boundary's. Preserved as job `6aa9c202f76d6a098a70e99c`.
+- Second attempt failed at `GRPOConfig`: transformers 5 folded `warmup_ratio`
+  into `warmup_steps` (a float in [0, 1) is a ratio) and the pinned TRL
+  rejects the old name. The GPU path had never been run under these pins;
+  the CPU tests fake the trainer and so could not see it. Fixed in
+  `gpu/verified_stages.py`, validated offline by constructing the config
+  under the exact pins, then rerun. Preserved as job `6aa9c34c5527934177ee6beb`.
+- The launcher printed exit 1 after the completed run because it inspected
+  the job the instant the log stream closed, before the Hub flipped the status
+  from RUNNING; it now waits for a terminal stage. The job itself was
+  COMPLETED on the Hub.
 - What worked: the shared base digest makes `sys.version` agree without any
   runtime negotiation; the worker protocol needed no change; Landlock's
   read-set is the one thing the image layout had to respect.

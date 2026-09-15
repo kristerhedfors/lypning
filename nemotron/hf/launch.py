@@ -16,17 +16,29 @@ import json
 import os
 import re
 import sys
+import time
 
 #: One digest for the trainer job and the verifier image. Change both together.
 BASE_IMAGE = "python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea"
 REPO_URL = "https://github.com/kristerhedfors/lypning"
 STAGES = {"smoke": "nemotron/hf/round02_smoke.sh"}
+TERMINAL = ("COMPLETED", "ERROR", "CANCELED")
 
 
 def bootstrap(stage, branch, commit):
     return ("set -euo pipefail; apt-get update -qq >/dev/null && apt-get install -y -qq git >/dev/null; "
             "git clone -q --branch %s %s /work/lypning && cd /work/lypning && git checkout -q %s && "
             "bash %s" % (branch, REPO_URL, commit, STAGES[stage]))
+
+
+def final_status(api, job_id, wait_s=120, sleep=time.sleep):
+    """The log stream closes a beat before the Hub flips the status; wait for a terminal stage."""
+    deadline = time.monotonic() + wait_s
+    while True:
+        job = api.inspect_job(job_id=job_id)
+        if job.status.stage in TERMINAL or time.monotonic() >= deadline:
+            return job.status
+        sleep(3)
 
 
 def main(argv=None):
@@ -76,9 +88,9 @@ def main(argv=None):
     if args.follow:
         for line in api.fetch_job_logs(job_id=job.id, follow=True):
             print(line)
-        final = api.inspect_job(job_id=job.id)
-        print(json.dumps({"job_id": job.id, "stage": final.status.stage, "message": final.status.message}))
-        return 0 if final.status.stage == "COMPLETED" else 1
+        status = final_status(api, job.id)
+        print(json.dumps({"job_id": job.id, "stage": status.stage, "message": status.message}))
+        return 0 if status.stage == "COMPLETED" else 1
     return 0
 
 
