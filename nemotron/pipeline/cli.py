@@ -1541,7 +1541,7 @@ def cmd_training_prepare(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="nt", description="Nemotron LoRA pipeline: corpus and eval")
+    p = argparse.ArgumentParser(prog="nt", description="LoRA pipeline: corpus and eval")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     tp = sub.add_parser("training-prepare", help="verify a NEW multi-input lypning-l experiment")

@@ -1,4 +1,4 @@
-"""Steps 1-2 of the Nemotron LoRA pipeline: corpus and evaluation.
+"""Steps 1-2 of the LoRA pipeline: corpus and evaluation.
 
 Stdlib only, on purpose. These two steps run on a laptop, in CI, and on the
 GPU box, and the one thing that must never differ between those three is the

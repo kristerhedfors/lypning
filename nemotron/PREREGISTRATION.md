@@ -206,8 +206,8 @@ than 150 verified examples" (§5) was being cleared by rows that are not the tas
 
 **CORRECTED 2026-09-13, before the spend.** The projection first written here
 folded `data/sft/v1/draws.jsonl` and reported 14 solved cases and 39 rows at
-`keep=4`. That file is Nemotron's (`SWITCH.md` §98 says so in this same tree:
-"off-policy for Qwen … must be re-sampled"), so it was Nemotron's yield
+`keep=4`. That file is the earlier model's (`SWITCH.md` §98 says so in this
+same tree: "off-policy for Qwen … must be re-sampled"), so it was that model's yield
 presented as a property of a Qwen run — the same substitution this document
 exists to prevent, made inside it. An on-policy control was already on disk:
 `runs/headroom-k16` and `runs/qwen38-baseline-k16` are the same 74 held-out
@@ -218,10 +218,10 @@ flags, 2026-09-13:
 
 | run | model | cases solved | per-draw | rows at `keep=4` |
 |---|---|---|---|---|
-| `headroom-k16` | Nemotron | 12 of 43 (27.9%) | 0.119 | ~43 |
+| `headroom-k16` | the earlier model (`SWITCH.md`) | 12 of 43 (27.9%) | 0.119 | ~43 |
 | `qwen38-baseline-k16` | Qwen3.8-27B | **16 of 43 (37.2%)** | **0.198** | **~55** |
 
-Qwen out-yields Nemotron by 1.33x on cases solved and 1.66x per draw, so the
+Qwen out-yields the earlier model by 1.33x on cases solved and 1.66x per draw, so the
 original figure understates the run it describes. Scaling the Qwen held-out rate
 onto the 66-case pool gives roughly **85 on-task rows at k=16**, not 39, and k=32
 is higher by an amount nothing here measures.
@@ -456,7 +456,7 @@ that most rewrite cases get a little better, this design sees it (96% at +6pp on
 the rewrite stratum). If it instead solves a specific handful of refusals — the
 shape §2(g) points at — on-policy, 34 of the 52 held-out rewrite cases (65%) have
 never once passed in Qwen's 16 draws; the "55 of 66" first written here was
-Nemotron's rate on the train pool and overstated it — this design reports "no
+the earlier model's rate on the train pool and overstated it — this design reports "no
 win" for anything short of about eight to ten
 solved cases under the §3c amendment (60% at eight, 90% at ten), where before the
 amendment it needed twelve to fifteen. The other pre-registered abandon

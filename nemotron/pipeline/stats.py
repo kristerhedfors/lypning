@@ -122,7 +122,7 @@ def _arm(baseline: Dict[str, Any], run: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     A model name is free text chosen by whoever launched the run, so it is not
     an identity: in this tree's own recorded runs two different endpoints both
-    answer to "nemotron".
+    answer to one model name.
 
     THIS USED TO FIRE ONLY WHEN THE NAMES MATCHED, on the reasoning that a
     different name means the weights are the thing under test. That reasoning

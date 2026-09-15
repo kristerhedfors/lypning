@@ -3,11 +3,15 @@
 > **RETIRED 2026-09-12; kept as the record of a plan that was not taken.**
 > The platform decision is `../RUNBOOK.md`: Hugging Face for everything, one
 > `h200` at $5.00/hr, `gpu/lypning_lora.py`. Everything below describes GCP
-> `a3-highgpu-8g`, Nemotron 3.5 Lightning, and `nt-gpu`, none of which is the
+> `a3-highgpu-8g`, the earlier target model, and `nt-gpu`, none of which is the
 > run. Two numbers on this page are actively wrong for the current target and
 > are left in place rather than silently patched: `exclude_modules:
-> ["*.out_proj"]` — correct for Nemotron, wrong for Qwen3.5, see `../SWITCH.md`
+> ["*.out_proj"]` — correct for the earlier model, wrong for Qwen3.5, see `../SWITCH.md`
 > — and the $29.52/hr rate. Do not launch from this file.
+>
+> The scripts this page describes (`launch.sh`, `startup.sh`, `reap.sh`,
+> `budget.py`, `nt-gpu`) were removed on 2026-09-15; they served the earlier
+> model and nothing live called them. The page stays as the record.
 
 
 The question this run answers is narrow on purpose: **does a brief rank-16 LoRA

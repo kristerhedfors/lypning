@@ -409,6 +409,77 @@ CASES = [
         "    show('int()', lambda: int(v))\n",
     ),
     (
+        # Three IndexErrors that name the OPERATION. `L.pop(9)` said `pop index
+        # index out of range` — the caller passed the words `norm_index` adds —
+        # and both stores (`L[9] = x`, `del L[9]`) said the read's `list index
+        # out of range` where CPython says `list assignment`. Found by an
+        # authored sweep over the surface a Stage 0a witness (ntx-a53924799ac1)
+        # swept; wording only reaches stdout through `print(e)`.
+        "list-index-errors-name-the-operation",
+        "def show(label, fn):\n"
+        "    try:\n"
+        "        print(label, fn())\n"
+        "    except Exception as e:\n"
+        "        print(label, '|', type(e).__name__, '|', e)\n"
+        "for i in (-3, -1, 0, 1, 2, 9):\n"
+        "    show('pop %d' % i, lambda: [1, 2].pop(i))\n"
+        "    def st(i=i):\n"
+        "        L = [1, 2]; L[i] = 7; return L\n"
+        "    show('set %d' % i, st)\n"
+        "    def de(i=i):\n"
+        "        L = [1, 2]; del L[i]; return L\n"
+        "    show('del %d' % i, de)\n"
+        "    show('get %d' % i, lambda: [1, 2][i])\n"
+        "show('pop empty', lambda: [].pop())\n",
+    ),
+    (
+        # `format(nan, '%')` was `NaN%`: the `%` arm never took the nonfinite
+        # exit `f`, `e` and `g` take, so Rust spelled the value. And `#` on the
+        # EMPTY presentation type keeps the point as it does on `g`, which
+        # `str(1e300)` has none of: `format(1e300, '#')` is `1.e+300`. Both from
+        # the authored sweep over the ntx-6ae7c8d5c3d8 surface.
+        "format-nonfinite-percent-and-alt-on-the-empty-type",
+        "vals = [float('nan'), float('inf'), float('-inf'), 1e300, -1e300, 1e16, 1.5, 100.0, 0.0, 1e-7]\n"
+        "specs = ['%', '+%', ' %', '10.2%', '010%', '<8%', '#', '#10', '+#', '#,', '#.0', '#.3', '#g', '#.0g', '#e']\n"
+        "for v in vals:\n"
+        "    for spec in specs:\n"
+        "        try:\n"
+        "            print(repr(v), spec, repr(format(v, spec)))\n"
+        "        except Exception as e:\n"
+        "            print(repr(v), spec, '|', type(e).__name__, '|', e)\n",
+    ),
+    (
+        # Argument Clinic names that the engine read only positionally, and the
+        # TypeErrors around them in CPython's order. `bytes(source=…)` and
+        # `open(file=…)` died with TypeErrors CPython never raises; `sorted`,
+        # `min` and `sum` named the keyword where CPython counts the positionals
+        # first; `reversed` takes no keywords at all and said something else.
+        # Authored sweep over the ntx-b47b0b10247f surface.
+        "builtins-take-argument-clinic-names-and-count-first",
+        "def show(label, fn):\n"
+        "    try:\n"
+        "        print(label, repr(fn()))\n"
+        "    except Exception as e:\n"
+        "        print(label, '|', type(e).__name__, '|', e)\n"
+        "show('bytes source enc', lambda: bytes(source='ab', encoding='utf-8'))\n"
+        "show('bytes source bytes', lambda: bytes(source=b'xy'))\n"
+        "show('bytes source list', lambda: bytes(source=[65, 66]))\n"
+        "show('bytes source int', lambda: bytes(source=2))\n"
+        "show('bytes twice', lambda: bytes('a', source='b'))\n"
+        "show('bytes enc kw', lambda: bytes('é', encoding='utf-8', errors='strict'))\n"
+        "show('sorted iterable kw', lambda: sorted(iterable=[2, 1]))\n"
+        "show('sorted key kw', lambda: sorted([2, 1], key=None, reverse=True))\n"
+        "show('min iterable kw', lambda: min(iterable=[1]))\n"
+        "show('min default kw', lambda: min([], default=5))\n"
+        "show('sum iterable kw', lambda: sum(iterable=[1]))\n"
+        "show('sum start kw', lambda: sum([1, 2], start=10))\n"
+        "show('sum start only', lambda: sum(start=1))\n"
+        "show('sum three', lambda: sum([1], 2, 3))\n"
+        "show('sum start and extra', lambda: sum([1], start=1, x=2))\n"
+        "show('reversed sequence kw', lambda: list(reversed(sequence=[1, 2])))\n"
+        "show('reversed', lambda: list(reversed([1, 2])))\n",
+    ),
+    (
         # A slice as a dict KEY. CPython hashes the key before it validates
         # anything, and slices became hashable in 3.12 — so `d[:2]` is
         # `KeyError: slice(None, 2, None)` there and `TypeError: unhashable
@@ -784,6 +855,48 @@ def test_a_lone_surrogate_escape_refuses_rather_than_dying_as_a_syntax_error(lyp
     assert r.returncode == 1 and "SyntaxError" in r.stderr, r.stderr
     r = engines.run(engines.LYPNING, 'print("\\u00e9\\U0001F600")', binary=lypning_bin)
     assert not r.refused and r.stdout == "é😀\n", r.stderr
+
+
+def test_a_union_of_classes_refuses_rather_than_dying(lypning_bin):
+    """`bytes | str` is a `types.UnionType` in CPython, a value this engine has
+    no representation for — and it is usually an annotation, evaluated at
+    `def` time, so a whole program died at exit 1 on its first `def`. It
+    refuses as `class-union` now, and `None` is a member (`int | None`) while
+    `None | None` stays CPython's own TypeError. Authored sweep over the
+    ntx-b38207f0de4f surface.
+    """
+    for program in (
+        "def f(b: bytes | str) -> bytes | str:\n    return b\nprint(f(b'x'))",
+        "print(int | None)",
+        "x = None | str",
+        "print(isinstance(1, int | str))",
+    ):
+        r = engines.run(engines.LYPNING, program, binary=lypning_bin)
+        assert r.returncode == UNSUPPORTED_EXIT, "answered %r instead of refusing" % r.stdout
+        assert r.stdout == "" and "class-union" in r.stderr, r.stderr
+    for program in ("print(None | None)", "print(1 | 'a')", "print(str | 1)"):
+        r = engines.run(engines.LYPNING, program, binary=lypning_bin)
+        assert r.returncode == 1 and "TypeError" in r.stderr, r.stderr
+    r = engines.run(engines.LYPNING, "print(5 | 2, len({1} | {2}), True | False)", binary=lypning_bin)
+    assert not r.refused and r.stdout == "7 2 True\n", r.stderr
+
+
+def test_open_binds_file_by_name(lypning_bin, tmp_path):
+    """`open(file='f.txt', mode='w')` is legal CPython; the engine read only the
+    positional slot and died with `missing required argument 'file'`. In a
+    temp cwd, because the program writes — a CASES row runs where pytest
+    runs, and the corpus's net is not this suite's (invariant 4).
+    """
+    program = ("open(file='f.txt', mode='w').write('hi')\n"
+               "print(open(file='f.txt').read(), open('f.txt', mode='r').read())\n"
+               "try:\n    open('f.txt', file='g.txt')\n"
+               "except TypeError as e:\n    print(e)\n")
+    ours = engines.run(engines.LYPNING, program, binary=lypning_bin, cwd=tmp_path)
+    theirs = engines.run(engines.CPYTHON, program, cwd=tmp_path)
+    if theirs.returncode == 127:
+        pytest.skip("no reference CPython")
+    assert not ours.refused, ours.stderr
+    assert (ours.returncode, ours.stdout) == (theirs.returncode, theirs.stdout), ours.stderr
 
 
 def test_storing_a_slice_as_a_dict_key_refuses_or_raises_as_the_host_does(lypning_bin):

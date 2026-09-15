@@ -48,8 +48,9 @@ THE TWO TRAPS THIS FILE IS SHAPED AROUND
     2. A LoRA on a module a fused kernel consumes by WEIGHT is silently bypassed:
        it trains, it merges, and it changes nothing. `*.out_proj` was excluded
        here for that reason until 2026-09-13, on a rationale copied from the
-       Nemotron cookbook -- where it is correct, because nemotron_v3/layers.py
-       :454-455 passes `outproj_weight=self.out_proj.weight` into the kernel.
+       earlier model's cookbook -- where it is correct, because that model's
+       layers pass `outproj_weight=self.out_proj.weight` into the kernel
+       (SWITCH.md).
        Qwen3.5 does not. In the implementation this file actually loads,
        transformers' Qwen3_5GatedDeltaNet, the kernel takes query/key/value/g/
        beta and returns `core_attn_out`, and the projection is an ordinary module
@@ -568,7 +569,7 @@ def main():
     ap.add_argument("--inputs-revision", default="main")
     # REQUIRED, with no default, deliberately. A default here is a way to spend
     # a full-price run on the wrong data by omitting a flag: sft/v1 was
-    # rejection-sampled from Nemotron, is off-policy for Qwen, and its first
+    # rejection-sampled from the earlier model, is off-policy for Qwen, and its first
     # record's target is the literal-output cheat `print(4.0, 2, 3, 3.1416, 3.0)`.
     ap.add_argument("--sft", required=True,
                     help="path INSIDE --inputs-repo, e.g. sft/v2/sft.jsonl. Never a local path.")

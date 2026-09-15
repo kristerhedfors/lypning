@@ -12,25 +12,21 @@ ladder until it is explained.
 
 ---
 
-## 0. Ground rules — Qwen, not Nemotron
+## 0. Ground rules
 
 The target is `Qwen/Qwen3.8-27B` (`SWITCH.md`). Most of the apparatus carried
-over from the Nemotron build unchanged: the corpus, the case gates, the frozen
+over from the earlier target unchanged: the corpus, the case gates, the frozen
 split, the engine fingerprint, `nt legality`, gates A/B/C, the serving-stack
 precondition, and the deployment argument — the harness model must be the tuned
 model, which means opencode or OpenHands pointed at the tuned Qwen.
 
-Three numbers did not carry over, and two of them were used as decision inputs
-anyway. **Retire these:**
-
-| number | where it came from | why it does not apply |
-|---|---|---|
-| pass@1 35.1%, rewrite slice 17.3% thinking-on vs 9.6% off | Nemotron 3.5 Lightning on vLLM/A100, 2026-09-11 | different model, different serving stack. It was used to argue for thinking-on eval; for Qwen the thinking effect on this eval is **unmeasured** |
-| "12 of 74 cases flip between thinking on/off on an identical checkpoint" | the same Nemotron run | it was used as the noise floor. The Qwen noise floors are the two serving-stack nulls: **−0.22pp** and **+1.57pp** ΔSLR (`REVIEW.md` §1) |
-| 505,576 thinking tokens vs 22,254 | Nemotron | the Qwen thinking budget is its own measurement |
-
-A Nemotron number is not a weaker Qwen number. It is a number about a different
-experiment, and the only safe use for one is history.
+A number measured on the earlier model is not a weaker Qwen number; it is a
+number about a different experiment, and its only safe use is history. Three
+such numbers had been used as decision inputs here; `SWITCH.md` lists them
+under *Retired numbers* with what replaces each. The Qwen noise floors are the
+two serving-stack nulls, **−0.22pp** and **+1.57pp** ΔSLR (`REVIEW.md` §1); the
+Qwen thinking budget and the thinking-on effect on this eval are their own
+measurements, still unmeasured.
 
 ## 1. What "adapted to our interpreter" means
 

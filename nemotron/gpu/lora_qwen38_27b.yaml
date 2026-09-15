@@ -13,10 +13,10 @@
 # from the NeMo AutoModel source, not from the model card:
 #
 #   DENSE, ~27.8B (55.6 GB BF16, 1199 tensors, ZERO expert tensors). Every
-#   parameter is active on every token, unlike Nemotron 3.5 Lightning's
-#   30B-A3B where only ~3B are. That is roughly 9x the FLOPs per token for the
-#   same step count, and it is the single most important difference between
-#   this recipe and the Nemotron one beside it.
+#   parameter is active on every token, unlike the earlier MoE target
+#   (SWITCH.md) where only ~3B of 30B were. That is roughly 9x the FLOPs per
+#   token for the same step count, and it is the single most important
+#   difference between this recipe and the earlier one.
 #
 #   HYBRID linear attention. `model.language_model.layers.N.linear_attn` carries
 #   A_log / conv1d / dt_bias — a gated-delta-net, same family as Qwen3-Next —
@@ -51,7 +51,7 @@ model:
   _target_: nemo_automodel.NeMoAutoModelForCausalLM.from_pretrained
   pretrained_model_name_or_path: Qwen/Qwen3.8-27B
   # MTP is left to auto-enable from the checkpoint (mtp_num_hidden_layers: 1).
-  # The Nemotron recipe overrides num_nextn_predict_layers / mtp_use_repeated_layer
+  # The earlier recipe overrides num_nextn_predict_layers / mtp_use_repeated_layer
   # because its HF export keeps only the physical depth; whether qwen3_5 needs the
   # same override is NOT established here and must be checked against a real run
   # before anything is read off the loss curve.
@@ -62,7 +62,7 @@ model:
     rms_norm: te
     # No `experts`/`dispatcher`: those are MoE token-routing knobs and this model
     # is dense. Setting ep_size or a dispatcher here would be cargo-culted from
-    # the Nemotron recipe.
+    # the earlier recipe.
     #
     # qwen3_5/model.py:99 disables TE FUSED RoPE for this architecture — TE's
     # fused path expects 4D inputs that the shared Qwen3-Next attention block does
@@ -80,9 +80,9 @@ peft:
   # rationale that was checked against the wrong line and was wrong for this
   # model.
   #
-  # The Nemotron cookbook excludes it for a real reason: nemotron_v3/layers.py
-  # passes `outproj_weight=self.out_proj.weight` INTO a fused kernel (layers.py
-  # :454-455), so a LoRA wrapping the module is bypassed. Qwen3.5 does no such
+  # The earlier model's cookbook excludes it for a real reason (SWITCH.md): its
+  # layers pass `outproj_weight=self.out_proj.weight` INTO a fused kernel, so a
+  # LoRA wrapping the module is bypassed. Qwen3.5 does no such
   # thing — `output = self.out_proj(core_attn_out)` at cp_linear_attn.py:343 and
   # :715 is an ordinary module call on both paths, so a LoRA there applies
   # normally. The line originally cited as proof, qwen3_5/model.py:430, is inside

@@ -183,9 +183,9 @@ def test_two_arms_off_one_stack_compare_and_two_stacks_do_not():
 
 def test_out_proj_is_adapted_and_only_the_vision_tower_is_excluded():
     """Qwen3.5 calls out_proj as a module (`output = self.out_proj(core_attn_out)`,
-    transformers modeling_qwen3_5.py:662, declared nn.Linear at :540); Nemotron
-    passes the weight into a kernel, which is where the exclusion came from and
-    where it belongs. Excluding it here froze the 48 widest projections in the
+    transformers modeling_qwen3_5.py:662, declared nn.Linear at :540); the
+    earlier model (SWITCH.md) passes the weight into a kernel, which is where
+    the exclusion came from and where it belongs. Excluding it here froze the 48 widest projections in the
     text tower."""
     names = _gpu_constants()
     targets, excludes = names["TARGET_MODULES"], names["EXCLUDE_MODULES"]
