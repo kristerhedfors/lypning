@@ -1,0 +1,100 @@
+name: Cerebras OpenCode project harvest
+
+# No PR/push/schedule trigger: only an explicitly budgeted operator dispatch.
+on:
+  workflow_dispatch:
+    inputs:
+      projects:
+        description: 'Distinct authored projects (1-12)'
+        type: number
+        default: 4
+        required: true
+      rounds:
+        description: 'Independent sessions per project (1-4; same-family lineage)'
+        type: number
+        default: 1
+        required: true
+      parallelism:
+        description: 'Concurrent isolated GitHub jobs (1-4)'
+        type: number
+        default: 4
+        required: true
+
+permissions:
+  contents: read
+
+# Do not multiply spend across overlapping dispatches. Never cancel evidence
+# collection midway to make room for another batch.
+concurrency:
+  group: cerebras-project-harvest
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    env:
+      PYTHONPATH: src:nemotron
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - id: plan
+        env:
+          PROJECTS: ${{ inputs.projects }}
+          ROUNDS: ${{ inputs.rounds }}
+          PARALLELISM: ${{ inputs.parallelism }}
+        run: |
+          MATRIX=$(python -m harvesting.runner --plan --projects "$PROJECTS" --rounds "$ROUNDS" --parallelism "$PARALLELISM")
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+      - name: Validate exact account-visible Qwen model (no generation)
+        env:
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+        run: python -m harvesting.preflight
+
+  harvest:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ inputs.parallelism }}
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      PYTHONPATH: src:nemotron
+      LYPNING_CAPTURE: '0'
+      LYPNING_HARVEST: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build pinned agent and proxy without any API key
+        run: |
+          docker build -f nemotron/harvesting/Dockerfile.opencode -t harvest-worker nemotron/harvesting
+          docker build -f nemotron/harvesting/Dockerfile.proxy -t harvest-proxy nemotron/harvesting
+      - name: Harvest one isolated project (observations, not labels)
+        env:
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          TASK_INDEX: ${{ matrix.task_index }}
+          ROUND_INDEX: ${{ matrix.round }}
+        run: |
+          python -m harvesting.runner --task-index "$TASK_INDEX" --round "$ROUND_INDEX" --output work/harvest \
+            --worker-image "$(docker image inspect harvest-worker --format '{{.Id}}')" \
+            --proxy-image "$(docker image inspect harvest-proxy --format '{{.Id}}')"
+      - name: Preserve successes, failures and partial runs; no training or upload elsewhere
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: harvest-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.task_index }}-${{ matrix.round }}
+          path: work/harvest
+          retention-days: 14
+          if-no-files-found: warn
