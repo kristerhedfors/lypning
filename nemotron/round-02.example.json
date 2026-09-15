@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "revision": "REPLACE_WITH_APPROVED_IMMUTABLE_QWEN_HUB_COMMIT",
+  "engine": "work/round-02/engine-home/bin/lypning-l",
+  "round_dir": "work/round-02",
+  "seed": 1111,
+  "steps": 20,
+  "eval_every": 5,
+  "rank": 16,
+  "generations": 4,
+  "eval_draws": 4,
+  "max_new_tokens": 1024
+}

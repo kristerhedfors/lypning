@@ -75,6 +75,7 @@ class RunResult:
     workdir_files: Dict[str, int] = field(default_factory=dict)
     memory_exceeded: bool = False
     memory_policy: str = "none"
+    encoding_error: bool = False
 
     @property
     def ok(self) -> bool:
@@ -192,14 +193,19 @@ def _scrubbed_env(workdir: Path, extra: Optional[Dict[str, str]] = None) -> Dict
     return env
 
 
-def _read_capped(path: Path, cap: int) -> "tuple[str, bool]":
+def _read_capped(path: Path, cap: int) -> "tuple[str, bool, bool]":
     try:
         size = path.stat().st_size
     except OSError:
-        return "", False
+        return "", False, False
     with path.open("rb") as fh:
         raw = fh.read(cap)
-    return raw.decode("utf-8", "replace"), size > cap
+    try:
+        return raw.decode("utf-8"), size > cap, False
+    except UnicodeDecodeError:
+        # Keep readable historical diagnostics without disguising invalid bytes
+        # as a legitimate U+FFFD in a UTF-8 training observable.
+        return raw.decode("utf-8", "replace"), size > cap, True
 
 
 def materialize(workdir: Path, files: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -358,8 +364,8 @@ def run_python(
 
         rc = proc.returncode if proc is not None else None
         sig = -rc if (rc is not None and rc < 0) else None
-        stdout, t1 = _read_capped(out_path, output_cap)
-        stderr, t2 = _read_capped(err_path, output_cap)
+        stdout, t1, e1 = _read_capped(out_path, output_cap)
+        stderr, t2, e2 = _read_capped(err_path, output_cap)
         # The entry script is excluded by identity, not by name: a program is
         # free to write its own `solution.py`, or a `sub/solution.py`, and the
         # listing has to say so.
@@ -391,6 +397,7 @@ def run_python(
             workdir_files=listing,
             memory_exceeded=memory_exceeded,
             memory_policy=memory_policy(mem_mb),
+            encoding_error=e1 or e2,
         )
     finally:
         if capture is not None:

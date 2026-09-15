@@ -89,6 +89,12 @@ routes reads it. `routing.py`; `docs/VERIFICATION.md` §C4–C5, §C11.
 
 ## Before you say you are done
 
+**Manual Qwen training handoff:** when assigned the next training round, start
+with `nemotron/START_NEXT_ROUND.md`. It links the persisted data-production loop,
+private evidence/review commands, pinned candidate-image boundary and manual
+run plan. Do not launch training or weaken admission gates just to complete the
+handoff; GPU/data/model approvals and a real hardware smoke remain required.
+
 ```bash
 lypning build --rust      # the contract is asserted on the binary, not assumed
 lypning conformance       # MISMATCH must be 0

@@ -5,6 +5,11 @@ started by this change.** The next coding agent launches manually, after the
 operator approves the worker and an enforced cost/time cap. Read `TRAINING.md`
 for the objective; this file is the executable handoff and stop checklist.
 
+**Other-device entry point:** read [START_NEXT_ROUND.md](START_NEXT_ROUND.md)
+first for private evidence/review, candidate-image construction and the portable
+`pipeline.round_plan` command. [DATA_PRODUCTION.md](DATA_PRODUCTION.md) owns the
+complete observation-to-next-dataset loop and interface/privacy limits.
+
 ## Assignment and evidence
 
 Pilot **Qwen/Qwen3.8-27B → lypning-l**: matched base control, verified SFT, then
@@ -13,10 +18,10 @@ engine, task-family split, template and evaluation fixed. First-draft correctnes
 comes before correct-native execution. Correct fallback is legitimate; core
 `lypning` compatibility and feedback-repair training are separate later studies.
 
-The code now fixes incorrect-program tracebacks being misclassified as unstable
-oracles, threaded-parent `preexec_fn`, stale replay caches, tests rewriting
-historical results, starter data accidentally launching a real run, and aggregate
-checkpoint improvements concealing fallback-control regressions. CPU/native CI
+The regime now separates admission, verification, optimizer stages and evaluation.
+Schema 3 groups sources/families/solution ASTs, verifies population labels, seals
+adapters, gates RL on train-only probes and preserves RNG during matched-seed
+evaluation. Per-capability correctness gates complement population checks. CPU/native CI
 does **not** exercise the exact Qwen/TRL GPU stack or demonstrate model quality.
 
 ## Admission gates — stop if any is unmet
@@ -24,7 +29,8 @@ does **not** exercise the exact Qwen/TRL GPU stack or demonstrate model quality.
 1. Start from merged `main`, inspect its CI, and record `git rev-parse HEAD`.
 2. Review `data/engine-mismatches.jsonl` and `LADDER.md`. The recorded Rust
    semantic discrepancies are **not claimed fixed by this training refactor**.
-   Freshly replay relevant witnesses with `nt refusals --run`, then fix or
+   Review witnesses statically first; replay only behind the execution boundary
+   in gate 6, then fix or
    explicitly quarantine affected families, recording counts and provenance.
    Quarantine is an experimental limitation, not a runtime fix. If it removes
    important target coverage, resolve the runtime before training. Any newly
@@ -34,20 +40,22 @@ does **not** exercise the exact Qwen/TRL GPU stack or demonstrate model quality.
    overlap and near-duplicates before freezing; cloning templates does not add
    independent families. Include supported-module retention and fallback
    controls, empty/boundary/Unicode inputs, varied argv and input files.
-4. Schema-2 pilot admission enforces at least 18 families and both populations
-   in train/dev/test. This is an admission floor, not adequate statistical power
+4. Schema-3 pilot admission enforces at least 18 families, reviewed source and
+   capability labels, and two families plus two independent components per
+   population in each train/dev/test split. This is an admission floor, not adequate statistical power
    by itself. Use substantially broader coverage for a quality claim. Three
    distinct test inputs and two different expected outputs is likewise a floor.
 5. The verifier currently covers deterministic UTF-8 stdout, empty stderr and
    exit zero. Do not admit file-editing tasks, binary-output tasks or arbitrary
    checkers without implementing their observable contracts.
-6. Establish and test an actual execution boundary for generated code.
-   `--isolated-worker` is **an attestation, not a jail**. The subprocess helper
-   shares the filesystem. Candidate programs must not see the bundle/test
-   registry, trainer outputs, credentials or private checkout. Configure an
-   external sandbox/remote verifier with those paths excluded and egress blocked.
-   A shared writable host mount or environment scrubbing alone is insufficient.
-   If that boundary is unavailable, stop before executing any generated code.
+6. Build/test the pinned candidate image using `START_NEXT_ROUND.md`.
+   Pilot preparation requires both `--review` and `--execution-image`;
+   generated code (even smoke) requires a container-backed bundle.
+   `--isolated-worker` remains an additional operator attestation, not a jail.
+   The local subprocess helper is allowed only for reviewed CPU smoke fixtures.
+   Candidate containers have no host mounts/network/GPU/credentials; identity
+   checks and real protocol fixtures must pass before model loading. If this
+   boundary or an approved disposable worker is unavailable, stop.
    The corpus replay now safety-skips recognised package installs and model
    downloads before either arm runs; this is not a general containment layer.
    CI exposed a captured installer mutating the comparison's shared interpreter.
@@ -93,18 +101,23 @@ candidate execution in the egress-disabled worker. Keep credentials outside the
 candidate filesystem. Apply an enforced wall-clock/GPU budget through the worker
 scheduler for every run; `--steps` alone is not a monetary limit.
 
-Input JSONL fields: `case_id`, `family`, `task`, `reference`, `provenance`,
+Input JSONL fields: `case_id`, `family`, `source_group`, `capabilities` (nonempty
+list of reviewed labels), `task`, `reference`, `provenance`,
 `population` (`coverage` or `fallback-control`), and `tests` (each with `stdout`
 and optional `stdin`, `argv`, UTF-8 `files`). `pipeline/curriculum.py` illustrates
-the schema, not production data quality. Family splits are assigned before any
-sampling. References and expected outputs do not enter model prompts.
+the schema, not production data quality. Connected source/family/solution groups
+are split before sampling. Coverage references must answer natively on every
+input; control references must validly refuse on every input. New L capabilities
+invalidate old control labels. References and expected outputs do not enter
+model prompts. Do not reuse schema-2 bundles or unsealed historical adapters.
 
 ```bash
 "$ROUND_PYTHON" -m pipeline.cli training-prepare --starter \
-  --engine "$LYPNING_L_BIN" --output work/round-02/smoke
+  --engine "$LYPNING_L_BIN" --execution-image "$EXECUTION_IMAGE" --output work/round-02/smoke
 
 "$ROUND_PYTHON" -m pipeline.cli training-prepare \
-  --cases work/round-02/reviewed-cases.jsonl --purpose pilot --seed 1111 \
+  --cases work/round-02/reviewed/cases.jsonl --review work/round-02/reviewed/review.json \
+  --execution-image "$EXECUTION_IMAGE" --purpose pilot --seed 1111 \
   --engine "$LYPNING_L_BIN" --output work/round-02/pilot
 
 # Plan only: no GPU imports, downloads, generation or optimisation.
@@ -130,7 +143,7 @@ uv run --python "$ROUND_PYTHON" nemotron/gpu/train_verified.py grpo \
   --smoke --from-base --isolated-worker --bundle work/round-02/smoke/bundle.json \
   --engine "$LYPNING_L_BIN" --revision "$QWEN_REV" --output work/round-02/grpo-smoke
 
-# 2. Unadapted dev control, same greedy generation as checkpoint selection.
+# 2. Unadapted dev control, same sampled first-draft policy as checkpoint selection.
 uv run --python "$ROUND_PYTHON" nemotron/gpu/train_verified.py eval \
   --isolated-worker --bundle work/round-02/pilot/bundle.json \
   --engine "$LYPNING_L_BIN" --revision "$QWEN_REV" --output work/round-02/base-dev
@@ -150,11 +163,19 @@ Check train-family rollout correctness and reward variation before scaling RL;
 random tiny-model all-zero rewards only test plumbing, not learnable signal.
 
 ```bash
-# 4. After reload, useful rollout signal and the approved budget are confirmed.
+# 4. Probe the exact selected policy on TRAIN cases only; no optimizer updates.
+uv run --python "$ROUND_PYTHON" nemotron/gpu/train_verified.py probe \
+  --adapter "$SFT_ADAPTER" --isolated-worker --bundle work/round-02/pilot/bundle.json \
+  --engine "$LYPNING_L_BIN" --revision "$QWEN_REV" --output work/round-02/probe-1111 \
+  --generations 4 --seed 1111
+
+# Inspect probe.json and per-family probe-rollouts.jsonl before the next command.
+# 5. RL requires that exact admitted probe (bundle/base/adapter/decoding/seed/code).
 uv run --python "$ROUND_PYTHON" nemotron/gpu/train_verified.py grpo \
   --adapter "$SFT_ADAPTER" --isolated-worker --bundle work/round-02/pilot/bundle.json \
   --engine "$LYPNING_L_BIN" --revision "$QWEN_REV" --output work/round-02/grpo-1111 \
-  --steps 20 --eval-every 5 --patience 3 --rank 16 --batch-size 4 --seed 1111
+  --steps 20 --eval-every 5 --patience 3 --rank 16 --generations 4 --seed 1111 \
+  --probe work/round-02/probe-1111/probe.json
 ```
 
 Stop on a harness/native mismatch, non-finite loss/gradient, changed prompt
@@ -165,15 +186,36 @@ the aggregate reward. Never award wrong runnable code partial credit.
 
 Adapters are saved, not optimizer/RNG resume state. Loading an adapter starts a
 **new** run with recorded lineage; it is not an exact resume. Repeat the design
-with seed 2222 and the **same bundle**. Include an RL-from-base ablation only
+with seed 2222 and the **same bundle**, using a fresh matching probe. Include an RL-from-base ablation only
 within the approved matched budget. Select on dev, then lock settings/checkpoints
-before independent `eval --eval-split test` per arm.
+before independent `eval --eval-split test` per arm. Keep `--eval-draws`,
+`--max-new-tokens`, seed and the full decoding contract identical across compared
+arms. Four draws estimate sampled pass@1; do not report them as best-of-four.
+Use `--greedy` only for a separately labelled, matched diagnostic.
+
+The default non-thinking policy is explicit, not Qwen's default mode. Do not
+toggle thinking during a run or supply code-only SFT as if it contained verified
+reasoning. See the controlled thinking-mode ablation in
+[L-TRAINING-ROADMAP.md](L-TRAINING-ROADMAP.md).
+
+```bash
+# Compare standalone eval directories only; no model loading or program execution.
+"$ROUND_PYTHON" -m pipeline.training_report \
+  work/round-02/base-test work/round-02/grpo-test
+```
+
+Require sealed adapter reloads (`seal.json`) and inspect all population and
+capability slices. Probe admission (two informative train groups) is a minimum
+wiring/signal gate, not evidence that scaling is worthwhile. Report the
+informative fraction, all-zero/all-equal groups and truncation by family before
+the operator authorizes a longer run. A failed probe means improve data/SFT or
+keep the better baseline; never reshape reward to pay for wrong code.
 
 ## Handback
 
 Report identities, selected steps, run paths, actual time/cost, family-macro
 correctness and correct-native pass@1, coverage/fallback slices, mismatch,
-quarantine and truncation counts, and paired family-level uncertainty intervals.
+quarantine and truncation counts, and paired source/family-component uncertainty intervals.
 Compare matched base/SFT/GRPO arms, not a local run against a historical
 provider's sampled pass@k. Require correctness non-inferiority and meaningful
 correct-native improvement before promotion. Otherwise retain base/SFT, explain

@@ -136,6 +136,7 @@ def test_a_lone_surrogate_on_stdout_is_still_written_not_raised():
     # The surrogate went out as the single byte 0xe9 and comes back through
     # _read_capped's errors='replace' as one U+FFFD.
     assert r.stdout == "a�b\n"
+    assert r.encoding_error
 
 
 def test_stdout_error_handler_and_buffering_are_the_ambient_defaults():

@@ -19,7 +19,12 @@ The hook feed is spelled once per harness (`HARNESSES.md` §1): `PreToolUse`
 fires before the command, OpenHands' `PostToolUse` after it, opencode's
 `tool.execute.before` in-process in Bun. Both feeds watch for a process, so a
 host that links `liblypning` (`EMBEDDING.md` §4) is invisible to both and must
-append the record itself.
+append the record itself. The Python `embed.Library.run` binding now supplies
+that observation by default, with the same `LYPNING_CAPTURE=0` opt-out. Native
+C/C++/Node/Go/Swift/Lua/Rust hosts still need their own host-side adapter. See
+[the data-production loop](../nemotron/DATA_PRODUCTION.md) for exact evidence
+snapshots, binding metadata, privacy/size limits and reviewed training views;
+none of these observations is automatically a correctness label.
 
 Both feeds append one JSON object per line to `$LYPNING_LOG` (default
 `~/.lypning/invocations.jsonl`; `capture.append_record`). The Stop hook

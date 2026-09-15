@@ -437,7 +437,7 @@ class Library:
             if not r:
                 raise LibraryError("lypning_run returned NULL")
             try:
-                return Outcome(
+                outcome = Outcome(
                     status=self._lib.lypning_result_status(r),
                     exit_code=self._lib.lypning_result_exit_code(r),
                     stdout=_b(self._lib.lypning_result_stdout, r),
@@ -447,6 +447,16 @@ class Library:
                     committed=bool(self._lib.lypning_result_committed(r)),
                     fall_onward=bool(self._lib.lypning_result_should_fall_onward(r)),
                 )
+                if os.environ.get("LYPNING_CAPTURE", "1").strip() != "0":
+                    try:
+                        from .capture import record_embedding
+                        record_embedding(source, outcome=outcome, engine=self.engine_name(),
+                                         version=self.version, library=self.path, args=args,
+                                         filename=filename, stdin=stdin, filesystem=filesystem,
+                                         step_limit=step_limit, output_limit=output_limit)
+                    except Exception:
+                        pass  # capture cannot change a committed result
+                return outcome
             finally:
                 self._lib.lypning_result_free(r)
         finally:

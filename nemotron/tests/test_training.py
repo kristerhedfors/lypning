@@ -92,6 +92,18 @@ def test_variants_defeat_constant_print(case):
     assert score.reward == 0
 
 
+def test_invalid_utf8_cannot_impersonate_a_replacement_character(case):
+    case["tests"] = [{"stdout": "\ufffd"}]  # score fixture, not a production task
+    score = t.Verifier("/never-called", memory_mb=0).score(case, "import os; os.write(1, bytes([255]))")
+    assert score.status == "incorrect" and score.reward == 0
+
+
+def test_native_invalid_encoding_is_an_engine_issue(case):
+    verifier, _ = fake_verifier(case, native=result(case["tests"][0]["stdout"], encoding_error=True))
+    with pytest.raises(t.VerificationBlocked, match="engine mismatch"):
+        verifier.score(case, "pass")
+
+
 @pytest.mark.parametrize("program", ["print(undefined_name)", "def broken(:", "raise ValueError('bad')"])
 def test_real_model_errors_are_zero_reward_not_unstable_oracle(case, program):
     score = t.Verifier("/never-called", memory_mb=0).score(case, program)
@@ -137,7 +149,9 @@ def test_family_split_is_deterministic_and_no_test_solution_export(tmp_path, mon
         c["family"]: c["split"] for c in t.split_cases(list(reversed(cases)))}
     identity = {"engine": "lypning-l", "sha256": "pinned"}
     monkeypatch.setattr(t, "engine_identity", lambda p: identity)
-    monkeypatch.setattr(t.Verifier, "score", lambda *a: t.Score(1, "correct-native", 3, 3))
+    monkeypatch.setattr(t.Verifier, "score", lambda self, c, program:
+        t.Score(1, "correct-native", 3, 3) if c["population"] == "coverage"
+        else t.Score(1, "correct-control", 0, 3))
     output = tmp_path / "experiment"
     original = copy.deepcopy(cases)
     bundle = t.prepare(cases, "/engine", output)
@@ -216,7 +230,8 @@ def test_gpu_preflight_no_torch_and_hard_split_gates(tmp_path, monkeypatch):
     with pytest.raises(t.TrainingError, match="GRPO needs"):
         gpu.preflight(args)
     args.from_base = True
-    assert gpu.preflight(args) == (bundle, None)
+    with pytest.raises(t.TrainingError, match="admitted --probe"):
+        gpu.preflight(args)
     args.plan = False
     with pytest.raises(t.TrainingError, match="isolated"):
         gpu.preflight(args)
@@ -240,11 +255,12 @@ def test_starter_cannot_admit_a_real_training_round():
 
 
 def test_pilot_requires_controls_in_every_split():
-    cases = [dict(family=str(i), split=("train", "dev", "test")[i % 3], population="coverage")
+    cases = [dict(family=str(i), source_group=str(i), capabilities=["test"],
+                  split=("train", "dev", "test")[i % 3], population="coverage")
              for i in range(18)]
     with pytest.raises(t.TrainingError, match="fallback controls"):
         t.validate_pilot(cases)
-    for i in range(3):
+    for i in range(6):
         cases[i]["population"] = "fallback-control"
     t.validate_pilot(cases)
 

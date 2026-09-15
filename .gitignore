@@ -14,6 +14,8 @@ dist/
 venv/
 # Local engine cache
 .lypning/
+# Private evidence, model checkpoints and next-round operator artifacts.
+work/
 # Pages build output
 _site/
 

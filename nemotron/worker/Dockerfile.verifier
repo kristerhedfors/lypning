@@ -1,0 +1,8 @@
+# Build context MUST be a new staging directory containing exactly these four
+# reviewed files. BASE_IMAGE must pin the same CPython build as the trainer.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+COPY sandbox.py child_exec.py container_worker.py /runner/
+COPY --chmod=755 lypning-l /usr/local/bin/lypning-l
+USER 65534:65534
+ENTRYPOINT ["python3", "-I", "/runner/container_worker.py"]

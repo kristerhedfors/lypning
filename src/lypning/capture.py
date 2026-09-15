@@ -34,6 +34,7 @@ corpus entry that can never be recovered.
 from __future__ import annotations
 
 import json
+import base64
 import os
 import re
 import sys
@@ -377,17 +378,62 @@ def append_record(rec: Dict[str, Any], log: Optional[Path] = None) -> bool:
     candidates.append(_fallback_log())
     try:
         line = json.dumps(rec, separators=(",", ":"), ensure_ascii=False) + "\n"
-    except (TypeError, ValueError):
+        raw = line.encode("utf-8")
+        if len(raw) > MAX_EVENT_BYTES:
+            return False
+    except (TypeError, ValueError, UnicodeError):
         return False
     for target in candidates:
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            with open(str(target), "a", encoding="utf-8", newline="\n") as fh:
-                fh.write(line)
-            return True
+            fd = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                return os.write(fd, raw) == len(raw)
+            finally:
+                os.close(fd)
         except OSError:
             continue  # unwritable — try the next candidate
     return False
+
+
+def record_embedding(source, *, outcome, engine, version, library, args=(),
+                     filename=None, stdin=b"", filesystem=True, step_limit=0,
+                     output_limit=0):
+    """Default private Python-binding evidence, never a correctness label.
+
+    No extra execution or filesystem/input-file discovery. Binary I/O is
+    explicit base64. Oversized calls retain hashes/lengths and limits rather
+    than allocating an unbounded log record. Hosts must review before sharing.
+    """
+    try:
+        if not capture_enabled():
+            return False
+        from .evidence import digest
+        raw = source.encode("utf-8")
+        rec = dict(schema=1, kind="embedding_invocation", ts=_now(),
+                   session=session_env(), host="python-embedding", cwd=os.getcwd(),
+                   engine=engine, engine_version=version, library=str(library),
+                   argv_tail=list(args), filename=filename, filesystem=filesystem,
+                   step_limit=step_limit, output_limit=output_limit,
+                   source_sha256=digest(raw), source_bytes=len(raw),
+                   status=outcome.status_name, exit_code=outcome.exit_code,
+                   committed=outcome.committed, fall_onward=outcome.fall_onward,
+                   refusal_kind=outcome.kind, refusal_detail=outcome.detail,
+                   correctness="unknown", capture_complete=True)
+        if len(raw) <= 65536:
+            rec["program"] = source
+        else:
+            rec["capture_complete"] = False
+        for name, value in (("stdin", stdin), ("stdout", outcome.stdout), ("stderr", outcome.stderr)):
+            rec[name + "_sha256"] = digest(value)
+            rec[name + "_bytes"] = len(value)
+            if len(value) <= 65536:
+                rec[name + "_base64"] = base64.b64encode(value).decode("ascii")
+            else:
+                rec["capture_complete"] = False
+        return append_record(rec)
+    except Exception:
+        return False  # observation must never alter return/fallback behavior
 
 
 def _respond(stdout: Optional[TextIO] = None) -> int:

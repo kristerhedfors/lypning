@@ -33,10 +33,12 @@ from __future__ import annotations
 
 import bisect
 import hashlib
+import io
 import json
 import os
 import re
 import sys
+import tokenize
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
@@ -163,6 +165,7 @@ class Sighting:
             count=self.count,
             stdin_sample=self.stdin_sample,
             models=self.models,
+            extra=dict(self.extra),
         )
 
 
@@ -179,8 +182,7 @@ _SIGHTING_KEYS = frozenset((
 
 
 def normalise(program: str) -> str:
-    """Dedup key text: line endings unified, per-line trailing whitespace and
-    outer blank lines dropped.
+    """Legacy summary key, NOT an exact source identity (see evidence.py).
 
     Indentation is NOT touched. In Python that is syntax, and two programs
     indented differently are two programs. The shim sees ``-c $'\\nimport os'``
@@ -188,6 +190,15 @@ def normalise(program: str) -> str:
     """
     if not isinstance(program, str):
         return ""
+    # Whitespace inside a multiline literal is DATA. Older normalization
+    # silently merged different programs. Keep legacy keys for ordinary source
+    # but preserve exact text for multiline tokens and un-tokenizable input.
+    try:
+        if any(t.start[0] != t.end[0] and t.type not in (tokenize.NL, tokenize.NEWLINE)
+               for t in tokenize.generate_tokens(io.StringIO(program).readline)):
+            return program
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return program
     lines = [ln.rstrip(" \t") for ln in program.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
     while lines and not lines[0].strip():
         lines.pop(0)
@@ -1876,6 +1887,7 @@ def fold_into_corpus(sightings: Sequence[Sighting],
         models = corpus.merge_models(cur.models, entry.models, max)
         by_id[entry.id] = replace(
             cur,
+            extra=dict(entry.extra, **cur.extra),
             source=cur.source if SOURCE_RANK.get(cur.source, 0) >= SOURCE_RANK.get(entry.source, 0) else entry.source,
             first_seen=min(stamps) if stamps else "",
             count=_count_at_least_the_models(max(cur.count, entry.count), models),

@@ -1,245 +1,205 @@
 # Qwen3.8 training for lypning-l
 
-Use [NEXT_ROUND.md](NEXT_ROUND.md) for the manually started next round: current
-admission gates, commands, stop conditions and handback format. No training is
-started by this repository change.
+Design decision, 2026-09-15: **verified, diverse SFT is the first candidate;
+execution-verified on-policy RL is conditional on measured signal and benefit.**
+Keep the untouched model and SFT-only controls. No algorithm has been shown to
+be universally best for Qwen3.8 on this interpreter's first-draft workload.
 
-Decision, 2026-09-14: **verified supervised warm start, then execution-verified
-on-policy RL; keep SFT-only and base-model controls.** Target the real
-`Qwen/Qwen3.8-27B` checkpoint, with the `lypning-l` execution surface first.
-LoRA is the parameterisation, not the learning objective: both stages use it.
-No particular algorithm is established as best for this interpreter domain.
-This document supersedes the proposed reward in `LADDER.md`, not its recorded
-measurements or the existing frozen rewrite benchmark.
+[Next round](NEXT_ROUND.md) is the manual launch checklist.
+[L capability priorities](L-TRAINING-ROADMAP.md) separates runtime investments
+from training changes. This refactor launches no training and establishes no
+model-quality improvement. Historical datasets and measurements remain intact.
 
-## Why this recipe
+## Start with the problem, not an RL algorithm
 
-| Approach | Fit to this problem | Decision |
-|---|---|---|
-| Continued pretraining on source/documentation | Teaches vocabulary and patterns, but has no direct correctness signal; the model already knows Python | Not the first intervention |
-| Supervised fine-tuning on verified solutions | Efficient way to demonstrate supported idioms; risks memorising answers and inheriting a teacher's style | Small, diverse warm start and standalone baseline |
-| DPO/ORPO on offline pairs | Cheap comparative learning, but stale pairs and correctness/style confounds are serious here | Optional ablation, not a required middle stage |
-| On-policy RL with executable rewards | Directly measures the objective and trains on the current model's mistakes | Main candidate after the verifier and rollout signal pass their gates |
-| Multi-turn repair training | Appropriate for a deployment that actually returns interpreter feedback | Separate experiment; do not mistake repair gains for first-draft gains |
+The target is an ordinary task's **first correct program that executes natively
+on L**, while retaining correctness when CPython fallback is necessary. It is
+not rewrite compliance, fewer imports, shortest source, or native execution of
+an incorrect program. Core compatibility and feedback-assisted repair are
+separate evaluation slices, not extra requirements on the first L experiment.
 
-[DeepSeek-R1](https://arxiv.org/abs/2501.12948) supports verifiable RL and a
-cold-start supervised stage for reasoning/code. [DeepCoder's official
-report](https://www.together.ai/blog/deepcoder) demonstrates coding gains from
-execution-RL at substantially larger data/compute scale than this project.
-Neither establishes a winner for Qwen3.8 + lypning-l. [STaR](https://arxiv.org/abs/2203.14465)
-supports iterating over verified successes; [SCoRe](https://arxiv.org/abs/2409.12917)
-is evidence that self-correction requires attention to the on-policy,
-multi-turn distribution, not just an offline collection of corrections.
+| Method | Role in this experiment |
+| --- | --- |
+| Continued pretraining | Low priority: this post-trained model already knows Python; raw documentation does not verify semantics. |
+| Verified SFT / rejection-sampled fine-tuning | First intervention and standalone control. Teach diverse correct supported idioms, with retention and legitimate fallback examples. Regenerate successes only from train families. |
+| Execution-reward RL | Candidate after a train-only probe finds useful within-prompt reward variation. It optimizes current-policy behavior, but can exploit weak tests or forget correctness. |
+| Offline preferences (DPO/ORPO) | Optional matched ablation; not an obligatory stage. Pairs must isolate native correctness, not style or teacher preference. |
+| Multi-turn repair | Only for a deployment that actually supplies runtime feedback. Do not present repair/pass@k gains as first-draft gains. |
 
-Full-parameter tuning is not intrinsically necessary for the first experiment.
-Keep BF16 rank-16 LoRA, frozen vision weights, and the existing exact
-`Qwen3_5ForConditionalGeneration` class and projection-gradient checks. Change
-rank or try full tuning only if the data/objective ablations demonstrate an
-adaptation-capacity bottleneck. QLoRA is a memory trade-off, not a claim of better
-quality; do not change quantisation, objective and dataset simultaneously.
-The checkpoint's architecture is verified by its [official config](https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/config.json).
+[DeepSeek-R1](https://arxiv.org/abs/2501.12948) and
+[DeepCoder](https://www.together.ai/blog/deepcoder) motivate verified RL in
+reasoning/code, not a guaranteed win on this smaller task distribution.
+[STaR](https://arxiv.org/abs/2203.14465) motivates iterative verified-success
+training; [SCoRe](https://arxiv.org/abs/2409.12917) motivates treating
+self-correction as its own training distribution.
 
-## What was wrong with the earlier plan
+LoRA is an adaptation parameterization, not an objective. Keep BF16 rank 16,
+alpha 32 and dropout zero initially, then jointly ablate rank and learning rate
+if underfitting survives data/objective improvements.
+[LoRA Without Regret](https://thinkingmachines.ai/blog/lora/) supports trying
+LoRA before full tuning and warns that capacity and optimization settings
+matter. It does not establish rank 16 as optimal here. Quantization and full
+fine-tuning remain separately budgeted experiments, not concurrent changes.
 
-1. Its proposed reward paid `+0.5` for legal-but-wrong code and `+0.1` for a
-   correct fallback. This actively favours losing correctness. Import-count and
-   reference-length penalties add style proxies that can also punish valid code.
-2. Refusal-derived rewrites are not the distribution of ordinary first-draft
-   tasks. Excluding already-supported examples also excludes retention training
-   for capabilities the large engine already has.
-3. One expected stdout is easy to memorise. A single successful perturbation is
-   better, but remains weak evidence of generalisation. Split semantic families
-   before generating variants or sampling solutions.
-4. Runtime mismatches, flaky oracles and harness failures cannot be learning
-   targets. Fix or quarantine them with a separately reported denominator;
-   never reward the model for avoiding an engine bug. The new path aborts.
-5. Zero successes in a finite pass@k sample estimates reachable signal at that
-   budget. It does **not** prove a hard learning ceiling: transfer and policy
-   changes can expose new successes. All-equal GRPO groups do, however, have no
-   relative reward signal for that update.
-6. With an SFT adapter loaded, disabling it gives the original base policy,
-   not an SFT reference. The new GRPO path continues the same adapter with
-   `beta=0`, explicitly; it does not pretend to KL-anchor to SFT.
+## Qwen-specific contract
 
-## New executable path
+The [official model card](https://huggingface.co/Qwen/Qwen3.8-27B) identifies
+`Qwen/Qwen3.8-27B` as post-trained, with Qwen3.5 architecture and thinking
+enabled by default. Use the exact `Qwen3_5ForConditionalGeneration` class,
+not a guessed text-only architecture. Pin an immutable Hub commit; validate
+checkpoint keys, tokenizer, template and every targeted text projection.
+Freeze vision, embeddings and output head. Include both gated linear-attention
+and full-attention projections plus the text MLPs; retain the gradient smoke.
 
-`pipeline/training.py` owns the task schema, family split, bundle integrity and
-verifier. `gpu/train_verified.py` implements completion-only SFT, GRPO and
-generation/evaluation using those same task prompts and verification rules.
-It reuses the tested masking, exact model class, vision exclusion and gradient
-smoke from `gpu/lypning_lora.py`; the legacy standalone runner remains usable
-for reproducing historical runs. GPU dependencies remain outside the Python
-package's zero-dependency runtime.
+This first experiment explicitly disables thinking everywhere. Its supervised
+targets are code, not verified reasoning traces. A thinking-mode comparison
+needs its own templates, parsed answer boundary, trace provenance and token
+budget; simply toggling it in this SFT pipeline would change the objective.
 
-| Observed result on **all** test inputs | Coverage task reward | Fallback-control reward |
-|---|---:|---:|
-| Correct CPython; correct native execution on every input | 1 | 1 |
-| Correct CPython; at least one valid native refusal | 0.25 | 1 |
-| Wrong, exception, timeout, empty or truncated completion | 0 | 0 |
-| Unstable oracle, malformed exit-90, harness failure, native mismatch after correct CPython | Abort, save RL witness | Abort, save RL witness |
+Use sampled decoding with temperature 0.7, top-p 0.8, top-k 20, min-p 0,
+repetition penalty 1, one beam and the tokenizer's assistant EOS. The official
+non-thinking serving recipe also uses presence penalty 1.5; this Transformers
+experiment explicitly uses **zero**, not an undocumented approximation.
+Probe, RL and primary evaluation share this policy. Greedy is an eval-only
+diagnostic. Completion length is part of the experiment, never silently changed.
 
-No partial-correctness or syntax bonuses. Refusal must be exit 90, one
-`lypning-l: unsupported: kind: detail` stderr line and empty stdout. Correct
-fallback receives credit; a fallback-control task does not penalise a legitimate
-native implementation either. Core `lypning` acceptance is **not** a second
-training requirement: teach the broad surface first, measure core compatibility
-as a separate later slice.
+## Audit: why the previous scaffold was insufficient
 
-The initial verifier supports deterministic UTF-8 stdout, empty stderr and exit
-zero, with varied stdin/argv/input files. Each case needs at least three distinct
-inputs and at least two expected outputs. Expectations are independently
-specified, then references are checked twice on CPython and against the engine.
-This is finite test evidence, **not a proof of correctness**. It does not check
-file postconditions, binary-output equivalence or arbitrary checker scripts.
-Those need their own explicit observable contracts before production editing
-tasks can enter this reward. Avoid model-written checkers that share a model's
-mistake with its solution.
+| Risk | Refactor |
+| --- | --- |
+| Family labels missed exact solution/source reuse | Join family, declared source group and normalized solution AST into indivisible split components. |
+| Coverage SFT seeds could themselves fall back | Admit coverage references only when every input is native; controls must really refuse on every input. Revalidate registry on bundle load. |
+| RL launched without learnable signal | Require a sealed train-only probe for the exact starting policy. Masked truncations cannot supply admission signal. Abort sustained no-signal groups. |
+| Greedy dev versus differently sampled RL | One explicit decoding contract; fixed per-case/draw seeds; preserve training RNG across evaluation. |
+| Adapter could be replaced or have incompatible provenance | Seal weights, config and manifest; check base, split, mode, tokenizer and model configuration on reload. |
+| Partial source hashes and ambiguous batching | Hash all pipeline/GPU sources; separate SFT batch size from RL group size; record completion/supervised token counts. |
+| Aggregate gains hid regressions | Family-macro, population and capability metrics; correctness retention gates; paired source/family-component comparison. |
+| Monolithic runner mixed scientific policy with optimization | Separate data, verification, contracts, evaluation, optimizer stages and reporting. GPU imports remain execution-only. |
 
-Prompts contain the ordinary task, not expected outputs, references, refusals or
-engine hints. The bundle retains tests/references for the trusted verifier;
-they are not passed into model inputs. Training samples semantic families with
-equal mass. Reference solutions are authored SFT seeds, **not** labelled as
-on-policy samples. No frozen legacy dataset or historical grade is rewritten.
+These are reliability improvements, not evidence that the trained policy is
+better. The exact pinned GPU stack still requires the manual smoke/reload gate.
 
-The 16-family authored starter is a **smoke curriculum**, not a training corpus
-or independent benchmark. It exercises integers/bigints, sorting, deduplication,
-Counter, regex, JSON, CSV, Unicode, GCD, hex parsing, bracket validation, hashing,
-Decimal fallback, argv and input files. Measured locally on 2026-09-14: all 48
-reference test inputs passed correctness; 45 executed natively and the three
-Decimal inputs validly refused. The deterministic starter split has 12 train,
-2 dev and 2 test families. Do not report its scores as model quality evidence.
+## Data admission: schema 3
 
-## Commands and execution safety
+Every case has `case_id`, `family`, `task`, `reference`, `provenance`,
+`population`, and `tests`. Pilot cases additionally require reviewed
+`source_group` and nonempty `capabilities` labels. A source group represents
+shared project/template/derivation, not a unique ID invented to pass splitting.
+Join these groups before sampling or adding derived solutions. AST matching
+detects exact structural reuse, **not semantic near-duplicates**; human review
+and benchmark contamination review remain mandatory.
 
-Run from the repository root. Use the same Python minor version as the engine.
-The bundle pins binary hash, Python version, verifier/sandbox source hashes,
-limits, prompts, references, test cases and family split. Existing output
-directories are refused. Build a **new** bundle on the actual Linux worker;
-copying a macOS engine-graded bundle there must fail the identity check.
+Split connected components deterministically within population strata. Pilot
+admission needs at least 18 semantic families, two families and two independent
+components of each population in each split. Linked families may reduce independence:
+inspect connected components, not just the family count. This is a floor,
+not enough statistical power by itself. Author substantially broader data.
 
-```bash
-# Linux worker: use the compiled lypning-l artifact, not a shim or dispatcher.
-PYTHONPATH=src:nemotron python -m pipeline.cli training-prepare \
-  --starter \
-  --engine src/lypning/assets/rust/target/variant-l/release/lypning \
-  --output work/training-smoke
+Use deterministic UTF-8 stdout, empty stderr and exit zero; tests may vary
+stdin, argv and UTF-8 input files. Require at least three distinct inputs and
+two distinct outputs, including boundary/adversarial inputs. Expectations must
+be independently checked; agreeing with one teacher is not an oracle.
+Finite tests cannot prove semantic correctness. File effects, binary outputs
+and arbitrary checkers are not yet certified by this contract.
 
-# Replace --starter with --cases independently-authored.jsonl for real data.
-# For reviewed local macOS smoke fixtures only, explicitly add --memory-mb 0.
-```
+References are run twice on CPython, then on the pinned compiled L binary.
+Coverage seeds must be correct and fully native; control seeds must be correct
+and cleanly refused on every input. A model may subsequently solve a control
+natively without penalty. A coverage expansion requires a new bundle and a
+fresh review of control labels.
 
-`--memory-mb 0` is a recorded opt-out for macOS's RLIMIT_AS failure, not a silent
-weakening of all runners. A real training/eval run refuses such a bundle.
+The authored starter remains smoke-only, even with source/capability metadata.
+No additional pilot corpus is fabricated by cloning it. Schema-2 bundles and
+unsealed legacy adapters do not silently migrate into this experiment:
+reprepare data; preserve historical runs; review any adapter migration explicitly.
 
-Set `QWEN_REV` to a verified 40-character Hub commit for this model and
-`LYPNING_L_BIN` to the absolute native binary path. Neither is auto-discovered.
-These commands do not submit jobs, rent hardware or upload to the Hub:
+## Verification and learning
 
-```bash
-# No torch import, checkpoint download, generation or training:
-PYTHONPATH=src:nemotron python nemotron/gpu/train_verified.py sft \
-  --bundle work/training-smoke/bundle.json --engine "$LYPNING_L_BIN" \
-  --revision "$QWEN_REV" --output work/sft-plan --smoke --plan
+| All-input observation | Coverage reward | Control reward |
+| --- | ---: | ---: |
+| Correct CPython and correct native on every input | 1 | 1 |
+| Correct CPython and valid native refusal on one or more inputs | 0.25 | 1 |
+| Incorrect, exception, timeout, no code, missing EOS | 0 | 0 |
+| Unstable successful oracle, harness failure, malformed refusal, native mismatch | Abort | Abort |
 
-# On the isolated worker, first exercise tiny-model gradients, tokenisation,
-# actual SFT/GRPO trainer steps, generation and verification. Smoke is not a
-# meaningful model-quality run; random models can give all-zero RL rewards.
-uv run nemotron/gpu/train_verified.py sft --smoke --isolated-worker \
-  --bundle work/training-smoke/bundle.json --engine "$LYPNING_L_BIN" \
-  --revision "$QWEN_REV" --output work/sft-smoke
-uv run nemotron/gpu/train_verified.py grpo --smoke --from-base --isolated-worker \
-  --bundle work/training-smoke/bundle.json --engine "$LYPNING_L_BIN" \
-  --revision "$QWEN_REV" --output work/grpo-smoke
-```
+No legality-only bonus, syntax credit, import penalty or reference-length reward.
+Refusal is exit 90, one correctly prefixed stderr line and empty stdout.
+Memory-limit failures are not successful execution or legitimate refusals.
+Per-draw records include truncation, token count, failing input and refusal
+diagnostics; these are for analysis, never prompt feedback.
 
-`--isolated-worker` is an operator attestation, **not an isolation mechanism**.
-The existing subprocess harness scrubs environment variables, bounds resources
-and uses a fresh cwd, but shares the filesystem. Run generated code in a
-disposable, externally constrained worker without credentials, private home
-directories or host repo mounts. Deny its outbound networking independently;
-preload weights. A future remote verifier service should keep test registries
-and trainer storage outside the generated program's filesystem namespace.
-Do not run model rollouts in this personal development checkout.
+SFT trains assistant completion tokens plus EOS, rejects silently dropped or
+boundary-merged examples, samples family then case, and uses token-weighted
+microbatch accumulation. It starts at peak LR 2e-5 with linear warmup/decay,
+gradient clipping and non-finite loss/gradient checks.
 
-Update, 2026-09-15: resource setup now runs in a fresh launcher, not `preexec_fn`.
-Linux retains the address-space cap; macOS uses a sampled process-group RSS
-watchdog for diagnostics. A host that denies process inspection reports a
-harness failure. The pytest-only `--no-memory-limit` flag explicitly skips that
-guard on a restricted macOS host; CI runs without it. Schema-2 bundles pin the
-launcher/memory policy and distinguish smoke from pilot data. The starter cannot
-launch a real job. Checkpoint selection also protects coverage and fallback
-correctness separately against the dev baseline. Ordinary failing tracebacks
-receive zero reward; only would-be successes are checked for oracle stability.
+RL starts at LR 1e-6, four generations per prompt and one optimizer update per
+group, using Dr.GRPO with no reward-standard-deviation scaling and truncated
+completions masked. `beta=0` is explicit: disabling the warm-start adapter
+would anchor to the original base, not SFT. Do not call this an SFT KL anchor.
+The [pinned TRL documentation](https://huggingface.co/docs/trl/v1.13.0/grpo_trainer)
+defines these settings. The [Dr.GRPO analysis](https://arxiv.org/abs/2503.20783)
+motivates avoiding length/difficulty normalization biases; it does not prove
+these settings optimal. [GSPO](https://arxiv.org/abs/2507.18071) is a plausible
+later ablation, not a reason to replace a verified baseline without evidence.
 
-After the smoke and the real-data admission gates pass: prepare a fresh real
-bundle, run SFT without `--smoke`, then GRPO with `--adapter` pointing to the
-selected `adapter-N` directory. Both use the same bundle and pinned base. The
-saved GRPO adapter includes its SFT warm start and reloads directly on the base;
-there is no hidden merged parent. `best.json` identifies the selected checkpoint
-(possibly step 0 if nothing improved). Checkpoints are selected by family-macro
-dev correctness first, then correct-native rate; plateau patience defaults to
-three checks. This small-sample checkpoint heuristic is not a release test.
+The probe covers every train case with the requested group size. At least two
+groups need distinct rewards among **non-truncated** draws, and some correct
+draws must exist. This deliberately modest gate is not a power calculation:
+inspect variation by family and raise sample sizes before scaling.
+Default live RL aborts after 20 consecutive uninformative groups. Smoke bypasses
+these signal gates because a tiny random model is only a plumbing test.
 
-Run `eval --adapter ... --eval-split test` only after selection is locked. Run
-the unadapted `eval` arm using identical bundle, revision and generation settings.
-Dev/test IDs cannot enter the RL reward callback. Normal evaluation is greedy
-pass@1; it does not silently compare against a provider's sampled pass@k result.
+GRPO uses a cyclic family-balanced dataset; within-family multiplicities can
+differ when family sizes differ. Review this mixture and freeze it. Increasing
+`--generations` also increases rollouts per update; equal steps are not equal
+compute across configurations.
 
-The initial GRPO settings are deliberately plain: four generations per prompt,
-learning rate 1e-6, fixed-length-normalised Dr.GRPO objective, no reward standard
-deviation scaling, no KL, truncated outputs masked. These are an experiment
-starting point, not tuned optima. API semantics are documented by
-[TRL](https://huggingface.co/docs/trl/grpo_trainer). SFT starts at 2e-5, completion
-tokens only, no silent truncation, with token-weighted gradient accumulation.
-Run manifests record package versions, source hashes, adapter lineage and args.
-RL writes program/score/family/population rows as well as correctness metrics,
-so high reward cannot conceal a changing task mixture.
+## Evaluation, checkpointing and reproducibility
 
-## Gates before spending on a real run
+Primary scores average independent first-draft draws, then cases within families,
+then families. They estimate sampled pass@1, **not best-of-k**. Equal draw counts
+and unique case/draw IDs are enforced. Dev checkpoint selection protects
+population and capability correctness against that run's starting policy, then
+ranks overall correctness before joint correct-native execution. A GRPO warm
+start's baseline is SFT; final release comparisons must also include base.
 
-1. Resolve or explicitly quarantine the signal ladder's existing engine
-   mismatches. Never transform a mismatch into a successful sample or claim
-   it has been fixed by the training refactor.
-2. Author a broader independent task set with source/project/template-family
-   grouping, robust edge inputs, supported-module retention and fallback
-   controls. Review family labels and near-duplicates manually; a family string
-   alone cannot detect semantic leakage. Keep old refusal rewrites as a separate
-   diagnostic distribution. Three test inputs is an admission floor, not enough
-   validation for arbitrary programs.
-3. Run small pinned-base rollouts on **training** families. Measure joint
-   correctness/native acceptance, fallback correctness, reward variance and
-   truncation by family. For all-zero groups improve tests/data/elicitation or
-   add verified SFT successes; do not award incorrect answers partial credit.
-4. Execute the exact tiny-model SFT and GRPO paths on the pinned Linux stack.
-   Check per-leaf gradients and adapter reload. Then run a short real-model pilot
-   under a separately approved resource budget. CPU unit tests are not this gate.
-5. Compare base, SFT-only, RL-from-base and SFT→RL under matched compute/token
-   budgets and at least two seeds. Checkpoint on dev, report once on test.
-   Report family-macro correctness, joint correct-native pass@1, fallback and
-   retention slices, length/import changes, measured latency, and mismatch
-   counts. Use paired family-level uncertainty intervals. Require correctness
-   non-inferiority and a real correct-native improvement before adoption.
-6. Only then assess smaller-core routing, rank changes, DPO ablations, execution
-   speed rewards, or a separately trained feedback-repair policy.
+Checkpoints retain separate directories, including step zero. `best.json`
+selects without deleting evidence. Adapters are restart artifacts, **not exact
+optimizer/RNG resumes**. Reload before accepting a checkpoint. Fixed seeds
+reduce comparison noise; they do not guarantee bit identity across hardware
+or different kernels. Do not mix versions or decode budgets.
 
-## Verification status
+After locking choices on dev, evaluate base, SFT-only and SFT→RL on the same
+untouched test split. Add RL-from-base only within the approved matched budget.
+Repeat at least two training seeds. `python -m pipeline.training_report BASE
+CANDIDATE` checks standalone eval contracts and reports paired source/family-component
+bootstrap intervals, resampling linked families together. With few independent
+components, these intervals are exploratory.
+The code prevents test cases from entering reward or checkpoint selection;
+an operator must still prevent repeated test inspection and preregister release
+margins, minimum native gain and acceptable retention regressions.
 
-On 2026-09-14 the focused verifier/masking/gate checks and the explicit native
-starter check passed locally. No real-model SFT/GRPO, GPU smoke, benchmark quality
-comparison or paid job has been run as part of this refactor. The pinned TRL
-integration still needs the Linux hardware smoke above.
+## Execution and cost boundary
 
-The wider pipeline suite also fails on the untouched upstream snapshot
-`af5d908` on this macOS/Python 3.14 environment: 50 failures, 235 passes, 2 skips.
-Many fail in `preexec_fn` while configuring the pre-existing subprocess memory
-cap. This refactor does not claim to fix that legacy harness or the recorded
-runtime mismatches.
+Follow [NEXT_ROUND.md](NEXT_ROUND.md) for commands. `--plan` checks locally
+without importing torch, downloading weights or executing generated programs.
+One process/GPU only; real runs require an admitted pilot, Linux/CUDA and active
+memory limits. Output directories must be new.
 
-A matched full-suite run of the refactor had 50 failures, 273 passes and 3 skips;
-the JUnit failing-test sets were identical (zero added failures). Further focused
-tests cover CLI failure reporting, mid-run engine drift and the real-tokenizer
-vocabulary in the tiny-model path. The final focused verifier/masking/gate run
-passed **78 tests on 2026-09-15**, including the opt-in native starter check.
-The full suite
-regenerates two historical summary files with platform-dependent floating-point
-rounding; those incidental changes were reverted, preserving the recorded data.
+`--isolated-worker` is an attestation, **not a jail**. Pilot preparation now
+requires a reviewed-data manifest and an immutable candidate-image ID. All
+generated-code runs, including smoke, require the container execution contract
+stored in their bundle. Candidates receive no host mounts/network, registry,
+expected outputs, credentials or GPU. The full oracle/engine/harness identity is
+checked before model loading. Docker still shares a kernel; use a dedicated
+disposable worker and the boundary tests in
+[START_NEXT_ROUND.md](START_NEXT_ROUND.md). The local subprocess harness remains
+available only for reviewed CPU smoke fixtures, not arbitrary generated code.
+Preload dependencies and weights after approval. Historical captured programs
+are also untrusted; never replay them directly in the development checkout.
+
+Step/completion caps bound work shape, not dollars or elapsed time. Use an
+externally enforced scheduler budget, record actual GPU time/cost and token
+totals, preserve blocked witnesses, and stop on verifier failures. CPU tests
+cannot substitute for the exact Qwen/TRL gradient, generation and reload smoke.
