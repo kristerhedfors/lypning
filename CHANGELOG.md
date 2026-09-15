@@ -34,6 +34,13 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 - Add `nemotron/STATUS.md`: the programme's dated scoreboard, gate state,
   ordered next steps, expected movement, a measurement assessment and the
   proposed training recipe, for the reviewing session's assessment.
+- After the Codex review: a Space name is not an immutable image, so the
+  runner refuses a Space whose Hub commit is not the pinned one and aborts on
+  any sandbox response whose in-image identity (engine, harness, worker,
+  interpreter) is not the admitted one; the launcher refuses a non-private
+  artifact repository and quotes every operator word; the smoke script logs
+  authored execution witnesses and the report no longer counts `no-code`
+  rollouts as sandbox round-trips.
 
 **2026-09-15** — Check question delivery and assess the first live proposal pilots ([#78](https://github.com/kristerhedfors/lypning/pull/78))
 

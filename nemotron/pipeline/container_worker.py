@@ -22,17 +22,33 @@ sys.path.insert(0, HERE)
 import sandbox
 
 
+def sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def identity():
+    """What this image is, measured from inside it on every request.
+
+    A pooled sandbox image is named by a Space, and a Space name is not an
+    immutable image: a rebuild or a replacement host can serve different bytes
+    under the same name. So every response, not only the handshake, carries
+    the engine, the harness, this worker and the interpreter, and the runner
+    refuses any response whose identity is not the one the bundle admitted.
+    """
+    return {"sha256": sha("/usr/local/bin/lypning-l"),
+            "version": subprocess.check_output(["/usr/local/bin/lypning-l", "--version"], text=True).strip(),
+            "oracle": sys.version, "sandbox_sha256": sha(Path(HERE) / "sandbox.py"),
+            "child_exec_sha256": sha(Path(HERE) / "child_exec.py"),
+            "worker_sha256": sha(__file__),
+            "python_sha256": sha(Path(sys.executable).resolve())}
+
+
 def main():
     request = json.loads(sys.stdin.buffer.read(8 * 1024 * 1024 + 1))
     if request["protocol"] != 1:
         raise ValueError("protocol mismatch")
     if request["action"] == "identity":
-        def sha(path):
-            return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-        result = {"sha256": sha("/usr/local/bin/lypning-l"),
-                  "version": subprocess.check_output(["/usr/local/bin/lypning-l", "--version"], text=True).strip(),
-                  "oracle": sys.version, "sandbox_sha256": sha(Path(HERE) / "sandbox.py"),
-                  "child_exec_sha256": sha(Path(HERE) / "child_exec.py")}
+        result = identity()
     elif request["action"] == "run":
         result = asdict(sandbox.run_python(request["program"], argv=request["argv"],
             stdin=request["stdin"], files=request["files"], timeout_s=request["timeout_s"],
@@ -40,7 +56,7 @@ def main():
             interpreter=["/usr/local/bin/lypning-l"] if request["native"] else None))
     else:
         raise ValueError("unknown action")
-    print(json.dumps({"protocol": 1, "result": result}))
+    print(json.dumps({"protocol": 1, "result": result, "identity": identity()}))
 
 
 if __name__ == "__main__":

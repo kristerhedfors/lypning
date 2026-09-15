@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import sys
 import time
 
@@ -26,9 +27,24 @@ TERMINAL = ("COMPLETED", "ERROR", "CANCELED")
 
 
 def bootstrap(stage, branch, commit):
+    """The job's shell line; every operator-supplied word is quoted, never interpolated."""
     return ("set -euo pipefail; apt-get update -qq >/dev/null && apt-get install -y -qq git >/dev/null; "
             "git clone -q --branch %s %s /work/lypning && cd /work/lypning && git checkout -q %s && "
-            "bash %s" % (branch, REPO_URL, commit, STAGES[stage]))
+            "bash %s" % (shlex.quote(branch), shlex.quote(REPO_URL), shlex.quote(commit), shlex.quote(STAGES[stage])))
+
+
+def private_dataset(api, repo_id):
+    """The artifact destination must be private BEFORE anything is submitted.
+
+    `create_repo(private=True, exist_ok=True)` neither checks nor changes an
+    existing repository's visibility, so an existing public repository would
+    receive the round's artifacts. Refuse it; never flip visibility silently.
+    Returns True when the repository exists (or was created) private.
+    """
+    if not api.repo_exists(repo_id, repo_type="dataset"):
+        api.create_repo(repo_id, repo_type="dataset", private=True)
+        return True
+    return getattr(api.repo_info(repo_id, repo_type="dataset"), "private", None) is True
 
 
 def final_status(api, job_id, wait_s=120, sleep=time.sleep):
@@ -77,7 +93,9 @@ def main(argv=None):
     if not args.yes:
         print("dry run: pass --yes to submit", file=sys.stderr)
         return 0
-    api.create_repo(args.work_repo, repo_type="dataset", private=True, exist_ok=True)
+    if not private_dataset(api, args.work_repo):
+        print("refusing to submit: %s exists and is not a private dataset repository" % args.work_repo, file=sys.stderr)
+        return 2
     job = api.run_job(
         image=BASE_IMAGE, command=["bash", "-c", bootstrap(args.stage, args.branch, args.commit)],
         env={"SPACE_REPO": args.space, "SPACE_REV": args.space_revision, "QWEN_REV": args.qwen_revision,

@@ -146,6 +146,24 @@ which is what makes the `sys.version` half of the identity handshake hold. The
 harness lives under `/usr/local/lib`, not `/runner`: a pooled sandbox's Landlock
 ruleset reads the standard system trees and nothing else at the root.
 
+**A Space name is not an immutable image.** The Hub SDK offers no revision or
+digest on `hf.co/spaces/<owner>/<name>` (huggingface_hub 1.31.0, read
+2026-09-16): the string resolves to whatever the Space last built. The runner
+therefore fails closed in two places, found by the Codex review of PR #79.
+Before the first host is touched, the Space's current Hub commit must equal
+the bundle's pinned revision. And every response from every sandbox carries
+the identity the worker measures from inside the image (engine, harness, the
+worker file itself, the interpreter binary); a response whose identity is not
+the one the handshake admitted aborts the run, so a replacement host or a
+rebuilt image cannot serve one request unnoticed. Rebuilding the Space is a
+new commit, a new bundle and a new handshake, never a silent swap.
+
+**The artifact destination must be private before anything runs.** The
+launcher refuses an existing repository that is not private and never flips
+visibility; the job checks again before it uploads. Step 3 of the smoke script
+also logs authored execution witnesses (`execution-witnesses.jsonl`) so a
+report can cite candidate execution through the pool rather than infer it.
+
 ```bash
 # Build the image: a Space whose context is the four reviewed files. Record its
 # 40-character commit; the bundle pins it, and the pool is named by it so a

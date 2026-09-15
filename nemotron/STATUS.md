@@ -70,10 +70,13 @@ Data side, same date:
   grouped multi-input verified bundles, sealed adapters, capability and
   population gates, train-only RL admission probe, matched seeds, paired
   family-component reports, portable round plans.
-- **Two admitted execution boundaries**: Docker on a disposable worker, and
+- **Two candidate execution boundaries**: Docker on a disposable worker, and
   since 2026-09-15 pooled Hugging Face sandboxes with one CPython base digest on
   both sides of the identity handshake; the latter smoke-tested on a real GPU
-  (PR #79, awaiting Codex's gate-6 decision).
+  (PR #79). Codex's review of 2026-09-16 held it for two fixes, now in the PR:
+  a Space name is not an immutable image, so the runner fails closed on the
+  Space's Hub commit and on the identity every response carries; and the
+  artifact repository must be private before anything is submitted.
 - **Engine work paid for by the programme**: `math`, `type()`, `%.2d` and the
   hillclimb-83 fixes came from on-policy evidence; stage 0a alone added 14 cases
   to `data/engine-mismatches.jsonl`.
@@ -108,8 +111,9 @@ Honest priors, not measurements. Each is conditional on a step above.
   k=16, 84.62% of tier-1 hold-out cases can be reached natively but only 42.31%
   natively and correctly (stage 0a, 2026-09-14). RL has something to reinforce;
   more than half of the tail is not rewardable at any policy the base model can
-  sample, and the pre-registered kinds `decorator`, `generator` and `walrus`
-  sit at 0/16 and are unmovable by RL.
+  sample, and the kinds `decorator`, `generator` and `walrus` had no native
+  draw in 16. A finite 0/16 is not proof of impossibility under RL; it says
+  those samples give RL nothing to reinforce.
 - **Stage 0b is the fork.** If the spec in the prompt lifts SLR by ≥10pp, the
   model can hold the boundary when shown the map, and distillation on ordinary
   tasks (not rewrite prompts) is the recipe with a real chance; the v2 run's
@@ -125,9 +129,12 @@ Honest priors, not measurements. Each is conditional on a step above.
 - **Detectability**: on 74 cases a fine-tune that flips fewer than six cases and
   loses none cannot fire the pre-registered rule at any effect size, and the
   headline verdict cannot fire below roughly +11pp on the whole hold-out
-  (`AUDIT.md` §FN, `PREREGISTRATION.md` §3c). At ≥300 tasks with a cluster
-  bootstrap, +3pp becomes a detectable effect. That is the second reason eval-2
-  comes before training.
+  (`AUDIT.md` §FN, `PREREGISTRATION.md` §3c). A larger benchmark is
+  necessary but 300 tasks alone do not guarantee power for +3pp: with a
+  paired cluster bootstrap, power depends on the discordance rate, the family
+  clustering and the base rate, none of which is known for ordinary tasks.
+  Size eval-2 from a design-specific power analysis on its own pilot draws
+  before freezing it. That is the second reason eval-2 comes before training.
 - **Kill criteria stand** (`LADDER.md` §6): if 0b is flat and the by-kind curves
   do not converge, or if eval-1 converges but eval-2 stays flat across two seeds,
   stop training and put the budget into the engine, which has so far returned

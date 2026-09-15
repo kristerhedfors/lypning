@@ -118,9 +118,15 @@ Smoke measurements are plumbing facts, not model results:
 
 The GRPO numbers are the expected shape for a random policy under Dr. GRPO:
 with every reward 0 the advantage is 0, the loss is exactly 0 and the weights
-do not move, which the identical adapter hashes show. That is the reward path
-working (12 verifier round-trips through the pool, `no-code` statuses, no
-blocked witnesses), not a training result. The SFT weights do move.
+do not move, which the identical adapter hashes show. Correction after the
+Codex review of 2026-09-16: a `no-code` rollout is scored without any sandbox
+call (`Verifier.score` returns before running anything), so the twelve GRPO
+rollouts exercised the reward callback and the zero-gradient path only, not
+candidate execution. Candidate execution through the pool is witnessed by the
+bundle's preparation (16 references verified natively and under CPython on
+every input) and, from the next run on, by the authored execution witnesses
+step 3 of the smoke script now logs to `execution-witnesses.jsonl`. The SFT
+weights do move.
 
 Boundary facts measured from this worker before the job, 2026-09-15: a pooled
 sandbox runs as uid 20000 with no `HF_TOKEN` in its environment and a cwd inside

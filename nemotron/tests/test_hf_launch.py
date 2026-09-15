@@ -34,3 +34,41 @@ def test_final_status_gives_up_after_the_deadline():
 def test_bootstrap_checks_out_the_exact_commit():
     cmd = launch.bootstrap("smoke", "b", "c" * 40)
     assert "--branch b" in cmd and "git checkout -q " + "c" * 40 in cmd and cmd.endswith(launch.STAGES["smoke"])
+
+
+class RepoApi:
+    """The two Hub calls the launcher makes about its artifact destination."""
+    def __init__(self, existing):
+        self.existing, self.created, self.jobs = existing, [], []
+
+    def repo_exists(self, repo_id, repo_type):
+        return self.existing is not None
+
+    def repo_info(self, repo_id, repo_type):
+        assert self.existing is not None, "repo_info is only asked of a repository that exists"
+        return SimpleNamespace(private=self.existing)
+
+    def create_repo(self, repo_id, repo_type, private):
+        self.created.append((repo_id, repo_type, private))
+
+    def run_job(self, **kw):
+        self.jobs.append(kw)
+
+
+def test_an_existing_public_repository_is_refused_and_nothing_is_submitted():
+    api = RepoApi(existing=False)
+    assert launch.private_dataset(api, "someone/work") is False
+    assert api.created == [] and api.jobs == [], "visibility is never flipped and no job runs"
+
+
+def test_a_missing_repository_is_created_private_and_a_private_one_is_accepted():
+    api = RepoApi(existing=None)
+    assert launch.private_dataset(api, "someone/work") is True
+    assert api.created == [("someone/work", "dataset", True)]
+    assert launch.private_dataset(RepoApi(existing=True), "someone/work") is True
+
+
+def test_bootstrap_quotes_every_operator_word():
+    cmd = launch.bootstrap("smoke", "feature; rm -rf /", "c" * 40)
+    assert "--branch 'feature; rm -rf /'" in cmd and "checkout -q " + "c" * 40 in cmd
+    assert cmd.endswith(launch.STAGES["smoke"]) or cmd.endswith("'" + launch.STAGES["smoke"] + "'")

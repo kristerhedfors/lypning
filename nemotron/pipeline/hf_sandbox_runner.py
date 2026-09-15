@@ -21,11 +21,25 @@ a fresh kernel per candidate. Both are written down in the handoff as the
 residual risk of this tier. A dedicated sandbox per request (one VM each,
 about six seconds to boot) is the stronger tier and needs only `Sandbox.create`
 in place of the pool; it was not chosen.
+
+A third thing it cannot have: an immutable image reference. The Hub SDK names
+a Space image `hf.co/spaces/<owner>/<name>` and offers no revision or digest
+on that string (huggingface_hub 1.31.0, read 2026-09-16), so the pinned commit
+in the bundle selects nothing by itself. This runner fails closed instead, in
+two places. Before the first host is touched, the Space's current commit on
+the Hub must equal the pinned one, so the only image the Space can currently
+have built is the pinned commit's. And every response from every sandbox
+carries the identity the worker measures from inside the image (engine,
+harness, the worker itself, the interpreter); a response whose identity is
+not the one the handshake admitted aborts the run. A replacement host or a
+rebuilt image cannot serve a single request unnoticed.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+from pathlib import Path
 import re
 
 from .sandbox import RunResult
@@ -44,11 +58,23 @@ IDLE_TIMEOUT = "10m"
 WORKER = "/usr/local/lib/lypning-verifier/container_worker.py"
 
 
+#: The five fields the bundle records, plus the worker file this tree ships.
+BUNDLE_FIELDS = ("sha256", "version", "oracle", "sandbox_sha256", "child_exec_sha256")
+WORKER_SOURCE = Path(__file__).with_name("container_worker.py")
+
+
+def expected_identity(identity):
+    """What every sandbox must report: the bundle's engine/oracle/harness and this worker."""
+    expected = {k: identity[k] for k in BUNDLE_FIELDS}
+    expected["worker_sha256"] = hashlib.sha256(WORKER_SOURCE.read_bytes()).hexdigest()
+    return expected
+
+
 class HfSandboxPoolRunner:
     """Same call shape as `ContainerRunner`; one pooled sandbox per request."""
 
     def __init__(self, image, revision, identity, *, check=True, pool=None, flavor=FLAVOR,
-                 sandboxes_per_host=None, hf_token=None):
+                 sandboxes_per_host=None, hf_token=None, space_sha=None):
         if not isinstance(image, str) or not re.fullmatch(IMAGE_PATTERN, image):
             raise TrainingError("hf-sandbox-pool execution image must be an hf.co/spaces/<owner>/<name> image")
         if not isinstance(revision, str) or not re.fullmatch(REVISION_PATTERN, revision):
@@ -56,20 +82,49 @@ class HfSandboxPoolRunner:
         self.image = image
         self.revision = revision
         self.identity = identity
+        self._expected = expected_identity(identity)
+        #: The interpreter hash the handshake observed; every later response must repeat it.
+        self._python_sha256 = None
         self._pool = pool
         self._flavor = flavor
         self._sandboxes_per_host = sandboxes_per_host
         self._hf_token = hf_token
+        self._space_sha = space_sha
         if check:
             got = self._request({"protocol": PROTOCOL, "action": "identity"}, 10, 1024)
-            expected = {k: identity[k] for k in ("sha256", "version", "oracle", "sandbox_sha256", "child_exec_sha256")}
-            if got != expected:
-                raise TrainingError("sandbox engine/oracle/harness differs from the bundle worker: " + str(got))
+            self._admit(got, "handshake")
+
+    def _admit(self, got, where):
+        """Abort unless `got` is the admitted identity; never a low reward, never a retry."""
+        if not isinstance(got, dict):
+            raise TrainingError("sandbox %s carried no identity" % where)
+        observed = {k: got.get(k) for k in self._expected}
+        if observed != self._expected:
+            raise TrainingError("sandbox engine/oracle/harness differs from the bundle worker at %s: %s" % (where, observed))
+        python = got.get("python_sha256")
+        if not isinstance(python, str) or not python:
+            raise TrainingError("sandbox %s did not identify its interpreter" % where)
+        if self._python_sha256 is None:
+            self._python_sha256 = python
+        elif python != self._python_sha256:
+            raise TrainingError("sandbox interpreter changed under the run at %s" % where)
 
     # -- the pool, created lazily so `--plan` and unit tests never touch the Hub
 
+    def space_head(self):
+        """The Space's current commit on the Hub; the only image it can have built now."""
+        if self._space_sha is not None:
+            return self._space_sha()
+        from huggingface_hub import HfApi
+        repo_id = self.image[len("hf.co/spaces/"):]
+        return HfApi(token=self._hf_token).space_info(repo_id).sha
+
     def pool(self):
         if self._pool is None:
+            head = self.space_head()
+            if head != self.revision:
+                raise TrainingError("verifier Space %s is at %s, not the pinned %s; a Space name is not an immutable image"
+                                    % (self.image, head, self.revision))
             from huggingface_hub import SandboxPool
             # Named by the Space revision: a pool attaches to any warm host with
             # the same image, flavor and NAME, and a host booted from an earlier
@@ -132,6 +187,9 @@ class HfSandboxPoolRunner:
             raise VerificationBlocked("invalid sandbox response") from exc
         if not isinstance(response, dict) or response.get("protocol") != PROTOCOL or "result" not in response:
             raise VerificationBlocked("sandbox protocol mismatch")
+        # Every response identifies the image that produced it; a fresh
+        # sandbox on a replacement host is admitted or refused on its own words.
+        self._admit(response.get("identity"), "request")
         return response["result"]
 
     def __call__(self, program, *, argv=None, stdin=None, files=None, timeout_s=5,

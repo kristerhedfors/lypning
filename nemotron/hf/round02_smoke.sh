@@ -46,8 +46,29 @@ export LYPNING_L_BIN="$PWD/$ROUND/engine-home/bin/lypning-l"
 "$LYPNING_L_BIN" --version
 sha256sum "$LYPNING_L_BIN"
 
-# 3. Identity handshake only: no candidate execution, no GPU imports.
-python3 -c 'import os; from pipeline.training import engine_identity; from pipeline.hf_sandbox_runner import HfSandboxPoolRunner; r = HfSandboxPoolRunner("hf.co/spaces/" + os.environ["SPACE_REPO"], os.environ["SPACE_REV"], engine_identity(os.environ["LYPNING_L_BIN"])); r.close(); print("== identity handshake: ok")'
+# 3. Identity handshake, then authored execution witnesses through the pool,
+#    logged to the round directory so the report can cite them: no GPU imports.
+python3 - <<'EOF'
+import json, os
+from pipeline.training import engine_identity
+from pipeline.hf_sandbox_runner import HfSandboxPoolRunner
+r = HfSandboxPoolRunner("hf.co/spaces/" + os.environ["SPACE_REPO"], os.environ["SPACE_REV"],
+                        engine_identity(os.environ["LYPNING_L_BIN"]))
+print("== identity handshake: ok")
+witnesses = [("cpython-argv", "import sys\nprint(sum(int(x) for x in sys.argv[1:]))", dict(argv=["1", "2"])),
+             ("native-file", "print(open('in.txt').read())", dict(files={"in.txt": "seeded"}, interpreter=["native"])),
+             ("timeout", "while True: pass", dict(timeout_s=1)),
+             ("no-token", "import os; print(os.getuid() >= 20000, os.environ.get('HF_TOKEN'))", {})]
+with open("work/round-02/execution-witnesses.jsonl", "w") as log:
+    for name, program, kw in witnesses:
+        kw.setdefault("timeout_s", 5); kw.setdefault("mem_mb", 256)
+        res = r(program, **kw)
+        row = dict(witness=name, program=program, exit_code=res.exit_code, stdout=res.stdout,
+                   timed_out=res.timed_out, harness_error=res.harness_error)
+        log.write(json.dumps(row) + "\n")
+        print("== execution witness:", json.dumps(row))
+r.close()
+EOF
 
 # 4. The authored starter, verified through the pool; smoke purpose only.
 python3 -m pipeline.cli training-prepare --starter --engine "$LYPNING_L_BIN" \
@@ -86,6 +107,9 @@ manifest = {"job": job, "commit": subprocess.check_output(["git", "rev-parse", "
             "qwen_revision": os.environ["QWEN_REV"], "flavor": os.environ.get("ACCELERATOR", ""),
             "bundle_digest": json.load(open("work/round-02/smoke/bundle.json"))["digest"]}
 json.dump(manifest, open("work/round-02/job-manifest.json", "w"), indent=2)
+info = api.repo_info(os.environ["WORK_REPO"], repo_type="dataset")
+if info.private is not True:
+    raise SystemExit("refusing to upload: %s is not a private dataset repository" % os.environ["WORK_REPO"])
 api.upload_folder(folder_path="work/round-02", repo_id=os.environ["WORK_REPO"], repo_type="dataset",
                   path_in_repo="round-02/" + job, commit_message="round-02 smoke from job " + job)
 print("== uploaded work/round-02 to", os.environ["WORK_REPO"], "under round-02/" + job)
