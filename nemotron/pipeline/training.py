@@ -47,7 +47,7 @@ def engine_identity(binary):
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             "oracle": sys.version, "policy": POLICY,
             "verifier_sha256": sha256_of({name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
-                for name in ("training.py", "training_types.py", "training_data.py")}),
+                for name in ("training.py", "training_types.py", "training_data.py", "data_loop.py", "container_runner.py")}),
             "sandbox_sha256": hashlib.sha256(Path(sandbox.__file__).read_bytes()).hexdigest(),
             "child_exec_sha256": hashlib.sha256(Path(sandbox.__file__).with_name("child_exec.py").read_bytes()).hexdigest()}
 
@@ -143,19 +143,29 @@ class Verifier:
         return Score(0.25, "correct-fallback", native_count, len(tests), tuple(refusals))
 
 
-def prepare(cases, binary, output, seed=1111, timeout_s=5.0, memory_mb=1024, purpose="smoke"):
+def prepare(cases, binary, output, seed=1111, timeout_s=5.0, memory_mb=1024, purpose="smoke", execution_image=None, review_path=None):
     """Verify references then publish a new immutable experiment directory."""
     output = Path(output)
     if output.exists():
         raise TrainingError("output already exists; use a new experiment directory")
     validate_cases(cases)
+    review_manifest = None
+    if review_path:
+        from .data_loop import load_review
+        review_manifest = load_review(review_path, cases, seed, purpose)
     identity = engine_identity(binary)
     cases = split_cases(cases, seed)
     if purpose not in ("smoke", "pilot"):
         raise TrainingError("purpose must be smoke or pilot")
     if purpose == "pilot":
         validate_pilot(cases)
-    verifier = Verifier(binary, timeout_s=timeout_s, memory_mb=memory_mb, identity=identity)
+        if not review_manifest:
+            raise TrainingError("pilot requires --review; observations are not verified tasks")
+        if not execution_image:
+            raise TrainingError("pilot preparation requires --execution-image; a temporary cwd is not isolation")
+    execution = {"kind": "docker", "image": execution_image} if execution_image else {"kind": "local-reviewed-smoke"}
+    runner = execution_runner(execution, identity)
+    verifier = Verifier(binary, timeout_s=timeout_s, memory_mb=memory_mb, identity=identity, runner=runner)
     references = {c["case_id"]: asdict(verifier.score(c, c["reference"])) for c in cases}
     references = json.loads(json.dumps(references))  # same tuple/list shape after manifest reload
     validate_reference_scores(cases, references)
@@ -165,6 +175,8 @@ def prepare(cases, binary, output, seed=1111, timeout_s=5.0, memory_mb=1024, pur
     payload = {"cases": cases, "identity": identity, "seed": seed,
                "schema": SCHEMA, "system": SYSTEM, "reference_scores": references,
                "purpose": purpose, "memory_policy": sandbox.memory_policy(memory_mb),
+               "execution": execution,
+               "data_review": review_manifest,
                "limits": {"timeout_s": timeout_s, "memory_mb": memory_mb}}
     payload["digest"] = sha256_of(payload)
     # Publish the manifest LAST: interruption leaves a non-loadable incomplete
@@ -199,12 +211,40 @@ def load_bundle(path, binary):
         raise TrainingError("missing experiment purpose")
     if payload["purpose"] == "pilot":
         validate_pilot(payload["cases"])
+        reviewed = payload.get("data_review")
+        if not isinstance(reviewed, dict) or reviewed.get("purpose") != "pilot":
+            raise TrainingError("pilot missing reviewed data lineage")
+        review_body = {k: v for k, v in reviewed.items() if k != "digest"}
+        original_cases = [{k: v for k, v in c.items() if k not in ("split", "split_group")} for c in payload["cases"]]
+        if (sha256_of(review_body) != reviewed.get("digest") or
+                sha256_of(original_cases) != reviewed.get("cases_sha256") or reviewed.get("seed") != payload["seed"]):
+            raise TrainingError("reviewed case lineage changed")
+        if payload.get("execution", {}).get("kind") != "docker":
+            raise TrainingError("pilot requires an isolated execution contract; prepare a new bundle")
+    validate_execution(payload.get("execution", {"kind": "local-reviewed-smoke"}))
     if payload["memory_policy"] != sandbox.memory_policy(payload["limits"]["memory_mb"]):
         raise TrainingError("memory enforcement policy changed")
     if split_cases(payload["cases"], payload["seed"]) != payload["cases"]:
         raise TrainingError("family split changed")
     payload["digest"] = digest
     return payload
+
+
+def validate_execution(execution):
+    from .container_runner import IMAGE_PATTERN
+    if execution == {"kind": "local-reviewed-smoke"}:
+        return
+    if (set(execution) != {"kind", "image"} or execution["kind"] != "docker" or
+            not isinstance(execution["image"], str) or not re.fullmatch(IMAGE_PATTERN, execution["image"])):
+        raise TrainingError("invalid execution contract")
+
+
+def execution_runner(execution, identity):
+    validate_execution(execution)
+    if execution["kind"] == "docker":
+        from .container_runner import ContainerRunner
+        return ContainerRunner(execution["image"], identity)
+    return None
 
 
 class Reward:

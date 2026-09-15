@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pipeline.jsonio import append_jsonl, sha256_of, write_json
 from pipeline.training_metrics import CheckpointGate
-from pipeline.training import TrainingError, Verifier, load_bundle, messages
+from pipeline.training import TrainingError, Verifier, execution_runner, load_bundle, messages
 
 from pipeline.training_contract import (BASE_MODEL, CONTRACT_VERSION, adapter_identity,
     decoding, model_config_identity, probe_contract, probe_report, runtime_versions,
@@ -102,6 +102,8 @@ def preflight(args):
         raise TrainingError("real runs require the isolated Linux worker, not macOS diagnostic limits")
     if not args.plan and not args.isolated_worker:
         raise TrainingError("generated-code execution requires --isolated-worker; see TRAINING.md")
+    if not args.plan and bundle.get("execution", {}).get("kind") != "docker":
+        raise TrainingError("generation (including smoke) requires a container execution bundle; re-prepare with --execution-image")
     if not args.smoke and bundle["limits"]["memory_mb"] == 0 and not args.plan:
         raise TrainingError("memory cap disabled: only --smoke may use this bundle")
     adapter = adapter_identity(args.adapter, args.revision) if args.adapter else None
@@ -144,6 +146,8 @@ to the real Qwen tokenizer would index beyond the embedding table immediately.
 
 
 def run(args, bundle, adapter_info):
+    verifier = Verifier(args.engine, **bundle["limits"], identity=bundle["identity"],
+                        runner=execution_runner(bundle["execution"], bundle["identity"]))
     versions = runtime_versions()
     # Block fused kernels before importing transformers, preserving the existing
     # exact Qwen class and per-leaf LoRA gradient smoke checks.
@@ -246,7 +250,6 @@ def run(args, bundle, adapter_info):
             if probe_manifest.get(key) != manifest[key]:
                 raise TrainingError("probe runtime contract changed: " + key)
     write_json(args.output / "experiment.json", manifest)
-    verifier = Verifier(args.engine, **bundle["limits"], identity=bundle["identity"])
     effective = schedule(args)
     max_tokens = effective["max_tokens"]
     policy = decoding(max_tokens, greedy=args.greedy)

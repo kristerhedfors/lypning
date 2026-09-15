@@ -187,12 +187,17 @@ without importing torch, downloading weights or executing generated programs.
 One process/GPU only; real runs require an admitted pilot, Linux/CUDA and active
 memory limits. Output directories must be new.
 
-`--isolated-worker` is an attestation, **not a jail**. The subprocess harness
-shares its filesystem: an externally enforced candidate boundary must exclude
-trainer storage, the test registry, credentials and private host mounts, and
-deny egress. Preload dependencies and weights. If no such boundary is available,
-do not execute generated code. Historical captured programs are also untrusted;
-never replay them directly in the development checkout.
+`--isolated-worker` is an attestation, **not a jail**. Pilot preparation now
+requires a reviewed-data manifest and an immutable candidate-image ID. All
+generated-code runs, including smoke, require the container execution contract
+stored in their bundle. Candidates receive no host mounts/network, registry,
+expected outputs, credentials or GPU. The full oracle/engine/harness identity is
+checked before model loading. Docker still shares a kernel; use a dedicated
+disposable worker and the boundary tests in
+[START_NEXT_ROUND.md](START_NEXT_ROUND.md). The local subprocess harness remains
+available only for reviewed CPU smoke fixtures, not arbitrary generated code.
+Preload dependencies and weights after approval. Historical captured programs
+are also untrusted; never replay them directly in the development checkout.
 
 Step/completion caps bound work shape, not dollars or elapsed time. Use an
 externally enforced scheduler budget, record actual GPU time/cost and token

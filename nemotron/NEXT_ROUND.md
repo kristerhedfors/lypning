@@ -5,6 +5,11 @@ started by this change.** The next coding agent launches manually, after the
 operator approves the worker and an enforced cost/time cap. Read `TRAINING.md`
 for the objective; this file is the executable handoff and stop checklist.
 
+**Other-device entry point:** read [START_NEXT_ROUND.md](START_NEXT_ROUND.md)
+first for private evidence/review, candidate-image construction and the portable
+`pipeline.round_plan` command. [DATA_PRODUCTION.md](DATA_PRODUCTION.md) owns the
+complete observation-to-next-dataset loop and interface/privacy limits.
+
 ## Assignment and evidence
 
 Pilot **Qwen/Qwen3.8-27B → lypning-l**: matched base control, verified SFT, then
@@ -43,13 +48,14 @@ does **not** exercise the exact Qwen/TRL GPU stack or demonstrate model quality.
 5. The verifier currently covers deterministic UTF-8 stdout, empty stderr and
    exit zero. Do not admit file-editing tasks, binary-output tasks or arbitrary
    checkers without implementing their observable contracts.
-6. Establish and test an actual execution boundary for generated code.
-   `--isolated-worker` is **an attestation, not a jail**. The subprocess helper
-   shares the filesystem. Candidate programs must not see the bundle/test
-   registry, trainer outputs, credentials or private checkout. Configure an
-   external sandbox/remote verifier with those paths excluded and egress blocked.
-   A shared writable host mount or environment scrubbing alone is insufficient.
-   If that boundary is unavailable, stop before executing any generated code.
+6. Build/test the pinned candidate image using `START_NEXT_ROUND.md`.
+   Pilot preparation requires both `--review` and `--execution-image`;
+   generated code (even smoke) requires a container-backed bundle.
+   `--isolated-worker` remains an additional operator attestation, not a jail.
+   The local subprocess helper is allowed only for reviewed CPU smoke fixtures.
+   Candidate containers have no host mounts/network/GPU/credentials; identity
+   checks and real protocol fixtures must pass before model loading. If this
+   boundary or an approved disposable worker is unavailable, stop.
    The corpus replay now safety-skips recognised package installs and model
    downloads before either arm runs; this is not a general containment layer.
    CI exposed a captured installer mutating the comparison's shared interpreter.
@@ -107,10 +113,11 @@ model prompts. Do not reuse schema-2 bundles or unsealed historical adapters.
 
 ```bash
 "$ROUND_PYTHON" -m pipeline.cli training-prepare --starter \
-  --engine "$LYPNING_L_BIN" --output work/round-02/smoke
+  --engine "$LYPNING_L_BIN" --execution-image "$EXECUTION_IMAGE" --output work/round-02/smoke
 
 "$ROUND_PYTHON" -m pipeline.cli training-prepare \
-  --cases work/round-02/reviewed-cases.jsonl --purpose pilot --seed 1111 \
+  --cases work/round-02/reviewed/cases.jsonl --review work/round-02/reviewed/review.json \
+  --execution-image "$EXECUTION_IMAGE" --purpose pilot --seed 1111 \
   --engine "$LYPNING_L_BIN" --output work/round-02/pilot
 
 # Plan only: no GPU imports, downloads, generation or optimisation.
