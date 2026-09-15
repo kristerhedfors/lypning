@@ -467,10 +467,6 @@ CASES = [
         "show('bytes source int', lambda: bytes(source=2))\n"
         "show('bytes twice', lambda: bytes('a', source='b'))\n"
         "show('bytes enc kw', lambda: bytes('é', encoding='utf-8', errors='strict'))\n"
-        "def op():\n"
-        "    open(file='f.txt', mode='w').write('hi')\n"
-        "    return open(file='f.txt').read()\n"
-        "show('open file kw', op)\n"
         "show('sorted iterable kw', lambda: sorted(iterable=[2, 1]))\n"
         "show('sorted key kw', lambda: sorted([2, 1], key=None, reverse=True))\n"
         "show('min iterable kw', lambda: min(iterable=[1]))\n"
@@ -859,6 +855,24 @@ def test_a_lone_surrogate_escape_refuses_rather_than_dying_as_a_syntax_error(lyp
     assert r.returncode == 1 and "SyntaxError" in r.stderr, r.stderr
     r = engines.run(engines.LYPNING, 'print("\\u00e9\\U0001F600")', binary=lypning_bin)
     assert not r.refused and r.stdout == "é😀\n", r.stderr
+
+
+def test_open_binds_file_by_name(lypning_bin, tmp_path):
+    """`open(file='f.txt', mode='w')` is legal CPython; the engine read only the
+    positional slot and died with `missing required argument 'file'`. In a
+    temp cwd, because the program writes — a CASES row runs where pytest
+    runs, and the corpus's net is not this suite's (invariant 4).
+    """
+    program = ("open(file='f.txt', mode='w').write('hi')\n"
+               "print(open(file='f.txt').read(), open('f.txt', mode='r').read())\n"
+               "try:\n    open('f.txt', file='g.txt')\n"
+               "except TypeError as e:\n    print(e)\n")
+    ours = engines.run(engines.LYPNING, program, binary=lypning_bin, cwd=tmp_path)
+    theirs = engines.run(engines.CPYTHON, program, cwd=tmp_path)
+    if theirs.returncode == 127:
+        pytest.skip("no reference CPython")
+    assert not ours.refused, ours.stderr
+    assert (ours.returncode, ours.stdout) == (theirs.returncode, theirs.stdout), ours.stderr
 
 
 def test_storing_a_slice_as_a_dict_key_refuses_or_raises_as_the_host_does(lypning_bin):
