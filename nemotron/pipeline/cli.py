@@ -1529,7 +1529,8 @@ def cmd_training_prepare(args) -> int:
             raise TrainingError("the starter curriculum is smoke-only")
         bundle = prepare(cases, args.engine, args.output, seed=args.seed,
                          timeout_s=args.timeout, memory_mb=args.memory_mb, purpose=args.purpose,
-                         execution_image=args.execution_image, review_path=args.review)
+                         execution_image=args.execution_image, review_path=args.review,
+                         execution_kind=args.execution_kind, execution_revision=args.execution_revision)
     except (TrainingError, OSError, subprocess.SubprocessError) as exc:
         print("training preparation blocked: %s" % exc, file=sys.stderr)
         return 1
@@ -1551,7 +1552,14 @@ def build_parser() -> argparse.ArgumentParser:
     tp.add_argument("--engine", type=Path, required=True, help="explicit compiled lypning-l binary")
     tp.add_argument("--output", type=Path, required=True, help="new directory; never overwrite")
     tp.add_argument("--seed", type=int, default=1111)
-    tp.add_argument("--execution-image", help="immutable local Docker image ID; required for pilot")
+    tp.add_argument("--execution-image",
+                    help="isolation image: an immutable local Docker image ID, or an "
+                         "hf.co/spaces/<owner>/<name> image for --execution-kind hf-sandbox-pool; "
+                         "required for pilot")
+    tp.add_argument("--execution-kind", choices=("docker", "hf-sandbox-pool"), default="docker",
+                    help="how generated code is isolated (default docker)")
+    tp.add_argument("--execution-revision",
+                    help="hf-sandbox-pool only: the Space's immutable 40-character commit")
     tp.add_argument("--review", type=Path, help="data_loop review.json bound to the exact cases/seed")
     tp.add_argument("--purpose", choices=("smoke", "pilot"), default="smoke")
     tp.add_argument("--timeout", type=float, default=5.0)

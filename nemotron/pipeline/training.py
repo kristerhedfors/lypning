@@ -143,7 +143,8 @@ class Verifier:
         return Score(0.25, "correct-fallback", native_count, len(tests), tuple(refusals))
 
 
-def prepare(cases, binary, output, seed=1111, timeout_s=5.0, memory_mb=1024, purpose="smoke", execution_image=None, review_path=None):
+def prepare(cases, binary, output, seed=1111, timeout_s=5.0, memory_mb=1024, purpose="smoke", execution_image=None, review_path=None,
+            execution_kind="docker", execution_revision=None):
     """Verify references then publish a new immutable experiment directory."""
     output = Path(output)
     if output.exists():
@@ -163,7 +164,7 @@ def prepare(cases, binary, output, seed=1111, timeout_s=5.0, memory_mb=1024, pur
             raise TrainingError("pilot requires --review; observations are not verified tasks")
         if not execution_image:
             raise TrainingError("pilot preparation requires --execution-image; a temporary cwd is not isolation")
-    execution = {"kind": "docker", "image": execution_image} if execution_image else {"kind": "local-reviewed-smoke"}
+    execution = execution_contract(execution_kind, execution_image, execution_revision)
     runner = execution_runner(execution, identity)
     verifier = Verifier(binary, timeout_s=timeout_s, memory_mb=memory_mb, identity=identity, runner=runner)
     references = {c["case_id"]: asdict(verifier.score(c, c["reference"])) for c in cases}
@@ -219,7 +220,7 @@ def load_bundle(path, binary):
         if (sha256_of(review_body) != reviewed.get("digest") or
                 sha256_of(original_cases) != reviewed.get("cases_sha256") or reviewed.get("seed") != payload["seed"]):
             raise TrainingError("reviewed case lineage changed")
-        if payload.get("execution", {}).get("kind") != "docker":
+        if payload.get("execution", {}).get("kind") not in ISOLATED_KINDS:
             raise TrainingError("pilot requires an isolated execution contract; prepare a new bundle")
     validate_execution(payload.get("execution", {"kind": "local-reviewed-smoke"}))
     if payload["memory_policy"] != sandbox.memory_policy(payload["limits"]["memory_mb"]):
@@ -230,13 +231,44 @@ def load_bundle(path, binary):
     return payload
 
 
+#: The execution contracts that count as an isolation boundary for generated
+#: code: a locked-down Docker container on a disposable worker, or a pooled
+#: Hugging Face sandbox on a host VM that is never the trainer's. The local
+#: subprocess helper is neither and is admitted for reviewed smoke fixtures only.
+ISOLATED_KINDS = ("docker", "hf-sandbox-pool")
+
+
+def execution_contract(kind, image, revision=None):
+    """The bundle's execution record from the operator's three inputs."""
+    if not image:
+        return {"kind": "local-reviewed-smoke"}
+    if kind == "docker":
+        return {"kind": "docker", "image": image}
+    if kind == "hf-sandbox-pool":
+        return {"kind": "hf-sandbox-pool", "image": image, "revision": revision}
+    raise TrainingError("unknown execution kind: %r" % (kind,))
+
+
 def validate_execution(execution):
     from .container_runner import IMAGE_PATTERN
+    from .hf_sandbox_runner import IMAGE_PATTERN as SPACE_PATTERN, REVISION_PATTERN
     if execution == {"kind": "local-reviewed-smoke"}:
         return
-    if (set(execution) != {"kind", "image"} or execution["kind"] != "docker" or
-            not isinstance(execution["image"], str) or not re.fullmatch(IMAGE_PATTERN, execution["image"])):
+    if not isinstance(execution, dict):
         raise TrainingError("invalid execution contract")
+    if execution.get("kind") == "docker":
+        if (set(execution) != {"kind", "image"} or not isinstance(execution["image"], str)
+                or not re.fullmatch(IMAGE_PATTERN, execution["image"])):
+            raise TrainingError("invalid execution contract")
+        return
+    if execution.get("kind") == "hf-sandbox-pool":
+        if (set(execution) != {"kind", "image", "revision"} or not isinstance(execution["image"], str)
+                or not re.fullmatch(SPACE_PATTERN, execution["image"])
+                or not isinstance(execution["revision"], str)
+                or not re.fullmatch(REVISION_PATTERN, execution["revision"])):
+            raise TrainingError("invalid execution contract")
+        return
+    raise TrainingError("invalid execution contract")
 
 
 def execution_runner(execution, identity):
@@ -244,6 +276,9 @@ def execution_runner(execution, identity):
     if execution["kind"] == "docker":
         from .container_runner import ContainerRunner
         return ContainerRunner(execution["image"], identity)
+    if execution["kind"] == "hf-sandbox-pool":
+        from .hf_sandbox_runner import HfSandboxPoolRunner
+        return HfSandboxPoolRunner(execution["image"], execution["revision"], identity)
     return None
 
 
