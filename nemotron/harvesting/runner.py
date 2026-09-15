@@ -26,6 +26,15 @@ MAX_FILE = 16 * 1024 * 1024
 CONTEXT = Path(__file__).resolve().parent
 
 
+class ContainerCommandError(RuntimeError):
+    def __init__(self, argv, stderr):
+        super().__init__("Container command failed: " + argv[0])
+        self.operation = argv[:3]
+        secret = os.environ.get("CEREBRAS_API_KEY", "").encode()
+        clean = stderr.replace(secret, b"[REDACTED_PROVIDER_KEY]") if secret else stderr
+        self.detail = clean[:4096].decode("utf-8", errors="replace")
+
+
 def command(argv, *, limit=MAX_ARCHIVE, timeout=60, env=None):
     """Bound Docker transport output and wall time, including malicious logs."""
     process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
@@ -49,7 +58,7 @@ def command(argv, *, limit=MAX_ARCHIVE, timeout=60, env=None):
         process.wait(timeout=max(0.01, deadline - time.monotonic()))
         if process.returncode:
             # No raw stderr in the trusted job log (could contain credentials).
-            raise RuntimeError("Container command failed: " + argv[0])
+            raise ContainerCommandError(argv, bytes(err))
         return bytes(out)
     finally:
         selector.close()
@@ -143,7 +152,7 @@ def run(task_index, repeat, output, worker_image, proxy_image, *, smoke=False, d
     # Authored, nonsecret prompt must be readable by container UID 65534.
     # Parent output directory remains private (0700).
     task_path.chmod(0o644)
-    records, errors, rule = [], [], None
+    records, errors, diagnostics, rule = [], [], [], None
     state = "infrastructure_failure"
     started = time.time()
     try:
@@ -226,6 +235,8 @@ def run(task_index, repeat, output, worker_image, proxy_image, *, smoke=False, d
     except Exception as exc:
         # No exception text: provider/container failures can echo sensitive data.
         errors.append(type(exc).__name__)
+        if isinstance(exc, ContainerCommandError):
+            diagnostics.append({"operation": exc.operation, "stderr": exc.detail})
     finally:
         for name in (worker, proxy):
             try:
@@ -245,6 +256,7 @@ def run(task_index, repeat, output, worker_image, proxy_image, *, smoke=False, d
             "proxy_image": proxy_image, "opencode_version": OPENCODE_VERSION,
             "model_revision": "provider-managed; not an immutable training checkpoint",
             "started_at": started, "finished_at": time.time(), "state": state, "errors": errors,
+            "diagnostics": diagnostics,
             "smoke": smoke, "trainable": False, "correctness": "unknown",
             "native_compatibility": "unmeasured; no L runtime in generation container",
             "records": records, "caps": {"requests": 24, "output_tokens_per_request": 2048,

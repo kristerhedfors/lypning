@@ -14,6 +14,14 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-15** — Add bounded parallel Cerebras/OpenCode project harvesting ([#72](https://github.com/kristerhedfors/lypning/pull/72))
+
+- Collect authored Python project sessions with Qwen 3.8, isolated workers and
+  a separate secret-holding proxy; cap parallelism, requests, tokens and time.
+- Preserve source, tool/session traces, provider usage and failed observations
+  for independent review. Keep Fable's active training inputs unchanged and
+  require no per-script speed threshold or automatic training admission.
+
 **2026-09-15** — Refactor the Qwen training experiment contract ([#71](https://github.com/kristerhedfors/lypning/pull/71))
 
 - Split admission, verification, optimization and evaluation; freeze decoding,
