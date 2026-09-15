@@ -1,0 +1,45 @@
+name: harvesting safety and integration
+on:
+  pull_request:
+    paths: ['nemotron/harvesting/**', 'nemotron/tests/test_harvest_*.py', '.github/workflows/harvest*.yml']
+  push:
+    branches: [main]
+    paths: ['nemotron/harvesting/**', 'nemotron/tests/test_harvest_*.py', '.github/workflows/harvest*.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: src:nemotron
+      LYPNING_CAPTURE: '0'
+      LYPNING_HARVEST: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pytest
+      - name: Mock API and archive-boundary unit tests (no secrets)
+        run: python -m pytest nemotron/tests/test_harvest_proxy.py nemotron/tests/test_harvest_runner.py -q
+      - name: Build pinned OpenCode and minimal proxy images
+        run: |
+          docker build -f nemotron/harvesting/Dockerfile.opencode -t harvest-worker nemotron/harvesting
+          docker build -f nemotron/harvesting/Dockerfile.proxy -t harvest-proxy nemotron/harvesting
+      - name: Real OpenCode tool call, capture and export with fake provider (no API spending)
+        run: |
+          python -m harvesting.runner --smoke --output work/harvest-smoke \
+            --worker-image "$(docker image inspect harvest-worker --format '{{.Id}}')" \
+            --proxy-image "$(docker image inspect harvest-proxy --format '{{.Id}}')"
+          python -m harvesting.check_smoke work/harvest-smoke
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: harvesting-smoke-evidence
+          path: work/harvest-smoke
+          retention-days: 7
+          if-no-files-found: ignore
