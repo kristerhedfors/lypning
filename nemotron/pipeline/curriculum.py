@@ -52,6 +52,7 @@ def starter_cases():
             tests = [{"files": {"input.txt": s}, "stdout": o} for s, o in
                      [("one two\nthree", "3\n"), ("", "0\n"), ("å", "1\n")]]
         cases.append({"case_id": "starter-" + family, "family": family, "task": task,
+                      "source_group": "starter-" + family, "capabilities": [family],
                       "reference": reference, "tests": tests,
                       "population": "fallback-control" if family == "decimal" else "coverage",
                       "provenance": "hand-authored smoke fixture, 2026-09-14; not a benchmark"})

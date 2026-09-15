@@ -15,29 +15,31 @@ See nemotron/TRAINING.md for staged acceptance gates and held-out evaluation.
 from __future__ import annotations
 
 import argparse
-import hashlib
-import importlib.metadata
 import json
 import math
 import os
 from pathlib import Path
-import random
 import re
 import sys
 from types import SimpleNamespace
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pipeline.jsonio import append_jsonl, sha256_of, write_json
-from pipeline.training_metrics import CheckpointGate, summarize
-from pipeline.training import (Reward, TrainingError, Verifier, load_bundle,
-                               messages, program_from_completion)
+from pipeline.training_metrics import CheckpointGate
+from pipeline.training import TrainingError, Verifier, load_bundle, messages
 
-BASE_MODEL = "Qwen/Qwen3.8-27B"
+from pipeline.training_contract import (BASE_MODEL, CONTRACT_VERSION, adapter_identity,
+    decoding, model_config_identity, probe_contract, probe_report, runtime_versions,
+    seal_adapter, source_identity, validate_probe)
+from verified_evaluation import evaluate
+from verified_stages import balanced_cases, train_sft, train_grpo
 
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("stage", choices=("sft", "grpo", "eval"))
+    p.add_argument("stage", choices=("sft", "probe", "grpo", "eval"))
     p.add_argument("--bundle", type=Path, required=True)
     p.add_argument("--engine", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True, help="new directory, never overwrite")
@@ -53,27 +55,18 @@ def parser():
     p.add_argument("--patience", type=int, default=3)
     p.add_argument("--rank", type=int, default=16)
     p.add_argument("--lr", type=float, help="default SFT 2e-5 / GRPO 1e-6")
-    p.add_argument("--batch-size", type=int, default=4, help="SFT effective batch / GRPO generations")
+    p.add_argument("--batch-size", type=int, default=4, help="SFT effective batch only")
+    p.add_argument("--generations", type=int, default=4, help="GRPO/probe draws per train prompt")
+    p.add_argument("--probe", type=Path, help="admitted probe.json from the exact RL starting policy")
+    p.add_argument("--eval-draws", type=int, default=4, help="matched-seed first-draft evaluation draws")
+    p.add_argument("--greedy", action="store_true", help="eval-only diagnostic; not checkpoint selection")
+    p.add_argument("--warmup-ratio", type=float, default=0.1)
+    p.add_argument("--max-no-signal", type=int, default=20, help="abort RL after this many uninformative groups")
     p.add_argument("--max-seq", type=int, default=4096)
     p.add_argument("--max-new-tokens", type=int, default=1024)
     p.add_argument("--seed", type=int, default=1111)
     p.add_argument("--eval-split", choices=("dev", "test"), default="dev")
     return p
-
-
-def adapter_identity(path, revision):
-    path = path.resolve(strict=True)
-    manifest_path = path / "experiment.json"
-    if not manifest_path.exists():
-        raise TrainingError("warm-start adapter needs its experiment.json (base/split provenance)")
-    manifest = json.loads(manifest_path.read_text())
-    if manifest["revision"] != revision:
-        raise TrainingError("adapter/base-model revision mismatch")
-    files = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
-             for p in path.iterdir() if p.suffix in (".json", ".safetensors")}
-    if "adapter_model.safetensors" not in files:
-        raise TrainingError("adapter weights missing")
-    return {"sha256": sha256_of(files), "experiment": manifest}
 
 
 def preflight(args):
@@ -84,16 +77,24 @@ def preflight(args):
     if args.output.exists():
         raise TrainingError("--output already exists")
     if min(args.steps, args.eval_every, args.patience, args.rank, args.batch_size,
-           args.max_seq, args.max_new_tokens) <= 0 or (args.lr is not None and (not math.isfinite(args.lr) or args.lr <= 0)):
+           args.max_seq, args.max_new_tokens, args.generations, args.eval_draws, args.max_no_signal) <= 0 or (args.lr is not None and (not math.isfinite(args.lr) or args.lr <= 0)):
         raise TrainingError("training lengths, rank, learning rate and batches must be positive")
-    if args.stage == "grpo" and args.batch_size < 2:
+    if args.stage in ("grpo", "probe") and args.generations < 2:
         raise TrainingError("GRPO needs at least two generations per prompt")
     if args.stage == "grpo" and bool(args.adapter) == bool(args.from_base):
         raise TrainingError("GRPO needs --adapter or explicit --from-base, exclusively")
+    if args.stage == "grpo" and args.batch_size != 4:
+        raise TrainingError("GRPO uses --generations; --batch-size is SFT-only")
     if args.stage == "sft" and (args.adapter or args.from_base):
         raise TrainingError("SFT starts from the pinned base; adapters belong to GRPO/eval")
     if args.stage != "eval" and args.eval_split != "dev":
         raise TrainingError("test split cannot select a checkpoint")
+    if not math.isfinite(args.warmup_ratio) or not 0 <= args.warmup_ratio < 1:
+        raise TrainingError("--warmup-ratio must be in [0, 1)")
+    if args.greedy and args.stage != "eval":
+        raise TrainingError("--greedy is only an evaluation diagnostic")
+    if args.from_base and args.stage != "grpo":
+        raise TrainingError("--from-base is only a GRPO ablation")
     bundle = load_bundle(args.bundle, args.engine)
     if not args.smoke and bundle.get("purpose") != "pilot":
         raise TrainingError("smoke data cannot launch a real run; prepare an admitted pilot bundle")
@@ -110,6 +111,12 @@ def preflight(args):
         raise TrainingError("adapter and model must both be smoke or both be real")
     if adapter and adapter["experiment"]["args"]["rank"] != args.rank and args.stage == "grpo":
         raise TrainingError("GRPO continues the existing adapter rank; --rank does not resize it")
+    if args.stage == "grpo" and not args.smoke:
+        if not args.probe:
+            raise TrainingError("GRPO needs an admitted --probe from the exact starting policy")
+        contract = probe_contract(bundle, args.revision, adapter,
+            decoding(schedule(args)["max_tokens"]), args.seed, args.generations, args.smoke)
+        validate_probe(args.probe, contract, [c["case_id"] for c in bundle["cases"] if c["split"] == "train"])
     return bundle, adapter
 
 
@@ -119,15 +126,6 @@ def schedule(args):
             "eval_every": 1 if args.smoke else args.eval_every,
             "max_tokens": min(32, args.max_new_tokens) if args.smoke else args.max_new_tokens,
             "learning_rate": args.lr or (2e-5 if args.stage == "sft" else 1e-6)}
-
-
-def balanced_cases(cases):
-    """Equal family mass without treating cloned task IDs as independent evidence."""
-    groups = {}
-    for case in cases:
-        groups.setdefault(case["family"], []).append(case)
-    size = max(map(len, groups.values()))
-    return [g[i % len(g)] for g in groups.values() for i in range(size)]
 
 
 def smoke_config(config, vocab_size, shrink):
@@ -145,45 +143,8 @@ to the real Qwen tokenizer would index beyond the embedding table immediately.
     return config
 
 
-def evaluate(model, tokenizer, cases, verifier, max_tokens, output, step, torch):
-    was_training = model.training
-    checkpointing = model.is_gradient_checkpointing
-    old_cache = model.config.text_config.use_cache
-    if checkpointing:
-        model.gradient_checkpointing_disable()
-    model.config.text_config.use_cache = True
-    model.eval()
-    records = []
-    try:
-        for case in cases:
-            text = tokenizer.apply_chat_template(messages(case), tokenize=False,
-                                                 add_generation_prompt=True, enable_thinking=False)
-            batch = tokenizer(text, return_tensors="pt", add_special_tokens=False).to(model.device)
-            with torch.no_grad():
-                ids = model.generate(**batch, do_sample=False, max_new_tokens=max_tokens,
-                                     pad_token_id=tokenizer.pad_token_id)
-            tail = ids[0, batch["input_ids"].shape[1]:]
-            completion = tokenizer.decode(tail, skip_special_tokens=True)
-            # A syntactically closed block cut before EOS is still a truncated rollout.
-            eos = model.generation_config.eos_token_id or tokenizer.eos_token_id
-            eos = eos if isinstance(eos, list) else [eos]
-            program = program_from_completion(completion) if int(tail[-1]) in eos else None
-            score = verifier.score(case, program)
-            records.append({"step": step, "case_id": case["case_id"], "family": case["family"],
-                            "population": case["population"],
-                            "completion": completion, "reward": score.reward, "status": score.status,
-                            "correct": score.reward > 0,
-                            "native": score.reward > 0 and score.native_tests == score.total_tests})
-            append_jsonl(output, records[-1])
-    finally:
-        model.config.text_config.use_cache = old_cache
-        if checkpointing:
-            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-        model.train(was_training)
-    return summarize(records)
-
-
 def run(args, bundle, adapter_info):
+    versions = runtime_versions()
     # Block fused kernels before importing transformers, preserving the existing
     # exact Qwen class and per-leaf LoRA gradient smoke checks.
     os.environ["NTX_USE_FLA"] = "0"
@@ -195,6 +156,8 @@ def run(args, bundle, adapter_info):
 
     if not args.smoke and not torch.cuda.is_available():
         raise TrainingError("CUDA required for a real 27B run")
+    if not args.smoke and not torch.cuda.is_bf16_supported():
+        raise TrainingError("this experiment requires native BF16 support")
     set_seed(args.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.bfloat16 if device == "cuda" else torch.float32
@@ -202,7 +165,9 @@ def run(args, bundle, adapter_info):
     tok.padding_side = "left"
     if tok.pad_token_id is None:
         tok.pad_token = tok.eos_token
-    train_cases = balanced_cases([c for c in bundle["cases"] if c["split"] == "train"])
+    if tok.eos_token_id is None or tok.encode("<|im_end|>", add_special_tokens=False) != [tok.eos_token_id]:
+        raise TrainingError("Qwen assistant terminator must equal tokenizer EOS for SFT/TRL agreement")
+    train_cases = [c for c in bundle["cases"] if c["split"] == "train"]
     dev_cases = [c for c in bundle["cases"] if c["split"] == args.eval_split]
     # Token limits are admission checks, not permission to silently drop long
     # examples or slice the task away. Run these before downloading 27B weights.
@@ -218,7 +183,7 @@ def run(args, bundle, adapter_info):
         examples, dropped = core.build_examples(tok, rows, args.max_seq)
         if dropped or not examples:
             raise TrainingError("SFT rows over token limit; do not silently change the curriculum")
-    if args.stage != "eval":
+    if args.stage in ("sft", "grpo"):
         core.smoke(device, dtype, SimpleNamespace(
             revision=args.revision, rank=args.rank, alpha=2 * args.rank,
             lora_dropout=0.0, lr=args.lr or 1e-6, temperature=1.0, top_p=0.95, top_k=0))
@@ -247,27 +212,57 @@ def run(args, bundle, adapter_info):
         # Continue the SAME adapter so its saved weights include the SFT warm
         # start and reload on the pinned base without a hidden merged parent.
         model = PeftModel.from_pretrained(model, str(args.adapter), is_trainable=args.stage == "grpo")
-    elif args.stage != "eval":
+    elif args.stage in ("sft", "grpo"):
         model = core.attach_lora(model, args.rank, 2 * args.rank, 0.0)
-    if args.stage != "eval":
+    if args.stage in ("sft", "grpo"):
         core.check_adapted_modules(model)
+    model.config.pad_token_id = tok.pad_token_id
+    model.generation_config.pad_token_id = tok.pad_token_id
     args.output.mkdir(parents=True, exist_ok=False)
     manifest = {"base_model": BASE_MODEL, "revision": args.revision, "stage": args.stage,
                 "bundle_digest": bundle["digest"], "adapter": adapter_info,
                 "smoke": args.smoke, "seed": args.seed,
                 "effective": schedule(args),
-                "code_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in
-                                (Path(__file__), Path(core.__file__))},
+                "contract_version": CONTRACT_VERSION,
+                "enable_thinking": False, "presence_penalty": 0.0,
+                "eos_token_id": tok.eos_token_id,
+                "decoding": decoding(schedule(args)["max_tokens"], greedy=args.greedy),
+                "tokenizer_sha256": sha256_of({"vocab": tok.get_vocab(), "template": tok.chat_template,
+                    "special_tokens": tok.special_tokens_map}),
+                "model_config_sha256": model_config_identity(model.config.to_dict()),
+                "hardware": {"device": device, "dtype": str(dtype), "cuda": torch.version.cuda,
+                    "gpu": torch.cuda.get_device_name() if device == "cuda" else None},
+                "code_sha256": source_identity(Path(__file__).resolve().parents[1]),
                 "args": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
-                "versions": {p: importlib.metadata.version(p) for p in
-                             ("torch", "transformers", "peft", "accelerate", "trl", "datasets")}}
+                "versions": versions}
+    if adapter_info:
+        prior = adapter_info["experiment"]
+        for key in ("tokenizer_sha256", "model_config_sha256", "enable_thinking"):
+            if prior.get(key) != manifest[key]:
+                raise TrainingError("adapter runtime contract changed: " + key)
+    if args.stage == "grpo" and not args.smoke:
+        probe_manifest = json.loads(args.probe.with_name("experiment.json").read_text())
+        for key in ("tokenizer_sha256", "model_config_sha256", "versions", "eos_token_id"):
+            if probe_manifest.get(key) != manifest[key]:
+                raise TrainingError("probe runtime contract changed: " + key)
     write_json(args.output / "experiment.json", manifest)
     verifier = Verifier(args.engine, **bundle["limits"], identity=bundle["identity"])
     effective = schedule(args)
     max_tokens = effective["max_tokens"]
+    policy = decoding(max_tokens, greedy=args.greedy)
+    if args.stage == "probe":
+        metrics, records = evaluate(model, tok, train_cases, verifier, policy,
+            args.output / "probe-rollouts.jsonl", 0, torch,
+            seed=args.seed, draws=args.generations, return_records=True)
+        contract = probe_contract(bundle, args.revision, adapter_info, policy,
+                                  args.seed, args.generations, args.smoke)
+        write_json(args.output / "probe.json", probe_report(records, contract))
+        write_json(args.output / "metrics.json", metrics)
+        return
     def measure(step):
-        return evaluate(model, tok, dev_cases, verifier, max_tokens,
-                        args.output / "evaluations.jsonl", step, torch)
+        return evaluate(model, tok, dev_cases, verifier, policy,
+                        args.output / "evaluations.jsonl", step, torch,
+                        seed=args.seed, draws=1 if args.greedy else args.eval_draws)
     baseline = measure(0)
     if args.stage == "eval":
         write_json(args.output / "metrics.json", baseline)
@@ -278,7 +273,8 @@ def run(args, bundle, adapter_info):
     def save(step):
         path = args.output / ("adapter-%d" % step)
         core.save_adapter(model, str(path))
-        write_json(path / "experiment.json", manifest)
+        write_json(path / "experiment.json", dict(manifest, checkpoint_step=step))
+        write_json(path / "seal.json", seal_adapter(path))
     save(0)
     gate = CheckpointGate(baseline, args.patience)
     write_json(args.output / "best.json", gate.report())
@@ -289,75 +285,10 @@ def run(args, bundle, adapter_info):
         write_json(args.output / "best.json", gate.report())
         return stop
 
-    steps, every = effective["steps"], effective["eval_every"]
     if args.stage == "sft":
-        core.set_train_mode(model)
-        params = [p for p in model.parameters() if p.requires_grad]
-        optimizer = torch.optim.AdamW(params, lr=effective["learning_rate"], weight_decay=0.01)
-        rng = random.Random(args.seed)
-        for step in range(1, steps + 1):
-            batch = [rng.choice(examples) for _ in range(args.batch_size)]
-            nlabels = sum(sum(x != -100 for x in e["labels"][1:]) for e in batch)
-            optimizer.zero_grad(set_to_none=True)
-            loss_sum = 0.0
-            for example in batch:
-                inputs = core.collate([example], tok.pad_token_id, device)
-                loss = model(**inputs).loss
-                if not torch.isfinite(loss):
-                    raise TrainingError("non-finite SFT loss")
-                count = sum(x != -100 for x in example["labels"][1:])
-                (loss * count / nlabels).backward()
-                loss_sum += float(loss.detach()) * count / nlabels
-            # On the first step require every targeted projection to participate.
-            if step == 1:
-                live = {}
-                for name, param in model.named_parameters():
-                    if ".lora_B" in name:
-                        leaf = name.split(".lora_B")[0].split(".")[-1]
-                        live[leaf] = live.get(leaf, False) or (param.grad is not None and bool(param.grad.abs().sum() > 0))
-                if not live or not all(live.values()):
-                    raise TrainingError("dead adapter projections: " + str(live))
-            torch.nn.utils.clip_grad_norm_(params, 1.0)
-            optimizer.step()
-            append_jsonl(args.output / "loss.jsonl", {"step": step, "loss": loss_sum})
-            if (step % every == 0 or step == steps) and checkpoint(step):
-                break
+        train_sft(model, tok, args, train_cases, examples, core, torch, effective, checkpoint)
     else:
-        from datasets import Dataset
-        from transformers import TrainerCallback
-        from trl import GRPOConfig, GRPOTrainer
-        class DevGate(TrainerCallback):
-            def on_step_end(self, args, state, control, **kwargs):
-                if state.global_step % every == 0 or state.global_step == steps:
-                    control.should_training_stop = checkpoint(state.global_step)
-                return control
-        config = GRPOConfig(
-            output_dir=str(args.output / "trainer"), max_steps=steps,
-            learning_rate=effective["learning_rate"], per_device_train_batch_size=1,
-            gradient_accumulation_steps=args.batch_size, num_generations=args.batch_size,
-            max_completion_length=max_tokens, temperature=1.0, top_p=0.95,
-            # No KL: disabling a warm-start adapter would anchor to BASE, not
-            # SFT. Correctness/development gates provide the first guardrail.
-            chat_template_kwargs={"enable_thinking": False}, beta=0.0,
-            loss_type="dr_grpo", scale_rewards="none", mask_truncated_completions=True,
-            bf16=device == "cuda", use_cpu=device == "cpu", seed=args.seed,
-            gradient_checkpointing_kwargs={"use_reentrant": False},
-            save_strategy="no", report_to="none", logging_steps=1,
-            remove_unused_columns=False)
-        reward = Reward(bundle["cases"], verifier, args.output / "blocked-witnesses.jsonl",
-                        eos_token_id=tok.eos_token_id, rollout_path=args.output / "rollouts.jsonl")
-        expected_prompts = [tok.apply_chat_template(messages(c), tokenize=False,
-                            add_generation_prompt=True, enable_thinking=False) for c in train_cases]
-        trainer = GRPOTrainer(model=model, args=config, processing_class=tok,
-                              train_dataset=Dataset.from_list([
-                                  {"prompt": messages(c), "case_id": c["case_id"]} for c in train_cases]),
-                              reward_funcs=reward, callbacks=[DevGate()])
-        actual_prompts = [tok.apply_chat_template(messages(c), tokenize=False,
-                          add_generation_prompt=True, chat_template=trainer.chat_template,
-                          **trainer.chat_template_kwargs) for c in train_cases]
-        if actual_prompts != expected_prompts:
-            raise TrainingError("TRL changed the task prompt template; SFT/RL/eval must agree")
-        trainer.train()
+        train_grpo(model, tok, args, bundle, train_cases, verifier, effective, policy, checkpoint)
     write_json(args.output / "best.json", gate.report())
 
 
@@ -368,6 +299,8 @@ def main(argv=None):
         if args.plan:
             print(json.dumps({"stage": args.stage, "model": BASE_MODEL, "revision": args.revision,
                               "purpose": bundle["purpose"], "effective": schedule(args),
+                              "decoding": decoding(schedule(args)["max_tokens"], greedy=args.greedy),
+                              "enable_thinking": False,
                               "limits": bundle["limits"], "memory_policy": bundle["memory_policy"],
                               "adapter": adapter, "training_started": False,
                               "bundle_digest": bundle["digest"], "target": bundle["identity"],

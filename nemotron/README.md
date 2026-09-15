@@ -15,8 +15,10 @@ hybrid Mamba-2 + MoE + attention, reasoning on by default). The NVFP4 release is
 inference-only and is not the training checkpoint.
 
 The current lypning-l-first training design and commands are in
-[TRAINING.md](TRAINING.md): verified SFT followed by execution-RL, with matched
-base/SFT controls, multi-input tests and family-held-out evaluation. The new
+[TRAINING.md](TRAINING.md): verified SFT, then evidence-gated execution-RL, with
+matched base/SFT controls, multi-input tests and source/family-held-out evaluation.
+See [NEXT_ROUND.md](NEXT_ROUND.md) for the manual probe/train/eval sequence and
+[L-TRAINING-ROADMAP.md](L-TRAINING-ROADMAP.md) for runtime priorities. The new
 `training-prepare` and `gpu/train_verified.py` path is separate from the frozen
 rewrite experiment documented below. Its GPU integration still needs a hardware
 smoke; no quality improvement is claimed from implementing the trainer.
