@@ -102,7 +102,7 @@ class ChatBackend:
         if stop:
             payload["stop"] = stop
         if enable_thinking is not None:
-            # Nemotron's chat template reads this; vLLM/SGLang forward it.
+            # Qwen's chat template reads this; vLLM/SGLang forward it.
             payload["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
         body = json.dumps(payload).encode("utf-8")
         headers = {"Content-Type": "application/json"}

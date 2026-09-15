@@ -195,7 +195,7 @@ RE_DERIVED = {
     # the syntactic guard convicted.
     # The Qwen3.8-27B baseline, k=16 thinking-off, measured through the repaired
     # harness on 2026-09-12. This is the number every tuned Qwen arm is measured
-    # against; the Nemotron baselines above are history from before the switch.
+    # against; the baselines above from before the switch are history.
     "qwen38-baseline-k16": 0.40371621621621623,
     # THE REFERENCE EVERY TUNED QWEN ARM IS MEASURED AGAINST. The same
     # completions as the line above, re-graded at the 2026-09-12 engine. The

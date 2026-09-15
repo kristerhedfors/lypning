@@ -475,7 +475,9 @@ pub fn reverse_arg(kw: &[(Rc<str>, Value)]) -> R<bool> {
 const NO_KEYWORDS: &[&str] = &[
     "abs", "all", "any", "bin", "bool", "chr", "divmod", "filter", "float", "format", "hex",
     "isinstance", "iter", "len", "list", "map", "next", "oct", "ord", "range", "repr", "set",
-    "tuple",
+    // `reversed(sequence=xs)` is `reversed() takes no keyword arguments`;
+    // without this entry it fell through to `arg1`'s missing-argument text.
+    "reversed", "tuple",
 ];
 
 fn no_kw(name: &str, kw: &[(Rc<str>, Value)]) -> R<()> {
@@ -1236,10 +1238,27 @@ pub fn call_builtin(
             // by the start value at exit 0. The type check below then never saw
             // a keyword start either, so `sum([], start='')` answered 0 where
             // CPython raises.
-            if let Some((k, _)) = kw.iter().find(|(k, _)| k.as_ref() != "start") {
+            //
+            // Three TypeErrors, in CPython's order, measured on 3.10 through
+            // 3.13 on 2026-09-15: the TOTAL count first (`sum([1], start=1,
+            // x=2)` is `takes at most 2 arguments (3 given)`, keywords
+            // included), then a missing iterable as `takes at least 1
+            // positional argument (0 given)` — `sum(iterable=xs)` says this,
+            // not a word about the name — and only then an unknown name in
+            // `bad_kw`'s version-dependent sentence. The old text here —
+            // `takes no keyword arguments (got 'x')` — is a sentence CPython
+            // never says of `sum`.
+            if args.len() + kw.len() > 2 {
                 return Err(type_err(format!(
-                    "sum() takes no keyword arguments (got '{k}')"
+                    "sum() takes at most 2 arguments ({} given)",
+                    args.len() + kw.len()
                 )));
+            }
+            if args.is_empty() {
+                return Err(type_err("sum() takes at least 1 positional argument (0 given)"));
+            }
+            if let Some((k, _)) = kw.iter().find(|(k, _)| k.as_ref() != "start") {
+                return Err(bad_kw("sum", k));
             }
             let start = crate::args::bind(&args, &kw, 1, "start", "sum")?
                 .unwrap_or(ival(0));
@@ -1437,7 +1456,6 @@ pub fn call_builtin(
             }
         }
         "min" | "max" => {
-            reject_unknown_kw(name, &kw, &["key", "default"])?;
             // `min()` is a TypeError about the ARGUMENT LIST, not a ValueError
             // about an empty iterable: with no positional at all there is no
             // iterable to be empty, and `default=` does not rescue it either.
@@ -1447,6 +1465,9 @@ pub fn call_builtin(
             if args.is_empty() {
                 return Err(type_err(format!("{name} expected at least 1 argument, got 0")));
             }
+            // After the count, as `sorted` above: `min(iterable=xs)` names the
+            // count, not the keyword.
+            reject_unknown_kw(name, &kw, &["key", "default"])?;
             let want_max = name == "max";
             let from_set = args.len() == 1 && matches!(args.first(), Some(Value::Set(_)));
             let items: Vec<Value> = if args.len() == 1 {
@@ -1513,11 +1534,14 @@ pub fn call_builtin(
             best
         }
         "sorted" => {
-            reject_unknown_kw("sort", &kw, &["key", "reverse"])?;
+            // CPython counts the positionals before it reads a keyword's name:
+            // `sorted(iterable=xs)` is `sorted expected 1 argument, got 0`, not
+            // a complaint about `iterable`. The guard ran first here.
             let v = args
                 .first()
                 .cloned()
                 .ok_or_else(|| type_err("sorted expected 1 argument, got 0"))?;
+            reject_unknown_kw("sort", &kw, &["key", "reverse"])?;
             let from_set = matches!(v, Value::Set(_));
             let mut items = it.collect_unordered(v)?;
             let keyf = key_arg(&kw, "key");
@@ -2162,11 +2186,14 @@ pub fn call_builtin(
             }))
         }
         "open" => {
-            let path = match args.first() {
+            // `file` is a keyword too — `open(file='f.txt', mode='w')` — and
+            // this read the positional slot alone, so the call died as
+            // `missing required argument 'file'` with the file right there.
+            let path = match crate::args::bind(&args, &kw, 0, "file", "open")? {
                 Some(Value::Str(s)) => s.to_string(),
                 // `open(Path('x'))` is `__fspath__`, and `to_str` knows it.
                 #[cfg(feature = "cap-pathlib")]
-                Some(p @ Value::Path(..)) => fmt::to_str(p)?,
+                Some(p @ Value::Path(..)) => fmt::to_str(&p)?,
                 // `open(0)` is the descriptor: CPython reads stdin. Stringified
                 // it opened a FILE named "0" — FileNotFoundError at exit 1 where
                 // CPython answers. A descriptor is not something this engine
@@ -2201,6 +2228,27 @@ pub fn call_builtin(
             }
         }
         "bytes" => {
+            // `source` is Argument Clinic's name for the first parameter, so
+            // `bytes(source='ab', encoding='utf-8')` is legal and `b'ab'`; every
+            // arm below read only the positional slot and raised a TypeError
+            // CPython never does. Re-seated as the first positional, so the
+            // arms keep their one reading of the argument list. Measured on
+            // 3.10 through 3.13, 2026-09-15, including the given-twice text.
+            let mut kw = kw;
+            let seated;
+            let args: &Args = match kw.iter().position(|(k, _)| k.as_ref() == "source") {
+                Some(i) => {
+                    if !args.is_empty() {
+                        return Err(type_err(
+                            "argument for bytes() given by name ('source') and position (1)",
+                        ));
+                    }
+                    let (_, v) = kw.remove(i);
+                    seated = std::iter::once(v).chain(args.iter().cloned()).collect::<Args>();
+                    &seated
+                }
+                None => args,
+            };
             // An `encoding` is only meaningful for a str source, and CPython says so
             // before it looks at the source at all. Every arm below but the
             // `Value::Str` one DROPPED the pair in silence, so `bytes(2, 'utf-8')`

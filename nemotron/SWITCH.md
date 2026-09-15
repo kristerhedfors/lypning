@@ -1,6 +1,21 @@
 # Target model: Qwen/Qwen3.8-27B
 
 Switched 2026-09-11 from `nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16`.
+**This file is the one home of the earlier target's name.** Every other
+document says *the earlier model* and points here; run directories and data
+files under `runs/` and `data/` keep the names they were recorded under,
+because a provenance line is a measurement too.
+
+## Retired numbers
+
+Measured on the earlier model, used as decision inputs for Qwen anyway, and
+retired from `LADDER.md` §0 on 2026-09-14:
+
+| number | where it came from | why it does not apply |
+|---|---|---|
+| pass@1 35.1%, rewrite slice 17.3% thinking-on vs 9.6% off | the earlier model on vLLM/A100, 2026-09-11 | different model, different serving stack. It was used to argue for thinking-on eval; for Qwen the thinking effect on this eval is **unmeasured** |
+| "12 of 74 cases flip between thinking on/off on an identical checkpoint" | the same run | it was used as the noise floor. The Qwen noise floors are the two serving-stack nulls: **−0.22pp** and **+1.57pp** ΔSLR (`REVIEW.md` §1) |
+| 505,576 thinking tokens vs 22,254 | the same run | the Qwen thinking budget is its own measurement |
 Everything below was established from the checkpoint and from the NeMo AutoModel
 source; nothing is taken from a model card.
 

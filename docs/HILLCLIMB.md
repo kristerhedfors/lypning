@@ -26,6 +26,100 @@ The four numbers, in the order an entry states them:
 
 <!-- lypning-hillclimb: newest entry is inserted directly below this line -->
 
+## 2026-09-15 · iteration 83 — the ledger's seven un-replayed witnesses, swept by hand
+
+Host: Linux x86_64, 4 CPUs, `x86_64-unknown-linux-musl` build, reference
+CPython 3.12.3 — the interpreter the round-02 handoff pins, not CI's 3.11.
+Corpus 6,317 programs graded, 2,747 skipped by the tool's own split (9,064 loaded). Focus: coverage, taken
+this iteration as the roadmap's first candidate — *resolve relevant semantic
+mismatches* — rather than the top of `--plan`, whose first five rows are
+`import inspect`, Unicode `\w`, set order, `yield` and `import pipeline`: two
+impossible, three that are multi-step branches. PR #73 closed five ledger
+witnesses; seven remained, all grid programs a model wrote to sweep a surface,
+and the handoff says those are replayed only behind the container boundary
+this worker does not have.
+
+### What was measured instead of replayed
+
+The witnesses name surfaces, not bugs. So each surface got an **authored**
+sweep — programs written here, from the surface's shape, never the captured
+text — graded the way `conformance` grades: both interpreters in their own
+temp cwd, a disagreement where neither refused is a MISMATCH. Seven sweeps,
+about 380 programs, in the scratchpad rather than the tree because a sweep
+is an instrument for one afternoon and the rows it finds become tests.
+
+| surface (witness) | programs | MISMATCH before | after | what it was |
+|---|---|---|---|---|
+| `format()` spec grid (ntx-6ae7c8d5c3d8) | 102 | 3 | 0 | `format(nan, '%')` was `NaN%`; `#` on the empty type dropped the point |
+| list index edges (ntx-a53924799ac1) | 72 | 17 | 0 | three IndexError wordings — `pop index index`, and stores saying the read's words |
+| Counter / defaultdict keys (ntx-a7fa28ddfc61, ntx-facb0ab80fea) | 30 | 0 | 0 | clean; 4 refuse as `collections` |
+| builtin keyword names (ntx-b47b0b10247f) | 62 | 6 | 0 | `bytes(source=)`, `open(file=)` died; `sorted`/`min`/`sum`/`reversed` said the wrong sentence |
+| `repr` of str/bytes (ntx-f9d537329224) | 49 | 0 | 0 | clean; 36 refuse (`builtin`, `repr-unicode`) |
+| case mapping (ntx-e10e978a3756) | 36 | 0 | 0 | every one refuses as `builtin` — no answer, so no wrong answer |
+| base64 / `n` format / unions (ntx-b38207f0de4f, ntx-f236a2064403) | 14 | 3 | 1 | `bytes \| str` killed the program at its `def`; one wording left (below) |
+
+Five mechanisms, five commits, each pinned by a differential row or a refusal
+test in `tests/test_semantics.py`:
+
+1. **List IndexErrors name the operation.** `L.pop(9)` said `pop index index
+   out of range` — the caller handed `norm_index` the words it appends — and
+   `L[9] = x` / `del L[9]` said the read's `list index out of range` where
+   CPython says `list assignment`. Wording only; reaches stdout via `print(e)`.
+2. **`%` takes the nonfinite exit.** `f`, `e` and `g` had one; `%` did not, so
+   Rust spelled the value. And `#` on the empty presentation type keeps the
+   point as `g` does — `format(1e300, '#')` is `1.e+300`.
+3. **Argument Clinic names.** `bytes(source='ab', encoding='utf-8')` and
+   `open(file='f', mode='w')` are legal and died with TypeErrors CPython never
+   raises. `sorted(iterable=)`, `min(iterable=)` and `sum(iterable=)` name the
+   *count* in CPython, not the keyword; `sum`'s unknown-keyword sentence was
+   one CPython never says of it; `reversed` takes no keywords and said something
+   else. Every wording measured on 3.10 through 3.13.
+4. **A union of classes refuses.** `bytes | str` is a `types.UnionType`, a value
+   this engine does not have, and it is usually an annotation — evaluated at
+   `def` time, so the whole program died at exit 1 on its first `def`. It
+   refuses as `class-union` now; `None` is a member and `None | None` stays
+   CPython's own TypeError.
+5. **One test ran where pytest runs.** The open-by-keyword row wrote `f.txt`
+   into the checkout: a CASES row runs in the current cwd and the corpus's net
+   is not this suite's (invariant 4). It is its own test with a temp cwd now.
+
+### What is left on the sweeps, and deliberately not done here
+
+`b'a'.rstrip(b'=', b'x')` says `bytes.rstrip() takes at most 1 argument (2
+given)` where CPython says `rstrip expected at most 1 argument, got 2`. The
+fix is not one line: the method arity table in `methods.rs` carries one
+sentence and CPython carries **three** (`X expected at most N arguments, got
+M` for Argument Clinic methods, `type.X() takes exactly one argument (M given)`
+for `METH_O`, `type.X() takes no arguments (M given)` for `METH_NOARGS`), and
+3.13 moved `str.find` and `str.replace` between them. Measured for all 30
+table rows on 3.12 and 3.13 this iteration; it is a table, and the next step.
+
+### The four numbers
+
+- **bytes:** `lypning` 1,151,184 B → 1,151,184 B, 9 blocks of 9 (the core's
+  `.text` grew 883,815 → 884,231 B inside the same file size); `lypning-l`
+  1,323,216 B → 1,331,408 B, 11 blocks of 11. Refusal texts, wordings and two
+  keyword bindings: about 8 KB on L, no block crossed.
+- **correctness:** `lypning` 2923 MATCH / 3394 UNSUPPORTED / **0 MISMATCH**; `lypning-l` 4560 / 1757 / **0**; both dispatchers 6317 / 0 / 0 and **agree 6317/6317**; routing IDEAL 5979, WASTED 227, LATE 111, **UNSAFE 0**. MATCH did not move — none of the five is a program the corpus has, and the grader compares exception classes, which is the point of the last section.
+- **speed:** `perf --arm lypning` against main's binary, 32 cases both, TOTAL
+  1157.01 → 1153.85 ms (−0.3%); the widest rows, `membership` −7.4 and
+  `dict-set` +2.1 ms, are inside the 5–9% perturbation band and neither path
+  was touched. Not the focus; flat.
+- **corpus:** `corpus-time --repeat 3` against main's binary over the 6,323 programs both timed: 14.10 → 15.91 s, **1.128× slower on its face**. 1.66 s of the 1.81 s is two programs that create 60,000 and 22,000 files in the sandbox; re-timed interleaved on the idle box, the 60,000-file one spans 2.8–12.2 s on the BASE binary alone across three rounds, and the 22,000-file one is 1769 ms base against 1705 ms new. That is the filesystem, not the engine, and the only change on that path is one keyword lookup per `open`. The other 6,321 programs moved +0.15 s on ~12.4 s, +1.2%, inside the ±3% deadband: **not slower**.
+
+Suites: `pytest tests` 8375 passed, 553 skipped, 0 failed; `nemotron/tests` 409 passed, 1 failed — `test_setup_failure_is_distinct_from_program_exit_127`, which this container fails on every branch because its `unshare` reports a missing interpreter as exit 127 itself; doctor
+19 checks, 0 FAIL, 3 WARN; gate PASS, both variants inside their block budgets.
+
+### One thing about the instrument
+
+`conformance` against a 3.11 reference agrees with this engine on every one
+of these, because they are wordings and the grader compares exception
+*classes* on stderr. They reach stdout only through `print(e)`, which is what
+the model-written grids do on every line — and what a training verifier that
+compares stdout will see. That is why this iteration graded against 3.12 and
+why the differential rows print the message, not the class.
+
+
 
 
 ## 2026-09-12 · iteration 82 — format-precision: the minimum-digit conversion, and the code that belongs to a type

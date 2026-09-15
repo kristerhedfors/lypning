@@ -189,6 +189,24 @@ impl Interp {
             // program's own exit, which the dispatcher does not treat as a
             // refusal, so a valid `b"%d" % 5` died at exit 1 with nothing to
             // rescue it. A refusal routes it onward instead.
+            // `int | str` builds a `types.UnionType` in CPython, a value this
+            // engine does not have — and it is usually an ANNOTATION, evaluated
+            // at `def` time, so `def f(b: bytes | str)` killed the whole program
+            // at exit 1 with a TypeError CPython never raises. Refused like a
+            // class subscript: one spawn, and CPython answers. `None` is a
+            // member too (`int | None`); `None | None` is CPython's own
+            // TypeError and still reaches the generic arm. Found by the
+            // authored sweep over the ntx-b38207f0de4f surface.
+            (BitOr, l, r)
+                if (is_class(l) || matches!(l, Value::None))
+                    && (is_class(r) || matches!(r, Value::None))
+                    && !(matches!(l, Value::None) && matches!(r, Value::None)) =>
+            {
+                return Err(unsupported(
+                    "class-union",
+                    "a `|` union of classes (a types.UnionType)",
+                ))
+            }
             (Mod, Value::Bytes(_), _) => {
                 return Err(unsupported(
                     "percent-format",
@@ -554,7 +572,10 @@ impl Interp {
             }
             Value::List(l) => {
                 let n = l.borrow().len();
-                let i = norm_index(crate::eval::int_val(&idx)?, n, "list")?;
+                // A STORE names the operation: `list assignment index out of range`,
+                // where a read says `list index out of range`. Both stores said
+                // the read's words. Measured on 3.10 through 3.13, 2026-09-15.
+                let i = norm_index(crate::eval::int_val(&idx)?, n, "list assignment")?;
                 l.borrow_mut()[i] = v;
             }
             other => {
@@ -583,7 +604,8 @@ impl Interp {
             }
             Value::List(l) => {
                 let n = l.borrow().len();
-                let i = norm_index(crate::eval::int_val(idx)?, n, "list")?;
+                // `del L[i]` is a store too, and says so — see `set_item`.
+                let i = norm_index(crate::eval::int_val(idx)?, n, "list assignment")?;
                 l.borrow_mut().remove(i);
             }
             other => {
@@ -1058,6 +1080,14 @@ impl Interp {
 /// never `'type' object …` — so no single message here is right for both
 /// halves. Refusing is right for both: one spawn, and CPython then answers or
 /// raises exactly as it would.
+/// Whether `v` names a class, by the one map that knows (`callable_kind`).
+fn is_class(v: &Value) -> bool {
+    matches!(
+        crate::value::callable_kind(v),
+        Some(crate::value::Callable::Class(_))
+    )
+}
+
 fn not_subscriptable(v: &Value) -> LypningError {
     match crate::value::callable_kind(v) {
         Some(crate::value::Callable::Class(cls)) => {
