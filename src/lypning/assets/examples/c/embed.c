@@ -183,8 +183,11 @@ static const program PROGRAMS[] = {
     },
     {
         .label = "outside the subset — the same stdin, answered by CPython",
-        .src = "import re, sys\n"
-               "print(len(re.findall(r\"[aeiou]\", sys.stdin.read())))\n",
+        /* subprocess is deliberately outside every variant's subset; this
+         * only imports it, never launches a child. `re.findall` is no longer
+         * a refusal on the L library this example normally links. */
+        .src = "import subprocess, sys\n"
+               "print(sum(c in 'aeiou' for c in sys.stdin.read()))\n",
         .stdin_bytes = SPEECH,
         .stdin_len = sizeof SPEECH - 1,
         .filesystem = 1,
@@ -569,6 +572,8 @@ static int answer(const program *p)
     int unanswered = 0;
 
     printf("== %s\n", p->label);
+    /* Keep the case label visible if an assertion aborts under CI's pipe. */
+    fflush(stdout);
 
     /* Step 1 — decide, without running anything. One parse. This is lypning's
      * own front end answering, not a guess over the program text, so a harness
@@ -625,9 +630,10 @@ static int answer(const program *p)
 
         /* Two things the route could not have told the host, both worth saying
          * out loud because a harness author will meet them on day one. */
-        if (strcmp(routed, "lypning") == 0) {
-            printf("  note      routing said lypning; only running it could tell. One parse\n"
-                   "            cannot see a policy the host set — that is what the run is for\n");
+        if (strcmp(routed, lypning_engine_self()) == 0) {
+            printf("  note      routing said %s; only running it could tell. One parse\n"
+                   "            cannot see a policy the host set — that is what the run is for\n",
+                   routed);
         } else if (p->decline == NULL && strcmp(routed, "cpython") != 0) {
             printf("  note      routing named %s; a chain with that tier in it would try it\n"
                    "            before CPython. This example has two engines, so: CPython\n",
@@ -666,7 +672,8 @@ static int answer(const program *p)
     } else {
         size_t n = 0;
         const uint8_t *out = lypning_result_stdout(r, &n);
-        printf("  exit      %d (lypning, in-process)\n", lypning_result_exit_code(r));
+        printf("  exit      %d (%s, in-process)\n", lypning_result_exit_code(r),
+               lypning_engine_self());
         show("stdout", out, n);
         size_t en = 0;
         const uint8_t *err = lypning_result_stderr(r, &en);

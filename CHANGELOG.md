@@ -14,6 +14,37 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-15** — Add a correctness-gated, lypning-l-first Qwen training path ([#69](https://github.com/kristerhedfors/lypning/pull/69))
+
+- Add multi-input task-family bundles, explicit engine/oracle pinning, verified
+  SFT preparation and an optional on-policy GRPO runner. Wrong runnable code
+  receives no reward; correct fallback retains credit. Preserve the historical
+  corpus and grades, and document GPU/data admission gates before real training.
+- Fix the pipeline's process launcher, tracebacks-as-instability bug, replay
+  cache identity and historical-test writes; protect fallback correctness at
+  checkpoint selection. Add Linux/macOS verifier CI and the manual next-round
+  handoff. Starter data is smoke-only; no training run is launched by this PR.
+- Repair baseline CI's absent-engine barrier fixture, macOS build/test paths,
+  and Python 3.13+ pool traceback parity. Give the CPU-heavy conformance corpus
+  a shared-runner deadline on both arms without changing verdict rules.
+- Expose conformance worker count and serialize CI's CPU-heavy captured
+  benchmarks; retain identical reference/engine deadlines and fatal engine-only
+  timeouts instead of treating a timing failure as semantic agreement.
+- Safety-skip recognised package installs and model downloads before corpus
+  conformance or benchmarking starts either arm. Preserve those captures but
+  prevent known site-packages/cache mutations from contaminating the reference.
+- Calibrate build-sensitive Python behavior against the selected executable,
+  not its minor version alone: normpath identity, reverse conversion, iterator
+  wording and zero-length signed integer conversion can vary within a release.
+- Fix version-sensitive unpacking, index and numeric error messages; stop
+  non-starred unpacking after one excess item instead of draining iterators.
+  Add Python 3.14 package CI and native compatibility regression checks.
+- Consolidate string keyword admission so the existing Python 3.13+
+  `str.replace(count=...)` implementation is not blocked by a stale second table.
+- Repair embedding examples and C++/Go/Swift/Lua host identity handling for the
+  linked L variant; fallback demonstrations use genuinely unsupported source
+  and retain their output, exit-status and no-duplicate-side-effect assertions.
+
 **2026-09-14** — Gate target detection is tested against the artifact, not the host (direct commit to `main`)
 
 - The target-classification test now supplies an explicit x86-64 ELF header

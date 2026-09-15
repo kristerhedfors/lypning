@@ -225,3 +225,19 @@ def test_a_replay_cache_is_not_reused_across_a_grader_change(tmp_path, monkeypat
     got = legality.replay([{"case_id": "a", "program": "p"}], "e", cache=cache)
     assert got == fresh
     assert json.loads(cache.read_text())["grader"] == legality.refusals.GRADER
+
+
+def test_replay_cache_pins_engine_programs_and_test_context(tmp_path, monkeypatch):
+    monkeypatch.setattr(legality.eng, "identity", lambda: {"fingerprint": "same-installed-binaries"})
+    calls = []
+    def census(attempts, engine, tests=None, workers=1):
+        calls.append((attempts, engine, tests))
+        return {"call": len(calls)}
+    monkeypatch.setattr(legality.refusals, "on_policy", census)
+    cache = tmp_path / "replay.json"
+    attempts = [{"case_id": "a", "program": "print(1)"}]
+    assert legality.replay(attempts, "core", cache=cache) == {"call": 1}
+    assert legality.replay(attempts, "core", cache=cache) == {"call": 1}
+    assert legality.replay(attempts, "large", cache=cache) == {"call": 2}
+    assert legality.replay(attempts, "large", tests={"a": {"stdin": "changed"}}, cache=cache) == {"call": 3}
+    assert legality.replay([dict(attempts[0], program="print(2)")], "large", cache=cache) == {"call": 4}

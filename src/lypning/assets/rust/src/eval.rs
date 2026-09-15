@@ -614,6 +614,19 @@ impl Interp {
                 // for x in [1, 0])` would report a TypeError where CPython raises
                 // ZeroDivisionError.
                 let tname = type_name(&v);
+                // 3.14's ceval.c reports the actual length only for exact
+                // lists, tuples and dicts, not strings, ranges, iterators or
+                // dict subclasses (Counter/defaultdict/os.environ).
+                let unpack_len = if crate::err::REF_PY_MINOR >= 14 {
+                    match &v {
+                        Value::List(xs) => Some(xs.borrow().len()),
+                        Value::Tuple(xs) => Some(xs.len()),
+                        Value::Dict(d) if tname == "dict" => Some(d.borrow().len()),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
                 let mut iter = self.make_iter(v).map_err(|e| {
                     if e.is_unsupported() {
                         e
@@ -624,6 +637,13 @@ impl Interp {
                 let mut items = Vec::new();
                 while let Some(x) = self.iter_next(&mut iter)? {
                     items.push(x);
+                    // Ordinary unpacking asks for only ONE extra item to
+                    // detect overflow. Draining the iterator would consume
+                    // later side effects or replace ValueError with a later
+                    // exception. Starred unpacking does need the whole tail.
+                    if star_at.is_none() && items.len() > parts.len() {
+                        break;
+                    }
                 }
                 match star_at {
                     None => {
@@ -634,6 +654,8 @@ impl Interp {
                                     parts.len(),
                                     items.len()
                                 )
+                            } else if let Some(n) = unpack_len {
+                                format!("too many values to unpack (expected {}, got {n})", parts.len())
                             } else {
                                 format!("too many values to unpack (expected {})", parts.len())
                             }));

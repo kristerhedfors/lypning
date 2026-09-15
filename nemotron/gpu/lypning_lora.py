@@ -341,7 +341,7 @@ def set_gen_mode(model):
 # ---------------------------------------------------------------------------
 def smoke(device, dtype, args):
     log("phase 1: smoke on a 4-layer random model (%s, %s)" % (device, dtype))
-    cfg = tiny_config(AutoConfig.from_pretrained(BASE_MODEL))
+    cfg = tiny_config(AutoConfig.from_pretrained(BASE_MODEL, revision=getattr(args, "revision", None)))
     torch.manual_seed(0)
     m = Qwen3_5ForConditionalGeneration(cfg).to(device=device, dtype=dtype)
     pm = attach_lora(m, args.rank, args.alpha, args.lora_dropout)

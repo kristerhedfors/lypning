@@ -1,0 +1,53 @@
+name: training pipeline
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verifier:
+    name: training verifier (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      LYPNING_CAPTURE: "0"
+      LYPNING_HARVEST: "0"
+      PYTHONPATH: src:nemotron
+    steps:
+      - uses: actions/checkout@v4
+      - name: Isolate engine state
+        run: echo "LYPNING_HOME=$RUNNER_TEMP/training-home" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: python -m pip install -e '.[dev]'
+      - name: Build both native engines against this Python
+        run: python -m lypning build --rust --target host
+      - name: Native reference-version and build-calibration regressions
+        run: >-
+          python -m pytest tests/test_version_semantics.py tests/test_fuzz_findings.py
+          tests/test_semantics.py tests/test_bound_identity_grid.py
+          tests/test_builtin_arity_grid.py tests/test_keyword_grid.py -q
+          --basetemp="${{ runner.temp }}/version-tests"
+      - name: Full pipeline suite, real engine smoke, resource guards enabled
+        env:
+          NTX_ENGINE_LYPNING: ${{ runner.temp }}/training-home/bin/lypning
+          NTX_ENGINE_LYPNING_L: ${{ runner.temp }}/training-home/bin/lypning-l
+          NTX_TRAINING_TEST_ENGINE: ${{ runner.temp }}/training-home/bin/lypning-l
+        run: python -m pytest nemotron/tests -q --junitxml="${{ runner.temp }}/training-tests.xml"
+      - name: Tests must not rewrite recorded datasets or results
+        run: git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: training-tests-${{ matrix.os }}
+          path: ${{ runner.temp }}/training-tests.xml

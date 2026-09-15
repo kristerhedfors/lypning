@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import collections
 import json
+import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -33,6 +35,16 @@ from pipeline.jsonio import read_json, read_jsonl, sha256_of
 NTX = Path(__file__).resolve().parents[1]
 RUNS = NTX / "runs"
 DATA = NTX / "data"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def private_recorded_runs(tmp_path_factory):
+    """Re-aggregation may write derived summaries, never in the checked-in ledger."""
+    copy = tmp_path_factory.mktemp("recorded") / "runs"
+    shutil.copytree(RUNS, copy)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(sys.modules[__name__], "RUNS", copy)
+        yield
 
 # Published 2026-09-11. A change here must be a deliberate line in a diff.
 AS_REPORTED = {

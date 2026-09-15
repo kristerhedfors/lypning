@@ -101,6 +101,17 @@ interpreter the binary falls through to and FAILs when they differ, and
 fails in one line when the suite grades it with another. `docs/VERIFICATION.md`
 §C7.
 
+**A minor version is not a complete behavior profile.** On 2026-09-15,
+CPython 3.12.13 exposed a builtin `normpath`, truth-value conversion for sort's
+`reverse`, and the short `iter(v, w)` error, unlike the older 3.12 measurements
+below. `reference_probe.py` measures these behaviors and the zero-length signed
+negative `int.to_bytes` boundary using the exact executable selected by
+`engines.find_cpython()`. Cargo compiles the flags into both engines; no Python
+is invoked at runtime. Rebuild when the reference executable changes, even
+within a minor version: the version/doctor check currently compares only 3.x.
+A bare Cargo build without a usable probe warns and uses legacy defaults;
+that fallback is not evidence of agreement with a particular interpreter.
+
 The rule that decides whether a site gets a branch is narrower than "this is
 version-dependent": it is **the ANSWER differs across 3.9 … 3.13**, each
 boundary measured on all five with `uv run --python X` and written down at the
@@ -118,8 +129,8 @@ one of them.
 | `zip([1], bogus=1)` | `zip() takes no keyword arguments` | the invalid-keyword form | ← | ← | the unexpected-keyword form |
 | `enumerate()` | `… required argument 'iterable' (pos 1)` | ← | `… required argument 'iterable'` | ← | ← |
 | `str(1, 0)` | `str() argument 2 must be str, not int` | `str() argument 'encoding' must be str, not int` | ← | ← | ← |
-| `iter([1], 0)` | `iter(v, w): v must be callable` | ← | ← | `iter(object, sentinel): object must be callable` | back to `iter(v, w)` |
-| `type(os.path.normpath)` | `function` | ← | ← | ← | `builtin_function_or_method` |
+| `iter([1], 0)` | `iter(v, w): v must be callable` | ← | ← | build-dependent, probed | build-dependent, probed |
+| `type(os.path.normpath)` | `function` | ← | ← | build-dependent, probed | build-dependent, probed |
 | `type(re.compile('a').match)` | `builtin_function_or_method` | `builtin_method` | ← | ← | ← |
 | `1 % 0` | `integer division or modulo by zero` | ← | `integer modulo by zero` | ← | ← |
 | `float([])` | `… must be a string or a number` | `… or a real number` | ← | ← | ← |
@@ -155,13 +166,52 @@ Some of the residue is **capability**, not wording, and is left alone rather
 than approximated: `NameError`'s `Did you mean: …?` suggestion (3.10+, the
 engine says the bare 3.9 form and is therefore wrong on four hosts out of five
 whenever a near-miss name exists), `str | None` at runtime (PEP 604, 3.10+),
-`str.replace(count=…)` (3.13+), and the `match` statement (3.10+, a
+and the `match` statement (3.10+, a
 `SyntaxError` here — `route.rs` sends it to CPython, so the chain is right and
 only the bare engine arm is not). A suggestion engine guessed at is a MISMATCH
 generator. The rest is wording, and the largest pieces of it are named in the
 `Unreleased` entry of `CHANGELOG.md` for whoever takes them next: each needs the
 same five-way measurement, and none of them may become a refusal, because every
 one is an answer CPython gives.
+
+`str.replace(count=…)`, added in
+[Python 3.13](https://docs.python.org/3.13/library/stdtypes.html#str.replace),
+is served for references from that version onward. Its implementation and
+keyword validator already agreed, but a second method-level allow-list still
+rejected it. String keyword admission now has one source, `str_kw_allowed`;
+the mandatory-answer version tests cover counts, empty patterns and Unicode.
+
+#### The 3.14 boundary
+
+CPython 3.14 changed observable results, not only traceback decoration. Its
+[`ceval.c`](https://github.com/python/cpython/blob/v3.14.0/Python/ceval.c)
+includes the actual size in excess-unpacking errors for exact lists, tuples
+and dicts, but not their iterators or dict subclasses. The engine preserves
+that distinction. Ordinary unpacking consumes at most one excess item before
+raising; starred unpacking still consumes the entire tail.
+
+The 3.14 [`list.index`](https://github.com/python/cpython/blob/v3.14.0/Objects/listobject.c)
+failure no longer renders the missing value. Integer and float division and
+modulo errors now use a common sentence, while zero to a negative power keeps
+its own wording; see
+[`longobject.c`](https://github.com/python/cpython/blob/v3.14.0/Objects/longobject.c)
+and [`floatobject.c`](https://github.com/python/cpython/blob/v3.14.0/Objects/floatobject.c).
+`err::zero_div` selects those messages without changing the exception class.
+Earlier hosts keep their own wordings, including float modulo's separate
+3.13 change.
+
+Zero-length signed integer conversion also differs between patch releases:
+`(-1).to_bytes(0, 'big', signed=True)` returned empty bytes on 3.12.13 and
+raised `OverflowError` on 3.13.13 and 3.14.5, measured 2026-09-15. A minor-version
+check cannot represent that history: the reference behavior probe supplies
+`REF_ZERO_NEGATIVE_BYTES_OVERFLOW`. Zero itself still fits; other nonzero
+integers still overflow, and the unsigned-negative error keeps precedence.
+
+`tests/test_version_semantics.py` requires successful, byte-identical answers
+from both core and L against the running interpreter. It checks exact
+containers against other iterables/subclasses, excess-iterator consumption,
+short/starred/nested unpacking, index bounds, zero-width conversion and numeric
+zero-division errors. It never treats refusal as a passing answer.
 
 ## 7. Failure modes: the unsupported contract
 

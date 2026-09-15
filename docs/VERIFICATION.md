@@ -135,6 +135,13 @@ tests/test_build.py::test_the_host_build_is_this_machines_engine_and_installs_un
 tests/test_build.py::test_verify_measures_the_binary_that_was_just_built  tests/test_engines.py::test_refusal_line_is_what_the_build_and_the_embedding_pin
 ```
 ## 3. C3 — Conformance
+
+`conformance --workers N` controls concurrent corpus entries. CI uses
+`--workers 1 --timeout 60` because captured self-timed regex benchmarks compete
+for CPU when several entries run together. Both arms keep the same deadline:
+a timed-out reference is unmeasured, while an engine-only timeout still fails.
+No benchmark entry or verdict is exempted by this scheduling choice.
+
 **STATEMENT.** Invariant 1: MISMATCH is always a bug. UNSUPPORTED never is.
 `lypning conformance` must end at `MISMATCH 0`; a rising UNSUPPORTED count is
 coverage and a build order (`--plan`), not a regression. Never "fix" a
@@ -343,6 +350,8 @@ PASS
 # … | vdiff c6-gate
 # differs: byte and block counts while under budget; the `code section` row, which is a measurement and not a budget; the BuildID; which rows are `--` (a check nobody took: no strace, readelf, file(1) or size(1) — never a pass, never a zero); the target row, absent once the oracle is built and named
 # must not: PASS, exit 0, and the size row NAMING the target its budget was measured on; exit 2 for a path that is not a file
+# This recorded table is checked only against its named artifact target.
+# The test reads the binary header, not the host OS; Mach-O has no musl budget.
 #
 # The previous run of record was Darwin arm64 (818,080 B = 7 blocks, three
 # checks unmeasured because that host has no file(1), readelf or strace) and
@@ -415,6 +424,22 @@ a sandbox: a write outside the repository is not undone. **CODE HOME.**
 and a program that imports lypning and drives a battery);
 `conformance._snapshot`, `conformance.close_net`, `conformance._restore`;
 `conformance.Report.ok` (damage fails); `bench.skip_reason` (the same skips).
+
+Recognised package-manager mutations and Hugging Face model-download calls are
+also safety-skipped **before the reference runs**, with an `external mutation`
+reason. A fresh cwd cannot contain site-packages changes or external model
+caches: the captured installer `py-ab4bbc603d5e` changed the environment being
+compared and exposed this gap in CI on 2026-09-15. Records stay in the corpus;
+these exclusions produce no MATCH/MISMATCH verdict or coverage credit.
+`corpus_safety.external_mutation` inspects executable AST calls, aliases and
+simple literal commands; comments, quoted patches and read-only package queries
+are not install commands. Dynamic commands, wrappers, arbitrary network access
+and Python reflection are **not** contained by this static net. Replay untrusted
+programs only behind an external filesystem/egress boundary with disposable
+interpreters; testing package installation needs a separate isolated protocol.
+`tests/test_corpus_safety.py` pins both admission and false-positive boundaries,
+and proves installer/download witnesses never reach either interpreter.
+
 ```bash
 # CHECK — `c8-net.sh`. Run a battery only in a worktree with its own state dir (`git worktree add ../lypning-<topic> -b <topic>`, `export LYPNING_HOME=/tmp/lypning-<topic>`), never in a tree anyone is editing — the net restores changed tracked files whoever changed them — and after a battery that crashed mid-way run `git status` yourself: the restore runs only at the end of a run that got there.
 git status --porcelain | wc -l; lypning conformance --limit 200 > /dev/null; echo $?; git status --porcelain | wc -l
@@ -730,6 +755,30 @@ skip, the engine alone timing out is `MISMATCH timeout`. The library arm has
 no deadline and uses `conformance.LIBRARY_STEP_LIMIT` instead (§C14). Only
 `lypning run -c` reaches `LYPNING_POOL`; `lypning -c` and the shim do not,
 and a pool that cannot be reached falls back to a cold spawn.
+
+### Version-shaped errors and unpacking (2026-09-15)
+
+`tests/test_version_semantics.py` requires both Rust engines to answer the
+version-sensitive boundary cases; refusal is not a pass. The mechanism and
+CPython source references live in `docs/SUBSET.md` §6a. Build and test against
+the same selected interpreter, in a worktree with its own state directory:
+
+```bash
+export LYPNING_CPYTHON=/absolute/path/to/python3
+export LYPNING_HOME="$PWD/work/compat-state"
+export PATH="$(dirname "$LYPNING_CPYTHON"):$PATH"
+PYTHONPATH=src "$LYPNING_CPYTHON" -m lypning build --rust --target host
+PYTHONPATH=src uv run --no-project --python "$LYPNING_CPYTHON" --with pytest \
+  python -m pytest tests/test_fuzz_findings.py tests/test_semantics.py \
+  tests/test_version_semantics.py -q
+```
+
+On 2026-09-15, fresh native Darwin arm64 builds against CPython 3.12.13,
+3.13.13 and 3.14.5 each gave 465 passed / 1 skipped for that command. The six
+authored `test_version_semantics.CASES` also passed `conformance.run` on core,
+L and both dispatchers under 3.14.5: all six compared stdout, MISMATCH 0,
+dispatchers agreed 6/6. This checks those six programs, not the full harvested
+corpus. `doctor` under the pinned 3.14.5 reported 0 FAIL.
 
 ## 16. C15 — Names
 **STATEMENT.** Invariant 9. Engine strings are exactly the members of

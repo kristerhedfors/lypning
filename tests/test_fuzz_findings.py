@@ -20,6 +20,11 @@ import pytest
 from lypning import engines
 
 CASES = [
+    # The reverse converter is build-dependent. Compare the full outcome,
+    # including on older interpreters that reject non-indexable values.
+    ("sort-reverse-conversion", "for v in [None, 0.0, [], [0], '', 'x', 0, 1]:\n"
+     "    try:\n        print(sorted([3, 1, 2], reverse=v))\n"
+     "    except TypeError as e:\n        print(e)"),
     # `type(2).__name__` lived in REFUSES until 2026-08-31, when tier 1 learned
     # to answer `__name__` on a `Value::Builtin` — the one receiver whose name
     # is not a guess, because a builtin carries it (`int.__name__ == "int"`,
@@ -991,15 +996,11 @@ STDERR_CASES = [
      "can only join an iterable"),
     ("join-generator-raises-through-text",
      "print(','.join(str(1//x) for x in [1, 0]))", "ZeroDivisionError"),
-    # `reverse=` is read through __index__, so the message names an integer and
-    # not a bool. Pinned as text because the stdout pin above cannot tell this
-    # error from any other TypeError.
-    ("sort-reverse-none-message", "print(sorted([3, 1, 2], reverse=None))",
-     "'NoneType' object cannot be interpreted as an integer"),
     # `list.index` with a range that excludes the element must RAISE, not find
     # it anyway. Pinned as text because the stdout pin cannot tell this
     # ValueError from a different one.
-    ("list-index-stop-excludes", "print([1, 2, 3].index(3, 0, 2))", "3 is not in list"),
+    ("list-index-stop-excludes", "print([1, 2, 3].index(3, 0, 2))",
+     "list.index(x): x not in list" if sys.version_info >= (3, 14) else "3 is not in list"),
     # `enumerate` is exempt from the no-keywords table because `start` is real,
     # and the exemption used to mean no validation at all.
     ("enumerate-bad-keyword", "print(list(enumerate([1], strict=True)))",

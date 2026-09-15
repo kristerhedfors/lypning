@@ -106,23 +106,27 @@ def replay(attempts: List[Dict[str, Any]], engine: str,
     cannot see — and the only way to make that true is to leave them no second
     door.
     """
+    from .jsonio import sha256_of, write_json
+    # A census belongs to these exact programs AND their execution contexts,
+    # not merely to whichever binaries happen to be installed on this host.
+    key = sha256_of({"identity": eng.identity(), "engine": str(engine),
+                     "binary_sha256": eng._sha256_of_file(str(engine)),
+                     "grader": refusals.GRADER, "attempts": attempts, "tests": tests})
     if cache is not None and cache.exists():
         import json as _json
         stored = _json.loads(cache.read_text(encoding="utf-8"))
         # A cached replay is only a replay of the SAME engine. Reusing one across
         # a rebuild is the confound this endpoint is most exposed to, so the
         # fingerprint is checked rather than trusted.
-        if (stored.get("fingerprint") == eng.identity()["fingerprint"]
-                and stored.get("grader") == refusals.GRADER):
+        if stored.get("cache_key") == key:
             return stored["census"]
     census = refusals.on_policy(attempts, engine, tests=tests, workers=workers)
     if cache is not None:
         import json as _json
         cache.parent.mkdir(parents=True, exist_ok=True)
-        cache.write_text(_json.dumps(
+        write_json(cache,
             {"fingerprint": eng.identity()["fingerprint"], "engine": engine,
-             "grader": refusals.GRADER, "census": census}, sort_keys=True),
-            encoding="utf-8")
+             "grader": refusals.GRADER, "cache_key": key, "census": census})
     return census
 
 

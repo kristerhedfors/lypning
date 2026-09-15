@@ -1279,8 +1279,8 @@ pub fn callable_kind(v: &Value) -> Option<Callable> {
 /// 3.14.5 and called disputed; `err::REF_PY_MINOR` is what a compile-time
 /// constant costs to settle them instead, and the boundaries were re-measured
 /// on 2026-09-12 because the note here had both of them a version early:
-/// `os.path.normpath` is a `function` on 3.9 … 3.12 and a
-/// `builtin_function_or_method` on **3.13**, and the six vectorcall
+/// `os.path.normpath` can be a `function` or `builtin_function_or_method`
+/// even within a minor version (measured at build time), and the six vectorcall
 /// `re.Pattern` methods are `builtin_function_or_method` on **3.9** alone,
 /// before `builtin_method` existed. Refusing instead would have to refuse at
 /// attribute access, which is the only choke point cheaper than making
@@ -1313,19 +1313,9 @@ fn bound_kind(recv: &Value, name: &str) -> Callable {
             // `os` is `posix` re-exported, so its names are C — except the two
             // served here that `os.py` defines itself.
             ("os", "makedirs" | "getenv") => Function,
-            // `posixpath` is Python, and `normpath` is the one name that went
-            // into C — in **3.13**, not 3.12 as the note above used to say.
-            // Measured with `type(os.path.normpath).__name__` on 2026-09-12:
-            //
-            //   3.9 3.10 3.11 3.12   function
-            //   3.13                 builtin_function_or_method
-            //
-            // This is the only TYPE NAME in this file that moves inside the
-            // supported range, and it is the one cell `bound_kind`'s note calls
-            // disputed: it is now answered for the host rather than for one
-            // version, which costs one comparison against a compile-time
-            // constant and no refusal.
-            ("os.path", "normpath") if crate::err::REF_PY_MINOR >= 13 => Builtin,
+            // A C fast path is a build-dependent detail, not a minor-version
+            // boundary: CPython 3.12 builds occur with both representations.
+            ("os.path", "normpath") if crate::err::REF_NORMPATH_BUILTIN => Builtin,
             ("os.path", "normpath") => Function,
             ("os.path", _) => Function,
             // `random`'s module functions are the bound methods of one hidden

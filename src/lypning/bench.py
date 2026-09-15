@@ -408,6 +408,9 @@ def skip_reason(entry: corpus.Entry) -> str:
         # Timing a program that runs the whole battery would fork-bomb the host
         # and measure the fork bomb. Conformance's rule, again.
         return battery
+    mutation = conformance.external_mutation(entry.program)
+    if mutation:
+        return mutation
     outside = conformance.absolute_paths(entry.program)
     for a in entry.argv_tail:
         outside.extend(p for p in conformance.absolute_paths(a) if p not in outside)

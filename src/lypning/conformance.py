@@ -48,11 +48,15 @@ runs this in. That last one is a net, not a sandbox: it cannot undo a write outs
 the repository, it only makes the next occurrence loud. It is here because the
 first measurement runs on the upstream project rewrote 34 tracked files and the
 escape route was never pinned down — which is precisely the argument for a net.
+Recognised package-manager mutations and model downloads are excluded before
+either arm runs: a temporary cwd cannot contain site-packages or cache writes.
+The static admission check is not a substitute for filesystem/egress isolation.
 
-**A timeout is never scored as a disagreement.** The reference run and the
-engine runs share one deadline, so a program that is simply slow times out on
-both sides and is dropped from the measurement instead of being recorded as an
-engine that printed the wrong thing.
+**A reference timeout is unmeasured; an engine-only timeout is a mismatch.**
+Both runs share one deadline. If the reference cannot finish, the entry is
+skipped; if only an engine times out, the comparison fails. CPU contention can
+make even two CPython runs straddle a wall-clock deadline: use one worker when
+grading CPU-heavy captures on shared runners, not a weaker timeout verdict.
 """
 
 from __future__ import annotations
@@ -75,6 +79,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import corpus
+from .corpus_safety import external_mutation as _external_mutation
 from . import engines as eng
 from . import paths
 from .engines import CPYTHON, LIBRARY, LYPNING, MICROPYTHON
@@ -1672,6 +1677,11 @@ class _EntryResult:
     seeded: int = 0
 
 
+def external_mutation(program: str) -> str:
+    """Recognised package/cache mutations that a replay cwd cannot contain."""
+    return _external_mutation(_tree(program))
+
+
 def _run_entry(
     entry: Any,
     arms: Sequence[str],
@@ -1699,6 +1709,13 @@ def _run_entry(
         # A fork bomb, not a divergence: this program runs the whole battery
         # again. Skipped like an absolute path — recorded, never replayed.
         out.skip = Skip(out.entry_id, battery)
+        return out
+
+    mutation = external_mutation(program)
+    if mutation:
+        # A temporary cwd cannot contain pip's site-packages writes or model
+        # caches. Never let the reference change what the next arm imports.
+        out.skip = Skip(out.entry_id, mutation)
         return out
 
     outside = absolute_paths(program)

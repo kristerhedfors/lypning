@@ -16,9 +16,12 @@ import (
 	"lypning.dev/lypning"
 )
 
-const refusalLine = "lypning: unsupported: module: import subprocess\n"
+var refusalLine = lypning.EngineName() + ": unsupported: module: import subprocess\n"
 
 func TestVersionAndABI(t *testing.T) {
+	if lypning.EngineName() == "" {
+		t.Fatal("EngineName() is empty")
+	}
 	if lypning.Version() == "" {
 		t.Fatal("Version() is empty")
 	}
@@ -140,7 +143,7 @@ func TestStepLimitRefuses(t *testing.T) {
 	if r.Status != lypning.Unsupported || !r.FallOnward || r.Committed {
 		t.Fatalf("status %v fall %v committed %v: %s", r.Status, r.FallOnward, r.Committed, r.Stderr)
 	}
-	if r.Kind != "steps" || !strings.HasPrefix(string(r.Stderr), "lypning: unsupported: steps: ") {
+	if r.Kind != "steps" || !strings.HasPrefix(string(r.Stderr), lypning.EngineName()+": unsupported: steps: ") {
 		t.Fatalf("kind %q stderr %q", r.Kind, r.Stderr)
 	}
 }
@@ -228,7 +231,7 @@ func TestRouteAgreesWithRun(t *testing.T) {
 	for _, src := range cases {
 		route := lypning.Route(src)
 		run := lypning.Run(src, nil)
-		if (route.Engine == "lypning") != (run.Status != lypning.Unsupported) {
+		if (route.Engine == lypning.EngineName()) != (run.Status != lypning.Unsupported) {
 			t.Fatalf("%q: route says %q, run says %v (%s)", src, route.Engine, run.Status, run.Stderr)
 		}
 		if run.Status == lypning.Unsupported && (route.Kind != run.Kind || route.Detail != run.Detail) {
@@ -255,7 +258,7 @@ func TestNonUTF8SourceFallsOnward(t *testing.T) {
 	if len(r.Stdout) != 0 || r.Kind != "source" {
 		t.Fatalf("stdout %q kind %q", r.Stdout, r.Kind)
 	}
-	if !strings.HasPrefix(string(r.Stderr), "lypning: unsupported: source: ") {
+	if !strings.HasPrefix(string(r.Stderr), lypning.EngineName()+": unsupported: source: ") {
 		t.Fatalf("stderr %q", r.Stderr)
 	}
 	if rt := lypning.Route("\xff"); rt.Engine != "cpython" {
@@ -271,7 +274,7 @@ func TestNonUTF8ArgFallsOnward(t *testing.T) {
 	if !r.FallOnward || r.Status != lypning.Unsupported || r.ExitCode != 90 || len(r.Stdout) != 0 {
 		t.Fatalf("fall %v status %v exit %d stdout %q", r.FallOnward, r.Status, r.ExitCode, r.Stdout)
 	}
-	if r.Kind != "source" || !strings.HasPrefix(string(r.Stderr), "lypning: unsupported: source: ") {
+	if r.Kind != "source" || !strings.HasPrefix(string(r.Stderr), lypning.EngineName()+": unsupported: source: ") {
 		t.Fatalf("kind %q stderr %q", r.Kind, r.Stderr)
 	}
 	r = lypning.Run("print(1)", &lypning.Options{Filename: "p\xff.py"})

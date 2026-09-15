@@ -58,7 +58,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -180,7 +180,12 @@ jobs:
         #
         # `lypning` is clean by selection and unconditionally. The third arm,
         # lypning-mp, is known red — see the micropython-conformance job.
-        run: lypning conformance --engine lypning --engine mixture
+        # Captured regex benchmarks (py-c9c864a8e18d, py-4cd9100cb501) route
+        # directly to CPython. Parallel CPU-heavy entries can make its second
+        # run cross the deadline after the reference finished. Serialize this
+        # corpus workload instead of raising the deadline again: both arms keep
+        # 60s and an engine-only timeout still fails. No entry is exempted.
+        run: lypning conformance --engine lypning --engine mixture --timeout 60 --workers 1
       # --- the same contract, through the ABI instead of through a process ---
       #
       # The library shares the interpreter with the binary above and does NOT
@@ -224,7 +229,7 @@ jobs:
         # by the rules the spawned arms are scored by. It must reach MISMATCH 0
         # AND agree with the `lypning` arm program for program: the two
         # disagreeing is the drift this arm exists to catch.
-        run: lypning conformance --engine lypning --engine library
+        run: lypning conformance --engine lypning --engine library --timeout 60 --workers 1
       # --- every host over the ABI, each held to the one quickstart contract --
       #
       # docs/EMBEDDING.md section 4 is the table of hosts; the steps below are
@@ -350,7 +355,7 @@ jobs:
   # pyproject.toml carries `Operating System :: MacOS`, and this job is what
   # makes that a fact rather than a classifier. It is not a mirror of `core`:
   # the static-musl core, its gate and its conformance battery are Linux
-  # artefacts, and `build --rust` on a Mac builds for the host and says so.
+  # artefacts, so the Mac explicitly requests a host build.
   # What a Mac adds is the host Linux cannot run at all (Swift) and the one
   # link detail Linux never sees: the library's install name must be
   # `@rpath/liblypning.dylib`, or every host linked with `lypning lib --libs`
@@ -374,12 +379,14 @@ jobs:
         # they just produced; `lib` and `status` print what was installed and
         # where, which is the line to read when a host step below fails.
         run: |
-          lypning build --rust
+          lypning build --rust --target host
           lypning build --lib
           lypning lib
           lypning status
       - name: pytest, on a Mac
-        run: python -m pytest tests -q
+        # macOS's default /var/folders temp prefix can leave fewer bytes than
+        # pytest's test names require under the Unix socket path limit.
+        run: python -m pytest tests -q --basetemp="$RUNNER_TEMP/pytest"
       - name: the quickstart contract, as one function every host is run through
         # The same function the core job defines, and for the same reason:
         # the five probes are the contract, and a host passes all of them or
@@ -674,7 +681,7 @@ jobs:
           cd "$RUNNER_TEMP/sdist"/lypning-*
           PYTHONPATH=src python -m lypning build --rust
           PYTHONPATH=src python -m lypning gate
-          PYTHONPATH=src python -m lypning conformance --engine lypning --engine mixture
+          PYTHONPATH=src python -m lypning conformance --engine lypning --engine mixture --timeout 60 --workers 1
 
   site:
     # The docs site is a rendering of the repository's own markdown, so a

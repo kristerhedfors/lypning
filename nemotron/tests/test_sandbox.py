@@ -44,9 +44,29 @@ def test_credentials_are_not_visible_to_generated_code():
     assert r.stdout.strip() == "None None"
 
 
-def test_memory_cap_is_enforced():
-    r = run_python("x = bytearray(4 * 1024**3)", mem_mb=256)
-    assert r.exit_code != 0
+def test_memory_cap_is_enforced(request):
+    if request.config.getoption("--no-memory-limit"):
+        pytest.skip("explicit local opt-out: CI checks memory enforcement")
+    # Bounded allocation even if the guard regresses: never allocate 4 GiB on
+    # the developer's laptop just to discover a missing memory limit.
+    r = run_python("import time\nx=[]\nfor _ in range(48):\n    x.append(bytearray(8*1024**2))\n    time.sleep(.01)", mem_mb=128)
+    assert r.harness_error is None, r.brief()
+    assert r.exit_code != 0 and r.memory_policy != "none"
+
+
+def test_setup_failure_is_distinct_from_program_exit_127():
+    assert run_python("raise SystemExit(127)", mem_mb=0).harness_error is None
+    assert run_python("pass", interpreter=["/missing/ntx-engine"], mem_mb=0).harness_error
+
+
+def test_monitor_failure_is_not_a_model_failure(monkeypatch):
+    from pipeline import sandbox
+    monkeypatch.setattr(sandbox, "memory_policy", lambda _: "process-group-rss-watchdog")
+    def denied(pid):
+        raise PermissionError("monitor denied")
+    monkeypatch.setattr(sandbox, "_group_rss_kb", denied)
+    r = run_python("import time; time.sleep(5)", mem_mb=128)
+    assert "monitor denied" in r.harness_error
 
 
 @pytest.mark.skipif(not netns_available(), reason="kernel will not give us a netns")

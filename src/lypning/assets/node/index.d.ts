@@ -5,8 +5,8 @@
 // type here to catch. `fallOnward` is a plain boolean field, and TypeScript
 // will not let a harness pretend it is not there.
 
-/** The tier that should run a program. These three strings and no others. */
-export type Engine = 'lypning' | 'lypning-mp' | 'cpython';
+/** A Rust spectrum variant or CPython. The oracle is measured, never routed to. */
+export type Engine = 'lypning' | 'lypning-l' | 'cpython';
 
 /** `Status`, spelled. `'unsupported'` is a refusal — not a failure. */
 export type StatusName = 'ok' | 'error' | 'unsupported' | 'busy' | 'panic';

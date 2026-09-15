@@ -110,7 +110,7 @@ def test_a_refusal_after_mkdir_is_a_refusal(lypning_bin, tmp_path, program, _ans
 
 @pytest.mark.parametrize("program, answer", MKDIR_THEN_REFUSE,
                          ids=["eval", "complex", "bigint"])
-def test_the_chain_makes_the_directory_exactly_once(tmp_path, program, answer) -> None:
+def test_the_chain_makes_the_directory_exactly_once(lypning_bin, tmp_path, program, answer) -> None:
     """The safety property, and it is self-checking.
 
     `os.mkdir` raises `FileExistsError` the second time, so a chain that ran the

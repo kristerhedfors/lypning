@@ -286,7 +286,14 @@ class Server:
                 # which is the whole point of being warm.
                 glb = {"__name__": "__main__", "__builtins__": __builtins__,
                        "__file__": None, "__doc__": None, "__package__": None}
-                exec(compile(program, "<string>", "exec"), glb)
+                compiled = compile(program, "<string>", "exec")
+                # CPython 3.13+ registers -c source (including nested code)
+                # for traceback source lines and carets. Mirror pythonrun.c;
+                # the cache belongs to this disposable child, not the pool.
+                if sys.version_info >= (3, 13):
+                    import linecache
+                    linecache._register_code(compiled, program, "<string>")
+                exec(compiled, glb)
                 code = 0
             except SystemExit as e:
                 # CPython's -c prints a non-integer SystemExit argument to

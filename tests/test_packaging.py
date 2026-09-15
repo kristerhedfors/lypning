@@ -87,6 +87,13 @@ def test_every_package_data_glob_matches_a_file() -> None:
 
 
 @needs_toml
+def test_the_wheel_carries_the_reference_behavior_probe() -> None:
+    """Cargo embeds the probe at compile time, including in a wheel build."""
+    patterns = _project()["tool"]["setuptools"]["package-data"]["lypning"]
+    assert "assets/rust/reference_probe.py" in patterns
+
+
+@needs_toml
 def test_the_wheel_carries_the_crate_cargo_config() -> None:
     """The one crate file whose absence produces a working, WRONG binary.
 

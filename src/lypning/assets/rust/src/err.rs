@@ -154,6 +154,13 @@ pub const ENGINE: &str = env!("LYPNING_ENGINE");
 /// measurement that fixed it.
 pub const REF_PY_MINOR: u32 = parse_minor(env!("LYPNING_REF_PY"));
 
+/// Build-dependent facts measured against the selected CPython, not guessed
+/// from its minor version. See reference_probe.py and build.rs.
+pub const REF_NORMPATH_BUILTIN: bool = env!("LYPNING_REF_NORMPATH_BUILTIN").as_bytes()[0] == b'1';
+pub const REF_REVERSE_TRUTH: bool = env!("LYPNING_REF_REVERSE_TRUTH").as_bytes()[0] == b'1';
+pub const REF_ITER_SHORT: bool = env!("LYPNING_REF_ITER_SHORT").as_bytes()[0] == b'1';
+pub const REF_ZERO_NEGATIVE_BYTES_OVERFLOW: bool = env!("LYPNING_REF_ZERO_NEGATIVE_BYTES_OVERFLOW").as_bytes()[0] == b'1';
+
 /// `"3.11"` -> `11`, at compile time. `build.rs` has already refused anything
 /// that is not `3.<digits>`, so this only has to read the digits; a string that
 /// somehow reaches here without them yields 0, which every site below treats as
@@ -336,19 +343,33 @@ pub fn overflow_err(msg: impl Into<String>) -> LypningError {
 }
 
 pub fn zero_div(msg: &str) -> LypningError {
+    // CPython 3.14 unifies numeric division/modulo messages, but zero to a
+    // negative power remains a distinct error. Keep the pre-3.14 spellings at
+    // the call sites so integer %, // and float operations cannot drift.
+    let msg = match msg {
+        "integer division or modulo by zero" | "integer modulo by zero"
+        | "float division by zero" | "float floor division by zero"
+        | "float modulo" if REF_PY_MINOR >= 14 => "division by zero",
+        "0.0 cannot be raised to a negative power" if REF_PY_MINOR >= 14 => {
+            "zero to a negative power"
+        }
+        "float modulo" if REF_PY_MINOR >= 13 => "float modulo by zero",
+        _ => msg,
+    };
     LypningError::exc("ZeroDivisionError", msg)
 }
 
 /// CPython's ZeroDivisionError for integer `%` by zero, which is the ONE
-/// operator of the family whose text moved. Measured on 2026-09-12 with
+/// operator of the family whose text moved before 3.14. Measured on 2026-09-12 with
 /// `1 % 0`, `1 // 0` and `divmod(1, 0)`:
 ///
 ///   3.9 3.10       integer division or modulo by zero
 ///   3.11 3.12 3.13 integer modulo by zero
+///   3.14+         division by zero (mapped by zero_div for the whole family)
 ///
-/// `//` and `divmod` keep the long sentence on all five, so they call
-/// `zero_div` directly and this function is `%`'s alone — widening it to the
-/// family would break two correct messages to fix one wrong one.
+/// `//` and `divmod` keep the long sentence through 3.13, so they call
+/// `zero_div` directly and this helper is `%`'s alone. `zero_div` owns the
+/// later, family-wide 3.14 boundary.
 pub fn int_mod_by_zero() -> LypningError {
     zero_div(if REF_PY_MINOR >= 11 {
         "integer modulo by zero"
