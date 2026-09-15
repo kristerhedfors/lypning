@@ -1,0 +1,86 @@
+[
+  {
+    "id": "quoted-sales-report",
+    "family": "quoted_table_aggregation",
+    "capabilities": ["csv_reader", "string_processing", "dict_aggregation", "sorting"],
+    "rights_basis": "Original task specification authored for this repository; no external project, customer data, or copied solution is supplied. Generated artifacts still require provenance and rights review before training or publication.",
+    "prompt": "Build a small Python 3 standard-library-only sales-report project. Deliver main.py, README.md and self-tests in the current project directory. main.py reads CSV from stdin with exactly the header region,item,quantity,unit_cents. Use CSV quoting correctly, including commas and doubled quotes in item values. Quantities and prices are nonnegative decimal integers; blank physical lines may occur, and the input otherwise satisfies the format. Sum quantity*unit_cents by region, including regions whose total is zero. Print one line per region, sorted by the region's case-sensitive string value, as region followed by a TAB and its integer total cents. Region values contain no tabs or newlines. An input containing only the header produces no output. Do not use binary floating-point money or third-party packages. Document the input/output contract and include self-tests for quoted fields, repeated regions, zero totals and empty data. Keep all writes inside this project and do not access the network. Run your self-tests before finishing."
+  },
+  {
+    "id": "structured-log-summary",
+    "family": "structured_text_extraction",
+    "capabilities": ["regex_named_groups", "integer_parsing", "dict_aggregation", "sorting"],
+    "rights_basis": "Original task specification authored for this repository; no external project, customer data, or copied solution is supplied. Generated artifacts still require provenance and rights review before training or publication.",
+    "prompt": "Build a Python 3 standard-library-only structured-log summarizer with main.py, README.md and self-tests. Read stdin as independent lines. A valid line has exactly this grammar: service=<name> level=<level> ms=<duration>, with one ASCII space between fields, name matching [A-Za-z][A-Za-z0-9_-]*, level one of INFO,WARN,ERROR, and duration one or more ASCII decimal digits. Ignore invalid lines, including blank lines and lines with leading or trailing spaces. For each service appearing in any valid line, count valid entries, sum durations and count ERROR entries. Print services sorted case-sensitively, each as service<TAB>count<TAB>total_ms<TAB>errors, followed by invalid<TAB>N on its own final line. The service name 'invalid' is legal and remains an ordinary service row before the final invalid-line row. An empty input prints only invalid<TAB>0. Preserve exact matching boundaries; do not partially accept a malformed line. Document and test valid, invalid, repeated-service and empty inputs. Keep writes in this project, use no network, and run your tests."
+  },
+  {
+    "id": "signed-byte-codec",
+    "family": "fixed_width_integer_encoding",
+    "capabilities": ["bigint", "int_to_bytes", "int_from_bytes", "string_formatting"],
+    "rights_basis": "Original task specification authored for this repository; no external project, customer data, or copied solution is supplied. Generated artifacts still require provenance and rights review before training or publication.",
+    "prompt": "Build a Python 3 standard-library-only fixed-width signed-integer codec with main.py, README.md and self-tests. Each nonblank stdin line is decimal_integer width byteorder separated by whitespace. Width is an integer from 1 through 32 inclusive, and byteorder is big or little; inputs satisfy that syntax. Interpret decimal_integer as a signed integer. If it does not fit in a signed width-byte two's-complement value, print OVERFLOW. Otherwise print the lowercase hexadecimal encoding with exactly 2*width digits, a TAB, and the signed decimal value obtained by decoding those bytes. Process lines independently, skip whitespace-only lines and emit no headers. Support values beyond 64 bits without truncation. Test both byte orders, negative values, signed boundaries, overflow and widths above eight bytes. Document the contract. Keep all writes inside this project, use no network, and run self-tests before finishing."
+  },
+  {
+    "id": "dependency-build-order",
+    "family": "directed_dependency_graph",
+    "capabilities": ["dict", "list", "set", "sorting", "graph_traversal"],
+    "rights_basis": "Original task specification authored for this repository; no external project, customer data, or copied solution is supplied. Generated artifacts still require provenance and rights review before training or publication.",
+    "prompt": "Build a Python 3 standard-library-only dependency planner with main.py, README.md and self-tests. stdin is one JSON object with nodes (a list of unique strings) and edges (a list of two-element string lists [prerequisite,dependent]); every endpoint is in nodes. Duplicate edges have no additional effect. Print the lexicographically smallest valid topological order as one node per line, choosing the smallest currently available node at each step. If any cycle exists, including a self-edge, print only CYCLE and no partial order. An empty graph produces no output. Node names are nonempty ASCII letters, digits, underscores or hyphens. Handle disconnected nodes and graphs with shared dependencies. Document and self-test deterministic tie-breaking, duplicate edges, disconnected components, cycles and the empty graph. No third-party dependencies or network access; write only within this project and run the self-tests."
+  },
+  {
+    "id": "interval-coverage",
+    "family": "interval_union_measure",
+    "capabilities": ["integer_arithmetic", "tuple_sorting", "list_processing", "boundary_conditions"],
+    "rights_basis": "Original task specification authored for this repository; no external project, customer data, or copied solution is supplied. Generated artifacts still require provenance and rights review before training or publication.",
+    "prompt": "Build a Python 3 standard-library-only interval coverage project with main.py, README.md and self-tests. Each nonblank stdin line contains two decimal integers start end, denoting the half-open interval [start,end); start<=end. Ignore zero-length intervals. Compute the union, merging overlaps and intervals that touch at an endpoint. Print each merged interval in ascending order as start<TAB>end, then print total<TAB>N where N is the total covered integer length. Empty input prints total<TAB>0. Negative coordinates and integers beyond 64 bits are valid. Do not enumerate individual points. Document the format and test nested intervals, duplicates, touching intervals, gaps, negative coordinates, huge coordinates and empty input. Use no third-party packages or network. Keep all files within the project and run your self-tests."
+  },
+  {
+    "id": "inventory-reconciliation",
+    "family": "stateful_inventory_events",
+    "capabilities": ["dict_state", "integer_arithmetic", "sequence_processing", "sorting"],
+    "rights_basis": "Original task specification authored for this repository; no external project, customer data, or copied solution is supplied. Generated artifacts still require provenance and rights review before training or publication.",
+    "prompt": "Build a Python 3 standard-library-only inventory reconciliation project with main.py, README.md and self-tests. Read one JSON object from stdin: initial maps SKU strings to nonnegative integer quantities, and events is an ordered list of objects with sku, op and quantity. op is add or remove; quantity is a nonnegative integer; every input satisfies this syntax. An unseen SKU starts at zero and must appear in the final inventory even if its first event is rejected. add always succeeds. remove succeeds only when enough quantity exists; otherwise reject that entire event without changing quantity. Print every SKU sorted case-sensitively as sku<TAB>final_quantity, then rejected<TAB>N. SKU values are nonempty ASCII alphanumeric strings and may equal rejected. Empty initial/events prints only rejected<TAB>0. Document and test order dependence, unseen SKUs, zero quantities and rejected removals. All files stay in the project; no network or external dependencies. Run your self-tests."
+  },
+  {
+    "id": "postfix-integer-calculator",
+    "family": "stack_expression_evaluation",
+    "capabilities": ["stack_list", "integer_division", "bigint", "validation"],
+    "rights_basis": "Original task specification authored for this repository; no external project, customer data, or copied solution is supplied. Generated artifacts still require provenance and rights review before training or publication.",
+    "prompt": "Build a Python 3 standard-library-only postfix integer calculator with main.py, README.md and self-tests. Evaluate every stdin line independently as whitespace-separated tokens. Integer tokens match -?[0-9]+ in ASCII. Operators are +, -, *, // and %, each consuming left then right operands in ordinary postfix order. Division and modulo use Python integer semantics, including negative operands. Print the integer result when all tokens are valid, no division by zero occurs, and exactly one stack value remains. Otherwise print ERROR, including for blank lines, too few operands, unknown tokens and leftover operands. Use arbitrary-precision integers, never eval or exec, and do not convert division through float. Test negative division/modulo, operand order, huge values, errors and multiple input lines. Document the behavior. Use no network or third-party dependencies; keep writes in this project and run the self-tests."
+  },
+  {
+    "id": "sparse-matrix-product",
+    "family": "sparse_linear_algebra",
+    "capabilities": ["nested_iteration", "tuple_dict_keys", "bigint", "sorting"],
+    "rights_basis": "Original task specification authored for this repository; no external project, customer data, or copied solution is supplied. Generated artifacts still require provenance and rights review before training or publication.",
+    "prompt": "Build a Python 3 standard-library-only sparse integer matrix multiplication project with main.py, README.md and self-tests. stdin is a JSON object containing m,k,n nonnegative dimensions and a,b lists of [row,column,value] integer triples for matrices of shapes m-by-k and k-by-n. Coordinates are in bounds. Repeated coordinates add, and zero values are allowed. Compute A*B exactly using integers; print only nonzero result entries ordered by row then column, each as row<TAB>column<TAB>value. Empty or zero results produce no output. Avoid allocating dense arrays proportional to m*k, k*n or m*n, since dimensions may be large while triples are few. Document the format and test duplicate coordinates, cancellation, rectangular shapes, zero dimensions and large integer products. No third-party dependencies or network; keep all writes in the project and run self-tests."
+  },
+  {
+    "id": "stable-event-scheduler",
+    "family": "discrete_event_scheduling",
+    "capabilities": ["tuple_sorting", "integer_arithmetic", "state_transitions", "list_processing"],
+    "rights_basis": "Original task specification authored for this repository; no external project, customer data, or copied solution is supplied. Generated artifacts still require provenance and rights review before training or publication.",
+    "prompt": "Build a Python 3 standard-library-only single-worker scheduling simulator with main.py, README.md and self-tests. Read a JSON list of jobs from stdin; each job has a unique ASCII alphanumeric id, nonnegative integer arrival and nonnegative integer duration. Execute jobs non-preemptively in ascending arrival order, preserving input order for equal arrivals. The clock starts at zero. Each job starts at max(current_clock,arrival), ends at start+duration and advances the clock to its end. Print jobs in execution order as id<TAB>start<TAB>end<TAB>waiting_time, where waiting_time=start-arrival. Finally print total_wait<TAB>N and makespan<TAB>M on separate lines, where M is the last end time or zero for no jobs. A job id may match a summary label. Document and test idle gaps, tied arrivals, zero durations, unsorted inputs and the empty list. No network or third-party dependencies; write only within this project and run self-tests."
+  },
+  {
+    "id": "run-length-codec",
+    "family": "lossless_sequence_encoding",
+    "capabilities": ["string_iteration", "list_processing", "json", "boundary_conditions"],
+    "rights_basis": "Original task specification authored for this repository; no external project, customer data, or copied solution is supplied. Generated artifacts still require provenance and rights review before training or publication.",
+    "prompt": "Build a Python 3 standard-library-only run-length codec with main.py, README.md and self-tests. Each stdin line is a JSON object with mode and value. For mode encode, value is a string: emit a JSON list of [character,count] pairs for consecutive equal Python string characters. For mode decode, value is a list of such pairs; each character is a Python string of length one and count is a positive integer, with total decoded length at most 100000. Inputs satisfy these contracts. Emit the decoded JSON string. Use json.dumps with ensure_ascii=True and separators=(',',':') for every output, one result per input line, no extra text. Empty strings/lists, quotes, backslashes and non-ASCII characters are valid; count characters rather than UTF-8 bytes. Adjacent duplicate pairs in decode are allowed. Document and test round trips plus exact encoded output for edge cases. Use no network or third-party packages, keep files in this project and run self-tests."
+  },
+  {
+    "id": "balanced-transfer-ledger",
+    "family": "atomic_transfer_accounting",
+    "capabilities": ["dict_state", "integer_arithmetic", "atomic_validation", "sorting"],
+    "rights_basis": "Original task specification authored for this repository; no external project, customer data, or copied solution is supplied. Generated artifacts still require provenance and rights review before training or publication.",
+    "prompt": "Build a Python 3 standard-library-only toy integer-credit transfer ledger with main.py, README.md and self-tests; this is a deterministic programming exercise, not a financial service. stdin is a JSON object with balances mapping unique ASCII alphanumeric account names to nonnegative integer credits and transfers an ordered list of [source,destination,amount], where amount is a nonnegative integer. Reject a transfer if either account is absent or the source balance is less than amount; rejection changes nothing and creates no account. Otherwise debit and credit atomically. A transfer to the same account is accepted only if the ordinary funds check passes and then has no net effect. Print accepted<TAB>A, rejected<TAB>R, then each original account sorted case-sensitively as account<TAB>balance. Account names may equal summary labels. Preserve exact integer totals and order dependence. Document and test missing accounts, self-transfers, insufficient funds, zero transfers and huge balances. No network or third-party dependencies; writes stay in the project. Run self-tests."
+  },
+  {
+    "id": "literal-template-expansion",
+    "family": "single_pass_template_parsing",
+    "capabilities": ["string_scanning", "dict_lookup", "list_join", "parser_boundaries"],
+    "rights_basis": "Original task specification authored for this repository; no external project, customer data, or copied solution is supplied. Generated artifacts still require provenance and rights review before training or publication.",
+    "prompt": "Build a Python 3 standard-library-only literal template expander with main.py, README.md and self-tests. Each stdin line is a JSON object containing template (string) and values (mapping strings to strings). Scan the original template once from left to right. A doubled dollar sign $$ emits one literal dollar and consumes both characters. Otherwise ${name} replaces that entire token with values[name] only when name matches [A-Za-z_][A-Za-z0-9_]* and exists in values; unknown but valid tokens stay unchanged. For a malformed token or unmatched dollar, emit the current character literally and continue scanning the next original character. Inserted values are never scanned again. Emit the result with json.dumps(ensure_ascii=True,separators=(',',':')), one JSON string per input line. Document the exact precedence and test adjacent tokens, $$ before braces, unknown names, malformed/unclosed braces and replacement values containing token syntax. Do not use eval, exec, external templates or third-party packages. Keep files in the project, use no network, and run self-tests."
+  }
+]
