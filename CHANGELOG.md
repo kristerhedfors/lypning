@@ -24,8 +24,10 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   `sorted`, `min`, `sum` and `reversed` count before naming, and a `|` union
   of classes refuses as `class-union` instead of killing the program at its
   first annotated `def`. Ledger entry in `docs/HILLCLIMB.md`.
-- Name the earlier target model in one place: `SWITCH.md` carries its name and
-  the retired numbers; every other document says "the earlier model". Remove
+- Name the earlier target model in one place:
+  [`nemotron/SWITCH.md`](https://github.com/kristerhedfors/lypning/blob/main/nemotron/SWITCH.md)
+  carries its name and the retired numbers; every other document says "the
+  earlier model". Remove
   the retired GCP launch scripts and the earlier model's LoRA recipe. Run
   records, data files and the mismatch ledger keep their recorded names.
 
