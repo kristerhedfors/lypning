@@ -23,7 +23,7 @@ from typing import Any
 
 UPSTREAM = "https://api.cerebras.ai/v1/chat/completions"
 MAX_BODY_BYTES = 256 * 1024
-MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 ALLOWED_FIELDS = frozenset({
     "model", "messages", "temperature", "top_p", "seed", "stop", "tools",
     "tool_choice", "parallel_tool_calls", "response_format", "reasoning_effort",
@@ -99,7 +99,9 @@ class ProxyServer(ThreadingHTTPServer):
         try:
             super().__init__(address, _Handler)
         except BaseException:
-            os.close(self._ledger_fd)
+            if self._ledger_fd is not None:
+                os.close(self._ledger_fd)
+                self._ledger_fd = None
             raise
 
     def server_close(self) -> None:
@@ -143,6 +145,20 @@ class ProxyServer(ThreadingHTTPServer):
         if type(requested) is not int or requested <= 0:
             raise Rejected(400, "invalid_token_limit")
         tokens = min(requested, self.config.max_output_tokens)
+        outgoing = dict(body)
+        outgoing.pop("max_completion_tokens", None)
+        outgoing.pop("stream_options", None)
+        outgoing["max_tokens"] = tokens
+        outgoing["stream"] = False
+        outgoing["reasoning_effort"] = "none"
+        outgoing["temperature"] = 0.7
+        outgoing["top_p"] = 0.8
+        try:
+            encoded = json.dumps(outgoing, ensure_ascii=True, allow_nan=False).encode()
+        except (ValueError, RecursionError):
+            raise Rejected(400, "invalid_json")
+        if len(encoded) > MAX_BODY_BYTES:
+            raise Rejected(413, "encoded_request_too_large")
         with self._lock:
             if self.requests >= self.config.max_requests:
                 raise Rejected(429, "request_budget_exhausted")
@@ -151,11 +167,6 @@ class ProxyServer(ThreadingHTTPServer):
             self.requests += 1
             self.reserved_output_tokens += tokens
             call_id = self.requests
-        outgoing = dict(body)
-        outgoing.pop("max_completion_tokens", None)
-        outgoing.pop("stream_options", None)
-        outgoing["max_tokens"] = tokens
-        outgoing["stream"] = False
         return call_id, outgoing
 
     def upstream(self, body: dict) -> dict:
@@ -263,17 +274,25 @@ class _Handler(BaseHTTPRequestHandler):
             self._reply(200, response, streaming=body.get("stream", False))
         except Rejected as exc:
             self._reply(exc.status, {"error": {"code": exc.code}})
-        except Exception:
+        except Exception as exc:
             # Exception messages and provider error bodies may contain secrets.
+            upstream_status = exc.code if isinstance(exc, urllib.error.HTTPError) else None
+            if type(upstream_status) is not int or not 400 <= upstream_status <= 599:
+                upstream_status = None
+            error_class = ("upstream_http_error" if upstream_status else
+                           "timeout" if isinstance(exc, TimeoutError) else
+                           "transport_error" if isinstance(exc, urllib.error.URLError) else
+                           "upstream_or_evidence_failed")
             if call_id is not None:
                 try:
                     self.server.record({"kind": "response", "call_id": call_id, "status": "failed",
                                         "elapsed_seconds": time.monotonic() - started,
+                                        "upstream_status": upstream_status, "error_class": error_class,
                                         "correctness": "unknown", "trainable": False})
                 except Exception:
                     pass
             try:
-                self._reply(502, {"error": {"code": "upstream_or_evidence_failed"}})
+                self._reply(upstream_status or 502, {"error": {"code": error_class}})
             except (OSError, TimeoutError):
                 pass
 

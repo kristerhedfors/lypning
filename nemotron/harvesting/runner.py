@@ -65,7 +65,7 @@ def command(argv, *, limit=MAX_ARCHIVE, timeout=60, env=None, input_bytes=None):
         if process.returncode:
             # No raw stderr in the trusted job log (could contain credentials).
             raise ContainerCommandError(argv, bytes(err))
-        return bytes(out)
+        return bytes(out + err) if argv[:2] == ["docker", "logs"] else bytes(out)
     finally:
         selector.close()
         if process.poll() is None:
@@ -132,11 +132,10 @@ def container_args(name, network, image):
             "--pids-limit=128", "--cpus=2", "--memory=2g", "--memory-swap=2g",
             "--ulimit", "fsize=16777216:16777216",
             "--log-opt", "max-size=1m", "--log-opt", "max-file=1",
-            "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m,mode=1777",
-            "--tmpfs", "/work:rw,nosuid,nodev,size=768m,uid=65534,gid=65534,mode=700"]
+            "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m,mode=1777"]
 
 
-def collect_container(name, directories, output, secret, errors, diagnostics):
+def collect_container(name, volume, image, directories, output, secret, errors, diagnostics):
     records = []
     try:
         command(["docker", "pause", name])
@@ -145,13 +144,26 @@ def collect_container(name, directories, output, secret, errors, diagnostics):
         errors.append("container_unavailable_for_collection:" + name.rsplit("-", 1)[-1])
         return records
     for label, directory in directories:
+        collector = name + "-collector-" + label
         try:
-            payload = command(["docker", "cp", name + ":" + directory, "-"])
+            # Docker cp cannot read tmpfs. A separate trusted read-only reader
+            # mounts the Docker-managed RAM volume, never the host checkout.
+            payload = command(["docker", "run", "--rm", "--name", collector,
+                "--network=none", "--read-only", "--cap-drop=ALL",
+                "--security-opt=no-new-privileges", "--user=65534:65534",
+                "--pids-limit=32", "--memory=256m", "--memory-swap=256m", "--cpus=1",
+                "--mount", "type=volume,source=" + volume + ",destination=/capture,readonly",
+                "--entrypoint", "python3", image, "-I", "/app/collector.py", directory])
             records.extend(collect(payload, output, label, secret.encode()))
         except (RuntimeError, ValueError, tarfile.TarError) as exc:
             errors.append("collection_failed:" + label)
             if isinstance(exc, ContainerCommandError):
                 diagnostics.append({"operation": exc.operation, "stderr": exc.detail})
+        finally:
+            try:
+                command(["docker", "rm", "--force", collector])
+            except RuntimeError:
+                pass
     return records
 
 
@@ -192,6 +204,7 @@ def run(task_index, repeat, output, worker_image, proxy_image, *, smoke=False, d
     output.mkdir(parents=True, exist_ok=False, mode=0o700)
     tag = "lyp-harvest-" + uuid.uuid4().hex[:12]
     worker, proxy, network = tag + "-worker", tag + "-proxy", tag + "-net"
+    work_volume, proxy_volume = tag + "-work", tag + "-ledger"
     revision = os.environ.get("GITHUB_SHA", "local-uncommitted")
     task = dict(tasks[task_index], model=MODEL, proxy_url="http://harvest-proxy:8080",
                 run_id=os.environ.get("GITHUB_RUN_ID", tag),
@@ -209,6 +222,9 @@ def run(task_index, repeat, output, worker_image, proxy_image, *, smoke=False, d
     state = "infrastructure_failure"
     started = time.time()
     try:
+        for volume, size in ((work_volume, "768m"), (proxy_volume, "64m")):
+            command(["docker", "volume", "create", "--driver", "local", "--opt", "type=tmpfs",
+                     "--opt", "device=tmpfs", "--opt", "o=size=" + size + ",uid=65534,gid=65534,mode=700", volume])
         command(["docker", "network", "create", "--internal", network])
         subnet = command(["docker", "network", "inspect", network, "--format",
                           "{{(index .IPAM.Config 0).Subnet}}"], limit=4096).decode().strip()
@@ -218,8 +234,7 @@ def run(task_index, repeat, output, worker_image, proxy_image, *, smoke=False, d
         rule = ["sudo", "iptables", "-w", "-I", "INPUT", "-s", subnet, "-j", "DROP"]
         command(rule)
         args = container_args(proxy, "bridge", proxy_image)
-        args += ["--tmpfs",
-                 "/data:rw,nosuid,nodev,noexec,size=64m,uid=65534,gid=65534,mode=700"]
+        args += ["--mount", "type=volume,source=" + proxy_volume + ",destination=/data,volume-nocopy"]
         # Do not print or embed the key in argv/config/image. Only the proxy gets it.
         child_env = {key: value for key, value in os.environ.items() if key != "CEREBRAS_API_KEY"}
         if smoke:
@@ -233,7 +248,10 @@ def run(task_index, repeat, output, worker_image, proxy_image, *, smoke=False, d
         command(["docker", "network", "connect", "--alias", "harvest-proxy", network, proxy])
         command(["docker", "start", proxy])
         started_containers.add(proxy)
-        command(container_args(worker, network, worker_image) + [worker_image])
+        # Docker resolves its own network alias, but cannot forward arbitrary
+        # external DNS queries through a host resolver on the agent's behalf.
+        command(container_args(worker, network, worker_image) + ["--dns=127.0.0.1", "--mount",
+                "type=volume,source=" + work_volume + ",destination=/work,volume-nocopy", worker_image])
         # The image-owned entrypoint waits for this nonsecret prompt file.
         # Copy after mounting /work tmpfs so the file is not shadowed on start.
         command(["docker", "start", worker])
@@ -270,14 +288,16 @@ def run(task_index, repeat, output, worker_image, proxy_image, *, smoke=False, d
         # Collect before cleanup even after a controller error or cancellation.
         try:
             if worker in started_containers:
-                records.extend(collect_container(worker, [("project", "/work/project"), ("output", "/work/output")],
+                records.extend(collect_container(worker, work_volume, proxy_image,
+                                                 [("project", "/capture/project"), ("output", "/capture/output")],
                                                  output, secret, errors, diagnostics))
                 errors.extend(worker_health(records, output))
         except Exception as exc:
             errors.append("worker_collection:" + type(exc).__name__)
         try:
             if proxy in started_containers and not smoke:
-                records.extend(collect_container(proxy, [("proxy", "/data")], output, secret, errors, diagnostics))
+                records.extend(collect_container(proxy, proxy_volume, proxy_image, [("proxy", "/capture")],
+                                                 output, secret, errors, diagnostics))
         except Exception as exc:
             errors.append("proxy_collection:" + type(exc).__name__)
         for name in (worker, proxy):
@@ -294,6 +314,11 @@ def run(task_index, repeat, output, worker_image, proxy_image, *, smoke=False, d
             command(["docker", "network", "rm", network])
         except RuntimeError:
             pass
+        for volume in (work_volume, proxy_volume):
+            try:
+                command(["docker", "volume", "rm", volume])
+            except RuntimeError:
+                errors.append("volume_cleanup_failed")
         manifest = {"schema": 1, "task": task, "worker_image": worker_image,
             "proxy_image": proxy_image, "opencode_version": OPENCODE_VERSION,
             "model_revision": "provider-managed; not an immutable training checkpoint",

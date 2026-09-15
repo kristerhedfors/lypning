@@ -5,6 +5,7 @@ import http.client
 import json
 import stat
 import threading
+import urllib.error
 from contextlib import contextmanager
 
 import pytest
@@ -61,6 +62,9 @@ def test_clamps_tokens_and_removes_secrets(tmp_path):
         assert KEY.encode() not in raw
         assert seen[0]["max_tokens"] == 100
         assert seen[0]["stream"] is False
+        assert seen[0]["reasoning_effort"] == "none"
+        assert seen[0]["temperature"] == 0.7
+        assert seen[0]["top_p"] == 0.8
         assert "max_completion_tokens" not in seen[0]
     ledger = tmp_path / "proxy.jsonl"
     assert KEY not in ledger.read_text()
@@ -145,3 +149,26 @@ def test_public_ledger_rejected(tmp_path):
     ledger.chmod(0o644)
     with pytest.raises(ValueError, match="private"):
         ProxyServer(("127.0.0.1", 0), ProxyConfig("qwen", 1, 1, 1, ledger), KEY)
+
+
+def test_encoding_expansion_rejected_before_spending(tmp_path):
+    with running(tmp_path) as (server, seen):
+        body = json.dumps({"model": "qwen-exact", "messages": [{"role": "user", "content": "é" * 50000}]},
+                          ensure_ascii=False).encode()
+        assert len(body) < MAX_BODY_BYTES
+        assert call(server, body)[0] == 413
+        assert not seen and server.requests == 0
+
+
+def test_http_error_preserves_status_not_provider_message(tmp_path):
+    with running(tmp_path) as (server, seen):
+        def failure(_):
+            raise urllib.error.HTTPError("https://example.invalid/" + KEY, 429, KEY, {}, None)
+        server.upstream = failure
+        status, raw = call(server)
+        assert status == 429 and KEY.encode() not in raw
+        assert json.loads(raw)["error"]["code"] == "upstream_http_error"
+    event = json.loads((tmp_path / "proxy.jsonl").read_text().splitlines()[-1])
+    assert event["upstream_status"] == 429
+    assert event["error_class"] == "upstream_http_error"
+    assert KEY not in (tmp_path / "proxy.jsonl").read_text()
