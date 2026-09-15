@@ -20,7 +20,7 @@ def config(task):
     if task["model"] != MODEL or task["proxy_url"] != "http://harvest-proxy:8080":
         raise ValueError("Only the fixed Qwen model and isolated proxy are supported")
     output_tokens = task.get("generation", {}).get("output_tokens_per_request", 2048)
-    if type(output_tokens) is not int or output_tokens not in (2048, 8192):
+    if type(output_tokens) is not int or output_tokens not in (2048, 4096, 8192):
         raise ValueError("Invalid worker output budget")
     return {
         "$schema": "https://opencode.ai/config.json",

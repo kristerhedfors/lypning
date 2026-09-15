@@ -41,7 +41,8 @@ class FakeDocker:
         self.proxy = _archive({"data/proxy.jsonl": json.dumps({
             "kind": "request", "observed_text": FAKE_KEY,
             "trainable": False,
-        }).encode() + b"\n"})
+        }).encode() + b"\n" + json.dumps({"kind": "response", "status": "completed",
+            "response": {"choices": [{"finish_reason": "stop"}]}}).encode() + b"\n"})
 
     def __call__(self, argv, **kwargs):
         argv = list(argv)
@@ -232,6 +233,12 @@ def test_partial_evidence_and_targeted_cleanup_survive_lifecycle(mode, tmp_path,
 
 def test_reasoning_profile_reaches_proxy_worker_and_manifest(tmp_path, monkeypatch):
     fake = FakeDocker("complete")
+    fake.project = _archive({"project/questions.jsonl": b"\n".join(json.dumps({
+        "id": str(i), "proposed_family": "fixture", "prompt": "fixture question " + str(i),
+        "input_contract": "text", "output_contract": "text", "difficulty": "simple",
+        "novelty_basis": "inert schema fixture", "edge_cases": ["empty"],
+        "capability_targets": ["strings"],
+    }).encode() for i in range(5))})
     monkeypatch.setattr(runner, "command", fake)
     monkeypatch.setenv("CEREBRAS_API_KEY", FAKE_KEY)
     output = tmp_path / "reasoning"
@@ -251,3 +258,26 @@ def test_reasoning_profile_reaches_proxy_worker_and_manifest(tmp_path, monkeypat
     (output / "manifest.json").write_text(json.dumps(manifest))
     with pytest.raises(ValueError, match="captured context"):
         inventory(output)
+
+
+@pytest.mark.parametrize("failure", ["python_deliverable_missing", "provider_completion_truncated",
+                                    "deliverable_inspection_failed"])
+def test_controller_fails_delivery_but_keeps_evidence(failure, tmp_path, monkeypatch):
+    fake = FakeDocker("complete")
+    if failure == "python_deliverable_missing":
+        fake.project = _archive({})
+    elif failure == "provider_completion_truncated":
+        fake.proxy = _archive({"capture/proxy.jsonl": json.dumps({"kind": "response",
+            "status": "completed", "response": {"choices": [{"finish_reason": "length"}]}}).encode()})
+    else:
+        def broken(*args, **kwargs):
+            raise ValueError("bad ledger fixture")
+        monkeypatch.setattr(runner, "delivery_errors", broken)
+    monkeypatch.setattr(runner, "command", fake)
+    monkeypatch.setenv("CEREBRAS_API_KEY", FAKE_KEY)
+    output = tmp_path / "failed-delivery"
+    assert runner.run(0, 0, output, WORKER_IMAGE, PROXY_IMAGE) == 1
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert failure in manifest["errors"]
+    assert manifest["state"] == "worker_reported_completion" and manifest["trainable"] is False
+    load_snapshot(output / "evidence")
