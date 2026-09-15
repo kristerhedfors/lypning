@@ -91,7 +91,10 @@ def train_grpo(model, tok, args, bundle, train_cases, verifier, effective, polic
         top_p=policy["top_p"], top_k=policy["top_k"], min_p=policy["min_p"],
         repetition_penalty=policy["repetition_penalty"],
         generation_kwargs={"eos_token_id": tok.eos_token_id, "num_beams": 1},
-        warmup_ratio=args.warmup_ratio, lr_scheduler_type="linear",
+        # transformers 5 folded the ratio into `warmup_steps`: a float in
+        # [0, 1) is a ratio of total steps, an int is exact steps. The pinned
+        # TRL rejects `warmup_ratio`; found by the first GPU smoke, 2026-09-15.
+        warmup_steps=float(args.warmup_ratio), lr_scheduler_type="linear",
         # No KL: disabling a warm-start adapter would anchor to BASE, not
         # SFT. Correctness/development gates provide the first guardrail.
         chat_template_kwargs={"enable_thinking": False}, beta=0.0,
