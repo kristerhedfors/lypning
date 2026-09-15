@@ -805,7 +805,10 @@ fn format_inner(v: &Value, spec_src: &str, from_pct: bool) -> R<String> {
                     None => to_str(&Value::Float(f.abs()))?,
                     Some(p) => g_with_point(f.abs(), p, false, sp.alt),
                 };
-                group_float(&s, sp.grouping)
+                // `#` keeps the point on the empty type as it does on `g`:
+                // `format(1e300, '#')` is `1.e+300`, and `str(float)` has no
+                // point to keep when the value prints in exponent form.
+                keep_point(group_float(&s, sp.grouping), sp.alt)
             } else {
                 return Ok(pad_signed(nonfinite_sign(*f, &sp), &nonfinite(*f, false), &sp, true));
             };
@@ -1020,7 +1023,15 @@ fn format_inner(v: &Value, spec_src: &str, from_pct: bool) -> R<String> {
             // groups like `f`. Grouping the whole string would put a separator
             // in front of the `%`, so the body is grouped before the suffix goes
             // on.
-            let f = float_of(v)? * 100.0;
+            let f = float_of(v)?;
+            // `f`, `e` and `g` take the nonfinite exit above; this arm did not,
+            // so Rust's `{}` spelled the value: `format(nan, '%')` was `NaN%`
+            // where CPython says `nan%`. Same suffix, same sign slot.
+            if !f.is_finite() {
+                let body = format!("{}%", nonfinite(f, false));
+                return Ok(pad_signed(nonfinite_sign(f, &sp), &body, &sp, true));
+            }
+            let f = f * 100.0;
             let digits = group_float(&format!("{:.*}", sp.precision.unwrap_or(6), f.abs()), sp.grouping);
             keep_point(format!("{digits}%"), sp.alt)
         }
