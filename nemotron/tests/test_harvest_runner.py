@@ -6,10 +6,13 @@ from pathlib import Path
 import subprocess
 import sys
 import tarfile
+import urllib.error
+from email.message import Message
 
 import pytest
 
 from harvesting import runner, worker
+from harvesting import preflight
 
 
 def archive(items):
@@ -108,3 +111,35 @@ def test_workflows_never_run_billable_calls_on_pr():
     assert "cancel-in-progress: false" in workflow
     smoke = (root / ".github/workflows/harvest-checks.yml").read_text()
     assert "secrets." not in smoke
+
+
+def test_preflight_reports_status_without_secret_or_body(monkeypatch, capsys):
+    secret = "private-provider-fixture"
+    monkeypatch.setenv("CEREBRAS_API_KEY", "  " + secret + "\n")
+    headers = Message()
+    headers["Content-Type"] = "application/json"
+    class Opener:
+        def open(self, request, timeout):
+            assert request.headers["Authorization"] == "Bearer " + secret
+            raise urllib.error.HTTPError(request.full_url, 403, secret, headers,
+                                         io.BytesIO(secret.encode()))
+    monkeypatch.setattr(preflight.urllib.request, "build_opener", lambda *args: Opener())
+    with pytest.raises(SystemExit, match=r"HTTP 403 \(JSON\)") as exc:
+        preflight.main()
+    assert secret not in str(exc.value) and secret not in capsys.readouterr().out
+
+
+def test_preflight_requires_exact_model_and_suppresses_exception_text(monkeypatch):
+    monkeypatch.setenv("CEREBRAS_API_KEY", "private-fixture")
+    class Opener:
+        def open(self, request, timeout):
+            return io.BytesIO(b'{"data": [{"id": "other-model"}]}')
+    monkeypatch.setattr(preflight.urllib.request, "build_opener", lambda *args: Opener())
+    with pytest.raises(SystemExit, match="no model substitution"):
+        preflight.main()
+    def broken(*args):
+        raise ValueError("private-fixture")
+    monkeypatch.setattr(preflight.urllib.request, "build_opener", broken)
+    with pytest.raises(SystemExit, match="ValueError") as exc:
+        preflight.main()
+    assert "private-fixture" not in str(exc.value)
