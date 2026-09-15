@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import time
 import traceback
 
@@ -76,10 +78,12 @@ def main():
     shutil.copytree("/opt/template", root / "home", dirs_exist_ok=True)
     settings = root / "config.json"
     settings.write_text(json.dumps(config(task)))
+    (output / "opencode-config.json").write_text(settings.read_text())
     env = dict(os.environ, HOME="/work/home", XDG_CONFIG_HOME="/work/home/.config",
                XDG_DATA_HOME="/work/home/.local/share", XDG_CACHE_HOME="/work/home/.cache",
                OPENCODE_CONFIG=str(settings), OPENCODE_DISABLE_PROJECT_CONFIG="true",
                OPENCODE_DISABLE_AUTOUPDATE="true", OPENCODE_DISABLE_LSP_DOWNLOAD="true",
+               OPENCODE_DISABLE_MODELS_FETCH="true",
                OPENCODE_DISABLE_DEFAULT_PLUGINS="true", LYPNING_CAPTURE="1")
     start = time.time()
     with (output / "events.jsonl").open("wb") as stdout, (output / "stderr.txt").open("wb") as stderr:
@@ -98,6 +102,7 @@ def main():
                 exports[session] = "timeout"
     (output / "worker.json").write_text(json.dumps({"schema": 1, "task": task,
         "opencode_version": OPENCODE_VERSION, "started_at": start, "finished_at": time.time(),
+        "python_version": sys.version, "platform": platform.platform(),
         "exit_code": result.returncode, "exports": exports, "trainable": False,
         "correctness": "unknown", "producer_trust": "agent-container-untrusted"}, indent=2))
 

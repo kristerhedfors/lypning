@@ -55,6 +55,13 @@ The provider model is fixed to `qwen-3.8-27b`, and the worker pins OpenCode to
 `opencode-ai@1.18.31`. Record the provider's returned model identity as well:
 a hosted model name is not an immutable checkpoint revision. If that model is
 unavailable, stop and report it instead of silently substituting another model.
+The trusted proxy records and enforces nonthinking generation
+(`reasoning_effort=none`, temperature `0.7`, top-p `0.8`). It records actual
+provider responses and usage, not an assertion of equivalence to local training
+weights. [Cerebras model catalog](https://inference-docs.cerebras.ai/models/overview)
+and [chat API](https://inference-docs.cerebras.ai/api-reference/chat-completions)
+were checked on 2026-09-15; the OpenCode CLI/provider integration is pinned to
+[v1.18.31](https://github.com/anomalyco/opencode/tree/v1.18.31).
 
 Each project is limited to 24 provider requests, 2,048 completion tokens per
 request and 49,152 reserved output tokens in total, with a 256 KiB request-body
@@ -123,6 +130,17 @@ to original names automatically. Inspect them by their records and digest, not
 by executing or unpacking generated paths. A record's `redacted` flag indicates
 replacement of an exact provider-key occurrence before hashing; those bytes are
 then a redacted derivative, not an untouched original.
+
+Inspect a downloaded archive without executing its code:
+
+```bash
+PYTHONPATH=src:nemotron python -m harvesting.report work/downloaded-archive
+```
+
+The report verifies the evidence snapshot and referenced blob hashes and lists
+source counts, actual provider usage, API failures and truncated completions.
+Multiple archive directories can be passed together. A hash detects byte
+corruption; it is not a signature or a correctness certificate.
 
 All records remain `trainable=false` with correctness unknown. A successful
 Actions job or `worker_reported_completion` means the collection path completed,

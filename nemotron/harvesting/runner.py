@@ -148,7 +148,7 @@ def collect_container(name, volume, image, directories, output, secret, errors, 
         try:
             # Docker cp cannot read tmpfs. A separate trusted read-only reader
             # mounts the Docker-managed RAM volume, never the host checkout.
-            payload = command(["docker", "run", "--rm", "--name", collector,
+            payload = command(["docker", "run", "--rm", "--pull=never", "--name", collector,
                 "--network=none", "--read-only", "--cap-drop=ALL",
                 "--security-opt=no-new-privileges", "--user=65534:65534",
                 "--pids-limit=32", "--memory=256m", "--memory-swap=256m", "--cpus=1",

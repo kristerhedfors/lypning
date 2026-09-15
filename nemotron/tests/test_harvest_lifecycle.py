@@ -9,6 +9,7 @@ import tarfile
 import pytest
 
 from harvesting import runner
+from harvesting.report import inspect
 from lypning.evidence import load_snapshot
 
 
@@ -215,3 +216,11 @@ def test_partial_evidence_and_targeted_cleanup_survive_lifecycle(mode, tmp_path,
                for path in output.rglob("*") if path.is_file())
     _assert_targeted_cleanup(fake)
     _assert_credential_boundary(fake)
+    summary = inspect(output)
+    assert summary["unique_python_sources"] == (0 if mode == "early_exit" else 1)
+    assert summary["trainable"] is False
+    assert summary["native_compatibility"] == "unmeasured"
+    blob = next((output / "blobs").iterdir())
+    blob.write_bytes(b"corrupted fixture")
+    with pytest.raises(ValueError, match="integrity mismatch"):
+        inspect(output)
