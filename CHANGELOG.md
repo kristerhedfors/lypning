@@ -14,6 +14,11 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-15** — Make Cerebras preflight failures diagnosable without secrets ([#74](https://github.com/kristerhedfors/lypning/pull/74))
+
+- Report HTTP status and response type without keys or response bodies; normalize
+  surrounding secret whitespace consistently before any generation is allowed.
+
 **2026-09-15** — Add bounded parallel Cerebras/OpenCode project harvesting ([#72](https://github.com/kristerhedfors/lypning/pull/72))
 
 - Collect authored Python project sessions with Qwen 3.8, isolated workers and
