@@ -14,6 +14,16 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-15** — Refactor the Qwen training experiment contract ([#71](https://github.com/kristerhedfors/lypning/pull/71))
+
+- Split admission, verification, optimization and evaluation; freeze decoding,
+  dependencies and sealed adapter provenance for the lypning-l-first experiment.
+- Prevent source/solution leakage and stale native/fallback labels; gate RL on
+  train-only reward signal and protect capability correctness at checkpointing.
+- Add matched-seed evaluation and source/family-cluster uncertainty reporting.
+  Document the manual next round, isolation gates and L capability priorities;
+  no training or model-quality improvement is claimed by this change.
+
 **2026-09-15** — Expand lypning-l CSV, named-regex and exact numeric coverage ([#70](https://github.com/kristerhedfors/lypning/pull/70))
 
 - Add lazy CSV list/tuple/string inputs, preserving source mutation, exhaustion
