@@ -44,6 +44,9 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 - Expose conformance worker count and serialize CI's CPU-heavy captured
   benchmarks; retain identical reference/engine deadlines and fatal engine-only
   timeouts instead of treating a timing failure as semantic agreement.
+- Safety-skip recognised package installs and model downloads before corpus
+  conformance or benchmarking starts either arm. Preserve those captures but
+  prevent known site-packages/cache mutations from contaminating the reference.
 - Calibrate build-sensitive Python behavior against the selected executable,
   not its minor version alone: normpath identity, reverse conversion, iterator
   wording and zero-length signed integer conversion can vary within a release.

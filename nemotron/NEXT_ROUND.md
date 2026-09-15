@@ -48,6 +48,10 @@ does **not** exercise the exact Qwen/TRL GPU stack or demonstrate model quality.
    external sandbox/remote verifier with those paths excluded and egress blocked.
    A shared writable host mount or environment scrubbing alone is insufficient.
    If that boundary is unavailable, stop before executing any generated code.
+   The corpus replay now safety-skips recognised package installs and model
+   downloads before either arm runs; this is not a general containment layer.
+   CI exposed a captured installer mutating the comparison's shared interpreter.
+   Never admit dependency installers or model-download tasks into this pilot.
 
 ## Freeze the worker, model and inputs
 
