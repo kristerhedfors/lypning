@@ -14,6 +14,21 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-15** — Hillclimb 83: five wrong answers from the un-replayed ledger surfaces, and one home for the earlier model's name ([#77](https://github.com/kristerhedfors/lypning/pull/77))
+
+- Sweep the seven surfaces the ledger's un-replayed witnesses name with
+  authored programs against the 3.12 reference round-02 pins; fix what they
+  found, one mechanism per commit: list IndexErrors name the operation,
+  `format(nan, '%')` and `#` on the empty type say what the host says,
+  `bytes(source=)` and `open(file=)` bind their Argument Clinic names while
+  `sorted`, `min`, `sum` and `reversed` count before naming, and a `|` union
+  of classes refuses as `class-union` instead of killing the program at its
+  first annotated `def`. Ledger entry in `docs/HILLCLIMB.md`.
+- Name the earlier target model in one place: `SWITCH.md` carries its name and
+  the retired numbers; every other document says "the earlier model". Remove
+  the retired GCP launch scripts and the earlier model's LoRA recipe. Run
+  records, data files and the mismatch ledger keep their recorded names.
+
 **2026-09-15** — Verify parallel harvest dispatch without API spending ([#75](https://github.com/kristerhedfors/lypning/pull/75))
 
 - Convert validated concurrency explicitly to a number and rehearse the same
