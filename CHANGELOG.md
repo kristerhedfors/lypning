@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-15** — Close four engine mismatches from the Stage 0a replay ledger ([claude/next-round-7dilm6](https://github.com/kristerhedfors/lypning/compare/main...claude/next-round-7dilm6))
+**2026-09-15** — Close four engine mismatches from the Stage 0a replay ledger ([#73](https://github.com/kristerhedfors/lypning/pull/73))
 
 - `enumerate(iterable=…, start=…)` binds both of Argument Clinic's names, so
   the first spelling answers instead of dying with a TypeError CPython never
