@@ -14,6 +14,15 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-15** — Add question campaigns and the Codex–Fable repair/training roadmap ([#76](https://github.com/kristerhedfors/lypning/pull/76))
+
+- Add bounded question-bank proposals, reviewed-catalog paging and matched
+  nonthinking/medium-reasoning profiles without raising total token ceilings.
+- Persist source-linked review queues and container-verified TRAIN-only repair
+  routing; retain controls and block on native mismatches without auto-admission.
+- Establish Codex orchestration, Fable writeups, independent round assessments
+  and a decision ledger for verified SFT, preference and execution-reward work.
+
 **2026-09-15** — Verify parallel harvest dispatch without API spending ([#75](https://github.com/kristerhedfors/lypning/pull/75))
 
 - Convert validated concurrency explicitly to a number and rehearse the same

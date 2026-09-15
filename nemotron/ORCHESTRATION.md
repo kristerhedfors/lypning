@@ -157,6 +157,12 @@ base vs verified SFT; Codex reviews that report before authorizing the next
 recipe.** Existing authorized Fable work may continue; this is a future bundle,
 not an instruction to reset an active round.
 
+Implementation verification, 2026-09-15: local training/documentation tests at
+`a6ab6ae` completed with 552 passed, 8 skipped and 20 existing non-strict xpasses.
+Four existing pilot archives produced source-linked private queues without
+execution. These results do not certify new questions, repairs or model quality;
+secret-free workflow integration and live pilots have separate evidence gates.
+
 ## Fable writeup → Codex assessment contract
 
 Use `FABLE_REPORT_TEMPLATE.md` for each attempt, including failures and no-run
