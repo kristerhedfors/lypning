@@ -1536,7 +1536,9 @@ fn list_method(
                 return Err(index_err("pop from empty list"));
             }
             let i = match args.first() {
-                Some(v) => ops::norm_index(int_val(v)?, n, "pop index")?,
+                // `pop index out of range`: `norm_index` appends the words, so the
+                // caller names only the operation. "pop index" here doubled it.
+                Some(v) => ops::norm_index(int_val(v)?, n, "pop")?,
                 None => n - 1,
             };
             l.borrow_mut().remove(i)

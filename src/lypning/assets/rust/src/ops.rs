@@ -554,7 +554,10 @@ impl Interp {
             }
             Value::List(l) => {
                 let n = l.borrow().len();
-                let i = norm_index(crate::eval::int_val(&idx)?, n, "list")?;
+                // A STORE names the operation: `list assignment index out of range`,
+                // where a read says `list index out of range`. Both stores said
+                // the read's words. Measured on 3.10 through 3.13, 2026-09-15.
+                let i = norm_index(crate::eval::int_val(&idx)?, n, "list assignment")?;
                 l.borrow_mut()[i] = v;
             }
             other => {
@@ -583,7 +586,8 @@ impl Interp {
             }
             Value::List(l) => {
                 let n = l.borrow().len();
-                let i = norm_index(crate::eval::int_val(idx)?, n, "list")?;
+                // `del L[i]` is a store too, and says so — see `set_item`.
+                let i = norm_index(crate::eval::int_val(idx)?, n, "list assignment")?;
                 l.borrow_mut().remove(i);
             }
             other => {
