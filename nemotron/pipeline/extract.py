@@ -1,8 +1,8 @@
 """Get the program out of the reply, or say honestly that there wasn't one.
 
-Nemotron 3.5 Lightning is a reasoning model with thinking ON by default, so a
-raw completion is reasoning followed by an answer. Two ways that arrives: a
-server started with ``--reasoning-parser nemotron_v3`` splits it into
+Qwen3.8 is a reasoning model with thinking ON by default, so a raw completion
+is reasoning followed by an answer. Two ways that arrives: a server started
+with a reasoning parser (``--reasoning-parser qwen3`` on vLLM) splits it into
 ``reasoning_content`` and ``content`` for us; anything else hands over one string
 with the thinking still inline. Both are handled, and the extractor is the same
 either way — which matters, because a baseline measured through one server and a

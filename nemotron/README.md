@@ -1,18 +1,10 @@
 # LoRA pipeline
 
-**The target model is `Qwen/Qwen3.8-27B`. The directory is called `nemotron/` and
-its CLI `nt` for historical reasons only** — the pipeline was built against
-NVIDIA Nemotron 3.5 Lightning and switched on 2026-09-11 (`SWITCH.md`), and the
-names stayed because `CLAUDE.md`, the tests and the site cite them. Renaming them
-would edit a dozen files to change nothing that runs. Every measurement in this
-tree is Qwen's unless its own provenance line says otherwise; a Nemotron number
-is never a decision input for a Qwen arm, and `LADDER.md` §0 lists the three that
-leaked into one anyway.
-
-The original target — for reading the history, never for planning:
-`nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16` (30B total, 3B active,
-hybrid Mamba-2 + MoE + attention, reasoning on by default). The NVFP4 release is
-inference-only and is not the training checkpoint.
+**The target model is `Qwen/Qwen3.8-27B`.** The directory and its `nt` CLI
+predate the target switch of 2026-09-11; `SWITCH.md` is the one place the
+earlier model is named, and it lists the numbers from that era that must never
+be read as Qwen's. Every measurement in this tree is Qwen's unless its own
+provenance line says otherwise.
 
 The current lypning-l-first training design and commands are in
 [TRAINING.md](TRAINING.md): verified SFT, then evidence-gated execution-RL, with
@@ -31,7 +23,7 @@ The original pipeline's four stages:
 1. **Corpus** — failing generation cases in, executable acceptance tests out.
 2. **Eval** — pass@1 over a frozen held-out split, with a bootstrap 95% CI.
 3. **Training** — Qwen rank-16 LoRA; the standalone historical runner is
-   `gpu/lypning_lora.py`, not the earlier Nemotron NeMo recipe.
+   `gpu/lypning_lora.py`.
 4. **Sweep** — one row per run, a win defined before any run happens.
 
 Corpus/evaluation and SFT tooling exist. Controlled training experiments and
@@ -237,7 +229,7 @@ identical code:
 
 ```bash
 export NTX_BASE_URL=http://127.0.0.1:8000/v1     # vLLM serving the BF16 checkpoint
-export NTX_MODEL=nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16
+export NTX_MODEL=Qwen/Qwen3.8-27B
 export NTX_API_KEY=...                            # falls back to HF_TOKEN
 ./nt probe && ./nt eval --baseline --price-hour 3.69 --max-spend 25
 ```
@@ -246,9 +238,10 @@ Cost is tracked both ways — per token (`NTX_PRICE_IN`/`NTX_PRICE_OUT`) and per
 GPU-hour (`--price-hour`) — because a hosted endpoint bills one way and a box you
 rented bills the other, and the spend cap has to see their sum.
 
-Serving recipe from the model card (vLLM `v0.27.1`, single H100 80GB, BF16):
-`--reasoning-parser nemotron_v3` splits thinking out of `content` for us. Sampling
-follows the card: temperature 1.0, top_p 0.95. `--no-thinking` sets
+Serve with a reasoning parser so thinking is split out of `content`
+(`--reasoning-parser qwen3` on vLLM); the extractor also handles a server that
+hands thinking back inline. Sampling defaults are `pipeline.backends`'s
+(temperature 1.0, top_p 0.95); `--no-thinking` sets
 `chat_template_kwargs.enable_thinking=false`.
 
 ## Zero dependencies

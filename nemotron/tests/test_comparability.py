@@ -26,7 +26,7 @@ ENDPOINT = "https://ev8eognh8prrpgs7.us-east-1.aws.endpoints.huggingface.cloud/v
 
 
 def _summary(run_id, pass_rate=0.35, sampling=None, evaluated=74, planned=74,
-             lo=0.24, harness_errors=0, model="nemotron", base_url=ENDPOINT):
+             lo=0.24, harness_errors=0, model="qwen38", base_url=ENDPOINT):
     return {
         "run_id": run_id, "label": "", "model": model, "pass_rate": pass_rate,
         "ci95": {"lo": lo, "hi": 0.46, "method": "bootstrap-percentile",
@@ -91,10 +91,10 @@ def test_a_run_is_comparable_with_itself_whatever_it_recorded():
 
 
 def test_two_endpoints_under_one_model_name_cannot_be_told_apart():
-    """The audit's arm-identity finding: both shipped runs recorded model 'nemotron'."""
+    """The audit's arm-identity finding: both shipped runs recorded model 'qwen38'."""
     why = stats.comparability(_summary("a"), _summary("b", base_url="https://other/v1"))
     assert [d["field"] for d in why] == ["backend.base_url"]
-    assert why[0]["same_model_name"] == "nemotron"
+    assert why[0]["same_model_name"] == "qwen38"
 
 
 def test_two_endpoints_under_two_model_names_are_still_not_a_delta():
@@ -117,7 +117,7 @@ def test_two_endpoints_under_two_model_names_are_still_not_a_delta():
     """
     why = stats.comparability(
         _summary("base"),
-        _summary("tuned", model="nemotron-lora-v1", base_url="https://other/v1"))
+        _summary("tuned", model="qwen38-lora-v1", base_url="https://other/v1"))
     assert [d["field"] for d in why] == ["backend.base_url"]
     # ...and without the stronger `same_model_name` detail, which belongs only to
     # the one-name-two-stacks shape the test above covers.
@@ -359,8 +359,8 @@ def test_results_prints_the_arm_behind_every_number(nt, tmp_path, capsys):
     _put_run(tmp_path, _summary("b", base_url="https://other/v1"))
     assert nt.cmd_results(_Args()) == 0
     out = capsys.readouterr().out
-    assert "nemotron @ %s" % ENDPOINT in out
-    assert "nemotron @ https://other/v1" in out
+    assert "qwen38 @ %s" % ENDPOINT in out
+    assert "qwen38 @ https://other/v1" in out
 
 
 def test_results_withholds_the_delta_between_two_endpoints_of_one_name(nt, tmp_path, capsys):
@@ -371,7 +371,7 @@ def test_results_withholds_the_delta_between_two_endpoints_of_one_name(nt, tmp_p
     assert nt.cmd_results(_Args()) == 0
     out = capsys.readouterr().out
     assert "+15.0pp" not in out
-    assert "different backend.base_url under one model name nemotron" in out
+    assert "different backend.base_url under one model name qwen38" in out
 
 
 def test_results_abbreviates_a_manifest_sha_instead_of_wrapping_the_line(nt, tmp_path, capsys):
@@ -645,7 +645,7 @@ def test_grade_refuses_a_completions_file_that_states_nothing(nt, tmp_path, caps
 
     class A(_Args):
         run_id = "cand"; completions = str(comps); label = ""
-        model = "nemotron-lora-v1"; sampling = ""; endpoint = ""
+        model = "qwen38-lora-v1"; sampling = ""; endpoint = ""
 
     assert nt.cmd_grade(A()) == 1
     err = capsys.readouterr().err
@@ -671,8 +671,8 @@ def test_grade_refuses_completions_that_cannot_name_their_arm(nt, tmp_path, caps
 def test_a_graded_run_that_declares_itself_is_comparable(nt, tmp_path):
     """The whole point: a declared grade can be subtracted from the baseline."""
     graded = _summary("cand", sampling=dict(SAMPLING, declared_by="operator", replayed=True),
-                      model="nemotron-lora-v1", base_url="")
-    graded["backend"] = {"model": "nemotron-lora-v1", "source": "replay:/tmp/c.jsonl"}
+                      model="qwen38-lora-v1", base_url="")
+    graded["backend"] = {"model": "qwen38-lora-v1", "source": "replay:/tmp/c.jsonl"}
     assert stats.comparability(_summary("base"), graded) == []
     assert nt._promotion_bars(graded) == []
 
