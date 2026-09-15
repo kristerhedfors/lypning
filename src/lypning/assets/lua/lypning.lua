@@ -245,8 +245,13 @@ function M.abi_version()
   return tonumber(lib.lypning_abi_version())
 end
 
+-- Identity of the loaded core or L library, including binding-made refusals.
+function M.engine_name()
+  return str(lib.lypning_engine_self())
+end
+
 -- Which interpreter should run src, at the cost of one parse and no execution.
--- Returns { engine = "lypning" | "lypning-mp" | "cpython", kind = "", detail =
+-- Returns { engine = "lypning" | "lypning-l" | "cpython", kind = "", detail =
 -- "", imports = { ... } }. kind/detail name the construct that pushed it past
 -- lypning ("module", "import re"); imports is every module the program
 -- imports, sorted and deduplicated.
@@ -311,7 +316,7 @@ function M.run(src, opts)
       status_name = "unsupported",
       exit_code = M.UNSUPPORTED_EXIT,
       stdout = "",
-      stderr = "lypning: unsupported: source: " .. NOT_UTF8 .. "\n",
+      stderr = M.engine_name() .. ": unsupported: source: " .. NOT_UTF8 .. "\n",
       kind = "source",
       detail = NOT_UTF8,
       committed = false,

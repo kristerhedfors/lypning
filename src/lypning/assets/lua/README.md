@@ -80,6 +80,7 @@ decoded. A traceback is the program's own answer: exit 1, never retried.
 ```lua
 lypning.version()        -- the runtime's, e.g. "0.1.0"
 lypning.abi_version()    -- what the loaded library answers; 1
+lypning.engine_name()    -- loaded native variant: "lypning" or "lypning-l"
 lypning.STATUS           -- { ok = 0, error = 1, unsupported = 2, busy = 3, panic = 4 }, from the header's enum
 lypning.STATUS_NAMES     -- the inverse
 lypning.UNSUPPORTED_EXIT -- 90
