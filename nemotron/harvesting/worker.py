@@ -19,6 +19,9 @@ MODEL = "qwen-3.8-27b"
 def config(task):
     if task["model"] != MODEL or task["proxy_url"] != "http://harvest-proxy:8080":
         raise ValueError("Only the fixed Qwen model and isolated proxy are supported")
+    output_tokens = task.get("generation", {}).get("output_tokens_per_request", 2048)
+    if type(output_tokens) is not int or output_tokens not in (2048, 8192):
+        raise ValueError("Invalid worker output budget")
     return {
         "$schema": "https://opencode.ai/config.json",
         "autoupdate": False, "share": "disabled", "lsp": False,
@@ -30,7 +33,7 @@ def config(task):
             "npm": "@ai-sdk/openai-compatible", "name": "Bounded Cerebras proxy",
             "options": {"baseURL": task["proxy_url"] + "/v1", "apiKey": "local-proxy-only"},
             "models": {MODEL: {"name": MODEL, "tool_call": True,
-                "limit": {"context": 64000, "output": 2048}}},
+                "limit": {"context": 64000, "output": output_tokens}}},
         }},
         # This is permission configuration for a disposable isolated container,
         # NOT an authorization decision made by the capture hook.

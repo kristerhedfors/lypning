@@ -35,9 +35,29 @@ def test_plan_is_bounded_and_preserves_project_family():
         with pytest.raises(ValueError):
             runner.plan(*args)
     tasks = runner.load_tasks()
-    assert len({t["family"] for t in tasks}) == 12
+    assert len({t["id"] for t in tasks}) == len(tasks)
     for task in tasks:
         assert all(task.get(key) for key in ("id", "family", "capabilities", "prompt", "rights_basis"))
+
+
+def test_question_batches_and_paging_do_not_invent_families():
+    from harvesting.campaign import profile
+    tasks = runner.load_tasks("questions")
+    assert len(tasks) == 6 and all(t["kind"] == "question-proposals" for t in tasks)
+    assert runner.plan(2, catalog="questions", start_index=4)["include"] == [
+        {"task_index": 4, "round": 0}, {"task_index": 5, "round": 0}]
+    for kwargs in ({"start_index": -1}, {"start_index": 12}, {"projects": True},
+                   {"catalog": "questions", "projects": 7}):
+        with pytest.raises(ValueError):
+            runner.plan(**kwargs)
+    left, right = profile("compare-none"), profile("compare-medium")
+    assert {k: v for k, v in left.items() if k not in ("name", "reasoning_effort")} == {
+        k: v for k, v in right.items() if k not in ("name", "reasoning_effort")}
+    for name in ("baseline", "compare-none", "compare-medium"):
+        p = profile(name)
+        assert p["requests"] * p["output_tokens_per_request"] == p["reserved_output_tokens"] == 49152
+        cfg = worker.config({"model": worker.MODEL, "proxy_url": "http://harvest-proxy:8080", "generation": p})
+        assert cfg["provider"]["harvest"]["models"][worker.MODEL]["limit"]["output"] == p["output_tokens_per_request"]
 
 
 def test_untrusted_archive_never_extracts_paths_or_symlinks(tmp_path):

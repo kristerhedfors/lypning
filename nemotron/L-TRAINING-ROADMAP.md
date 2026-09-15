@@ -6,15 +6,18 @@ policies, engines and prompts. The recorded mismatch witnesses were inspected
 as text; this refactor did not execute or resolve them. Do not rank new work
 using those counts as if they described today's model and L binary.
 
-## Build the verification boundary first
+Current cross-session ownership and decisions live in
+[ORCHESTRATION.md](ORCHESTRATION.md). The priorities below are scoped runtime
+hypotheses, not a second training launch checklist.
 
-The largest missing capability for trustworthy training is not another Python
-module: it is candidate execution that cannot read or modify the trainer,
-test registry, evaluator or credentials. The current local subprocess runner
-is not a security boundary. Implement an isolated execution backend with
-immutable per-request inputs, filesystem/egress restrictions, bounded raw-byte
-outputs and explicit infrastructure-failure responses. Prove those restrictions
-with adversarial fixtures before admitting generated code.
+## Validate the implemented boundary; extend observable coverage next
+
+The pinned Docker candidate backend is now implemented with immutable per-request
+inputs, filesystem/egress restrictions, bounded transport and explicit
+infrastructure failures. A production image and matching device identity still
+need operator provisioning and validation through `START_NEXT_ROUND.md`. The
+local subprocess runner is not a security boundary; never use it for generated
+harvest sources. Keep adversarial isolation fixtures as release gates.
 
 Then extend the verifier's observable contract to cover bounded output-file
 contents, creations/deletions and raw stdout/stderr bytes. File effects must be
@@ -48,7 +51,7 @@ both-dispatcher agreement and the existing platform size gates.
 
 ## Measure priority from correct programs
 
-After the execution boundary exists, sample the pinned base and selected SFT
+After the production execution boundary is provisioned, sample the pinned base and selected SFT
 adapter on TRAIN families. Gate each complete program on all CPython tests
 before using its native refusal as coverage evidence. The new rollout logs
 include per-input refusal diagnostics, task capabilities, completion tokens

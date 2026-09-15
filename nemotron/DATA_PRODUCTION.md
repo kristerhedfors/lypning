@@ -6,6 +6,11 @@ motivates expanding coverage. Aggregate >9× runtime health is a separate measur
 goal, not a claim that every task or every machine has that speedup. No maximum
 speedup is imposed. Every incremental correct-compatible gain is useful.
 
+For larger question campaigns, verified teacher repairs, behavioral-training
+experiments and Codex's review of Fable's rounds, use the active ownership and
+decision ledger in [ORCHESTRATION.md](ORCHESTRATION.md). Collection commands and
+the review queue live in [HARVESTING.md](HARVESTING.md).
+
 ## One loop, distinct evidence and decisions
 
 1. **Observe authorized normal use.** Keep source, actual invocation context,
