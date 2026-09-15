@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-15** — Run round-02 on Hugging Face: pooled sandboxes as the execution boundary ([claude/next-round-7dilm6](https://github.com/kristerhedfors/lypning/compare/main...claude/next-round-7dilm6))
+**2026-09-15** — Run round-02 on Hugging Face: pooled sandboxes as the execution boundary ([#79](https://github.com/kristerhedfors/lypning/pull/79))
 
 - Add the `hf-sandbox-pool` execution contract: every verification request
   runs the unchanged `container_worker.py` protocol in a fresh pooled
