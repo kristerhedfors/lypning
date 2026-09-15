@@ -45,13 +45,16 @@ class ContainerRunner:
                 "--entrypoint=python3", self.image, "-I", "/runner/container_worker.py"]
 
     def _request(self, request, timeout_s, memory_mb):
+        request_bytes = json.dumps(request, allow_nan=False).encode("utf-8")
+        if len(request_bytes) > 8 * 1024 * 1024:
+            raise VerificationBlocked("container request exceeds protocol cap")
         name = "lypning-verify-" + uuid.uuid4().hex
         # Disk-backed transport prevents candidate output from filling trainer
         # memory. The trusted worker also caps each child output at 8 MiB.
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
             try:
                 result = subprocess.run(self.command(name, memory_mb),
-                    input=json.dumps(request, allow_nan=False).encode("utf-8"),
+                    input=request_bytes,
                     stdout=out, stderr=err, timeout=timeout_s + 30, check=False)
                 out.seek(0)
                 raw = out.read(RESPONSE_CAP + 1)
@@ -90,6 +93,7 @@ class ContainerRunner:
         if (not isinstance(result.stdout, str) or not isinstance(result.stderr, str) or
                 type(result.timed_out) is not bool or type(result.truncated) is not bool or
                 type(result.memory_exceeded) is not bool or
+                type(result.encoding_error) is not bool or
                 (result.exit_code is not None and type(result.exit_code) is not int)):
             raise VerificationBlocked("malformed container result fields")
         return result

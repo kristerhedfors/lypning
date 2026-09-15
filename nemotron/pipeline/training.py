@@ -98,7 +98,7 @@ class Verifier:
 
     @staticmethod
     def _observed(r):
-        return (r.exit_code, r.stdout, r.stderr, r.timed_out, r.truncated, r.memory_exceeded)
+        return (r.exit_code, r.stdout, r.stderr, r.timed_out, r.truncated, r.memory_exceeded, r.encoding_error)
 
     def score(self, case, program):
         if self.identity is not None and engine_identity(self.binary) != self.identity:
@@ -109,7 +109,7 @@ class Verifier:
         # Correctness gates the ENTIRE program before native coverage is scored.
         for i, test in enumerate(tests):
             oracle = self._run(program, test)
-            if (not oracle.ok or oracle.memory_exceeded or oracle.truncated or oracle.stderr or
+            if (not oracle.ok or oracle.memory_exceeded or oracle.truncated or oracle.encoding_error or oracle.stderr or
                     oracle.stdout != test["stdout"]):
                 return Score(0.0, "incorrect", total_tests=len(tests), failed_test=i)
             # Only a would-be SUCCESS needs a stability check. Tracebacks name
@@ -123,14 +123,14 @@ class Verifier:
         for i, test in enumerate(tests):
             native = self._run(program, test, native=True)
             if native.exit_code == 90:
-                if (native.stdout or native.timed_out or native.memory_exceeded or native.truncated or not re.fullmatch(
+                if (native.stdout or native.timed_out or native.memory_exceeded or native.truncated or native.encoding_error or not re.fullmatch(
                         r"lypning-l: unsupported: [^:\n]+: [^\n]+\n?", native.stderr)):
                     raise VerificationBlocked("refusal protocol: %s test %d" % (case["case_id"], i))
                 refusals.append((i, native.stderr.strip()))
                 continue
             # Native timeout/exception/wrong output after a correct oracle is an
             # engine issue, not permission to teach the model to avoid a feature.
-            if (not native.ok or native.memory_exceeded or native.truncated or native.stderr or
+            if (not native.ok or native.memory_exceeded or native.truncated or native.encoding_error or native.stderr or
                     native.stdout != test["stdout"]):
                 raise VerificationBlocked("engine mismatch: " + json.dumps({
                     "case_id": case["case_id"], "test": i, "expected_stdout": test["stdout"],

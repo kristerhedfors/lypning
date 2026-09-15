@@ -1887,6 +1887,7 @@ def fold_into_corpus(sightings: Sequence[Sighting],
         models = corpus.merge_models(cur.models, entry.models, max)
         by_id[entry.id] = replace(
             cur,
+            extra=dict(entry.extra, **cur.extra),
             source=cur.source if SOURCE_RANK.get(cur.source, 0) >= SOURCE_RANK.get(entry.source, 0) else entry.source,
             first_seen=min(stamps) if stamps else "",
             count=_count_at_least_the_models(max(cur.count, entry.count), models),

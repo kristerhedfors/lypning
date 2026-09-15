@@ -15,6 +15,8 @@ speedup is imposed. Every incremental correct-compatible gain is useful.
    every occurrence, preserves unknown fields and stores exact UTF-8 source by
    full SHA-256 when a producer supplies `program`. Malformed, oversized and
    incomplete lines remain in the raw archive with explicit quarantine reasons.
+   Ambiguous duplicate keys, nonfinite numbers and metadata nesting beyond 128
+   levels are likewise quarantined without discarding the original bytes.
 3. **Review intent and rights.** Supply a real task specification, reviewed
    provenance, independently expected outputs, input variants, capabilities and
    source/template grouping. `pipeline.data_loop` checks schema, evidence links,

@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 
@@ -22,6 +23,33 @@ def digest(raw: bytes) -> str:
 def encoded(value) -> bytes:
     return json.dumps(value, sort_keys=True, ensure_ascii=False,
                       separators=(",", ":"), allow_nan=False).encode("utf-8")
+
+
+def _invalid_constant(value):
+    raise ValueError("non-JSON numeric constant: " + value)
+
+
+def _unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON field: " + key)
+        result[key] = value
+    return result
+
+
+def _check_metadata(value):
+    # A fixed view limit is portable across Python recursion-limit changes.
+    # Raw bytes are retained even when the parsed view is too deeply nested.
+    pending = [(value, 0)]
+    while pending:
+        item, depth = pending.pop()
+        if depth > 128 or (isinstance(item, float) and not math.isfinite(item)):
+            raise ValueError("metadata nesting/nonfinite-number limit")
+        if isinstance(item, dict):
+            pending.extend((child, depth + 1) for child in item.values())
+        elif isinstance(item, list):
+            pending.extend((child, depth + 1) for child in item)
 
 
 def _write_new(path, raw):
@@ -81,10 +109,12 @@ def snapshot(log, output, origin):
                     reason = "incomplete-line"
                 if reason is None:
                     try:
-                        record = json.loads(head.decode("utf-8"), parse_constant=lambda s: (_ for _ in ()).throw(ValueError(s)))
+                        record = json.loads(head.decode("utf-8"), parse_constant=_invalid_constant,
+                                            object_pairs_hook=_unique_object)
+                        _check_metadata(record)
                         if not isinstance(record, dict):
                             reason = "not-object"
-                    except (ValueError, UnicodeError):
+                    except (ValueError, UnicodeError, RecursionError):
                         reason = "invalid-json-or-utf8"
                 event = {"schema": 1, "origin": origin, "line": event_count + 1,
                          "offset": start, "bytes": offset - start,

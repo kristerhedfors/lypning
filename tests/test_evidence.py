@@ -85,3 +85,14 @@ def test_oversized_capture_does_not_append_or_truncate(tmp_path, monkeypatch):
     log = tmp_path / "log"
     assert not capture.append_record({"program": "x" * 100}, log)
     assert not log.exists()
+
+
+@pytest.mark.parametrize("raw", [b'{"x":1,"x":2}\n', b'{"x":NaN}\n', b'{"x":1e999}\n',
+                                     b'{"x":"\\ud800"}\n', b'{"x":' + b'[' * 2000 + b']' * 2000 + b'}\n'],
+                         ids=["duplicate-key", "nan", "overflow", "surrogate", "nesting"])
+def test_ambiguous_or_unrepresentable_metadata_keeps_raw_evidence(tmp_path, raw):
+    log = tmp_path / "log"
+    log.write_bytes(raw)
+    result = evidence.snapshot(log, tmp_path / "snapshot", "origin")
+    assert result["quarantined"] == 1
+    assert (tmp_path / "snapshot/raw.jsonl").read_bytes() == raw

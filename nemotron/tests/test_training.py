@@ -92,6 +92,18 @@ def test_variants_defeat_constant_print(case):
     assert score.reward == 0
 
 
+def test_invalid_utf8_cannot_impersonate_a_replacement_character(case):
+    case["tests"] = [{"stdout": "\ufffd"}]  # score fixture, not a production task
+    score = t.Verifier("/never-called", memory_mb=0).score(case, "import os; os.write(1, bytes([255]))")
+    assert score.status == "incorrect" and score.reward == 0
+
+
+def test_native_invalid_encoding_is_an_engine_issue(case):
+    verifier, _ = fake_verifier(case, native=result(case["tests"][0]["stdout"], encoding_error=True))
+    with pytest.raises(t.VerificationBlocked, match="engine mismatch"):
+        verifier.score(case, "pass")
+
+
 @pytest.mark.parametrize("program", ["print(undefined_name)", "def broken(:", "raise ValueError('bad')"])
 def test_real_model_errors_are_zero_reward_not_unstable_oracle(case, program):
     score = t.Verifier("/never-called", memory_mb=0).score(case, program)
