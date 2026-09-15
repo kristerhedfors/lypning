@@ -347,6 +347,19 @@ def test_c_contract_example(lypning_lib, tmp_path) -> None:
     assert ("stdout    %d\n" % vowels).encode() in fallback
 
 
+def test_lua_contract(lypning_lib, tmp_path) -> None:
+    """Exercise binding-made refusals and route identity, not only quickstarts."""
+    luajit = shutil.which("luajit", path=_BUILD_ENV.get("PATH"))
+    if luajit is None:
+        pytest.skip("Lua contract needs luajit")
+    env = dict(_BUILD_ENV, LYPNING_LIB=str(_INSTALLED_LIBRARY))
+    got = subprocess.run([luajit, str(ASSETS / "lua" / "test.lua")],
+                         cwd=tmp_path, env=env, capture_output=True,
+                         timeout=PROBE_TIMEOUT)
+    assert got.returncode == 0, (got.returncode, got.stdout, got.stderr)
+    assert b"checks passed against" in got.stdout
+
+
 def test_cpp_contract_example(lypning_lib, tmp_path) -> None:
     """Refusal lines and runs_in_process must name the linked variant."""
     got = _run_contract_example("cpp", tmp_path)

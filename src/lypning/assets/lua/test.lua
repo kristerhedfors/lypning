@@ -32,6 +32,8 @@ check(lypning.header_path:match("lypning%.h$") ~= nil, "header path", lypning.he
 check(lypning.library_path:match("liblypning%.") ~= nil, "library path", lypning.library_path)
 check(lypning.abi_version() == lypning.ABI_VERSION, "abi version", lypning.abi_version())
 check(type(lypning.version()) == "string" and #lypning.version() > 0, "version", lypning.version())
+local engine = lypning.engine_name()
+check(engine == "lypning" or engine == "lypning-l", "loaded native identity", engine)
 
 -- The refusal contract, the same five properties `lypning build --lib` pins:
 -- status, exit 90, an empty stdout, exactly the one line, and a request to
@@ -41,7 +43,7 @@ check(r.status == lypning.STATUS.unsupported, "refusal: status", r.status_name)
 check(r.status_name == "unsupported", "refusal: status_name", r.status_name)
 check(r.exit_code == 90, "refusal: exit code", r.exit_code)
 check(r.stdout == "", "refusal: stdout is empty", r.stdout)
-check(r.stderr == "lypning: unsupported: module: import subprocess\n", "refusal: the one line", r.stderr)
+check(r.stderr == engine .. ": unsupported: module: import subprocess\n", "refusal: the one line", r.stderr)
 check(r.kind == "module", "refusal: kind", r.kind)
 check(r.detail == "import subprocess", "refusal: detail", r.detail)
 check(r.committed == false, "refusal: not committed", r.committed)
@@ -133,7 +135,7 @@ end
 r = lypning.run("print('\xff')")
 check(r.status == lypning.STATUS.unsupported and r.fall_onward, "not UTF-8: routes onward", r.status_name)
 check(r.exit_code == 90 and r.kind == "source" and r.stdout == "", "not UTF-8: the refusal shape", r.kind)
-check(r.stderr == "lypning: unsupported: source: not UTF-8\n", "not UTF-8: the one line", r.stderr)
+check(r.stderr == engine .. ": unsupported: source: not UTF-8\n", "not UTF-8: the one line", r.stderr)
 r = lypning.run("print('a\0b')")
 check(r.status == lypning.STATUS.unsupported and r.kind == "source", "a NUL in the source is a refusal", r.kind)
 
@@ -142,13 +144,13 @@ local ro = lypning.route("import subprocess")
 check(ro.engine == "cpython" and ro.kind == "module" and ro.detail == "import subprocess", "route: refused program", ro.engine)
 check(#ro.imports == 1 and ro.imports[1] == "subprocess", "route: imports", table.concat(ro.imports, ","))
 ro = lypning.route("print(sum(range(10)))")
-check(ro.engine == "lypning" and ro.kind == "" and ro.detail == "" and #ro.imports == 0, "route: accepted program", ro.engine)
+check(ro.engine == engine and ro.kind == "" and ro.detail == "" and #ro.imports == 0, "route: accepted program", ro.engine)
 ro = lypning.route("import sys, os, sys; print(1)")
 check(table.concat(ro.imports, ",") == "os,sys", "route: imports sorted and deduplicated", table.concat(ro.imports, ","))
 ro = lypning.route("print('\xff')")
 check(ro.engine == "cpython" and ro.kind == "source", "route: not UTF-8 is cpython's", ro.engine)
 for _, src in ipairs({ "print(1)", "import subprocess", "import sys; print(sys.argv)", "x = [i*i for i in range(5)]; print(x)" }) do
-  local want_refused = lypning.route(src).engine ~= "lypning"
+  local want_refused = lypning.route(src).engine ~= engine
   check(lypning.run(src).fall_onward == want_refused, "route agrees with run: " .. src)
 end
 
