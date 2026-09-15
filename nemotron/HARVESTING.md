@@ -79,8 +79,11 @@ log, uploaded artifact or training record. The model-facing execution boundary
 must not receive repository credentials or the upstream API key. A trusted
 provider gateway and disposable project workers keep those responsibilities
 separate. The agent and trusted proxy run in different containers on an internal
-network. The agent receives no host mounts, repository token, Docker socket or
-upstream provider key. Only the trusted proxy can attach the upstream secret.
+network. The agent receives no host-path mounts, repository token, Docker socket
+or upstream provider key. Docker-managed RAM volumes provide bounded temporary
+project storage (768 MiB) and a separate proxy ledger (64 MiB); neither volume
+mounts the checkout or an operator directory. Only the trusted proxy can attach
+the upstream secret.
 This boundary is not proof against container/kernel vulnerabilities; use an
 approved disposable Actions runner and inspect the pilot before scaling it.
 
@@ -93,14 +96,18 @@ batch. API token ceilings are ceilings, not predictions of billing.
 
 ## What the archive must mean
 
-The controller pauses the worker before collecting its `/work` tmpfs, keeping
-the mounted project and output available without further agent writes. It reads
-bounded Docker archive streams but **never extracts untrusted paths onto the
-host**. Collected file paths are metadata only; safe regular-file bytes become
-content-addressed blobs. The per-job artifact has this layout:
+The controller pauses each producer before collection, keeping its Docker-managed
+RAM volume mounted without further producer writes. A separate trusted collector
+container mounts only that volume **read-only**, has no network or provider
+credentials, and emits a bounded archive stream. This does not use `docker cp`
+to read container tmpfs mounts. The controller still treats the stream as
+untrusted and **never extracts generated paths onto the host**. Collected paths
+are metadata only; safe regular-file bytes become content-addressed blobs. The
+per-job artifact has this layout:
 
 ```text
 task.json                 Authored task and run context
+worker-console.txt        Available bounded worker stdout/stderr diagnostics
 manifest.json             Controller state, caps, identities and file records
 blobs/<full-sha256>        Collected bytes addressed by each record's sha256
 observations.jsonl        Context record and indexed file observations
@@ -125,6 +132,14 @@ plus trusted provider outcomes and collection errors. Worker-owned logs can be
 altered by code in that worker; the separate proxy ledger gives another source
 of observations, not a correctness oracle. Omission flags and quarantined
 snapshot records must survive any later import.
+
+Collection is attempted before targeted cleanup after a deadline, cancellation
+or controller error as well as normal completion. If a producer cannot be
+paused, the archive records that collection gap instead of inventing missing
+bytes. Collector containers, producer containers, the isolated network, its
+targeted firewall rule and the two run-specific RAM volumes are removed during
+cleanup; approved copies already indexed into the artifact remain. Abrupt runner
+loss or forced termination can still prevent final collection and upload.
 
 Retain the authorized project specification and catalog revision; requested and
 provider-reported model identities; run, shard, attempt and OpenCode session IDs;

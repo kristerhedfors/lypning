@@ -15,6 +15,8 @@ def main():
     root = Path(sys.argv[1])
     if str(root) not in ("/capture/project", "/capture/output", "/capture"):
         raise SystemExit("Unexpected collection root")
+    if root.is_symlink() or not root.is_dir():
+        raise SystemExit("Collection root must be an existing real directory")
     count = 0
     total = 0
     with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as archive:

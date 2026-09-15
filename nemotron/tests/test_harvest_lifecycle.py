@@ -68,20 +68,20 @@ class FakeDocker:
             if self.mode == "early_exit" and argv[2].endswith("-worker"):
                 raise runner.ContainerCommandError(argv, b"container is not running")
             return b""
-        if argv[:2] == ["docker", "cp"]:
-            if argv[-1] != "-":
-                return b""  # Authored task copied into the disposable worker.
-            source = argv[2]
-            if source.endswith(":/work/project"):
+        if argv[:2] == ["docker", "run"]:
+            source = argv[-1]
+            if source == "/capture/project":
                 return self.project
-            if source.endswith(":/work/output"):
+            if source == "/capture/output":
                 return self.output
-            if source.endswith(":/data"):
+            if source == "/capture":
                 return self.proxy
             raise AssertionError("unexpected fake collection source")
         if argv[:3] in (["docker", "network", "create"],
                         ["docker", "network", "connect"],
-                        ["docker", "network", "rm"]):
+                        ["docker", "network", "rm"],
+                        ["docker", "volume", "create"],
+                        ["docker", "volume", "rm"]):
             return b""
         if argv[:2] in (["docker", "create"], ["docker", "start"],
                         ["docker", "rm"], ["sudo", "iptables"]):
@@ -95,8 +95,15 @@ def _assert_targeted_cleanup(fake):
     names = [argv[argv.index("--name") + 1] for argv in creates]
     assert len(names) == 2 and len(set(names)) == 2
     assert all(re.fullmatch(r"lyp-harvest-[0-9a-f]{12}-(worker|proxy)", name) for name in names)
+    collectors = [argv for argv in calls if argv[:2] == ["docker", "run"]]
+    collector_names = [argv[argv.index("--name") + 1] for argv in collectors]
+    assert len(collector_names) == (1 if fake.mode == "early_exit" else 3)
+    assert len(collector_names) == len(set(collector_names))
+    assert all(any(name.startswith(producer + "-collector-") for producer in names)
+               for name in collector_names)
     removals = [argv for argv in calls if argv[:2] == ["docker", "rm"]]
-    assert sorted(removals) == sorted([["docker", "rm", "--force", name] for name in names])
+    assert sorted(removals) == sorted([["docker", "rm", "--force", name]
+                                      for name in names + collector_names])
     network_create = next(argv for argv in calls if argv[:3] == ["docker", "network", "create"])
     network = network_create[-1]
     assert network.endswith("-net") and "--internal" in network_create
@@ -108,14 +115,38 @@ def _assert_targeted_cleanup(fake):
     assert firewall[0] == ["sudo", "iptables", "-w", "-I", "INPUT", "-s",
                            "172.29.91.0/24", "-j", "DROP"]
     assert firewall[1] == ["-D" if item == "-I" else item for item in firewall[0]]
-    first_removal = min(calls.index(argv) for argv in removals)
+    first_removal = min(calls.index(["docker", "rm", "--force", name]) for name in names)
     collections = [index for index, argv in enumerate(calls)
-                   if argv[:2] == ["docker", "cp"] and argv[-1] == "-"]
+                   if argv[:2] == ["docker", "run"]]
     assert len(collections) == (1 if fake.mode == "early_exit" else 3)
     assert max(collections) < first_removal
     pauses = [argv for argv in calls if argv[:2] == ["docker", "pause"]]
     assert sorted(argv[2] for argv in pauses) == sorted(names)
     assert calls.index(["docker", "network", "rm", network]) > first_removal
+    volume_creates = [argv for argv in calls if argv[:3] == ["docker", "volume", "create"]]
+    volumes = [argv[-1] for argv in volume_creates]
+    assert len(volumes) == 2 and len(set(volumes)) == 2
+    assert all(re.fullmatch(r"lyp-harvest-[0-9a-f]{12}-(work|ledger)", volume) for volume in volumes)
+    for argv in volume_creates:
+        assert "type=tmpfs" in argv and "device=tmpfs" in argv
+        assert any(value.startswith("o=size=") and "uid=65534,gid=65534,mode=700" in value
+                   for value in argv)
+    volume_removes = [argv for argv in calls if argv[:3] == ["docker", "volume", "rm"]]
+    assert sorted(volume_removes) == sorted([["docker", "volume", "rm", volume] for volume in volumes])
+    assert min(calls.index(argv) for argv in volume_removes) > max(calls.index(argv) for argv in removals)
+    for argv in collectors:
+        assert "--rm" in argv and "--network=none" in argv and "--read-only" in argv
+        assert "--cap-drop=ALL" in argv and "--security-opt=no-new-privileges" in argv
+        assert "--user=65534:65534" in argv and "--memory=256m" in argv
+        assert "--env" not in argv and "--env-file" not in argv
+        mount = argv[argv.index("--mount") + 1]
+        assert mount in {"type=volume,source=" + volume + ",destination=/capture,readonly"
+                         for volume in volumes}
+        assert PROXY_IMAGE in argv and "/app/collector.py" in argv
+        collector = argv[argv.index("--name") + 1]
+        assert calls.index(["docker", "rm", "--force", collector]) > calls.index(argv)
+    assert all("docker.sock" not in " ".join(argv) and "type=bind" not in " ".join(argv)
+               for argv in calls)
 
 
 def _assert_credential_boundary(fake):

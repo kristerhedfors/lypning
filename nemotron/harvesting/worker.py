@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import time
+import traceback
 
 OPENCODE_VERSION = "1.18.31"
 MODEL = "qwen-3.8-27b"
@@ -104,6 +105,10 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except Exception:
+        # There are no provider credentials in this container. Preserve setup
+        # failures too; the finally-loop otherwise delays exception reporting.
+        traceback.print_exc()
     finally:
         # Keep tmpfs mounted until the trusted host pauses and collects it.
         # This marker reports process completion, NEVER correctness.
