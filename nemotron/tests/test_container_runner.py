@@ -4,11 +4,13 @@ from dataclasses import asdict
 import json
 import os
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
 
 from pipeline.container_runner import ContainerRunner
+from pipeline import container_runner
 from pipeline.sandbox import RunResult
 from pipeline.training_types import TrainingError, VerificationBlocked
 
@@ -17,11 +19,13 @@ IMAGE = "sha256:" + "a" * 64
 
 def test_container_contract_no_mounts_no_expected_outputs(monkeypatch):
     calls = []
+    def attached(cmd, request, timeout):
+        calls.append((cmd, {"input": request}))
+        return 0, json.dumps(dict(protocol=1, result=asdict(RunResult(0, "answer", "", .1)))).encode()
     def execute(cmd, **kw):
         calls.append((cmd, kw))
-        if cmd[1] == "run":
-            kw["stdout"].write(json.dumps(dict(protocol=1, result=asdict(RunResult(0, "answer", "", .1)))).encode())
         return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(container_runner, "transport", attached)
     monkeypatch.setattr(subprocess, "run", execute)
     runner = ContainerRunner(IMAGE, {}, check=False)
     result = runner("print(1)", stdin="input", interpreter=["/host/private/engine"])
@@ -39,15 +43,28 @@ def test_container_contract_no_mounts_no_expected_outputs(monkeypatch):
 
 def test_container_transport_timeout_cleans_up_and_blocks(monkeypatch):
     calls = []
+    def attached(cmd, *args):
+        calls.append(cmd)
+        raise subprocess.TimeoutExpired(cmd, 1)
     def execute(cmd, **kw):
         calls.append(cmd)
-        if cmd[1] == "run":
-            raise subprocess.TimeoutExpired(cmd, 1)
         return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(container_runner, "transport", attached)
     monkeypatch.setattr(subprocess, "run", execute)
     with pytest.raises(VerificationBlocked, match="transport"):
         ContainerRunner(IMAGE, {}, check=False)("pass")
     assert calls[-1][:3] == ["docker", "rm", "--force"]
+
+
+def test_transport_is_bounded_before_buffering_and_enforces_deadline(monkeypatch):
+    monkeypatch.setattr(container_runner, "RESPONSE_CAP", 128)
+    code, raw = container_runner.transport([sys.executable, "-c", "print(input())"], b"fixture\n", 5)
+    assert code == 0 and raw == b"fixture\n"
+    for fd in (1, 2):
+        with pytest.raises(VerificationBlocked, match="output exceeded cap"):
+            container_runner.transport([sys.executable, "-c", "import os; os.write(%d, b'x' * 1024)" % fd], b"", 5)
+    with pytest.raises(subprocess.TimeoutExpired):
+        container_runner.transport([sys.executable, "-c", "import time; time.sleep(10)"], b"", .05)
 
 
 def test_mutable_image_and_identity_drift_rejected(monkeypatch):

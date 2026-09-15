@@ -9,9 +9,13 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
+import selectors
+import signal
 import subprocess
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -21,6 +25,47 @@ from .training_types import TrainingError, VerificationBlocked
 PROTOCOL = 1
 IMAGE_PATTERN = r"sha256:[0-9a-f]{64}"
 RESPONSE_CAP = 24 * 1024 * 1024
+
+
+def transport(command, request, timeout_s):
+    """Bound both attached streams before buffering; no unlimited host log file.
+
+    Even a candidate writing to its parent's /proc stdout must not bypass the
+    ordinary child-output cap and fill trainer disk/RAM via docker attach.
+    """
+    with tempfile.TemporaryFile() as incoming:
+        incoming.write(request)
+        incoming.seek(0)
+        with subprocess.Popen(command, stdin=incoming, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, start_new_session=True) as proc:
+            deadline = time.monotonic() + timeout_s
+            output, total = bytearray(), 0
+            try:
+                with selectors.DefaultSelector() as selector:
+                    selector.register(proc.stdout, selectors.EVENT_READ, True)
+                    selector.register(proc.stderr, selectors.EVENT_READ, False)
+                    while selector.get_map():
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise subprocess.TimeoutExpired(command, timeout_s)
+                        for key, _ in selector.select(remaining):
+                            raw = os.read(key.fd, 65536)
+                            if not raw:
+                                selector.unregister(key.fileobj)
+                                continue
+                            total += len(raw)
+                            if total > RESPONSE_CAP:
+                                raise VerificationBlocked("container transport output exceeded cap")
+                            if key.data:
+                                output.extend(raw)
+                code = proc.wait(timeout=max(.001, deadline - time.monotonic()))
+                return code, bytes(output)
+            finally:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                proc.wait(timeout=5)
 
 
 class ContainerRunner:
@@ -37,7 +82,7 @@ class ContainerRunner:
 
     def command(self, name, memory_mb):
         return ["docker", "run", "--name", name, "--rm", "--pull=never", "--interactive",
-                "--network=none", "--read-only", "--cap-drop=ALL",
+                "--network=none", "--read-only", "--cap-drop=ALL", "--log-driver=none",
                 "--security-opt=no-new-privileges", "--user=65534:65534",
                 "--pids-limit=64", "--cpus=1", "--memory=%dm" % (memory_mb + 128),
                 "--memory-swap=%dm" % (memory_mb + 128),
@@ -49,32 +94,25 @@ class ContainerRunner:
         if len(request_bytes) > 8 * 1024 * 1024:
             raise VerificationBlocked("container request exceeds protocol cap")
         name = "lypning-verify-" + uuid.uuid4().hex
-        # Disk-backed transport prevents candidate output from filling trainer
-        # memory. The trusted worker also caps each child output at 8 MiB.
-        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        try:
+            code, raw = transport(self.command(name, memory_mb), request_bytes, timeout_s + 30)
+            if code != 0:
+                raise VerificationBlocked("container failed; exit %s" % code)
             try:
-                result = subprocess.run(self.command(name, memory_mb),
-                    input=request_bytes,
-                    stdout=out, stderr=err, timeout=timeout_s + 30, check=False)
-                out.seek(0)
-                raw = out.read(RESPONSE_CAP + 1)
-                if result.returncode != 0 or len(raw) > RESPONSE_CAP:
-                    raise VerificationBlocked("container failed or response exceeded cap; exit %s" % result.returncode)
-                try:
-                    response = json.loads(raw)
-                except (ValueError, UnicodeError) as exc:
-                    raise VerificationBlocked("invalid container response") from exc
-                if not isinstance(response, dict) or response.get("protocol") != PROTOCOL or "result" not in response:
-                    raise VerificationBlocked("container protocol mismatch")
-                return response["result"]
-            except subprocess.TimeoutExpired as exc:
-                # A transport/daemon timeout is not an observed candidate timeout.
-                raise VerificationBlocked("container transport timed out") from exc
-            finally:
-                # Killing a docker client does NOT kill its container. Target
-                # only the unique name this request created, including failures.
-                subprocess.run(["docker", "rm", "--force", name], stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL, timeout=15, check=False)
+                response = json.loads(raw)
+            except (ValueError, UnicodeError) as exc:
+                raise VerificationBlocked("invalid container response") from exc
+            if not isinstance(response, dict) or response.get("protocol") != PROTOCOL or "result" not in response:
+                raise VerificationBlocked("container protocol mismatch")
+            return response["result"]
+        except subprocess.TimeoutExpired as exc:
+            # A transport/daemon timeout is not an observed candidate timeout.
+            raise VerificationBlocked("container transport timed out") from exc
+        finally:
+            # Killing a docker client does NOT kill its container. Target only
+            # the unique name this request created, including failures.
+            subprocess.run(["docker", "rm", "--force", name], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=15, check=False)
 
     def __call__(self, program, *, argv=None, stdin=None, files=None, timeout_s=5,
                  mem_mb=1024, interpreter=None):
