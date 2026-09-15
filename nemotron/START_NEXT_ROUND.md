@@ -5,6 +5,12 @@ This file is the portable assignment for the **other device**. Start on merged
 training merely because these files exist. No GPU experiment or quality win was
 produced by the pipeline refactor.
 
+**Ownership:** Codex orchestrates data/repair priorities and independently reviews
+Fable's training writeups; Fable runs approved training loops. Read
+[ORCHESTRATION.md](ORCHESTRATION.md) for the active decision ledger and use
+[FABLE_REPORT_TEMPLATE.md](FABLE_REPORT_TEMPLATE.md) at every handoff, including
+blocked/no-run outcomes. New harvesting data never mutates your active bundle.
+
 ## The assignment
 
 Adapt **Qwen/Qwen3.8-27B** to write correct, first-draft **lypning-l-compatible**

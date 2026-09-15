@@ -25,7 +25,7 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install pytest
       - name: Mock API and archive-boundary unit tests (no secrets)
-        run: python -m pytest nemotron/tests/test_harvest_proxy.py nemotron/tests/test_harvest_runner.py nemotron/tests/test_harvest_lifecycle.py -q
+        run: python -m pytest nemotron/tests/test_harvest_proxy.py nemotron/tests/test_harvest_runner.py nemotron/tests/test_harvest_lifecycle.py nemotron/tests/test_harvest_review_queue.py -q
       - name: Build pinned OpenCode and minimal proxy images
         run: |
           docker build -f nemotron/harvesting/Dockerfile.opencode -t harvest-worker nemotron/harvesting

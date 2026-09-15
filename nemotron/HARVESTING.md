@@ -6,6 +6,9 @@ admit generated code automatically. The goal is more correct
 lypning-l-compatible Python, with no individual speedup threshold. The aggregate
 runtime performance premise is not a label for any generated project.
 
+The question/teacher-repair loop, Codex/Fable ownership, training-method priorities
+and active next-step ledger are in [ORCHESTRATION.md](ORCHESTRATION.md).
+
 ## Task catalog and generation regime
 
 `harvesting/tasks.json` contains original, repository-authored specifications for
@@ -42,6 +45,9 @@ from training and supports these bounded inputs:
 | `parallelism` | 4 | 1–4 | Maximum simultaneous project jobs |
 | `rounds` | 1 | 1–4 | Independent sessions per selected task, not new families |
 | `dry_run` | false | true/false | Full matrix with mock provider, no secret or API calls |
+| `catalog` | projects | projects/questions | Solve reviewed projects or propose question banks |
+| `start_index` | 0 | Nonnegative, range must fit catalog | Page through a larger reviewed catalog |
+| `profile` | baseline | baseline/compare-none/compare-medium | Explicit teacher generation condition |
 
 After the workflow is available on `main`, a small pilot can be dispatched with
 the command below. The workflow rejects other refs before providing provider
@@ -62,17 +68,21 @@ The provider model is fixed to `qwen-3.8-27b`, and the worker pins OpenCode to
 `opencode-ai@1.18.31`. Record the provider's returned model identity as well:
 a hosted model name is not an immutable checkpoint revision. If that model is
 unavailable, stop and report it instead of silently substituting another model.
-The trusted proxy records and enforces nonthinking generation
-(`reasoning_effort=none`, temperature `0.7`, top-p `0.8`). It records actual
+The trusted proxy records and enforces the selected generation profile.
+The historical baseline uses `reasoning_effort=none`, temperature `0.7`, top-p
+`0.8`; comparison profiles hold sampling settings constant and select `none` or
+`medium`. The agent cannot override the proxy's reasoning setting. It records actual
 provider responses and usage, not an assertion of equivalence to local training
 weights. [Cerebras model catalog](https://inference-docs.cerebras.ai/models/overview)
 and [chat API](https://inference-docs.cerebras.ai/api-reference/chat-completions)
 were checked on 2026-09-15; the OpenCode CLI/provider integration is pinned to
 [v1.18.31](https://github.com/anomalyco/opencode/tree/v1.18.31).
 
-Each project is limited to 24 provider requests, 2,048 completion tokens per
-request and 49,152 reserved output tokens in total, with a 256 KiB request-body
-limit. The project worker has a 15-minute deadline and its Actions job a
+The baseline is limited to 24 provider requests and 2,048 completion tokens per
+request. Both comparison profiles allow six requests and 8,192 tokens per request.
+**All profiles reserve at most 49,152 output tokens/session**, including reasoning
+where enabled, with a 256 KiB request-body limit. The project worker has a
+15-minute deadline and its Actions job a
 25-minute timeout. There are no automatic workflow retries; any SDK request
 retry consumes the same proxy request budget. These bounds apply per session,
 so multiplying projects by rounds multiplies the batch ceiling. Output-token
@@ -232,3 +242,79 @@ This command does not invent test oracles or waive the pilot's independence and
 population requirements. See [DATA_PRODUCTION.md](DATA_PRODUCTION.md),
 [START_NEXT_ROUND.md](START_NEXT_ROUND.md) and
 [TRAINING.md](TRAINING.md) for the existing admission and manual-training gates.
+
+## Question production and teacher review queue
+
+`--catalog questions` selects six authored domain producers in `campaign.py`.
+Each requests 20 original questions in `questions.jsonl`, with proposed families,
+input/output contracts, edge cases, difficulty, capability targets and novelty
+basis. These are **unreviewed proposals**, not oracles or automatically accepted
+questions. The worker's small schema check is not independent semantic review.
+Output files and traces use the same default evidence collector and retention.
+
+After secret-free rehearsal and review of the updated workflow, the first bounded
+question batch can be manually dispatched on merged main:
+
+```bash
+gh workflow run harvest.yml --repo kristerhedfors/lypning --ref main \
+  -f catalog=questions -f profile=compare-medium \
+  -f projects=6 -f rounds=1 -f parallelism=4
+```
+
+This requests, but does not guarantee, 120 proposals. Inspect omissions,
+truncations, rights, duplicates, family grouping and semantics before expanding.
+The reviewed project catalog can grow to 256 entries; `start_index` pages it in
+batches of at most 12. The total session ceiling remains 48 per dispatch. Reject
+an out-of-range selection before the credential preflight. Review/promote selected
+questions to `tasks.json` through a PR using its existing task schema; keep
+generation/evidence lineage in the associated review, not an invented authored
+provenance. Repeated rounds do not count as new semantic families.
+
+Create a new private review queue from one downloaded archive (no execution,
+API calls or training admission):
+
+```bash
+PYTHONPATH=src:nemotron python -m harvesting.review_queue \
+  work/downloaded-archive --output work/harvest-review/queue-001
+```
+
+`queue.json` binds the manifest context and source paths/hashes to the evidence
+snapshot. It points to the complete archive, including question JSON and traces.
+It does not guess which Python file is a solution or mistake generated tests for
+an oracle. Keep the archive alongside it when transferring privately.
+
+When independent review has produced a **new pilot bundle** with pinned Docker
+execution, a reviewer may map captured standalone solutions to existing TRAIN
+cases. `assignments.json` is a JSON list:
+
+```json
+[{"source_sha256": "FULL_HASH_FROM_QUEUE", "case_id": "REVIEWED_TRAIN_CASE_ID"}]
+```
+
+Each case's existing `review.evidence_ids` must link the selected captured source.
+Do not attach unrelated sources to convenient test cases. The reviewer's task
+mapping and independent test basis are substantive assertions, not facts proved
+by a digest. Run only on the approved disposable verifier host:
+
+```bash
+PYTHONPATH=src:nemotron python -m harvesting.review_queue \
+  work/downloaded-archive --output work/harvest-review/graded-001 \
+  --assignments work/harvest-review/assignments.json \
+  --bundle work/harvest-review/prepared/bundle.json --binary "$LYPNING_L_BIN"
+```
+
+The command requires all grading inputs together, a reviewed pilot, source
+evidence links, TRAIN-only assignments and the existing container identity
+handshake. It grades sequentially with the existing CPython-first verifier.
+It writes `results.jsonl` as results arrive and `grading.json` with bundle,
+runtime and execution identities. A native mismatch or infrastructure failure
+persists a blocked record, aborts the batch and never becomes a preference pair.
+Only an ordinary correct refusal becomes a compatibility-repair request;
+incorrect Python gets a correctness-repair request, and correct controls stay
+controls. All outputs remain `trainable=false` candidates.
+
+Codex consumes these teacher packets manually; no teacher API is configured or
+called by this command. Preserve and independently reverify repairs in a new
+evidence/review bundle with original lineage. The current queue does not execute
+multi-file projects, generate independent test oracles, append SFT rows, train
+DPO, provision a GPU, or alter Fable's active artifacts.

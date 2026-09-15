@@ -220,7 +220,34 @@ def test_partial_evidence_and_targeted_cleanup_survive_lifecycle(mode, tmp_path,
     assert summary["unique_python_sources"] == (0 if mode == "early_exit" else 1)
     assert summary["trainable"] is False
     assert summary["native_compatibility"] == "unmeasured"
+    from harvesting.review_queue import inventory
+    item = inventory(output)
+    assert item["trainable"] is False and item["snapshot_digest"] == snapshot_manifest["digest"]
+    assert len(item["sources"]) == (0 if mode == "early_exit" else 1)
     blob = next((output / "blobs").iterdir())
     blob.write_bytes(b"corrupted fixture")
     with pytest.raises(ValueError, match="integrity mismatch"):
         inspect(output)
+
+
+def test_reasoning_profile_reaches_proxy_worker_and_manifest(tmp_path, monkeypatch):
+    fake = FakeDocker("complete")
+    monkeypatch.setattr(runner, "command", fake)
+    monkeypatch.setenv("CEREBRAS_API_KEY", FAKE_KEY)
+    output = tmp_path / "reasoning"
+    assert runner.run(0, 0, output, WORKER_IMAGE, PROXY_IMAGE,
+                      generation_profile="compare-medium", catalog="questions") == 0
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert manifest["task"]["catalog"] == "questions"
+    assert manifest["task"]["generation"]["reasoning_effort"] == "medium"
+    assert manifest["caps"]["requests"] == 6
+    proxy = next(argv for argv, _ in fake.calls if "--reasoning-effort" in argv)
+    assert proxy[proxy.index("--reasoning-effort") + 1] == "medium"
+    assert proxy[proxy.index("--max-output-tokens") + 1] == "8192"
+    payload = next(kwargs["input_bytes"] for argv, kwargs in fake.calls if argv[:2] == ["docker", "exec"])
+    assert json.loads(payload)["generation"]["output_tokens_per_request"] == 8192
+    from harvesting.review_queue import inventory
+    manifest["task"]["prompt"] = "tampered"
+    (output / "manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="captured context"):
+        inventory(output)
