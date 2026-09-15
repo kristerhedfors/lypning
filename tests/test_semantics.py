@@ -857,6 +857,30 @@ def test_a_lone_surrogate_escape_refuses_rather_than_dying_as_a_syntax_error(lyp
     assert not r.refused and r.stdout == "é😀\n", r.stderr
 
 
+def test_a_union_of_classes_refuses_rather_than_dying(lypning_bin):
+    """`bytes | str` is a `types.UnionType` in CPython, a value this engine has
+    no representation for — and it is usually an annotation, evaluated at
+    `def` time, so a whole program died at exit 1 on its first `def`. It
+    refuses as `class-union` now, and `None` is a member (`int | None`) while
+    `None | None` stays CPython's own TypeError. Authored sweep over the
+    ntx-b38207f0de4f surface.
+    """
+    for program in (
+        "def f(b: bytes | str) -> bytes | str:\n    return b\nprint(f(b'x'))",
+        "print(int | None)",
+        "x = None | str",
+        "print(isinstance(1, int | str))",
+    ):
+        r = engines.run(engines.LYPNING, program, binary=lypning_bin)
+        assert r.returncode == UNSUPPORTED_EXIT, "answered %r instead of refusing" % r.stdout
+        assert r.stdout == "" and "class-union" in r.stderr, r.stderr
+    for program in ("print(None | None)", "print(1 | 'a')", "print(str | 1)"):
+        r = engines.run(engines.LYPNING, program, binary=lypning_bin)
+        assert r.returncode == 1 and "TypeError" in r.stderr, r.stderr
+    r = engines.run(engines.LYPNING, "print(5 | 2, len({1} | {2}), True | False)", binary=lypning_bin)
+    assert not r.refused and r.stdout == "7 2 True\n", r.stderr
+
+
 def test_open_binds_file_by_name(lypning_bin, tmp_path):
     """`open(file='f.txt', mode='w')` is legal CPython; the engine read only the
     positional slot and died with `missing required argument 'file'`. In a
