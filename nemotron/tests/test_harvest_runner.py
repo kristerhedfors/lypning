@@ -109,6 +109,9 @@ def test_workflows_never_run_billable_calls_on_pr():
     assert "github.ref == 'refs/heads/main'" in workflow
     assert "persist-credentials: false" in workflow
     assert "cancel-in-progress: false" in workflow
+    assert "max-parallel: ${{ fromJSON(needs.plan.outputs.parallelism) }}" in workflow
+    assert "if: ${{ !inputs.dry_run }}" in workflow
+    assert "python -m harvesting.runner --smoke" in workflow
     smoke = (root / ".github/workflows/harvest-checks.yml").read_text()
     assert "secrets." not in smoke
 

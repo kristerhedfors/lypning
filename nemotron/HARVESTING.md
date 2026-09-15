@@ -41,6 +41,7 @@ from training and supports these bounded inputs:
 | `projects` | 4 | 1–12 | Number of catalog tasks, in catalog order |
 | `parallelism` | 4 | 1–4 | Maximum simultaneous project jobs |
 | `rounds` | 1 | 1–4 | Independent sessions per selected task, not new families |
+| `dry_run` | false | true/false | Full matrix with mock provider, no secret or API calls |
 
 After the workflow is available on `main`, a small pilot can be dispatched with
 the command below. The workflow rejects other refs before providing provider
@@ -50,6 +51,12 @@ credentials to the harvest jobs.
 gh workflow run harvest.yml --repo kristerhedfors/lypning \
   --ref main -f projects=4 -f parallelism=4 -f rounds=1
 ```
+
+Before changing matrix orchestration, exercise that exact workflow end to end
+with `-f dry_run=true -f projects=2 -f parallelism=2 -f rounds=1`. Only this
+secret-free mode permits dispatch against a development branch. Output
+concurrency is validated in the planner and converted explicitly from its JSON
+number; a successful preflight alone does not prove matrix expansion works.
 
 The provider model is fixed to `qwen-3.8-27b`, and the worker pins OpenCode to
 `opencode-ai@1.18.31`. Record the provider's returned model identity as well:
