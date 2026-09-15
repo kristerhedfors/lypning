@@ -14,6 +14,22 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-15** — Run round-02 on Hugging Face: pooled sandboxes as the execution boundary ([claude/next-round-7dilm6](https://github.com/kristerhedfors/lypning/compare/main...claude/next-round-7dilm6))
+
+- Add the `hf-sandbox-pool` execution contract: every verification request
+  runs the unchanged `container_worker.py` protocol in a fresh pooled
+  Hugging Face sandbox on a host VM that is never the trainer's, under its own
+  uid and Landlock ruleset, token never forwarded; the identity handshake holds
+  because the trainer job and the verifier Space share one CPython base digest.
+- Move the worker's harness path off `/runner` for that image: a pooled
+  sandbox reads the standard system trees only. The Docker image is unchanged.
+- Add `nemotron/hf/launch.py` and `round02_smoke.sh`: submit a stage with the
+  cost printed first and never without `--yes`; the smoke job prepares the
+  starter through the pool, runs tiny-model SFT and GRPO on a real GPU, emits
+  the plan and uploads the round directory to a private artifact repo.
+- Amend the handoff: gate 6 admits either boundary; the pooled tier's residual
+  risks are written down; a pilot still needs the reviewed dataset.
+
 **2026-09-15** — Hillclimb 83: five wrong answers from the un-replayed ledger surfaces, and one home for the earlier model's name ([#77](https://github.com/kristerhedfors/lypning/pull/77))
 
 - Sweep the seven surfaces the ledger's un-replayed witnesses name with

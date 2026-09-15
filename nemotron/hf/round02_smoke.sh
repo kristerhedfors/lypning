@@ -51,7 +51,7 @@ python3 -c 'import os; from pipeline.training import engine_identity; from pipel
 
 # 4. The authored starter, verified through the pool; smoke purpose only.
 python3 -m pipeline.cli training-prepare --starter --engine "$LYPNING_L_BIN" \
-  --execution-kind hf-sandbox-pool --execution-image "hf.co/$SPACE_REPO" \
+  --execution-kind hf-sandbox-pool --execution-image "hf.co/spaces/$SPACE_REPO" \
   --execution-revision "$SPACE_REV" --output "$ROUND/smoke"
 
 # 5. Plan first, then the two tiny-model stages on the real GPU.

@@ -68,7 +68,16 @@ including step 0. It never substitutes the last checkpoint. Output existence is
 not completion, approval or passing evaluation. A failed/interrupted directory
 must be retained and a fresh round directory chosen for a new attempt.
 
-## Candidate image: required even for generated smoke code
+## Candidate boundary: required even for generated smoke code
+
+Two execution contracts are implemented and the bundle records which one
+verified it: a locked-down Docker container on a disposable worker (below), or
+a pooled Hugging Face sandbox on a host VM that is never the trainer's
+([the section after it](#the-hugging-face-boundary-chosen-2026-09-15)). The
+local subprocess helper is neither and is admitted for reviewed CPU smoke
+fixtures only.
+
+### The Docker boundary
 
 Use a dedicated disposable **Linux** worker. Docker shares the kernel; this
 boundary does not make hostile code safe on a sensitive shared host. Maintain
@@ -114,6 +123,52 @@ failure aborts verification; it is never converted to a low model reward.
 Container startup time is verification overhead, **not interpreter speed**.
 Benchmark aggregate engine performance separately with matched workload and
 timing scope. Never optimize GRPO against Docker startup time.
+
+### The Hugging Face boundary, chosen 2026-09-15
+
+The operator chose to run the round on Hugging Face, where a Job is a VM
+without a Docker daemon, and chose the **pooled** sandbox tier over a dedicated
+VM per request: candidates from one training run are treated as one trust
+class. `pipeline.hf_sandbox_runner` runs every verification request in a fresh
+pooled sandbox on a host Job that is a different VM from the trainer's, under
+its own uid (>= 20000), a private home, a scrubbed environment, rlimits and a
+per-sandbox Landlock ruleset, with the HF token never forwarded. The request
+carries only source, argv, stdin, input files and limits, through the same
+`container_worker.py` protocol as Docker. What this tier does **not** give, in
+the platform's own words: a separate kernel per candidate, and no outbound
+network (Landlock stops binding, not connecting). A dedicated sandbox per
+request is the stronger tier and is one call away (`Sandbox.create` in place
+of the pool); it costs about six seconds per verification.
+
+The verifier image is a private Docker Space built from exactly four files and
+a CPython base pinned by digest; the trainer Job runs from the **same digest**,
+which is what makes the `sys.version` half of the identity handshake hold. The
+harness lives under `/usr/local/lib`, not `/runner`: a pooled sandbox's Landlock
+ruleset reads the standard system trees and nothing else at the root.
+
+```bash
+# Build the image: a Space whose context is the four reviewed files. Record its
+# 40-character commit; the bundle pins it, and the pool is named by it so a
+# host booted from an earlier build never serves a later bundle.
+#   Dockerfile: FROM python:3.12-slim@sha256:<digest>
+#               COPY sandbox.py child_exec.py container_worker.py /usr/local/lib/lypning-verifier/
+#               COPY --chmod=755 lypning-l /usr/local/bin/lypning-l   (no USER line)
+# Prepare with the pooled contract (inside a Job on the same base digest):
+PYTHONPATH=src:nemotron python3 -m pipeline.cli training-prepare --starter \
+  --engine "$LYPNING_L_BIN" --execution-kind hf-sandbox-pool \
+  --execution-image hf.co/spaces/<owner>/<verifier> --execution-revision <space commit> \
+  --output work/round-02/smoke
+# Submit a stage; the cost is printed first and nothing runs without --yes:
+PYTHONPATH=src:nemotron python3 nemotron/hf/launch.py smoke --branch <branch> --commit <sha> \
+  --space <owner>/<verifier> --space-revision <space commit> --qwen-revision "$QWEN_REV" \
+  --work-repo <owner>/<private dataset> --flavor a10g-small --timeout 75m --yes --follow
+```
+
+`nemotron/hf/round02_smoke.sh` is what the job runs: the handshake, the starter
+bundle through the pool, the tiny-model SFT and GRPO stages on the real GPU,
+the plan, and an upload of `work/round-02` to the private artifact repo. It is
+smoke: the starter is not a pilot, and a pilot still needs the reviewed dataset
+above. Sandbox and Job time are verification overhead, not interpreter speed.
 
 ## Evidence and reviewed data
 
