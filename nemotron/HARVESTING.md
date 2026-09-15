@@ -47,7 +47,7 @@ from training and supports these bounded inputs:
 | `dry_run` | false | true/false | Full matrix with mock provider, no secret or API calls |
 | `catalog` | projects | projects/questions | Solve reviewed projects or propose question banks |
 | `start_index` | 0 | Nonnegative, range must fit catalog | Page through a larger reviewed catalog |
-| `profile` | baseline | baseline/compare-none/compare-medium | Explicit teacher generation condition |
+| `profile` | baseline | baseline/compare-none/compare-medium/question-proposals | Explicit teacher generation condition |
 
 After the workflow is available on `main`, a small pilot can be dispatched with
 the command below. The workflow rejects other refs before providing provider
@@ -80,6 +80,8 @@ were checked on 2026-09-15; the OpenCode CLI/provider integration is pinned to
 
 The baseline is limited to 24 provider requests and 2,048 completion tokens per
 request. Both comparison profiles allow six requests and 8,192 tokens per request.
+The dedicated `question-proposals` profile disables reasoning and allows twelve
+requests of at most 4,096 tokens each, keeping room for file creation/checking.
 **All profiles reserve at most 49,152 output tokens/session**, including reasoning
 where enabled, with a 256 KiB request-body limit. The project worker has a
 15-minute deadline and its Actions job a
@@ -159,9 +161,14 @@ source counts, actual provider usage, API failures and truncated completions.
 Multiple archive directories can be passed together. A hash detects byte
 corruption; it is not a signature or a correctness certificate.
 
-All records remain `trainable=false` with correctness unknown. A successful
-Actions job or `worker_reported_completion` means the collection path completed,
-**not that OpenCode succeeded, self-tests passed, or the program is correct**.
+All records remain `trainable=false` with correctness unknown. The controller
+now fails the job if expected deliverables are absent, provider responses are
+truncated/incomplete or a question bank fails its structural/count checks. It
+still preserves all collected evidence. Historical green jobs may predate these
+checks: inspect their artifacts rather than relabeling old outcomes in place.
+`worker_reported_completion` is a producer signal, **not correctness**. Even a
+green current job only proves the bounded collection/delivery checks passed,
+not independent task semantics, meaningful novelty or native compatibility.
 Inspect the untrusted worker's reported exit code, events and export statuses,
 plus trusted provider outcomes and collection errors. Worker-owned logs can be
 altered by code in that worker; the separate proxy ledger gives another source
@@ -246,7 +253,7 @@ population requirements. See [DATA_PRODUCTION.md](DATA_PRODUCTION.md),
 ## Question production and teacher review queue
 
 `--catalog questions` selects six authored domain producers in `campaign.py`.
-Each requests 20 original questions in `questions.jsonl`, with proposed families,
+Each requests five concise original questions in `questions.jsonl`, with proposed families,
 input/output contracts, edge cases, difficulty, capability targets and novelty
 basis. These are **unreviewed proposals**, not oracles or automatically accepted
 questions. The worker's small schema check is not independent semantic review.
@@ -257,11 +264,12 @@ question batch can be manually dispatched on merged main:
 
 ```bash
 gh workflow run harvest.yml --repo kristerhedfors/lypning --ref main \
-  -f catalog=questions -f profile=compare-medium \
+  -f catalog=questions -f profile=question-proposals \
   -f projects=6 -f rounds=1 -f parallelism=4
 ```
 
-This requests, but does not guarantee, 120 proposals. Inspect omissions,
+This requests, but does not guarantee, 30 proposals. Four bounded rounds request
+120 proposals without claiming additional independent producer families. Inspect omissions,
 truncations, rights, duplicates, family grouping and semantics before expanding.
 The reviewed project catalog can grow to 256 entries; `start_index` pages it in
 batches of at most 12. The total session ceiling remains 48 per dispatch. Reject
@@ -269,6 +277,27 @@ an out-of-range selection before the credential preflight. Review/promote select
 questions to `tasks.json` through a PR using its existing task schema; keep
 generation/evidence lineage in the associated review, not an invented authored
 provenance. Repeated rounds do not count as new semantic families.
+
+The initial 20-question medium/nonthinking comparison and why the production
+profile changed are recorded in
+[reviews/2026-09-15-question-pilots.md](reviews/2026-09-15-question-pilots.md).
+There is no evidence here that thinking is universally worse for project solving
+or teacher repairs; the observed failure was specific to this request and cap.
+
+Inspect proposal content without executing generator scripts or schema checks:
+
+```bash
+PYTHONPATH=src:nemotron python -m harvesting.questions \
+  work/downloaded-archive --output work/harvest-review/proposals-001.json
+```
+
+The report binds the archive to its evidence snapshot, validates blob hashes,
+keeps original line hashes/offsets and unknown fields, and flags malformed,
+oversized, duplicate or redacted records. Legacy string or nonnegative integer
+IDs are accepted without rewriting their types; booleans are not numeric IDs.
+Cross-input deduplication is lexical only, not a claim of semantic independence.
+Reports are new private files and never overwrite an earlier view. Original
+blobs remain authoritative; all proposals remain unreviewed and non-trainable.
 
 Create a new private review queue from one downloaded archive (no execution,
 API calls or training admission):

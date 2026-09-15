@@ -53,7 +53,7 @@ def test_question_batches_and_paging_do_not_invent_families():
     left, right = profile("compare-none"), profile("compare-medium")
     assert {k: v for k, v in left.items() if k not in ("name", "reasoning_effort")} == {
         k: v for k, v in right.items() if k not in ("name", "reasoning_effort")}
-    for name in ("baseline", "compare-none", "compare-medium"):
+    for name in ("baseline", "compare-none", "compare-medium", "question-proposals"):
         p = profile(name)
         assert p["requests"] * p["output_tokens_per_request"] == p["reserved_output_tokens"] == 49152
         cfg = worker.config({"model": worker.MODEL, "proxy_url": "http://harvest-proxy:8080", "generation": p})

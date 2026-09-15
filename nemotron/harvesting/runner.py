@@ -21,6 +21,7 @@ import uuid
 from lypning.evidence import snapshot
 from .worker import MODEL, OPENCODE_VERSION
 from .campaign import PROFILES, profile, question_tasks
+from .questions import delivery_errors
 
 MAX_ARCHIVE = 64 * 1024 * 1024
 MAX_FILE = 16 * 1024 * 1024
@@ -344,6 +345,10 @@ def run(task_index, repeat, output, worker_image, proxy_image, *, smoke=False, d
                 command(["docker", "volume", "rm", volume])
             except RuntimeError:
                 errors.append("volume_cleanup_failed")
+        try:
+            errors.extend(delivery_errors(records, output, task, smoke=smoke))
+        except (OSError, ValueError, TypeError, KeyError, AttributeError, RecursionError):
+            errors.append("deliverable_inspection_failed")
         manifest = {"schema": 1, "task": task, "worker_image": worker_image,
             "proxy_image": proxy_image, "opencode_version": OPENCODE_VERSION,
             "model_revision": "provider-managed; not an immutable training checkpoint",

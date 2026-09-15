@@ -131,9 +131,14 @@ reasoning separate from final content; the pinned OpenCode reasoning-history
 round-trip and live medium-mode behavior still need a real pilot before claiming
 equivalence with native Cerebras clients. Do not train reasoning traces by default.
 
-Question-production target: six domain sessions requesting 20 proposals each
-in the first batch (a target of 120, **not a measured count of valid questions**).
-After quality/usage review, use bounded additional rounds and page an expanded
+The initial six-domain, 20-proposal comparison is now measured in
+[reviews/2026-09-15-question-pilots.md](reviews/2026-09-15-question-pilots.md).
+It exposed reasoning truncation, request-budget exhaustion and missing outputs
+behind green collection jobs. Use the new `question-proposals` profile for the
+next pilot: five concise proposals per domain, twelve calls of at most 4,096
+tokens, reasoning off. Its total reservation remains 49,152 tokens/session.
+Six sessions target 30 proposals; four bounded rounds target 120, not 120 verified
+or independent questions. After quality/usage review, page an expanded
 reviewed catalog. Repeated producer domains or paraphrases do not add independent
 families. Broaden task semantics and capability compositions before raising job
 concurrency or caps. Do not change the current paid manual-only trigger.
@@ -143,10 +148,10 @@ concurrency or caps. Do not change the current paid manual-only trigger.
 | ID / owner | Current status | Evidence needed / next action |
 | --- | --- | --- |
 | H1 / Codex | Baseline collection demonstrated; ungraded | Existing pilot [35017084120](https://github.com/kristerhedfors/lypning/actions/runs/35017084120), 2026-09-15. Build queues; review independent contracts before labeling |
-| H2 / Codex | Question catalog and comparison profiles implemented; live question/medium pilot pending | Secret-free integration first; then bounded proposed question batch and matched reasoning arms; report actual valid novelty and usage |
+| H2 / Codex | Matched initial question pilots measured; partial data retained | See question-pilot review. Validate the five-question delivery-aware profile next; semantic review remains mandatory |
 | D1 / Codex | Review/repair queue implemented; no new training examples admitted | Independently review tasks/oracles, author references, freeze a new container-backed pilot, map reviewed TRAIN sources, grade and repair |
 | T1 / Fable | Hugging Face boundary implemented (`hf-sandbox-pool`, operator's choice 2026-09-15); verifier Space built; round-02 smoke job launched on a10g-small | Report in `reports/2026-09-15-fable-round02-smoke.md` with job, Space and bundle identities; smoke only, no pilot data, no model-quality claim |
-| R1 / Codex | PR #73 assessed; no later training writeup available here | See `reviews/2026-09-15-fable-stage0a.md`; request private artifacts/remaining replay before accepting stronger claims |
+| R1 / Codex | PR #73 and Fable's PR #77 runtime writeup assessed; no new training result available here | See `reviews/2026-09-15-fable-hillclimb83.md`; authored sweeps do not close the outstanding captured replay or hardware/data gates |
 | E1 / Codex + Fable | Verified broad SFT is first training candidate | Once data/model/hardware approvals and smoke pass, Fable compares base vs SFT under fixed identities |
 | E2 / Codex | DPO or GRPO choice not decided | Use SFT results, enough valid pairs and exact-policy reward variation; change one objective at a time |
 
