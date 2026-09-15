@@ -14,6 +14,29 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-15** — Close five engine mismatches found while auditing the Stage 0a ledger ([#73](https://github.com/kristerhedfors/lypning/pull/73))
+
+- `enumerate(iterable=…, start=…)` binds both of Argument Clinic's names, so
+  the first spelling answers instead of dying with a TypeError CPython never
+  raises; the same parameter given by name and position is the given-twice
+  TypeError CPython raises.
+- `divmod` over a float and a zero divisor says `float divmod()`, the wording
+  `float_divmod` owns, rather than `//`'s `float floor division by zero`;
+  `zero_div` folds it into the 3.14 respelling with the rest.
+- A `\u` or `\U` escape naming a lone surrogate refuses as `escape` rather
+  than dying as a SyntaxError CPython does not raise: CPython compiles the
+  literal and no UTF-8 string here can hold it.
+- `is` between two dict views refuses as `dict-view`: the value carries the
+  dict's `Rc`, not the view's, so neither True nor False was a fact.
+- A slice as a dict key says what the host says: `KeyError` with the slice's
+  repr from 3.12, where slices hash, and `unhashable type: 'slice'` before;
+  storing one refuses as `slice-key`. Four corpus sightings found it against
+  the 3.12 reference this round pins; CI's 3.11 reference agreed on the class.
+- Manual Qwen round-02 handoff, first session: engine built against 3.12,
+  planner and starter preparation exercised, ledger audited; no training,
+  no Docker boundary and no GPU on this worker, so every launch gate that
+  needs an operator, a candidate image or hardware remains open.
+
 **2026-09-15** — Add bounded parallel Cerebras/OpenCode project harvesting ([#72](https://github.com/kristerhedfors/lypning/pull/72))
 
 - Collect authored Python project sessions with Qwen 3.8, isolated workers and
