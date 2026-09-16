@@ -14,6 +14,38 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-16** — Make the lever split a command, preserve a blocked arm's program, and stop a harness failure from wearing the program's exit code ([#86](https://github.com/kristerhedfors/lypning/pull/86))
+
+- The next round did not run. Every rung of `training/STATUS.md` §10 is blocked
+  on this device, each on a different prerequisite; `training/reports/2026-09-16-fable-sladder-s0-device-audit.md`
+  names them one by one rather than inventing any of them. Nothing was spent and
+  no GPU ran.
+- `training/ASSESSMENT.md` §4's split of refusals between the engine lever, the
+  model lever and neither was a judgement made once in prose. It is now
+  `pipeline.levers` and `nt levers`: three mechanical layers — this package's own
+  imports, the engine's closed list imported through `refusals.closed_kinds()`
+  and never restated, and what the running interpreter does not ship — over a
+  frozen declaration table of one reasoned line per refusal family. The oracle's
+  module list is an evidence column and never a layer, and a test pins that.
+- It reads the eval-2 draw rows unchanged, so the ladder's rung S0b is a command
+  on the device that holds them rather than a judgement re-made there. It also
+  gives `training/ASSESSMENT.md` §6 step 6 the ranked build order it never had.
+- On this tree (`nt levers --against`, 2026-09-16, 9,064 rows loaded, 643
+  carrying a refusal, rule 1) it reproduces §4's self-referential bucket exactly
+  and disagrees on the lever boundary by 38 entries. The disagreement is pinned
+  by a test as the one that was reviewed, so a new one fails rather than passing
+  quietly; which side is right is asked of Codex in the ledger.
+- A blocked **evaluation** arm now writes the program that blocked it, as the
+  reward stage already did. The abort, every score and every gate are unchanged
+  on purpose: the ruling `training/ORCHESTRATION.md` row T4 asks for is the one
+  this evidence was missing, and it is still open.
+- Fixed a defect that predates this change: under network isolation the harness
+  execs `unshare`, which succeeds and then fails to start the real program, so a
+  setup failure arrived as exit 127 with an empty error pipe — indistinguishable
+  from the program's own `SystemExit(127)`, which is the distinction the
+  verification contract uses to decide whether a run is a model result at all.
+  Taking it rebuilds the verifier image and needs a new bundle.
+
 **2026-09-16** — Fix the power-table mislabel at its source, and make the pre-registered k a refusal ([#85](https://github.com/kristerhedfors/lypning/pull/85))
 
 - `training/ASSESSMENT.md` described the `training/EVAL2.md` §7 mislabel and

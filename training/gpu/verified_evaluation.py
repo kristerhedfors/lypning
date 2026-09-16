@@ -26,11 +26,46 @@ from pipeline.jsonio import append_jsonl
 from pipeline.training import messages, program_from_completion
 from pipeline.training_contract import complete, draw_seed
 from pipeline.training_metrics import summarize
+from pipeline.training_types import VerificationBlocked
 
 #: Sequences one `generate` call carries; a chunk is this many cases × draws.
 SEQUENCES_PER_CALL = 64
 #: Concurrent verifier scorings; one pooled sandbox host serves 50.
 SCORE_WORKERS = 16
+
+
+def blocked_witness(verifier, witness_path, step):
+    """Score one draw, and preserve the program if verification blocks.
+
+    The reward stage has written a witness and re-raised since it was built
+    (`pipeline.training.Reward.score_one`); the evaluation arm only re-raised,
+    so when the round-02 base arm blocked on a native timeout after a correct
+    oracle (2026-09-16, job 6aaa8746) the exception string survived and the
+    program that caused it did not. A second occurrence would have been as
+    unexplained as the first.
+
+    This changes nothing about what the arm DOES: the raise stands, the stage
+    still aborts, no score moves and no gate moves. Whether a native timeout
+    after a correct oracle should instead be scored — with what status, and
+    whether an arm should abort above some rate — is an open decision on
+    `ORCHESTRATION.md`'s ledger (row T4) and is deliberately not taken here.
+    Both rulings need the program, which is why the witness comes first.
+    """
+
+    def score_one(pending):
+        case, draw, _tail, _completion, _truncated, program = pending
+        try:
+            return verifier.score(case, program)
+        except VerificationBlocked as exc:
+            if witness_path is not None:
+                append_jsonl(witness_path, {
+                    "step": step, "case_id": case["case_id"], "draw": draw,
+                    "family": case["family"], "population": case["population"],
+                    "split_group": case.get("split_group", case["family"]),
+                    "program": program, "error": str(exc), "tests": case["tests"]})
+            raise
+
+    return score_one
 
 
 def chunked(cases, draws, sequences_per_call):
@@ -58,7 +93,7 @@ def trim(tail, eos, pad):
 
 
 def evaluate(model, tokenizer, cases, verifier, policy, output, step, torch,
-             *, seed=1111, draws=4, return_records=False,
+             *, seed=1111, draws=4, return_records=False, witness_path=None,
              sequences_per_call=SEQUENCES_PER_CALL, score_workers=SCORE_WORKERS):
     from transformers import GenerationConfig
 
@@ -107,7 +142,8 @@ def evaluate(model, tokenizer, cases, verifier, policy, output, step, torch,
                         pending.append((case, draw, tail, completion, truncated, program))
                 workers = max(1, min(int(score_workers), len(pending)))
                 with ThreadPoolExecutor(max_workers=workers) as pool:
-                    scores = list(pool.map(lambda p: verifier.score(p[0], p[5]), pending))
+                    scores = list(pool.map(blocked_witness(verifier, witness_path, step),
+                                           pending))
                 for (case, draw, tail, completion, truncated, program), score in zip(pending, scores):
                     row = dict(asdict(score), step=step, case_id=case["case_id"],
                         family=case["family"], population=case["population"],

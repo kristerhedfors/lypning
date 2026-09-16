@@ -59,6 +59,22 @@ def test_setup_failure_is_distinct_from_program_exit_127():
     assert run_python("pass", interpreter=["/missing/ntx-engine"], mem_mb=0).harness_error
 
 
+@pytest.mark.skipif(not netns_available(), reason="kernel will not give us a netns")
+def test_a_netns_wrapper_does_not_mask_the_missing_engine():
+    """The path that masked it: `unshare` execs fine and then fails itself.
+
+    `child_exec` only sees its own exec, which succeeded, so the setup pipe is
+    empty and the wrapper's own exit 127 arrives looking exactly like the
+    program's `SystemExit(127)`. A verification harness that cannot tell those
+    apart scores a transport failure as a model result, which the routing table
+    of `training/ORCHESTRATION.md` forbids in as many words.
+    """
+    r = run_python("pass", interpreter=["/missing/ntx-engine"], mem_mb=0,
+                   isolate_network=True)
+    assert r.harness_error, r.brief()
+    assert not r.ok
+
+
 def test_monitor_failure_is_not_a_model_failure(monkeypatch):
     from pipeline import sandbox
     monkeypatch.setattr(sandbox, "memory_policy", lambda _: "process-group-rss-watchdog")

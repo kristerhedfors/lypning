@@ -1813,6 +1813,57 @@ def cmd_refusals(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_levers(args: argparse.Namespace) -> int:
+    """Which lever can remove each refusal: the engine, the model, or neither.
+
+    `nt refusals` ranks what the engine refuses; this asks the next question —
+    of those refusals, which could be REMOVED, and by which lever. The model
+    lever is a subset of the engine one, so this table is what divides a budget
+    between them, and rung S0b of `STATUS.md` §10 is this same table run over
+    the eval-2 correct-but-fallback draws instead of the local capture.
+    """
+    from . import levers
+
+    today = time.strftime("%Y-%m-%d")
+    if args.rows:
+        rows = list(read_jsonl(Path(args.rows)))
+        loaded = len(rows)
+        if args.status:
+            rows = [r for r in rows if r.get("status") == args.status]
+        result = levers.table(rows, source=args.rows, unit="draw",
+                              independence="family", loaded=loaded)
+    else:
+        source = args.source or str(DATA / "classified.jsonl")
+        rows = list(read_jsonl(Path(source)))
+        result = levers.table(rows, source=source, loaded=len(rows))
+
+    if args.json:
+        print(json.dumps(result, indent=2, ensure_ascii=False, default=sorted))
+        return 0
+
+    failed = False
+    if args.declared:
+        print(levers.declared_report(levers.declared_rows(result, provenance=args.provenance)))
+    elif args.undeclared:
+        print(levers.undeclared_report(levers.undeclared_rows(result)))
+    elif args.rank:
+        print(levers.rank_report(levers.rank(result, bucket=args.bucket),
+                                 bucket=args.bucket,
+                                 independence=result["independence"],
+                                 limit=args.limit))
+    else:
+        print(levers.report(result, today=today))
+        if args.against:
+            totals = levers.section4_totals(args.against)
+            comparison = levers.compare(result, totals)
+            print("")
+            print(levers.compare_report(result, comparison))
+            failed = failed or (args.strict and not comparison["agrees"])
+    if args.strict:
+        failed = failed or bool(result["undeclared"]) or bool(result["declared_unused"])
+    return 1 if failed else 0
+
+
 def cmd_show(args: argparse.Namespace) -> int:
     """Inspect what actually happened on a case: the program and why it failed."""
     run_dir = RUNS / args.run_id
@@ -2156,6 +2207,24 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--held-out", action="store_true", help="only the frozen held-out split")
     g.add_argument("--train", action="store_true", help="only the train split")
     rf.set_defaults(fn=cmd_refusals)
+
+    lv = sub.add_parser("levers", help="which lever can remove each refusal: engine, model, neither")
+    lv.add_argument("--source", help="a `nt classify` jsonl (default: data/classified.jsonl)")
+    lv.add_argument("--rows", help="eval-2 draw rows instead — rung S0b's population")
+    lv.add_argument("--status", help="keep only rows with this status, e.g. correct-fallback")
+    lv.add_argument("--rank", action="store_true", help="the build order: independent x units")
+    lv.add_argument("--bucket", default="engine-addressable", help="which bucket to rank")
+    lv.add_argument("--limit", type=int, default=20, help="rows to show (0 for all)")
+    lv.add_argument("--declared", action="store_true", help="every judgement call, for review")
+    lv.add_argument("--provenance", choices=["s4", "new"],
+                    help="with --declared: only rows from §4, or only new ones")
+    lv.add_argument("--undeclared", action="store_true", help="the review queue")
+    lv.add_argument("--against", nargs="?", const=str(ROOT / "ASSESSMENT.md"),
+                    help="compare the four totals with ASSESSMENT.md §4's table")
+    lv.add_argument("--json", action="store_true", help="the raw result")
+    lv.add_argument("--strict", action="store_true",
+                    help="exit 1 on an unreviewed family, an unused declaration or a delta")
+    lv.set_defaults(fn=cmd_levers)
 
     sh = sub.add_parser("show", help="print the programs a run produced")
     sh.add_argument("run_id"); sh.add_argument("--case"); sh.add_argument("--limit", type=int, default=5)

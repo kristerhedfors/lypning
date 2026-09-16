@@ -81,6 +81,7 @@ number we want.
 | Round-02 pipeline on Hugging Face, pooled sandboxes | plumbing complete: 16/16 starter references verified, SFT and GRPO smoke stages sealed, planner ran. **No model-quality number** | job `6aa9c4c35527934177ee6c46`, 2026-09-15, tiny random Qwen config, never the 27B weights (`reports/2026-09-15-fable-round02-smoke.md`) |
 | Round-02 pilot on the 27B weights, task-first path | SFT 20 steps (loss 0.83 → 0.54), step 5 selected; probe 172/200 correct, GRPO admitted, GRPO flat (step 0 kept); dev 7 cases: base 78.6% / 75.0% correct / correct-and-native, SFT 82.1% / 75.0%; test 7 cases: base 85.7% / 57.1%, SFT 82.1% / 57.1%, paired native delta 0.0pp [−10.7, +10.7]. **Eval-2: base arm blocked at 384/1,200 draws by an engine timeout on a CPU-bound candidate under 16-way concurrent scoring (partial base 87.4% / 69.8%); SFT and GRPO arms never ran** | job `6aaa87465527934177ee9f34`, 2026-09-16, engine `2e079e786a655ab6`, policy v3, k = 4 (`reports/2026-09-16-fable-round02-run.md`) |
 | Eval-2 base rate on the training bank (legacy tree), full pilot draw | 87.9% correct, 68.7% correct-and-native, family macro over 64 cases. **No power figure from that draw is quotable**: every row of the `EVAL2.md` §7 curve is keyed by a lift the simulation was not shown to deliver, and the uniform reading is withdrawn (2026-09-16). The re-print, keyed on the realised macro, is rung S0a in §10 | run `eval-20260916-063539`, 2026-09-16, k = 16, engine `2e079e786a655ab6` (`EVAL2.md` §7, §11) |
+| Lever split of this repository's own refused captures | 195 self-referential / 264 legitimate-fallback / 184 engine-addressable / 0 residue, over 643 refusals in 9,064 classified rows. Reproduces `ASSESSMENT.md` §4's self-referential bucket exactly and disagrees on the lever boundary: **−38 engine-addressable, +43 fallback**. Not a model number and not the deployment population — the one that decides the budget is rung S0b's, on the eval-2 draws | `nt levers --against`, 2026-09-16, this tree, engine `lypning-l` built from `346e59c`, rule 1, 130 declared families of which 108 are new and unreviewed (`reports/2026-09-16-fable-sladder-s0-device-audit.md`) |
 
 Data side, same date:
 
@@ -299,6 +300,30 @@ at is refused in `preflight`. **§10 is now the live sequence.** Two of the
 assessment's own claims were corrected in the process: `mean_effect` is per-case
 and is not the unit power is read against, and the concentrated shape clips too.
 
+Acted on in code 2026-09-16, a second time, nothing spent and no frozen artifact
+touched (`ORCHESTRATION.md` ledger row S4). The assessment's §4 bucketing — the
+table that decides how the budget divides between the engine lever and the model
+lever — was a judgement call made once in prose, and nothing in the tree could
+re-make it; it is now `pipeline.levers` / `nt levers`: three mechanical layers
+(this package's own imports, the engine's closed list imported and never
+restated, and what this interpreter does not ship) over a frozen 130-row
+declaration table, each row carrying its reason and whether §4 or this tree is
+its source. It reads the eval-2 draw rows unchanged, which is what makes rung
+S0b a command rather than a judgement re-made on another device. On this tree it
+reproduces §4's self-referential bucket exactly and disagrees on the lever
+boundary — 38 fewer entries engine-addressable, 43 more legitimate-fallback —
+and that disagreement is pinned by a test as the one that was reviewed, not
+closed by guessing. Two further $0 items from the same round: a blocked
+**evaluation** arm now preserves the program that blocked it, the abort and
+every score unchanged, which is the half of `ASSESSMENT.md` §6 step 2 that
+carries no policy (the ruling row T4 asks for is deliberately still open); and a
+defect pre-existing at `346e59c` was fixed in the candidate-execution boundary,
+where under network isolation a harness setup failure was indistinguishable from
+the program's own exit 127 — the distinction the verification contract uses to
+decide whether a run is a model result at all. The round itself did **not** run:
+every rung of §10 is blocked on this device, each on a different prerequisite
+(`reports/2026-09-16-fable-sladder-s0-device-audit.md` §1).
+
 ## 10. The live sequence: the S-ladder
 
 **This is the one home for what runs next**, added 2026-09-16 as step 8 of
@@ -318,10 +343,10 @@ The ladder itself, with the prediction and stop rule for each rung, is
 `ASSESSMENT.md` §5 and §6; it is not restated here, because a seventh copy of a
 sequence is the problem §3.7 of that document names. In one line each:
 
-| rung | what it measures | cost | state, 2026-09-16 |
+| rung | what it measures | cost | state, 2026-09-16 (read the S0b cell: the tool half moved) |
 |---|---|---|---|
 | S0a | `EVAL2.md` §7 re-printed from the real pilot rows, keyed on the realised macro lift | $0 | the tool half done in this tree; the read is owed by the other device |
-| S0b | the by-kind refusal vector of the 171 correct-but-fallback pilot draws | $0 | not started; promised by `EVAL2.md` §4 |
+| S0b | the by-kind refusal vector of the 171 correct-but-fallback pilot draws | $0 | **the tool half done in this tree 2026-09-16** (`nt levers --rows … --status correct-fallback --rank`); the read is owed by the other device, as S0a's is |
 | S0c | the round-02 probe rollouts by native status, per train case | $0 | not started |
 | S1 | stage 0b on the training bank: bare vs `--system-file subset-spec.md`, k=16 | ~$5 | not started; the first positive control the programme would have |
 | S2 | the rewritable fraction: verified native rewrites of the fallback draws | tokens | not started; ledger row D1 |

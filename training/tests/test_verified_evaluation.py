@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager, nullcontext
 import importlib.util
+import json
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -182,3 +183,65 @@ def test_chunks_pair_across_arms_and_padding_is_not_generation(tmp_path, monkeyp
     assert ev.chunked(cases, draws=16, sequences_per_call=64) == [cases[:3]] and \
         ev.chunked(cases, draws=100, sequences_per_call=64) == [[c] for c in cases], "at least one case per call"
     assert ev.trim([1, 2], 99, 0) == [1, 2] and ev.trim([1, 0, 0], 99, 0) == [1] and ev.trim([99, 99], 99, 99) == [99]
+
+
+def test_a_blocked_evaluation_preserves_the_program_and_still_aborts(tmp_path, monkeypatch):
+    """The uncontroversial half of ASSESSMENT.md §6 step 2.
+
+    Round-02's base arm blocked on a native timeout after a correct oracle and
+    left only the exception string: the program was nowhere in the artifacts, so
+    neither ruling Codex is owed on ledger row T4 — fault, or a scored
+    `not-native` with a witness — could be taken from the evidence. The witness
+    closes that, and the abort is unchanged: this test pins BOTH halves, because
+    a witness that swallowed the raise would be the gate change nobody approved.
+    """
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(GenerationConfig=SimpleNamespace))
+    ev, torch = load_evaluation(), FakeTorch()
+    model = Model(torch, [1, 99])
+    from pipeline.training_types import VerificationBlocked
+
+    def block(case, program):
+        raise VerificationBlocked("engine mismatch: " + program)
+
+    cases = [dict(case_id="c", family="f", task="task", population="coverage",
+                  split_group="g", tests=[{"stdout": "1"}])]
+    witness = tmp_path / "eval-blocked-witnesses.jsonl"
+    with pytest.raises(VerificationBlocked):
+        ev.evaluate(model, Tokenizer(), cases, SimpleNamespace(score=block), decoding(10),
+                    tmp_path / "eval.jsonl", 7, torch, witness_path=witness)
+    rows = [json.loads(line) for line in witness.read_text().splitlines() if line.strip()]
+    assert rows, "the program that blocked the arm must survive the abort"
+    assert rows[0]["case_id"] == "c" and rows[0]["step"] == 7
+    assert rows[0]["split_group"] == "g" and rows[0]["tests"] == [{"stdout": "1"}]
+    assert rows[0]["program"] and rows[0]["program"] in rows[0]["error"]
+    # The arm still aborts and the trainer's state is still restored.
+    assert model.training and model.is_gradient_checkpointing and torch.state == 123
+
+
+def test_a_witnessless_evaluation_behaves_exactly_as_before(tmp_path, monkeypatch):
+    """No witness path, no new file, same raise — the default is unchanged."""
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(GenerationConfig=SimpleNamespace))
+    ev, torch = load_evaluation(), FakeTorch()
+    model = Model(torch, [1, 99])
+    from pipeline.training_types import VerificationBlocked
+
+    def block(case, program):
+        raise VerificationBlocked("engine mismatch")
+
+    cases = [dict(case_id="c", family="f", task="task", population="coverage")]
+    with pytest.raises(VerificationBlocked):
+        ev.evaluate(model, Tokenizer(), cases, SimpleNamespace(score=block), decoding(10),
+                    tmp_path / "eval.jsonl", 0, torch)
+    assert list(tmp_path.glob("*witness*")) == []
+
+
+def test_a_clean_evaluation_writes_no_witness(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(GenerationConfig=SimpleNamespace))
+    ev, torch = load_evaluation(), FakeTorch()
+    model = Model(torch, [1, 99])
+    verifier = SimpleNamespace(score=lambda c, p: Score(1, "correct-native", 3, 3))
+    cases = [dict(case_id="c", family="f", task="task", population="coverage")]
+    witness = tmp_path / "eval-blocked-witnesses.jsonl"
+    ev.evaluate(model, Tokenizer(), cases, verifier, decoding(10),
+                tmp_path / "eval.jsonl", 0, torch, witness_path=witness)
+    assert not witness.exists()
