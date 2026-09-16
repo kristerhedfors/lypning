@@ -1,10 +1,10 @@
 name: harvesting safety and integration
 on:
   pull_request:
-    paths: ['nemotron/harvesting/**', 'nemotron/tests/test_harvest_*.py', '.github/workflows/harvest*.yml']
+    paths: ['training/harvesting/**', 'training/tests/test_harvest_*.py', '.github/workflows/harvest*.yml']
   push:
     branches: [main]
-    paths: ['nemotron/harvesting/**', 'nemotron/tests/test_harvest_*.py', '.github/workflows/harvest*.yml']
+    paths: ['training/harvesting/**', 'training/tests/test_harvest_*.py', '.github/workflows/harvest*.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      PYTHONPATH: src:nemotron
+      PYTHONPATH: src:training
       LYPNING_CAPTURE: '0'
       LYPNING_HARVEST: '0'
     steps:
@@ -25,11 +25,11 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install pytest
       - name: Mock API and archive-boundary unit tests (no secrets)
-        run: python -m pytest nemotron/tests/test_harvest_proxy.py nemotron/tests/test_harvest_runner.py nemotron/tests/test_harvest_lifecycle.py nemotron/tests/test_harvest_review_queue.py nemotron/tests/test_harvest_questions.py -q
+        run: python -m pytest training/tests/test_harvest_proxy.py training/tests/test_harvest_runner.py training/tests/test_harvest_lifecycle.py training/tests/test_harvest_review_queue.py training/tests/test_harvest_questions.py -q
       - name: Build pinned OpenCode and minimal proxy images
         run: |
-          docker build -f nemotron/harvesting/Dockerfile.opencode -t harvest-worker nemotron/harvesting
-          docker build -f nemotron/harvesting/Dockerfile.proxy -t harvest-proxy nemotron/harvesting
+          docker build -f training/harvesting/Dockerfile.opencode -t harvest-worker training/harvesting
+          docker build -f training/harvesting/Dockerfile.proxy -t harvest-proxy training/harvesting
       - name: Real OpenCode tool call, capture and export with fake provider (no API spending)
         run: |
           python -m harvesting.runner --smoke --output work/harvest-smoke \

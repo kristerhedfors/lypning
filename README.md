@@ -399,7 +399,7 @@ engine after somebody runs `lypning harvest`.
 ## 7b. Teaching a model the subset — and what the measurement said
 
 The engine refuses what it does not implement, and a refusal costs a CPython
-spawn. So: can a model be taught to write the subset instead? `nemotron/` is the
+spawn. So: can a model be taught to write the subset instead? `training/` is the
 apparatus that answers that with a number rather than an impression — a frozen
 held-out split, a pre-registration written before any adapter existed, and a
 decision rule fixed in advance.
@@ -420,7 +420,7 @@ the adapter the only difference — and graded by one engine, fingerprint
 | exact McNemar leg | does not — gained 2, lost 2, p = 1.0000 |
 | **pre-registered verdict** | **no win** |
 
-**The two legs disagree, and `nemotron/PREREGISTRATION.md` §3 registered in
+**The two legs disagree, and `training/PREREGISTRATION.md` §3 registered in
 advance that the disagreement would be the finding.** It is: the adapter shifted
 per-case rates *broadly* — 16 of 70 cases improved, 6 got worse — rather than
 acquiring cases. Only two crossed from never-solved to solved.
@@ -438,7 +438,7 @@ p = 0.0525, also failing. The prediction behind the amendment was wrong, it
 changed no verdict, and that is checkable only because it was dated first.
 
 Whole run: **$28.70**. The apparatus, the pre-registration and its outcome are
-in `nemotron/` — §6 of `nemotron/PREREGISTRATION.md` is the result written back
+in `training/` — §6 of `training/PREREGISTRATION.md` is the result written back
 against the rule it was measured by.
 
 ## 8. Credit

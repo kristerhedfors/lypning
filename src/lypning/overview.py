@@ -66,7 +66,7 @@ COMPONENTS = (
      "grade in this project is over this."),
     ("tests", "tests", "*.py",
      "the differential suite: the engine against CPython, one program at a time."),
-    ("pipeline", "nemotron/pipeline", "*.py",
+    ("pipeline", "training/pipeline", "*.py",
      "the LoRA measurement pipeline — corpus, held-out split, eval, statistics. "
      "Imports the engine's own rules rather than restating them."),
     ("docs", "docs", "*.md",

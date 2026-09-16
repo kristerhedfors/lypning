@@ -14,9 +14,35 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-16** — `nemotron/` is `training/`, and the retired name is a test ([#83](https://github.com/kristerhedfors/lypning/pull/83))
+
+- Rename the training tree after the model it is for, not the model it is
+  not: 208 files, plus the three workflows and their path filters,
+  `PYTHONPATH=src:training`, `round_plan`'s `source_identity` root (a real
+  breakage the moment the directory moved), the `overview` registration, the
+  runbook commands, the Hugging Face job scripts and every document citation.
+  `SWITCH.md` deferred this twice on the three workflows; they were the work.
+- The name is model-agnostic on purpose. `qwen/` would repeat the mistake
+  being undone, for the reason invariant 9 already gives: a name that still
+  resolves to something is a name that can drift back into the code.
+- The earlier target's name now survives only where a rewrite would falsify a
+  record — the recorded run ids under `training/runs/` and their `meta.json`
+  (each run records its own `run_id`, and a run id is the join key between a
+  number and its evidence, including evidence outside this tree), the captured
+  corpus and sightings JSONL, and the dated entries in this file, `AUDIT.md`
+  and `REFACTOR.md`. `SWITCH.md` stops being the home of the name and becomes
+  the home of that rule. Earlier entries' *paths* were repointed, because
+  `tests/test_docs.py` resolves them and a ledger may not cite a file that is
+  not there; their branches, models and numbers are untouched.
+- `training/tests/test_naming.py` is the grep: the name appears nowhere
+  outside the frozen evidence, no tracked path spells it outside `runs/`, and
+  `SWITCH.md` states the rule without spelling it. The test does not spell it
+  either — it reads it off the recorded run directory names, so there is no
+  literal to go stale and the last evidence deleted deletes the rule with it.
+
 **2026-09-16** — Assess the Qwen training approach against its goal, and plan the signal ladder ([#82](https://github.com/kristerhedfors/lypning/pull/82))
 
-- Add `nemotron/ASSESSMENT.md`: why no run so far could say whether the
+- Add `training/ASSESSMENT.md`: why no run so far could say whether the
   programme is moving — no positive control was ever run, every adapter was
   trained at a scale that installs style rather than a boundary, the training
   side got the leftover of the supply, and the examples that would carry the
@@ -24,7 +50,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   admitted. Nothing spent; no frozen artifact touched.
 - Calibrate `stats.power_curve_clustered` on synthetic pilots: a uniform lift
   is applied as `min(1.0, p + delta)`, so on a saturated pilot the uniform
-  rows of `nemotron/EVAL2.md` §7 realise a fraction of the nominal lift they
+  rows of `training/EVAL2.md` §7 realise a fraction of the nominal lift they
   are keyed by; the function's `mean_effect` is the column to print. The rule
   sees a realised +5pp about half the time and a realised +8pp nearly always
   at N=300, k=16, whatever the shape.
@@ -33,10 +59,10 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   repository working on itself.
 - Propose the S0–S4 signal ladder (three rungs at $0, one at ~$5) and an
   eight-step plan with owner, cost, decision and stop rule per step; link it
-  from the nemotron README and `nemotron/STATUS.md` §9, and add ledger row S2 to
+  from the training README and `training/STATUS.md` §9, and add ledger row S2 to
   `ORCHESTRATION.md`.
 - The #80 entry cited `EVAL2.md` without its path, which
-  `tests/test_docs.py` reads as a missing file; it now says `nemotron/EVAL2.md`.
+  `tests/test_docs.py` reads as a missing file; it now says `training/EVAL2.md`.
 
 **2026-09-16** — Round-02 run report corrected: the eval-2 base arm was blocked, no arm completed ([#81](https://github.com/kristerhedfors/lypning/pull/81))
 
@@ -53,13 +79,13 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   verifier on an h200 (job `6aaa87465527934177ee9f34`): SFT trains, the probe
   admits GRPO, GRPO does not move the policy, and 7-case dev and test splits
   show no gain; the three eval-2 arms upload as they finish. Report in
-  `nemotron/reports/2026-09-16-fable-round02-run.md`.
+  `training/reports/2026-09-16-fable-round02-run.md`.
 - Evaluate in chunks: one `generate` call per chunk of cases with every draw,
   paired by chunk seed across arms, completions scored concurrently; GRPO
   rewards scored concurrently; the sequential form ran at ~30 s per draw.
 - Cluster the paired comparison and the power curve by split component, so a
   family spanning source groups is one family and the rule accepts eval-2 v1
-  (18 such families); the corrected power curve is in `nemotron/EVAL2.md` §7 with the
+  (18 such families); the corrected power curve is in `training/EVAL2.md` §7 with the
   full pilot draw's base rates in §11.
 - Verifier policy v3: a candidate that disagrees with itself across two clean
   oracle runs scores `unstable` instead of aborting the stage.
@@ -77,7 +103,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   because the trainer job and the verifier Space share one CPython base digest.
 - Move the worker's harness path off `/runner` for that image: a pooled
   sandbox reads the standard system trees only. The Docker image is unchanged.
-- Add `nemotron/hf/launch.py` and `round02_smoke.sh`: submit a stage with the
+- Add `training/hf/launch.py` and `round02_smoke.sh`: submit a stage with the
   cost printed first and never without `--yes`; the smoke job prepares the
   starter through the pool, runs tiny-model SFT and GRPO on a real GPU, emits
   the plan and uploads the round directory to a private artifact repo.
@@ -85,7 +111,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   assembled schema-3 bank by seed into a spent pilot draw, an eval-2 bank and
   a train bank, assigning whole `split_cases` components, stratifying by
   population, preferring a train bank that clears the pilot admission floor
-  and exiting 1 on any `eval2_leaks` pair; `nemotron/hf/round02_pilot.sh` is
+  and exiting 1 on any `eval2_leaks` pair; `training/hf/round02_pilot.sh` is
   the job-side pilot (banks from the private dataset, `data_loop` review,
   pilot and benchmark bundles through the pool, base/SFT/probe, GRPO only on
   an admitted probe, matched test and whole-benchmark evaluations, paired
@@ -96,7 +122,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   risks are written down; a pilot still needs the reviewed dataset.
 - GRPO warmup goes through `warmup_steps`: the pinned TRL has no
   `warmup_ratio`, which the first GPU smoke under these pins found.
-- Add `nemotron/STATUS.md`: the programme's dated scoreboard, gate state,
+- Add `training/STATUS.md`: the programme's dated scoreboard, gate state,
   ordered next steps, expected movement, a measurement assessment and the
   proposed training recipe, for the reviewing session's assessment.
 - After the Codex review: a Space name is not an immutable image, so the
@@ -112,7 +138,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   independent solution written from the text alone to agree, labels the
   population by running the engine on every test, attaches evidence ids, and
   files native mismatches as witnesses rather than cases.
-- Pre-register eval-2 in `nemotron/EVAL2.md`: the unconditioned task bank,
+- Pre-register eval-2 in `training/EVAL2.md`: the unconditioned task bank,
   the frozen correct-and-native primary metric, the decoding contract, seeds
   and arms, the pilot-draw power analysis, the leak check and the costs, all
   written before any draw is sampled.
@@ -140,9 +166,9 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   (what the SDK's `extra_body` puts on the wire) only when given; `nt eval
   --top-k` (default none) records it in the run's sampling block and
   `stats.SAMPLING_KEYS` carries `top_k`, an absent key reading as null so
-  every earlier run keeps its arm. `nemotron/EVAL2.md` §5 amended to match.
+  every earlier run keeps its arm. `training/EVAL2.md` §5 amended to match.
 - Add `stats.power_curve_clustered` and `nt power --eval2 --rows --mde --sizes`:
-  the design-specific power analysis `nemotron/EVAL2.md` §7 promised, resampling the
+  the design-specific power analysis `training/EVAL2.md` §7 promised, resampling the
   pilot's family clusters to each candidate bank size and asking the §4 rule
   (family-cluster paired bootstrap, lower bound above the bar) at a uniform and
   a concentrated effect of the same mean lift, the null row as the
@@ -157,8 +183,8 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   and `refused` together, each static exclusion rule named and counted, every
   survivor regenerated twice in the sandbox under two hash seeds, and a
   shape-stratified `--limit`/`--seed` draw that ignores the refusal kind.
-- Add `nt eval --system-file` and `nemotron/prompts/subset-spec.md` (generated
-  by `nemotron/prompts/gen_subset_spec.py` from the crate's refusal sites; the
+- Add `nt eval --system-file` and `training/prompts/subset-spec.md` (generated
+  by `training/prompts/gen_subset_spec.py` from the crate's refusal sites; the
   file is held equal to the generator's output): the stage 0b prompt-ceiling
   switch, appended as its own paragraph after the bare system prompt and
   recorded as `meta.system_file_sha256`. `evaluate.prompt_signature` now folds
@@ -184,7 +210,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   of classes refuses as `class-union` instead of killing the program at its
   first annotated `def`. Ledger entry in `docs/HILLCLIMB.md`.
 - Name the earlier target model in one place:
-  [`nemotron/SWITCH.md`](https://github.com/kristerhedfors/lypning/blob/main/nemotron/SWITCH.md)
+  [`training/SWITCH.md`](https://github.com/kristerhedfors/lypning/blob/main/training/SWITCH.md)
   carries its name and the retired numbers; every other document says "the
   earlier model". Remove
   the retired GCP launch scripts and the earlier model's LoRA recipe. Run
@@ -335,7 +361,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   unbiased estimator rather than as `c > 0` under a smaller k's name.
 - **53 MISMATCHes over 14 cases, found by the replay.** Programs this engine runs
   and answers differently from CPython, all from the train pool, all now in
-  `nemotron/data/engine-mismatches.jsonl`. Four reduce to one-liners: a
+  `training/data/engine-mismatches.jsonl`. Four reduce to one-liners: a
   `'\udcff'` surrogate escape is a `SyntaxError` here and a string in CPython;
   `enumerate(iterable=…, start=…)` is rejected here and accepted there; `v is v`
   for a bound `dict.values()` is False here and True there; `divmod(1.0, 0)` says
@@ -350,7 +376,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   replay cache now keys on a grader version as well as the engine fingerprint,
   because the fingerprint cannot see a change on this side of the comparison.
 - **The four training-checklist assertions are tests now**
-  (`nemotron/tests/test_sft_rows.py`): completion-only loss, the empty
+  (`training/tests/test_sft_rows.py`): completion-only loss, the empty
   `<think></think>` block byte-for-byte between training and eval, every SFT
   completion decoding back through the *eval's* extractor to the program the
   verifier passed, and the MLP projections being in `TARGET_MODULES`. The GPU
@@ -360,12 +386,12 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   and leaves the loss curve looking perfectly healthy.
 - **The documentation checker stopped crying wolf about a second suite.**
   `tests/test_docs.py` matched only the tail of a test path, so a document citing
-  a test file under `nemotron/tests/` was reported as promising a file that does
+  a test file under `training/tests/` was reported as promising a file that does
   not exist — while the file did. Paths now resolve as written, which also means
   a path named in a document is checked where it actually points.
-- **`nemotron/LADDER.md`** carries the plan these rungs belong to, and the three
+- **`training/LADDER.md`** carries the plan these rungs belong to, and the three
   Nemotron numbers that must stop being decision inputs for a Qwen arm.
-  `nemotron/README.md` now says on line one that the model is Qwen and the
+  `training/README.md` now says on line one that the model is Qwen and the
   directory name is history.
 
 **2026-09-14** — What differs from Python was written down twice and both copies were stale ([#67](https://github.com/kristerhedfors/lypning/pull/67))
@@ -489,8 +515,8 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   subset legality is inside the noise floor, while correctness over the same
   programs moves +4.92pp. Spend $0.00: it replays stored programs. Also
   `nt grade --require-fingerprint`, and `nt refusals --held-out` no longer calls
-  its own output a build order. `nemotron/REVIEW.md` is the response to the
-  external review that asked for the endpoint; `nemotron/PREREGISTRATION.md` §7
+  its own output a build order. `training/REVIEW.md` is the response to the
+  external review that asked for the endpoint; `training/PREREGISTRATION.md` §7
   registers the rules for a v2 that has not been run.
 - **The core answered what its own superset refused, and one `#[cfg]` was
   why.** With `lypning-l` finally building, `conformance` reported 2 monotone
@@ -687,7 +713,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   as harness errors; the report says how many of each. `--dry-run` prints the
   pool, the draw count and the ceiling cost and sends nothing. `--max-spend` with
   no prices exported is now an error rather than a cap that cannot fire
-  (`nemotron/PREREGISTRATION.md` §2(f)).
+  (`training/PREREGISTRATION.md` §2(f)).
 - **The lock is verified before sampling, which §4 has promised since it was
   written.** Only `evaluate.load_holdout` did it; `sample.train_cases` loaded the
   lock without checking the corpus against it, so a corpus edited after the
@@ -705,7 +731,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   differing `backend.base_url`, and nothing on the GPU path wrote one — so it
   would not have fired if the two arms really had come off different stacks. The
   completions header now names the stack (transformers, torch, kernels, device).
-- `nemotron/RUNBOOK.md` §1 re-derives the memory arithmetic in one unit against
+- `training/RUNBOOK.md` §1 re-derives the memory arithmetic in one unit against
   the script that runs, and adds the generation cache it had no line for; §2 records that
   the implementation is `transformers`, not vLLM, and two Jobs, not one.
 
@@ -763,7 +789,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   behind them is dropped by the similarity filter and the clean re-fold solves
   none — the first non-tautological evidence that the exclusion excludes.
 - **The abandon threshold now reads on the population it is about.**
-  `sft_examples_on_task`; `nemotron/PREREGISTRATION.md` §2(g) and §2(b) re-run at HEAD's
+  `sft_examples_on_task`; `training/PREREGISTRATION.md` §2(g) and §2(b) re-run at HEAD's
   engine — the 70-case primary denominator holds, same four degenerate ids.
 
 **2026-09-12** — The binary now says which CPython it was built for, and three things read it (branch `claude/nemotron-lora-pipeline-1zczi2`)
@@ -1160,7 +1186,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   as `any(x is n for x in l)` and went straight through. A refusal that can be
   reworded into a wrong answer is not a guard.
 - **The instrument was the 1,173 programs Qwen3.8-27B wrote** in
-  `nemotron/runs/qwen38-baseline-k16`, each run against lypning and CPython:
+  `training/runs/qwen38-baseline-k16`, each run against lypning and CPython:
   462 MATCH, 709 UNSUPPORTED, **2 MISMATCH** — these two. `conformance` grades
   the corpus, not the language, and the corpus's blind spots are shaped like its
   capture mechanism.
@@ -1175,10 +1201,10 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 **2026-09-11** — The measurement pipeline audited: 52 findings, 33 survived, and the corpus does not need to be bigger (branch `claude/nemotron-lora-pipeline-1zczi2`)
 
 - **A green suite measures the cases someone thought of.** Six independent lenses
-  over `nemotron/pipeline/`, every finding then handed to two refute-by-default
+  over `training/pipeline/`, every finding then handed to two refute-by-default
   skeptics: 52 raised, **33 survived**, 19 refuted, every survivor confirmed by
   running a repro. The 62 passing tests caught none of them. Written up in
-  `nemotron/AUDIT.md`.
+  `training/AUDIT.md`.
 - **`-E` silently voided the harness's own determinism.** `run_python` spawned
   CPython with `-E`, which ignores every `PYTHON*` variable — including the
   `PYTHONHASHSEED=0` set nine lines earlier against exactly this. Found
@@ -1244,11 +1270,11 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   the rule as a control. An engine that runs a program and disagrees with
   CPython is `engine-mismatch`, never a model failure.
 
-**2026-09-11** — `nemotron/`: a corpus that drops what it cannot test, and a held-out split that is frozen by a file rather than by intention (branch `claude/nemotron-lora-pipeline-1zczi2`)
+**2026-09-11** — `training/`: a corpus that drops what it cannot test, and a held-out split that is frozen by a file rather than by intention (branch `claude/nemotron-lora-pipeline-1zczi2`)
 
 - **Steps 1 and 2 of a LoRA pipeline** for
   `nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16`, in a new top-level
-  `nemotron/` that imports nothing from `lypning` and adds no dependency to it.
+  `training/` that imports nothing from `lypning` and adds no dependency to it.
   Steps 3 (training) and 4 (sweep) are deliberately not started: no training
   config is proposed before there is a baseline to beat.
 - **A case is kept only if its test runs and discriminates.** Four gates, and a
@@ -1277,7 +1303,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   absolute path still escapes it.
 - Stdlib only, `>=3.9`, `from __future__ import annotations` throughout, so the
   same code gives the same verdict on a laptop, in CI and in the GPU container.
-  54 tests under `nemotron/tests`.
+  54 tests under `training/tests`.
 
 **2026-09-07** — Round 81: `repr()` of a type at 46 programs per KB, a `zip()` that never returned, and 224 builtin arity divergences
 

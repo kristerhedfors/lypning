@@ -22,7 +22,7 @@ host that links `liblypning` (`EMBEDDING.md` §4) is invisible to both and must
 append the record itself. The Python `embed.Library.run` binding now supplies
 that observation by default, with the same `LYPNING_CAPTURE=0` opt-out. Native
 C/C++/Node/Go/Swift/Lua/Rust hosts still need their own host-side adapter. See
-[the data-production loop](../nemotron/DATA_PRODUCTION.md) for exact evidence
+[the data-production loop](../training/DATA_PRODUCTION.md) for exact evidence
 snapshots, binding metadata, privacy/size limits and reviewed training views;
 none of these observations is automatically a correctness label.
 

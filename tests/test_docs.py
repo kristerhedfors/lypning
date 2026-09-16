@@ -134,7 +134,7 @@ def test_relative_markdown_links_resolve(doc):
 
 
 #: A test file as a document spells one: `tests/test_x.py`, or with the
-#: directory that holds it — `nemotron/tests/test_x.py`.
+#: directory that holds it — `training/tests/test_x.py`.
 _TEST_PATH = r"(?:[\w.-]+/)*tests/test_\w+\.py"
 
 
@@ -147,7 +147,7 @@ def test_every_test_file_a_document_promises_exists(doc):
     true — write the test, or stop claiming it.
 
     The path is resolved AS WRITTEN. This tree has a second suite under
-    `nemotron/tests/`, and matching only the tail of such a path would report a
+    `training/tests/`, and matching only the tail of such a path would report a
     test that exists as missing — a false alarm on a checker whose whole value is
     that it does not cry wolf.
     """

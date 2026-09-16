@@ -107,7 +107,7 @@ table rows on 3.12 and 3.13 this iteration; it is a table, and the next step.
   was touched. Not the focus; flat.
 - **corpus:** `corpus-time --repeat 3` against main's binary over the 6,323 programs both timed: 14.10 → 15.91 s, **1.128× slower on its face**. 1.66 s of the 1.81 s is two programs that create 60,000 and 22,000 files in the sandbox; re-timed interleaved on the idle box, the 60,000-file one spans 2.8–12.2 s on the BASE binary alone across three rounds, and the 22,000-file one is 1769 ms base against 1705 ms new. That is the filesystem, not the engine, and the only change on that path is one keyword lookup per `open`. The other 6,321 programs moved +0.15 s on ~12.4 s, +1.2%, inside the ±3% deadband: **not slower**.
 
-Suites: `pytest tests` 8375 passed, 553 skipped, 0 failed; `nemotron/tests` 409 passed, 1 failed — `test_setup_failure_is_distinct_from_program_exit_127`, which this container fails on every branch because its `unshare` reports a missing interpreter as exit 127 itself; doctor
+Suites: `pytest tests` 8375 passed, 553 skipped, 0 failed; `training/tests` 409 passed, 1 failed — `test_setup_failure_is_distinct_from_program_exit_127`, which this container fails on every branch because its `unshare` reports a missing interpreter as exit 127 itself; doctor
 19 checks, 0 FAIL, 3 WARN; gate PASS, both variants inside their block budgets.
 
 ### One thing about the instrument

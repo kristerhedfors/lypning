@@ -239,7 +239,7 @@ CASES = [
         #
         # Ranked first among the `type` rows by the census of what a model
         # actually writes: 30 of the 1,173 programs in
-        # `nemotron/runs/qwen38-baseline-k16` refused here.
+        # `training/runs/qwen38-baseline-k16` refused here.
         "type-of-an-exception-names-its-class",
         "cases = [ValueError('v'), TypeError('t'), KeyError('k'), IndexError('i'),\n"
         "         ZeroDivisionError('z'), AttributeError('a'), RuntimeError('r'),\n"

@@ -21,7 +21,7 @@ jobs:
     env:
       LYPNING_CAPTURE: "0"
       LYPNING_HARVEST: "0"
-      PYTHONPATH: src:nemotron
+      PYTHONPATH: src:training
     steps:
       - uses: actions/checkout@v4
       - name: Isolate engine state
@@ -43,20 +43,20 @@ jobs:
           NTX_ENGINE_LYPNING: ${{ runner.temp }}/training-home/bin/lypning
           NTX_ENGINE_LYPNING_L: ${{ runner.temp }}/training-home/bin/lypning-l
           NTX_TRAINING_TEST_ENGINE: ${{ runner.temp }}/training-home/bin/lypning-l
-        run: python -m pytest nemotron/tests -q --junitxml="${{ runner.temp }}/training-tests.xml"
+        run: python -m pytest training/tests -q --junitxml="${{ runner.temp }}/training-tests.xml"
       - name: Tests must not rewrite recorded datasets or results
         run: git diff --exit-code
       - name: Build minimal candidate image (Linux only, no repository or dataset in image)
         if: runner.os == 'Linux'
         run: |
           VERIFY_CONTEXT=$(mktemp -d)
-          cp nemotron/pipeline/{sandbox,child_exec,container_worker}.py "$VERIFY_CONTEXT/"
+          cp training/pipeline/{sandbox,child_exec,container_worker}.py "$VERIFY_CONTEXT/"
           cp "$LYPNING_HOME/bin/lypning-l" "$VERIFY_CONTEXT/"
-          docker build --build-arg BASE_IMAGE=python:3.14-slim -f nemotron/worker/Dockerfile.verifier -t lypning-verifier-ci "$VERIFY_CONTEXT"
+          docker build --build-arg BASE_IMAGE=python:3.14-slim -f training/worker/Dockerfile.verifier -t lypning-verifier-ci "$VERIFY_CONTEXT"
           echo "NTX_TEST_EXECUTION_IMAGE=$(docker image inspect lypning-verifier-ci --format '{{.Id}}')" >> "$GITHUB_ENV"
       - name: Real container protocol and filesystem separation (no GPU or captured code)
         if: runner.os == 'Linux'
-        run: python -m pytest nemotron/tests/test_container_runner.py -q
+        run: python -m pytest training/tests/test_container_runner.py -q
       - uses: actions/upload-artifact@v4
         if: always()
         with:

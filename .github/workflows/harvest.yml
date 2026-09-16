@@ -56,7 +56,7 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
       parallelism: ${{ steps.plan.outputs.parallelism }}
     env:
-      PYTHONPATH: src:nemotron
+      PYTHONPATH: src:training
     steps:
       - uses: actions/checkout@v4
         with:
@@ -90,7 +90,7 @@ jobs:
       max-parallel: ${{ fromJSON(needs.plan.outputs.parallelism) }}
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
-      PYTHONPATH: src:nemotron
+      PYTHONPATH: src:training
       LYPNING_CAPTURE: '0'
       LYPNING_HARVEST: '0'
       CATALOG: ${{ inputs.catalog }}
@@ -104,8 +104,8 @@ jobs:
           python-version: '3.12'
       - name: Build pinned agent and proxy without any API key
         run: |
-          docker build -f nemotron/harvesting/Dockerfile.opencode -t harvest-worker nemotron/harvesting
-          docker build -f nemotron/harvesting/Dockerfile.proxy -t harvest-proxy nemotron/harvesting
+          docker build -f training/harvesting/Dockerfile.opencode -t harvest-worker training/harvesting
+          docker build -f training/harvesting/Dockerfile.proxy -t harvest-proxy training/harvesting
       - name: Harvest one isolated project (observations, not labels)
         if: ${{ !inputs.dry_run }}
         env:

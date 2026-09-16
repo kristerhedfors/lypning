@@ -43,7 +43,7 @@ x86-64 musl budget or the zero-file-open startup property.
 
 ## How this informs the next manually started training round
 
-Follow [the training handoff](../nemotron/NEXT_ROUND.md). These runtime changes
+Follow [the training handoff](../training/NEXT_ROUND.md). These runtime changes
 do not launch a training job and do not turn the authored starter into a pilot
 benchmark.
 
