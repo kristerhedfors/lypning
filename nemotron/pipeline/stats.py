@@ -31,6 +31,8 @@ import math
 import random
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from .training_metrics import split_components
+
 RESAMPLES = 10000
 SEED = 20260911
 
@@ -674,7 +676,7 @@ def power_curve_clustered(
     family-cluster percentile bootstrap of the macro-over-family
     correct-and-native delta is above ``mde``. `power_curve` above resamples
     cases and cannot price that rule: a family's cases share a task, so the
-    bootstrap resamples families as whole clusters (`split_group`, the family
+    bootstrap resamples families as whole clusters (split components, the family
     when absent), exactly as `training_metrics.paired_comparison` does, and so
     does this simulation.
 
@@ -696,14 +698,18 @@ def power_curve_clustered(
     for shape in shapes:
         if shape not in CLUSTER_SHAPES:
             raise ValueError("unknown effect shape %r" % (shape,))
+    # A cluster is a split component (`training_metrics.split_components`), the
+    # unit `paired_comparison` resamples; a family pools its cases across the
+    # groups it spans, so the macro is over families exactly as the rule takes it.
+    component = split_components({(str(e["family"]), str(e.get("split_group") or e["family"]))
+                                  for e in pilot.values()})
     clusters: Dict[str, Dict[str, List[float]]] = {}
     for cid in sorted(pilot):
         e = pilot[cid]
         scores = e["scores"]
         if not scores:
             raise ValueError("case %s has no draws" % cid)
-        group = str(e.get("split_group") or e["family"])
-        clusters.setdefault(group, {}).setdefault(str(e["family"]), []).append(
+        clusters.setdefault(component[str(e["family"])], {}).setdefault(str(e["family"]), []).append(
             sum(scores) / len(scores))
     if not clusters:
         raise ValueError("empty pilot")

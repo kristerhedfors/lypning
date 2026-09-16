@@ -184,44 +184,45 @@ same mean lift as the uniform row, so the two rows differ only in shape.
 tree, the 64 cases of train v1 (§11) at k = 16, 1,024 draws, all 64 cases
 drawn (the run was resumed twice through router outages; the 268 attempts that
 never reached the model are superseded by their redraws, `nt eval2-rows`, and
-no harness error remains in the rows). Base correct-and-native as the power
-tool reads it, macro over 64 (cluster, family) units in 63 independent
-clusters: 73.1%. `nt power --eval2 --rows work/eval2/legacy-pilot/rows-full.jsonl
---draws 16`, 200 banks per cell, 400 resamples each, rule 95% lower bound > +3pp:
+no harness error remains in the rows). Base correct-and-native, macro over the
+49 families in 48 split components: 68.7%, the summariser's own figure.
+`nt power --eval2 --rows work/eval2/legacy-pilot/rows-full.jsonl --draws 16`,
+200 banks per cell, 400 resamples each, rule 95% lower bound > +3pp:
 
 | shape | effect | N=100 | N=200 | N=300 | N=500 | N=800 |
 |---|---|---|---|---|---|---|
 | uniform | +0pp (false positives) | 0% | 0% | 0% | 0% | 0% |
 | uniform | +3pp | 0% | 0% | 0% | 0% | 0% |
 | uniform | +5pp | 0% | 0% | 0% | 0% | 0% |
-| uniform | +8pp | 2% | 3% | 2% | 2% | 3% |
-| uniform | +10pp | 20% | 28% | 40% | 59% | 81% |
+| uniform | +8pp | 9% | 20% | 20% | 36% | 56% |
+| uniform | +10pp | 40% | 62% | 76% | 96% | 100% |
 | concentrated | +0pp (false positives) | 0% | 0% | 0% | 0% | 0% |
-| concentrated | +3pp | 0% | 0% | 0% | 0% | 0% |
-| concentrated | +5pp | 9% | 30% | 64% | 98% | 100% |
-| concentrated | +8pp | 73% | 100% | 100% | 100% | 100% |
+| concentrated | +3pp | 4% | 6% | 8% | 16% | 22% |
+| concentrated | +5pp | 30% | 68% | 97% | 100% | 100% |
+| concentrated | +8pp | 87% | 100% | 100% | 100% | 100% |
 | concentrated | +10pp | 98% | 100% | 100% | 100% | 100% |
 
 Read at the frozen bank size of 300 (supply-capped, §11): the rule has 80%
-power only for a concentrated effect of +8pp or more; a concentrated +5pp is
-seen in about two banks of three, a uniform +10pp in two of five, and a uniform
-lift of +8pp or less is invisible at every size on the grid. The false-positive
+power for a concentrated effect of +5pp or more (97% at +5pp, 100% at +8pp),
+sees a uniform +10pp in three banks of four, and a uniform lift of +8pp or
+less in one of five or fewer at every size on the grid. The false-positive
 rate is 0% in every cell. So a null result from round-02 rules out a
-concentrated gain of roughly +8pp on the lowest-base families and nothing
-finer; a uniform few-point lift, the shape a small SFT most plausibly produces,
-cannot be detected by this instrument at N = 300 and k = 16, and the honest
-route to it is more draws per case (k) and a larger bank, not a looser rule.
+concentrated gain of about +5pp on the lowest-base families and a uniform
+gain of about +10pp, and nothing finer; a uniform few-point lift, the shape a
+small SFT most plausibly produces, cannot be seen by this instrument at
+N = 300 and k = 16, and the honest route to it is more draws per case and a
+larger bank, not a looser rule.
 
-One caveat on the statistic itself, found while reading the curve. The rows'
-summariser (`training_metrics.summarize`) takes the macro over the bank's 49
-families; `power_curve_clustered` keys a family inside its cluster, so a
-family that straddles source groups (`stdin-nonblank-line-count`, 12 cases in
-several groups) is several units to it and the same rows read 68.7% to the
-summariser and 73.1% to the power tool. The curve is therefore priced on a
-statistic slightly closer to a per-case macro than the §4 rule's, which should
-overstate power a little for effects concentrated inside a straddling family.
-Follow-up: pool a family across clusters in the power tool, re-run the curve
-on the same rows, and replace this table.
+A first print of this table on the same rows, earlier the same day, read the
+base as 73.1% over 64 units and gave lower power (64% for concentrated +5pp at
+N = 300): the tool keyed a family inside each source group, so a family that
+spans groups (`stdin-nonblank-line-count`, 12 cases in several) was several
+units to it and one to the summariser, and `paired_comparison` refused such
+rows outright. Both now cluster by split component
+(`training_metrics.split_components`: every family and group reachable from
+one another), so the curve prices the statistic the rule takes and the rule
+accepts the bank, which has 18 spanning families (§11). The earlier table is
+superseded, not kept.
 
 ## 8. Contamination
 
@@ -288,6 +289,12 @@ rules:
 |---|---|---|---|---|---|
 | eval-2 v1 | 300 | 248 | 241 | 59 | `46cff1d740c93b596c80095233818781629e8a9766545410febdf58eca36d37b` |
 | train v1 | 64 | 49 | 51 | 13 | `31edda65c2c71dda7e0f46038bf30da283bf10564855a56b866076635bfee9ff` |
+
+Families and source groups do not nest: in eval-2 v1, 18 of the 248 families
+span more than one source group (`stdin-digit-run-sum` spans 23), and in train
+v1, 3 of 49. The unit of independence is therefore the split component (§6,
+§7; `training_metrics.split_components`), and the family stays the unit of the
+macro.
 
 Supply capped the bank at the 300 floor, so the pilot draw of §7 is the training
 bank itself, drawn on the legacy tree at k = 16: it is spent for eval-2 (no

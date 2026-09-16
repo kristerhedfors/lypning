@@ -147,3 +147,15 @@ def test_harness_errored_draws_are_not_pilot_observations():
     assert "b" not in pilot, "a case with no real draw is absent, not a zero"
     assert pilot["a"]["scores"] == [1]
 
+
+
+def test_a_family_that_spans_groups_is_one_family_to_the_curve():
+    """The summariser and the rule take the macro over families; the curve
+    must price that statistic, not one over (group, family) pieces."""
+    pilot = {"a": {"family": "f", "split_group": "g1", "scores": [1, 1]},
+             "b": {"family": "f", "split_group": "g2", "scores": [0, 0]},
+             "c": {"family": "h", "split_group": "g2", "scores": [1, 0]},
+             "d": {"family": "j", "split_group": "g3", "scores": [1, 1]}}
+    out = stats.power_curve_clustered(pilot, 2, trials=4, resamples=100, sizes=(4,), deltas=(0.0,))
+    assert out["pilot"] == {"cases": 4, "families": 3, "clusters": 2,
+                            "base_point": pytest.approx((0.5 + 0.5 + 1.0) / 3)}
