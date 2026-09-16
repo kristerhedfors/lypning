@@ -14,6 +14,66 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-16** — Fix the power-table mislabel at its source, and make the pre-registered k a refusal ([#85](https://github.com/kristerhedfors/lypning/pull/85))
+
+- `training/ASSESSMENT.md` described the `training/EVAL2.md` §7 mislabel and
+  left it in the code, so the next print would have reproduced it.
+  `stats.power_curve_clustered` now returns the realised lift in the unit the
+  §4 rule works in — the macro over families, noise-free — beside the per-case
+  figure and a flag for whether the rate cap clipped the cell, and
+  `nt power --eval2` keys every cell on the macro, counts the cells the cap
+  clipped and names the worst of them in the cap's own per-case unit.
+  A row can no longer be read by the lift it was asked for.
+- §7's uniform reading is withdrawn, dated, with the withdrawn sentences quoted:
+  it concluded that a uniform few-point lift "cannot be seen by this instrument
+  at N = 300 and k = 16" and prescribed more draws and a larger bank. Neither
+  follows from rows that tested a smaller effect than their label. The
+  concentrated rows stand — their lifted decile starts at zero, which their
+  strictly rising power confirms — and the §4 rule, N and the §9 falsifier are
+  untouched.
+- Two corrections to the assessment's own findings, both from adversarial
+  re-calibration on synthetic pilots (2026-09-16, this tree, k=16, N=300, mde
+  +3pp, seed 7). `mean_effect` is per-case and is not the unit power is read
+  against, so the prescription to key the re-print on it named the wrong
+  column; on the real bank it would understate rather than overstate, because
+  §11 puts the macro headroom above the per-draw headroom. And the concentrated
+  shape clips too: its reachable lift is `fraction × (1 − mean(lifted decile))`,
+  so at fraction 0.1 a nominal +10pp survives only on a decile at exactly zero.
+- A non-smoke benchmark eval arm at any k but
+  `training_contract.PROTOCOL_EVAL_DRAWS` is refused in
+  `train_verified.preflight`; `--greedy`, which draws once by construction and is
+  already restricted to a diagnostic, is exempt. `training/EVAL2.md` §4 already called the runner's default
+  of 4 a smoke setting; round-02 spent an arm proving it. The other two "stop
+  doing" rules stay prose on purpose — a training-case floor of 1,000 would
+  refuse every bundle in this tree, and which floor is right is a decision
+  `training/ASSESSMENT.md` §8 asks for.
+- `training/STATUS.md` §10 is the single live sequence, appended rather than installed as
+  §5: §5 is the only dated record of the programme's priors, and evicting it
+  would have made five of the ten inbound `training/STATUS.md` §N citations
+  wrong — silently, since the headings they name all survive a shift — one of
+  them inside a dated entry in this file. `training/LADDER.md` §5,
+  `training/NEXT_ROUND.md`, `training/START_NEXT_ROUND.md` and `training/ORCHESTRATION.md` point at it and
+  keep their mechanism, which for `training/NEXT_ROUND.md` is the launch flags that exist
+  nowhere else.
+- `training/STATUS.md` §0 states where the programme stands in one paragraph —
+  five days and about $105 for four adapters and no informative result, and the
+  four cheap things that have never been done — because a reader had to reach §9
+  to find it. Its scoreboard row for the pilot draw no longer quotes power
+  figures from the withdrawn curve; it says instead that none is quotable until
+  rung S0a re-prints it.
+- `test_reward_scores_a_group_concurrently_and_keeps_batch_order` asserted that
+  GRPO's thread pool overlaps two scorings by sleeping 0.05s in each and
+  demanding the pair finish inside 0.15s. That is a wall-clock budget on a
+  shared runner, which `ci.yml` refuses to put `bench` in CI for in those exact
+  words, and it was the macOS job's only red on `0fdb527` — at 0.21s, with
+  nothing wrong with the code. A `threading.Barrier` now asserts the overlap
+  directly: two completions each wait for the other, so `reward` returns only if
+  both were in flight. Checked both ways — it passes in 0.10s concurrently and
+  fails on `score_workers=1`.
+- `training/AUDIT.md` carries the defect as
+  `data-integrity/power-table-keyed-by-a-lift-the-simulation-does-not-deliver`,
+  with the repro; `training/ORCHESTRATION.md` gains ledger row S3.
+
 **2026-09-16** — `nemotron/` is `training/`, and the retired name is a test ([#83](https://github.com/kristerhedfors/lypning/pull/83))
 
 - Rename the training tree after the model it is for, not the model it is

@@ -30,9 +30,9 @@ from pipeline.jsonio import append_jsonl, sha256_of, write_json
 from pipeline.training_metrics import CheckpointGate
 from pipeline.training import ISOLATED_KINDS, TrainingError, Verifier, execution_runner, load_bundle, messages
 
-from pipeline.training_contract import (BASE_MODEL, CONTRACT_VERSION, adapter_identity,
-    decoding, model_config_identity, probe_contract, probe_report, runtime_versions,
-    seal_adapter, source_identity, validate_probe)
+from pipeline.training_contract import (BASE_MODEL, CONTRACT_VERSION, PROTOCOL_EVAL_DRAWS,
+    adapter_identity, decoding, model_config_identity, probe_contract, probe_report,
+    runtime_versions, seal_adapter, source_identity, validate_probe)
 from verified_evaluation import evaluate
 from verified_stages import balanced_cases, train_sft, train_grpo
 
@@ -127,6 +127,16 @@ def preflight(args):
         raise TrainingError("smoke data cannot launch a real run; prepare an admitted pilot bundle")
     if bundle.get("purpose") == "benchmark" and args.stage != "eval":
         raise TrainingError("a benchmark bundle is evaluated whole, never trained on; only stage eval accepts it")
+    # k is pre-registered for the confirmatory arm, and the runner's default is
+    # not it. Refusing here costs nothing; the round-02 pilot spent an arm
+    # finding this out, and a wider interval than the effect is not a cheaper
+    # measurement but a measurement of nothing.
+    if (not args.smoke and bundle.get("purpose") == "benchmark" and args.stage == "eval"
+            and not args.greedy and args.eval_draws != PROTOCOL_EVAL_DRAWS):
+        raise TrainingError(
+            "eval-2 is pre-registered at --eval-draws %d (EVAL2.md section 4); %d is a "
+            "different instrument, not a cheaper one. Pass --smoke for a wiring check."
+            % (PROTOCOL_EVAL_DRAWS, args.eval_draws))
     if args.eval_split == "all" and bundle.get("purpose") != "benchmark":
         raise TrainingError("--eval-split all evaluates a benchmark bundle whole; a pilot is measured per split")
     if not args.smoke and sys.platform != "linux" and not args.plan:

@@ -21,9 +21,11 @@ correct compatible 2× example and an untimed example are both valuable. There i
 Correctness comes first; compatibility coverage is the model objective.
 
 Use the task-first `pipeline.training` / `gpu/train_verified.py` path, not the
-historical rewrite trainer. Follow base → verified SFT → train-only signal probe
-→ GRPO only if informative → matched evaluation. Keep the better base/SFT policy
-if RL does not earn its place. Broader independent task coverage is more valuable
+historical rewrite trainer. **Which round runs next, and whether it runs at all,
+is `STATUS.md` §10 — read it first; nothing here chooses the next paid step.**
+Within a round the stage order is base → verified SFT → train-only signal probe
+→ GRPO only if informative → matched evaluation, run by the exact commands in
+`NEXT_ROUND.md`. Keep the better base/SFT policy if RL does not earn its place. Broader independent task coverage is more valuable
 than repeatedly cloning starter templates. Training remains manually launched.
 
 ## What is implemented; what is still a launch gate
