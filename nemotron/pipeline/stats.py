@@ -568,6 +568,12 @@ def pilot_from_rows(rows: Sequence[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]
     """
     per: Dict[str, Dict[str, Any]] = {}
     for r in rows:
+        if r.get("status") == "harness-error":
+            # A draw the server or sandbox failed to produce is not an
+            # observation of the policy: the first pilot draw of 2026-09-16
+            # lost 796 of 1,024 calls to a billing refusal, and counting them
+            # as wrong answers read a 97% base rate as 21%.
+            continue
         cid = str(r["case_id"])
         e = per.setdefault(cid, {"family": r["family"],
                                  "split_group": r.get("split_group") or r["family"],

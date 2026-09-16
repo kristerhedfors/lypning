@@ -135,3 +135,15 @@ def test_nt_power_eval2_reads_a_run_id_and_says_what_is_missing(tmp_path, capsys
     assert rc == 0 and "pilot 12 cases" in out and "k=2" in out
     # Without --eval2 the legacy curve still wants its run id.
     assert cli.main(["power"]) == 2
+
+
+def test_harness_errored_draws_are_not_pilot_observations():
+    """A call the provider refused is neither a hit nor a miss; the case keeps its real draws."""
+    from pipeline import stats
+    rows = [{"case_id": "a", "family": "f", "draw": 0, "correct": True, "native": True, "status": "correct-native"},
+            {"case_id": "a", "family": "f", "draw": 1, "correct": False, "native": False, "status": "harness-error"},
+            {"case_id": "b", "family": "g", "draw": 0, "correct": False, "native": False, "status": "harness-error"}]
+    pilot = stats.pilot_from_rows(rows)
+    assert "b" not in pilot, "a case with no real draw is absent, not a zero"
+    assert [s for _, s in pilot["a"]["draws"]] == [1]
+
