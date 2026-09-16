@@ -455,16 +455,29 @@ def test_a_pilot_adapter_is_admitted_on_a_benchmark_eval_and_nowhere_else():
 
 def test_reward_scores_a_group_concurrently_and_keeps_batch_order(case):
     """GRPO's four completions are a dozen sandbox requests each; they are
-    scored on a thread pool and the rewards come back in batch order."""
-    import time
+    scored on a thread pool and the rewards come back in batch order.
+
+    The overlap is asserted with a barrier and not a stopwatch. This test used to
+    sleep 0.05s per slow scoring and demand the pair finish inside 0.15s, which
+    is a wall-clock budget on a shared runner — the thing `ci.yml` refuses to put
+    `bench` in CI for, in its own words, because it measures the runner. It duly
+    became the macOS job's only red, at 0.21s, with nothing wrong with the code.
+    A barrier asserts the property directly instead of inferring it from elapsed
+    time: two of the four completions are `p0`, each waits for the other, so
+    `reward` can only return at all if both were in flight at once. A serial
+    scorer breaks the barrier on its timeout and fails there. Free when it passes.
+    """
+    import threading
     from pipeline.training import Score
 
-    class Slow:
+    side_by_side = threading.Barrier(2, timeout=30)
+
+    class Concurrent:
         def score(self, c, program):
-            time.sleep(0.05 if program == "p0" else 0.0)
+            if program == "p0":
+                side_by_side.wait()
             return Score(1.0 if program == "p0" else 0.0, "correct-native" if program == "p0" else "incorrect", 1, 1)
-    reward = t.Reward([case], Slow(), generations=2, score_workers=4)
-    started = time.time()
+    reward = t.Reward([case], Concurrent(), generations=2, score_workers=4)
     got = reward(["```python\np0\n```", "```python\np1\n```"] * 2, [case["case_id"]] * 4)
     assert got == [1.0, 0.0, 1.0, 0.0]
-    assert time.time() - started < 0.15, "two slow scorings ran side by side"
+    assert not side_by_side.broken, "the two slow scorings never ran side by side"

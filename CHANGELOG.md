@@ -61,6 +61,15 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   to find it. Its scoreboard row for the pilot draw no longer quotes power
   figures from the withdrawn curve; it says instead that none is quotable until
   rung S0a re-prints it.
+- `test_reward_scores_a_group_concurrently_and_keeps_batch_order` asserted that
+  GRPO's thread pool overlaps two scorings by sleeping 0.05s in each and
+  demanding the pair finish inside 0.15s. That is a wall-clock budget on a
+  shared runner, which `ci.yml` refuses to put `bench` in CI for in those exact
+  words, and it was the macOS job's only red on `0fdb527` — at 0.21s, with
+  nothing wrong with the code. A `threading.Barrier` now asserts the overlap
+  directly: two completions each wait for the other, so `reward` returns only if
+  both were in flight. Checked both ways — it passes in 0.10s concurrently and
+  fails on `score_workers=1`.
 - `training/AUDIT.md` carries the defect as
   `data-integrity/power-table-keyed-by-a-lift-the-simulation-does-not-deliver`,
   with the repro; `training/ORCHESTRATION.md` gains ledger row S3.
