@@ -59,6 +59,9 @@ def parser():
     p.add_argument("--generations", type=int, default=4, help="GRPO/probe draws per train prompt")
     p.add_argument("--probe", type=Path, help="admitted probe.json from the exact RL starting policy")
     p.add_argument("--eval-draws", type=int, default=4, help="matched-seed first-draft evaluation draws")
+    p.add_argument("--eval-sequences", type=int, default=64,
+                   help="sequences per generate call in evaluation: cases per chunk = this // draws")
+    p.add_argument("--score-workers", type=int, default=16, help="concurrent verifier scorings per chunk")
     p.add_argument("--greedy", action="store_true", help="eval-only diagnostic; not checkpoint selection")
     p.add_argument("--warmup-ratio", type=float, default=0.1)
     p.add_argument("--max-no-signal", type=int, default=20, help="abort RL after this many uninformative groups")
@@ -100,7 +103,8 @@ def preflight(args):
     if args.output.exists():
         raise TrainingError("--output already exists")
     if min(args.steps, args.eval_every, args.patience, args.rank, args.batch_size,
-           args.max_seq, args.max_new_tokens, args.generations, args.eval_draws, args.max_no_signal) <= 0 or (args.lr is not None and (not math.isfinite(args.lr) or args.lr <= 0)):
+           args.max_seq, args.max_new_tokens, args.generations, args.eval_draws, args.max_no_signal,
+           args.eval_sequences, args.score_workers) <= 0 or (args.lr is not None and (not math.isfinite(args.lr) or args.lr <= 0)):
         raise TrainingError("training lengths, rank, learning rate and batches must be positive")
     if args.stage in ("grpo", "probe") and args.generations < 2:
         raise TrainingError("GRPO needs at least two generations per prompt")
@@ -283,7 +287,8 @@ def run(args, bundle, adapter_info):
     if args.stage == "probe":
         metrics, records = evaluate(model, tok, train_cases, verifier, policy,
             args.output / "probe-rollouts.jsonl", 0, torch,
-            seed=args.seed, draws=args.generations, return_records=True)
+            seed=args.seed, draws=args.generations, return_records=True,
+            sequences_per_call=args.eval_sequences, score_workers=args.score_workers)
         contract = probe_contract(bundle, args.revision, adapter_info, policy,
                                   args.seed, args.generations, args.smoke)
         write_json(args.output / "probe.json", probe_report(records, contract))
@@ -292,7 +297,8 @@ def run(args, bundle, adapter_info):
     def measure(step):
         return evaluate(model, tok, dev_cases, verifier, policy,
                         args.output / "evaluations.jsonl", step, torch,
-                        seed=args.seed, draws=1 if args.greedy else args.eval_draws)
+                        seed=args.seed, draws=1 if args.greedy else args.eval_draws,
+                        sequences_per_call=args.eval_sequences, score_workers=args.score_workers)
     baseline = measure(0)
     if args.stage == "eval":
         write_json(args.output / "metrics.json", baseline)

@@ -137,6 +137,18 @@ and the `lypning-l` sha it was graded against. The bundle digest is the eval-2
 identity: the bank is frozen at that digest and **never re-cut**. A bank that
 needs a change is a new bank with a new name and its own pre-registration.
 
+Draws are paired by chunk, not one seed per draw (since 2026-09-16,
+`gpu/verified_evaluation.py`): a `generate` call carries a chunk of cases with
+every draw of each, under a seed derived from the run seed and the case IDs in
+the chunk, and both arms chunk the same bank the same way, so the candidate
+draws the base's noise chunk for chunk. The change was forced by cost, not
+taste: one draw per call plus one sandbox request per test at a time ran at
+about 30 s per draw on the h200 (job 6aaa4b2c, 2026-09-16), and 300 × 16 × 2
+draws was days against a 6 h cap. Completions of a chunk are verified
+concurrently; the rows keep (case, draw) order and carry the chunk seed. The
+pilot of round-02 runs eval-2 at k = 8 for the same reason and says so in its
+report; k = 16 (§4) remains the draw count of a confirmatory run.
+
 ## 7. Power
 
 The bank size is set by a design-specific power analysis on a pilot draw, not

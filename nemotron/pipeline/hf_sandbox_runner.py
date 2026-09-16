@@ -41,6 +41,7 @@ import json
 import math
 from pathlib import Path
 import re
+import threading
 import time
 
 from .sandbox import RunResult
@@ -112,12 +113,19 @@ class HfSandboxPoolRunner:
         self._hf_token = hf_token
         self._space_sha = space_sha
         self._sleep = sleep
+        #: Scorings run concurrently (`gpu/verified_evaluation.py`); the pool is
+        #: built once and the interpreter admitted once, whichever thread is first.
+        self._lock = threading.RLock()
         if check:
             got = self._request({"protocol": PROTOCOL, "action": "identity"}, 10, 1024)
             self._admit(got, "handshake")
 
     def _admit(self, got, where):
         """Abort unless `got` is the admitted identity; never a low reward, never a retry."""
+        with self._lock:
+            self._admit_locked(got, where)
+
+    def _admit_locked(self, got, where):
         if not isinstance(got, dict):
             raise TrainingError("sandbox %s carried no identity" % where)
         observed = {k: got.get(k) for k in self._expected}
@@ -142,6 +150,10 @@ class HfSandboxPoolRunner:
         return HfApi(token=self._hf_token).space_info(repo_id).sha
 
     def pool(self):
+        with self._lock:
+            return self._pool_locked()
+
+    def _pool_locked(self):
         if self._pool is None:
             head = self.space_head()
             if head != self.revision:
