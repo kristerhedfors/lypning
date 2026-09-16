@@ -366,12 +366,6 @@ def run_python(
         sig = -rc if (rc is not None and rc < 0) else None
         stdout, t1, e1 = _read_capped(out_path, output_cap)
         stderr, t2, e2 = _read_capped(err_path, output_cap)
-        if cmd and cmd[0].endswith("unshare") and rc in (126, 127) and stderr.startswith("unshare: failed to execute"):
-            # Under `unshare -n` the exec that fails is unshare's, not ours: the
-            # error pipe stays empty and the missing interpreter would read as a
-            # program exit 127. That is our failure, and says so (observed 2026-09-16).
-            return RunResult(None, "", "", time.time() - started,
-                             harness_error="spawn: " + stderr.strip().splitlines()[0][:300])
         # The entry script is excluded by identity, not by name: a program is
         # free to write its own `solution.py`, or a `sub/solution.py`, and the
         # listing has to say so.
