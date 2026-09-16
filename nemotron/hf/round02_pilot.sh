@@ -35,6 +35,7 @@ cd "$(dirname "$0")/../.."
 export PYTHONPATH=src:nemotron LYPNING_CAPTURE=0 LYPNING_HARVEST=0 PIP_DISABLE_PIP_VERSION_CHECK=1
 ROUND=work/round-02
 JOB="${JOB_ID:-local}"
+export NTX_POOL_TAG="$JOB"   # this run's sandbox pool is its own; see hf_sandbox_runner.pool_name
 STAGE=start
 mkdir -p "$ROUND"
 echo "== round-02 pilot on $(hostname) job=$JOB commit=$(git rev-parse HEAD) steps=$STEPS eval_draws=$EVAL_DRAWS seed=$SEED"

@@ -209,6 +209,11 @@ def test_the_space_must_sit_at_the_pinned_commit_before_any_host_is_used(monkeyp
     r = HfSandboxPoolRunner(IMAGE, REVISION, BUNDLE, check=False, space_sha=lambda: REVISION)
     pool = r.pool()
     assert pool.kw["image"] == IMAGE and pool.kw["name"] == "lypning-verifier-" + REVISION[:12]
+    monkeypatch.setenv("NTX_POOL_TAG", "6aaa5c1e/f76d")
+    r = HfSandboxPoolRunner(IMAGE, REVISION, BUNDLE, check=False, space_sha=lambda: REVISION)
+    assert r.pool().kw["name"] == "lypning-verifier-" + REVISION[:12] + "-6aaa5c1ef76d", \
+        "a run's pool is its own: a pool cancels the hosts it owns on close"
+    assert hf_sandbox_runner.pool_name(REVISION, "") == "lypning-verifier-" + REVISION[:12]
 
 
 def test_execution_contract_round_trips_through_validation():

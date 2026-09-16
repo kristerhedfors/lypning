@@ -39,6 +39,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
 import threading
@@ -71,6 +72,13 @@ TRANSPORT_BACKOFF_S = 5.0
 #: The five fields the bundle records, plus the worker file this tree ships.
 BUNDLE_FIELDS = ("sha256", "version", "oracle", "sandbox_sha256", "child_exec_sha256")
 WORKER_SOURCE = Path(__file__).with_name("container_worker.py")
+
+
+def pool_name(revision, tag=None):
+    """The pool's name: the Space revision, then the run's own tag when it has one."""
+    tag = os.environ.get("NTX_POOL_TAG", "") if tag is None else tag
+    tag = re.sub(r"[^A-Za-z0-9._-]", "", str(tag))[:24]
+    return "lypning-verifier-" + revision[:12] + ("-" + tag if tag else "")
 
 
 def http_status(exc):
@@ -163,8 +171,11 @@ class HfSandboxPoolRunner:
             # Named by the Space revision: a pool attaches to any warm host with
             # the same image, flavor and NAME, and a host booted from an earlier
             # build of the same Space must never serve this bundle's requests.
-            kwargs = {"image": self.image, "flavor": self._flavor,
-                      "name": "lypning-verifier-" + self.revision[:12]}
+            # And by the run (`NTX_POOL_TAG`, the job id): a pool that owns its
+            # hosts cancels them on close, so two runs sharing a name would tear
+            # each other's hosts down mid-stage (jobs 6aaa4b2c and 6aaa5c1e,
+            # 2026-09-16).
+            kwargs = {"image": self.image, "flavor": self._flavor, "name": pool_name(self.revision)}
             if self._sandboxes_per_host:
                 kwargs["sandboxes_per_host"] = self._sandboxes_per_host
             if self._hf_token:
