@@ -14,6 +14,15 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-16** — Round-02 run report corrected: the eval-2 base arm was blocked, no arm completed ([#81](https://github.com/kristerhedfors/lypning/pull/81))
+
+- Job `6aaa8746` failed at stage `eval2` after 384 of 1,200 base-arm draws:
+  a CPU-bound candidate's engine run timed out after a correct oracle run,
+  which the verifier policy reads as an engine fault. The report, `STATUS.md`
+  and the ledger now say so, with the two explanations still to separate
+  (engine speed on tight loops vs 16 sandboxes starving one pool host) and
+  the decision Codex is asked for.
+
 **2026-09-16** — Round-02 pilot on the 27B weights: nine attempts, one run, eval-2 in flight ([#80](https://github.com/kristerhedfors/lypning/pull/80))
 
 - Run SFT, probe and GRPO on `Qwen/Qwen3.8-27B` through the pooled-sandbox
