@@ -26,6 +26,7 @@ nobody established.
 
 from __future__ import annotations
 
+import bisect
 import math
 import random
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -96,14 +97,30 @@ def beats(candidate: Dict[str, object], baseline_point: float) -> bool:
 # models. `seed` is deliberately absent — a different seed is the sampling noise
 # the interval already prices, not a different measurement.
 IDENTITY_KEYS = ("holdout_manifest_sha256", "prompt_sha")
-SAMPLING_KEYS = ("enable_thinking", "max_tokens", "samples", "temperature", "top_p")
+SAMPLING_KEYS = ("enable_thinking", "max_tokens", "samples", "temperature", "top_p", "top_k")
+#: Keys whose ABSENCE from a recorded block is a value, not an unknown. Until
+#: 2026-09-16 the backend could not pass `top_k`, so a block written without it
+#: sampled with none — the same arm as a block that records `top_k: null`.
+SAMPLING_DEFAULTS: Dict[str, Any] = {"top_k": None}
 UNRECORDED = "unrecorded"
 RECORDED = "recorded"
 
 
 def _sampling(summary: Dict[str, Any]) -> Dict[str, Any]:
     s = summary.get("sampling")
-    return s if isinstance(s, dict) else {}
+    return sampling_block(s) if isinstance(s, dict) else {}
+
+
+def sampling_block(block: Dict[str, Any]) -> Dict[str, Any]:
+    """A recorded sampling block with the defaulted keys filled in."""
+    return dict(SAMPLING_DEFAULTS, **block)
+
+
+def sampling_missing(block: Any) -> List[str]:
+    """The SAMPLING_KEYS a block leaves unknown — absent and with no default."""
+    if not isinstance(block, dict):
+        return list(SAMPLING_KEYS)
+    return [k for k in SAMPLING_KEYS if k not in block and k not in SAMPLING_DEFAULTS]
 
 
 def _differs(field: str, baseline: Any, run: Any) -> Dict[str, Any]:
@@ -216,11 +233,16 @@ def comparability(baseline: Dict[str, Any], run: Dict[str, Any]) -> List[Dict[st
         return out
     for key in IDENTITY_KEYS:
         b, r = baseline.get(key), run.get(key)
+        if key == "prompt_sha":
+            # One rendered prompt has carried two names since 2026-09-16
+            # (evaluate.PROMPT_SHA_ALIASES); compare the current names.
+            from .evaluate import canonical_prompt_sha
+            b, r = canonical_prompt_sha(b), canonical_prompt_sha(r)
         if b and r != b:
             out.append(_differs(key, b, r))
     bs, rs = _sampling(baseline), _sampling(run)
-    b_full = all(k in bs for k in SAMPLING_KEYS)
-    r_full = all(k in rs for k in SAMPLING_KEYS)
+    b_full = bool(bs) and not sampling_missing(bs)
+    r_full = bool(rs) and not sampling_missing(rs)
     if not (b_full and r_full):
         out.append(_unestablished("sampling", b_full, r_full))
     else:
@@ -521,6 +543,232 @@ def minimum_detectable(curve: Dict[str, Any], rule: str, want: float = 0.8) -> O
         if float(row[key]) >= want:  # type: ignore[index]
             return float(row["lift"])  # type: ignore[index]
     return None
+
+
+# --- power for eval-2: family clusters, not cases -----------------------------
+
+#: The effect shapes `power_curve_clustered` simulates. `uniform` lifts every
+#: case's per-draw rate by delta (capped at 1). `concentrated` lifts the
+#: CONCENTRATED_FRACTION of cases with the lowest base rate to ONE target rate,
+#: chosen so the mean per-case lift is that same delta — a handful of families
+#: solved outright, the shape `PREREGISTRATION.md` §3c found the case-resampling
+#: rule near-blind to. Same delta, two shapes: the difference is the shape.
+CLUSTER_SHAPES = ("uniform", "concentrated")
+CLUSTER_DELTAS = (0.0, 0.03, 0.05, 0.08, 0.10)
+CLUSTER_SIZES = (100, 200, 300, 500, 800)
+CONCENTRATED_FRACTION = 0.1
+
+
+def pilot_from_rows(rows: Sequence[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """`training_metrics` rows as the pilot a cluster power curve reads.
+
+    One entry per case: its family, its independent cluster (``split_group``,
+    the family when absent — the default `eval2_rows` and the task-first path
+    both use) and one 0/1 correct-AND-native score per draw, in draw order.
+    """
+    per: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        if r.get("status") == "harness-error":
+            # A draw the server or sandbox failed to produce is not an
+            # observation of the policy: the first pilot draw of 2026-09-16
+            # lost 796 of 1,024 calls to a billing refusal, and counting them
+            # as wrong answers read a 97% base rate as 21%.
+            continue
+        cid = str(r["case_id"])
+        e = per.setdefault(cid, {"family": r["family"],
+                                 "split_group": r.get("split_group") or r["family"],
+                                 "draws": []})
+        e["draws"].append((int(r.get("draw", len(e["draws"]))),
+                           int(bool(r.get("correct")) and bool(r.get("native")))))
+    out: Dict[str, Dict[str, Any]] = {}
+    for cid, e in per.items():
+        e["draws"].sort()
+        out[cid] = {"family": e["family"], "split_group": e["split_group"],
+                    "scores": [s for _, s in e["draws"]]}
+    return out
+
+
+def _binomial(rng: random.Random, k: int, p: float, cache: Dict[float, List[float]]) -> int:
+    """One Binomial(k, p) draw by inverse CDF: one uniform per case, not k."""
+    if p <= 0.0:
+        return 0
+    if p >= 1.0:
+        return k
+    cdf = cache.get(p)
+    if cdf is None:
+        q = 1.0 - p
+        pr = q ** k
+        acc = pr
+        cdf = [acc]
+        for i in range(1, k + 1):
+            pr *= (k - i + 1) / i * p / q
+            acc += pr
+            cdf.append(acc)
+        cache[p] = cdf
+    return min(k, bisect.bisect_left(cdf, rng.random()))
+
+
+def _draw_bank(units: List[List[Tuple[str, List[float]]]], n: int,
+               rng: random.Random) -> List[List[List[float]]]:
+    """A bank of ``n`` cases: pilot clusters drawn with replacement, each drawn
+    cluster carrying its families and their cases whole. Only the last cluster
+    is cut, to land on ``n`` exactly; its cases stay together in it."""
+    bank: List[List[List[float]]] = []
+    count = 0
+    while count < n:
+        room = n - count
+        fams: List[List[float]] = []
+        for _, rates in rng.choice(units):
+            if room <= 0:
+                break
+            take = rates[:room]
+            fams.append(take)
+            room -= len(take)
+        bank.append(fams)
+        count += sum(len(f) for f in fams)
+    return bank
+
+
+def _treated(bank: List[List[List[float]]], shape: str, delta: float, n: int,
+             fraction: float, rng: random.Random) -> Tuple[List[List[List[float]]], float]:
+    """The treated arm's per-case rates, and the realised mean per-case lift
+    (below ``delta`` only where the cap at 1 bit)."""
+    if delta <= 0.0:
+        return bank, 0.0
+    if shape == "uniform":
+        out = [[[min(1.0, p + delta) for p in fam] for fam in cl] for cl in bank]
+    else:
+        refs = [(ci, fi, pi, p) for ci, cl in enumerate(bank)
+                for fi, fam in enumerate(cl) for pi, p in enumerate(fam)]
+        # Ties at the floor are broken by the cell's own rng, so WHICH of the
+        # never-passing cases get solved varies by trial as it would in life.
+        rng.shuffle(refs)
+        refs.sort(key=lambda t: t[3])
+        m = max(1, int(round(fraction * n)))
+        chosen = refs[:m]
+        target = min(1.0, sum(t[3] for t in chosen) / m + delta * n / m)
+        out = [[list(fam) for fam in cl] for cl in bank]
+        for ci, fi, pi, p in chosen:
+            out[ci][fi][pi] = max(p, target)
+    lifted = sum(t - b for cl, tcl in zip(bank, out) for fam, tfam in zip(cl, tcl)
+                 for b, t in zip(fam, tfam))
+    return out, lifted / n
+
+
+def power_curve_clustered(
+    pilot: Dict[str, Dict[str, Any]],
+    k: int,
+    *,
+    mde: float = 0.03,
+    deltas: Sequence[float] = CLUSTER_DELTAS,
+    sizes: Sequence[int] = CLUSTER_SIZES,
+    shapes: Sequence[str] = CLUSTER_SHAPES,
+    fraction: float = CONCENTRATED_FRACTION,
+    trials: int = 100,
+    resamples: int = 400,
+    seed: int = SEED,
+) -> Dict[str, object]:
+    """The power of the eval-2 rule as a function of bank size, from a pilot.
+
+    `EVAL2.md` §4 fixes the rule: the 95% lower bound of the paired
+    family-cluster percentile bootstrap of the macro-over-family
+    correct-and-native delta is above ``mde``. `power_curve` above resamples
+    cases and cannot price that rule: a family's cases share a task, so the
+    bootstrap resamples families as whole clusters (`split_group`, the family
+    when absent), exactly as `training_metrics.paired_comparison` does, and so
+    does this simulation.
+
+    ``pilot`` is one entry per case, ``{family, split_group?, scores: [0/1 per
+    draw]}`` (`pilot_from_rows`). Every trial draws a fresh bank of ``N`` cases
+    by resampling the pilot's clusters with replacement, cases kept with their
+    families; simulates ``k`` draws per case for a base arm at each case's
+    pilot rate and a treated arm at that rate lifted by ``delta`` in the given
+    shape; and asks whether the lower bound clears ``mde``. ``power`` is the
+    fraction of trials that fired; at ``delta`` 0 that fraction is the
+    false-positive rate. ``mean_lo`` says how far the bound typically sat.
+
+    Deterministic by ``seed``: each (shape, delta, N) cell seeds its own
+    generator from the three, so adding a size or a delta to the grid moves no
+    other row.
+    """
+    if k < 1:
+        raise ValueError("k must be at least 1")
+    for shape in shapes:
+        if shape not in CLUSTER_SHAPES:
+            raise ValueError("unknown effect shape %r" % (shape,))
+    clusters: Dict[str, Dict[str, List[float]]] = {}
+    for cid in sorted(pilot):
+        e = pilot[cid]
+        scores = e["scores"]
+        if not scores:
+            raise ValueError("case %s has no draws" % cid)
+        group = str(e.get("split_group") or e["family"])
+        clusters.setdefault(group, {}).setdefault(str(e["family"]), []).append(
+            sum(scores) / len(scores))
+    if not clusters:
+        raise ValueError("empty pilot")
+    units = [sorted(fams.items()) for _, fams in sorted(clusters.items())]
+    fam_means = [sum(r) / len(r) for u in units for _, r in u]
+    rows: List[Dict[str, object]] = []
+    for shape in shapes:
+        for delta in deltas:
+            for n in sizes:
+                rng = random.Random("%d:%s:%r:%d" % (seed, shape, delta, n))
+                cache: Dict[float, List[float]] = {}
+                fired = 0
+                lo_sum = point_sum = effect_sum = 0.0
+                for _ in range(trials):
+                    bank = _draw_bank(units, n, rng)
+                    treated, effect = _treated(bank, shape, delta, n, fraction, rng)
+                    csum: List[float] = []
+                    cnf: List[int] = []
+                    for cl, tcl in zip(bank, treated):
+                        fd = []
+                        for fam, tfam in zip(cl, tcl):
+                            fd.append(sum(_binomial(rng, k, t, cache) - _binomial(rng, k, b, cache)
+                                          for b, t in zip(fam, tfam)) / (k * len(fam)))
+                        csum.append(sum(fd))
+                        cnf.append(len(fd))
+                    # The paired cluster bootstrap, as `paired_comparison` does
+                    # it: clusters drawn with replacement, the statistic the
+                    # mean over every family the drawn clusters carry.
+                    g = len(csum)
+                    idx = range(g)
+                    samples: List[float] = []
+                    for _ in range(resamples):
+                        pick = rng.choices(idx, k=g)
+                        samples.append(sum(map(csum.__getitem__, pick))
+                                       / sum(map(cnf.__getitem__, pick)))
+                    samples.sort()
+                    lo = samples[int(0.025 * resamples)]
+                    fired += lo > mde
+                    lo_sum += lo
+                    point_sum += sum(csum) / sum(cnf)
+                    effect_sum += effect
+                rows.append({"shape": shape, "delta": delta, "N": n,
+                             "power": fired / trials, "mean_lo": lo_sum / trials,
+                             "mean_delta": point_sum / trials,
+                             "mean_effect": effect_sum / trials})
+    smallest: Dict[str, Dict[float, Optional[int]]] = {}
+    for shape in shapes:
+        smallest[shape] = {}
+        for delta in deltas:
+            hit = [r for r in rows if r["shape"] == shape and r["delta"] == delta
+                   and float(r["power"]) >= 0.8]  # type: ignore[arg-type]
+            smallest[shape][delta] = int(hit[0]["N"]) if hit else None  # type: ignore[arg-type]
+    return {
+        "k": k, "mde": mde, "trials": trials, "resamples": resamples, "seed": seed,
+        "shapes": list(shapes), "deltas": list(deltas), "sizes": list(sizes),
+        "fraction": fraction,
+        "pilot": {"cases": sum(len(r) for u in units for _, r in u),
+                  "families": len(fam_means), "clusters": len(units),
+                  "base_point": sum(fam_means) / len(fam_means)},
+        "rows": rows,
+        "smallest_n": smallest,
+        "false_positive": {shape: {int(r["N"]): float(r["power"])  # type: ignore[arg-type]
+                                   for r in rows if r["shape"] == shape and r["delta"] == 0.0}
+                           for shape in shapes},
+    }
 
 
 # --- the pre-registered verdict, as code rather than a paragraph -------------

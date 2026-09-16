@@ -14,6 +14,104 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-15** — Run round-02 on Hugging Face: pooled sandboxes as the execution boundary ([#79](https://github.com/kristerhedfors/lypning/pull/79))
+
+- Add the `hf-sandbox-pool` execution contract: every verification request
+  runs the unchanged `container_worker.py` protocol in a fresh pooled
+  Hugging Face sandbox on a host VM that is never the trainer's, under its own
+  uid and Landlock ruleset, token never forwarded; the identity handshake holds
+  because the trainer job and the verifier Space share one CPython base digest.
+- Move the worker's harness path off `/runner` for that image: a pooled
+  sandbox reads the standard system trees only. The Docker image is unchanged.
+- Add `nemotron/hf/launch.py` and `round02_smoke.sh`: submit a stage with the
+  cost printed first and never without `--yes`; the smoke job prepares the
+  starter through the pool, runs tiny-model SFT and GRPO on a real GPU, emits
+  the plan and uploads the round directory to a private artifact repo.
+- Cut and run the first real round: `python -m pipeline.eval2_split` cuts an
+  assembled schema-3 bank by seed into a spent pilot draw, an eval-2 bank and
+  a train bank, assigning whole `split_cases` components, stratifying by
+  population, preferring a train bank that clears the pilot admission floor
+  and exiting 1 on any `eval2_leaks` pair; `nemotron/hf/round02_pilot.sh` is
+  the job-side pilot (banks from the private dataset, `data_loop` review,
+  pilot and benchmark bundles through the pool, base/SFT/probe, GRPO only on
+  an admitted probe, matched test and whole-benchmark evaluations, paired
+  reports, and an upload with a status field on every exit); `launch.py pilot`
+  submits it with `--bank-path`, `--steps`, `--eval-draws` and `--seed` as
+  job environment and refuses a pilot without a bank path.
+- Amend the handoff: gate 6 admits either boundary; the pooled tier's residual
+  risks are written down; a pilot still needs the reviewed dataset.
+- GRPO warmup goes through `warmup_steps`: the pinned TRL has no
+  `warmup_ratio`, which the first GPU smoke under these pins found.
+- Add `nemotron/STATUS.md`: the programme's dated scoreboard, gate state,
+  ordered next steps, expected movement, a measurement assessment and the
+  proposed training recipe, for the reviewing session's assessment.
+- After the Codex review: a Space name is not an immutable image, so the
+  runner refuses a Space whose Hub commit is not the pinned one and aborts on
+  any sandbox response whose in-image identity (engine, harness, worker,
+  interpreter) is not the admitted one; the launcher refuses a non-private
+  artifact repository and quotes every operator word; the smoke script logs
+  authored execution witnesses and the report no longer counts `no-code`
+  rollouts as sandbox round-trips.
+- `nt eval2-bank` assembles authored proposals into schema-3 cases: lints
+  the task text against the one-home no-runtime-name list, recomputes every
+  expected output by running the reference twice in the sandbox, requires an
+  independent solution written from the text alone to agree, labels the
+  population by running the engine on every test, attaches evidence ids, and
+  files native mismatches as witnesses rather than cases.
+- Pre-register eval-2 in `nemotron/EVAL2.md`: the unconditioned task bank,
+  the frozen correct-and-native primary metric, the decoding contract, seeds
+  and arms, the pilot-draw power analysis, the leak check and the costs, all
+  written before any draw is sampled.
+- Add `nt eval2-leaks EVAL2 TRAIN` (`pipeline.eval2_leaks`): a bank-vs-bank
+  contamination check between the schema-3 eval-2 bank and a training bank,
+  one row per pair that trips any of five rules — task text at the split's
+  similarity ceiling, an identical expected stdout of at least 8 characters,
+  an identical reference fingerprint, a shared `source_group`, a shared
+  evidence id — exiting 1 on any pair unless `--allow`; neither bank is written.
+- Bridge the eval-2 bank to the legacy `nt` tree: `nt eval2-legacy --bank
+  --output` (`pipeline.eval2_legacy`) projects schema-3 cases to `jsonl`-adapter
+  records — one exact-`stdout` test per case (the first with a non-empty
+  stdout), category `unobserved`, never the `lypning` kind, the bank's identity
+  in `family:`/`group:`/`population:`/`capability:` tags — and `nt eval2-rows
+  RUN --output` (`pipeline.eval2_rows`) turns a run's `attempts.jsonl` plus a
+  legality replay into `training_metrics` rows, so `summarize` and
+  `paired_comparison` serve both homes. Verified end to end on a scratch tree
+  on 2026-09-16: two bank cases, `harvest kept 2 dropped 0`, `split frozen at
+  100% held-out 2`, `holdout OK 2 cases`.
+- `legality.arm` reports a per-case `native_rate` (verdict `MATCH` and correct,
+  off the replay and never off the run's `passed`) beside `legal_rate` and
+  `pass_rate`; `nt legality` prints `native` and `dnative` under `SLR`, a hole
+  and not a zero for arms without an expected stdout.
+- `backends.complete` passes `top_k` and `min_p` as top-level request keys
+  (what the SDK's `extra_body` puts on the wire) only when given; `nt eval
+  --top-k` (default none) records it in the run's sampling block and
+  `stats.SAMPLING_KEYS` carries `top_k`, an absent key reading as null so
+  every earlier run keeps its arm. `nemotron/EVAL2.md` §5 amended to match.
+- Add `stats.power_curve_clustered` and `nt power --eval2 --rows --mde --sizes`:
+  the design-specific power analysis `nemotron/EVAL2.md` §7 promised, resampling the
+  pilot's family clusters to each candidate bank size and asking the §4 rule
+  (family-cluster paired bootstrap, lower bound above the bar) at a uniform and
+  a concentrated effect of the same mean lift, the null row as the
+  false-positive rate; deterministic by seed, one seed per cell.
+- Add the `benchmark` bundle purpose (`training.PURPOSES`/`ADMISSION`,
+  `training_data.validate_benchmark`): a reviewed, isolated bank that
+  `gpu/train_verified.py eval --eval-split all` measures whole and that
+  sft/probe/grpo refuse to train on; `nt training-prepare --purpose benchmark`
+  writes no SFT export, and `data_loop --purpose benchmark` reviews it.
+- Add `nt eval2-select --output` (`pipeline.eval2_select`): the eval-2
+  reverse-prompting candidates drawn from `data/classified.jsonl` over `tier1`
+  and `refused` together, each static exclusion rule named and counted, every
+  survivor regenerated twice in the sandbox under two hash seeds, and a
+  shape-stratified `--limit`/`--seed` draw that ignores the refusal kind.
+- Add `nt eval --system-file` and `nemotron/prompts/subset-spec.md` (generated
+  by `nemotron/prompts/gen_subset_spec.py` from the crate's refusal sites; the
+  file is held equal to the generator's output): the stage 0b prompt-ceiling
+  switch, appended as its own paragraph after the bare system prompt and
+  recorded as `meta.system_file_sha256`. `evaluate.prompt_signature` now folds
+  in the rendered runtime contract, so the bare `prompt_sha` moved from
+  `cbb7be44937a6b41` to `d23e9420b5812443` on 2026-09-16 with nothing the
+  model sees changed; runs recorded under either value rendered one prompt.
+
 **2026-09-15** — Check question delivery and assess the first live proposal pilots ([#78](https://github.com/kristerhedfors/lypning/pull/78))
 
 - Fail missing, incomplete or truncated harvest delivery while retaining partial

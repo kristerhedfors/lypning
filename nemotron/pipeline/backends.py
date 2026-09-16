@@ -34,6 +34,24 @@ class BackendError(RuntimeError):
     """Ours or the server's — never the generated program's."""
 
 
+def extra_body(top_k: Optional[int] = None, min_p: Optional[float] = None) -> Dict[str, Any]:
+    """The sampling knobs the OpenAI schema lacks, as vLLM/SGLang read them.
+
+    The SDK's ``extra_body`` merges its keys into the top level of the request
+    body — there is no ``extra_body`` field on the wire, and a server handed one
+    would ignore it without a word, which is a top-k of "whatever the server
+    defaults to" recorded as 20. So this returns the top-level keys, and only
+    the ones the sampling block carries: an absent knob is left to the server,
+    never sent as a guess (`EVAL2.md` §5).
+    """
+    out: Dict[str, Any] = {}
+    if top_k is not None:
+        out["top_k"] = int(top_k)
+    if min_p is not None:
+        out["min_p"] = float(min_p)
+    return out
+
+
 @dataclass
 class Completion:
     text: str
@@ -89,6 +107,8 @@ class ChatBackend:
         seed: Optional[int] = None,
         enable_thinking: Optional[bool] = None,
         stop: Optional[List[str]] = None,
+        top_k: Optional[int] = None,
+        min_p: Optional[float] = None,
     ) -> Completion:
         payload: Dict[str, Any] = {
             "model": self.model,
@@ -99,6 +119,7 @@ class ChatBackend:
         }
         if seed is not None:
             payload["seed"] = seed
+        payload.update(extra_body(top_k=top_k, min_p=min_p))
         if stop:
             payload["stop"] = stop
         if enable_thinking is not None:

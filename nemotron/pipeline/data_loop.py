@@ -12,7 +12,7 @@ from pathlib import Path
 
 from lypning.evidence import load_snapshot
 from .jsonio import read_jsonl, sha256_of, write_json, write_jsonl
-from .training_data import split_cases, validate_cases, validate_pilot
+from .training_data import split_cases, validate_benchmark, validate_cases, validate_pilot
 from .training_types import TrainingError
 
 
@@ -56,6 +56,8 @@ def review(cases, snapshots=(), seed=1111, purpose="pilot"):
     split = split_cases(cases, seed)
     if purpose == "pilot":
         validate_pilot(split)
+    elif purpose == "benchmark":
+        validate_benchmark(split)
     elif purpose != "smoke":
         raise TrainingError("invalid review purpose")
     # All uses of one exact source or occurrence must be grouped, even when
@@ -100,7 +102,7 @@ def main(argv=None):
     parser.add_argument("--snapshot", action="append", type=Path, default=[])
     parser.add_argument("--output", type=Path, required=True, help="new private review directory")
     parser.add_argument("--seed", type=int, default=1111)
-    parser.add_argument("--purpose", choices=("smoke", "pilot"), default="pilot")
+    parser.add_argument("--purpose", choices=("smoke", "pilot", "benchmark"), default="pilot")
     args = parser.parse_args(argv)
     try:
         if args.output.exists():

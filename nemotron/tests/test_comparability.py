@@ -895,3 +895,32 @@ def test_identity_reads_the_binary_and_not_a_version_string(tmp_path, monkeypatc
     binary.chmod(0o755)
     assert eng.identity(chain=("lypning",))["fingerprint"] != ident["fingerprint"], (
         "two different binaries answering the same --version got one identity")
+
+
+# --- top_k joined the arm identity on 2026-09-16 --------------------------------
+
+
+def test_top_k_is_a_guarded_knob_and_its_absence_is_the_servers_default():
+    """A block written before the backend could pass top_k sampled with none,
+    so absent and null are one arm; 20 and absent are two."""
+    assert "top_k" in stats.SAMPLING_KEYS
+    assert stats.comparability(_summary("a"), _summary("b", sampling=dict(SAMPLING, top_k=None))) == []
+    why = stats.comparability(_summary("a"), _summary("b", sampling=dict(SAMPLING, top_k=20)))
+    assert [(d["field"], d["established"]) for d in why] == [("sampling.top_k", True)]
+    assert why[0]["baseline"] is None and why[0]["run"] == 20
+    assert stats.sampling_missing(SAMPLING) == []
+    assert stats.sampling_missing({k: v for k, v in SAMPLING.items() if k != "top_p"}) == ["top_p"]
+    assert stats.sampling_block(SAMPLING)["top_k"] is None
+
+
+def test_the_two_names_of_one_prompt_do_not_read_as_drift():
+    """Runs recorded before 2026-09-16 carry the old bare signature; same prompt, no reason."""
+    from pipeline import stats
+    from pipeline.evaluate import PROMPT_SHA_ALIASES, canonical_prompt_sha
+    old, new = next(iter(PROMPT_SHA_ALIASES.items()))
+    assert canonical_prompt_sha(old) == new and canonical_prompt_sha(new) == new and canonical_prompt_sha(None) is None
+    base = {"run_id": "a", "holdout_manifest_sha256": "m", "prompt_sha": old}
+    run = {"run_id": "b", "holdout_manifest_sha256": "m", "prompt_sha": new}
+    assert not [r for r in stats.comparability(base, run) if r.get("field") == "prompt_sha"]
+    other = dict(run, prompt_sha="0000000000000000")
+    assert [r for r in stats.comparability(base, other) if r.get("field") == "prompt_sha"]

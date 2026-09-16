@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import datetime as _dt
+import hashlib
 import inspect
 import threading
 import time
@@ -79,16 +80,74 @@ def render_contract(test: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def render_messages(case: Dict[str, Any]) -> List[Dict[str, str]]:
+#: Two test shapes that between them take every branch `render_contract` has:
+#: no stdin, no files, exit 0; then stdin, argv, two files and a non-zero exit.
+#: `prompt_signature` hashes what the contract RENDERS over these rather than
+#: the function's source, so a change to its wording or its logic moves the
+#: signature and a comment does not.
+CONTRACT_PROBES: Tuple[Dict[str, Any], ...] = (
+    {"kind": "stdout", "expect_stdout": ""},
+    {"kind": "stdout", "stdin": "x", "argv": ["a.txt", "3"],
+     "files": {"b.txt": "", "a.txt": ""}, "expect_exit": 1},
+)
+
+
+def system_prompt(system_extra: Optional[str] = None) -> str:
+    """The system turn: `SYSTEM_PROMPT`, plus `system_extra` as its own paragraph.
+
+    The extra is the stage 0b prompt-ceiling switch (`LADDER.md` 0b): a
+    description of the subset handed to the model as a separate paragraph, so
+    that the bare prompt is byte-identical to every run before it and an arm
+    with the paragraph carries a different `prompt_sha`.
+    """
+    extra = (system_extra or "").strip()
+    return SYSTEM_PROMPT + "\n\n" + extra if extra else SYSTEM_PROMPT
+
+
+def render_messages(case: Dict[str, Any],
+                    system_extra: Optional[str] = None) -> List[Dict[str, str]]:
     return [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt(system_extra)},
         {"role": "user", "content": USER_TEMPLATE.format(
             task=case["prompt"].strip(), contract=render_contract(case["test"]))},
     ]
 
 
-def prompt_signature() -> str:
-    return sha256_of({"system": SYSTEM_PROMPT, "user": USER_TEMPLATE})[:16]
+#: Two names for one rendered prompt. Until 2026-09-16 the signature hashed only
+#: the two templates and every recorded run carries the old value; folding the
+#: rendered runtime contract in moved the bare value without changing a byte the
+#: model saw. Comparability and grading canonicalise through this table, so the
+#: old runs stay comparable and a genuinely different prompt still trips both.
+PROMPT_SHA_ALIASES = {"cbb7be44937a6b41": "d23e9420b5812443"}
+
+
+def canonical_prompt_sha(value: Optional[str]) -> Optional[str]:
+    """The current name of a recorded prompt signature, or the value itself."""
+    if isinstance(value, str):
+        return PROMPT_SHA_ALIASES.get(value, value)
+    return value
+
+
+def prompt_signature(system_extra: Optional[str] = None) -> str:
+    """Sixteen hex digits over everything the wrapper puts in front of the task.
+
+    Three inputs, and each one moves it: the two templates, the runtime
+    contract as rendered over :data:`CONTRACT_PROBES`, and the sha256 of the
+    extra system paragraph when there is one. Until 2026-09-16 only the two
+    templates were hashed, so a rewrite of `render_contract` — a third of the
+    user message — left the signature at ``cbb7be44937a6b41`` (`AUDIT.md`,
+    *prompt-signature-blind-to-render-contract*); folding the contract in is
+    what moved the bare value to ``d23e9420b5812443``, and every run recorded
+    under the old value rendered exactly the prompt the new value names.
+    """
+    extra = (system_extra or "").strip()
+    return sha256_of({
+        "system": SYSTEM_PROMPT,
+        "user": USER_TEMPLATE,
+        "contract": [render_contract(t) for t in CONTRACT_PROBES],
+        "system_extra_sha256": (hashlib.sha256(extra.encode("utf-8")).hexdigest()
+                                if extra else ""),
+    })[:16]
 
 
 def _now() -> str:
@@ -300,13 +359,24 @@ class Evaluation:
         max_spend: float = 0.0,
         price_hour: float = 0.0,
         label: str = "",
+        top_k: Optional[int] = None,
+        system_extra: Optional[str] = None,
+        system_file_sha256: Optional[str] = None,
     ) -> None:
         self.backend = backend
+        # The stage 0b switch. None is the bare prompt every run before
+        # 2026-09-16 rendered; a paragraph here moves `prompt_sha`, and the
+        # file it came from is named in meta.json so the arm can be re-drawn.
+        self.system_extra = system_extra
+        self.system_file_sha256 = system_file_sha256
         self.cases = cases
         self.run_dir = run_dir
         self.samples = samples
         self.temperature = temperature
         self.top_p = top_p
+        # None leaves top-k to the server, which is what every run before
+        # 2026-09-16 did; it is recorded either way so the arm identity says so.
+        self.top_k = top_k
         self.max_tokens = max_tokens
         self.enable_thinking = enable_thinking
         self.seed = seed
@@ -340,10 +410,12 @@ class Evaluation:
             "backend": self.backend.identity(),
             "sampling": {
                 "temperature": self.temperature, "top_p": self.top_p,
+                "top_k": self.top_k,
                 "max_tokens": self.max_tokens, "seed": self.seed,
                 "enable_thinking": self.enable_thinking, "samples": self.samples,
             },
-            "prompt_sha": prompt_signature(),
+            "prompt_sha": prompt_signature(self.system_extra),
+            "system_file_sha256": self.system_file_sha256,
             "holdout_manifest_sha256": holdout_manifest,
             # WHICH ENGINE GRADED THIS. Half of what a `lypning`-kind pass rate
             # is a statement about, and until 2026-09-13 no run recorded it.
@@ -404,11 +476,12 @@ class Evaluation:
         }
         try:
             comp = self.backend.complete(
-                render_messages(case),
+                render_messages(case, self.system_extra),
                 temperature=self.temperature, top_p=self.top_p,
                 max_tokens=self.max_tokens,
                 seed=None if self.seed is None else self.seed + sample,
                 enable_thinking=self.enable_thinking,
+                top_k=self.top_k,
             )
         except BackendError as exc:
             return dict(base, harness_error=str(exc)[:500], passed=False)

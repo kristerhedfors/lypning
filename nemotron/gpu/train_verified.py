@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pipeline.jsonio import append_jsonl, sha256_of, write_json
 from pipeline.training_metrics import CheckpointGate
-from pipeline.training import TrainingError, Verifier, execution_runner, load_bundle, messages
+from pipeline.training import ISOLATED_KINDS, TrainingError, Verifier, execution_runner, load_bundle, messages
 
 from pipeline.training_contract import (BASE_MODEL, CONTRACT_VERSION, adapter_identity,
     decoding, model_config_identity, probe_contract, probe_report, runtime_versions,
@@ -65,8 +65,31 @@ def parser():
     p.add_argument("--max-seq", type=int, default=4096)
     p.add_argument("--max-new-tokens", type=int, default=1024)
     p.add_argument("--seed", type=int, default=1111)
-    p.add_argument("--eval-split", choices=("dev", "test"), default="dev")
+    p.add_argument("--eval-split", choices=("dev", "test", "all"), default="dev",
+                   help="all: every case of a benchmark bundle, stage eval only")
     return p
+
+
+def evaluation_cases(bundle, eval_split):
+    """The cases stage eval measures: one split, or a benchmark bundle whole."""
+    if eval_split == "all":
+        return list(bundle["cases"])
+    return [c for c in bundle["cases"] if c["split"] == eval_split]
+
+
+def adapter_lineage_admitted(experiment, bundle, stage):
+    """An adapter belongs to the bundle it was trained on, with one exception.
+
+    A benchmark bundle is never trained on, so the only adapter it can ever
+    meet was trained elsewhere: stage eval on a benchmark accepts an adapter
+    whose own experiment was a pilot, and the eval record keeps that
+    adapter's training bundle digest (`adapter_info["experiment"]`). Every
+    other stage, and every other bundle, keeps the exact-lineage rule.
+    """
+    if experiment.get("bundle_digest") == bundle.get("digest"):
+        return True
+    return (stage == "eval" and bundle.get("purpose") == "benchmark"
+            and experiment.get("purpose") == "pilot")
 
 
 def preflight(args):
@@ -96,18 +119,22 @@ def preflight(args):
     if args.from_base and args.stage != "grpo":
         raise TrainingError("--from-base is only a GRPO ablation")
     bundle = load_bundle(args.bundle, args.engine)
-    if not args.smoke and bundle.get("purpose") != "pilot":
+    if not args.smoke and bundle.get("purpose") not in ("pilot", "benchmark"):
         raise TrainingError("smoke data cannot launch a real run; prepare an admitted pilot bundle")
+    if bundle.get("purpose") == "benchmark" and args.stage != "eval":
+        raise TrainingError("a benchmark bundle is evaluated whole, never trained on; only stage eval accepts it")
+    if args.eval_split == "all" and bundle.get("purpose") != "benchmark":
+        raise TrainingError("--eval-split all evaluates a benchmark bundle whole; a pilot is measured per split")
     if not args.smoke and sys.platform != "linux" and not args.plan:
         raise TrainingError("real runs require the isolated Linux worker, not macOS diagnostic limits")
     if not args.plan and not args.isolated_worker:
         raise TrainingError("generated-code execution requires --isolated-worker; see TRAINING.md")
-    if not args.plan and bundle.get("execution", {}).get("kind") != "docker":
-        raise TrainingError("generation (including smoke) requires a container execution bundle; re-prepare with --execution-image")
+    if not args.plan and bundle.get("execution", {}).get("kind") not in ISOLATED_KINDS:
+        raise TrainingError("generation (including smoke) requires an isolated execution bundle; re-prepare with --execution-image")
     if not args.smoke and bundle["limits"]["memory_mb"] == 0 and not args.plan:
         raise TrainingError("memory cap disabled: only --smoke may use this bundle")
     adapter = adapter_identity(args.adapter, args.revision) if args.adapter else None
-    if adapter and adapter["experiment"]["bundle_digest"] != bundle["digest"]:
+    if adapter and not adapter_lineage_admitted(adapter["experiment"], bundle, args.stage):
         raise TrainingError("adapter trained with a different experiment/split")
     if adapter and bool(adapter["experiment"].get("smoke")) != args.smoke:
         raise TrainingError("adapter and model must both be smoke or both be real")
@@ -172,7 +199,7 @@ def run(args, bundle, adapter_info):
     if tok.eos_token_id is None or tok.encode("<|im_end|>", add_special_tokens=False) != [tok.eos_token_id]:
         raise TrainingError("Qwen assistant terminator must equal tokenizer EOS for SFT/TRL agreement")
     train_cases = [c for c in bundle["cases"] if c["split"] == "train"]
-    dev_cases = [c for c in bundle["cases"] if c["split"] == args.eval_split]
+    dev_cases = evaluation_cases(bundle, args.eval_split)
     # Token limits are admission checks, not permission to silently drop long
     # examples or slice the task away. Run these before downloading 27B weights.
     for case in train_cases + dev_cases:

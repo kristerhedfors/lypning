@@ -139,12 +139,17 @@ def split_cases(cases, seed=1111):
     return [dict(c, split=assignment[c["case_id"]], split_group=component_ids[c["case_id"]]) for c in cases]
 
 
-def validate_pilot(cases):
+def validate_bank(cases, purpose="pilot"):
+    """The bank-wide admission a pilot and a benchmark share; splits are checked by the caller."""
     if len({c["family"] for c in cases}) < 18:
-        raise TrainingError("pilot needs at least 18 independent semantic families; starter is smoke-only")
+        raise TrainingError(purpose + " needs at least 18 independent semantic families; starter is smoke-only")
     for case in cases:
         if not case.get("source_group") or not case.get("capabilities"):
-            raise TrainingError("pilot needs reviewed source_group and capability labels for every case")
+            raise TrainingError(purpose + " needs reviewed source_group and capability labels for every case")
+
+
+def validate_pilot(cases):
+    validate_bank(cases, "pilot")
     for split in ("train", "dev", "test"):
         rows = [c for c in cases if c["split"] == split]
         if {c["population"] for c in rows} != POPULATIONS:
@@ -154,6 +159,19 @@ def validate_pilot(cases):
             if (len({c["family"] for c in population_rows}) < 2 or
                     len({c.get("split_group", c["source_group"]) for c in population_rows}) < 2):
                 raise TrainingError("each pilot split needs two independent families per population")
+
+
+def validate_benchmark(cases):
+    """A standalone bank evaluated whole: both populations somewhere, not in every split.
+
+    It is never trained on, so the per-split population rule of a pilot does not
+    apply; the split_group is still required so cluster bootstraps stay honest.
+    """
+    validate_bank(cases, "benchmark")
+    if {c["population"] for c in cases} != POPULATIONS:
+        raise TrainingError("benchmark needs coverage AND fallback controls in the bank as a whole")
+    if any(not c.get("split_group") for c in cases):
+        raise TrainingError("benchmark cases need a split_group; split the bank before admission")
 
 
 def validate_reference_scores(cases, scores):

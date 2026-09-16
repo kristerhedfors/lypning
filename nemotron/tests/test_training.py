@@ -265,6 +265,85 @@ def test_pilot_requires_controls_in_every_split():
     t.validate_pilot(cases)
 
 
+def benchmark_bank():
+    """Schema-only fixture: 18 families, both populations in the bank, but the
+    two controls land in one split, which the per-split pilot rule rejects."""
+    from pipeline.data_loop import REVIEW_FIELDS
+    cases = []
+    for i in range(18):
+        cases.append(dict(starter_cases()[0], case_id=str(i), task="task %d" % i, family=str(i),
+                          source_group=str(i), reference="print(%d)" % i,
+                          population="coverage" if i < 16 else "fallback-control",
+                          review=dict({k: "reviewed fixture" for k in REVIEW_FIELDS},
+                                      origin="authored", evidence_ids=[])))
+    return cases
+
+
+def test_benchmark_bundle_admits_a_bank_a_pilot_would_reject(tmp_path, monkeypatch):
+    from pipeline.data_loop import review
+    from pipeline.jsonio import write_json
+    cases = benchmark_bank()
+    with pytest.raises(t.TrainingError, match="fallback controls"):
+        t.validate_pilot(t.split_cases(cases))
+    with pytest.raises(t.TrainingError, match="fallback controls"):
+        review(cases, purpose="pilot")
+    reviewed = review(cases, purpose="benchmark")
+    assert reviewed["purpose"] == "benchmark"
+    review_path = tmp_path / "review.json"
+    write_json(review_path, reviewed)
+    monkeypatch.setattr(t, "engine_identity", lambda b: {"fixture": True})
+    monkeypatch.setattr(t, "execution_runner", lambda *a: None)
+    monkeypatch.setattr(t.Verifier, "score", lambda self, c, p: t.Score(
+        1.0, "correct-native" if c["population"] == "coverage" else "correct-control",
+        3 if c["population"] == "coverage" else 0, 3))
+    image = "sha256:" + "a" * 64
+    # The benchmark keeps the pilot's review and isolation requirements.
+    with pytest.raises(t.TrainingError, match="--review"):
+        t.prepare(cases, "engine", tmp_path / "missing-review", purpose="benchmark", execution_image=image)
+    with pytest.raises(t.TrainingError, match="--execution-image"):
+        t.prepare(cases, "engine", tmp_path / "missing-image", purpose="benchmark", review_path=review_path)
+    # A benchmark review cannot launder the same bank into a pilot.
+    with pytest.raises(t.TrainingError, match="integrity"):
+        t.prepare(cases, "engine", tmp_path / "as-pilot", purpose="pilot",
+                  review_path=review_path, execution_image=image)
+    payload = t.prepare(cases, "engine", tmp_path / "bundle", purpose="benchmark",
+                        review_path=review_path, execution_image=image)
+    assert payload["purpose"] == "benchmark"
+    assert all(c["split_group"] and c["split"] in ("train", "dev", "test") for c in payload["cases"])
+    assert len(payload["cases"]) == 18
+    assert t.load_bundle(tmp_path / "bundle" / "bundle.json", "engine") == payload
+    assert not list((tmp_path / "bundle").glob("*-sft.jsonl"))
+    assert sorted(p.name for p in (tmp_path / "bundle").glob("*-prompts.jsonl")) == [
+        "dev-prompts.jsonl", "test-prompts.jsonl", "train-prompts.jsonl"]
+    with pytest.raises(t.TrainingError, match="whole"):
+        t.validate_benchmark([dict(c, population="coverage") for c in payload["cases"]])
+
+
+def test_benchmark_bundle_is_evaluated_whole_and_never_trained_on(tmp_path, monkeypatch):
+    gpu = gpu_module()
+    cases = [{"case_id": str(i), "split": s} for i, s in enumerate(("train", "train", "dev", "test"))]
+    benchmark = {"digest": "locked", "purpose": "benchmark", "limits": {"memory_mb": 1024}, "cases": cases}
+    pilot = dict(benchmark, purpose="pilot")
+    bundles = {"benchmark.json": benchmark, "pilot.json": pilot}
+    monkeypatch.setattr(gpu, "load_bundle", lambda path, engine: bundles[str(path)])
+    def args(stage, bundle, *extra):
+        return gpu.parser().parse_args([stage, "--bundle", bundle, "--engine", "engine",
+            "--output", str(tmp_path / "run"), "--revision", "a" * 40, "--plan", *extra])
+    for stage in ("sft", "probe", "grpo"):
+        with pytest.raises(t.TrainingError, match="never trained on"):
+            gpu.preflight(args(stage, "benchmark.json", *(("--from-base",) if stage == "grpo" else ())))
+    assert gpu.preflight(args("eval", "benchmark.json", "--eval-split", "all")) == (benchmark, None)
+    assert gpu.preflight(args("eval", "benchmark.json", "--eval-split", "dev")) == (benchmark, None)
+    assert gpu.preflight(args("eval", "pilot.json", "--eval-split", "test")) == (pilot, None)
+    with pytest.raises(t.TrainingError, match="benchmark bundle whole"):
+        gpu.preflight(args("eval", "pilot.json", "--eval-split", "all"))
+    with pytest.raises(t.TrainingError, match="cannot select a checkpoint"):
+        gpu.preflight(args("sft", "pilot.json", "--eval-split", "all"))
+    assert [c["case_id"] for c in gpu.evaluation_cases(benchmark, "all")] == ["0", "1", "2", "3"]
+    assert [c["case_id"] for c in gpu.evaluation_cases(benchmark, "dev")] == ["2"]
+    assert [c["case_id"] for c in gpu.evaluation_cases(benchmark, "test")] == ["3"]
+
+
 def test_real_run_rejects_smoke_bundle_even_in_plan(tmp_path, monkeypatch):
     gpu = gpu_module()
     args = gpu.parser().parse_args(["sft", "--bundle", "bundle.json", "--engine", "engine",
@@ -322,3 +401,17 @@ def test_real_starter_curriculum(tmp_path):
     assert len(bundle["reference_scores"]) == 16
     assert all(s["reward"] > 0 for s in bundle["reference_scores"].values())
     assert t.load_bundle(tmp_path / "real" / "bundle.json", engine) == bundle
+
+
+def test_a_pilot_adapter_is_admitted_on_a_benchmark_eval_and_nowhere_else():
+    """The benchmark is never trained on, so its adapters always come from a pilot."""
+    module = gpu_module()
+    pilot_adapter = {"bundle_digest": "pilot-digest", "purpose": "pilot"}
+    benchmark = {"digest": "bench-digest", "purpose": "benchmark"}
+    pilot = {"digest": "pilot-digest", "purpose": "pilot"}
+    assert module.adapter_lineage_admitted(pilot_adapter, pilot, "eval")
+    assert module.adapter_lineage_admitted(pilot_adapter, pilot, "grpo")
+    assert module.adapter_lineage_admitted(pilot_adapter, benchmark, "eval")
+    assert not module.adapter_lineage_admitted(pilot_adapter, benchmark, "grpo")
+    assert not module.adapter_lineage_admitted(pilot_adapter, {"digest": "other", "purpose": "pilot"}, "eval")
+    assert not module.adapter_lineage_admitted({"bundle_digest": "x", "purpose": "smoke"}, benchmark, "eval")

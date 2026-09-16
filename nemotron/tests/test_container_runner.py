@@ -74,6 +74,12 @@ def test_mutable_image_and_identity_drift_rejected(monkeypatch):
     identity = {k: "expected" for k in ("sha256", "version", "oracle", "sandbox_sha256", "child_exec_sha256")}
     with pytest.raises(TrainingError, match="differs"):
         ContainerRunner(IMAGE, identity)
+    # The worker answers with more fields than the bundle records; that is not drift.
+    monkeypatch.setattr(ContainerRunner, "_request", lambda *a: dict(identity, worker_sha256="w", python_sha256="p"))
+    assert ContainerRunner(IMAGE, identity).identity == identity
+    monkeypatch.setattr(ContainerRunner, "_request", lambda *a: dict(identity, sha256="other", worker_sha256="w"))
+    with pytest.raises(TrainingError, match="differs"):
+        ContainerRunner(IMAGE, identity)
 
 
 @pytest.mark.skipif(not os.environ.get("NTX_TEST_EXECUTION_IMAGE"), reason="explicit reviewed Docker integration image required")
