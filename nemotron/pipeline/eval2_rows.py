@@ -23,7 +23,11 @@ test, and knows nothing about families. This module makes the two meet:
 Every attempt becomes a row — a harness error or a no-code draw included, with
 ``correct`` and ``native`` False and a ``status`` that says why — because the
 summariser refuses unequal draw counts per case, and a draw that failed to
-happen is still a draw the arm was budgeted.
+happen is still a draw the arm was budgeted. One row per (case, draw), though:
+a resumed run (`evaluate.py`) redraws its harness errors and appends, so a
+draw can carry several attempts; the one that reached the model wins, and
+among harness errors the last. Two rows for one draw would be one draw
+counted twice.
 """
 
 from __future__ import annotations
@@ -88,7 +92,8 @@ def rows(attempts: List[Dict[str, Any]], replay_rows: Iterable[Dict[str, Any]],
     by_key = _replay_index(replay_rows)
     out: List[Dict[str, Any]] = []
     unknown: List[str] = []
-    for a in attempts:
+    kept = one_attempt_per_draw(attempts)
+    for a in kept:
         cid = a.get("case_id")
         case = cases.get(cid)
         if case is None:
@@ -96,4 +101,22 @@ def rows(attempts: List[Dict[str, Any]], replay_rows: Iterable[Dict[str, Any]],
             continue
         out.append(row_for(a, case, by_key.get((cid, a.get("sample"))), seed))
     return {"rows": out, "unknown_cases": sorted(set(unknown)),
-            "replayed": sum(1 for r in out if r["verdict"] is not None)}
+            "replayed": sum(1 for r in out if r["verdict"] is not None),
+            "superseded": len(attempts) - len(kept)}
+
+
+def one_attempt_per_draw(attempts: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The attempt that stands for each (case, draw), in first-seen order: the
+    last one that reached the model, else the last harness error."""
+    chosen: Dict[Tuple[Any, Any], Dict[str, Any]] = {}
+    order: List[Tuple[Any, Any]] = []
+    for a in attempts:
+        key = (a.get("case_id"), a.get("sample"))
+        if key not in chosen:
+            order.append(key)
+            chosen[key] = a
+            continue
+        if a.get("harness_error") and not chosen[key].get("harness_error"):
+            continue  # a later failure to reach the model never displaces a real draw
+        chosen[key] = a
+    return [chosen[k] for k in order]
