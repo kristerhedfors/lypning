@@ -233,3 +233,18 @@ Codex's review, not an approval.
   ahead of the pilot dataset (this document's step 3 before step 5).
 - Operator: cost ceiling for eval-2 and for round-02 proper; approval of the
   question-proposals pilot budget; the primary metric freeze in §6 item 2.
+
+## 9. Assessment, 2026-09-16
+
+[ASSESSMENT.md](ASSESSMENT.md) reads this document, the ladder, the
+pre-registrations, the reports and the reviews against the goal in §1 and
+answers why no run so far could say whether the programme is moving: no
+positive control has been run, every adapter was trained at a scale that
+installs style rather than a boundary, the training side got the leftover of
+the supply, the power table in `EVAL2.md` §7 keys its uniform rows by a
+nominal lift the simulation does not realise on a saturated pilot, and the
+examples that would carry the signal — verified native rewrites of
+correct-but-refused answers — have never been admitted. It replaces §4's
+sequence with a signal ladder (S0–S4) whose first three rungs cost nothing,
+and an action plan with an owner, a cost and a stop rule per step. Read it
+before the next paid step; §4 above stands as history until Codex rules.
