@@ -48,9 +48,13 @@ does **not** exercise the exact Qwen/TRL GPU stack or demonstrate model quality.
 5. The verifier currently covers deterministic UTF-8 stdout, empty stderr and
    exit zero. Do not admit file-editing tasks, binary-output tasks or arbitrary
    checkers without implementing their observable contracts.
-6. Build/test the pinned candidate image using `START_NEXT_ROUND.md`.
+6. Build/test the pinned candidate boundary using `START_NEXT_ROUND.md`: the
+   Docker image on a disposable worker, or the pooled Hugging Face sandbox
+   contract (`--execution-kind hf-sandbox-pool`) chosen on 2026-09-15, which
+   fails closed on the Space's Hub commit and on the identity every sandbox
+   response carries, because a Space name is not an immutable image.
    Pilot preparation requires both `--review` and `--execution-image`;
-   generated code (even smoke) requires a container-backed bundle.
+   generated code (even smoke) requires an isolated execution bundle.
    `--isolated-worker` remains an additional operator attestation, not a jail.
    The local subprocess helper is allowed only for reviewed CPU smoke fixtures.
    Candidate containers have no host mounts/network/GPU/credentials; identity

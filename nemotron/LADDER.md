@@ -232,7 +232,9 @@ mention of lypning, refusals or a runtime; ≥300 cases drawn without regard to
 whether base refuses; its own lock, its own `prompt_sha`; both arms baselined
 before any adapter touches it. This is the first point where a positive ΔSLR is a
 claim about deployment rather than about the eval prompt, so it should be under
-construction while Stages 1–3 run.
+construction while Stages 1–3 run. The bank, metric, decoding contract, power
+analysis and leak check are pre-registered in [EVAL2.md](EVAL2.md), written
+before any draw is sampled.
 
 ## Stage 5 — real sessions (~$0 GPU)
 

@@ -168,6 +168,21 @@ def arm(attempts: List[Dict[str, Any]], engine: str,
     legal_rate = {c: sum(1 for r in rows if r["verdict"] != "UNSUPPORTED") / len(rows)
                   for c, rows in graded.items()}
     pass_rate = {c: sum(1 for p in v if p) / len(v) for c, v in passed.items()}
+    # NATIVE: the engine ran it AND its own output was right — the eval-2
+    # primary metric (EVAL2.md §4), read off this replay and never off the run's
+    # recorded `passed`. Only over cases that carry an expected stdout: a case
+    # with nothing to compare against is unmeasured, and an unmeasured 0 would
+    # read as a failure. Measurable is a property of the CASE (see
+    # `reachability`), so a case whose every draw was refused stays in at 0.
+    if tests is not None:
+        measurable = {c for c in graded if (tests.get(c) or {}).get("expect_stdout") is not None}
+    else:
+        measurable = {c for c, rows in graded.items()
+                      if any(r.get("correct") is not None for r in rows)}
+    native_rate = {c: sum(1 for r in graded[c]
+                          if r["verdict"] == "MATCH" and r.get("correct") is True) / len(graded[c])
+                   for c in sorted(measurable)}
+    n_measured = sum(len(graded[c]) for c in measurable)
     tok_mean = {c: sum(v) / len(v) for c, v in tokens.items() if v}
     n_graded = sum(len(v) for v in graded.values()) or 1
     degenerate = sum(1 for a in attempts if a.get("failure_category") == "not-genuine")
@@ -184,8 +199,12 @@ def arm(attempts: List[Dict[str, Any]], engine: str,
         "error": census["tally"].get("ERROR", 0),
         "by_kind": dict(census["details"]),
         "blockers": dict(census["blockers"]),
+        "measured": n_measured,
+        "native": (sum(native_rate[c] * len(graded[c]) for c in measurable) / n_measured
+                   if n_measured else float("nan")),
         "legal_rate": legal_rate,
         "pass_rate": pass_rate,
+        "native_rate": native_rate,
         "tokens": tok_mean,
         "programs_by_case": programs,
         "rows": census["rows"],
@@ -533,6 +552,7 @@ def compare(base: Dict[str, Any], tuned: Dict[str, Any],
                          % (base["fingerprint"], tuned["fingerprint"]))
     delta = stats.paired_delta(base["legal_rate"], tuned["legal_rate"])
     corr = stats.paired_delta(base["pass_rate"], tuned["pass_rate"])
+    native = stats.paired_delta(base.get("native_rate") or {}, tuned.get("native_rate") or {})
 
     shared = sorted(set(base["tokens"]) & set(tuned["tokens"]))
     b_tok = sum(base["tokens"][c] for c in shared) / len(shared) if shared else float("nan")
@@ -567,8 +587,11 @@ def compare(base: Dict[str, Any], tuned: Dict[str, Any],
     by_kind.sort(key=lambda r: (-abs(r["delta"]), -max(r["base"], r["tuned"])))
 
     return {"fingerprint": base["fingerprint"], "delta": delta, "correctness": corr,
+            "native": native,
             "not_genuine": base.get("not_genuine", 0) + tuned.get("not_genuine", 0),
             "base_slr": base["slr"], "tuned_slr": tuned["slr"],
+            "base_native": base.get("native", float("nan")),
+            "tuned_native": tuned.get("native", float("nan")),
             "by_kind": by_kind, "gates": gates,
             "gates_pass": all(g.get("pass") for g in gates),
             "mismatch": base["mismatch"] + tuned["mismatch"],
@@ -596,6 +619,18 @@ def report(cmp: Dict[str, Any], *, before: str, after: str, limit: int = 12,
     lo, hi = ci.get("lo", float("nan")), ci.get("hi", float("nan"))
     out.append("  dSLR  %+.2fpp   95%% CI [%+.2f, %+.2f]"
                % (100 * d["delta"], 100 * lo, 100 * hi))
+    nat = cmp.get("native") or {}
+    nci = nat.get("ci95") or {}
+    out.append("  native  base %s   tuned %s   (correct AND the engine ran it, per draw; "
+               "the eval-2 primary metric)"
+               % (_pct(cmp.get("base_native", float("nan"))),
+                  _pct(cmp.get("tuned_native", float("nan")))))
+    if nat.get("n_pairs"):
+        out.append("  dnative %+.2fpp   95%% CI [%+.2f, %+.2f]   over %d measurable cases"
+                   % (100 * nat["delta"], 100 * nci.get("lo", float("nan")),
+                      100 * nci.get("hi", float("nan")), nat["n_pairs"]))
+    else:
+        out.append("  dnative not measured: no shared case carries an expected stdout")
     if mde:
         out.append("  MDE   lower bound must exceed %+.2fpp — %s"
                    % (100 * mde, "met" if lo > mde else "NOT met"))
