@@ -1825,21 +1825,91 @@ def cmd_levers(args: argparse.Namespace) -> int:
     from . import levers
 
     today = time.strftime("%Y-%m-%d")
-    if args.rows:
-        rows = list(read_jsonl(Path(args.rows)))
-        loaded = len(rows)
-        if args.status:
-            rows = [r for r in rows if r.get("status") == args.status]
-        result = levers.table(rows, source=args.rows, unit="draw",
-                              independence="family", loaded=loaded)
+    notes: List[str] = []
+    if args.run:
+        # Rung S0b. Neither artifact carries the whole answer: the draw rows say
+        # which draws are correct-but-fallback and how they cluster, the replay
+        # says which refusal. `eval2_rows` already joins them to decide `native`;
+        # this joins them to ask WHICH refusal, on the same key.
+        from . import eval2_rows, legality
+        engine = args.engine or eng.engine_path("lypning-l") or eng.engine_path("lypning")
+        if not engine:
+            print("no lypning binary on this machine: run `lypning build --rust`, "
+                  "or pass --engine", file=sys.stderr)
+            return 1
+        attempts_path = RUNS / args.run / "attempts.jsonl"
+        if not attempts_path.exists():
+            print("no such run: %s" % args.run, file=sys.stderr)
+            return 1
+        attempts = list(read_jsonl(attempts_path))
+        meta = _run_meta(args.run)
+        seed = (meta.get("sampling") or {}).get("seed")
+        cases, tests = _case_context(False)
+        cache = (Path(args.cache) / ("%s.replay.json" % args.run)) if args.cache else None
+        census = legality.replay(attempts, engine, tests=tests, workers=args.jobs,
+                                 cache=cache)
+        drawn = eval2_rows.rows(attempts, census["rows"], cases, seed=seed)
+        programs = dict(((a.get("case_id"), int(a.get("sample") or 0)), a.get("program") or "")
+                        for a in attempts)
+        joined = levers.draw_refusals(drawn["rows"], census["rows"],
+                                      status=args.status, programs=programs)
+        result = levers.table(joined["records"], source="runs/%s" % args.run,
+                              unit="draw", independence="family",
+                              loaded=len(drawn["rows"]))
+        notes.append("%d draw(s) match status %s; %d carried a refusal"
+                     % (joined["considered"], args.status or "(any)",
+                        len(joined["records"])))
+        # Never a zero: a fallback draw with no refusal on record is a hole in
+        # the evidence, and a hole is not a family with no mass.
+        if joined["unmatched"] or joined["without_refusal"]:
+            notes.append("UNRESOLVED: %d draw(s) have no replay row, %d have a replay "
+                         "row carrying no refusal. Neither is counted anywhere above."
+                         % (joined["unmatched"], joined["without_refusal"]))
+        if census["tally"].get("MISMATCH"):
+            print("  MISMATCH %d — invariant 1: always a bug, never the model's."
+                  % census["tally"]["MISMATCH"], file=sys.stderr)
+    elif args.rows:
+        if not args.replay:
+            print("levers: --rows needs --replay: a draw row carries no refusal, and "
+                  "the replay carries no population label. Use --run to build both.",
+                  file=sys.stderr)
+            return 2
+        drawn = list(read_jsonl(Path(args.rows)))
+        joined = levers.draw_refusals(drawn, read_jsonl(Path(args.replay)),
+                                      status=args.status)
+        result = levers.table(joined["records"], source=args.rows, unit="draw",
+                              independence="family", loaded=len(drawn))
+        notes.append("%d draw(s) match status %s; %d carried a refusal"
+                     % (joined["considered"], args.status or "(any)",
+                        len(joined["records"])))
+        if joined["unmatched"] or joined["without_refusal"]:
+            notes.append("UNRESOLVED: %d draw(s) have no replay row, %d have a replay "
+                         "row carrying no refusal. Neither is counted anywhere above."
+                         % (joined["unmatched"], joined["without_refusal"]))
     else:
+        if args.status:
+            print("levers: --status applies to draw rows; use it with --run or --rows",
+                  file=sys.stderr)
+            return 2
         source = args.source or str(DATA / "classified.jsonl")
         rows = list(read_jsonl(Path(source)))
         result = levers.table(rows, source=source, loaded=len(rows))
 
+    if result["unit"] == "draw":
+        # A build order read off a benchmark is test-set steering, and this
+        # command can be pointed at one. The banner is the same one `refusals`
+        # carries, for the same reason.
+        from . import refusals as _refusals
+        notes.append(_refusals.HELD_OUT_BANNER)
+
     if args.json:
         print(json.dumps(result, indent=2, ensure_ascii=False, default=sorted))
         return 0
+
+    for note in notes:
+        print(note)
+    if notes:
+        print("")
 
     failed = False
     if args.declared:
@@ -1854,6 +1924,9 @@ def cmd_levers(args: argparse.Namespace) -> int:
     else:
         print(levers.report(result, today=today))
         if args.against:
+            if not os.path.exists(args.against):
+                print("levers: no such file: %s" % args.against, file=sys.stderr)
+                return 2
             totals = levers.section4_totals(args.against)
             comparison = levers.compare(result, totals)
             print("")
@@ -2210,8 +2283,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     lv = sub.add_parser("levers", help="which lever can remove each refusal: engine, model, neither")
     lv.add_argument("--source", help="a `nt classify` jsonl (default: data/classified.jsonl)")
-    lv.add_argument("--rows", help="eval-2 draw rows instead — rung S0b's population")
-    lv.add_argument("--status", help="keep only rows with this status, e.g. correct-fallback")
+    lv.add_argument("--run", metavar="RUN_ID",
+                    help="rung S0b: a run's draws joined to their replay verdicts")
+    lv.add_argument("--engine", help="binary to replay through (with --run)")
+    lv.add_argument("--cache", help="directory of <run>.replay.json caches (with --run)")
+    lv.add_argument("--jobs", type=int, default=0, help="replay workers (with --run)")
+    lv.add_argument("--rows", help="draw rows already written by `nt eval2-rows`")
+    lv.add_argument("--replay", help="the legality rows to join them with (with --rows)")
+    lv.add_argument("--status", help="keep only draws with this status, e.g. correct-fallback")
     lv.add_argument("--rank", action="store_true", help="the build order: independent x units")
     lv.add_argument("--bucket", default="engine-addressable", help="which bucket to rank")
     lv.add_argument("--limit", type=int, default=20, help="rows to show (0 for all)")

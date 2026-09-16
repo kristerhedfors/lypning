@@ -32,7 +32,8 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   gives `training/ASSESSMENT.md` §6 step 6 the ranked build order it never had.
 - On this tree (`nt levers --against`, 2026-09-16, 9,064 rows loaded, 643
   carrying a refusal, rule 1) it reproduces §4's self-referential bucket exactly
-  and disagrees on the lever boundary by 38 entries. The disagreement is pinned
+  and disagrees on the lever boundary by 36 entries, entirely inside the 235
+  entries §4 counted but never named. The disagreement is pinned
   by a test as the one that was reviewed, so a new one fails rather than passing
   quietly; which side is right is asked of Codex in the ledger.
 - A blocked **evaluation** arm now writes the program that blocked it, as the

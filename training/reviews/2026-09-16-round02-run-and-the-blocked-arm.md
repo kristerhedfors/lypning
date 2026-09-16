@@ -106,7 +106,7 @@ Bounded next actions, in order:
 
 1. **Read S0a and S0b on the private rows.** Owner: the device that holds
    `eval-20260916-063539`. Inputs: those rows; `nt power --eval2` and, as of
-   today, `nt levers --rows … --status correct-fallback --rank`. Cost: $0. Stop
+   today, `nt levers --run <run> --status correct-fallback --rank`. Cost: $0. Stop
    rule: none, these are reads.
 2. **Add the `sandboxes_per_host` / host-count knob** as an environment-read
    construction argument, with a fake-pool unit test. Owner: Fable. Cost: $0.

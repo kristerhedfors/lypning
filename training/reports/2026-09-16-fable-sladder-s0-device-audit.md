@@ -24,8 +24,8 @@ $0, and one defect found on the way:
    `ASSESSMENT.md` — the split of refusals between the engine lever, the model
    lever and neither — was a judgement call made once in prose, and nothing in
    the tree could re-make it. It is now three mechanical layers and a frozen
-   130-row declaration table, and it runs on the eval-2 draw rows unchanged, so
-   S0b is a command on the other device rather than a judgement re-made there.
+   130-row declaration table, and rung S0b is a command — **run end to end here
+   on a local run** to prove the path, not asserted (§3).
 2. **`ASSESSMENT.md` §6 step 2's uncontroversial half is done**: a blocked
    evaluation arm now writes the program that blocked it. The abort is
    unchanged and **the ruling Codex owes on ledger row T4 is not pre-empted** —
@@ -39,10 +39,11 @@ $0, and one defect found on the way:
 **Decisions requested of Codex** — three, all in §6:
 
 - Whether the 108 **new** declarations in `levers.DECLARED` are accepted as
-  written, and whether the resulting disagreement with §4 (−38 entries in
-  engine-addressable, +43 in legitimate-fallback) is §4's judgement or this
-  table's. §4's per-family reasoning is not recoverable from its prose, so this
-  cannot be settled by reading; it has to be ruled.
+  written, and whether the resulting disagreement with §4 (−36 entries in
+  engine-addressable, +41 in legitimate-fallback) is §4's judgement or this
+  table's. It cannot be settled by reading: all 26 families §4 itemises land in
+  §4's own bucket here, and the whole delta sits inside the 235 entries §4
+  counted but never named (§3).
 - Whether the sandbox fix is taken now, **which invalidates the verifier image**
   (§5), or held until the next launch is approved anyway.
 - The ruling already owed on row T4, now with the evidence it needed.
@@ -86,10 +87,16 @@ PYTHONPATH=src:training python3 -m pipeline.cli levers --against
 PYTHONPATH=src:training python3 -m pipeline.cli levers --rank --limit 16
 PYTHONPATH=src:training python3 -m pipeline.cli levers --declared --provenance new
 PYTHONPATH=src:training python3 -m pipeline.cli levers --undeclared
-# What rung S0b will be, on the other device, on the private rows:
+# Rung S0b itself. Run here against a local run to prove the path; on the other
+# device the same line names the private one.
 PYTHONPATH=src:training python3 -m pipeline.cli levers \
-    --rows <run>/eval2_rows.jsonl --status correct-fallback --rank
+    --run qwen38-baseline-k16 --status correct-fallback --rank
 ```
+
+`lypning` must be importable for any of these: the closed-kind layer reads the
+engine's own list, and without it the tool says so in its first two lines and
+decides 73 fewer entries. That is loud, not silent, and it is the `PYTHONPATH`
+above.
 
 **Missing artifacts, named rather than worked around:** the private pilot rows
 of run `eval-20260916-063539`; the round-02 probe rollouts and sealed adapter of
@@ -135,11 +142,11 @@ printed by a tool that reports the row count it loaded.
 | bucket | units | families | from §4 | new here | programs |
 |---|---|---|---|---|---|
 | self-referential | 195 | 13 | 3 | 9 | 194 |
-| legitimate-fallback | 264 | 89 | 5 | 56 | 250 |
-| engine-addressable | 184 | 57 | 14 | 43 | 165 |
+| legitimate-fallback | 262 | 87 | 5 | 54 | 248 |
+| engine-addressable | 186 | 59 | 14 | 45 | 167 |
 | other | 0 | 0 | 0 | 0 | 0 |
 
-195 entries are decided mechanically and 448 by declaration. The mechanical
+**193 entries are decided mechanically and 450 by declaration.** The mechanical
 layers, first match wins, are: an import of this package (111 entries); a kind
 on the engine's own closed list, imported through `refusals.closed_kinds()` and
 never restated (73); an import this interpreter does not ship (9, all
@@ -154,26 +161,33 @@ fixture:
 | bucket | here | §4 | delta |
 |---|---|---|---|
 | self-referential | 195 | 195 | **0** |
-| legitimate-fallback | 264 | 221 | **+43** |
-| engine-addressable | 184 | 222 | **−38** |
+| legitimate-fallback | 262 | 221 | **+41** |
+| engine-addressable | 186 | 222 | **−36** |
 | other | 0 | 5 | −5 |
 
-**The self-referential bucket reproduces exactly and the lever boundary does
-not**, which is the prediction. The delta is not presented as §4 being wrong: it
-is 43 entries this tree calls environment-reading that §4 counted as servable,
-concentrated in `tempfile` 5, `inspect` 5, `shutil` 4, `locale` 4, `socket` 4,
-`warnings` 3 and the `bigint`, `file-tell`, `base64`-strictness and
-CPython-error-text families. Every one of those is a `new` declaration with its
-one-line reason, listed by `nt levers --declared --provenance new`. **§4's
-per-family reasoning is not in §4**, so which side is right is a ruling, not a
-read — §6 asks for it. `other` is 0 rather than §4's 5 because §4's five are not
-recoverable from prose; the tool reports its own residue, and its residue is
-empty.
+**Where the delta is not.** §4 itemises 26 families under its three buckets, and
+**all 26 land in §4's own bucket here — 26 of 26, with no exceptions.** Two
+differ in count and neither differs in judgement: this table's key collapses
+`import lypning`, `import lypning.corpus` and `import lypning.conformance` into
+one family of 111, and splits §4's "NaN identity 10" across the details the
+engine actually writes. So nothing §4 named has been re-bucketed.
 
-`test_levers.py::test_the_disagreement_with_section_4_is_the_reviewed_one` pins
-this delta as a constant. It does not demand agreement — it demands that a
-*different* disagreement fails, so a new capture or a reworded engine detail
-cannot move the split unnoticed.
+**Where it is.** §4's named families account for 408 of its 643 entries; the
+remaining 235 are counted in its bucket totals and never listed. The entire
+±41/−36 lives inside that unnamed residue — which means the disagreement cannot
+be settled by reading §4, because the entries it is about are the ones §4 did
+not write down. That is the honest shape of it, and §6 asks Codex to rule rather
+than asking anyone to re-read. `other` is 0 rather than §4's 5 for the same
+reason: §4's five are unrecoverable from prose, so the tool reports its own
+residue instead of claiming to reproduce them, and its residue is empty.
+
+Three tests pin this rather than one, because the aggregate delta alone is
+blind: `test_the_disagreement_with_section_4_is_the_reviewed_one` pins the four
+sums, `test_the_delta_alone_cannot_see_a_paired_swap` pins each bucket's family
+and provenance counts — two equal-sized families can trade buckets and move no
+total — and `test_a_declaration_cannot_borrow_section_4s_authority` pins which
+families claim §4 as their source and checks each against §4's own text. None
+demands agreement; they demand that a *different* disagreement fails.
 
 ### The engine build order
 
@@ -200,6 +214,40 @@ counting as recurring evidence.
 `math` is served since 2026-09-12 and the capture predates it, so its row is
 history, not a request. This is `ASSESSMENT.md` §6 step 6's input, and it is the
 first time that step has had one.
+
+### Rung S0b, run end to end — on a local run, not the private one
+
+The claim that S0b is "a command" is worth exactly as much as a demonstration,
+so here is one. `nt levers --run qwen38-baseline-k16 --status correct-fallback
+--rank`, 2026-09-16, this tree, replayed through `lypning-l` built from
+`346e59c`:
+
+```
+197 draw(s) match status correct-fallback; 197 carried a refusal
+THIS IS THE HELD-OUT SET. It is a description, never a build order.
+[...]
+family                          units  progs  indep  score  oracle basis
+module: unicodedata                80     18      5    400      no declared
+class: class definition             4      4      3     12       - declared
+module: ast                         1      1      1      1      no declared
+```
+
+Three things this demonstrates that the earlier draft only asserted. **It is a
+join, not a read**: the draw rows say which draws are correct-but-fallback and
+how they cluster and carry no refusal at all; the replay carries the refusal and
+none of the population labels. **The key is `corpus_id`, not `case_id`** —
+`eval2_rows` writes `case_id` as the case's *source* id — and the first version
+of this command used `case_id`, matched nothing, and printed an empty table with
+every bucket at zero. It was caught because the tool reports what it could not
+resolve rather than reporting a zero; that run's line read `197 draw(s) match
+status correct-fallback; 0 carried a refusal / UNRESOLVED: 197 draw(s) have no
+replay row`. **And the held-out banner travels with it**, because this command
+can be pointed at a benchmark arm and a build order read off one is test-set
+steering — the hazard `refusals.py` already carries that banner for.
+
+This run is the rewrite hold-out, not eval-2, so its ranking is an exercise of
+the path and **not** a result: §6 asks Codex whether the banner is sufficient
+protection or whether a draw table should refuse `--rank` outright.
 
 ### Tree health, re-derived here
 
@@ -258,6 +306,58 @@ The fix is a pre-flight check in the harness, not a guess from the program's
 output: the harness built the argv, so it knows which element is the program,
 and it refuses to spawn one that is not executable. A new test names the netns
 path explicitly so the mask cannot come back silently.
+
+### What an adversarial review of this round found, before it was committed
+
+Ten agents were pointed at the change with instructions to refute it. They did,
+and the findings below were real and are fixed. They are recorded because a
+report that lists only what worked is the kind of report §3.1 of
+`ASSESSMENT.md` complains about.
+
+- **The headline claim did not hold.** `nt levers --rows` was written against a
+  row shape nothing in this tree produces. Eval-2 draw rows carry no refusal;
+  the legality replay carries no population label. S0b is a **join**, and the
+  first version would have printed an empty table with four zero buckets on the
+  private rows. It is now `--run`, it joins on the key `eval2_rows` itself uses,
+  and it is demonstrated in §3 rather than claimed.
+- **A near-identical second masking of exit 127.** The sandbox guard resolved a
+  relative interpreter path against the *harness's* working directory while the
+  child runs in its own, so `--engine ./something` still produced
+  `exit_code=127, harness_error=None` — the exact defect this round set out to
+  fix, by a second door. Fixed, and a mutation test confirms the new test
+  catches it.
+- **`compare` claimed an agreement it had not checked.** A §4 table that could
+  not be parsed came back as "reproduces §4 on all four buckets" and `--strict`
+  exited 0. It now fails closed and says which buckets it could not read.
+- **The `not-stdlib` layer inverted below Python 3.10.** `sys.stdlib_module_names`
+  is 3.10+, and the empty set it fell back to made *every* import
+  third-party — moving 94 entries out of engine-addressable with nothing entering
+  the review queue. A wrong table reporting itself as complete, which is the one
+  failure mode this module exists to prevent. The layer now abstains.
+- **The family key could be decided by the user's own program text.** A regex
+  detail echoes the pattern it was given, so a pattern containing `" ("`
+  truncated the key inside the user's text, and a pattern containing the words
+  "named group" was bucketed *as* a named group whatever it actually was.
+- **A `KeyError` in the witness would have replaced the abort it documents.**
+  The witness read `case["tests"]`, and `Verifier.score` can block before it
+  ever reads `tests`. The engine-mismatch message — the entire point — would
+  have become `KeyError: 'tests'`.
+- **Concurrent witness rows could shred the file.** `append_jsonl` wrote body and
+  newline separately, so rows over the 8 KiB buffer interleaved under 16
+  workers. A witness row carries a program and its tests and is routinely larger
+  than that. Measured before: 116 unparseable lines of 320. Now one write.
+- **Four tests were defeated by one-line mutations** and are rewritten: the
+  closed-list guard (a whole second copy written as one concatenated string
+  compared equal to nothing and passed); the §4 delta (two equal-sized families
+  could trade buckets and move no total); the print guard (`_emit = print`); and
+  the ranking test (it hand-fed the score it claimed to check).
+- **Two of my own declarations were factually wrong.** `recursion: call depth
+  beyond 180` and `repr nested deeper than 500` were filed as fallback because
+  "CPython's own limit is the observable" — but 180 and 500 are **this engine's**
+  constants (`eval.rs MAX_DEPTH`, `err.rs MAX_NEST`). That is "the engine has not
+  served it yet", which this table's own criterion calls engine-addressable.
+  Both moved, along with `EnvironmentError` and `type() of a RegexFlag`, which
+  were inconsistent with rows beside them.
 
 ### The net caught this session, which is the point of it
 
@@ -336,7 +436,7 @@ separate change and it is not made here.
    `module: tempfile`, `module: shutil`, `module: locale`, `module: socket`,
    all placed in legitimate-fallback, and the `bigint` family, which the
    engine's own closed list used to carry and no longer does.
-2. Is the −38 / +43 delta against §4 §4's error or this table's? If §4's, it
+2. Is the −36 / +41 delta against §4 §4's error or this table's? If §4's, it
    should be annotated dated rather than rewritten, and `SECTION_4_DELTA`
    becomes 0.
 3. Should `refusals.HELD_OUT_BANNER` be carried by `nt levers --rows` when the

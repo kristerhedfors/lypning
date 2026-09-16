@@ -38,11 +38,15 @@ engine should, because `tempfile` and `shutil` are on that list and reading the
 environment is what the fallback bucket is for. `mp_serves` is therefore a
 column a reviewer reads beside the declaration, and never a layer.
 
-The same table reads the eval-2 draw rows (`unit: "draw"`), which carry the
-engine's `kind` and `detail` in the same spelling through
-`refusals.grade_against_engine`. That is what makes the ladder's rung S0b a
-command rather than a judgement call re-made on another device: the table that
-decides the private rows is this table, reviewed here, versioned by `RULE`.
+The same table reads the eval-2 draws (`unit: "draw"`), and reaching them takes
+a join, not a second reader: `eval2_rows.row_for` says which draws are
+correct-but-fallback and how they cluster but records no refusal, while the
+legality replay records the refusal as `"<kind>: <detail>"` and none of the
+population labels. `draw_refusals` joins the two on `(corpus_id, draw)` —
+the key `eval2_rows` itself already uses — and hands the result to the same
+`classify`. That is what makes the ladder's rung S0b a command rather than a
+judgement call re-made on another device: the table that decides the private
+rows is this table, reviewed here, versioned by `RULE`.
 
 Library code does not print (root `CLAUDE.md` invariant 8): every function here
 returns data or a string, and `cli.py` renders it.
@@ -165,8 +169,7 @@ DECLARED: Tuple[Tuple[str, str, str, str], ...] = (
      "CPython defines the value, and it is randomised per process"),
     ("builtin: dir", LEGITIMATE_FALLBACK, NEW_HERE,
      "enumerates CPython's own object model"),
-    ("builtin: EnvironmentError", LEGITIMATE_FALLBACK, NEW_HERE,
-     "an alias CPython's exception hierarchy owns"),
+
     ("builtin: iter(callable, sentinel)", LEGITIMATE_FALLBACK, NEW_HERE,
      "the two-argument form drives an arbitrary callable to exhaustion"),
     ("module-attr: os.system", LEGITIMATE_FALLBACK, NEW_HERE,
@@ -207,10 +210,7 @@ DECLARED: Tuple[Tuple[str, str, str, str], ...] = (
      "arbitrary precision under a machine-word engine; a boundary that has moved once"),
     ("bigint: math.factorial() past 20!", LEGITIMATE_FALLBACK, NEW_HERE,
      "arbitrary precision under a machine-word engine; a boundary that has moved once"),
-    ("recursion: call depth beyond 180", LEGITIMATE_FALLBACK, NEW_HERE,
-     "a stack budget, not a construct; CPython's own limit is the observable"),
-    ("recursion: repr nested deeper than 500", LEGITIMATE_FALLBACK, NEW_HERE,
-     "a stack budget, not a construct; CPython's own limit is the observable"),
+
     ("float-sum: sum() over floats where CPython 3.11, 3.12 and 3.14 round differently",
      LEGITIMATE_FALLBACK, NEW_HERE,
      "the engine's own detail says CPython versions disagree, so no oracle pins it"),
@@ -224,7 +224,7 @@ DECLARED: Tuple[Tuple[str, str, str, str], ...] = (
     ("repr: repr() of a builtin_function_or_method", LEGITIMATE_FALLBACK, NEW_HERE,
      "the text embeds a CPython address and its own object model"),
     ("repr: repr() of a method_descriptor", LEGITIMATE_FALLBACK, NEW_HERE,
-     "the text embeds a CPython address and its own object model"),
+     "the text names CPython's own object model (no address: that is the bound form)"),
     ("dunder-attr: type.__qualname__, which is part of Python's data model",
      LEGITIMATE_FALLBACK, NEW_HERE,
      "the engine's own detail says the data model owns it"),
@@ -238,10 +238,10 @@ DECLARED: Tuple[Tuple[str, str, str, str], ...] = (
     ("re: ~ on a RegexFlag, whose inverted mask CPython spells version-dependently",
      LEGITIMATE_FALLBACK, NEW_HERE,
      "the engine's own detail says the spelling is CPython-version-dependent"),
-    ("re: pattern '[a--b]', which CPython rejects: bad character range",
+    ("re: bad character range",
      LEGITIMATE_FALLBACK, NEW_HERE,
      "the observable is CPython's own error text for a pattern it rejects"),
-    ("re: pattern '^*', which CPython rejects: nothing to repeat",
+    ("re: nothing to repeat",
      LEGITIMATE_FALLBACK, NEW_HERE,
      "the observable is CPython's own error text for a pattern it rejects"),
     ("base64: b64decode() over data carrying an alphabet character after the padding that closes a quad",
@@ -258,6 +258,8 @@ DECLARED: Tuple[Tuple[str, str, str, str], ...] = (
      "the observable is the exact TypeError CPython raises"),
     ("str-method: str.casefold() of U+00B5", LEGITIMATE_FALLBACK, NEW_HERE,
      "a full-Unicode case-folding table, which the repr-unicode kind is already closed for"),
+    ("type: type() of a RegexFlag", LEGITIMATE_FALLBACK, NEW_HERE,
+     "CPython spells the flag repr version-dependently, as the `~` row already says"),
     ("argument: keyword strict", LEGITIMATE_FALLBACK, NEW_HERE,
      "selects a CPython-owned strict mode whose rejections are its own messages"),
 
@@ -290,6 +292,12 @@ DECLARED: Tuple[Tuple[str, str, str, str], ...] = (
      "pure formatting over values the program already holds"),
     (_RE_NAMED_GROUP, ENGINE_ADDRESSABLE, FROM_SECTION_4,
      "a regex feature with a fixed answer, already collapsed to one row by §4"),
+    ("recursion: call depth beyond 180", ENGINE_ADDRESSABLE, NEW_HERE,
+     "180 is THIS engine's own stack budget (eval.rs MAX_DEPTH), not CPython's"),
+    ("recursion: repr nested deeper than 500", ENGINE_ADDRESSABLE, NEW_HERE,
+     "500 is THIS engine's own nesting budget (err.rs MAX_NEST), not CPython's"),
+    ("builtin: EnvironmentError", ENGINE_ADDRESSABLE, NEW_HERE,
+     "an alias for OSError, whose type this table already calls servable"),
     ("walrus: assignment expression", ENGINE_ADDRESSABLE, NEW_HERE,
      "a language construct with a native equivalent; no environment is read"),
     ("nonlocal: nonlocal declaration", ENGINE_ADDRESSABLE, NEW_HERE,
@@ -301,7 +309,7 @@ DECLARED: Tuple[Tuple[str, str, str, str], ...] = (
     ("module: statistics", ENGINE_ADDRESSABLE, NEW_HERE,
      "pure computation over values the program already holds"),
     ("module: zlib", ENGINE_ADDRESSABLE, NEW_HERE,
-     "pure byte transformation with a fixed answer"),
+     "pure byte transformation; note compress() output tracks the zlib build"),
     ("module: string", ENGINE_ADDRESSABLE, NEW_HERE,
      "static constants and pure template substitution"),
     ("module: types", ENGINE_ADDRESSABLE, NEW_HERE,
@@ -342,8 +350,7 @@ DECLARED: Tuple[Tuple[str, str, str, str], ...] = (
      "naming an exception class, which the engine already raises"),
     ("type: type() of a FileNotFoundError", ENGINE_ADDRESSABLE, NEW_HERE,
      "naming an exception class, which the engine already raises"),
-    ("type: type() of a RegexFlag", ENGINE_ADDRESSABLE, NEW_HERE,
-     "naming a type the engine already produces"),
+
     ("type: type() of a dict_keys", ENGINE_ADDRESSABLE, NEW_HERE,
      "naming a type the engine already produces"),
     ("type: type() of a function", ENGINE_ADDRESSABLE, NEW_HERE,
@@ -373,9 +380,9 @@ DECLARED: Tuple[Tuple[str, str, str, str], ...] = (
      "a static Unicode table, the same table the unicodedata row needs"),
     ("re: bytes pattern or subject", ENGINE_ADDRESSABLE, NEW_HERE,
      "the engine already matches over text; bytes is the same algorithm"),
-    ("re: pattern '(\\w)\\1': backreference \\1..\\99", ENGINE_ADDRESSABLE, NEW_HERE,
+    ("re: backreference \\1..\\99", ENGINE_ADDRESSABLE, NEW_HERE,
      "a regex feature with a fixed answer"),
-    ("re: pattern '(?<![.\\w])seed\\s*\\(': negative lookbehind", ENGINE_ADDRESSABLE, NEW_HERE,
+    ("re: negative lookbehind", ENGINE_ADDRESSABLE, NEW_HERE,
      "a regex feature with a fixed answer"),
 )
 
@@ -436,16 +443,22 @@ def oracle_modules() -> "frozenset[str]":
         return frozenset()
 
 
-def stdlib_names() -> "frozenset[str]":
+def stdlib_names() -> "Optional[frozenset[str]]":
     """What this interpreter ships, which is what the `not-stdlib` layer asks.
 
-    The answer belongs to the interpreter running the tool, not to the engine,
-    so the result records which one it was. `sys.stdlib_module_names` arrived in
-    3.10; below that the layer decides nothing and says so by being empty,
-    rather than quietly calling every import third-party.
+    Returns **None**, not an empty set, when it cannot answer —
+    `sys.stdlib_module_names` arrived in 3.10 and this tree still declares
+    `>=3.9`. The distinction is the whole safety of the layer: an empty set
+    makes `top not in stdlib` true for *every* import, which would silently
+    reclassify every stdlib module as third-party and land it in the fallback
+    bucket. Measured on this tree, that moves 94 entries out of
+    engine-addressable without a single row entering the review queue — a wrong
+    table that reports itself as complete, which is the failure mode this module
+    is otherwise built to prevent. None makes the layer decide nothing instead,
+    and the result records that it abstained.
     """
     names = getattr(sys, "stdlib_module_names", None)
-    return frozenset(names) if names else frozenset()
+    return frozenset(names) if names else None
 
 
 def _top_module(detail: str) -> Optional[str]:
@@ -456,6 +469,27 @@ def _top_module(detail: str) -> Optional[str]:
     if not name:
         return None
     return name.split(".")[0]
+
+
+def _construct(detail: str) -> str:
+    """Strip a leading `pattern <src>: ` or `template <src>: ` echo of the user's
+    own text, leaving the construct the engine actually named.
+
+    The engine writes the source it was given back into the detail, and it
+    escapes only control characters — so the user's spaces, parentheses and
+    words survive. Two things went wrong before this existed, both measured on
+    hand-built details this corpus happens not to contain yet: a pattern holding
+    `" ("` truncated the key inside the user's text, collapsing a backreference
+    and a lookbehind into one row keyed `re: pattern 'a`; and a pattern
+    containing the words "named group" was bucketed AS a named group, carrying
+    that declaration's reason, however it actually failed. Keying on the
+    construct and not on the echo closes both, and a user's text can no longer
+    decide a bucket.
+    """
+    for prefix in ("pattern ", "template "):
+        if detail.startswith(prefix) and ": " in detail:
+            return detail.rsplit(": ", 1)[1].strip()
+    return detail
 
 
 def family(kind: str, detail: str) -> str:
@@ -476,9 +510,10 @@ def family(kind: str, detail: str) -> str:
         top = _top_module(detail)
         if top is not None:
             return "module: " + top
-    if kind == "re" and "named group" in detail:
+    construct = _construct(detail)
+    if kind == "re" and "named group" in construct:
         return _RE_NAMED_GROUP
-    head = detail.split(" (")[0].strip()
+    head = construct.split(" (")[0].strip()
     return "%s: %s" % (kind, head)
 
 
@@ -515,7 +550,7 @@ def classify(kind: str, detail: str, *, closed_kinds=None, stdlib=None) -> Dict[
     if kind in closed_kinds:
         return {"bucket": LEGITIMATE_FALLBACK, "basis": "engine-closed-list",
                 "evidence": kind, "family": key}
-    if top is not None and top not in stdlib:
+    if stdlib is not None and top is not None and top not in stdlib:
         return {"bucket": LEGITIMATE_FALLBACK, "basis": "not-stdlib",
                 "evidence": top, "family": key}
     row = _DECLARED_INDEX.get(key)
@@ -533,6 +568,10 @@ def refusal_of(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     `blocker = "<kind>: <detail>"` (`refusals.grade_against_engine`), which is
     what the eval-2 draw rows carry. Neither is parsed twice.
     """
+    if "kind" in record and "outcome" not in record:
+        # Already normalised — `draw_refusals` did the join. Passing a joined
+        # record back through the two parsers below would re-derive nothing.
+        return dict(record)
     if record.get("outcome") == "refused":
         info = record.get("info") or {}
         kind, detail = info.get("kind"), info.get("detail")
@@ -552,6 +591,66 @@ def refusal_of(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 "day": None, "source": record.get("status"), "count": None,
                 "group": record.get("split_group") or record.get("family")}
     return None
+
+
+def draw_refusals(draw_rows: Iterable[Dict[str, Any]],
+                  replay_rows: Iterable[Dict[str, Any]],
+                  *, status: Optional[str] = None,
+                  programs: Optional[Dict[Any, str]] = None) -> Dict[str, Any]:
+    """Rung S0b's population: an eval-2 draw joined to its replay verdict.
+
+    THIS JOIN IS THE WHOLE COMMAND, and it is not optional, because neither side
+    carries what the other has. `eval2_rows.row_for` writes `status`, `family`
+    and `split_group` — which draws are correct-but-fallback, and how they
+    cluster — and no refusal at all. `refusals.on_policy` writes the refusal
+    (`blocker`, which is `"<kind>: <detail>"`) keyed `(case_id, sample)`, and
+    none of the population labels. `eval2_rows.rows` already joins them on
+    exactly this key to decide `native`; this joins them again to ask *which
+    refusal*.
+
+    `programs` is optional and maps a draw to the program text, for the
+    `mentions_own_package` column only — never for a bucket.
+
+    Returns the joined records and, separately, the counts that must not be read
+    as zeros: draws whose replay row is absent, and draws whose replay recorded
+    no refusal. A correct-but-fallback draw with no refusal on record is a hole
+    in the evidence, not a family with no mass.
+    """
+    index = {}
+    for row in replay_rows:
+        index[(row.get("case_id"), row.get("sample"))] = row
+    out: List[Dict[str, Any]] = []
+    considered = 0
+    unmatched = 0
+    without_refusal = 0
+    for row in draw_rows:
+        if status is not None and row.get("status") != status:
+            continue
+        considered += 1
+        # `corpus_id`, not `case_id`: `eval2_rows.row_for` writes `case_id` as
+        # the case's SOURCE id and keeps the attempt's own id in `corpus_id`,
+        # and the replay is keyed by the attempt's. `eval2_rows.rows` joins on
+        # exactly that, so this joins on exactly that. Getting it wrong is silent
+        # in the worst way — every draw simply fails to match and the table comes
+        # out empty — which is why the counts below are returned and printed.
+        key = (row.get("corpus_id") or row.get("case_id"), row.get("draw"))
+        replay = index.get(key)
+        if replay is None:
+            unmatched += 1
+            continue
+        blocker = replay.get("blocker")
+        if not blocker or ": " not in blocker:
+            without_refusal += 1
+            continue
+        kind, detail = blocker.split(": ", 1)
+        out.append({"kind": kind, "detail": detail,
+                    "unit_id": row.get("corpus_id") or row.get("case_id"),
+                    "program": (programs or {}).get(key) or "",
+                    "day": None, "source": row.get("status"),
+                    "count": None,
+                    "group": row.get("split_group") or row.get("family")})
+    return {"records": out, "considered": considered, "unmatched": unmatched,
+            "without_refusal": without_refusal}
 
 
 def engine_note(engine: Dict[str, Any]) -> str:
@@ -653,7 +752,8 @@ def table(records: Iterable[Dict[str, Any]], *, source: str, unit: str = "entry"
             "available": bool(closed_kinds),
             "closed_kinds": len(closed_kinds),
             "oracle_modules": len(oracle),
-            "stdlib_from": "%d.%d" % (sys.version_info[0], sys.version_info[1]),
+            "stdlib_from": ("%d.%d" % (sys.version_info[0], sys.version_info[1])
+                            if stdlib is not None else None),
         },
         "buckets": buckets,
         "families": families,
@@ -676,12 +776,25 @@ def rank(result: Dict[str, Any], *, bucket: str = ENGINE_ADDRESSABLE,
 
 
 def compare(result: Dict[str, Any], expected: Dict[str, int]) -> Dict[str, Any]:
-    """This table against §4's four totals: agreement, or the per-bucket delta."""
+    """This table against §4's four totals: agreement, or the per-bucket delta.
+
+    A bucket §4's table did not yield is `missing`, and a comparison with any
+    missing bucket **never agrees**. The earlier form skipped those buckets and
+    then took `all()` over what was left, so a §4 table that had been renamed,
+    reformatted or half-parsed came back as "reproduces §4 on all four buckets"
+    — an agreement about a comparison that did not happen, which is worse than
+    no comparison at all. An empty `expected` is the same bug at its limit and is
+    now the same answer.
+    """
     delta = {}
+    missing = []
     for name in BUCKETS:
         if name in expected:
             delta[name] = result["buckets"][name]["units"] - expected[name]
-    return {"agrees": all(v == 0 for v in delta.values()), "delta": delta,
+        else:
+            missing.append(name)
+    agrees = (not missing) and all(v == 0 for v in delta.values())
+    return {"agrees": agrees, "delta": delta, "missing": missing,
             "expected": dict(expected)}
 
 
@@ -691,10 +804,10 @@ def section4_totals(path: str) -> Dict[str, int]:
     The document is the fixture, so its table and this module cannot drift apart
     unnoticed — the pinning test reads the same rows a reader does.
     """
-    wanted = (("self-referential", SELF_REFERENTIAL),
-              ("legitimate fallback", LEGITIMATE_FALLBACK),
-              ("engine-addressable", ENGINE_ADDRESSABLE),
-              ("| other ", OTHER))
+    wanted = {"self-referential": SELF_REFERENTIAL,
+              "legitimate fallback": LEGITIMATE_FALLBACK,
+              "engine-addressable": ENGINE_ADDRESSABLE,
+              "other": OTHER}
     totals: Dict[str, int] = {}
     with open(path, "r", encoding="utf-8") as handle:
         for line in handle:
@@ -703,15 +816,20 @@ def section4_totals(path: str) -> Dict[str, int]:
             cells = [c.strip() for c in line.strip().strip("|").split("|")]
             if len(cells) < 2:
                 continue
-            for needle, name in wanted:
-                if name in totals:
-                    continue
-                probe = line if needle.startswith("|") else cells[0]
-                if needle.strip("| ") in probe:
-                    try:
-                        totals[name] = int(cells[1])
-                    except ValueError:
-                        pass
+            # Anchored at the START of the first cell, never a substring of
+            # the line. §4 writes `self-referential: this repository working on
+            # itself`, so the label is the head of its own cell. Matching a
+            # substring of the whole line let any other table in the document
+            # whose first cell merely contained "other" supply that bucket's
+            # count, and the earlier row won silently.
+            head = cells[0].split(":", 1)[0].strip()
+            name = wanted.get(head)
+            if name is None or name in totals:
+                continue
+            try:
+                totals[name] = int(cells[1])
+            except ValueError:
+                pass
     return totals
 
 
@@ -827,8 +945,10 @@ def undeclared_report(rows: Sequence[Dict[str, Any]]) -> str:
 
 def compare_report(result: Dict[str, Any], cmp: Dict[str, Any]) -> str:
     """Whether this table reproduces §4, and where it does not."""
-    if not cmp["expected"]:
-        return "no §4 table found to compare against."
+    if cmp.get("missing"):
+        return ("could NOT compare against ASSESSMENT.md §4: its table yielded no "
+                "count for %s. This is a failure to read the document, not an "
+                "agreement with it." % ", ".join(cmp["missing"]))
     if cmp["agrees"]:
         return "reproduces ASSESSMENT.md §4 on all four buckets."
     lines = ["does NOT reproduce ASSESSMENT.md §4; the delta is this table minus §4:"]

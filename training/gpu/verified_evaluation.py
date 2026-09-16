@@ -57,12 +57,19 @@ def blocked_witness(verifier, witness_path, step):
         try:
             return verifier.score(case, program)
         except VerificationBlocked as exc:
+            # Every field is read with `.get`. A KeyError raised in here would
+            # REPLACE the abort it is trying to document — the one exception
+            # whose message is the whole point — with a KeyError naming a
+            # bookkeeping field. `Verifier.score` can block before it ever
+            # reads `tests` (a runner failure, a harness error, identity
+            # drift), so a case without one is reachable on exactly the paths
+            # this witness exists for.
             if witness_path is not None:
                 append_jsonl(witness_path, {
-                    "step": step, "case_id": case["case_id"], "draw": draw,
-                    "family": case["family"], "population": case["population"],
-                    "split_group": case.get("split_group", case["family"]),
-                    "program": program, "error": str(exc), "tests": case["tests"]})
+                    "step": step, "case_id": case.get("case_id"), "draw": draw,
+                    "family": case.get("family"), "population": case.get("population"),
+                    "split_group": case.get("split_group") or case.get("family"),
+                    "program": program, "error": str(exc), "tests": case.get("tests")})
             raise
 
     return score_one

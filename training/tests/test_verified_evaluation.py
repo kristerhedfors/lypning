@@ -200,15 +200,22 @@ def test_a_blocked_evaluation_preserves_the_program_and_still_aborts(tmp_path, m
     model = Model(torch, [1, 99])
     from pipeline.training_types import VerificationBlocked
 
+    raised = []
+
     def block(case, program):
-        raise VerificationBlocked("engine mismatch: " + program)
+        exc = VerificationBlocked("engine mismatch: " + program)
+        raised.append(exc)
+        raise exc
 
     cases = [dict(case_id="c", family="f", task="task", population="coverage",
                   split_group="g", tests=[{"stdout": "1"}])]
     witness = tmp_path / "eval-blocked-witnesses.jsonl"
-    with pytest.raises(VerificationBlocked):
+    with pytest.raises(VerificationBlocked, match="engine mismatch") as caught:
         ev.evaluate(model, Tokenizer(), cases, SimpleNamespace(score=block), decoding(10),
                     tmp_path / "eval.jsonl", 7, torch, witness_path=witness)
+    # The ORIGINAL exception, not a new one of the same class: a witness that
+    # re-raised its own would discard the message the abort exists to carry.
+    assert any(caught.value is exc for exc in raised)
     rows = [json.loads(line) for line in witness.read_text().splitlines() if line.strip()]
     assert rows, "the program that blocked the arm must survive the abort"
     assert rows[0]["case_id"] == "c" and rows[0]["step"] == 7
@@ -245,3 +252,69 @@ def test_a_clean_evaluation_writes_no_witness(tmp_path, monkeypatch):
     ev.evaluate(model, Tokenizer(), cases, verifier, decoding(10),
                 tmp_path / "eval.jsonl", 0, torch, witness_path=witness)
     assert not witness.exists()
+
+
+def test_a_case_without_tests_does_not_lose_the_abort(tmp_path, monkeypatch):
+    """A KeyError in the witness would REPLACE the exception it documents.
+
+    `Verifier.score` can block before it reads `tests` — a runner failure, a
+    harness error, engine-identity drift — so a case reaching the witness
+    without one is exactly the path the witness was built for. Reading
+    `case["tests"]` there turned `engine mismatch: ...` into `KeyError: 'tests'`,
+    and `train_verified.main` catches KeyError too, so the run still exited 1
+    with the evidence gone.
+    """
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(GenerationConfig=SimpleNamespace))
+    ev, torch = load_evaluation(), FakeTorch()
+    model = Model(torch, [1, 99])
+    from pipeline.training_types import VerificationBlocked
+
+    def block(case, program):
+        raise VerificationBlocked("engine mismatch: identity drift")
+
+    cases = [dict(case_id="c", family="f", task="task", population="coverage")]
+    witness = tmp_path / "eval-blocked-witnesses.jsonl"
+    with pytest.raises(VerificationBlocked, match="identity drift"):
+        ev.evaluate(model, Tokenizer(), cases, SimpleNamespace(score=block), decoding(10),
+                    tmp_path / "eval.jsonl", 0, torch, witness_path=witness)
+    rows = [json.loads(line) for line in witness.read_text().splitlines() if line.strip()]
+    assert rows and rows[0]["tests"] is None and rows[0]["case_id"] == "c"
+
+
+def test_the_runner_asks_for_a_witness_at_every_evaluation_call_site():
+    """The witness is worthless if the trainer never requests it.
+
+    Deleting both `witness_path=` arguments in `train_verified.py` left the whole
+    suite green, so nothing would have noticed the real trainer silently writing
+    no witness at all. This reads the script, which is how `test_training.py`
+    already pins source-level contracts.
+    """
+    source = (Path(__file__).resolve().parents[1] / "gpu" / "train_verified.py").read_text()
+    calls = source.count("evaluate(model, tok,")
+    assert calls == 2, "call sites moved; re-check that each still asks for a witness"
+    assert source.count('witness_path=args.output / "eval-blocked-witnesses.jsonl"') == calls
+
+
+def test_concurrent_witness_rows_stay_parseable(tmp_path):
+    """Two writes per row let threads interleave a body and its newline.
+
+    A witness row carries a program and its tests, so it is routinely over the
+    8 KiB text buffer — which is exactly when the body and the "\n" became
+    separate syscalls and 16 workers could shred the file.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from pipeline.jsonio import append_jsonl
+
+    path = tmp_path / "w.jsonl"
+    payload = "x" * 20000
+
+    def write(i):
+        for _ in range(20):
+            append_jsonl(path, {"i": i, "program": payload})
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        list(pool.map(write, range(16)))
+    lines = [ln for ln in path.read_text().splitlines() if ln.strip()]
+    assert len(lines) == 320
+    for line in lines:
+        json.loads(line)

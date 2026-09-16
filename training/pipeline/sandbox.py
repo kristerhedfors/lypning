@@ -94,14 +94,24 @@ class RunResult:
 _NETNS_PROBE: Optional[bool] = None
 
 
-def _not_executable(program: str) -> Optional[str]:
+def _not_executable(program: str, cwd: Path) -> Optional[str]:
     """Why this program cannot be executed, or None if it can.
+
+    `cwd` is the CHILD's working directory, not ours, and it is the reason this
+    takes an argument at all: the child is spawned with `cwd=tmp`, so a relative
+    interpreter path resolves against that directory and not against the
+    harness's. Checking it here against our own cwd would admit a path that the
+    child then cannot exec — which is precisely the masked exit 127 this guard
+    exists to stop, arriving by a different door.
 
     Deliberately phrased like `child_exec`'s own message, because it reports the
     same event from the other side of the spawn and a reader should not have to
     know which side caught it.
     """
-    found = program if os.path.sep in program else shutil.which(program)
+    if os.path.sep in program:
+        found = program if os.path.isabs(program) else os.path.join(str(cwd), program)
+    else:
+        found = shutil.which(program)
     if not found or not os.path.isfile(found) or not os.access(found, os.X_OK):
         return "child setup/exec: not executable: %s" % program
     return None
@@ -343,7 +353,7 @@ def run_python(
         # decides whether a run is a model result or a transport failure that
         # must abort, so it is checked here, where the harness still knows which
         # element of its own argv is the program.
-        unrunnable = _not_executable(cmd[program_at])
+        unrunnable = _not_executable(cmd[program_at], tmp)
         if unrunnable:
             return RunResult(None, "", "", time.time() - started, harness_error=unrunnable)
 
