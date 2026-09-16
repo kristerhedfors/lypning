@@ -14,6 +14,45 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-16** — A "standard library" corpus: units the engines run, each labelled by the cheapest one ([#85](https://github.com/kristerhedfors/lypning/pull/85))
+
+- `training/stdlib/units/` holds self-contained, function-only programs that
+  fill CPython surfaces the engines refuse. Nothing imports them, and nothing
+  can: measured 2026-09-16, `/root/.lypning/bin/lypning-l main.py` on `import
+  mylib` refuses `module: import mylib` and `exec("x = 1")` refuses `builtin:
+  exec`. A unit can only be INLINED, which is what makes this training data
+  rather than a shipped library.
+- A unit is labelled by running it, never by reading it: CPython first as the
+  oracle, then each engine in `engines.ENGINE_ORDER` cheapest-first, and the
+  first byte-identical zero exit wins. Exit 90 is coverage and labelling moves
+  on; an engine that exits 0 with different bytes is a MISMATCH, so the unit is
+  rejected and the reason recorded (invariant 1).
+- `PYTHONPATH=src:training python3 -m pipeline.cli stdlib-verify --units
+  training/stdlib/units --first-seen 2026-09-16 --producer authored --cpython
+  /usr/bin/python3.11 --engine lypning=… --engine lypning-l=…`, run 2026-09-16:
+  34 units, 26 `lypning`, 8 `lypning-l`, 0 drops, 121 CPython names filled.
+  Three of the 34 disagree with what `lypning route` predicted statically, all
+  in the legitimate direction — a `bigint` refusal only exists at runtime.
+- `training/data/stdlib/stdlib.jsonl` is those rows, committed, so the corpus
+  can be read and merged without a Rust toolchain. `first_seen` is passed in
+  and the serialisation is fixed, so re-running the writer over an unchanged
+  tree rewrites nothing; `test_stdlib.py` §9 fails when it has gone stale
+  against the units, engine-free by name and hash and byte-exact when the
+  binaries are present.
+- `engines.ONLY_CPYTHON_REFUSALS` is gated, not merely discouraged. A
+  pure-Python `math.log` or set-ordering helper passes its own cases and
+  returns a silent wrong answer, which is the one defect this corpus cannot see
+  for itself; `training/tests/test_stdlib.py` is the check, over the CPython
+  differential, determinism and that gate.
+- `.github/workflows/stdlib-corpus.yml` runs plan, generate, verify, one
+  bounded repair round and assemble — `workflow_dispatch` only, the provider
+  secret at step level, `permissions: contents: read`. It uploads the corpus
+  and never commits, and its `dry_run` runs all five stages offline and asserts
+  the shape a real run would produce.
+- `training/STDLIB.md` states the mechanism, `training/stdlib/README.md` is the
+  operator's note, and `training/stdlib/targets.json` carries the surfaces with
+  the census that ranked them and its own date.
+
 **2026-09-16** — `nemotron/` is `training/`, and the retired name is a test ([#83](https://github.com/kristerhedfors/lypning/pull/83))
 
 - Rename the training tree after the model it is for, not the model it is

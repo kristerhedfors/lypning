@@ -1,0 +1,250 @@
+{
+  "schema": "lypning-stdlib-targets/1",
+  "measured_on": "2026-09-16",
+  "note": [
+    "The CPython surfaces worth filling, ordered by how much of the corpus they",
+    "cost. Coverage is COMPUTED, not maintained here: `stdlib-plan` reads the",
+    "`# fills:` header of every committed unit and drops a target whose names are",
+    "all taken, so a fully covered target stays in this file on purpose. It",
+    "documents the surface, and it reopens by itself if a unit is ever removed or",
+    "if a fresh census widens what the surface means.",
+    "Every weight carries the command and the date that produced it (invariant 3).",
+    "Nothing in this file is re-counted by any tool; re-run the census to move a",
+    "number, and move its date with it."
+  ],
+  "census": {
+    "command": "ast-scan of lypning.corpus.load_default()",
+    "entries": 9064,
+    "measured_on": "2026-09-16",
+    "columns": {
+      "programs": "corpus programs that reach for the module at all",
+      "sightings": "occurrences, so one program may count several times",
+      "sole_gap": "programs where this module is the SOLE reason the engine refused — the column that says what filling it would actually buy"
+    },
+    "note": [
+      "These are counts of one corpus on one day, not a forecast of demand and not",
+      "a claim about any other population. Capture grows the corpus every session,",
+      "so a later scan will disagree; that is the corpus growing, not this file",
+      "being wrong. Re-run before relying on a number here."
+    ]
+  },
+
+  "closed_kinds": [
+    "del", "dict-view", "dunder-missing", "encoding", "exception-chaining",
+    "glob-order", "identity", "iterator-type-name", "json", "math",
+    "nan-identity", "nan-order", "percent-format", "random", "repr-unicode",
+    "set-method", "set-order"
+  ],
+  "closed_kinds_note": [
+    "This list restates `lypning.engines.ONLY_CPYTHON_REFUSALS` so a reader sees",
+    "the reasons without holding two files open. `stdlib_generate.load_targets`",
+    "CHECKS it against the engine's own set and refuses to plan if the two differ:",
+    "a kind the engine added and this file did not name would become a target",
+    "nobody excluded, which is precisely the silent wrong answer the closed list",
+    "exists to prevent. Fix this file when they diverge — never the engine's set",
+    "(invariant 1: never widen a table to silence a mismatch)."
+  ],
+
+  "never_target": [
+    {
+      "reason": "closed kind",
+      "modules": ["math", "json", "random"],
+      "kinds": ["math", "json", "random", "nan-identity", "nan-order", "repr-unicode", "percent-format", "encoding"],
+      "why": [
+        "A reimplementation here is wrong in a way the cases cannot catch. A",
+        "pure-Python `math.log` agrees with CPython on the twelve values a unit",
+        "prints and diverges in the last place on the thirteenth; a hand-rolled",
+        "JSON float repr agrees until it meets 0.1 + 0.2; `random` is a specific",
+        "MT19937 stream, not an arbitrary one. Every other unit in this corpus",
+        "fails LOUDLY when it is wrong, because CPython runs every case and a",
+        "wrong byte rejects the unit. These fail quietly, and a model that",
+        "reproduced one inline would ship a wrong answer wearing the shape of a",
+        "feature."
+      ]
+    },
+    {
+      "reason": "closed kind",
+      "modules": [],
+      "kinds": ["set-order", "set-method", "dict-view", "identity", "iterator-type-name", "dunder-missing", "exception-chaining", "del", "glob-order"],
+      "why": [
+        "Observable order, object identity and type names are CPython's own, not a",
+        "computable property a helper can restore. A set-ordering helper agrees",
+        "under this machine's hash seed and under no other; a `glob` wrapper that",
+        "sorts is a different function than the one the program called."
+      ]
+    },
+    {
+      "reason": "refused by design, not by omission",
+      "modules": ["subprocess"],
+      "weight": {"programs": 669, "sightings": 706, "sole_gap": 226, "measured_on": "2026-09-16"},
+      "why": [
+        "The heaviest surface in the census and still out of scope: see",
+        "docs/SUBSET.md section 5. Nothing in pure Python spawns a process, so a",
+        "'fill' could only be a stub that lies about what it did. A high count",
+        "here is a statement about what the corpus does, not a backlog item."
+      ]
+    },
+    {
+      "reason": "refused by design, not by omission",
+      "modules": ["ast"],
+      "weight": {"programs": 230, "sightings": 246, "sole_gap": 155, "measured_on": "2026-09-16"},
+      "why": [
+        "`ast` is CPython's own parser exposed as data. A pure-Python Python parser",
+        "would be a second grammar to keep in step with the first, and the engine",
+        "refuses `ast` because it will not carry one either. A unit here would be",
+        "a large, plausible, quietly divergent parser — the worst shape a corpus",
+        "row can have."
+      ]
+    },
+    {
+      "reason": "refused by design, not by omission",
+      "modules": ["time", "datetime.datetime.now", "calendar.timegm"],
+      "weight": {"programs": 205, "sightings": 225, "sole_gap": 32, "measured_on": "2026-09-16"},
+      "why": [
+        "A clock is not a function of its arguments. Reading one makes a unit's",
+        "output differ between two runs, and the file format requires output that",
+        "is byte-identical on every run on every machine. The date ARITHMETIC that",
+        "surrounds a clock is a separate, fillable target and is listed below as",
+        "`datetime_datetime`; the clock read itself never is."
+      ]
+    }
+  ],
+
+  "targets": [
+    {
+      "slug": "tempfile_paths",
+      "module": "tempfile",
+      "reference": "tempfile",
+      "names": ["tempfile.gettempprefix", "tempfile.mkdtemp", "tempfile.mkstemp", "tempfile.NamedTemporaryFile"],
+      "programs": 248, "sightings": 265, "sole_gap": 4, "measured_on": "2026-09-16",
+      "fillable": "the deterministic half only: how a candidate name is composed from prefix, the random infix and suffix, how `dir` defaults are chosen, and the `text`/binary mode flags — all as functions taking the infix as an argument.",
+      "caution": "tempfile's NAME GENERATION is `random`, a closed kind, and the path it returns is a temp path that may never appear in a unit's output. Fill the composition, take the random part as a parameter, and say in the docstring that the RNG half is deliberately absent. A unit that prints an actual temp path is rejected for non-determinism."
+    },
+    {
+      "slug": "shutil_paths",
+      "module": "shutil",
+      "reference": "shutil",
+      "names": ["shutil.which", "shutil.copyfileobj", "shutil.get_terminal_size", "shutil.make_archive"],
+      "programs": 131, "sightings": 147, "sole_gap": 7, "measured_on": "2026-09-16",
+      "fillable": "the path and buffer arithmetic: how `which` splits PATH and applies PATHEXT, how `copyfileobj` chunks, how an archive member name is built from a base and a root.",
+      "caution": "everything in shutil that WALKS a directory needs `os.listdir`, which the engine refuses, and `os.environ`, which it also refuses. Take PATH and the directory listing as arguments; do not read them."
+    },
+    {
+      "slug": "itertools_rest",
+      "module": "itertools",
+      "reference": "itertools",
+      "names": ["itertools.compress", "itertools.dropwhile", "itertools.takewhile", "itertools.filterfalse", "itertools.starmap", "itertools.tee", "itertools.batched"],
+      "programs": 69, "sightings": 72, "sole_gap": 20, "measured_on": "2026-09-16",
+      "fillable": "all of it, as functions returning materialised lists.",
+      "caution": "CPython returns iterators and this unit cannot: `yield` is refused. Return lists, and say in the docstring that laziness and infinite inputs are the accepted divergence. `itertools.count`, `cycle` and `repeat` are unbounded and are deliberately not listed."
+    },
+    {
+      "slug": "statistics_rest",
+      "module": "statistics",
+      "reference": "statistics",
+      "names": ["statistics.multimode", "statistics.quantiles", "statistics.harmonic_mean"],
+      "programs": 62, "sightings": 69, "sole_gap": 25, "measured_on": "2026-09-16",
+      "fillable": "the ones that are exact arithmetic over the input.",
+      "caution": "`statistics.geometric_mean` needs exp/log and is NOT listed: `math` is a closed kind. Anything that would reach for a transcendental is out, and a unit that approximates one is exactly the quiet divergence the closed list forbids."
+    },
+    {
+      "slug": "difflib_ratio",
+      "module": "difflib",
+      "reference": "difflib",
+      "names": ["difflib.SequenceMatcher", "difflib.get_close_matches", "difflib.ndiff", "difflib.unified_diff"],
+      "programs": 37, "sightings": 37, "sole_gap": 13, "measured_on": "2026-09-16",
+      "fillable": "all of it. SequenceMatcher becomes `matcher_new(a, b)` returning a dict plus `matching_blocks(st)`, `opcodes(st)` and `ratio(st)` — the dict-as-state idiom.",
+      "caution": "CPython's autojunk heuristic (the 1 percent popular-element rule for sequences of 200 or more) changes the answer and must either be implemented or declared absent in the docstring. `find_longest_match` recurses; carry an explicit stack, because depth beyond 180 frames is refused."
+    },
+    {
+      "slug": "unicodedata_ascii",
+      "module": "unicodedata",
+      "reference": "unicodedata",
+      "names": ["unicodedata.category", "unicodedata.normalize", "unicodedata.decimal", "unicodedata.numeric"],
+      "programs": 32, "sightings": 45, "sole_gap": 23, "measured_on": "2026-09-16",
+      "fillable": "a DECLARED, BOUNDED code-point range with its table written out in the file — U+0000..U+00FF is the useful one, and the cases must cover every code point in whatever range the docstring claims.",
+      "caution": "the full UCD is megabytes of tables and no unit carries it. The docstring must state the exact range covered and the helper must raise `ValueError(\"...\")` outside it rather than guess, because a table that silently answers for an uncovered code point is a silent wrong answer. Do not attempt full NFC/NFD."
+    },
+    {
+      "slug": "urllib_defrag",
+      "module": "urllib",
+      "reference": "urllib.parse",
+      "names": ["urllib.parse.urldefrag", "urllib.parse.parse_qsl", "urllib.parse.urlsplit"],
+      "programs": 30, "sightings": 44, "sole_gap": 25, "measured_on": "2026-09-16",
+      "fillable": "the remaining parse entry points, on top of what the committed urllib units already cover.",
+      "caution": "kept in the file although the committed units may already cover every name: the plan drops it when they do, and reopens it if one is removed."
+    },
+    {
+      "slug": "zipfile_stored",
+      "module": "zipfile",
+      "reference": "zipfile",
+      "names": ["zipfile.ZipFile", "zipfile.ZipInfo", "zipfile.is_zipfile"],
+      "programs": 17, "sightings": 18, "sole_gap": 17, "measured_on": "2026-09-16",
+      "fillable": "the container format on bytes: the local file header, the central directory, the end-of-central-directory record, and STORED (method 0) members. Read and write, as functions over `bytes`.",
+      "caution": "DEFLATE is not fillable — it is zlib, and a from-scratch inflater in this subset would be large and quietly wrong on the cases it does not print. Handle method 0 and raise `ValueError(\"unsupported compression method\")` for anything else. CRC-32 is already a committed unit; inline the same algorithm rather than importing anything."
+    },
+    {
+      "slug": "datetime_datetime",
+      "module": "datetime",
+      "reference": "datetime",
+      "names": ["datetime.datetime", "datetime.timedelta.total_seconds", "datetime.timezone.utc", "datetime.datetime.combine"],
+      "programs": 22, "sightings": 53, "sole_gap": 11, "measured_on": "2026-09-16",
+      "fillable": "datetime-as-a-dict arithmetic on top of the committed date units: combining a date and a time, normalising a timedelta, fixed-offset timezones.",
+      "caution": "no clock. `datetime.now`, `today` and `utcnow` are never filled — every helper takes its instant as an argument. Leap seconds do not exist in CPython's model either; say so rather than inventing them."
+    },
+    {
+      "slug": "binascii_base64",
+      "module": "binascii",
+      "reference": "binascii",
+      "names": ["binascii.b2a_base64", "binascii.a2b_base64", "binascii.crc_hqx"],
+      "programs": 18, "sightings": 25, "sole_gap": 13, "measured_on": "2026-09-16",
+      "fillable": "the binascii spelling of base64, which differs from the base64 module's: `b2a_base64` appends a newline unless `newline=False`, and `a2b_base64` is lenient about padding in a way `base64.b64decode` is not.",
+      "caution": "a committed unit already fills base64. The DIFFERENCE is the point of this one, and the docstring must name it; a unit that just re-does base64 under another name is a duplicate and will be dropped at assemble."
+    },
+    {
+      "slug": "string_template",
+      "module": "string",
+      "reference": "string",
+      "names": ["string.capwords", "string.Template", "string.ascii_letters", "string.punctuation", "string.digits"],
+      "programs": 8, "sightings": 8, "sole_gap": 2, "measured_on": "2026-09-16",
+      "fillable": "all of it. The constants are literals; `Template.substitute` and `safe_substitute` become functions over the template string.",
+      "caution": "`string.Template` is a class and classes are refused — write `substitute(template, mapping)`. Its placeholder rule is `$$`, `$name` and `${name}` with an identifier that may not start with a digit, and `substitute` raises where `safe_substitute` does not; that difference is the unit."
+    },
+    {
+      "slug": "argparse_minimal",
+      "module": "argparse",
+      "reference": "argparse",
+      "names": ["argparse.ArgumentParser", "argparse.ArgumentParser.add_argument", "argparse.ArgumentParser.parse_args"],
+      "programs": 9, "sightings": 22, "sole_gap": 2, "measured_on": "2026-09-16",
+      "fillable": "a parser as a dict: `parser_new(prog)`, `add_argument(st, ...)`, `parse_args(st, argv)` returning a dict rather than a Namespace. Long and short options, `store_true`, `nargs` counts, `--` and `=` forms, positionals, defaults and `type=int`.",
+      "caution": "the lowest weight here and listed last on purpose. argparse's error MESSAGES and its usage-line layout are large surfaces of their own; cover parsing, declare the messages out of scope in the docstring, and raise `ValueError(\"...\")` where CPython would exit."
+    },
+    {
+      "slug": "textwrap_all",
+      "module": "textwrap",
+      "reference": "textwrap",
+      "names": ["textwrap.wrap", "textwrap.fill", "textwrap.dedent", "textwrap.indent", "textwrap.shorten"],
+      "programs": 48, "sightings": 86, "sole_gap": 44, "measured_on": "2026-09-16",
+      "fillable": "all of it.",
+      "caution": "expected to be fully covered by committed units and therefore dropped by the plan. It stays here as the documented surface and as the case that exercises the coverage diff."
+    },
+    {
+      "slug": "fnmatch_all",
+      "module": "fnmatch",
+      "reference": "fnmatch",
+      "names": ["fnmatch.fnmatch", "fnmatch.fnmatchcase", "fnmatch.translate", "fnmatch.filter"],
+      "programs": 6, "sightings": 8, "sole_gap": 2, "measured_on": "2026-09-16",
+      "fillable": "all of it.",
+      "caution": "expected to be fully covered by a committed unit and therefore dropped by the plan."
+    },
+    {
+      "slug": "bisect_all",
+      "module": "bisect",
+      "reference": "bisect",
+      "names": ["bisect.bisect_left", "bisect.bisect_right", "bisect.insort_left", "bisect.insort_right"],
+      "programs": 4, "sightings": 4, "sole_gap": 1, "measured_on": "2026-09-16",
+      "fillable": "all of it.",
+      "caution": "expected to be fully covered by a committed unit and therefore dropped by the plan."
+    }
+  ]
+}
