@@ -14,6 +14,32 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-16** — `nemotron/` is `training/`, and the retired name is a test ([#83](https://github.com/kristerhedfors/lypning/pull/83))
+
+- Rename the training tree after the model it is for, not the model it is
+  not: 208 files, plus the three workflows and their path filters,
+  `PYTHONPATH=src:training`, `round_plan`'s `source_identity` root (a real
+  breakage the moment the directory moved), the `overview` registration, the
+  runbook commands, the Hugging Face job scripts and every document citation.
+  `SWITCH.md` deferred this twice on the three workflows; they were the work.
+- The name is model-agnostic on purpose. `qwen/` would repeat the mistake
+  being undone, for the reason invariant 9 already gives: a name that still
+  resolves to something is a name that can drift back into the code.
+- The earlier target's name now survives only where a rewrite would falsify a
+  record — the recorded run ids under `training/runs/` and their `meta.json`
+  (each run records its own `run_id`, and a run id is the join key between a
+  number and its evidence, including evidence outside this tree), the captured
+  corpus and sightings JSONL, and the dated entries in this file, `AUDIT.md`
+  and `REFACTOR.md`. `SWITCH.md` stops being the home of the name and becomes
+  the home of that rule. Earlier entries' *paths* were repointed, because
+  `tests/test_docs.py` resolves them and a ledger may not cite a file that is
+  not there; their branches, models and numbers are untouched.
+- `training/tests/test_naming.py` is the grep: the name appears nowhere
+  outside the frozen evidence, no tracked path spells it outside `runs/`, and
+  `SWITCH.md` states the rule without spelling it. The test does not spell it
+  either — it reads it off the recorded run directory names, so there is no
+  literal to go stale and the last evidence deleted deletes the rule with it.
+
 **2026-09-16** — Assess the Qwen training approach against its goal, and plan the signal ladder ([#82](https://github.com/kristerhedfors/lypning/pull/82))
 
 - Add `training/ASSESSMENT.md`: why no run so far could say whether the

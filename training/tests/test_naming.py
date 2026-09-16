@@ -7,10 +7,10 @@ captured corpus and sightings JSONL, and the dated documents that quote them.
 Everywhere else the tree says *the earlier target*, and nothing spells the name
 as a live identifier: no directory, module, variable, path or command.
 
-The directory this file sits in was itself the largest violation, and was
-renamed ``nemotron`` -> ``training`` on 2026-09-16 (`CHANGELOG.md`). A rule
-that cost a 208-file rename is worth a test, because the way it comes back is
-not a decision — it is one path in one new workflow, copied from an old one.
+The directory this file sits in was itself the largest violation, and became
+``training/`` on 2026-09-16 (`CHANGELOG.md`). A rule that cost a 208-file
+rename is worth a test, because the way it comes back is not a decision — it
+is one path in one new workflow, copied from an old one.
 
 **This file does not spell the name either.** It reads it off the recorded run
 directory names, so there is no literal here to go stale, and so that deleting
