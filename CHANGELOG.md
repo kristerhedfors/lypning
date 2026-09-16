@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-16** — Fix the power-table mislabel at its source, and make the pre-registered k a refusal ([#84](https://github.com/kristerhedfors/lypning/pull/84))
+**2026-09-16** — Fix the power-table mislabel at its source, and make the pre-registered k a refusal ([#85](https://github.com/kristerhedfors/lypning/pull/85))
 
 - `training/ASSESSMENT.md` described the `training/EVAL2.md` §7 mislabel and
   left it in the code, so the next print would have reproduced it.
