@@ -14,6 +14,27 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-16** — Round-02 pilot on the 27B weights: nine attempts, one run, eval-2 in flight ([#80](https://github.com/kristerhedfors/lypning/pull/80))
+
+- Run SFT, probe and GRPO on `Qwen/Qwen3.8-27B` through the pooled-sandbox
+  verifier on an h200 (job `6aaa87465527934177ee9f34`): SFT trains, the probe
+  admits GRPO, GRPO does not move the policy, and 7-case dev and test splits
+  show no gain; the three eval-2 arms upload as they finish. Report in
+  `nemotron/reports/2026-09-16-fable-round02-run.md`.
+- Evaluate in chunks: one `generate` call per chunk of cases with every draw,
+  paired by chunk seed across arms, completions scored concurrently; GRPO
+  rewards scored concurrently; the sequential form ran at ~30 s per draw.
+- Cluster the paired comparison and the power curve by split component, so a
+  family spanning source groups is one family and the rule accepts eval-2 v1
+  (18 such families); the corrected power curve is in `EVAL2.md` §7 with the
+  full pilot draw's base rates in §11.
+- Verifier policy v3: a candidate that disagrees with itself across two clean
+  oracle runs scores `unstable` instead of aborting the stage.
+- HF job hardening from the day's failures: transport retries on Hub 5xx,
+  install retries, per-job sandbox pool names, uploads after every stage,
+  reuse of prepared bundles gated on the verifier identity, and a reused
+  legacy eval run folds its redrawn harness errors to one row per draw.
+
 **2026-09-15** — Run round-02 on Hugging Face: pooled sandboxes as the execution boundary ([#79](https://github.com/kristerhedfors/lypning/pull/79))
 
 - Add the `hf-sandbox-pool` execution contract: every verification request
