@@ -166,8 +166,50 @@ resamples the pilot's clusters with replacement to the candidate size, cases
 kept with their families, simulates both arms at k draws per case and asks the
 §4 rule; the null (delta 0) row is the false-positive rate. Concentrated means
 the 10% of cases with the lowest base rate lifted to one target rate for the
-same mean lift as the uniform row, so the two rows differ only in shape. The
-curve on the pilot draw is pending the pilot and will be appended here, dated.
+same mean lift as the uniform row, so the two rows differ only in shape.
+
+**The curve, 2026-09-16.** Pilot: run `eval-20260916-063539` on the legacy
+tree, the 64 cases of train v1 (§11) at k = 16, 1,024 draws, all 64 cases
+drawn (the run was resumed twice through router outages; the 268 attempts that
+never reached the model are superseded by their redraws, `nt eval2-rows`, and
+no harness error remains in the rows). Base correct-and-native as the power
+tool reads it, macro over 64 (cluster, family) units in 63 independent
+clusters: 73.1%. `nt power --eval2 --rows work/eval2/legacy-pilot/rows-full.jsonl
+--draws 16`, 200 banks per cell, 400 resamples each, rule 95% lower bound > +3pp:
+
+| shape | effect | N=100 | N=200 | N=300 | N=500 | N=800 |
+|---|---|---|---|---|---|---|
+| uniform | +0pp (false positives) | 0% | 0% | 0% | 0% | 0% |
+| uniform | +3pp | 0% | 0% | 0% | 0% | 0% |
+| uniform | +5pp | 0% | 0% | 0% | 0% | 0% |
+| uniform | +8pp | 2% | 3% | 2% | 2% | 3% |
+| uniform | +10pp | 20% | 28% | 40% | 59% | 81% |
+| concentrated | +0pp (false positives) | 0% | 0% | 0% | 0% | 0% |
+| concentrated | +3pp | 0% | 0% | 0% | 0% | 0% |
+| concentrated | +5pp | 9% | 30% | 64% | 98% | 100% |
+| concentrated | +8pp | 73% | 100% | 100% | 100% | 100% |
+| concentrated | +10pp | 98% | 100% | 100% | 100% | 100% |
+
+Read at the frozen bank size of 300 (supply-capped, §11): the rule has 80%
+power only for a concentrated effect of +8pp or more; a concentrated +5pp is
+seen in about two banks of three, a uniform +10pp in two of five, and a uniform
+lift of +8pp or less is invisible at every size on the grid. The false-positive
+rate is 0% in every cell. So a null result from round-02 rules out a
+concentrated gain of roughly +8pp on the lowest-base families and nothing
+finer; a uniform few-point lift, the shape a small SFT most plausibly produces,
+cannot be detected by this instrument at N = 300 and k = 16, and the honest
+route to it is more draws per case (k) and a larger bank, not a looser rule.
+
+One caveat on the statistic itself, found while reading the curve. The rows'
+summariser (`training_metrics.summarize`) takes the macro over the bank's 49
+families; `power_curve_clustered` keys a family inside its cluster, so a
+family that straddles source groups (`stdin-nonblank-line-count`, 12 cases in
+several groups) is several units to it and the same rows read 68.7% to the
+summariser and 73.1% to the power tool. The curve is therefore priced on a
+statistic slightly closer to a per-case macro than the §4 rule's, which should
+overstate power a little for effects concentrated inside a straddling family.
+Follow-up: pool a family across clusters in the power tool, re-run the curve
+on the same rows, and replace this table.
 
 ## 8. Contamination
 
@@ -247,6 +289,25 @@ The first pilot draw (2026-09-16, run `eval-20260916-044656`, k = 16) reached
 (HTTP 402 on 796 of 1,024 calls). On the 228 clean draws: coverage 97.4%
 correct and 96.9% correct-and-native over 12 cases; fallback-control 100% on
 both over 3 cases. The power curve printed from that draw treated the failed
-calls as incorrect draws and is void; the curve is re-run when the full draw
-lands. See `reports/2026-09-16-fable-round02-pilot.md`.
+calls as incorrect draws and is void. See `reports/2026-09-16-fable-round02-pilot.md`.
+
+The full pilot draw landed the same day (run `eval-20260916-063539`, k = 16,
+all 64 cases, 1,024 draws, 1,022 replayed through engine fingerprint
+`2e079e786a655ab6`, `prompt_sha d23e9420b5812443`, provider novita, decoding
+per §5), after two resumes through router outages. `nt eval2-rows`, macro over
+the 49 families:
+
+| Population | Cases | Correct | Correct-and-native |
+|---|---|---|---|
+| all | 64 | 87.9% | 68.7% |
+| coverage | 51 | 92.5% | 75.6% |
+| fallback-control | 13 | 75.0% | 49.5% |
+
+Draw counts: 749 correct-and-native, 171 correct on CPython but refused by the
+engine, 102 incorrect, 2 with no code. The fifteen-case glimpse above was the
+easy head of the bank: on the whole training bank the base model leaves about
+19 points of correct-but-fallback headroom on the native axis, which is the
+axis training targets, so the §9 falsifier "base rate ≥ 90% correct-and-native"
+is not met and round-02 has something to move. The power curve on these rows
+is in §7.
 
