@@ -41,6 +41,7 @@ import json
 import math
 from pathlib import Path
 import re
+import time
 
 from .sandbox import RunResult
 from .training_types import TrainingError, VerificationBlocked
@@ -56,11 +57,31 @@ IDLE_TIMEOUT = "10m"
 #: Under /usr/local on purpose: a pooled sandbox's Landlock ruleset lets it read
 #: the standard system trees, and a top-level /runner is not one of them.
 WORKER = "/usr/local/lib/lypning-verifier/container_worker.py"
+#: A transport failure that may not recur — a Hub 5xx or 429, a dropped
+#: connection — is retried this many times with doubling backoff before the
+#: request is blocked; a 4xx is refused at once. Six tries wait 155 s in all,
+#: a fraction of a GPU hour. Identity drift is never retried (`_admit`): on
+#: 2026-09-16 one Hub 500 on a sandbox create ended a 55-minute run at its
+#: first eval request.
+TRANSPORT_ATTEMPTS = 6
+TRANSPORT_BACKOFF_S = 5.0
 
 
 #: The five fields the bundle records, plus the worker file this tree ships.
 BUNDLE_FIELDS = ("sha256", "version", "oracle", "sandbox_sha256", "child_exec_sha256")
 WORKER_SOURCE = Path(__file__).with_name("container_worker.py")
+
+
+def http_status(exc):
+    """The HTTP status an SDK error carries, or None for a connection-level failure."""
+    code = getattr(getattr(exc, "response", None), "status_code", None)
+    return code if isinstance(code, int) else None
+
+
+def transient(exc):
+    """A transport failure worth one more try: no HTTP status, a 5xx, or 429."""
+    code = http_status(exc)
+    return code is None or code >= 500 or code == 429
 
 
 def expected_identity(identity):
@@ -74,7 +95,7 @@ class HfSandboxPoolRunner:
     """Same call shape as `ContainerRunner`; one pooled sandbox per request."""
 
     def __init__(self, image, revision, identity, *, check=True, pool=None, flavor=FLAVOR,
-                 sandboxes_per_host=None, hf_token=None, space_sha=None):
+                 sandboxes_per_host=None, hf_token=None, space_sha=None, sleep=time.sleep):
         if not isinstance(image, str) or not re.fullmatch(IMAGE_PATTERN, image):
             raise TrainingError("hf-sandbox-pool execution image must be an hf.co/spaces/<owner>/<name> image")
         if not isinstance(revision, str) or not re.fullmatch(REVISION_PATTERN, revision):
@@ -90,6 +111,7 @@ class HfSandboxPoolRunner:
         self._sandboxes_per_host = sandboxes_per_host
         self._hf_token = hf_token
         self._space_sha = space_sha
+        self._sleep = sleep
         if check:
             got = self._request({"protocol": PROTOCOL, "action": "identity"}, 10, 1024)
             self._admit(got, "handshake")
@@ -173,12 +195,21 @@ class HfSandboxPoolRunner:
         request_bytes = json.dumps(request, allow_nan=False).encode("utf-8")
         if len(request_bytes) > REQUEST_CAP:
             raise VerificationBlocked("sandbox request exceeds protocol cap")
-        try:
-            code, raw = self.transport(request_bytes, timeout_s + 30)
-        except VerificationBlocked:
-            raise
-        except Exception as exc:  # transport, proxy or pool failure: never a low reward
-            raise VerificationBlocked("sandbox transport failed: %s" % type(exc).__name__) from exc
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                code, raw = self.transport(request_bytes, timeout_s + 30)
+                break
+            except (VerificationBlocked, TrainingError):
+                raise  # a block is final; a moved Space or drifted identity aborts, never softens
+            except Exception as exc:  # transport, proxy or pool failure: never a low reward
+                reason = "sandbox transport failed: %s: %s" % (type(exc).__name__, str(exc)[:200])
+                if attempt >= TRANSPORT_ATTEMPTS or not transient(exc):
+                    if attempt > 1:
+                        reason += " (after %d attempts)" % attempt
+                    raise VerificationBlocked(reason) from exc
+                self._sleep(TRANSPORT_BACKOFF_S * 2 ** (attempt - 1))
         if code != 0:
             raise VerificationBlocked("sandbox worker failed; exit %s" % code)
         try:
