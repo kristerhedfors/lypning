@@ -41,6 +41,12 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   artifact repository and quotes every operator word; the smoke script logs
   authored execution witnesses and the report no longer counts `no-code`
   rollouts as sandbox round-trips.
+- `nt eval2-bank` assembles authored proposals into schema-3 cases: lints
+  the task text against the one-home no-runtime-name list, recomputes every
+  expected output by running the reference twice in the sandbox, requires an
+  independent solution written from the text alone to agree, labels the
+  population by running the engine on every test, attaches evidence ids, and
+  files native mismatches as witnesses rather than cases.
 - Pre-register eval-2 in `nemotron/EVAL2.md`: the unconditioned task bank,
   the frozen correct-and-native primary metric, the decoding contract, seeds
   and arms, the pilot-draw power analysis, the leak check and the costs, all

@@ -422,6 +422,37 @@ def cmd_eval2_rows(args: argparse.Namespace) -> int:
     return 1 if census["tally"].get("MISMATCH") else 0
 
 
+def cmd_eval2_bank(args: argparse.Namespace) -> int:
+    """Assemble a schema-3 eval-2 bank from authored proposals, verified by execution.
+
+    Exit 0 even when proposals were dropped (the drops are the report), 1 when
+    nothing was admitted, 2 when the output directory already exists.
+    """
+    from . import eval2_bank
+    from .training_types import TrainingError
+    engine = args.engine or eng.engine_path("lypning-l") or os.environ.get("LYPNING_L_BIN")
+    if not engine or not Path(engine).exists():
+        print("no lypning-l on this machine: run `lypning build --rust`, set LYPNING_L_BIN, "
+              "or pass --engine", file=sys.stderr)
+        return 1
+    if Path(args.output).exists():
+        print("refusing to overwrite %s: a changed bank is a new directory" % args.output,
+              file=sys.stderr)
+        return 2
+    try:
+        inputs = eval2_bank.load_inputs(args.proposals, args.candidates, args.evidence or [])
+        result = eval2_bank.build(inputs["batches"], inputs["candidates"], inputs["evidence"],
+                                  engine, seed=args.seed, keep_disagreements=args.keep_disagreements,
+                                  timeout_s=args.timeout)
+        paths = eval2_bank.write_outputs(result, args.output)
+    except (TrainingError, ValueError, OSError) as exc:
+        print("eval2-bank: %s" % exc, file=sys.stderr)
+        return 1
+    print(eval2_bank.render(result["report"]))
+    print("  -> %s" % paths["bank"])
+    return 0 if result["cases"] else 1
+
+
 def _run_meta(run_id: str) -> Dict[str, Any]:
     p = RUNS / run_id / "meta.json"
     if not p.exists():
@@ -1867,6 +1898,19 @@ def build_parser() -> argparse.ArgumentParser:
     e2r.add_argument("--jobs", type=int, default=8)
     e2r.add_argument("--cache", help="directory of per-run replay verdicts (see `legality --cache`)")
     e2r.set_defaults(fn=cmd_eval2_rows)
+
+    e2b = sub.add_parser("eval2-bank",
+                         help="assemble a schema-3 eval-2 bank from authored proposals, verified by execution")
+    e2b.add_argument("--proposals", required=True, help="JSON array of authoring batch results")
+    e2b.add_argument("--candidates", required=True, help="eval2-select candidates JSONL")
+    e2b.add_argument("--evidence", action="append", help="lypning.evidence snapshot dir (repeatable)")
+    e2b.add_argument("--engine", help="lypning-l binary (default: lypning-l, then $LYPNING_L_BIN)")
+    e2b.add_argument("--output", required=True, help="NEW directory for bank.jsonl, report.json, dropped.jsonl, witnesses.jsonl")
+    e2b.add_argument("--seed", type=int, default=1111, help="hash seed of the second reference run")
+    e2b.add_argument("--keep-disagreements", action="store_true",
+                     help="keep (flagged) cases whose independent solution disagrees or is missing")
+    e2b.add_argument("--timeout", type=float, default=10.0)
+    e2b.set_defaults(fn=cmd_eval2_bank)
 
     v = sub.add_parser("verify", help="check the held-out split against its lock")
     v.set_defaults(fn=cmd_verify)
