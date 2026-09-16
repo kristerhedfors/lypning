@@ -211,7 +211,11 @@ for name in ("pilot", "eval2"):
     if bundle.get("execution") != want:
         raise SystemExit("%s bundle was prepared under another execution contract: %s" % (name, bundle.get("execution")))
     if bundle.get("identity") != identity:
-        raise SystemExit("%s bundle was prepared against another engine identity" % name)
+        # verifier_sha256 is the hash of pipeline/training.py: a bundle is reusable
+        # only by a commit that left the verifier module untouched (job 6aaa7339).
+        moved = sorted(k for k in set(bundle.get("identity") or {}) | set(identity)
+                       if (bundle.get("identity") or {}).get(k) != identity.get(k))
+        raise SystemExit("%s bundle was prepared against another engine identity; differs in %s" % (name, ", ".join(moved)))
     shutil.copytree(d, os.path.join("work/round-02", name))
     print("== %s bundle from %s: digest %s, purpose %s, cases %d"
           % (name, src, bundle["digest"], bundle.get("purpose"), len(bundle["cases"])))
