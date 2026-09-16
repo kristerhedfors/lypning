@@ -809,7 +809,7 @@ REFUSES = [
     # Exactly one string survives that round trip through a message, so every
     # other shape refuses at construction — after answering nine wrong answers
     # at exit 0, none of them in the corpus and all of them found in the 1,173
-    # programs of `nemotron/runs/qwen38-baseline-k16`.
+    # programs of `training/runs/qwen38-baseline-k16`.
     ("exc-no-args", "print(ValueError().args)"),
     ("exc-no-args-repr", "print(repr(KeyError()), repr(ValueError()))"),
     ("exc-int-arg", "print(repr(ValueError(42)))"),

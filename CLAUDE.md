@@ -90,12 +90,15 @@ routes reads it. `routing.py`; `docs/VERIFICATION.md` §C4–C5, §C11.
 ## Before you say you are done
 
 **Training ownership:** Codex is the orchestrator; Fable executes approved manual
-training loops and writes its reflections. Follow `nemotron/ORCHESTRATION.md`,
+training loops and writes its reflections. Follow `training/ORCHESTRATION.md`,
 keep its decision ledger current at handoffs, and record a separate Codex review
 of each available Fable report. Never modify another session's frozen artifacts.
+The target model's predecessor is not named anywhere outside frozen evidence —
+`training/SWITCH.md` names the homes it survives in and why each one would be
+falsified by a rename; `training/tests/test_naming.py` is the grep.
 
 **Manual Qwen training handoff:** when assigned the next training round, start
-with `nemotron/START_NEXT_ROUND.md`. It links the persisted data-production loop,
+with `training/START_NEXT_ROUND.md`. It links the persisted data-production loop,
 private evidence/review commands, pinned candidate-image boundary and manual
 run plan. Do not launch training or weaken admission gates just to complete the
 handoff; GPU/data/model approvals and a real hardware smoke remain required.
