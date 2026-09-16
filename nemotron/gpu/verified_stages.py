@@ -106,7 +106,8 @@ def train_grpo(model, tok, args, bundle, train_cases, verifier, effective, polic
     reward = Reward(bundle["cases"], verifier, args.output / "blocked-witnesses.jsonl",
                     eos_token_id=tok.eos_token_id,
                     rollout_path=args.output / "rollouts.jsonl",
-                    generations=args.generations, max_no_signal=0 if args.smoke else args.max_no_signal)
+                    generations=args.generations, max_no_signal=0 if args.smoke else args.max_no_signal,
+                    score_workers=args.score_workers)
     expected_prompts = [tok.apply_chat_template(messages(c), tokenize=False,
                         add_generation_prompt=True, enable_thinking=False) for c in train_cases]
     trainer = GRPOTrainer(model=model, args=config, processing_class=tok,

@@ -137,6 +137,22 @@ and the `lypning-l` sha it was graded against. The bundle digest is the eval-2
 identity: the bank is frozen at that digest and **never re-cut**. A bank that
 needs a change is a new bank with a new name and its own pre-registration.
 
+Draws are paired by chunk, not one seed per draw (since 2026-09-16,
+`gpu/verified_evaluation.py`): a `generate` call carries a chunk of cases with
+every draw of each, under a seed derived from the run seed and the case IDs in
+the chunk, and both arms chunk the same bank the same way, so the candidate
+draws the base's noise chunk for chunk. The change was forced by cost, not
+taste: one draw per call plus one sandbox request per test at a time ran at
+about 30 s per draw on the h200 (job 6aaa4b2c, 2026-09-16), and 300 × 16 × 2
+draws was days against a 6 h cap. Completions of a chunk are verified
+concurrently; the rows keep (case, draw) order and carry the chunk seed. The
+pilot of round-02 ran eval-2 at k = 4 for the same reason (job 6aaa8746;
+k = 8 was planned and cut once the probe stage had measured the batched pace)
+and says so in its report; k = 16 (§4) remains the draw count of a
+confirmatory run. The verifier policy of that run is `l-correctness-v3`: a
+candidate whose two clean oracle runs disagree scores `unstable`, reward 0,
+instead of aborting the stage (`ORCHESTRATION.md` ledger, `training.POLICY`).
+
 ## 7. Power
 
 The bank size is set by a design-specific power analysis on a pilot draw, not
@@ -166,8 +182,51 @@ resamples the pilot's clusters with replacement to the candidate size, cases
 kept with their families, simulates both arms at k draws per case and asks the
 §4 rule; the null (delta 0) row is the false-positive rate. Concentrated means
 the 10% of cases with the lowest base rate lifted to one target rate for the
-same mean lift as the uniform row, so the two rows differ only in shape. The
-curve on the pilot draw is pending the pilot and will be appended here, dated.
+same mean lift as the uniform row, so the two rows differ only in shape.
+
+**The curve, 2026-09-16.** Pilot: run `eval-20260916-063539` on the legacy
+tree, the 64 cases of train v1 (§11) at k = 16, 1,024 draws, all 64 cases
+drawn (the run was resumed twice through router outages; the 268 attempts that
+never reached the model are superseded by their redraws, `nt eval2-rows`, and
+no harness error remains in the rows). Base correct-and-native, macro over the
+49 families in 48 split components: 68.7%, the summariser's own figure.
+`nt power --eval2 --rows work/eval2/legacy-pilot/rows-full.jsonl --draws 16`,
+200 banks per cell, 400 resamples each, rule 95% lower bound > +3pp:
+
+| shape | effect | N=100 | N=200 | N=300 | N=500 | N=800 |
+|---|---|---|---|---|---|---|
+| uniform | +0pp (false positives) | 0% | 0% | 0% | 0% | 0% |
+| uniform | +3pp | 0% | 0% | 0% | 0% | 0% |
+| uniform | +5pp | 0% | 0% | 0% | 0% | 0% |
+| uniform | +8pp | 9% | 20% | 20% | 36% | 56% |
+| uniform | +10pp | 40% | 62% | 76% | 96% | 100% |
+| concentrated | +0pp (false positives) | 0% | 0% | 0% | 0% | 0% |
+| concentrated | +3pp | 4% | 6% | 8% | 16% | 22% |
+| concentrated | +5pp | 30% | 68% | 97% | 100% | 100% |
+| concentrated | +8pp | 87% | 100% | 100% | 100% | 100% |
+| concentrated | +10pp | 98% | 100% | 100% | 100% | 100% |
+
+Read at the frozen bank size of 300 (supply-capped, §11): the rule has 80%
+power for a concentrated effect of +5pp or more (97% at +5pp, 100% at +8pp),
+sees a uniform +10pp in three banks of four, and a uniform lift of +8pp or
+less in one of five or fewer at every size on the grid. The false-positive
+rate is 0% in every cell. So a null result from round-02 rules out a
+concentrated gain of about +5pp on the lowest-base families and a uniform
+gain of about +10pp, and nothing finer; a uniform few-point lift, the shape a
+small SFT most plausibly produces, cannot be seen by this instrument at
+N = 300 and k = 16, and the honest route to it is more draws per case and a
+larger bank, not a looser rule.
+
+A first print of this table on the same rows, earlier the same day, read the
+base as 73.1% over 64 units and gave lower power (64% for concentrated +5pp at
+N = 300): the tool keyed a family inside each source group, so a family that
+spans groups (`stdin-nonblank-line-count`, 12 cases in several) was several
+units to it and one to the summariser, and `paired_comparison` refused such
+rows outright. Both now cluster by split component
+(`training_metrics.split_components`: every family and group reachable from
+one another), so the curve prices the statistic the rule takes and the rule
+accepts the bank, which has 18 spanning families (§11). The earlier table is
+superseded, not kept.
 
 ## 8. Contamination
 
@@ -235,6 +294,12 @@ rules:
 | eval-2 v1 | 300 | 248 | 241 | 59 | `46cff1d740c93b596c80095233818781629e8a9766545410febdf58eca36d37b` |
 | train v1 | 64 | 49 | 51 | 13 | `31edda65c2c71dda7e0f46038bf30da283bf10564855a56b866076635bfee9ff` |
 
+Families and source groups do not nest: in eval-2 v1, 18 of the 248 families
+span more than one source group (`stdin-digit-run-sum` spans 23), and in train
+v1, 3 of 49. The unit of independence is therefore the split component (§6,
+§7; `training_metrics.split_components`), and the family stays the unit of the
+macro.
+
 Supply capped the bank at the 300 floor, so the pilot draw of §7 is the training
 bank itself, drawn on the legacy tree at k = 16: it is spent for eval-2 (no
 case in it can enter eval-2) and it is the only training material of round-02.
@@ -247,6 +312,25 @@ The first pilot draw (2026-09-16, run `eval-20260916-044656`, k = 16) reached
 (HTTP 402 on 796 of 1,024 calls). On the 228 clean draws: coverage 97.4%
 correct and 96.9% correct-and-native over 12 cases; fallback-control 100% on
 both over 3 cases. The power curve printed from that draw treated the failed
-calls as incorrect draws and is void; the curve is re-run when the full draw
-lands. See `reports/2026-09-16-fable-round02-pilot.md`.
+calls as incorrect draws and is void. See `reports/2026-09-16-fable-round02-pilot.md`.
+
+The full pilot draw landed the same day (run `eval-20260916-063539`, k = 16,
+all 64 cases, 1,024 draws, 1,022 replayed through engine fingerprint
+`2e079e786a655ab6`, `prompt_sha d23e9420b5812443`, provider novita, decoding
+per §5), after two resumes through router outages. `nt eval2-rows`, macro over
+the 49 families:
+
+| Population | Cases | Correct | Correct-and-native |
+|---|---|---|---|
+| all | 64 | 87.9% | 68.7% |
+| coverage | 51 | 92.5% | 75.6% |
+| fallback-control | 13 | 75.0% | 49.5% |
+
+Draw counts: 749 correct-and-native, 171 correct on CPython but refused by the
+engine, 102 incorrect, 2 with no code. The fifteen-case glimpse above was the
+easy head of the bank: on the whole training bank the base model leaves about
+19 points of correct-but-fallback headroom on the native axis, which is the
+axis training targets, so the §9 falsifier "base rate ≥ 90% correct-and-native"
+is not met and round-02 has something to move. The power curve on these rows
+is in §7.
 

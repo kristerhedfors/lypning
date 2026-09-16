@@ -21,16 +21,28 @@ cd "$(dirname "$0")/../.."
 export PYTHONPATH=src:nemotron LYPNING_CAPTURE=0 LYPNING_HARVEST=0 PIP_DISABLE_PIP_VERSION_CHECK=1
 ROUND=work/round-02
 JOB="${JOB_ID:-local}"
+export NTX_POOL_TAG="$JOB"   # this run's sandbox pool is its own; see hf_sandbox_runner.pool_name
 echo "== round-02 smoke on $(hostname) job=$JOB commit=$(git rev-parse HEAD)"
 echo "== python: $(python3 -c 'import sys; print(sys.version)')"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || echo "== no GPU visible"
 
 # 1. The GPU script's own pinned dependencies are the single source of truth.
-python3 - <<'EOF' | xargs -r pip install -q --no-cache-dir
+DEPS=$(python3 - <<'EOF'
 import re
 head = open("nemotron/gpu/train_verified.py").read().split("# ///")[1]
 print(" ".join(re.findall(r'"([^"]+)"', head.split("dependencies")[1])))
 EOF
+)
+# A dropped download is not a failed run: pip retries its own connections,
+# and the whole install is retried with a growing pause (job 6aaa49a9, 2026-09-16,
+# died at exit 123 on one broken pipe three minutes in).
+for attempt in 1 2 3 4; do
+  # shellcheck disable=SC2086
+  if pip install -q --no-cache-dir --retries 10 --timeout 120 $DEPS; then break; fi
+  if [ "$attempt" = 4 ]; then echo "== pip install failed 4 times"; exit 123; fi
+  echo "== pip install attempt $attempt failed; retrying in $((attempt * 30))s"
+  sleep $((attempt * 30))
+done
 python3 -c 'import torch, transformers, peft, trl, huggingface_hub; print("== torch", torch.__version__, "cuda", torch.cuda.is_available(), "| transformers", transformers.__version__, "| trl", trl.__version__, "| hub", huggingface_hub.__version__)'
 
 # 2. The engine: the same bytes the verifier image carries, from the same commit.

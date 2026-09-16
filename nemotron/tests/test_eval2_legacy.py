@@ -177,6 +177,24 @@ def test_rows_from_two_runs_pair_through_the_shared_summariser():
     assert cmp["independent_clusters"] == 1
 
 
+def test_a_resumed_run_keeps_one_row_per_draw_and_the_real_attempt_wins():
+    """`nt eval --run-id` redraws harness errors and appends: the draw that
+    failed twice and then reached the model is one draw, and a correct one."""
+    cases = {"ntx-a": _corpus_case("a", ["family:fa"])}
+    attempts = [
+        {"case_id": "ntx-a", "sample": 0, "harness_error": "HTTP 500", "passed": False},
+        {"case_id": "ntx-a", "sample": 1, "program": "p", "passed": True, "finish_reason": "stop"},
+        {"case_id": "ntx-a", "sample": 0, "harness_error": "HTTP 500 again", "passed": False},
+        {"case_id": "ntx-a", "sample": 0, "program": "p", "passed": True, "finish_reason": "stop"},
+        {"case_id": "ntx-a", "sample": 1, "harness_error": "a late 500", "passed": False},
+    ]
+    out = R.rows(attempts, [{"case_id": "ntx-a", "sample": 0, "verdict": "MATCH", "correct": True}], cases)
+    assert out["superseded"] == 3
+    assert [(r["draw"], r["status"]) for r in out["rows"]] == [(0, "correct-native"), (1, "correct-fallback")]
+    still_failing = attempts[:1] + attempts[2:3]
+    assert R.rows(still_failing, [], cases)["rows"][0]["status"] == "harness-error", "no real draw yet: still one row"
+
+
 def test_an_attempt_for_a_case_this_tree_does_not_know_is_reported_not_invented():
     out = R.rows([{"case_id": "ntx-zzz", "sample": 0, "program": "p", "passed": True}], [], {})
     assert out["rows"] == [] and out["unknown_cases"] == ["ntx-zzz"]

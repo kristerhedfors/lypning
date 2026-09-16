@@ -397,6 +397,9 @@ def cmd_eval2_rows(args: argparse.Namespace) -> int:
     print("eval2-rows  %s   %d rows, %d replayed   @ engine %s"
           % (args.run_id, len(result["rows"]), result["replayed"],
              eng.identity()["fingerprint"]))
+    if result.get("superseded"):
+        print("  %d superseded attempt(s) folded: a resumed run redrew its harness errors"
+              % result["superseded"])
     if result["unknown_cases"]:
         print("  %d attempts name cases this tree does not know: %s"
               % (len(result["unknown_cases"]), ", ".join(result["unknown_cases"][:5])),

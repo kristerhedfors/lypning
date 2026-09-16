@@ -182,6 +182,25 @@ def test_paired_bootstrap_keeps_families_and_seeds_matched():
         summarize(base[:-1])
 
 
+def test_a_family_spanning_split_groups_links_them_into_one_component():
+    """eval-2 bank v1: `stdin-digit-run-sum` spans 23 source groups. The family
+    is one unit for the macro and its groups one component for the resampling;
+    a second family in one of those groups rides in the same component."""
+    from pipeline.training_metrics import split_components
+
+    def case(cid, family, group):
+        return [dict(case_id=cid, family=family, split_group=group, population="coverage",
+                     capabilities=["csv"], draw=d, seed=d, correct=False, native=False,
+                     truncated=False, completion_tokens=2) for d in range(2)]
+    base = case("one-x", "one", "gA") + case("one-y", "one", "gB") + case("two", "two", "gB") + case("three", "three", "gC")
+    candidate = [dict(r, correct=True, native=True) for r in base]
+    report = paired_comparison(base, candidate, resamples=100)
+    assert report["families"] == 3 and report["independent_clusters"] == 2
+    assert report["metrics"]["correct"]["delta"] == 1.0
+    assert split_components({("one", "gA"), ("one", "gB"), ("two", "gB"), ("three", "gC")}) == \
+        {"one": "one", "two": "one", "three": "three"}
+
+
 def test_capability_regression_blocks_checkpoint_even_when_aggregate_improves():
     baseline = summarize(evaluation_rows())
     baseline["by_capability"]["csv"]["correct"] = 1

@@ -30,14 +30,18 @@ set -euo pipefail
 : "${SPACE_REPO:?}" "${SPACE_REV:?}" "${QWEN_REV:?}" "${WORK_REPO:?}" "${BANK_PATH:?}" "${HF_TOKEN:?}"
 STEPS="${STEPS:-20}"
 EVAL_DRAWS="${EVAL_DRAWS:-16}"
+EVAL_SEQUENCES="${EVAL_SEQUENCES:-128}"   # sequences per generate call in evaluation
+SCORE_WORKERS="${SCORE_WORKERS:-16}"      # concurrent verifier scorings (one pool host serves 50)
+BUNDLES_FROM="${BUNDLES_FROM:-}"          # reuse the bundles an earlier job prepared, e.g. round-02/<job>
 SEED="${SEED:-1111}"
 cd "$(dirname "$0")/../.."
 export PYTHONPATH=src:nemotron LYPNING_CAPTURE=0 LYPNING_HARVEST=0 PIP_DISABLE_PIP_VERSION_CHECK=1
 ROUND=work/round-02
 JOB="${JOB_ID:-local}"
+export NTX_POOL_TAG="$JOB"   # this run's sandbox pool is its own; see hf_sandbox_runner.pool_name
 STAGE=start
 mkdir -p "$ROUND"
-echo "== round-02 pilot on $(hostname) job=$JOB commit=$(git rev-parse HEAD) steps=$STEPS eval_draws=$EVAL_DRAWS seed=$SEED"
+echo "== round-02 pilot on $(hostname) job=$JOB commit=$(git rev-parse HEAD) steps=$STEPS eval_draws=$EVAL_DRAWS eval_sequences=$EVAL_SEQUENCES score_workers=$SCORE_WORKERS seed=$SEED bundles_from=${BUNDLES_FROM:-none}"
 echo "== python: $(python3 -c 'import sys; print(sys.version)')"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || echo "== no GPU visible"
 
@@ -45,6 +49,26 @@ nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || ec
 run() {
   echo "== $*"
   "$@"
+}
+
+# A stage's artifacts go up as soon as it ends. A cancelled or timed-out job
+# runs no EXIT trap (job 6aaa5c1e, 2026-09-16, lost its SFT and probe that way),
+# so the trap is the last upload, never the only one. A failed checkpoint is
+# reported and the run continues; uploads are incremental (unchanged files skip).
+checkpoint() {
+  echo "== checkpoint after $STAGE"
+  STAGE_DONE="$STAGE" python3 - <<'PYEOF' || echo "== checkpoint upload failed after $STAGE (continuing)"
+import os
+from huggingface_hub import HfApi
+api = HfApi()
+if api.repo_info(os.environ["WORK_REPO"], repo_type="dataset").private is not True:
+    raise SystemExit("refusing to upload: %s is not a private dataset repository" % os.environ["WORK_REPO"])
+job = os.environ.get("JOB_ID", "local")
+api.upload_folder(folder_path="work/round-02", repo_id=os.environ["WORK_REPO"], repo_type="dataset",
+                  path_in_repo="round-02/" + job, ignore_patterns=["bank-download/**", "bundles-download/**"],
+                  commit_message="round-02 pilot job %s: checkpoint after %s" % (job, os.environ["STAGE_DONE"]))
+print("== checkpoint uploaded after", os.environ["STAGE_DONE"])
+PYEOF
 }
 
 # The trap: whatever happened, write the manifest with its status and hand the
@@ -56,6 +80,7 @@ finish() {
   [ "$code" -eq 0 ] || status=failed
   echo "== finish: status=$status stage=$STAGE exit=$code"
   if ! STATUS="$status" EXIT_CODE="$code" STAGE="$STAGE" STEPS="$STEPS" EVAL_DRAWS="$EVAL_DRAWS" SEED="$SEED" \
+      EVAL_SEQUENCES="$EVAL_SEQUENCES" SCORE_WORKERS="$SCORE_WORKERS" BUNDLES_FROM="$BUNDLES_FROM" \
       python3 - <<'PYEOF'
 import json, os, subprocess
 from huggingface_hub import HfApi
@@ -73,6 +98,8 @@ manifest = {"job": job, "status": os.environ["STATUS"], "exit_code": int(os.envi
             "qwen_revision": os.environ["QWEN_REV"], "flavor": os.environ.get("ACCELERATOR", ""),
             "bank_path": os.environ["BANK_PATH"], "steps": int(os.environ["STEPS"]),
             "eval_draws": int(os.environ["EVAL_DRAWS"]), "seed": int(os.environ["SEED"]),
+            "eval_sequences": int(os.environ["EVAL_SEQUENCES"]), "score_workers": int(os.environ["SCORE_WORKERS"]),
+            "bundles_from": os.environ.get("BUNDLES_FROM") or None,
             "pilot_bundle_digest": digest("work/round-02/pilot/bundle.json"),
             "eval2_bundle_digest": digest("work/round-02/eval2/bundle.json"),
             "grpo_skipped": os.path.exists("work/round-02/grpo-skipped.json")}
@@ -82,7 +109,7 @@ info = api.repo_info(os.environ["WORK_REPO"], repo_type="dataset")
 if info.private is not True:
     raise SystemExit("refusing to upload: %s is not a private dataset repository" % os.environ["WORK_REPO"])
 api.upload_folder(folder_path="work/round-02", repo_id=os.environ["WORK_REPO"], repo_type="dataset",
-                  path_in_repo="round-02/" + job, ignore_patterns=["bank-download/**"],
+                  path_in_repo="round-02/" + job, ignore_patterns=["bank-download/**", "bundles-download/**"],
                   commit_message="round-02 pilot from job %s (%s)" % (job, os.environ["STATUS"]))
 print("== uploaded work/round-02 to", os.environ["WORK_REPO"], "under round-02/" + job)
 PYEOF
@@ -98,11 +125,22 @@ trap 'finish $?' EXIT
 # 1. The GPU script's own pinned dependencies are the single source of truth.
 STAGE=deps
 echo "== install pinned dependencies from nemotron/gpu/train_verified.py"
-python3 - <<'PYEOF' | xargs -r pip install -q --no-cache-dir
+DEPS=$(python3 - <<'PYEOF'
 import re
 head = open("nemotron/gpu/train_verified.py").read().split("# ///")[1]
 print(" ".join(re.findall(r'"([^"]+)"', head.split("dependencies")[1])))
 PYEOF
+)
+# A dropped download is not a failed run: pip retries its own connections,
+# and the whole install is retried with a growing pause (job 6aaa49a9, 2026-09-16,
+# died at exit 123 on one broken pipe three minutes in).
+for attempt in 1 2 3 4; do
+  # shellcheck disable=SC2086
+  if pip install -q --no-cache-dir --retries 10 --timeout 120 $DEPS; then break; fi
+  if [ "$attempt" = 4 ]; then echo "== pip install failed 4 times"; exit 123; fi
+  echo "== pip install attempt $attempt failed; retrying in $((attempt * 30))s"
+  sleep $((attempt * 30))
+done
 python3 -c 'import torch, transformers, peft, trl, huggingface_hub; print("== torch", torch.__version__, "cuda", torch.cuda.is_available(), "| transformers", transformers.__version__, "| trl", trl.__version__, "| hub", huggingface_hub.__version__)'
 
 # 2. The engine: the same bytes the verifier image carries, from the same commit.
@@ -146,6 +184,43 @@ with open("work/round-02/execution-witnesses.jsonl", "w") as log:
 r.close()
 PYEOF
 
+# 4-6. Either reuse the bundles an earlier job of this round prepared through
+# the pool (same Space revision, same engine identity, checked here and again
+# by the trainer's bundle load), or download the banks, review them and prepare
+# both bundles. Preparation re-verifies every reference through the pool and
+# took about 45 minutes on 2026-09-16; a bundle is immutable once written.
+if [ -n "$BUNDLES_FROM" ]; then
+  STAGE=bundles
+  echo "== reuse prepared bundles from $WORK_REPO/$BUNDLES_FROM (pilot, eval2)"
+  python3 - <<'PYEOF'
+import json, os, shutil
+from huggingface_hub import HfApi, snapshot_download
+from pipeline.training import engine_identity
+repo, src = os.environ["WORK_REPO"], os.environ["BUNDLES_FROM"].strip("/")
+if not src or ".." in src.split("/"):
+    raise SystemExit("BUNDLES_FROM must be a relative directory inside the dataset repo")
+if HfApi().repo_info(repo, repo_type="dataset").private is not True:
+    raise SystemExit("refusing to read bundles from %s: not a private dataset repository" % repo)
+local = snapshot_download(repo, repo_type="dataset", allow_patterns=[src + "/pilot/**", src + "/eval2/**"],
+                          local_dir="work/round-02/bundles-download")
+identity = engine_identity(os.environ["LYPNING_L_BIN"])
+want = {"kind": "hf-sandbox-pool", "image": "hf.co/spaces/" + os.environ["SPACE_REPO"], "revision": os.environ["SPACE_REV"]}
+for name in ("pilot", "eval2"):
+    d = os.path.join(local, src, name)
+    bundle = json.load(open(os.path.join(d, "bundle.json")))
+    if bundle.get("execution") != want:
+        raise SystemExit("%s bundle was prepared under another execution contract: %s" % (name, bundle.get("execution")))
+    if bundle.get("identity") != identity:
+        # verifier_sha256 is the hash of pipeline/training.py: a bundle is reusable
+        # only by a commit that left the verifier module untouched (job 6aaa7339).
+        moved = sorted(k for k in set(bundle.get("identity") or {}) | set(identity)
+                       if (bundle.get("identity") or {}).get(k) != identity.get(k))
+        raise SystemExit("%s bundle was prepared against another engine identity; differs in %s" % (name, ", ".join(moved)))
+    shutil.copytree(d, os.path.join("work/round-02", name))
+    print("== %s bundle from %s: digest %s, purpose %s, cases %d"
+          % (name, src, bundle["digest"], bundle.get("purpose"), len(bundle["cases"])))
+PYEOF
+else
 # 4. The banks: eval2.jsonl, train.jsonl and the evidence snapshots they cite,
 #    from the private dataset repo only. The download is never uploaded back.
 STAGE=bank
@@ -196,10 +271,12 @@ run python3 -m pipeline.cli training-prepare \
   --cases "$ROUND/reviewed-eval2/cases.jsonl" --review "$ROUND/reviewed-eval2/review.json" \
   --purpose benchmark --execution-kind hf-sandbox-pool --execution-image "hf.co/spaces/$SPACE_REPO" \
   --execution-revision "$SPACE_REV" --engine "$LYPNING_L_BIN" --seed "$SEED" --output "$ROUND/eval2"
+fi
 
 # 7. The stages, in NEXT_ROUND.md's order. One set of common flags for every one.
 TV=(python3 nemotron/gpu/train_verified.py)
-COMMON=(--isolated-worker --engine "$LYPNING_L_BIN" --revision "$QWEN_REV" --seed "$SEED")
+COMMON=(--isolated-worker --engine "$LYPNING_L_BIN" --revision "$QWEN_REV" --seed "$SEED"
+        --eval-sequences "$EVAL_SEQUENCES" --score-workers "$SCORE_WORKERS")
 PILOT="$ROUND/pilot/bundle.json"
 EVAL2="$ROUND/eval2/bundle.json"
 TRAIN=(--steps "$STEPS" --eval-every 5 --patience 3 --rank 16)
@@ -209,6 +286,7 @@ STAGE=plan
 run "${TV[@]}" sft --plan --bundle "$PILOT" --output "$ROUND/sft-plan" "${COMMON[@]}" "${TRAIN[@]}" --batch-size 4
 STAGE=base-dev
 run "${TV[@]}" eval --bundle "$PILOT" --output "$ROUND/base-dev" "${COMMON[@]}"
+checkpoint
 
 # 7b. Bounded SFT; best.json selects the adapter, step 0 included, never the last checkpoint.
 STAGE=sft
@@ -217,14 +295,17 @@ SFT_STEP=$(python3 -c 'import json; print(json.load(open("work/round-02/sft/best
 SFT_ADAPTER="$ROUND/sft/adapter-$SFT_STEP"
 echo "== sft selected step $SFT_STEP: $SFT_ADAPTER"
 [ -f "$SFT_ADAPTER/seal.json" ] || { echo "== selected adapter has no seal.json"; exit 1; }
+checkpoint
 
 # 7c. Reload the selected adapter and reproduce its dev record.
 STAGE=sft-dev-reload
 run "${TV[@]}" eval --adapter "$SFT_ADAPTER" --bundle "$PILOT" --output "$ROUND/sft-dev-reload" "${COMMON[@]}"
+checkpoint
 
 # 7d. Probe the exact selected policy on TRAIN cases only; no optimizer updates.
 STAGE=probe
 run "${TV[@]}" probe --adapter "$SFT_ADAPTER" --bundle "$PILOT" --output "$ROUND/probe" "${COMMON[@]}" --generations 4
+checkpoint
 
 # 7e. GRPO only if the probe is admitted (probe_report: at least two informative
 #     groups and a correct draw). Otherwise a marker says why, and the round
@@ -257,6 +338,7 @@ if [ "$GATE" -eq 0 ]; then
   GRPO_ADAPTER="$ROUND/grpo/adapter-$GRPO_STEP"
   echo "== grpo selected step $GRPO_STEP: $GRPO_ADAPTER"
   [ -f "$GRPO_ADAPTER/seal.json" ] || { echo "== selected adapter has no seal.json"; exit 1; }
+  checkpoint
 elif [ "$GATE" -eq 3 ]; then
   echo "== grpo skipped; marker at $ROUND/grpo-skipped.json"
 else
@@ -271,13 +353,17 @@ run "${TV[@]}" eval --eval-split test --adapter "$SFT_ADAPTER" --bundle "$PILOT"
 if [ -n "$GRPO_ADAPTER" ]; then
   run "${TV[@]}" eval --eval-split test --adapter "$GRPO_ADAPTER" --bundle "$PILOT" --output "$ROUND/grpo-test" "${COMMON[@]}"
 fi
+checkpoint
 
 # 7g. The eval-2 benchmark, whole, EVAL_DRAWS matched-seed draws per case, per arm.
 STAGE=eval2
 run "${TV[@]}" eval --eval-split all --eval-draws "$EVAL_DRAWS" --bundle "$EVAL2" --output "$ROUND/base-eval2" "${COMMON[@]}"
+checkpoint
 run "${TV[@]}" eval --eval-split all --eval-draws "$EVAL_DRAWS" --adapter "$SFT_ADAPTER" --bundle "$EVAL2" --output "$ROUND/sft-eval2" "${COMMON[@]}"
+checkpoint
 if [ -n "$GRPO_ADAPTER" ]; then
   run "${TV[@]}" eval --eval-split all --eval-draws "$EVAL_DRAWS" --adapter "$GRPO_ADAPTER" --bundle "$EVAL2" --output "$ROUND/grpo-eval2" "${COMMON[@]}"
+  checkpoint
 fi
 
 # 8. Paired, grouped comparisons; no model loading or program execution.

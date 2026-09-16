@@ -37,8 +37,40 @@ def summarize(records):
                        for c in sorted({c for r in records for c in r.get("capabilities", [])})})
 
 
+def split_components(links):
+    """Families and split groups as connected components: a family that spans
+    groups links them, a group holding two families links those, and one
+    component is one independent unit. Returns family -> component key, the
+    key being the component's first family in sorted order.
+
+    Before 2026-09-16 a family spanning groups was refused outright; the eval-2
+    bank v1 has 18 such families (one across 23 source groups), so the refusal
+    would have voided every comparison on the bank."""
+    parent = {}
+
+    def find(x):
+        while parent.setdefault(x, x) != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for family, group in links:
+        a, b = find(("f", str(family))), find(("g", str(group)))
+        if a != b:
+            parent[a] = b
+    members = {}
+    for kind, name in list(parent):
+        if kind == "f":
+            members.setdefault(find((kind, name)), []).append(name)
+    key = {root: min(names) for root, names in members.items()}
+    return {name: key[find(("f", name))] for names in members.values() for name in names}
+
+
 def paired_comparison(base, candidate, *, seed=1111, resamples=2000):
-    """Paired split-component bootstrap; linked families are not independent."""
+    """Paired split-component bootstrap; linked families are not independent.
+    A component is every family and split group reachable from one another
+    (`split_components`); components are resampled, the statistic is the macro
+    over the families the drawn components carry."""
     def index(rows):
         summarize(rows)
         return {(r["case_id"], r["draw"]): r for r in rows}
@@ -51,12 +83,10 @@ def paired_comparison(base, candidate, *, seed=1111, resamples=2000):
     if resamples < 100:
         raise TrainingError("need at least 100 bootstrap resamples")
     families = sorted({r["family"] for r in a.values()})
+    component = split_components({(r["family"], r.get("split_group", r["family"])) for r in a.values()})
     clusters = {}
     for f in families:
-        groups = {r.get("split_group", f) for r in a.values() if r["family"] == f}
-        if len(groups) != 1:
-            raise TrainingError("family spans independent split groups")
-        clusters.setdefault(next(iter(groups)), []).append(f)
+        clusters.setdefault(component[f], []).append(f)
     results = {}
     for metric in ("correct", "native"):
         delta = {f: sum(float(b[k][metric]) - float(a[k][metric]) for k in a if a[k]["family"] == f) /

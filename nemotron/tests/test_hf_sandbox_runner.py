@@ -68,7 +68,28 @@ class FakePool:
 def runner(*replies, check=False, **kw):
     log = []
     pool = FakePool(log, replies or (OK,))
+    kw.setdefault("sleep", lambda s: log.append(("sleep", s)))
     return HfSandboxPoolRunner(IMAGE, REVISION, BUNDLE, check=check, pool=pool, **kw), log
+
+
+class HubError(Exception):
+    """Shaped like `HfHubHTTPError`: the status rides on `.response`."""
+    def __init__(self, status):
+        super().__init__("Server error '%d' for url https://huggingface.co/api/sandboxes" % status)
+        self.response = SimpleNamespace(status_code=status)
+
+
+class FlakyPool(FakePool):
+    """`create` raises the queued errors first, then serves like the fake pool."""
+    def __init__(self, log, replies, errors):
+        super().__init__(log, replies)
+        self.errors = list(errors)
+
+    def create(self, **kw):
+        if self.errors:
+            self.log.append(("create-failed",))
+            raise self.errors.pop(0)
+        return super().create(**kw)
 
 
 def test_request_carries_only_the_candidate_and_never_the_token():
@@ -102,6 +123,37 @@ def test_transport_exceptions_become_blocks_and_never_rewards():
             raise RuntimeError("proxy down")
     r._pool = Boom(log, [OK])
     with pytest.raises(VerificationBlocked, match="transport failed"):
+        r("pass")
+
+
+def test_a_transient_hub_failure_is_retried_with_backoff_and_a_persistent_one_blocks():
+    r, log = runner()
+    r._pool = FlakyPool(log, [OK], [HubError(500), ConnectionError("reset")])
+    assert r("pass").stdout == "answer", "the third attempt answers"
+    b = hf_sandbox_runner.TRANSPORT_BACKOFF_S
+    assert [e for e in log if e[0] in ("sleep", "create-failed")] == [
+        ("create-failed",), ("sleep", b), ("create-failed",), ("sleep", 2 * b)]
+    n = hf_sandbox_runner.TRANSPORT_ATTEMPTS
+    r, log = runner()
+    r._pool = FlakyPool(log, [OK], [HubError(503)] * n)
+    with pytest.raises(VerificationBlocked, match=r"HubError: Server error '503'.*after %d attempts" % n):
+        r("pass")
+    waits = [e[1] for e in log if e[0] == "sleep"]
+    assert waits == [b * 2 ** i for i in range(n - 1)], "bounded: one wait fewer than tries"
+    assert sum(waits) < 300, "an outage costs minutes of a GPU hour, never the run"
+
+
+def test_a_client_error_is_refused_at_once():
+    r, log = runner()
+    r._pool = FlakyPool(log, [OK], [HubError(403)])
+    with pytest.raises(VerificationBlocked, match="403"):
+        r("pass")
+    assert not [e for e in log if e[0] == "sleep"], "a 4xx will not change on retry"
+
+
+def test_a_moved_space_aborts_through_a_request_instead_of_blocking():
+    r = HfSandboxPoolRunner(IMAGE, REVISION, BUNDLE, check=False, space_sha=lambda: "e" * 40, sleep=lambda s: None)
+    with pytest.raises(TrainingError, match="not the pinned"):
         r("pass")
 
 
@@ -157,6 +209,11 @@ def test_the_space_must_sit_at_the_pinned_commit_before_any_host_is_used(monkeyp
     r = HfSandboxPoolRunner(IMAGE, REVISION, BUNDLE, check=False, space_sha=lambda: REVISION)
     pool = r.pool()
     assert pool.kw["image"] == IMAGE and pool.kw["name"] == "lypning-verifier-" + REVISION[:12]
+    monkeypatch.setenv("NTX_POOL_TAG", "6aaa5c1e/f76d")
+    r = HfSandboxPoolRunner(IMAGE, REVISION, BUNDLE, check=False, space_sha=lambda: REVISION)
+    assert r.pool().kw["name"] == "lypning-verifier-" + REVISION[:12] + "-6aaa5c1ef76d", \
+        "a run's pool is its own: a pool cancels the hosts it owns on close"
+    assert hf_sandbox_runner.pool_name(REVISION, "") == "lypning-verifier-" + REVISION[:12]
 
 
 def test_execution_contract_round_trips_through_validation():
