@@ -415,3 +415,20 @@ def test_a_pilot_adapter_is_admitted_on_a_benchmark_eval_and_nowhere_else():
     assert not module.adapter_lineage_admitted(pilot_adapter, benchmark, "grpo")
     assert not module.adapter_lineage_admitted(pilot_adapter, {"digest": "other", "purpose": "pilot"}, "eval")
     assert not module.adapter_lineage_admitted({"bundle_digest": "x", "purpose": "smoke"}, benchmark, "eval")
+
+
+def test_reward_scores_a_group_concurrently_and_keeps_batch_order(case):
+    """GRPO's four completions are a dozen sandbox requests each; they are
+    scored on a thread pool and the rewards come back in batch order."""
+    import time
+    from pipeline.training import Score
+
+    class Slow:
+        def score(self, c, program):
+            time.sleep(0.05 if program == "p0" else 0.0)
+            return Score(1.0 if program == "p0" else 0.0, "correct-native" if program == "p0" else "incorrect", 1, 1)
+    reward = t.Reward([case], Slow(), generations=2, score_workers=4)
+    started = time.time()
+    got = reward(["```python\np0\n```", "```python\np1\n```"] * 2, [case["case_id"]] * 4)
+    assert got == [1.0, 0.0, 1.0, 0.0]
+    assert time.time() - started < 0.15, "two slow scorings ran side by side"

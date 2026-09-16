@@ -294,8 +294,9 @@ class Reward:
     __name__ = "verified_lypning_l"
 
     def __init__(self, cases, verifier, witness_path=None, eos_token_id=None, rollout_path=None,
-                 generations=None, max_no_signal=0):
+                 generations=None, max_no_signal=0, score_workers=16):
         self.cases = {c["case_id"]: c for c in cases if c["split"] == "train"}
+        self.score_workers = max(1, int(score_workers))
         self.verifier = verifier
         self.witness_path = witness_path
         self.eos_token_id = eos_token_id
@@ -310,25 +311,33 @@ class Reward:
         token_ids = kwargs.get("completion_ids")
         if self.eos_token_id is not None and (token_ids is None or len(token_ids) != len(completions)):
             raise TrainingError("TRL completion token IDs required for truncation check")
-        rewards, scores, truncated_flags = [], [], []
+        rewards, truncated_flags, programs = [], [], []
         for i, (completion, cid) in enumerate(zip(completions, case_id)):
             if cid not in self.cases:
                 raise TrainingError("non-training case in RL batch: " + cid)
             program = program_from_completion(completion)
             truncated = self.eos_token_id is not None and not complete(token_ids[i], self.eos_token_id)
             truncated_flags.append(truncated)
-            if truncated:
-                program = None
+            programs.append(None if truncated else program)
+
+        def score_one(item):
+            cid, program = item
             try:
-                score = self.verifier.score(self.cases[cid], program)
+                return self.verifier.score(self.cases[cid], program)
             except VerificationBlocked as exc:
                 if self.witness_path:
                     from .jsonio import append_jsonl
                     append_jsonl(self.witness_path, {"case_id": cid, "program": program,
                                                      "error": str(exc), "tests": self.cases[cid]["tests"]})
                 raise
+        # A group's completions are scored concurrently (each one is a dozen
+        # sandbox requests) and kept in batch order; the first block wins.
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(self.score_workers, max(1, len(programs)))) as pool:
+            scores = list(pool.map(score_one, zip(case_id, programs)))
+        for i, (cid, program, score) in enumerate(zip(case_id, programs, scores)):
+            truncated = truncated_flags[i]
             rewards.append(score.reward)
-            scores.append(score)
             if self.rollout_path:
                 from .jsonio import append_jsonl
                 append_jsonl(self.rollout_path, {"case_id": cid, "family": self.cases[cid]["family"],

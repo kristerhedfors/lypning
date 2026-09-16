@@ -101,7 +101,7 @@ class Model:
         assert kwargs["generation_config"].eos_token_id == 99
         self.seeds.append(self.torch.state)
         self.torch.state += 1
-        n = kwargs["input_ids"].shape[0] * kwargs["num_return_sequences"]
+        n = kwargs["input_ids"].shape[0] * kwargs["generation_config"].num_return_sequences
         return Tokens([[7, 7, 7] + list(self.tail) for _ in range(n)])
 
 

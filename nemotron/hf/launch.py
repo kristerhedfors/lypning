@@ -32,6 +32,7 @@ STAGES = {"smoke": "nemotron/hf/round02_smoke.sh", "pilot": "nemotron/hf/round02
 #: The stages that read reviewed banks from the private dataset repo (--bank-path).
 BANKED = ("pilot",)
 DEFAULT_STEPS, DEFAULT_EVAL_DRAWS, DEFAULT_SEED = 20, 16, 1111
+DEFAULT_EVAL_SEQUENCES, DEFAULT_SCORE_WORKERS = 128, 32
 TERMINAL = ("COMPLETED", "ERROR", "CANCELED")
 
 
@@ -48,7 +49,9 @@ def job_env(args):
            "WORK_REPO": args.work_repo}
     if args.stage in BANKED:
         env.update({"BANK_PATH": args.bank_path, "STEPS": str(args.steps),
-                    "EVAL_DRAWS": str(args.eval_draws), "SEED": str(args.seed)})
+                    "EVAL_DRAWS": str(args.eval_draws), "SEED": str(args.seed),
+                    "EVAL_SEQUENCES": str(args.eval_sequences), "SCORE_WORKERS": str(args.score_workers),
+                    "BUNDLES_FROM": args.bundles_from or ""})
     return env
 
 
@@ -88,6 +91,12 @@ def main(argv=None):
     p.add_argument("--bank-path", help="pilot: directory in --work-repo holding eval2.jsonl, train.jsonl, evidence-*/")
     p.add_argument("--steps", type=int, default=DEFAULT_STEPS, help="pilot: SFT and GRPO optimizer steps")
     p.add_argument("--eval-draws", type=int, default=DEFAULT_EVAL_DRAWS, help="pilot: draws per case on the eval-2 benchmark")
+    p.add_argument("--eval-sequences", type=int, default=DEFAULT_EVAL_SEQUENCES,
+                   help="pilot: sequences per generate call in evaluation")
+    p.add_argument("--score-workers", type=int, default=DEFAULT_SCORE_WORKERS,
+                   help="pilot: concurrent verifier scorings")
+    p.add_argument("--bundles-from", default="",
+                   help="pilot: reuse the pilot/ and eval2/ bundles under this directory of --work-repo")
     p.add_argument("--seed", type=int, default=DEFAULT_SEED, help="pilot: review, preparation and training seed")
     p.add_argument("--flavor", default="a10g-small")
     p.add_argument("--timeout", default="75m")

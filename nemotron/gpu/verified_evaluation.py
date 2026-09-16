@@ -72,7 +72,8 @@ def evaluate(model, tokenizer, cases, verifier, policy, output, step, torch,
     # model's serving configuration. Use that same single stop in every arm.
     eos = tokenizer.eos_token_id
     pad = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else eos
-    config = GenerationConfig(**policy, eos_token_id=eos, disable_compile=True,
+    settings = dict(policy, num_return_sequences=int(draws))
+    config = GenerationConfig(**settings, eos_token_id=eos, disable_compile=True,
                               pad_token_id=pad, bos_token_id=tokenizer.bos_token_id)
     try:
         model.generation_config = config
@@ -94,8 +95,7 @@ def evaluate(model, tokenizer, cases, verifier, policy, output, step, torch,
                 sample_seed = chunk_seed(seed, chunk)
                 torch.manual_seed(sample_seed)
                 with torch.no_grad():
-                    ids = model.generate(**batch, generation_config=config,
-                                         num_return_sequences=draws)
+                    ids = model.generate(**batch, generation_config=config)
                 # `generate` groups its return sequences by input, in input order.
                 pending = []
                 for i, case in enumerate(chunk):
