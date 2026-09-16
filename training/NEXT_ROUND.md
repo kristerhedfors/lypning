@@ -138,6 +138,15 @@ are never overwritten; interrupted preparation publishes no usable manifest.
 
 ## Manual launch sequence — next agent only
 
+These are the commands and flags for a round once one is authorised; they live
+here because they live nowhere else and `training/hf/round02_pilot.sh` runs them
+in this order by name. **Whether to launch a round, and which rung comes first,
+is `STATUS.md` §10.** The eval-2 confirmatory arm is not one of the five steps
+below — it is a separate `eval --eval-split all` against the frozen benchmark
+bundle — and since 2026-09-16 `preflight` refuses it at any k but
+`training_contract.PROTOCOL_EVAL_DRAWS`. The steps below run against the pilot
+bundle and are unaffected.
+
 ```bash
 # 1. Exact tiny-model SFT/GRPO wiring with the production tokenizer.
 uv run --python "$ROUND_PYTHON" training/gpu/train_verified.py sft \

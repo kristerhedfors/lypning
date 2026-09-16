@@ -163,17 +163,30 @@ inform the size and the effect-shape assumptions and are then set aside before
 the bank is frozen, so no case whose base rate was seen chooses the bank.
 
 The analysis resamples family clusters, not cases, and reports the power of
-the §4 rule at two effect shapes — uniform (a lift on every family) and
-concentrated (a handful of families solved outright, the shape
-`PREREGISTRATION.md` §3c found the old rule near-blind to) — as a function of
-bank size. The existing `pipeline.stats.power_curve` resamples cases and cannot
+the §4 rule at two effect shapes — uniform (a lift asked of every case, which a
+case already at 1.0 cannot take) and concentrated (a handful of families solved
+outright, the shape `PREREGISTRATION.md` §3c found the old rule near-blind to) —
+as a function of bank size. The existing `pipeline.stats.power_curve` resamples cases and cannot
 do this; the cluster version, `stats.power_curve_clustered`, is written and
 tested before the pilot draw is sampled, and its curve is appended to this
 document dated. Power is read at an expected effect above the bar, not at
-the bar itself: at a true effect equal to +3pp the lower bound sits under the
+the bar itself: at a realised effect equal to +3pp the lower bound sits under the
 point estimate and no size reaches 80% power. The bank is the smallest size
-at which both shapes reach 80% power for a +5pp true effect under the +3pp
-rule, or 300, whichever is larger.
+at which both shapes reach 80% power for a +5pp realised effect under the +3pp
+rule, or 300, whichever is larger. **Realised, not asked for, and realised in
+the rule's own unit** — the macro over families.
+
+**CLARIFICATION, corrected 2026-09-16, and it decides nothing.** Both
+qualifications were added that day, after the table below was printed. The two
+sentences above first read "at a **true** effect equal to +3pp" and "for a +5pp
+**true** effect"; "true" was doing no work, because the simulation's `delta` is
+the effect *asked for* and the cap decides how much of it arrives, in a unit the
+sentence did not name. This is a clarification and not a change of rule: it moves
+no threshold, and the sizing rule it clarifies was never binding — supply capped
+the bank at the 300 floor named in the same sentence (§11), so 300 was reached by
+the floor and not by the curve. The rule of §4 — the 95% lower bound above +3pp,
+k = 16, the paired family-cluster bootstrap — is untouched, as is §9's falsifier,
+which is a condition on the base rate and not on sensitivity.
 
 `stats.power_curve_clustered` was written and tested on 2026-09-16, before any
 pilot draw (`nt power --eval2 --rows <rows JSONL or run id> --mde 0.03 --sizes
@@ -181,8 +194,11 @@ pilot draw (`nt power --eval2 --rows <rows JSONL or run id> --mde 0.03 --sizes
 resamples the pilot's clusters with replacement to the candidate size, cases
 kept with their families, simulates both arms at k draws per case and asks the
 §4 rule; the null (delta 0) row is the false-positive rate. Concentrated means
-the 10% of cases with the lowest base rate lifted to one target rate for the
-same mean lift as the uniform row, so the two rows differ only in shape.
+the 10% of cases with the lowest base rate lifted to one target rate *aimed at*
+the same mean lift as the uniform row. Aimed at, not equal to: the rate cap at 1
+takes back whatever a case has no room for, so at one `delta` the two rows can
+carry different effect sizes and differ in more than shape. Which is why no row
+below may be read by its `delta` alone — see the correction that closes §7.
 
 **The curve, 2026-09-16.** Pilot: run `eval-20260916-063539` on the legacy
 tree, the 64 cases of train v1 (§11) at k = 16, 1,024 draws, all 64 cases
@@ -207,15 +223,64 @@ no harness error remains in the rows). Base correct-and-native, macro over the
 | concentrated | +10pp | 98% | 100% | 100% | 100% | 100% |
 
 Read at the frozen bank size of 300 (supply-capped, §11): the rule has 80%
-power for a concentrated effect of +5pp or more (97% at +5pp, 100% at +8pp),
-sees a uniform +10pp in three banks of four, and a uniform lift of +8pp or
-less in one of five or fewer at every size on the grid. The false-positive
-rate is 0% in every cell. So a null result from round-02 rules out a
-concentrated gain of about +5pp on the lowest-base families and a uniform
-gain of about +10pp, and nothing finer; a uniform few-point lift, the shape a
-small SFT most plausibly produces, cannot be seen by this instrument at
-N = 300 and k = 16, and the honest route to it is more draws per case and a
-larger bank, not a looser rule.
+power for a concentrated effect of +5pp or more (97% at +5pp, 100% at +8pp).
+The false-positive rate is 0% in every cell. The concentrated rows lose less to
+the ceiling than the uniform ones, because the decile they lift starts lower and
+so has room — but **how much room, and therefore what they realised, is not
+established here.** Rising power across +3pp → +10pp does not establish it: a
+cell can be clipped in every trial and still sit on a rising curve (measured
+2026-09-16 on a synthetic pilot: concentrated +10pp clipped in 60 of 60 trials,
+realising +8.4pp, with power still above the +8pp cell's). And what these rows
+realised *per case* is in any event not what the rule tests, which is the macro
+over families — a different number on a bank with families this unequal. So
+whether a null from round-02 rules out a concentrated +5pp is what rung S0a's
+re-print settles, and this table does not.
+
+**The uniform rows of this table are keyed by a lift the simulation did not
+deliver, and their reading is withdrawn.** Corrected 2026-09-16, after the
+table was printed and after round-02 was read under it. The `effect` column is
+the lift *asked for*; a uniform lift reaches a case as `min(1, p + delta)`, so
+every case with less than `delta` of room contributes less, and the row tests
+something smaller than its label. This paragraph first read that the rule "sees
+a uniform +10pp in three banks of four, and a uniform lift of +8pp or less in
+one of five or fewer at every size on the grid", and concluded that "a uniform
+few-point lift, the shape a small SFT most plausibly produces, cannot be seen by
+this instrument at N = 300 and k = 16, and the honest route to it is more draws
+per case and a larger bank, not a looser rule". **That conclusion is not
+supported by these rows and is withdrawn.** What the uniform rows show is how
+little of a nominal lift a bank with this much saturation can absorb — a ceiling,
+not a sensitivity. The prescription that followed from it (more draws, a larger
+bank) has no evidence behind it here and is withdrawn with it.
+
+Two further corrections the same day, from calibration on synthetic pilots where
+the answer is known (`training/ASSESSMENT.md` §3.4, and
+`training/tests/test_eval2_power.py`):
+
+- **A realised lift has two units, and only one of them is this rule's.**
+  `stats._treated` also returns the lift per *case*; the §4 rule macro-averages
+  over *families*. On a bank whose families hold unequal numbers of cases — this
+  pilot is 64 cases in 49 families (§11), one of them the
+  `stdin-nonblank-line-count` of 12 cases named in the note that closes this
+  section — the two are different
+  numbers that can diverge in either direction, and the cap is only one of the
+  two things that separates them: a lift landing unevenly across families of
+  unequal size separates them on its own. Power is a property of the statistic,
+  so the macro is the column a power row is read against.
+  `power_curve_clustered` now returns both (`mean_macro_effect`, `mean_effect`)
+  and `nt power --eval2` prints the macro in every cell, counts the cells the cap
+  bit and names the worst of them in the cap's own per-case unit.
+- **Even a realised macro is not a sufficient key.** At one realised macro the
+  two shapes still differ in power, because how the lift is spread between
+  families moves it too. The shape rows stay distinct; they are not two
+  labellings of one number.
+
+**What is still owed.** This table has not been re-printed from the pilot rows,
+because they are private to the other device
+(`work/eval2/legacy-pilot/rows-full.jsonl`, §11). Until it is, the only figures
+here safe to quote are the 0% false-positive rate and the pilot's base rate: no
+row's effect label is known to be what that row tested. The re-print is rung S0a
+of `ASSESSMENT.md` §5; it is a tool change plus a read, not a read alone, and the
+tool half is done.
 
 A first print of this table on the same rows, earlier the same day, read the
 base as 73.1% over 64 units and gave lower power (64% for concentrated +5pp at

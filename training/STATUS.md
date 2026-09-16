@@ -87,6 +87,12 @@ Data side, same date:
 
 ## 4. What is next, in order, with what each step decides
 
+> **Superseded as the live sequence on 2026-09-16 — see §10, which is the one
+> home for what runs next.** This table is kept, not rewritten: it is the dated
+> record of what was believed on 2026-09-16 before `ASSESSMENT.md`, and step 6
+> was run against it. Its step numbers are cited from `EVAL2.md`, so they do not
+> move either. Read §10 for the order; read this for the history.
+
 | # | Step | Owner | Cost | Decides |
 |---|---|---|---|---|
 | 1 | Codex decision on gate 6: pooled tier admitted, or dedicated required | Codex | $0 | whether round-02 may run at all on HF |
@@ -248,3 +254,54 @@ correct-but-refused answers — have never been admitted. It replaces §4's
 sequence with a signal ladder (S0–S4) whose first three rungs cost nothing,
 and an action plan with an owner, a cost and a stop rule per step. Read it
 before the next paid step; §4 above stands as history until Codex rules.
+
+Acted on in code 2026-09-16, nothing spent (`ORCHESTRATION.md` ledger row S3):
+the §7 mislabel is fixed at its source rather than only described — the power
+tool now returns and prints the realised lift in the rule's own unit and counts
+the cells the rate cap clipped, so the table cannot be re-printed keyed by a
+lift the simulation did not deliver. `EVAL2.md` §7's uniform reading, and the
+"more draws and a larger bank" prescription that followed from it, are withdrawn;
+its concentrated rows stand. A benchmark eval arm at a k the rule was not priced
+at is refused in `preflight`. **§10 is now the live sequence.** Two of the
+assessment's own claims were corrected in the process: `mean_effect` is per-case
+and is not the unit power is read against, and the concentrated shape clips too.
+
+## 10. The live sequence: the S-ladder
+
+**This is the one home for what runs next**, added 2026-09-16 as step 8 of
+`ASSESSMENT.md` §6. Every other ordering in this tree is either history or
+mechanism, and each says which it is:
+
+| document | what it still owns | what it no longer says |
+|---|---|---|
+| §4 above | the dated record of the seven-step plan, and the step numbers `EVAL2.md` cites | what runs next |
+| §7 below | the training recipe's mechanism — rank, decoding, the GRPO reward contract | the order the stages run in |
+| `LADDER.md` | stage 0a's measured results, the fork definitions, the kill criteria (§6), the reproduction commands | its §5 budget-and-sequence ordering, which the ladder below replaces |
+| `NEXT_ROUND.md` | the executable launch order and its flags, which exist nowhere else and which `training/hf/round02_pilot.sh` runs by name | which round to launch, and when |
+| `START_NEXT_ROUND.md` | the handoff, the boundaries, the admission gates, the evidence commands (root `CLAUDE.md` names it first for a reason) | the training sequence, one sentence of which now points here |
+| `ORCHESTRATION.md` | ownership, the verified-outcome routing table, the decision ledger | its method ordering, which is a priority list and not a plan |
+
+The ladder itself, with the prediction and stop rule for each rung, is
+`ASSESSMENT.md` §5 and §6; it is not restated here, because a seventh copy of a
+sequence is the problem §3.7 of that document names. In one line each:
+
+| rung | what it measures | cost | state, 2026-09-16 |
+|---|---|---|---|
+| S0a | `EVAL2.md` §7 re-printed from the real pilot rows, keyed on the realised macro lift | $0 | the tool half done in this tree; the read is owed by the other device |
+| S0b | the by-kind refusal vector of the 171 correct-but-fallback pilot draws | $0 | not started; promised by `EVAL2.md` §4 |
+| S0c | the round-02 probe rollouts by native status, per train case | $0 | not started |
+| S1 | stage 0b on the training bank: bare vs `--system-file subset-spec.md`, k=16 | ~$5 | not started; the first positive control the programme would have |
+| S2 | the rewritable fraction: verified native rewrites of the fallback draws | tokens | not started; ledger row D1 |
+| S3 | stage 5: refusals per 100 programs through opencode on base | harness time | not started; settles the deployment prior |
+| S4 | the first SFT with a predicted effect: ≥1,000 cases, ≥50,000 supervised tokens, three seeds, eval-2 at k=16 | ~$60–90 | blocked on S0–S3; the first GPU spend |
+
+**The standing rule, and the only one that matters here: no paid rung runs
+before the rung below it has been read.** S0a–S0c and S3 cost nothing and
+depend on nothing.
+
+Two of the three "stop doing" rules of `ASSESSMENT.md` §6 remain prose, and
+one does not: since 2026-09-16 a non-smoke benchmark eval arm at any k but
+`training_contract.PROTOCOL_EVAL_DRAWS` is refused by `train_verified.preflight`,
+so the k=4 arm that cost round-02 its eval cannot recur. The training-case floor
+and the three-seed rule are still prose, not gates; whether they should become
+gates is asked in `ORCHESTRATION.md` ledger row S3.

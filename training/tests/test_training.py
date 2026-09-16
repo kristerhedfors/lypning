@@ -244,6 +244,36 @@ def test_gpu_preflight_no_torch_and_hard_split_gates(tmp_path, monkeypatch):
         gpu.preflight(args)
 
 
+def test_a_confirmatory_eval2_arm_is_refused_at_a_k_it_was_not_registered_at(tmp_path, monkeypatch):
+    """`EVAL2.md` section 4 prices the rule at k=16; the runner's own default is 4.
+
+    The round-02 pilot ran a benchmark arm at the default and produced an
+    interval wider than any effect it could have found. The two defaults
+    disagree by construction, so the disagreement is caught where it is free.
+    """
+    gpu = gpu_module()
+    args = gpu.parser().parse_args(["eval", "--bundle", "bundle.json", "--engine", "engine",
+        "--output", str(tmp_path / "run"), "--revision", "a" * 40, "--plan",
+        "--eval-split", "all"])
+    bundle = {"digest": "locked", "purpose": "benchmark", "limits": {"memory_mb": 1024}}
+    monkeypatch.setattr(gpu, "load_bundle", lambda *a: bundle)
+    args.eval_draws = 4
+    with pytest.raises(t.TrainingError, match="pre-registered at --eval-draws 16"):
+        gpu.preflight(args)
+    # A wiring check may still be cheap, and a pilot bundle is not the frozen
+    # benchmark the pre-registration binds.
+    args.smoke = True
+    assert gpu.preflight(args) == (bundle, None)
+    args.smoke = False
+    bundle["purpose"] = "pilot"
+    args.eval_split = "dev"
+    assert gpu.preflight(args) == (bundle, None)
+    # ...and the registered k passes on the benchmark.
+    bundle["purpose"] = "benchmark"
+    args.eval_split, args.eval_draws = "all", 16
+    assert gpu.preflight(args) == (bundle, None)
+
+
 def test_family_balance():
     gpu = gpu_module()
     cases = [{"family": f, "case_id": str(i)} for i, f in enumerate(["a", "a", "b"])]
@@ -335,8 +365,11 @@ def test_benchmark_bundle_is_evaluated_whole_and_never_trained_on(tmp_path, monk
     for stage in ("sft", "probe", "grpo"):
         with pytest.raises(t.TrainingError, match="never trained on"):
             gpu.preflight(args(stage, "benchmark.json", *(("--from-base",) if stage == "grpo" else ())))
-    assert gpu.preflight(args("eval", "benchmark.json", "--eval-split", "all")) == (benchmark, None)
-    assert gpu.preflight(args("eval", "benchmark.json", "--eval-split", "dev")) == (benchmark, None)
+    # A benchmark arm is a confirmatory arm, so it carries the pre-registered k.
+    assert gpu.preflight(args("eval", "benchmark.json", "--eval-split", "all",
+                              "--eval-draws", "16")) == (benchmark, None)
+    assert gpu.preflight(args("eval", "benchmark.json", "--eval-split", "dev",
+                              "--eval-draws", "16")) == (benchmark, None)
     assert gpu.preflight(args("eval", "pilot.json", "--eval-split", "test")) == (pilot, None)
     with pytest.raises(t.TrainingError, match="benchmark bundle whole"):
         gpu.preflight(args("eval", "pilot.json", "--eval-split", "all"))

@@ -306,6 +306,16 @@ is a test in `tests/test_sft_rows.py`, not a belief.
 
 ## 5. Budget and sequence
 
+> **The sequence half of this section is superseded by `STATUS.md` §10**
+> (2026-09-16), which is the one home for what runs next. The costs below stand
+> as this ladder's own estimates, and two of them — stage 0b at ~$5 and stage 4
+> at ~$40 — are where §10's S1 and S4 costs come from; the other rungs are
+> priced in `ASSESSMENT.md` §5 and have no row here. The ordering does not stand,
+> because it
+> was written before `ASSESSMENT.md` found that the cheap decisive rungs kept
+> being displaced by the expensive indecisive one. §6's kill criteria stand
+> unchanged and are still cited from here.
+
 | stage | GPU / API | wall time | decision it buys |
 |---|---|---|---|
 | 0a reachability | $0 | hours | is RL possible on this model at all — **done** |

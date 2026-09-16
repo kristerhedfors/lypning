@@ -11,6 +11,14 @@ from .training_types import TrainingError
 
 BASE_MODEL = "Qwen/Qwen3.8-27B"
 CONTRACT_VERSION = 1
+#: Draws per case for a confirmatory eval-2 arm, pre-registered in `EVAL2.md`
+#: §4 and not ours to move: the §4 rule is priced at this k, so an arm drawn at
+#: another one is a different instrument whose interval is wider than any effect
+#: it is looking for. The runner's own `--eval-draws` default is a smoke
+#: setting, which `EVAL2.md` §4 says in as many words and which the round-02
+#: pilot spent an arm proving, so the two disagree by construction and the
+#: disagreement has to be caught somewhere that costs nothing. `preflight`.
+PROTOCOL_EVAL_DRAWS = 16
 GPU_VERSIONS = {"torch": "2.9.1", "transformers": "5.17.0", "peft": "0.20.0",
                 "accelerate": "1.15.0", "huggingface-hub": "1.31.0", "safetensors": "0.8.0",
                 "trl": "1.13.0", "datasets": "4.7.0"}

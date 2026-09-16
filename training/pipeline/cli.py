@@ -1548,30 +1548,68 @@ def _power_eval2(args: argparse.Namespace) -> int:
     print("  rule: 95%% lower bound > %+.0fpp   %d banks per cell, %d resamples each"
           % (100 * curve["mde"], curve["trials"], curve["resamples"]))
     print()
-    print("  %-13s %7s  %s" % ("shape", "effect", " ".join("%7s" % ("N=%d" % n) for n in curve["sizes"])))
+    # Every cell carries the lift it REALISED beside its power, because the lift
+    # it was ASKED for is not what it tested: the cap at 1 takes back whatever a
+    # case has no room for. A table keyed on the nominal column alone reads as
+    # blind to effects the rule detects (`EVAL2.md` section 7, ASSESSMENT.md
+    # section 3.4). Realised here is the macro over families -- the units of the
+    # section 4 rule, and so the units power is a property of.
+    print("  each cell: realised macro lift (the rule's units), then power")
+    print("  %-12s %6s   %s" % ("shape", "asked",
+                                " ".join("%13s" % ("N=%d" % n) for n in curve["sizes"])))
     for shape in curve["shapes"]:
         for delta in curve["deltas"]:
             cells = [r for r in curve["rows"] if r["shape"] == shape and r["delta"] == delta]
-            line = "  %-13s %+6.0fpp  %s" % (shape, 100 * delta,
-                                             " ".join("%6.0f%%" % (100 * r["power"]) for r in cells))
+            line = "  %-12s %+5.0fpp  %s" % (
+                shape, 100 * delta,
+                " ".join("%+6.1fpp%4.0f%%" % (100 * r["mean_macro_effect"], 100 * r["power"])
+                         for r in cells))
             print(line + ("   <- false-positive rate" if delta == 0 else ""))
     print()
-    print("  smallest N at 80% power, by effect:")
+    # Two different things make a cell's realised macro miss its label, and only
+    # one of them is the cap. `capped` is a fact about PER-CASE rates, so it is
+    # reported in per-case units and ranked in them; it cannot certify or condemn
+    # a macro label, which the family weighting moves on its own and in either
+    # direction (a capped cell can still over-realise its label in the macro).
+    # Hence: the shortfall the cap caused, named as the cap's; the macro read off
+    # the table above for every row regardless.
+    graded = [r for r in curve["rows"] if r["delta"] > 0]
+    clipped = [r for r in graded if r["capped"]]
+    if clipped:
+        worst = min(clipped, key=lambda r: r["mean_effect"] - r["delta"])
+        print("  the cap at 1 bit in %d of %d cells: those rows asked for more lift than"
+              % (len(clipped), len(graded)))
+        print("  the pilot's rates had room to take, so `asked` overstates what they")
+        print("  tested. Worst per case: %s %+.0fpp asked at N=%d took %+.1fpp per case"
+              % (worst["shape"], 100 * worst["delta"], worst["N"], 100 * worst["mean_effect"]))
+        print("  (macro %+.1fpp). Read every row by its realised column above, capped or"
+              % (100 * worst["mean_macro_effect"],))
+        print("  not: the macro can miss `asked` in either direction without the cap.")
+        print()
+    print("  smallest N at 80% power, by the lift asked for (realised macro beside it,")
+    print("  at that N -- they differ wherever the cap bit):")
     for shape in curve["shapes"]:
         for delta in curve["deltas"]:
             if delta <= curve["mde"]:
                 continue
             n = curve["smallest_n"][shape][delta]
-            print("    %-13s %+4.0fpp -> %s" % (shape, 100 * delta,
-                                                ("N=%d" % n) if n else "none on this grid"))
+            hit = [r for r in curve["rows"]
+                   if r["shape"] == shape and r["delta"] == delta and r["N"] == n]
+            got = ("  (realised %+.1fpp)" % (100 * hit[0]["mean_macro_effect"])) if hit else ""
+            print("    %-12s %+4.0fpp -> %s%s" % (shape, 100 * delta,
+                                                  ("N=%d" % n) if n else "none on this grid", got))
     print()
     print("  uniform lifts every case by the effect; concentrated lifts the %.0f%% of"
           % (100 * curve["fraction"]))
-    print("  cases with the lowest base rate to one target rate for the same mean")
-    print("  effect. An effect equal to the bar itself clears it in under half the")
-    print("  banks however large N: size the bank at the effect expected, not the bar.")
-    print("  The bank is the smallest N at which both shapes reach 80% power, or 300,")
-    print("  whichever is larger (EVAL2.md section 7).")
+    print("  cases with the lowest base rate to one target rate aimed at the same mean.")
+    print("  Aimed at, not equal to: on a bank with no room the two shapes realise")
+    print("  different effect SIZES at one `asked` value, so compare them by what they")
+    print("  realised. And one realised lift is still not one power -- how the lift is")
+    print("  spread between families moves it too, which is what the two shapes are for.")
+    print("  An effect equal to the bar itself clears it in under half the banks however")
+    print("  large N: size the bank at the effect expected, not the bar. The bank is the")
+    print("  smallest N at which both shapes reach 80% power, or 300, whichever is larger")
+    print("  (EVAL2.md section 7).")
     return 0
 
 
