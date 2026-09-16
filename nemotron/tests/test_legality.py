@@ -241,3 +241,62 @@ def test_replay_cache_pins_engine_programs_and_test_context(tmp_path, monkeypatc
     assert legality.replay(attempts, "large", cache=cache) == {"call": 2}
     assert legality.replay(attempts, "large", tests={"a": {"stdin": "changed"}}, cache=cache) == {"call": 3}
     assert legality.replay([dict(attempts[0], program="print(2)")], "large", cache=cache) == {"call": 4}
+
+
+# --- native: correct AND the engine ran it ------------------------------------
+
+
+def _armed(rows, tests, monkeypatch):
+    monkeypatch.setattr(legality.refusals, "on_policy",
+                        lambda attempts, engine, tests=None, workers=1: _census(rows))
+    monkeypatch.setattr(legality.eng, "identity", lambda: {"fingerprint": "fp"})
+    attempts = [{"case_id": r["case_id"], "sample": r["sample"], "program": "p",
+                 "passed": r["passed"], "completion_tokens": 10} for r in rows]
+    return legality.arm(attempts, "e", tests=tests)
+
+
+def test_native_rate_is_match_and_correct_read_off_the_replay(monkeypatch):
+    """A draw that passed on CPython and was refused is legal-rate 0, pass-rate 1,
+    native 0: the eval-2 primary metric needs both halves from the same engine."""
+    rows = [_draw("a", "MATCH", True, sample=0), _draw("a", "UNSUPPORTED", None, sample=1),
+            _draw("b", "MATCH", False, sample=0), _draw("b", "MATCH", True, sample=1)]
+    rows[1]["passed"] = True                      # correct on CPython, refused
+    tests = {"a": {"expect_stdout": "x"}, "b": {"expect_stdout": "x"}}
+    a = _armed(rows, tests, monkeypatch)
+    assert a["native_rate"] == {"a": 0.5, "b": 0.5}
+    assert a["pass_rate"]["a"] == 1.0 and a["legal_rate"]["a"] == 0.5
+    assert a["native"] == pytest.approx(0.5) and a["measured"] == 4
+
+
+def test_a_case_without_an_expected_stdout_is_unmeasured_not_zero(monkeypatch):
+    rows = [_draw("scored", "MATCH", True), _draw("free", "MATCH", None)]
+    tests = {"scored": {"expect_stdout": "x"}, "free": {}}
+    a = _armed(rows, tests, monkeypatch)
+    assert a["native_rate"] == {"scored": 1.0}
+    assert a["native"] == 1.0
+    # Every draw refused: measurable is a property of the case, so it stays in at 0.
+    a = _armed([_draw("z", "UNSUPPORTED"), _draw("z", "UNSUPPORTED", sample=1)],
+               {"z": {"expect_stdout": "x"}}, monkeypatch)
+    assert a["native_rate"] == {"z": 0.0}
+    # No tests at all: nothing is measurable, so the rate is a hole and not a zero.
+    a = _armed([_draw("q", "MATCH", None)], None, monkeypatch)
+    assert a["native_rate"] == {} and a["native"] != a["native"]
+
+
+def test_compare_and_report_carry_native_beside_slr():
+    a = _arm({"c1": 0.5, "c2": 0.5})
+    b = _arm({"c1": 0.5, "c2": 0.5})
+    a.update(native_rate={"c1": 0.0, "c2": 0.5}, native=0.25)
+    b.update(native_rate={"c1": 1.0, "c2": 0.5}, native=0.75)
+    cmp = legality.compare(a, b)
+    assert cmp["native"]["n_pairs"] == 2 and cmp["native"]["delta"] == pytest.approx(0.5)
+    assert cmp["base_native"] == 0.25 and cmp["tuned_native"] == 0.75
+    text = legality.report(cmp, before="a", after="b")
+    lines = text.splitlines()
+    slr = next(i for i, l in enumerate(lines) if l.startswith("  SLR "))
+    assert lines[slr + 2].startswith("  native  base 25.00%   tuned 75.00%")
+    assert "dnative +50.00pp" in lines[slr + 3]
+    # An arm from before native was measured: a hole in the report, never a zero.
+    old = legality.compare(_arm({"c1": 0.5}), _arm({"c1": 0.5}))
+    assert old["native"]["n_pairs"] == 0
+    assert "dnative not measured" in legality.report(old, before="a", after="b")

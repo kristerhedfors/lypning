@@ -65,8 +65,16 @@ def parser():
     p.add_argument("--max-seq", type=int, default=4096)
     p.add_argument("--max-new-tokens", type=int, default=1024)
     p.add_argument("--seed", type=int, default=1111)
-    p.add_argument("--eval-split", choices=("dev", "test"), default="dev")
+    p.add_argument("--eval-split", choices=("dev", "test", "all"), default="dev",
+                   help="all: every case of a benchmark bundle, stage eval only")
     return p
+
+
+def evaluation_cases(bundle, eval_split):
+    """The cases stage eval measures: one split, or a benchmark bundle whole."""
+    if eval_split == "all":
+        return list(bundle["cases"])
+    return [c for c in bundle["cases"] if c["split"] == eval_split]
 
 
 def preflight(args):
@@ -96,8 +104,12 @@ def preflight(args):
     if args.from_base and args.stage != "grpo":
         raise TrainingError("--from-base is only a GRPO ablation")
     bundle = load_bundle(args.bundle, args.engine)
-    if not args.smoke and bundle.get("purpose") != "pilot":
+    if not args.smoke and bundle.get("purpose") not in ("pilot", "benchmark"):
         raise TrainingError("smoke data cannot launch a real run; prepare an admitted pilot bundle")
+    if bundle.get("purpose") == "benchmark" and args.stage != "eval":
+        raise TrainingError("a benchmark bundle is evaluated whole, never trained on; only stage eval accepts it")
+    if args.eval_split == "all" and bundle.get("purpose") != "benchmark":
+        raise TrainingError("--eval-split all evaluates a benchmark bundle whole; a pilot is measured per split")
     if not args.smoke and sys.platform != "linux" and not args.plan:
         raise TrainingError("real runs require the isolated Linux worker, not macOS diagnostic limits")
     if not args.plan and not args.isolated_worker:
@@ -172,7 +184,7 @@ def run(args, bundle, adapter_info):
     if tok.eos_token_id is None or tok.encode("<|im_end|>", add_special_tokens=False) != [tok.eos_token_id]:
         raise TrainingError("Qwen assistant terminator must equal tokenizer EOS for SFT/TRL agreement")
     train_cases = [c for c in bundle["cases"] if c["split"] == "train"]
-    dev_cases = [c for c in bundle["cases"] if c["split"] == args.eval_split]
+    dev_cases = evaluation_cases(bundle, args.eval_split)
     # Token limits are admission checks, not permission to silently drop long
     # examples or slice the task away. Run these before downloading 27B weights.
     for case in train_cases + dev_cases:

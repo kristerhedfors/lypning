@@ -128,3 +128,23 @@ def test_verifier_failure_restores_training_state(tmp_path, monkeypatch):
                     tmp_path / "eval.jsonl", 0, torch)
     assert model.training and model.is_gradient_checkpointing and torch.state == 123
     assert model.config.text_config.use_cache is False
+
+
+def test_whole_bank_evaluation_keeps_the_row_schema_across_splits(tmp_path, monkeypatch):
+    # A benchmark bundle is measured whole: one row per case and draw whatever
+    # the split, with the same keys, so training_report compares two whole-bank
+    # evaluations exactly as it compares two dev evaluations.
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(GenerationConfig=SimpleNamespace))
+    ev, torch = load_evaluation(), FakeTorch()
+    model = Model(torch, [1, 99])
+    verifier = SimpleNamespace(score=lambda c, p: Score(1, "correct-native", 3, 3))
+    cases = [dict(case_id=str(i), family="f%d" % i, task="task %d" % i, population="coverage",
+                  split=split, split_group="g%d" % i)
+             for i, split in enumerate(("train", "dev", "test"))]
+    metrics, records = ev.evaluate(model, Tokenizer(), cases, verifier, decoding(10),
+                                   tmp_path / "eval.jsonl", 0, torch, seed=42, draws=2, return_records=True)
+    assert [r["case_id"] for r in records] == ["0", "0", "1", "1", "2", "2"]
+    assert len({tuple(sorted(r)) for r in records}) == 1
+    assert {r["split_group"] for r in records} == {"g0", "g1", "g2"}
+    assert len((tmp_path / "eval.jsonl").read_text().splitlines()) == 6
+    assert metrics["correct"] == 1

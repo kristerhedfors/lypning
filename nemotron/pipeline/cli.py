@@ -11,6 +11,7 @@ for the same reason — a module that prints cannot be tested for what it decide
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -178,7 +179,7 @@ def _promotion_bars(s: Dict[str, Any]) -> List[str]:
         stats.completeness(s, _progress(s.get("run_id") or ""))))
     samp = s.get("sampling")
     samp = samp if isinstance(samp, dict) else {}
-    missing = [k for k in stats.SAMPLING_KEYS if k not in samp]
+    missing = stats.sampling_missing(samp)
     if missing:
         why.append("sampling not recorded (missing %s): every later run would be "
                    "not-comparable against it" % ", ".join(missing))
@@ -330,6 +331,107 @@ def cmd_split(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_eval2_select(args: argparse.Namespace) -> int:
+    """Select reverse-prompting candidates for eval-2 from data/classified.jsonl."""
+    from . import eval2_select as e2s
+    from .jsonio import write_jsonl
+    source = Path(args.classified) if args.classified else DATA / "classified.jsonl"
+    if not source.exists():
+        print("no classified corpus: run `nt classify` first", file=sys.stderr)
+        return 1
+    sightings = Path(args.sightings) if args.sightings else ROOT.parent / "tests" / "corpus" / "sightings"
+    result = e2s.select(read_jsonl(source), limit=args.limit, seed=args.seed,
+                        sightings_dir=sightings, timeout_s=args.timeout, jobs=args.jobs)
+    write_jsonl(args.output, result["candidates"])
+    print(e2s.render(result))
+    print("  -> %s" % args.output)
+    return 0 if result["selected"] else 1
+
+
+def cmd_eval2_legacy(args: argparse.Namespace) -> int:
+    """Project a schema-3 eval-2 bank onto records `nt harvest --source jsonl:path=`
+    accepts: one exact-stdout test per case, category unobserved, the bank's
+    identity in the tags. The harvest's gates still run on what comes out."""
+    from . import eval2_legacy
+    from .jsonio import write_jsonl
+    bank = Path(args.bank)
+    if not bank.is_file():
+        print("not a file: %s" % bank, file=sys.stderr)
+        return 2
+    result = eval2_legacy.project(read_jsonl(bank))
+    write_jsonl(args.output, result["records"])
+    print("eval2-legacy  projected %d of %d cases   skipped %d"
+          % (len(result["records"]), result["cases"], len(result["skipped"])))
+    for row in result["skipped"]:
+        print("  skipped %s: %s" % (row["case_id"] or ("#%d" % row["index"]), row["reason"]))
+    print("  -> %s" % args.output)
+    print("  next: NTX_ROOT=<tree> nt harvest --source jsonl:path=%s && nt split --fraction 1.0"
+          % args.output)
+    return 0 if result["records"] else 1
+
+
+def cmd_eval2_rows(args: argparse.Namespace) -> int:
+    """A legacy run as `training_metrics` rows: correct off the run, native off a
+    replay through the pinned engine, family and population off the case tags."""
+    from . import eval2_rows, legality
+    from .jsonio import write_jsonl
+    from .training_metrics import summarize
+    from .training_types import TrainingError
+    engine = args.engine or eng.engine_path("lypning-l") or eng.engine_path("lypning")
+    if not engine:
+        print("no lypning binary on this machine: run `lypning build --rust`, "
+              "or pass --engine", file=sys.stderr)
+        return 1
+    path = RUNS / args.run_id / "attempts.jsonl"
+    if not path.exists():
+        print("no such run: %s" % args.run_id, file=sys.stderr)
+        return 1
+    attempts = list(read_jsonl(path))
+    meta = _run_meta(args.run_id)
+    seed = (meta.get("sampling") or {}).get("seed")
+    cases, tests = _case_context(False)
+    cache = (Path(args.cache) / ("%s.replay.json" % args.run_id)) if args.cache else None
+    census = legality.replay(attempts, engine, tests=tests, workers=args.jobs, cache=cache)
+    result = eval2_rows.rows(attempts, census["rows"], cases, seed=seed)
+    write_jsonl(args.output, result["rows"])
+    print("eval2-rows  %s   %d rows, %d replayed   @ engine %s"
+          % (args.run_id, len(result["rows"]), result["replayed"],
+             eng.identity()["fingerprint"]))
+    if result["unknown_cases"]:
+        print("  %d attempts name cases this tree does not know: %s"
+              % (len(result["unknown_cases"]), ", ".join(result["unknown_cases"][:5])),
+              file=sys.stderr)
+    if census["tally"].get("MISMATCH"):
+        print("  MISMATCH %d — invariant 1: always a bug, never the model's."
+              % census["tally"]["MISMATCH"], file=sys.stderr)
+    print("  -> %s" % args.output)
+    try:
+        s = summarize(result["rows"]) if result["rows"] else None
+    except TrainingError as exc:
+        print("  rows written but not summarised: %s" % exc, file=sys.stderr)
+        return 1
+    if s is None:
+        print("  no rows", file=sys.stderr)
+        return 1
+    print("  correct %s   correct-native %s   over %d cases, %d draws, %d families "
+          "(family macro)" % (_pct(s["correct"]), _pct(s["correct_native"]),
+                              s["cases"], s["draws"], s["families"]))
+    for pop, ps in sorted(s["by_population"].items()):
+        print("    %-18s correct %s   native %s   (%d cases)"
+              % (pop, _pct(ps["correct"]), _pct(ps["correct_native"]), ps["cases"]))
+    return 1 if census["tally"].get("MISMATCH") else 0
+
+
+def _run_meta(run_id: str) -> Dict[str, Any]:
+    p = RUNS / run_id / "meta.json"
+    if not p.exists():
+        return {}
+    try:
+        return read_json(p)
+    except (ValueError, OSError):
+        return {}
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     ok, problems = splitmod.verify(DATA / "corpus.jsonl")
     if ok:
@@ -385,8 +487,13 @@ def cmd_eval(args: argparse.Namespace) -> int:
         inner.append("--baseline")
     if args.no_thinking:
         inner.append("--no-thinking")
+    if getattr(args, "top_k", None) is not None:
+        inner += ["--top-k", str(args.top_k)]
     if args.label:
         inner += ["--label", args.label]
+    if getattr(args, "system_file", None):
+        # Absolute, because the inner command starts with `cd ROOT`.
+        inner += ["--system-file", str(Path(args.system_file).resolve())]
     if args.base_url:
         inner += ["--base-url", args.base_url]
     if args.model:
@@ -409,6 +516,20 @@ def _q(s: str) -> str:
     return "'" + s.replace("'", "'\\''") + "'"
 
 
+def _system_file(path: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    """``(text, sha256 of the file's bytes)`` for `--system-file`, or two Nones.
+
+    The stage 0b switch (`LADDER.md` 0b). The text goes to the model as a
+    paragraph after `evaluate.SYSTEM_PROMPT` and into `prompt_sha`; the file's
+    own sha256 is recorded beside it in meta.json so the arm names the exact
+    bytes it was drawn with. An empty file is the bare prompt.
+    """
+    if not path:
+        return None, None
+    raw = Path(path).read_bytes()
+    return raw.decode("utf-8"), hashlib.sha256(raw).hexdigest()
+
+
 def _eval_foreground(args: argparse.Namespace, run_id: str) -> int:
     try:
         cases = load_holdout(DATA)
@@ -424,13 +545,20 @@ def _eval_foreground(args: argparse.Namespace, run_id: str) -> int:
         print(str(exc), file=sys.stderr)
         return 1
     lock = splitmod.load_lock(DATA) or {}
+    try:
+        system_extra, system_file_sha256 = _system_file(getattr(args, "system_file", None))
+    except (OSError, UnicodeDecodeError) as exc:
+        print("cannot read --system-file: %s" % exc, file=sys.stderr)
+        return 1
     ev = Evaluation(
         backend, cases, RUNS / run_id,
         samples=args.samples, temperature=args.temperature, top_p=args.top_p,
         max_tokens=args.max_tokens, enable_thinking=not args.no_thinking,
+        top_k=getattr(args, "top_k", None),
         concurrency=args.concurrency, max_spend=args.max_spend,
         price_hour=args.price_hour,
         label=args.label or ("stock baseline" if args.baseline else ""),
+        system_extra=system_extra, system_file_sha256=system_file_sha256,
     )
     t0 = time.time()
 
@@ -554,10 +682,10 @@ def _declared_sampling(header: Dict[str, Any], comps: List[Dict[str, Any]],
         samp = samp["sampling"]
     if not isinstance(samp, dict):
         return None, "the declared sampling is not a JSON object"
-    missing = [k for k in stats.SAMPLING_KEYS if k not in samp]
+    missing = stats.sampling_missing(samp)
     if missing:
         return None, "the declared sampling is missing %s" % ", ".join(missing)
-    return dict(samp, declared_by=source), ""
+    return dict(stats.sampling_block(samp), declared_by=source), ""
 
 
 def cmd_grade(args: argparse.Namespace) -> int:
@@ -595,8 +723,9 @@ def cmd_grade(args: argparse.Namespace) -> int:
     # nothing. Both arms drift together, so the paired delta survives -- but it is
     # then a delta on an unrecorded prompt, and every comparison against a run
     # graded at another template is wrong while claiming to be checked.
-    local_sha = __import__("pipeline.evaluate", fromlist=["x"]).prompt_signature()
-    stated_sha = header.get("prompt_sha")
+    evaluate = __import__("pipeline.evaluate", fromlist=["x"])
+    local_sha = evaluate.prompt_signature()
+    stated_sha = evaluate.canonical_prompt_sha(header.get("prompt_sha"))
     if stated_sha and stated_sha != local_sha:
         print("refusing to grade %s: it was generated from prompt %s and this tree "
               "renders %s.\n  The run would be stamped with a prompt it never saw. "
@@ -1327,6 +1456,91 @@ def cmd_slices(args: argparse.Namespace) -> int:
     return 0
 
 
+def _csv_ints(text: str) -> List[int]:
+    try:
+        out = [int(x) for x in text.split(",") if x.strip()]
+    except ValueError:
+        raise argparse.ArgumentTypeError("expected comma-separated integers, got %r" % text)
+    if not out or any(n < 1 for n in out):
+        raise argparse.ArgumentTypeError("expected positive integers, got %r" % text)
+    return out
+
+
+def _csv_floats(text: str) -> List[float]:
+    try:
+        return [float(x) for x in text.split(",") if x.strip()]
+    except ValueError:
+        raise argparse.ArgumentTypeError("expected comma-separated numbers, got %r" % text)
+
+
+def _eval2_rows_source(spec: str) -> Optional[Path]:
+    """A `training_metrics` rows JSONL path, or a legacy run id whose
+    `eval2_rows.jsonl` (`nt eval2-rows RUN --output runs/RUN/eval2_rows.jsonl`)
+    sits in its run directory."""
+    p = Path(spec)
+    if p.is_file():
+        return p
+    q = RUNS / spec / "eval2_rows.jsonl"
+    return q if q.is_file() else None
+
+
+def _power_eval2(args: argparse.Namespace) -> int:
+    """`EVAL2.md` §7: the power of the family-cluster rule against bank size,
+    from a pilot's rows. Run before the bank is drawn; the pilot is spent."""
+    if not args.rows:
+        print("power --eval2 needs --rows <training_metrics rows JSONL, or a run id "
+              "with runs/<id>/eval2_rows.jsonl>", file=sys.stderr)
+        return 2
+    src = _eval2_rows_source(args.rows)
+    if src is None:
+        print("no rows file at %s and no %s: write them with `nt eval2-rows %s "
+              "--output runs/%s/eval2_rows.jsonl`"
+              % (args.rows, RUNS / args.rows / "eval2_rows.jsonl", args.rows, args.rows),
+              file=sys.stderr)
+        return 1
+    pilot = stats.pilot_from_rows(list(read_jsonl(src)))
+    if not pilot:
+        print("no rows in %s" % src, file=sys.stderr)
+        return 1
+    k = args.draws or max(len(e["scores"]) for e in pilot.values())
+    curve = stats.power_curve_clustered(
+        pilot, k, mde=args.mde, sizes=args.sizes, deltas=args.deltas,
+        trials=args.trials, resamples=args.resamples)
+    p = curve["pilot"]
+    print("eval-2 power: family-cluster paired bootstrap, from %s" % src)
+    print("  pilot %d cases in %d families (%d independent clusters), k=%d"
+          % (p["cases"], p["families"], p["clusters"], curve["k"]))
+    print("  base correct-and-native, macro over families: %s" % _pct(p["base_point"]))
+    print("  rule: 95%% lower bound > %+.0fpp   %d banks per cell, %d resamples each"
+          % (100 * curve["mde"], curve["trials"], curve["resamples"]))
+    print()
+    print("  %-13s %7s  %s" % ("shape", "effect", " ".join("%7s" % ("N=%d" % n) for n in curve["sizes"])))
+    for shape in curve["shapes"]:
+        for delta in curve["deltas"]:
+            cells = [r for r in curve["rows"] if r["shape"] == shape and r["delta"] == delta]
+            line = "  %-13s %+6.0fpp  %s" % (shape, 100 * delta,
+                                             " ".join("%6.0f%%" % (100 * r["power"]) for r in cells))
+            print(line + ("   <- false-positive rate" if delta == 0 else ""))
+    print()
+    print("  smallest N at 80% power, by effect:")
+    for shape in curve["shapes"]:
+        for delta in curve["deltas"]:
+            if delta <= curve["mde"]:
+                continue
+            n = curve["smallest_n"][shape][delta]
+            print("    %-13s %+4.0fpp -> %s" % (shape, 100 * delta,
+                                                ("N=%d" % n) if n else "none on this grid"))
+    print()
+    print("  uniform lifts every case by the effect; concentrated lifts the %.0f%% of"
+          % (100 * curve["fraction"]))
+    print("  cases with the lowest base rate to one target rate for the same mean")
+    print("  effect. An effect equal to the bar itself clears it in under half the")
+    print("  banks however large N: size the bank at the effect expected, not the bar.")
+    print("  The bank is the smallest N at which both shapes reach 80% power, or 300,")
+    print("  whichever is larger (EVAL2.md section 7).")
+    return 0
+
+
 def cmd_power(args: argparse.Namespace) -> int:
     """What this held-out set can see, before anything is spent on making it move.
 
@@ -1334,6 +1548,11 @@ def cmd_power(args: argparse.Namespace) -> int:
     whatever happens, and the money goes either way. Run this BEFORE the run:
     a rule chosen once the outcome is visible is not a rule.
     """
+    if args.eval2:
+        return _power_eval2(args)
+    if not args.run_id:
+        print("power needs a run id, or --eval2 --rows", file=sys.stderr)
+        return 2
     run_dir = RUNS / args.run_id
     attempts = scored_attempts(read_jsonl(run_dir / "attempts.jsonl"))
     per: Dict[str, List[int]] = {}
@@ -1428,6 +1647,31 @@ def cmd_leaks(args: argparse.Namespace) -> int:
         print()
         for row in sorted(report["leaks"], key=lambda r: -r["similarity"]):
             print("  %s  ~  %s   %s" % (row["id"], row["twin"], row["why"]))
+    return 0
+
+
+def cmd_eval2_leaks(args: argparse.Namespace) -> int:
+    """Training cases that are an eval-2 case in disguise, bank against bank.
+
+    Exit 1 on any pair unless ``--allow``: a training bank that overlaps the
+    eval-2 bank voids the number eval-2 exists to produce. Neither bank is
+    written.
+    """
+    from . import eval2_leaks
+    eval_path, train_path = Path(args.eval2), Path(args.train)
+    for path in (eval_path, train_path):
+        if not path.is_file():
+            print("not a file: %s" % path, file=sys.stderr)
+            return 2
+    report = eval2_leaks.bank_leaks(read_jsonl(eval_path), read_jsonl(train_path),
+                                    ceiling=args.ceiling,
+                                    min_stdout_chars=args.min_stdout)
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print(eval2_leaks.render(report))
+    if report["pairs"] and not args.allow:
+        return 1
     return 0
 
 
@@ -1561,7 +1805,8 @@ def build_parser() -> argparse.ArgumentParser:
     tp.add_argument("--execution-revision",
                     help="hf-sandbox-pool only: the Space's immutable 40-character commit")
     tp.add_argument("--review", type=Path, help="data_loop review.json bound to the exact cases/seed")
-    tp.add_argument("--purpose", choices=("smoke", "pilot"), default="smoke")
+    tp.add_argument("--purpose", choices=("smoke", "pilot", "benchmark"), default="smoke",
+                    help="benchmark: a reviewed bank stage eval measures whole (--eval-split all), never trains on")
     tp.add_argument("--timeout", type=float, default=5.0)
     tp.add_argument("--memory-mb", type=int, default=1024,
                     help="child address-space cap; 0 explicitly disables it (macOS smoke only)")
@@ -1598,6 +1843,31 @@ def build_parser() -> argparse.ArgumentParser:
                    help="move the held-out set; voids every baseline")
     s.set_defaults(fn=cmd_split)
 
+    e2 = sub.add_parser("eval2-select", help="select reverse-prompting candidates for eval-2 (shape-stratified)")
+    e2.add_argument("--output", type=Path, required=True, help="candidates JSONL to write")
+    e2.add_argument("--classified", help="classified corpus (default data/classified.jsonl)")
+    e2.add_argument("--sightings", help="per-session sightings dir (default tests/corpus/sightings)")
+    e2.add_argument("--limit", type=int, default=0, help="stratified draw of this many; 0 keeps all")
+    e2.add_argument("--seed", type=int, default=1111)
+    e2.add_argument("--jobs", type=int, default=4)
+    e2.add_argument("--timeout", type=float, default=10.0)
+    e2.set_defaults(fn=cmd_eval2_select)
+
+    e2l = sub.add_parser("eval2-legacy",
+                         help="project a schema-3 eval-2 bank to records `harvest --source jsonl:` takes")
+    e2l.add_argument("--bank", required=True, help="eval-2 bank (schema-3 cases JSONL)")
+    e2l.add_argument("--output", required=True, help="records JSONL to write")
+    e2l.set_defaults(fn=cmd_eval2_legacy)
+
+    e2r = sub.add_parser("eval2-rows",
+                         help="a legacy run's attempts as training_metrics rows (native off a replay)")
+    e2r.add_argument("run_id")
+    e2r.add_argument("--output", required=True, help="rows JSONL to write")
+    e2r.add_argument("--engine", help="binary to replay through (default: lypning-l)")
+    e2r.add_argument("--jobs", type=int, default=8)
+    e2r.add_argument("--cache", help="directory of per-run replay verdicts (see `legality --cache`)")
+    e2r.set_defaults(fn=cmd_eval2_rows)
+
     v = sub.add_parser("verify", help="check the held-out split against its lock")
     v.set_defaults(fn=cmd_verify)
 
@@ -1613,11 +1883,18 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--concurrency", type=int, default=4)
     e.add_argument("--temperature", type=float, default=1.0)
     e.add_argument("--top-p", type=float, default=0.95)
+    e.add_argument("--top-k", type=int, default=None,
+                   help="top-k sampling, sent to vLLM/SGLang as a top-level key; "
+                        "unset leaves it to the server (every run before 2026-09-16)")
     e.add_argument("--max-tokens", type=int, default=4096)
     e.add_argument("--max-spend", type=float, default=0.0, help="abort above this many dollars")
     e.add_argument("--price-hour", type=float, default=0.0,
                    help="dollars per GPU-hour, when you rent the box instead of the tokens")
     e.add_argument("--no-thinking", action="store_true")
+    e.add_argument("--system-file", default=None,
+                   help="stage 0b: a text file appended to the system prompt as its "
+                        "own paragraph (nemotron/prompts/subset-spec.md); moves "
+                        "prompt_sha and is recorded as meta.system_file_sha256")
     e.add_argument("--base-url"); e.add_argument("--model")
     e.add_argument("--foreground", action="store_true", help="used by the tmux launcher")
     e.set_defaults(fn=cmd_eval)
@@ -1740,9 +2017,21 @@ def build_parser() -> argparse.ArgumentParser:
     sl.set_defaults(fn=cmd_slices)
 
     pw = sub.add_parser("power", help="what effect size this held-out set could detect")
-    pw.add_argument("run_id")
+    pw.add_argument("run_id", nargs="?")
     pw.add_argument("--trials", type=int, default=200,
                     help="simulated runs per lift (default 200)")
+    pw.add_argument("--eval2", action="store_true",
+                    help="EVAL2.md section 7: family-cluster power against bank size, from --rows")
+    pw.add_argument("--rows", help="training_metrics rows JSONL of the pilot, or a run id "
+                                   "with runs/<id>/eval2_rows.jsonl")
+    pw.add_argument("--mde", type=float, default=0.03, help="the rule's bar (default 0.03)")
+    pw.add_argument("--sizes", type=_csv_ints, default=list(stats.CLUSTER_SIZES),
+                    help="candidate bank sizes (default %s)" % ",".join(map(str, stats.CLUSTER_SIZES)))
+    pw.add_argument("--deltas", type=_csv_floats, default=list(stats.CLUSTER_DELTAS),
+                    help="true effects to simulate, 0 for the null (default %s)"
+                         % ",".join(map(str, stats.CLUSTER_DELTAS)))
+    pw.add_argument("--draws", type=int, default=0, help="k per case (default: the pilot's)")
+    pw.add_argument("--resamples", type=int, default=400, help="bootstrap resamples per bank")
     pw.set_defaults(fn=cmd_power)
 
     lk = sub.add_parser("leaks", help="train cases that are the same question as a held-out one")
@@ -1751,6 +2040,19 @@ def build_parser() -> argparse.ArgumentParser:
                                               "target against the held-out cases themselves")
     lk.add_argument("--verbose", action="store_true")
     lk.set_defaults(fn=cmd_leaks)
+
+    el = sub.add_parser("eval2-leaks",
+                        help="training cases that are an eval-2 case in disguise")
+    el.add_argument("eval2", help="eval-2 bank (schema-3 cases JSONL)")
+    el.add_argument("train", help="training bank in the same shape")
+    el.add_argument("--ceiling", type=float, default=splitmod.SIMILARITY_CEILING,
+                    help="task-text similarity at or above which a pair leaks")
+    el.add_argument("--min-stdout", type=int, default=8,
+                    help="expected stdouts shorter than this are ignored")
+    el.add_argument("--allow", action="store_true",
+                    help="report pairs but exit 0 anyway")
+    el.add_argument("--json", action="store_true", help="print the report as JSON")
+    el.set_defaults(fn=cmd_eval2_leaks)
 
     us = sub.add_parser("usable", help="which held-out cases can still measure a model")
     us.add_argument("--engine")

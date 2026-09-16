@@ -21,9 +21,15 @@ from .jsonio import sha256_of, write_json, write_jsonl
 
 from .training_types import Score, TrainingError, VerificationBlocked
 from .training_contract import complete
-from .training_data import validate_cases, split_cases, validate_pilot, validate_reference_scores
+from .training_data import validate_cases, split_cases, validate_benchmark, validate_pilot, validate_reference_scores
 
 SCHEMA = 3
+#: smoke: authored starter data, local execution allowed, never a real run.
+#: pilot: a reviewed, isolated, split bank that sft/probe/grpo train on.
+#: benchmark: a reviewed, isolated bank that stage eval measures WHOLE
+#: (--eval-split all) and nothing trains on; split_groups still cluster bootstraps.
+PURPOSES = ("smoke", "pilot", "benchmark")
+ADMISSION = {"pilot": validate_pilot, "benchmark": validate_benchmark}
 POLICY = "l-correctness-v2"
 SYSTEM = "Write a Python standard-library program. Return exactly one fenced python code block."
 
@@ -156,14 +162,14 @@ def prepare(cases, binary, output, seed=1111, timeout_s=5.0, memory_mb=1024, pur
         review_manifest = load_review(review_path, cases, seed, purpose)
     identity = engine_identity(binary)
     cases = split_cases(cases, seed)
-    if purpose not in ("smoke", "pilot"):
-        raise TrainingError("purpose must be smoke or pilot")
-    if purpose == "pilot":
-        validate_pilot(cases)
+    if purpose not in PURPOSES:
+        raise TrainingError("purpose must be one of " + ", ".join(PURPOSES))
+    if purpose in ADMISSION:
+        ADMISSION[purpose](cases)
         if not review_manifest:
-            raise TrainingError("pilot requires --review; observations are not verified tasks")
+            raise TrainingError(purpose + " requires --review; observations are not verified tasks")
         if not execution_image:
-            raise TrainingError("pilot preparation requires --execution-image; a temporary cwd is not isolation")
+            raise TrainingError(purpose + " preparation requires --execution-image; a temporary cwd is not isolation")
     execution = execution_contract(execution_kind, execution_image, execution_revision)
     runner = execution_runner(execution, identity)
     verifier = Verifier(binary, timeout_s=timeout_s, memory_mb=memory_mb, identity=identity, runner=runner)
@@ -187,8 +193,8 @@ def prepare(cases, binary, output, seed=1111, timeout_s=5.0, memory_mb=1024, pur
         subset = [c for c in cases if c["split"] == split]
         write_jsonl(output / (split + "-prompts.jsonl"),
                     ({"case_id": c["case_id"], "prompt": messages(c)} for c in subset))
-        # Never export test solutions as SFT rows.
-        if split != "test":
+        # Never export test solutions as SFT rows; a benchmark is all held out.
+        if split != "test" and purpose != "benchmark":
             write_jsonl(output / (split + "-sft.jsonl"),
                         ({"case_id": c["case_id"], "messages": messages(c) + [{
                             "role": "assistant", "content": "```python\n" + c["reference"].rstrip() + "\n```"}]}
@@ -208,20 +214,21 @@ def load_bundle(path, binary):
         raise TrainingError("engine/oracle/policy drift; prepare a new experiment")
     validate_cases(payload["cases"])
     validate_reference_scores(payload["cases"], payload["reference_scores"])
-    if payload.get("purpose") not in ("smoke", "pilot"):
+    purpose = payload.get("purpose")
+    if purpose not in PURPOSES:
         raise TrainingError("missing experiment purpose")
-    if payload["purpose"] == "pilot":
-        validate_pilot(payload["cases"])
+    if purpose in ADMISSION:
+        ADMISSION[purpose](payload["cases"])
         reviewed = payload.get("data_review")
-        if not isinstance(reviewed, dict) or reviewed.get("purpose") != "pilot":
-            raise TrainingError("pilot missing reviewed data lineage")
+        if not isinstance(reviewed, dict) or reviewed.get("purpose") != purpose:
+            raise TrainingError(purpose + " missing reviewed data lineage")
         review_body = {k: v for k, v in reviewed.items() if k != "digest"}
         original_cases = [{k: v for k, v in c.items() if k not in ("split", "split_group")} for c in payload["cases"]]
         if (sha256_of(review_body) != reviewed.get("digest") or
                 sha256_of(original_cases) != reviewed.get("cases_sha256") or reviewed.get("seed") != payload["seed"]):
             raise TrainingError("reviewed case lineage changed")
         if payload.get("execution", {}).get("kind") not in ISOLATED_KINDS:
-            raise TrainingError("pilot requires an isolated execution contract; prepare a new bundle")
+            raise TrainingError(purpose + " requires an isolated execution contract; prepare a new bundle")
     validate_execution(payload.get("execution", {"kind": "local-reviewed-smoke"}))
     if payload["memory_policy"] != sandbox.memory_policy(payload["limits"]["memory_mb"]):
         raise TrainingError("memory enforcement policy changed")

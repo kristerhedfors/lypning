@@ -246,3 +246,75 @@ def test_the_holdout_guard_can_be_overridden_deliberately(tmp_path, monkeypatch)
                                 allow_no_witness=True, allow_holdout_loss=True)
     assert ledger["kept"] == 1
     assert (out / "corpus.jsonl").exists()
+
+
+# --- top_k / min_p ride at the top level of the request, or not at all ----------
+
+
+def _captured_request(monkeypatch):
+    """Swap urllib's opener for one that records the body and answers a canned reply."""
+    import io
+    import urllib.request
+    from pipeline import backends
+    seen = {}
+
+    class _Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        seen["body"] = json.loads(req.data.decode("utf-8"))
+        return _Resp(json.dumps({"choices": [{"message": {"content": "ok"},
+                                              "finish_reason": "stop"}],
+                                 "usage": {"prompt_tokens": 1, "completion_tokens": 1}}).encode())
+
+    monkeypatch.setattr(backends.urllib.request, "urlopen", fake_urlopen)
+    return seen
+
+
+def test_the_backend_sends_top_k_and_min_p_as_top_level_keys_only_when_given(monkeypatch):
+    from pipeline.backends import ChatBackend, extra_body
+    seen = _captured_request(monkeypatch)
+    b = ChatBackend("http://x/v1", "m")
+    b.complete([{"role": "user", "content": "hi"}])
+    assert "top_k" not in seen["body"] and "min_p" not in seen["body"]
+    assert "extra_body" not in seen["body"]
+    b.complete([{"role": "user", "content": "hi"}], top_k=20, min_p=0.0)
+    assert seen["body"]["top_k"] == 20 and seen["body"]["min_p"] == 0.0
+    assert "extra_body" not in seen["body"]           # the SDK's name, not a wire field
+    assert extra_body() == {} and extra_body(top_k=5) == {"top_k": 5}
+
+
+def test_the_eval_records_top_k_in_its_sampling_block_and_passes_it_on(tmp_path):
+    from pipeline.backends import ChatBackend, Completion
+    from pipeline.evaluate import Evaluation
+
+    class _Seen(ChatBackend):
+        kw = None
+
+        def complete(self, messages, **kw):  # type: ignore[override]
+            _Seen.kw = kw
+            return Completion(text="```python\nprint(6)\n```", reasoning=None,
+                              prompt_tokens=1, completion_tokens=1, latency_s=0.0,
+                              finish_reason="stop")
+
+    case = make_case(prompt="p", test={"kind": "stdout", "expect_stdout": "6\n"},
+                     category="unobserved")
+    ev = Evaluation(_Seen("http://x/v1", "m"), [case], tmp_path / "r")
+    assert ev.meta("m")["sampling"]["top_k"] is None       # unset: the server's default
+    ev._one(case, 0)
+    assert _Seen.kw["top_k"] is None
+    ev = Evaluation(_Seen("http://x/v1", "m"), [case], tmp_path / "r2", top_k=20)
+    assert ev.meta("m")["sampling"]["top_k"] == 20
+    ev._one(case, 0)
+    assert _Seen.kw["top_k"] == 20
+
+
+def test_nt_eval_takes_top_k_and_defaults_it_to_none():
+    from pipeline.cli import build_parser
+    p = build_parser()
+    assert p.parse_args(["eval"]).top_k is None
+    assert p.parse_args(["eval", "--top-k", "20"]).top_k == 20
