@@ -14,6 +14,30 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-16** — Assess the Qwen training approach against its goal, and plan the signal ladder ([#82](https://github.com/kristerhedfors/lypning/pull/82))
+
+- Add `nemotron/ASSESSMENT.md`: why no run so far could say whether the
+  programme is moving — no positive control was ever run, every adapter was
+  trained at a scale that installs style rather than a boundary, the training
+  side got the leftover of the supply, and the examples that would carry the
+  signal (verified native rewrites of correct-but-refused answers) were never
+  admitted. Nothing spent; no frozen artifact touched.
+- Calibrate `stats.power_curve_clustered` on synthetic pilots: a uniform lift
+  is applied as `min(1.0, p + delta)`, so on a saturated pilot the uniform
+  rows of `nemotron/EVAL2.md` §7 realise a fraction of the nominal lift they
+  are keyed by; the function's `mean_effect` is the column to print. The rule
+  sees a realised +5pp about half the time and a realised +8pp nearly always
+  at N=300, k=16, whatever the shape.
+- Bucket the 643 refused entries of `data/classified.jsonl` by which lever
+  can remove them: 222 engine-addressable, 221 legitimate fallback, 195 this
+  repository working on itself.
+- Propose the S0–S4 signal ladder (three rungs at $0, one at ~$5) and an
+  eight-step plan with owner, cost, decision and stop rule per step; link it
+  from the nemotron README and `nemotron/STATUS.md` §9, and add ledger row S2 to
+  `ORCHESTRATION.md`.
+- The #80 entry cited `EVAL2.md` without its path, which
+  `tests/test_docs.py` reads as a missing file; it now says `nemotron/EVAL2.md`.
+
 **2026-09-16** — Round-02 run report corrected: the eval-2 base arm was blocked, no arm completed ([#81](https://github.com/kristerhedfors/lypning/pull/81))
 
 - Job `6aaa8746` failed at stage `eval2` after 384 of 1,200 base-arm draws:
@@ -35,7 +59,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   rewards scored concurrently; the sequential form ran at ~30 s per draw.
 - Cluster the paired comparison and the power curve by split component, so a
   family spanning source groups is one family and the rule accepts eval-2 v1
-  (18 such families); the corrected power curve is in `EVAL2.md` §7 with the
+  (18 such families); the corrected power curve is in `nemotron/EVAL2.md` §7 with the
   full pilot draw's base rates in §11.
 - Verifier policy v3: a candidate that disagrees with itself across two clean
   oracle runs scores `unstable` instead of aborting the stage.
