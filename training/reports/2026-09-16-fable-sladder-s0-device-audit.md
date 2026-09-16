@@ -268,16 +268,22 @@ says to grade it:
 
 | engine | MATCH | UNSUPPORTED | MISMATCH | coverage |
 |---|---|---|---|---|
-| lypning | 2923 | 3394 | **0** | 46.3% |
-| lypning-l | 4560 | 1757 | **0** | 72.2% |
-| mixture | 6317 | 0 | **0** | 100.0% |
+| lypning | 2923 | 3393 | **0** | 46.3% |
+| lypning-l | 4560 | 1756 | **0** | 72.2% |
+| mixture | 6316 | 0 | **0** | 100.0% |
 
-9,064 programs in the corpus, 6,317 graded and 2,747 skipped; monotone
-violations 0; routing UNSAFE 0, NO-ENGINE 0, accuracy 94.6% ideal.
+9,064 programs in the corpus; monotone violations 0; routing UNSAFE 0,
+NO-ENGINE 0. One entry moves between runs and it is the same one: the
+backtracking benchmark takes about 27 s against a 30 s reference deadline, so it
+is graded in some runs (6,317, UNSUPPORTED 3394/1757) and dropped as "reference
+is not reproducible" in others (6,316, as above). It has never been a MISMATCH
+at one worker. Quoting one run's row, as invariant 3 requires, is why these
+numbers differ by one from a neighbouring run's and not because anything moved.
 
-**Tests.** `uv run --with pytest pytest training/tests -q`: **626 passed, 4
+**Tests.** `uv run --with pytest pytest training/tests -q`: **642 passed, 4
 skipped**, against 603 passed and **1 failed** at `346e59c` before this round —
-the failure is §5's defect and it is gone. The main suite is in §5 too.
+the failure is §5's defect and it is gone. `pytest tests -q`: **8,337 passed,
+591 skipped, 3 xfailed, 20 xpassed**, unchanged.
 
 ## Failures, reflections and next experiment
 
