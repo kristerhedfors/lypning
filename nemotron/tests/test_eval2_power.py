@@ -145,5 +145,5 @@ def test_harness_errored_draws_are_not_pilot_observations():
             {"case_id": "b", "family": "g", "draw": 0, "correct": False, "native": False, "status": "harness-error"}]
     pilot = stats.pilot_from_rows(rows)
     assert "b" not in pilot, "a case with no real draw is absent, not a zero"
-    assert [s for _, s in pilot["a"]["draws"]] == [1]
+    assert pilot["a"]["scores"] == [1]
 
