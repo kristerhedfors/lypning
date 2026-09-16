@@ -28,6 +28,25 @@ losing correctness after step 5 on dev) is the right teacher, and whether
 policy v3 (a self-disagreeing candidate scores as incorrect) stands. No
 model-quality claim is made here beyond "no gain on 7 test cases".
 
+**Correction, 14:52 UTC, after the first version of this report.** The base
+eval-2 arm was **blocked** at 14:50 UTC after 384 of 1,200 draws:
+`engine mismatch: e2-590f99f145c4 test 0`, the CPython oracle correct and the
+engine run timed out at 5 s (observed `[None, "", "", timed_out=True, …]`).
+The job failed at stage `eval2`, uploaded what existed (manifest status
+`failed`, last stage `eval2`), and **no eval-2 arm completed; the SFT and GRPO
+arms never ran.** The case is a CPU-bound float recurrence (`float-recurrence-wrap`,
+N iterations from argv); the reference passed natively at preparation, run
+alone. Two explanations, not yet separated: the engine is slower than CPython
+on tight numeric loops and the model's program is heavier than the reference;
+or 16 concurrent sandboxes on one `cpu-basic` pool host starved the run past
+its 5 s budget, which preparation (sequential) and the light dev/test
+programs would not show. The verifier policy reads a native timeout after a
+correct oracle as an engine fault and stops the stage (`ORCHESTRATION.md`
+ledger, "never teach avoidance of a runtime bug"). What did land of the base
+arm, 384 draws over 96 cases in 87 families: 87.4% correct, 69.8%
+correct-and-native, family macro, in line with the pilot draw (§11). Not a
+number of record: a partial arm, unpaired.
+
 ## Reproduction and authority
 
 - Repository commit `3b0d4f064bd2195aedf17de036a2596a25c47039` on
@@ -173,7 +192,7 @@ Nine GPU attempts on 2026-09-16, in order, each one a fix carried forward:
 | 6 | `6aaa5c1e` | cancelled in GRPO, 95 min | sequential eval could not finish: ~30 s per draw | batched generation, concurrent scoring, k = 4 |
 | 7 | `6aaa7339` | bundles | reused bundles pinned an older verifier hash | prepare fresh; message names the field |
 | 8 | `6aaa73e9` | probe, 75 min | a nondeterministic candidate aborted the stage as "unstable oracle" | policy v3: scores `unstable` |
-| 9 | `6aaa8746` | completed | | |
+| 9 | `6aaa8746` | eval-2 base arm, 384 of 1,200 draws | engine timeout on a CPU-bound candidate under 16-way concurrent scoring, read as an engine fault | open: give each sandbox CPU headroom (fewer sandboxes per host, more hosts) and decide whether a native timeout after a correct oracle is a fault or a `not-native` score with a witness |
 
 Job 6 also showed that a cancelled job runs no EXIT trap; every stage now
 uploads as it ends. The Space's runtime stays in RUNTIME_ERROR ("workload not
@@ -196,6 +215,13 @@ generation pairs chunks, not draws; the SFT references are terse and the
 adapter learns terseness first (mean tokens 297 → 66 by step 15), which is a
 style shift as much as a skill shift; GRPO at lr 1e-6 for 20 steps did not
 move the policy at all on dev.
+
+Before that, the eval-2 arms have to be measurable at all: the next launch
+must (a) run scorings with CPU headroom per sandbox (`sandboxes_per_host`
+4, `max_hosts` 4 for 16 workers, or 4 workers on one host) and (b) settle,
+with Codex, whether an engine timeout on a candidate whose oracle passed
+blocks the arm or scores `not-native` with a witness row; (a) alone may be
+enough, and the witness row is what tells them apart next time.
 
 Next experiment (bounded): before any further SFT, test the
 teacher rather than the student. Take the 26 correct-fallback probe rollouts
