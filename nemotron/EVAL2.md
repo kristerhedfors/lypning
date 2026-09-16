@@ -242,3 +242,11 @@ The power curve on that draw is appended below when it lands, dated. Both banks
 and their evidence snapshots are stored privately in `headforce/lypning-round02-work`
 under `banks/2026-09-16-eval2-v1/`, commit `7b10488bbc7be5cd28ebc901a5ffd16e028c8986`.
 
+The first pilot draw (2026-09-16, run `eval-20260916-044656`, k = 16) reached
+15 of the 64 cases before the account's included provider credits ran out
+(HTTP 402 on 796 of 1,024 calls). On the 228 clean draws: coverage 97.4%
+correct and 96.9% correct-and-native over 12 cases; fallback-control 100% on
+both over 3 cases. The power curve printed from that draw treated the failed
+calls as incorrect draws and is void; the curve is re-run when the full draw
+lands. See `reports/2026-09-16-fable-round02-pilot.md`.
+
