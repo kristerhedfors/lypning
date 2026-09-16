@@ -401,3 +401,17 @@ def test_real_starter_curriculum(tmp_path):
     assert len(bundle["reference_scores"]) == 16
     assert all(s["reward"] > 0 for s in bundle["reference_scores"].values())
     assert t.load_bundle(tmp_path / "real" / "bundle.json", engine) == bundle
+
+
+def test_a_pilot_adapter_is_admitted_on_a_benchmark_eval_and_nowhere_else():
+    """The benchmark is never trained on, so its adapters always come from a pilot."""
+    module = gpu_module()
+    pilot_adapter = {"bundle_digest": "pilot-digest", "purpose": "pilot"}
+    benchmark = {"digest": "bench-digest", "purpose": "benchmark"}
+    pilot = {"digest": "pilot-digest", "purpose": "pilot"}
+    assert module.adapter_lineage_admitted(pilot_adapter, pilot, "eval")
+    assert module.adapter_lineage_admitted(pilot_adapter, pilot, "grpo")
+    assert module.adapter_lineage_admitted(pilot_adapter, benchmark, "eval")
+    assert not module.adapter_lineage_admitted(pilot_adapter, benchmark, "grpo")
+    assert not module.adapter_lineage_admitted(pilot_adapter, {"digest": "other", "purpose": "pilot"}, "eval")
+    assert not module.adapter_lineage_admitted({"bundle_digest": "x", "purpose": "smoke"}, benchmark, "eval")

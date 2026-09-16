@@ -27,6 +27,17 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   cost printed first and never without `--yes`; the smoke job prepares the
   starter through the pool, runs tiny-model SFT and GRPO on a real GPU, emits
   the plan and uploads the round directory to a private artifact repo.
+- Cut and run the first real round: `python -m pipeline.eval2_split` cuts an
+  assembled schema-3 bank by seed into a spent pilot draw, an eval-2 bank and
+  a train bank, assigning whole `split_cases` components, stratifying by
+  population, preferring a train bank that clears the pilot admission floor
+  and exiting 1 on any `eval2_leaks` pair; `nemotron/hf/round02_pilot.sh` is
+  the job-side pilot (banks from the private dataset, `data_loop` review,
+  pilot and benchmark bundles through the pool, base/SFT/probe, GRPO only on
+  an admitted probe, matched test and whole-benchmark evaluations, paired
+  reports, and an upload with a status field on every exit); `launch.py pilot`
+  submits it with `--bank-path`, `--steps`, `--eval-draws` and `--seed` as
+  job environment and refuses a pilot without a bank path.
 - Amend the handoff: gate 6 admits either boundary; the pooled tier's residual
   risks are written down; a pilot still needs the reviewed dataset.
 - GRPO warmup goes through `warmup_steps`: the pinned TRL has no

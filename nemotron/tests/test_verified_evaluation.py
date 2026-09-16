@@ -148,3 +148,4 @@ def test_whole_bank_evaluation_keeps_the_row_schema_across_splits(tmp_path, monk
     assert {r["split_group"] for r in records} == {"g0", "g1", "g2"}
     assert len((tmp_path / "eval.jsonl").read_text().splitlines()) == 6
     assert metrics["correct"] == 1
+

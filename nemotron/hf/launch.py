@@ -1,5 +1,11 @@
 """Submit a round-02 stage to Hugging Face Jobs and follow it. Runs on the operator's machine.
 
+Two stages: `smoke` (round02_smoke.sh, the plumbing on the starter) and `pilot`
+(round02_pilot.sh, the first real round on reviewed banks). A pilot names the
+bank with --bank-path, a directory in the private --work-repo that holds
+eval2.jsonl, train.jsonl and the evidence-*/ snapshots they cite; --steps,
+--eval-draws and --seed travel to the job as environment, as the bank path does.
+
 The job image is the SAME CPython base digest as the verifier Space, so the
 identity handshake's `sys.version` matches by construction. The job clones the
 repository at one commit, then runs the stage script from that clone; nothing
@@ -22,7 +28,10 @@ import time
 #: One digest for the trainer job and the verifier image. Change both together.
 BASE_IMAGE = "python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea"
 REPO_URL = "https://github.com/kristerhedfors/lypning"
-STAGES = {"smoke": "nemotron/hf/round02_smoke.sh"}
+STAGES = {"smoke": "nemotron/hf/round02_smoke.sh", "pilot": "nemotron/hf/round02_pilot.sh"}
+#: The stages that read reviewed banks from the private dataset repo (--bank-path).
+BANKED = ("pilot",)
+DEFAULT_STEPS, DEFAULT_EVAL_DRAWS, DEFAULT_SEED = 20, 16, 1111
 TERMINAL = ("COMPLETED", "ERROR", "CANCELED")
 
 
@@ -31,6 +40,16 @@ def bootstrap(stage, branch, commit):
     return ("set -euo pipefail; apt-get update -qq >/dev/null && apt-get install -y -qq git >/dev/null; "
             "git clone -q --branch %s %s /work/lypning && cd /work/lypning && git checkout -q %s && "
             "bash %s" % (shlex.quote(branch), shlex.quote(REPO_URL), shlex.quote(commit), shlex.quote(STAGES[stage])))
+
+
+def job_env(args):
+    """The job's environment. The smoke keys are fixed; a banked stage adds the bank and its knobs."""
+    env = {"SPACE_REPO": args.space, "SPACE_REV": args.space_revision, "QWEN_REV": args.qwen_revision,
+           "WORK_REPO": args.work_repo}
+    if args.stage in BANKED:
+        env.update({"BANK_PATH": args.bank_path, "STEPS": str(args.steps),
+                    "EVAL_DRAWS": str(args.eval_draws), "SEED": str(args.seed)})
+    return env
 
 
 def private_dataset(api, repo_id):
@@ -66,6 +85,10 @@ def main(argv=None):
     p.add_argument("--space-revision", required=True, help="the Space's 40-character commit")
     p.add_argument("--qwen-revision", required=True, help="approved immutable Qwen3.8-27B commit")
     p.add_argument("--work-repo", required=True, help="private dataset repo for artifacts")
+    p.add_argument("--bank-path", help="pilot: directory in --work-repo holding eval2.jsonl, train.jsonl, evidence-*/")
+    p.add_argument("--steps", type=int, default=DEFAULT_STEPS, help="pilot: SFT and GRPO optimizer steps")
+    p.add_argument("--eval-draws", type=int, default=DEFAULT_EVAL_DRAWS, help="pilot: draws per case on the eval-2 benchmark")
+    p.add_argument("--seed", type=int, default=DEFAULT_SEED, help="pilot: review, preparation and training seed")
     p.add_argument("--flavor", default="a10g-small")
     p.add_argument("--timeout", default="75m")
     p.add_argument("--yes", action="store_true", help="actually submit (billed)")
@@ -75,6 +98,13 @@ def main(argv=None):
         if not re.fullmatch(r"[0-9a-f]{40}", value):
             print("%s must be a 40-character commit" % name, file=sys.stderr)
             return 2
+    if args.stage in BANKED and not (args.bank_path or "").strip("/"):
+        print("%s needs --bank-path: a directory in --work-repo holding eval2.jsonl, train.jsonl and evidence-*/"
+              % args.stage, file=sys.stderr)
+        return 2
+    if min(args.steps, args.eval_draws) <= 0:
+        print("--steps and --eval-draws must be positive", file=sys.stderr)
+        return 2
     token = os.environ.get("HF_TOKEN")
     if not token:
         print("HF_TOKEN is not set", file=sys.stderr)
@@ -89,6 +119,8 @@ def main(argv=None):
             "hourly_usd": round(hardware[args.flavor].unit_cost_usd * (60 if hardware[args.flavor].unit_label == "minute" else 1), 2),
             "branch": args.branch, "commit": args.commit, "space": args.space, "space_revision": args.space_revision,
             "qwen_revision": args.qwen_revision, "work_repo": args.work_repo}
+    if args.stage in BANKED:
+        plan.update({"bank_path": args.bank_path, "steps": args.steps, "eval_draws": args.eval_draws, "seed": args.seed})
     print(json.dumps(plan, indent=2))
     if not args.yes:
         print("dry run: pass --yes to submit", file=sys.stderr)
@@ -98,8 +130,7 @@ def main(argv=None):
         return 2
     job = api.run_job(
         image=BASE_IMAGE, command=["bash", "-c", bootstrap(args.stage, args.branch, args.commit)],
-        env={"SPACE_REPO": args.space, "SPACE_REV": args.space_revision, "QWEN_REV": args.qwen_revision,
-             "WORK_REPO": args.work_repo},
+        env=job_env(args),
         secrets={"HF_TOKEN": token}, flavor=args.flavor, timeout=args.timeout,
         name="lypning-round02-" + args.stage, labels={"lypning-round": "02", "lypning-stage": args.stage})
     print(json.dumps({"job_id": job.id, "url": job.url}))

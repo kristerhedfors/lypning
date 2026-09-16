@@ -72,3 +72,44 @@ def test_bootstrap_quotes_every_operator_word():
     cmd = launch.bootstrap("smoke", "feature; rm -rf /", "c" * 40)
     assert "--branch 'feature; rm -rf /'" in cmd and "checkout -q " + "c" * 40 in cmd
     assert cmd.endswith(launch.STAGES["smoke"]) or cmd.endswith("'" + launch.STAGES["smoke"] + "'")
+
+
+def test_pilot_stage_maps_to_its_script_and_smoke_is_unchanged():
+    assert launch.STAGES["pilot"] == "nemotron/hf/round02_pilot.sh"
+    assert launch.STAGES["smoke"] == "nemotron/hf/round02_smoke.sh"
+    cmd = launch.bootstrap("pilot", "b", "c" * 40)
+    assert cmd.endswith(launch.STAGES["pilot"])
+
+
+def args(stage, **overrides):
+    base = dict(stage=stage, space="o/space", space_revision="a" * 40, qwen_revision="b" * 40,
+                work_repo="o/work", bank_path=None, steps=launch.DEFAULT_STEPS,
+                eval_draws=launch.DEFAULT_EVAL_DRAWS, seed=launch.DEFAULT_SEED)
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def test_smoke_env_carries_only_the_four_original_keys():
+    env = launch.job_env(args("smoke", bank_path="ignored/for/smoke", steps=5))
+    assert env == {"SPACE_REPO": "o/space", "SPACE_REV": "a" * 40, "QWEN_REV": "b" * 40, "WORK_REPO": "o/work"}
+
+
+def test_pilot_env_wires_the_bank_and_its_knobs_as_strings():
+    env = launch.job_env(args("pilot", bank_path="banks/2026-09-16", steps=40, eval_draws=8, seed=2222))
+    assert env == {"SPACE_REPO": "o/space", "SPACE_REV": "a" * 40, "QWEN_REV": "b" * 40, "WORK_REPO": "o/work",
+                   "BANK_PATH": "banks/2026-09-16", "STEPS": "40", "EVAL_DRAWS": "8", "SEED": "2222"}
+    defaults = launch.job_env(args("pilot", bank_path="banks/x"))
+    assert (defaults["STEPS"], defaults["EVAL_DRAWS"], defaults["SEED"]) == ("20", "16", "1111")
+
+
+def test_pilot_without_a_bank_path_is_rejected_before_any_hub_call(monkeypatch, capsys):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    argv = ["pilot", "--branch", "b", "--commit", "c" * 40, "--space", "o/space",
+            "--space-revision", "a" * 40, "--qwen-revision", "b" * 40, "--work-repo", "o/work"]
+    assert launch.main(argv) == 2
+    assert "--bank-path" in capsys.readouterr().err
+    assert launch.main(argv + ["--bank-path", "/"]) == 2
+    # With a bank path the next gate is the token, i.e. the usage checks passed.
+    assert launch.main(argv + ["--bank-path", "banks/x"]) == 2
+    assert "HF_TOKEN" in capsys.readouterr().err
+    assert launch.main(argv + ["--bank-path", "banks/x", "--steps", "0"]) == 2

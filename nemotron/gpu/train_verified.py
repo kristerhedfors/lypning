@@ -77,6 +77,21 @@ def evaluation_cases(bundle, eval_split):
     return [c for c in bundle["cases"] if c["split"] == eval_split]
 
 
+def adapter_lineage_admitted(experiment, bundle, stage):
+    """An adapter belongs to the bundle it was trained on, with one exception.
+
+    A benchmark bundle is never trained on, so the only adapter it can ever
+    meet was trained elsewhere: stage eval on a benchmark accepts an adapter
+    whose own experiment was a pilot, and the eval record keeps that
+    adapter's training bundle digest (`adapter_info["experiment"]`). Every
+    other stage, and every other bundle, keeps the exact-lineage rule.
+    """
+    if experiment.get("bundle_digest") == bundle.get("digest"):
+        return True
+    return (stage == "eval" and bundle.get("purpose") == "benchmark"
+            and experiment.get("purpose") == "pilot")
+
+
 def preflight(args):
     if int(os.environ.get("WORLD_SIZE", "1")) != 1:
         raise TrainingError("this runner supports one process/GPU; do not launch with torchrun")
@@ -119,7 +134,7 @@ def preflight(args):
     if not args.smoke and bundle["limits"]["memory_mb"] == 0 and not args.plan:
         raise TrainingError("memory cap disabled: only --smoke may use this bundle")
     adapter = adapter_identity(args.adapter, args.revision) if args.adapter else None
-    if adapter and adapter["experiment"]["bundle_digest"] != bundle["digest"]:
+    if adapter and not adapter_lineage_admitted(adapter["experiment"], bundle, args.stage):
         raise TrainingError("adapter trained with a different experiment/split")
     if adapter and bool(adapter["experiment"].get("smoke")) != args.smoke:
         raise TrainingError("adapter and model must both be smoke or both be real")
