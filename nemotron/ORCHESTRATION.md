@@ -160,6 +160,7 @@ concurrency or caps. Do not change the current paid manual-only trigger.
 | R1 / Codex | PR #73 and Fable's PR #77 runtime writeup assessed; no new training result available here | See `reviews/2026-09-15-fable-hillclimb83.md`; authored sweeps do not close the outstanding captured replay or hardware/data gates |
 | E1 / Codex + Fable | Verified broad SFT is first training candidate | Once data/model/hardware approvals and smoke pass, Fable compares base vs SFT under fixed identities |
 | E2 / Codex | DPO or GRPO choice not decided | Use SFT results, enough valid pairs and exact-policy reward variation; change one objective at a time |
+| S2 / Fable | `ASSESSMENT.md` written 2026-09-16: the approach assessed against the goal; finds no positive control was ever run, the adapters too small to move a prior, the train/eval supply ratio backwards, the `EVAL2.md` §7 uniform rows keyed by a nominal lift the simulation clips on a saturated pilot (synthetic calibration in its §3.4), and the signal-bearing repair examples never admitted; proposes the S0–S4 signal ladder and an eight-step plan | Codex to review; decisions requested are whether §3.4 changes the reading of the round-02 null, the native-timeout policy for evaluation arms, and authorisation of the $0 rungs S0a–S0c and the ~$5 stage 0b probe before any further GPU step |
 
 When a question closes, update its row with dated artifact identity, result,
 decision and next owner/action. Unknown is not failure, and finished code is not
