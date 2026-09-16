@@ -32,7 +32,7 @@ STAGES = {"smoke": "nemotron/hf/round02_smoke.sh", "pilot": "nemotron/hf/round02
 #: The stages that read reviewed banks from the private dataset repo (--bank-path).
 BANKED = ("pilot",)
 DEFAULT_STEPS, DEFAULT_EVAL_DRAWS, DEFAULT_SEED = 20, 16, 1111
-DEFAULT_EVAL_SEQUENCES, DEFAULT_SCORE_WORKERS = 128, 32
+DEFAULT_EVAL_SEQUENCES, DEFAULT_SCORE_WORKERS = 128, 16
 TERMINAL = ("COMPLETED", "ERROR", "CANCELED")
 
 

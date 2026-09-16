@@ -77,9 +77,12 @@ def test_oracle_failure_and_nondeterminism_abort(case):
     verifier, _ = fake_verifier(case, oracle=result(harness_error="failed setup"))
     with pytest.raises(t.VerificationBlocked, match="harness"):
         verifier.score(case, "pass")
+    # A candidate whose two clean runs disagree is a nondeterministic program:
+    # wrong, with its own status, never a stage abort (POLICY v3, 2026-09-16).
     draws = iter([result(case["tests"][0]["stdout"]), result("b")])
-    with pytest.raises(t.VerificationBlocked, match="unstable"):
-        t.Verifier("/engine", runner=lambda *a, **k: next(draws)).score(case, "pass")
+    score = t.Verifier("/engine", runner=lambda *a, **k: next(draws)).score(case, "pass")
+    assert (score.reward, score.status, score.failed_test, score.correct) == (0.0, "unstable", 0, False)
+    assert t.POLICY == "l-correctness-v3"
     def failed(*args, **kwargs):
         raise subprocess.SubprocessError("preexec failed")
     with pytest.raises(t.VerificationBlocked, match="runner failed"):

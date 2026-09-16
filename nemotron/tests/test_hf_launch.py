@@ -100,7 +100,7 @@ def test_pilot_env_wires_the_bank_and_its_knobs_as_strings():
     env = launch.job_env(args("pilot", bank_path="banks/2026-09-16", steps=40, eval_draws=8, seed=2222))
     assert env == {"SPACE_REPO": "o/space", "SPACE_REV": "a" * 40, "QWEN_REV": "b" * 40, "WORK_REPO": "o/work",
                    "BANK_PATH": "banks/2026-09-16", "STEPS": "40", "EVAL_DRAWS": "8", "SEED": "2222",
-                   "EVAL_SEQUENCES": "128", "SCORE_WORKERS": "32", "BUNDLES_FROM": ""}
+                   "EVAL_SEQUENCES": "128", "SCORE_WORKERS": "16", "BUNDLES_FROM": ""}
     defaults = launch.job_env(args("pilot", bank_path="banks/x"))
     assert (defaults["STEPS"], defaults["EVAL_DRAWS"], defaults["SEED"]) == ("20", "16", "1111")
     reused = launch.job_env(args("pilot", bank_path="banks/x", bundles_from="round-02/6aaa4b2c", eval_sequences=64, score_workers=8))

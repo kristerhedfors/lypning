@@ -30,7 +30,13 @@ SCHEMA = 3
 #: (--eval-split all) and nothing trains on; split_groups still cluster bootstraps.
 PURPOSES = ("smoke", "pilot", "benchmark")
 ADMISSION = {"pilot": validate_pilot, "benchmark": validate_benchmark}
-POLICY = "l-correctness-v2"
+#: v3 (2026-09-16): a candidate program whose two clean oracle runs disagree
+#: scores ``unstable`` (reward 0) instead of aborting the stage. Preparation
+#: runs every reference twice, so the oracle's own stability on each test is
+#: established before any candidate is scored; a disagreement on a candidate
+#: is the program's (set order under hash randomisation, the clock, randomness).
+#: Under v2 one such program ended the probe of job 6aaa73e9 at its first chunk.
+POLICY = "l-correctness-v3"
 SYSTEM = "Write a Python standard-library program. Return exactly one fenced python code block."
 
 
@@ -123,7 +129,10 @@ class Verifier:
             # for byte would abort RL on every ordinary model NameError.
             repeat = self._run(program, test)
             if self._observed(oracle) != self._observed(repeat):
-                raise VerificationBlocked("unstable oracle: %s test %d" % (case["case_id"], i))
+                # The oracle proved stable on this test at preparation (every
+                # reference ran twice); a candidate that disagrees with itself
+                # is a nondeterministic program, scored as wrong (POLICY v3).
+                return Score(0.0, "unstable", total_tests=len(tests), failed_test=i)
         native_count = 0
         refusals = []
         for i, test in enumerate(tests):

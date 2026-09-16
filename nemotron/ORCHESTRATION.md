@@ -62,7 +62,8 @@ writeups; approved private storage transfers data, models and run artifacts.
 | Correct and native | Retain success and diverse already-native controls | Reviewed task → code SFT candidate |
 | Correct with a valid L refusal | Codex produces a faithful supported-subset implementation | Verified repaired SFT candidate; potential compatibility preference pair |
 | Incorrect Python | Codex fixes task behavior first, then checks native support | Correctness repair candidate; keep original failure separately |
-| Native mismatch / broken refusal / unstable oracle / infrastructure failure | Stop grading, preserve witness, fix runtime or verifier, regrade under a new identity | None; never teach avoidance of a runtime bug |
+| Native mismatch / broken refusal / unstable oracle on a reference / infrastructure failure | Stop grading, preserve witness, fix runtime or verifier, regrade under a new identity | None; never teach avoidance of a runtime bug |
+| Candidate program disagrees with itself across two clean runs (`unstable`, policy v3, 2026-09-16) | Score as incorrect, keep the row and completion; the oracle's stability on the test was established at preparation | Wrong-answer view only; never a stage abort |
 | Correct fallback-control | Keep control; do not force an impossible or unsafe native rewrite | Existing fallback-control view |
 | Unknown, truncated, redacted or incomplete contract | Retain evidence and review gap | None until resolved |
 

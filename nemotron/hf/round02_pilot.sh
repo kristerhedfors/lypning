@@ -31,7 +31,7 @@ set -euo pipefail
 STEPS="${STEPS:-20}"
 EVAL_DRAWS="${EVAL_DRAWS:-16}"
 EVAL_SEQUENCES="${EVAL_SEQUENCES:-128}"   # sequences per generate call in evaluation
-SCORE_WORKERS="${SCORE_WORKERS:-32}"      # concurrent verifier scorings (one pool host serves 50)
+SCORE_WORKERS="${SCORE_WORKERS:-16}"      # concurrent verifier scorings (one pool host serves 50)
 BUNDLES_FROM="${BUNDLES_FROM:-}"          # reuse the bundles an earlier job prepared, e.g. round-02/<job>
 SEED="${SEED:-1111}"
 cd "$(dirname "$0")/../.."
