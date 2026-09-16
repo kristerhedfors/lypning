@@ -12,8 +12,9 @@ matched base/SFT controls, multi-input tests and source/family-held-out evaluati
 Start the other-device Claude Code session with
 [START_NEXT_ROUND.md](START_NEXT_ROUND.md); [STATUS.md](STATUS.md) is the
 dated one-page state of the programme: scoreboard, gates, next steps, expected
-movement and whether the instrument can see it; its §10 is the **one home for
-what runs next**, and every other ordering in this tree points at it.
+movement and whether the instrument can see it. **Its §0 is where the programme
+stands in one paragraph and its §10 is the one home for what runs next**; every
+other ordering in this tree points at §10.
 [ASSESSMENT.md](ASSESSMENT.md) (2026-09-16) is Fable's assessment of the approach
 against the goal — why no run so far could say whether the programme is moving,
 and the signal ladder and action plan that would. See

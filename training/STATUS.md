@@ -2,10 +2,43 @@
 
 One page for the operator and the reviewing session: where the numbers stand,
 what is built, what is next, how much the needle can be expected to move, and
-whether the instrument can see it move. Every number carries its run and date
+whether the instrument can see it move. **§0 is where we are in one paragraph
+and §10 is what runs next; everything between them is the evidence for those
+two.** Every number carries its run and date
 (root `CLAUDE.md`, invariant 3); nothing here is a new measurement. Sources are
 the pre-registration, `LADDER.md`, `REVIEW.md`, `AUDIT.md`, the run summaries
 under `runs/`, the reviews under `reviews/` and the round-02 smoke report.
+
+## 0. Where we are, in one paragraph
+
+**Five days and roughly $105 have bought four adapters and no informative
+result, positive or negative.** Every finding so far is about the instrument and
+none is about the model — which is the signature of measuring an effect smaller
+than the noise and answering with more measurement (`ASSESSMENT.md` §2). The
+programme is not blocked on money or on GPUs. It is blocked on four things that
+cost nothing or almost nothing and have never been done: **no positive control
+has ever been run** (stage 0b and stage 1a, about $5 each, defined 2026-09-14
+and skipped both times), **no adapter has been trained at a scale that could
+move a 27B prior** (round-02: 6,251 supervised tokens, 20 steps, one seed),
+**the supply ratio is backwards** (300 cases to the frozen benchmark, 64 to
+training), and **the examples that would carry the signal have never been
+admitted** (ledger row D1, zero throughput). Meanwhile the one lever with a
+non-null return is the engine, and it can address about a third of this
+repository's 643 refused entries — the same third a model could.
+
+**What changed on 2026-09-16, and it is not a result.** The instrument finding
+the assessment rested on was itself mislabelled, and is now fixed in code rather
+than described: the `EVAL2.md` §7 power table keyed its rows by a lift the
+simulation was not shown to deliver, so its conclusion that the rule is blind to
+a uniform few-point effect is **withdrawn**, along with the "more draws, a larger
+bank" prescription that followed from it. No power figure from that curve is
+quotable until rung S0a re-prints it from the private pilot rows, keyed on the
+realised macro the tool now returns. A benchmark eval arm at a k the rule was not
+priced at is now refused outright, so round-02's k=4 arm cannot recur.
+
+**The next step is §10, and its first four rungs cost nothing.** Nothing paid
+runs before the rung below it has been read. The open decisions are
+`ORCHESTRATION.md` ledger rows S2 and S3 and §8 below.
 
 ## 1. The goal, in one sentence and one number
 
@@ -47,7 +80,7 @@ number we want.
 | RL reachability on the refusing tail, k=16 | 84.62% of 52 tier-1 hold-out cases reachable, 42.31% rewardable; train pool 82.38% / 34.72% over 193 | `LADDER.md` stage 0a, 2026-09-14, engine `23684d6c40738fcf`; train-pool row provisional (53 mismatches over 14 cases found in the replay) |
 | Round-02 pipeline on Hugging Face, pooled sandboxes | plumbing complete: 16/16 starter references verified, SFT and GRPO smoke stages sealed, planner ran. **No model-quality number** | job `6aa9c4c35527934177ee6c46`, 2026-09-15, tiny random Qwen config, never the 27B weights (`reports/2026-09-15-fable-round02-smoke.md`) |
 | Round-02 pilot on the 27B weights, task-first path | SFT 20 steps (loss 0.83 → 0.54), step 5 selected; probe 172/200 correct, GRPO admitted, GRPO flat (step 0 kept); dev 7 cases: base 78.6% / 75.0% correct / correct-and-native, SFT 82.1% / 75.0%; test 7 cases: base 85.7% / 57.1%, SFT 82.1% / 57.1%, paired native delta 0.0pp [−10.7, +10.7]. **Eval-2: base arm blocked at 384/1,200 draws by an engine timeout on a CPU-bound candidate under 16-way concurrent scoring (partial base 87.4% / 69.8%); SFT and GRPO arms never ran** | job `6aaa87465527934177ee9f34`, 2026-09-16, engine `2e079e786a655ab6`, policy v3, k = 4 (`reports/2026-09-16-fable-round02-run.md`) |
-| Eval-2 base rate on the training bank (legacy tree), full pilot draw | 87.9% correct, 68.7% correct-and-native, family macro over 64 cases; power at N = 300: concentrated +5pp 97%, uniform +10pp 76%, uniform ≤ +8pp ≤ 20% | run `eval-20260916-063539`, 2026-09-16, k = 16, engine `2e079e786a655ab6` (`EVAL2.md` §7, §11) |
+| Eval-2 base rate on the training bank (legacy tree), full pilot draw | 87.9% correct, 68.7% correct-and-native, family macro over 64 cases. **No power figure from that draw is quotable**: every row of the `EVAL2.md` §7 curve is keyed by a lift the simulation was not shown to deliver, and the uniform reading is withdrawn (2026-09-16). The re-print, keyed on the realised macro, is rung S0a in §10 | run `eval-20260916-063539`, 2026-09-16, k = 16, engine `2e079e786a655ab6` (`EVAL2.md` §7, §11) |
 
 Data side, same date:
 

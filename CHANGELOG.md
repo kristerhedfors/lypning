@@ -55,6 +55,12 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   `training/NEXT_ROUND.md`, `training/START_NEXT_ROUND.md` and `training/ORCHESTRATION.md` point at it and
   keep their mechanism, which for `training/NEXT_ROUND.md` is the launch flags that exist
   nowhere else.
+- `training/STATUS.md` §0 states where the programme stands in one paragraph —
+  five days and about $105 for four adapters and no informative result, and the
+  four cheap things that have never been done — because a reader had to reach §9
+  to find it. Its scoreboard row for the pilot draw no longer quotes power
+  figures from the withdrawn curve; it says instead that none is quotable until
+  rung S0a re-prints it.
 - `training/AUDIT.md` carries the defect as
   `data-integrity/power-table-keyed-by-a-lift-the-simulation-does-not-deliver`,
   with the repro; `training/ORCHESTRATION.md` gains ledger row S3.
