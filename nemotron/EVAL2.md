@@ -210,3 +210,35 @@ is authorised ahead of the pilot dataset (`STATUS.md` §4 step 3 before step 5),
 and that §4 above is the primary-metric freeze `STATUS.md` §6 item 2 asked for.
 Until both are recorded in the decision ledger, this document is a proposal and
 no draw is sampled.
+
+## 11. Bank v1, frozen 2026-09-16
+
+The first eval-2 bank was assembled and frozen on 2026-09-16 from 691
+reverse-prompting candidates (`nt eval2-select`, seed 1111, drawn over tier1 and
+refused outcomes together): 397 proposals kept by the authoring agents, 364
+admitted by `nt eval2-bank` after the lint, the twice-run reference, the
+independent solution (364 of 364 agreeing) and the population label from the
+engine (`lypning-l` `a23b3083…`, fingerprint `2e079e786a655ab6`), 294 dropped by
+the authors (self-check harnesses, REPL scratch lines, environment-specific and
+nondeterministic programs), 20 dropped as mixed native/refused across inputs,
+one engine mismatch filed as a witness (`min()` on an empty sequence: the engine
+words the error differently from CPython) and never as a case.
+
+Sixteen expected-output coincidences between the two banks (integer square
+root, SHA-256 and float division families) were unified into shared source
+groups before the cut, so kin travel together. The cut (`pipeline.eval2_split`,
+seed 1111, eval-2 size 300, no separate pilot draw) is leak-free on all five
+rules:
+
+| Bank | Cases | Families | Coverage | Fallback-control | sha256 |
+|---|---|---|---|---|---|
+| eval-2 v1 | 300 | 248 | 241 | 59 | `46cff1d740c93b596c80095233818781629e8a9766545410febdf58eca36d37b` |
+| train v1 | 64 | 49 | 51 | 13 | `31edda65c2c71dda7e0f46038bf30da283bf10564855a56b866076635bfee9ff` |
+
+Supply capped the bank at the 300 floor, so the pilot draw of §7 is the training
+bank itself, drawn on the legacy tree at k = 16: it is spent for eval-2 (no
+case in it can enter eval-2) and it is the only training material of round-02.
+The power curve on that draw is appended below when it lands, dated. Both banks
+and their evidence snapshots are stored privately in `headforce/lypning-round02-work`
+under `banks/2026-09-16-eval2-v1/`, commit `7b10488bbc7be5cd28ebc901a5ffd16e028c8986`.
+

@@ -51,7 +51,7 @@ Data side, same date:
 
 | Asset | Count | Status |
 |---|---|---|
-| Admitted training cases on the task-first path | **0** | `ORCHESTRATION.md` D1: "no new training examples admitted" |
+| Admitted training cases on the task-first path | **64** (train v1, 49 families, 13 fallback-control), reviewed by authoring and solving agents, not by Codex | frozen 2026-09-16, `EVAL2.md` §11; the first eval-2 bank of 300 cases froze the same day |
 | Starter smoke curriculum | 16 families | smoke fixture by declaration; the pilot floor is 18 and `validate_pilot` rejects the starter by name |
 | Reviewed project task catalog | 12 tasks | collection fixture, not a split |
 | Question proposals from the 2026-09-15 pilots | 63 structurally valid of 120 requested (`none` arm); 0 of 120 (`medium` arm, all length-truncated) | unreviewed; four sampled proposals already found contradictory (`reviews/2026-09-15-question-pilots.md`) |
