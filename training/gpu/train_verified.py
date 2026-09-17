@@ -298,6 +298,7 @@ def run(args, bundle, adapter_info):
         metrics, records = evaluate(model, tok, train_cases, verifier, policy,
             args.output / "probe-rollouts.jsonl", 0, torch,
             seed=args.seed, draws=args.generations, return_records=True,
+            witness_path=args.output / "eval-blocked-witnesses.jsonl",
             sequences_per_call=args.eval_sequences, score_workers=args.score_workers)
         contract = probe_contract(bundle, args.revision, adapter_info, policy,
                                   args.seed, args.generations, args.smoke)
@@ -308,6 +309,7 @@ def run(args, bundle, adapter_info):
         return evaluate(model, tok, dev_cases, verifier, policy,
                         args.output / "evaluations.jsonl", step, torch,
                         seed=args.seed, draws=1 if args.greedy else args.eval_draws,
+                        witness_path=args.output / "eval-blocked-witnesses.jsonl",
                         sequences_per_call=args.eval_sequences, score_workers=args.score_workers)
     baseline = measure(0)
     if args.stage == "eval":
