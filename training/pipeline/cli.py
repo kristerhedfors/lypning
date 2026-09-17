@@ -1901,6 +1901,10 @@ def cmd_levers(args: argparse.Namespace) -> int:
         # carries, for the same reason.
         from . import refusals as _refusals
         notes.append(_refusals.HELD_OUT_BANNER)
+        if args.rank:
+            print("levers: refusing --rank on draw/held-out rows; use --vector for "
+                  "descriptive by-family counts", file=sys.stderr)
+            return 2
 
     if args.json:
         print(json.dumps(result, indent=2, ensure_ascii=False, default=sorted))
@@ -1916,6 +1920,10 @@ def cmd_levers(args: argparse.Namespace) -> int:
         print(levers.declared_report(levers.declared_rows(result, provenance=args.provenance)))
     elif args.undeclared:
         print(levers.undeclared_report(levers.undeclared_rows(result)))
+    elif args.vector:
+        print(levers.vector_report(levers.vector(result),
+                                   independence=result["independence"],
+                                   limit=args.limit))
     elif args.rank:
         print(levers.rank_report(levers.rank(result, bucket=args.bucket),
                                  bucket=args.bucket,
@@ -1935,6 +1943,24 @@ def cmd_levers(args: argparse.Namespace) -> int:
     if args.strict:
         failed = failed or bool(result["undeclared"]) or bool(result["declared_unused"])
     return 1 if failed else 0
+
+
+def cmd_probe_vector(args: argparse.Namespace) -> int:
+    """S0c: a read-only per-case native-status comparison."""
+    from . import probe_vector
+    try:
+        result = probe_vector.compare(read_jsonl(Path(args.probe)),
+                                      read_jsonl(Path(args.base)))
+    except (OSError, ValueError) as exc:
+        print("probe-vector: %s" % exc, file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        print(probe_vector.render(result))
+    # The completed base pilot may include dev/test cases the train-only probe
+    # deliberately lacks. A probe case with no base comparison is the hole.
+    return 1 if result["probe_only"] else 0
 
 
 def cmd_show(args: argparse.Namespace) -> int:
@@ -2291,7 +2317,11 @@ def build_parser() -> argparse.ArgumentParser:
     lv.add_argument("--rows", help="draw rows already written by `nt eval2-rows`")
     lv.add_argument("--replay", help="the legality rows to join them with (with --rows)")
     lv.add_argument("--status", help="keep only draws with this status, e.g. correct-fallback")
-    lv.add_argument("--rank", action="store_true", help="the build order: independent x units")
+    lv_order = lv.add_mutually_exclusive_group()
+    lv_order.add_argument("--rank", action="store_true",
+                          help="the build order: independent x units")
+    lv_order.add_argument("--vector", action="store_true",
+                          help="descriptive by-family counts, safe for held-out draw rows")
     lv.add_argument("--bucket", default="engine-addressable", help="which bucket to rank")
     lv.add_argument("--limit", type=int, default=20, help="rows to show (0 for all)")
     lv.add_argument("--declared", action="store_true", help="every judgement call, for review")
@@ -2304,6 +2334,12 @@ def build_parser() -> argparse.ArgumentParser:
     lv.add_argument("--strict", action="store_true",
                     help="exit 1 on an unreviewed family, an unused declaration or a delta")
     lv.set_defaults(fn=cmd_levers)
+
+    pv = sub.add_parser("probe-vector", help="S0c: probe vs base native status per train case")
+    pv.add_argument("--probe", required=True, help="probe/probe-rollouts.jsonl")
+    pv.add_argument("--base", required=True, help="completed base-pilot rows JSONL")
+    pv.add_argument("--json", action="store_true", help="machine-readable full table")
+    pv.set_defaults(fn=cmd_probe_vector)
 
     sh = sub.add_parser("show", help="print the programs a run produced")
     sh.add_argument("run_id"); sh.add_argument("--case"); sh.add_argument("--limit", type=int, default=5)

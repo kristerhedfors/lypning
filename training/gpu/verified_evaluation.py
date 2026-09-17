@@ -148,10 +148,25 @@ def evaluate(model, tokenizer, cases, verifier, policy, output, step, torch,
                         program = None if truncated else program_from_completion(completion)
                         pending.append((case, draw, tail, completion, truncated, program))
                 workers = max(1, min(int(score_workers), len(pending)))
+                # Do not let one blocked score erase every successful row in
+                # the same generated chunk. All work is still awaited and the
+                # arm still aborts with the original exception; successful
+                # siblings are durable evidence, not a completed arm.
+                failure = None
                 with ThreadPoolExecutor(max_workers=workers) as pool:
-                    scores = list(pool.map(blocked_witness(verifier, witness_path, step),
-                                           pending))
+                    futures = [pool.submit(blocked_witness(verifier, witness_path, step), item)
+                               for item in pending]
+                    scores = []
+                    for future in futures:
+                        try:
+                            scores.append(future.result())
+                        except Exception as exc:
+                            scores.append(None)
+                            if failure is None:
+                                failure = exc
                 for (case, draw, tail, completion, truncated, program), score in zip(pending, scores):
+                    if score is None:
+                        continue
                     row = dict(asdict(score), step=step, case_id=case["case_id"],
                         family=case["family"], population=case["population"],
                         split_group=case.get("split_group", case["family"]),
@@ -160,6 +175,8 @@ def evaluate(model, tokenizer, cases, verifier, policy, output, step, torch,
                         correct=score.correct, native=score.native)
                     records.append(row)
                     append_jsonl(output, row)
+                if failure is not None:
+                    raise failure
     finally:
         model.generation_config = old_generation
         model.config.text_config.use_cache = old_cache

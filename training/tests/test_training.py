@@ -222,9 +222,15 @@ def test_gpu_preflight_no_torch_and_hard_split_gates(tmp_path, monkeypatch):
     gpu = gpu_module()
     args = gpu.parser().parse_args(["sft", "--bundle", "bundle.json", "--engine", "engine",
         "--output", str(tmp_path / "run"), "--revision", "a" * 40, "--plan"])
-    bundle = {"digest": "locked", "purpose": "pilot", "limits": {"memory_mb": 1024}}
+    bundle = {"digest": "locked", "purpose": "pilot", "limits": {"memory_mb": 1024},
+              "cases": [{"case_id": str(i), "family": "f", "split": "train"}
+                        for i in range(1000)]}
     monkeypatch.setattr(gpu, "load_bundle", lambda *a: bundle)
     assert gpu.preflight(args) == (bundle, None)
+    bundle["cases"].pop()
+    with pytest.raises(t.TrainingError, match="at least 1000 train cases"):
+        gpu.preflight(args)
+    bundle["cases"].append({"case_id": "999", "family": "f", "split": "train"})
     args.eval_split = "test"
     with pytest.raises(t.TrainingError, match="test split"):
         gpu.preflight(args)

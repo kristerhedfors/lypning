@@ -65,10 +65,11 @@ ENGINE_ADDRESSABLE = "engine-addressable"
 OTHER = "other"
 BUCKETS = (SELF_REFERENTIAL, LEGITIMATE_FALLBACK, ENGINE_ADDRESSABLE, OTHER)
 
-#: Bumped whenever a bucket's MEANING changes, the way `refusals.GRADER` is.
+#: Bumped whenever a bucket's meaning or a reviewed declaration verdict changes,
+#: the way `refusals.GRADER` is.
 #: Every result carries it and `compare` refuses a pair that disagrees, so two
 #: tables can never be read against each other across a redefinition.
-RULE = 1
+RULE = 2
 
 #: Where a declaration came from. `S4` means the family is named in
 #: `ASSESSMENT.md` §4's own per-bucket kind list, so the declaration transcribes
@@ -87,10 +88,10 @@ _RE_NAMED_GROUP = "re: named group (?P<name>...)"
 # --------------------------------------------------------------------------
 # The declared table: the part that is NOT derivable.
 #
-# One row per family key, `(family, bucket, provenance, why)`. Ordered by
-# bucket then by the entries it decides on this tree, so a reviewer reads the
-# heavy rows first. `why` is one line and answers only "why this bucket", never
-# "what this construct is".
+# One row per family key, `(family, bucket, provenance, why)`. Historical review
+# groups stay in their original order so rule changes have a legible diff; the
+# bucket field, not physical location, is authoritative. `why` is one line and
+# answers only "why this bucket", never "what this construct is".
 #
 # The honest limit this table exists to make visible: nothing in a refusal
 # record distinguishes "no reimplementation may serve this" from "this engine
@@ -163,15 +164,15 @@ DECLARED: Tuple[Tuple[str, str, str, str], ...] = (
      "produces CPython bytecode, which is CPython's own compiler"),
     ("builtin: __import__", LEGITIMATE_FALLBACK, NEW_HERE,
      "the import machinery the engine deliberately does not have"),
-    ("builtin: getattr", LEGITIMATE_FALLBACK, NEW_HERE,
-     "attribute lookup by computed name reaches the whole object model"),
+    ("builtin: getattr", ENGINE_ADDRESSABLE, NEW_HERE,
+     "computed attribute lookup is deterministic over values the engine already holds"),
     ("builtin: hash", LEGITIMATE_FALLBACK, NEW_HERE,
      "CPython defines the value, and it is randomised per process"),
-    ("builtin: dir", LEGITIMATE_FALLBACK, NEW_HERE,
-     "enumerates CPython's own object model"),
+    ("builtin: dir", ENGINE_ADDRESSABLE, NEW_HERE,
+     "introspection over the engine's own values is deterministic"),
 
-    ("builtin: iter(callable, sentinel)", LEGITIMATE_FALLBACK, NEW_HERE,
-     "the two-argument form drives an arbitrary callable to exhaustion"),
+    ("builtin: iter(callable, sentinel)", ENGINE_ADDRESSABLE, NEW_HERE,
+     "a deterministic language protocol with a native equivalent"),
     ("module-attr: os.system", LEGITIMATE_FALLBACK, NEW_HERE,
      "spawns a shell"),
     ("module-attr: os.pipe", LEGITIMATE_FALLBACK, NEW_HERE,
@@ -185,10 +186,10 @@ DECLARED: Tuple[Tuple[str, str, str, str], ...] = (
      "the engine's own detail says the order is not reproducible"),
     ("pathlib: PosixPath.glob", LEGITIMATE_FALLBACK, NEW_HERE,
      "the glob-order argument the engine's closed list already makes for glob()"),
-    ("module-attr: random.Random", LEGITIMATE_FALLBACK, NEW_HERE,
-     "a stream CPython seeds from the OS, as the closed random kind already says"),
-    ("module-attr: random.sample", LEGITIMATE_FALLBACK, NEW_HERE,
-     "a stream CPython seeds from the OS, as the closed random kind already says"),
+    ("module-attr: random.Random", ENGINE_ADDRESSABLE, NEW_HERE,
+     "the captured uses are explicitly seeded deterministic MT19937 streams"),
+    ("module-attr: random.sample", ENGINE_ADDRESSABLE, NEW_HERE,
+     "the captured uses seed the stream before this deterministic selection"),
     ("module-attr: sys.stdin.buffer", LEGITIMATE_FALLBACK, NEW_HERE,
      "the raw byte stream under the text layer, owned by the host's I/O stack"),
     ("module-attr: sys.stdout.buffer", LEGITIMATE_FALLBACK, NEW_HERE,
@@ -206,10 +207,10 @@ DECLARED: Tuple[Tuple[str, str, str, str], ...] = (
      LEGITIMATE_FALLBACK, NEW_HERE,
      "CPython's own conversion limit and the exact ValueError it raises"),
     ("bigint: an integer past 64 bits where this engine needs a machine word",
-     LEGITIMATE_FALLBACK, NEW_HERE,
-     "arbitrary precision under a machine-word engine; a boundary that has moved once"),
-    ("bigint: math.factorial() past 20!", LEGITIMATE_FALLBACK, NEW_HERE,
-     "arbitrary precision under a machine-word engine; a boundary that has moved once"),
+     ENGINE_ADDRESSABLE, NEW_HERE,
+     "arbitrary precision is an engine capability and this boundary has already moved once"),
+    ("bigint: math.factorial() past 20!", ENGINE_ADDRESSABLE, NEW_HERE,
+     "pure arbitrary-precision arithmetic over an explicit value"),
 
     ("float-sum: sum() over floats where CPython 3.11, 3.12 and 3.14 round differently",
      LEGITIMATE_FALLBACK, NEW_HERE,
@@ -226,10 +227,10 @@ DECLARED: Tuple[Tuple[str, str, str, str], ...] = (
     ("repr: repr() of a method_descriptor", LEGITIMATE_FALLBACK, NEW_HERE,
      "the text names CPython's own object model (no address: that is the bound form)"),
     ("dunder-attr: type.__qualname__, which is part of Python's data model",
-     LEGITIMATE_FALLBACK, NEW_HERE,
-     "the engine's own detail says the data model owns it"),
-    ("method: .__qualname__()", LEGITIMATE_FALLBACK, NEW_HERE,
-     "reaches CPython's data model through a computed attribute"),
+     ENGINE_ADDRESSABLE, NEW_HERE,
+     "a deterministic attribute of a type the engine models"),
+    ("method: .__qualname__()", ENGINE_ADDRESSABLE, NEW_HERE,
+     "a deterministic attribute of a value the engine models"),
     ("mkdir: os.mkdir() with a mode argument", LEGITIMATE_FALLBACK, NEW_HERE,
      "the resulting mode depends on the process umask"),
     ("csv: a row from a file that has been written since it was opened",
@@ -239,11 +240,11 @@ DECLARED: Tuple[Tuple[str, str, str, str], ...] = (
      LEGITIMATE_FALLBACK, NEW_HERE,
      "the engine's own detail says the spelling is CPython-version-dependent"),
     ("re: bad character range",
-     LEGITIMATE_FALLBACK, NEW_HERE,
-     "the observable is CPython's own error text for a pattern it rejects"),
+     ENGINE_ADDRESSABLE, NEW_HERE,
+     "a deterministic parser rejection the engine can report on its regex surface"),
     ("re: nothing to repeat",
-     LEGITIMATE_FALLBACK, NEW_HERE,
-     "the observable is CPython's own error text for a pattern it rejects"),
+     ENGINE_ADDRESSABLE, NEW_HERE,
+     "a deterministic parser rejection the engine can report on its regex surface"),
     ("base64: b64decode() over data carrying an alphabet character after the padding that closes a quad",
      LEGITIMATE_FALLBACK, NEW_HERE,
      "the observable is binascii's own acceptance of malformed input"),
@@ -256,12 +257,12 @@ DECLARED: Tuple[Tuple[str, str, str, str], ...] = (
      "the engine's own detail says every rejection is a binascii message it does not write"),
     ("base64: base64.b64encode() over a str", LEGITIMATE_FALLBACK, NEW_HERE,
      "the observable is the exact TypeError CPython raises"),
-    ("str-method: str.casefold() of U+00B5", LEGITIMATE_FALLBACK, NEW_HERE,
-     "a full-Unicode case-folding table, which the repr-unicode kind is already closed for"),
+    ("str-method: str.casefold() of U+00B5", ENGINE_ADDRESSABLE, NEW_HERE,
+     "a static Unicode table, the same kind of table as the Unicode regex surface"),
     ("type: type() of a RegexFlag", LEGITIMATE_FALLBACK, NEW_HERE,
      "CPython spells the flag repr version-dependently, as the `~` row already says"),
-    ("argument: keyword strict", LEGITIMATE_FALLBACK, NEW_HERE,
-     "selects a CPython-owned strict mode whose rejections are its own messages"),
+    ("argument: keyword strict", ENGINE_ADDRESSABLE, NEW_HERE,
+     "a deterministic builtin call shape over explicit inputs"),
 
     # ---- engine-addressable: a capability the engine could serve ------------
     ("class: class definition", ENGINE_ADDRESSABLE, FROM_SECTION_4,
@@ -909,6 +910,30 @@ def rank_report(rows: Sequence[Dict[str, Any]], *, bucket: str, independence: st
         lines.append("%-50s %6d %6d %6d %6d %7s %s"
                      % (row["family"][:50], row["units"], row["programs"],
                         row["independent"], row["score"], oracle, row["basis"]))
+    if limit and len(rows) > limit:
+        lines.append("... %d more" % (len(rows) - limit))
+    return "\n".join(lines)
+
+
+def vector(result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """A descriptive family vector: stable labels and counts, never a build order."""
+    order = {name: i for i, name in enumerate(BUCKETS)}
+    return sorted(result["families"], key=lambda row: (order[row["bucket"]], row["family"]))
+
+
+def vector_report(rows: Sequence[Dict[str, Any]], *, independence: str,
+                  limit: int = 0) -> str:
+    """Render family-level evidence without a steering score or priority order."""
+    shown = rows[:limit] if limit else rows
+    lines = ["descriptive refusal vector (independence: %s)" % independence,
+             "families are grouped by reviewed bucket and sorted by name; this is not a rank",
+             "or a build order.", "",
+             "%-22s %-48s %6s %6s %s"
+             % ("bucket", "family", "units", "indep", "basis")]
+    for row in shown:
+        lines.append("%-22s %-48s %6d %6d %s"
+                     % (row["bucket"], row["family"][:48], row["units"],
+                        row["independent"], row["basis"]))
     if limit and len(rows) > limit:
         lines.append("... %d more" % (len(rows) - limit))
     return "\n".join(lines)

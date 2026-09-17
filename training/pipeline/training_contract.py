@@ -19,6 +19,11 @@ CONTRACT_VERSION = 1
 #: pilot spent an arm proving, so the two disagree by construction and the
 #: disagreement has to be caught somewhere that costs nothing. `preflight`.
 PROTOCOL_EVAL_DRAWS = 16
+#: S4's minimum evidence dose, accepted from `ASSESSMENT.md` section 6 on
+#: 2026-09-17. These are training gates, not claims about model quality.
+MIN_TRAIN_CASES = 1000
+MIN_SUPERVISED_TOKENS = 50_000
+PROTOCOL_TRAIN_SEEDS = (1111, 2222, 3333)
 GPU_VERSIONS = {"torch": "2.9.1", "transformers": "5.17.0", "peft": "0.20.0",
                 "accelerate": "1.15.0", "huggingface-hub": "1.31.0", "safetensors": "0.8.0",
                 "trl": "1.13.0", "datasets": "4.7.0"}

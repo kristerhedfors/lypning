@@ -225,6 +225,33 @@ def test_a_blocked_evaluation_preserves_the_program_and_still_aborts(tmp_path, m
     assert model.training and model.is_gradient_checkpointing and torch.state == 123
 
 
+def test_a_blocked_draw_keeps_successful_siblings_but_the_arm_still_aborts(tmp_path, monkeypatch):
+    """Chunk durability is not arm completion: keep successes, re-raise the block."""
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(GenerationConfig=SimpleNamespace))
+    ev, torch = load_evaluation(), FakeTorch()
+    model = Model(torch, [1, 99])
+    from pipeline.training_types import VerificationBlocked
+
+    blocked = VerificationBlocked("native timeout after correct oracle")
+
+    def score(case, program):
+        if case["case_id"] == "blocked":
+            raise blocked
+        return Score(1, "correct-native", 3, 3)
+
+    cases = [dict(case_id="blocked", family="f0", task="t0", population="coverage"),
+             dict(case_id="kept", family="f1", task="t1", population="coverage")]
+    output = tmp_path / "eval.jsonl"
+    witness = tmp_path / "witness.jsonl"
+    with pytest.raises(VerificationBlocked) as caught:
+        ev.evaluate(model, Tokenizer(), cases, SimpleNamespace(score=score), decoding(10),
+                    output, 0, torch, draws=1, witness_path=witness, score_workers=2)
+    assert caught.value is blocked
+    rows = [json.loads(line) for line in output.read_text().splitlines()]
+    assert [row["case_id"] for row in rows] == ["kept"]
+    assert json.loads(witness.read_text())["case_id"] == "blocked"
+
+
 def test_a_witnessless_evaluation_behaves_exactly_as_before(tmp_path, monkeypatch):
     """No witness path, no new file, same raise — the default is unchanged."""
     monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(GenerationConfig=SimpleNamespace))

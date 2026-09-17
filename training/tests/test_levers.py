@@ -27,11 +27,11 @@ ASSESSMENT = os.path.join(ROOT, "ASSESSMENT.md")
 SOURCE = os.path.join(ROOT, "pipeline", "levers.py")
 
 #: The reviewed disagreement between this table and `ASSESSMENT.md` §4, as
-#: measured on this tree on 2026-09-16 and recorded in the round report of the
-#: same date. §4 bucketed by judgement per kind and could not be re-derived from
+#: measured on this tree on 2026-09-17 after Codex reviewed the S-ladder audit.
+#: §4 bucketed by judgement per kind and could not be re-derived from
 #: its prose; this table decides 193 entries mechanically (111 own-package, 73
 #: on the engine's closed list, 9 not stdlib) and 450 through `DECLARED`, and it
-#: lands 41 more entries in the fallback bucket and 36 fewer in the
+#: lands 21 more entries in the fallback bucket and 16 fewer in the
 #: engine-addressable one. Every one of the 26 families §4 itemises reproduces
 #: unit for unit in §4's own bucket; the whole disagreement lives inside the 235
 #: entries §4 counted but never named. The test does NOT demand agreement — it demands that
@@ -40,8 +40,8 @@ SOURCE = os.path.join(ROOT, "pipeline", "levers.py")
 #: the point.
 SECTION_4_DELTA = {
     "self-referential": 0,
-    "legitimate-fallback": +41,
-    "engine-addressable": -36,
+    "legitimate-fallback": +21,
+    "engine-addressable": -16,
     "other": -5,
 }
 
@@ -50,8 +50,8 @@ SECTION_4_DELTA = {
 #: buckets, nor a `new` row relabelled `s4`; this can.
 SECTION_4_COMPOSITION = {
     "self-referential": (13, 3, 9),
-    "legitimate-fallback": (87, 5, 54),
-    "engine-addressable": (59, 14, 45),
+    "legitimate-fallback": (74, 5, 41),
+    "engine-addressable": (72, 14, 58),
     "other": (0, 0, 0),
 }
 
@@ -615,3 +615,14 @@ def test_a_draw_table_carries_the_held_out_banner(tmp_path, capsys):
     assert code == 0
     assert "HELD-OUT SET" in out.out
     assert "1 carried a refusal" in out.out
+
+    code, out = _run_cli(["levers", "--rows", str(rows), "--replay", str(replay),
+                          "--status", "correct-fallback", "--rank"], capsys)
+    assert code == 2
+    assert "refusing --rank" in out.err and "--vector" in out.err
+
+    code, out = _run_cli(["levers", "--rows", str(rows), "--replay", str(replay),
+                          "--status", "correct-fallback", "--vector"], capsys)
+    assert code == 0
+    assert "descriptive refusal vector" in out.out
+    assert "not a rank" in out.out and "score" not in out.out

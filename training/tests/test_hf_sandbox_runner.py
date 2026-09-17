@@ -216,6 +216,25 @@ def test_the_space_must_sit_at_the_pinned_commit_before_any_host_is_used(monkeyp
     assert hf_sandbox_runner.pool_name(REVISION, "") == "lypning-verifier-" + REVISION[:12]
 
 
+def test_pool_density_and_host_ceiling_are_explicit_and_validated(monkeypatch):
+    import sys
+    class FakeSandboxPool:
+        def __init__(self, **kw):
+            self.kw = kw
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(SandboxPool=FakeSandboxPool))
+    monkeypatch.setenv("NTX_POOL_SANDBOXES_PER_HOST", "4")
+    monkeypatch.setenv("NTX_POOL_MAX_HOSTS", "4")
+    pool = HfSandboxPoolRunner(IMAGE, REVISION, BUNDLE, check=False,
+                               space_sha=lambda: REVISION).pool()
+    assert pool.kw["sandboxes_per_host"] == 4 and pool.kw["max_hosts"] == 4
+    for key, value in (("NTX_POOL_SANDBOXES_PER_HOST", "0"),
+                       ("NTX_POOL_MAX_HOSTS", "many")):
+        monkeypatch.setenv(key, value)
+        with pytest.raises(TrainingError, match="positive integer"):
+            HfSandboxPoolRunner(IMAGE, REVISION, BUNDLE, check=False, pool=object())
+        monkeypatch.setenv(key, "4")
+
+
 def test_execution_contract_round_trips_through_validation():
     assert execution_contract("docker", None) == {"kind": "local-reviewed-smoke"}
     hf = execution_contract("hf-sandbox-pool", IMAGE, REVISION)
