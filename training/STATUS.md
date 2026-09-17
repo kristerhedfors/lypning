@@ -48,18 +48,23 @@ the declaration review is closed under rule 2, real adapter dosage floors are
 gates, and the verifier Space now has a content-free health mode. Fable's next
 session is only the private-artifact S0a–S0c read in `START_NEXT_ROUND.md`.
 
-**Codex review, 2026-09-17 (second, of the S0-blocked report):** the round is
-still unrun, on a third clone that holds none of its inputs; the guards and the
-document corrections are accepted, and rung S0b is re-assigned. Three findings
-the report did not have. The vacuous-read guards closed four paths, not five —
+**Codex review, 2026-09-17 (second, of the S0-blocked report).** Two sessions
+reviewed it independently and agreed on the diagnosis; this is the combined
+ruling. The round is still unrun, on a third clone holding none of its inputs,
+and no rung is answered. The guards and the document corrections are accepted.
+Four findings the report did not have. The guards closed four paths, not five —
 `levers` could still print a full vector at exit 0 over two empty files, and now
-exits 1 whenever no record backs the vector. S0b's `--run` form manufactures its
-own population, so the rung reads the frozen rows instead, and a rebuild at the
-pilot's fingerprint is not a prerequisite. The token floor's plan-time blindness
-is real but its prescribed substitute was wrong in its units; `--plan` now
-prints a byte-derived upper bound instead. A banked launch is also refused above
-four sandboxes per host, which `16/16/1` was not.
-`reviews/2026-09-17-codex-s0-guards-and-engine-identity.md`.
+exits 1 whenever no record backs the vector. S0b's `--run` form re-derived the
+historical population and printed no engine identity, so the rung now freezes
+status and family to the pilot rows, uses the replay only for refusal kinds,
+pins the explicit binary by its recorded SHA-256 and requires exactly 171
+matching draws. The token floor's plan-time blindness is real but its
+prescribed substitute was wrong in its units; `--plan` now refuses a schedule
+whose byte-derived upper bound is already below the floor, while the exact count
+stays in the stage. And a banked launch is refused above four sandboxes per host
+and above four hosts, which `16/16/1` was not.
+`reviews/2026-09-17-codex-s0-guards-and-engine-identity.md` and
+`reviews/2026-09-17-fable-s0-independent-assessment.md`.
 
 ## 1. The goal, in one sentence and one number
 
@@ -378,7 +383,7 @@ sequence is the problem §3.7 of that document names. In one line each:
 | rung | what it measures | cost | state, 2026-09-17 |
 |---|---|---|---|
 | S0a | `EVAL2.md` §7 re-printed from the real pilot rows, keyed on the realised macro lift | $0 | exact command assigned to Fable in `START_NEXT_ROUND.md`; private read still owed — attempted 2026-09-17 on a clone without the rows, exit 1 |
-| S0b | the by-kind refusal vector of the 171 correct-but-fallback pilot draws | $0 | rule 2 reviewed; `--rank` is refused on held-out draws. **Re-assigned 2026-09-17** to the frozen-rows `--rows`/`--replay` form: `--run` replays through the local binary and re-derives `native`, hence the population, so it manufactures its own denominator. A rebuild at the pilot's identity is explicitly **not** a prerequisite — the fingerprint folds in a core `lypning` sha no document records. Whatever identity grades the vector must be printed beside it, and no re-derived count may be called 171 |
+| S0b | the by-kind refusal vector of the 171 correct-but-fallback pilot draws | $0 | rule 2 reviewed; `--rank` is refused on held-out draws. **Re-assigned 2026-09-17**, because `--run` replayed through the local binary and re-derived `native`, hence the population, so it manufactured its own denominator. The corrected command freezes status and family to the pilot rows, uses the replay only for refusal kinds, pins the explicit historical binary by its recorded SHA-256 and requires exactly 171 draws; a partial replay prints no vector. The composite *fingerprint* of that build is not reproducible and is deliberately not a prerequisite |
 | S0c | the round-02 probe rollouts by native status, per train case | $0 | private artifact and comparison contract named in `START_NEXT_ROUND.md`; read still owed. Attempted 2026-09-17 without the artifacts: it printed a zeros table at exit 0, and now exits 2 naming the absent path, or 1 on a present-but-empty probe |
 | S1 | stage 0b on the training bank: bare vs `--system-file subset-spec.md`, k=16 | ~$5 | not started; the first positive control the programme would have |
 | S2 | the rewritable fraction: verified native rewrites of the fallback draws | tokens | not started; ledger row D1 |
@@ -412,3 +417,6 @@ certain failure, and the exact count is taken in `run()`. Ruled in
 `reviews/2026-09-17-codex-s0-guards-and-engine-identity.md` §D3, which also
 records why the exact floor stays where it is.
 `training/tests/test_training.py::test_the_supervised_token_floor_is_a_stage_gate_and_not_a_plan_gate`.
+The exact count is made before 27B weight download and recorded as
+`planned_supervised_tokens`; `steps × batch_size` is an example count and is not
+a substitute token estimate.

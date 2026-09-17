@@ -42,7 +42,7 @@ DEFAULT_POOL_SANDBOXES_PER_HOST, DEFAULT_POOL_MAX_HOSTS = 4, 4
 #: makes that argument for k already. The number is four *at* `cpu-basic` and
 #: nowhere else: a different pool flavor is a different host, which voids it and
 #: has to be decided again rather than carried over.
-POOL_FLAVOR, MAX_POOL_SANDBOXES_PER_HOST = "cpu-basic", 4
+POOL_FLAVOR, MAX_POOL_SANDBOXES_PER_HOST, MAX_POOL_HOSTS = "cpu-basic", 4, 4
 TERMINAL = ("COMPLETED", "ERROR", "CANCELED")
 
 
@@ -112,9 +112,9 @@ def main(argv=None):
                    help="pilot: concurrent verifier scorings")
     p.add_argument("--pool-sandboxes-per-host", type=int,
                    default=DEFAULT_POOL_SANDBOXES_PER_HOST,
-                   help="pilot: verifier concurrency per CPU host (default: 4)")
+                   help="pilot: verifier concurrency per CPU host (default and maximum: 4)")
     p.add_argument("--pool-max-hosts", type=int, default=DEFAULT_POOL_MAX_HOSTS,
-                   help="pilot: verifier CPU-host cost ceiling (default: 4)")
+                   help="pilot: verifier CPU-host cost ceiling (default and maximum: 4)")
     p.add_argument("--bundles-from", default="",
                    help="pilot: reuse the pilot/ and eval2/ bundles under this directory of --work-repo")
     p.add_argument("--seed", type=int, default=DEFAULT_SEED, help="pilot: review, preparation and training seed")
@@ -160,6 +160,13 @@ def main(argv=None):
         print("--pool-sandboxes-per-host must not exceed %d at %s: per-host density is part of the "
               "instrument, so spread the scorers with --pool-max-hosts instead"
               % (MAX_POOL_SANDBOXES_PER_HOST, POOL_FLAVOR), file=sys.stderr)
+        return 2
+    # And the cost envelope is bounded in the other direction for the same
+    # reason the density is: both ceilings are conditioned on a banked stage,
+    # because only a banked stage carries these knobs into the job at all, so
+    # refusing them on a smoke would be refusing a value that does nothing.
+    if args.stage in BANKED and args.pool_max_hosts > MAX_POOL_HOSTS:
+        print("pool cost ceiling is %d CPU hosts" % MAX_POOL_HOSTS, file=sys.stderr)
         return 2
     token = os.environ.get("HF_TOKEN")
     if not token:

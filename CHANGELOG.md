@@ -14,10 +14,13 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-17** — Review the S0-blocked round, close the four vacuous reads its guards left open, and stop a plan from certifying a schedule it cannot price ([#90](https://github.com/kristerhedfors/lypning/pull/90))
+**2026-09-17** — Assess the blocked S0 round from two independent reviews, close the four vacuous reads its guards left open, pin Fable's retry to the historical binary, and stop a plan from certifying a schedule it cannot price ([#90](https://github.com/kristerhedfors/lypning/pull/90))
 
-- The independent Codex review owed by ledger row S0 is
-  `training/reviews/2026-09-17-codex-s0-guards-and-engine-identity.md`:
+- The independent Codex review owed by ledger row S0 was written twice, by two
+  sessions that did not see each other's work and agreed on the diagnosis:
+  `training/reviews/2026-09-17-codex-s0-guards-and-engine-identity.md` and
+  `training/reviews/2026-09-17-fable-s0-independent-assessment.md`. Both are
+  kept as evidence and this PR carries the combined ruling:
   **continue**, all four decision requests ruled, every paid and GPU rung still
   held. The round remains unrun — this is a third clone holding none of its
   inputs, checked literally rather than assumed — so no power figure, lever
@@ -37,14 +40,18 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   The refusal line now carries `loaded`, `considered` and `unmatched`, since
   `loaded` is pre-filter and `refusals` post-filter and the first wording could
   assert that named rows carried no refusal when the filter had removed them.
-- Rung S0b is re-assigned to the pilot's frozen rows. Its `--run` form replays
-  through the local binary, which recomputes `native` and `status` with it, so
-  the `--status` filter ran over a population the binary had just manufactured.
-  A rebuild at the pilot's fingerprint is explicitly **not** a prerequisite —
-  the fingerprint folds in a core `lypning` sha no document records, and an
-  unsatisfiable gate on a $0 rung is how a $0 rung stops being run. Whatever
-  identity grades the vector must be printed beside it, and no re-derived count
-  may be called 171, which is a count at `2e079e786a655ab6` only.
+- Rung S0b no longer re-derives the population it reports. `--run` replayed
+  every program through the local binary, which recomputes `native` and `status`
+  with it, so the `--status` filter ran over a population the binary had just
+  manufactured — and the handoff's instruction to record an `@ engine` line
+  named output no mode of `levers` produced. The rung now freezes status and
+  family to the materialized 171 pilot rows, uses the replay only to attach
+  refusal kinds, binds the explicit historical `lypning-l` by its full recorded
+  SHA-256, prints that identity, and refuses a wrong draw count or any partial
+  replay before publishing a vector. The composite build *fingerprint* is
+  deliberately not a prerequisite: it folds in a core `lypning` sha no document
+  records, and an unsatisfiable gate on a $0 rung is how a $0 rung stops being
+  run. 171 stands as a historical population rather than a number to re-derive.
 - `--plan` now refuses the certainly-too-small half of the supervised-token
   floor without downloading anything. `sft_batches` picks by family and index
   and never inspects what it carries, so the schedule is buildable from the
@@ -65,7 +72,9 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   *at `cpu-basic`*; a different pool flavor voids the number. No floor on the
   worker count, host count or total capacity, because no eval-2 arm has ever
   completed and a throughput threshold would be set against a forward estimate.
-  The product check no longer advises raising a knob the ceiling forbids.
+  The host count is capped at four as well, so the cost envelope is bounded in
+  both directions, and the product check no longer advises raising a knob the
+  ceiling forbids.
 - Eight residual risks are recorded with file and line, four of them absent from
   the report; two are parked as future calls — `power --eval2 --rows` accepts
   any file bound to no run, digest or fingerprint, and `eval2_rows` tests

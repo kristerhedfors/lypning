@@ -15,60 +15,59 @@ blocked/no-run outcomes. New harvesting data never mutates your active bundle.
 
 The next session is a **read-only, $0 S0 evidence round**, not another training
 launch. Start from the merged commit carrying
-[`reviews/2026-09-17-round02-full-assessment.md`](reviews/2026-09-17-round02-full-assessment.md)
-on the device that can read the private round-02 artifacts. Do these in order:
+[`reviews/2026-09-17-fable-s0-independent-assessment.md`](reviews/2026-09-17-fable-s0-independent-assessment.md)
+on the device that already owns the private round-02 artifacts. Do not run this
+assignment on a substitute clone again. Set `PILOT_LYPNING_L` to the historical
+binary named below; if any of these four files is absent, report the missing
+path and stop without running a rung:
 
 ```bash
+export PILOT_RUN=training/runs/eval-20260916-063539
+export PILOT_ROWS="$PILOT_RUN/eval2_rows.jsonl"
+export PILOT_PROBE=work/round-02/6aaa87465527934177ee9f34/probe/probe-rollouts.jsonl
+export PILOT_LYPNING_L=/approved/private/path/to/pilot/lypning-l
+test -f "$PILOT_RUN/attempts.jsonl"
+test -f "$PILOT_ROWS"
+test -f "$PILOT_PROBE"
+test -f "$PILOT_LYPNING_L"
+
 # S0a: re-print power from the completed private pilot draw, in realised-macro units.
 PYTHONPATH=src:training python3 -m pipeline.cli power --eval2 \
-  --rows eval-20260916-063539 --draws 16 --mde 0.03
+  --rows "$PILOT_ROWS" --draws 16 --mde 0.03
 
-# S0b: descriptive family vector only. --rank is now refused on draw/held-out rows.
-# Read the pilot's FROZEN rows; do not let a binary re-derive them — see below.
+# S0b: freeze the original 171-draw population; replay supplies refusal kinds only.
+# --rank is refused on draw/held-out rows.
 PYTHONPATH=src:training python3 -m pipeline.cli levers \
-  --rows training/runs/eval-20260916-063539/eval2_rows.jsonl \
-  --replay <census>.jsonl --status correct-fallback --vector --limit 0
+  --run eval-20260916-063539 --population-rows "$PILOT_ROWS" \
+  --engine "$PILOT_LYPNING_L" \
+  --require-engine-sha256 a23b30832e00640cec2090d8403a6beeaa2087083d0fbd9080210fd8d4fc1096 \
+  --status correct-fallback --expect-draws 171 --vector --limit 0
 
 # S0c: per-train-case native status, probe beside the completed base pilot.
 # Paths are cwd-relative and resolved against the repository root.
 PYTHONPATH=src:training python3 -m pipeline.cli probe-vector \
-  --probe work/round-02/6aaa87465527934177ee9f34/probe/probe-rollouts.jsonl \
-  --base training/runs/eval-20260916-063539/eval2_rows.jsonl
+  --probe "$PILOT_PROBE" --base "$PILOT_ROWS"
 ```
 
-**S0b reads the pilot's frozen rows; it must not re-derive them** (ruled
-2026-09-17, `reviews/2026-09-17-codex-s0-guards-and-engine-identity.md` §D2).
-`--run` replays every program through the local binary — the draw rows carry
-`native` and `status` but no refusal *kind* — and that replay recomputes
-`native`, and `status` with it, so the `--status` filter runs over a population
-the binary just manufactured. Prefer the `--rows`/`--replay` form above, where
-`<census>` is the replay `nt eval2-rows` took on 2026-09-16 at fingerprint
-`2e079e786a655ab6` (persisted only if that command was given `--cache`),
-converted to one JSON object per line. That form filters the frozen file's own
-`status`, so the population is the pilot's 171 and no binary re-derives it.
+**S0b is not engine-free, and its number is not engine-independent** (measured
+2026-09-17). The eval-2 draw rows carry `native` and `status` but no refusal
+*kind*. The earlier `--run` path replayed every program through the local binary
+and re-derived the population too: on `runs/stock-nothinking`, the same command
+matched 14 correct-but-fallback draws through the built engine and 26 through a
+broken one. The command above instead reads the historical population from
+`PILOT_ROWS`, uses the replay only to attach refusal kinds, requires exactly 171
+matching draws, and pins the explicit binary by its full recorded SHA-256. It
+prints that SHA, version line and oracle Python. Any mismatch, replay error,
+unmatched draw or fallback row without a refusal exits nonzero before a vector
+is printed. Do not quote a partial vector.
 
-If the census did not survive, fall back to `levers --run …` with whatever
-`lypning-l` the device can build, print the grading identity beside the vector —
-
-```bash
-PYTHONPATH=src:training python3 -c \
-  'from pipeline import engines; print(engines.identity()["fingerprint"])'
-```
-
-— and report its re-derived correct-but-fallback count as **its own number under
-that fingerprint**, never as 171, which is a count at `2e079e786a655ab6` only
-(`EVAL2.md` §11). `levers` prints no `@ engine` line in any mode, so the
-identity is the operator's to print; do not wait for one in its output.
-
-**Do not try to rebuild at `2e079e786a655ab6`.** The fingerprint folds in the
-core `lypning` sha of that build, which no document here records, so it cannot
-be hit to spec — and an unsatisfiable prerequisite on a $0 rung is how a $0 rung
-stops being run. Quote the vector only as a *shape* — which kinds carry the
-mass — never as an absolute headroom and never subtracted from a vector taken at
-another identity. Copy the `UNRESOLVED` line verbatim if any draw has no replay
-row or no refusal on record. Inputs that are absent now exit 2 naming the path,
-and a vector with no record behind it exits 1 instead of printing an empty
-table at exit 0.
+Quote the vector only as a *shape* — which kinds carry the mass — never as an
+absolute headroom and never subtracted from a vector taken at another identity.
+The composite engine *fingerprint* of that build is not reproducible here (it
+folds in a core `lypning` sha no document records), which is why the binary's
+own recorded SHA-256 is what the command binds. An input that is absent exits 2
+naming the path, and a vector with no record behind it exits 1 rather than
+printing an empty table at exit 0.
 
 Before S0c, download the immutable private artifact directory
 `round-02/6aaa87465527934177ee9f34/` into the path shown and materialize the
@@ -95,13 +94,15 @@ CMD ["python3", "-I", "/usr/local/lib/lypning-verifier/container_worker.py", "--
 
 The launcher defaults to 16 scorers backed by four sandboxes per CPU host and
 at most four hosts, and since 2026-09-17 a banked launch is **refused above four
-sandboxes per host** as well as below the worker count — the two together are
-what force sixteen scorers onto four hosts or wider; separately neither did, and
-`16/16/1` was admitted. `native` is host-load-dependent, so per-host density is
-part of the instrument: the ceiling is four *at `cpu-basic`*, and changing the
-pool flavor voids the number. There is deliberately no floor on the worker
-count, the host count or total capacity — no eval-2 arm has ever completed, so a
-throughput threshold would be set against a forward estimate. A confirmatory eval-2
+sandboxes per host and above four hosts**, as well as below the worker count —
+the product check and the density ceiling together are what force sixteen
+scorers onto four hosts; separately neither did, and `16/16/1` was admitted.
+`native` is host-load-dependent, so per-host density is part of the instrument:
+the ceiling is four *at `cpu-basic`*, and changing the pool flavor voids the
+number. A serial `1/1/1` diagnostic stays legal because it creates no CPU
+contention, and there is deliberately no floor on the worker count, the host
+count or total capacity — no eval-2 arm has ever completed, so a throughput
+threshold would be set against a forward estimate. A confirmatory eval-2
 arm remains k=16. Real adapter stages now refuse fewer than 1,000 train cases,
 an SFT schedule below 50,000 supervised tokens, a schedule that cannot cover
 every family once, or a seed outside `1111, 2222, 3333`. A complete S4 result
@@ -133,6 +134,10 @@ exposures and is 1,000 at this runbook's own `--steps 250 --batch-size 4`
 (`NEXT_ROUND.md`), so comparing it to 50,000 would refuse a schedule the floor
 admits. Do not substitute it. Every other gate — `k`, the case count, the seed,
 the family cycle — is refused at plan time outright.
+
+The stage still computes the exact count before the 27B weights are downloaded
+and records `planned_supervised_tokens`; that recorded number, not the plan's
+bound, is what a report quotes.
 
 ## The assignment
 

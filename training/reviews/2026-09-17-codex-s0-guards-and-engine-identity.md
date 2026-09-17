@@ -443,3 +443,58 @@ empty `--source` — deliberately, because widening that guard changes what
 shape and therefore a separate call. C3 is done; C7's `correct-native` direction
 is pinned; C8 is discharged in the changelog entry rather than by rewriting the
 merged one.
+
+## Reconciliation with the second independent review
+
+This round was reviewed twice, by two sessions that did not see each other's
+work: this document and
+[`2026-09-17-fable-s0-independent-assessment.md`](2026-09-17-fable-s0-independent-assessment.md).
+Both are kept, because the agreement is evidence and the disagreements are where
+the ruling actually had to be made. They agreed, independently, on everything
+load-bearing: the round is blocked and answers no rung; the guards are accepted;
+the `@ engine` line the handoff told the operator to record does not exist;
+`levers --run` redefines the population it reports; `steps × batch_size` counts
+exposures and is withdrawn; and the pool's defect is a per-host density hole
+that `16/16/1` walked through, not a missing global floor. Two sessions reaching
+the same reading of `16/16/1` from different starting points is the strongest
+evidence in either document.
+
+Where they differ, the combined ruling takes the better half, and two of those
+go against this document.
+
+**S0b: the other review's mechanism wins.** This document's D2 concluded that
+the pilot's engine could not be bound, because the composite fingerprint folds
+in a core `lypning` sha no document records — true of the *fingerprint*, and the
+wrong conclusion, because `EVAL2.md` §11 records the `lypning-l` **binary's own
+SHA-256**. `--require-engine-sha256` binds exactly that, `--population-rows`
+freezes status and family to the materialized rows so the replay supplies only
+refusal kinds, and `--expect-draws 171` refuses a wrong or partial population
+before a vector prints. That is strictly stronger than the `--rows`/`--replay`
+fallback prescribed here, and it does not depend on a `--cache` census that may
+not have survived. D2's operative instruction is superseded; its reasoning about
+the fingerprint stands and is why the *binary* sha is the right pin.
+
+**Capacity: a host ceiling as well, and this document's D4 was wrong to call
+`16/2/8` and `16/1/16` legal.** They are the least contended shapes in the
+space, which is why D4 admitted them; the other review caps the host count at
+four on **cost**, an argument D4 never made, and cost binds independently of
+contention. Both ceilings are conditioned on a banked stage, because only a
+banked stage carries these knobs into the job at all. Line 317 above is
+therefore superseded: `1/1/1`, `16/4/4`, `8/4/2` and every smoke stay legal;
+`16/2/8` and `16/1/16` are now refused by the cost ceiling.
+
+**The token floor: this document's ruling wins.** The other review kept the
+floor purely stage-time on the grounds that moving it would cost `--plan` its
+no-download contract. That argument is sound for the *exact* count and does not
+reach a one-sided byte bound, which needs no tokenizer. Both survive: the exact
+count stays in the stage and is recorded as `planned_supervised_tokens`, and
+`--plan` additionally refuses a schedule already certainly below the floor.
+
+**The four open vacuous-read routes: only this document found them**, and the
+other review accepted "five guards" as complete. Both sessions then wrote a
+guard for the `--run` path; the merged code keeps both, and the other review's
+is the more informative — it refuses any *incomplete* replay or join, reporting
+MISMATCH, ERROR, unmatched and without-a-refusal counts, rather than only the
+case where nothing at all was graded. This document's guard remains as the
+backstop that covers what neither `--run` guard reaches: the `--rows` route over
+two files that exist, parse and join to nothing. Both are pinned by tests.

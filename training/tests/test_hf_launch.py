@@ -151,9 +151,16 @@ def test_a_banked_launch_is_refused_above_the_per_host_density_ceiling(monkeypat
     err = capsys.readouterr()
     assert "--pool-sandboxes-per-host" in err.err and launch.POOL_FLAVOR in err.err
     assert err.out == "", "a refused shape prints no plan"
-    for workers, per_host, hosts in ((16, 4, 4), (1, 1, 1), (16, 2, 8), (16, 1, 16)):
+    # `16/2/8` and `16/1/16` are the least contended shapes in the space and
+    # this ceiling does not object to them — but the second review's host
+    # ceiling does, on cost, so they are refused there instead. The shapes that
+    # clear both are the decided topology and the serial diagnostic.
+    for workers, per_host, hosts in ((16, 4, 4), (1, 1, 1), (8, 4, 2)):
         assert launch.main(pool_argv("pilot", workers, per_host, hosts)) == 2
         assert "HF_TOKEN" in capsys.readouterr().err, (workers, per_host, hosts)
+    for workers, per_host, hosts in ((16, 2, 8), (16, 1, 16)):
+        assert launch.main(pool_argv("pilot", workers, per_host, hosts)) == 2
+        assert "cost ceiling" in capsys.readouterr().err, (workers, per_host, hosts)
 
 
 def test_the_density_ceiling_does_not_reach_a_smoke(monkeypatch, capsys):
@@ -179,3 +186,23 @@ def test_the_ceilings_flavor_is_the_flavor_the_pool_actually_runs_on():
     from pipeline import hf_sandbox_runner
 
     assert launch.POOL_FLAVOR == hf_sandbox_runner.FLAVOR
+
+
+def test_a_banked_launch_is_refused_above_the_host_cost_ceiling(monkeypatch, capsys):
+    """The other half of the envelope: four hosts is a ceiling, not just a default.
+
+    Contributed by the second independent review of the same round. It is
+    conditioned on a banked stage for the same reason the density ceiling is —
+    only a banked stage carries these knobs into the job, so refusing them on a
+    smoke would refuse a value that does nothing.
+    """
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    assert launch.main(pool_argv("pilot", 16, 4, launch.MAX_POOL_HOSTS + 1)) == 2
+    err = capsys.readouterr()
+    assert "cost ceiling is %d CPU hosts" % launch.MAX_POOL_HOSTS in err.err
+    assert err.out == "", "a refused shape prints no plan"
+    # The ceiling itself is admitted, and a smoke is not reached by it at all.
+    assert launch.main(pool_argv("pilot", 16, 4, launch.MAX_POOL_HOSTS)) == 2
+    assert "HF_TOKEN" in capsys.readouterr().err
+    assert launch.main(pool_argv("smoke", 1, 1, launch.MAX_POOL_HOSTS + 6)) == 2
+    assert "HF_TOKEN" in capsys.readouterr().err

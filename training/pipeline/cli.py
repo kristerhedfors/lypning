@@ -1833,6 +1833,14 @@ def cmd_levers(args: argparse.Namespace) -> int:
 
     today = time.strftime("%Y-%m-%d")
     notes: List[str] = []
+    if (args.population_rows or args.require_engine_sha256 or args.expect_draws is not None) \
+            and not args.run:
+        print("levers: --population-rows, --require-engine-sha256 and --expect-draws "
+              "apply only with --run", file=sys.stderr)
+        return 2
+    if args.expect_draws is not None and args.expect_draws <= 0:
+        print("levers: --expect-draws must be positive", file=sys.stderr)
+        return 2
     if args.run:
         # Rung S0b. Neither artifact carries the whole answer: the draw rows say
         # which draws are correct-but-fallback and how they cluster, the replay
@@ -1852,25 +1860,67 @@ def cmd_levers(args: argparse.Namespace) -> int:
         if not Path(engine).is_file():
             print("not a file: %s" % engine, file=sys.stderr)
             return 2
+        replay_identity = eng.binary_identity(engine)
+        if args.require_engine_sha256:
+            if not re.fullmatch(r"[0-9a-f]{64}", args.require_engine_sha256):
+                print("levers: --require-engine-sha256 must be 64 lowercase hex characters",
+                      file=sys.stderr)
+                return 2
+            if replay_identity["sha256"] != args.require_engine_sha256:
+                print("levers: replay engine sha256 %s, required %s"
+                      % (replay_identity["sha256"] or "unreadable",
+                         args.require_engine_sha256), file=sys.stderr)
+                return 1
         attempts_path = RUNS / args.run / "attempts.jsonl"
         if not attempts_path.exists():
             print("no such run: %s" % args.run, file=sys.stderr)
             return 1
         attempts = list(read_jsonl(attempts_path))
-        meta = _run_meta(args.run)
-        seed = (meta.get("sampling") or {}).get("seed")
         cases, tests = _case_context(False)
+        if args.population_rows:
+            population_path = Path(args.population_rows)
+            if not population_path.is_file():
+                print("not a file: %s" % population_path, file=sys.stderr)
+                return 2
+            drawn_rows = list(read_jsonl(population_path))
+            if not drawn_rows:
+                print("levers: no population rows in %s — nothing to join"
+                      % population_path, file=sys.stderr)
+                return 1
+            # Replay only the frozen population.  A resumed legacy run can
+            # carry several attempts for one draw; use the same winner rule as
+            # eval2-rows before selecting by (corpus_id, draw).
+            wanted = {(row.get("corpus_id") or row.get("case_id"), row.get("draw"))
+                      for row in drawn_rows
+                      if args.status is None or row.get("status") == args.status}
+            attempts = [a for a in eval2_rows.one_attempt_per_draw(attempts)
+                        if (a.get("case_id"), a.get("sample")) in wanted]
+            source = "%s joined to %s" % (population_path, attempts_path)
+        else:
+            meta = _run_meta(args.run)
+            seed = (meta.get("sampling") or {}).get("seed")
+            drawn_rows = None
+            source = "runs/%s" % args.run
         cache = (Path(args.cache) / ("%s.replay.json" % args.run)) if args.cache else None
         census = legality.replay(attempts, engine, tests=tests, workers=args.jobs,
                                  cache=cache)
-        drawn = eval2_rows.rows(attempts, census["rows"], cases, seed=seed)
+        if drawn_rows is None:
+            drawn_rows = eval2_rows.rows(attempts, census["rows"], cases, seed=seed)["rows"]
         programs = dict(((a.get("case_id"), int(a.get("sample") or 0)), a.get("program") or "")
                         for a in attempts)
-        joined = levers.draw_refusals(drawn["rows"], census["rows"],
+        joined = levers.draw_refusals(drawn_rows, census["rows"],
                                       status=args.status, programs=programs)
-        result = levers.table(joined["records"], source="runs/%s" % args.run,
+        if args.expect_draws is not None and joined["considered"] != args.expect_draws:
+            print("levers: %d draw(s) match status %s; expected exactly %d"
+                  % (joined["considered"], args.status or "(any)", args.expect_draws),
+                  file=sys.stderr)
+            return 1
+        result = levers.table(joined["records"], source=source,
                               unit="draw", independence="family",
-                              loaded=len(drawn["rows"]))
+                              loaded=len(drawn_rows))
+        notes.append("@ replay engine sha256 %s   %s   oracle Python %s"
+                     % (replay_identity["sha256"], replay_identity["version"],
+                        replay_identity["oracle_python"]))
         notes.append("%d draw(s) match status %s; %d carried a refusal"
                      % (joined["considered"], args.status or "(any)",
                         len(joined["records"])))
@@ -1880,9 +1930,10 @@ def cmd_levers(args: argparse.Namespace) -> int:
             notes.append("UNRESOLVED: %d draw(s) have no replay row, %d have a replay "
                          "row carrying no refusal. Neither is counted anywhere above."
                          % (joined["unmatched"], joined["without_refusal"]))
-        if census["tally"].get("MISMATCH"):
+        mismatches = census["tally"].get("MISMATCH") or 0
+        if mismatches:
             print("  MISMATCH %d — invariant 1: always a bug, never the model's."
-                  % census["tally"]["MISMATCH"], file=sys.stderr)
+                  % mismatches, file=sys.stderr)
         # A program the replay could not run carries no refusal, so it leaves
         # the vector silently. Say so where MISMATCH is said: an ungraded
         # program is a hole in the evidence, not a family with no mass.
@@ -1897,10 +1948,11 @@ def cmd_levers(args: argparse.Namespace) -> int:
         # exit 0, over a population this binary inflated by re-deriving
         # `native` from a replay that failed. That is the read of nothing this
         # command must not be able to publish.
-        if errors and joined["considered"] and not joined["records"]:
-            print("levers: no draw graded — %d considered, %d ERROR. This is a "
-                  "failed replay, not a refusal vector." % (joined["considered"], errors),
-                  file=sys.stderr)
+        if mismatches or errors or joined["unmatched"] or joined["without_refusal"]:
+            print("levers: incomplete replay — %d considered, %d MISMATCH, %d ERROR, "
+                  "%d unmatched, %d without a refusal. This is not a refusal vector."
+                  % (joined["considered"], mismatches, errors, joined["unmatched"],
+                     joined["without_refusal"]), file=sys.stderr)
             return 1
     elif args.rows:
         if not args.replay:
@@ -1927,6 +1979,11 @@ def cmd_levers(args: argparse.Namespace) -> int:
             notes.append("UNRESOLVED: %d draw(s) have no replay row, %d have a replay "
                          "row carrying no refusal. Neither is counted anywhere above."
                          % (joined["unmatched"], joined["without_refusal"]))
+            print("levers: incomplete join — %d considered, %d unmatched, %d without "
+                  "a refusal. This is not a refusal vector."
+                  % (joined["considered"], joined["unmatched"],
+                     joined["without_refusal"]), file=sys.stderr)
+            return 1
     else:
         if args.status:
             print("levers: --status applies to draw rows; use it with --run or --rows",
@@ -2400,8 +2457,15 @@ def build_parser() -> argparse.ArgumentParser:
     lv.add_argument("--run", metavar="RUN_ID",
                     help="rung S0b: a run's draws joined to their replay verdicts")
     lv.add_argument("--engine", help="binary to replay through (with --run)")
+    lv.add_argument("--require-engine-sha256",
+                    help="with --run, refuse unless the explicit replay binary has this sha256")
     lv.add_argument("--cache", help="directory of <run>.replay.json caches (with --run)")
     lv.add_argument("--jobs", type=int, default=0, help="replay workers (with --run)")
+    lv.add_argument("--population-rows",
+                    help="with --run, freeze status/family/population to these eval2 rows; "
+                         "the replay supplies refusal kinds only")
+    lv.add_argument("--expect-draws", type=int,
+                    help="refuse unless exactly N draw rows match --status")
     lv.add_argument("--rows", help="draw rows already written by `nt eval2-rows`")
     lv.add_argument("--replay", help="the legality rows to join them with (with --rows)")
     lv.add_argument("--status", help="keep only draws with this status, e.g. correct-fallback")
