@@ -13,6 +13,7 @@ as the local capture — which is the whole claim behind rung S0b being a comman
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
 
@@ -681,6 +682,75 @@ def test_an_engine_that_cannot_execute_is_a_failed_replay_and_not_a_vector(tmp_p
                           "--status", "correct-fallback", "--vector", "--limit", "0",
                           "--engine", str(engine)], capsys)
     assert code == 1
-    assert "no draw graded" in out.err and "failed replay" in out.err
+    assert "incomplete replay" in out.err and "not a refusal vector" in out.err
     assert "ERROR" in out.err
+    assert "descriptive refusal vector" not in out.out
+
+
+def test_s0b_freezes_the_population_and_pins_the_explicit_engine(tmp_path, capsys,
+                                                                monkeypatch):
+    """The pilot rows define the 171; today's engine only supplies refusal kinds."""
+    from pipeline import cli, legality
+
+    run = tmp_path / "runs" / "pilot"
+    run.mkdir(parents=True)
+    (run / "attempts.jsonl").write_text(
+        json.dumps({"case_id": "py-1", "sample": 0, "program": "import itertools"}) + "\n",
+        encoding="utf-8")
+    population = tmp_path / "population.jsonl"
+    population.write_text(json.dumps({
+        "case_id": "source-1", "corpus_id": "py-1", "draw": 0,
+        "family": "f", "split_group": "g", "status": "correct-fallback",
+    }) + "\n", encoding="utf-8")
+    engine = tmp_path / "lypning-l"
+    engine.write_text("#!/bin/sh\necho 'lypning 0.1.0 (lypning-l) for cpython 3.12'\n",
+                      encoding="utf-8")
+    engine.chmod(0o755)
+    digest = hashlib.sha256(engine.read_bytes()).hexdigest()
+
+    monkeypatch.setattr(cli, "RUNS", tmp_path / "runs")
+    monkeypatch.setattr(cli, "_case_context", lambda *_: ({}, {}))
+
+    def replay(attempts, explicit, **_kwargs):
+        assert explicit == str(engine)
+        assert [(a["case_id"], a["sample"]) for a in attempts] == [("py-1", 0)]
+        return {"rows": [{"case_id": "py-1", "sample": 0,
+                           "verdict": "UNSUPPORTED",
+                           "blocker": "module: import itertools"}],
+                "tally": {}, "details": {}, "blockers": {}, "programs": 1}
+
+    monkeypatch.setattr(legality, "replay", replay)
+    base = ["levers", "--run", "pilot", "--population-rows", str(population),
+            "--status", "correct-fallback", "--engine", str(engine),
+            "--require-engine-sha256", digest, "--vector"]
+    code, out = _run_cli(base + ["--expect-draws", "1"], capsys)
+    assert code == 0
+    assert "@ replay engine sha256 %s" % digest in out.out
+    assert "1 draw(s) match status correct-fallback; 1 carried a refusal" in out.out
+    assert "descriptive refusal vector" in out.out
+
+    code, out = _run_cli(base + ["--expect-draws", "171"], capsys)
+    assert code == 1
+    assert "expected exactly 171" in out.err
+    assert "descriptive refusal vector" not in out.out
+
+    wrong = "0" * 64
+    bad = [word if word != digest else wrong for word in base]
+    code, out = _run_cli(bad + ["--expect-draws", "1"], capsys)
+    assert code == 1
+    assert "required %s" % wrong in out.err
+    assert out.out == ""
+
+
+def test_a_partial_draw_join_is_not_publishable(tmp_path, capsys):
+    rows = tmp_path / "rows.jsonl"
+    rows.write_text(json.dumps({"corpus_id": "py-1", "draw": 0,
+                                "status": "correct-fallback"}) + "\n",
+                    encoding="utf-8")
+    replay = tmp_path / "replay.jsonl"
+    replay.write_text("", encoding="utf-8")
+    code, out = _run_cli(["levers", "--rows", str(rows), "--replay", str(replay),
+                          "--status", "correct-fallback", "--vector"], capsys)
+    assert code == 1
+    assert "incomplete join" in out.err and "1 unmatched" in out.err
     assert "descriptive refusal vector" not in out.out

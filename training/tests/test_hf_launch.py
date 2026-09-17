@@ -128,3 +128,17 @@ def test_pilot_without_a_bank_path_is_rejected_before_any_hub_call(monkeypatch, 
     assert launch.main(argv + ["--bank-path", "banks/x", "--score-workers", "16",
                                "--pool-sandboxes-per-host", "2", "--pool-max-hosts", "2"]) == 2
     assert "pool capacity" in capsys.readouterr().err
+    assert launch.main(argv + ["--bank-path", "banks/x", "--score-workers", "16",
+                               "--pool-sandboxes-per-host", "16",
+                               "--pool-max-hosts", "1"]) == 2
+    assert "capped at 4 sandboxes per CPU host" in capsys.readouterr().err
+    assert launch.main(argv + ["--bank-path", "banks/x", "--score-workers", "16",
+                               "--pool-sandboxes-per-host", "4",
+                               "--pool-max-hosts", "5"]) == 2
+    assert "cost ceiling is 4 CPU hosts" in capsys.readouterr().err
+    # A serial 1x1 diagnostic is slow but has no contention. It passes the pool
+    # topology checks and reaches the next gate, the deliberately absent token.
+    assert launch.main(argv + ["--bank-path", "banks/x", "--score-workers", "1",
+                               "--pool-sandboxes-per-host", "1",
+                               "--pool-max-hosts", "1"]) == 2
+    assert "HF_TOKEN" in capsys.readouterr().err

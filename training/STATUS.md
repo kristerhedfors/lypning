@@ -48,6 +48,17 @@ the declaration review is closed under rule 2, real adapter dosage floors are
 gates, and the verifier Space now has a content-free health mode. Fable's next
 session is only the private-artifact S0a–S0c read in `START_NEXT_ROUND.md`.
 
+**Fable S0 review, 2026-09-17:** the assigned read ran on a clone with none of
+the private inputs and answered none of S0a–S0c. Its five fail-closed guards are
+accepted. Independent review found that S0b still recomputed the historical
+population and did not print or bind the explicit engine identity it claimed;
+the corrected command freezes the 171 pilot rows, pins the full `lypning-l`
+SHA-256, requires exactly 171 matches and refuses any partial replay. The pool
+now caps both per-host concurrency and host count. The token floor remains an
+exact stage-time gate; example count is not token count. Decisions and the only
+authorized next action are in
+`reviews/2026-09-17-fable-s0-independent-assessment.md`.
+
 ## 1. The goal, in one sentence and one number
 
 Adapt `Qwen/Qwen3.8-27B` so that an agent with **no knowledge that lypning
@@ -362,7 +373,7 @@ sequence is the problem §3.7 of that document names. In one line each:
 | rung | what it measures | cost | state, 2026-09-17 |
 |---|---|---|---|
 | S0a | `EVAL2.md` §7 re-printed from the real pilot rows, keyed on the realised macro lift | $0 | exact command assigned to Fable in `START_NEXT_ROUND.md`; private read still owed — attempted 2026-09-17 on a clone without the rows, exit 1 |
-| S0b | the by-kind refusal vector of the 171 correct-but-fallback pilot draws | $0 | rule 2 reviewed; exact `--vector` command assigned to Fable. `--rank` is refused on held-out draws. Needs a built engine at the pilot's identity: the draw rows carry no refusal kind, so `--run` replays them, and the population moves with the binary (2026-09-17) |
+| S0b | the by-kind refusal vector of the 171 correct-but-fallback pilot draws | $0 | rule 2 reviewed; exact `--vector` command assigned to Fable. `--rank` is refused on held-out draws. The corrected command freezes status/family to the pilot rows, pins the explicit historical engine SHA, requires 171 draws and uses replay only for refusal kinds |
 | S0c | the round-02 probe rollouts by native status, per train case | $0 | private artifact and comparison contract named in `START_NEXT_ROUND.md`; read still owed. Attempted 2026-09-17 without the artifacts: it printed a zeros table at exit 0, and now exits 2 naming the absent path |
 | S1 | stage 0b on the training bank: bare vs `--system-file subset-spec.md`, k=16 | ~$5 | not started; the first positive control the programme would have |
 | S2 | the rewritable fraction: verified native rewrites of the fallback draws | tokens | not started; ledger row D1 |
@@ -388,3 +399,6 @@ exists to avoid. So a passing `--plan` does **not** mean the schedule is
 admissible, and `START_NEXT_ROUND.md`'s instruction to plan before every stage
 cannot be read as a token-floor check.
 `training/tests/test_training.py::test_the_supervised_token_floor_is_a_stage_gate_and_not_a_plan_gate`.
+The exact count is made before 27B weight download and recorded as
+`planned_supervised_tokens`; `steps × batch_size` is an example count and is not
+a substitute token estimate.
