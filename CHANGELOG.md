@@ -167,6 +167,14 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   (md5 `9a7f0eaec5ef0fcc89e7846042c15c92`, both runs 2026-09-17), 34 rows, 0
   drops, and not one `requires`, `requires_static`, `caps`, `route_agrees` or
   `naive_kind` field moved from the previous rows.
+- Building that second pair has a trap worth writing down, because it produced a
+  binary that looked like the arm it was not. `build.py` pins the reference
+  version to `engines.find_cpython()` (`build.py:495`), which walks `$PATH` for
+  the real interpreter and does NOT read the one running the build — so
+  `python3.14 -m lypning build --rust` still builds `for cpython 3.11`, and says
+  so in `--version` if asked. The arm above is a pair built with 3.14 first on
+  `$PATH`, which reports `for cpython 3.14`; a pair built the other way was
+  discarded once `--version` gave it away.
 **2026-09-17** — Assess round 02, preserve blocked evaluation evidence, and constrain the next Fable run to zero-cost validation ([#87](https://github.com/kristerhedfors/lypning/pull/87))
 
 - Round 02 produced no completed eval-2 arm and therefore no model-quality
