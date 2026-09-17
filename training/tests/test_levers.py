@@ -105,6 +105,18 @@ def result(classified):
     return levers.table(classified, source=CLASSIFIED, loaded=len(classified))
 
 
+#: Below Python 3.10 there is no `sys.stdlib_module_names`, so the `not-stdlib`
+#: layer abstains and the nine entries it decides here land in the review queue
+#: instead. That is the module behaving correctly — an incomplete table saying
+#: so — but every constant below was measured with the layer working, so the
+#: tests that assert a complete table would read as a regression rather than as
+#: the abstention they are.
+STDLIB_LAYER = pytest.mark.skipif(
+    levers.stdlib_names() is None,
+    reason="no sys.stdlib_module_names: the not-stdlib layer abstains, "
+           "so the table is incomplete by design and its constants do not apply")
+
+
 #: How many closed kinds must appear together before a string, or a file, is
 #: treating the list as a list rather than mentioning one kind in passing. Three
 #: is enough: `refusals.closed_kinds()` holds 17, and no sentence here names
@@ -216,6 +228,7 @@ def test_the_buckets_partition_the_refusals(result, classified):
     assert sum(r["units"] for r in result["families"]) == refused
 
 
+@STDLIB_LAYER
 def test_every_family_is_decided(result):
     """The review queue is empty and no declaration is orphaned.
 
@@ -227,6 +240,7 @@ def test_every_family_is_decided(result):
     assert result["declared_unused"] == []
 
 
+@STDLIB_LAYER
 def test_the_disagreement_with_section_4_is_the_reviewed_one(result):
     totals = levers.section4_totals(ASSESSMENT)
     assert set(totals) == set(levers.BUCKETS), totals
@@ -236,6 +250,7 @@ def test_the_disagreement_with_section_4_is_the_reviewed_one(result):
         "but it is a new disagreement and it needs a reviewer, not a new constant.")
 
 
+@STDLIB_LAYER
 def test_the_delta_alone_cannot_see_a_paired_swap(result):
     """Aggregate totals are blind to two equal-sized families trading buckets.
 
@@ -271,6 +286,7 @@ def test_a_declaration_cannot_borrow_section_4s_authority(result):
             "%s claims §4 as its source, but §4 does not name %r" % (name, token))
 
 
+@STDLIB_LAYER
 def test_section_4_totals_still_sum_to_the_population(result):
     totals = levers.section4_totals(ASSESSMENT)
     assert sum(totals.values()) == result["refusals"]
@@ -480,7 +496,18 @@ def test_it_degrades_without_an_engine(classified, monkeypatch):
 
 
 def test_the_result_records_which_interpreter_answered_the_stdlib_layer(result):
-    assert result["engine"]["stdlib_from"].startswith("3.")
+    """Which interpreter answered, or None when none could.
+
+    The `not-stdlib` layer's answer belongs to the interpreter running the tool,
+    so the result says which one it was — and says `None` rather than a version
+    when the layer abstained, because an abstention that reports a version reads
+    as an answer.
+    """
+    answered = result["engine"]["stdlib_from"]
+    if levers.stdlib_names() is None:
+        assert answered is None
+    else:
+        assert answered.startswith("3.")
     assert result["rule"] == levers.RULE
 
 
@@ -526,6 +553,7 @@ def _run_cli(argv, capsys):
     return code, capsys.readouterr()
 
 
+@STDLIB_LAYER
 def test_the_command_reports_what_it_loaded(capsys):
     """Invariant 3: the tool prints the count it loaded, with its source."""
     code, out = _run_cli(["levers"], capsys)
