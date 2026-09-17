@@ -23,15 +23,19 @@
 #   WORK_REPO    private dataset repo: the banks come from it, work/round-02 goes to it
 #   BANK_PATH    directory in WORK_REPO holding eval2.jsonl, train.jsonl, evidence-*/
 #   HF_TOKEN     job secret; the trainer holds it, candidates never see it
-#   STEPS        SFT and GRPO optimizer steps (default 20)
+#   STEPS        SFT optimizer steps (default 250; SFT's token floor still decides)
+#   GRPO_STEPS   GRPO optimizer steps (default 20)
 #   EVAL_DRAWS   matched-seed draws per case on the eval-2 benchmark (default 16)
 #   SEED         review, preparation and training seed (default 1111)
 set -euo pipefail
 : "${SPACE_REPO:?}" "${SPACE_REV:?}" "${QWEN_REV:?}" "${WORK_REPO:?}" "${BANK_PATH:?}" "${HF_TOKEN:?}"
-STEPS="${STEPS:-20}"
+STEPS="${STEPS:-250}"
+GRPO_STEPS="${GRPO_STEPS:-20}"
 EVAL_DRAWS="${EVAL_DRAWS:-16}"
 EVAL_SEQUENCES="${EVAL_SEQUENCES:-128}"   # sequences per generate call in evaluation
 SCORE_WORKERS="${SCORE_WORKERS:-16}"      # concurrent verifier scorings (one pool host serves 50)
+export NTX_POOL_SANDBOXES_PER_HOST="${NTX_POOL_SANDBOXES_PER_HOST:-4}"
+export NTX_POOL_MAX_HOSTS="${NTX_POOL_MAX_HOSTS:-4}"
 BUNDLES_FROM="${BUNDLES_FROM:-}"          # reuse the bundles an earlier job prepared, e.g. round-02/<job>
 SEED="${SEED:-1111}"
 cd "$(dirname "$0")/../.."
@@ -41,7 +45,7 @@ JOB="${JOB_ID:-local}"
 export NTX_POOL_TAG="$JOB"   # this run's sandbox pool is its own; see hf_sandbox_runner.pool_name
 STAGE=start
 mkdir -p "$ROUND"
-echo "== round-02 pilot on $(hostname) job=$JOB commit=$(git rev-parse HEAD) steps=$STEPS eval_draws=$EVAL_DRAWS eval_sequences=$EVAL_SEQUENCES score_workers=$SCORE_WORKERS seed=$SEED bundles_from=${BUNDLES_FROM:-none}"
+echo "== round-02 pilot on $(hostname) job=$JOB commit=$(git rev-parse HEAD) sft_steps=$STEPS grpo_steps=$GRPO_STEPS eval_draws=$EVAL_DRAWS eval_sequences=$EVAL_SEQUENCES score_workers=$SCORE_WORKERS pool_sandboxes_per_host=$NTX_POOL_SANDBOXES_PER_HOST pool_max_hosts=$NTX_POOL_MAX_HOSTS seed=$SEED bundles_from=${BUNDLES_FROM:-none}"
 echo "== python: $(python3 -c 'import sys; print(sys.version)')"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || echo "== no GPU visible"
 
@@ -79,8 +83,9 @@ finish() {
   local status=complete
   [ "$code" -eq 0 ] || status=failed
   echo "== finish: status=$status stage=$STAGE exit=$code"
-  if ! STATUS="$status" EXIT_CODE="$code" STAGE="$STAGE" STEPS="$STEPS" EVAL_DRAWS="$EVAL_DRAWS" SEED="$SEED" \
+  if ! STATUS="$status" EXIT_CODE="$code" STAGE="$STAGE" STEPS="$STEPS" GRPO_STEPS="$GRPO_STEPS" EVAL_DRAWS="$EVAL_DRAWS" SEED="$SEED" \
       EVAL_SEQUENCES="$EVAL_SEQUENCES" SCORE_WORKERS="$SCORE_WORKERS" BUNDLES_FROM="$BUNDLES_FROM" \
+      NTX_POOL_SANDBOXES_PER_HOST="$NTX_POOL_SANDBOXES_PER_HOST" NTX_POOL_MAX_HOSTS="$NTX_POOL_MAX_HOSTS" \
       python3 - <<'PYEOF'
 import json, os, subprocess
 from huggingface_hub import HfApi
@@ -97,8 +102,11 @@ manifest = {"job": job, "status": os.environ["STATUS"], "exit_code": int(os.envi
             "space": os.environ["SPACE_REPO"], "space_revision": os.environ["SPACE_REV"],
             "qwen_revision": os.environ["QWEN_REV"], "flavor": os.environ.get("ACCELERATOR", ""),
             "bank_path": os.environ["BANK_PATH"], "steps": int(os.environ["STEPS"]),
+            "grpo_steps": int(os.environ["GRPO_STEPS"]),
             "eval_draws": int(os.environ["EVAL_DRAWS"]), "seed": int(os.environ["SEED"]),
             "eval_sequences": int(os.environ["EVAL_SEQUENCES"]), "score_workers": int(os.environ["SCORE_WORKERS"]),
+            "pool_sandboxes_per_host": int(os.environ["NTX_POOL_SANDBOXES_PER_HOST"]),
+            "pool_max_hosts": int(os.environ["NTX_POOL_MAX_HOSTS"]),
             "bundles_from": os.environ.get("BUNDLES_FROM") or None,
             "pilot_bundle_digest": digest("work/round-02/pilot/bundle.json"),
             "eval2_bundle_digest": digest("work/round-02/eval2/bundle.json"),
@@ -279,18 +287,19 @@ COMMON=(--isolated-worker --engine "$LYPNING_L_BIN" --revision "$QWEN_REV" --see
         --eval-sequences "$EVAL_SEQUENCES" --score-workers "$SCORE_WORKERS")
 PILOT="$ROUND/pilot/bundle.json"
 EVAL2="$ROUND/eval2/bundle.json"
-TRAIN=(--steps "$STEPS" --eval-every 5 --patience 3 --rank 16)
+SFT_TRAIN=(--steps "$STEPS" --eval-every 25 --patience 3 --rank 16)
+GRPO_TRAIN=(--steps "$GRPO_STEPS" --eval-every 5 --patience 3 --rank 16)
 
 # 7a. Plan first (no GPU imports), then the unadapted dev control.
 STAGE=plan
-run "${TV[@]}" sft --plan --bundle "$PILOT" --output "$ROUND/sft-plan" "${COMMON[@]}" "${TRAIN[@]}" --batch-size 4
+run "${TV[@]}" sft --plan --bundle "$PILOT" --output "$ROUND/sft-plan" "${COMMON[@]}" "${SFT_TRAIN[@]}" --batch-size 4
 STAGE=base-dev
 run "${TV[@]}" eval --bundle "$PILOT" --output "$ROUND/base-dev" "${COMMON[@]}"
 checkpoint
 
 # 7b. Bounded SFT; best.json selects the adapter, step 0 included, never the last checkpoint.
 STAGE=sft
-run "${TV[@]}" sft --bundle "$PILOT" --output "$ROUND/sft" "${COMMON[@]}" "${TRAIN[@]}" --batch-size 4
+run "${TV[@]}" sft --bundle "$PILOT" --output "$ROUND/sft" "${COMMON[@]}" "${SFT_TRAIN[@]}" --batch-size 4
 SFT_STEP=$(python3 -c 'import json; print(json.load(open("work/round-02/sft/best.json"))["step"])')
 SFT_ADAPTER="$ROUND/sft/adapter-$SFT_STEP"
 echo "== sft selected step $SFT_STEP: $SFT_ADAPTER"
@@ -333,7 +342,7 @@ set -e
 if [ "$GATE" -eq 0 ]; then
   STAGE=grpo
   run "${TV[@]}" grpo --adapter "$SFT_ADAPTER" --probe "$ROUND/probe/probe.json" --bundle "$PILOT" \
-    --output "$ROUND/grpo" "${COMMON[@]}" "${TRAIN[@]}" --generations 4
+    --output "$ROUND/grpo" "${COMMON[@]}" "${GRPO_TRAIN[@]}" --generations 4
   GRPO_STEP=$(python3 -c 'import json; print(json.load(open("work/round-02/grpo/best.json"))["step"])')
   GRPO_ADAPTER="$ROUND/grpo/adapter-$GRPO_STEP"
   echo "== grpo selected step $GRPO_STEP: $GRPO_ADAPTER"

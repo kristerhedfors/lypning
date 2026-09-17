@@ -1,4 +1,4 @@
-# Training programme status — 2026-09-16
+# Training programme status — 2026-09-17
 
 One page for the operator and the reviewing session: where the numbers stand,
 what is built, what is next, how much the needle can be expected to move, and
@@ -37,8 +37,16 @@ realised macro the tool now returns. A benchmark eval arm at a k the rule was no
 priced at is now refused outright, so round-02's k=4 arm cannot recur.
 
 **The next step is §10, and its first four rungs cost nothing.** Nothing paid
-runs before the rung below it has been read. The open decisions are
-`ORCHESTRATION.md` ledger rows S2 and S3 and §8 below.
+runs before the rung below it has been read. The 2026-09-17 decisions are in
+`reviews/2026-09-17-round02-full-assessment.md` and the closed ledger rows.
+
+**Codex review, 2026-09-17:** round-02 produced no completed eval-2 arm and no
+model-quality verdict. Paid work remains held. The timeout remains a hard abort;
+16 scorers now have an explicit 4-sandboxes/host × 4-host capacity plan, and
+successful rows beside a block survive. Held-out lever ranking is refused,
+the declaration review is closed under rule 2, real adapter dosage floors are
+gates, and the verifier Space now has a content-free health mode. Fable's next
+session is only the private-artifact S0a–S0c read in `START_NEXT_ROUND.md`.
 
 ## 1. The goal, in one sentence and one number
 
@@ -81,7 +89,7 @@ number we want.
 | Round-02 pipeline on Hugging Face, pooled sandboxes | plumbing complete: 16/16 starter references verified, SFT and GRPO smoke stages sealed, planner ran. **No model-quality number** | job `6aa9c4c35527934177ee6c46`, 2026-09-15, tiny random Qwen config, never the 27B weights (`reports/2026-09-15-fable-round02-smoke.md`) |
 | Round-02 pilot on the 27B weights, task-first path | SFT 20 steps (loss 0.83 → 0.54), step 5 selected; probe 172/200 correct, GRPO admitted, GRPO flat (step 0 kept); dev 7 cases: base 78.6% / 75.0% correct / correct-and-native, SFT 82.1% / 75.0%; test 7 cases: base 85.7% / 57.1%, SFT 82.1% / 57.1%, paired native delta 0.0pp [−10.7, +10.7]. **Eval-2: base arm blocked at 384/1,200 draws by an engine timeout on a CPU-bound candidate under 16-way concurrent scoring (partial base 87.4% / 69.8%); SFT and GRPO arms never ran** | job `6aaa87465527934177ee9f34`, 2026-09-16, engine `2e079e786a655ab6`, policy v3, k = 4 (`reports/2026-09-16-fable-round02-run.md`) |
 | Eval-2 base rate on the training bank (legacy tree), full pilot draw | 87.9% correct, 68.7% correct-and-native, family macro over 64 cases. **No power figure from that draw is quotable**: every row of the `EVAL2.md` §7 curve is keyed by a lift the simulation was not shown to deliver, and the uniform reading is withdrawn (2026-09-16). The re-print, keyed on the realised macro, is rung S0a in §10 | run `eval-20260916-063539`, 2026-09-16, k = 16, engine `2e079e786a655ab6` (`EVAL2.md` §7, §11) |
-| Lever split of this repository's own refused captures | 195 self-referential / 262 legitimate-fallback / 186 engine-addressable / 0 residue, over 643 refusals in 9,064 classified rows. All 26 families §4 itemises land in §4's own bucket; the disagreement — **−36 engine-addressable, +41 fallback** — lies entirely inside the 235 entries §4 counted but never named. Not a model number and not the deployment population — the one that decides the budget is rung S0b's, on the eval-2 draws | `nt levers --against`, 2026-09-16, this tree, engine `lypning-l` built from `346e59c`, rule 1, 130 declared families of which 108 are new and unreviewed (`reports/2026-09-16-fable-sladder-s0-device-audit.md`) |
+| Lever split of this repository's own refused captures | 195 self-referential / 242 legitimate-fallback / 206 engine-addressable / 0 residue, over 643 refusals in 9,064 classified rows. Codex moved 13 deterministic new families (20 entries) to engine-addressable and accepted the remainder as current-corpus policy. Against historical §4: **−16 engine-addressable, +21 fallback, −5 other**. Not a model number and not the deployment population — S0b's private draw vector decides the budget | `nt levers --against`, 2026-09-17, rule 2, reviewed in `reviews/2026-09-17-round02-full-assessment.md` |
 
 Data side, same date:
 
@@ -267,10 +275,10 @@ Codex's review, not an approval.
    (`L-TRAINING-ROADMAP.md`). The two loops share one budget and the engine
    loop has the better record.
 
-## 8. Decisions requested
+## 8. Decision state
 
-- Codex: gate 6 (pooled tier) and whether eval-2 construction is authorized
-  ahead of the pilot dataset (this document's step 3 before step 5).
+- Codex's 2026-09-17 review accepts the operator-selected pooled tier with its
+  recorded residual risks, holds paid work, and assigns only S0a–S0c to Fable.
 - Operator: cost ceiling for eval-2 and for round-02 proper; approval of the
   question-proposals pilot budget; the primary metric freeze in §6 item 2.
 
@@ -324,6 +332,14 @@ decide whether a run is a model result at all. The round itself did **not** run:
 every rung of §10 is blocked on this device, each on a different prerequisite
 (`reports/2026-09-16-fable-sladder-s0-device-audit.md` §1).
 
+Reviewed independently by Codex on 2026-09-17
+(`reviews/2026-09-17-round02-full-assessment.md`). The declaration delta above
+is superseded by rule 2's reviewed 195 / 242 / 206 / 0 vector; held-out ranking
+is refused; the native-timeout policy stays abort; pool headroom, partial-row
+durability, Space health and adapter dosage gates are implemented. Historical
+text remains here because it records what the S-ladder audit asked, not the
+answer it later received.
+
 ## 10. The live sequence: the S-ladder
 
 **This is the one home for what runs next**, added 2026-09-16 as step 8 of
@@ -343,11 +359,11 @@ The ladder itself, with the prediction and stop rule for each rung, is
 `ASSESSMENT.md` §5 and §6; it is not restated here, because a seventh copy of a
 sequence is the problem §3.7 of that document names. In one line each:
 
-| rung | what it measures | cost | state, 2026-09-16 (read the S0b cell: the tool half moved) |
+| rung | what it measures | cost | state, 2026-09-17 |
 |---|---|---|---|
-| S0a | `EVAL2.md` §7 re-printed from the real pilot rows, keyed on the realised macro lift | $0 | the tool half done in this tree; the read is owed by the other device |
-| S0b | the by-kind refusal vector of the 171 correct-but-fallback pilot draws | $0 | **the tool half done in this tree 2026-09-16** (`nt levers --run <run> --status correct-fallback --rank`, demonstrated end to end on a local run); the read is owed by the other device, as S0a's is |
-| S0c | the round-02 probe rollouts by native status, per train case | $0 | not started |
+| S0a | `EVAL2.md` §7 re-printed from the real pilot rows, keyed on the realised macro lift | $0 | exact command assigned to Fable in `START_NEXT_ROUND.md`; private read owed |
+| S0b | the by-kind refusal vector of the 171 correct-but-fallback pilot draws | $0 | rule 2 reviewed; exact `--vector` command assigned to Fable. `--rank` is refused on held-out draws |
+| S0c | the round-02 probe rollouts by native status, per train case | $0 | private artifact and comparison contract named in `START_NEXT_ROUND.md`; read owed |
 | S1 | stage 0b on the training bank: bare vs `--system-file subset-spec.md`, k=16 | ~$5 | not started; the first positive control the programme would have |
 | S2 | the rewritable fraction: verified native rewrites of the fallback draws | tokens | not started; ledger row D1 |
 | S3 | stage 5: refusals per 100 programs through opencode on base | harness time | not started; settles the deployment prior |
@@ -357,9 +373,8 @@ sequence is the problem §3.7 of that document names. In one line each:
 before the rung below it has been read.** S0a–S0c and S3 cost nothing and
 depend on nothing.
 
-Two of the three "stop doing" rules of `ASSESSMENT.md` §6 remain prose, and
-one does not: since 2026-09-16 a non-smoke benchmark eval arm at any k but
-`training_contract.PROTOCOL_EVAL_DRAWS` is refused by `train_verified.preflight`,
-so the k=4 arm that cost round-02 its eval cannot recur. The training-case floor
-and the three-seed rule are still prose, not gates; whether they should become
-gates is asked in `ORCHESTRATION.md` ledger row S3.
+The runner now enforces the per-job parts of all three “stop doing” rules:
+confirmatory eval-2 is k=16; real adapter stages require ≥1,000 train cases and
+one of seeds 1111/2222/3333; SFT requires one complete family cycle and ≥50,000
+scheduled supervised tokens. The three-seed aggregate still requires three
+separate jobs and is reviewed from their manifests, never inferred from one.

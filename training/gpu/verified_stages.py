@@ -8,7 +8,7 @@ import random
 
 from pipeline.jsonio import append_jsonl
 from pipeline.training import Reward, TrainingError, messages
-from pipeline.training_contract import learning_rate
+from pipeline.training_contract import MIN_SUPERVISED_TOKENS, learning_rate
 
 
 def balanced_cases(cases):
@@ -20,24 +20,55 @@ def balanced_cases(cases):
     return [g[i % len(g)] for g in groups.values() for i in range(size)]
 
 
+def sft_batches(cases, examples, steps, batch_size, seed):
+    """Deterministic family cycles: every family appears before any repeats.
 
-def train_sft(model, tok, args, train_cases, examples, core, torch, effective, checkpoint):
+    Within a family one example is sampled per cycle. This preserves equal
+    family mass without the round-02 failure mode where with-replacement draws
+    could omit a small family entirely during a short run.
+    """
+    if len(cases) != len(examples):
+        raise TrainingError("SFT cases/examples differ; do not silently change the curriculum")
+    families = {}
+    for case, example in zip(cases, examples):
+        families.setdefault(case["family"], []).append(example)
+    if not families:
+        raise TrainingError("SFT needs training families")
+    rng = random.Random(seed)
+    schedule = []
+    needed = int(steps) * int(batch_size)
+    keys = list(families)
+    while len(schedule) < needed:
+        cycle = keys[:]
+        rng.shuffle(cycle)
+        for family in cycle:
+            schedule.append(rng.choice(families[family]))
+            if len(schedule) == needed:
+                break
+    return [schedule[i:i + batch_size] for i in range(0, needed, batch_size)]
+
+
+def supervised_tokens(batches):
+    """The exact number of assistant tokens the planned SFT schedule exposes."""
+    return sum(sum(token != -100 for token in example["labels"][1:])
+               for batch in batches for example in batch)
+
+
+def train_sft(model, tok, args, train_cases, examples, core, torch, effective, checkpoint,
+              batches=None):
     steps, every = effective["steps"], effective["eval_every"]
     device = model.device
     core.set_train_mode(model)
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(params, lr=effective["learning_rate"], weight_decay=0.01)
-    rng = random.Random(args.seed)
-    families = {}
-    for case, example in zip(train_cases, examples):
-        families.setdefault(case["family"], []).append(example)
-    for step in range(1, steps + 1):
-        # Sample family then case: no duplicated-row weighting artefacts.
-        batch = [rng.choice(rng.choice(list(families.values()))) for _ in range(args.batch_size)]
+    batches = batches or sft_batches(train_cases, examples, steps, args.batch_size, args.seed)
+    seen_tokens = 0
+    for step, batch in enumerate(batches, 1):
         lr = learning_rate(step, steps, effective["learning_rate"], args.warmup_ratio)
         for group in optimizer.param_groups:
             group["lr"] = lr
         nlabels = sum(sum(x != -100 for x in e["labels"][1:]) for e in batch)
+        seen_tokens += nlabels
         optimizer.zero_grad(set_to_none=True)
         loss_sum = 0.0
         for example in batch:
@@ -60,9 +91,14 @@ def train_sft(model, tok, args, train_cases, examples, core, torch, effective, c
         torch.nn.utils.clip_grad_norm_(params, 1.0, error_if_nonfinite=True)
         optimizer.step()
         append_jsonl(args.output / "loss.jsonl", {"step": step, "loss": loss_sum, "learning_rate": lr,
-            "supervised_tokens": nlabels})
-        if (step % every == 0 or step == steps) and checkpoint(step):
-            break
+            "supervised_tokens": nlabels, "supervised_tokens_total": seen_tokens})
+        if step % every == 0 or step == steps:
+            stop = checkpoint(step)
+            # Checkpoint selection may decide early that later steps regress,
+            # but a real S4 replicate still executes its registered evidence
+            # dose. Step 0 remains selectable throughout.
+            if stop and (args.smoke or seen_tokens >= MIN_SUPERVISED_TOKENS):
+                break
 
 
 def train_grpo(model, tok, args, bundle, train_cases, verifier, effective, policy, checkpoint):

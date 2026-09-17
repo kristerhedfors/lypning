@@ -326,6 +326,15 @@ by-kind vector of eval-2's 171 correct-but-fallback draws — promised by
 `EVAL2.md` §4 and not yet published — is the same table for the population
 that matters, and it decides the split of the budget between the two levers.
 
+**Codex review, 2026-09-17.** The table above remains the dated §4 judgement;
+the executable rule-2 review does not reproduce it blindly. Thirteen of the
+S-ladder audit's new deterministic families (20 entries) moved from fallback
+to engine-addressable. The reviewed local result is now 195 self-referential,
+242 legitimate fallback, 206 engine-addressable and 0 other. The remaining
+new declarations stand as current-corpus policy, not a universal statement
+about Python. The population that decides investment remains S0b's private
+draw vector.
+
 ## 5. What a signal would look like
 
 A signal, for this programme, is a number with four properties: it costs
@@ -360,12 +369,12 @@ review apply as `ORCHESTRATION.md` says.
 |---|---|---|---|---|---|
 | 1 | Run S0a–S0c on the private pilot and probe rows; append the re-printed power table to `EVAL2.md` §7 dated, and the by-kind vector to `EVAL2.md` §11 | Fable (other device) | $0 | whether the instrument reading in §3.4 holds on real rows; where the headroom lives; whether round-02's adapter moved its own prompts | none: these are reads |
 | 1a | Done 2026-09-16, this tree: the mislabel fixed at its source rather than only described — `power_curve_clustered` returns the realised macro lift and a `capped` flag, `nt power --eval2` keys every cell on the macro and counts the clipped cells, `EVAL2.md` §7's uniform reading withdrawn, and a benchmark eval arm at a k the rule was not priced at is refused in `preflight` | — | that step 1's re-print cannot reprint the same mislabel, and that round-02's k=4 arm cannot recur | none: no run touched |
-| 2 | Fix the two round-02 blockers before any eval-2 arm: CPU headroom per sandbox (4 per host, 4 hosts, or 4 workers on one host); a native timeout after a correct oracle scores `not-native` with a witness row in an **evaluation** arm and still aborts a **reward** stage | Fable, Codex rules on the policy | $0 | whether eval-2 can complete at all | an arm that blocks again is a different bug |
+| 2 | **Done in code 2026-09-17:** 16 scorers are provisioned as 4 sandboxes/host × at most 4 hosts; launcher capacity below the worker count is refused. A native timeout after a correct oracle still aborts every arm, because scoring it would make the endpoint load-dependent; the witness and successful sibling rows survive | Codex decision | $0 | whether eval-2 can complete without changing what “native” means | any blocked arm remains incomplete and stops the rung |
 | 3 | Run S1 (stage 0b) on the training bank and S3 (stage 5) on base Qwen, in parallel | Fable | ~$5 + harness time | the fork `LADDER.md` stage 0b describes, on the population that matters; the deployment prior | S3 under 10 refusals per 100 → stop training, engine only |
 | 4 | Run S2: Codex authors or reviews native rewrites of every correct-but-fallback draw on the training bank, through the pooled verifier, gate C enforced; the rewritable fraction and its by-kind table go in the report | Codex authors, Fable verifies | tokens | the ceiling of the model lever; the first SFT target with a reason to work | under 10 of 64 cases gain a native reference → the model lever is capped and the round's lever is the engine (the run report's own stop rule) |
 | 5 | Grow the **training** side to ≥ 1,000 cases without touching eval-2: the remaining classified draw, the question campaign, S2's rewrites, fallback controls kept at the bank's ratio. Rejection-sampled targets need the verifier, not oracle-grade review; only authored tasks need the review record | Codex reviews, Fable prepares | tokens + review | whether S4 can be sized to its prediction | eval-2 leak check (`nt eval2-leaks`) fails → drop the training case, never the eval case |
 | 6 | Feed the engine from S0b and S2's tables: rank kinds by independent families × draws, serve the top of the list, rebuild, regrade, new bundle | hillclimb loop | engine time | the deployment number, directly | a MISMATCH is a bug and stops the change (invariant 1) |
-| 6a | **Its input exists since 2026-09-16**, which it never had before: `nt levers --rank` ranks the engine-addressable families by independent × units over this repository's own capture, and the same command reads S0b's draw rows when they arrive. The local ranking is train-side and so is a legitimate build order; pointed at an eval-2 arm it is a description, and the banner `refusals.HELD_OUT_BANNER` now travels with a draw table, and whether that is protection enough is asked of Codex in `ORCHESTRATION.md` ledger row S4 | hillclimb loop | $0 for the ranking | which construct is in front of the most independent programs | unchanged: a MISMATCH is a bug and stops the change |
+| 6a | **Closed 2026-09-17:** `nt levers --rank` remains a train-side build order over the repository capture. It is refused on draw/held-out rows; S0b uses `--vector`, which prints reviewed families and counts without a score or priority order | hillclimb loop | $0 for the train-side ranking | which construct is in front of the most independent train-side programs | unchanged: a MISMATCH is a bug and stops the change |
 | 7 | S4: three-seed SFT, ≥ 50,000 supervised tokens, distillation targets if S1 was positive else S2 rewrites, selection on dev by correctness, eval-2 at k=16 with the regenerated base arm; predicted effect and its shape written into `EVAL2.md` before the job | Fable, Codex reviews | ~$60–90 | the first informative answer to the programme's question | gate A fails → void; realised effect under +3pp with S1–S3 positive → the SFT recipe is wrong, not the data |
 | 8 | Collapse the plan into one place: `STATUS.md` carries the S-ladder as the one live sequence and every other ordering points at it rather than restating it. **Re-scoped and done 2026-09-16 — see below; as first written this step would have destroyed records** | operator's call | $0 | which document a new session reads first | none |
 
@@ -406,10 +415,11 @@ And three things to stop doing, each of which has already cost a round:
   longer a rule in a document: since 2026-09-16 `preflight` refuses a non-smoke
   benchmark eval arm at any k but `training_contract.PROTOCOL_EVAL_DRAWS`, so
   the runner's default of 4 — which `EVAL2.md` §4 already called a smoke
-  setting — cannot reach a confirmatory arm again.** The other two bullets stay
-  prose deliberately: a case floor of 1,000 would refuse every bundle in this
-  tree today, and which floor is right is a decision §8 asks Codex and the
-  operator for, not one this document may install.
+  setting — cannot reach a confirmatory arm again.** Since the independent
+  review on 2026-09-17, real adapter stages also enforce the 1,000-case floor,
+  the registered seeds 1111/2222/3333, at least one complete family cycle and
+  50,000 scheduled supervised-token exposures. All three seeds remain an
+  aggregate-round requirement: one process cannot prove the other two ran.
 - **No new planning document.** Amend `STATUS.md`. A sixth sequence is not a
   plan; it is the reason the first five were not executed.
 
@@ -432,12 +442,12 @@ None of these is a failure of the apparatus, which is the best thing the
 programme has built. They are the programme finally being able to lose in a
 way it can see.
 
-## 8. Decisions requested
+## 8. Decision state
 
-- **Codex:** whether §3.4 changes the reading of round-02's null (it says the
-  null was uninformative for a different reason than the report gives: the
-  adapter was too small, not the instrument); the native-timeout policy in
-  step 2; authorisation of steps 3 and 4.
+- **Codex, closed 2026-09-17:** §3.4 changes the reading of round-02's null; it
+  is uninformative because dosage/data were inadequate and no eval-2 arm
+  completed. Native timeout stays a hard abort. Only S0a–S0c are authorized;
+  steps 3, 4 and every GPU rung remain held pending that report.
 - **Operator:** the ceiling for steps 3, 4 and 7; whether step 8 is wanted;
   and the standing rule that no GPU step runs before the rung below it has
   been read.
