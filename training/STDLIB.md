@@ -116,7 +116,7 @@ The comparison is over bytes on both sides, never over decoded text: decoding
 applies universal-newline translation, which would hide a CRLF divergence on
 exactly the axis an engine is most likely to get wrong.
 
-Over the 34 committed units, on 2026-09-16, with
+Over the 34 committed units, on 2026-09-17, with
 
 ```
 PYTHONPATH=src:training python3 -m pipeline.cli stdlib-verify \
@@ -127,8 +127,13 @@ PYTHONPATH=src:training python3 -m pipeline.cli stdlib-verify \
   --engine lypning-l=/root/.lypning/bin/lypning-l
 ```
 
-the labels came out 26 `lypning`, 8 `lypning-l`, 0 drops, over 121 CPython names
-filled. Re-run it before quoting it (invariant 3): the units grow.
+the labels came out 25 `lypning`, 9 `lypning-l`, 0 drops, across 120 distinct
+CPython names — 121 `# fills:` entries, because `struct.calcsize` is named by
+both `struct_pack` and `struct_unpack`. Re-run it before quoting any of that
+(invariant 3): the units grow, and a unit edited after this run can move its own
+label. That is not a caution in the abstract — the same command on 2026-09-16
+printed 26 and 8, and `struct_pack` moved to `lypning-l` the day after, when it
+gained cases above 2**63 - 1 and the value going in became a bigint.
 
 ### Where the verified rows live
 
@@ -138,7 +143,9 @@ rebuilt on demand for one reason: labelling needs both Rust binaries, and a
 reader, a reviewer or the assemble stage should be able to hold the corpus
 without a toolchain. `first_seen` is passed in and the serialisation is fixed,
 so re-running the writer over an unchanged tree rewrites nothing — which is what
-`git diff --exit-code` at the end of `.github/workflows/training.yml` checks.
+the `Tests must not rewrite recorded datasets or results` step of
+`.github/workflows/training.yml` checks, with `git diff --exit-code` straight
+after the training suite.
 
 That makes it the one artifact here that can go stale quietly, so
 `training/tests/test_stdlib.py` §9 reads it: the names and `source_sha256` of
@@ -222,8 +229,16 @@ excluded. When they diverge, fix the file, never the engine's set.
 only. No `push`, no `pull_request`, no `schedule`: the provider secret must
 never be reachable from a fork PR, and a corpus that regenerated itself on every
 push would spend money nobody authorised. `NTX_API_KEY` is mapped from the
-`BERGET_API_KEY` secret at **step** level, on the two steps that call the
-provider, never job-wide.
+`BERGET_API_KEY` secret at **step** level, never job-wide and never
+workflow-wide, on the **three** steps that call the provider: *Resolve the
+newest active GLM and plan the batches* in `plan`, *Generate one batch* in
+`generate`, and *One bounded repair round* in `repair`. `grep -n
+'BERGET_API_KEY' .github/workflows/stdlib-corpus.yml` returns exactly those
+three lines (101, 203, 352 on 2026-09-17); every other step in the workflow,
+including all four `dry_run` steps and every verify and assemble step, runs
+without the secret in its environment at all. If that grep ever returns a
+fourth line, either the count here is stale or a step gained the secret without
+anyone saying so.
 
 1. **plan** — resolves the generation model against the provider's live
    `/v1/models`, drops every target in `stdlib/targets.json` whose `# fills:`
@@ -277,16 +292,20 @@ reader should know that before trusting one. The subset has no classes, so
 there is nothing to hang a method on; what CPython spells `d.isoformat()` a unit
 spells `date_isoformat(d)` over a tuple or a dict.
 
-Measured 2026-09-16, each refusing with exit 90 on `lypning-l`:
+Measured 2026-09-16 and re-run unchanged 2026-09-17, each refusing with exit 90
+on `lypning-l`. The refusal column is the `<kind>: <detail>` half of the
+contract line, quoted whole — the `raise ValueError()` detail is long because
+the engine explains what it cannot distinguish, and truncating it here would
+make this table disagree with the bytes:
 
-| written                     | refusal                                    |
-| --------------------------- | ------------------------------------------ |
-| `class C: pass`             | `class: class definition`                   |
-| `class E(ValueError): pass` | `class: class definition`                   |
-| `def g(): yield 1`          | `generator: yield expression`               |
-| `import functools`          | `module: import functools`                  |
-| `raise ValueError()`        | `exception: ValueError() with no arguments` |
-| recursion at depth 181      | `recursion: call depth beyond 180`          |
+| written                     | refusal                                                                                        |
+| --------------------------- | ---------------------------------------------------------------------------------------------- |
+| `class C: pass`             | `class: class definition`                                                                       |
+| `class E(ValueError): pass` | `class: class definition`                                                                       |
+| `def g(): yield 1`          | `generator: yield expression`                                                                   |
+| `import functools`          | `module: import functools`                                                                      |
+| `raise ValueError()`        | `exception: ValueError() with no arguments, which this value cannot tell from ValueError("")`   |
+| recursion at depth 181      | `recursion: call depth beyond 180`                                                              |
 
 (`f(178)` in the same shape printed `0` and exited 0.) Decorators, `nonlocal`,
 `async`, the walrus and keyword-only parameters refuse the same way.

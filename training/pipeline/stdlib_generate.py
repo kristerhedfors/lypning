@@ -30,7 +30,10 @@ generation/verification evidence even when it contributes no training loss" — 
 the reason ``draws.jsonl`` records the raw completion of every rollout, including
 the ones that produced nothing. A rollout that contributed no candidate still
 says what the model reached for, and that is the only measurement of whether the
-prompt is working.
+prompt is working. Each row is APPENDED AS IT IS PRODUCED rather than buffered
+until the batch returns: a step killed by a job timeout, or a runner that goes
+away, would otherwise upload the candidates it had already written with no
+record at all of what they cost.
 
 **Draws are a ceiling, not a count.** ``draws_per_target`` bounds the retries a
 target may cost, and drawing stops at the first structurally valid candidate. A
@@ -80,6 +83,13 @@ PINNED_PRICE_IN = 0.25
 PINNED_PRICE_OUT = 0.50
 PINNED_PRICE_CURRENCY = "EUR"
 
+#: The day the REFUSED and SUPPORTED blocks of the system prompt were last run,
+#: line by line, against both binaries. Deliberately NOT :data:`PINNED_ON`,
+#: which dates a provider LISTING: sharing one constant would let a re-pin of
+#: the model silently redate a measurement nobody re-ran, which is the pairing
+#: invariant 3 exists to keep honest.
+SUBSET_MEASURED_ON = "2026-09-17"
+
 #: Substring a model id must carry to be a candidate, matched case-insensitively.
 MODEL_MATCH = "glm"
 
@@ -95,6 +105,13 @@ TARGETS_SCHEMA = "lypning-stdlib-targets/1"
 #: something passes: a second round would be a search over the verifier, and a
 #: unit found that way is a unit fitted to the checks. The workflow says so too.
 REPAIR_ROUNDS = 1
+
+#: The sentence :func:`repair_prompt` opens with, and the one signal that tells
+#: :class:`FakeBackend` it is being asked to repair rather than to generate. A
+#: constant rather than a literal in each place, because a fake that recognised
+#: a wording the prompt no longer uses would answer every repair with a fresh
+#: generation and the dry run would go on passing.
+REPAIR_MARKER = "This unit was REJECTED."
 
 DEFAULT_MAX_TOKENS = 6144
 DEFAULT_DRAWS_PER_TARGET = 2
@@ -603,15 +620,17 @@ def plan_batch(plan: Mapping[str, Any], batch: int) -> List[Target]:
 # --- the prompt --------------------------------------------------------------
 
 #: Constructs both engines refuse, as ``kind: detail`` and the source that gets
-#: it. Measured on 2026-09-16 against the binaries built that session; the engine
-#: name is deliberately absent from every line, because each variant writes its
-#: OWN name at the head of its refusal (invariant 9) and a literal here would be
-#: a second, drifting copy of one of them.
+#: it. Every line was run on :data:`SUBSET_MEASURED_ON` against both binaries —
+#: the date lives in that constant and not in this comment, so there is one place
+#: to change when it is re-measured. The engine name is deliberately absent from
+#: every line, because each variant writes its OWN name at the head of its
+#: refusal (invariant 9) and a literal here would be a second, drifting copy of
+#: one of them.
 _REFUSED = """\
     class Foo: ...                class: class definition
     yield / yield from            generator: yield expression
     @decorator                    decorator: decorated definition
-    async def / await             async: async def
+    async def / await             async: async def / async for
     (n := 5)                      walrus: assignment expression (:=)
     nonlocal                      nonlocal: nonlocal declaration
     from m import *               import: star import
@@ -619,7 +638,9 @@ _REFUSED = """\
     except*                       except-star: except* group
     del l[1:3]                    del: del of this target form
     def f(a, *, b)                kwonly: keyword-only parameters
-    [0, *a, 3] in a display        unpack: * in a list display
+    [*a, 3] in a display          unpack: * in a list display
+      -> `[0, *a]` is NOT this: a star after an element is a SyntaxError,
+         exit 1 with a traceback, which is the program's own failure
     f'{x=}'                       fstring: self-documenting {x=} field
     1j                            complex: complex literal
     ... / Ellipsis                ellipsis: Ellipsis literal
@@ -647,9 +668,18 @@ _REFUSED = """\
     math.log and the transcendentals         module-attr: math.log
     sys.path / sys.version / sys.modules     module-attr: sys.path
     os.listdir(...) even inside sorted()     os-listdir
-    os.environ (read, write or `in`)         environ
+    os.environ, in ANY way at all            environ: PEP 538 C-locale coercion
+      -> whenever LC_CTYPE is unset, empty, `C` or `POSIX`, which is the
+         state CI and this sandbox run in; read, write, `in`, len() and
+         sorted() all refuse alike. os.getenv(name) is NOT this and runs.
+    print(os.environ) or its .keys()         repr: repr() of os.environ
+      -> the other branch. Under an LC_CTYPE the engine will not coerce,
+         the mapping IS served and everything but its repr() runs -- so a
+         unit that reads os.environ passes on one machine and refuses on
+         the next. Do not touch os.environ in a unit at all.
     random.random() unseeded                 random
     print of a set with more than one element    set-order
+    1 is 1 / 'a' is 'a'           identity: `is` between two equal immutables
     Counter+Counter, Counter.elements, defaultdict(lambda: ...)
     re lookahead (?=...)          re: lookahead
     json.dumps(default=...)       json: json.dumps(default=...)
@@ -671,9 +701,10 @@ EXPRESSIONS passed to sum/any/all/sorted/max/min/list/join, and
 including nesting, !r, {v:.2f}, {255:x}, {5:03d}; % formatting and .format();
 slicing including [::-1] and slice ASSIGNMENT `l[0:2] = [9]`; bytes literals,
 .hex(), .decode(), str.encode(); int/float arithmetic, //, %, **, bitwise,
-chained comparisons, is, in; 1_000_000, 0xff, 0o17, 0b101; shadowing and binding
-builtins (`f = len`, `a = l.append`, `str.upper` as a sorted() key);
-sys.exit(n); input().
+chained comparisons, `in`, `is`/`is not` against None, True and False and
+between MUTABLE objects (`a is b` on two lists); 1_000_000, 0xff, 0o17, 0b101;
+shadowing and binding builtins (`f = len`, `a = l.append`, `str.upper` as a
+sorted() key); sys.exit(n); input().
 
 Working str methods: upper lower strip lstrip rstrip split rsplit splitlines
 join replace find rfind index rindex startswith endswith count ljust rjust zfill
@@ -701,9 +732,19 @@ NO nonlocal, so a closure cell is a one-element list:
 NO generators, so return a materialised list. NO recursion past 180 frames, so
 every tree walk and divide-and-conquer carries an EXPLICIT stack.
 
-NO custom exceptions (`class E(Exception)` refuses) and most builtin exception
-names are not even bound. Raise `ValueError("message")` and nothing else: one
-argument, non-empty."""
+NO custom exceptions (`class E(Exception)` refuses), but the builtin exception
+names mostly ARE bound: ValueError TypeError KeyError IndexError AttributeError
+NameError UnboundLocalError RuntimeError ZeroDivisionError OverflowError
+ArithmeticError LookupError StopIteration AssertionError NotImplementedError
+OSError IOError FileNotFoundError PermissionError UnicodeDecodeError SystemExit
+Exception BaseException all raise and all catch. Raise the one CPython raises.
+
+What refuses is the ARITY, not the name: `raise X("message")`, exactly one
+argument and non-empty. `X()` and `X("a", 2)` are both an `exception:` refusal.
+A handful of names are not bound at all and refuse as `builtin: <Name>` —
+ImportError, RecursionError, EOFError, MemoryError, BufferError,
+FloatingPointError, SyntaxError, IndentationError, KeyboardInterrupt,
+GeneratorExit, StopAsyncIteration."""
 
 
 def engine_capabilities() -> str:
@@ -713,6 +754,12 @@ def engine_capabilities() -> str:
     :data:`lypning.engines.VARIANT_CAPS` so that a variant that gains a
     capability gains it in the prompt on the same commit. Typing the seven module
     names here would be a fourth place they live and the only one with no test.
+
+    Each name is a CAPABILITY, and most but not all of them are a module: the
+    line says so rather than listing which, because naming the exception here
+    would hand-type what ``VARIANT_CAPS`` owns and would go stale the moment the
+    set changes. Without that sentence a model reads the list as an import list
+    and spends a rollout on one of them that is not importable.
     """
     lines: List[str] = []
     for name in lyp.SPECTRUM:
@@ -724,9 +771,12 @@ def engine_capabilities() -> str:
         else:
             extra = ", ".join(c[len("cap-"):] if c.startswith("cap-") else c
                               for c in caps)
-            lines.append("    %-12s adds %s. Anything it adds costs a wider engine, "
-                         "so reach for it only when the unit genuinely needs it."
-                         % (name, extra))
+            lines.append("    %-12s adds %s. Those are CAPABILITIES: most name a "
+                         "module to import, but not all — one of them is the "
+                         "64-bit integer ceiling above lifting, with nothing to "
+                         "import. Anything this variant adds costs a wider "
+                         "engine, so reach for it only when the unit genuinely "
+                         "needs it." % (name, extra))
     lines.append("    %-12s neither engine runs it. NOT a corpus row — a recorded "
                  "gap, and a wasted rollout." % lyp.CPYTHON)
     return "\n".join(lines)
@@ -769,14 +819,14 @@ THE ENGINES
 
 %s
 
-REFUSED BY BOTH ENGINES. Do not write any of these — they were measured, not
-guessed, on %s:
+REFUSED BY BOTH ENGINES. Do not write any of these — every line was run on both
+engines on %s, not guessed:
 
 %s
 
 `__name__` DOES work: `if __name__ == "__main__":` runs on both engines.
 
-SUPPORTED, confirmed by 1,361 probes:
+SUPPORTED — every clause below was run on both engines on %s too:
 
 %s
 
@@ -831,8 +881,9 @@ OUTPUT
 
 Emit exactly ONE fenced python code block containing the whole file, and nothing
 outside it — no preamble, no explanation, no second block.""" % (
-        core, engine_capabilities(), PINNED_ON, _REFUSED, _SUPPORTED, _IDIOMS,
-        closed_list(), stdlib.UNIT_SEPARATOR, stdlib.UNIT_SEPARATOR)
+        core, engine_capabilities(), SUBSET_MEASURED_ON, _REFUSED,
+        SUBSET_MEASURED_ON, _SUPPORTED, _IDIOMS, closed_list(),
+        stdlib.UNIT_SEPARATOR, stdlib.UNIT_SEPARATOR)
 
 
 def target_prompt(target: Target) -> str:
@@ -879,7 +930,7 @@ def repair_prompt(target: Target, source: str, verdict: str,
     ``conformance --plan`` is ordered by — the same words the rest of the project
     reasons in.
     """
-    lines = ["This unit was REJECTED. Fix it and return the whole corrected file.",
+    lines = [REPAIR_MARKER + " Fix it and return the whole corrected file.",
              "", "What rejected it:", "    %s" % verdict]
     if refusals:
         lines.append("")
@@ -927,12 +978,11 @@ class FakeBackend:
         return {"base_url": self.base_url, "model": self.model}
 
     def complete(self, messages: Sequence[Mapping[str, str]], **kw: Any) -> Completion:
-        user = ""
-        for m in messages:
-            if m.get("role") == "user":
-                user = str(m.get("content") or "")
-        slug = _slug_of_prompt(user)
-        text = "```python\n" + fake_unit_source(slug) + "```\n"
+        slug = _slug_of_prompt(messages)
+        # A repair exchange always answers with the clean file: that IS the
+        # repair. Only a first draw may come back deliberately broken.
+        broken = _fake_is_broken(slug) and not _is_repair(messages)
+        text = "```python\n" + fake_unit_source(slug, broken=broken) + "```\n"
         return Completion(
             text=text, reasoning=None,
             # Derived from the strings, not measured: a fake usage count that
@@ -944,22 +994,80 @@ class FakeBackend:
         )
 
 
-def _slug_of_prompt(user: str) -> str:
-    """The slug out of a target or repair prompt — the fake's only input."""
-    for line in user.splitlines():
-        if line.startswith("Write the unit for: "):
-            return line[len("Write the unit for: "):].strip()
+def _slug_of_prompt(messages: Sequence[Mapping[str, str]]) -> str:
+    """The slug this exchange is about — the fake's only input.
+
+    EVERY user message is scanned and the FIRST match wins, not the last one.
+    A repair exchange is four messages and the last of them is
+    :func:`repair_prompt`, which carries the rejected file and the engine's own
+    words but no "Write the unit for:" line; reading only the last message
+    answered "offline" for every repair job in a round, so every repair
+    candidate was byte-identical and all but the first were dropped as
+    duplicates. The target prompt that opens the exchange is the one that names
+    the target, and it is the first match by construction.
+    """
+    for m in messages:
+        if m.get("role") != "user":
+            continue
+        for line in str(m.get("content") or "").splitlines():
+            if line.startswith("Write the unit for: "):
+                return line[len("Write the unit for: "):].strip()
     return "offline"
 
 
-def fake_unit_source(slug: str) -> str:
+def _is_repair(messages: Sequence[Mapping[str, str]]) -> bool:
+    """Whether this exchange is a repair round, by the marker the prompt opens with."""
+    for m in messages:
+        if m.get("role") == "user" and REPAIR_MARKER in str(m.get("content") or ""):
+            return True
+    return False
+
+
+def _fake_is_broken(slug: str) -> bool:
+    """Whether the fake's first answer for this slug is deliberately unrunnable.
+
+    A dry run whose every candidate passes never reaches the repair stage, and a
+    stage nothing reaches is a stage nothing tests: the offline chain was
+    asserting on four of the five stages and reporting all five green. So about
+    half of any batch — by :func:`_seed_for`, the fold this module already has,
+    so there is one hash here and not two — comes back with a construct both
+    engines refuse. Verify drops it ``cpython-only``, which is repairable, and
+    the repair round answers the same slug with the clean file.
+
+    "About half" is the honest word: the split is a property of the slugs, not a
+    quota, so a targets file could in principle deal a batch that is all one
+    way. Measured against the targets in this tree on 2026-09-17 (``python -m
+    pipeline.cli stdlib-plan --fake --batches 2 --targets-per-batch 4``,
+    ``_fake_is_broken`` over the dealt slugs): batch 0 breaks 1 of 4
+    (``tempfile_paths``), batch 1 breaks 2 of 4 (``unicodedata_ascii``,
+    ``zipfile_stored``) — both batches exercise both paths. Re-run it after
+    editing the targets file.
+    """
+    return _seed_for(slug, 0) % 2 == 0
+
+
+def fake_unit_source(slug: str, broken: bool = False) -> str:
     """A well-formed unit that the core engine runs and CPython agrees with.
 
     Distinct per slug, so two fake candidates are two ids rather than one
     de-duplicated row — the assemble stage's de-duplication is one of the things
     a dry run is meant to exercise.
+
+    ``broken`` returns the same file with ONE construct changed: ``[*out]``, a
+    star leading a list display, which both engines refuse as ``unpack`` and
+    CPython runs. The shape stays valid — it parses as a unit and passes the
+    closed-kind gate — so the file reaches verify, is dropped ``cpython-only``,
+    and gives the repair stage something to repair. The difference is one
+    expression on purpose: a candidate broken in its HEADER would be dropped at
+    generation time and never become a drop row at all.
     """
     safe = "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in slug) or "offline"
+    join = '"".join([*out])' if broken else '"".join(out)'
+    note = ("\n"
+            "This copy is the deliberately-unrunnable one: `[*out]` below is a\n"
+            "construct both engines refuse, so the dry run has a drop for the\n"
+            "repair stage to act on. The repaired answer is the clean file.\n"
+            if broken else "")
     return (
         '"""Offline stand-in for %s, written by the fake provider.\n'
         '\n'
@@ -967,6 +1075,7 @@ def fake_unit_source(slug: str) -> str:
         'of its content. It fills a name in its own namespace, it answers no\n'
         'CPython surface, and it exists so the staged pipeline can be exercised\n'
         'end to end with no secret and no spend. Never merge it.\n'
+        '%s'
         '"""\n'
         '# fills: fake.%s\n'
         '# reference: -\n'
@@ -984,7 +1093,7 @@ def fake_unit_source(slug: str) -> str:
         '    out = []\n'
         '    for ch in text:\n'
         '        out.append(ch)\n'
-        '    return "".join(out)\n'
+        '    return %s\n'
         '\n'
         '\n'
         '%s\n'
@@ -992,7 +1101,7 @@ def fake_unit_source(slug: str) -> str:
         'print(_checksum([ord(c) for c in "%s"]))\n'
         'print(roundtrip("%s"))\n'
         'print(len(roundtrip("")))\n'
-    ) % (slug, safe, stdlib.UNIT_SEPARATOR, safe, safe)
+    ) % (slug, note, safe, join, stdlib.UNIT_SEPARATOR, safe, safe)
 
 
 def backend_for(plan: Mapping[str, Any], fake: bool = False,
@@ -1187,8 +1296,52 @@ def draw_candidate(backend: Any, target: Target, batch: int, draw: int,
     return Draw(row=row, source=source, unit=unit)
 
 
+def _flush_draws(sink: str, rows: Sequence[Mapping[str, Any]], flushed: int) -> None:
+    """Append the rows the loop produced but did not reach, on ANY exit.
+
+    Runs from a ``finally``, so it is reached by a ``KeyboardInterrupt`` and by
+    an exception from the candidate write as well as by a normal return. An
+    ``OSError`` here is swallowed on purpose and only here: this is the last
+    thing that runs while another exception is already unwinding, and a ledger
+    that cannot be written must not replace the failure that is being reported
+    with one about the ledger.
+    """
+    if not sink or flushed >= len(rows):
+        return
+    try:
+        write_draws(sink, list(rows[flushed:]), append=True)
+    except OSError:
+        pass
+
+
+def _ledger_sink(draws_path: "Optional[str]", out_dir: str) -> str:
+    """Where each draw is appended AS IT IS PRODUCED, or "" for nowhere.
+
+    ``None`` — the default — means the caller did not choose, so the ledger is
+    the one the CLI and the workflow already name, ``<out_dir>/draws.jsonl``.
+    That default is the whole point: a batch accumulating its rows in a list and
+    writing them once at the end uploads candidates with no record of what they
+    cost the moment a step is killed by ``timeout-minutes`` or a runner goes
+    away, and ``training/DATA_PRODUCTION.md`` step 5 keeps raw generation
+    evidence precisely for the rollouts that contributed nothing. An empty
+    string is a caller that owns the ledger itself, and is the one way to opt
+    out.
+
+    Appended, never truncated: the ledger is evidence, and a partial run that
+    was resumed should show both halves rather than only the second.
+
+    Not a new idea here — :func:`pipeline.sample.draw` already names its ledger
+    ``<out_dir>/draws.jsonl`` and appends one record at a time for the same
+    reason. This makes the stdlib generator do what the sampler does.
+    """
+    if draws_path is None:
+        return str(Path(out_dir) / "draws.jsonl")
+    return draws_path or ""
+
+
 def generate_batch(plan: Mapping[str, Any], batch: int, out_dir: str, backend: Any,
-                   draws_per_target: int = 0, max_tokens: int = 0) -> Generation:
+                   draws_per_target: int = 0, max_tokens: int = 0,
+                   draws_path: "Optional[str]" = None) -> Generation:
     """One batch of the plan: draw until a target lands, then move on.
 
     ``draws_per_target`` is a CEILING. A target answered on the first draw costs
@@ -1200,6 +1353,13 @@ def generate_batch(plan: Mapping[str, Any], batch: int, out_dir: str, backend: A
     write, the same way :func:`pipeline.stdlib.write_rows` writes: writing is not
     printing, and a batch that died halfway should still leave the candidates it
     had already earned on disk for the verify stage to judge.
+
+    The draws ledger is written the same way and for the same reason — one
+    append per row, as the row is produced, to :func:`_ledger_sink`, with a
+    ``finally`` that flushes anything the loop did not reach. ``Generation.draws``
+    still carries every row, so a caller that writes the ledger itself afterwards
+    writes the same bytes; what changes is that a killed step now leaves them
+    behind instead of only the candidates they paid for.
     """
     targets = plan_batch(plan, batch)
     per = draws_per_target or int(plan.get("draws_per_target") or DEFAULT_DRAWS_PER_TARGET)
@@ -1207,6 +1367,7 @@ def generate_batch(plan: Mapping[str, Any], batch: int, out_dir: str, backend: A
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
+    sink = _ledger_sink(draws_path, out_dir)
     rows: List[Dict[str, Any]] = []
     written: List[Tuple[str, str]] = []
     unanswered: List[Tuple[str, str, str]] = []
@@ -1214,25 +1375,32 @@ def generate_batch(plan: Mapping[str, Any], batch: int, out_dir: str, backend: A
     calls = 0
     p_tok = 0
     c_tok = 0
-    for target in targets:
-        last = ("", "")
-        for draw in range(max(1, per)):
-            got = draw_candidate(backend, target, batch, draw, str(out), tokens,
-                                 seen=seen)
-            rows.append(got.row)
-            calls += 1
-            p_tok += int(got.row.get("prompt_tokens") or 0)
-            c_tok += int(got.row.get("completion_tokens") or 0)
-            if got.kept and got.source:
-                path = out / (target.slug + ".py")
-                path.write_text(got.source, encoding="utf-8")
-                seen[got.row["source_sha256"]] = target.slug
-                written.append((target.slug, str(path)))
-                last = ("", "")
-                break
-            last = (got.drop_reason, got.drop_detail)
-        if last[0]:
-            unanswered.append((target.slug, last[0], last[1]))
+    flushed = 0
+    try:
+        for target in targets:
+            last = ("", "")
+            for draw in range(max(1, per)):
+                got = draw_candidate(backend, target, batch, draw, str(out), tokens,
+                                     seen=seen)
+                rows.append(got.row)
+                if sink:
+                    write_draws(sink, [got.row], append=True)
+                    flushed = len(rows)
+                calls += 1
+                p_tok += int(got.row.get("prompt_tokens") or 0)
+                c_tok += int(got.row.get("completion_tokens") or 0)
+                if got.kept and got.source:
+                    path = out / (target.slug + ".py")
+                    path.write_text(got.source, encoding="utf-8")
+                    seen[got.row["source_sha256"]] = target.slug
+                    written.append((target.slug, str(path)))
+                    last = ("", "")
+                    break
+                last = (got.drop_reason, got.drop_detail)
+            if last[0]:
+                unanswered.append((target.slug, last[0], last[1]))
+    finally:
+        _flush_draws(sink, rows, flushed)
     return Generation(tuple(rows), tuple(written), tuple(unanswered), calls, p_tok, c_tok)
 
 
@@ -1336,45 +1504,58 @@ def repair_jobs(drops: Sequence[Mapping[str, Any]], units_dir: str,
 
 
 def repair_batch(jobs: Sequence[RepairJob], out_dir: str, backend: Any,
-                 max_tokens: int = DEFAULT_MAX_TOKENS) -> Generation:
+                 max_tokens: int = DEFAULT_MAX_TOKENS,
+                 draws_path: "Optional[str]" = None) -> Generation:
     """ONE round. One call per job, no retry, no second pass.
 
     :data:`REPAIR_ROUNDS` is 1 and this function does not loop, so "bounded"
     is a property of the code and not only of the caller. A job that comes back
     unusable stays unanswered and is reported; the next attempt is a new
     dispatch, which a human authorises.
+
+    The ledger streams exactly as :func:`generate_batch`'s does, to
+    :func:`_ledger_sink`, because a repair round is spend too and a killed one
+    loses the same evidence.
     """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
+    sink = _ledger_sink(draws_path, out_dir)
     rows: List[Dict[str, Any]] = []
     written: List[Tuple[str, str]] = []
     unanswered: List[Tuple[str, str, str]] = []
     seen: Dict[str, str] = {}
     p_tok = 0
     c_tok = 0
-    for job in jobs:
-        messages = [
-            {"role": "system", "content": system_prompt()},
-            {"role": "user", "content": target_prompt(job.target)},
-            {"role": "assistant", "content": "```python\n" + job.source.rstrip("\n") + "\n```"},
-            {"role": "user", "content": repair_prompt(job.target, job.source,
-                                                      job.verdict, job.refusals)},
-        ]
-        got = draw_candidate(backend, job.target, -1, 0, str(out), max_tokens,
-                             messages=messages, kind="repair", seen=seen)
-        got.row["verdict"] = job.verdict
-        got.row["refusals"] = ["%s %s" % (e, line) for e, line in job.refusals]
-        rows.append(got.row)
-        p_tok += int(got.row.get("prompt_tokens") or 0)
-        c_tok += int(got.row.get("completion_tokens") or 0)
-        if got.kept and got.source:
-            path = out / (job.target.slug + ".py")
-            path.write_text(got.source, encoding="utf-8")
-            seen[got.row["source_sha256"]] = job.target.slug
-            written.append((job.target.slug, str(path)))
-        else:
-            unanswered.append((job.target.slug, got.drop_reason or "unchanged",
-                               got.drop_detail))
+    flushed = 0
+    try:
+        for job in jobs:
+            messages = [
+                {"role": "system", "content": system_prompt()},
+                {"role": "user", "content": target_prompt(job.target)},
+                {"role": "assistant", "content": "```python\n" + job.source.rstrip("\n") + "\n```"},
+                {"role": "user", "content": repair_prompt(job.target, job.source,
+                                                          job.verdict, job.refusals)},
+            ]
+            got = draw_candidate(backend, job.target, -1, 0, str(out), max_tokens,
+                                 messages=messages, kind="repair", seen=seen)
+            got.row["verdict"] = job.verdict
+            got.row["refusals"] = ["%s %s" % (e, line) for e, line in job.refusals]
+            rows.append(got.row)
+            if sink:
+                write_draws(sink, [got.row], append=True)
+                flushed = len(rows)
+            p_tok += int(got.row.get("prompt_tokens") or 0)
+            c_tok += int(got.row.get("completion_tokens") or 0)
+            if got.kept and got.source:
+                path = out / (job.target.slug + ".py")
+                path.write_text(got.source, encoding="utf-8")
+                seen[got.row["source_sha256"]] = job.target.slug
+                written.append((job.target.slug, str(path)))
+            else:
+                unanswered.append((job.target.slug, got.drop_reason or "unchanged",
+                                   got.drop_detail))
+    finally:
+        _flush_draws(sink, rows, flushed)
     return Generation(tuple(rows), tuple(written), tuple(unanswered), len(jobs),
                       p_tok, c_tok)
 

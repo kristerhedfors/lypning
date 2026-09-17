@@ -9,7 +9,7 @@ those prefixes there is no alignment padding and ``l``/``L`` are four
 bytes, not the native eight.  ``struct_pack.py`` is the other half of the
 same surface.
 
-The four details worth having in front of you:
+The six details worth having in front of you:
 
   * ``unpack`` demands the buffer be **exactly** the right length -- too
     long is as much an error as too short, and the message says
@@ -39,6 +39,19 @@ The four details worth having in front of you:
     third can never see one.
   * ``unpack`` returns a tuple even for one value, and a count of ``0``
     contributes nothing, so ``unpack('<0i', b'')`` is ``()``.
+  * The format is ASCII, not Unicode, and bounded.  CPython encodes the
+    format to ASCII before it parses it, so a character above U+007F is
+    a UnicodeEncodeError naming its position (a run of them is reported
+    as one run) and an embedded NUL is ``embedded null character`` --
+    both ahead of every other check, including the prefix.  Only the
+    ASCII digits are digits and only the six ASCII spaces (space, tab,
+    newline, carriage return, U+000B, U+000C) are spaces, which is
+    narrower than ``str.isdigit()`` and ``str.isspace()``: those take
+    U+00B2 for a digit and U+00A0 for a space and CPython takes
+    neither.  A total past 2**63 - 1 is ``total struct size too long``,
+    counted as the parser walks, so an over-long count is that error
+    even with no code after it.  That grammar is shared verbatim with
+    ``struct_pack.py``: two inlined copies, one answer.
 
 Errors: CPython raises ``struct.error``, which is a subclass of
 ``Exception`` but NOT of ``ValueError``; the subset has no custom
@@ -72,8 +85,74 @@ _SIGNED = {"b": True, "B": False, "h": True, "H": False, "i": True,
 _OTHER_CODES = "xcspfde?"
 
 
+# ---------------------------------------------------------------------
+# The format grammar below is shared VERBATIM with the other struct unit
+# in this corpus.  Units are inlined, never imported, so the two copies
+# are two programs; a caller may take either, and they must answer the
+# same.  Change one, change the other, byte for byte.
+# ---------------------------------------------------------------------
+
+# CPython's PY_SSIZE_T_MAX: the largest total a format may describe.
+_MAX_SSIZE = 9223372036854775807
+# Py_ISDIGIT and Py_ISSPACE are ASCII-only.  str.isdigit() and
+# str.isspace() are not: they would take U+00B2 for a digit and U+00A0
+# for a space, and CPython takes neither.
+_ASCII_DIGITS = "0123456789"
+_ASCII_SPACE = " \t\n\r\x0b\x0c"
+_HEX_DIGITS = "0123456789abcdef"
+
+
+def _escape_point(point):
+    """One code point in the backslash spelling CPython's message uses."""
+    if point < 256:
+        marker = "x"
+        width = 2
+    elif point < 65536:
+        marker = "u"
+        width = 4
+    else:
+        marker = "U"
+        width = 8
+    out = ""
+    place = width
+    while place > 0:
+        out = out + _HEX_DIGITS[(point // (16 ** (place - 1))) % 16]
+        place = place - 1
+    return "\\" + marker + out
+
+
+def _require_ascii(fmt):
+    """Reject what CPython's encode-to-ASCII rejects, before any parsing.
+
+    CPython encodes the format to ASCII first, so this runs ahead of
+    every other check -- ahead of the prefix, the codes and the counts.
+    A single offending character is reported alone, a run of them as a
+    run, and only then is an embedded NUL noticed.
+    """
+    index = 0
+    total = len(fmt)
+    while index < total:
+        if ord(fmt[index]) > 127:
+            end = index
+            while end < total and ord(fmt[end]) > 127:
+                end = end + 1
+            if end - index == 1:
+                raise ValueError(
+                    "'ascii' codec can't encode character '"
+                    + _escape_point(ord(fmt[index])) + "' in position "
+                    + str(index) + ": ordinal not in range(128)")
+            raise ValueError(
+                "'ascii' codec can't encode characters in position "
+                + str(index) + "-" + str(end - 1)
+                + ": ordinal not in range(128)")
+        index = index + 1
+    if chr(0) in fmt:
+        raise ValueError("embedded null character")
+
+
 def _parse_format(fmt):
     """Return (little_endian, [(code, count), ...]) for a std-size format."""
+    _require_ascii(fmt)
     if len(fmt) == 0 or (fmt[0] != "<" and fmt[0] != ">"
                          and fmt[0] != "!" and fmt[0] != "="):
         raise ValueError(
@@ -82,20 +161,26 @@ def _parse_format(fmt):
     # little-endian, and the engine refuses sys.byteorder, so it is fixed.
     little = fmt[0] == "<" or fmt[0] == "="
     items = []
+    size = 0
     index = 1
     total = len(fmt)
     while index < total:
         ch = fmt[index]
-        if ch.isspace():
+        if ch in _ASCII_SPACE:
             index = index + 1
             continue
         count = 1
-        if ch.isdigit():
+        if ch in _ASCII_DIGITS:
             digits = ""
-            while index < total and fmt[index].isdigit():
+            while index < total and fmt[index] in _ASCII_DIGITS:
                 digits = digits + fmt[index]
                 index = index + 1
             count = int(digits)
+            # CPython bounds the count while it is still reading the
+            # digits, so a count past PY_SSIZE_T_MAX is a size error
+            # even when no code follows it at all.
+            if count > _MAX_SSIZE:
+                raise ValueError("total struct size too long")
             if index >= total:
                 raise ValueError("repeat count given without format specifier")
             ch = fmt[index]
@@ -105,13 +190,24 @@ def _parse_format(fmt):
                     "this port covers only the integer codes"
                     " b B h H i I l L q Q, not '" + ch + "'")
             raise ValueError("bad char in struct format")
+        # The running total is checked here, item by item, and not once
+        # at the end, because that is where CPython checks it: '<'
+        # followed by an over-long count, a 'b' and a 'z' is the size
+        # error, not the bad-char one.
+        size = size + _STD_SIZE[ch] * count
+        if size > _MAX_SSIZE:
+            raise ValueError("total struct size too long")
         items.append((ch, count))
         index = index + 1
     return little, items
 
 
 def _items_size(items):
-    """Bytes the parsed items occupy, standard sizes, no padding."""
+    """Bytes the parsed items occupy, standard sizes, no padding.
+
+    No bound is repeated here: _parse_format has already refused any
+    format whose running total passes PY_SSIZE_T_MAX.
+    """
     total = 0
     for item in items:
         total = total + _STD_SIZE[item[0]] * item[1]
@@ -329,6 +425,48 @@ print(repr(_error_message(calcsize, "<3")))
 print(repr(_error_message(calcsize, "<i3")))
 print(repr(_error_message(calcsize, "<1 i")))
 print(repr(_error_message(unpack, "<z", b"")))
+
+# The format is ASCII and CPython encodes it before it parses it, so a
+# character above U+007F loses to the encoder -- ahead of the prefix,
+# the codes and the counts -- and a run of them is reported as one run.
+print(repr(_error_message(calcsize, "<" + chr(178) + "i")))
+print(repr(_error_message(calcsize, "<" + chr(178) + chr(179) + "i")))
+print(repr(_error_message(calcsize, "<" + chr(128) + chr(128) + chr(128))))
+print(repr(_error_message(calcsize, "<" + chr(178) + "i" + chr(179))))
+print(repr(_error_message(calcsize, "<i" + chr(133))))
+print(repr(_error_message(calcsize, chr(178) + "i")))
+print(repr(_error_message(calcsize, "<" + chr(4660) + "i")))
+print(repr(_error_message(calcsize, "<" + chr(55295) + "i")))
+print(repr(_error_message(calcsize, "<" + chr(1114111) + "i")))
+print(repr(_error_message(calcsize, "<" + chr(0) + "i")))
+print(repr(_error_message(calcsize, "<i" + chr(0))))
+print(repr(_error_message(calcsize, "<" + chr(0) + chr(178))))
+
+# str.isdigit() and str.isspace() are Unicode-wide; this grammar is not.
+print(repr(_error_message(calcsize, "<" + chr(1635) + "i")))
+print(repr(_error_message(calcsize, "<i" + chr(160) + "i")))
+print(repr(_error_message(calcsize, "<i" + chr(8199) + "i")))
+print(calcsize("<i" + chr(11) + "i"), calcsize("<i" + chr(12) + "i"))
+print(repr(_error_message(calcsize, "<i" + chr(28) + "i")))
+print(repr(_error_message(calcsize, "<" + chr(127) + "i")))
+
+# The total is bounded by PY_SSIZE_T_MAX, counted as the parser walks.
+print(calcsize("<9223372036854775807b"), calcsize("<9223372036854775806b1b"))
+print(calcsize("<1152921504606846975q"), calcsize("<4611686018427387903h"))
+print(calcsize("<00000000000000000000000000000001b"))
+print(calcsize("<09223372036854775807b"))
+print(repr(_error_message(calcsize, "<9223372036854775808b")))
+print(repr(_error_message(calcsize, "<9223372036854775806b2b")))
+print(repr(_error_message(calcsize, "<1152921504606846976q")))
+print(repr(_error_message(calcsize, "<9223372036854775807q")))
+print(repr(_error_message(calcsize, "<4611686018427387904h")))
+print(repr(_error_message(calcsize, "<" + "9" * 30 + "b")))
+# An over-long count outruns both the missing-specifier check and the
+# bad-char one; a count that fits does not.
+print(repr(_error_message(calcsize, "<9223372036854775808")))
+print(repr(_error_message(calcsize, "<9223372036854775807")))
+print(repr(_error_message(calcsize, "<9223372036854775808bz")))
+print(repr(_error_message(calcsize, "<9223372036854775807bz")))
 
 # Every code, every prefix, decoding the same all-ones bytes.
 for _code in ["b", "B", "h", "H", "i", "I", "l", "L", "q", "Q"]:

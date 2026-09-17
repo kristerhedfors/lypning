@@ -133,10 +133,10 @@
       "slug": "itertools_rest",
       "module": "itertools",
       "reference": "itertools",
-      "names": ["itertools.compress", "itertools.dropwhile", "itertools.takewhile", "itertools.filterfalse", "itertools.starmap", "itertools.tee", "itertools.batched"],
+      "names": ["itertools.compress", "itertools.dropwhile", "itertools.takewhile", "itertools.filterfalse", "itertools.starmap", "itertools.tee"],
       "programs": 69, "sightings": 72, "sole_gap": 20, "measured_on": "2026-09-16",
       "fillable": "all of it, as functions returning materialised lists.",
-      "caution": "CPython returns iterators and this unit cannot: `yield` is refused. Return lists, and say in the docstring that laziness and infinite inputs are the accepted divergence. `itertools.count`, `cycle` and `repeat` are unbounded and are deliberately not listed."
+      "caution": "CPython returns iterators and this unit cannot: `yield` is refused. Return lists, and say in the docstring that laziness and infinite inputs are the accepted divergence. `itertools.count`, `cycle` and `repeat` are unbounded and are deliberately not listed. `itertools.batched` is deliberately not listed either, and for a different reason: it arrived in CPython 3.12, and the oracle is whatever `python3` resolves to (`stdlib-verify --cpython`, default `the real python3, past any shim`) — 3.11.15 in this tree, checked 2026-09-17, where `itertools.batched` does not exist. `names` is an instruction the generate and repair prompts render verbatim as the names a unit must fill, so a name the oracle may not have is a helper the reference differential silently skips on one machine and checks on another."
     },
     {
       "slug": "statistics_rest",

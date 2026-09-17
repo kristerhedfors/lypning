@@ -29,10 +29,15 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   rejected and the reason recorded (invariant 1).
 - `PYTHONPATH=src:training python3 -m pipeline.cli stdlib-verify --units
   training/stdlib/units --first-seen 2026-09-16 --producer authored --cpython
-  /usr/bin/python3.11 --engine lypning=… --engine lypning-l=…`, run 2026-09-16:
-  34 units, 26 `lypning`, 8 `lypning-l`, 0 drops, 121 CPython names filled.
-  Three of the 34 disagree with what `lypning route` predicted statically, all
-  in the legitimate direction — a `bigint` refusal only exists at runtime.
+  /usr/bin/python3.11 --engine lypning=… --engine lypning-l=…`, run 2026-09-17:
+  34 units, 25 `lypning`, 9 `lypning-l`, 0 drops, 120 distinct CPython names
+  over 121 `# fills:` entries. Three of the 34 disagree with what `lypning
+  route` predicted statically, all in the legitimate direction — a `bigint`
+  refusal only exists at runtime. The same command on 2026-09-16 printed 26 /
+  8 and "121 CPython names filled": `struct_pack` moved to `lypning-l` when it
+  gained the cases above 2**63 - 1, and the name count was the entry count
+  printed under the wrong word — `struct.calcsize` is filled by two units, so
+  coverage is 120 and the labelling work is 121. Both numbers are printed now.
 - `training/data/stdlib/stdlib.jsonl` is those rows, committed, so the corpus
   can be read and merged without a Rust toolchain. `first_seen` is passed in
   and the serialisation is fixed, so re-running the writer over an unchanged
@@ -52,6 +57,27 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 - `training/STDLIB.md` states the mechanism, `training/stdlib/README.md` is the
   operator's note, and `training/stdlib/targets.json` carries the surfaces with
   the census that ranked them and its own date.
+- Adversarial review of the above, 2026-09-17, sixteen findings fixed in the
+  units and in the checks rather than in the tables that grade them. The
+  parser reads its two headers and its separator from `tokenize` COMMENT
+  tokens, so a `# fills:` written inside any string is prose and cannot shadow
+  the real one — a unit may now document the format it is written in. The
+  reference differential is exempted by the reviewed `_DIVERGENCES` table
+  alone, never by the word "divergence" appearing in a docstring, which had
+  been switching the check off for 16 of the 34 units. `fmean`'s weighted
+  products are formed with `*` on the values, as `fsum(map(mul, …))` does, so
+  they round once and not three times; `struct.pack` folds with `%` and `//`
+  rather than a bitwise mask the wider engine refuses on a bigint; both struct
+  parsers share one byte-identical ASCII/format-bound block; `timedelta`'s C
+  int limit and `bytes.hex`'s ASCII-separator rule are ported with CPython's
+  messages and CPython's check order.
+- The one unit whose divergence the new differential caught, `binascii_hex`,
+  was fixed rather than waived: `hex_str` was handing its own default `None`
+  down to `hexlify` as an explicit argument, which is a `TypeError` in the
+  real `binascii`, so the reference run died at case 28 of 71 and the other 43
+  cases were compared against nothing. It now calls `hexlify(data)` the way
+  `bytes.hex()` does, all 71 agree, and the entry that would have admitted the
+  abort is not in the table.
 
 **2026-09-16** — `nemotron/` is `training/`, and the retired name is a test ([#83](https://github.com/kristerhedfors/lypning/pull/83))
 

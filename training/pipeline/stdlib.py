@@ -123,27 +123,87 @@ class Unit:
     source: str
 
 
-def _header_value(text: str, tag: str) -> Optional[str]:
-    """The value of a ``# <tag>: ...`` header line, or None if absent.
+def _comments(text: str, path: str) -> Tuple[Tuple[int, int, str], ...]:
+    """Every ``#`` comment in the file, as ``(line, column, text)``.
 
-    Only lines above the separator are considered, and only ones that begin the
-    line: a ``# fills:`` inside a docstring example is prose, not a header.
+    Through :mod:`tokenize`, the stdlib's own lexer, and never by scanning lines
+    for a ``#``. That is the whole of the header gate's defence. A ``# fills:``
+    written INSIDE a string — a module docstring explaining the format, a
+    helper's own docstring, a constant holding an example — is part of a STRING
+    token and can never come back from here, so prose about a header can never
+    stand in for one. A line scan cannot tell the two apart, and the module
+    docstring is always ABOVE the real headers, so under a line scan the prose
+    won: a unit could declare a harmless ``# fills:`` in its docstring, carry
+    ``# fills: math.log`` as its real header, and walk straight past
+    :func:`closed_kind_violation`, which reads both of its halves from these
+    declared values.
+
+    ``line`` is 1-based and counts ``\\n`` exactly as ``tokenize`` does, which is
+    why :func:`parse_unit` cuts on character offsets found the same way rather
+    than on ``splitlines``, which also breaks on ``\\x0c`` and friends.
     """
-    for line in text.splitlines():
-        if line.startswith(UNIT_SEPARATOR):
+    import io
+    import tokenize
+
+    out: List[Tuple[int, int, str]] = []
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(text).readline):
+            if tok.type == tokenize.COMMENT:
+                out.append((tok.start[0], tok.start[1], tok.string))
+    except (tokenize.TokenError, IndentationError, SyntaxError) as exc:
+        raise UnitError("%s: does not tokenize: %s" % (path, exc)) from None
+    return tuple(out)
+
+
+def _is_separator(comment: str) -> bool:
+    """One definition of "this comment IS the separator", for both readers.
+
+    Trailing whitespace only; anything else is a different comment. The count,
+    the cut and the header scan's stopping point all key on this, so none of
+    them can disagree about where a unit's cases begin.
+    """
+    return comment.rstrip() == UNIT_SEPARATOR
+
+
+def _header_value(comments: Sequence[Tuple[int, int, str]],
+                  tag: str) -> Optional[str]:
+    """The value of a ``# <tag>: ...`` header, or None if there is none.
+
+    A header is a real comment (:func:`_comments`) that BEGINS its line and
+    stands above the separator. Column 0 because that is where the format puts
+    the two headers — between the module docstring and the first definition —
+    and a rule that took an indented one would take a comment from inside a
+    helper body, which is the same shadow one level down.
+    """
+    prefix = "# " + tag + ":"
+    for _line, col, comment in comments:
+        if col != 0:
+            continue
+        if _is_separator(comment):
             break
-        stripped = line.strip()
-        if stripped.startswith("# " + tag + ":"):
-            return stripped[len("# " + tag + ":"):].strip()
+        if comment.startswith(prefix):
+            return comment[len(prefix):].strip()
     return None
+
+
+def _line_starts(text: str) -> List[int]:
+    """Character offset of the start of each line, counted the way ``tokenize``
+    counts lines — on ``\\n`` and nothing else."""
+    starts = [0]
+    idx = text.find("\n")
+    while idx != -1:
+        starts.append(idx + 1)
+        idx = text.find("\n", idx + 1)
+    return starts
 
 
 def _docstring_of(text: str, path: str) -> str:
     """The module docstring, read by compiling the file rather than by regex.
 
-    ``ast`` is the stdlib's own parser, so a docstring with a separator line or a
-    ``# fills:`` inside it parses as what it is. A file that does not parse is
-    malformed here rather than at the CPython run, which is a better error.
+    ``ast`` is the stdlib's own parser, so the docstring comes back whole
+    whatever it quotes. A file that does not parse is malformed here rather than
+    at the CPython run, which is a better error. What that docstring may quote
+    without being mistaken for a header is :func:`_comments`' business.
     """
     import ast
 
@@ -163,38 +223,43 @@ def parse_unit(path: str, text: str) -> Unit:
     Structural only. Whether the unit is CORRECT is a question for CPython, and
     it is asked in :func:`label_unit`; a file that passes here has the right
     shape and nothing more.
+
+    Every ``#`` this reads — the two headers and the separator — comes from
+    :func:`_comments`, so the separator is found for the same reason the headers
+    are: a unit may write either one inside its docstring as prose without
+    either shadowing the real one. Reading the separator by line scan while
+    reading the headers by token would have been worse than reading both by
+    line: a docstring separator would then cut the file in the middle of its own
+    docstring and the unit would ship with corrupt ``helpers``, where today it
+    is rejected.
     """
     name = Path(path).stem
     if not text.strip():
         raise UnitError("%s: empty file" % path)
     doc = _docstring_of(text, path)
+    comments = _comments(text, path)
 
-    count = sum(1 for line in text.splitlines() if line.rstrip() == UNIT_SEPARATOR)
-    if count != 1:
+    seps = [line for line, col, comment in comments
+            if col == 0 and _is_separator(comment)]
+    if len(seps) != 1:
         raise UnitError("%s: expected exactly one %r line, found %d"
-                        % (path, UNIT_SEPARATOR, count))
-    head: List[str] = []
-    tail: List[str] = []
-    seen = False
-    for line in text.splitlines(True):
-        if not seen and line.rstrip() == UNIT_SEPARATOR:
-            seen = True
-            continue
-        (tail if seen else head).append(line)
-    helpers = "".join(head)
-    cases = "".join(tail)
+                        % (path, UNIT_SEPARATOR, len(seps)))
+    starts = _line_starts(text)
+    cut = seps[0]
+    helpers = text[:starts[cut - 1]]
+    cases = text[starts[cut]:] if cut < len(starts) else ""
     if not cases.strip():
         raise UnitError("%s: nothing below %r — a unit with no cases checks "
                         "nothing" % (path, UNIT_SEPARATOR))
 
-    raw_fills = _header_value(text, "fills")
+    raw_fills = _header_value(comments, "fills")
     if raw_fills is None:
         raise UnitError("%s: no '# fills:' header" % path)
     fills = tuple(part.strip() for part in raw_fills.split(",") if part.strip())
     if not fills:
         raise UnitError("%s: '# fills:' is empty" % path)
 
-    raw_ref = _header_value(text, "reference")
+    raw_ref = _header_value(comments, "reference")
     if raw_ref is None:
         raise UnitError("%s: no '# reference:' header" % path)
     reference = "" if raw_ref == "-" else raw_ref
@@ -877,9 +942,17 @@ def report(rows: Sequence[Mapping[str, Any]],
             lines.append("gap each unit closes, as the engine words it")
             for kind, n in kinds:
                 lines.append("  %-*s %4d" % (width, kind, n))
-        fills = sum(len(r.get("fills") or ()) for r in rows)
+        # Two different numbers, printed as two, because one unit's `# fills:`
+        # name can also be another's: `struct.calcsize` is named by both the
+        # pack and the unpack unit, and summing the list lengths counted it
+        # twice and called the total "CPython names filled". Coverage is the
+        # DISTINCT count; the entry count is how much labelling work the corpus
+        # claims, and is only equal to it when nothing overlaps.
+        entries = sum(len(r.get("fills") or ()) for r in rows)
+        distinct = len(set(n for r in rows for n in (r.get("fills") or ())))
         lines.append("")
-        lines.append("%d CPython names filled across %d units" % (fills, len(rows)))
+        lines.append("%d distinct CPython names filled across %d units "
+                     "(%d `# fills:` entries)" % (distinct, len(rows), entries))
         lines.append("")
         lines.append("unit                          engine       fills")
         for r in rows:

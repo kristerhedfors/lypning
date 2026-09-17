@@ -11,8 +11,9 @@ name: stdlib corpus (GLM on Berget)
 #
 # This workflow does not commit. `permissions: contents: read`, it uploads the
 # assembled corpus as an artifact, and a human reads the report and merges it.
-# Every other workflow in this tree is contents: read; this is not the first to
-# ask for write.
+# It asks for no write scope of any kind, and nothing here should ever add one:
+# generated content that wrote itself into the tree would be content nobody
+# read.
 on:
   workflow_dispatch:
     inputs:
@@ -88,9 +89,12 @@ jobs:
         with:
           python-version: '3.12'
 
-      # The secret is mapped at STEP level and only onto the one step that talks
-      # to the provider — never job-wide, never workflow-wide. Every other step
-      # in this workflow runs without it in the environment at all.
+      # The secret is mapped at STEP level, never job-wide and never
+      # workflow-wide. Three steps talk to the provider and three steps carry
+      # it: this one, "Generate one batch" in `generate`, and "One bounded
+      # repair round" in `repair`. Every other step in this workflow runs
+      # without it in the environment at all. Grepping this file for the secret
+      # name is the count, and it must return exactly those three `env:` lines.
       - name: Resolve the newest active GLM and plan the batches
         if: ${{ !inputs.dry_run }}
         env:

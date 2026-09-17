@@ -25,8 +25,9 @@ Four layers, cheapest first, and each one catches something the next cannot:
    stdout. A clock, a pid, a temp path or a set iteration order that leaked into
    an output dies here rather than in a ``git diff`` six weeks later.
 4. **The reference.** The unit's cases run once against its own helpers and once
-   against the real module's same-named attributes. Bytes must match or the
-   unit's docstring must say why not.
+   against the real module's same-named attributes. Bytes must match, unless the
+   unit is one of the few in :data:`_DIVERGENCES` — reviewed, pinned with the
+   input that shows it, and declared in the unit's own docstring as well.
 
 The engine-dependent layer — labels, mismatches, row stability — is SKIPPED, not
 failed, when the binaries are absent, the way every other path in this tree
@@ -46,9 +47,11 @@ from __future__ import annotations
 import ast
 import builtins
 import importlib
+import io
 import json
 import os
 import subprocess
+import tokenize
 from pathlib import Path
 from typing import Any, Dict, List, Sequence, Tuple
 
@@ -70,7 +73,8 @@ SEED_CORPUS = TRAINING / "data" / "stdlib" / "stdlib.jsonl"
 #: Passed IN, never read from the clock. ``first_seen`` is an argument to every
 #: row builder for exactly this reason: a library that called ``date.today()``
 #: would rewrite every row it re-verified and the workflow ends in
-#: ``git diff --exit-code`` (FORMAT.md, "The row").
+#: ``git diff --exit-code`` (``training/STDLIB.md`` §3, "Where the verified rows
+#: live").
 FIRST_SEEN = "2026-09-16"
 
 if not UNITS_DIR.is_dir():  # pragma: no cover - a checkout without the corpus
@@ -85,16 +89,27 @@ _UNIT_IDS: Tuple[str, ...] = tuple(p.stem for p in _UNIT_PATHS)
 unit_case = pytest.mark.parametrize("name", _UNIT_IDS, ids=_UNIT_IDS)
 
 #: Units whose cases, run against the real module, do NOT agree byte for byte —
-#: measured, then reviewed, then written down. Every one of these declares the
-#: divergence in its own docstring, which is what
-#: :func:`test_unit_agrees_with_its_reference` checks; this table is the second
-#: half, and it only asks whether a divergence that was here is still here.
+#: measured, then reviewed, then written down with the input that shows it.
+#: This table, and nothing else, is what exempts a unit from
+#: :func:`test_unit_agrees_with_its_reference`. An exemption read out of the
+#: docstring instead would be an exemption driven by prose: most units here use
+#: the word "divergence" somewhere, usually to say a surface has none, and the
+#: differential would switch itself off for every one of them.
 #:
-#: Deliberately NOT an exact-match check in the other direction. A unit that
-#: newly diverges is caught by the docstring rule above, which does not go stale
-#: when a generated unit lands or when the oracle is a different CPython; a
-#: table that also had to list every new one would fail the whole suite on a
-#: version bump for something no human needed to look at.
+#: Checked in both directions, which is what keeps it from becoming a list of
+#: waivers: a unit outside it must agree byte for byte, and a unit inside it
+#: must still disagree AND still declare the divergence in its own docstring.
+#: Adding a name here is a review, never a fix — a unit that differs from
+#: CPython by accident is a bug in the unit (CLAUDE.md invariant 1), and the
+#: entry has to name an input a reader can run.
+#:
+#: A divergence a unit DECLARES but no case reaches does not belong here either,
+#: and ``binascii_hex`` is the worked example: its docstring declares that an
+#: explicit ``sep=None`` diverges, and for a while a helper reached it, which
+#: killed the reference run at case 28 of 71 and left the other 43 compared
+#: against nothing. The entry that admitted it would have kept them that way.
+#: The call site was the bug; the table is not where a unit's own cases go to
+#: stop being checked.
 _DIVERGENCES: Dict[str, str] = {
     "hashlib_digest": "pbkdf2_hmac on an unknown hash name: ValueError here, "
                       "CPython's own message is different",
@@ -108,9 +123,12 @@ _DIVERGENCES: Dict[str, str] = {
 }
 
 #: The word a docstring uses to declare a divergence. One token, case-folded, so
-#: "DIVERGENCE", "divergences" and "diverges further" all count. The docstring is
-#: the ONLY place a divergence may be declared (FORMAT.md, "Author verification"),
-#: which is what makes a single token enough to look for.
+#: "DIVERGENCE", "divergences" and "diverges further" all count. Deliberately
+#: weak, and only ever asked of a unit already in :data:`_DIVERGENCES`: it
+#: cannot tell a declaration from a mention, so it can confirm that a reviewed
+#: divergence reached the docstring — where the model reads it
+#: (``training/stdlib/README.md``, "The three commands": "Byte-identical, or the
+#: divergence goes in the docstring") — and it can never grant an exemption.
 _DECLARES = "diverg"
 
 
@@ -121,18 +139,31 @@ _DECLARES = "diverg"
 # value.
 
 _REF_DRIVER = r'''
-import sys, io, json, types, functools, importlib
+import sys, io, json, types, functools, importlib, tokenize
 
 SEP = "# --- cases ---"
 path, mode, reference = sys.argv[1], sys.argv[2], sys.argv[3]
 text = open(path, encoding="utf-8").read()
-head, tail, seen = [], [], False
-for line in text.splitlines(True):
-    if not seen and line.rstrip() == SEP:
-        seen = True
-        continue
-    (tail if seen else head).append(line)
-helpers, cases = "".join(head), "".join(tail)
+
+# The separator is a COMMENT token at column 0, which is how
+# `pipeline.stdlib.parse_unit` finds it. A line scan would also find one quoted
+# inside a docstring, cut the file there, and leave every helper below the cut
+# -- and then the rebinding loop further down would find no functions to rebind,
+# and this whole differential would pass by doing nothing. A check that can turn
+# itself off silently is worse than no check, so the two readers of this format
+# agree on what a comment is.
+starts = [0]
+at = text.find("\n")
+while at != -1:
+    starts.append(at + 1)
+    at = text.find("\n", at + 1)
+seps = [tok.start[0] for tok in tokenize.generate_tokens(io.StringIO(text).readline)
+        if tok.type == tokenize.COMMENT and tok.start[1] == 0
+        and tok.string.rstrip() == SEP]
+if len(seps) != 1:
+    sys.exit("%s: expected exactly one %r line, found %d" % (path, SEP, len(seps)))
+helpers = text[:starts[seps[0] - 1]]
+cases = text[starts[seps[0]]:] if seps[0] < len(starts) else ""
 
 
 def settle(value, depth=0):
@@ -496,9 +527,16 @@ def test_unit_parses(name: str) -> None:
     """The format is a contract, and this is the whole of it.
 
     ``parse_unit`` enforces the docstring, the two headers, the single separator
-    and a non-empty case block; the assertions below re-state the ones a reader
-    of FORMAT.md would look for, so a parser that stopped enforcing one is a
-    failure here rather than a silently looser corpus.
+    and a non-empty case block; the assertions below re-state the rules
+    ``training/STDLIB.md`` §2 lists under "The rules the parser enforces", so a
+    parser that stopped enforcing one is a failure here rather than a silently
+    looser corpus.
+
+    Re-stated from ``tokenize``, not from ``splitlines``, for the reason
+    :func:`pipeline.stdlib._comments` gives: a ``#`` inside a string is not a
+    comment. A line scan here would disagree with the parser on a unit that
+    documents the format it is written in — which the parser deliberately
+    allows — and would fail a legal unit rather than catch an illegal one.
     """
     path = UNITS_DIR / (name + ".py")
     text = path.read_text(encoding="utf-8")
@@ -509,9 +547,13 @@ def test_unit_parses(name: str) -> None:
     assert unit.doc.strip(), "%s: the docstring is empty" % name
     assert unit.fills, "%s: '# fills:' is empty" % name
     assert all(f.strip() for f in unit.fills), "%s: a '# fills:' name is blank" % name
-    assert any(ln.strip().startswith("# reference:") for ln in text.splitlines()), (
+    comments = [(tok.start[1], tok.string) for tok in
+                tokenize.generate_tokens(io.StringIO(text).readline)
+                if tok.type == tokenize.COMMENT]
+    assert any(col == 0 and c.startswith("# reference:") for col, c in comments), (
         "%s: no '# reference:' header" % name)
-    separators = [ln for ln in text.splitlines() if ln.rstrip() == stdlib.UNIT_SEPARATOR]
+    separators = [c for col, c in comments
+                  if col == 0 and c.rstrip() == stdlib.UNIT_SEPARATOR]
     assert len(separators) == 1, (
         "%s: expected exactly one %r line, found %d"
         % (name, stdlib.UNIT_SEPARATOR, len(separators)))
@@ -678,23 +720,43 @@ def test_unit_agrees_with_its_reference(name: str, units: Dict[str, stdlib.Unit]
     cases then exercise CPython's implementation through the unit's own call
     sites, with the unit's own arguments.
 
-    A divergence is allowed. An UNDECLARED one is not: the docstring is the only
-    place a unit may say it differs from CPython (FORMAT.md, "Author
-    verification"), because the docstring is the part a model reads. A unit that
-    quietly differs teaches the difference as if it were CPython.
+    A divergence is allowed, but only one that is in :data:`_DIVERGENCES` —
+    reviewed once, by a human, and pinned there with the input that shows it.
+    The exemption is driven by that table and NOT by what the docstring says,
+    because a docstring is prose: most units here use the word "divergence"
+    somewhere, usually only to say a surface has none, and a test that looked for
+    the word would switch itself off for every one of them. A unit that quietly
+    differs teaches the difference as if it were CPython.
+
+    So: a unit outside the table must agree byte for byte, and a unit inside it
+    must still disagree AND still declare it in its docstring (`training/stdlib/
+    README.md`, "The three commands" — "Byte-identical, or the divergence goes
+    in the docstring"), because the docstring is the part a model reads. An
+    entry whose divergence closed fails here rather than rotting.
     """
     unit = _unit(units, name)
     if not unit.reference:
         pytest.skip("%s fills a language gap ('# reference: -'), so there is no "
                     "module to differ from" % name)
     ref = references[name]
-    if ref.agrees or _DECLARES in unit.doc.lower():
-        return
-    pytest.fail(
-        "%s: it differs from the real `%s` and its docstring never says so. "
-        "Either the unit is wrong, or the divergence is real and belongs in the "
-        "docstring, where a model will read it.\n\n%s"
-        % (name, unit.reference, ref.report(name)))
+    if name not in _DIVERGENCES:
+        if ref.agrees:
+            return
+        pytest.fail(
+            "%s: it differs from the real `%s` and no reviewed entry in "
+            "_DIVERGENCES says it may. Either the unit is wrong — fix the unit "
+            "— or the divergence is real, in which case it goes in the unit's "
+            "docstring, where a model will read it, AND in _DIVERGENCES with "
+            "the input that demonstrates it.\n\n%s"
+            % (name, unit.reference, ref.report(name)))
+    assert not ref.agrees, (
+        "%s: _DIVERGENCES claims it differs from the real `%s`, and it no "
+        "longer does. The limit closed — drop the entry here and the note in "
+        "the unit's docstring." % (name, unit.reference))
+    assert _DECLARES in unit.doc.lower(), (
+        "%s: _DIVERGENCES pins a divergence its docstring never mentions (%s). "
+        "The table is for the reviewer; the docstring is for the model, and a "
+        "model only ever reads the unit." % (name, _DIVERGENCES[name]))
 
 
 def test_the_reference_differential_really_rebinds(
@@ -729,10 +791,10 @@ def test_declared_divergences_have_not_quietly_closed(
         references: Dict[str, Reference]) -> None:
     """A written-down limit that is no longer a limit is a stale document.
 
-    Only this direction. A unit that NEWLY diverges is caught by the docstring
-    rule, which does not go stale when a generated unit lands or when the oracle
-    is a different CPython; pinning the other direction too would fail the suite
-    on a version bump for something no human needed to look at.
+    The whole-table twin of :func:`test_unit_agrees_with_its_reference`, which
+    asks the same question one unit at a time. This one adds what a parametrised
+    test cannot see: an entry naming a unit that has left the corpus, which would
+    otherwise sit here unexercised and unnoticed.
     """
     closed = sorted(n for n in _DIVERGENCES
                     if n in references and references[n].agrees)

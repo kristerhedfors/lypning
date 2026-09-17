@@ -26,19 +26,54 @@ CPython implements: the 34 Windows-1252 rewrites in ``_invalid_charrefs``
 (``&#147;`` is a curly quote, ``&#0;`` is U+FFFD, ``&#13;`` is CR), a
 surrogate or a value above U+10FFFF becomes U+FFFD, and a codepoint in
 ``_invalid_codepoints`` decodes to the EMPTY string.  That last set is
-written here as an exact range predicate rather than a 122-element literal;
+written here as an exact range predicate rather than a literal; the literal
+would have **126** elements, counted on 2026-09-17 with::
+
+    python3.11 -c 'import html; print(len(html._invalid_codepoints))'
+    # -> 126
+
 ``_is_invalid_codepoint`` was checked against ``html._invalid_codepoints``
-over all of range(0x110000) on 2026-09-16 with zero mismatches.
+over all of range(0x110000) on 2026-09-16 with zero mismatches, and again on
+2026-09-17, still zero.
 
 DIVERGENCE, deliberate: the named table holds only the five XML entities,
 in the casings the HTML 5 list actually defines -- ``amp AMP lt LT gt GT
 quot QUOT`` with and without the semicolon, and ``apos`` ONLY with it
 (``&apos`` is not a legacy reference, so CPython leaves it literal too).
-The other 2,214 html5 names are not here, so ``unescape('&nbsp;')`` is
-``'&nbsp;'`` where CPython gives ``'\\xa0'``, and ``unescape('&ltrie;')``
-is ``'<rie;'`` where CPython gives ``'\\u22b4'``.  Every case below stays
-inside the covered set, so the differential against the real ``html`` is
-byte-identical.
+The other 2,214 html5 names are not here, and they do not all fail the
+same way.  A census of all 2,231 keys of ``html.entities.html5``, taken on
+2026-09-17 by comparing ``unescape('&' + key)`` with
+``html.unescape('&' + key)``:
+
+  * 17 agree -- the table above.
+  * 2,191 stay LITERAL: ``unescape('&nbsp;')`` is ``'&nbsp;'`` where
+    CPython gives ``'\\xa0'``.  Visibly undecoded, and easy to spot.
+  * 23 come back as PLAUSIBLE TEXT from the prefix retry, because the
+    prefix that matches is itself a real entity: ``unescape('&ltrie;')``
+    is ``'<rie;'`` where CPython gives ``'\\u22b4'``.  These are exactly
+    the html5 names beginning ``lt`` or ``gt`` that are not ``lt`` or
+    ``gt`` themselves -- ``gtcc; gtcir; gtdot; gtlPar; gtquest;
+    gtrapprox; gtrarr; gtrdot; gtreqless; gtreqqless; gtrless; gtrsim;
+    ltcc; ltcir; ltdot; lthree; ltimes; ltlarr; ltquest; ltrPar; ltri;
+    ltrie; ltrif;``.
+
+That third bullet is the one shape of the reduced scope that does not
+announce itself, and the reason this is a DIVERGENCE and not merely a
+gap: the 2,191 leave the ``&`` in place, but those 23 emit a ``<`` or a
+``>`` that was never in the source.  Nothing similar happens for
+``amp``, ``quot`` or ``apos``: no html5 name has one of those as a
+prefix.  Every case below stays inside the covered set, so the
+differential against the real ``html`` is byte-identical.
+
+The numeric side carries no such reservation.  Measured on 2026-09-17
+over 6,861 numeric references and 38 malformed ones, ``unescape`` and
+``html.unescape`` agreed on every one.  The numeric set sweeps every
+codepoint in 0x00..0x20, 0x7E..0xA0, 0xD7F0..0xE00F and 0xFDC0..0xFDFF
+-- the control, cp1252, surrogate and noncharacter edges -- and adds
+0xFFFD, 0xFFFE, 0xFFFF, 0x10000, 0x1FFFE, 0x10FFFD, 0x10FFFE,
+0x10FFFF, 0x110000, 0x110001, 0x11FFFF, 0x1FFFFF, 0x7FFFFFFF and
+2**63-1, each spelled decimal, hex, upper-case hex, zero-padded, and
+with and without the trailing semicolon.
 
 Not covered: a numeric reference with more than eighteen digits leaves
 signed 64-bit and needs the wider engine; none is used below.

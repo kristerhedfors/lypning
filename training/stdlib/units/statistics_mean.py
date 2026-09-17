@@ -31,6 +31,17 @@ as int) the result is an int when the exact mean is a whole number, so
 mean([1, 2, 3]) is the int 2 while fmean([1, 2, 3]) is 2.0, and mean([1, 2]) is
 1.5. repr() in the cases keeps those apart.
 
+fmean(data, weights) forms each product with `*` on the values themselves, not
+on floats of them, because CPython spells it fsum(map(mul, data, weights)):
+int * int is an exact arbitrary-precision product and fsum rounds it once, on
+its own float() of each item. Rounding the two operands first and multiplying
+the doubles rounds three times instead of once, and the answers differ for
+ordinary integer data — fmean([9007199254740993], [3]) is 9007199254740994.0
+the exact way and 9007199254740992.0 the float-first way. The divergence opens
+at 2**53, where floats stop being able to hold every integer, so the cases that
+pin it have products inside a machine word; the products that need a bignum are
+past what any engine here runs, which is why none is pinned.
+
 Helpers:
   _gcd                  Euclid, because math.gcd refuses integers past 64 bits.
   _reduce / _ratio_add  exact rational arithmetic on (numerator, denominator)
@@ -194,7 +205,11 @@ def fsum(data):
 
 
 def fmean(data, weights=None):
-    """Return the mean as a float: fsum(data) / n, or the weighted mean."""
+    """Return the mean as a float: fsum(data) / n, or the weighted mean.
+
+    The weighted products are formed with `*` on the values, so an int times
+    an int is exact and is rounded once by fsum, as fsum(map(mul, ...)) does.
+    """
     values = list(data)
     count = len(values)
     if weights is None:
@@ -207,7 +222,7 @@ def fmean(data, weights=None):
     products = []
     i = 0
     while i < count:
-        products.append(float(values[i]) * float(w[i]))
+        products.append(values[i] * w[i])
         i = i + 1
     num = fsum(products)
     den = fsum(w)
@@ -272,6 +287,12 @@ print(repr(fmean([3.5, 4.0, 5.25], [0.25, 0.5, 0.25])))
 print(repr(fmean([1, 2, 3], [3, 1, 0])))
 print(repr(fmean([2, 3, 4], [1, 1, 1])))
 print(repr(fmean([2.5])))
+
+print(repr(fmean([9007199254740993], [3])))
+print(repr(fmean([3], [9007199254740993])))
+print(repr(fmean([9007199254740993, 1], [3, 1])))
+print(repr(fmean([9007199254740993], [0.5])))
+print(repr(fmean([0.1, 0.2, 0.3], [3, 1, 1])))
 
 print(repr(mean([float("inf"), 1.0])))
 print(repr(mean([float("-inf"), 2, 3])))

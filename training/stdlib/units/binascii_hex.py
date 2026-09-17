@@ -11,8 +11,14 @@ are literally the same functions.
 The four details worth having in front of you:
 
   * ``hexlify`` returns **bytes**, not str.  ``bytes.hex()`` is the str
-    twin of the same writer and takes the same ``sep`` arguments; the
-    unit prints both so the pair is visible.
+    twin of the same writer and takes the same ``sep`` arguments, plus
+    one rule of its own: the separator must be **ASCII**.  A separator
+    whose ordinal is above 0x7F is written through by
+    ``binascii.hexlify`` as that raw byte and rejected by ``bytes.hex``
+    with ``ValueError: sep must be ASCII.`` -- after the length check,
+    which runs first in both.  ``hex_str`` enforces that rule rather
+    than delegating blind, so it is exact for every separator; the unit
+    prints both so the pair is visible.
   * ``bytes_per_sep`` counts groups from the **right** when it is
     positive and from the **left** when it is negative, so the short
     group lands at the front for ``2`` and at the back for ``-2``.  A
@@ -39,13 +45,42 @@ explicitly beside a count -- ``binascii.hexlify(b"abcd", None, 2)`` --
 raises ``TypeError: object of type 'NoneType' has no len()`` in CPython,
 because the C writer takes ``len(sep)`` before it looks at the count.
 This port returns the unseparated ``b'61626364'`` instead.  No case
-exercises it: the subset cannot raise ``TypeError``, so a case there
-could only pin the divergence as if it were CPython's behaviour.
+exercises it, and no HELPER reaches it either: the subset cannot raise
+``TypeError``, so a case there could only pin the divergence as if it
+were CPython's behaviour.  The second half of that is not free --
+``hex_str`` used to hand its own default ``None`` down to ``hexlify``
+as an explicit argument, which reached the divergence from inside the
+unit, so it now calls ``hexlify(data)`` with no ``sep`` the way
+``bytes.hex()`` does.  ``b2a_hex`` still delegates with all three
+arguments and may: its caller has already chosen a separator or not,
+and the default it would forward is its own.
 
-Not covered: separator characters whose ordinal is above 255 (CPython's
-writer takes a latin-1 view of a str ``sep``; this port refuses above 255
-rather than guess), and the base64/uu/quoted-printable ``a2b_*`` family,
-which is a different surface.
+The separator is covered over its whole domain.  Measured on CPython
+3.11 on 2026-09-17 with::
+
+    python3.11 -c 'import binascii
+    def last(f):
+        hi = -1
+        for n in range(0x1100):
+            try:
+                f(chr(n))
+                hi = n
+            except ValueError:
+                pass
+        return hex(hi)
+    print(last(lambda s: binascii.hexlify(b"abcd", s, 2)),
+          last(lambda s: b"abcd".hex(s, 2)))'
+    # -> 0xff 0x7f   (the last separator ordinal each one accepts)
+
+``binascii.hexlify`` takes a latin-1 view and accepts 0x00..0xFF as str
+or bytes, writing the raw byte, and raises ``ValueError("sep must be
+ASCII.")`` from U+0100 up; ``bytes.hex`` raises that same message from
+0x80 up, as str or bytes alike.  Both check the length before the
+ordinal, so ``""`` and ``"--"`` are ``sep must be length 1.`` either
+way, and this port keeps that order.
+
+Not covered: the base64/uu/quoted-printable ``a2b_*`` family, which is
+a different surface.
 """
 # fills: binascii.hexlify, binascii.unhexlify, binascii.b2a_hex, binascii.a2b_hex
 # reference: binascii
@@ -63,7 +98,11 @@ def _hex_digit_value(ch):
 
 
 def _sep_ordinal(sep):
-    """Validate a separator and return its byte value."""
+    """Validate a hexlify separator and return its byte value.
+
+    Length first, then the ordinal: that is CPython's order, and the
+    latin-1 view means everything below U+0100 is a separator byte.
+    """
     if len(sep) != 1:
         raise ValueError("sep must be length 1.")
     if isinstance(sep, str):
@@ -71,7 +110,20 @@ def _sep_ordinal(sep):
     else:
         value = sep[0]
     if value > 255:
-        raise ValueError("sep must be a single character below U+0100")
+        raise ValueError("sep must be ASCII.")
+    return value
+
+
+def _sep_ascii_ordinal(sep):
+    """The same, under ``bytes.hex()``'s stricter rule: ASCII only.
+
+    ``hexlify`` would write 0x80..0xFF through as a raw byte; ``bytes.hex``
+    refuses them, so ``hex_str`` checks before it delegates rather than
+    letting the ``.decode()`` below fail with a different exception.
+    """
+    value = _sep_ordinal(sep)
+    if value > 127:
+        raise ValueError("sep must be ASCII.")
     return value
 
 
@@ -111,7 +163,20 @@ def b2a_hex(data, sep=None, bytes_per_sep=1):
 
 
 def hex_str(data, sep=None, bytes_per_sep=1):
-    """bytes.hex(): the str twin of hexlify, same grouping rules."""
+    """bytes.hex(): the str twin of hexlify, same grouping rules.
+
+    Same grouping, one rule more: the separator must be ASCII.
+
+    With no separator it calls ``hexlify(data)`` and passes no ``sep``
+    at all, which is what CPython's ``bytes.hex()`` does.  Handing the
+    default ``None`` down as an explicit argument would reach the one
+    divergence the docstring declares -- ``hexlify(data, None, 1)`` is
+    a ``TypeError`` in CPython and an unseparated result here -- from
+    inside the unit, where nothing prints it.
+    """
+    if sep is None:
+        return hexlify(data).decode()
+    _sep_ascii_ordinal(sep)
     return hexlify(data, sep, bytes_per_sep).decode()
 
 
@@ -153,6 +218,19 @@ def _error_message(fn, *args):
     return ""
 
 
+def _hex_error_message(data, sep, bytes_per_sep):
+    """The message the REAL ``bytes.hex`` raises, or '' if it raises none.
+
+    The ASCII cases below pin ``hex_str`` against this, not against a
+    remembered string, so a divergence shows up as a False in the output.
+    """
+    try:
+        data.hex(sep, bytes_per_sep)
+    except ValueError as exc:
+        return str(exc)
+    return ""
+
+
 # --- cases ---
 print(repr(hexlify(b"abc")))
 print(repr(hexlify(b"")))
@@ -181,8 +259,10 @@ print(repr(hexlify(b"abcd", b"-", -4)))
 print(repr(hexlify(b"abcd", b"-", -10)))
 
 # A count of zero, or one at least as large as the data, means "no
-# separator at all".  An explicit sep=None is a TypeError in CPython and
-# is left to the docstring, not to a case.
+# separator at all".  An explicit sep=None is a TypeError in CPython, so
+# it is left to the docstring rather than pinned by a case -- and no
+# helper here passes one either, which is why `hex_str` calls
+# `hexlify(data)` rather than forwarding its own default.
 print(repr(hexlify(b"abcd", b"-", 0)))
 print(repr(hexlify(b"", b"-", 2)))
 print(repr(hexlify(b"a", b"-", 3)))
@@ -201,6 +281,31 @@ print(repr(hex_str(b"abcd", "-", 2)))
 print(repr(b"abc".hex()))
 print(repr(b"abcd".hex("-", 2)))
 print(hex_str(b"abcd", "-", 2) == b"abcd".hex("-", 2))
+
+# ...but only bytes.hex insists the separator be ASCII.  hexlify writes
+# 0x80..0xFF through as a raw byte; hex_str refuses it, with CPython's
+# own message, before the decode that would otherwise fail differently.
+# The passing cases print ordinals rather than repr(): repr() of an
+# unprintable character needs CPython's unicode tables and is a refusal.
+print([_b for _b in hexlify(b"abcd", "\x80", 2)])
+print([_b for _b in hexlify(b"abcd", bytes([0xFF]), 2)])
+print([ord(_c) for _c in hex_str(b"abcd", "\x7f", 2)])
+print(hex_str(b"abcd", "\x7f", 2) == b"abcd".hex("\x7f", 2))
+print(repr(_error_message(hex_str, b"abcd", "\x80", 2)))
+print(repr(_error_message(hex_str, b"abcd", "\xff", 2)))
+print(repr(_error_message(hex_str, b"abcd", bytes([0x80]), 2)))
+print(repr(_error_message(hex_str, b"abcd", "\u0100", 2)))
+print(repr(_error_message(hexlify, b"abcd", "\u0100", 2)))
+print(repr(_error_message(hex_str, b"abcd", "--", 2)))
+
+# Pinned against the real bytes.hex, message and check order alike: the
+# length is tested before the ordinal, so "--" is a length error even
+# though it is also not ASCII.
+print(_error_message(hex_str, b"abcd", "\x80", 2) == _hex_error_message(b"abcd", "\x80", 2))
+print(_error_message(hex_str, b"abcd", "\xff", 2) == _hex_error_message(b"abcd", "\xff", 2))
+print(_error_message(hex_str, b"abcd", "\u0100", 2) == _hex_error_message(b"abcd", "\u0100", 2))
+print(_error_message(hex_str, b"abcd", "--", 2) == _hex_error_message(b"abcd", "--", 2))
+print(_error_message(hex_str, b"abcd", "\u0100\u0100", 2) == _hex_error_message(b"abcd", "\u0100\u0100", 2))
 
 # unhexlify accepts str and bytes, upper and lower case.
 print(repr(unhexlify(b"616263")))

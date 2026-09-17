@@ -34,6 +34,11 @@ wrong:
   * `timedelta` itself refuses a day count past +/- 999999999 at
     CONSTRUCTION, before the date is even consulted, and with a different
     message.  Both limits are kept here, in CPython's order.
+  * That construction check is itself the SECOND thing timedelta does to
+    `days`: the argument is converted to a C int first, so a count outside
+    the signed 32-bit range fails one step earlier still, with a third
+    message that mentions neither the magnitude nor the limit.  All three
+    limits are kept here, in CPython's order.
 
 Two deliberate divergences, both about exception TYPE, neither about values
 or messages:
@@ -41,14 +46,29 @@ or messages:
   * A result outside 0001-01-01..9999-12-31 raises `ValueError("date value
     out of range")`.  CPython raises `OverflowError` with that exact text.
   * A day count past +/- 999999999 raises `ValueError("days=1000000000; must
-    have magnitude <= 999999999")`.  CPython raises `OverflowError` with that
-    exact text.
+    have magnitude <= 999999999")`, and one outside the signed 32-bit C int
+    range raises `ValueError("Python int too large to convert to C int")`.
+    CPython raises `OverflowError` with each of those exact texts.
 
 `OverflowError` is NOT a ValueError subclass, so this is a real difference an
 `except OverflowError` would notice.  It is forced: the subset has no
 custom exceptions and does not bind `OverflowError`, so a unit raises
-`ValueError("message")` or nothing.  The message text is identical, so
-matching on the text carries over unchanged.
+`ValueError("message")` or nothing.  The message text is identical at every
+day count, so matching on the text carries over unchanged.
+
+The C int boundary is exact, measured on CPython 3.11 on 2026-09-17 with::
+
+    python3.11 -c 'import datetime
+    for n in (2147483647, 2147483648, -2147483648, -2147483649):
+        try: datetime.timedelta(days=n)
+        except OverflowError as e: print(n, e)'
+    # -> 2147483647 days=2147483647; must have magnitude <= 999999999
+    #    2147483648 Python int too large to convert to C int
+    #    -2147483648 days=-2147483648; must have magnitude <= 999999999
+    #    -2147483649 Python int too large to convert to C int
+
+so the C int range is closed at both ends at -2147483648..2147483647, and
+the magnitude message -- not the C int one -- is what 2147483647 gets.
 
 Not covered: timedelta arithmetic in its own right (seconds, microseconds,
 normalisation, division), datetime, and timezones.  Ordinal conversion is in
@@ -64,6 +84,14 @@ agrees with `date + timedelta(days=n)`, value and error message alike, on
 -4,000,000..4,000,000 so roughly half of them overflow the range; and
 days_between agrees with `(d1 - d2).days` on 250,000 seeded-random date
 pairs.  The cases below are a deterministic sample.
+
+A fourth sweep on 2026-09-17 covers the limits the first three never reached,
+again with zero divergences: add_days, sub_days and add_weeks agree with the
+real module, value and error message alike, on an 80-cell grid of four dates
+(2026-09-16, 0001-01-01, 9999-12-31, 2024-02-29) against every day count at
+and either side of +/- 999999999, +/- 2147483647 and +/- 2147483648, and on a
+further 200,000 seeded-random (date, offset) pairs with half the offsets drawn
+from -3,000,000,000..3,000,000,000 so the C int limit is actually crossed.
 """
 # fills: datetime.date.__add__, datetime.date.__sub__, datetime.date.__lt__, datetime.timedelta, datetime.timedelta.days
 # reference: datetime
@@ -75,6 +103,10 @@ MINORDINAL = 1
 MAXORDINAL = 3652059
 # timedelta's own construction limit, in days.
 MAXDELTADAYS = 999999999
+# The signed 32-bit C int `days` is converted to before that limit is even
+# looked at; the range is closed at both ends.
+MAXCINT = 2147483647
+MINCINT = -2147483648
 
 _DAYS_IN_MONTH = [-1, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
 _DAYS_BEFORE_MONTH = [-1, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
@@ -158,11 +190,16 @@ def from_ordinal(n):
 
 
 def _check_delta_days(n):
-    """The limit `timedelta(days=n)` imposes before a date is consulted.
+    """The limits `timedelta(days=n)` imposes before a date is consulted.
 
     CPython raises OverflowError here, one step earlier than the date range
-    check and with a different message; both are kept, in that order.
+    check and with a different message; both are kept, in that order.  And
+    there are two of them, in this order: `days` is converted to a C int
+    before it is range-checked, so a count outside the signed 32-bit range
+    never reaches the magnitude test and never appears in its message.
     """
+    if n > MAXCINT or n < MINCINT:
+        raise ValueError("Python int too large to convert to C int")
     if n > MAXDELTADAYS or n < -MAXDELTADAYS:
         raise ValueError("days=%d; must have magnitude <= 999999999" % n)
 
@@ -265,6 +302,32 @@ for _n in [1000000000, -1000000000, 2000000000]:
         print(_n, add_days(2026, 9, 16, _n))
     except ValueError as _e:
         print(_n, repr(str(_e)))
+
+# ...and the C int conversion fires before THAT, with a third message that
+# names neither the count nor the limit.  The range is closed at both ends:
+# 2147483647 and -2147483648 are still magnitude errors, 2147483648 and
+# -2147483649 are not.
+for _n in [2147483646, 2147483647, 2147483648, 2147483649,
+           -2147483647, -2147483648, -2147483649, 4000000000, -4000000000]:
+    try:
+        print(_n, add_days(2026, 9, 16, _n))
+    except ValueError as _e:
+        print(_n, repr(str(_e)))
+
+# sub_days takes the same two checks, on the value timedelta itself sees.
+for _n in [2147483647, 2147483648, -2147483648, -2147483649]:
+    try:
+        print("sub", _n, sub_days(2026, 9, 16, _n))
+    except ValueError as _e:
+        print("sub", _n, repr(str(_e)))
+
+# The C int limit is on the DAY count, so weeks cross it seven times sooner
+# and the message still reports days: 306783379 weeks is 2147483653 days.
+for _n in [306783378, 306783379, -306783378, -306783379]:
+    try:
+        print("weeks", _n, add_weeks(2026, 9, 16, _n))
+    except ValueError as _e:
+        print("weeks", _n, repr(str(_e)))
 
 # A 400-year step lands on the same month and day: the cycle is 146097 days.
 print(add_days(2000, 3, 1, 146097), add_days(1600, 2, 29, 146097))
