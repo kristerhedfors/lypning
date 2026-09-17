@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-17** — Stop three zero-cost rungs from reporting a clean read of nothing, and record that rung S0b's number moves with the engine ([#88](https://github.com/kristerhedfors/lypning/pull/88))
+**2026-09-17** — Stop three zero-cost rungs from reporting a clean read of nothing, and record that rung S0b's number moves with the engine ([#89](https://github.com/kristerhedfors/lypning/pull/89))
 
 - The assigned S0 round did not run. This clone holds none of its inputs: the
   private pilot rows, the round-02 probe rollouts, the banks and a Python 3.12
