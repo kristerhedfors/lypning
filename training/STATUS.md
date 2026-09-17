@@ -48,6 +48,19 @@ the declaration review is closed under rule 2, real adapter dosage floors are
 gates, and the verifier Space now has a content-free health mode. Fable's next
 session is only the private-artifact S0a–S0c read in `START_NEXT_ROUND.md`.
 
+**Codex review, 2026-09-17 (second, of the S0-blocked report):** the round is
+still unrun, on a third clone that holds none of its inputs; the guards and the
+document corrections are accepted, and rung S0b is re-assigned. Three findings
+the report did not have. The vacuous-read guards closed four paths, not five —
+`levers` could still print a full vector at exit 0 over two empty files, and now
+exits 1 whenever no record backs the vector. S0b's `--run` form manufactures its
+own population, so the rung reads the frozen rows instead, and a rebuild at the
+pilot's fingerprint is not a prerequisite. The token floor's plan-time blindness
+is real but its prescribed substitute was wrong in its units; `--plan` now
+prints a byte-derived upper bound instead. A banked launch is also refused above
+four sandboxes per host, which `16/16/1` was not.
+`reviews/2026-09-17-codex-s0-guards-and-engine-identity.md`.
+
 ## 1. The goal, in one sentence and one number
 
 Adapt `Qwen/Qwen3.8-27B` so that an agent with **no knowledge that lypning
@@ -316,8 +329,11 @@ re-make it; it is now `pipeline.levers` / `nt levers`: three mechanical layers
 (this package's own imports, the engine's closed list imported and never
 restated, and what this interpreter does not ship) over a frozen 130-row
 declaration table, each row carrying its reason and whether §4 or this tree is
-its source. It reads the eval-2 draw rows unchanged, which is what makes rung
-S0b a command rather than a judgement re-made on another device. On this tree it
+its source. Its `--rows` form reads the eval-2 draw rows unchanged, which is
+what makes rung S0b a command rather than a judgement re-made on another device;
+its `--run` form does **not** — it replays through the local binary and
+re-derives `native`, hence the population, which is why §10's S0b row now
+assigns the frozen-rows form. On this tree it
 reproduces §4's self-referential bucket exactly and disagrees on the lever
 boundary — 36 fewer entries engine-addressable, 41 more legitimate-fallback —
 and that disagreement is pinned by a test as the one that was reviewed, not
@@ -362,8 +378,8 @@ sequence is the problem §3.7 of that document names. In one line each:
 | rung | what it measures | cost | state, 2026-09-17 |
 |---|---|---|---|
 | S0a | `EVAL2.md` §7 re-printed from the real pilot rows, keyed on the realised macro lift | $0 | exact command assigned to Fable in `START_NEXT_ROUND.md`; private read still owed — attempted 2026-09-17 on a clone without the rows, exit 1 |
-| S0b | the by-kind refusal vector of the 171 correct-but-fallback pilot draws | $0 | rule 2 reviewed; exact `--vector` command assigned to Fable. `--rank` is refused on held-out draws. Needs a built engine at the pilot's identity: the draw rows carry no refusal kind, so `--run` replays them, and the population moves with the binary (2026-09-17) |
-| S0c | the round-02 probe rollouts by native status, per train case | $0 | private artifact and comparison contract named in `START_NEXT_ROUND.md`; read still owed. Attempted 2026-09-17 without the artifacts: it printed a zeros table at exit 0, and now exits 2 naming the absent path |
+| S0b | the by-kind refusal vector of the 171 correct-but-fallback pilot draws | $0 | rule 2 reviewed; `--rank` is refused on held-out draws. **Re-assigned 2026-09-17** to the frozen-rows `--rows`/`--replay` form: `--run` replays through the local binary and re-derives `native`, hence the population, so it manufactures its own denominator. A rebuild at the pilot's identity is explicitly **not** a prerequisite — the fingerprint folds in a core `lypning` sha no document records. Whatever identity grades the vector must be printed beside it, and no re-derived count may be called 171 |
+| S0c | the round-02 probe rollouts by native status, per train case | $0 | private artifact and comparison contract named in `START_NEXT_ROUND.md`; read still owed. Attempted 2026-09-17 without the artifacts: it printed a zeros table at exit 0, and now exits 2 naming the absent path, or 1 on a present-but-empty probe |
 | S1 | stage 0b on the training bank: bare vs `--system-file subset-spec.md`, k=16 | ~$5 | not started; the first positive control the programme would have |
 | S2 | the rewritable fraction: verified native rewrites of the fallback draws | tokens | not started; ledger row D1 |
 | S3 | stage 5: refusals per 100 programs through opencode on base | harness time | not started; settles the deployment prior |
@@ -379,12 +395,20 @@ one of seeds 1111/2222/3333; SFT requires one complete family cycle and ≥50,00
 scheduled supervised tokens. The three-seed aggregate still requires three
 separate jobs and is reviewed from their manifests, never inferred from one.
 
-**Three of those four are `preflight` gates; the token floor is not** (audited
-2026-09-17). The k, the case count, the seed and the family-cycle capacity are
-refused by `train_verified.preflight`, so `--plan` sees them. The ≥50,000
-supervised-token floor is refused in `run()`, because counting the exposures
-needs `build_examples`, hence the tokenizer download and the GPU deps `--plan`
-exists to avoid. So a passing `--plan` does **not** mean the schedule is
-admissible, and `START_NEXT_ROUND.md`'s instruction to plan before every stage
-cannot be read as a token-floor check.
+**Four of those five are `preflight` gates; the token floor is not** (audited
+2026-09-17, miscounted as three of four until the review below). The k, the case
+count, the seed and the family-cycle capacity are refused by
+`train_verified.preflight`, so `--plan` sees them. The ≥50,000 supervised-token
+floor is refused in `run()`, because counting the exposures needs
+`build_examples`, hence the tokenizer download and the GPU deps `--plan` exists
+to avoid. So a passing `--plan` does **not** mean the schedule is admissible,
+and `START_NEXT_ROUND.md`'s instruction to plan before every stage cannot be
+read as a token-floor check. Since 2026-09-17 `preflight` does refuse the
+certainly-too-small half without downloading anything: `supervised_plan` sums
+the scheduled references' UTF-8 bytes, a one-sided upper bound on the tokens,
+and a plan below the floor exits naming it. **A plan that passes still does not
+certify the schedule** — a bound above the floor is only the absence of that
+certain failure, and the exact count is taken in `run()`. Ruled in
+`reviews/2026-09-17-codex-s0-guards-and-engine-identity.md` §D3, which also
+records why the exact floor stays where it is.
 `training/tests/test_training.py::test_the_supervised_token_floor_is_a_stage_gate_and_not_a_plan_gate`.

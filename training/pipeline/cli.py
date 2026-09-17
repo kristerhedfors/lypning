@@ -1821,6 +1821,13 @@ def cmd_levers(args: argparse.Namespace) -> int:
     lever is a subset of the engine one, so this table is what divides a budget
     between them, and rung S0b of `STATUS.md` §10 is this same table run over
     the eval-2 correct-but-fallback draws instead of the local capture.
+
+    The two failure exits split on whose mistake it was (root `CLAUDE.md`
+    invariant 8): a path typed on the command line that is not a file is a usage
+    error, 2, because argv is wrong and nothing was attempted; having read or
+    graded nothing is this command failing, 1, because argv was right and the
+    evidence was not there. `probe-vector` chose the same 1 for a
+    present-but-empty input, so the two commands answer alike.
     """
     from . import levers
 
@@ -1939,6 +1946,37 @@ def cmd_levers(args: argparse.Namespace) -> int:
             print("levers: refusing --rank on draw/held-out rows; use --vector for "
                   "descriptive by-family counts", file=sys.stderr)
             return 2
+        # The backstop under the narrow ERROR guard above, which fires first and
+        # names the failed replay because that is the more useful message. This
+        # one asks the weaker question that covers the routes the other cannot
+        # see: did ANY record back this vector? A present-but-empty
+        # `attempts.jsonl` passes the `exists()` check; a `--status` that matches
+        # nothing leaves `considered` at 0 and falsifies the other guard's second
+        # term; and an engine that runs but is not lypning grades MISMATCH, not
+        # ERROR, so `errors` is 0. Each of those printed a complete vector at
+        # exit 0 over inputs that read or graded nothing. The vector is
+        # publishable only if at least one record backs it.
+        #
+        # All four counts are on the line because stdout, which a refusal leaves
+        # empty, is where the note that used to carry them went: without
+        # `considered`, rows that never matched `--status` read as rows that
+        # matched and carried no refusal; without the unmatched count, a join on
+        # the wrong key reads as a census carrying no refusal at all. `joined` is
+        # bound on both routes that label the unit `draw` — the local census is
+        # the `entry` unit and never reaches here, and closing its own empty
+        # reads (an absent or 0-byte `--source` still prints a table at exit 0)
+        # would change what `--rank` and `--against` report over the repository
+        # capture, which is not this guard's call to make.
+        if not result["refusals"]:
+            print("levers: no refusal to publish — %d draw row(s) loaded from %s; "
+                  "%d match status %s; %d have no replay row; %d carried a "
+                  "refusal. An empty vector over nothing is a read of nothing, "
+                  "not a measured absence of refusals."
+                  % (result["loaded"], result["source"], joined["considered"],
+                     args.status or "(any)", joined["unmatched"],
+                     result["refusals"]),
+                  file=sys.stderr)
+            return 1
 
     if args.json:
         print(json.dumps(result, indent=2, ensure_ascii=False, default=sorted))

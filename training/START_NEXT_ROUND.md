@@ -24,9 +24,10 @@ PYTHONPATH=src:training python3 -m pipeline.cli power --eval2 \
   --rows eval-20260916-063539 --draws 16 --mde 0.03
 
 # S0b: descriptive family vector only. --rank is now refused on draw/held-out rows.
-# Needs a built lypning-l at the PILOT's engine identity — see below.
+# Read the pilot's FROZEN rows; do not let a binary re-derive them — see below.
 PYTHONPATH=src:training python3 -m pipeline.cli levers \
-  --run eval-20260916-063539 --status correct-fallback --vector --limit 0
+  --rows training/runs/eval-20260916-063539/eval2_rows.jsonl \
+  --replay <census>.jsonl --status correct-fallback --vector --limit 0
 
 # S0c: per-train-case native status, probe beside the completed base pilot.
 # Paths are cwd-relative and resolved against the repository root.
@@ -35,17 +36,39 @@ PYTHONPATH=src:training python3 -m pipeline.cli probe-vector \
   --base training/runs/eval-20260916-063539/eval2_rows.jsonl
 ```
 
-**S0b is not engine-free, and its number is not engine-independent** (measured
-2026-09-17). The eval-2 draw rows carry `native` and `status` but no refusal
-*kind*, so `--run` replays every program through the local binary to get one —
-which means the binary re-derives the population too. On `runs/stock-nothinking`
-in this tree, the same command matched 14 correct-but-fallback draws through the
-built engine and 26 through a broken one. Run S0b with a `lypning-l` built to
-the pilot's own identity (`2e079e786a655ab6`, `EVAL2.md` §11), record the
-`@ engine <fingerprint>` line it prints, and if it does not match, say so in the
-report rather than quoting the vector: at another identity the "171
-correct-but-fallback draws" is a different 171. A `--engine` that is not a file
-now exits 2 instead of printing an empty vector at exit 0.
+**S0b reads the pilot's frozen rows; it must not re-derive them** (ruled
+2026-09-17, `reviews/2026-09-17-codex-s0-guards-and-engine-identity.md` §D2).
+`--run` replays every program through the local binary — the draw rows carry
+`native` and `status` but no refusal *kind* — and that replay recomputes
+`native`, and `status` with it, so the `--status` filter runs over a population
+the binary just manufactured. Prefer the `--rows`/`--replay` form above, where
+`<census>` is the replay `nt eval2-rows` took on 2026-09-16 at fingerprint
+`2e079e786a655ab6` (persisted only if that command was given `--cache`),
+converted to one JSON object per line. That form filters the frozen file's own
+`status`, so the population is the pilot's 171 and no binary re-derives it.
+
+If the census did not survive, fall back to `levers --run …` with whatever
+`lypning-l` the device can build, print the grading identity beside the vector —
+
+```bash
+PYTHONPATH=src:training python3 -c \
+  'from pipeline import engines; print(engines.identity()["fingerprint"])'
+```
+
+— and report its re-derived correct-but-fallback count as **its own number under
+that fingerprint**, never as 171, which is a count at `2e079e786a655ab6` only
+(`EVAL2.md` §11). `levers` prints no `@ engine` line in any mode, so the
+identity is the operator's to print; do not wait for one in its output.
+
+**Do not try to rebuild at `2e079e786a655ab6`.** The fingerprint folds in the
+core `lypning` sha of that build, which no document here records, so it cannot
+be hit to spec — and an unsatisfiable prerequisite on a $0 rung is how a $0 rung
+stops being run. Quote the vector only as a *shape* — which kinds carry the
+mass — never as an absolute headroom and never subtracted from a vector taken at
+another identity. Copy the `UNRESOLVED` line verbatim if any draw has no replay
+row or no refusal on record. Inputs that are absent now exit 2 naming the path,
+and a vector with no record behind it exits 1 instead of printing an empty
+table at exit 0.
 
 Before S0c, download the immutable private artifact directory
 `round-02/6aaa87465527934177ee9f34/` into the path shown and materialize the
@@ -71,17 +94,45 @@ CMD ["python3", "-I", "/usr/local/lib/lypning-verifier/container_worker.py", "--
 ```
 
 The launcher defaults to 16 scorers backed by four sandboxes per CPU host and
-at most four hosts; do not collapse them onto one host. A confirmatory eval-2
+at most four hosts, and since 2026-09-17 a banked launch is **refused above four
+sandboxes per host** as well as below the worker count — the two together are
+what force sixteen scorers onto four hosts or wider; separately neither did, and
+`16/16/1` was admitted. `native` is host-load-dependent, so per-host density is
+part of the instrument: the ceiling is four *at `cpu-basic`*, and changing the
+pool flavor voids the number. There is deliberately no floor on the worker
+count, the host count or total capacity — no eval-2 arm has ever completed, so a
+throughput threshold would be set against a forward estimate. A confirmatory eval-2
 arm remains k=16. Real adapter stages now refuse fewer than 1,000 train cases,
 an SFT schedule below 50,000 supervised tokens, a schedule that cannot cover
 every family once, or a seed outside `1111, 2222, 3333`. A complete S4 result
 requires all three seed jobs; one successful job is one replicate, not a round.
 
-Of those, **only the token floor is invisible to `--plan`** (audited
-2026-09-17): it is refused in `run()`, because counting supervised exposures
-needs the tokenizer and the GPU deps `--plan` avoids. A passing plan therefore
-does not certify the schedule; check `steps × batch_size` against 50,000
-yourself before submitting. The other gates refuse at plan time.
+Of those, the **≥50,000-supervised-token floor is the only one `--plan` cannot
+settle** (audited 2026-09-17; since the same day it is no longer wholly blind to
+it). The exact floor is refused inside `run()` (`gpu/train_verified.py`), after
+the tokenizer download but before the base weights are fetched, because counting
+**assistant tokens the schedule exposes** needs the tokenizer that `--plan`
+exists to avoid. A schedule that fails it there is refused *on a metered job* —
+after the dependency install, the bank download, bundle preparation and the
+unadapted base-dev arm (`hf/round02_pilot.sh` steps 7a and 7b) — and the round
+ends there with no adapter.
+
+`preflight` now refuses the certainly-too-small half of that before anything is
+downloaded: `supervised_plan` sums the scheduled references' UTF-8 bytes, which
+under byte-level BPE can never cost more tokens than they have bytes, and a
+`--plan` whose `supervised_token_upper_bound` is below 50,000 exits naming the
+bound, the floor and the word *upper bound*. So **a `--plan` that passes still
+does not certify the schedule.** It means only that the certain failure is
+absent; the exact count is taken in `run()`, and a bound above the floor is
+never a pass. `planned_exposures` and `supervised_token_upper_bound` are printed
+in the plan JSON, and are `null` — never `0` — for a stage with no supervised
+dose.
+
+The check is **not** `steps × batch_size`: that product counts example
+exposures and is 1,000 at this runbook's own `--steps 250 --batch-size 4`
+(`NEXT_ROUND.md`), so comparing it to 50,000 would refuse a schedule the floor
+admits. Do not substitute it. Every other gate — `k`, the case count, the seed,
+the family cycle — is refused at plan time outright.
 
 ## The assignment
 
@@ -314,7 +365,11 @@ privately; they are not all appropriate positive SFT examples.
 ## Finish and hand back
 
 Continue with the exact launch/evaluation order in `NEXT_ROUND.md`. Run
-`train_verified.py ... --plan` before every actual stage. Do the real tiny-model
+`train_verified.py ... --plan` before every actual stage — for the gates the
+plan can settle. The ≥50,000-supervised-token floor is not one of them: the plan
+refuses a schedule whose `supervised_token_upper_bound` is already below it, but
+a plan that passes is not a pass on the floor, which `run()` still checks
+exactly. Do the real tiny-model
 GPU wiring tests before loading the full model. If the probe fails, preserve it,
 stop GRPO and evaluate the better base/SFT arm using the matched evaluation
 commands in that runbook; do not manufacture signal by rewarding wrong code.

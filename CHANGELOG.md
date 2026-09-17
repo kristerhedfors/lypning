@@ -14,6 +14,68 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-17** — Review the S0-blocked round, close the four vacuous reads its guards left open, and stop a plan from certifying a schedule it cannot price ([#90](https://github.com/kristerhedfors/lypning/pull/90))
+
+- The independent Codex review owed by ledger row S0 is
+  `training/reviews/2026-09-17-codex-s0-guards-and-engine-identity.md`:
+  **continue**, all four decision requests ruled, every paid and GPU rung still
+  held. The round remains unrun — this is a third clone holding none of its
+  inputs, checked literally rather than assumed — so no power figure, lever
+  vector, probe table or model-quality claim exists from it, and the two
+  `EVAL2.md` deliverables are still owed. Five of the report's load-bearing
+  claims were re-derived in-tree before being ruled on; three came back
+  partially confirmed, and the disagreement is recorded rather than smoothed.
+- The guards closed four paths, not five. `levers`' fifth fired only when the
+  failure took the `ERROR` route *and* the filtered population was non-empty,
+  so a full descriptive vector — held-out banner and all — still printed at
+  exit 0 over two empty files, over a present-but-empty `attempts.jsonl`, under
+  a `--status` filter that matched nothing, and through an engine that runs but
+  is not `lypning` (`MISMATCH`, so `errors` was 0). The vector is now
+  publishable only if at least one record backs it: exit 1, stdout empty, in
+  every render mode including `--json`. The narrow `ERROR` guard stays in front
+  of it because it names the failed replay, which is the more useful message.
+  The refusal line now carries `loaded`, `considered` and `unmatched`, since
+  `loaded` is pre-filter and `refusals` post-filter and the first wording could
+  assert that named rows carried no refusal when the filter had removed them.
+- Rung S0b is re-assigned to the pilot's frozen rows. Its `--run` form replays
+  through the local binary, which recomputes `native` and `status` with it, so
+  the `--status` filter ran over a population the binary had just manufactured.
+  A rebuild at the pilot's fingerprint is explicitly **not** a prerequisite —
+  the fingerprint folds in a core `lypning` sha no document records, and an
+  unsatisfiable gate on a $0 rung is how a $0 rung stops being run. Whatever
+  identity grades the vector must be printed beside it, and no re-derived count
+  may be called 171, which is a count at `2e079e786a655ab6` only.
+- `--plan` now refuses the certainly-too-small half of the supervised-token
+  floor without downloading anything. `sft_batches` picks by family and index
+  and never inspects what it carries, so the schedule is buildable from the
+  cases alone; summing the scheduled references' UTF-8 bytes bounds the tokens
+  above under byte-level BPE. The exact floor stays in `run()`, unmoved, because
+  the exact count needs the tokenizer. A passing plan still does not certify the
+  schedule and the refusal says so. The shipped substitute — check
+  `steps × batch_size` against 50,000 — counted example exposures rather than
+  tokens and would have refused the runbook's own `--steps 250 --batch-size 4`;
+  it is withdrawn. `planned_exposures` and `supervised_token_upper_bound` are
+  `null`, never `0`, for a stage the floor does not price.
+- A banked launch is refused above four sandboxes per host. The existing check
+  was a product and a product is blind to density, so `16/16/1` — sixteen
+  sandboxes on one host, the shape round-02 ran — cleared it, while `1/1/1` is
+  the least contended shape in the space and was never the problem. `native` is
+  host-load-dependent, so per-host density is an instrument parameter and two
+  arms scored at different densities are not comparable. The ceiling is four
+  *at `cpu-basic`*; a different pool flavor voids the number. No floor on the
+  worker count, host count or total capacity, because no eval-2 arm has ever
+  completed and a throughput threshold would be set against a forward estimate.
+  The product check no longer advises raising a knob the ceiling forbids.
+- Eight residual risks are recorded with file and line, four of them absent from
+  the report; two are parked as future calls — `power --eval2 --rows` accepts
+  any file bound to no run, digest or fingerprint, and `eval2_rows` tests
+  `native` before `correct`, so its `correct-native` bucket can hold draws
+  CPython did not pass. Neither is ruled here.
+- Bookkeeping, per review condition C8: the entry below says "three zero-cost
+  rungs" and its commit subject says five. Neither is a count of rungs — it was
+  two commands across two of the three S0 rungs, three CLI branches and five
+  guards. The merged entry is left as written; this is the correction.
+
 **2026-09-17** — Stop three zero-cost rungs from reporting a clean read of nothing, and record that rung S0b's number moves with the engine ([#89](https://github.com/kristerhedfors/lypning/pull/89))
 
 - The assigned S0 round did not run. This clone holds none of its inputs: the
