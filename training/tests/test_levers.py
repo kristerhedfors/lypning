@@ -662,3 +662,25 @@ def test_absent_draw_rows_are_a_usage_error_and_never_an_empty_vector(tmp_path, 
         assert code == 2
         assert out.err.strip() == "not a file: %s" % missing
         assert out.out == ""
+
+
+def test_an_engine_that_cannot_execute_is_a_failed_replay_and_not_a_vector(tmp_path,
+                                                                          capsys):
+    """The `is_file` check above is not enough on its own.
+
+    An engine that EXISTS but cannot execute passes it, and then reproduces the
+    whole defect one step later: every program grades ERROR, no draw carries a
+    refusal, and the empty vector prints at exit 0 — over a population this
+    binary inflated, because `--run` re-derives `native` from the same failed
+    replay. Nothing graded is not a refusal vector of zero.
+    """
+    engine = tmp_path / "not-executable"
+    engine.write_text("#!/bin/sh\nexit 3\n", encoding="utf-8")
+    engine.chmod(0o644)
+    code, out = _run_cli(["levers", "--run", "stock-nothinking",
+                          "--status", "correct-fallback", "--vector", "--limit", "0",
+                          "--engine", str(engine)], capsys)
+    assert code == 1
+    assert "no draw graded" in out.err and "failed replay" in out.err
+    assert "ERROR" in out.err
+    assert "descriptive refusal vector" not in out.out

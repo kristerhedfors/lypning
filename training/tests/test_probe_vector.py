@@ -44,3 +44,19 @@ def test_an_absent_input_is_a_usage_error_and_never_a_zeros_table(tmp_path, caps
 
     assert cli.main(["probe-vector", "--probe", str(probe), "--base", str(base)]) == 0
     assert "probe rows 1   base rows 1" in capsys.readouterr().out
+
+
+def test_a_present_but_empty_probe_is_not_a_comparison_either(tmp_path, capsys):
+    """Absent was one step; empty is the same read of nothing one step later.
+
+    A probe stage that produced no rollouts did not run, and `probe_only` is
+    empty over it, so the hole detector cannot catch this one either.
+    """
+    from pipeline import cli
+    probe, base = tmp_path / "probe.jsonl", tmp_path / "base.jsonl"
+    probe.write_text("", encoding="utf-8")
+    write_jsonl(base, [{"case_id": "a", "status": "correct-native"}])
+    assert cli.main(["probe-vector", "--probe", str(probe), "--base", str(base)]) == 1
+    captured = capsys.readouterr()
+    assert "no probe rows in" in captured.err
+    assert captured.out == ""          # never the zeros table

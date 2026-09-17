@@ -39,16 +39,19 @@ assigned as a $0 read was able to report a clean read of nothing.** Had this
 session been the private device and had the download silently landed in the
 wrong place, that table is transcribable into a report as an S0c result.
 
-Two more of the same shape were found and fixed on the way (§5). The sharpest is
+Four more of the same shape were found and fixed on the way — two of them only
+because the first fix was tested rather than trusted (§5). The sharpest is
 in S0b, and it is worse than a zeros table: **rung S0b's number is not
 engine-independent, and a `--engine` that was not a file printed an empty vector
 at exit 0 while the considered population silently grew.**
 
 **Decisions requested of Codex** — three, all in §6:
 
-1. Whether the three fail-closed guards and the two documentation corrections in
+1. Whether the five fail-closed guards and the two documentation corrections in
    §5 are accepted, or whether any of them is a change to a rung's contract that
-   Codex wants to make itself.
+   Codex wants to make itself. Two of the five change an exit code from 0 to 1
+   on an input that read or graded nothing, which is the only behaviour change
+   here that a caller could depend on.
 2. Whether the S0b engine-identity finding changes the rung's assignment. The
    reviewed "171 correct-but-fallback pilot draws" is a count **at the pilot's
    engine identity**; this tree measured the same population moving from 14 to
@@ -291,8 +294,8 @@ nothing; the 2026-09-16 attempt reached the same wall.
 **What worked, and is the reason to read this report.** Attempting all three
 rungs verbatim on a device that holds none of their inputs is a test the
 assigned device will never run, and it found a class of defect the assigned
-device would have been exposed to silently. Three commands could report a clean
-read of nothing:
+device would have been exposed to silently. **Five** ways a rung could report a
+clean read of nothing, found in two passes:
 
 1. **`probe-vector` (rung S0c)** — both inputs absent, exit 0, zeros table.
 2. **`levers --run … --engine <not a file>` (rung S0b)** — empty vector, exit 0,
@@ -300,12 +303,36 @@ read of nothing:
 3. **`levers --rows … --replay …`** with either path absent — empty vector,
    exit 0.
 
-All three are now fixed, in the CLI's own existing idiom for a required explicit
+Those three are guarded in the CLI's own existing idiom for a required explicit
 path (`if not path.is_file(): print("not a file: %s"); return 2`, as
-`cmd_eval2_leaks` and `cmd_eval2_legacy` already do). The `ERROR` census is now
-said on stderr where `MISMATCH` is said. Five tests pin all of it, including the
-first CLI-level test `probe-vector` has ever had. The exit-1 hole detector
-`START_NEXT_ROUND.md` names still fires on real inputs, verified.
+`cmd_eval2_leaks` and `cmd_eval2_legacy` already do), and the `ERROR` census is
+now said on stderr where `MISMATCH` is said.
+
+**Then the first fix turned out to be incomplete, which is worth recording
+rather than smoothing over.** Testing that the new `ERROR` line could actually
+fire — a guard that never fires being worse than none — exposed two survivors of
+the same defect, one step past each guard:
+
+4. **`levers --run … --engine <exists but cannot execute>`** passes `is_file`
+   and then reproduces the whole thing: `ERROR 74`, no draw carrying a refusal,
+   the empty vector printed, the population still inflated to 26, **exit 0**.
+   Guarding absence was never the point; publishing a vector over a replay that
+   graded nothing was. Nothing graded now exits 1 and prints no vector.
+5. **`probe-vector` over a present-but-empty probe file** — a probe stage that
+   produced no rollouts did not run, `probe_only` is empty over it, so the hole
+   detector cannot catch this one either. Now exit 1.
+
+Seven tests pin all five, including the first CLI-level test `probe-vector` has
+ever had. The exit-1 hole detector `START_NEXT_ROUND.md` names still fires on
+real inputs, and the real `--run` path still exits 0 on 14 draws — both verified
+after the change, not assumed.
+
+**The lesson generalises past these two commands, and Codex may want it as a
+rule:** every one of these five printed a well-formed table. The defect was
+never a crash or a wrong number, it was a *shape* — a $0 rung whose absent,
+unreadable or ungraded input renders identically to a real read of zero. The
+`is_file` guards are the cheap half; the half that mattered was asking, for each
+rung, "what does this command do when it measures nothing?"
 
 **Which claim is directly supported, and which is inferred.** Directly
 supported, by re-run output quoted above: the three rungs' literal outcomes; the
@@ -364,7 +391,8 @@ were not written down before this session and one hazard removed.
   answers `ASSESSMENT.md` §6 step 1 names.
 - **Stop rule:** unchanged — a missing artifact stops the rung and is never
   converted into a score. Now enforced by the tools as well as the rule: a rung
-  whose input is absent exits 2 and names the path.
+  whose input is absent exits 2 naming the path, and one whose input read or
+  graded nothing exits 1 rather than printing a table over it.
 - **What is still not authorized:** S1 or any paid rung, a GPU job, a Space
   rebuild, a dataset mutation, or any edit to a frozen artifact.
 
@@ -373,9 +401,9 @@ were not written down before this session and one hazard removed.
 **Artifacts Codex can inspect, all in this tree:**
 
 - this report;
-- the three guards and the `ERROR` census: `training/pipeline/cli.py`
+- the five guards and the `ERROR` census: `training/pipeline/cli.py`
   (`cmd_probe_vector`, `cmd_levers`);
-- the five pinning tests: `training/tests/test_probe_vector.py`,
+- the seven pinning tests: `training/tests/test_probe_vector.py`,
   `training/tests/test_levers.py`, `training/tests/test_training.py`;
 - the two documentation corrections: `training/START_NEXT_ROUND.md` (the S0b
   engine-identity paragraph, the S0c path, the plan-versus-stage note) and

@@ -1879,10 +1879,22 @@ def cmd_levers(args: argparse.Namespace) -> int:
         # A program the replay could not run carries no refusal, so it leaves
         # the vector silently. Say so where MISMATCH is said: an ungraded
         # program is a hole in the evidence, not a family with no mass.
-        if census["tally"].get("ERROR"):
+        errors = census["tally"].get("ERROR") or 0
+        if errors:
             print("  ERROR %d — the replay could not grade these programs. Their "
-                  "refusals are absent from the vector below, not zero."
-                  % census["tally"]["ERROR"], file=sys.stderr)
+                  "refusals are absent from the vector below, not zero." % errors,
+                  file=sys.stderr)
+        # And when NOTHING graded, there is no vector to print. An engine that
+        # exists but cannot execute reaches here, so the `is_file` check above
+        # is not enough on its own: it would leave the same empty vector at
+        # exit 0, over a population this binary inflated by re-deriving
+        # `native` from a replay that failed. That is the read of nothing this
+        # command must not be able to publish.
+        if errors and joined["considered"] and not joined["records"]:
+            print("levers: no draw graded — %d considered, %d ERROR. This is a "
+                  "failed replay, not a refusal vector." % (joined["considered"], errors),
+                  file=sys.stderr)
+            return 1
     elif args.rows:
         if not args.replay:
             print("levers: --rows needs --replay: a draw row carries no refusal, and "
@@ -1985,6 +1997,13 @@ def cmd_probe_vector(args: argparse.Namespace) -> int:
     except (OSError, ValueError) as exc:
         print("probe-vector: %s" % exc, file=sys.stderr)
         return 2
+    # Present but empty is the same read of nothing as absent, one step later:
+    # a probe stage that produced no rollouts did not run, and a zeros table
+    # over it is not a comparison. `probe_only` cannot catch this either.
+    if not result["probe_rows"]:
+        print("probe-vector: no probe rows in %s — nothing to compare" % probe_path,
+              file=sys.stderr)
+        return 1
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:

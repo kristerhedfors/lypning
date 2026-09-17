@@ -33,6 +33,13 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   exit 2 naming the path, in the idiom `eval2-leaks` and `eval2-legacy` already
   used, and an `ERROR` census is reported where `MISMATCH` is. The exit-1 hole
   detector on real inputs is unchanged.
+- Guarding absence was not enough, and testing that the new `ERROR` line could
+  actually fire is what showed it. Two survivors reproduced the whole defect
+  one step past each guard: an `--engine` that exists but cannot execute passed
+  `is_file` and still printed the empty vector at exit 0 over the inflated
+  population, and a present-but-empty probe file still printed a zeros table.
+  A replay that graded nothing, and a probe with no rows, now exit 1 and print
+  no table at all. Seven tests pin all five paths.
 - Rung S0b is not engine-independent. The eval-2 draw rows carry no refusal
   kind, so `--run` replays through the local binary and re-derives `native` with
   it: one local run matched 14 correct-but-fallback draws through the built
