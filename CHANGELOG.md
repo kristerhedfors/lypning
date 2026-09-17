@@ -14,6 +14,40 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-17** — Stop three zero-cost rungs from reporting a clean read of nothing, and record that rung S0b's number moves with the engine ([#88](https://github.com/kristerhedfors/lypning/pull/88))
+
+- The assigned S0 round did not run. This clone holds none of its inputs: the
+  private pilot rows, the round-02 probe rollouts, the banks and a Python 3.12
+  build are all absent, and `nt eval2-rows` cannot materialize the rows because
+  it reads the same missing run. Substitution was available — the tools accept
+  any path — and was refused.
+  `training/reports/2026-09-17-fable-s0-blocked-and-the-vacuous-read.md` names
+  every missing artifact. Nothing was spent, no provider was called and no GPU
+  ran.
+- Run verbatim with both private inputs absent, rung S0c printed a complete
+  all-zeros table and exited 0, because `read_jsonl` answers `[]` for a path
+  that is not there and `probe_only` was the command's only failure signal. Two
+  further commands had the same shape, and the worst was rung S0b's: an
+  `--engine` that is not a file graded every program `ERROR`, printed an empty
+  vector at exit 0, and silently grew the considered population. All three now
+  exit 2 naming the path, in the idiom `eval2-leaks` and `eval2-legacy` already
+  used, and an `ERROR` census is reported where `MISMATCH` is. The exit-1 hole
+  detector on real inputs is unchanged.
+- Rung S0b is not engine-independent. The eval-2 draw rows carry no refusal
+  kind, so `--run` replays through the local binary and re-derives `native` with
+  it: one local run matched 14 correct-but-fallback draws through the built
+  engine and 26 through a broken one. The reviewed count of 171 pilot draws is
+  therefore a count at the pilot's engine identity, and
+  `training/START_NEXT_ROUND.md` now says so and asks for the fingerprint in
+  the report.
+- Of nine admission gates the documents claim the runner enforces, eight are
+  enforced as documented. The ninth is a split: the 50,000-supervised-token
+  floor is refused in the stage, not in `preflight`, so `--plan` accepts a
+  schedule the stage later rejects. Moving it earlier would cost `--plan` its
+  no-download contract, so the documents are corrected and the split is pinned.
+  The registered seeds, the family cycle and the token floor had no test on
+  their refusal branch; they have one now.
+
 **2026-09-17** — Assess round 02, preserve blocked evaluation evidence, and constrain the next Fable run to zero-cost validation ([#87](https://github.com/kristerhedfors/lypning/pull/87))
 
 - Round 02 produced no completed eval-2 arm and therefore no model-quality
