@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-16** — A "standard library" corpus: units the engines run, each labelled by the cheapest one ([#88](https://github.com/kristerhedfors/lypning/pull/88))
+**2026-09-17** — A "standard library" corpus: units the engines run, each labelled by the cheapest one ([#88](https://github.com/kristerhedfors/lypning/pull/88))
 
 - `training/stdlib/units/` holds self-contained, function-only programs that
   fill CPython surfaces the engines refuse. Nothing imports them, and nothing
@@ -99,6 +99,128 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   caused by a diverging case does not belong in it — reorder the case or widen
   the capture. Re-measured 2026-09-17: all 31 reference-bearing units
   equal-length, the other 3 name no module.
+**2026-09-17** — Assess round 02, preserve blocked evaluation evidence, and constrain the next Fable run to zero-cost validation ([#87](https://github.com/kristerhedfors/lypning/pull/87))
+
+- Round 02 produced no completed eval-2 arm and therefore no model-quality
+  verdict: the only real 27B attempt reached SFT, probe and GRPO, then the base
+  evaluation blocked when sixteen isolated scorers competed on one CPU host.
+  The assessment records the attempt history, separates infrastructure evidence
+  from model evidence, and keeps paid and GPU work on hold.
+- Verified evaluation now drains an interrupted chunk, persists every successful
+  sibling row, and then re-raises the first infrastructure failure. Native
+  timeouts after a correct oracle remain aborts, not scores. The launcher caps
+  each scorer host at four sandboxes, uses at most four hosts, and refuses an
+  undersized pool before work starts.
+- Held-out draw rows can no longer be ranked as a build queue. `nt levers`
+  exposes descriptive vectors instead, and a new `probe-vector` command compares
+  probe outcomes with base rows case by case. A review of all 108 new refusal
+  declarations moves twenty entries in thirteen deterministic families from the
+  fallback bucket to the engine-addressable bucket without changing evaluation
+  labels or gates.
+- The verifier Space now has content-free `/` and `/healthz` endpoints plus a
+  container health mode. The earlier exit-127 correction changes the worker and
+  harness hashes, so the next remote run must use a new Space commit and fresh
+  bundles.
+- Real adapter stages require at least 1,000 training cases, at least 50,000
+  supervised token exposures, a complete family cycle, and the three registered
+  seeds 1111, 2222 and 3333. Family-cyclic scheduling replaces replacement
+  sampling, and all three jobs are required before the aggregate gate.
+- `training/START_NEXT_ROUND.md` gives Fable an exact S0a-S0c sequence on the
+  private device that owns the artifacts. That zero-cost audit must be reported
+  and reviewed before any provider allocation, upload, training or evaluation.
+
+**2026-09-16** — Make the lever split a command, preserve a blocked arm's program, and stop a harness failure from wearing the program's exit code ([#86](https://github.com/kristerhedfors/lypning/pull/86))
+
+- The next round did not run. Every rung of `training/STATUS.md` §10 is blocked
+  on this device, each on a different prerequisite; `training/reports/2026-09-16-fable-sladder-s0-device-audit.md`
+  names them one by one rather than inventing any of them. Nothing was spent and
+  no GPU ran.
+- `training/ASSESSMENT.md` §4's split of refusals between the engine lever, the
+  model lever and neither was a judgement made once in prose. It is now
+  `pipeline.levers` and `nt levers`: three mechanical layers — this package's own
+  imports, the engine's closed list imported through `refusals.closed_kinds()`
+  and never restated, and what the running interpreter does not ship — over a
+  frozen declaration table of one reasoned line per refusal family. The oracle's
+  module list is an evidence column and never a layer, and a test pins that.
+- It reads the eval-2 draw rows unchanged, so the ladder's rung S0b is a command
+  on the device that holds them rather than a judgement re-made there. It also
+  gives `training/ASSESSMENT.md` §6 step 6 the ranked build order it never had.
+- On this tree (`nt levers --against`, 2026-09-16, 9,064 rows loaded, 643
+  carrying a refusal, rule 1) it reproduces §4's self-referential bucket exactly
+  and disagrees on the lever boundary by 36 entries, entirely inside the 235
+  entries §4 counted but never named. The disagreement is pinned
+  by a test as the one that was reviewed, so a new one fails rather than passing
+  quietly; which side is right is asked of Codex in the ledger.
+- A blocked **evaluation** arm now writes the program that blocked it, as the
+  reward stage already did. The abort, every score and every gate are unchanged
+  on purpose: the ruling `training/ORCHESTRATION.md` row T4 asks for is the one
+  this evidence was missing, and it is still open.
+- Fixed a defect that predates this change: under network isolation the harness
+  execs `unshare`, which succeeds and then fails to start the real program, so a
+  setup failure arrived as exit 127 with an empty error pipe — indistinguishable
+  from the program's own `SystemExit(127)`, which is the distinction the
+  verification contract uses to decide whether a run is a model result at all.
+  Taking it rebuilds the verifier image and needs a new bundle.
+
+**2026-09-16** — Fix the power-table mislabel at its source, and make the pre-registered k a refusal ([#85](https://github.com/kristerhedfors/lypning/pull/85))
+
+- `training/ASSESSMENT.md` described the `training/EVAL2.md` §7 mislabel and
+  left it in the code, so the next print would have reproduced it.
+  `stats.power_curve_clustered` now returns the realised lift in the unit the
+  §4 rule works in — the macro over families, noise-free — beside the per-case
+  figure and a flag for whether the rate cap clipped the cell, and
+  `nt power --eval2` keys every cell on the macro, counts the cells the cap
+  clipped and names the worst of them in the cap's own per-case unit.
+  A row can no longer be read by the lift it was asked for.
+- §7's uniform reading is withdrawn, dated, with the withdrawn sentences quoted:
+  it concluded that a uniform few-point lift "cannot be seen by this instrument
+  at N = 300 and k = 16" and prescribed more draws and a larger bank. Neither
+  follows from rows that tested a smaller effect than their label. The
+  concentrated rows stand — their lifted decile starts at zero, which their
+  strictly rising power confirms — and the §4 rule, N and the §9 falsifier are
+  untouched.
+- Two corrections to the assessment's own findings, both from adversarial
+  re-calibration on synthetic pilots (2026-09-16, this tree, k=16, N=300, mde
+  +3pp, seed 7). `mean_effect` is per-case and is not the unit power is read
+  against, so the prescription to key the re-print on it named the wrong
+  column; on the real bank it would understate rather than overstate, because
+  §11 puts the macro headroom above the per-draw headroom. And the concentrated
+  shape clips too: its reachable lift is `fraction × (1 − mean(lifted decile))`,
+  so at fraction 0.1 a nominal +10pp survives only on a decile at exactly zero.
+- A non-smoke benchmark eval arm at any k but
+  `training_contract.PROTOCOL_EVAL_DRAWS` is refused in
+  `train_verified.preflight`; `--greedy`, which draws once by construction and is
+  already restricted to a diagnostic, is exempt. `training/EVAL2.md` §4 already called the runner's default
+  of 4 a smoke setting; round-02 spent an arm proving it. The other two "stop
+  doing" rules stay prose on purpose — a training-case floor of 1,000 would
+  refuse every bundle in this tree, and which floor is right is a decision
+  `training/ASSESSMENT.md` §8 asks for.
+- `training/STATUS.md` §10 is the single live sequence, appended rather than installed as
+  §5: §5 is the only dated record of the programme's priors, and evicting it
+  would have made five of the ten inbound `training/STATUS.md` §N citations
+  wrong — silently, since the headings they name all survive a shift — one of
+  them inside a dated entry in this file. `training/LADDER.md` §5,
+  `training/NEXT_ROUND.md`, `training/START_NEXT_ROUND.md` and `training/ORCHESTRATION.md` point at it and
+  keep their mechanism, which for `training/NEXT_ROUND.md` is the launch flags that exist
+  nowhere else.
+- `training/STATUS.md` §0 states where the programme stands in one paragraph —
+  five days and about $105 for four adapters and no informative result, and the
+  four cheap things that have never been done — because a reader had to reach §9
+  to find it. Its scoreboard row for the pilot draw no longer quotes power
+  figures from the withdrawn curve; it says instead that none is quotable until
+  rung S0a re-prints it.
+- `test_reward_scores_a_group_concurrently_and_keeps_batch_order` asserted that
+  GRPO's thread pool overlaps two scorings by sleeping 0.05s in each and
+  demanding the pair finish inside 0.15s. That is a wall-clock budget on a
+  shared runner, which `ci.yml` refuses to put `bench` in CI for in those exact
+  words, and it was the macOS job's only red on `0fdb527` — at 0.21s, with
+  nothing wrong with the code. A `threading.Barrier` now asserts the overlap
+  directly: two completions each wait for the other, so `reward` returns only if
+  both were in flight. Checked both ways — it passes in 0.10s concurrently and
+  fails on `score_workers=1`.
+- `training/AUDIT.md` carries the defect as
+  `data-integrity/power-table-keyed-by-a-lift-the-simulation-does-not-deliver`,
+  with the repro; `training/ORCHESTRATION.md` gains ledger row S3.
 
 **2026-09-16** — `nemotron/` is `training/`, and the retired name is a test ([#83](https://github.com/kristerhedfors/lypning/pull/83))
 

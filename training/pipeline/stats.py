@@ -552,9 +552,15 @@ def minimum_detectable(curve: Dict[str, Any], rule: str, want: float = 0.8) -> O
 #: The effect shapes `power_curve_clustered` simulates. `uniform` lifts every
 #: case's per-draw rate by delta (capped at 1). `concentrated` lifts the
 #: CONCENTRATED_FRACTION of cases with the lowest base rate to ONE target rate,
-#: chosen so the mean per-case lift is that same delta — a handful of families
-#: solved outright, the shape `PREREGISTRATION.md` §3c found the case-resampling
-#: rule near-blind to. Same delta, two shapes: the difference is the shape.
+#: aiming at that same mean per-case lift — a handful of families solved
+#: outright, the shape `PREREGISTRATION.md` §3c found the case-resampling rule
+#: near-blind to.
+#:
+#: `delta` is the lift ASKED FOR, and neither shape is guaranteed to deliver it:
+#: the rate cap at 1 takes back whatever a case has no room for. So a cell is
+#: named by the lift it REALISED, never by its delta, and `_treated` returns
+#: both realisations — see its docstring for which one power is read against.
+#: Two rows at one delta can therefore differ in effect SIZE as well as shape.
 CLUSTER_SHAPES = ("uniform", "concentrated")
 CLUSTER_DELTAS = (0.0, 0.03, 0.05, 0.08, 0.10)
 CLUSTER_SIZES = (100, 200, 300, 500, 800)
@@ -632,12 +638,52 @@ def _draw_bank(units: List[List[Tuple[str, List[float]]]], n: int,
 
 
 def _treated(bank: List[List[List[float]]], shape: str, delta: float, n: int,
-             fraction: float, rng: random.Random) -> Tuple[List[List[List[float]]], float]:
-    """The treated arm's per-case rates, and the realised mean per-case lift
-    (below ``delta`` only where the cap at 1 bit)."""
+             fraction: float, rng: random.Random) -> Tuple[List[List[List[float]]], float, float, bool]:
+    """The treated arm's rates, what the lift REALLY came to, and whether the
+    cap took any of it.
+
+    Returns ``(treated, per_case, macro, capped)``. Both realisations are
+    noise-free — they are read off the rates, before any draw is simulated —
+    and they are DIFFERENT NUMBERS that can diverge in either direction:
+
+    ``per_case``  the mean lift over cases, ``lifted / n``. What an experimenter
+                  predicting "a quarter of the fallback draws turn native"
+                  computes, because that arithmetic counts draws.
+    ``macro``     the mean over FAMILIES of each family's mean case lift. The
+                  units of the `EVAL2.md` §4 rule, which macro-averages over
+                  families, so THIS is the one a power reading is taken
+                  against: `paired_comparison` never sees ``per_case``.
+
+    They coincide when every family carries the same number of cases — however
+    the lift lands, cap included — or when the lift lands evenly across families
+    of any size. They diverge when BOTH fail, which is unequal families plus an
+    uneven lift. The cap is one way the lift comes out uneven and not the only
+    one: ``concentrated`` lands its whole lift on a subset of families, so it can
+    diverge with ``capped`` False. A bank whose heavy families are saturated
+    makes ``macro`` the larger; one whose heavy families sit at the floor makes
+    ``per_case`` the larger.
+
+    ``capped`` says the cap changed the answer, which is the whole reason the
+    two shapes cannot be compared by their ``delta``:
+
+    * uniform — a case at ``p`` keeps only ``min(1, p + delta) - p``, so on a
+      saturated bank a nominal +8pp can realise +2pp.
+    * concentrated — the target is ``min(1, mean(chosen) + delta * n / m)``, so
+      the reachable lift is at most ``fraction * (1 - mean(chosen))``. At
+      ``fraction`` 0.1 the nominal survives only while the lifted decile's mean
+      sits at or below ``1 - delta / fraction``: 0.5 at +5pp, 0.2 at +8pp, and
+      exactly 0 at +10pp. The top of `CLUSTER_DELTAS` is thus clipped on any
+      pilot whose lowest decile is not entirely at zero.
+
+    ``max(p, target)`` can also push ``per_case`` ABOVE ``delta``, when a chosen
+    case already sits above the target and keeps its own rate rather than being
+    pulled down to it. The realised figures are the truth in both directions.
+    """
     if delta <= 0.0:
-        return bank, 0.0
+        return bank, 0.0, 0.0, False
+    capped = False
     if shape == "uniform":
+        capped = any(p + delta > 1.0 for cl in bank for fam in cl for p in fam)
         out = [[[min(1.0, p + delta) for p in fam] for fam in cl] for cl in bank]
     else:
         refs = [(ci, fi, pi, p) for ci, cl in enumerate(bank)
@@ -648,13 +694,21 @@ def _treated(bank: List[List[List[float]]], shape: str, delta: float, n: int,
         refs.sort(key=lambda t: t[3])
         m = max(1, int(round(fraction * n)))
         chosen = refs[:m]
-        target = min(1.0, sum(t[3] for t in chosen) / m + delta * n / m)
+        want = sum(t[3] for t in chosen) / m + delta * n / m
+        capped = want > 1.0
+        target = min(1.0, want)
         out = [[list(fam) for fam in cl] for cl in bank]
         for ci, fi, pi, p in chosen:
             out[ci][fi][pi] = max(p, target)
     lifted = sum(t - b for cl, tcl in zip(bank, out) for fam, tfam in zip(cl, tcl)
                  for b, t in zip(fam, tfam))
-    return out, lifted / n
+    # The macro is the rule's own unit, so it is computed the rule's way: each
+    # family averaged over its own cases first, then families averaged equally.
+    # A family of twelve and a family of one weigh the same here and differently
+    # in `lifted / n`, which is the whole of the difference between the two.
+    fam_lifts = [sum(t - b for b, t in zip(fam, tfam)) / len(fam)
+                 for cl, tcl in zip(bank, out) for fam, tfam in zip(cl, tcl)]
+    return out, lifted / n, sum(fam_lifts) / len(fam_lifts), capped
 
 
 def power_curve_clustered(
@@ -689,6 +743,34 @@ def power_curve_clustered(
     fraction of trials that fired; at ``delta`` 0 that fraction is the
     false-positive rate. ``mean_lo`` says how far the bound typically sat.
 
+    **A row is named by what it realised, never by its ``delta``.** ``delta`` is
+    the lift asked for and the grid coordinate; the cap at 1 decides how much of
+    it arrives (`_treated`). Four fields say what a cell actually was, and
+    reading power against the wrong one is how a table comes to report an
+    instrument blind to an effect it detects three times in four:
+
+    ``mean_macro_effect``  the realised lift in the RULE'S units — macro over
+                           families, noise-free. **The key column.** Power is a
+                           property of the statistic, and this is the statistic.
+    ``mean_effect``        the realised lift per CASE, noise-free. Not the
+                           rule's units; it is what an experimenter's per-draw
+                           headroom arithmetic lands in, and it says how much of
+                           the nominal lift the cap allowed through.
+    ``mean_delta``         ``mean_macro_effect`` observed through ``k`` draws —
+                           the same estimand with sampling noise, which is what
+                           `paired_comparison` will report on a real run.
+    ``capped``             the fraction of trials in which the cap bit. Above 0,
+                           ``delta`` overstates the PER-CASE treatment, and is
+                           exactly the condition ``mean_effect < delta``. It says
+                           nothing about ``mean_macro_effect``, which the family
+                           weighting moves on its own and in either direction: a
+                           capped cell can still over-realise its label in the
+                           macro, and an uncapped one can fall far short of it.
+
+    Even the key column is not a sufficient key on its own: at one realised
+    macro, power still depends on how the lift is spread between families, which
+    is what the two shapes are for. Compare rows across ``N`` within a shape.
+
     Deterministic by ``seed``: each (shape, delta, N) cell seeds its own
     generator from the three, so adding a size or a delta to the grid moves no
     other row.
@@ -721,11 +803,13 @@ def power_curve_clustered(
             for n in sizes:
                 rng = random.Random("%d:%s:%r:%d" % (seed, shape, delta, n))
                 cache: Dict[float, List[float]] = {}
-                fired = 0
-                lo_sum = point_sum = effect_sum = 0.0
+                fired = capped_cells = 0
+                lo_sum = point_sum = effect_sum = macro_sum = 0.0
                 for _ in range(trials):
                     bank = _draw_bank(units, n, rng)
-                    treated, effect = _treated(bank, shape, delta, n, fraction, rng)
+                    treated, effect, macro, capped = _treated(bank, shape, delta, n, fraction, rng)
+                    macro_sum += macro
+                    capped_cells += capped
                     csum: List[float] = []
                     cnf: List[int] = []
                     for cl, tcl in zip(bank, treated):
@@ -754,7 +838,9 @@ def power_curve_clustered(
                 rows.append({"shape": shape, "delta": delta, "N": n,
                              "power": fired / trials, "mean_lo": lo_sum / trials,
                              "mean_delta": point_sum / trials,
-                             "mean_effect": effect_sum / trials})
+                             "mean_effect": effect_sum / trials,
+                             "mean_macro_effect": macro_sum / trials,
+                             "capped": capped_cells / trials})
     smallest: Dict[str, Dict[float, Optional[int]]] = {}
     for shape in shapes:
         smallest[shape] = {}

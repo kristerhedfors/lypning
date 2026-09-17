@@ -31,8 +31,9 @@ REPO_URL = "https://github.com/kristerhedfors/lypning"
 STAGES = {"smoke": "training/hf/round02_smoke.sh", "pilot": "training/hf/round02_pilot.sh"}
 #: The stages that read reviewed banks from the private dataset repo (--bank-path).
 BANKED = ("pilot",)
-DEFAULT_STEPS, DEFAULT_EVAL_DRAWS, DEFAULT_SEED = 20, 16, 1111
+DEFAULT_STEPS, DEFAULT_GRPO_STEPS, DEFAULT_EVAL_DRAWS, DEFAULT_SEED = 250, 20, 16, 1111
 DEFAULT_EVAL_SEQUENCES, DEFAULT_SCORE_WORKERS = 128, 16
+DEFAULT_POOL_SANDBOXES_PER_HOST, DEFAULT_POOL_MAX_HOSTS = 4, 4
 TERMINAL = ("COMPLETED", "ERROR", "CANCELED")
 
 
@@ -49,8 +50,11 @@ def job_env(args):
            "WORK_REPO": args.work_repo}
     if args.stage in BANKED:
         env.update({"BANK_PATH": args.bank_path, "STEPS": str(args.steps),
+                    "GRPO_STEPS": str(args.grpo_steps),
                     "EVAL_DRAWS": str(args.eval_draws), "SEED": str(args.seed),
                     "EVAL_SEQUENCES": str(args.eval_sequences), "SCORE_WORKERS": str(args.score_workers),
+                    "NTX_POOL_SANDBOXES_PER_HOST": str(args.pool_sandboxes_per_host),
+                    "NTX_POOL_MAX_HOSTS": str(args.pool_max_hosts),
                     "BUNDLES_FROM": args.bundles_from or ""})
     return env
 
@@ -89,12 +93,19 @@ def main(argv=None):
     p.add_argument("--qwen-revision", required=True, help="approved immutable Qwen3.8-27B commit")
     p.add_argument("--work-repo", required=True, help="private dataset repo for artifacts")
     p.add_argument("--bank-path", help="pilot: directory in --work-repo holding eval2.jsonl, train.jsonl, evidence-*/")
-    p.add_argument("--steps", type=int, default=DEFAULT_STEPS, help="pilot: SFT and GRPO optimizer steps")
+    p.add_argument("--steps", type=int, default=DEFAULT_STEPS, help="pilot: SFT optimizer steps")
+    p.add_argument("--grpo-steps", type=int, default=DEFAULT_GRPO_STEPS,
+                   help="pilot: GRPO optimizer steps (default: 20)")
     p.add_argument("--eval-draws", type=int, default=DEFAULT_EVAL_DRAWS, help="pilot: draws per case on the eval-2 benchmark")
     p.add_argument("--eval-sequences", type=int, default=DEFAULT_EVAL_SEQUENCES,
                    help="pilot: sequences per generate call in evaluation")
     p.add_argument("--score-workers", type=int, default=DEFAULT_SCORE_WORKERS,
                    help="pilot: concurrent verifier scorings")
+    p.add_argument("--pool-sandboxes-per-host", type=int,
+                   default=DEFAULT_POOL_SANDBOXES_PER_HOST,
+                   help="pilot: verifier concurrency per CPU host (default: 4)")
+    p.add_argument("--pool-max-hosts", type=int, default=DEFAULT_POOL_MAX_HOSTS,
+                   help="pilot: verifier CPU-host cost ceiling (default: 4)")
     p.add_argument("--bundles-from", default="",
                    help="pilot: reuse the pilot/ and eval2/ bundles under this directory of --work-repo")
     p.add_argument("--seed", type=int, default=DEFAULT_SEED, help="pilot: review, preparation and training seed")
@@ -111,8 +122,13 @@ def main(argv=None):
         print("%s needs --bank-path: a directory in --work-repo holding eval2.jsonl, train.jsonl and evidence-*/"
               % args.stage, file=sys.stderr)
         return 2
-    if min(args.steps, args.eval_draws) <= 0:
-        print("--steps and --eval-draws must be positive", file=sys.stderr)
+    if min(args.steps, args.grpo_steps, args.eval_draws, args.eval_sequences, args.score_workers,
+           args.pool_sandboxes_per_host, args.pool_max_hosts) <= 0:
+        print("training, evaluation and pool limits must be positive", file=sys.stderr)
+        return 2
+    if args.pool_sandboxes_per_host * args.pool_max_hosts < args.score_workers:
+        print("pool capacity must cover --score-workers: increase --pool-max-hosts or "
+              "--pool-sandboxes-per-host", file=sys.stderr)
         return 2
     token = os.environ.get("HF_TOKEN")
     if not token:
@@ -129,7 +145,12 @@ def main(argv=None):
             "branch": args.branch, "commit": args.commit, "space": args.space, "space_revision": args.space_revision,
             "qwen_revision": args.qwen_revision, "work_repo": args.work_repo}
     if args.stage in BANKED:
-        plan.update({"bank_path": args.bank_path, "steps": args.steps, "eval_draws": args.eval_draws, "seed": args.seed})
+        plan.update({"bank_path": args.bank_path, "steps": args.steps,
+                     "grpo_steps": args.grpo_steps,
+                     "eval_draws": args.eval_draws, "eval_sequences": args.eval_sequences,
+                     "score_workers": args.score_workers,
+                     "pool_sandboxes_per_host": args.pool_sandboxes_per_host,
+                     "pool_max_hosts": args.pool_max_hosts, "seed": args.seed})
     print(json.dumps(plan, indent=2))
     if not args.yes:
         print("dry run: pass --yes to submit", file=sys.stderr)

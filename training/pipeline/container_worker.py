@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import hashlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -43,7 +45,38 @@ def identity():
             "python_sha256": sha(Path(sys.executable).resolve())}
 
 
-def main():
+class HealthHandler(BaseHTTPRequestHandler):
+    """A content-free liveness endpoint for the private verifier Space."""
+
+    def do_GET(self):
+        if self.path not in ("/", "/healthz"):
+            self.send_error(404)
+            return
+        body = b"ok\n"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, _format, *args):
+        pass
+
+
+def serve_health(host="0.0.0.0", port=None):
+    """Keep a Space healthy without exposing the verifier protocol or identity."""
+    port = int(os.environ.get("PORT", "7860")) if port is None else int(port)
+    ThreadingHTTPServer((host, port), HealthHandler).serve_forever()
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv == ["--health-server"]:
+        serve_health()
+        return
+    if argv:
+        raise ValueError("unknown arguments")
     request = json.loads(sys.stdin.buffer.read(8 * 1024 * 1024 + 1))
     if request["protocol"] != 1:
         raise ValueError("protocol mismatch")

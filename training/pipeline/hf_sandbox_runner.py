@@ -81,6 +81,19 @@ def pool_name(revision, tag=None):
     return "lypning-verifier-" + revision[:12] + ("-" + tag if tag else "")
 
 
+def pool_limit(value, name):
+    """A positive optional pool limit, from a flag or the job environment."""
+    if value in (None, ""):
+        return None
+    try:
+        value = int(value)
+    except (TypeError, ValueError) as exc:
+        raise TrainingError("%s must be a positive integer" % name) from exc
+    if value <= 0:
+        raise TrainingError("%s must be a positive integer" % name)
+    return value
+
+
 def http_status(exc):
     """The HTTP status an SDK error carries, or None for a connection-level failure."""
     code = getattr(getattr(exc, "response", None), "status_code", None)
@@ -104,7 +117,8 @@ class HfSandboxPoolRunner:
     """Same call shape as `ContainerRunner`; one pooled sandbox per request."""
 
     def __init__(self, image, revision, identity, *, check=True, pool=None, flavor=FLAVOR,
-                 sandboxes_per_host=None, hf_token=None, space_sha=None, sleep=time.sleep):
+                 sandboxes_per_host=None, max_hosts=None, hf_token=None, space_sha=None,
+                 sleep=time.sleep):
         if not isinstance(image, str) or not re.fullmatch(IMAGE_PATTERN, image):
             raise TrainingError("hf-sandbox-pool execution image must be an hf.co/spaces/<owner>/<name> image")
         if not isinstance(revision, str) or not re.fullmatch(REVISION_PATTERN, revision):
@@ -117,7 +131,13 @@ class HfSandboxPoolRunner:
         self._python_sha256 = None
         self._pool = pool
         self._flavor = flavor
-        self._sandboxes_per_host = sandboxes_per_host
+        self._sandboxes_per_host = pool_limit(
+            sandboxes_per_host if sandboxes_per_host is not None else
+            os.environ.get("NTX_POOL_SANDBOXES_PER_HOST"),
+            "sandboxes per host")
+        self._max_hosts = pool_limit(
+            max_hosts if max_hosts is not None else os.environ.get("NTX_POOL_MAX_HOSTS"),
+            "maximum pool hosts")
         self._hf_token = hf_token
         self._space_sha = space_sha
         self._sleep = sleep
@@ -176,8 +196,10 @@ class HfSandboxPoolRunner:
             # each other's hosts down mid-stage (jobs 6aaa4b2c and 6aaa5c1e,
             # 2026-09-16).
             kwargs = {"image": self.image, "flavor": self._flavor, "name": pool_name(self.revision)}
-            if self._sandboxes_per_host:
+            if self._sandboxes_per_host is not None:
                 kwargs["sandboxes_per_host"] = self._sandboxes_per_host
+            if self._max_hosts is not None:
+                kwargs["max_hosts"] = self._max_hosts
             if self._hf_token:
                 kwargs["token"] = self._hf_token
             self._pool = SandboxPool(**kwargs)

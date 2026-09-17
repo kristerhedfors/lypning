@@ -11,6 +11,22 @@ from pipeline.training import Score
 from pipeline.training_contract import decoding
 
 
+def test_sft_schedule_covers_each_family_before_repeating_and_is_deterministic():
+    path = Path(__file__).resolve().parents[1] / "gpu" / "verified_stages.py"
+    spec = importlib.util.spec_from_file_location("test_sft_schedule_runtime", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    cases = [{"family": family} for family in ("a", "a", "b", "c")]
+    examples = [{"name": str(i), "labels": [-100, i, i]} for i in range(4)]
+    first = module.sft_batches(cases, examples, steps=2, batch_size=2, seed=7)
+    second = module.sft_batches(cases, examples, steps=2, batch_size=2, seed=7)
+    assert first == second
+    family_of = {id(example): case["family"] for case, example in zip(cases, examples)}
+    scheduled = [family_of[id(example)] for batch in first for example in batch]
+    assert set(scheduled[:3]) == {"a", "b", "c"}, "one complete family cycle precedes repeats"
+    assert module.supervised_tokens(first) == 8
+
+
 def test_grpo_stage_uses_frozen_policy_and_callbacks(tmp_path, monkeypatch):
     path = Path(__file__).resolve().parents[1] / "gpu" / "verified_stages.py"
     spec = importlib.util.spec_from_file_location("test_stages_runtime", path)

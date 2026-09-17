@@ -82,8 +82,13 @@ def append_jsonl(path: str | os.PathLike, row: Dict[str, Any]) -> None:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("a", encoding="utf-8") as fh:
-        fh.write(canon(row))
-        fh.write("\n")
+        # One write, not two. Appending from several threads is how the reward
+        # stage and the evaluation arm both use this, and a row longer than the
+        # 8 KiB text buffer used to emit its body and its newline as separate
+        # syscalls — so two threads could interleave and leave lines no reader
+        # can parse. A witness row carries a program and its tests; it is
+        # routinely over 8 KiB, which is exactly when the old form broke.
+        fh.write(canon(row) + "\n")
         fh.flush()
         os.fsync(fh.fileno())
 

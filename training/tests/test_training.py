@@ -222,9 +222,15 @@ def test_gpu_preflight_no_torch_and_hard_split_gates(tmp_path, monkeypatch):
     gpu = gpu_module()
     args = gpu.parser().parse_args(["sft", "--bundle", "bundle.json", "--engine", "engine",
         "--output", str(tmp_path / "run"), "--revision", "a" * 40, "--plan"])
-    bundle = {"digest": "locked", "purpose": "pilot", "limits": {"memory_mb": 1024}}
+    bundle = {"digest": "locked", "purpose": "pilot", "limits": {"memory_mb": 1024},
+              "cases": [{"case_id": str(i), "family": "f", "split": "train"}
+                        for i in range(1000)]}
     monkeypatch.setattr(gpu, "load_bundle", lambda *a: bundle)
     assert gpu.preflight(args) == (bundle, None)
+    bundle["cases"].pop()
+    with pytest.raises(t.TrainingError, match="at least 1000 train cases"):
+        gpu.preflight(args)
+    bundle["cases"].append({"case_id": "999", "family": "f", "split": "train"})
     args.eval_split = "test"
     with pytest.raises(t.TrainingError, match="test split"):
         gpu.preflight(args)
@@ -242,6 +248,36 @@ def test_gpu_preflight_no_torch_and_hard_split_gates(tmp_path, monkeypatch):
     args.revision = "main"
     with pytest.raises(t.TrainingError, match="immutable"):
         gpu.preflight(args)
+
+
+def test_a_confirmatory_eval2_arm_is_refused_at_a_k_it_was_not_registered_at(tmp_path, monkeypatch):
+    """`EVAL2.md` section 4 prices the rule at k=16; the runner's own default is 4.
+
+    The round-02 pilot ran a benchmark arm at the default and produced an
+    interval wider than any effect it could have found. The two defaults
+    disagree by construction, so the disagreement is caught where it is free.
+    """
+    gpu = gpu_module()
+    args = gpu.parser().parse_args(["eval", "--bundle", "bundle.json", "--engine", "engine",
+        "--output", str(tmp_path / "run"), "--revision", "a" * 40, "--plan",
+        "--eval-split", "all"])
+    bundle = {"digest": "locked", "purpose": "benchmark", "limits": {"memory_mb": 1024}}
+    monkeypatch.setattr(gpu, "load_bundle", lambda *a: bundle)
+    args.eval_draws = 4
+    with pytest.raises(t.TrainingError, match="pre-registered at --eval-draws 16"):
+        gpu.preflight(args)
+    # A wiring check may still be cheap, and a pilot bundle is not the frozen
+    # benchmark the pre-registration binds.
+    args.smoke = True
+    assert gpu.preflight(args) == (bundle, None)
+    args.smoke = False
+    bundle["purpose"] = "pilot"
+    args.eval_split = "dev"
+    assert gpu.preflight(args) == (bundle, None)
+    # ...and the registered k passes on the benchmark.
+    bundle["purpose"] = "benchmark"
+    args.eval_split, args.eval_draws = "all", 16
+    assert gpu.preflight(args) == (bundle, None)
 
 
 def test_family_balance():
@@ -335,8 +371,11 @@ def test_benchmark_bundle_is_evaluated_whole_and_never_trained_on(tmp_path, monk
     for stage in ("sft", "probe", "grpo"):
         with pytest.raises(t.TrainingError, match="never trained on"):
             gpu.preflight(args(stage, "benchmark.json", *(("--from-base",) if stage == "grpo" else ())))
-    assert gpu.preflight(args("eval", "benchmark.json", "--eval-split", "all")) == (benchmark, None)
-    assert gpu.preflight(args("eval", "benchmark.json", "--eval-split", "dev")) == (benchmark, None)
+    # A benchmark arm is a confirmatory arm, so it carries the pre-registered k.
+    assert gpu.preflight(args("eval", "benchmark.json", "--eval-split", "all",
+                              "--eval-draws", "16")) == (benchmark, None)
+    assert gpu.preflight(args("eval", "benchmark.json", "--eval-split", "dev",
+                              "--eval-draws", "16")) == (benchmark, None)
     assert gpu.preflight(args("eval", "pilot.json", "--eval-split", "test")) == (pilot, None)
     with pytest.raises(t.TrainingError, match="benchmark bundle whole"):
         gpu.preflight(args("eval", "pilot.json", "--eval-split", "all"))
@@ -422,16 +461,29 @@ def test_a_pilot_adapter_is_admitted_on_a_benchmark_eval_and_nowhere_else():
 
 def test_reward_scores_a_group_concurrently_and_keeps_batch_order(case):
     """GRPO's four completions are a dozen sandbox requests each; they are
-    scored on a thread pool and the rewards come back in batch order."""
-    import time
+    scored on a thread pool and the rewards come back in batch order.
+
+    The overlap is asserted with a barrier and not a stopwatch. This test used to
+    sleep 0.05s per slow scoring and demand the pair finish inside 0.15s, which
+    is a wall-clock budget on a shared runner — the thing `ci.yml` refuses to put
+    `bench` in CI for, in its own words, because it measures the runner. It duly
+    became the macOS job's only red, at 0.21s, with nothing wrong with the code.
+    A barrier asserts the property directly instead of inferring it from elapsed
+    time: two of the four completions are `p0`, each waits for the other, so
+    `reward` can only return at all if both were in flight at once. A serial
+    scorer breaks the barrier on its timeout and fails there. Free when it passes.
+    """
+    import threading
     from pipeline.training import Score
 
-    class Slow:
+    side_by_side = threading.Barrier(2, timeout=30)
+
+    class Concurrent:
         def score(self, c, program):
-            time.sleep(0.05 if program == "p0" else 0.0)
+            if program == "p0":
+                side_by_side.wait()
             return Score(1.0 if program == "p0" else 0.0, "correct-native" if program == "p0" else "incorrect", 1, 1)
-    reward = t.Reward([case], Slow(), generations=2, score_workers=4)
-    started = time.time()
+    reward = t.Reward([case], Concurrent(), generations=2, score_workers=4)
     got = reward(["```python\np0\n```", "```python\np1\n```"] * 2, [case["case_id"]] * 4)
     assert got == [1.0, 0.0, 1.0, 0.0]
-    assert time.time() - started < 0.15, "two slow scorings ran side by side"
+    assert not side_by_side.broken, "the two slow scorings never ran side by side"

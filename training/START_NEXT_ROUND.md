@@ -1,4 +1,4 @@
-# Claude Code: start the next round here
+# Fable: start the next round here
 
 This file is the portable assignment for the **other device**. Start on merged
 `main`; read the root `CLAUDE.md`, this file, then `NEXT_ROUND.md`. Do not launch
@@ -11,6 +11,56 @@ Fable's training writeups; Fable runs approved training loops. Read
 [FABLE_REPORT_TEMPLATE.md](FABLE_REPORT_TEMPLATE.md) at every handoff, including
 blocked/no-run outcomes. New harvesting data never mutates your active bundle.
 
+## Next Fable session — 2026-09-17
+
+The next session is a **read-only, $0 S0 evidence round**, not another training
+launch. Start from the merged commit carrying
+[`reviews/2026-09-17-round02-full-assessment.md`](reviews/2026-09-17-round02-full-assessment.md)
+on the device that can read the private round-02 artifacts. Do these in order:
+
+```bash
+# S0a: re-print power from the completed private pilot draw, in realised-macro units.
+PYTHONPATH=src:training python3 -m pipeline.cli power --eval2 \
+  --rows eval-20260916-063539 --draws 16 --mde 0.03
+
+# S0b: descriptive family vector only. --rank is now refused on draw/held-out rows.
+PYTHONPATH=src:training python3 -m pipeline.cli levers \
+  --run eval-20260916-063539 --status correct-fallback --vector --limit 0
+
+# S0c: per-train-case native status, probe beside the completed base pilot.
+PYTHONPATH=src:training python3 -m pipeline.cli probe-vector \
+  --probe work/round-02/6aaa87465527934177ee9f34/probe/probe-rollouts.jsonl \
+  --base runs/eval-20260916-063539/eval2_rows.jsonl
+```
+
+Before S0c, download the immutable private artifact directory
+`round-02/6aaa87465527934177ee9f34/` into the path shown and materialize the
+pilot rows with `nt eval2-rows` if the named file is absent. `probe-vector`
+prints every status and every unmatched ID; a probe case missing from base exits
+1. This is a descriptive read, not a new score and not a reason to tune on
+eval-2.
+
+Write one Fable report from `FABLE_REPORT_TEMPLATE.md` containing the full S0a
+output, full S0b vector, S0c table, artifact hashes, unmatched counts, and the
+three conclusions those reads support. Then stop and hand it back for Codex
+review. Do not run S1, create a GPU job, rebuild a dataset, or alter a frozen
+artifact in this session.
+
+If a later review authorizes another paid round, it uses a **new** verifier
+Space commit and new bundles. The worker and sandbox harness changed, and the
+Space Dockerfile must keep a health process alive:
+
+```dockerfile
+CMD ["python3", "-I", "/usr/local/lib/lypning-verifier/container_worker.py", "--health-server"]
+```
+
+The launcher defaults to 16 scorers backed by four sandboxes per CPU host and
+at most four hosts; do not collapse them onto one host. A confirmatory eval-2
+arm remains k=16. Real adapter stages now refuse fewer than 1,000 train cases,
+an SFT schedule below 50,000 supervised tokens, a schedule that cannot cover
+every family once, or a seed outside `1111, 2222, 3333`. A complete S4 result
+requires all three seed jobs; one successful job is one replicate, not a round.
+
 ## The assignment
 
 Adapt **Qwen/Qwen3.8-27B** to write correct, first-draft **lypning-l-compatible**
@@ -21,9 +71,11 @@ correct compatible 2× example and an untimed example are both valuable. There i
 Correctness comes first; compatibility coverage is the model objective.
 
 Use the task-first `pipeline.training` / `gpu/train_verified.py` path, not the
-historical rewrite trainer. Follow base → verified SFT → train-only signal probe
-→ GRPO only if informative → matched evaluation. Keep the better base/SFT policy
-if RL does not earn its place. Broader independent task coverage is more valuable
+historical rewrite trainer. **Which round runs next, and whether it runs at all,
+is `STATUS.md` §10 — read it first; nothing here chooses the next paid step.**
+Within a round the stage order is base → verified SFT → train-only signal probe
+→ GRPO only if informative → matched evaluation, run by the exact commands in
+`NEXT_ROUND.md`. Keep the better base/SFT policy if RL does not earn its place. Broader independent task coverage is more valuable
 than repeatedly cloning starter templates. Training remains manually launched.
 
 ## What is implemented; what is still a launch gate
@@ -171,6 +223,7 @@ report can cite candidate execution through the pool rather than infer it.
 #   Dockerfile: FROM python:3.12-slim@sha256:<digest>
 #               COPY sandbox.py child_exec.py container_worker.py /usr/local/lib/lypning-verifier/
 #               COPY --chmod=755 lypning-l /usr/local/bin/lypning-l   (no USER line)
+#               CMD ["python3", "-I", "/usr/local/lib/lypning-verifier/container_worker.py", "--health-server"]
 # Prepare with the pooled contract (inside a Job on the same base digest):
 PYTHONPATH=src:training python3 -m pipeline.cli training-prepare --starter \
   --engine "$LYPNING_L_BIN" --execution-kind hf-sandbox-pool \

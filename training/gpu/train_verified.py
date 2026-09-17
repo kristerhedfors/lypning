@@ -30,11 +30,12 @@ from pipeline.jsonio import append_jsonl, sha256_of, write_json
 from pipeline.training_metrics import CheckpointGate
 from pipeline.training import ISOLATED_KINDS, TrainingError, Verifier, execution_runner, load_bundle, messages
 
-from pipeline.training_contract import (BASE_MODEL, CONTRACT_VERSION, adapter_identity,
-    decoding, model_config_identity, probe_contract, probe_report, runtime_versions,
-    seal_adapter, source_identity, validate_probe)
+from pipeline.training_contract import (BASE_MODEL, CONTRACT_VERSION, MIN_SUPERVISED_TOKENS,
+    MIN_TRAIN_CASES, PROTOCOL_EVAL_DRAWS, PROTOCOL_TRAIN_SEEDS,
+    adapter_identity, decoding, model_config_identity, probe_contract, probe_report,
+    runtime_versions, seal_adapter, source_identity, validate_probe)
 from verified_evaluation import evaluate
-from verified_stages import balanced_cases, train_sft, train_grpo
+from verified_stages import balanced_cases, sft_batches, supervised_tokens, train_sft, train_grpo
 
 
 def parser():
@@ -127,6 +128,27 @@ def preflight(args):
         raise TrainingError("smoke data cannot launch a real run; prepare an admitted pilot bundle")
     if bundle.get("purpose") == "benchmark" and args.stage != "eval":
         raise TrainingError("a benchmark bundle is evaluated whole, never trained on; only stage eval accepts it")
+    train_cases = [case for case in bundle.get("cases", []) if case.get("split") == "train"]
+    if not args.smoke and args.stage in ("sft", "probe", "grpo"):
+        if len(train_cases) < MIN_TRAIN_CASES:
+            raise TrainingError("real adapter stages require at least %d train cases; got %d"
+                                % (MIN_TRAIN_CASES, len(train_cases)))
+        if args.seed not in PROTOCOL_TRAIN_SEEDS:
+            raise TrainingError("training seed must be one of the pre-registered seeds: %s"
+                                % (", ".join(map(str, PROTOCOL_TRAIN_SEEDS))))
+    if (not args.smoke and args.stage == "sft"
+            and args.steps * args.batch_size < len({case["family"] for case in train_cases})):
+        raise TrainingError("SFT schedule is shorter than one complete family cycle")
+    # k is pre-registered for the confirmatory arm, and the runner's default is
+    # not it. Refusing here costs nothing; the round-02 pilot spent an arm
+    # finding this out, and a wider interval than the effect is not a cheaper
+    # measurement but a measurement of nothing.
+    if (not args.smoke and bundle.get("purpose") == "benchmark" and args.stage == "eval"
+            and not args.greedy and args.eval_draws != PROTOCOL_EVAL_DRAWS):
+        raise TrainingError(
+            "eval-2 is pre-registered at --eval-draws %d (EVAL2.md section 4); %d is a "
+            "different instrument, not a cheaper one. Pass --smoke for a wiring check."
+            % (PROTOCOL_EVAL_DRAWS, args.eval_draws))
     if args.eval_split == "all" and bundle.get("purpose") != "benchmark":
         raise TrainingError("--eval-split all evaluates a benchmark bundle whole; a pilot is measured per split")
     if not args.smoke and sys.platform != "linux" and not args.plan:
@@ -180,6 +202,7 @@ def run(args, bundle, adapter_info):
     verifier = Verifier(args.engine, **bundle["limits"], identity=bundle["identity"],
                         runner=execution_runner(bundle["execution"], bundle["identity"]))
     versions = runtime_versions()
+    effective = schedule(args)
     # Block fused kernels before importing transformers, preserving the existing
     # exact Qwen class and per-leaf LoRA gradient smoke checks.
     os.environ["NTX_USE_FLA"] = "0"
@@ -212,12 +235,20 @@ def run(args, bundle, adapter_info):
         if len(prompt_ids) + args.max_new_tokens > args.max_seq:
             raise TrainingError("prompt + completion budget exceeds --max-seq: " + case["case_id"])
     examples = []
+    planned_sft_batches = None
+    planned_tokens = None
     if args.stage == "sft":
         rows = [{"case_id": c["case_id"], "messages": messages(c) + [{"role": "assistant",
                  "content": "```python\n" + c["reference"].rstrip() + "\n```"}]} for c in train_cases]
         examples, dropped = core.build_examples(tok, rows, args.max_seq)
         if dropped or not examples:
             raise TrainingError("SFT rows over token limit; do not silently change the curriculum")
+        planned_sft_batches = sft_batches(train_cases, examples, effective["steps"],
+                                          args.batch_size, args.seed)
+        planned_tokens = supervised_tokens(planned_sft_batches)
+        if not args.smoke and planned_tokens < MIN_SUPERVISED_TOKENS:
+            raise TrainingError("SFT schedule exposes %d supervised tokens; at least %d required"
+                                % (planned_tokens, MIN_SUPERVISED_TOKENS))
     if args.stage in ("sft", "grpo"):
         core.smoke(device, dtype, SimpleNamespace(
             revision=args.revision, rank=args.rank, alpha=2 * args.rank,
@@ -257,6 +288,7 @@ def run(args, bundle, adapter_info):
     manifest = {"base_model": BASE_MODEL, "revision": args.revision, "stage": args.stage,
                 "bundle_digest": bundle["digest"], "adapter": adapter_info,
                 "smoke": args.smoke, "seed": args.seed,
+                "planned_supervised_tokens": planned_tokens,
                 "effective": schedule(args),
                 "contract_version": CONTRACT_VERSION,
                 "enable_thinking": False, "presence_penalty": 0.0,
@@ -281,13 +313,13 @@ def run(args, bundle, adapter_info):
             if probe_manifest.get(key) != manifest[key]:
                 raise TrainingError("probe runtime contract changed: " + key)
     write_json(args.output / "experiment.json", manifest)
-    effective = schedule(args)
     max_tokens = effective["max_tokens"]
     policy = decoding(max_tokens, greedy=args.greedy)
     if args.stage == "probe":
         metrics, records = evaluate(model, tok, train_cases, verifier, policy,
             args.output / "probe-rollouts.jsonl", 0, torch,
             seed=args.seed, draws=args.generations, return_records=True,
+            witness_path=args.output / "eval-blocked-witnesses.jsonl",
             sequences_per_call=args.eval_sequences, score_workers=args.score_workers)
         contract = probe_contract(bundle, args.revision, adapter_info, policy,
                                   args.seed, args.generations, args.smoke)
@@ -298,6 +330,7 @@ def run(args, bundle, adapter_info):
         return evaluate(model, tok, dev_cases, verifier, policy,
                         args.output / "evaluations.jsonl", step, torch,
                         seed=args.seed, draws=1 if args.greedy else args.eval_draws,
+                        witness_path=args.output / "eval-blocked-witnesses.jsonl",
                         sequences_per_call=args.eval_sequences, score_workers=args.score_workers)
     baseline = measure(0)
     if args.stage == "eval":
@@ -322,7 +355,8 @@ def run(args, bundle, adapter_info):
         return stop
 
     if args.stage == "sft":
-        train_sft(model, tok, args, train_cases, examples, core, torch, effective, checkpoint)
+        train_sft(model, tok, args, train_cases, examples, core, torch, effective, checkpoint,
+                  batches=planned_sft_batches)
     else:
         train_grpo(model, tok, args, bundle, train_cases, verifier, effective, policy, checkpoint)
     write_json(args.output / "best.json", gate.report())

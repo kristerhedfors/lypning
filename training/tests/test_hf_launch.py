@@ -84,8 +84,11 @@ def test_pilot_stage_maps_to_its_script_and_smoke_is_unchanged():
 def args(stage, **overrides):
     base = dict(stage=stage, space="o/space", space_revision="a" * 40, qwen_revision="b" * 40,
                 work_repo="o/work", bank_path=None, steps=launch.DEFAULT_STEPS,
+                grpo_steps=launch.DEFAULT_GRPO_STEPS,
                 eval_draws=launch.DEFAULT_EVAL_DRAWS, seed=launch.DEFAULT_SEED,
                 eval_sequences=launch.DEFAULT_EVAL_SEQUENCES, score_workers=launch.DEFAULT_SCORE_WORKERS,
+                pool_sandboxes_per_host=launch.DEFAULT_POOL_SANDBOXES_PER_HOST,
+                pool_max_hosts=launch.DEFAULT_POOL_MAX_HOSTS,
                 bundles_from="")
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -99,10 +102,14 @@ def test_smoke_env_carries_only_the_four_original_keys():
 def test_pilot_env_wires_the_bank_and_its_knobs_as_strings():
     env = launch.job_env(args("pilot", bank_path="banks/2026-09-16", steps=40, eval_draws=8, seed=2222))
     assert env == {"SPACE_REPO": "o/space", "SPACE_REV": "a" * 40, "QWEN_REV": "b" * 40, "WORK_REPO": "o/work",
-                   "BANK_PATH": "banks/2026-09-16", "STEPS": "40", "EVAL_DRAWS": "8", "SEED": "2222",
-                   "EVAL_SEQUENCES": "128", "SCORE_WORKERS": "16", "BUNDLES_FROM": ""}
+                   "BANK_PATH": "banks/2026-09-16", "STEPS": "40", "GRPO_STEPS": "20",
+                   "EVAL_DRAWS": "8", "SEED": "2222",
+                   "EVAL_SEQUENCES": "128", "SCORE_WORKERS": "16",
+                   "NTX_POOL_SANDBOXES_PER_HOST": "4", "NTX_POOL_MAX_HOSTS": "4",
+                   "BUNDLES_FROM": ""}
     defaults = launch.job_env(args("pilot", bank_path="banks/x"))
-    assert (defaults["STEPS"], defaults["EVAL_DRAWS"], defaults["SEED"]) == ("20", "16", "1111")
+    assert (defaults["STEPS"], defaults["GRPO_STEPS"], defaults["EVAL_DRAWS"],
+            defaults["SEED"]) == ("250", "20", "16", "1111")
     reused = launch.job_env(args("pilot", bank_path="banks/x", bundles_from="round-02/6aaa4b2c", eval_sequences=64, score_workers=8))
     assert (reused["BUNDLES_FROM"], reused["EVAL_SEQUENCES"], reused["SCORE_WORKERS"]) == ("round-02/6aaa4b2c", "64", "8")
 
@@ -118,3 +125,6 @@ def test_pilot_without_a_bank_path_is_rejected_before_any_hub_call(monkeypatch, 
     assert launch.main(argv + ["--bank-path", "banks/x"]) == 2
     assert "HF_TOKEN" in capsys.readouterr().err
     assert launch.main(argv + ["--bank-path", "banks/x", "--steps", "0"]) == 2
+    assert launch.main(argv + ["--bank-path", "banks/x", "--score-workers", "16",
+                               "--pool-sandboxes-per-host", "2", "--pool-max-hosts", "2"]) == 2
+    assert "pool capacity" in capsys.readouterr().err

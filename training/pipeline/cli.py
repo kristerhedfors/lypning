@@ -1548,30 +1548,68 @@ def _power_eval2(args: argparse.Namespace) -> int:
     print("  rule: 95%% lower bound > %+.0fpp   %d banks per cell, %d resamples each"
           % (100 * curve["mde"], curve["trials"], curve["resamples"]))
     print()
-    print("  %-13s %7s  %s" % ("shape", "effect", " ".join("%7s" % ("N=%d" % n) for n in curve["sizes"])))
+    # Every cell carries the lift it REALISED beside its power, because the lift
+    # it was ASKED for is not what it tested: the cap at 1 takes back whatever a
+    # case has no room for. A table keyed on the nominal column alone reads as
+    # blind to effects the rule detects (`EVAL2.md` section 7, ASSESSMENT.md
+    # section 3.4). Realised here is the macro over families -- the units of the
+    # section 4 rule, and so the units power is a property of.
+    print("  each cell: realised macro lift (the rule's units), then power")
+    print("  %-12s %6s   %s" % ("shape", "asked",
+                                " ".join("%13s" % ("N=%d" % n) for n in curve["sizes"])))
     for shape in curve["shapes"]:
         for delta in curve["deltas"]:
             cells = [r for r in curve["rows"] if r["shape"] == shape and r["delta"] == delta]
-            line = "  %-13s %+6.0fpp  %s" % (shape, 100 * delta,
-                                             " ".join("%6.0f%%" % (100 * r["power"]) for r in cells))
+            line = "  %-12s %+5.0fpp  %s" % (
+                shape, 100 * delta,
+                " ".join("%+6.1fpp%4.0f%%" % (100 * r["mean_macro_effect"], 100 * r["power"])
+                         for r in cells))
             print(line + ("   <- false-positive rate" if delta == 0 else ""))
     print()
-    print("  smallest N at 80% power, by effect:")
+    # Two different things make a cell's realised macro miss its label, and only
+    # one of them is the cap. `capped` is a fact about PER-CASE rates, so it is
+    # reported in per-case units and ranked in them; it cannot certify or condemn
+    # a macro label, which the family weighting moves on its own and in either
+    # direction (a capped cell can still over-realise its label in the macro).
+    # Hence: the shortfall the cap caused, named as the cap's; the macro read off
+    # the table above for every row regardless.
+    graded = [r for r in curve["rows"] if r["delta"] > 0]
+    clipped = [r for r in graded if r["capped"]]
+    if clipped:
+        worst = min(clipped, key=lambda r: r["mean_effect"] - r["delta"])
+        print("  the cap at 1 bit in %d of %d cells: those rows asked for more lift than"
+              % (len(clipped), len(graded)))
+        print("  the pilot's rates had room to take, so `asked` overstates what they")
+        print("  tested. Worst per case: %s %+.0fpp asked at N=%d took %+.1fpp per case"
+              % (worst["shape"], 100 * worst["delta"], worst["N"], 100 * worst["mean_effect"]))
+        print("  (macro %+.1fpp). Read every row by its realised column above, capped or"
+              % (100 * worst["mean_macro_effect"],))
+        print("  not: the macro can miss `asked` in either direction without the cap.")
+        print()
+    print("  smallest N at 80% power, by the lift asked for (realised macro beside it,")
+    print("  at that N -- they differ wherever the cap bit):")
     for shape in curve["shapes"]:
         for delta in curve["deltas"]:
             if delta <= curve["mde"]:
                 continue
             n = curve["smallest_n"][shape][delta]
-            print("    %-13s %+4.0fpp -> %s" % (shape, 100 * delta,
-                                                ("N=%d" % n) if n else "none on this grid"))
+            hit = [r for r in curve["rows"]
+                   if r["shape"] == shape and r["delta"] == delta and r["N"] == n]
+            got = ("  (realised %+.1fpp)" % (100 * hit[0]["mean_macro_effect"])) if hit else ""
+            print("    %-12s %+4.0fpp -> %s%s" % (shape, 100 * delta,
+                                                  ("N=%d" % n) if n else "none on this grid", got))
     print()
     print("  uniform lifts every case by the effect; concentrated lifts the %.0f%% of"
           % (100 * curve["fraction"]))
-    print("  cases with the lowest base rate to one target rate for the same mean")
-    print("  effect. An effect equal to the bar itself clears it in under half the")
-    print("  banks however large N: size the bank at the effect expected, not the bar.")
-    print("  The bank is the smallest N at which both shapes reach 80% power, or 300,")
-    print("  whichever is larger (EVAL2.md section 7).")
+    print("  cases with the lowest base rate to one target rate aimed at the same mean.")
+    print("  Aimed at, not equal to: on a bank with no room the two shapes realise")
+    print("  different effect SIZES at one `asked` value, so compare them by what they")
+    print("  realised. And one realised lift is still not one power -- how the lift is")
+    print("  spread between families moves it too, which is what the two shapes are for.")
+    print("  An effect equal to the bar itself clears it in under half the banks however")
+    print("  large N: size the bank at the effect expected, not the bar. The bank is the")
+    print("  smallest N at which both shapes reach 80% power, or 300, whichever is larger")
+    print("  (EVAL2.md section 7).")
     return 0
 
 
@@ -1773,6 +1811,156 @@ def cmd_refusals(args: argparse.Namespace) -> int:
                           limit=args.limit, show_details=args.details,
                           held_out=bool(args.held_out)))
     return 0
+
+
+def cmd_levers(args: argparse.Namespace) -> int:
+    """Which lever can remove each refusal: the engine, the model, or neither.
+
+    `nt refusals` ranks what the engine refuses; this asks the next question —
+    of those refusals, which could be REMOVED, and by which lever. The model
+    lever is a subset of the engine one, so this table is what divides a budget
+    between them, and rung S0b of `STATUS.md` §10 is this same table run over
+    the eval-2 correct-but-fallback draws instead of the local capture.
+    """
+    from . import levers
+
+    today = time.strftime("%Y-%m-%d")
+    notes: List[str] = []
+    if args.run:
+        # Rung S0b. Neither artifact carries the whole answer: the draw rows say
+        # which draws are correct-but-fallback and how they cluster, the replay
+        # says which refusal. `eval2_rows` already joins them to decide `native`;
+        # this joins them to ask WHICH refusal, on the same key.
+        from . import eval2_rows, legality
+        engine = args.engine or eng.engine_path("lypning-l") or eng.engine_path("lypning")
+        if not engine:
+            print("no lypning binary on this machine: run `lypning build --rust`, "
+                  "or pass --engine", file=sys.stderr)
+            return 1
+        attempts_path = RUNS / args.run / "attempts.jsonl"
+        if not attempts_path.exists():
+            print("no such run: %s" % args.run, file=sys.stderr)
+            return 1
+        attempts = list(read_jsonl(attempts_path))
+        meta = _run_meta(args.run)
+        seed = (meta.get("sampling") or {}).get("seed")
+        cases, tests = _case_context(False)
+        cache = (Path(args.cache) / ("%s.replay.json" % args.run)) if args.cache else None
+        census = legality.replay(attempts, engine, tests=tests, workers=args.jobs,
+                                 cache=cache)
+        drawn = eval2_rows.rows(attempts, census["rows"], cases, seed=seed)
+        programs = dict(((a.get("case_id"), int(a.get("sample") or 0)), a.get("program") or "")
+                        for a in attempts)
+        joined = levers.draw_refusals(drawn["rows"], census["rows"],
+                                      status=args.status, programs=programs)
+        result = levers.table(joined["records"], source="runs/%s" % args.run,
+                              unit="draw", independence="family",
+                              loaded=len(drawn["rows"]))
+        notes.append("%d draw(s) match status %s; %d carried a refusal"
+                     % (joined["considered"], args.status or "(any)",
+                        len(joined["records"])))
+        # Never a zero: a fallback draw with no refusal on record is a hole in
+        # the evidence, and a hole is not a family with no mass.
+        if joined["unmatched"] or joined["without_refusal"]:
+            notes.append("UNRESOLVED: %d draw(s) have no replay row, %d have a replay "
+                         "row carrying no refusal. Neither is counted anywhere above."
+                         % (joined["unmatched"], joined["without_refusal"]))
+        if census["tally"].get("MISMATCH"):
+            print("  MISMATCH %d — invariant 1: always a bug, never the model's."
+                  % census["tally"]["MISMATCH"], file=sys.stderr)
+    elif args.rows:
+        if not args.replay:
+            print("levers: --rows needs --replay: a draw row carries no refusal, and "
+                  "the replay carries no population label. Use --run to build both.",
+                  file=sys.stderr)
+            return 2
+        drawn = list(read_jsonl(Path(args.rows)))
+        joined = levers.draw_refusals(drawn, read_jsonl(Path(args.replay)),
+                                      status=args.status)
+        result = levers.table(joined["records"], source=args.rows, unit="draw",
+                              independence="family", loaded=len(drawn))
+        notes.append("%d draw(s) match status %s; %d carried a refusal"
+                     % (joined["considered"], args.status or "(any)",
+                        len(joined["records"])))
+        if joined["unmatched"] or joined["without_refusal"]:
+            notes.append("UNRESOLVED: %d draw(s) have no replay row, %d have a replay "
+                         "row carrying no refusal. Neither is counted anywhere above."
+                         % (joined["unmatched"], joined["without_refusal"]))
+    else:
+        if args.status:
+            print("levers: --status applies to draw rows; use it with --run or --rows",
+                  file=sys.stderr)
+            return 2
+        source = args.source or str(DATA / "classified.jsonl")
+        rows = list(read_jsonl(Path(source)))
+        result = levers.table(rows, source=source, loaded=len(rows))
+
+    if result["unit"] == "draw":
+        # A build order read off a benchmark is test-set steering, and this
+        # command can be pointed at one. The banner is the same one `refusals`
+        # carries, for the same reason.
+        from . import refusals as _refusals
+        notes.append(_refusals.HELD_OUT_BANNER)
+        if args.rank:
+            print("levers: refusing --rank on draw/held-out rows; use --vector for "
+                  "descriptive by-family counts", file=sys.stderr)
+            return 2
+
+    if args.json:
+        print(json.dumps(result, indent=2, ensure_ascii=False, default=sorted))
+        return 0
+
+    for note in notes:
+        print(note)
+    if notes:
+        print("")
+
+    failed = False
+    if args.declared:
+        print(levers.declared_report(levers.declared_rows(result, provenance=args.provenance)))
+    elif args.undeclared:
+        print(levers.undeclared_report(levers.undeclared_rows(result)))
+    elif args.vector:
+        print(levers.vector_report(levers.vector(result),
+                                   independence=result["independence"],
+                                   limit=args.limit))
+    elif args.rank:
+        print(levers.rank_report(levers.rank(result, bucket=args.bucket),
+                                 bucket=args.bucket,
+                                 independence=result["independence"],
+                                 limit=args.limit))
+    else:
+        print(levers.report(result, today=today))
+        if args.against:
+            if not os.path.exists(args.against):
+                print("levers: no such file: %s" % args.against, file=sys.stderr)
+                return 2
+            totals = levers.section4_totals(args.against)
+            comparison = levers.compare(result, totals)
+            print("")
+            print(levers.compare_report(result, comparison))
+            failed = failed or (args.strict and not comparison["agrees"])
+    if args.strict:
+        failed = failed or bool(result["undeclared"]) or bool(result["declared_unused"])
+    return 1 if failed else 0
+
+
+def cmd_probe_vector(args: argparse.Namespace) -> int:
+    """S0c: a read-only per-case native-status comparison."""
+    from . import probe_vector
+    try:
+        result = probe_vector.compare(read_jsonl(Path(args.probe)),
+                                      read_jsonl(Path(args.base)))
+    except (OSError, ValueError) as exc:
+        print("probe-vector: %s" % exc, file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        print(probe_vector.render(result))
+    # The completed base pilot may include dev/test cases the train-only probe
+    # deliberately lacks. A probe case with no base comparison is the hole.
+    return 1 if result["probe_only"] else 0
 
 
 def cmd_show(args: argparse.Namespace) -> int:
@@ -2407,6 +2595,40 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--held-out", action="store_true", help="only the frozen held-out split")
     g.add_argument("--train", action="store_true", help="only the train split")
     rf.set_defaults(fn=cmd_refusals)
+
+    lv = sub.add_parser("levers", help="which lever can remove each refusal: engine, model, neither")
+    lv.add_argument("--source", help="a `nt classify` jsonl (default: data/classified.jsonl)")
+    lv.add_argument("--run", metavar="RUN_ID",
+                    help="rung S0b: a run's draws joined to their replay verdicts")
+    lv.add_argument("--engine", help="binary to replay through (with --run)")
+    lv.add_argument("--cache", help="directory of <run>.replay.json caches (with --run)")
+    lv.add_argument("--jobs", type=int, default=0, help="replay workers (with --run)")
+    lv.add_argument("--rows", help="draw rows already written by `nt eval2-rows`")
+    lv.add_argument("--replay", help="the legality rows to join them with (with --rows)")
+    lv.add_argument("--status", help="keep only draws with this status, e.g. correct-fallback")
+    lv_order = lv.add_mutually_exclusive_group()
+    lv_order.add_argument("--rank", action="store_true",
+                          help="the build order: independent x units")
+    lv_order.add_argument("--vector", action="store_true",
+                          help="descriptive by-family counts, safe for held-out draw rows")
+    lv.add_argument("--bucket", default="engine-addressable", help="which bucket to rank")
+    lv.add_argument("--limit", type=int, default=20, help="rows to show (0 for all)")
+    lv.add_argument("--declared", action="store_true", help="every judgement call, for review")
+    lv.add_argument("--provenance", choices=["s4", "new"],
+                    help="with --declared: only rows from §4, or only new ones")
+    lv.add_argument("--undeclared", action="store_true", help="the review queue")
+    lv.add_argument("--against", nargs="?", const=str(ROOT / "ASSESSMENT.md"),
+                    help="compare the four totals with ASSESSMENT.md §4's table")
+    lv.add_argument("--json", action="store_true", help="the raw result")
+    lv.add_argument("--strict", action="store_true",
+                    help="exit 1 on an unreviewed family, an unused declaration or a delta")
+    lv.set_defaults(fn=cmd_levers)
+
+    pv = sub.add_parser("probe-vector", help="S0c: probe vs base native status per train case")
+    pv.add_argument("--probe", required=True, help="probe/probe-rollouts.jsonl")
+    pv.add_argument("--base", required=True, help="completed base-pilot rows JSONL")
+    pv.add_argument("--json", action="store_true", help="machine-readable full table")
+    pv.set_defaults(fn=cmd_probe_vector)
 
     sh = sub.add_parser("show", help="print the programs a run produced")
     sh.add_argument("run_id"); sh.add_argument("--case"); sh.add_argument("--limit", type=int, default=5)

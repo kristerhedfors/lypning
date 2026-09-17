@@ -90,6 +90,99 @@ def test_the_two_shapes_differ_at_the_same_mean_effect():
     assert uni["power"] > con["power"], "concentrating the lift on the floor widened nothing"
 
 
+def _flat(rate, families, per_family=1, k=16, pre="f"):
+    """A pilot with an exact shape: ``families`` families of ``per_family`` cases,
+    every case at ``rate``. The knob the cap cares about is the rate.
+
+    ``pre`` namespaces both the case ids and the family names, because two
+    `_flat` calls merged into one pilot must not collide — a collision would
+    silently join families of different rates and drop cases, which is exactly
+    the unequal-family shape these tests are trying to control for.
+    """
+    out = {}
+    for f in range(families):
+        for c in range(per_family):
+            out["%s%02dc%02d" % (pre, f, c)] = {
+                "family": "%s%02d" % (pre, f), "split_group": "%s%02d" % (pre, f),
+                "scores": [1] * int(round(rate * k)) + [0] * (k - int(round(rate * k)))}
+    return out
+
+
+def test_power_tracks_the_macro_lift_and_not_the_per_case_lift():
+    """The two realised columns are different numbers, and only one of them is
+    the unit the `EVAL2.md` section 4 rule works in.
+
+    `mean_effect` weights by case, the rule macro-averages over families. A bank
+    whose heavy family sits at the floor lifts many cases and one family, so the
+    per-case column reads large while the statistic barely moves — and power
+    follows the statistic. Keying a power table on `mean_effect` would report
+    the rule blind to effects it sees, or sighted for effects it cannot.
+    """
+    pilot = dict(_flat(0.0, 1, per_family=40, pre="big"))  # one heavy family, at the floor
+    pilot.update(_flat(1.0, 24, pre="one"))                # 24 singleton families, saturated
+    assert len(pilot) == 64 and len({e["family"] for e in pilot.values()}) == 25
+    a = stats.power_curve_clustered(pilot, 16, sizes=(300,), deltas=(0.10,),
+                                    trials=12, resamples=120)
+    row = [r for r in a["rows"] if r["shape"] == "uniform"][0]
+    assert row["mean_effect"] > 0.05, "the per-case lift should look large here"
+    assert row["mean_macro_effect"] < 0.01, "the rule's own statistic barely moved"
+    assert row["power"] == 0.0, "power followed the per-case column, not the macro"
+    # The estimate the rule will actually report agrees with the noise-free macro,
+    # not with the per-case figure: that is what makes the macro the right key.
+    assert abs(row["mean_delta"] - row["mean_macro_effect"]) < 0.01
+
+
+def test_a_cap_that_bit_is_reported_rather_than_folded_into_the_label(capsys, tmp_path):
+    """On a saturated pilot a uniform lift has nowhere to go, so the row tests a
+    fraction of the effect its label names. The cell must say so."""
+    pilot = dict(_flat(1.0, 45, pre="sat"))
+    pilot.update(_flat(0.0, 19, pre="flr"))
+    # 64 single-case families, as ASSESSMENT.md section 3.4's calibration states:
+    # with one case per family the macro and the per-case lift are the same
+    # number, so this test isolates the cap from the family weighting.
+    assert len(pilot) == 64 and len({e["family"] for e in pilot.values()}) == 64
+    a = stats.power_curve_clustered(pilot, 16, sizes=(300,), deltas=(0.08,),
+                                    trials=12, resamples=120)
+    uni = [r for r in a["rows"] if r["shape"] == "uniform"][0]
+    assert uni["capped"] == 1.0, "the cap bit in every trial and was not recorded"
+    assert uni["mean_macro_effect"] < 0.04, "a nominal +8pp realised most of itself?"
+    # ...and the renderer refuses to print such a row without saying so.
+    rows = tmp_path / "rows.jsonl"
+    write_jsonl(rows, _rows(pilot))
+    rc = cli.main(["power", "--eval2", "--rows", str(rows), "--sizes", "300",
+                   "--deltas", "0.08", "--trials", "4", "--resamples", "100"])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "the cap at 1 bit in" in out
+    assert "`asked` overstates what they" in out
+    # The cap's shortfall is named in the cap's own unit, and the reader is sent
+    # to the realised column for every row, not only the capped ones.
+    assert re.search(r"Worst per case: uniform\s+\+8pp asked at N=300 took \+\d\.\dpp per case", out)
+    assert "in either direction without the cap" in out
+
+
+def test_the_concentrated_shape_clips_too_when_the_floor_is_not_at_zero():
+    """The concentrated rows realise their label only because the cases they lift
+    start at zero — a property of the pilot, never a guarantee of the tool.
+
+    The reachable lift is ``fraction * (1 - mean(lifted decile))``, so at
+    fraction 0.1 a nominal +10pp survives only on a decile sitting exactly at 0.
+    Lift the floor to 0.5 and the ceiling is +5pp: that nominal arrives exactly,
+    and +8pp and +10pp collapse onto it. Three labels, one effect size.
+    """
+    a = stats.power_curve_clustered(_flat(0.5, 64), 16, sizes=(300,),
+                                    deltas=(0.05, 0.08, 0.10), trials=8, resamples=100,
+                                    shapes=("concentrated",))
+    by_delta = {r["delta"]: r for r in a["rows"]}
+    got = sorted(r["mean_macro_effect"] for r in a["rows"])
+    assert max(got) < 0.055, "a floor at 0.5 left room for more than +5pp"
+    assert max(got) - min(got) < 0.005, "three nominal lifts should collapse to one"
+    # +5pp lands exactly on the ceiling, so nothing is lost and nothing is
+    # flagged; the two above it lose lift and must say so.
+    assert by_delta[0.05]["capped"] == 0.0
+    assert by_delta[0.08]["capped"] == 1.0 and by_delta[0.10]["capped"] == 1.0
+
+
 def test_the_curve_refuses_bad_input():
     with pytest.raises(ValueError):
         stats.power_curve_clustered({}, 8)
@@ -115,8 +208,11 @@ def test_nt_power_eval2_renders_the_table(tmp_path, capsys):
     assert "pilot 24 cases" in out and "k=4" in out
     assert "N=30" in out and "N=60" in out
     assert "<- false-positive rate" in out
-    assert re.search(r"concentrated\s+\+10pp\s+\d+%\s+\d+%", out)
-    assert re.search(r"uniform\s+\+10pp\s+\d+%\s+\d+%", out)
+    # Every cell shows the lift it REALISED before its power. A row read against
+    # the `asked` column alone is the mislabel this column exists to stop.
+    assert "realised macro lift" in out
+    assert re.search(r"concentrated\s+\+10pp\s+[+-][\d.]+pp\s*\d+%\s+[+-][\d.]+pp\s*\d+%", out)
+    assert re.search(r"uniform\s+\+10pp\s+[+-][\d.]+pp\s*\d+%\s+[+-][\d.]+pp\s*\d+%", out)
     assert "80%% power" not in out
     assert "smallest N at 80% power" in out
 

@@ -128,7 +128,7 @@ model prompts. Do not reuse schema-2 bundles or unsealed historical adapters.
 "$ROUND_PYTHON" training/gpu/train_verified.py sft --plan \
   --bundle work/round-02/pilot/bundle.json --engine "$LYPNING_L_BIN" \
   --revision "$QWEN_REV" --output work/round-02/sft-1111 \
-  --steps 20 --eval-every 5 --patience 3 --rank 16 --batch-size 4
+  --steps 250 --eval-every 25 --patience 3 --rank 16 --batch-size 4
 ```
 
 Archive the bundle digest, model revision, engine hash, repository commit,
@@ -137,6 +137,15 @@ edit a bundle or move the held-out split during an experiment. Output directorie
 are never overwritten; interrupted preparation publishes no usable manifest.
 
 ## Manual launch sequence — next agent only
+
+These are the commands and flags for a round once one is authorised; they live
+here because they live nowhere else and `training/hf/round02_pilot.sh` runs them
+in this order by name. **Whether to launch a round, and which rung comes first,
+is `STATUS.md` §10.** The eval-2 confirmatory arm is not one of the five steps
+below — it is a separate `eval --eval-split all` against the frozen benchmark
+bundle — and since 2026-09-16 `preflight` refuses it at any k but
+`training_contract.PROTOCOL_EVAL_DRAWS`. The steps below run against the pilot
+bundle and are unaffected.
 
 ```bash
 # 1. Exact tiny-model SFT/GRPO wiring with the production tokenizer.
@@ -156,7 +165,7 @@ uv run --python "$ROUND_PYTHON" training/gpu/train_verified.py eval \
 uv run --python "$ROUND_PYTHON" training/gpu/train_verified.py sft \
   --isolated-worker --bundle work/round-02/pilot/bundle.json \
   --engine "$LYPNING_L_BIN" --revision "$QWEN_REV" --output work/round-02/sft-1111 \
-  --steps 20 --eval-every 5 --patience 3 --rank 16 --batch-size 4 --seed 1111
+  --steps 250 --eval-every 25 --patience 3 --rank 16 --batch-size 4 --seed 1111
 ```
 
 Read `sft-1111/best.json`; set `SFT_ADAPTER` to its selected `adapter-N` directory.
@@ -190,7 +199,8 @@ the aggregate reward. Never award wrong runnable code partial credit.
 
 Adapters are saved, not optimizer/RNG resume state. Loading an adapter starts a
 **new** run with recorded lineage; it is not an exact resume. Repeat the design
-with seed 2222 and the **same bundle**, using a fresh matching probe. Include an RL-from-base ablation only
+with seeds 2222 and 3333 and the **same bundle**, using a fresh matching probe
+for each seed. All three seed manifests are required for the aggregate. Include an RL-from-base ablation only
 within the approved matched budget. Select on dev, then lock settings/checkpoints
 before independent `eval --eval-split test` per arm. Keep `--eval-draws`,
 `--max-new-tokens`, seed and the full decoding contract identical across compared

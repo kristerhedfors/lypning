@@ -59,6 +59,39 @@ def test_setup_failure_is_distinct_from_program_exit_127():
     assert run_python("pass", interpreter=["/missing/ntx-engine"], mem_mb=0).harness_error
 
 
+def test_a_relative_engine_path_is_resolved_against_the_childs_cwd(tmp_path, monkeypatch):
+    """The same masking, by a second door, and the guard's own near-miss.
+
+    The child runs with `cwd=` its own scratch directory, so a relative
+    interpreter path resolves there and not in the harness's cwd. A guard that
+    checked our cwd would wave through a path the child then cannot exec —
+    `unshare` execs fine, fails to start it, and exits 127 with an empty error
+    pipe, which is byte-for-byte the program's own `SystemExit(127)`. This is not
+    hypothetical: `--engine` is a user-supplied path and is never absolutised.
+
+    Both directions are asserted, because a guard that rejects everything
+    relative would turn every real engine run into a harness error and abort
+    verification, and nothing else here would catch that.
+    """
+    real = tmp_path / "fakeengine"
+    real.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    real.chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+
+    missing = run_python("pass", interpreter=["./fakeengine"], mem_mb=0)
+    assert missing.harness_error, (
+        "a relative interpreter that exists only in OUR cwd must not be admitted: "
+        "the child cannot exec it, and its exit 127 is the program's own")
+    assert "not executable" in missing.harness_error
+
+
+def test_the_guard_admits_an_engine_that_really_is_there():
+    """The other half: the guard must not reject a real binary."""
+    r = run_python("print('x')", mem_mb=0)
+    assert r.harness_error is None, r.brief()
+    assert r.stdout.strip() == "x"
+
+
 def test_monitor_failure_is_not_a_model_failure(monkeypatch):
     from pipeline import sandbox
     monkeypatch.setattr(sandbox, "memory_policy", lambda _: "process-group-rss-watchdog")

@@ -94,6 +94,29 @@ class RunResult:
 _NETNS_PROBE: Optional[bool] = None
 
 
+def _not_executable(program: str, cwd: Path) -> Optional[str]:
+    """Why this program cannot be executed, or None if it can.
+
+    `cwd` is the CHILD's working directory, not ours, and it is the reason this
+    takes an argument at all: the child is spawned with `cwd=tmp`, so a relative
+    interpreter path resolves against that directory and not against the
+    harness's. Checking it here against our own cwd would admit a path that the
+    child then cannot exec — which is precisely the masked exit 127 this guard
+    exists to stop, arriving by a different door.
+
+    Deliberately phrased like `child_exec`'s own message, because it reports the
+    same event from the other side of the spawn and a reader should not have to
+    know which side caught it.
+    """
+    if os.path.sep in program:
+        found = program if os.path.isabs(program) else os.path.join(str(cwd), program)
+    else:
+        found = shutil.which(program)
+    if not found or not os.path.isfile(found) or not os.access(found, os.X_OK):
+        return "child setup/exec: not executable: %s" % program
+    return None
+
+
 def netns_available() -> bool:
     """Can we give the child an empty network namespace? Probed once."""
     global _NETNS_PROBE
@@ -306,6 +329,7 @@ def run_python(
         cmd: List[str] = []
         if isolate_network and netns_available():
             cmd += [shutil.which("unshare") or "unshare", "-n", "--"]
+        program_at = len(cmd)
         if interpreter:
             # An engine binary. No -E/-s: those are CPython's flags, and the
             # Rust core would reject them as program arguments.
@@ -319,6 +343,19 @@ def run_python(
             # from sys.path, which breaks a case whose test imports the solution.
             cmd += [sys.executable, "-s", str(entry_path)]
         cmd += [str(a) for a in (argv or [])]
+
+        # A harness failure must never read as the program's own exit code.
+        # `child_exec` covers an exec that fails in its own process, but when the
+        # network is isolated the process it execs is `unshare`, which execs
+        # successfully and only then fails to start the real program — exiting
+        # 127 with nothing in the setup pipe, which is byte-for-byte a program's
+        # own `SystemExit(127)`. Under the verification contract that difference
+        # decides whether a run is a model result or a transport failure that
+        # must abort, so it is checked here, where the harness still knows which
+        # element of its own argv is the program.
+        unrunnable = _not_executable(cmd[program_at], tmp)
+        if unrunnable:
+            return RunResult(None, "", "", time.time() - started, harness_error=unrunnable)
 
         proc = None
         timed_out = False

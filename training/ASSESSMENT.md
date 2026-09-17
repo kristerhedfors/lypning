@@ -137,9 +137,9 @@ artefact of the simulation, not a property of the instrument.**
 `stats.power_curve_clustered` applies a uniform lift as `min(1.0, p + delta)`
 per case (`stats._treated`). On a pilot where most cases already sit at 1.0
 the lift is clipped on those cases and the realised mean effect is a fraction
-of the nominal `delta`. The function computes that realised effect
-(`mean_effect`) and returns it; the table in `EVAL2.md` §7 omitted the column
-and keyed its rows by the nominal value. Measured today on synthetic pilots
+of the nominal `delta`. The function computes that realised effect and returns
+it; the table in `EVAL2.md` §7 omitted the column and keyed its rows by the
+nominal value. Measured today on synthetic pilots
 where the answer is known (64 single-case families, k=16, N=300, MDE +3pp,
 60 trials, 200 resamples, seed 7; `PYTHONPATH=src:training python3 -c` over
 `pipeline.stats.power_curve_clustered`, 2026-09-16):
@@ -164,14 +164,70 @@ because the cases they lift start at zero. The uniform-versus-concentrated
 contrast in that table is mostly the ceiling, not the statistic.
 
 The consequence for reading round-02: the correct-but-fallback headroom on
-the training bank is 171 of 1,022 draws (16.7% per draw, about 19pp macro,
-`EVAL2.md` §11). An adapter that converts a quarter of those draws to native
-is a realised +4–5pp and would be seen about half the time; one that converts
-40% is a realised +8pp and would be seen almost always. The instrument is not
-the reason the programme has no signal. **The §7 table should be re-printed
-from the real pilot rows with `mean_effect` as its key column** before it is
-quoted again; the rows are private (`work/eval2/legacy-pilot/rows-full.jsonl`),
-so that is the other device's task, and it costs nothing.
+the training bank is 171 of 1,022 draws (16.7% per draw) and about 19pp
+macro over families (`EVAL2.md` §11). An adapter that converts a quarter of
+that macro headroom is a realised +4–5pp macro and would be seen about half
+the time; one that converts 40% is a realised +8pp and would be seen almost
+always. **The instrument is not the reason the programme has no signal.**
+
+**Corrected 2026-09-16, the same day, after this section was written.** This
+paragraph first prescribed re-printing §7 "with `mean_effect` as its key
+column", and stated the headroom as "171 of 1,022 draws (16.7% per draw, about
+19pp macro)" before reasoning to "+4–5pp" without saying which of the two it
+was. Both are the same mistake, and it is the mistake this section is about: a
+realised effect has two units.
+
+- `mean_effect` is the mean lift per **case**. The §4 rule macro-averages over
+  **families**. Power is a property of the statistic, so the macro is the column
+  a power row is read against, and `mean_effect` is not it. The two coincide
+  when families carry equal case counts — however the lift lands, cap included —
+  *or* when the lift lands evenly across families of any size. They diverge when
+  both fail, which is unequal families **and** an uneven lift, so the mechanism is
+  that conjunction and not unequal families alone. The cap is one way a lift
+  comes out uneven and not the only one: the concentrated shape lands its whole
+  lift on a subset of families, and diverges with the cap never biting (measured
+  2026-09-16, this tree: one 40-case family at 0.0 plus 24 singletons at 1.0, k=16,
+  N=300, 60 trials, 200 resamples — concentrated at a nominal +10pp reads +10.0pp
+  per case against +0.7pp macro, `capped` 0.00).
+- The eight rows above are unaffected: every pilot in them is 64 **single-case**
+  families, so the macro and the per-case figure are the same number there by
+  construction. The defect was in the prescription for the re-print, not in the
+  evidence, and it would have bitten only on the real pilot, whose families are
+  unequal (§11: 18 spanning families, one of 12 cases in 64).
+- **Which direction it bites on the real rows is not known from this tree**, and
+  this section does not guess. What decides it is where the *saturated* cases sit:
+  `_treated` gives a case `min(1, p + delta) − p`, so the cap falls on the side
+  holding the cases nearest 1.0, and the per-case column understates the macro
+  when the heavy families are the saturated ones and overstates it when they sit
+  at the floor. §11's figures do not settle that — the macro headroom (about 19pp
+  over 49 families) sitting above the per-draw headroom (171 of 1,022 draws,
+  16.7%) says only that the heavy families are *less often* correct-but-refused,
+  which is consistent with their being saturated or with their being hard. Rung
+  S0a reads it off the rows; until then the size of the error is unknown and its
+  sign is unknown, so the conclusion of this section rests on the +5pp/+8pp
+  calibration above and not on any claim about which way the column would move.
+
+The tool no longer permits the confusion: `power_curve_clustered` returns
+`mean_macro_effect` — the realised lift in the rule's own unit, noise-free —
+beside `mean_effect` and a `capped` flag, `nt power --eval2` prints the macro in
+every cell, counts the cells the cap bit and names the worst, and
+`training/tests/test_eval2_power.py` pins that power tracks the macro and not the
+per-case column. **§7's table should now be re-printed from the real pilot rows**
+before it is quoted again; the rows are private
+(`work/eval2/legacy-pilot/rows-full.jsonl`), so the read is the other device's
+task. It is a read and nothing more *now*; it was not free when this section
+claimed it was, because the renderer printed none of these columns.
+
+One further finding from the same calibration, not in the table above: the
+concentrated shape clips too. Its reachable lift **per case** is at most
+`fraction × (1 − mean(lifted decile))` — the macro is not bounded by that
+expression and exceeds it whenever the lifted cases sit in the light families —
+so at `fraction` 0.1 a nominal +10pp arrives in full only on a decile sitting
+exactly at zero, and the top of `CLUSTER_DELTAS` is on that boundary by
+construction. Whether §7's concentrated rows clipped is not established: a
+clipped cell can still sit on a rising power curve, so their rising power is not
+the evidence it looks like. Check the lifted decile, and the `capped` column the
+tool now prints, before trusting a concentrated row on any pilot.
 
 ### 3.5 The data admission excludes the examples that carry the signal
 
@@ -270,6 +326,15 @@ by-kind vector of eval-2's 171 correct-but-fallback draws — promised by
 `EVAL2.md` §4 and not yet published — is the same table for the population
 that matters, and it decides the split of the budget between the two levers.
 
+**Codex review, 2026-09-17.** The table above remains the dated §4 judgement;
+the executable rule-2 review does not reproduce it blindly. Thirteen of the
+S-ladder audit's new deterministic families (20 entries) moved from fallback
+to engine-addressable. The reviewed local result is now 195 self-referential,
+242 legitimate fallback, 206 engine-addressable and 0 other. The remaining
+new declarations stand as current-corpus policy, not a universal statement
+about Python. The population that decides investment remains S0b's private
+draw vector.
+
 ## 5. What a signal would look like
 
 A signal, for this programme, is a number with four properties: it costs
@@ -282,7 +347,7 @@ enough to run this week.
 
 | rung | measurement | cost | prediction if the approach is sound | if not |
 |---|---|---|---|---|
-| S0a | `EVAL2.md` §7 re-printed with `mean_effect` from the real pilot rows | $0 | realised +5pp seen at ~50%, +8pp at ~100% | the tool is wrong in a way §3.4 did not find; fix before anything runs |
+| S0a | `EVAL2.md` §7 re-printed from the real pilot rows, keyed on the realised macro lift the tool now prints | $0 (the tool half is done, 2026-09-16) | realised macro +5pp seen at ~50%, +8pp at ~100% | the rows contradict the synthetic calibration; fix before anything runs |
 | S0b | by-kind refusal vector of the 171 correct-but-fallback pilot draws, bucketed as §4 | $0 | a handful of kinds carry most of the mass | the headroom is diffuse and the engine cannot take it either |
 | S0c | the round-02 probe rollouts read by native status per train case, against the base pilot draw on the same cases | $0 | a stage-1a proxy: SFT moved native on its own prompts | it did not (§3.1 says it did not); no more SFT on this data |
 | S1 | stage 0b on the 64-case training bank: bare vs `--system-file subset-spec.md`, k=16, thinking off, one pinned provider (`nt eval --system-file`, shipped 2026-09-16) | ~$5 | correct-and-native up ≥ 10pp with correctness flat, concentrated in a few kinds — the 2026-08-23 shape | flat: the boundary is not installable from a description at this size; only verified rewrites (a teacher) can supply targets |
@@ -303,13 +368,40 @@ review apply as `ORCHESTRATION.md` says.
 | # | step | owner | cost | decides | stop rule |
 |---|---|---|---|---|---|
 | 1 | Run S0a–S0c on the private pilot and probe rows; append the re-printed power table to `EVAL2.md` §7 dated, and the by-kind vector to `EVAL2.md` §11 | Fable (other device) | $0 | whether the instrument reading in §3.4 holds on real rows; where the headroom lives; whether round-02's adapter moved its own prompts | none: these are reads |
-| 2 | Fix the two round-02 blockers before any eval-2 arm: CPU headroom per sandbox (4 per host, 4 hosts, or 4 workers on one host); a native timeout after a correct oracle scores `not-native` with a witness row in an **evaluation** arm and still aborts a **reward** stage | Fable, Codex rules on the policy | $0 | whether eval-2 can complete at all | an arm that blocks again is a different bug |
+| 1a | Done 2026-09-16, this tree: the mislabel fixed at its source rather than only described — `power_curve_clustered` returns the realised macro lift and a `capped` flag, `nt power --eval2` keys every cell on the macro and counts the clipped cells, `EVAL2.md` §7's uniform reading withdrawn, and a benchmark eval arm at a k the rule was not priced at is refused in `preflight` | — | that step 1's re-print cannot reprint the same mislabel, and that round-02's k=4 arm cannot recur | none: no run touched |
+| 2 | **Done in code 2026-09-17:** 16 scorers are provisioned as 4 sandboxes/host × at most 4 hosts; launcher capacity below the worker count is refused. A native timeout after a correct oracle still aborts every arm, because scoring it would make the endpoint load-dependent; the witness and successful sibling rows survive | Codex decision | $0 | whether eval-2 can complete without changing what “native” means | any blocked arm remains incomplete and stops the rung |
 | 3 | Run S1 (stage 0b) on the training bank and S3 (stage 5) on base Qwen, in parallel | Fable | ~$5 + harness time | the fork `LADDER.md` stage 0b describes, on the population that matters; the deployment prior | S3 under 10 refusals per 100 → stop training, engine only |
 | 4 | Run S2: Codex authors or reviews native rewrites of every correct-but-fallback draw on the training bank, through the pooled verifier, gate C enforced; the rewritable fraction and its by-kind table go in the report | Codex authors, Fable verifies | tokens | the ceiling of the model lever; the first SFT target with a reason to work | under 10 of 64 cases gain a native reference → the model lever is capped and the round's lever is the engine (the run report's own stop rule) |
 | 5 | Grow the **training** side to ≥ 1,000 cases without touching eval-2: the remaining classified draw, the question campaign, S2's rewrites, fallback controls kept at the bank's ratio. Rejection-sampled targets need the verifier, not oracle-grade review; only authored tasks need the review record | Codex reviews, Fable prepares | tokens + review | whether S4 can be sized to its prediction | eval-2 leak check (`nt eval2-leaks`) fails → drop the training case, never the eval case |
 | 6 | Feed the engine from S0b and S2's tables: rank kinds by independent families × draws, serve the top of the list, rebuild, regrade, new bundle | hillclimb loop | engine time | the deployment number, directly | a MISMATCH is a bug and stops the change (invariant 1) |
+| 6a | **Closed 2026-09-17:** `nt levers --rank` remains a train-side build order over the repository capture. It is refused on draw/held-out rows; S0b uses `--vector`, which prints reviewed families and counts without a score or priority order | hillclimb loop | $0 for the train-side ranking | which construct is in front of the most independent train-side programs | unchanged: a MISMATCH is a bug and stops the change |
 | 7 | S4: three-seed SFT, ≥ 50,000 supervised tokens, distillation targets if S1 was positive else S2 rewrites, selection on dev by correctness, eval-2 at k=16 with the regenerated base arm; predicted effect and its shape written into `EVAL2.md` before the job | Fable, Codex reviews | ~$60–90 | the first informative answer to the programme's question | gate A fails → void; realised effect under +3pp with S1–S3 positive → the SFT recipe is wrong, not the data |
-| 8 | Collapse the plan into one place: `STATUS.md` keeps the scoreboard and the S-ladder table as its §5; `LADDER.md` and the sequence sections of `NEXT_ROUND.md`, `START_NEXT_ROUND.md` and `ORCHESTRATION.md` point at it rather than restate it | operator's call | $0 | which document a new session reads first | none |
+| 8 | Collapse the plan into one place: `STATUS.md` carries the S-ladder as the one live sequence and every other ordering points at it rather than restating it. **Re-scoped and done 2026-09-16 — see below; as first written this step would have destroyed records** | operator's call | $0 | which document a new session reads first | none |
+
+**Step 8 as first written was wrong, and the narrower version is what was
+done.** It said the S-ladder should become `STATUS.md` §5 and that
+`START_NEXT_ROUND.md` and `NEXT_ROUND.md`'s sequence sections should become
+pointers. Three things were missed:
+
+- §5 is *Expected movement of the needle* — the only dated statement of the
+  programme's priors, and the pointer to `LADDER.md` §6's kill criteria.
+  Overwriting it deletes a record; evicting it renumbers §5–§9 and makes five of
+  the ten inbound `STATUS.md §N` citations wrong — every one of them silently,
+  because the headings they name all still exist after a shift, and one of them
+  inside a dated `CHANGELOG.md` entry, where correcting it means editing a record
+  to cite a section that did not exist when it was written. Appending the ladder as a new §10 costs no renumbering and breaks
+  nothing.
+- `NEXT_ROUND.md`'s launch sequence is not prose to be replaced by a pointer: it
+  holds command flags that exist nowhere else, and `training/hf/round02_pilot.sh`
+  says in two places that it runs "in `NEXT_ROUND.md`'s order". Pointing it at
+  `STATUS.md` would make that script's own comment false and leave the root
+  `CLAUDE.md`'s "manual run plan" bottoming out in nothing.
+- `START_NEXT_ROUND.md` is 250 lines of mechanism and two lines of sequence, and
+  the root `CLAUDE.md` names it as the handoff entry point. It is a poor target.
+
+So the ordering *claims* were pointed at one home and the ordering *mechanisms*
+were left where they work. What §3.7 diagnosed was five documents disagreeing
+about what runs next — not five documents existing.
 
 And three things to stop doing, each of which has already cost a round:
 
@@ -319,7 +411,15 @@ And three things to stop doing, each of which has already cost a round:
   (`PREREGISTRATION.md` §7f); it has not been honoured once.
 - **No eval-2 arm at k=4.** The rule was pre-registered at k=16; a k=4 arm
   is a different instrument and its interval is wider than any plausible
-  effect (`EVAL2.md` §6 says so and the pilot ran it anyway).
+  effect (`EVAL2.md` §6 says so and the pilot ran it anyway). **This one is no
+  longer a rule in a document: since 2026-09-16 `preflight` refuses a non-smoke
+  benchmark eval arm at any k but `training_contract.PROTOCOL_EVAL_DRAWS`, so
+  the runner's default of 4 — which `EVAL2.md` §4 already called a smoke
+  setting — cannot reach a confirmatory arm again.** Since the independent
+  review on 2026-09-17, real adapter stages also enforce the 1,000-case floor,
+  the registered seeds 1111/2222/3333, at least one complete family cycle and
+  50,000 scheduled supervised-token exposures. All three seeds remain an
+  aggregate-round requirement: one process cannot prove the other two ran.
 - **No new planning document.** Amend `STATUS.md`. A sixth sequence is not a
   plan; it is the reason the first five were not executed.
 
@@ -342,12 +442,12 @@ None of these is a failure of the apparatus, which is the best thing the
 programme has built. They are the programme finally being able to lose in a
 way it can see.
 
-## 8. Decisions requested
+## 8. Decision state
 
-- **Codex:** whether §3.4 changes the reading of round-02's null (it says the
-  null was uninformative for a different reason than the report gives: the
-  adapter was too small, not the instrument); the native-timeout policy in
-  step 2; authorisation of steps 3 and 4.
+- **Codex, closed 2026-09-17:** §3.4 changes the reading of round-02's null; it
+  is uninformative because dosage/data were inadequate and no eval-2 arm
+  completed. Native timeout stays a hard abort. Only S0a–S0c are authorized;
+  steps 3, 4 and every GPU rung remain held pending that report.
 - **Operator:** the ceiling for steps 3, 4 and 7; whether step 8 is wanted;
   and the standing rule that no GPU step runs before the rung below it has
   been read.
