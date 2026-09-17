@@ -15,37 +15,51 @@ blocked/no-run outcomes. New harvesting data never mutates your active bundle.
 
 The next session is a **read-only, $0 S0 evidence round**, not another training
 launch. Start from the merged commit carrying
-[`reviews/2026-09-17-round02-full-assessment.md`](reviews/2026-09-17-round02-full-assessment.md)
-on the device that can read the private round-02 artifacts. Do these in order:
+[`reviews/2026-09-17-fable-s0-independent-assessment.md`](reviews/2026-09-17-fable-s0-independent-assessment.md)
+on the device that already owns the private round-02 artifacts. Do not run this
+assignment on a substitute clone again. Set `PILOT_LYPNING_L` to the historical
+binary named below; if any of these four files is absent, report the missing
+path and stop without running a rung:
 
 ```bash
+export PILOT_RUN=training/runs/eval-20260916-063539
+export PILOT_ROWS="$PILOT_RUN/eval2_rows.jsonl"
+export PILOT_PROBE=work/round-02/6aaa87465527934177ee9f34/probe/probe-rollouts.jsonl
+export PILOT_LYPNING_L=/approved/private/path/to/pilot/lypning-l
+test -f "$PILOT_RUN/attempts.jsonl"
+test -f "$PILOT_ROWS"
+test -f "$PILOT_PROBE"
+test -f "$PILOT_LYPNING_L"
+
 # S0a: re-print power from the completed private pilot draw, in realised-macro units.
 PYTHONPATH=src:training python3 -m pipeline.cli power --eval2 \
-  --rows eval-20260916-063539 --draws 16 --mde 0.03
+  --rows "$PILOT_ROWS" --draws 16 --mde 0.03
 
-# S0b: descriptive family vector only. --rank is now refused on draw/held-out rows.
-# Needs a built lypning-l at the PILOT's engine identity — see below.
+# S0b: freeze the original 171-draw population; replay supplies refusal kinds only.
+# --rank is refused on draw/held-out rows.
 PYTHONPATH=src:training python3 -m pipeline.cli levers \
-  --run eval-20260916-063539 --status correct-fallback --vector --limit 0
+  --run eval-20260916-063539 --population-rows "$PILOT_ROWS" \
+  --engine "$PILOT_LYPNING_L" \
+  --require-engine-sha256 a23b30832e00640cec2090d8403a6beeaa2087083d0fbd9080210fd8d4fc1096 \
+  --status correct-fallback --expect-draws 171 --vector --limit 0
 
 # S0c: per-train-case native status, probe beside the completed base pilot.
 # Paths are cwd-relative and resolved against the repository root.
 PYTHONPATH=src:training python3 -m pipeline.cli probe-vector \
-  --probe work/round-02/6aaa87465527934177ee9f34/probe/probe-rollouts.jsonl \
-  --base training/runs/eval-20260916-063539/eval2_rows.jsonl
+  --probe "$PILOT_PROBE" --base "$PILOT_ROWS"
 ```
 
 **S0b is not engine-free, and its number is not engine-independent** (measured
 2026-09-17). The eval-2 draw rows carry `native` and `status` but no refusal
-*kind*, so `--run` replays every program through the local binary to get one —
-which means the binary re-derives the population too. On `runs/stock-nothinking`
-in this tree, the same command matched 14 correct-but-fallback draws through the
-built engine and 26 through a broken one. Run S0b with a `lypning-l` built to
-the pilot's own identity (`2e079e786a655ab6`, `EVAL2.md` §11), record the
-`@ engine <fingerprint>` line it prints, and if it does not match, say so in the
-report rather than quoting the vector: at another identity the "171
-correct-but-fallback draws" is a different 171. A `--engine` that is not a file
-now exits 2 instead of printing an empty vector at exit 0.
+*kind*. The earlier `--run` path replayed every program through the local binary
+and re-derived the population too: on `runs/stock-nothinking`, the same command
+matched 14 correct-but-fallback draws through the built engine and 26 through a
+broken one. The command above instead reads the historical population from
+`PILOT_ROWS`, uses the replay only to attach refusal kinds, requires exactly 171
+matching draws, and pins the explicit binary by its full recorded SHA-256. It
+prints that SHA, version line and oracle Python. Any mismatch, replay error,
+unmatched draw or fallback row without a refusal exits nonzero before a vector
+is printed. Do not quote a partial vector.
 
 Before S0c, download the immutable private artifact directory
 `round-02/6aaa87465527934177ee9f34/` into the path shown and materialize the
@@ -71,7 +85,9 @@ CMD ["python3", "-I", "/usr/local/lib/lypning-verifier/container_worker.py", "--
 ```
 
 The launcher defaults to 16 scorers backed by four sandboxes per CPU host and
-at most four hosts; do not collapse them onto one host. A confirmatory eval-2
+at most four hosts; it now refuses both a higher per-host concurrency and a
+higher host ceiling, as well as total capacity below the worker count. A serial
+1x1 diagnostic is allowed because it creates no CPU contention. A confirmatory eval-2
 arm remains k=16. Real adapter stages now refuse fewer than 1,000 train cases,
 an SFT schedule below 50,000 supervised tokens, a schedule that cannot cover
 every family once, or a seed outside `1111, 2222, 3333`. A complete S4 result
@@ -80,8 +96,11 @@ requires all three seed jobs; one successful job is one replicate, not a round.
 Of those, **only the token floor is invisible to `--plan`** (audited
 2026-09-17): it is refused in `run()`, because counting supervised exposures
 needs the tokenizer and the GPU deps `--plan` avoids. A passing plan therefore
-does not certify the schedule; check `steps × batch_size` against 50,000
-yourself before submitting. The other gates refuse at plan time.
+does not certify the schedule. `steps × batch_size` counts example exposures,
+not tokens, and must not be compared with the 50,000-token floor. The stage
+computes the exact count before downloading the 27B weights, records
+`planned_supervised_tokens`, and refuses a short schedule. The other gates
+refuse at plan time.
 
 ## The assignment
 

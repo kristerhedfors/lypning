@@ -103,9 +103,9 @@ def main(argv=None):
                    help="pilot: concurrent verifier scorings")
     p.add_argument("--pool-sandboxes-per-host", type=int,
                    default=DEFAULT_POOL_SANDBOXES_PER_HOST,
-                   help="pilot: verifier concurrency per CPU host (default: 4)")
+                   help="pilot: verifier concurrency per CPU host (default and maximum: 4)")
     p.add_argument("--pool-max-hosts", type=int, default=DEFAULT_POOL_MAX_HOSTS,
-                   help="pilot: verifier CPU-host cost ceiling (default: 4)")
+                   help="pilot: verifier CPU-host cost ceiling (default and maximum: 4)")
     p.add_argument("--bundles-from", default="",
                    help="pilot: reuse the pilot/ and eval2/ bundles under this directory of --work-repo")
     p.add_argument("--seed", type=int, default=DEFAULT_SEED, help="pilot: review, preparation and training seed")
@@ -129,6 +129,15 @@ def main(argv=None):
     if args.pool_sandboxes_per_host * args.pool_max_hosts < args.score_workers:
         print("pool capacity must cover --score-workers: increase --pool-max-hosts or "
               "--pool-sandboxes-per-host", file=sys.stderr)
+        return 2
+    if args.pool_sandboxes_per_host > DEFAULT_POOL_SANDBOXES_PER_HOST:
+        print("pool concurrency is capped at %d sandboxes per CPU host; add hosts, "
+              "do not recreate round-02's one-host contention"
+              % DEFAULT_POOL_SANDBOXES_PER_HOST, file=sys.stderr)
+        return 2
+    if args.pool_max_hosts > DEFAULT_POOL_MAX_HOSTS:
+        print("pool cost ceiling is %d CPU hosts" % DEFAULT_POOL_MAX_HOSTS,
+              file=sys.stderr)
         return 2
     token = os.environ.get("HF_TOKEN")
     if not token:

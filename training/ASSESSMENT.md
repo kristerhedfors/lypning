@@ -451,3 +451,9 @@ way it can see.
 - **Operator:** the ceiling for steps 3, 4 and 7; whether step 8 is wanted;
   and the standing rule that no GPU step runs before the rung below it has
   been read.
+- **Codex, closed 2026-09-17 after Fable's S0 attempt:** the attempt was blocked
+  on the wrong device and answered no S0 question. Its fail-closed guards stand.
+  S0b now reads the frozen 171-draw population, pins the explicit historical
+  engine SHA and refuses a partial join. The supervised-token floor remains a
+  stage-time exact-token gate. Only the corrected private-device S0a–S0c retry
+  is authorized (`reviews/2026-09-17-fable-s0-independent-assessment.md`).

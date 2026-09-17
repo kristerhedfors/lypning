@@ -129,3 +129,23 @@ def identity(chain=DEFAULT_CHAIN) -> Dict[str, Any]:
         {"chain": {k: v["sha256"] for k, v in engines.items()},
          "oracle_python": oracle})[:16]
     return {"chain": engines, "oracle_python": oracle, "fingerprint": fingerprint}
+
+
+def binary_identity(binary: Any) -> Dict[str, Any]:
+    """The explicit binary a replay actually executes.
+
+    :func:`identity` describes the installed chain.  That is the right arm
+    identity for a normal evaluation, but it cannot identify an explicit
+    ``--engine /path/to/old/lypning-l``: the path may not be installed anywhere
+    in that chain.  S0b replays a historical population through exactly such a
+    binary, so its evidence must name the bytes it executed rather than the
+    unrelated binaries discoverable on the host.
+    """
+    path = str(binary)
+    sha256 = _sha256_of_file(path)
+    return {
+        "path": path,
+        "sha256": sha256,
+        "version": _version_line(path) if sha256 else "",
+        "oracle_python": "%d.%d.%d" % sys.version_info[:3],
+    }
