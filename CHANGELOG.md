@@ -99,6 +99,74 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   caused by a diverging case does not belong in it — reorder the case or widen
   the capture. Re-measured 2026-09-17: all 31 reference-bearing units
   equal-length, the other 3 name no module.
+- **A unit may not pin CPython-version detail, and ten of them did.** A unit is
+  INLINED, so it is run on whichever CPython the reader has, and CI runs this
+  suite on 3.9 through 3.14. A case that prints an error MESSAGE, a generated
+  regular expression or any other implementation detail is right on the release
+  it was authored against and wrong on the others — the same rule
+  `conformance.classify` already follows when it compares exception types and
+  never traceback text. Found by running every unit, and every unit's cases
+  through `_REF_DRIVER` against the real module, on CPython 3.9.23, 3.10.18,
+  3.11.15, 3.12.11, 3.13.7 and 3.14.0rc2, 2026-09-17. Layer 1 cannot see this
+  defect at all and said so: all 34 units print byte-identical stdout on all six
+  both before and after, because a unit runs its own inlined helper. Only the
+  reference arm moves.
+- Before that run, five units agreed with CPython on some releases and not
+  others: `struct_pack` (22 differing lines on 3.9 and 3.10, 8 on 3.11, 83 on
+  3.12, 3.13 and 3.14, against 8 declared), `statistics_variance` (2 on 3.9 and
+  3.10, 0 from 3.11), `urllib_urljoin` (1 on 3.9 and 3.10, 0 from 3.11),
+  `bisect_search` and `statistics_mean` (the reference arm died outright, on 3.9
+  and on 3.9-3.10). Two more, `itertools_accumulate` and `itertools_product`,
+  declared a TYPE divergence but printed a message CPython reworded in 3.13, so
+  the declaration was true on four releases and understated on two. Afterwards
+  no unit's agreement depends on the release: of the 31 reference-bearing units
+  23 agree byte for byte on all six, 6 differ by exactly the same lines on all
+  six and each of those 6 is a reviewed `_DIVERGENCES` entry, and the last 2 are
+  `bisect_search` and `statistics_mean`, which agree on every release where
+  their surface exists. The real module also gives the byte-identical answer to
+  all six interpreters for 28 of the 31.
+- Each was fixed by printing the stable fact, never by widening `_DIVERGENCES`.
+  `statistics_variance` prints the exception TYPE for the too-little-data cases,
+  because 3.11 relabelled `stdev`'s and `pstdev`'s message from `variance
+  requires at least two data points` to `stdev requires …`; it gained four cases
+  pinning the other side of that boundary. `urllib_urljoin` splits `_http://x`
+  instead of `1http://x`, since a digit led a scheme until 3.11 and does not
+  from 3.11 — the alphabet half of the scheme rule is printed and the
+  letter-first half is docstring prose. `itertools_accumulate` and
+  `itertools_product` print the type alone, and raise their own message rather
+  than a copy of a retired CPython one.
+- `struct_pack` was the large one and its central claim had expired. It printed
+  CPython's range-check messages as a grid and called that grid the
+  specification; 3.12 unified the two handler tables and deleted it. Over 680
+  `pack(prefix + code, value)` probes on the same six interpreters, 350 answer
+  with a different message on some release — 38 at 3.10→3.11 (a C macro leaked,
+  `short format requires (-32767 -1) <= number <= 32767`) and 312 at 3.11→3.12
+  (one message per code, no byte-order split, no `argument out of range`). Zero
+  of the 680 disagree on whether `pack` raises, and zero on the exception type.
+  So the grid is gone and `_rejects` prints the boolean on both sides of every
+  boundary instead, which pins the range contract harder than the messages did.
+  The 43 format, argument-count and argument-type messages are identical on all
+  six and are still printed, character for character. `_range_message` was
+  rewritten to 3.12's one-message-per-code rule at the same time so the text the
+  port raises is current rather than retired: 5,320 (prefix, code, value) probes
+  give the identical raise/no-raise answer before the rewrite, after it, and on
+  every one of the six releases.
+- `bisect_search` and `statistics_mean` are the other kind and are not a defect
+  in what they print: `bisect`'s `key` arrived in 3.10 and `fmean`'s `weights`
+  in 3.11, so on the older releases there is no surface to check those cases
+  against rather than a wrong answer. Both docstrings now name the release the
+  surface comes from and what the older ones answer instead. `hashlib_digest`
+  keeps its declared divergence and states it release by release, because
+  CPython's own answer there is not one answer — a plain `ValueError` saying
+  `unsupported hash type` on 3.9 and an `UnsupportedDigestmodError` saying
+  `[digital envelope routines] unsupported` from 3.11 — while `hashlib.new`'s
+  message, the one this port carries, is the same on all six.
+- The rows were rewritten and proved version-independent: `stdlib-verify` under
+  CPython 3.11.15 with the 3.11-built engines and under CPython 3.14.0rc2 with
+  engines built against 3.14 produce byte-identical `stdlib.jsonl`
+  (md5 `9a7f0eaec5ef0fcc89e7846042c15c92`, both runs 2026-09-17), 34 rows, 0
+  drops, and not one `requires`, `requires_static`, `caps`, `route_agrees` or
+  `naive_kind` field moved from the previous rows.
 **2026-09-17** — Assess round 02, preserve blocked evaluation evidence, and constrain the next Fable run to zero-cost validation ([#87](https://github.com/kristerhedfors/lypning/pull/87))
 
 - Round 02 produced no completed eval-2 arm and therefore no model-quality

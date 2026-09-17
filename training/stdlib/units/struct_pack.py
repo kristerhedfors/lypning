@@ -10,31 +10,13 @@ which is exactly why wire formats spell the prefix out.
 
 The five details worth having in front of you:
 
-  * The range-check messages are **not uniform**, and CPython's own
-    inconsistency is the specification.  Two things drive it, and neither
-    is guessable:
-
-      - The message depends on the BYTE ORDER for ``h H q Q``, because
-        ``<``/``=`` run CPython's little-endian handler table and
-        ``>``/``!`` its big-endian one, and the two were written by
-        different hands.  ``pack('<h', 40000)`` is ``short format
-        requires ...``; ``pack('>h', 40000)`` is ``'h' format requires
-        ...``.  ``pack('<q', 2**63)`` is ``argument out of range``;
-        ``pack('>q', 2**63)`` is ``int too large to convert``.
-      - Every handler first converts the value to a C ``long`` or
-        ``unsigned long`` and only THEN checks the code's own range, so a
-        value outside the C type never reaches the pretty message.
-        ``pack('<b', 2**63 - 1)`` is ``byte format requires -128 <=
-        number <= 127`` but ``pack('<b', 2**63)`` is ``argument out of
-        range``.  Which C type it is differs per code: ``b B h i l`` and
-        little-endian ``H`` go through signed ``long``, so a negative
-        value reaches the range check; ``I L``, big-endian ``H`` and
-        ``Q`` go through ``unsigned long``, so a negative value does not.
-        That is why ``pack('<I', -1)`` and ``pack('<I', 2**32)`` raise
-        two different messages, and why ``pack('<H', -1)`` and
-        ``pack('>H', -1)`` do too.
-
-    The whole grid is printed in the cases.
+  * The range of each code is the whole of the range contract, and the
+    cases print it as a BOOLEAN -- which values ``pack`` rejects and
+    which it takes -- never as a message.  ``pack('<b', 127)`` returns
+    and ``pack('<b', 128)`` raises, on every prefix and every release;
+    the text under the raise is neither.  See "The range MESSAGES are
+    not printed, and why" below, which is the reason this bullet reads
+    the way it does and not the way it used to.
   * A value is encoded by taking ``value % 256`` and dividing by 256,
     ``size`` times.  For a negative value Python's floor division and
     remainder already produce two's complement, so signed and unsigned
@@ -65,25 +47,80 @@ The five details worth having in front of you:
 
 Errors: CPython raises ``struct.error``, which is a subclass of
 ``Exception`` but NOT of ``ValueError``; the subset has no custom
-exceptions, so this port raises ``ValueError`` carrying the identical
-message.  That exception TYPE is the one deliberate divergence in this
-unit, and it is the only one -- every message below is CPython's own,
-character for character.  Two things follow, and both are load-bearing.
-``_error_message`` catches ``Exception`` and not ``ValueError``: the
-narrow spelling looks right here, where nothing else is ever raised, and
-stops catching the moment these same cases are run against the real
-``struct``, which is when it matters.  And the type difference is
-PRINTED, by ``_error_type`` at the end of the cases, rather than being
-left to show itself by ending the run -- an abort compares one line and
-silences every line under it.  CPython's own choice of type is not
-uniform either: a bad format character is ``struct.error`` but a format
-that will not encode to ASCII is ``UnicodeEncodeError``, and this port
-answers ``ValueError`` to both.
+exceptions, so this port raises ``ValueError``.  That exception TYPE is
+the one deliberate divergence in this unit.  Two things follow, and both
+are load-bearing.  ``_error_message`` and ``_rejects`` catch
+``Exception`` and not ``ValueError``: the narrow spelling looks right
+here, where nothing else is ever raised, and stops catching the moment
+these same cases are run against the real ``struct``, which is when it
+matters.  And the type difference is PRINTED, by ``_error_type`` at the
+end of the cases, rather than being left to show itself by ending the
+run -- an abort compares one line and silences every line under it.
+CPython's own choice of type is not uniform either: a bad format
+character is ``struct.error`` but a format that will not encode to ASCII
+is ``UnicodeEncodeError``, and this port answers ``ValueError`` to both.
+
+The range MESSAGES are not printed, and why
+-------------------------------------------
+
+The FORMAT messages below are CPython's own, character for character --
+``bad char in struct format``, ``embedded null character``, ``repeat
+count given without format specifier``, ``total struct size too long``,
+the ``'ascii' codec can't encode`` runs, and the argument-count and
+argument-type messages.  All of those are the same on CPython 3.9.23,
+3.10.18, 3.11.15, 3.12.11, 3.13.7 and 3.14.0rc2: 43 such probes, 43
+identical answers on all six (measured 2026-09-17).
+
+The RANGE messages are not, and they are the largest moving target this
+corpus has found.  Over 680 ``pack(prefix + code, value)`` probes -- all
+four prefixes, all ten codes, seventeen values on and outside every
+boundary -- 350 answer with a different message on some release, on the
+same six interpreters the same day.  The break is in two places:
+
+  * **3.10 -> 3.11**, 38 probes.  A C macro leaked into the text: 3.9 and
+    3.10 say ``short format requires (-32767 -1) <= number <= 32767`` and
+    ``ushort format requires 0 <= number <= (32767 * 2 + 1)`` where 3.11
+    evaluates both, ``-32768`` and ``65535``.
+  * **3.11 -> 3.12**, 312 probes.  CPython unified the two handler
+    tables.  Before 3.12 the message depended on the BYTE ORDER for
+    ``h H q Q``, because ``<``/``=`` ran the little-endian table and
+    ``>``/``!`` the big-endian one, and each handler converted to a C
+    ``long`` or ``unsigned long`` BEFORE checking the code's own range,
+    so a value outside the C type got ``argument out of range`` or ``int
+    too large to convert`` instead of the code's own text.  From 3.12
+    there is exactly one message per code, ``'b' format requires -128 <=
+    number <= 127`` and its nine siblings, for every prefix and every
+    out-of-range value: 12 distinct range messages on 3.9 and on 3.11,
+    10 on 3.14, and not the same 12 either time.
+
+That grid used to be printed here, and printing it made this unit right
+on one release and wrong on five.  It is gone.  What replaced it is the
+fact every release does agree on, and the fact a caller actually
+depends on: 0 of those 680 probes disagree on WHETHER ``pack`` raises,
+and 0 disagree on the exception TYPE.  So ``_rejects`` prints the
+boolean, on both sides of every boundary, and the range contract is
+pinned harder than the messages ever pinned it.
+
+Two things went with the messages, and are written down here because
+they cannot be printed.  The byte-order split -- ``pack('<h', 40000)``
+against ``pack('>h', 40000)`` -- is a pre-3.12 artefact and 3.12 removed
+it.  So is the convert-then-check order, whose only observable trace was
+the message: ``pack('<b', 2**63 - 1)`` and ``pack('<b', 2**63)`` gave
+two different texts up to 3.11 and give the one ``'b' format requires``
+text from 3.12.  Both raise on all six, which is the part that is API
+and the part the cases keep.  ``_range_message`` below was rewritten to
+3.12's one-message-per-code rule at the same time, so that the text this
+port raises -- which nothing prints, and which a reader will still read
+-- is CPython's current text rather than a retired one: it now matches
+3.12.11, 3.13.7 and 3.14.0rc2 on all 680 of those probes and differs
+from 3.9, 3.10 and 3.11 on exactly the 350 CPython itself changed.  The
+rewrite moved no answer: the 5,320-probe raise/no-raise grid is
+identical before and after it, and identical to all six releases.
 
 Bigints: ``pack('<Q', v)`` for ``v > 2**63 - 1`` takes a bigint as
 INPUT, so this unit needs the wider engine, and the cases below stand on
-that boundary on purpose -- 2**63, 2**64 - 1, and the two different
-out-of-range messages at 2**64.  Until 2026-09-17 they did not, and the
+that boundary on purpose -- 2**63, 2**64 - 1, and the rejection at
+2**64 under both byte orders.  Until 2026-09-17 they did not, and the
 docstring's claim that the helper handled the region was false in both
 engines: the encoder masked with ``& 0xFF`` and the range test shifted
 with ``>> 64``, and the wider engine refuses ``bigint: a bitwise
@@ -253,12 +290,12 @@ def calcsize(fmt):
 
 
 def _fits_signed_long(value):
-    """True when `value` survives CPython's PyLong_AsLong (C long)."""
+    """True when `value` is inside the signed 64-bit range -- `q`'s range."""
     return value >= _MIN_I64 and value <= _MAX_I64
 
 
 def _fits_unsigned_long(value):
-    """True when `value` survives PyLong_AsUnsignedLong (C unsigned long).
+    """True when `value` is inside the unsigned 64-bit range -- `Q`'s range.
 
     The upper bound is 2**64 - 1, and the test divides rather than
     shifting -- `(value >> 64) == 0` says the same thing but is a
@@ -269,63 +306,48 @@ def _fits_unsigned_long(value):
     return value >= 0 and value // 4294967296 <= 4294967295
 
 
-def _range_message(code, value, little):
-    """CPython's out-of-range message for `value` under `code`, or ''.
+def _range_message(code, value):
+    """The out-of-range message for `value` under `code`, or ''.
 
-    Two gates, in CPython's order: the C conversion first, the code's own
-    range second.  The wording of the second depends on the byte order.
+    One test and one message per code, which is CPython 3.12's rule and
+    not the rule of any earlier release.  Up to 3.11 the wording here
+    depended on the byte order for `h H q Q` and on whether the value
+    survived a C `long` first, and it is gone from this port for the
+    reason the module docstring gives at length: 3.12 unified the two
+    handler tables, so the pre-3.12 grid was a fact about five releases
+    rather than about `struct`, and no case prints any of it now.  WHICH
+    values are rejected did not move with the wording -- 5,320 (prefix,
+    code, value) probes on CPython 3.9.23, 3.10.18, 3.11.15, 3.12.11,
+    3.13.7 and 3.14.0rc2 give one answer, and it is this one (measured
+    2026-09-17).
     """
     if code == "b":
-        if not _fits_signed_long(value):
-            return "argument out of range"
         if value < -128 or value > 127:
-            return "byte format requires -128 <= number <= 127"
+            return "'b' format requires -128 <= number <= 127"
     elif code == "B":
-        if not _fits_signed_long(value):
-            return "argument out of range"
         if value < 0 or value > 255:
-            return "ubyte format requires 0 <= number <= 255"
+            return "'B' format requires 0 <= number <= 255"
     elif code == "h":
-        if not _fits_signed_long(value):
-            return "argument out of range"
         if value < -32768 or value > 32767:
-            if little:
-                return "short format requires -32768 <= number <= 32767"
             return "'h' format requires -32768 <= number <= 32767"
     elif code == "H":
-        if little:
-            # np_ushort converts through a SIGNED long, so -1 reaches
-            # the range check and gets the wordy message.
-            if not _fits_signed_long(value):
-                return "argument out of range"
-            if value < 0 or value > 65535:
-                return "ushort format requires 0 <= number <= 65535"
-        else:
-            if not _fits_unsigned_long(value):
-                return "argument out of range"
-            if value > 65535:
-                return "'H' format requires 0 <= number <= 65535"
+        if value < 0 or value > 65535:
+            return "'H' format requires 0 <= number <= 65535"
     elif code == "i" or code == "l":
-        if not _fits_signed_long(value):
-            return "argument out of range"
         if value < -2147483648 or value > 2147483647:
             return ("'" + code
                     + "' format requires -2147483648 <= number <= 2147483647")
     elif code == "I" or code == "L":
-        if not _fits_unsigned_long(value):
-            return "argument out of range"
-        if value > 4294967295:
+        if value < 0 or value > 4294967295:
             return "'" + code + "' format requires 0 <= number <= 4294967295"
     elif code == "q":
         if not _fits_signed_long(value):
-            if little:
-                return "argument out of range"
-            return "int too large to convert"
+            return ("'q' format requires -9223372036854775808"
+                    " <= number <= 9223372036854775807")
     elif code == "Q":
         if not _fits_unsigned_long(value):
-            if little:
-                return "argument out of range"
-            return "int too large to convert"
+            return ("'Q' format requires 0"
+                    " <= number <= 18446744073709551615")
     return ""
 
 
@@ -333,7 +355,7 @@ def _append_int(out, code, value, little):
     """Append one packed integer to the list of byte values `out`."""
     if not isinstance(value, int):
         raise ValueError("required argument is not an integer")
-    message = _range_message(code, value, little)
+    message = _range_message(code, value)
     if message:
         raise ValueError(message)
     size = _STD_SIZE[code]
@@ -399,6 +421,28 @@ def _error_message(fn, *args):
     except Exception as exc:
         return str(exc)
     return ""
+
+
+def _rejects(fn, *args):
+    """True when fn(*args) raises, False when it returns.
+
+    The boolean, and deliberately not the message.  This is what the range
+    cases print.  CPython reworded every one of its range messages between
+    3.11 and 3.12, and two of them between 3.10 and 3.11, but WHETHER a
+    value is in range has never moved -- 680 probes, 0 disagreements, on
+    six releases.  See the module docstring, "The range MESSAGES are not
+    printed, and why".
+
+    ``except Exception`` for the same reason ``_error_message`` uses it:
+    the real ``struct`` raises ``struct.error``, which is not a
+    ``ValueError``, and a narrower catch would let it escape and leave
+    every case below compared against nothing.
+    """
+    try:
+        fn(*args)
+    except Exception:
+        return True
+    return False
 
 
 def _error_type(fn, *args):
@@ -477,22 +521,23 @@ print(pack_hex("<Q", 9223372036854775807 + 1)
       == pack_hex("<Q", 9223372036854775808))
 print(pack_hex("<Q", 12297829382473034410))
 print(pack_hex(">Q", 12297829382473034410))
-# One past the top, and one past the bottom: two messages each way.
-print(repr(_error_message(pack, "<Q", 18446744073709551616)))
-print(repr(_error_message(pack, ">Q", 18446744073709551616)))
-print(repr(_error_message(pack, "<Q", -9223372036854775809)))
-print(repr(_error_message(pack, ">Q", -9223372036854775809)))
-print(repr(_error_message(pack, "<q", 9223372036854775808)))
-print(repr(_error_message(pack, ">q", 9223372036854775808)))
-print(repr(_error_message(pack, "<Q", 18446744073709551615)))
+# One past the top and one past the bottom, as booleans: the text under
+# each of these moved twice between 3.9 and 3.14 and the answer never did.
+print(_rejects(pack, "<Q", 18446744073709551616))
+print(_rejects(pack, ">Q", 18446744073709551616))
+print(_rejects(pack, "<Q", -9223372036854775809))
+print(_rejects(pack, ">Q", -9223372036854775809))
+print(_rejects(pack, "<q", 9223372036854775808))
+print(_rejects(pack, ">q", 9223372036854775808))
+print(_rejects(pack, "<Q", 18446744073709551615))
 for _code in ["b", "B", "h", "H", "i", "I", "l", "L", "q", "Q"]:
     print(_code,
-          repr(_error_message(pack, "<" + _code, 18446744073709551615)),
-          repr(_error_message(pack, ">" + _code, 18446744073709551615)))
+          _rejects(pack, "<" + _code, 18446744073709551615),
+          _rejects(pack, ">" + _code, 18446744073709551615))
 for _code in ["b", "B", "h", "H", "i", "I", "l", "L", "q", "Q"]:
     print(_code,
-          repr(_error_message(pack, "<" + _code, 18446744073709551616)),
-          repr(_error_message(pack, ">" + _code, 18446744073709551616)))
+          _rejects(pack, "<" + _code, 18446744073709551616),
+          _rejects(pack, ">" + _code, 18446744073709551616))
 
 # Repeat counts, several codes, and the empty format.
 print(pack_hex("<3i", 1, 2, 3))
@@ -508,51 +553,79 @@ print(pack_hex("<10b", 0, 1, 2, 3, 4, 5, 6, 7, 8, 9))
 print(pack_hex("<i", True), pack_hex("<i", False))
 print(pack_hex("<B", True), pack_hex("<B", False))
 
-# Range errors: four different message shapes, all from CPython.
+# The range of every code under every prefix, printed as the pair of
+# booleans on the two sides of each boundary: the last value that packs
+# and the first that does not.  The boundary itself is the contract, and
+# it is the same on every CPython; the message is not, and is not printed
+# anywhere below.  See the module docstring, "The range MESSAGES are not
+# printed, and why".
 for _prefix in ["<", ">", "!", "="]:
-    print(_prefix, repr(_error_message(pack, _prefix + "b", 128)),
-          repr(_error_message(pack, _prefix + "b", -129)))
+    print(_prefix, "b",
+          _rejects(pack, _prefix + "b", 127), _rejects(pack, _prefix + "b", 128),
+          _rejects(pack, _prefix + "b", -128), _rejects(pack, _prefix + "b", -129))
 for _prefix in ["<", ">", "!", "="]:
-    print(_prefix, repr(_error_message(pack, _prefix + "B", 256)),
-          repr(_error_message(pack, _prefix + "B", -1)))
+    print(_prefix, "B",
+          _rejects(pack, _prefix + "B", 255), _rejects(pack, _prefix + "B", 256),
+          _rejects(pack, _prefix + "B", 0), _rejects(pack, _prefix + "B", -1))
 for _prefix in ["<", ">", "!", "="]:
-    print(_prefix, repr(_error_message(pack, _prefix + "h", 32768)))
-    print(_prefix, repr(_error_message(pack, _prefix + "h", -32769)))
+    print(_prefix, "h",
+          _rejects(pack, _prefix + "h", 32767), _rejects(pack, _prefix + "h", 32768),
+          _rejects(pack, _prefix + "h", -32768), _rejects(pack, _prefix + "h", -32769))
 for _prefix in ["<", ">", "!", "="]:
-    print(_prefix, repr(_error_message(pack, _prefix + "H", 65536)))
-    print(_prefix, repr(_error_message(pack, _prefix + "H", -1)))
+    print(_prefix, "H",
+          _rejects(pack, _prefix + "H", 65535), _rejects(pack, _prefix + "H", 65536),
+          _rejects(pack, _prefix + "H", 0), _rejects(pack, _prefix + "H", -1))
 for _prefix in ["<", ">", "!", "="]:
-    print(_prefix, repr(_error_message(pack, _prefix + "i", 2147483648)))
-    print(_prefix, repr(_error_message(pack, _prefix + "i", -2147483649)))
-    print(_prefix, repr(_error_message(pack, _prefix + "l", 2147483648)))
-    print(_prefix, repr(_error_message(pack, _prefix + "l", -2147483649)))
+    print(_prefix, "i",
+          _rejects(pack, _prefix + "i", 2147483647),
+          _rejects(pack, _prefix + "i", 2147483648),
+          _rejects(pack, _prefix + "i", -2147483648),
+          _rejects(pack, _prefix + "i", -2147483649))
+    print(_prefix, "l",
+          _rejects(pack, _prefix + "l", 2147483647),
+          _rejects(pack, _prefix + "l", 2147483648),
+          _rejects(pack, _prefix + "l", -2147483648),
+          _rejects(pack, _prefix + "l", -2147483649))
 for _prefix in ["<", ">", "!", "="]:
-    print(_prefix, repr(_error_message(pack, _prefix + "I", 4294967296)))
-    print(_prefix, repr(_error_message(pack, _prefix + "I", -1)))
-    print(_prefix, repr(_error_message(pack, _prefix + "L", 4294967296)))
-    print(_prefix, repr(_error_message(pack, _prefix + "L", -1)))
+    print(_prefix, "I",
+          _rejects(pack, _prefix + "I", 4294967295),
+          _rejects(pack, _prefix + "I", 4294967296),
+          _rejects(pack, _prefix + "I", 0), _rejects(pack, _prefix + "I", -1))
+    print(_prefix, "L",
+          _rejects(pack, _prefix + "L", 4294967295),
+          _rejects(pack, _prefix + "L", 4294967296),
+          _rejects(pack, _prefix + "L", 0), _rejects(pack, _prefix + "L", -1))
 for _prefix in ["<", ">", "!", "="]:
-    print(_prefix, repr(_error_message(pack, _prefix + "q", -1)))
-    print(_prefix, repr(_error_message(pack, _prefix + "Q", -1)))
-    print(_prefix, repr(_error_message(pack, _prefix + "Q", -4294967296)))
-print(repr(_error_message(pack, "<q", 9223372036854775807)))
-print(repr(_error_message(pack, "<Q", 9223372036854775807)))
-print(repr(_error_message(pack, "<b", 127)))
+    print(_prefix, "q",
+          _rejects(pack, _prefix + "q", 9223372036854775807),
+          _rejects(pack, _prefix + "q", 9223372036854775808),
+          _rejects(pack, _prefix + "q", -9223372036854775807 - 1),
+          _rejects(pack, _prefix + "q", -9223372036854775809))
+    print(_prefix, "Q",
+          _rejects(pack, _prefix + "Q", 18446744073709551615),
+          _rejects(pack, _prefix + "Q", 18446744073709551616),
+          _rejects(pack, _prefix + "Q", 0), _rejects(pack, _prefix + "Q", -1),
+          _rejects(pack, _prefix + "Q", -4294967296))
+print(_rejects(pack, "<q", 9223372036854775807))
+print(_rejects(pack, "<Q", 9223372036854775807))
+print(_rejects(pack, "<b", 127))
 
-# The C conversion runs BEFORE the code's own range check, so a value
-# outside the C type never reaches the pretty message.
+# A value far outside the C type the handler converts through is rejected
+# just the same.  Up to 3.11 that showed itself in the WORDING -- a value
+# past the C type never reached the code's own message -- and 3.12 unified
+# the two, so the wording is no longer a fact and only the answer is.
 for _code in ["b", "B", "h", "H", "i", "I", "l", "L", "q", "Q"]:
     print(_code,
-          repr(_error_message(pack, "<" + _code, 9223372036854775807)),
-          repr(_error_message(pack, ">" + _code, 9223372036854775807)))
+          _rejects(pack, "<" + _code, 9223372036854775807),
+          _rejects(pack, ">" + _code, 9223372036854775807))
 for _code in ["b", "B", "h", "H", "i", "I", "l", "L", "q", "Q"]:
     print(_code,
-          repr(_error_message(pack, "<" + _code, -9223372036854775807 - 1)),
-          repr(_error_message(pack, ">" + _code, -9223372036854775807 - 1)))
+          _rejects(pack, "<" + _code, -9223372036854775807 - 1),
+          _rejects(pack, ">" + _code, -9223372036854775807 - 1))
 for _code in ["b", "B", "h", "H", "i", "I", "l", "L", "q", "Q"]:
     print(_code,
-          repr(_error_message(pack, "<" + _code, -1099511627776)),
-          repr(_error_message(pack, ">" + _code, -1099511627776)))
+          _rejects(pack, "<" + _code, -1099511627776),
+          _rejects(pack, ">" + _code, -1099511627776))
 
 # Argument-count and argument-type errors.
 print(repr(_error_message(pack, "<i")))

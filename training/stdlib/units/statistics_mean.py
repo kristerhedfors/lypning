@@ -67,7 +67,24 @@ the OverflowError math.fsum raises on finite intermediate overflow.
 
 StatisticsError is a subclass of ValueError and the subset has no class
 statement, so the empty-data and bad-weights errors are raised as ValueError
-with CPython's own message text.
+with CPython's own message text.  That text is safe to print here, and it was
+checked rather than assumed: 'mean requires at least one data point', 'fmean
+requires at least one data point', 'data and weights must be the same length',
+'sum of weights must be non-zero' and '-inf + inf in fsum' are character for
+character the same on CPython 3.9.23, 3.10.18, 3.11.15, 3.12.11, 3.13.7 and
+3.14.0rc2 (measured 2026-09-17).  The sibling unit statistics_variance.py
+prints exception TYPES instead, and for a reason that does not apply here: its
+stdev/pstdev messages DID move, in 3.11.
+
+WHICH CPython `weights` comes from: 3.11 and later.  fmean's second argument was
+added in CPython 3.11 (gh-90203); on 3.9 and 3.10 fmean takes data alone and
+`statistics.fmean([1, 2, 3], [3, 1, 0])` is `TypeError: fmean() takes 1
+positional argument but 2 were given`, measured the same day on the same
+interpreters.  The weighted cases below therefore have no counterpart to check
+against on 3.9 and 3.10 -- they are not WRONG there, the surface is absent --
+and running this unit's cases against the real `statistics` on those two stops
+at the first weighted call.  Everything that passes data alone, mean() included,
+answers identically on all six.
 """
 # fills: statistics.mean, statistics.fmean
 # reference: statistics

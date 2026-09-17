@@ -5,11 +5,12 @@ into a regular expression and matches with it.  The core engine refuses
 ``import re`` outright, so the whole module is out of reach there; the
 wider variant serves ``re`` and this unit runs on it.
 
-Covered, as a faithful port of CPython 3.11's ``Lib/fnmatch.py``:
+Covered:
 
-  * ``translate(pat)`` -- returns the *exact* string CPython returns,
-    including the ``(?s:...)\\Z`` wrapper and the ``(?>.*?fixed)`` atomic
-    groups CPython emits for interior ``STAR fixed`` pairs.
+  * ``translate(pat)`` -- the regular expression, built the way CPython
+    3.11 through 3.13 build it, including the ``(?s:...)`` wrapper and
+    the ``(?>.*?fixed)`` atomic groups for interior ``STAR fixed`` pairs.
+    Its TEXT is not printed; see "What translate returns is not API".
   * ``fnmatchcase(name, pat)`` -- case-sensitive match of a whole name.
   * ``fnmatch(name, pat)`` -- case-normalised match.
   * ``filter(names, pat)`` -- the matching subset, order preserved.
@@ -27,10 +28,59 @@ The three corners that catch people, all pinned in the cases below:
     leading ``!``.
   * A ``-`` is a range only between two characters.  ``[a-]``, ``[-a]``
     and ``[a-c-e]`` are each handled by the chunking pass that CPython
-    added so that a trailing or leading hyphen becomes a literal and an
-    *inverted* range like ``[c-a]`` is collapsed instead of raising.
+    added so that a trailing or leading hyphen becomes a literal.
   * ``&``, ``~`` and ``|`` are escaped inside the set because a future
     ``re`` may give ``&&``, ``~~`` and ``||`` set-operation meaning.
+
+What translate returns is not API
+---------------------------------
+
+The cases do not print the expression ``translate`` returns.  CPython has
+respelled it three times inside the 3.9-3.14 window this corpus targets.
+Measured 2026-09-17 by running ``fnmatch.translate`` over 2,430 distinct
+patterns -- every string up to length three over ``a * ? [ ] ! - \\ ^ & ~
+| .``, plus every pattern this unit uses -- on CPython 3.9.23, 3.10.20,
+3.11.15, 3.12.3, 3.13.12 and 3.14.0rc2, and diffing adjacent versions:
+
+  * 3.9 -> 3.10, **6 patterns.**  The hyphen chunking pass arrives.  3.9
+    emits ``(?s:[a-])\\Z`` for ``[a-]`` where 3.10 emits ``(?s:[a\\-])\\Z``,
+    and 3.9 hands an inverted range such as ``[c-a]`` straight through
+    where 3.10 collapses it to the never-matching ``(?!)``.
+  * 3.10 -> 3.11, **23 patterns.**  An interior ``STAR fixed`` pair is
+    the atomic ``(?>.*?fixed)`` from 3.11 on; 3.10 spells the same thing
+    with a named-group lookahead, ``(?=(?P<g0>.*?fixed))(?P=g0)``.
+  * 3.11 -> 3.12 and 3.12 -> 3.13, **0 patterns.**
+  * 3.13 -> 3.14, **all 2,430.**  The end-of-string anchor is spelled
+    ``\\z`` from 3.14 and ``\\Z`` before it.  One anchor, two spellings.
+
+Not one of those three changed an answer.  Over 4,681 patterns -- every
+string up to length four over ``a b * ? [ ] ! -`` -- against 259 names --
+every string up to length three over ``a b ] - ^`` and newline, plus the
+empty one -- ``fnmatchcase`` returns the identical verdict on all six
+interpreters (digest ``2119c0708f01b4fc``, run 2026-09-17).
+
+So the cases print the ANSWER and not the expression: ``_accepts(pat)``
+gives the subset of one fixed probe list that ``pat`` accepts, which is
+what a caller of ``translate`` actually depends on.  Of the expression
+itself the cases print only the two things all six interpreters agree on
+-- that it opens with the scoped-DOTALL ``(?s:`` and that it ends at an
+end-of-string anchor, the latter through ``_anchor``, which case-folds
+``\\Z`` and ``\\z`` into the one spelling they share.
+
+One case was removed rather than printed
+----------------------------------------
+
+``[c-a]``, an inverted range, used to appear twice: as
+``translate('[c-a]')`` and as ``fnmatchcase('b', '[c-a]')``.  It is the
+only input found whose BEHAVIOUR drifts rather than its spelling.  From
+3.10 the empty range is collapsed and the pattern matches nothing; 3.9
+hands ``[c-a]`` to ``re`` and ``fnmatchcase('b', '[c-a]')`` raises
+``re.error: bad character range c-a at position 5``.  Every inverted
+range does this -- ``[b-a]``, ``[z-a]``, ``[9-0]``, ``[!c-a]``,
+``[c-ab]`` were each checked on 3.9.23, 3.10.20 and 3.14.0rc2 on
+2026-09-17 -- so there is no stable inverted range to print instead, and
+no case here uses one.  ``_parse`` still collapses empty ranges, faithful
+to 3.10 and later; no printed case reaches that branch.
 
 Two deliberate restrictions, both documented rather than faked:
 
@@ -43,7 +93,7 @@ Two deliberate restrictions, both documented rather than faked:
     and the subset has no decorators, so each call recompiles.
 
 One divergence, and it is only in the regex handed to ``re``, never in
-what ``translate`` returns or in any answer this unit prints:
+any answer this unit prints:
 
   ``_regex_for`` builds a second, equivalent expression for matching.
   It drops the ``(?s:...)`` wrapper in favour of passing ``re.DOTALL``,
@@ -54,11 +104,12 @@ what ``translate`` returns or in any answer this unit prints:
   The atomic group is documented in CPython as a backtracking
   optimisation for an interior ``* fixed`` pair; dropping it can only
   cost time, never change whether an anchored match exists.  That claim
-  was not reasoned about, it was swept: 4,681 patterns (every string up
-  to length four over ``a b * ? [ ] ! -``) against 1,555 names (every
-  string up to length four over ``a b ] - ^`` and newline, plus the
-  empty one), comparing both ``translate``'s string and the anchored
-  match against the real module -- 0 divergences, run 2026-09-16.
+  was not reasoned about, it was swept: the same 4,681 patterns against
+  the same 259 names, comparing this expression's anchored match against
+  ``fnmatch.fnmatchcase`` -- 0 divergences on each of 3.9.23, 3.10.20,
+  3.11.15, 3.12.3, 3.13.12 and 3.14.0rc2, run 2026-09-17.  ``_agrees``
+  puts a handful of those comparisons in the cases, where the reference
+  arm runs the left-hand side against the real module.
 
 ``os.path.normcase`` is the identity on POSIX, which is where this unit
 is graded, so ``normcase`` here is the identity and ``fnmatch`` equals
@@ -123,7 +174,10 @@ def _parse(pat, never):
                         chunks.append(chunk)
                     else:
                         chunks[-1] = chunks[-1] + "-"
-                    # Remove empty ranges -- invalid in a regex.
+                    # Remove empty ranges -- invalid in a regex. This is the
+                    # 3.10 behaviour; 3.9 emitted the inverted range and let
+                    # `re` raise. No printed case reaches here; see the
+                    # docstring, "One case was removed rather than printed".
                     for k in range(len(chunks) - 1, 0, -1):
                         if chunks[k - 1][-1] > chunks[k][0]:
                             chunks[k - 1] = chunks[k - 1][:-1] + chunks[k][1:]
@@ -192,7 +246,11 @@ def _assemble(pieces, atomic):
 
 
 def translate(pat):
-    """Shell pattern -> the regular expression CPython's fnmatch builds."""
+    """Shell pattern -> the regular expression CPython's fnmatch builds.
+
+    Spelled the way CPython 3.11 through 3.13 spell it. The text is not
+    what the cases check; see the module docstring.
+    """
     body = _assemble(_parse(pat, "(?!)"), True)
     return "(?s:" + body + ")\\Z"
 
@@ -236,50 +294,105 @@ def _matcher(pat):
     return _compile_pattern(pat).match
 
 
+#: The one probe list every ``_accepts`` case is answered against. Fixed so
+#: that a pattern's line is read as "these, of these", and wide enough that
+#: the metacharacters, the bracket corners and the whitespace all show.
+_PROBE = ["", "a", "b", "c", "d", "x", "z", "A", "-", "]", "[", "^", "!",
+          "&", "~", "|", ".", "\\", "ab", "abc", "a1", "b1", "a.b", "a+b",
+          "a b", "a\tb", "a\nb", "(a)", "aaa", "foo.bar", "foobar",
+          "report.txt", "a/b/c", "Makefile", "makefile"]
+
+
+def _accepts(pat):
+    """The names in ``_PROBE`` that PAT accepts -- what translate is FOR.
+
+    The expression ``translate`` returns has been respelled three times
+    between 3.9 and 3.14 without any of these lines moving, which is why
+    the cases print this and not the expression.
+    """
+    return filter(_PROBE, pat)
+
+
+def _anchor(expr):
+    """The end-of-string anchor an expression ends with, case-folded.
+
+    ``\\Z`` up to 3.13 and ``\\z`` from 3.14 are the same anchor under two
+    spellings, so the case prints the one spelling they share.
+    """
+    return expr[-2:].lower()
+
+
+def _agrees(pat, names):
+    """Whether ``fnmatchcase`` and ``_regex_for``'s expression agree on NAMES.
+
+    The equivalence ``translate`` exists to provide, checked through the
+    expression this engine can actually compile. In the reference run the
+    left-hand side is the real ``fnmatch.fnmatchcase``, so the answer is a
+    comparison and not a tautology.
+    """
+    matcher = re.compile(_regex_for(pat), re.DOTALL).match
+    for name in names:
+        if (matcher(name) is not None) != fnmatchcase(name, pat):
+            return False
+    return True
+
+
 # --- cases ---
-# translate(), byte for byte, including the atomic groups and the wrapper.
-print(repr(translate("")))
-print(repr(translate("*")))
-print(repr(translate("**")))
-print(repr(translate("***")))
-print(repr(translate("?")))
-print(repr(translate("a")))
-print(repr(translate("*.txt")))
-print(repr(translate("a*b")))
-print(repr(translate("*a*b*")))
-print(repr(translate("a*b*c*d")))
-print(repr(translate("foo?bar")))
-print(repr(translate(".")))
-print(repr(translate("a.b")))
-print(repr(translate("a+b")))
-print(repr(translate("a b")))
-print(repr(translate("a\tb")))
-print(repr(translate("(a)")))
+# translate() returns an expression; the two things about its TEXT that
+# every CPython from 3.9 to 3.14 agrees on are the scoped-DOTALL opener
+# and that it ends at an end-of-string anchor.
+print(repr(translate("")[:4]))
+print(repr(translate("*.txt")[:4]))
+print(repr(translate("a*b*c")[:4]))
+print(repr(translate("[!a-c]")[:4]))
+print(repr(_anchor(translate(""))))
+print(repr(_anchor(translate("*.txt"))))
+print(repr(_anchor(translate("a*b*c"))))
+print(repr(_anchor(translate("[!a-c]"))))
+
+# Everything else about translate() is checked as what the expression
+# ACCEPTS, out of the one fixed probe list.
+print(_accepts(""))
+print(_accepts("*"))
+print(_accepts("**"))
+print(_accepts("***"))
+print(_accepts("?"))
+print(_accepts("a"))
+print(_accepts("*.txt"))
+print(_accepts("a*b"))
+print(_accepts("*a*b*"))
+print(_accepts("a*b*c*d"))
+print(_accepts("foo?bar"))
+print(_accepts("."))
+print(_accepts("a.b"))
+print(_accepts("a+b"))
+print(_accepts("a b"))
+print(_accepts("a\tb"))
+print(_accepts("(a)"))
 
 # Character sets, including every bracket corner.
-print(repr(translate("[abc]")))
-print(repr(translate("[!abc]")))
-print(repr(translate("[]]")))
-print(repr(translate("[!]]")))
-print(repr(translate("[]")))
-print(repr(translate("[!]")))
-print(repr(translate("[")))
-print(repr(translate("[abc")))
-print(repr(translate("[^a]")))
-print(repr(translate("[[]")))
-print(repr(translate("[a-c]")))
-print(repr(translate("[!a-c]")))
-print(repr(translate("[a-]")))
-print(repr(translate("[-a]")))
-print(repr(translate("[a-c-e]")))
-print(repr(translate("[c-a]")))
-print(repr(translate("[a-cx-z]")))
-print(repr(translate("[&~|]")))
-print(repr(translate("[a&b]")))
-print(repr(translate("[\\]")))
-print(repr(translate("[a\\b]")))
-print(repr(translate("[!-a]")))
-print(repr(translate("*[abc]*")))
+print(_accepts("[abc]"))
+print(_accepts("[!abc]"))
+print(_accepts("[]]"))
+print(_accepts("[!]]"))
+print(_accepts("[]"))
+print(_accepts("[!]"))
+print(_accepts("["))
+print(_accepts("[abc"))
+print(_accepts("[^a]"))
+print(_accepts("[[]"))
+print(_accepts("[a-c]"))
+print(_accepts("[!a-c]"))
+print(_accepts("[a-]"))
+print(_accepts("[-a]"))
+print(_accepts("[a-c-e]"))
+print(_accepts("[a-cx-z]"))
+print(_accepts("[&~|]"))
+print(_accepts("[a&b]"))
+print(_accepts("[\\]"))
+print(_accepts("[a\\b]"))
+print(_accepts("[!-a]"))
+print(_accepts("*[abc]*"))
 
 # fnmatchcase: the happy path and the empties.
 print(fnmatchcase("abc", "abc"))
@@ -317,7 +430,6 @@ print(fnmatchcase("z", "[a-c]"))
 print(fnmatchcase("-", "[a-]"))
 print(fnmatchcase("a", "[a-]"))
 print(fnmatchcase("-", "[-a]"))
-print(fnmatchcase("b", "[c-a]"))
 print(fnmatchcase("^", "[^a]"))
 print(fnmatchcase("a", "[^a]"))
 print(fnmatchcase("[", "[[]"))
@@ -363,9 +475,18 @@ _m = _matcher("*.log")
 print(_m("a.log") is not None)
 print(_m("a.txt") is not None)
 
-# The two expressions agree on what they are anchored to.
+# The second expression -- the one this engine compiles -- accepts exactly
+# what fnmatchcase accepts. See the docstring's "One divergence".
 print(repr(_regex_for("*.txt")))
 print(repr(_regex_for("[]")))
 print(repr(_regex_for("a*b*c")))
-print(translate("a*b*c").count("(?>"))
 print(_regex_for("a*b*c").count("(?>"))
+print(_agrees("*.txt", _PROBE))
+print(_agrees("a*b*c", _PROBE))
+print(_agrees("*a*b*", _PROBE))
+print(_agrees("*[abc]*", _PROBE))
+print(_agrees("[!a-c]", _PROBE))
+print(_agrees("[a-c-e]", _PROBE))
+print(_agrees("?", _PROBE))
+print(_agrees("*", _PROBE))
+print(_agrees("", _PROBE))

@@ -43,16 +43,25 @@ Edge cases, all checked against the live module on 2026-09-16:
     negative"), the same message CPython uses.
 
 DIVERGENCE (one, deliberate): an unexpected keyword argument raises
-`ValueError` here, carrying CPython's exact message
-(`'bogus' is an invalid keyword argument for product()`), where CPython raises
-`TypeError`.  The subset has no class statement and most builtin exception
-names are not bound, so ValueError with a non-empty message is the only shape
-available.  The cases print the exception's TYPE as well as its message, so
-this shows up as exactly one differing line -- `product([1], bogus=1)` --
-against the real module, and every other line matches byte for byte.  The
-message alone would hide the one thing that differs, and catching only
-`ValueError` would let CPython's `TypeError` escape and leave every case
-below it compared against nothing.
+`ValueError` here, where CPython raises `TypeError`.  The subset has no class
+statement and most builtin exception names are not bound, so ValueError is the
+only shape available.  The cases print the exception's TYPE and nothing else,
+so this shows up as exactly one differing line -- `product([1], bogus=1)` --
+against the real module, and every other line matches byte for byte.  Catching
+only `ValueError` would let CPython's `TypeError` escape and leave every case
+below it compared against nothing, which is why the `except` names both.
+
+The TYPE and not the message, because the message is not API and moved inside
+the window this corpus targets: CPython 3.9 through 3.12 say `'bogus' is an
+invalid keyword argument for product()` and 3.13 and 3.14 say `product() got an
+unexpected keyword argument 'bogus'`, the Argument Clinic wording.  Measured
+2026-09-17 on CPython 3.9.23, 3.10.18, 3.11.15, 3.12.11, 3.13.7 and 3.14.0rc2.
+A case that printed the text would have been right on four of those six
+releases; a unit is inlined and run on whichever one the reader has.  The
+message this port raises is its own and is deliberately not a copy of either
+CPython wording -- copying one would be picking a release.  The negative
+`repeat` message, by contrast, IS CPython's and is the same on all six, which
+is why `_repeat_of` still spells it out.
 
 Not covered: nothing else in itertools -- see the sibling units.
 """
@@ -64,8 +73,11 @@ def _repeat_of(kwargs, funcname):
     """Read and validate the only keyword `product` accepts."""
     for key in kwargs:
         if key != "repeat":
+            # Not a copy of CPython's text: CPython has two wordings for
+            # this in 3.9-3.14 and no case prints either.  See the module
+            # docstring, DIVERGENCE.
             raise ValueError(
-                repr(key) + " is an invalid keyword argument for " + funcname + "()"
+                funcname + "() does not take the keyword argument " + repr(key)
             )
     repeat = 1
     if "repeat" in kwargs:
@@ -135,11 +147,31 @@ def _error_of(args, kwargs):
     every case printed below it would then be compared against nothing at all.
     The type is reported rather than swallowed, which is what makes the
     divergence above one visible line instead of a silence.
+
+    Only the negative-`repeat` cases come through here, because only their
+    message is the same on every CPython this corpus targets.  The
+    unexpected-keyword case uses `_error_type_of`; see the module docstring.
     """
     try:
         product(*args, **kwargs)
     except (ValueError, TypeError) as exc:
         return type(exc).__name__ + ": " + str(exc)
+    return ""
+
+
+def _error_type_of(args, kwargs):
+    """Return the TYPE name of whatever product(*args, **kwargs) raises, or "".
+
+    The type, and deliberately not the message.  CPython reworded the
+    unexpected-keyword text between 3.12 and 3.13 -- `'bogus' is an invalid
+    keyword argument for product()` became `product() got an unexpected keyword
+    argument 'bogus'` -- and the wording is not a fact about `product`.  The
+    type is, and it is also the one thing this port cannot match.
+    """
+    try:
+        product(*args, **kwargs)
+    except (ValueError, TypeError) as exc:
+        return type(exc).__name__
     return ""
 
 
@@ -202,10 +234,12 @@ print(product((c for c in "ab"), (n for n in [0, 1])))
 # repeat over a one-shot iterator still reads it once.
 print(product((n for n in [0, 1]), repeat=2))
 
-# Errors.  The type is printed with the message -- see DIVERGENCE above.
+# Errors.  The negative-`repeat` message is CPython's own and the same on
+# every release, so it is printed with the type; see DIVERGENCE above.
 print(repr(_error_of(([1],), {"repeat": -1})))
 print(repr(_error_of((), {"repeat": -5})))
-print(repr(_error_of(([1],), {"bogus": 1})))
+# The type only: CPython's wording for this moved between 3.12 and 3.13.
+print(repr(_error_type_of(([1],), {"bogus": 1})))
 print(repr(_error_of(([1],), {"repeat": 1})))
 
 # Depth: 200 pools.  A recursive-descent product recurses once per pool and

@@ -63,10 +63,26 @@ answers against the real ``hmac`` and ``hashlib``, over keys and
 messages of every length either side of both block sizes.  0
 divergences.
 
-One divergence: ``hashlib.pbkdf2_hmac`` with an unknown name raises
-``UnsupportedDigestmodError`` from the OpenSSL layer; ``digest`` here
-raises ``ValueError`` with ``hashlib.new``'s message, because the subset
-has one exception to raise and that is the message worth carrying.
+One divergence, and it is the only line below that does not match the
+real module: ``hashlib.pbkdf2_hmac`` with an unknown name fails in the
+OpenSSL layer, where ``digest`` here raises ``ValueError`` carrying
+``hashlib.new``'s message.  The subset has one exception to raise, and
+that message is the one worth carrying because it is the one CPython
+itself keeps steady: ``hashlib.new('bogus')`` is ``ValueError:
+unsupported hash type bogus`` on CPython 3.9.23, 3.10.18, 3.11.15,
+3.12.11, 3.13.7 and 3.14.0rc2 alike (measured 2026-09-17).
+
+What CPython answers on the ``pbkdf2_hmac`` side is NOT steady, which is
+why the declaration here names no single CPython answer.  On the same six
+interpreters, the same day, ``hashlib.pbkdf2_hmac('bogus', b'p', b's',
+1)`` raises a plain ``ValueError`` on 3.9 and 3.10 and an
+``_hashlib.UnsupportedDigestmodError`` from 3.11 on, and its message is
+``unsupported hash type`` on 3.9 and ``[digital envelope routines]
+unsupported`` on the other five.  Neither the type nor the text is a fact
+about PBKDF2.  The one thing all six agree on is the part a caller can
+use: whatever comes out is a ``ValueError`` -- ``UnsupportedDigestmodError``
+subclasses it -- so ``except ValueError`` catches CPython's error and this
+port's alike, and ``_message`` is written with exactly that ``except``.
 """
 # fills: hashlib.md5, hashlib.sha1, hashlib.sha256, hashlib.sha512, hashlib.new, hashlib.pbkdf2_hmac, hmac.new, hmac.digest
 # reference: hashlib

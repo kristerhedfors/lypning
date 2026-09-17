@@ -26,6 +26,17 @@ ordinary fifth parameter here.  Every call CPython accepts, these accept,
 with the same answer; these additionally accept `key` positionally, which
 CPython rejects.  No case below passes `key` positionally.
 
+WHICH CPython that `key` comes from: 3.10 and later.  `key` was added to
+all four functions in CPython 3.10 (gh-bpo-4356); on 3.9 there is no such
+parameter at all and ``bisect.bisect_left([0, -1, 2], 2, 0, None,
+key=abs)`` is ``TypeError: bisect_left() takes at most 4 arguments (5
+given)``.  Measured 2026-09-17 on CPython 3.9.23, 3.10.18, 3.11.15 and
+3.14.0rc2.  The `key` cases below therefore have no counterpart to check
+against on 3.9 -- they are not WRONG there, the surface is absent -- and
+running this unit's cases against the real `bisect` on 3.9 stops at the
+first of them.  Everything above the `key` block is the 3.9 surface and
+answers identically on every release.
+
 Not covered, and not exercised: ``hi`` outside ``0 <= hi <= len(a)``.  The
 documented contract does not allow it, and CPython's C accelerator answers
 differently from its own pure-Python source there -- ``hi=-1`` is an

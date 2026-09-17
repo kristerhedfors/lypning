@@ -21,11 +21,12 @@ The details that are not guessable:
 
   * A scheme is only recognised when the text before the first ``':'``
     starts with an ASCII letter and is made only of ``scheme_chars``
-    (letters, digits, ``+``, ``-``, ``.``).  So ``'1http://x'`` and
-    ``'a b:c'`` have NO scheme, and ``':80/x'`` has none either because
-    ``i > 0`` fails.  A recognised scheme is lower-cased; the netloc is
-    NOT, which is why ``urlsplit('HTTP://Example.COM/')`` gives
-    ``('http', 'Example.COM', ...)``.
+    (letters, digits, ``+``, ``-``, ``.``).  So ``'_http://x'`` and
+    ``'a b:c'`` have NO scheme -- ``'_'`` and ``' '`` are outside that
+    alphabet -- and ``':80/x'`` has none either because ``i > 0`` fails.
+    A recognised scheme is lower-cased; the netloc is NOT, which is why
+    ``urlsplit('HTTP://Example.COM/')`` gives ``('http', 'Example.COM',
+    ...)``.
   * A netloc exists only after a literal ``'//'``, and it ends at the
     first of ``'/'``, ``'?'`` or ``'#'``.  ``'http:/a'`` and ``'http:a'``
     are therefore netloc-less with paths ``'/a'`` and ``'a'``, while
@@ -51,6 +52,22 @@ The details that are not guessable:
     Empty interior segments are filtered out of a relative reference
     only (``segments[1:-1]``), never out of an absolute path, which is
     why ``urljoin('http://a/b', '//g//h')`` keeps its double slash.
+
+**Which CPython the scheme rule comes from.**  The "starts with an
+ASCII letter" half of that rule is 3.11 and later.  CPython 3.9 and 3.10
+required only that every character before the ``':'`` be a
+``scheme_chars`` character, so a DIGIT could lead one:
+``urlsplit('1http://x')`` is ``('1http', 'x', '', '', '')`` there and
+``('', '', '1http://x', '', '')`` from 3.11 on.  Measured 2026-09-17 on
+CPython 3.9.23, 3.10.18, 3.11.15, 3.12.11, 3.13.7 and 3.14.0rc2;
+``'+http://x'``, ``'-http://x'``, ``'.http://x'`` and ``'0:x'`` split the
+same two ways on the same boundary, because each leads with a
+``scheme_chars`` character that is not a letter.  This port implements
+the 3.11 rule (``url[0].isalpha()`` in ``urlsplit``), so no case below
+prints any of those five: a unit is inlined and run on whichever CPython
+the reader has, and a line that is right on four releases and wrong on
+two teaches the wrong half.  The alphabet half of the rule IS printed,
+through ``'_http://x'`` and ``'a b:c'``, which have no scheme on all six.
 
 Not covered: ``bytes`` input, ``urldefrag``, the ``allow_fragments=False``
 interaction with ``urlparse``'s params (covered for ``urlsplit``), and
@@ -267,11 +284,15 @@ print(urlsplit("http://a/b?x#y#z"))
 print(urlsplit("http://a/b?x?y"))
 
 # The scheme rules: ASCII letter first, scheme_chars throughout, lowered.
+# The alphabet half only: a leading '_' and an interior ' ' are outside
+# scheme_chars on every CPython.  A leading DIGIT is not printed here --
+# it was a scheme before 3.11 and is not one from 3.11; see the docstring,
+# "Which CPython the scheme rule comes from".
 print(urlsplit("HTTP://Example.COM/Path"))
 print(urlsplit("svn+ssh://h/r"))
 print(urlsplit("x-y://h/r"))
 print(urlsplit("x.y+1-z://h/r"))
-print(urlsplit("1http://x"))
+print(urlsplit("_http://x"))
 print(urlsplit("a b:c"))
 print(urlsplit(":80/x"))
 print(urlsplit("http:/a"))

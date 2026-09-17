@@ -115,8 +115,12 @@ unit_case = pytest.mark.parametrize("name", _UNIT_IDS, ids=_UNIT_IDS)
 #: The call site was the bug; the table is not where a unit's own cases go to
 #: stop being checked.
 _DIVERGENCES: Dict[str, str] = {
-    "hashlib_digest": "pbkdf2_hmac on an unknown hash name: ValueError here, "
-                      "CPython's own message is different",
+    "hashlib_digest": "pbkdf2_hmac('bogus', b'p', b's', 1): a ValueError "
+                      "carrying hashlib.new's message here; CPython fails in "
+                      "the OpenSSL layer and its own answer is not one answer "
+                      "-- a plain ValueError saying 'unsupported hash type' on "
+                      "3.9, and UnsupportedDigestmodError saying '[digital "
+                      "envelope routines] unsupported' from 3.11",
     "itertools_accumulate": "exception TYPE on an unexpected keyword: "
                             "accumulate([1, 2], bogus=1) is ValueError here, "
                             "TypeError in CPython",

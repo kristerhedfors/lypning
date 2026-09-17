@@ -343,4 +343,36 @@ every case below it is then compared against nothing while the file stays green
 message therefore catches what the REAL module raises, not only the `ValueError`
 the unit itself can raise, and prints the type so the divergence stays visible.
 
+### A case must be true on every CPython, not on the one it was written against
+
+A unit is inlined and run wherever the reader is, and CI runs this suite on 3.9
+through 3.14, so a case may only print something all of them answer the same
+way. The exception TYPE is API; its wording is not — the same split
+`conformance.classify` makes, and for the same reason. So is a generated regular
+expression, a range-check message, a parse result CPython later tightened, and
+anything else that is an implementation detail rather than a contract. Where the
+stable fact cannot be printed at all, the case is dropped and the docstring says
+what it used to demonstrate and why; a reviewed `_DIVERGENCES` entry is not the
+remedy, because a unit that agrees on one release and differs on another is a
+bug and not a divergence.
+
+This is not a rule read off a whiteboard. Measured 2026-09-17, by running every
+unit and every unit's cases through `_REF_DRIVER` on CPython 3.9.23, 3.10.18,
+3.11.15, 3.12.11, 3.13.7 and 3.14.0rc2: seven units were pinning version detail,
+and `struct_pack` alone had 83 lines that disagreed with CPython 3.12 and later
+while its reviewed entry declared 8. Note which layer saw it. All 34 units print
+byte-identical stdout on all six, before the fix and after — a unit runs its own
+inlined helper, so its own output cannot drift, and only the reference arm can
+show the defect at all. After the fix no unit's agreement depends on the
+release: of the 31 reference-bearing units, 23 agree byte for byte on all six
+and 6 differ by exactly the same lines on all six, each of those 6 a reviewed
+`_DIVERGENCES` entry. 28 of the 31 also get a byte-identical reference arm from
+all six interpreters.
+
+The two exceptions are a different thing and are not defects: `bisect`'s `key`
+arrived in CPython 3.10 and `fmean`'s `weights` in 3.11, so on the older
+releases there is no surface for those cases to be checked against. Each
+docstring names the release its surface comes from and what the older ones
+answer instead.
+
 Adding or checking a unit by hand: `stdlib/README.md`.

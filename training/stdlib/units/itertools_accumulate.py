@@ -47,16 +47,24 @@ Edge cases, all checked against the live module on 2026-09-16:
   * `groupby` of an empty input is `[]`.
 
 DIVERGENCE (one, deliberate): an unexpected keyword argument to `accumulate`
-raises `ValueError` here carrying CPython's exact message
-(`'bogus' is an invalid keyword argument for accumulate()`), where CPython
-raises `TypeError`.  The subset has no class statement and most builtin
-exception names are not bound, so ValueError with a non-empty message is the
-only shape available.  The cases print the exception's TYPE as well as its
-message, so this shows up as exactly one differing line --
+raises `ValueError` here, where CPython raises `TypeError`.  The subset has no
+class statement and most builtin exception names are not bound, so ValueError
+is the only shape available.  That case prints the exception's TYPE and
+nothing else, so the divergence shows up as exactly one differing line --
 `accumulate([1, 2], bogus=1)` -- against the real module, and every other line
-matches byte for byte.  The message alone would hide the one thing that
-differs, and catching only `ValueError` would let CPython's `TypeError` escape
-and leave every case below it compared against nothing.
+matches byte for byte.  Catching only `ValueError` would let CPython's
+`TypeError` escape and leave every case below it compared against nothing,
+which is why the `except` names both.
+
+The TYPE and not the message, because the message is not API and moved inside
+the window this corpus targets: CPython 3.9 through 3.12 say `'bogus' is an
+invalid keyword argument for accumulate()` and 3.13 and 3.14 say `accumulate()
+got an unexpected keyword argument 'bogus'`, the Argument Clinic wording.
+Measured 2026-09-17 on CPython 3.9.23, 3.10.18, 3.11.15, 3.12.11, 3.13.7 and
+3.14.0rc2.  A case that printed the text would have been right on four of those
+six releases; a unit is inlined and run on whichever one the reader has.  The
+message this port raises is its own and is deliberately not a copy of either
+CPython wording -- copying one would be picking a release.
 
 Not covered: `itertools.chain`, `islice`, `zip_longest`, `product`,
 `combinations` and `permutations`, which have their own units in this corpus.
@@ -72,8 +80,11 @@ def accumulate(iterable, func=None, **kwargs):
     """
     for key in kwargs:
         if key != "initial":
+            # Not a copy of CPython's text: CPython has two wordings for
+            # this in 3.9-3.14 and no case prints either.  See the module
+            # docstring, DIVERGENCE.
             raise ValueError(
-                repr(key) + " is an invalid keyword argument for accumulate()"
+                "accumulate() does not take the keyword argument " + repr(key)
             )
     initial = None
     if "initial" in kwargs:
@@ -157,18 +168,22 @@ def _is_odd(n):
 
 
 def _accumulate_error(iterable, kwargs):
-    """Return "<type>: <message>" for whatever accumulate(...) raises.
+    """Return the TYPE name of whatever accumulate(...) raises, or "".
 
     The tuple in the `except` is load-bearing: CPython answers an unexpected
     keyword with TypeError, and a helper that caught only ValueError would let
     it escape -- leaving every case printed below compared against nothing at
     all.  The type is reported rather than swallowed, which is what makes the
     divergence above one visible line instead of a silence.
+
+    The type and not the message.  CPython reworded this one between 3.12 and
+    3.13 and the text is not a fact about `accumulate`; the type is.  See the
+    module docstring, DIVERGENCE.
     """
     try:
         accumulate(iterable, **kwargs)
     except (ValueError, TypeError) as exc:
-        return type(exc).__name__ + ": " + str(exc)
+        return type(exc).__name__
     return ""
 
 
@@ -261,7 +276,8 @@ print([(k, list(g)) for k, g in held])
 print([(k, list(g)) for k, g in held])
 print(held[0][1] == ["A", "A"], held[1][1] == ["B"])
 
-# Errors.  The type is printed with the message -- see DIVERGENCE above.
+# Errors.  The TYPE alone -- CPython reworded the message in 3.13 and the
+# type is the part that is API; see DIVERGENCE above.
 print(repr(_accumulate_error([1, 2], {"bogus": 1})))
 print(repr(_accumulate_error([1, 2], {"initial": 0})))
 

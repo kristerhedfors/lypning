@@ -50,7 +50,21 @@ by 2.0 ** shift and builds no subnormals; and correlation/covariance/linear
 regression, which live on the same machinery but are separate surfaces.
 
 StatisticsError subclasses ValueError and the subset has no class statement, so
-the too-little-data errors are raised as ValueError with CPython's own text.
+the too-little-data errors are raised as a plain ValueError here.  The cases
+print that TYPE and never the message, which is the same rule the rest of this
+corpus follows: the type is API and the wording is not.  It is not a hypothetical
+here.  Before 3.11 stdev and pstdev delegated to variance and pvariance and let
+the inner message through unrelabelled, so `statistics.stdev([1])` says
+'variance requires at least two data points' on CPython 3.9 and 3.10 and
+'stdev requires at least two data points' from 3.11 on, and `statistics.pstdev([])`
+says 'pvariance requires at least one data point' and then 'pstdev requires at
+least one data point' the same way.  Measured 2026-09-17 on CPython 3.9.23,
+3.10.18, 3.11.15, 3.12.11, 3.13.7 and 3.14.0rc2.  A case that printed either
+wording would be right on four of those six releases and wrong on the other two,
+and a unit is inlined and run on whichever one the reader has.  What every
+release does agree on is that all five failures are a ValueError, so that is what
+the cases print -- and the boolean shape survives too: which inputs raise and
+which return is identical on all six.
 """
 # fills: statistics.variance, statistics.pvariance, statistics.stdev, statistics.pstdev
 # reference: statistics
@@ -268,12 +282,19 @@ CLOSE = [1e8, 1e8 + 1, 1e8 + 2]
 TENTHS = [0.1, 0.2, 0.3]
 
 
-def _error_of(fn, *args):
-    """Return the message of the ValueError fn(*args) raises, or '' if none."""
+def _error_kind(fn, *args):
+    """Return 'ValueError' when fn(*args) raises one, or '' when it does not.
+
+    The TYPE, and deliberately not the message.  CPython's StatisticsError is
+    a ValueError subclass, so `except ValueError` catches the real module's
+    error and this port's alike and the answer is the same on both sides --
+    while the text under it is not the same on every release: 3.9 and 3.10
+    report `stdev`'s failure in `variance`'s words.  See the module docstring.
+    """
     try:
         fn(*args)
-    except ValueError as exc:
-        return str(exc)
+    except ValueError:
+        return "ValueError"
     return ""
 
 
@@ -317,8 +338,16 @@ print(repr(variance(CLOSE)), repr(_naive_two_pass(CLOSE)), repr(_naive_one_pass(
 print(repr(variance(SAMPLE)), repr(_naive_two_pass(SAMPLE)), repr(_naive_one_pass(SAMPLE)))
 print(repr(variance(TENTHS)), repr(_naive_two_pass(TENTHS)), repr(_naive_one_pass(TENTHS)))
 
-print(repr(_error_of(variance, [1])))
-print(repr(_error_of(variance, [])))
-print(repr(_error_of(pvariance, [])))
-print(repr(_error_of(stdev, [1])))
-print(repr(_error_of(pstdev, [])))
+# Too little data is a ValueError, and the TYPE is all that is printed:
+# StatisticsError is a ValueError subclass, and the wording under it moved
+# in 3.11 for stdev and pstdev.  See the module docstring.
+print(repr(_error_kind(variance, [1])))
+print(repr(_error_kind(variance, [])))
+print(repr(_error_kind(pvariance, [])))
+print(repr(_error_kind(stdev, [1])))
+print(repr(_error_kind(pstdev, [])))
+# And the boundary itself: one more point and each of them returns.
+print(repr(_error_kind(variance, [1, 2])))
+print(repr(_error_kind(pvariance, [1])))
+print(repr(_error_kind(stdev, [1, 2])))
+print(repr(_error_kind(pstdev, [1])))

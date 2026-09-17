@@ -64,6 +64,16 @@ cases compute and prints them the same way, and `diff` it against your unit's
 CPython output. Byte-identical, or the divergence goes in the docstring.
 Reasoning about what CPython does is how silent divergence ships.
 
+And run that diff on more than one CPython. A case may only print what every
+release from 3.9 to 3.14 answers the same way, because a unit is inlined and run
+wherever the reader is. Print the exception TYPE, never its message; print the
+match RESULT, never the regular expression that produced it. If the stable fact
+cannot be printed, drop the case and say in the docstring what it demonstrated
+and why it is gone. `_DIVERGENCES` is not the way out: a unit that agrees on one
+release and differs on another is a bug, not a reviewed divergence.
+`training/STDLIB.md`, "A case must be true on every CPython", has the seven this
+rule was written from.
+
 ## Verifying and labelling the whole tree
 
 ```bash
