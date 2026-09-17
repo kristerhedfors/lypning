@@ -14,6 +14,28 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-17** — Assess the blocked S0 round, close the remaining vacuous-read paths, and pin Fable's retry ([#90](https://github.com/kristerhedfors/lypning/pull/90))
+
+- The latest Fable session ran on a clone without the private round-02 inputs,
+  so it produced no S0 evidence or training result. Its five fail-closed guards
+  are accepted, paid and GPU work remain held, and the next assignment is still
+  one read-only, $0 S0a-S0c session on the artifact-owning device.
+- S0b no longer re-derives the historical correct-but-fallback population with
+  today's replay engine. It freezes status and family to the materialized 171
+  pilot rows, binds the explicit historical `lypning-l` by its full SHA-256,
+  prints that binary's identity, and refuses a wrong draw count or any partial
+  replay before publishing a vector.
+- Verifier launch admission now caps both the per-host concurrency at four
+  sandboxes and the cost envelope at four CPU hosts, while preserving a safe
+  serial 1x1 diagnostic. Total capacity must still cover every scorer worker.
+- The 50,000 supervised-token floor remains an exact stage-time gate so
+  `--plan` stays download-free. The prior instruction to compare
+  `steps × batch_size` with a token count is withdrawn; the stage records
+  `planned_supervised_tokens` before downloading the 27B weights.
+- `training/START_NEXT_ROUND.md` now supplies Fable's exact bounded command
+  block, prerequisite checks and stop conditions. No S1, provider call or paid
+  action is authorized.
+
 **2026-09-17** — Stop three zero-cost rungs from reporting a clean read of nothing, and record that rung S0b's number moves with the engine ([#89](https://github.com/kristerhedfors/lypning/pull/89))
 
 - The assigned S0 round did not run. This clone holds none of its inputs: the
