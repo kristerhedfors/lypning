@@ -144,7 +144,8 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   `PYTHONPATH=src:training`, `round_plan`'s `source_identity` root (a real
   breakage the moment the directory moved), the `overview` registration, the
   runbook commands, the Hugging Face job scripts and every document citation.
-  `SWITCH.md` deferred this twice on the three workflows; they were the work.
+  `training/SWITCH.md` deferred this twice on the three workflows; they were
+  the work.
 - The name is model-agnostic on purpose. `qwen/` would repeat the mistake
   being undone, for the reason invariant 9 already gives: a name that still
   resolves to something is a name that can drift back into the code.
@@ -152,15 +153,16 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   record — the recorded run ids under `training/runs/` and their `meta.json`
   (each run records its own `run_id`, and a run id is the join key between a
   number and its evidence, including evidence outside this tree), the captured
-  corpus and sightings JSONL, and the dated entries in this file, `AUDIT.md`
-  and `REFACTOR.md`. `SWITCH.md` stops being the home of the name and becomes
-  the home of that rule. Earlier entries' *paths* were repointed, because
+  corpus and sightings JSONL, and the dated entries in this file,
+  `training/AUDIT.md` and `training/REFACTOR.md`. `training/SWITCH.md` stops
+  being the home of the name and becomes the home of that rule. Earlier
+  entries' *paths* were repointed, because
   `tests/test_docs.py` resolves them and a ledger may not cite a file that is
   not there; their branches, models and numbers are untouched.
 - `training/tests/test_naming.py` is the grep: the name appears nowhere
   outside the frozen evidence, no tracked path spells it outside `runs/`, and
-  `SWITCH.md` states the rule without spelling it. The test does not spell it
-  either — it reads it off the recorded run directory names, so there is no
+  `training/SWITCH.md` states the rule without spelling it. The test does not
+  spell it either — it reads it off the recorded run directory names, so there is no
   literal to go stale and the last evidence deleted deletes the rule with it.
 
 **2026-09-16** — Assess the Qwen training approach against its goal, and plan the signal ladder ([#82](https://github.com/kristerhedfors/lypning/pull/82))
@@ -183,16 +185,17 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 - Propose the S0–S4 signal ladder (three rungs at $0, one at ~$5) and an
   eight-step plan with owner, cost, decision and stop rule per step; link it
   from the training README and `training/STATUS.md` §9, and add ledger row S2 to
-  `ORCHESTRATION.md`.
-- The #80 entry cited `EVAL2.md` without its path, which
+  `training/ORCHESTRATION.md`.
+- The #80 entry cited the eval-2 pre-registration by its bare filename, which
   `tests/test_docs.py` reads as a missing file; it now says `training/EVAL2.md`.
 
 **2026-09-16** — Round-02 run report corrected: the eval-2 base arm was blocked, no arm completed ([#81](https://github.com/kristerhedfors/lypning/pull/81))
 
 - Job `6aaa8746` failed at stage `eval2` after 384 of 1,200 base-arm draws:
   a CPU-bound candidate's engine run timed out after a correct oracle run,
-  which the verifier policy reads as an engine fault. The report, `STATUS.md`
-  and the ledger now say so, with the two explanations still to separate
+  which the verifier policy reads as an engine fault. The report,
+  `training/STATUS.md` and the ledger now say so, with the two explanations
+  still to separate
   (engine speed on tight loops vs 16 sandboxes starving one pool host) and
   the decision Codex is asked for.
 
