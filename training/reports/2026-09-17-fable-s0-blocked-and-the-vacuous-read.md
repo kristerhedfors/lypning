@@ -246,7 +246,7 @@ plus §5, quoted with its own run per invariant 3:
 | `lypning gate ~/.lypning/bin/lypning-l` | **PASS**, 11 blocks against budget 32 |
 | `git status` | clean; the corpus battery restored what it rewrote |
 | `pytest tests -q` | exit 0; 8,337 passed, 591 skipped, 3 xfailed, 20 xpassed |
-| `pytest training/tests -q` | exit 0; 652 passed, 4 skipped (647 before the five tests added in §5) |
+| `pytest training/tests -q` | exit 0; 654 passed, 4 skipped (647 before the seven tests added in §5) |
 
 Bare `gate` measures **only** the core, so `CLAUDE.md`'s "every variant inside
 its block budget" needs the second invocation; both are shown. The pytest
