@@ -626,3 +626,61 @@ def test_a_draw_table_carries_the_held_out_banner(tmp_path, capsys):
     assert code == 0
     assert "descriptive refusal vector" in out.out
     assert "not a rank" in out.out and "score" not in out.out
+
+
+def test_an_engine_that_is_not_a_file_is_refused_before_anything_is_replayed(tmp_path,
+                                                                            capsys):
+    """Rung S0b's `--engine` was never existence-checked, and that was the hole.
+
+    `engine = args.engine or eng.engine_path(...)` then `if not engine` passes a
+    nonexistent path, because a path is a truthy string. Every program then
+    graded ERROR, no draw carried a refusal, and the vector printed EMPTY at
+    exit 0 — while the considered population GREW, because `--run` re-derives
+    `native` from this binary. On `runs/stock-nothinking`, 14 correct-fallback
+    draws with the built engine became 26 with a broken one, all of them
+    refusal-less. A vector of nothing is the one answer rung S0b must never be
+    able to publish by accident.
+    """
+    code, out = _run_cli(["levers", "--run", "stock-nothinking",
+                          "--status", "correct-fallback", "--vector",
+                          "--engine", str(tmp_path / "not-built")], capsys)
+    assert code == 2
+    assert out.err.strip() == "not a file: %s" % (tmp_path / "not-built")
+    assert out.out == ""
+
+
+def test_absent_draw_rows_are_a_usage_error_and_never_an_empty_vector(tmp_path, capsys):
+    """The `--rows`/`--replay` half of the same hole: `read_jsonl` answers `[]`."""
+    rows = tmp_path / "rows.jsonl"
+    rows.write_text(json.dumps({"corpus_id": "py-1", "draw": 0, "family": "f",
+                                "split_group": "g", "status": "correct-fallback"}) + "\n",
+                    encoding="utf-8")
+    missing = tmp_path / "missing.jsonl"
+    for rows_arg, replay_arg in ((missing, rows), (rows, missing)):
+        code, out = _run_cli(["levers", "--rows", str(rows_arg), "--replay",
+                              str(replay_arg), "--vector"], capsys)
+        assert code == 2
+        assert out.err.strip() == "not a file: %s" % missing
+        assert out.out == ""
+
+
+def test_an_engine_that_cannot_execute_is_a_failed_replay_and_not_a_vector(tmp_path,
+                                                                          capsys):
+    """The `is_file` check above is not enough on its own.
+
+    An engine that EXISTS but cannot execute passes it, and then reproduces the
+    whole defect one step later: every program grades ERROR, no draw carries a
+    refusal, and the empty vector prints at exit 0 — over a population this
+    binary inflated, because `--run` re-derives `native` from the same failed
+    replay. Nothing graded is not a refusal vector of zero.
+    """
+    engine = tmp_path / "not-executable"
+    engine.write_text("#!/bin/sh\nexit 3\n", encoding="utf-8")
+    engine.chmod(0o644)
+    code, out = _run_cli(["levers", "--run", "stock-nothinking",
+                          "--status", "correct-fallback", "--vector", "--limit", "0",
+                          "--engine", str(engine)], capsys)
+    assert code == 1
+    assert "no draw graded" in out.err and "failed replay" in out.err
+    assert "ERROR" in out.err
+    assert "descriptive refusal vector" not in out.out

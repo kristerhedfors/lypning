@@ -487,3 +487,75 @@ def test_reward_scores_a_group_concurrently_and_keeps_batch_order(case):
     got = reward(["```python\np0\n```", "```python\np1\n```"] * 2, [case["case_id"]] * 4)
     assert got == [1.0, 0.0, 1.0, 0.0]
     assert not side_by_side.broken, "the two slow scorings never ran side by side"
+
+
+def test_the_registered_seeds_and_the_family_cycle_are_refused_by_message(tmp_path,
+                                                                         monkeypatch):
+    """Two admission gates whose REFUSAL branch nothing pinned.
+
+    `test_gpu_preflight_no_torch_and_hard_split_gates` asserts the accepting
+    side for seed 1111 and a schedule with capacity for one family, so an
+    inverted comparison would be caught. Deleting either guard outright, or
+    corrupting its message, would not be — and these two are what stop a
+    fourth single-seed round on a schedule that can skip a family.
+    """
+    gpu = gpu_module()
+    args = gpu.parser().parse_args(["sft", "--bundle", "bundle.json", "--engine", "engine",
+        "--output", str(tmp_path / "run"), "--revision", "a" * 40, "--plan"])
+    bundle = {"digest": "locked", "purpose": "pilot", "limits": {"memory_mb": 1024},
+              "cases": [{"case_id": str(i), "family": "f%d" % (i % 4), "split": "train"}
+                        for i in range(1000)]}
+    monkeypatch.setattr(gpu, "load_bundle", lambda *a: bundle)
+    assert gpu.preflight(args) == (bundle, None)
+
+    for seed in (1111, 2222, 3333):
+        args.seed = seed
+        assert gpu.preflight(args) == (bundle, None)
+    for seed in (0, 1234, 4444):
+        args.seed = seed
+        with pytest.raises(t.TrainingError,
+                           match="pre-registered seeds: 1111, 2222, 3333"):
+            gpu.preflight(args)
+    args.seed = 1111
+
+    # Four families; the schedule must have room for all four at least once.
+    args.steps, args.batch_size = 1, 3
+    with pytest.raises(t.TrainingError, match="shorter than one complete family cycle"):
+        gpu.preflight(args)
+    args.batch_size = 4
+    assert gpu.preflight(args) == (bundle, None)
+
+
+def test_the_supervised_token_floor_is_a_stage_gate_and_not_a_plan_gate(tmp_path,
+                                                                       monkeypatch):
+    """`--plan` accepts a schedule the stage later refuses. Pinned, not fixed.
+
+    `START_NEXT_ROUND.md` says to run `train_verified.py ... --plan` before
+    every actual stage, so it is fair to read a passing plan as "this schedule
+    is admissible". It is not: the 50,000-token floor lives in `run()`, because
+    counting supervised tokens needs `build_examples`, hence the Hub tokenizer
+    and the GPU deps that `--plan` exists to avoid. The floor is real and the
+    plan cannot see it; this test is the record of which of the two is true, so
+    that moving the check later cannot quietly become moving it away.
+    """
+    gpu = gpu_module()
+    args = gpu.parser().parse_args(["sft", "--bundle", "bundle.json", "--engine", "engine",
+        "--output", str(tmp_path / "run"), "--revision", "a" * 40, "--plan",
+        "--steps", "1", "--batch-size", "1"])
+    bundle = {"digest": "locked", "purpose": "pilot", "limits": {"memory_mb": 1024},
+              "cases": [{"case_id": str(i), "family": "f", "split": "train"}
+                        for i in range(1000)]}
+    monkeypatch.setattr(gpu, "load_bundle", lambda *a: bundle)
+    # One step of one example cannot reach 50,000 supervised tokens, and the
+    # plan accepts it anyway.
+    assert gpu.preflight(args) == (bundle, None)
+    from pipeline.training_contract import MIN_SUPERVISED_TOKENS
+    assert MIN_SUPERVISED_TOKENS == 50_000
+    from gpu.verified_stages import supervised_tokens
+    assert supervised_tokens([]) == 0 < MIN_SUPERVISED_TOKENS
+    # The refusal exists, and it is in `run` rather than `preflight`. Read from
+    # source because importing `run` needs the GPU deps `--plan` avoids.
+    source = Path(gpu.__file__).read_text(encoding="utf-8")
+    body = source.split("def run(")[1]
+    assert "supervised tokens; at least %d required" in body
+    assert "supervised tokens; at least %d required" not in source.split("def run(")[0]

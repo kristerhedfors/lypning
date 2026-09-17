@@ -24,21 +24,37 @@ PYTHONPATH=src:training python3 -m pipeline.cli power --eval2 \
   --rows eval-20260916-063539 --draws 16 --mde 0.03
 
 # S0b: descriptive family vector only. --rank is now refused on draw/held-out rows.
+# Needs a built lypning-l at the PILOT's engine identity — see below.
 PYTHONPATH=src:training python3 -m pipeline.cli levers \
   --run eval-20260916-063539 --status correct-fallback --vector --limit 0
 
 # S0c: per-train-case native status, probe beside the completed base pilot.
+# Paths are cwd-relative and resolved against the repository root.
 PYTHONPATH=src:training python3 -m pipeline.cli probe-vector \
   --probe work/round-02/6aaa87465527934177ee9f34/probe/probe-rollouts.jsonl \
-  --base runs/eval-20260916-063539/eval2_rows.jsonl
+  --base training/runs/eval-20260916-063539/eval2_rows.jsonl
 ```
+
+**S0b is not engine-free, and its number is not engine-independent** (measured
+2026-09-17). The eval-2 draw rows carry `native` and `status` but no refusal
+*kind*, so `--run` replays every program through the local binary to get one —
+which means the binary re-derives the population too. On `runs/stock-nothinking`
+in this tree, the same command matched 14 correct-but-fallback draws through the
+built engine and 26 through a broken one. Run S0b with a `lypning-l` built to
+the pilot's own identity (`2e079e786a655ab6`, `EVAL2.md` §11), record the
+`@ engine <fingerprint>` line it prints, and if it does not match, say so in the
+report rather than quoting the vector: at another identity the "171
+correct-but-fallback draws" is a different 171. A `--engine` that is not a file
+now exits 2 instead of printing an empty vector at exit 0.
 
 Before S0c, download the immutable private artifact directory
 `round-02/6aaa87465527934177ee9f34/` into the path shown and materialize the
-pilot rows with `nt eval2-rows` if the named file is absent. `probe-vector`
-prints every status and every unmatched ID; a probe case missing from base exits
-1. This is a descriptive read, not a new score and not a reason to tune on
-eval-2.
+pilot rows with `nt eval2-rows` if the named file is absent — it needs the same
+run's `attempts.jsonl` and an engine, so it is not a way around a missing
+artifact. `probe-vector` prints every status and every unmatched ID; a probe case
+missing from base exits 1, and since 2026-09-17 an input that is not a file
+exits 2 rather than printing a zeros table at exit 0. This is a descriptive
+read, not a new score and not a reason to tune on eval-2.
 
 Write one Fable report from `FABLE_REPORT_TEMPLATE.md` containing the full S0a
 output, full S0b vector, S0c table, artifact hashes, unmatched counts, and the
@@ -60,6 +76,12 @@ arm remains k=16. Real adapter stages now refuse fewer than 1,000 train cases,
 an SFT schedule below 50,000 supervised tokens, a schedule that cannot cover
 every family once, or a seed outside `1111, 2222, 3333`. A complete S4 result
 requires all three seed jobs; one successful job is one replicate, not a round.
+
+Of those, **only the token floor is invisible to `--plan`** (audited
+2026-09-17): it is refused in `run()`, because counting supervised exposures
+needs the tokenizer and the GPU deps `--plan` avoids. A passing plan therefore
+does not certify the schedule; check `steps × batch_size` against 50,000
+yourself before submitting. The other gates refuse at plan time.
 
 ## The assignment
 

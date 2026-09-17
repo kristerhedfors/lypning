@@ -361,9 +361,9 @@ sequence is the problem §3.7 of that document names. In one line each:
 
 | rung | what it measures | cost | state, 2026-09-17 |
 |---|---|---|---|
-| S0a | `EVAL2.md` §7 re-printed from the real pilot rows, keyed on the realised macro lift | $0 | exact command assigned to Fable in `START_NEXT_ROUND.md`; private read owed |
-| S0b | the by-kind refusal vector of the 171 correct-but-fallback pilot draws | $0 | rule 2 reviewed; exact `--vector` command assigned to Fable. `--rank` is refused on held-out draws |
-| S0c | the round-02 probe rollouts by native status, per train case | $0 | private artifact and comparison contract named in `START_NEXT_ROUND.md`; read owed |
+| S0a | `EVAL2.md` §7 re-printed from the real pilot rows, keyed on the realised macro lift | $0 | exact command assigned to Fable in `START_NEXT_ROUND.md`; private read still owed — attempted 2026-09-17 on a clone without the rows, exit 1 |
+| S0b | the by-kind refusal vector of the 171 correct-but-fallback pilot draws | $0 | rule 2 reviewed; exact `--vector` command assigned to Fable. `--rank` is refused on held-out draws. Needs a built engine at the pilot's identity: the draw rows carry no refusal kind, so `--run` replays them, and the population moves with the binary (2026-09-17) |
+| S0c | the round-02 probe rollouts by native status, per train case | $0 | private artifact and comparison contract named in `START_NEXT_ROUND.md`; read still owed. Attempted 2026-09-17 without the artifacts: it printed a zeros table at exit 0, and now exits 2 naming the absent path |
 | S1 | stage 0b on the training bank: bare vs `--system-file subset-spec.md`, k=16 | ~$5 | not started; the first positive control the programme would have |
 | S2 | the rewritable fraction: verified native rewrites of the fallback draws | tokens | not started; ledger row D1 |
 | S3 | stage 5: refusals per 100 programs through opencode on base | harness time | not started; settles the deployment prior |
@@ -378,3 +378,13 @@ confirmatory eval-2 is k=16; real adapter stages require ≥1,000 train cases an
 one of seeds 1111/2222/3333; SFT requires one complete family cycle and ≥50,000
 scheduled supervised tokens. The three-seed aggregate still requires three
 separate jobs and is reviewed from their manifests, never inferred from one.
+
+**Three of those four are `preflight` gates; the token floor is not** (audited
+2026-09-17). The k, the case count, the seed and the family-cycle capacity are
+refused by `train_verified.preflight`, so `--plan` sees them. The ≥50,000
+supervised-token floor is refused in `run()`, because counting the exposures
+needs `build_examples`, hence the tokenizer download and the GPU deps `--plan`
+exists to avoid. So a passing `--plan` does **not** mean the schedule is
+admissible, and `START_NEXT_ROUND.md`'s instruction to plan before every stage
+cannot be read as a token-floor check.
+`training/tests/test_training.py::test_the_supervised_token_floor_is_a_stage_gate_and_not_a_plan_gate`.

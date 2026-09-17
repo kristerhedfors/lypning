@@ -1837,6 +1837,14 @@ def cmd_levers(args: argparse.Namespace) -> int:
             print("no lypning binary on this machine: run `lypning build --rust`, "
                   "or pass --engine", file=sys.stderr)
             return 1
+        # An `--engine` that is not a file passes `if not engine` — it is a
+        # truthy string. Every program then grades ERROR, no draw carries a
+        # refusal, and the vector prints empty at exit 0 while the considered
+        # population silently grows, because `native` is re-derived from this
+        # binary. A missing engine is a usage error, not a measurement.
+        if not Path(engine).is_file():
+            print("not a file: %s" % engine, file=sys.stderr)
+            return 2
         attempts_path = RUNS / args.run / "attempts.jsonl"
         if not attempts_path.exists():
             print("no such run: %s" % args.run, file=sys.stderr)
@@ -1868,14 +1876,40 @@ def cmd_levers(args: argparse.Namespace) -> int:
         if census["tally"].get("MISMATCH"):
             print("  MISMATCH %d — invariant 1: always a bug, never the model's."
                   % census["tally"]["MISMATCH"], file=sys.stderr)
+        # A program the replay could not run carries no refusal, so it leaves
+        # the vector silently. Say so where MISMATCH is said: an ungraded
+        # program is a hole in the evidence, not a family with no mass.
+        errors = census["tally"].get("ERROR") or 0
+        if errors:
+            print("  ERROR %d — the replay could not grade these programs. Their "
+                  "refusals are absent from the vector below, not zero." % errors,
+                  file=sys.stderr)
+        # And when NOTHING graded, there is no vector to print. An engine that
+        # exists but cannot execute reaches here, so the `is_file` check above
+        # is not enough on its own: it would leave the same empty vector at
+        # exit 0, over a population this binary inflated by re-deriving
+        # `native` from a replay that failed. That is the read of nothing this
+        # command must not be able to publish.
+        if errors and joined["considered"] and not joined["records"]:
+            print("levers: no draw graded — %d considered, %d ERROR. This is a "
+                  "failed replay, not a refusal vector." % (joined["considered"], errors),
+                  file=sys.stderr)
+            return 1
     elif args.rows:
         if not args.replay:
             print("levers: --rows needs --replay: a draw row carries no refusal, and "
                   "the replay carries no population label. Use --run to build both.",
                   file=sys.stderr)
             return 2
-        drawn = list(read_jsonl(Path(args.rows)))
-        joined = levers.draw_refusals(drawn, read_jsonl(Path(args.replay)),
+        rows_path, replay_path = Path(args.rows), Path(args.replay)
+        # Same hole as `probe-vector`: absent rows join to an empty vector at
+        # exit 0, which reads as a measured absence of refusals.
+        for path in (rows_path, replay_path):
+            if not path.is_file():
+                print("not a file: %s" % path, file=sys.stderr)
+                return 2
+        drawn = list(read_jsonl(rows_path))
+        joined = levers.draw_refusals(drawn, read_jsonl(replay_path),
                                       status=args.status)
         result = levers.table(joined["records"], source=args.rows, unit="draw",
                               independence="family", loaded=len(drawn))
@@ -1948,12 +1982,28 @@ def cmd_levers(args: argparse.Namespace) -> int:
 def cmd_probe_vector(args: argparse.Namespace) -> int:
     """S0c: a read-only per-case native-status comparison."""
     from . import probe_vector
+    probe_path, base_path = Path(args.probe), Path(args.base)
+    # `read_jsonl` answers `[]` for a path that is not there, and two empty
+    # sides make `probe_only` empty, which is this command's only failure
+    # signal. Absent inputs would therefore print a zeros table and exit 0 —
+    # a rung that reads as "every probe case matched" when nothing was read.
+    for path in (probe_path, base_path):
+        if not path.is_file():
+            print("not a file: %s" % path, file=sys.stderr)
+            return 2
     try:
-        result = probe_vector.compare(read_jsonl(Path(args.probe)),
-                                      read_jsonl(Path(args.base)))
+        result = probe_vector.compare(read_jsonl(probe_path),
+                                      read_jsonl(base_path))
     except (OSError, ValueError) as exc:
         print("probe-vector: %s" % exc, file=sys.stderr)
         return 2
+    # Present but empty is the same read of nothing as absent, one step later:
+    # a probe stage that produced no rollouts did not run, and a zeros table
+    # over it is not a comparison. `probe_only` cannot catch this either.
+    if not result["probe_rows"]:
+        print("probe-vector: no probe rows in %s — nothing to compare" % probe_path,
+              file=sys.stderr)
+        return 1
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
