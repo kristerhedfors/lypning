@@ -23,6 +23,8 @@ a consequence of being exactly that loop:
   * Keys are matched by hash and equality, so ``1``, ``1.0`` and ``True``
     are one key, and the FIRST of them is the one that survives.
   * An unhashable key is the dict's own TypeError, raised on insertion.
+    The cases print that TYPE and not its message: CPython rewords the
+    text between releases, so the message is not a fact about fromkeys.
 
 The second helper, ``sorted_disjoint``, is deliberately NOT a set method.
 ``set.isdisjoint`` is one of the refusals no reimplementation short of
@@ -70,11 +72,19 @@ def sorted_disjoint(a, b):
 
 
 def _err(label, ok):
-    """Run `ok`, and report the exception type and message if it raises."""
+    """Run `ok`, and report the exception TYPE if it raises.
+
+    The type, and deliberately not the message. CPython rewords its error
+    text between releases and this project treats only the type as API:
+    3.11 says ``unhashable type: 'list'`` where 3.14 says ``cannot use
+    'list' as a dict key (unhashable type: 'list')``. A case that printed
+    the message would make this unit's output depend on which CPython
+    happened to be the oracle, which is not a fact about ``fromkeys``.
+    """
     try:
         return label + ": " + repr(ok())
-    except TypeError as exc:
-        return label + ": TypeError: " + str(exc)
+    except TypeError:
+        return label + ": TypeError"
 
 
 def _one_object(keys):
