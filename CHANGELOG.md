@@ -14,6 +14,77 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-17** — Assess the blocked S0 round from two independent reviews, close the four vacuous reads its guards left open, pin Fable's retry to the historical binary, and stop a plan from certifying a schedule it cannot price ([#91](https://github.com/kristerhedfors/lypning/pull/91))
+
+- The independent Codex review owed by ledger row S0 was written twice, by two
+  sessions that did not see each other's work and agreed on the diagnosis:
+  `training/reviews/2026-09-17-codex-s0-guards-and-engine-identity.md` and
+  `training/reviews/2026-09-17-fable-s0-independent-assessment.md`. Both are
+  kept as evidence and this PR carries the combined ruling:
+  **continue**, all four decision requests ruled, every paid and GPU rung still
+  held. The round remains unrun — this is a third clone holding none of its
+  inputs, checked literally rather than assumed — so no power figure, lever
+  vector, probe table or model-quality claim exists from it, and the two
+  `training/EVAL2.md` deliverables are still owed. Five of the report's load-bearing
+  claims were re-derived in-tree before being ruled on; three came back
+  partially confirmed, and the disagreement is recorded rather than smoothed.
+- The guards closed four paths, not five. `levers`' fifth fired only when the
+  failure took the `ERROR` route *and* the filtered population was non-empty,
+  so a full descriptive vector — held-out banner and all — still printed at
+  exit 0 over two empty files, over a present-but-empty `attempts.jsonl`, under
+  a `--status` filter that matched nothing, and through an engine that runs but
+  is not `lypning` (`MISMATCH`, so `errors` was 0). The vector is now
+  publishable only if at least one record backs it: exit 1, stdout empty, in
+  every render mode including `--json`. The narrow `ERROR` guard stays in front
+  of it because it names the failed replay, which is the more useful message.
+  The refusal line now carries `loaded`, `considered` and `unmatched`, since
+  `loaded` is pre-filter and `refusals` post-filter and the first wording could
+  assert that named rows carried no refusal when the filter had removed them.
+- Rung S0b no longer re-derives the population it reports. `--run` replayed
+  every program through the local binary, which recomputes `native` and `status`
+  with it, so the `--status` filter ran over a population the binary had just
+  manufactured — and the handoff's instruction to record an `@ engine` line
+  named output no mode of `levers` produced. The rung now freezes status and
+  family to the materialized 171 pilot rows, uses the replay only to attach
+  refusal kinds, binds the explicit historical `lypning-l` by its full recorded
+  SHA-256, prints that identity, and refuses a wrong draw count or any partial
+  replay before publishing a vector. The composite build *fingerprint* is
+  deliberately not a prerequisite: it folds in a core `lypning` sha no document
+  records, and an unsatisfiable gate on a $0 rung is how a $0 rung stops being
+  run. 171 stands as a historical population rather than a number to re-derive.
+- `--plan` now refuses the certainly-too-small half of the supervised-token
+  floor without downloading anything. `sft_batches` picks by family and index
+  and never inspects what it carries, so the schedule is buildable from the
+  cases alone; summing the scheduled references' UTF-8 bytes bounds the tokens
+  above under byte-level BPE. The exact floor stays in `run()`, unmoved, because
+  the exact count needs the tokenizer. A passing plan still does not certify the
+  schedule and the refusal says so. The shipped substitute — check
+  `steps × batch_size` against 50,000 — counted example exposures rather than
+  tokens and would have refused the runbook's own `--steps 250 --batch-size 4`;
+  it is withdrawn. `planned_exposures` and `supervised_token_upper_bound` are
+  `null`, never `0`, for a stage the floor does not price.
+- A banked launch is refused above four sandboxes per host. The existing check
+  was a product and a product is blind to density, so `16/16/1` — sixteen
+  sandboxes on one host, the shape round-02 ran — cleared it, while `1/1/1` is
+  the least contended shape in the space and was never the problem. `native` is
+  host-load-dependent, so per-host density is an instrument parameter and two
+  arms scored at different densities are not comparable. The ceiling is four
+  *at `cpu-basic`*; a different pool flavor voids the number. No floor on the
+  worker count, host count or total capacity, because no eval-2 arm has ever
+  completed and a throughput threshold would be set against a forward estimate.
+  The host count is capped at four as well, so the cost envelope is bounded in
+  both directions, and the product check no longer advises raising a knob the
+  ceiling forbids.
+- Eight residual risks are recorded with file and line, four of them absent from
+  the report; two are parked as future calls — `power --eval2 --rows` accepts
+  any file bound to no run, digest or fingerprint, and `eval2_rows` tests
+  `native` before `correct`, so its `correct-native` bucket can hold draws
+  CPython did not pass. Neither is ruled here.
+- Bookkeeping, per review condition C8: the entry below says "three zero-cost
+  rungs" and its commit subject says five. Neither is a count of rungs — it was
+  two commands across two of the three S0 rungs, three CLI branches and five
+  guards. The merged entry is left as written; this is the correction.
+
 **2026-09-17** — Stop three zero-cost rungs from reporting a clean read of nothing, and record that rung S0b's number moves with the engine ([#89](https://github.com/kristerhedfors/lypning/pull/89))
 
 - The assigned S0 round did not run. This clone holds none of its inputs: the
@@ -185,7 +256,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   `PYTHONPATH=src:training`, `round_plan`'s `source_identity` root (a real
   breakage the moment the directory moved), the `overview` registration, the
   runbook commands, the Hugging Face job scripts and every document citation.
-  `SWITCH.md` deferred this twice on the three workflows; they were the work.
+  `training/SWITCH.md` deferred this twice on the three workflows; they were the work.
 - The name is model-agnostic on purpose. `qwen/` would repeat the mistake
   being undone, for the reason invariant 9 already gives: a name that still
   resolves to something is a name that can drift back into the code.
@@ -193,14 +264,14 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   record — the recorded run ids under `training/runs/` and their `meta.json`
   (each run records its own `run_id`, and a run id is the join key between a
   number and its evidence, including evidence outside this tree), the captured
-  corpus and sightings JSONL, and the dated entries in this file, `AUDIT.md`
-  and `REFACTOR.md`. `SWITCH.md` stops being the home of the name and becomes
+  corpus and sightings JSONL, and the dated entries in this file, `training/AUDIT.md`
+  and `training/REFACTOR.md`. `training/SWITCH.md` stops being the home of the name and becomes
   the home of that rule. Earlier entries' *paths* were repointed, because
   `tests/test_docs.py` resolves them and a ledger may not cite a file that is
   not there; their branches, models and numbers are untouched.
 - `training/tests/test_naming.py` is the grep: the name appears nowhere
   outside the frozen evidence, no tracked path spells it outside `runs/`, and
-  `SWITCH.md` states the rule without spelling it. The test does not spell it
+  `training/SWITCH.md` states the rule without spelling it. The test does not spell it
   either — it reads it off the recorded run directory names, so there is no
   literal to go stale and the last evidence deleted deletes the rule with it.
 
@@ -224,15 +295,15 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 - Propose the S0–S4 signal ladder (three rungs at $0, one at ~$5) and an
   eight-step plan with owner, cost, decision and stop rule per step; link it
   from the training README and `training/STATUS.md` §9, and add ledger row S2 to
-  `ORCHESTRATION.md`.
-- The #80 entry cited `EVAL2.md` without its path, which
-  `tests/test_docs.py` reads as a missing file; it now says `training/EVAL2.md`.
+  `training/ORCHESTRATION.md`.
+- The #80 entry named that file without its `training/` prefix, which
+  `tests/test_docs.py` reads as a missing file; it now carries the full path.
 
 **2026-09-16** — Round-02 run report corrected: the eval-2 base arm was blocked, no arm completed ([#81](https://github.com/kristerhedfors/lypning/pull/81))
 
 - Job `6aaa8746` failed at stage `eval2` after 384 of 1,200 base-arm draws:
   a CPU-bound candidate's engine run timed out after a correct oracle run,
-  which the verifier policy reads as an engine fault. The report, `STATUS.md`
+  which the verifier policy reads as an engine fault. The report, `training/STATUS.md`
   and the ledger now say so, with the two explanations still to separate
   (engine speed on tight loops vs 16 sandboxes starving one pool host) and
   the decision Codex is asked for.

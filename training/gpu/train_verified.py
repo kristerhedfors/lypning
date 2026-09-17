@@ -139,6 +139,16 @@ def preflight(args):
     if (not args.smoke and args.stage == "sft"
             and args.steps * args.batch_size < len({case["family"] for case in train_cases})):
         raise TrainingError("SFT schedule is shorter than one complete family cycle")
+    planned = supervised_plan(args, bundle)
+    if planned and planned["supervised_token_upper_bound"] < MIN_SUPERVISED_TOKENS:
+        raise TrainingError(
+            "SFT schedule exposes at most %d supervised tokens -- an upper bound over the "
+            "%d scheduled references' UTF-8 bytes -- and the floor is %d, so run() will "
+            "certainly refuse this schedule after the tokenizer download. A bound ABOVE "
+            "the floor is not a pass: it is only the absence of this certain failure, and "
+            "the exact count is still taken in run()."
+            % (planned["supervised_token_upper_bound"], planned["planned_exposures"],
+               MIN_SUPERVISED_TOKENS))
     # k is pre-registered for the confirmatory arm, and the runner's default is
     # not it. Refusing here costs nothing; the round-02 pilot spent an arm
     # finding this out, and a wider interval than the effect is not a cheaper
@@ -173,6 +183,39 @@ def preflight(args):
             decoding(schedule(args)["max_tokens"]), args.seed, args.generations, args.smoke)
         validate_probe(args.probe, contract, [c["case_id"] for c in bundle["cases"] if c["split"] == "train"])
     return bundle, adapter
+
+
+def supervised_plan(args, bundle):
+    """What the SFT schedule will expose, bounded above, with nothing downloaded.
+
+    The exact floor cannot move here: counting supervised tokens needs
+    `build_examples`, hence the Hub tokenizer that `--plan` exists to avoid. A
+    one-sided bound can, because none of its three inputs need the model.
+    `sft_batches` picks by family and index and never looks inside what it
+    carries, so passing the cases in place of their examples yields the very
+    schedule `run()` will train on; every case is guaranteed a non-empty
+    `reference` at load (`pipeline/training_data.py`); and the supervised
+    segment is that reference in a fenced block plus the assistant terminator,
+    which under byte-level BPE can never cost more tokens than it has UTF-8
+    bytes. The sum is over the SCHEDULE -- every repeat counted again -- not the
+    exposure count times the longest reference, which is looser by a factor of
+    six on the in-tree proxy corpus (`training/data/corpus.jsonl`, measured
+    2026-09-17: 147 of 517 rows carry a reference, assistant-segment bytes mean
+    407.8 and max 2,536) and would admit schedules the floor certainly refuses.
+
+    Returns None where no supervised dose is planned or the floor does not
+    apply, so the caller cannot mistake "not applicable" for a bound of zero.
+    """
+    if args.stage != "sft" or args.smoke:
+        return None
+    train_cases = [case for case in bundle.get("cases", []) if case.get("split") == "train"]
+    batches = sft_batches(train_cases, train_cases, schedule(args)["steps"],
+                          args.batch_size, args.seed)
+    scheduled = [case for batch in batches for case in batch]
+    return {"planned_exposures": len(scheduled),
+            "supervised_token_upper_bound":
+                sum(len(("```python\n" + case["reference"].rstrip() + "\n```<|im_end|>")
+                        .encode("utf-8")) for case in scheduled)}
 
 
 def schedule(args):
@@ -367,12 +410,20 @@ def main(argv=None):
     try:
         bundle, adapter = preflight(args)
         if args.plan:
+            # The two supervised-dose numbers are printed, not left to be
+            # inferred from steps x batch-size, which counts example exposures
+            # and not tokens; and the bound is an upper bound, so reading it as
+            # a pass is the one mistake this line exists to prevent.
+            planned = supervised_plan(args, bundle) or {"planned_exposures": None,
+                                                        "supervised_token_upper_bound": None}
             print(json.dumps({"stage": args.stage, "model": BASE_MODEL, "revision": args.revision,
                               "purpose": bundle["purpose"], "effective": schedule(args),
                               "decoding": decoding(schedule(args)["max_tokens"], greedy=args.greedy),
                               "enable_thinking": False,
                               "limits": bundle["limits"], "memory_policy": bundle["memory_policy"],
                               "adapter": adapter, "training_started": False,
+                              "planned_exposures": planned["planned_exposures"],
+                              "supervised_token_upper_bound": planned["supervised_token_upper_bound"],
                               "bundle_digest": bundle["digest"], "target": bundle["identity"],
                               "cases": {s: sum(c["split"] == s for c in bundle["cases"])
                                         for s in ("train", "dev", "test")}}, indent=2))
