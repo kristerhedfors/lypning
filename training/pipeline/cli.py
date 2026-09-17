@@ -382,6 +382,14 @@ def cmd_eval2_rows(args: argparse.Namespace) -> int:
         print("no lypning binary on this machine: run `lypning build --rust`, "
               "or pass --engine", file=sys.stderr)
         return 1
+    # `native` is read off this replay, and `status` is read off `native`, so the
+    # binary here IS the population these rows define. An `--engine` that is not a
+    # file is a truthy string that grades every program ERROR, which writes rows
+    # whose every draw is non-native — a population, at exit 0, from a replay that
+    # ran nothing. Same usage error, same exit 2, as `levers`.
+    if not Path(engine).is_file():
+        print("not a file: %s" % engine, file=sys.stderr)
+        return 2
     path = RUNS / args.run_id / "attempts.jsonl"
     if not path.exists():
         print("no such run: %s" % args.run_id, file=sys.stderr)
@@ -393,10 +401,30 @@ def cmd_eval2_rows(args: argparse.Namespace) -> int:
     cache = (Path(args.cache) / ("%s.replay.json" % args.run_id)) if args.cache else None
     census = legality.replay(attempts, engine, tests=tests, workers=args.jobs, cache=cache)
     result = eval2_rows.rows(attempts, census["rows"], cases, seed=seed)
+    # `is_file` above rejects a path; it cannot reject a regular file that will
+    # not execute — no +x bit, wrong architecture, a text placeholder. Those
+    # grade every program ERROR, which writes `native` False on every row and
+    # every correct draw as `correct-fallback`: the same population from a replay
+    # that ran nothing, one step further out. A hand-transferred binary losing
+    # its execute bit is the ordinary way to arrive here. `levers` refuses an
+    # ungraded replay; so does this, before any rows are written.
+    errors = census["tally"].get("ERROR") or 0
+    if errors:
+        print("eval2-rows: %d of %d replayed program(s) did not grade (ERROR) through "
+              "%s — an ungraded replay writes every draw non-native, which is a "
+              "population, not a measurement."
+              % (errors, result["replayed"], engine), file=sys.stderr)
+        return 1
     write_jsonl(args.output, result["rows"])
-    print("eval2-rows  %s   %d rows, %d replayed   @ engine %s"
+    # The bytes that graded these rows, not the installed chain. `identity()`
+    # fingerprints whatever `lypning-l`/`lypning` this host has, which for an
+    # explicit historical `--engine` names binaries the replay never touched —
+    # and this line is the only provenance the rows file carries, since
+    # `eval2_rows.row_for` records a verdict and no identity.
+    replay_identity = eng.binary_identity(engine)
+    print("eval2-rows  %s   %d rows, %d replayed   @ engine sha256 %s   %s"
           % (args.run_id, len(result["rows"]), result["replayed"],
-             eng.identity()["fingerprint"]))
+             replay_identity["sha256"] or "unreadable", replay_identity["version"]))
     if result.get("superseded"):
         print("  %d superseded attempt(s) folded: a resumed run redrew its harness errors"
               % result["superseded"])
@@ -1526,6 +1554,13 @@ def _power_eval2(args: argparse.Namespace) -> int:
               "with runs/<id>/eval2_rows.jsonl>", file=sys.stderr)
         return 2
     src = _eval2_rows_source(args.rows)
+    if src is None and (os.sep in args.rows or args.rows.endswith(".jsonl")):
+        # A path the caller typed is a usage error, and rebuilding it is not the
+        # remedy: `eval2-rows` re-derives `native` — hence `status`, hence the
+        # population — from whichever engine it is given, so a rebuilt file is a
+        # new population at a new identity. Only the run-id form gets the hint.
+        print("not a file: %s" % args.rows, file=sys.stderr)
+        return 2
     if src is None:
         print("no rows file at %s and no %s: write them with `nt eval2-rows %s "
               "--output runs/%s/eval2_rows.jsonl`"
@@ -1695,9 +1730,26 @@ def cmd_leaks(args: argparse.Namespace) -> int:
         # the cases they came from: does a program we are about to train on
         # already pass a held-out case? Exit 1 if any does — it is the one
         # finding here that must stop a training run.
-        rows = list(read_jsonl(Path(args.sft) if Path(args.sft).suffix == ".jsonl"
-                               else Path(args.sft) / "sft.jsonl"))
+        sft_path = (Path(args.sft) if Path(args.sft).suffix == ".jsonl"
+                    else Path(args.sft) / "sft.jsonl")
+        # `read_jsonl` answers `[]` for a path that is not there, so a mistyped
+        # `--sft`, a directory holding no `sft.jsonl` and an empty file all used
+        # to reach "no training target passes a held-out case" and exit 0. This
+        # is the one finding here that must stop a training run, so its all-clear
+        # has to mean a comparison happened: a path that is not a file is the
+        # caller's error, 2, and probing nothing is this command failing, 1.
+        if not sft_path.is_file():
+            print("not a file: %s" % sft_path, file=sys.stderr)
+            return 2
+        rows = list(read_jsonl(sft_path))
         r = splitmod.sft_solves_holdout(rows, [c for c in cases if c["id"] in held])
+        if not r["programs_probed"] or not r["inputs_probed"]:
+            print("leaks: %d SFT row(s) in %s, %d carrying a program, %d distinct "
+                  "input(s) probed against %d held-out case(s) — nothing was run, so "
+                  "nothing is clean."
+                  % (r["rows"], sft_path, r["programs_probed"], r["inputs_probed"],
+                     r["n_holdout"]), file=sys.stderr)
+            return 1
         print("%d SFT rows against %d held-out cases (%d distinct inputs probed)"
               % (r["rows"], r["n_holdout"], r["inputs_probed"]))
         if not r["solved"]:
@@ -1738,6 +1790,14 @@ def cmd_eval2_leaks(args: argparse.Namespace) -> int:
     report = eval2_leaks.bank_leaks(read_jsonl(eval_path), read_jsonl(train_path),
                                     ceiling=args.ceiling,
                                     min_stdout_chars=args.min_stdout)
+    # `is_file` above covers absence, not emptiness, and an all-filtered bank
+    # reads the same. "0 pairs; 0 of 0 eval-2 cases leak" is a clean bill over a
+    # comparison that did not happen, in the gate that stands between a training
+    # bank and the number eval-2 exists to produce.
+    if not report["n_eval2"] or not report["n_train"]:
+        print("eval2-leaks: %d eval-2 and %d training case(s) — nothing was compared"
+              % (report["n_eval2"], report["n_train"]), file=sys.stderr)
+        return 1
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:

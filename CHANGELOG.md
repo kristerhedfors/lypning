@@ -14,6 +14,70 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-17** — Stop the S0 handoff from telling the private device to rebuild the population it was pinned to read ([#92](https://github.com/kristerhedfors/lypning/pull/92))
+
+- The next training round was attempted on a third clone holding none of the
+  round's four inputs. It was reported blocked and no rung was run, which is the
+  assignment's own instruction. What the clone *could* do was read the
+  assignment against the tree it will run in, and it does not survive that read.
+- **`START_NEXT_ROUND.md` contradicted its own stop rule.** :21-22 stops on an
+  absent input; :72-75 told the device to materialise an absent `$PILOT_ROWS`
+  with `nt eval2-rows`. That command's engine defaults to whichever `lypning-l`
+  the host has installed, `native` is read off its replay and `status` off
+  `native`, so the rows' *population* is a function of the binary — the same
+  mechanism that read 14 correct-but-fallback draws through one binary and 26
+  through another. The blast radius is asymmetric: S0b refuses a re-derived
+  population on `--expect-draws 171`, but S0a accepts any file that exists and
+  would have printed a confident §7 curve at an unrecorded identity. The
+  sentence is withdrawn; an absent `$PILOT_ROWS` is a blocked round and an
+  artifact-transfer problem.
+- `eval2-rows` now refuses an `--engine` that is not a file, and prints the
+  sha256 and version line of the binary it replayed through rather than
+  `identity()["fingerprint"]`, which fingerprints the host's installed chain and
+  cannot name an explicit historical binary. Its pinning test had been passing
+  `/bin/true`, which does not exist on darwin — the test was demonstrating the
+  defect it was meant to prevent.
+- The preflight block now stops. Four bare `test -f` lines print nothing and
+  exit nothing, so a pasted block ran all three rungs against whatever the
+  device had; the operator saw the rungs' errors, not the missing path.
+- The three rungs run on the resolved 3.12 `$ROUND_PYTHON`, not bare `python3`.
+  The replay grades against `sys.executable` and the pinned binary says *for
+  cpython 3.12*; a mismatch there is scored as MISMATCH or as a draw with no
+  refusal, either of which blocks the rung three layers from its cause.
+- Two contamination gates issued an all-clear over a file they never read.
+  `leaks --sft` — "the one finding here that must stop a training run" —
+  reported no target passing a held-out case for a mistyped path, a directory
+  with no `sft.jsonl`, and an empty file; `eval2-leaks` certified two empty
+  banks as non-overlapping. Both now split on invariant 8: a path that is not a
+  file is usage (2), comparing nothing is failure (1), and `--allow` forgives
+  found pairs rather than an absent comparison.
+- A banked launch above its capacity was told to raise a knob its own ceiling
+  forbids — `--score-workers 32` earned "increase `--pool-max-hosts`", and
+  taking that advice earned "pool cost ceiling is 4 CPU hosts". Above the
+  ceiling the refusal now names the ceiling. At or below it, nothing changes.
+- `STATUS.md`'s account of `levers --run` is corrected: it describes the bare
+  form, and the `--run --population-rows` form §10's S0b row assigns does not
+  re-derive the population.
+- The change was then adversarially reviewed in turn, which found no blocking
+  defect and two high ones, both introduced by the change itself: the
+  replacement rebuild command could not run as written — the positional is a run
+  id, not a path, and `--output` is required — and the review listed as
+  still-open a `STATUS.md` defect the same change fixed. Both are fixed, along
+  with four more: `eval2-rows` refuses a replay in which any program failed to
+  grade, because `is_file` rejects a path but not a *regular file that will not
+  execute*, and a binary that lost its execute bit in transfer writes an
+  all-`correct-fallback` population at exit 0; `leaks --sft` counts programs
+  built rather than lines read, because a bundle's `train-sft.jsonl` carries
+  `messages` and no `program`; `power --eval2` stops advertising the withdrawn
+  rebuild for a path the caller typed; and the capacity refusal names the knob
+  with remaining headroom, since `16/1/4` was still a dead end with hosts
+  already at their ceiling.
+- Review: `training/reviews/2026-09-17-codex-s0-assignment-executability.md`,
+  ledger row R6. 58 findings were raised and 2 refuted; the blocking 3 and the
+  items above are closed here, and §5 of the review is a triaged excerpt of the
+  residue. None of it blocks the S0 session. No paid rung, GPU job, Space
+  rebuild or dataset mutation is authorised, and none was performed.
+
 **2026-09-17** — Assess the blocked S0 round from two independent reviews, close the four vacuous reads its guards left open, pin Fable's retry to the historical binary, and stop a plan from certifying a schedule it cannot price ([#91](https://github.com/kristerhedfors/lypning/pull/91))
 
 - The independent Codex review owed by ledger row S0 was written twice, by two

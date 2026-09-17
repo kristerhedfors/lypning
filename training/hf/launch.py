@@ -136,13 +136,26 @@ def main(argv=None):
         print("training, evaluation and pool limits must be positive", file=sys.stderr)
         return 2
     if args.pool_sandboxes_per_host * args.pool_max_hosts < args.score_workers:
-        # Half this advice is dead for a banked stage: raising the density past
-        # the ceiling below only trades this refusal for that one. Say which
-        # knob is actually available, or an operator at 16/8/1 follows the
-        # sentence to 16/16/1 and is refused a second time by another message.
-        print("pool capacity must cover --score-workers: increase --pool-max-hosts%s"
-              % ("" if args.stage in BANKED else " or --pool-sandboxes-per-host"),
-              file=sys.stderr)
+        # Name the knob that still has room, not the knob that matches the stage.
+        # Both knobs are capped for a banked stage, so "increase --pool-max-hosts"
+        # was unfollowable whenever hosts were already at the ceiling — the same
+        # two-refusal dead end the density fix removed, moved one knob out — and
+        # above their product no knob reaches at all, which is a number the
+        # operator has to be told rather than left to find by bisection.
+        room = []
+        if args.stage not in BANKED or args.pool_sandboxes_per_host < MAX_POOL_SANDBOXES_PER_HOST:
+            room.append("--pool-sandboxes-per-host")
+        if args.stage not in BANKED or args.pool_max_hosts < MAX_POOL_HOSTS:
+            room.append("--pool-max-hosts")
+        if room:
+            print("pool capacity must cover --score-workers: increase %s"
+                  % " or ".join(room), file=sys.stderr)
+        else:
+            print("a banked launch tops out at %d scorers (%d per host x %d hosts at %s); "
+                  "lower --score-workers"
+                  % (MAX_POOL_SANDBOXES_PER_HOST * MAX_POOL_HOSTS,
+                     MAX_POOL_SANDBOXES_PER_HOST, MAX_POOL_HOSTS, POOL_FLAVOR),
+                  file=sys.stderr)
         return 2
     # The check above is a product, and a product is blind to density: sixteen
     # sandboxes on one host clears it, and that is the shape round-02 actually
