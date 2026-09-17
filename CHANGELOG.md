@@ -14,6 +14,36 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-17** — Assess round 02, preserve blocked evaluation evidence, and constrain the next Fable run to zero-cost validation ([#87](https://github.com/kristerhedfors/lypning/pull/87))
+
+- Round 02 produced no completed eval-2 arm and therefore no model-quality
+  verdict: the only real 27B attempt reached SFT, probe and GRPO, then the base
+  evaluation blocked when sixteen isolated scorers competed on one CPU host.
+  The assessment records the attempt history, separates infrastructure evidence
+  from model evidence, and keeps paid and GPU work on hold.
+- Verified evaluation now drains an interrupted chunk, persists every successful
+  sibling row, and then re-raises the first infrastructure failure. Native
+  timeouts after a correct oracle remain aborts, not scores. The launcher caps
+  each scorer host at four sandboxes, uses at most four hosts, and refuses an
+  undersized pool before work starts.
+- Held-out draw rows can no longer be ranked as a build queue. `nt levers`
+  exposes descriptive vectors instead, and a new `probe-vector` command compares
+  probe outcomes with base rows case by case. A review of all 108 new refusal
+  declarations moves twenty entries in thirteen deterministic families from the
+  fallback bucket to the engine-addressable bucket without changing evaluation
+  labels or gates.
+- The verifier Space now has content-free `/` and `/healthz` endpoints plus a
+  container health mode. The earlier exit-127 correction changes the worker and
+  harness hashes, so the next remote run must use a new Space commit and fresh
+  bundles.
+- Real adapter stages require at least 1,000 training cases, at least 50,000
+  supervised token exposures, a complete family cycle, and the three registered
+  seeds 1111, 2222 and 3333. Family-cyclic scheduling replaces replacement
+  sampling, and all three jobs are required before the aggregate gate.
+- `training/START_NEXT_ROUND.md` gives Fable an exact S0a-S0c sequence on the
+  private device that owns the artifacts. That zero-cost audit must be reported
+  and reviewed before any provider allocation, upload, training or evaluation.
+
 **2026-09-16** — Make the lever split a command, preserve a blocked arm's program, and stop a harness failure from wearing the program's exit code ([#86](https://github.com/kristerhedfors/lypning/pull/86))
 
 - The next round did not run. Every rung of `training/STATUS.md` §10 is blocked
