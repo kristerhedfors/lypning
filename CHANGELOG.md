@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-16** — A "standard library" corpus: units the engines run, each labelled by the cheapest one ([#85](https://github.com/kristerhedfors/lypning/pull/85))
+**2026-09-16** — A "standard library" corpus: units the engines run, each labelled by the cheapest one ([#88](https://github.com/kristerhedfors/lypning/pull/88))
 
 - `training/stdlib/units/` holds self-contained, function-only programs that
   fill CPython surfaces the engines refuse. Nothing imports them, and nothing
