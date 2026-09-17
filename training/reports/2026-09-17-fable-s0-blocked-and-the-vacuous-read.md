@@ -237,7 +237,7 @@ plus §5, quoted with its own run per invariant 3:
 | command | result |
 |---|---|
 | `lypning build --rust` | exit 0; `ok` for both variants; the exit-90 refusal contract asserted on the binary |
-| `lypning conformance` | exit 0, **`MISMATCH 0`** over 6,317 corpus programs; UNSUPPORTED 3,394 / 1,757 / 0; coverage 46.3% / 72.2% / 100.0%; monotone violations 0; routing UNSAFE 0, NO-ENGINE 0 |
+| `lypning conformance` | exit 0, **`MISMATCH 0 — ok`** over 6,316 corpus programs of 9,064 loaded; UNSUPPORTED 3,393 / 1,756 / 0; coverage 46.3% / 72.2% / 100.0%; monotone violations 0; routing UNSAFE 0, NO-ENGINE 0, accuracy 94.6% ideal |
 | `lypning doctor` | exit 0; **19 checks, 0 FAIL**, 3 WARN (12 OK + 3 WARN + 4 NOTE) |
 | `lypning gate` | **PASS**, core 9 blocks against budget 9 |
 | `lypning gate ~/.lypning/bin/lypning-l` | **PASS**, 11 blocks against budget 32 |
@@ -249,6 +249,26 @@ Bare `gate` measures **only** the core, so `CLAUDE.md`'s "every variant inside
 its block budget" needs the second invocation; both are shown. The pytest
 warning count is deliberately not quoted: it varies with bytecode-cache state
 (6 warm, 7 cold) and is not a property of the tree.
+
+**Two things this battery taught about its own numbers, both invariant 3 in
+practice.** First, the corpus total was 9,064 in every run, but the run/skip
+split moved between two runs on the same tree an hour apart — 6,316 programs
+run and 2,748 skipped here, 6,317 and 2,747 earlier — because one program
+crossed the timing-dependent `reference timed out after 30s` skip reason. The
+per-engine UNSUPPORTED counts move with it (3,393/1,756 here, 3,394/1,757
+earlier). Neither is a coverage change and neither number is quotable without
+its run.
+
+Second, **the first `conformance` run of this session was a FAIL, and the net
+was right.** It was launched on a dirty tree and this session went on editing
+documents while it ran, so a corpus program's write to a repository file was
+followed by a restore to a snapshot predating those edits: `MISMATCH 0 — FAIL`,
+exit 1, `4 repository files changed by corpus programs and have been restored`.
+Nothing was lost — the edits were in the index — and the counts above are from a
+clean-tree re-run at exit 0 with `git status` empty afterwards. `CLAUDE.md`
+invariant 4 says to run the battery only in a worktree with its own
+`LYPNING_HOME`; that is a net, not a sandbox, and this is what it looks like
+when it fires.
 
 **The oracle is absent, as expected** (`docs/VERIFICATION.md` §C12): `lypning-mp`
 is not built here, and all five paths that touch it degrade to `not built` —
