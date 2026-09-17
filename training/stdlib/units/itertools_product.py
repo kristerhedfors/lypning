@@ -47,8 +47,12 @@ DIVERGENCE (one, deliberate): an unexpected keyword argument raises
 (`'bogus' is an invalid keyword argument for product()`), where CPython raises
 `TypeError`.  The subset has no class statement and most builtin exception
 names are not bound, so ValueError with a non-empty message is the only shape
-available.  The cases print the message, never the type, so the differential
-against the real module is byte-identical.
+available.  The cases print the exception's TYPE as well as its message, so
+this shows up as exactly one differing line -- `product([1], bogus=1)` --
+against the real module, and every other line matches byte for byte.  The
+message alone would hide the one thing that differs, and catching only
+`ValueError` would let CPython's `TypeError` escape and leave every case
+below it compared against nothing.
 
 Not covered: nothing else in itertools -- see the sibling units.
 """
@@ -122,12 +126,20 @@ def product(*iterables, **kwargs):
             return rows
 
 
-def _message_of(args, kwargs):
-    """Return the message of the ValueError product(*args, **kwargs) raises."""
+def _error_of(args, kwargs):
+    """Return "<type>: <message>" for whatever product(*args, **kwargs) raises.
+
+    The tuple in the `except` is load-bearing.  CPython answers a negative
+    `repeat` with ValueError and an unexpected keyword with TypeError, so a
+    helper that caught only ValueError would let that TypeError escape -- and
+    every case printed below it would then be compared against nothing at all.
+    The type is reported rather than swallowed, which is what makes the
+    divergence above one visible line instead of a silence.
+    """
     try:
         product(*args, **kwargs)
-    except ValueError as exc:
-        return str(exc)
+    except (ValueError, TypeError) as exc:
+        return type(exc).__name__ + ": " + str(exc)
     return ""
 
 
@@ -190,11 +202,11 @@ print(product((c for c in "ab"), (n for n in [0, 1])))
 # repeat over a one-shot iterator still reads it once.
 print(product((n for n in [0, 1]), repeat=2))
 
-# Errors.
-print(repr(_message_of(([1],), {"repeat": -1})))
-print(repr(_message_of((), {"repeat": -5})))
-print(repr(_message_of(([1],), {"bogus": 1})))
-print(repr(_message_of(([1],), {"repeat": 1})))
+# Errors.  The type is printed with the message -- see DIVERGENCE above.
+print(repr(_error_of(([1],), {"repeat": -1})))
+print(repr(_error_of((), {"repeat": -5})))
+print(repr(_error_of(([1],), {"bogus": 1})))
+print(repr(_error_of(([1],), {"repeat": 1})))
 
 # Depth: 200 pools.  A recursive-descent product recurses once per pool and
 # refuses beyond 180 frames; the odometer above does not.  Output stays tiny

@@ -41,16 +41,21 @@ Edge cases, all checked against the live module on 2026-09-16:
 
 DIVERGENCES (two, deliberate, both documented rather than hidden):
 
-  1. `islice` with the wrong number of positional arguments raises
+  1. `islice` with the wrong NUMBER of positional arguments raises
      `ValueError` here carrying CPython's exact message
      (`islice expected at least 2 arguments, got 1`), where CPython raises
      `TypeError`.  Same for an unexpected keyword to `zip_longest`, whose
      message CPython leaves keyless: `zip_longest() got an unexpected keyword
-     argument`, with no mention of which one.  The
-     subset has no class statement and most builtin exception names are not
-     bound, so ValueError with a non-empty message is the only shape
-     available.  The cases print the message, never the type, so the
-     differential against the real module is byte-identical.
+     argument`, with no mention of which one.  The subset has no class
+     statement and most builtin exception names are not bound, so ValueError
+     with a non-empty message is the only shape available.  The cases print
+     the exception's TYPE as well as its message, so this shows up as exactly
+     three differing lines -- the two argument-count `islice` calls and the
+     `zip_longest` keyword call -- and every other line matches the real
+     module byte for byte.  Printing the message alone would hide the one
+     thing that actually differs, and catching only `ValueError` would let
+     CPython's `TypeError` escape and leave every case below it compared
+     against nothing.
   2. CPython's islice also rejects an index above `sys.maxsize`.  That is not
      reproduced: an index that large is a bigint, which the core engine
      refuses outright, so the check could never fire where it matters.  The
@@ -208,21 +213,34 @@ def zip_longest(*iterables, **kwargs):
     return rows
 
 
-def _islice_message(iterable, args):
-    """Return the message of the ValueError islice(iterable, *args) raises."""
+def _islice_error(iterable, args):
+    """Return "<type>: <message>" for whatever islice(iterable, *args) raises.
+
+    The tuple in the `except` is load-bearing.  The real `itertools.islice`
+    answers a bad INDEX with ValueError and a wrong argument COUNT with
+    TypeError, so a helper that caught only ValueError would let that
+    TypeError escape -- and every case printed below it would then be compared
+    against nothing at all.  The type is reported rather than swallowed, which
+    is what makes divergence 1 above one visible line instead of a silence,
+    and what would make a TypeError raised here by accident loud.
+    """
     try:
         islice(iterable, *args)
-    except ValueError as exc:
-        return str(exc)
+    except (ValueError, TypeError) as exc:
+        return type(exc).__name__ + ": " + str(exc)
     return ""
 
 
-def _zip_message(iterables, kwargs):
-    """Return the message of the ValueError zip_longest(...) raises."""
+def _zip_error(iterables, kwargs):
+    """Return "<type>: <message>" for whatever zip_longest(...) raises.
+
+    Wide for the same reason as `_islice_error`: CPython answers an unexpected
+    keyword argument with TypeError.
+    """
     try:
         zip_longest(*iterables, **kwargs)
-    except ValueError as exc:
-        return str(exc)
+    except (ValueError, TypeError) as exc:
+        return type(exc).__name__ + ": " + str(exc)
     return ""
 
 
@@ -298,22 +316,22 @@ rows = zip_longest(left, "ab")
 left.append(3)
 print(rows)
 
-# Errors.  Only the message is printed -- see DIVERGENCES in the docstring.
-print(repr(_islice_message("ABCDE", (-1,))))
-print(repr(_islice_message("ABCDE", (0, -1))))
-print(repr(_islice_message("ABCDE", (-1, -1))))
-print(repr(_islice_message("ABCDE", (-1, 3, -1))))
-print(repr(_islice_message("ABCDE", (0, -1, -1))))
-print(repr(_islice_message("ABCDE", (-1, None))))
-print(repr(_islice_message("ABCDE", (None, -1))))
-print(repr(_islice_message("ABCDE", (0, 3, -1))))
-print(repr(_islice_message("ABCDE", (0, 3, 0))))
-print(repr(_islice_message("ABCDE", (None, None, 0))))
-print(repr(_islice_message("ABCDE", ())))
-print(repr(_islice_message("ABCDE", (0, 1, 1, 1))))
-print(repr(_islice_message("ABCDE", (1, 3))))
-print(repr(_zip_message(("ab",), {"bogus": 1})))
-print(repr(_zip_message(("ab",), {"fillvalue": 1})))
+# Errors.  The type is printed with the message -- see DIVERGENCES above.
+print(repr(_islice_error("ABCDE", (-1,))))
+print(repr(_islice_error("ABCDE", (0, -1))))
+print(repr(_islice_error("ABCDE", (-1, -1))))
+print(repr(_islice_error("ABCDE", (-1, 3, -1))))
+print(repr(_islice_error("ABCDE", (0, -1, -1))))
+print(repr(_islice_error("ABCDE", (-1, None))))
+print(repr(_islice_error("ABCDE", (None, -1))))
+print(repr(_islice_error("ABCDE", (0, 3, -1))))
+print(repr(_islice_error("ABCDE", (0, 3, 0))))
+print(repr(_islice_error("ABCDE", (None, None, 0))))
+print(repr(_islice_error("ABCDE", ())))
+print(repr(_islice_error("ABCDE", (0, 1, 1, 1))))
+print(repr(_islice_error("ABCDE", (1, 3))))
+print(repr(_zip_error(("ab",), {"bogus": 1})))
+print(repr(_zip_error(("ab",), {"fillvalue": 1})))
 
 # Width: 300 chained arguments and a 200-wide zip_longest.  Every loop above
 # is flat, so neither is near the 180-frame recursion ceiling.

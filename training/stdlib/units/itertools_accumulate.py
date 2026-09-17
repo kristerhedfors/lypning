@@ -51,8 +51,12 @@ raises `ValueError` here carrying CPython's exact message
 (`'bogus' is an invalid keyword argument for accumulate()`), where CPython
 raises `TypeError`.  The subset has no class statement and most builtin
 exception names are not bound, so ValueError with a non-empty message is the
-only shape available.  The cases print the message, never the type, so the
-differential against the real module is byte-identical.
+only shape available.  The cases print the exception's TYPE as well as its
+message, so this shows up as exactly one differing line --
+`accumulate([1, 2], bogus=1)` -- against the real module, and every other line
+matches byte for byte.  The message alone would hide the one thing that
+differs, and catching only `ValueError` would let CPython's `TypeError` escape
+and leave every case below it compared against nothing.
 
 Not covered: `itertools.chain`, `islice`, `zip_longest`, `product`,
 `combinations` and `permutations`, which have their own units in this corpus.
@@ -152,12 +156,19 @@ def _is_odd(n):
     return n % 2 == 1
 
 
-def _accumulate_message(iterable, kwargs):
-    """Return the message of the ValueError accumulate(...) raises."""
+def _accumulate_error(iterable, kwargs):
+    """Return "<type>: <message>" for whatever accumulate(...) raises.
+
+    The tuple in the `except` is load-bearing: CPython answers an unexpected
+    keyword with TypeError, and a helper that caught only ValueError would let
+    it escape -- leaving every case printed below compared against nothing at
+    all.  The type is reported rather than swallowed, which is what makes the
+    divergence above one visible line instead of a silence.
+    """
     try:
         accumulate(iterable, **kwargs)
-    except ValueError as exc:
-        return str(exc)
+    except (ValueError, TypeError) as exc:
+        return type(exc).__name__ + ": " + str(exc)
     return ""
 
 
@@ -250,9 +261,9 @@ print([(k, list(g)) for k, g in held])
 print([(k, list(g)) for k, g in held])
 print(held[0][1] == ["A", "A"], held[1][1] == ["B"])
 
-# Errors.  Only the message is printed -- see DIVERGENCE in the docstring.
-print(repr(_accumulate_message([1, 2], {"bogus": 1})))
-print(repr(_accumulate_message([1, 2], {"initial": 0})))
+# Errors.  The type is printed with the message -- see DIVERGENCE above.
+print(repr(_accumulate_error([1, 2], {"bogus": 1})))
+print(repr(_accumulate_error([1, 2], {"initial": 0})))
 
 # Length: a long input, handled by flat loops well clear of the 180-frame
 # recursion ceiling.  Every value stays inside signed 64-bit.

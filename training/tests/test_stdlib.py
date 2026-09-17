@@ -27,7 +27,11 @@ Four layers, cheapest first, and each one catches something the next cannot:
 4. **The reference.** The unit's cases run once against its own helpers and once
    against the real module's same-named attributes. Bytes must match, unless the
    unit is one of the few in :data:`_DIVERGENCES` — reviewed, pinned with the
-   input that shows it, and declared in the unit's own docstring as well.
+   input that shows it, and declared in the unit's own docstring as well. And
+   the reference arm must reach the END of the case block: comparing the lines
+   it HAS is worth nothing for the lines it never got to, which is how 310 case
+   lines across five units stayed unverified while this file was green
+   (:func:`test_the_reference_arm_ran_every_case`, measured 2026-09-17).
 
 The engine-dependent layer — labels, mismatches, row stability — is SKIPPED, not
 failed, when the binaries are absent, the way every other path in this tree
@@ -113,13 +117,23 @@ unit_case = pytest.mark.parametrize("name", _UNIT_IDS, ids=_UNIT_IDS)
 _DIVERGENCES: Dict[str, str] = {
     "hashlib_digest": "pbkdf2_hmac on an unknown hash name: ValueError here, "
                       "CPython's own message is different",
-    "itertools_accumulate": "an unexpected keyword argument to accumulate",
-    "itertools_chain": "islice's signature, and the error an exhausted "
-                       "argument raises",
-    "itertools_product": "an unexpected keyword argument to product",
-    "struct_pack": "exception TYPE on a range error: ValueError here, "
-                   "struct.error in CPython",
-    "struct_unpack": "exception TYPE on a short buffer, same reason",
+    "itertools_accumulate": "exception TYPE on an unexpected keyword: "
+                            "accumulate([1, 2], bogus=1) is ValueError here, "
+                            "TypeError in CPython",
+    "itertools_chain": "exception TYPE on three inputs: islice('ABCDE') and "
+                       "islice('ABCDE', 0, 1, 1, 1) (a wrong argument COUNT, "
+                       "not a bad index) and zip_longest('ab', bogus=1) are "
+                       "ValueError here, TypeError in CPython",
+    "itertools_product": "exception TYPE on an unexpected keyword: "
+                         "product([1], bogus=1) is ValueError here, "
+                         "TypeError in CPython",
+    "struct_pack": "exception TYPE, ValueError here for every failure: "
+                   "pack('<Q', 2**64) is struct.error in CPython, and "
+                   "calcsize('<\\xb2i') is UnicodeEncodeError -- two CPython "
+                   "types this port flattens into one",
+    "struct_unpack": "exception TYPE, same reason and the same two CPython "
+                     "types: unpack('<i', b'abc') is struct.error, "
+                     "calcsize('<\\xb2i') is UnicodeEncodeError",
 }
 
 #: The word a docstring uses to declare a divergence. One token, case-folded, so
@@ -130,6 +144,31 @@ _DIVERGENCES: Dict[str, str] = {
 #: (``training/stdlib/README.md``, "The three commands": "Byte-identical, or the
 #: divergence goes in the docstring") — and it can never grant an exemption.
 _DECLARES = "diverg"
+
+#: Units whose reference arm is allowed to print FEWER lines than the unit arm —
+#: measured, then reviewed, then written down with the reason it cannot be
+#: removed. Empty is the natural state and the only state that needs no
+#: argument: a short reference run means the real module stopped part way
+#: through the unit's own cases, and every case below that point was compared
+#: against nothing at all. :func:`test_the_reference_arm_ran_every_case` is the
+#: check; this table, and nothing else, exempts a unit from it.
+#:
+#: An entry here is NOT the same kind of thing as a :data:`_DIVERGENCES` entry,
+#: and the distinction is the whole point. A divergence entry says "these two
+#: lines differ, and here is the input"; it is about one line and leaves the
+#: rest of the unit under test. An entry here says "the comparison stops here
+#: and does not resume", which costs coverage of every case beneath it — so it
+#: must name what those cases are and why they cannot be reached any other way.
+#: A short run caused by a diverging case is not one of those: move the case to
+#: the end of the case block, or widen what the unit's capture helper catches.
+#: Both are fixes in the unit, both keep the divergence declared, and neither
+#: needs a line here.
+#:
+#: Checked in both directions, like :data:`_DIVERGENCES`: a unit outside it must
+#: run its reference arm to the end, and a unit inside it must still stop short
+#: — an allowance nobody can demonstrate is an allowance held open for the next
+#: short run.
+_SHORT_REFERENCE_RUNS: Dict[str, str] = {}
 
 
 # --- the reference differential -----------------------------------------------
@@ -264,6 +303,32 @@ class Reference:
     @property
     def agrees(self) -> bool:
         return self.unit_out == self.ref_out and self.unit_err == self.ref_err
+
+    @property
+    def unit_lines(self) -> int:
+        """Lines the unit's own cases printed. The number to match."""
+        return len(self.unit_out.splitlines())
+
+    @property
+    def ref_lines(self) -> int:
+        """Lines the same cases printed through the real module.
+
+        Fewer than :attr:`unit_lines` means the reference arm died part way
+        down the case block, and the cases below the death were never compared
+        with anything — see :func:`test_the_reference_arm_ran_every_case`.
+        """
+        return len(self.ref_out.splitlines())
+
+    @property
+    def ref_last_line(self) -> bytes:
+        """The last line the reference arm managed, or ``b""``.
+
+        Bytes, not text, for the reason the whole comparison is in bytes: a
+        decode here would apply newline translation to the one line a reader
+        uses to find the case that killed the run.
+        """
+        lines = self.ref_out.splitlines()
+        return lines[-1] if lines else b""
 
     def report(self, name: str) -> str:
         """One failure with both sides, rendered — never printed (invariant 8)."""
@@ -759,6 +824,103 @@ def test_unit_agrees_with_its_reference(name: str, units: Dict[str, stdlib.Unit]
         "model only ever reads the unit." % (name, _DIVERGENCES[name]))
 
 
+@unit_case
+def test_the_reference_arm_ran_every_case(name: str, units: Dict[str, stdlib.Unit],
+                                          references: Dict[str, Reference]) -> None:
+    """The reference arm printed as many lines as the unit arm. Length, not content.
+
+    :func:`test_unit_agrees_with_its_reference` compares the two arms and is
+    satisfied when the lines it HAS agree. It never asks whether the reference
+    arm got as far as the unit arm did, and for a unit in :data:`_DIVERGENCES`
+    it cannot: that table's whole job is to accept a disagreement, and "the
+    reference arm died at case 12 and printed nothing for cases 13-240" is a
+    disagreement like any other. So an entry written to excuse ONE diverging
+    line silently bought silence for every line beneath it.
+
+    That is not hypothetical. On 2026-09-17, before this test existed, five
+    units ran their reference arm into an uncaught exception and left 310 case
+    lines compared against nothing:
+
+    ====================  =========  ==============  ==================================
+    unit                  unit arm   reference arm   what killed the reference arm
+    ====================  =========  ==============  ==================================
+    ``struct_pack``             240              44  ``struct.error`` past ``ValueError``
+    ``struct_unpack``           126              42  ``struct.error`` past ``ValueError``
+    ``itertools_chain``          76              62  ``TypeError`` past ``ValueError``
+    ``itertools_product``        42              33  ``TypeError`` past ``ValueError``
+    ``itertools_accumulate``     67              60  ``TypeError`` past ``ValueError``
+    ====================  =========  ==============  ==================================
+
+    Each of those units declares a real exception-TYPE divergence — it cannot
+    ``raise struct.error``, because ``class E(Exception)`` refuses on both
+    engines, so it raises ``ValueError`` — and each caught only ``ValueError``
+    when capturing the message. In the unit arm that works; in the reference arm
+    the real module raises the real type, which escapes and takes the rest of
+    the case block with it.
+
+    Two honest fixes, both of which this test accepts: move the diverging cases
+    to the END of the case block, so the abort happens after everything else has
+    been compared, or widen the capture so the reference arm survives the line.
+    Neither weakens anything — the divergence itself is still declared, still in
+    :data:`_DIVERGENCES`, and still fails
+    :func:`test_unit_agrees_with_its_reference` if it closes.
+
+    Counted in LINES rather than bytes on purpose: a length in bytes would move
+    whenever a case's output changed and would report a content divergence,
+    which is the other test's question. This one asks only "did every case
+    run", so it stays quiet about everything else and cannot be silenced by the
+    table that silences that one.
+    """
+    unit = _unit(units, name)
+    if not unit.reference:
+        pytest.skip("%s fills a language gap ('# reference: -'), so there is no "
+                    "module to run the cases through" % name)
+    ref = references[name]
+    reviewed = _SHORT_REFERENCE_RUNS.get(name)
+    if ref.unit_lines == ref.ref_lines:
+        assert reviewed is None, (
+            "%s: _SHORT_REFERENCE_RUNS says its reference arm stops early (%s), "
+            "and it no longer does — both arms print %d lines. Drop the entry: "
+            "an allowance nobody can demonstrate is an allowance for the next "
+            "short run instead." % (name, reviewed, ref.unit_lines))
+        return
+    if reviewed is not None:
+        return
+    detail = (
+        "  unit arm:      %d lines\n"
+        "  reference arm: %d lines  (%+d)\n"
+        "  the last line the reference arm managed: %r\n"
+        "  it then raised: %s"
+        % (ref.unit_lines, ref.ref_lines, ref.ref_lines - ref.unit_lines,
+           ref.ref_last_line, ref.ref_err or "(nothing — it stopped without an "
+           "exception, so look for a case that returns or exits early)"))
+    pytest.fail(
+        "%s: the reference arm stopped short, so every case line below it was "
+        "compared against nothing.\n%s\n\n"
+        "The usual cause is a message-capturing helper that catches only the "
+        "type the UNIT raises: the real `%s` raises a different one, which "
+        "escapes and ends the run. Fix it in the unit, either by moving the "
+        "diverging cases to the end of the case block or by widening the "
+        "capture — not by adding a name to _SHORT_REFERENCE_RUNS, which is for "
+        "a short run that cannot be removed at all and has to be argued."
+        % (name, detail, unit.reference))
+
+
+def test_short_reference_runs_are_still_short_and_still_in_the_corpus(
+        references: Dict[str, Reference]) -> None:
+    """The whole-table twin, for what a parametrised test cannot see.
+
+    The same shape as :func:`test_declared_divergences_have_not_quietly_closed`,
+    and for the same reason: an entry naming a unit that has left the corpus is
+    never reached by the per-unit test above, so it would sit here forever,
+    reading as a reviewed fact about a file nobody can open.
+    """
+    gone = sorted(n for n in _SHORT_REFERENCE_RUNS if n not in references)
+    assert not gone, (
+        "_SHORT_REFERENCE_RUNS names units that are not in the corpus any more "
+        "(or that name no reference module): %s" % ", ".join(gone))
+
+
 def test_the_reference_differential_really_rebinds(
         units: Dict[str, stdlib.Unit], references: Dict[str, Reference]) -> None:
     """The one failure mode that would make the layer above a lie.
@@ -893,6 +1055,9 @@ def test_a_row_is_identical_after_a_round_trip(units: Dict[str, stdlib.Unit]) ->
     label = stdlib.Label(requires="lypning", requires_static="lypning",
                          route_agrees=True, runs=(), mismatch="",
                          naive_kind="", naive_detail="")
+    assert units, (
+        "no unit parsed, so this test round-tripped nothing and passed by "
+        "checking nothing — see test_unit_parses")
     for name in sorted(units):
         line = stdlib.row_line(stdlib.unit_row(units[name], label, "authored", FIRST_SEEN))
         assert stdlib.row_line(json.loads(line)) == line, "%s does not round-trip" % name

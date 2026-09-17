@@ -335,6 +335,12 @@ one place it belongs: a reader inlining the function has the docstring in front
 of them and does not have this file open. `training/tests/test_stdlib.py` runs
 the differential that keeps those docstrings honest — it rebinds each unit's
 helpers against the real CPython module and fails when a declared divergence has
-quietly closed, as well as when an undeclared one opens.
+quietly closed, as well as when an undeclared one opens. It also requires the
+reference arm to print as many LINES as the unit arm: a declared divergence the
+unit's capture helper does not catch kills the reference run at that case, and
+every case below it is then compared against nothing while the file stays green
+— 310 lines across five units, measured 2026-09-17. A helper that captures a
+message therefore catches what the REAL module raises, not only the `ValueError`
+the unit itself can raise, and prints the type so the divergence stays visible.
 
 Adding or checking a unit by hand: `stdlib/README.md`.

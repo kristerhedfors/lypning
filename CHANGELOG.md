@@ -78,6 +78,27 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   cases were compared against nothing. It now calls `hexlify(data)` the way
   `bytes.hex()` does, all 71 agree, and the entry that would have admitted the
   abort is not in the table.
+- That abort was not the only one, and the differential could not see it: it
+  compares the lines it HAS, so a reference arm that dies part way down the
+  case block passes by comparing a prefix. Measured 2026-09-17 by driving
+  `_REF_DRIVER` over every unit, five more were short — `struct_pack` 240
+  lines against 44, `struct_unpack` 126 against 42, `itertools_chain` 76
+  against 62, `itertools_product` 42 against 33, `itertools_accumulate` 67
+  against 60 — leaving 310 case lines compared against nothing, including the
+  2\*\*64 `struct` boundary cases added in this same PR. Each unit captured a
+  message with `except ValueError`, which is what it raises and not what
+  `struct` or `itertools` raise. The five now catch the real type as well and
+  PRINT it, so the declared type divergence is demonstrated by a line a reader
+  can run instead of by ending the run; all five arms are equal-length, and
+  the recovered lines exposed no behavioural divergence.
+- `test_the_reference_arm_ran_every_case` is the check that would have caught
+  it: the reference arm must print as many LINES as the unit arm, counted in
+  lines rather than bytes so it asks only "did every case run" and cannot be
+  silenced by `_DIVERGENCES`. Its reviewed table `_SHORT_REFERENCE_RUNS` is
+  empty, checked in both directions like `_DIVERGENCES`, and a short run
+  caused by a diverging case does not belong in it — reorder the case or widen
+  the capture. Re-measured 2026-09-17: all 31 reference-bearing units
+  equal-length, the other 3 name no module.
 
 **2026-09-16** — `nemotron/` is `training/`, and the retired name is a test ([#83](https://github.com/kristerhedfors/lypning/pull/83))
 

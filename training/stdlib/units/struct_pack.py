@@ -67,7 +67,18 @@ Errors: CPython raises ``struct.error``, which is a subclass of
 ``Exception`` but NOT of ``ValueError``; the subset has no custom
 exceptions, so this port raises ``ValueError`` carrying the identical
 message.  That exception TYPE is the one deliberate divergence in this
-unit, and it is the only one.
+unit, and it is the only one -- every message below is CPython's own,
+character for character.  Two things follow, and both are load-bearing.
+``_error_message`` catches ``Exception`` and not ``ValueError``: the
+narrow spelling looks right here, where nothing else is ever raised, and
+stops catching the moment these same cases are run against the real
+``struct``, which is when it matters.  And the type difference is
+PRINTED, by ``_error_type`` at the end of the cases, rather than being
+left to show itself by ending the run -- an abort compares one line and
+silences every line under it.  CPython's own choice of type is not
+uniform either: a bad format character is ``struct.error`` but a format
+that will not encode to ASCII is ``UnicodeEncodeError``, and this port
+answers ``ValueError`` to both.
 
 Bigints: ``pack('<Q', v)`` for ``v > 2**63 - 1`` takes a bigint as
 INPUT, so this unit needs the wider engine, and the cases below stand on
@@ -371,11 +382,40 @@ def pack_hex(fmt, *values):
 
 
 def _error_message(fn, *args):
-    """The message of the ValueError fn(*args) raises, or '' if none."""
+    """The message of the exception fn(*args) raises, or '' if none.
+
+    ``except Exception``, and the width is the whole point.  This port
+    raises ``ValueError`` because the subset has no ``class``, but the
+    module it stands in for raises ``struct.error``, which is a subclass
+    of ``Exception`` and NOT of ``ValueError``.  A narrower catch reads
+    the same in this file and stops catching the moment these cases are
+    run against the real ``struct``: the first failure escapes, the run
+    ends there, and every case below it is compared against nothing.
+    The width hides no type difference, because ``_error_type`` below
+    prints exactly that.
+    """
     try:
         fn(*args)
-    except ValueError as exc:
+    except Exception as exc:
         return str(exc)
+    return ""
+
+
+def _error_type(fn, *args):
+    """The NAME of the exception type fn(*args) raises, or '' if none.
+
+    The deliberate divergence, printed instead of raised.  Every failure
+    in this port is a ``ValueError``; the module it stands in for uses
+    two different types for the same failures -- ``struct.error``, whose
+    ``__name__`` is ``error``, and ``UnicodeEncodeError`` for a format
+    that will not encode -- and the port flattens both into one.  That
+    is a fact about the port, so the cases print it rather than letting
+    it end the run.
+    """
+    try:
+        fn(*args)
+    except Exception as exc:
+        return type(exc).__name__
     return ""
 
 
@@ -581,3 +621,21 @@ for _code in ["b", "B", "h", "H", "i", "I", "l", "L", "q", "Q"]:
     print(_code, calcsize("<" + _code),
           pack_hex("<" + _code, 1), pack_hex(">" + _code, 1),
           pack_hex("!" + _code, 1), pack_hex("=" + _code, 1))
+
+# The one deliberate divergence, printed rather than raised.  Every line
+# above compares a MESSAGE with the real `struct`; these compare the
+# TYPE, which is the single thing this port cannot match -- `class
+# E(Exception)` is refused on both engines, so every failure here is a
+# ValueError.  CPython uses two types for the same failures, `error`
+# (that is `struct.error`) and `UnicodeEncodeError`, and this port
+# flattens both into one.  Printing it is what keeps the divergence
+# demonstrated instead of ending the run at the first range error.
+print("pack <Q 2**64", _error_type(pack, "<Q", 18446744073709551616))
+print("pack >Q 2**64", _error_type(pack, ">Q", 18446744073709551616))
+print("pack <b 128", _error_type(pack, "<b", 128))
+print("pack <i 1.5", _error_type(pack, "<i", 1.5))
+print("pack <i (no value)", _error_type(pack, "<i"))
+print("calcsize <z", _error_type(calcsize, "<z"))
+print("calcsize <NUL i", _error_type(calcsize, "<" + chr(0) + "i"))
+print("calcsize <U+00B2 i", _error_type(calcsize, "<" + chr(178) + "i"))
+print("pack <i 1", _error_type(pack, "<i", 1))

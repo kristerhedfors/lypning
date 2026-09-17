@@ -56,7 +56,18 @@ The six details worth having in front of you:
 Errors: CPython raises ``struct.error``, which is a subclass of
 ``Exception`` but NOT of ``ValueError``; the subset has no custom
 exceptions, so this port raises ``ValueError`` carrying the identical
-message.  That exception TYPE is the one deliberate divergence here.
+message.  That exception TYPE is the one deliberate divergence here --
+every message below is CPython's own, character for character.  Two
+things follow, and both are load-bearing.  ``_error_message`` catches
+``Exception`` and not ``ValueError``: the narrow spelling looks right
+here, where nothing else is ever raised, and stops catching the moment
+these same cases are run against the real ``struct``, which is when it
+matters.  And the type difference is PRINTED, by ``_error_type`` at the
+end of the cases, rather than being left to show itself by ending the
+run -- an abort compares one line and silences every line under it.
+CPython's own choice of type is not uniform either: a short buffer is
+``struct.error`` but a format that will not encode to ASCII is
+``UnicodeEncodeError``, and this port answers ``ValueError`` to both.
 
 ``unpack_all`` is ``struct.iter_unpack`` with the iterator materialised
 into a list, because the subset has no generators; it keeps CPython's two
@@ -310,11 +321,40 @@ def unpack_all(fmt, data):
 
 
 def _error_message(fn, *args):
-    """The message of the ValueError fn(*args) raises, or '' if none."""
+    """The message of the exception fn(*args) raises, or '' if none.
+
+    ``except Exception``, and the width is the whole point.  This port
+    raises ``ValueError`` because the subset has no ``class``, but the
+    module it stands in for raises ``struct.error``, which is a subclass
+    of ``Exception`` and NOT of ``ValueError``.  A narrower catch reads
+    the same in this file and stops catching the moment these cases are
+    run against the real ``struct``: the first failure escapes, the run
+    ends there, and every case below it is compared against nothing.
+    The width hides no type difference, because ``_error_type`` below
+    prints exactly that.
+    """
     try:
         fn(*args)
-    except ValueError as exc:
+    except Exception as exc:
         return str(exc)
+    return ""
+
+
+def _error_type(fn, *args):
+    """The NAME of the exception type fn(*args) raises, or '' if none.
+
+    The deliberate divergence, printed instead of raised.  Every failure
+    in this port is a ``ValueError``; the module it stands in for uses
+    two different types for the same failures -- ``struct.error``, whose
+    ``__name__`` is ``error``, and ``UnicodeEncodeError`` for a format
+    that will not encode -- and the port flattens both into one.  That
+    is a fact about the port, so the cases print it rather than letting
+    it end the run.
+    """
+    try:
+        fn(*args)
+    except Exception as exc:
+        return type(exc).__name__
     return ""
 
 
@@ -477,3 +517,22 @@ for _code in ["b", "B", "h", "H", "i", "I", "l", "L", "q", "Q"]:
           unpack("<" + _code, _ones)[0], unpack(">" + _code, _ones)[0],
           unpack("<" + _code, _low)[0], unpack(">" + _code, _low)[0],
           unpack("!" + _code, _low)[0], unpack("=" + _code, _low)[0])
+
+# The one deliberate divergence, printed rather than raised.  Every line
+# above compares a MESSAGE with the real `struct`; these compare the
+# TYPE, which is the single thing this port cannot match -- `class
+# E(Exception)` is refused on both engines, so every failure here is a
+# ValueError.  CPython uses two types for the same failures, `error`
+# (that is `struct.error`) and `UnicodeEncodeError`, and this port
+# flattens both into one.  Printing it is what keeps the divergence
+# demonstrated instead of ending the run at the first short buffer.
+print("unpack <i b'abc'", _error_type(unpack, "<i", b"abc"))
+print("unpack <i b'abcde'", _error_type(unpack, "<i", b"abcde"))
+print("unpack_from <q at 1", _error_type(unpack_from, "<q",
+                                        bytes([1, 2, 3, 4, 5, 6, 7, 8]), 1))
+print("unpack_from <i at -10",
+      _error_type(unpack_from, "<i", bytes([1, 2, 3, 4, 5, 6, 7, 8]), -10))
+print("calcsize <z", _error_type(calcsize, "<z"))
+print("calcsize <NUL i", _error_type(calcsize, "<" + chr(0) + "i"))
+print("calcsize <U+00B2 i", _error_type(calcsize, "<" + chr(178) + "i"))
+print("unpack <b one byte", _error_type(unpack, "<b", bytes([0])))
