@@ -484,6 +484,92 @@ def cmd_eval2_bank(args: argparse.Namespace) -> int:
     return 0 if result["cases"] else 1
 
 
+def cmd_synth_generate(args: argparse.Namespace) -> int:
+    """Ask the model for tasks and k programs each; execute nothing. Holds the key.
+
+    Exit 2 when CEREBRAS_API_KEY is not in this process, 0 otherwise — a run that
+    hit its bound is a normal outcome, and the next run resumes past what this
+    one wrote.
+    """
+    import random
+    from . import synth_generate as sg
+    from .jsonio import iter_jsonl
+    backend = sg.backend_from_env(timeout_s=args.timeout)
+    if backend is None:
+        print("CEREBRAS_API_KEY is not set; this runs on the trusted controller only",
+              file=sys.stderr)
+        return 2
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    # Resumable: what this file already holds, plus what the bank already has.
+    seen = sg.seen_tasks(iter_jsonl(output))
+    here = len(seen)
+    for path in args.exclude_tasks or []:
+        if not Path(path).is_file():
+            print("not a file: %s" % path, file=sys.stderr)
+            return 2
+        seen |= sg.seen_tasks(iter_jsonl(path))
+    print("resuming with %d task(s) in this file, %d already banked elsewhere"
+          % (here, len(seen) - here))
+    budget = sg.Budget(max_calls=args.max_calls, max_output_tokens=args.max_output_tokens,
+                       max_seconds=args.max_minutes * 60.0)
+    with output.open("a", encoding="utf-8") as sink:
+        def write(row):
+            sink.write(json.dumps(row, sort_keys=True) + "\n")
+            sink.flush()
+        summary = sg.generate(backend, write, budget=budget, seen=seen, samples=args.samples,
+                              tasks_per_call=args.tasks_per_call,
+                              rewrite_fraction=args.rewrite_fraction,
+                              rng=random.Random(args.seed))
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_synth_adapt(args: argparse.Namespace) -> int:
+    """Execute every candidate, apply the oracle, route by what the engine does,
+    repair the queue, and write schema-3 cases. Holds no provider key.
+
+    Exit 2 for a usage error (the engine is not a file, the output exists), 1
+    when nothing was admitted — a batch of nothing is a failed read, not a clean
+    one — and 0 otherwise. Witnesses do not change the exit code: they are
+    written and printed, and the cases beside them are still cases.
+    """
+    from . import synth
+    from .training_types import VerificationBlocked
+    if not Path(args.engine).is_file():
+        print("not a file: %s" % args.engine, file=sys.stderr)
+        return 2
+    if not Path(args.candidates).is_file():
+        print("not a file: %s" % args.candidates, file=sys.stderr)
+        return 2
+    if Path(args.output).exists():
+        print("refusing to overwrite %s: a re-run is a new directory" % args.output,
+              file=sys.stderr)
+        return 2
+    candidates = read_jsonl(args.candidates)
+    if args.limit:
+        candidates = candidates[:args.limit]
+    if not candidates:
+        print("no candidates in %s — nothing was triaged" % args.candidates, file=sys.stderr)
+        return 1
+    runner = synth.Runner(args.engine, timeout_s=args.timeout, mem_mb=args.memory_mb,
+                          seed=args.seed)
+    try:
+        result = synth.run(candidates, runner, agree=args.agree, batch=args.batch)
+    except VerificationBlocked as exc:
+        # Ours: a sandbox that could not start, an engine that could not be
+        # spawned. Nothing is written, because a partial batch that looks whole
+        # is worse than none.
+        print("synth-adapt blocked: %s" % exc, file=sys.stderr)
+        return 1
+    synth.write_outputs(result, args.output)
+    print(synth.render(result["report"]))
+    print("  -> %s" % args.output)
+    for row in result["witnesses"][:5]:
+        print("  witness: %s" % row["why"], file=sys.stderr)
+    return 0 if result["cases"] else 1
+
+
 def _run_meta(run_id: str) -> Dict[str, Any]:
     p = RUNS / run_id / "meta.json"
     if not p.exists():
@@ -2307,6 +2393,40 @@ def build_parser() -> argparse.ArgumentParser:
                      help="keep (flagged) cases whose independent solution disagrees or is missing")
     e2b.add_argument("--timeout", type=float, default=10.0)
     e2b.set_defaults(fn=cmd_eval2_bank)
+
+    sgn = sub.add_parser("synth-generate",
+                         help="bank v3 step 1: ask Qwen on Cerebras for tasks and k programs each (runs nothing)")
+    sgn.add_argument("--output", required=True, help="candidates JSONL, appended to; resumable")
+    sgn.add_argument("--exclude-tasks", action="append",
+                     help="JSONL whose task texts are never regenerated (repeatable)")
+    sgn.add_argument("--tasks-per-call", type=int, default=8)
+    sgn.add_argument("--samples", type=int, default=3,
+                     help="independent programs per task; the self-consistency k")
+    sgn.add_argument("--max-calls", type=int, default=200)
+    sgn.add_argument("--max-output-tokens", type=int, default=1_500_000)
+    sgn.add_argument("--max-minutes", type=float, default=50.0)
+    sgn.add_argument("--timeout", type=float, default=120.0, help="per-request seconds")
+    sgn.add_argument("--seed", type=int, default=1111)
+    sgn.add_argument("--rewrite-fraction", type=float, default=66.0 / 93.0,
+                     help="share of requests aimed at a REWRITABLE construct; the "
+                          "preregistered pool is 66 rewrite to 27 ceiling (0.71)")
+    sgn.set_defaults(fn=cmd_synth_generate)
+
+    sad = sub.add_parser("synth-adapt",
+                         help="bank v3 step 2: execute, judge, repair and write schema-3 cases (no provider key)")
+    sad.add_argument("--candidates", required=True, help="synth-generate output")
+    sad.add_argument("--engine", required=True, help="the pinned lypning-l binary that decides native versus refused")
+    sad.add_argument("--output", required=True,
+                     help="NEW directory for cases.jsonl, unrepaired.jsonl, rejected.jsonl, witnesses.jsonl, report.json")
+    sad.add_argument("--agree", type=int, default=2, help="samples that must agree for a case to survive")
+    sad.add_argument("--batch", default=os.environ.get("GITHUB_RUN_ID", "local"),
+                     help="batch identity written into every case's provenance")
+    sad.add_argument("--timeout", type=float, default=10.0)
+    sad.add_argument("--memory-mb", type=int, default=1024,
+                     help="child address-space cap; 0 explicitly disables it (macOS only)")
+    sad.add_argument("--seed", type=int, default=1111, help="hash seed of the winner's second run")
+    sad.add_argument("--limit", type=int, default=0, help="judge only the first N candidates; 0 keeps all")
+    sad.set_defaults(fn=cmd_synth_adapt)
 
     v = sub.add_parser("verify", help="check the held-out split against its lock")
     v.set_defaults(fn=cmd_verify)

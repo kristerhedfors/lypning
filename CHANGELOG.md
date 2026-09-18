@@ -14,6 +14,55 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-18** — Fold the bank-v3 synthesis into the pipeline, on the one net, emitting the one schema ([#94](https://github.com/kristerhedfors/lypning/pull/94))
+
+- The generate-and-adapt loop was four standalone scripts under
+  `training/data/bank_v3/` and `.github/scripts/`, each with its own
+  `subprocess.run` harness, its own JSONL reader and its own reading of the
+  refusal line — and its output was a record shape nothing downstream could
+  load. Two independent surveys of the tree agreed: no converter from a v3 row
+  to schema-3 existed, so the loop terminated at the private dataset repo.
+- Now `pipeline/synth.py` (the oracle, the routing, the proved repair, the
+  schema-3 projection), `pipeline/repair_rules.py` (the rewrites, as pure source
+  transforms) and `pipeline/synth_generate.py` (the prompts, the construct
+  lists, the budget loop), driven by `nt synth-generate` and `nt synth-adapt`.
+  Model-written code runs through `sandbox.run_python` — scrubbed environment,
+  process-group kill, memory and output caps — where it used to run through a
+  bare subprocess with a timeout. The refusal line is read by
+  `engines.parse_refusal`; `engines.check_refusal_contract` is the one home for
+  "exit 90, one line, empty stdout", and `eval2_bank` now uses it too.
+- What comes out is schema-3. `synth-adapt` output goes straight into
+  `training-prepare --cases`, which confirmed every label by execution on a
+  handcrafted batch (coverage references `correct-native`, controls
+  `correct-control`), and into `eval2-leaks` against the frozen benchmark.
+  Emitting the shape admits nothing: review, preparation and every floor in
+  `training-bundle` still stand, and each case says in `review.oracle_basis`
+  that its tier is self-consistency, not independent derivation — the
+  docstrings claimed that field was written before; it never was.
+- Three routing defects closed. A ceiling-stratum row the engine served is now
+  a coverage case, decided by execution and not by its label; a control refused
+  on some inputs only is rejected, because `validate_reference_scores` wants
+  every test refused; and an engine that runs a program to a different answer
+  than CPython is a **witness** (root invariant 1), where triage used to file
+  it as `engine_error` and discard it. Stratum routing moved from the
+  publishing script, which holds `HF_TOKEN`, into the stage that decides.
+- The adapt job no longer fails when nothing needs repairing: `repair.py`
+  exited 1 on an empty queue, so a batch that was all native banked nothing.
+  A batch with no admitted case still exits 1, because nothing is not a clean
+  read.
+- The generator goes through `pipeline.backends`, the one OpenAI-shaped door,
+  with a `reasoning_effort` knob it needed and the eval arms do not; the vendor
+  SDK leaves the workflow, and so does the second copy of the key-stripping
+  rationale in `cerebras_probe.py`.
+- `training/tests/test_synth.py` and `test_synth_generate.py`: every route
+  in `synth.judge` reached from a fixture engine, the repair accepted only when
+  native and byte-identical, every admitted kind validated by
+  `training_data.validate_cases`, the generator's bounds and resume against a
+  scripted backend, and the door's payload. `test_repair_rules.py` imports the
+  package instead of a file path. Touches no Rust, nothing under `src/lypning/`,
+  no admission gate, and no frozen artifact; `training/data/bank_v2/` is
+  untouched.
+
 **2026-09-18** — Generate the population the programme asked for, and repair what the engine refuses ([#93](https://github.com/kristerhedfors/lypning/pull/93))
 
 - `training/PREREGISTRATION.md` §2 item (g) fixed the training mixture on 2026-09-13,

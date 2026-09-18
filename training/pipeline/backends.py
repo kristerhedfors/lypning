@@ -109,6 +109,7 @@ class ChatBackend:
         stop: Optional[List[str]] = None,
         top_k: Optional[int] = None,
         min_p: Optional[float] = None,
+        reasoning_effort: Optional[str] = None,
     ) -> Completion:
         payload: Dict[str, Any] = {
             "model": self.model,
@@ -125,6 +126,14 @@ class ChatBackend:
         if enable_thinking is not None:
             # Qwen's chat template reads this; vLLM/SGLang forward it.
             payload["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
+        if reasoning_effort is not None:
+            # The hosted form of the same switch. Cerebras serves Qwen3.8 with
+            # reasoning ON by default and puts the thinking in a separate
+            # channel, leaving `content` EMPTY: a call without this returns
+            # successfully with nothing in it, which is how the first bank run
+            # spent sixty calls for zero tasks. `harvesting/proxy.py` pins it
+            # too. Not sent unless asked for, like every other knob here.
+            payload["reasoning_effort"] = reasoning_effort
         body = json.dumps(payload).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         if self.api_key:

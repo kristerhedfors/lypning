@@ -13,6 +13,10 @@
 # branch, which it is not yet, so the push route is gated on a commit-message
 # marker the way the round-02 launcher already is. A routine push to this branch
 # spends nothing; only a commit that says `[generate-bank]` does.
+#
+# The stages are `python -m pipeline.cli synth-generate` and `synth-adapt`
+# (`training/pipeline/synth_generate.py`, `training/pipeline/synth.py`); the
+# adapt step writes schema-3 cases, the shape `training-prepare` reads.
 name: bank v3 (generate and adapt)
 
 on:
@@ -48,15 +52,17 @@ jobs:
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      PYTHONPATH: src:training
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      # The official SDK, as the provider documents it. Not a runtime dependency
-      # of the package — root CLAUDE.md invariant 6 is about what ships in the
-      # wheel, and this is CI tooling on the trusted controller.
-      - run: pip install -q cerebras_cloud_sdk "huggingface-hub==1.31.0"
+      # The provider is reached through `pipeline.backends`, stdlib urllib: no
+      # vendor SDK. huggingface-hub is CI tooling on the trusted controller, not
+      # a runtime dependency of the package (root CLAUDE.md invariant 6).
+      - run: pip install -q "huggingface-hub==1.31.0"
       # Every task already banked, so a run does not pay to regenerate what the
       # bank already has. This step runs no model-written code, which is why it
       # may hold HF_TOKEN; the job that executes candidates must not, and does not.
@@ -76,7 +82,7 @@ jobs:
         env:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
         run: |
-          python training/data/bank_v3/cerebras_gen.py \
+          python -m pipeline.cli synth-generate \
             --output "$RUNNER_TEMP/candidates.jsonl" \
             --exclude-tasks "$RUNNER_TEMP/banked.jsonl" \
             --samples "${{ inputs.samples || 3 }}" \
@@ -118,25 +124,17 @@ jobs:
       # Runs every candidate. This job deliberately has no provider secret, so
       # a generated program that reads the environment finds nothing worth
       # having; the runner is a disposable VM with no other credentials either.
-      - name: Triage — self-consistency oracle, then route by what the engine does
+      # Every repair is proved against the expected output agreed BEFORE the
+      # repair existed, so a rewrite cannot move its own target. Exit 1 here
+      # means nothing was admitted, which is a failed read and not a clean one.
+      - name: Triage, repair, and write schema-3 cases
         run: |
-          python training/data/bank_v3/triage.py \
+          python -m pipeline.cli synth-adapt \
             --candidates "$RUNNER_TEMP/in/candidates.jsonl" \
             --engine "$LYPNING_HOME/bin/lypning-l" \
             --agree "${{ inputs.agree || 2 }}" \
-            --out-native "$RUNNER_TEMP/out/native.jsonl" \
-            --out-repair "$RUNNER_TEMP/out/repair-queue.jsonl" \
-            --out-rejected "$RUNNER_TEMP/out/rejected.jsonl"
-
-      # Every repair is proved against the expected output agreed BEFORE the
-      # repair existed, so a rewrite cannot move its own target.
-      - name: Adapt the refused programs into the supported subset
-        run: |
-          python training/data/bank_v3/repair.py \
-            --queue "$RUNNER_TEMP/out/repair-queue.jsonl" \
-            --engine "$LYPNING_HOME/bin/lypning-l" \
-            --out-repaired "$RUNNER_TEMP/out/repaired.jsonl" \
-            --out-unrepaired "$RUNNER_TEMP/out/unrepaired.jsonl"
+            --batch "$GITHUB_RUN_ID" \
+            --output "$RUNNER_TEMP/out"
 
       - uses: actions/upload-artifact@v4
         if: always()

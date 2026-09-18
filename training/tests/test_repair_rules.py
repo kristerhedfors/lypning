@@ -1,14 +1,14 @@
 """The repair preludes, differential-tested against the library they replace.
 
-WHY THIS FILE EXISTS. `repair.py` accepts a rewrite only when it reproduces the
-expected output on the four inputs a queue row carries. Four inputs cannot see
+WHY THIS FILE EXISTS. `pipeline.synth` accepts a rewrite only when it reproduces
+the expected output on the four inputs a queue row carries. Four inputs cannot see
 that 1900 is not a leap year while 2000 is, or that `monthrange` returns a
 weekday nobody in the current queue reads. So an edit to `_dt_cfd` or
 `_cal_weekday` that breaks a century boundary would pass the bank in silence and
 land in training data as a plausible wrong answer.
 
-The verification numbers quoted in `repair.py`'s docstrings were measured once by
-hand and are not re-runnable from the tree — which is the same defect as a
+The verification numbers quoted in `repair_rules.py`'s docstrings were measured
+once by hand and are not re-runnable from the tree — which is the same defect as a
 number with no command behind it. These tests are that command.
 
 They compare against CPython's own `calendar` and `datetime`, which is the
@@ -19,12 +19,10 @@ from __future__ import annotations
 
 import calendar
 import datetime as _dt
-import importlib.util
-from pathlib import Path
 
 import pytest
 
-REPAIR = Path(__file__).resolve().parents[1] / "data" / "bank_v3" / "repair.py"
+from pipeline import repair_rules as module
 
 
 def _prelude_namespace(*keys):
@@ -34,9 +32,6 @@ def _prelude_namespace(*keys):
     pasted into a candidate program. Running them here is the only way to test
     the thing that actually ships.
     """
-    spec = importlib.util.spec_from_file_location("repair_under_test", REPAIR)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
     ns: dict = {}
     for key in keys:
         exec(module.PRELUDE[key], ns)          # noqa: S102 - the unit under test
