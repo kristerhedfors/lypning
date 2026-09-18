@@ -18,7 +18,16 @@ import os
 import sys
 from pathlib import Path
 
-ACCEPTED = ("native.jsonl", "repaired.jsonl")
+#: What counts as a banked row, and why `unrepaired.jsonl` is on the list.
+#: A refused row whose stratum is `ceiling` is the RIGHT answer — the task needs
+#: something the engine cannot serve, so keeping the import and taking the
+#: fallback is correct, and `PREREGISTRATION.md` §2g reserves 27 of 93 pool cases
+#: for exactly that. Banking only native+repaired discarded the whole
+#: counterweight: the run of 2026-09-18 asked for 105 ceiling task-calls and
+#: banked none of them. A refused row whose stratum is `rewrite` is a genuine
+#: failure and is still not banked; `ceiling_from_unrepaired` splits them.
+ACCEPTED = ("native.jsonl", "repaired.jsonl", "ceiling.jsonl")
+SOURCE_OF_CEILING = "unrepaired.jsonl"
 
 
 def api():
@@ -81,6 +90,23 @@ def main() -> int:
     if args.push is None:
         print("one of --push or --seed is required", file=sys.stderr)
         return 2
+
+    # Split the unrepaired file before counting: a ceiling row that refused is a
+    # banked case, a rewrite row that refused is a repair we owe.
+    source = args.push / SOURCE_OF_CEILING
+    if source.is_file():
+        kept, owed = [], 0
+        for line in source.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if row.get("stratum") == "ceiling":
+                kept.append(line)
+            else:
+                owed += 1
+        (args.push / "ceiling.jsonl").write_text(
+            "\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+        print("ceiling rows kept %d; rewrite rows still owed a repair %d" % (len(kept), owed))
 
     counts, total = {}, 0
     for name in ACCEPTED:

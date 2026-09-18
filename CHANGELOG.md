@@ -14,6 +14,47 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-18** — Generate the population the programme asked for, and repair what the engine refuses ([#94](https://github.com/kristerhedfors/lypning/pull/94))
+
+- `training/PREREGISTRATION.md` §2g fixed the training mixture on 2026-09-13,
+  before any spend: a pool of 66 rewrite to 27 ceiling, drawn from "rewrite +
+  ceiling only, less the cases that cannot teach", because "an unobserved case
+  is a plain coding task the stock model already answers". The first scaled run
+  was 3,499 of 3,837 already native — 91.2% of the one population that was
+  struck out. The prompt caused it: asking for tasks "solvable in under 25 lines
+  of ordinary Python" is a description of the served subset.
+- Generation now names a construct the engine refuses and asks for an ordinary
+  task whose natural answer reaches for it, never mentioning the module or any
+  restriction. Measured 2026-09-18 (GH run 35340137976): the refused fraction
+  went **5.2% to 42.1%**, repaired rows 13 to 103, and the stratum draw came out
+  at 0.708 against the preregistered 0.710.
+- Two lists, not one, and the difference is the point. REWRITABLE means a native
+  equivalent exists, so the pair teaches a substitution; UNREWRITABLE means the
+  right answer keeps the import. `fractions` and `namedtuple` moved to the second
+  list after the repair failed: `lypning-l -c "class C: pass"` exits 90, so a
+  shim built on a user-defined type can never be native.
+- Ceiling cases were being generated and then thrown away. `bank3_publish.py`
+  banked only native and repaired rows, so the run's 105 ceiling task-calls
+  reached the queue, refused correctly, and were discarded — the whole
+  counterweight that stops an arm scoring well by avoiding every import.
+  `triage.py` now carries the stratum and publishing separates a banked ceiling
+  row from a rewrite row that still owes a repair.
+- `calendar` and `datetime` repair rules, which were the two largest unserved
+  buckets. Plain functions only, verified against CPython over 3,652,059 days,
+  216,012 `monthrange` pairs and 323,935 date triples with zero mismatches. The
+  repair rate over the same queue went **13 to 78 of 198**.
+- Adversarial review demonstrated two repairs that `verify()` accepted and that
+  were silently wrong, both now refused. A date is carried as an integer day
+  count, and the leak guard matched the carrier only as a FIRST argument, so
+  `print("far", d)` printed `21358` where the original printed `2028-06-23`.
+  And `date + timedelta(days=1.5)` advances ONE day in CPython, because
+  `timedelta` truncates before `date.__add__` reads `.days`; rewriting it to
+  `+ 1.5` advanced 1.5. Closing both cost 4 repairs, which is the right price.
+- `training/tests/test_repair_rules.py`, 28 tests: the verification above was
+  measured by hand and quoted in a docstring, which is the same defect as a
+  number with no command behind it. Four inputs per queue row cannot see that
+  1900 is not a leap year while 2000 is.
+
 **2026-09-18** — Grow the bank from Qwen on Cerebras, and adapt what the engine refuses ([#92](https://github.com/kristerhedfors/lypning/pull/92))
 
 - A generate-and-adapt loop, which is `training/ORCHESTRATION.md`'s data loop and its
