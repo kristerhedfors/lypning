@@ -40,27 +40,94 @@ from pathlib import Path
 #: different model is a different bank.
 MODEL = "qwen-3.8-27b"
 
-DOMAINS = [
-    ("text", "parsing, normalising and reporting on lines of text"),
-    ("records", "tabular records: grouping, filtering, joining, validating"),
-    ("numbers", "integer and rational arithmetic, counting, accumulation"),
-    ("sequences", "ordering, deduplicating, windowing and chunking sequences"),
-    ("encoding", "base conversion, escaping, checksums, fixed-width formatting"),
-    ("files", "reading one or more small text files and summarising them"),
-    ("argv", "command-line arguments that select or parameterise the work"),
-    ("validation", "checking input against a stated rule and reporting which failed"),
-    ("dates", "day/month arithmetic done from first principles, no date library"),
-    ("stats", "counts, extremes, medians and simple aggregates over numbers"),
+# --------------------------------------------------------------------------
+# WHAT TO ASK FOR, and why it is not "ordinary tasks".
+#
+# The first scaled run asked for ordinary sub-25-line Python and got 3,499 of
+# 3,837 tasks (91.2%) already served natively (GH run 35320962503, 2026-09-18).
+# That is the one population `PREREGISTRATION.md` §2 item (g) strikes out: sampling
+# draws from "rewrite + ceiling only, less the cases that cannot teach", because
+# "an unobserved case is a plain coding task the stock model already answers".
+# Its pool is 66 rewrite to 27 ceiling — 71/29 — decided 2026-09-13 before any
+# spend. We generated the inverse.
+#
+# So generation now NAMES a construct the engine refuses and asks for an
+# ordinary task whose natural answer reaches for it. The task text never
+# mentions lypning, the subset, or the module: the model must write its natural
+# first draft, which is the refused one. `triage.py` confirms the refusal and
+# `repair.py` supplies the native rewrite, and THAT PAIR is the rewrite case.
+#
+# The two lists are not interchangeable and the difference is the whole point:
+#   REWRITABLE   a native equivalent exists, so the pair teaches a substitution.
+#                Proof it exists: repair.py already rewrites functools,
+#                statistics, heapq and string, verified byte-identical.
+#   UNREWRITABLE no native equivalent exists, so the right answer KEEPS the
+#                import and takes the fallback. These are the ceiling cases, and
+#                they are the counterweight that stops an arm scoring well by
+#                learning to avoid every import.
+#
+# bank v2's ten "fallback-control" families are all on the REWRITABLE list, so
+# they taught "fall back where a native answer exists" — the behaviour the round
+# exists to remove. They are controls in name only.
+
+REWRITABLE = [
+    ("functools.reduce", "folding a list down to one value"),
+    ("itertools.groupby", "grouping consecutive equal keys in a sorted list"),
+    ("itertools.combinations", "every unordered pair or triple drawn from a list"),
+    ("statistics.median", "the middle value of a set of measurements"),
+    ("statistics.mean", "an average of numbers"),
+    ("heapq.nsmallest", "the few smallest items without sorting everything"),
+    ("heapq.heappush and heapq.heappop", "a priority queue processed in order"),
+    ("bisect.bisect_left", "where a value belongs in a sorted list"),
+    ("operator.itemgetter", "sorting records by a chosen field"),
+    ("collections.deque", "a sliding window or a queue consumed from both ends"),
+    ("collections.OrderedDict", "entries kept in insertion order and re-ordered"),
+    ("copy.deepcopy", "an independent copy of nested data before mutating it"),
+    ("string.ascii_lowercase", "a rotation or substitution cipher over the alphabet"),
+    ("textwrap.fill", "wrapping prose to a fixed column width"),
+    ("math.comb", "counting combinations or binomial coefficients"),
+    ("math.prod", "the product of a list of numbers"),
+    ("math.lcm", "a least common multiple of several integers"),
+    ("str.center or str.ljust with a fill character", "a fixed-width aligned report"),
+    ("str.translate with str.maketrans", "replacing many characters at once"),
+    ("dict.fromkeys", "de-duplicating while preserving order"),
+    ("calendar.monthrange", "how many days a given month has"),
+    ("datetime.date arithmetic", "days between two dates, or a date N days on"),
+    ("array.array", "a compact numeric buffer"),
+    ("csv.writer", "emitting correctly quoted CSV"),
+    ("io.StringIO", "building text in memory and reading it back"),
+    ("frozenset", "a set used as a dictionary key"),
+    ("zip with strict=True", "pairing two lists that must be the same length"),
 ]
 
-TASK_PROMPT = """Invent {n} small, self-contained Python programming tasks about {topic}.
+UNREWRITABLE = [
+    # Moved here from REWRITABLE on 2026-09-18 after the repair failed: both
+    # need a user-defined type, and `lypning-l -c "class C: ..."` exits 90 with
+    # `class: class definition`. A shim that cannot be native is not a rewrite.
+    ("fractions.Fraction", "exact rational arithmetic without floating point"),
+    ("collections.namedtuple", "records with named fields"),
+    ("unicodedata.name or unicodedata.category", "naming or classifying characters"),
+    ("time.strftime or time.gmtime", "formatting a timestamp"),
+    ("uuid.uuid5", "a deterministic namespaced identifier"),
+    ("difflib.ndiff or difflib.SequenceMatcher", "a textual diff or similarity ratio"),
+    ("math.log10, math.exp or math.sin", "logarithms or trigonometry"),
+    ("base64.b32encode", "base32 encoding"),
+    ("hashlib.new with an algorithm name", "a digest chosen at run time"),
+    ("random.shuffle with a fixed seed", "a deterministic shuffle"),
+]
+
+TASK_PROMPT = """Invent {n} small Python programming tasks whose most natural solution uses
+{construct} — for example, {hint}.
 
 Rules for every task:
-- It reads from stdin, or command-line arguments, or a named text file - state which.
-- Its entire output is deterministic UTF-8 text on stdout. No randomness, no clocks,
-  no network, no file writing.
-- It is solvable in under 25 lines of ordinary Python.
+- State plainly what the program must do and where its input comes from: stdin, or
+  command-line arguments, or a named text file.
+- Its entire output is deterministic UTF-8 text on stdout. Nothing random, no clocks,
+  no network, no file writing, no reading of anything not named in the task.
 - The expected output is fully determined by the input and the task text alone.
+- Write the task as an ORDINARY request. Do NOT mention {construct}, any module name,
+  any library, or any restriction on how it must be solved. A competent Python
+  programmer reading it should simply reach for {construct} on their own.
 - Tasks must differ from each other in what they compute, not only in wording.
 
 Reply with ONLY a JSON array of objects, each {{"task": "<one paragraph>",
@@ -73,8 +140,9 @@ SOLVE_PROMPT = """Write a Python 3 program for this task.
 {task}
 
 Constraints: read only from the sources the task names; write only to stdout;
-be deterministic; use the standard library only. Reply with ONLY the program
-source. No explanation, no markdown fences."""
+be deterministic; use the standard library only. Write the solution you would
+naturally write — do not avoid any module or restrict yourself to builtins.
+Reply with ONLY the program source. No explanation, no markdown fences."""
 
 
 def make_client():
@@ -207,6 +275,9 @@ def main() -> int:
     ap.add_argument("--max-minutes", type=float, default=50.0)
     ap.add_argument("--timeout", type=float, default=120.0)
     ap.add_argument("--seed", type=int, default=1111)
+    ap.add_argument("--rewrite-fraction", type=float, default=66.0 / 93.0,
+                    help="share of requests aimed at a REWRITABLE construct; the "
+                         "preregistered pool is 66 rewrite to 27 ceiling (0.71)")
     ap.add_argument("--exclude-tasks", type=Path,
                     help="JSONL of already-banked {'task': ...}; never regenerate these")
     args = ap.parse_args()
@@ -250,9 +321,18 @@ def main() -> int:
 
     with args.output.open("a", encoding="utf-8") as sink:
         while budget_left():
-            name, topic = DOMAINS[rng.randrange(len(DOMAINS))]
+            # `PREREGISTRATION.md` §2 item (g): 66 rewrite to 27 ceiling, decided before
+            # the spend. Draw the target in that proportion rather than dropping
+            # the counterweight, which is what makes an arm look good by
+            # learning to avoid every import.
+            want_rewrite = rng.random() < args.rewrite_fraction
+            pool = REWRITABLE if want_rewrite else UNREWRITABLE
+            construct, hint = pool[rng.randrange(len(pool))]
+            name = ("rewrite:" if want_rewrite else "ceiling:") + construct.split(".")[0].split()[0]
+            ledger["asked_" + ("rewrite" if want_rewrite else "ceiling")] = ledger.get(
+                "asked_" + ("rewrite" if want_rewrite else "ceiling"), 0) + 1
             text, err = call(client, [{"role": "user", "content": TASK_PROMPT.format(
-                n=args.tasks_per_call, topic=topic)}],
+                n=args.tasks_per_call, construct=construct, hint=hint)}],
                 max_tokens=4096, temperature=0.9, timeout=args.timeout, ledger=ledger)
             if err:
                 ledger["task_call_failed"] = ledger.get("task_call_failed", 0) + 1
@@ -301,6 +381,8 @@ def main() -> int:
                 sink.write(json.dumps({
                     "task": spec["task"], "inputs": spec["inputs"],
                     "programs": programs, "domain": name, "model": MODEL,
+                    "target_construct": construct,
+                    "stratum": "rewrite" if want_rewrite else "ceiling",
                 }, sort_keys=True) + "\n")
                 sink.flush()
                 written += 1
