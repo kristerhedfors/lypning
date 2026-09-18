@@ -1,11 +1,16 @@
 """Print what the private artifact repo holds, and read the small files in it.
 
-Free and read-only: it lists files and downloads only JSON manifests and metric
-files, never weights. `hf_status.py` prints counts, which is the right size for
-a status line and the wrong size for deciding whether a rung has its inputs or
-what a finished stage measured. This prints every path, then the contents of
-the files small enough to be evidence, so both decisions are made against the
-repository rather than against a remembered layout.
+`hf_status.py` prints counts, which is the right size for a status line and the
+wrong size for deciding whether a rung has its inputs or what a finished stage
+measured. This prints every path, then the contents of the files small enough to
+be evidence, so both decisions are made against the repository rather than
+against a remembered layout.
+
+Downloading and printing are different boundaries, and only the second one is
+tight. No weights are fetched, but the line-counts loop downloads **every**
+`.jsonl` in the repository into the runner — bank rows and case files included —
+and returns only the count. What may be *printed* is the `SMALL` tuple below,
+and that is the list that keeps the held-out benchmark out of a public log.
 """
 from __future__ import annotations
 
