@@ -13,6 +13,13 @@ making cases that are worth training on — the shape is the easy part, and
 Work from `training/data/bank_v2/generate.py`, which is a working generator with
 69 families; copying its structure is faster than starting from the schema.
 
+There is a second, generated route: `nt synth-generate` asks Qwen on Cerebras
+for tasks and k programs each, and `nt synth-adapt` judges them by execution,
+repairs what the engine refuses and writes schema-3 cases (`training/README.md`,
+"Bank v3"; mechanism in `training/pipeline/synth.py`). Its oracle is
+self-consistency, a weaker tier than the differential oracle below, and every
+case it emits says so; never merge the two banks into one number.
+
 ## The four rules that actually bite
 
 **1. The oracle must not be a transcript of your own answer.**

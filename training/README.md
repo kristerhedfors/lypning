@@ -181,6 +181,35 @@ the abandon threshold in `PREREGISTRATION.md` is a claim about the population th
 experiment is about, and a total that counts ceiling rows can clear it while that
 population does not.
 
+## Bank v3 — the generate-and-adapt loop
+
+The second way a bank grows, beside the authored `data/bank_v2`: the model
+proposes tasks and answers each k times, execution judges them, rules adapt what
+the engine refuses, and what survives comes out in **schema-3**, the shape
+`training-prepare`, `data_loop` and `eval2-leaks` already read. Two commands, and
+the split between them is the safety property (`HARVESTING.md`: the upstream key
+never reaches the model-facing execution boundary):
+
+```bash
+nt synth-generate --output candidates.jsonl --exclude-tasks banked.jsonl   # holds the key; runs nothing
+nt synth-adapt --candidates candidates.jsonl --engine "$LYPNING_HOME/bin/lypning-l" --output out/   # no key; runs everything
+```
+
+`pipeline/synth.py` is the mechanism: the self-consistency oracle, the routing
+by what the engine does (native → coverage, refused ceiling → fallback-control,
+refused rewrite → the repair queue, an engine that disagrees with CPython → a
+witness, never a row), the proved repair, and the projection to schema-3.
+`pipeline/repair_rules.py` holds the rewrites as pure source transforms;
+`pipeline/synth_generate.py` holds the prompts, the two construct lists and the
+budget loop, through `pipeline.backends` like every other arm. Every case
+carries its evidence tier in `review.oracle_basis` and a `synth` block: this is
+a **weaker tier than bank v2** — samples of one model agreeing, not independent
+derivation from the task — and a report must never merge the two into one
+number (`ORCHESTRATION.md` ledger row T6). `.github/workflows/bank-v3.yml` runs
+the loop and `.github/scripts/bank3_publish.py` banks a batch; neither admits
+anything, and every floor in the `training-bundle` skill still stands between a
+batch and a round.
+
 ## Step 1b — the frozen split
 
 70/30, stratified by failure category, assigned by `sha256(salt || case_id)`

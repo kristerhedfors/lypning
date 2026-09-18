@@ -1,4 +1,4 @@
-"""Rewrite refused programs into the supported subset, and prove each rewrite.
+"""The repair rules: rewrite a refused program into the served subset, as text.
 
 This is the `ORCHESTRATION.md` step-6 repair: "Supply a complete implementation,
 not an unsupported-construct deletion." A rule here replaces a refused library
@@ -6,32 +6,23 @@ call with an equivalent written in the subset the engine serves. Deleting the
 construct, or quietly changing what the program computes, is the failure mode
 these rules are shaped to avoid.
 
-NOTHING IS TRUSTED. A repair is accepted only when both hold:
-
-  1. the engine serves it natively on every input, and
-  2. it reproduces the ALREADY-AGREED expected output byte for byte.
-
-Condition 2 is the one that matters. The expected output came from independent
-samples agreeing in `triage.py`, before any repair existed, so a rewrite cannot
-move the target it is measured against. A rule that changes behaviour fails here
-and the row stays in the queue; it is never nudged through.
+A RULE IS A PURE FUNCTION OF SOURCE. It returns the rewritten program, or None
+when the shape is not one it has measured. Nothing here executes anything:
+:mod:`pipeline.synth` runs every candidate a rule returns, and accepts it only
+when the engine serves it natively on every input AND it reproduces the
+expected output that was agreed BEFORE the repair existed. A rule that changes
+behaviour fails there and the row stays in the queue; it is never nudged
+through. Keeping the rules apart from the verifier is what lets
+``training/tests/test_repair_rules.py`` exercise the preludes against CPython's
+own ``calendar`` and ``datetime`` without an engine in the room.
 
 WHAT SURVIVES THE QUEUE IS EVIDENCE TOO. A refusal kind with no rule, or whose
 rule keeps failing, is a capability request for the engine — the
-`engine-addressable` bucket `levers` ranks — not a case to discard. Unrepaired
-rows are written out with their kind so the next round can read what the subset
-actually costs.
+`engine-addressable` bucket `levers` ranks — not a case to discard.
 """
 from __future__ import annotations
 
-import argparse
-import json
 import re
-import subprocess
-import sys
-import tempfile
-from collections import Counter
-from pathlib import Path
 
 # --------------------------------------------------------------------------
 # The rules. Each is (name, applies-to-kind predicate, source transform).
@@ -721,98 +712,7 @@ RULES = [
     ("calendar", rule_calendar), ("datetime", rule_datetime),
     # `fraction` withdrawn 2026-09-18: the shim was a class, and the engine
     # refuses `class` outright (`class: class definition`), so the repair could
-    # never be native. Fractions move to the CEILING list in cerebras_gen.py —
+    # never be native. Fractions move to the CEILING list in synth_generate.py —
     # keeping the import is the right answer, which is what a control is for.
 ]
 
-
-def run(binary, program, spec, workdir):
-    for name, text in (spec.get("files") or {}).items():
-        if "/" in name or name.startswith("."):
-            return None
-        (workdir / name).write_text(text, encoding="utf-8")
-    try:
-        return subprocess.run(
-            [binary, "-I", "-c", program] + list(spec.get("argv") or []),
-            input=(spec.get("stdin") or ""), capture_output=True, text=True,
-            cwd=str(workdir), timeout=10.0)
-    except (subprocess.TimeoutExpired, OSError, ValueError, UnicodeError):
-        return None
-
-
-def verify(python, engine, program, row, workdir):
-    """Native on every input AND byte-identical to the pre-agreed expected output."""
-    for spec, want in zip(row["inputs"], row["expected"]):
-        for p in workdir.iterdir():
-            p.unlink()
-        got = run(python, program, spec, workdir)
-        if got is None or got.returncode != 0 or got.stderr.strip() or got.stdout != want:
-            return False, "cpython-mismatch"
-        for p in workdir.iterdir():
-            p.unlink()
-        nat = run(engine, program, spec, workdir)
-        if nat is None or nat.returncode != 0:
-            return False, "still-refused"
-        if nat.stdout != want:
-            return False, "engine-mismatch"
-    return True, None
-
-
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--queue", required=True, type=Path)
-    ap.add_argument("--engine", required=True)
-    ap.add_argument("--out-repaired", required=True, type=Path)
-    ap.add_argument("--out-unrepaired", required=True, type=Path)
-    ap.add_argument("--python", default=sys.executable)
-    args = ap.parse_args()
-
-    if not Path(args.engine).is_file():
-        print("not a file: %s" % args.engine, file=sys.stderr)
-        return 2
-    rows = [json.loads(l) for l in args.queue.read_text(encoding="utf-8").splitlines() if l]
-    if not rows:
-        print("empty repair queue: %s" % args.queue, file=sys.stderr)
-        return 1
-
-    repaired, unrepaired = [], []
-    fired, accepted, why = Counter(), Counter(), Counter()
-    with tempfile.TemporaryDirectory() as tmp:
-        workdir = Path(tmp)
-        for row in rows:
-            done = False
-            for name, rule in RULES:
-                candidate = rule(row["program"])
-                if candidate is None or candidate == row["program"]:
-                    continue
-                fired[name] += 1
-                ok, reason = verify(args.python, args.engine, candidate, row, workdir)
-                if not ok:
-                    why["%s:%s" % (name, reason)] += 1
-                    continue
-                accepted[name] += 1
-                repaired.append({**row, "program": candidate, "original": row["program"],
-                                 "repair_rule": name})
-                done = True
-                break
-            if not done:
-                unrepaired.append(row)
-
-    for path, rows_out in ((args.out_repaired, repaired), (args.out_unrepaired, unrepaired)):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows_out),
-                        encoding="utf-8")
-
-    still = Counter(k for r in unrepaired for k in r.get("refusals", []))
-    print(json.dumps({
-        "queue": len(rows), "repaired": len(repaired), "unrepaired": len(unrepaired),
-        "rules_fired": dict(fired), "rules_accepted": dict(accepted),
-        "rejected_by_verification": dict(why),
-        # This is the capability request, and the useful half of a failure.
-        "unserved_kinds": still.most_common(20),
-    }, indent=2))
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

@@ -63,8 +63,6 @@ AUTHORED_ON = "2026-09-16"
 #: A task shorter than this cannot state how input arrives and what to print.
 MIN_TASK_WORDS = 20
 
-#: The prefix a clean ``lypning-l`` refusal writes on stderr (invariant 2).
-REFUSAL_PREFIX = "lypning-l: unsupported: "
 
 #: The pre-registration's no-runtime-name rule, as ``(label, pattern)`` pairs
 #: matched case-insensitively against the task text. Each pattern is a whole
@@ -229,9 +227,9 @@ def native_verdict(result: RunResult, expected: str) -> str:
     if result.ok:
         return "native" if result.stdout == expected else "wrong-answer"
     if result.exit_code == eng.REFUSAL_EXIT:
-        clean = (result.stdout == "" and result.stderr.startswith(REFUSAL_PREFIX)
-                 and len(result.stderr.strip().splitlines()) == 1)
-        return "refused" if clean else "bad-refusal"
+        broken = eng.check_refusal_contract(result.exit_code, result.stdout, result.stderr,
+                                            engine="lypning-l")
+        return "bad-refusal" if broken else "refused"
     return "crash"
 
 

@@ -4,11 +4,13 @@ Two modes, because growing a bank to five figures takes many runs and an Actions
 artifact expires in 14 days (`HARVESTING.md`: "Retention is bounded, not a
 promise"). The dataset repo is the durable home.
 
-  --push  upload this run's accepted rows as a new immutable batch directory.
+  --push  upload this run's `synth-adapt` output as a new immutable batch.
   --seed  write every task text already banked, so the generator can skip them.
 
 This process runs no model-written code, which is why it may hold HF_TOKEN. The
-job that executes candidates must not, and does not.
+job that executes candidates must not, and does not. It is transport: what a
+row IS was decided in `pipeline.synth`, which already separated a banked
+ceiling row from a rewrite row that still owes a repair.
 """
 from __future__ import annotations
 
@@ -18,16 +20,13 @@ import os
 import sys
 from pathlib import Path
 
-#: What counts as a banked row, and why `unrepaired.jsonl` is on the list.
-#: A refused row whose stratum is `ceiling` is the RIGHT answer — the task needs
-#: something the engine cannot serve, so keeping the import and taking the
-#: fallback is correct, and `PREREGISTRATION.md` §2 item (g) reserves 27 of 93 pool cases
-#: for exactly that. Banking only native+repaired discarded the whole
-#: counterweight: the run of 2026-09-18 asked for 105 ceiling task-calls and
-#: banked none of them. A refused row whose stratum is `rewrite` is a genuine
-#: failure and is still not banked; `ceiling_from_unrepaired` splits them.
-ACCEPTED = ("native.jsonl", "repaired.jsonl", "ceiling.jsonl")
-SOURCE_OF_CEILING = "unrepaired.jsonl"
+#: What a batch carries. `cases.jsonl` is the bank (schema-3, both populations);
+#: `unrepaired.jsonl` is the capability request the next engine round reads;
+#: `witnesses.jsonl` is engine bugs, kept because invariant 1 says a mismatch
+#: is never discarded; `report.json` is the counts. Rejected rows stay in the
+#: 14-day artifact: they are observations, not evidence anyone re-reads.
+PUBLISHED = ("cases.jsonl", "unrepaired.jsonl", "witnesses.jsonl", "report.json")
+BANK = "cases.jsonl"
 
 
 def api():
@@ -45,10 +44,14 @@ def repo_id(client):
                       os.environ.get("WORK_REPO_NAME", "lypning-round02-artifacts"))
 
 
+def rows_of(path):
+    return [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--push", type=Path, help="directory holding this run's outputs")
-    ap.add_argument("--seed", type=Path, help="write banked task texts here")
+    ap.add_argument("--push", type=Path, help="the synth-adapt output directory")
+    ap.add_argument("--seed", type=Path, help="write already-seen task texts here")
     ap.add_argument("--batch", default=os.environ.get("GITHUB_RUN_ID", "local"))
     args = ap.parse_args()
 
@@ -60,9 +63,10 @@ def main() -> int:
         return 2
 
     if args.seed is not None:
-        # Every task already banked, so a later run does not pay to regenerate
-        # what it already has. Absence is normal on the first run and is not an
-        # error, but it is reported rather than silently treated as empty.
+        # Every task already seen — banked, owed a repair, or a witness — so a
+        # later run does not pay to regenerate it. Earlier batches used
+        # native/repaired/ceiling files; every layout carries `task`. Absence is
+        # normal on the first run and is reported rather than treated as empty.
         from huggingface_hub import snapshot_download
 
         tasks = set()
@@ -75,59 +79,44 @@ def main() -> int:
             local = None
         if local:
             for path in sorted(Path(local).rglob("*.jsonl")):
-                for line in path.read_text(encoding="utf-8").splitlines():
-                    if line.strip():
-                        try:
-                            tasks.add(json.loads(line)["task"])
-                        except (ValueError, KeyError):
-                            continue
+                for row in rows_of(path):
+                    if isinstance(row, dict) and isinstance(row.get("task"), str):
+                        tasks.add(row["task"])
+                    elif isinstance(row, dict) and isinstance(row.get("row"), dict):
+                        task = row["row"].get("task")      # a witness carries its row
+                        if isinstance(task, str):
+                            tasks.add(task)
         args.seed.parent.mkdir(parents=True, exist_ok=True)
         args.seed.write_text(
             "".join(json.dumps({"task": t}) + "\n" for t in sorted(tasks)), encoding="utf-8")
-        print("seeded %d already-banked task(s) from %s" % (len(tasks), repo))
+        print("seeded %d already-seen task(s) from %s" % (len(tasks), repo))
         return 0
 
     if args.push is None:
         print("one of --push or --seed is required", file=sys.stderr)
         return 2
 
-    # Split the unrepaired file before counting: a ceiling row that refused is a
-    # banked case, a rewrite row that refused is a repair we owe.
-    source = args.push / SOURCE_OF_CEILING
-    if source.is_file():
-        kept, owed = [], 0
-        for line in source.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            if row.get("stratum") == "ceiling":
-                kept.append(line)
-            else:
-                owed += 1
-        (args.push / "ceiling.jsonl").write_text(
-            "\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
-        print("ceiling rows kept %d; rewrite rows still owed a repair %d" % (len(kept), owed))
-
-    counts, total = {}, 0
-    for name in ACCEPTED:
-        path = args.push / name
-        rows = [l for l in path.read_text(encoding="utf-8").splitlines() if l.strip()] \
-            if path.is_file() else []
-        counts[name] = len(rows)
-        total += len(rows)
-    if not total:
+    bank = args.push / BANK
+    cases = rows_of(bank) if bank.is_file() else []
+    if not cases:
         # A batch of nothing is not a batch. Uploading it would grow the
         # directory count while leaving the bank the size it was.
-        print("no accepted rows in %s (%s) — nothing to publish"
-              % (args.push, counts), file=sys.stderr)
+        print("no cases in %s — nothing to publish" % bank, file=sys.stderr)
         return 1
+    populations = {}
+    for row in cases:
+        populations[row.get("population")] = populations.get(row.get("population"), 0) + 1
+    counts = {name: (len(rows_of(args.push / name)) if name.endswith(".jsonl") else 1)
+              for name in PUBLISHED if (args.push / name).is_file()}
 
     target = "bank-v3/batches/%s" % args.batch
     client.upload_folder(repo_id=repo, repo_type="dataset", folder_path=str(args.push),
-                         path_in_repo=target, allow_patterns=list(ACCEPTED),
-                         commit_message="bank-v3 batch %s: %d accepted rows" % (args.batch, total))
-    print(json.dumps({"repo": repo, "batch": target, "counts": counts, "total": total},
-                     indent=2))
+                         path_in_repo=target, allow_patterns=list(PUBLISHED),
+                         commit_message="bank-v3 batch %s: %d cases (%s)"
+                         % (args.batch, len(cases),
+                            ", ".join("%s %d" % kv for kv in sorted(populations.items()))))
+    print(json.dumps({"repo": repo, "batch": target, "cases": len(cases),
+                      "populations": populations, "files": counts}, indent=2, sort_keys=True))
     return 0
 
 
