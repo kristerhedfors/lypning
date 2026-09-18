@@ -53,6 +53,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # A 403 on the first completion does not say whether the key is rejected
+      # or the model is not entitled. Ask before spending the run finding out.
+      - name: What can this key see?
+        env:
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+        run: python .github/scripts/cerebras_probe.py
+
       - name: Ask Qwen for tasks and k independent programs each
         env:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
