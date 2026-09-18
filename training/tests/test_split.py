@@ -167,3 +167,80 @@ def test_the_sampler_cannot_be_handed_a_leaking_case_by_default():
         "the number of leaking train cases moved; that is a corpus change and "
         "belongs in a commit that says so (was 121 on 2026-09-13)"
     )
+
+
+def test_the_contamination_gate_does_not_clear_a_file_it_never_read(tmp_path, monkeypatch,
+                                                                    capsys):
+    """`leaks --sft` is the one finding here that must stop a training run.
+
+    `read_jsonl` answers `[]` for a path that is not there, so a mistyped
+    `--sft`, a directory holding no `sft.jsonl`, and a present-but-empty file
+    all reached "no training target passes a held-out case" and exit 0 — an
+    all-clear issued by a gate that probed nothing. The split between the two
+    refusals is root `CLAUDE.md` invariant 8: a path typed on the command line
+    that is not a file is a usage error, having compared nothing is the command
+    failing.
+    """
+    import importlib
+
+    monkeypatch.setenv("NTX_ROOT", str(tmp_path))
+    from pipeline import cli
+
+    importlib.reload(cli)
+    try:
+        (tmp_path / "data").mkdir()
+        cases = [
+            make_case(prompt="task %d" % i,
+                      test={"kind": "stdout", "expect_stdout": "%d\n" % i},
+                      reference="print(%d)" % i, category=CATS[i % len(CATS)])
+            for i in range(40)
+        ]
+        write_jsonl(tmp_path / "data" / "corpus.jsonl", cases)
+        assert cli.main(["split"]) == 0
+        capsys.readouterr()
+
+        assert cli.main(["leaks", "--sft", str(tmp_path / "nope.jsonl")]) == 2
+        out = capsys.readouterr()
+        assert "not a file" in out.err and out.out == ""
+
+        empty = tmp_path / "sft.jsonl"
+        empty.write_text("", encoding="utf-8")
+        assert cli.main(["leaks", "--sft", str(empty)]) == 1
+        out = capsys.readouterr()
+        assert "nothing was run, so nothing is clean" in out.err and out.out == ""
+
+        # And the count that decides it is programs BUILT, not lines read. A
+        # bundle's `train-sft.jsonl` carries `{case_id, messages}` and no
+        # `program`, so every row is dropped before execution: rows > 0 and an
+        # empty `solved` list, which read together as a clean bill over a gate
+        # that ran nothing.
+        messages_only = tmp_path / "bundle-sft.jsonl"
+        messages_only.write_text("".join(
+            json.dumps({"case_id": "ntx-%d" % i,
+                        "messages": [{"role": "user", "content": "task %d" % i},
+                                     {"role": "assistant", "content": "print(%d)" % i}]}) + "\n"
+            for i in range(3)), encoding="utf-8")
+        assert cli.main(["leaks", "--sft", str(messages_only)]) == 1
+        out = capsys.readouterr()
+        assert "3 SFT row(s)" in out.err and "0 carrying a program" in out.err
+        assert out.out == ""
+
+        # A directory is addressed by its sft.jsonl, and both answers hold there.
+        empty_dir = tmp_path / "bundle"
+        empty_dir.mkdir()
+        assert cli.main(["leaks", "--sft", str(empty_dir)]) == 2
+        assert "not a file" in capsys.readouterr().err
+        (empty_dir / "sft.jsonl").write_text("", encoding="utf-8")
+        assert cli.main(["leaks", "--sft", str(empty_dir)]) == 1
+        assert "nothing was run" in capsys.readouterr().err
+
+        # A real program still reaches the comparison and answers 0.
+        real = tmp_path / "real-sft.jsonl"
+        real.write_text(json.dumps({"case_id": "ntx-0",
+                                    "program": "print('nothing matches this')"}) + "\n",
+                        encoding="utf-8")
+        assert cli.main(["leaks", "--sft", str(real)]) == 0
+        assert "no training target passes a held-out case" in capsys.readouterr().out
+    finally:
+        monkeypatch.delenv("NTX_ROOT", raising=False)
+        importlib.reload(cli)

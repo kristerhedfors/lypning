@@ -199,3 +199,27 @@ def test_cli_missing_bank_is_usage(tmp_path, capsys):
     assert main(["eval2-leaks", str(ev), str(tmp_path / "missing.jsonl")]) == 2
     err = capsys.readouterr()
     assert "not a file" in err.err and err.out == ""
+
+
+def test_cli_empty_banks_are_not_two_clean_banks(tmp_path, capsys):
+    """`is_file` covers absence, not emptiness, and they read alike downstream.
+
+    "0 pairs; 0 of 0 eval-2 cases leak" is a clean bill over a comparison that
+    did not happen, issued by the gate standing between a training bank and the
+    number eval-2 exists to produce. An all-filtered bank arrives the same way.
+    """
+    from pipeline.cli import main
+    ev, tr = tmp_path / "eval2.jsonl", tmp_path / "train.jsonl"
+    ev.write_text("", encoding="utf-8")
+    tr.write_text("", encoding="utf-8")
+    assert main(["eval2-leaks", str(ev), str(tr)]) == 1
+    err = capsys.readouterr()
+    assert "nothing was compared" in err.err and err.out == ""
+
+    # One populated side is still nothing compared, and --allow does not buy it:
+    # --allow forgives found pairs, not an absent comparison.
+    write_jsonl(ev, EVAL2)
+    assert main(["eval2-leaks", str(ev), str(tr)]) == 1
+    assert "0 training case(s)" in capsys.readouterr().err
+    assert main(["eval2-leaks", str(ev), str(tr), "--allow"]) == 1
+    assert "nothing was compared" in capsys.readouterr().err

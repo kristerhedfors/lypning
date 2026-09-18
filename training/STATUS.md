@@ -336,9 +336,11 @@ restated, and what this interpreter does not ship) over a frozen 130-row
 declaration table, each row carrying its reason and whether §4 or this tree is
 its source. Its `--rows` form reads the eval-2 draw rows unchanged, which is
 what makes rung S0b a command rather than a judgement re-made on another device;
-its `--run` form does **not** — it replays through the local binary and
-re-derives `native`, hence the population, which is why §10's S0b row now
-assigns the frozen-rows form. On this tree it
+its **bare** `--run` form does **not** — it replays through the local binary and
+re-derives `native`, hence the population. Since `6044886` there is a third
+form, `--run --population-rows`, which freezes status and family to the given
+rows and uses the replay only to attach refusal kinds; that is the one §10's
+S0b row assigns, and the sentence above is about the form without it. On this tree it
 reproduces §4's self-referential bucket exactly and disagrees on the lever
 boundary — 36 fewer entries engine-addressable, 41 more legitimate-fallback —
 and that disagreement is pinned by a test as the one that was reviewed, not

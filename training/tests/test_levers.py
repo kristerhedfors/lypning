@@ -977,3 +977,90 @@ def test_a_partial_draw_join_is_not_publishable(tmp_path, capsys):
     assert code == 1
     assert "incomplete join" in out.err and "1 unmatched" in out.err
     assert "descriptive refusal vector" not in out.out
+
+
+def test_eval2_rows_refuses_an_engine_that_is_not_a_file(tmp_path, capsys):
+    """The escape hatch that S0's handoff used to offer, closed at the source.
+
+    `native` is read off this replay and `status` is read off `native`, so this
+    binary IS the population the rows define. A path that is not a file is a
+    truthy string: every program would grade ERROR, every draw would be written
+    non-native, and the rows would be a population produced by a replay that ran
+    nothing. `levers` already answers 2 here; this is the same usage error and
+    must answer alike.
+    """
+    code, out = _run_cli(["eval2-rows", "eval-does-not-matter",
+                          "--engine", str(tmp_path / "no-such-binary"),
+                          "--output", str(tmp_path / "rows.jsonl")], capsys)
+    assert code == 2
+    assert "not a file" in out.err
+    assert out.out == ""
+    assert not (tmp_path / "rows.jsonl").exists(), "a refused run writes no rows"
+
+
+def test_eval2_rows_refuses_a_replay_that_did_not_grade(tmp_path, monkeypatch, capsys):
+    """The step past `is_file`: a regular file that will not execute.
+
+    No `+x` bit, wrong architecture, a text placeholder — each grades every
+    program ERROR, which writes `native` False on every row and every correct
+    draw as `correct-fallback`. That is the same population from a replay that
+    ran nothing, and a hand-transferred binary losing its execute bit is the
+    ordinary way to arrive at it. The rows must not be written.
+    """
+    import importlib
+
+    monkeypatch.setenv("NTX_ROOT", str(tmp_path))
+    from pipeline import cli
+
+    from pipeline.jsonio import write_jsonl
+
+    importlib.reload(cli)
+    try:
+        (tmp_path / "data").mkdir()
+        write_jsonl(tmp_path / "data" / "corpus.jsonl", [
+            dict(make_case(prompt="p", test={"kind": "stdout", "expect_stdout": "1\n"},
+                           category="unobserved", source_id="a",
+                           tags=["family:fa", "group:g", "population:coverage"]),
+                 id="ntx-a")])
+        run = tmp_path / "runs" / "r1"
+        run.mkdir(parents=True)
+        (run / "meta.json").write_text(json.dumps({"sampling": {"seed": 7}}))
+        write_jsonl(run / "attempts.jsonl",
+                    [{"case_id": "ntx-a", "sample": 0, "program": "print(1)", "passed": True}])
+        # A regular file, so `is_file` admits it, that cannot be executed.
+        engine = tmp_path / "unexecutable-engine"
+        engine.write_text("#!/bin/sh\nexit 0\n")
+        engine.chmod(0o644)
+        out_path = tmp_path / "rows.jsonl"
+        code, out = _run_cli(["eval2-rows", "r1", "--engine", str(engine),
+                              "--output", str(out_path)], capsys)
+        assert code == 1
+        assert "did not grade (ERROR)" in out.err
+        assert out.out == ""
+        assert not out_path.exists(), "a population from an ungraded replay is not written"
+    finally:
+        monkeypatch.delenv("NTX_ROOT", raising=False)
+        importlib.reload(cli)
+
+
+def test_eval2_rows_stamps_the_binary_it_replayed_not_the_installed_chain(capsys):
+    """Invariant 3's other half: the number carries the identity that produced it.
+
+    `identity()["fingerprint"]` hashes whichever `lypning-l`/`lypning` this host
+    has installed. For an explicit historical `--engine` that names binaries the
+    replay never executed, and this line is the only provenance the rows file
+    carries — `eval2_rows.row_for` records a verdict and no identity. So the
+    printed sha256 must be the argument's own.
+    """
+    from pipeline import cli, engines as eng
+
+    src = ast.parse(open(cli.__file__, "r", encoding="utf-8").read())
+    fn = next(n for n in ast.walk(src)
+              if isinstance(n, ast.FunctionDef) and n.name == "cmd_eval2_rows")
+    body = ast.dump(fn)
+    assert "binary_identity" in body, "the rows must name the bytes that graded them"
+    assert "fingerprint" not in body, (
+        "the installed-chain fingerprint cannot identify an explicit --engine")
+
+    here = eng.binary_identity(__file__)
+    assert here["path"] == __file__ and len(here["sha256"]) == 64

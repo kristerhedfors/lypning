@@ -287,7 +287,11 @@ def sft_solves_holdout(rows: List[Dict[str, Any]],
                     hits.append({"row_case_id": owner, "holdout_id": case["id"],
                                  "program": program})
     solving = set(h["program"] for h in hits)
+    # `rows` counts lines read; `programs_probed` counts what was actually run.
+    # A bundle's `train-sft.jsonl` carries `{case_id, messages}` and no
+    # `program`, so every row is dropped above and the empty `solved` list below
+    # means "nothing was executed", not "nothing passed".
     return {"rows": len(rows), "n_holdout": len(holdout), "inputs_probed": len(groups),
-            "solved": hits,
+            "programs_probed": len(programs), "solved": hits,
             "rows_solving": sum(1 for r in rows if r.get("program") in solving),
             "holdout_cases_solved": sorted(set(h["holdout_id"] for h in hits))}

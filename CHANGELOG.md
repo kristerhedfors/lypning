@@ -14,6 +14,168 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-18** — Grow the bank from Qwen on Cerebras, and adapt what the engine refuses ([#92](https://github.com/kristerhedfors/lypning/pull/92))
+
+- A generate-and-adapt loop, which is `training/ORCHESTRATION.md`'s data loop and its
+  step-6 repair made executable. Qwen proposes tasks and answers each k times;
+  triage runs every sample, keeps a case only when at least two agree byte for
+  byte on every input, re-runs the winner to catch output that moves between two
+  clean runs, and routes by what the engine does with it.
+- The safety property is a job boundary, not a convention: generation holds
+  `CEREBRAS_API_KEY` and executes nothing, triage executes model-written code and
+  holds no provider key, publishing holds `HF_TOKEN` and executes nothing.
+- First scaled run, 2026-09-18 (GH run 35320962503): 12,000 calls, 2,286,142
+  output tokens, 49 minutes, 3,837 tasks, **3,499 native + 13 repaired = 3,512
+  banked**, 140 rejected, 185 refused with no working rule.
+- Repairs are proved rather than trusted: a rewrite is accepted only when the
+  engine serves it natively *and* it reproduces the output agreed before the
+  repair existed, so a rule cannot move its own target. `heapq` is a complete
+  reimplementation using CPython's sift order — an improvised heap pops equal
+  elements in a different order, which is observable once values carry payloads.
+- **This is a weaker evidence tier than the authored bank and is kept separate
+  on purpose.** Its expected outputs come from samples of one model agreeing, so
+  a misreading shared by every sample survives. The teacher is `qwen-3.8-27b`,
+  the model being trained: on-policy rejection sampling, not distillation.
+- What the rules could not repair is the useful half of the failure, and is
+  written out by kind: `calendar` 39, `datetime` 31, `fractions` 13, `string` 12.
+  Those are capability requests for the engine. The `decimal/fractions` rule
+  fired 15 times and was accepted 0 times; it is wrong and is recorded as such
+  rather than quietly left to keep firing.
+
+**2026-09-18** — Author a task bank with a differential oracle, and run the round-02 pilot on a real GPU ([#92](https://github.com/kristerhedfors/lypning/pull/92))
+
+- The blocker on a real adapter stage was never the GPU, it was data:
+  `MIN_TRAIN_CASES` is 1,000 and the tree held 517 corpus cases, 147 with
+  references, in the rewrite schema rather than schema-3. The floor was not
+  weakened; a bank was authored.
+- The oracle is differential. Each family carries a `spec` and a `reference`
+  written against the same English sentence and never against each other, and a
+  case is admitted only when the two agree byte for byte under execution.
+- Three of the repo's own gates rejected the first drafts, and each rejection
+  improved the data: identical prompts across a family are one case with hidden
+  tests; four families labelled `fallback-control` are in fact served natively
+  (`math`, `json`, `collections`, `re`, `random`), so they became coverage and
+  ten genuinely refused modules became the controls; and one shared task
+  preamble put pairwise similarity at 0.81 — 0.958 between two families of one
+  kind on opposite sides of the split — so every family now has its own sentence
+  shape. Task leaks went 4,419 to 0.
+- Measured 2026-09-18: `eval2-leaks` exits 0 with 315 of 315 clean; preparation
+  gives digest `7c8997e1e128c47f` and a train split of **1,355** over 40
+  families with both populations in all three splits. Cases are not
+  independence: 2,286 cases over 69 families is 69 components, and every
+  `review` block records that an agent, not a human, authored and checked it.
+- Two skills so the next bank does not start from scratch:
+  `.claude/skills/training-cases` (authoring and the differential oracle) and
+  `.claude/skills/training-bundle` (preparation, the gates, and publishing a
+  bank to the private dataset repo).
+- CI gained a pilot path. The bank is committed to git for review and copied to
+  the private dataset repo inside the job, because an Actions secret is
+  write-only. Two free gates run before any submit: the upload refuses a bank
+  with a missing population or a family on both sides, and `eval2-leaks` must
+  exit 0. A 27B model loads in full bf16 with no quantization, so the smoke's
+  24 GB `a10g-small` cannot hold it; the pilot runs on `h200`, priced by the
+  preflight at $5.00/hour.
+
+**2026-09-18** — Run round-02 from CI: a free preflight, a bootstrapped verifier Space, and a marker-gated GPU submit ([#92](https://github.com/kristerhedfors/lypning/pull/92))
+
+- The round is launchable from GitHub Actions. A GitHub runner is a disposable
+  Linux VM with no sensitive files, which is what `--isolated-worker` attests,
+  and the GPU is a Hugging Face Job the workflow submits — never the runner.
+  This is also the only place the token can be used: an Actions secret is
+  write-only, so every Hub operation has to happen inside the job.
+- Three jobs, and only the last one costs anything. **preflight** asks the Hub
+  the three questions that decide whether a round can run at all and that no
+  checkout can answer: whether the token sees Jobs hardware, what the flavor
+  costs, and whether the model revision resolves to a 40-character commit.
+  Ledger row T3 records the last attempt dying on a provider 402 *after* the job
+  was submitted; this asks first. **bootstrap** builds the verifier Space and
+  the private artifact repo and ends in a launch dry run that prints the priced
+  plan. **submit** runs only on a commit-message marker.
+- Measured 2026-09-18 on run 35299470403: account `headforce`, 26 Jobs flavors
+  visible, `a10g-small` at $1.00/hour, `Qwen/Qwen3.8-27B` at
+  `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`, verifier Space
+  `headforce/lypning-round02-verifier` at
+  `5fa4f3127f7a3d70b84d4e1c93923f18f0c43a41` built from six files and RUNNING,
+  artifact repo `headforce/lypning-round02-artifacts` created private.
+- The Space Dockerfile is deliberately not `training/worker/Dockerfile.verifier`.
+  That one is the Docker boundary's — `/runner/`, uid 65534, an ENTRYPOINT. A
+  pooled sandbox reads the standard system trees and nothing else at the root,
+  so the harness goes under `/usr/local/lib` and the Space needs a CMD that
+  keeps a health process alive and no USER line. The base digest is read out of
+  `launch.py` rather than restated, because one CPython build across the trainer
+  Job and the verifier image is what makes the `sys.version` half of the
+  identity handshake hold.
+- Bootstrap failures are free by construction: the Space must reach RUNNING and
+  the destination must be private before `launch.py` is reached at all.
+- **This is the smoke, and the smoke is not a round.** It exercises the round's
+  plumbing on a real GPU with a tiny random model and the authored starter
+  fixture. The pilot needs a reviewed bank that is not in this tree, and a real
+  adapter stage still gates at >=1,000 train cases against the starter's 12.
+
+**2026-09-17** — Stop the S0 handoff from telling the private device to rebuild the population it was pinned to read ([#92](https://github.com/kristerhedfors/lypning/pull/92))
+
+- The next training round was attempted on a third clone holding none of the
+  round's four inputs. It was reported blocked and no rung was run, which is the
+  assignment's own instruction. What the clone *could* do was read the
+  assignment against the tree it will run in, and it does not survive that read.
+- **`training/START_NEXT_ROUND.md` contradicted its own stop rule.** :21-22 stops on an
+  absent input; :72-75 told the device to materialise an absent `$PILOT_ROWS`
+  with `nt eval2-rows`. That command's engine defaults to whichever `lypning-l`
+  the host has installed, `native` is read off its replay and `status` off
+  `native`, so the rows' *population* is a function of the binary — the same
+  mechanism that read 14 correct-but-fallback draws through one binary and 26
+  through another. The blast radius is asymmetric: S0b refuses a re-derived
+  population on `--expect-draws 171`, but S0a accepts any file that exists and
+  would have printed a confident §7 curve at an unrecorded identity. The
+  sentence is withdrawn; an absent `$PILOT_ROWS` is a blocked round and an
+  artifact-transfer problem.
+- `eval2-rows` now refuses an `--engine` that is not a file, and prints the
+  sha256 and version line of the binary it replayed through rather than
+  `identity()["fingerprint"]`, which fingerprints the host's installed chain and
+  cannot name an explicit historical binary. Its pinning test had been passing
+  `/bin/true`, which does not exist on darwin — the test was demonstrating the
+  defect it was meant to prevent.
+- The preflight block now stops. Four bare `test -f` lines print nothing and
+  exit nothing, so a pasted block ran all three rungs against whatever the
+  device had; the operator saw the rungs' errors, not the missing path.
+- The three rungs run on the resolved 3.12 `$ROUND_PYTHON`, not bare `python3`.
+  The replay grades against `sys.executable` and the pinned binary says *for
+  cpython 3.12*; a mismatch there is scored as MISMATCH or as a draw with no
+  refusal, either of which blocks the rung three layers from its cause.
+- Two contamination gates issued an all-clear over a file they never read.
+  `leaks --sft` — "the one finding here that must stop a training run" —
+  reported no target passing a held-out case for a mistyped path, a directory
+  with no `sft.jsonl`, and an empty file; `eval2-leaks` certified two empty
+  banks as non-overlapping. Both now split on invariant 8: a path that is not a
+  file is usage (2), comparing nothing is failure (1), and `--allow` forgives
+  found pairs rather than an absent comparison.
+- A banked launch above its capacity was told to raise a knob its own ceiling
+  forbids — `--score-workers 32` earned "increase `--pool-max-hosts`", and
+  taking that advice earned "pool cost ceiling is 4 CPU hosts". Above the
+  ceiling the refusal now names the ceiling. At or below it, nothing changes.
+- `training/STATUS.md`'s account of `levers --run` is corrected: it describes the bare
+  form, and the `--run --population-rows` form §10's S0b row assigns does not
+  re-derive the population.
+- The change was then adversarially reviewed in turn, which found no blocking
+  defect and two high ones, both introduced by the change itself: the
+  replacement rebuild command could not run as written — the positional is a run
+  id, not a path, and `--output` is required — and the review listed as
+  still-open a `training/STATUS.md` defect the same change fixed. Both are fixed, along
+  with four more: `eval2-rows` refuses a replay in which any program failed to
+  grade, because `is_file` rejects a path but not a *regular file that will not
+  execute*, and a binary that lost its execute bit in transfer writes an
+  all-`correct-fallback` population at exit 0; `leaks --sft` counts programs
+  built rather than lines read, because a bundle's `train-sft.jsonl` carries
+  `messages` and no `program`; `power --eval2` stops advertising the withdrawn
+  rebuild for a path the caller typed; and the capacity refusal names the knob
+  with remaining headroom, since `16/1/4` was still a dead end with hosts
+  already at their ceiling.
+- Review: `training/reviews/2026-09-17-codex-s0-assignment-executability.md`,
+  ledger row R6. 58 findings were raised and 2 refuted; the blocking 3 and the
+  items above are closed here, and §5 of the review is a triaged excerpt of the
+  residue. None of it blocks the S0 session. No paid rung, GPU job, Space
+  rebuild or dataset mutation is authorised, and none was performed.
+
 **2026-09-17** — Assess the blocked S0 round from two independent reviews, close the four vacuous reads its guards left open, pin Fable's retry to the historical binary, and stop a plan from certifying a schedule it cannot price ([#91](https://github.com/kristerhedfors/lypning/pull/91))
 
 - The independent Codex review owed by ledger row S0 was written twice, by two

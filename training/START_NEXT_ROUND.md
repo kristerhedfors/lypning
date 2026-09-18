@@ -21,31 +21,48 @@ assignment on a substitute clone again. Set `PILOT_LYPNING_L` to the historical
 binary named below; if any of these four files is absent, report the missing
 path and stop without running a rung:
 
+Save the block below as `s0.sh` and run it with `bash s0.sh` from the
+repository root. **Do not paste it into an interactive shell**: the preflight
+has to stop the rungs, and at an interactive prompt `exit` would close the
+session while `return` would not stop anything — neither is a guard.
+
 ```bash
+#!/usr/bin/env bash
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+# The 3.12 build `NEXT_ROUND.md` resolves; the pinned binary was built against it,
+# and the identity line S0b prints reports the oracle Python it actually used.
+# It is a prerequisite like the four files, so it fails the same way.
+ROUND_PYTHON=$(uv python find 3.12) || { echo "S0 blocked: no Python 3.12 build" >&2; exit 1; }
 export PILOT_RUN=training/runs/eval-20260916-063539
+export PILOT_RUN_ID=eval-20260916-063539
 export PILOT_ROWS="$PILOT_RUN/eval2_rows.jsonl"
 export PILOT_PROBE=work/round-02/6aaa87465527934177ee9f34/probe/probe-rollouts.jsonl
 export PILOT_LYPNING_L=/approved/private/path/to/pilot/lypning-l
-test -f "$PILOT_RUN/attempts.jsonl"
-test -f "$PILOT_ROWS"
-test -f "$PILOT_PROBE"
-test -f "$PILOT_LYPNING_L"
+# `test -f` alone prints nothing and stops nothing: the earlier block would fail
+# here and run all three rungs anyway, against whatever the device does have.
+for f in "$ROUND_PYTHON" "$PILOT_RUN/attempts.jsonl" "$PILOT_ROWS" "$PILOT_PROBE" \
+         "$PILOT_LYPNING_L"; do
+  test -f "$f" || { echo "S0 blocked: absent input $f" >&2; exit 1; }
+done
+test -x "$PILOT_LYPNING_L" || { echo "S0 blocked: not executable: $PILOT_LYPNING_L" >&2; exit 1; }
 
 # S0a: re-print power from the completed private pilot draw, in realised-macro units.
-PYTHONPATH=src:training python3 -m pipeline.cli power --eval2 \
+PYTHONPATH=src:training "$ROUND_PYTHON" -m pipeline.cli power --eval2 \
   --rows "$PILOT_ROWS" --draws 16 --mde 0.03
 
 # S0b: freeze the original 171-draw population; replay supplies refusal kinds only.
 # --rank is refused on draw/held-out rows.
-PYTHONPATH=src:training python3 -m pipeline.cli levers \
-  --run eval-20260916-063539 --population-rows "$PILOT_ROWS" \
+PYTHONPATH=src:training "$ROUND_PYTHON" -m pipeline.cli levers \
+  --run "$PILOT_RUN_ID" --population-rows "$PILOT_ROWS" \
   --engine "$PILOT_LYPNING_L" \
   --require-engine-sha256 a23b30832e00640cec2090d8403a6beeaa2087083d0fbd9080210fd8d4fc1096 \
   --status correct-fallback --expect-draws 171 --vector --limit 0
 
 # S0c: per-train-case native status, probe beside the completed base pilot.
 # Paths are cwd-relative and resolved against the repository root.
-PYTHONPATH=src:training python3 -m pipeline.cli probe-vector \
+PYTHONPATH=src:training "$ROUND_PYTHON" -m pipeline.cli probe-vector \
   --probe "$PILOT_PROBE" --base "$PILOT_ROWS"
 ```
 
@@ -70,13 +87,47 @@ naming the path, and a vector with no record behind it exits 1 rather than
 printing an empty table at exit 0.
 
 Before S0c, download the immutable private artifact directory
-`round-02/6aaa87465527934177ee9f34/` into the path shown and materialize the
-pilot rows with `nt eval2-rows` if the named file is absent — it needs the same
-run's `attempts.jsonl` and an engine, so it is not a way around a missing
-artifact. `probe-vector` prints every status and every unmatched ID; a probe case
+`round-02/6aaa87465527934177ee9f34/` into the path shown. **An absent
+`$PILOT_ROWS` is a blocked rung, not a file to rebuild** (audited 2026-09-17).
+The withdrawn instruction here was to materialize it with `nt eval2-rows`, which
+is the confound this round was re-assigned to remove, wearing the other hat:
+that command defaults its engine to whichever `lypning-l` the device has
+installed, re-derives `native` from that replay, and so re-derives `status` and
+hence the population — the same mechanism that read 14 draws through one binary
+and 26 through another. Rows made that way are a *new* population at an unknown
+identity. What each rung would do with them differs, and the
+quieter half is the dangerous one. S0b counts: `--expect-draws 171` refuses a
+rebuilt population whose count moved, which is the likely case but not a
+guaranteed one — it is a count check, not an identity check, and a rebuild that
+happens to land on 171 would pass it. **S0a has no check at all**: `power
+--eval2 --rows` accepts any file that exists and would print a confident curve
+at an unrecorded identity. The 171 is a count at the pilot's identity
+`2e079e786a655ab6`, not a property of the run id.
+
+If the rows must be rebuilt for some later purpose, name the engine and give
+the result a path of its own:
+
+```bash
+PYTHONPATH=src:training "$ROUND_PYTHON" -m pipeline.cli eval2-rows "$PILOT_RUN_ID" \
+  --engine "$PILOT_LYPNING_L" --output work/round-02/rebuilt-rows.jsonl
+```
+
+Since 2026-09-17 that command refuses an `--engine` that is not a file, refuses
+a replay in which any program failed to grade, and prints the binary's own
+sha256 rather than the installed chain's fingerprint. Report the result under
+that sha256 — never as the 171, never as S0a's input, and never written over
+`$PILOT_ROWS`. Use `"$ROUND_PYTHON"` rather than `nt`, which execs a bare
+`python3`.
+
+`probe-vector` prints every status and every unmatched ID; a probe case
 missing from base exits 1, and since 2026-09-17 an input that is not a file
 exits 2 rather than printing a zeros table at exit 0. This is a descriptive
-read, not a new score and not a reason to tune on eval-2.
+read, not a new score and not a reason to tune on eval-2. Its two columns are
+**not the same measurement** and the per-case difference is confounded in one
+direction: the probe column grades every test through the container verifier,
+the base column one projected stdout test through the legacy provider arm, and
+a fallback-control case is structurally 0/k on the probe side. Read which cases
+move, not by how much.
 
 Write one Fable report from `FABLE_REPORT_TEMPLATE.md` containing the full S0a
 output, full S0b vector, S0c table, artifact hashes, unmatched counts, and the
