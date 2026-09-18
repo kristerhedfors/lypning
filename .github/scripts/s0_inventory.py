@@ -33,8 +33,21 @@ def main() -> int:
 
     api = HfApi(token=token)
     owner = api.whoami()["name"]
+
+    # A second repository has been asserted to hold the S0c probe rollouts. The
+    # assertion is worth one lookup: a rung reported blocked twice for a file
+    # that was in the next repository along is the expensive kind of wrong.
+    print("== the asserted second home for the S0c probe")
+    for name in ("%s/lypning-round02-work" % owner,):
+        try:
+            hits = [f for f in api.list_repo_files(name, repo_type="dataset")
+                    if "probe" in f or "eval2_rows" in f or f.endswith("attempts.jsonl")]
+            print("   %s: %s" % (name, hits if hits else "exists, holds none of the S0 inputs"))
+        except Exception as exc:                                  # noqa: BLE001
+            print("   %s: %s" % (name, type(exc).__name__))
+
     repo = "%s/%s" % (owner, os.environ.get("WORK_REPO_NAME", "lypning-round02-artifacts"))
-    print("== %s" % repo)
+    print("\n== %s" % repo)
 
     files = sorted(api.list_repo_files(repo, repo_type="dataset"))
     print("   %d file(s)" % len(files))
