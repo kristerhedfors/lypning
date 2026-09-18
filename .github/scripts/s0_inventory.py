@@ -18,10 +18,16 @@ import sys
 S0_JOB = "6aaa87465527934177ee9f34"
 S0_RUN = "eval-20260916-063539"
 
-# Read whole. Anything not matching stays a path in the listing: weights and
-# rollout logs are evidence too, but not evidence that fits in a CI log.
-SMALL = ("job-manifest.json", "metrics.json", "experiment.json", "bundle.json",
-         "review.json", "best.json", "config.json", "plan-001.json", "seal.json")
+# Read whole. This repository is PUBLIC, so an Actions log is world-readable and
+# every name here is a publication decision, not a convenience. Aggregates only:
+# a manifest, a metric, a seal. `bundle.json` is deliberately ABSENT — it carries
+# the cases, and the cases are the held-out benchmark. Printing them publishes
+# eval-2 to anyone who scrapes a log, which cannot be undone by deleting the run.
+# Never widen this to anything that holds task text, a reference program or an
+# expected stdout; count its lines instead, or compute the statistic in the job
+# and print only the statistic.
+SMALL = ("job-manifest.json", "metrics.json", "experiment.json",
+         "best.json", "config.json", "plan-001.json", "seal.json")
 
 
 def main() -> int:
