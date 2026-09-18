@@ -14,6 +14,42 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-18** — Run round-02 from CI: a free preflight, a bootstrapped verifier Space, and a marker-gated GPU submit ([#93](https://github.com/kristerhedfors/lypning/pull/93))
+
+- The round is launchable from GitHub Actions. A GitHub runner is a disposable
+  Linux VM with no sensitive files, which is what `--isolated-worker` attests,
+  and the GPU is a Hugging Face Job the workflow submits — never the runner.
+  This is also the only place the token can be used: an Actions secret is
+  write-only, so every Hub operation has to happen inside the job.
+- Three jobs, and only the last one costs anything. **preflight** asks the Hub
+  the three questions that decide whether a round can run at all and that no
+  checkout can answer: whether the token sees Jobs hardware, what the flavor
+  costs, and whether the model revision resolves to a 40-character commit.
+  Ledger row T3 records the last attempt dying on a provider 402 *after* the job
+  was submitted; this asks first. **bootstrap** builds the verifier Space and
+  the private artifact repo and ends in a launch dry run that prints the priced
+  plan. **submit** runs only on a commit-message marker.
+- Measured 2026-09-18 on run 35299470403: account `headforce`, 26 Jobs flavors
+  visible, `a10g-small` at $1.00/hour, `Qwen/Qwen3.8-27B` at
+  `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`, verifier Space
+  `headforce/lypning-round02-verifier` at
+  `5fa4f3127f7a3d70b84d4e1c93923f18f0c43a41` built from six files and RUNNING,
+  artifact repo `headforce/lypning-round02-artifacts` created private.
+- The Space Dockerfile is deliberately not `training/worker/Dockerfile.verifier`.
+  That one is the Docker boundary's — `/runner/`, uid 65534, an ENTRYPOINT. A
+  pooled sandbox reads the standard system trees and nothing else at the root,
+  so the harness goes under `/usr/local/lib` and the Space needs a CMD that
+  keeps a health process alive and no USER line. The base digest is read out of
+  `launch.py` rather than restated, because one CPython build across the trainer
+  Job and the verifier image is what makes the `sys.version` half of the
+  identity handshake hold.
+- Bootstrap failures are free by construction: the Space must reach RUNNING and
+  the destination must be private before `launch.py` is reached at all.
+- **This is the smoke, and the smoke is not a round.** It exercises the round's
+  plumbing on a real GPU with a tiny random model and the authored starter
+  fixture. The pilot needs a reviewed bank that is not in this tree, and a real
+  adapter stage still gates at >=1,000 train cases against the starter's 12.
+
 **2026-09-17** — Stop the S0 handoff from telling the private device to rebuild the population it was pinned to read ([#92](https://github.com/kristerhedfors/lypning/pull/92))
 
 - The next training round was attempted on a third clone holding none of the
