@@ -16,7 +16,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 **2026-09-18** — Grow the bank from Qwen on Cerebras, and adapt what the engine refuses ([#92](https://github.com/kristerhedfors/lypning/pull/92))
 
-- A generate-and-adapt loop, which is `ORCHESTRATION.md`'s data loop and its
+- A generate-and-adapt loop, which is `training/ORCHESTRATION.md`'s data loop and its
   step-6 repair made executable. Qwen proposes tasks and answers each k times;
   triage runs every sample, keeps a case only when at least two agree byte for
   byte on every input, re-runs the winner to catch output that moves between two
@@ -118,7 +118,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   round's four inputs. It was reported blocked and no rung was run, which is the
   assignment's own instruction. What the clone *could* do was read the
   assignment against the tree it will run in, and it does not survive that read.
-- **`START_NEXT_ROUND.md` contradicted its own stop rule.** :21-22 stops on an
+- **`training/START_NEXT_ROUND.md` contradicted its own stop rule.** :21-22 stops on an
   absent input; :72-75 told the device to materialise an absent `$PILOT_ROWS`
   with `nt eval2-rows`. That command's engine defaults to whichever `lypning-l`
   the host has installed, `native` is read off its replay and `status` off
@@ -153,14 +153,14 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   forbids — `--score-workers 32` earned "increase `--pool-max-hosts`", and
   taking that advice earned "pool cost ceiling is 4 CPU hosts". Above the
   ceiling the refusal now names the ceiling. At or below it, nothing changes.
-- `STATUS.md`'s account of `levers --run` is corrected: it describes the bare
+- `training/STATUS.md`'s account of `levers --run` is corrected: it describes the bare
   form, and the `--run --population-rows` form §10's S0b row assigns does not
   re-derive the population.
 - The change was then adversarially reviewed in turn, which found no blocking
   defect and two high ones, both introduced by the change itself: the
   replacement rebuild command could not run as written — the positional is a run
   id, not a path, and `--output` is required — and the review listed as
-  still-open a `STATUS.md` defect the same change fixed. Both are fixed, along
+  still-open a `training/STATUS.md` defect the same change fixed. Both are fixed, along
   with four more: `eval2-rows` refuses a replay in which any program failed to
   grade, because `is_file` rejects a path but not a *regular file that will not
   execute*, and a binary that lost its execute bit in transfer writes an
