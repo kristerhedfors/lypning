@@ -105,9 +105,15 @@ def call(client, messages, *, max_tokens, temperature, timeout, ledger):
     """One bounded completion. Every non-answer is an outcome, not a retry loop."""
     for attempt in range(3):
         try:
+            # `reasoning_effort` is not optional for this model. Qwen3.8 puts
+            # its thinking in a separate channel and leaves `content` EMPTY when
+            # reasoning is on, so omitting this returns a successful call with
+            # nothing in it — which is how the first run spent all 60 calls and
+            # wrote 0 tasks. `harvesting/proxy.py` always sets it, default none.
             data = client.chat.completions.create(
                 messages=messages, model=MODEL, temperature=temperature,
-                top_p=0.8, max_completion_tokens=max_tokens, timeout=timeout)
+                top_p=0.8, max_completion_tokens=max_tokens, timeout=timeout,
+                reasoning_effort="none")
         except Exception as exc:                                  # noqa: BLE001
             # Never log the exception body: it can echo the request, and some
             # error shapes carry the Authorization header with it.
@@ -133,7 +139,13 @@ def call(client, messages, *, max_tokens, temperature, timeout, ledger):
         if getattr(choice, "finish_reason", None) == "length":
             ledger["truncated"] = ledger.get("truncated", 0) + 1
             return None, "truncated"
-        return getattr(getattr(choice, "message", None), "content", None) or "", None
+        content = getattr(getattr(choice, "message", None), "content", None) or ""
+        if not content.strip():
+            # A successful call with no content is a failure that looks like a
+            # success. Name it, so a budget cannot drain into empty replies.
+            ledger["empty_content"] = ledger.get("empty_content", 0) + 1
+            return None, "empty-content"
+        return content, None
     return None, "exhausted"
 
 
@@ -215,6 +227,7 @@ def main() -> int:
 
     rng = random.Random(args.seed)
     ledger = {}
+    barren = 0
     started = time.time()
     written = 0
 
@@ -231,11 +244,23 @@ def main() -> int:
                 max_tokens=4096, temperature=0.9, timeout=args.timeout, ledger=ledger)
             if err:
                 ledger["task_call_failed"] = ledger.get("task_call_failed", 0) + 1
+                barren += 1
                 if err.startswith("http-4") and err != "http-429":
+                    break
+                # Six consecutive task calls that yielded no usable task means
+                # the prompt or the model contract is wrong, not that the next
+                # call will be luckier. The first run learned this the
+                # expensive way, at 60 calls for 0 tasks.
+                if barren >= 6:
+                    ledger["stopped_barren"] = 1
                     break
                 continue
             tasks = parse_tasks(text or "")
             ledger["tasks_parsed"] = ledger.get("tasks_parsed", 0) + len(tasks)
+            barren = 0 if tasks else barren + 1
+            if barren >= 6:
+                ledger["stopped_barren"] = 1
+                break
             for spec in tasks:
                 if not budget_left():
                     break

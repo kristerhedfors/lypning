@@ -54,16 +54,23 @@ def main() -> int:
 
     # One real completion, because a visible model can still be unentitled.
     try:
+        # `reasoning_effort="none"` is required, not tidy: with reasoning on,
+        # this model answers in a separate channel and leaves `content` empty,
+        # so the call succeeds and returns nothing.
         out = client.chat.completions.create(
             messages=[{"role": "user", "content": "Reply with the single word: ready"}],
-            model=WANTED, max_completion_tokens=16)
+            model=WANTED, max_completion_tokens=64, reasoning_effort="none")
     except Exception as exc:                                     # noqa: BLE001
         code = getattr(exc, "status_code", None)
         print("chat.completions failed: %s%s"
               % (type(exc).__name__, (" HTTP %d" % code) if code else ""), file=sys.stderr)
         return 1
     reply = (out.choices[0].message.content or "").strip()
-    print("completion ok: %r" % reply[:40])
+    print("completion content: %r" % reply[:60])
+    if not reply:
+        print("the call succeeded and returned no content: the reasoning "
+              "contract is wrong, not the key", file=sys.stderr)
+        return 1
     return 0
 
 
