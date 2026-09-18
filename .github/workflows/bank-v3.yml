@@ -1,0 +1,117 @@
+# Grow the training bank from Qwen on Cerebras, then adapt what the engine refuses.
+#
+# THE SPLIT IS THE SAFETY PROPERTY. `HARVESTING.md`: the upstream key belongs to
+# the trusted controller, and the model-facing execution boundary must never
+# receive it. So:
+#   generate — holds CEREBRAS_API_KEY, writes candidates, EXECUTES NOTHING.
+#   adapt    — holds no provider key, executes model-written code, repairs it.
+# The artifact between them is the only channel. Do not merge these jobs, and do
+# not add the secret to the second one.
+#
+# Manual trigger only. `ORCHESTRATION.md` says not to change the paid
+# manual-only trigger, so there is no `push:` here on purpose.
+name: bank v3 (generate and adapt)
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_calls:
+        description: "provider calls this run (~3.4 per task at 3 samples)"
+        default: "200"
+        type: string
+      max_minutes:
+        description: "wall-clock bound on generation"
+        default: "45"
+        type: string
+      samples:
+        description: "independent programs per task; the self-consistency k"
+        default: "3"
+        type: string
+      agree:
+        description: "how many samples must agree for a case to survive"
+        default: "2"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    name: generate candidates (holds the key, runs nothing)
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Ask Qwen for tasks and k independent programs each
+        env:
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+        run: |
+          python training/data/bank_v3/cerebras_gen.py \
+            --output "$RUNNER_TEMP/candidates.jsonl" \
+            --samples "${{ inputs.samples }}" \
+            --max-calls "${{ inputs.max_calls }}" \
+            --max-minutes "${{ inputs.max_minutes }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bank-v3-candidates
+          path: ${{ runner.temp }}/candidates.jsonl
+          retention-days: 14
+
+  adapt:
+    name: execute, judge and repair (no provider key)
+    needs: generate
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PYTHONPATH: src:training
+      LYPNING_CAPTURE: "0"
+      LYPNING_HARVEST: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Isolate engine state
+        run: echo "LYPNING_HOME=$RUNNER_TEMP/bank3-home" >> "$GITHUB_ENV"
+      - run: pip install -q -e .
+      - name: Build the engine that decides native versus refused
+        run: |
+          python -m lypning build --rust --target host
+          "$LYPNING_HOME/bin/lypning-l" --version
+      - uses: actions/download-artifact@v4
+        with:
+          name: bank-v3-candidates
+          path: ${{ runner.temp }}/in
+
+      # Runs every candidate. This job deliberately has no provider secret, so
+      # a generated program that reads the environment finds nothing worth
+      # having; the runner is a disposable VM with no other credentials either.
+      - name: Triage — self-consistency oracle, then route by what the engine does
+        run: |
+          python training/data/bank_v3/triage.py \
+            --candidates "$RUNNER_TEMP/in/candidates.jsonl" \
+            --engine "$LYPNING_HOME/bin/lypning-l" \
+            --agree "${{ inputs.agree }}" \
+            --out-native "$RUNNER_TEMP/out/native.jsonl" \
+            --out-repair "$RUNNER_TEMP/out/repair-queue.jsonl" \
+            --out-rejected "$RUNNER_TEMP/out/rejected.jsonl"
+
+      # Every repair is proved against the expected output agreed BEFORE the
+      # repair existed, so a rewrite cannot move its own target.
+      - name: Adapt the refused programs into the supported subset
+        run: |
+          python training/data/bank_v3/repair.py \
+            --queue "$RUNNER_TEMP/out/repair-queue.jsonl" \
+            --engine "$LYPNING_HOME/bin/lypning-l" \
+            --out-repaired "$RUNNER_TEMP/out/repaired.jsonl" \
+            --out-unrepaired "$RUNNER_TEMP/out/unrepaired.jsonl"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bank-v3-adapted
+          path: ${{ runner.temp }}/out
+          retention-days: 14
