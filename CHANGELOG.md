@@ -14,6 +14,34 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-18** — Grow the bank from Qwen on Cerebras, and adapt what the engine refuses ([#93](https://github.com/kristerhedfors/lypning/pull/93))
+
+- A generate-and-adapt loop, which is `ORCHESTRATION.md`'s data loop and its
+  step-6 repair made executable. Qwen proposes tasks and answers each k times;
+  triage runs every sample, keeps a case only when at least two agree byte for
+  byte on every input, re-runs the winner to catch output that moves between two
+  clean runs, and routes by what the engine does with it.
+- The safety property is a job boundary, not a convention: generation holds
+  `CEREBRAS_API_KEY` and executes nothing, triage executes model-written code and
+  holds no provider key, publishing holds `HF_TOKEN` and executes nothing.
+- First scaled run, 2026-09-18 (GH run 35320962503): 12,000 calls, 2,286,142
+  output tokens, 49 minutes, 3,837 tasks, **3,499 native + 13 repaired = 3,512
+  banked**, 140 rejected, 185 refused with no working rule.
+- Repairs are proved rather than trusted: a rewrite is accepted only when the
+  engine serves it natively *and* it reproduces the output agreed before the
+  repair existed, so a rule cannot move its own target. `heapq` is a complete
+  reimplementation using CPython's sift order — an improvised heap pops equal
+  elements in a different order, which is observable once values carry payloads.
+- **This is a weaker evidence tier than the authored bank and is kept separate
+  on purpose.** Its expected outputs come from samples of one model agreeing, so
+  a misreading shared by every sample survives. The teacher is `qwen-3.8-27b`,
+  the model being trained: on-policy rejection sampling, not distillation.
+- What the rules could not repair is the useful half of the failure, and is
+  written out by kind: `calendar` 39, `datetime` 31, `fractions` 13, `string` 12.
+  Those are capability requests for the engine. The `decimal/fractions` rule
+  fired 15 times and was accepted 0 times; it is wrong and is recorded as such
+  rather than quietly left to keep firing.
+
 **2026-09-18** — Author a task bank with a differential oracle, and run the round-02 pilot on a real GPU ([#93](https://github.com/kristerhedfors/lypning/pull/93))
 
 - The blocker on a real adapter stage was never the GPU, it was data:
