@@ -68,6 +68,63 @@ PRELUDE = {
         "    for g in groups:\n"
         "        out.extend(list(g))\n"
         "    return out\n"),
+    # CPython's own heap algorithm, reimplemented in the subset. `nsmallest` is
+    # a one-line substitution but `heappush`/`heappop` are a discipline, and a
+    # program that balances two heaps to track a running median cannot be
+    # repaired by deleting an import. Sift order is copied from CPython's
+    # `_siftdown`/`_siftup` rather than improvised, because a different-but-
+    # valid heap pops equal elements in a different order, and that is
+    # observable the moment the values carry payloads.
+    "heap": (
+        "def _siftdown(h, start, pos):\n"
+        "    item = h[pos]\n"
+        "    while pos > start:\n"
+        "        parent = (pos - 1) >> 1\n"
+        "        if item < h[parent]:\n"
+        "            h[pos] = h[parent]\n"
+        "            pos = parent\n"
+        "            continue\n"
+        "        break\n"
+        "    h[pos] = item\n"
+        "def _siftup(h, pos):\n"
+        "    endpos = len(h)\n"
+        "    startpos = pos\n"
+        "    item = h[pos]\n"
+        "    child = 2 * pos + 1\n"
+        "    while child < endpos:\n"
+        "        right = child + 1\n"
+        "        if right < endpos and not h[child] < h[right]:\n"
+        "            child = right\n"
+        "        h[pos] = h[child]\n"
+        "        pos = child\n"
+        "        child = 2 * pos + 1\n"
+        "    h[pos] = item\n"
+        "    _siftdown(h, startpos, pos)\n"
+        "def _heappush(h, item):\n"
+        "    h.append(item)\n"
+        "    _siftdown(h, 0, len(h) - 1)\n"
+        "def _heappop(h):\n"
+        "    last = h.pop()\n"
+        "    if h:\n"
+        "        top = h[0]\n"
+        "        h[0] = last\n"
+        "        _siftup(h, 0)\n"
+        "        return top\n"
+        "    return last\n"
+        "def _heapify(x):\n"
+        "    n = len(x)\n"
+        "    for i in reversed(range(n // 2)):\n"
+        "        _siftup(x, i)\n"
+        "def _heapreplace(h, item):\n"
+        "    top = h[0]\n"
+        "    h[0] = item\n"
+        "    _siftup(h, 0)\n"
+        "    return top\n"
+        "def _heappushpop(h, item):\n"
+        "    if h and h[0] < item:\n"
+        "        item, h[0] = h[0], item\n"
+        "        _siftup(h, 0)\n"
+        "    return item\n"),
     "bisect_left": (
         "def _bisect_left(a, x):\n"
         "    lo, hi = 0, len(a)\n"
@@ -173,9 +230,16 @@ def rule_heapq(src):
     body = re.sub(r"\bheapq\.nsmallest\(\s*([^,]+),\s*([^()]+)\)", r"sorted(\2)[:\1]", src)
     body = re.sub(r"\bheapq\.nlargest\(\s*([^,]+),\s*([^()]+)\)",
                   r"sorted(\2, reverse=True)[:\1]", body)
+    need_heap = False
+    for attr in ("heappushpop", "heapreplace", "heappush", "heappop", "heapify"):
+        if re.search(r"\b(heapq\.%s|^from\s+heapq\s+import[^\n]*\b%s\b)" % (attr, attr),
+                     body, re.M):
+            body = _sub_calls(body, "heapq", attr, "_" + attr)
+            need_heap = True
     if body == src:
         return None
-    return _drop_import(body, "heapq")
+    prelude = PRELUDE["heap"] if need_heap else ""
+    return prelude + _drop_import(body, "heapq")
 
 
 def rule_bisect(src):

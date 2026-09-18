@@ -207,6 +207,8 @@ def main() -> int:
     ap.add_argument("--max-minutes", type=float, default=50.0)
     ap.add_argument("--timeout", type=float, default=120.0)
     ap.add_argument("--seed", type=int, default=1111)
+    ap.add_argument("--exclude-tasks", type=Path,
+                    help="JSONL of already-banked {'task': ...}; never regenerate these")
     args = ap.parse_args()
 
     client = make_client()
@@ -223,7 +225,17 @@ def main() -> int:
         for line in args.output.read_text(encoding="utf-8").splitlines():
             if line.strip():
                 seen.add(json.loads(line)["task"])
-    print("resuming with %d task(s) already generated" % len(seen))
+    banked = 0
+    if args.exclude_tasks and args.exclude_tasks.is_file():
+        for line in args.exclude_tasks.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                try:
+                    seen.add(json.loads(line)["task"])
+                    banked += 1
+                except (ValueError, KeyError):
+                    continue
+    print("resuming with %d task(s) in this file, %d already banked elsewhere"
+          % (len(seen) - banked, banked))
 
     rng = random.Random(args.seed)
     ledger = {}
