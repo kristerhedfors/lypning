@@ -280,18 +280,41 @@ def rule_string_constants(src):
     return _drop_import(body, "string")
 
 
-def rule_decimal_fractions(src):
-    """`Decimal(x)` / `Fraction(x)` around integer work is the integer itself."""
-    body = src
-    for mod, cls in (("decimal", "Decimal"), ("fractions", "Fraction")):
-        if mod not in body:
-            continue
-        body = re.sub(r"\b%s\.%s\(\s*([^(),]+)\s*\)" % (mod, cls), r"\1", body)
-        body = re.sub(r"\b%s\(\s*([^(),]+)\s*\)" % cls, r"\1", body)
-        body = _drop_import(body, mod)
+def rule_decimal(src):
+    """`Decimal(x)` around INTEGER work is the integer itself — and only then.
+
+    Withdrawn for `Fraction` on 2026-09-18 after firing 15 times and being
+    accepted 0 times (GH run 35320962503). Unwrapping a Fraction is wrong twice
+    over: `Fraction(1, 3)` takes two arguments the pattern never matched, and
+    where it did match, `Fraction(a) / Fraction(b)` prints `1/3` while `a / b`
+    prints `0.333...`. Decimal survives only because the cases that reach it are
+    integer sums, where `Decimal(n)` really is `n`; a Decimal doing division or
+    quantisation is the same trap and is left to fail verification.
+    """
+    if "decimal" not in src or "/" in src:
+        return None
+    body = re.sub(r"\bdecimal\.Decimal\(\s*([^(),]+)\s*\)", r"\1", src)
+    body = re.sub(r"\bDecimal\(\s*([^(),]+)\s*\)", r"\1", body)
     if body == src:
         return None
-    return body
+    return _drop_import(body, "decimal")
+
+
+def _withdrawn_rule_fraction_exact(src):
+    """Exact rationals as a numerator/denominator pair reduced by gcd.
+
+    `Fraction` is not unwrappable — it prints `1/3`, not `0.333...` — so the
+    repair has to carry the arithmetic, not delete it. Narrow on purpose: only
+    a Fraction built from one or two integer arguments, because that is the
+    shape whose behaviour a pair of ints reproduces exactly.
+    """
+    if "Fraction" not in src:
+        return None
+    body = _sub_calls(src, "fractions", "Fraction", "_Fraction")
+    body = re.sub(r"(?<![\w.])Fraction\b(?=\s*\()", "_Fraction", body)
+    if body == src:
+        return None
+    return PRELUDE["fraction"] + _drop_import(body, "fractions")
 
 
 RULES = [
@@ -299,7 +322,11 @@ RULES = [
     ("itertools", rule_itertools), ("operator", rule_operator),
     ("copy", rule_copy), ("heapq", rule_heapq), ("bisect", rule_bisect),
     ("array", rule_array), ("string", rule_string_constants),
-    ("decimal/fractions", rule_decimal_fractions),
+    ("decimal", rule_decimal),
+    # `fraction` withdrawn 2026-09-18: the shim was a class, and the engine
+    # refuses `class` outright (`class: class definition`), so the repair could
+    # never be native. Fractions move to the CEILING list in cerebras_gen.py —
+    # keeping the import is the right answer, which is what a control is for.
 ]
 
 
