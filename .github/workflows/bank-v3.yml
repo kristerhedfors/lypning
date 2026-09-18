@@ -9,10 +9,11 @@
 # not add the secret to the second one.
 #
 # Manual trigger only. `ORCHESTRATION.md` says not to change the paid manual-only
-# trigger, and this keeps it: `workflow_dispatch` needs the file on the default
-# branch, which it is not yet, so the push route is gated on a commit-message
-# marker the way the round-02 launcher already is. A routine push to this branch
-# spends nothing; only a commit that says `[generate-bank]` does.
+# trigger, and this keeps it. The file now IS on the default branch, so
+# `workflow_dispatch` resolves and is the ordinary route; the push route stays
+# gated on a commit-message marker the way the round-02 launcher already is. A
+# routine push to this branch spends nothing; only a commit that says
+# `[generate-bank]` does.
 #
 # The stages are `python -m pipeline.cli synth-generate` and `synth-adapt`
 # (`training/pipeline/synth_generate.py`, `training/pipeline/synth.py`); the
@@ -30,7 +31,7 @@ on:
         type: string
       max_minutes:
         description: "wall-clock bound on generation"
-        default: "50"
+        default: "120"
         type: string
       samples:
         description: "independent programs per task; the self-consistency k"
@@ -55,7 +56,7 @@ jobs:
       contains(github.event.head_commit.message, '[generate-bank]') ||
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 150
     env:
       PYTHONPATH: src:training
     steps:
@@ -98,7 +99,7 @@ jobs:
             --exclude-tasks "$RUNNER_TEMP/banked.jsonl" \
             --samples "${{ inputs.samples || 3 }}" \
             --max-calls "${{ inputs.max_calls || 12000 }}" \
-            --max-minutes "${{ inputs.max_minutes || 50 }}" \
+            --max-minutes "${{ inputs.max_minutes || 120 }}" \
             --seed "$SEED" \
             --max-output-tokens 8000000
       - uses: actions/upload-artifact@v4
