@@ -1,0 +1,101 @@
+# The supervised-token floor, counted exactly, where the tokenizer is free.
+#
+# `run()` refuses an SFT schedule below MIN_SUPERVISED_TOKENS after the
+# tokenizer download, on a metered H200, with 55.6 GB of base weights already
+# moving. The count needs the tokenizer and nothing else, so it is answerable
+# on a plain runner for nothing. This downloads a tokenizer, never weights,
+# submits no job and writes nothing to the Hub.
+name: token floor
+
+on:
+  push:
+    branches: ["s0/**"]
+  workflow_dispatch:
+    inputs:
+      steps:
+        description: "comma-separated --steps values; empty uses the script's grid"
+        required: false
+        default: ""
+      hub_bank:
+        description: "bank path inside the private dataset repo, e.g. banks/v2"
+        required: false
+        default: ""
+      revision:
+        description: "40-character Qwen commit to count against; empty resolves the Hub's current one"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  floor:
+    name: count the supervised tokens the schedule exposes
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # The model is not named here: the script reads
+    # `training_contract.BASE_MODEL`, which is where the experiment keeps it,
+    # and prints it with the revision it resolved. The pinned tokenizer version
+    # is `training_contract.GPU_VERSIONS`, and the script says so on stderr if
+    # the installed one differs from the pin below.
+    #
+    # The revision is an input because an empty one means "whatever the Hub's
+    # main was when this job ran": the script prints the 40-character commit it
+    # resolved either way, so the count always carries an identity, but only a
+    # pinned one lets a later job count against the same tokenizer on purpose.
+    # `round02.yml`'s preflight prints the revision a metered job would use.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q "transformers==5.17.0" "huggingface-hub==1.31.0"
+      - name: In-tree bank_v2
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          STEPS: ${{ inputs.steps }}
+          REVISION: ${{ inputs.revision }}
+        run: |
+          set -euo pipefail
+          args=""
+          for s in $(printf '%s' "${STEPS}" | tr ',' ' '); do
+            case "$s" in
+              ''|*[!0-9]*) echo "refusing a non-numeric --steps: $s" >&2; exit 2 ;;
+              *) args="$args --steps $s" ;;
+            esac
+          done
+          if [ -n "${REVISION:-}" ]; then
+            printf '%s' "${REVISION}" | grep -Eq '^[0-9a-f]{40}$' \
+              || { echo "refusing a revision that is not a 40-character commit: ${REVISION}" >&2; exit 2; }
+            args="$args --revision ${REVISION}"
+          fi
+          # shellcheck disable=SC2086
+          python .github/scripts/token_floor.py --bank-path training/data/bank_v2 $args
+      # The metered job trains on the bank it downloads from the Hub, not on
+      # the checkout's copy. Counting both settles whether they are the same
+      # bank; it is allowed to fail, because the count above is the deliverable
+      # and repository access is a separate question.
+      - name: The bank the job would download
+        if: ${{ inputs.hub_bank != '' }}
+        continue-on-error: true
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HUB_BANK: ${{ inputs.hub_bank }}
+          STEPS: ${{ inputs.steps }}
+          REVISION: ${{ inputs.revision }}
+        run: |
+          set -euo pipefail
+          args=""
+          for s in $(printf '%s' "${STEPS}" | tr ',' ' '); do
+            case "$s" in
+              ''|*[!0-9]*) echo "refusing a non-numeric --steps: $s" >&2; exit 2 ;;
+              *) args="$args --steps $s" ;;
+            esac
+          done
+          if [ -n "${REVISION:-}" ]; then
+            printf '%s' "${REVISION}" | grep -Eq '^[0-9a-f]{40}$' \
+              || { echo "refusing a revision that is not a 40-character commit: ${REVISION}" >&2; exit 2; }
+            args="$args --revision ${REVISION}"
+          fi
+          # shellcheck disable=SC2086
+          python .github/scripts/token_floor.py --hub-bank "${HUB_BANK}" $args
