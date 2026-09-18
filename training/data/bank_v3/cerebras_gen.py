@@ -45,7 +45,7 @@ MODEL = "qwen-3.8-27b"
 #
 # The first scaled run asked for ordinary sub-25-line Python and got 3,499 of
 # 3,837 tasks (91.2%) already served natively (GH run 35320962503, 2026-09-18).
-# That is the one population `PREREGISTRATION.md` §2g strikes out: sampling
+# That is the one population `PREREGISTRATION.md` §2 item (g) strikes out: sampling
 # draws from "rewrite + ceiling only, less the cases that cannot teach", because
 # "an unobserved case is a plain coding task the stock model already answers".
 # Its pool is 66 rewrite to 27 ceiling — 71/29 — decided 2026-09-13 before any
@@ -321,7 +321,7 @@ def main() -> int:
 
     with args.output.open("a", encoding="utf-8") as sink:
         while budget_left():
-            # `PREREGISTRATION.md` §2g: 66 rewrite to 27 ceiling, decided before
+            # `PREREGISTRATION.md` §2 item (g): 66 rewrite to 27 ceiling, decided before
             # the spend. Draw the target in that proportion rather than dropping
             # the counterweight, which is what makes an arm look good by
             # learning to avoid every import.

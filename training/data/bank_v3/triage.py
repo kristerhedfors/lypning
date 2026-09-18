@@ -146,9 +146,17 @@ def main() -> int:
                 continue
 
             verdict, kinds = engine_verdict(args.engine, winner, inputs, workdir)
+            # Carry the stratum through. Without it a refused CEILING case is
+            # indistinguishable from a rewrite case no rule could fix, and the
+            # two are opposites: the first is the right answer keeping its
+            # import, the second is a failure. `PREREGISTRATION.md` §2 item (g) reserves
+            # 27 of 93 pool cases for the first, so losing them loses the
+            # counterweight that stops an arm scoring well by avoiding imports.
             record = {"task": row["task"], "domain": row["domain"], "inputs": inputs,
                       "program": winner, "expected": list(best),
-                      "agreement": count, "samples": len(programs), "model": row["model"]}
+                      "agreement": count, "samples": len(programs), "model": row["model"],
+                      "stratum": row.get("stratum"),
+                      "target_construct": row.get("target_construct")}
             if verdict == "native":
                 tally["native"] += 1
                 native.append(record)
