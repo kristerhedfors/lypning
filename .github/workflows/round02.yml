@@ -56,15 +56,19 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python .github/scripts/round02_preflight.py
 
-  submit:
-    name: submit the GPU job (BILLED)
+  # Free. Building the Space and the artifact repo is idempotent and costs
+  # nothing, so it runs on every push to this branch: a bootstrap failure is
+  # then a red run rather than a surprise after the meter has started.
+  bootstrap:
+    name: bootstrap the Hub artifacts (free)
     needs: preflight
-    if: >-
-      needs.preflight.outputs.jobs_ok == 'true' &&
-      (contains(github.event.head_commit.message, '[submit-smoke]') ||
-       github.event.inputs.submit == 'SUBMIT')
+    if: needs.preflight.outputs.jobs_ok == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 45
+    outputs:
+      space_repo: ${{ steps.space.outputs.space_repo }}
+      space_rev: ${{ steps.space.outputs.space_rev }}
+      owner: ${{ steps.space.outputs.owner }}
     env:
       PYTHONPATH: src:training
       LYPNING_CAPTURE: "0"
@@ -99,16 +103,44 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python .github/scripts/round02_workrepo.py
 
-      # launch.py prints the plan and its hourly cost, then submits. --follow
-      # streams the job's own log into this run so the evidence is here.
+      # Free: prints the plan and the hourly price, submits nothing. Every run
+      # of this branch therefore states what a submit would cost.
+      - name: Dry run — print the plan and its price
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python training/hf/launch.py smoke \
+            --branch "${GITHUB_REF_NAME}" --commit "${GITHUB_SHA}" \
+            --space "${{ steps.space.outputs.space_repo }}" \
+            --space-revision "${{ steps.space.outputs.space_rev }}" \
+            --qwen-revision "${{ needs.preflight.outputs.qwen_rev }}" \
+            --work-repo "${{ steps.space.outputs.owner }}/${WORK_REPO_NAME}" \
+            --flavor "${FLAVOR}" --timeout 75m
+
+  submit:
+    name: submit the GPU job (BILLED)
+    needs: [preflight, bootstrap]
+    if: >-
+      contains(github.event.head_commit.message, '[submit-smoke]') ||
+      github.event.inputs.submit == 'SUBMIT'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q "huggingface-hub==1.31.0"
+      # --follow streams the job's own log into this run, so the evidence for
+      # what the GPU actually did lives beside the decision to spend on it.
       - name: Submit
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python training/hf/launch.py "${{ github.event.inputs.stage || 'smoke' }}" \
             --branch "${GITHUB_REF_NAME}" --commit "${GITHUB_SHA}" \
-            --space "${{ steps.space.outputs.space_repo }}" \
-            --space-revision "${{ steps.space.outputs.space_rev }}" \
+            --space "${{ needs.bootstrap.outputs.space_repo }}" \
+            --space-revision "${{ needs.bootstrap.outputs.space_rev }}" \
             --qwen-revision "${{ needs.preflight.outputs.qwen_rev }}" \
-            --work-repo "${{ steps.space.outputs.owner }}/${WORK_REPO_NAME}" \
+            --work-repo "${{ needs.bootstrap.outputs.owner }}/${WORK_REPO_NAME}" \
             --flavor "${FLAVOR}" --timeout 75m --yes --follow
