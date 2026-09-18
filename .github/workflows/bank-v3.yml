@@ -8,11 +8,16 @@
 # The artifact between them is the only channel. Do not merge these jobs, and do
 # not add the secret to the second one.
 #
-# Manual trigger only. `ORCHESTRATION.md` says not to change the paid
-# manual-only trigger, so there is no `push:` here on purpose.
+# Manual trigger only. `ORCHESTRATION.md` says not to change the paid manual-only
+# trigger, and this keeps it: `workflow_dispatch` needs the file on the default
+# branch, which it is not yet, so the push route is gated on a commit-message
+# marker the way the round-02 launcher already is. A routine push to this branch
+# spends nothing; only a commit that says `[generate-bank]` does.
 name: bank v3 (generate and adapt)
 
 on:
+  push:
+    branches: ["round02/**", "bank3/**"]
   workflow_dispatch:
     inputs:
       max_calls:
@@ -38,6 +43,9 @@ permissions:
 jobs:
   generate:
     name: generate candidates (holds the key, runs nothing)
+    if: >-
+      contains(github.event.head_commit.message, '[generate-bank]') ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 75
     steps:
@@ -51,9 +59,9 @@ jobs:
         run: |
           python training/data/bank_v3/cerebras_gen.py \
             --output "$RUNNER_TEMP/candidates.jsonl" \
-            --samples "${{ inputs.samples }}" \
-            --max-calls "${{ inputs.max_calls }}" \
-            --max-minutes "${{ inputs.max_minutes }}"
+            --samples "${{ inputs.samples || 3 }}" \
+            --max-calls "${{ inputs.max_calls || 60 }}" \
+            --max-minutes "${{ inputs.max_minutes || 20 }}"
       - uses: actions/upload-artifact@v4
         with:
           name: bank-v3-candidates
@@ -94,7 +102,7 @@ jobs:
           python training/data/bank_v3/triage.py \
             --candidates "$RUNNER_TEMP/in/candidates.jsonl" \
             --engine "$LYPNING_HOME/bin/lypning-l" \
-            --agree "${{ inputs.agree }}" \
+            --agree "${{ inputs.agree || 2 }}" \
             --out-native "$RUNNER_TEMP/out/native.jsonl" \
             --out-repair "$RUNNER_TEMP/out/repair-queue.jsonl" \
             --out-rejected "$RUNNER_TEMP/out/rejected.jsonl"
