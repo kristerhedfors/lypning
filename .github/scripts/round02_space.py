@@ -83,7 +83,9 @@ def main() -> int:
     (staging / "README.md").write_text(
         "---\n"
         "title: lypning round-02 verifier\n"
-        "emoji: fire\n"
+        # No `emoji:` key: the Hub validates it against
+        # /\p{Extended_Pictographic}/u, so a word like "fire" is a 400 on
+        # upload_folder rather than a default. It is optional; omit it.
         "colorFrom: gray\n"
         "colorTo: gray\n"
         "sdk: docker\n"
