@@ -16,9 +16,14 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-#: The eval-2 bank is frozen at 300 in `EVAL2.md` §11; take the smallest set of
-#: whole families that reaches it rather than trimming a family to hit a number.
+#: The eval-2 bank is frozen at 300 cases in `EVAL2.md` §11, but the binding
+#: constraint is families, not cases: `data_loop --purpose benchmark` refuses
+#: fewer than 18 independent semantic families, which a 9-family bank of 315
+#: cases fails even though it clears the case target (measured 2026-09-18, job
+#: 6aacca0ab1dc2b62dc590991, `benchmark needs at least 18 independent semantic
+#: families`). Take whole families until BOTH are satisfied.
 EVAL2_TARGET = 300
+EVAL2_MIN_FAMILIES = 18
 
 
 def main() -> int:
@@ -29,31 +34,44 @@ def main() -> int:
     for c in cases:
         by_family[c["family"]].append(c)
 
-    # Deterministic order, and controls first so the benchmark is guaranteed
-    # some: they are the scarcer population and the one a greedy pass would
-    # otherwise leave entirely in train.
+    # Split coverage by CAPABILITY, not by family. Families of one kind answer
+    # the same shape of question and collide by the identical-stdout rule —
+    # `file-firstline` matched `file-longestline`, `file-lastline`,
+    # `file-sortlines` and `file-joinedcommas` across the split on 2026-09-18,
+    # 96 pairs, because a first line is often also the longest. Keeping a whole
+    # capability on one side removes the collision at its cause rather than
+    # tuning a threshold.
     #
-    # Which controls, though, is not arbitrary. A control that prints a bare sum
-    # collides with every sum-shaped training family by the identical-stdout
-    # rule — `control-array-sum` alone produced all 51 stdout leaks on
-    # 2026-09-18 — so the benchmark takes the controls whose output SHAPE is
-    # distinctive (a comma-joined list, a doubled list, a median that can be
-    # fractional) and leaves the bare-integer ones in train, where a collision
-    # costs nothing.
+    # Controls are the exception: `fallback-control` is one capability, and
+    # sending all of it to either side would leave the other with no control at
+    # all. They are split by family, and only the ones whose output SHAPE is
+    # distinctive go to the benchmark — a control printing a bare sum collides
+    # with every sum-shaped training family.
     DISTINCTIVE = ("control-copy-roundtrip", "control-itertools-chain",
                    "control-statistics-median")
-    control = [f for f in DISTINCTIVE if f in by_family] + sorted(
-        f for f, cs in by_family.items()
-        if cs[0]["population"] == "fallback-control" and f not in DISTINCTIVE)
-    coverage = sorted(f for f, cs in by_family.items()
-                      if cs[0]["population"] == "coverage")
+    by_capability = defaultdict(list)
+    for fam, cs in by_family.items():
+        by_capability[cs[0]["capabilities"][0]].append(fam)
 
-    eval_families, n = [], 0
-    for fam in control[:3] + coverage:
-        if n >= EVAL2_TARGET:
+    # Which capabilities, in order. Kinds that print a BARE INTEGER collide with
+    # each other across the split by the identical-stdout rule whatever their
+    # tasks say — `stdlib-collections-counter` matched `int-maximum` because the
+    # most common value is often also the largest — so the benchmark is built
+    # from the kinds whose answers are text, and the integer kinds stay in train
+    # where a coincidence costs nothing.
+    TEXTUAL_FIRST = ("string", "file", "text", "set-ops")
+    caps = [c for c in by_capability if c != "fallback-control"]
+    coverage_caps = ([c for c in TEXTUAL_FIRST if c in caps]
+                     + sorted(c for c in caps if c not in TEXTUAL_FIRST))
+
+    eval_families = [f for f in DISTINCTIVE if f in by_family]
+    n = sum(len(by_family[f]) for f in eval_families)
+    for cap in coverage_caps:
+        if n >= EVAL2_TARGET and len(eval_families) >= EVAL2_MIN_FAMILIES:
             break
-        eval_families.append(fam)
-        n += len(by_family[fam])
+        for fam in sorted(by_capability[cap]):
+            eval_families.append(fam)
+            n += len(by_family[fam])
 
     eval_set = set(eval_families)
     eval_cases = [c for c in cases if c["family"] in eval_set]
@@ -75,6 +93,10 @@ def main() -> int:
     print(json.dumps(report, indent=2))
     if overlap or report["task_overlap"]:
         print("a family or task on both sides is a leak, not a split", file=sys.stderr)
+        return 1
+    if report["eval2"]["families"] < EVAL2_MIN_FAMILIES:
+        print("eval2 has %d families; the benchmark floor is %d"
+              % (report["eval2"]["families"], EVAL2_MIN_FAMILIES), file=sys.stderr)
         return 1
     for side in ("train", "eval2"):
         if len(report[side]["populations"]) < 2:
