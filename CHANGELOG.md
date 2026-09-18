@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-18** — Grow the bank from Qwen on Cerebras, and adapt what the engine refuses ([#93](https://github.com/kristerhedfors/lypning/pull/93))
+**2026-09-18** — Grow the bank from Qwen on Cerebras, and adapt what the engine refuses ([#92](https://github.com/kristerhedfors/lypning/pull/92))
 
 - A generate-and-adapt loop, which is `ORCHESTRATION.md`'s data loop and its
   step-6 repair made executable. Qwen proposes tasks and answers each k times;
@@ -42,7 +42,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   fired 15 times and was accepted 0 times; it is wrong and is recorded as such
   rather than quietly left to keep firing.
 
-**2026-09-18** — Author a task bank with a differential oracle, and run the round-02 pilot on a real GPU ([#93](https://github.com/kristerhedfors/lypning/pull/93))
+**2026-09-18** — Author a task bank with a differential oracle, and run the round-02 pilot on a real GPU ([#92](https://github.com/kristerhedfors/lypning/pull/92))
 
 - The blocker on a real adapter stage was never the GPU, it was data:
   `MIN_TRAIN_CASES` is 1,000 and the tree held 517 corpus cases, 147 with
@@ -76,7 +76,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   24 GB `a10g-small` cannot hold it; the pilot runs on `h200`, priced by the
   preflight at $5.00/hour.
 
-**2026-09-18** — Run round-02 from CI: a free preflight, a bootstrapped verifier Space, and a marker-gated GPU submit ([#93](https://github.com/kristerhedfors/lypning/pull/93))
+**2026-09-18** — Run round-02 from CI: a free preflight, a bootstrapped verifier Space, and a marker-gated GPU submit ([#92](https://github.com/kristerhedfors/lypning/pull/92))
 
 - The round is launchable from GitHub Actions. A GitHub runner is a disposable
   Linux VM with no sensitive files, which is what `--isolated-worker` attests,
