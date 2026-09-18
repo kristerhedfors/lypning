@@ -14,6 +14,40 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-18** — Author a task bank with a differential oracle, and run the round-02 pilot on a real GPU ([#93](https://github.com/kristerhedfors/lypning/pull/93))
+
+- The blocker on a real adapter stage was never the GPU, it was data:
+  `MIN_TRAIN_CASES` is 1,000 and the tree held 517 corpus cases, 147 with
+  references, in the rewrite schema rather than schema-3. The floor was not
+  weakened; a bank was authored.
+- The oracle is differential. Each family carries a `spec` and a `reference`
+  written against the same English sentence and never against each other, and a
+  case is admitted only when the two agree byte for byte under execution.
+- Three of the repo's own gates rejected the first drafts, and each rejection
+  improved the data: identical prompts across a family are one case with hidden
+  tests; four families labelled `fallback-control` are in fact served natively
+  (`math`, `json`, `collections`, `re`, `random`), so they became coverage and
+  ten genuinely refused modules became the controls; and one shared task
+  preamble put pairwise similarity at 0.81 — 0.958 between two families of one
+  kind on opposite sides of the split — so every family now has its own sentence
+  shape. Task leaks went 4,419 to 0.
+- Measured 2026-09-18: `eval2-leaks` exits 0 with 315 of 315 clean; preparation
+  gives digest `7c8997e1e128c47f` and a train split of **1,355** over 40
+  families with both populations in all three splits. Cases are not
+  independence: 2,286 cases over 69 families is 69 components, and every
+  `review` block records that an agent, not a human, authored and checked it.
+- Two skills so the next bank does not start from scratch:
+  `.claude/skills/training-cases` (authoring and the differential oracle) and
+  `.claude/skills/training-bundle` (preparation, the gates, and publishing a
+  bank to the private dataset repo).
+- CI gained a pilot path. The bank is committed to git for review and copied to
+  the private dataset repo inside the job, because an Actions secret is
+  write-only. Two free gates run before any submit: the upload refuses a bank
+  with a missing population or a family on both sides, and `eval2-leaks` must
+  exit 0. A 27B model loads in full bf16 with no quantization, so the smoke's
+  24 GB `a10g-small` cannot hold it; the pilot runs on `h200`, priced by the
+  preflight at $5.00/hour.
+
 **2026-09-18** — Run round-02 from CI: a free preflight, a bootstrapped verifier Space, and a marker-gated GPU submit ([#93](https://github.com/kristerhedfors/lypning/pull/93))
 
 - The round is launchable from GitHub Actions. A GitHub runner is a disposable
