@@ -33,6 +33,12 @@ env:
   WORK_REPO_NAME: lypning-round02-artifacts
   QWEN_MODEL: Qwen/Qwen3.8-27B
   FLAVOR: a10g-small
+  BANK_PATH: banks/v2
+  # A 27B model loads in full bf16 with no quantization (~54 GB of weights), so
+  # the smoke's 24 GB a10g-small cannot hold it. A pilot needs an 80 GB-class
+  # flavor; the preflight prints the whole priced table so this is a decision
+  # with a number attached rather than a guess.
+  PILOT_FLAVOR: h200
 
 jobs:
   preflight:
@@ -103,6 +109,18 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python .github/scripts/round02_workrepo.py
 
+      # The banks the pilot reads. Committed to git for review; copied here
+      # because the token only exists inside the job.
+      - name: Publish the committed bank to the private dataset repo
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python .github/scripts/round02_bank.py
+
+      - name: The benchmark must not overlap the training bank
+        run: |
+          PYTHONPATH=src:training python -m pipeline.cli eval2-leaks \
+            training/data/bank_v2/eval2.jsonl training/data/bank_v2/train.jsonl
+
       # Free: prints the plan and the hourly price, submits nothing. Every run
       # of this branch therefore states what a submit would cost.
       - name: Dry run — print the plan and its price
@@ -122,6 +140,7 @@ jobs:
     needs: [preflight, bootstrap]
     if: >-
       contains(github.event.head_commit.message, '[submit-smoke]') ||
+      contains(github.event.head_commit.message, '[submit-pilot]') ||
       github.event.inputs.submit == 'SUBMIT'
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -137,10 +156,24 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          python training/hf/launch.py "${{ github.event.inputs.stage || 'smoke' }}" \
-            --branch "${GITHUB_REF_NAME}" --commit "${GITHUB_SHA}" \
-            --space "${{ needs.bootstrap.outputs.space_repo }}" \
-            --space-revision "${{ needs.bootstrap.outputs.space_rev }}" \
-            --qwen-revision "${{ needs.preflight.outputs.qwen_rev }}" \
-            --work-repo "${{ needs.bootstrap.outputs.owner }}/${WORK_REPO_NAME}" \
-            --flavor "${FLAVOR}" --timeout 75m --yes --follow
+          # A pilot is a banked stage: it needs the bank, a bigger GPU and a
+          # longer timeout, and it carries the k/seed/case/token floors.
+          if [ "${{ github.event.inputs.stage }}" = "pilot" ] || \
+             echo "${{ github.event.head_commit.message }}" | grep -q '\[submit-pilot\]'; then
+            python training/hf/launch.py pilot \
+              --branch "${GITHUB_REF_NAME}" --commit "${GITHUB_SHA}" \
+              --space "${{ needs.bootstrap.outputs.space_repo }}" \
+              --space-revision "${{ needs.bootstrap.outputs.space_rev }}" \
+              --qwen-revision "${{ needs.preflight.outputs.qwen_rev }}" \
+              --work-repo "${{ needs.bootstrap.outputs.owner }}/${WORK_REPO_NAME}" \
+              --bank-path "${BANK_PATH}" --seed 1111 --eval-draws 16 \
+              --flavor "${PILOT_FLAVOR}" --timeout 300m --yes --follow
+          else
+            python training/hf/launch.py smoke \
+              --branch "${GITHUB_REF_NAME}" --commit "${GITHUB_SHA}" \
+              --space "${{ needs.bootstrap.outputs.space_repo }}" \
+              --space-revision "${{ needs.bootstrap.outputs.space_rev }}" \
+              --qwen-revision "${{ needs.preflight.outputs.qwen_rev }}" \
+              --work-repo "${{ needs.bootstrap.outputs.owner }}/${WORK_REPO_NAME}" \
+              --flavor "${FLAVOR}" --timeout 75m --yes --follow
+          fi
