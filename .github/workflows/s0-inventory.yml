@@ -1,0 +1,32 @@
+# What the private artifact repo actually holds, printed in full.
+#
+# Rung S0 is blocked on the developer device for want of private inputs, and
+# whether the Hub still holds them is answerable for free. This runs where the
+# token is, downloads nothing, and bills nothing.
+name: s0 inventory
+
+on:
+  push:
+    branches: ["s0/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inventory:
+    name: list the artifact repo
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      WORK_REPO_NAME: lypning-round02-artifacts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q "huggingface-hub==1.31.0"
+      - name: Every path in the artifact repo
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python .github/scripts/s0_inventory.py
