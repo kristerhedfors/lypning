@@ -143,7 +143,10 @@ jobs:
       contains(github.event.head_commit.message, '[submit-pilot]') ||
       github.event.inputs.submit == 'SUBMIT'
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # The HF pilot is submitted with --timeout 300m, so a 120-minute runner
+    # cancels the follower mid-round: the job keeps running and still uploads,
+    # but the streamed evidence is lost and the workflow reads as failed.
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
