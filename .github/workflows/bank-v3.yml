@@ -40,6 +40,10 @@ on:
         description: "how many samples must agree for a case to survive"
         default: "2"
         type: string
+      seed:
+        description: "construct-draw seed; blank uses the run id, so two runs never draw alike"
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -78,9 +82,16 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
         run: python .github/scripts/cerebras_probe.py
 
+      # The seed draws the construct sequence. It defaults to 1111, so every run
+      # left to itself asks for the same constructs in the same order and pays
+      # the provider for tasks `--exclude-tasks` then filters: the bank stops
+      # growing while the bill does not. Defaulting it to the run id makes two
+      # runs draw differently by construction; pass an explicit seed only to
+      # reproduce a particular batch.
       - name: Ask Qwen for tasks and k independent programs each
         env:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          SEED: ${{ inputs.seed || github.run_id }}
         run: |
           python -m pipeline.cli synth-generate \
             --output "$RUNNER_TEMP/candidates.jsonl" \
@@ -88,6 +99,7 @@ jobs:
             --samples "${{ inputs.samples || 3 }}" \
             --max-calls "${{ inputs.max_calls || 12000 }}" \
             --max-minutes "${{ inputs.max_minutes || 50 }}" \
+            --seed "$SEED" \
             --max-output-tokens 8000000
       - uses: actions/upload-artifact@v4
         with:
