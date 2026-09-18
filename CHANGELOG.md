@@ -14,6 +14,68 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-18** — Read the Hub from CI, find the benchmark saturated, and move generation to where the provider answers
+
+- `HF_TOKEN` exists only as an Actions secret, so the private round-02 artifacts
+  are readable only from a CI job. `START_NEXT_ROUND.md` asks for the device that
+  owns them and no such device exists; the Hub is the device.
+  `.github/workflows/s0-inventory.yml` is the reader, and
+  `.claude/skills/round02-evidence/` is the route written down.
+- The 2026-09-16 pilot job `6aaa87465527934177ee9f34` is absent from
+  `lypning-round02-artifacts`. Its `probe/` survives in a second private repo,
+  `lypning-round02-work`; `eval2_rows.jsonl` and `attempts.jsonl` are in neither,
+  so rungs S0a and S0b cannot be read without re-running that pilot.
+- A base arm completed (HF job `6aacd5cfb1dc2b62dc590b82`, 2026-09-18): 256 dev
+  cases, 1,024 draws, 9 families, `correct` 0.9301, `correct_native` 0.7534, and
+  on the coverage population 0.9686 over 7 families. That value is a family
+  macro, not an aggregate — `7 × 0.9686456400742115 / 9 = 0.7533910533910534`
+  exactly, and `training_metrics.py` computes it as `macro("native")`.
+- So the coverage population leaves ~3.14pp of headroom against a rule that
+  fires on a 95% lower bound above +3pp. At k = 4 on a dev split over 7 clusters
+  that is a design signal, not a verdict, but it says a round on `bank_v2` cannot
+  answer the question. `nt headroom` now re-makes that judgement from a metrics
+  file rather than leaving it in prose, and detects the family-macro basis
+  instead of assuming it.
+- Three faults that stopped bank-v3 growing: every run drew constructs from the
+  same seed 1111 and paid for tasks `--exclude-tasks` then filtered; runs stopped
+  on wall time with a quarter of their paid-for calls unused; and the generation
+  probe gated on `GET /models`, which a key can be refused while still being
+  entitled to complete.
+- Measured 2026-09-18 over four dispatches: `chat/completions` returns 403 from a
+  GitHub runner for a key that answers the developer's own shell, including
+  immediately after the secret was rotated. Generation therefore moves to that
+  shell and adaptation stays on a runner that holds no provider key
+  (`bank-v3-adapt.yml`), preserving the split `HARVESTING.md` requires.
+- This session published roughly eleven bank cases into three world-readable
+  Actions logs before `bundle.json` was removed from the printable set; the runs
+  were deleted and the cause fixed, and deleting a run does not undo a scrape.
+  `training/reports/2026-09-18-codex-saturated-bank-and-the-absent-pilot.md`,
+  *What this session published into public logs*.
+
+**2026-09-18** — Ask a bank whether it can host the effect before booking a GPU
+
+- `nt headroom` answers `training/EVAL2.md` §9's falsifier off a finished arm's
+  `metrics.json`, which costs the draws that produced it. `nt bank-native`
+  asks the same question of a BANK, locally and free, two ways: it runs every
+  row's program through the pinned engine, and — with `--mix-only` — it reads
+  the per-family first-draft mix off the labels `pipeline.synth` already wrote,
+  executing nothing.
+- The instrument is `synth.Runner.engine_verdict`, the same call the bank was
+  admitted with, so a bank is measured against its own admission test rather
+  than a second opinion about it. The engine is named by `binary_identity`:
+  `legality.py` says the number is quoted with its fingerprint or not quoted.
+- Instrument check on `training/data/bank_v2/train.jsonl`, run 2026-09-18 with
+  `lypning-l` sha256 `56a23c13286bb6bd…` built from this tree: 1,689 rows, 51
+  families, coverage 1,473/1,473 native and fallback-control 0/216 native, zero
+  witnesses. Both populations land exactly on what they were authored to be.
+- `--mix-only` refuses rather than reporting a zero. `bank_v2` carries no
+  `synth.kind`, so its macro delta ceiling is `None` and the renderer prints
+  UNREADABLE: a zero there would read as "no room", which is a verdict this
+  file cannot reach.
+- A counterweight's nominal room is not room. A `fallback-control` row is
+  `correct-control` in `training.Score` and `Score.native` is False for every
+  arm, so ceiling rows are counted in the denominator and never as movable.
+
 **2026-09-18** — Fold the bank-v3 synthesis into the pipeline, on the one net, emitting the one schema ([#94](https://github.com/kristerhedfors/lypning/pull/94))
 
 - The generate-and-adapt loop was four standalone scripts under
