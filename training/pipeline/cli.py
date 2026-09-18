@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import engines as eng
+from . import headroom as headroom_mod
 from . import sample as sample_mod
 from . import split as splitmod
 from . import stats
@@ -2254,6 +2255,38 @@ def cmd_probe_vector(args: argparse.Namespace) -> int:
     return 1 if result["probe_only"] else 0
 
 
+def cmd_headroom(args: argparse.Namespace) -> int:
+    """Whether this arm's population can host the pre-registered effect at all.
+
+    A bank with no room reports "no win" whatever the adapter does, and the
+    draws are paid for either way. Run it on the base arm before booking one.
+    """
+    path = Path(args.metrics)
+    # An absent or unparsable metrics.json is a read of nothing, and a table
+    # over it would be the S0b/S0c defect again: zeros at exit 0. Exit 2 names
+    # the file, and `assess` exits 2 naming the field when one is missing.
+    if not path.is_file():
+        print("not a file: %s" % path, file=sys.stderr)
+        return 2
+    try:
+        result = headroom_mod.assess(read_json(path), mde=args.mde, noise=args.noise)
+    except (OSError, ValueError) as exc:
+        print("headroom: %s: %s" % (path, exc), file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        print(headroom_mod.render(result))
+    # A saturated population is a finding, not a usage error: exit 1 so a script
+    # that reads this before spending cannot ignore it by ignoring the prose.
+    # `can_fire` is None when the file gives no way to tell whether its rate IS
+    # EVAL2.md section 4's family macro, and that lands here too: a summary that
+    # cannot answer the rule is not one that answers yes, and exit 0 would be
+    # read as one. A file that shows its rate is the macro (headroom.
+    # macro_decomposition) does get a verdict, and exit 0 when it clears.
+    return 0 if result["can_fire"] else 1
+
+
 def cmd_show(args: argparse.Namespace) -> int:
     """Inspect what actually happened on a case: the program and why it failed."""
     run_dir = RUNS / args.run_id
@@ -2672,6 +2705,20 @@ def build_parser() -> argparse.ArgumentParser:
     pv.add_argument("--base", required=True, help="completed base-pilot rows JSONL")
     pv.add_argument("--json", action="store_true", help="machine-readable full table")
     pv.set_defaults(fn=cmd_probe_vector)
+
+    hr = sub.add_parser("headroom",
+                        help="whether an arm's population can host the pre-registered effect")
+    hr.add_argument("metrics", help="a metrics.json from an eval arm")
+    hr.add_argument("--mde", type=float, default=headroom_mod.PREREGISTERED_MDE,
+                    help="the rule's bar as a fraction (PREREGISTRATION.md section 7b: "
+                         "the CI lower bound must exceed +3pp, default %g)"
+                         % headroom_mod.PREREGISTERED_MDE)
+    hr.add_argument("--noise", type=float, default=headroom_mod.NOISE_FLOOR,
+                    help="arm-to-arm noise the interval must clear the bar by "
+                         "(default %g: %s); 0 asks the strict ceiling question instead"
+                         % (headroom_mod.NOISE_FLOOR, headroom_mod.NOISE_PROVENANCE))
+    hr.add_argument("--json", action="store_true", help="machine-readable full table")
+    hr.set_defaults(fn=cmd_headroom)
 
     sh = sub.add_parser("show", help="print the programs a run produced")
     sh.add_argument("run_id"); sh.add_argument("--case"); sh.add_argument("--limit", type=int, default=5)
