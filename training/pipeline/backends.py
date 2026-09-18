@@ -29,6 +29,10 @@ from typing import Any, Dict, List, Optional
 
 DEFAULT_TIMEOUT_S = 600.0
 
+#: Who we say we are. An edge that sees `Python-urllib/3.x` may refuse the
+#: request before the key is ever checked; see `complete` for what that cost.
+USER_AGENT = "lypning/0.1 (+https://github.com/kristerhedfors/lypning)"
+
 
 class BackendError(RuntimeError):
     """Ours or the server's — never the generated program's."""
@@ -135,7 +139,15 @@ class ChatBackend:
             # too. Not sent unless asked for, like every other knob here.
             payload["reasoning_effort"] = reasoning_effort
         body = json.dumps(payload).encode("utf-8")
-        headers = {"Content-Type": "application/json"}
+        # Naming ourselves is not politeness, it is the difference between a
+        # working key and an unexplainable one. Measured 2026-09-19 against
+        # Cerebras: the same request, same key, same body, differs only in this
+        # header and returns either `content` or HTTP 403 with Cloudflare error
+        # 1010 -- "the owner has banned your client based on its signature",
+        # which `urllib`'s default `Python-urllib/3.x` earns. A 403 from an edge
+        # is indistinguishable from a rejected key at the call site, so this
+        # cost four CI dispatches and a secret rotation before it was found.
+        headers = {"Content-Type": "application/json", "User-Agent": USER_AGENT}
         if self.api_key:
             headers["Authorization"] = "Bearer " + self.api_key
 

@@ -19,7 +19,7 @@ import sys
 import urllib.error
 import urllib.request
 
-from pipeline.backends import BackendError
+from pipeline.backends import USER_AGENT, BackendError
 from pipeline.synth_generate import CEREBRAS_BASE_URL, MODEL, backend_from_env
 
 
@@ -35,14 +35,19 @@ def main() -> int:
     print("key: %d chars (%d before strip), prefix %r, stripped_whitespace=%s"
           % (len(key), len(raw), key[:4], raw != key))
 
-    # The listing is DIAGNOSTIC, never the gate. Measured 2026-09-18: this key
-    # returns 403 on GET /models and completes on the pinned model regardless,
-    # so a key can be entitled to inference without being entitled to enumerate.
-    # Treating the listing as the gate cost a dispatched run that refused before
-    # asking the only question that decides whether generation can proceed.
+    # The listing is DIAGNOSTIC, never the gate, because it answers a different
+    # question than the one the job is about to spend on: a key can be entitled
+    # to inference without being entitled to enumerate. It stays advisory even
+    # though both now succeed -- the 403s of 2026-09-18 were this client failing
+    # to name itself, not the key, and a gate that cannot tell those apart is
+    # what stopped four dispatches before either question was asked.
     listing = None
+    # Same User-Agent as every other call this tree makes. Without it the edge
+    # answers 403 before the key is checked, which is the failure this probe
+    # exists to tell apart from a rejected key -- and did not, until 2026-09-19.
     req = urllib.request.Request(CEREBRAS_BASE_URL + "/models",
-                                 headers={"Authorization": "Bearer " + key})
+                                 headers={"Authorization": "Bearer " + key,
+                                          "User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             listing = json.loads(resp.read().decode("utf-8"))
