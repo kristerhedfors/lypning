@@ -63,11 +63,17 @@ def main() -> int:
         # (`dtype=torch.bfloat16`, no quantization), so ~54 GB of weights plus
         # activations decides the flavor, and the flavor decides whether a real
         # round costs cents or tens of dollars. Print it rather than guess.
-        print("  %-22s %10s  %s" % ("flavor", "$/hour", "unit"))
+        # Print the raw unit cost beside the derived hourly one. The first
+        # version printed an hourly figure with the string "per minute" next to
+        # it, which reads as $300/hour for a flavor that costs $5/hour — the
+        # kind of column a spend decision should never rest on.
+        print("  %-22s %12s %12s  %s"
+              % ("flavor", "$/hour", "unit cost", "billed per"))
         for name in sorted(hardware):
             h = hardware[name]
             per_hour = h.unit_cost_usd * (60 if h.unit_label == "minute" else 1)
-            print("  %-22s %10.2f  per %s" % (name, per_hour, h.unit_label))
+            print("  %-22s %12.2f %12.5f  %s"
+                  % (name, per_hour, h.unit_cost_usd, h.unit_label))
         if flavor in hardware:
             h = hardware[flavor]
             hourly = "%.2f" % (h.unit_cost_usd * (60 if h.unit_label == "minute" else 1))
