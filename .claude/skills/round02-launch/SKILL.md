@@ -188,9 +188,17 @@ step.
 
 | gate | value | line |
 |---|---|---|
-| per-case prompt + completion budget | `≤ --max-seq` | 275-279 |
-| **supervised tokens** | **`MIN_SUPERVISED_TOKENS = 50_000`** | **292** |
-| CUDA and native BF16 | — | 258-261 |
+| CUDA and native BF16 | — | 277-280 |
+| per-case prompt + completion budget | `check_prompt_budget`, `≤ --max-seq` | 245-260, called at 292 |
+| every SFT row's whole turn | `build_examples` drops it, `run()` refuses the drop | 299-301 |
+| **supervised tokens** | **`MIN_SUPERVISED_TOKENS = 50_000`** | **305** |
+
+The prompt budget counts through `pipeline.training.chat_prompt_token_ids`, not
+`len()` of the render: under transformers 5.x `apply_chat_template(tokenize=True)`
+returns a `BatchEncoding` whose `len()` is 2, the number of keys, and the check
+read that as the prompt length until 2026-09-19. The row below it is the one
+that still refuses a long *train* row while it did — also before the download,
+so an `sft` stage that dies with no output directory has that candidate too.
 
 `supervised_plan()` (lines 188-218) gives plan time a **one-sided upper bound**
 on the token floor: the scheduled references' UTF-8 bytes, which byte-level BPE

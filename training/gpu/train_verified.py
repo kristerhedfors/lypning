@@ -28,7 +28,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pipeline.jsonio import append_jsonl, sha256_of, write_json
 from pipeline.training_metrics import CheckpointGate
-from pipeline.training import ISOLATED_KINDS, TrainingError, Verifier, execution_runner, load_bundle, messages
+from pipeline.training import (ISOLATED_KINDS, TrainingError, Verifier,
+    chat_prompt_token_ids, execution_runner, load_bundle, messages)
 
 from pipeline.training_contract import (BASE_MODEL, CONTRACT_VERSION, MIN_SUPERVISED_TOKENS,
     MIN_TRAIN_CASES, PROTOCOL_EVAL_DRAWS, PROTOCOL_TRAIN_SEEDS,
@@ -241,6 +242,24 @@ to the real Qwen tokenizer would index beyond the embedding table immediately.
     return config
 
 
+def check_prompt_budget(tok, cases, max_new_tokens, max_seq):
+    """Refuse any case whose prompt plus its completion budget exceeds --max-seq.
+
+    Token limits are admission checks, not permission to silently drop long
+    examples or slice the task away. Run this before downloading 27B weights.
+
+    It is a module-level function because it has to be testable without a GPU:
+    inline in `run()` it was reachable only behind `import torch`, and it spent
+    a release counting `len()` of a `BatchEncoding` -- two keys -- against
+    `max_seq`, which admitted every prompt of every length. `chat_prompt_token_ids`
+    owns the shape; this owns the arithmetic; the tests can now reach both.
+    """
+    for case in cases:
+        prompt_ids = chat_prompt_token_ids(tok, messages(case))
+        if len(prompt_ids) + max_new_tokens > max_seq:
+            raise TrainingError("prompt + completion budget exceeds --max-seq: " + case["case_id"])
+
+
 def run(args, bundle, adapter_info):
     verifier = Verifier(args.engine, **bundle["limits"], identity=bundle["identity"],
                         runner=execution_runner(bundle["execution"], bundle["identity"]))
@@ -270,13 +289,7 @@ def run(args, bundle, adapter_info):
         raise TrainingError("Qwen assistant terminator must equal tokenizer EOS for SFT/TRL agreement")
     train_cases = [c for c in bundle["cases"] if c["split"] == "train"]
     dev_cases = evaluation_cases(bundle, args.eval_split)
-    # Token limits are admission checks, not permission to silently drop long
-    # examples or slice the task away. Run these before downloading 27B weights.
-    for case in train_cases + dev_cases:
-        prompt_ids = tok.apply_chat_template(messages(case), tokenize=True,
-                                              add_generation_prompt=True, enable_thinking=False)
-        if len(prompt_ids) + args.max_new_tokens > args.max_seq:
-            raise TrainingError("prompt + completion budget exceeds --max-seq: " + case["case_id"])
+    check_prompt_budget(tok, train_cases + dev_cases, args.max_new_tokens, args.max_seq)
     examples = []
     planned_sft_batches = None
     planned_tokens = None

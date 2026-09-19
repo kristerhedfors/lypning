@@ -669,3 +669,24 @@ def test_a_stage_with_no_supervised_dose_plans_null_and_never_zero(tmp_path, mon
     plan = json.loads(out)
     assert plan["planned_exposures"] is None
     assert plan["supervised_token_upper_bound"] is None
+
+
+def test_the_output_directory_is_created_after_the_weights_and_not_before():
+    """A missing stage directory does not date the failure. Pinned, not fixed.
+
+    Round-02 job `6aacd5cfb1dc2b62dc590b82` failed at stage `sft` having never
+    created `work/round-02/sft/`, and that was read as evidence it died before
+    the model loaded -- which would have left the supervised-token floor as
+    nearly the only candidate. `run()` does not mkdir before the download: it
+    mkdirs after `snapshot_download`, after `from_pretrained`, and after the
+    LoRA attach, so an absent directory is equally consistent with a refusal at
+    the floor, an OOM in the gradient smoke and a kill during the 55.6 GB load.
+    This test records which side of the download the mkdir is on, so the next
+    reading of an empty stage directory starts from the right suspect list.
+    """
+    gpu = gpu_module()
+    body = Path(gpu.__file__).read_text(encoding="utf-8").split("def run(")[1]
+    floor = body.index("supervised tokens; at least %d required")
+    download = body.index("snapshot_download(BASE_MODEL")
+    mkdir = body.index("args.output.mkdir(")
+    assert floor < download < mkdir

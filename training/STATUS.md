@@ -1,4 +1,4 @@
-# Training programme status — 2026-09-17
+# Training programme status — 2026-09-19
 
 One page for the operator and the reviewing session: where the numbers stand,
 what is built, what is next, how much the needle can be expected to move, and
@@ -16,13 +16,20 @@ result, positive or negative.** Every finding so far is about the instrument and
 none is about the model — which is the signature of measuring an effect smaller
 than the noise and answering with more measurement (`ASSESSMENT.md` §2). The
 programme is not blocked on money or on GPUs. It is blocked on four things that
-cost nothing or almost nothing and have never been done: **no positive control
-has ever been run** (stage 0b and stage 1a, about $5 each, defined 2026-09-14
-and skipped both times), **no adapter has been trained at a scale that could
-move a 27B prior** (round-02: 6,251 supervised tokens, 20 steps, one seed),
-**the supply ratio is backwards** (300 cases to the frozen benchmark, 64 to
-training), and **the examples that would carry the signal have never been
-admitted** (ledger row D1, zero throughput). Meanwhile the one lever with a
+cost nothing or almost nothing; **one of the four closed on 2026-09-18** and the
+other three have still never been done: **no positive control has ever been
+run** (stage 0b and stage 1a, about $5 each, defined 2026-09-14 and skipped both
+times), **no adapter has been trained at a scale that could move a 27B prior**
+(round-02, 2026-09-16: 6,251 supervised tokens, 20 steps, one seed; the
+2026-09-18 attempt at 250 steps on the 1,120-case bank cleared `preflight`,
+reached stage `sft` and died there, leaving a base arm and no adapter — job
+`6aacd5cfb1dc2b62dc590b82`), **the supply ratio was backwards and no longer is**
+(bank v2, 2026-09-18: 1,120 admitted training cases to 597 benchmark cases,
+against train v1's 64 to 300), and **the examples that would carry the signal
+have never been admitted** — ledger row D1 still reads so, and the bank-v3
+repair throughput beside it (13 rows, then 103) is not that kind: the
+signal-bearing population is the 2026-09-16 pilot's correct-but-fallback
+*draws*, which the repair loop never saw. Meanwhile the one lever with a
 non-null return is the engine, and it can address about a third of this
 repository's 643 refused entries — the same third a model could.
 
@@ -35,6 +42,22 @@ bank" prescription that followed from it. No power figure from that curve is
 quotable until rung S0a re-prints it from the private pilot rows, keyed on the
 realised macro the tool now returns. A benchmark eval arm at a k the rule was not
 priced at is now refused outright, so round-02's k=4 arm cannot recur.
+
+**What changed on 2026-09-18/19: the data loop runs, and the finding is again
+about the instrument rather than the model.** Generation had been read as a
+quota problem, a key problem and a GitHub-IP problem across four CI dispatches
+and a secret rotation. It was none of them: `pipeline/backends.py` sent no
+`User-Agent`, so `urllib` announced `Python-urllib/3.x` and the provider's edge
+answered HTTP 403 with Cloudflare error 1010 — "the owner has banned your client
+based on its signature" — before the key was read. A 403 from an edge is
+indistinguishable from a rejected key at the call site, which is why it survived
+so long. The same request, same key, same body, differing only in that header,
+returns a completion (`backends.USER_AGENT`, commit `33d5666`, measured
+2026-09-19). With it, GH run 35399909232 wrote **7,967** candidate tasks on
+25,048 provider calls before its own wall clock stopped it, against 2,784 on
+8,753 calls in the previous best run (GH run 35340137976, 2026-09-18). Neither
+batch is a training asset yet, and the 4,850 rows already banked cannot become
+one at any size: they carry no `fallback-control` row at all (§2, data side).
 
 **The next step is §10, and its first four rungs cost nothing.** Nothing paid
 runs before the rung below it has been read. The 2026-09-17 decisions are in
@@ -89,11 +112,13 @@ itself a finding, addressed in §6.
 
 ## 2. Scoreboard: every number that exists, with its date
 
-All eval numbers below are on the frozen 74-case rewrite hold-out (manifest
+The first six rows below are on the frozen 74-case rewrite hold-out (manifest
 `80b2fc52…`, `prompt_sha cbb7be44937a6b41`), which by the project's own
 admission measures **compliance with a rewrite instruction, not the deployment
 prior** (`REVIEW.md` §6, 2026-09-14). They are the numbers we have, not the
-number we want.
+number we want. Every row below those six carries its own population in the
+middle column, and rows from different populations must never be compared or
+subtracted.
 
 | What | Value | Run, date, identity |
 |---|---|---|
@@ -108,12 +133,17 @@ number we want.
 | Round-02 pilot on the 27B weights, task-first path | SFT 20 steps (loss 0.83 → 0.54), step 5 selected; probe 172/200 correct, GRPO admitted, GRPO flat (step 0 kept); dev 7 cases: base 78.6% / 75.0% correct / correct-and-native, SFT 82.1% / 75.0%; test 7 cases: base 85.7% / 57.1%, SFT 82.1% / 57.1%, paired native delta 0.0pp [−10.7, +10.7]. **Eval-2: base arm blocked at 384/1,200 draws by an engine timeout on a CPU-bound candidate under 16-way concurrent scoring (partial base 87.4% / 69.8%); SFT and GRPO arms never ran** | job `6aaa87465527934177ee9f34`, 2026-09-16, engine `2e079e786a655ab6`, policy v3, k = 4 (`reports/2026-09-16-fable-round02-run.md`) |
 | Eval-2 base rate on the training bank (legacy tree), full pilot draw | 87.9% correct, 68.7% correct-and-native, family macro over 64 cases. **No power figure from that draw is quotable**: every row of the `EVAL2.md` §7 curve is keyed by a lift the simulation was not shown to deliver, and the uniform reading is withdrawn (2026-09-16). The re-print, keyed on the realised macro, is rung S0a in §10 | run `eval-20260916-063539`, 2026-09-16, k = 16, engine `2e079e786a655ab6` (`EVAL2.md` §7, §11) |
 | Lever split of this repository's own refused captures | 195 self-referential / 242 legitimate-fallback / 206 engine-addressable / 0 residue, over 643 refusals in 9,064 classified rows. Codex moved 13 deterministic new families (20 entries) to engine-addressable and accepted the remainder as current-corpus policy. Against historical §4: **−16 engine-addressable, +21 fallback, −5 other**. Not a model number and not the deployment population — S0b's private draw vector decides the budget | `nt levers --against`, 2026-09-17, rule 2, reviewed in `reviews/2026-09-17-round02-full-assessment.md` |
+| Base rate on the **training bank's dev split**, unadapted 27B, task-first path | 256 cases / 1,024 draws / 9 families, truncation 0.0: correct 0.9301, correct-and-native 0.7534, mean completion 96.87 tokens. Coverage arm 215 cases / 860 draws / 7 families: correct 0.9686, correct-and-native 0.9686. Fallback-control arm 41 cases / 164 draws / 2 families: correct 0.7952, correct-and-native 0.0 **by design** — the right answer keeps the import. By capability, correct-and-native: set-ops 1.000, text 0.9964, argv-arith 0.9929, int-reduce 0.9545, stdlib-module 0.8857. The `correct_native` in this file is the **family macro** `EVAL2.md` §4 freezes, which `nt headroom` shows by decomposition rather than assumes. **Not an eval-2 number and not a model-quality verdict**: it is the pilot bundle's dev split at k = 4, the setting `EVAL2.md` §4 calls a smoke setting (the refusal in §0 that stops a k = 4 arm recurring is on **benchmark** arms; this is a dev arm, and it is the right split for a design decision and the wrong one to quote as a result) | job `6aacd5cfb1dc2b62dc590b82`, 2026-09-18, `Qwen/Qwen3.8-27B` @ `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`, pilot bundle digest `797cfe7e12589c…`, seed 1111, `--eval-draws 4`, 16 scorers, verifier Space `headforce/lypning-round02-verifier` @ `5fa4f3127f…`; from `round-02/6aacd5cfb1dc2b62dc590b82/base-dev/metrics.json` and `experiment.json`, re-printed in GH run 35399900848 (`s0-inventory.yml` at `33d5666`), 2026-09-18 |
 
-Data side, same date:
+Data side, each row with its own date:
 
 | Asset | Count | Status |
 |---|---|---|
-| Admitted training cases on the task-first path | **64** (train v1, 49 families, 13 fallback-control), reviewed by authoring and solving agents, not by Codex | frozen 2026-09-16, `EVAL2.md` §11; the first eval-2 bank of 300 cases froze the same day |
+| Admitted training cases on the task-first path | **1,120** over 33 independent split components (1,015 coverage, 105 fallback-control), held out of a 1,689-row bank whose dev (256) and test (313) halves the gates reserve. Every row's `review.reviewer` reads "Codex orchestrator session, 2026-09-18 (an agent, not a human reviewer)": a self-declared agent review with an executed differential oracle behind it, no external evidence attached, and **not** a human review | `data/bank_v2/train.jsonl` through `training_data.split_cases(seed=1111)` and `validate_pilot`, re-run in this worktree 2026-09-19; the GPU job's own bundle prints the same 1,120 / 256 / 313 (`pilot/*-prompts.jsonl`, GH run 35399900848, 2026-09-18) |
+| Benchmark bank, v2 | **597** cases, 18 families, 18 split components (492 coverage, 105 fallback-control) | `data/bank_v2/eval2.jsonl` through `split_cases(seed=1111)` and `validate_benchmark`, re-run 2026-09-19; capability-disjoint from the training bank by construction (`bank_v2/README.md`) — its coverage capabilities are `file` and `string`, and the row above holds `argv-arith`, `int-reduce`, `set-ops`, `stdlib-module` and `text` |
+| Admitted training cases, train v1 (superseded) | 64 (49 families, 13 fallback-control) | frozen 2026-09-16, `EVAL2.md` §11; superseded by bank v2 above, kept because the 2026-09-16 pilot ran on it |
+| Bank v3, rows already banked | 4,850 over two batches — 3,499 native + 13 repaired (GH run 35320962503) and 1,235 native + 103 repaired (GH run 35340137976) — and **0 fallback-control** | line counts from GH run 35399900848, 2026-09-18. The publisher that wrote both batches accepted `native.jsonl` and `repaired.jsonl` only, so every `ceiling` row it made was dropped; `ceiling.jsonl` was added at `f5f3b35`. `validate_pilot` requires coverage **and** fallback-control in each of the three splits, so these rows cannot form a pilot at any size. Re-adapting the surviving candidate artifacts with the current `synth-adapt` is what recovers the discarded ceiling rows, and it costs no provider call |
+| Bank v3, candidates generated and not yet adapted | 7,967 written of 12,817 tasks seen, on 25,048 provider calls, stopped on time | GH run 35399909232, generate job 105777198079, 2026-09-18/19, artifact `bank-v3-candidates` (expires 2026-10-03). The adapt job of the same run banked nothing: one candidate declared a test setup file outside the workdir, and `synth-adapt` writes nothing rather than a partial batch (job 105802008535, `synth-adapt blocked: harness: setup file escapes workdir`, exit 1) |
 | Starter smoke curriculum | 16 families | smoke fixture by declaration; the pilot floor is 18 and `validate_pilot` rejects the starter by name |
 | Reviewed project task catalog | 12 tasks | collection fixture, not a split |
 | Question proposals from the 2026-09-15 pilots | 63 structurally valid of 120 requested (`none` arm); 0 of 120 (`medium` arm, all length-truncated) | unreviewed; four sampled proposals already found contradictory (`reviews/2026-09-15-question-pilots.md`) |
@@ -143,7 +173,10 @@ Data side, same date:
   hillclimb-83 fixes came from on-policy evidence; stage 0a alone added 14 cases
   to `data/engine-mismatches.jsonl`.
 - **A data-production loop with hard budgets** (49,152 output tokens per
-  session, no automatic retries) and a review queue, but nothing admitted yet.
+  session, no automatic retries) and a review queue. Since 2026-09-18 it
+  produces rows — 4,850 banked and 7,967 more generated and unadapted (§2, data
+  side) — and **not one of them has been admitted to a training bank**: the bank
+  a stage now sees was authored, not harvested.
 
 ## 4. What is next, in order, with what each step decides
 
@@ -194,6 +227,26 @@ Honest priors, not measurements. Each is conditional on a step above.
   a +3pp lower bound is a demanding target. It is equally plausible the tail
   under-represents kinds that ordinary tasks hit constantly. Measuring the base
   rate is step 3, and it is worth more than any training run.
+- **The dev split the SFT stage selects on has almost no room left, and the
+  judgement is a command rather than a paragraph.** `nt headroom` over the base
+  arm's `metrics.json` (run 2026-09-19 in this worktree, on the file GH run
+  35399900848 re-printed) reports the carrier population INSUFFICIENT: coverage
+  at 0.9686 correct-and-native leaves **+3.14pp** of estimated ceiling, the
+  `PREREGISTRATION.md` §7b bar takes 3.00pp of it, and +0.14pp is left for the
+  whole 95% interval over seven family clusters. The rate it measures is
+  `EVAL2.md` §4's own family macro, shown by decomposition and not assumed, so
+  the comparison is like for like. Three caveats travel with it or it will be
+  misused: it is k = 4, the smoke setting, not the confirmatory k = 16; it is
+  the dev split, which is the right split for a design decision and the wrong
+  one to quote as a result; and it is a point estimate with no interval. So this
+  is a strong reason not to spend on this population and never a proof that
+  nothing could clear the bar. Do not select a checkpoint on correct-and-native
+  on this bank — select on correctness, as §7 item 4 already says, and read
+  correct-and-native as a gate — and re-measure the arm at k = 16 before quoting
+  any headroom as a number. The fallback-control arm's 0.0 is the design and is
+  a retention counterweight, never headroom. What this does **not** say:
+  eval-2's base rate is still unknown, because eval-2's coverage capabilities
+  (`file`, `string`) do not appear in this bank at all.
 - **Detectability**: on 74 cases a fine-tune that flips fewer than six cases and
   loses none cannot fire the pre-registered rule at any effect size, and the
   headline verdict cannot fire below roughly +11pp on the whole hold-out
@@ -382,15 +435,15 @@ The ladder itself, with the prediction and stop rule for each rung, is
 `ASSESSMENT.md` §5 and §6; it is not restated here, because a seventh copy of a
 sequence is the problem §3.7 of that document names. In one line each:
 
-| rung | what it measures | cost | state, 2026-09-17 |
+| rung | what it measures | cost | state, 2026-09-19 |
 |---|---|---|---|
-| S0a | `EVAL2.md` §7 re-printed from the real pilot rows, keyed on the realised macro lift | $0 | exact command assigned to Fable in `START_NEXT_ROUND.md`; private read still owed — attempted 2026-09-17 on a clone without the rows, exit 1 |
-| S0b | the by-kind refusal vector of the 171 correct-but-fallback pilot draws | $0 | rule 2 reviewed; `--rank` is refused on held-out draws. **Re-assigned 2026-09-17**, because `--run` replayed through the local binary and re-derived `native`, hence the population, so it manufactured its own denominator. The corrected command freezes status and family to the pilot rows, uses the replay only for refusal kinds, pins the explicit historical binary by its recorded SHA-256 and requires exactly 171 draws; a partial replay prints no vector. The composite *fingerprint* of that build is not reproducible and is deliberately not a prerequisite |
-| S0c | the round-02 probe rollouts by native status, per train case | $0 | private artifact and comparison contract named in `START_NEXT_ROUND.md`; read still owed. Attempted 2026-09-17 without the artifacts: it printed a zeros table at exit 0, and now exits 2 naming the absent path, or 1 on a present-but-empty probe |
+| S0a | `EVAL2.md` §7 re-printed from the real pilot rows, keyed on the realised macro lift | $0 | exact command assigned to Fable in `START_NEXT_ROUND.md`. **BLOCKED because the input is on neither private repository, 2026-09-18**, which is not the same as untransferred: `headforce/lypning-round02-artifacts` holds 86 files over three round-02 job directories and `headforce/lypning-round02-work` holds six, and `eval2_rows.jsonl` is in neither listing (GH run 35399900848, 2026-09-18). The rung is unblocked by re-running the 2026-09-16 pilot that would produce those rows, not by fetching them |
+| S0b | the by-kind refusal vector of the 171 correct-but-fallback pilot draws | $0 | rule 2 reviewed; `--rank` is refused on held-out draws. **Re-assigned 2026-09-17**, because `--run` replayed through the local binary and re-derived `native`, hence the population, so it manufactured its own denominator. The corrected command freezes status and family to the pilot rows, uses the replay only for refusal kinds, pins the explicit historical binary by its recorded SHA-256 and requires exactly 171 draws; a partial replay prints no vector. The composite *fingerprint* of that build is not reproducible and is deliberately not a prerequisite. **BLOCKED on the same absent input, 2026-09-18**: `--population-rows` reads that same `eval2_rows.jsonl`, so the 171-draw population is the blocker. **The pinned binary is a second open question and not a solved one** — the S0 inventory lists three `engine-home/bin/lypning-l` paths, but a file name is not a hash, and those three belong to the three 2026-09-18 jobs while line 60 of `START_NEXT_ROUND.md` pins the 2026-09-16 build by SHA-256. Hash each Hub copy before assuming any of them is it; no copy of that build is reachable on this device |
+| S0c | the round-02 probe rollouts by native status, per train case | $0 | private artifact and comparison contract named in `START_NEXT_ROUND.md`. Attempted 2026-09-17 without the artifacts: it printed a zeros table at exit 0, and now exits 2 naming the absent path, or 1 on a present-but-empty probe. **BLOCKED on its BASE column only, 2026-09-18 — the probe itself is present.** `headforce/lypning-round02-work` holds `round-02/6aaa87465527934177ee9f34/probe/` with `probe-rollouts.jsonl`, `metrics.json`, `probe.json` and `experiment.json`; the `ABSENT` the S0 inventory prints on that line is a read of `…-artifacts`, the other repository (GH run 35399900848, 2026-09-18). So `--probe` has its input and only `--base` does not, for want of `eval2_rows.jsonl`: this rung needs a transfer, where S0a and S0b need a re-run |
 | S1 | stage 0b on the training bank: bare vs `--system-file subset-spec.md`, k=16 | ~$5 | not started; the first positive control the programme would have |
-| S2 | the rewritable fraction: verified native rewrites of the fallback draws | tokens | not started; ledger row D1 |
+| S2 | the rewritable fraction: verified native rewrites of the fallback draws | tokens | not started. Its population is the 2026-09-16 pilot's 171 + 26 correct-but-fallback draws — the same rows S0a and S0b are blocked for want of — and the bank-v3 repair loop never saw them. Ledger row D1's throughput is bank rows produced, with no denominator in common, and must not be read as S2 progress |
 | S3 | stage 5: refusals per 100 programs through opencode on base | harness time | not started; settles the deployment prior |
-| S4 | the first SFT with a predicted effect: ≥1,000 cases, ≥50,000 supervised tokens, three seeds, eval-2 at k=16 | ~$60–90 | blocked on S0–S3; the first GPU spend |
+| S4 | the first SFT with a predicted effect: ≥1,000 cases, ≥50,000 supervised tokens, three seeds, eval-2 at k=16 | ~$60–90 | blocked on S0–S3; the first GPU spend. **The case floor is met on supply since 2026-09-18**: bank v2 admits 1,120 on the split the gates use. The 2026-09-18 job cleared `preflight` at 250 steps and died inside `sft` (`job-manifest.json`: `last_stage sft`, `exit_code 1`, `status failed`, GH run 35399900848, 2026-09-18), so admission is not what stopped it. Which of wall clock, the ≥50,000-supervised-token floor and a kill during the 55.6 GB load did is **UNKNOWN**, and the absent `sft/` directory does not decide it: `run()` creates that directory only after the download, `from_pretrained` and the LoRA attach (`training/tests/test_training.py::test_the_output_directory_is_created_after_the_weights_and_not_before`), so its absence is equally consistent with all three |
 
 **The standing rule, and the only one that matters here: no paid rung runs
 before the rung below it has been read.** S0a–S0c and S3 cost nothing and

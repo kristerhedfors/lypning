@@ -33,6 +33,12 @@ jobs:
     name: count the supervised tokens the schedule exposes
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # The cache is pinned into the workspace so the "no weights" guard below
+    # checks the same bytes the script inventories: `HF_HUB_CACHE` derives from
+    # `HF_HOME`, and a guard that measured a different directory would pass for
+    # the wrong reason.
+    env:
+      HF_HOME: ${{ github.workspace }}/.hf
     # The model is not named here: the script reads
     # `training_contract.BASE_MODEL`, which is where the experiment keeps it,
     # and prints it with the revision it resolved. The pinned tokenizer version
@@ -49,7 +55,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -q "transformers==5.17.0" "huggingface-hub==1.31.0"
+      # jinja2 renders the model's chat template, and `apply_chat_template`
+      # raises without it. It is absent here and present on the GPU for the same
+      # reason: it is not a `transformers` dependency, it is a `torch` one, so
+      # the metered job gets it by accident and a tokenizer-only runner does not
+      # get it at all. Naming it removes the accident from the dependency graph.
+      # The version is a range, alone among these pins, because the run it has
+      # to agree with does not pin it either: `train_verified.py`'s script
+      # header installs torch, torch installs jinja2, and the patch that
+      # arrives there is whatever the resolver picked that day.
+      - run: pip install -q "transformers==5.17.0" "huggingface-hub==1.31.0" "jinja2>=3.1"
       - name: In-tree bank_v2
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -99,3 +114,18 @@ jobs:
           fi
           # shellcheck disable=SC2086
           python .github/scripts/token_floor.py --hub-bank "${HUB_BANK}" $args
+      # No weights came down, asserted rather than argued. The script prints
+      # every cached file with its size; this fails the job if the total is
+      # anywhere near a shard, which is the one way a model load could hide in a
+      # log nobody reads to the end.
+      - name: No weights
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          bytes=0
+          if [ -d "${HF_HOME}" ]; then bytes=$(du -sb "${HF_HOME}" | cut -f1); fi
+          echo "hub cache: ${bytes} B under ${HF_HOME}"
+          if [ "${bytes}" -gt 1073741824 ]; then
+            echo "the tokenizer-only job holds more than 1 GiB; something fetched weights" >&2
+            exit 1
+          fi

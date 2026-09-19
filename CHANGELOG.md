@@ -14,6 +14,186 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-19** — Count the tokens the prompt budget was supposed to be counting
+
+- The per-case prompt budget in `train_verified.py` had been vacuous since the
+  experiment pinned transformers 5: `apply_chat_template(tokenize=True)` returns
+  a plain list of ids under 4.x and a `BatchEncoding` under 5.x, both answer
+  `len()`, and the 5.x answer is the number of KEYS. So
+  `len(prompt_ids) + args.max_new_tokens > args.max_seq` evaluated
+  `2 + 1024 > 4096` and admitted a prompt of any length whatsoever. Measured
+  2026-09-19: `uv run --no-project --python 3.12 --with transformers==5.17.0`,
+  `len(BatchEncoding({"input_ids": [0…43], "attention_mask": […]}))` is **2**
+  while `len(be["input_ids"])` is **44**. The comment above the check called it
+  an admission check "before downloading 27B weights"; it was two lines of
+  arithmetic on a dictionary.
+- The extraction has one home and a name that says what it is:
+  `pipeline.training.chat_prompt_token_ids` renders with the three settings the
+  SFT examples and the held-out generation already agree on, accepts both
+  shapes, unnests a batched row, and **raises** on a third shape rather than
+  counting whatever it was handed. The arithmetic has one home too —
+  `train_verified.check_prompt_budget`, module level rather than inline in
+  `run()`, because inline it was reachable only behind `import torch` and so
+  could not be tested at all. That is the whole reason it could rot.
+- `.github/scripts/token_floor.py` refused to run on the environment its own
+  workflow pins. Its new shape guard demanded a `list` of `int`, which is
+  exactly what transformers 5.17.0 does not return, so the job would have
+  exited 2 on a correct tokenizer; and the sweep on the line below it took
+  `len()` of the same call, so had the guard passed, every bank row would have
+  been reported as a two-token prompt. Both now count through
+  `chat_prompt_token_ids`, and the guard refuses only what that refuses.
+- `training/tests/test_prompt_budget.py` is the regression, and two of its twelve
+  tests are sweeps rather than cases: nothing outside the extraction may call
+  `apply_chat_template(tokenize=True)`, and no call site anywhere in
+  `training/gpu/`, `training/pipeline/` or `.github/scripts/` may take `len()`
+  of a chat-template render. Against the unfixed tree the sweeps name the three
+  offending lines; the behavioural tests drive a 4,000-token prompt through a
+  `BatchEncoding` double against a 2,048 budget and require the refusal.
+- **Amends the entry below.** "The base-dev arm of the same job did complete,
+  which rules out … the per-case prompt budget" was true for the wrong reason:
+  that arm ran a check that could not fail. What the completed base-dev arm
+  actually shows is that the dev prompts generate (256 cases, truncation 0.0,
+  mean completion 96.87 tokens, job `6aacd5cfb1dc2b62dc590b82`, 2026-09-18).
+  The candidate list for the `sft` death gains one entry and it is not this
+  check: `build_examples` drops any row whose whole turn exceeds `--max-seq`
+  and `run()` then raises *"SFT rows over token limit"* — before the download
+  and before the mkdir, which is where that job died. `token_floor.py` decides
+  it for free, now that it can run: it prints rows over budget, rows dropped,
+  and the mean and longest prompt over the same bank, tokenizer and revision.
+- Not a tokenizer bug but found by the same sweep: `pipeline/sample.py` carried
+  `\$` inside a plain docstring, a `SyntaxWarning` today and a `SyntaxError` in
+  a later Python.
+
+**2026-09-19** — Stop one generated row from throwing away a whole adapted batch, and shard adapt so a full generate run fits its job
+
+- The adapt job of GH run 35399909232 did not run out of memory, which is what
+  a step that prints nothing for 38 minutes looks like. It printed the reason
+  on its last line: `synth-adapt blocked: harness: setup file escapes workdir:
+  '/data/logs.txt'` (job 105802008535, log read 2026-09-19). One candidate
+  asked for an absolute path, `sandbox.materialize` called that a *harness*
+  error, and a harness error is ours and aborts everything — so 2,078
+  already-judged candidates were discarded and nothing was written. Three of
+  the artifact's 7,967 rows carry such a name — rows 2078, 2082 and 2937, the
+  first of which is where the job stopped.
+- `synth.validate_candidate` now applies the input-path rule before anything is
+  executed, so the row is rejected as malformed and the batch survives. The rule
+  has one home, `training_data.unsafe_input_path`, which `validate_cases`
+  already enforced downstream — the candidate validator was simply not asking.
+- **A NUL is the second defect class, and it is independent of the first.** A
+  NUL byte inside an `argv` element or an input-file name never reaches a
+  verdict at all: `subprocess.Popen` and `Path.mkdir` raise `ValueError`, which
+  is neither a harness error nor a program result, so it left `synth.run` as a
+  traceback and took the batch with it by a different door. `validate_candidate`
+  rejects it as malformed too, with its own parametrised regression tests in
+  `training/tests/test_synth.py`. File *content* may still hold a NUL — bytes on
+  a pipe and bytes in a file both arrive intact, and `validate_cases` admits
+  them. Three of GH run 35340137976's 2,784 candidates carry one, at rows **28,
+  31 and 1712**; row 461 of that same artifact is the *other* class, an escaping
+  file name, and is not a NUL row. Four of GH run 35399909232's 7,967 carry one,
+  at rows 2380, 3498, 3501 and 5058 (`gh run download <run> -n
+  bank-v3-candidates`, then a scan of every `argv` element and input-file name
+  for `\0` and through `training_data.unsafe_input_path`, 2026-09-19).
+- **Sharding alone would not have saved that run, and the arithmetic says which
+  shards.** `size = ceil(7967 / 4) = 1992`, so shard 1 is rows 1992–3983 and
+  shard 2 is 3984–5975. All three escaping-path rows fall in shard 1 and one
+  NUL row (5058) falls in shard 2, so **two of the four shards** would still
+  have aborted and two would have completed. The guard is what saves those two;
+  the matrix only bounds the loss (same scan, same date).
+- The input-path rule now has the one home the bullet above claims for it.
+  `eval2_bank.check_tests_shape` held a third, verbatim copy, and a copy does
+  drift: that one never grew `unsafe_input_path`'s directory-collision clause,
+  so an authored eval-2 proposal naming both `d` and `d/x` passed the cheap
+  shape check and was charged to `invalid-case` after the reference had been
+  executed twice and the engine consulted. It is charged to `tests-shape` now,
+  at the first rule it fails, and
+  `test_this_module_holds_no_second_copy_of_the_input_path_rule` is the grep
+  that keeps the claim true rather than merely written down.
+- The memory theory is recorded as falsified rather than dropped: the 7,967
+  candidates occupy **38.2 MB** resident once parsed, 39.8 MB with a full
+  retained rejected list, against a 16 GB runner (measured 2026-09-19 on the
+  `bank-v3-candidates` artifact of that run, which is 18,290,882 B of JSONL —
+  the 2,956,177 B is the compressed artifact).
+- Adapt is four shards, because the batch no longer fits one job even when it
+  does not crash: 2,078 candidates in 38m54s is 1.12 s each and projects 7,967
+  to ~149 min against a 90-minute cap. `--offset` is the new flag, `--limit`
+  was already there, and the divisor is `strategy.job-total` so the slice
+  cannot drift from the matrix. Each shard banks its own `<run_id>-<shard>`
+  batch, the matrix is not `fail-fast`, and publish runs `if: !cancelled()`:
+  a shard that dies costs a quarter of a paid run, not a run.
+- The safety split is unchanged and is the reason the shards are shaped this
+  way: generate holds `CEREBRAS_API_KEY` and executes nothing, every adapt
+  shard executes model-written code and holds no secret, publish holds
+  `HF_TOKEN` and runs no candidate code.
+
+**2026-09-19** — Reconcile the programme ledger with the banks, the base arm and the instrument finding that unblocked generation
+
+- `training/STATUS.md` named a blocker that two PRs had closed and an admitted
+  case count off by a factor of seventeen. The supply ratio is no longer
+  backwards: bank v2 admits **1,120** train cases over 33 independent split
+  components against a 597-case benchmark, which is what `split_cases(seed=1111)`
+  and `validate_pilot` return over `training/data/bank_v2/`, re-run 2026-09-19 —
+  not the 1,689 lines of the file, because dev (256) and test (313) are held out.
+  The GPU job's own bundle prints the same three numbers (GH run 35399900848,
+  2026-09-18).
+- The unadapted base arm is on the scoreboard with the two clauses it will be
+  misquoted without: it is the **training bank's dev split**, not eval-2, and it
+  is k = 4, which `training/EVAL2.md` §4 calls a smoke setting. `nt headroom` over its
+  `metrics.json` reports the carrier population INSUFFICIENT — +3.14pp of
+  estimated ceiling against a 3.00pp bar — which is a strong design signal and
+  never arithmetic certainty (job `6aacd5cfb1dc2b62dc590b82`, 2026-09-18).
+- S0a and S0b are blocked because `eval2_rows.jsonl` is on **neither** private
+  repository, so the next action is a pilot re-run and not a transfer; S0c is
+  blocked on its base column only, because its probe rollouts are in
+  `lypning-round02-work` (GH run 35399900848, 2026-09-18). Reading those two as
+  one state is what would abandon a rung for want of a file that exists.
+- The programme records measurements about its own instrument, and this is one:
+  `pipeline/backends.py` sent no `User-Agent`, so the provider's edge answered
+  HTTP 403 (Cloudflare error 1010) before the key was read. With the header,
+  GH run 35399909232 wrote 7,967 candidates on 25,048 calls (2026-09-18/19)
+  against 2,784 on 8,753 (GH run 35340137976, 2026-09-18).
+- Recorded, not corrected: the #92 entry below describes a **draft** of bank v2
+  — a train split of 1,355 over 40 families, digest `7c8997e1e128c47f`, 315 of
+  315 clean — where the bank that shipped in the same PR splits 1,120 over 33
+  and records digest `10492e75cc8c52a6` and 597 of 597 (`data/bank_v2/README.md`,
+  and `split_cases(seed=1111)` re-run 2026-09-19). A dated entry is a record of
+  a moment, so it is left standing; the artifact is 1,120.
+- Bank v3's 4,850 banked rows carry **zero** `fallback-control` rows, because
+  the publisher that wrote both batches accepted `native.jsonl` and
+  `repaired.jsonl` only. `validate_pilot` requires both populations in every
+  split, so they cannot form a pilot at any size (line counts from GH run
+  35399900848, 2026-09-18).
+
+**2026-09-19** — Make the token-floor job runnable, and stop reading an empty stage directory as a diagnosis
+
+- `.github/workflows/token-floor.yml` could not have run: `apply_chat_template`
+  needs jinja2, and jinja2 is a `torch` dependency rather than a `transformers`
+  one. The metered GPU job gets it by accident, because `train_verified.py`'s
+  script header installs torch; a tokenizer-only runner installs neither. The
+  workflow now names it, `token_floor.py` asks for it beside `transformers`
+  instead of failing forty lines later from inside the template renderer, and
+  the job pins `HF_HOME` into the workspace so a new step can assert the hub
+  cache stayed under 1 GiB rather than argue that no weights came down.
+- `apply_chat_template(tokenize=True)` is checked once for shape. A release
+  that returned a mapping would still answer `len()`, with its number of keys,
+  and every count below the prompt-budget line would be a measurement of that.
+- Round-02 job `6aacd5cfb1dc2b62dc590b82` failed at stage `sft` with no
+  `work/round-02/sft/`, and that was read as "it died before the weights". It
+  was not: `run()` mkdirs *after* `snapshot_download`, after `from_pretrained`
+  and after the LoRA attach, so the absent directory is equally consistent with
+  the supervised-token floor, a failure in the gradient smoke, and a kill during
+  the 55.6 GB load. `test_the_output_directory_is_created_after_the_weights_and_not_before`
+  pins the ordering. The base-dev arm of the same job did complete, which rules
+  out everything `run()` checks before the SFT-only branch — the tokenizer, the
+  eos admission and the per-case prompt budget — because stage `eval` ran those
+  same lines over the same cases.
+- What the job has to print for the pilot to be admissible: the schedule's
+  exact supervised tokens must reach 50,000, and the byte upper bound over the
+  schedule is 134,384 B at `--steps 250`, 161,286 B at 300 and 214,968 B at 400
+  (seed 1111 over `training/data/bank_v2/train.jsonl`, `split_cases(rows, 1111)`
+  then `train_verified.supervised_plan` at `--batch-size 4`, computed
+  2026-09-19). So steps 250 clears the floor only if the realised encoding is at
+  most 2.6877 bytes/token, steps 300 at most 3.2257, steps 400 at most 4.2994.
+
 **2026-09-18** — Read the Hub from CI, find the benchmark saturated, and move generation to where the provider answers
 
 - `HF_TOKEN` exists only as an Actions secret, so the private round-02 artifacts

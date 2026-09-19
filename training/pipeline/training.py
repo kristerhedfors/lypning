@@ -70,6 +70,49 @@ def messages(case):
             {"role": "user", "content": case["task"]}]
 
 
+def _sized(value):
+    """`len(value)`, or 0 for something that has no length to take."""
+    try:
+        return len(value)
+    except TypeError:
+        return 0
+
+
+def chat_prompt_token_ids(tok, msgs):
+    """The prompt's TOKEN IDS. Count these; never count the call that made them.
+
+    `apply_chat_template(tokenize=True)` returns a plain list of ids under
+    transformers 4.x and a `BatchEncoding` -- a mapping of `input_ids` and
+    `attention_mask` -- under the 5.x the experiment pins. Both answer `len()`,
+    and the 5.x answer is 2, the number of keys: a budget check written against
+    the 4.x shape reads every prompt as two tokens and admits any length at all
+    (measured 2026-09-19: transformers 5.17.0, `len(out)` 2, `len(out["input_ids"])`
+    44). So the extraction lives here, once, and every caller that needs a
+    length calls this instead of `len()` on the render; a shape that is neither
+    of the two raises rather than being counted as whatever it is.
+
+    The render settings are the same three the SFT examples and the held-out
+    generation use, for the same reason they agree there: a budget measured
+    under a different template is a budget for a prompt nothing sends.
+    """
+    ids = tok.apply_chat_template(msgs, tokenize=True, add_generation_prompt=True,
+                                  enable_thinking=False)
+    if hasattr(ids, "keys"):                        # BatchEncoding is a mapping
+        if "input_ids" not in ids:
+            raise TrainingError("apply_chat_template returned a mapping without input_ids: "
+                                + ", ".join(sorted(str(k) for k in ids.keys())))
+        ids = ids["input_ids"]
+    # One conversation went in, so a batched row comes back nested by one level.
+    if _sized(ids) == 1 and isinstance(ids[0], (list, tuple)):
+        ids = ids[0]
+    count = _sized(ids)
+    if not count or isinstance(ids, (str, bytes)) or not hasattr(ids[0], "__index__"):
+        raise TrainingError("apply_chat_template(tokenize=True) returned %s, which is not token "
+                            "ids; its length is a measurement of the wrong thing"
+                            % type(ids).__name__)
+    return ids
+
+
 def program_from_completion(completion):
     if isinstance(completion, list):
         if len(completion) != 1 or not isinstance(completion[0], dict) or completion[0].get("role") != "assistant":

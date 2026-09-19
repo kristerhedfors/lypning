@@ -56,7 +56,7 @@ sys.path.insert(0, str(ROOT / "training" / "gpu"))
 sys.path.insert(0, str(ROOT / "training"))
 
 from pipeline.jsonio import sha256_of                                   # noqa: E402
-from pipeline.training import messages                                  # noqa: E402
+from pipeline.training import chat_prompt_token_ids, messages           # noqa: E402
 from pipeline.training_contract import (BASE_MODEL, GPU_VERSIONS,       # noqa: E402
     MIN_SUPERVISED_TOKENS, MIN_TRAIN_CASES, PROTOCOL_TRAIN_SEEDS)
 from pipeline.training_data import split_cases                          # noqa: E402
@@ -77,8 +77,8 @@ def require(name):
     try:
         return __import__(name)
     except ImportError:
-        raise SystemExit("%s is not installed; this runs on a runner that pip-installed "
-                         "transformers==%s and huggingface-hub==%s"
+        raise SystemExit("%s is not installed; .github/workflows/token-floor.yml is the "
+                         "environment this expects: transformers==%s, huggingface-hub==%s, jinja2"
                          % (name, GPU_VERSIONS["transformers"], GPU_VERSIONS["huggingface-hub"]))
 
 
@@ -350,6 +350,13 @@ def main(argv=None):
     print("   %-26s %s" % ("python", sys.version.split()[0]))
 
     transformers = require("transformers")
+    # jinja2 renders the chat template, and it is a torch dependency rather than
+    # a transformers one: the metered job gets it because it installs torch, and
+    # this one only has it because the workflow names it. Asking here costs one
+    # import and turns the alternative -- an ImportError raised from inside
+    # `apply_chat_template`, forty lines further down and after the identity
+    # block has already printed -- into the line above.
+    require("jinja2")
     from transformers import AutoTokenizer
     print("   %-26s %s  (experiment pins %s)"
           % ("transformers", transformers.__version__, GPU_VERSIONS["transformers"]))
@@ -382,8 +389,26 @@ def main(argv=None):
     # run() admits: this one is split-independent on purpose, so a row too long
     # for the budget is reported whichever split it lands in.
     print("\n== prompt budget (run() refuses before any of this)")
-    prompts = [len(tok.apply_chat_template(messages(c), tokenize=True, add_generation_prompt=True,
-                                           enable_thinking=False)) for c in rows]
+    # `tokenize=True` answers `len()` in two different currencies: a list of
+    # token ids under transformers 4.x, a `BatchEncoding` of two keys under the
+    # 5.x this workflow pins. Counting the call rather than its ids reads every
+    # prompt as two tokens, so the counting goes through the one extraction the
+    # stage itself uses -- `chat_prompt_token_ids` -- and a shape that is
+    # neither raises there. The shape is exercised once, on the row whose
+    # length is about to be counted, so a third shape refuses here with a line
+    # rather than a traceback forty rows into the sweep.
+    if not rows:
+        print("the bank file holds no rows, so there is no prompt budget to measure",
+              file=sys.stderr)
+        return 2
+    try:
+        sample = chat_prompt_token_ids(tok, messages(rows[0]))
+    except TrainingError as exc:
+        print("the prompt budget cannot be measured: %s" % exc, file=sys.stderr)
+        return 2
+    print("   %-26s %s of token ids, counted through chat_prompt_token_ids"
+          % ("chat template shape", type(sample).__name__))
+    prompts = [len(chat_prompt_token_ids(tok, messages(c))) for c in rows]
     over = sum(length + args.max_new_tokens > args.max_seq for length in prompts)
     print("   %-26s %d bank row(s) over --max-seq %d with --max-new-tokens %d"
           % ("prompt + completion", over, args.max_seq, args.max_new_tokens))
