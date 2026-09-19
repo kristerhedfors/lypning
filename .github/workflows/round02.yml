@@ -39,6 +39,12 @@ env:
   # flavor; the preflight prints the whole priced table so this is a decision
   # with a number attached rather than a guess.
   PILOT_FLAVOR: h200
+  # The schedule the token-floor job above counts and the submit below runs, so
+  # the number that was checked is the number that is billed. 250 is refused:
+  # the smallest clearing value on `banks/v2` was 269/273/279 by seed (run
+  # `35434623069`), and a bank with different rows needs its own count, which is
+  # what that job is for.
+  PILOT_STEPS: "300"
 
 jobs:
   preflight:
@@ -135,9 +141,45 @@ jobs:
             --work-repo "${{ steps.space.outputs.owner }}/${WORK_REPO_NAME}" \
             --flavor "${FLAVOR}" --timeout 75m
 
+  # Free, and it stands between the marker and the meter. Measured 2026-09-19
+  # on `banks/v2` (run `35434623069`): the pilot's own `--steps 250
+  # --batch-size 4` exposes 46,535 / 45,952 / 44,940 supervised tokens at the
+  # three protocol seeds against a 50,000 floor, so `run()` refuses it BEFORE
+  # the first optimizer step — after the dependency install, the bank
+  # download, bundle preparation, the unadapted base-dev arm and 55.6 GB of
+  # weights. The `--plan` bound for the same schedule is 134,384 and passes,
+  # which is why a passing plan was never a certificate. This counts exactly,
+  # needs only the tokenizer, and costs nothing.
+  token-floor:
+    name: the supervised-token floor, counted before it is billed
+    needs: preflight
+    if: >-
+      contains(github.event.head_commit.message, '[submit-pilot]') ||
+      (github.event.inputs.stage == 'pilot' && github.event.inputs.submit == 'SUBMIT')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      HF_HOME: ${{ github.workspace }}/.hf
+      PYTHONPATH: src:training
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q "transformers==5.17.0" "huggingface-hub==1.31.0" jinja2
+      - name: Count what the schedule exposes
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python .github/scripts/token_floor.py \
+            --hub-bank "${BANK_PATH}" \
+            --revision "${{ needs.preflight.outputs.qwen_rev }}" \
+            --steps "${PILOT_STEPS}" \
+            --require-clears
+
   submit:
     name: submit the GPU job (BILLED)
-    needs: [preflight, bootstrap]
+    needs: [preflight, bootstrap, token-floor]
     if: >-
       contains(github.event.head_commit.message, '[submit-smoke]') ||
       contains(github.event.head_commit.message, '[submit-pilot]') ||
@@ -170,6 +212,7 @@ jobs:
               --qwen-revision "${{ needs.preflight.outputs.qwen_rev }}" \
               --work-repo "${{ needs.bootstrap.outputs.owner }}/${WORK_REPO_NAME}" \
               --bank-path "${BANK_PATH}" --seed 1111 --eval-draws 16 \
+              --steps "${PILOT_STEPS}" \
               --flavor "${PILOT_FLAVOR}" --timeout 300m --yes --follow
           else
             python training/hf/launch.py smoke \

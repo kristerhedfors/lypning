@@ -276,6 +276,9 @@ def parser():
     p.add_argument("--revision", default=os.environ.get("QWEN_REV", ""),
                    help="40-character Hub commit; resolved from the Hub when omitted")
     p.add_argument("--steps", type=int, action="append", help="repeatable; defaults to a grid")
+    p.add_argument("--require-clears", action="store_true",
+                   help="exit 1 when any counted --steps is under the floor at any protocol "
+                        "seed; for gating a billed submit, never for reading the grid")
     p.add_argument("--batch-size", type=int, default=4)
     p.add_argument("--seed", type=int, action="append",
                    help="repeatable; defaults to the protocol seeds")
@@ -447,11 +450,14 @@ def main(argv=None):
     print("   %6s %10s %s %12s  %s" % ("steps", "exposures",
                                        " ".join("%12s" % ("seed " + str(s)) for s in seeds),
                                        "plan bound", "verdict"))
+    refused_steps = []
     for steps in steps_grid:
         exact = []
         for seed in seeds:
             subset, examples = population(seed)
             exact.append(exact_tokens(subset, examples, steps, args.batch_size, seed))
+        if min(exact) < MIN_SUPERVISED_TOKENS:
+            refused_steps.append((steps, min(exact)))
         bound = upper_bound(population(seeds[0])[0], steps, args.batch_size, seeds[0],
                             args.max_seq, args.max_new_tokens)
         print("   %6d %10d %s %12d  %s"
@@ -492,6 +498,23 @@ def main(argv=None):
         print("   seed %-6d --steps %d -> %d tokens (one step below: %d)%s"
               % (seed, found["steps"], found["tokens"], found["tokens_one_step_below"],
                  "" if found["monotone"] else "  NOT MONOTONE: bisection assumption broken"))
+
+    # A report says what a schedule costs; a gate refuses to let it be billed.
+    # Off by default, because reading the grid is the ordinary use and a
+    # refusal in it is the deliverable — see this module's docstring. The
+    # round-02 workflow turns it on between the marker and the meter, so the
+    # number that was counted is the number that is submitted.
+    if args.require_clears:
+        if refused_steps:
+            worst = min(refused_steps, key=lambda pair: pair[1])
+            print("\nREFUSED: --steps %d exposes %d supervised tokens at its worst protocol "
+                  "seed, under the %d floor. run() would refuse this before the first "
+                  "optimizer step, after the weights. Raise --steps to a value the grid "
+                  "above clears." % (worst[0], worst[1], MIN_SUPERVISED_TOKENS),
+                  file=sys.stderr)
+            return 1
+        print("\nclears: every --steps counted above reaches the %d floor at every "
+              "protocol seed" % MIN_SUPERVISED_TOKENS)
     return 0
 
 
