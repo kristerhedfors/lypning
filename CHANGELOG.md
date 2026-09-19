@@ -244,7 +244,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 **2026-09-18** — Read the Hub from CI, find the benchmark saturated, and move generation to where the provider answers
 
 - `HF_TOKEN` exists only as an Actions secret, so the private round-02 artifacts
-  are readable only from a CI job. `START_NEXT_ROUND.md` asks for the device that
+  are readable only from a CI job. `training/START_NEXT_ROUND.md` asks for the device that
   owns them and no such device exists; the Hub is the device.
   `.github/workflows/s0-inventory.yml` is the reader, and
   `.claude/skills/round02-evidence/` is the route written down.
@@ -272,7 +272,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   GitHub runner for a key that answers the developer's own shell, including
   immediately after the secret was rotated. Generation therefore moves to that
   shell and adaptation stays on a runner that holds no provider key
-  (`bank-v3-adapt.yml`), preserving the split `HARVESTING.md` requires.
+  (`bank-v3-adapt.yml`), preserving the split `training/HARVESTING.md` requires.
 - This session published roughly eleven bank cases into three world-readable
   Actions logs before `bundle.json` was removed from the printable set; the runs
   were deleted and the cause fixed, and deleting a run does not undo a scrape.
