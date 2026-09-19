@@ -74,10 +74,16 @@ RULE = 2
 #: Where a declaration came from. `S4` means the family is named in
 #: `ASSESSMENT.md` §4's own per-bucket kind list, so the declaration transcribes
 #: a judgement already made and reviewed; `NEW` means this tree proposed it and
-#: it is owed a review. The counts are printed per bucket, so a reader always
-#: knows how much of a table is transcription and how much is new judgement.
+#: it is owed a review. `RULE` means the subject is a repair rule in
+#: `repair_rules.RULES`: the rewrite runs natively or the rule is withdrawn, so
+#: the rule is the proof of the verdict, and the row is matched by the rule
+#: existing rather than by a capture-corpus family -- a rule the corpus never
+#: exercised still needs its verdict on record before its pairs reach a model.
+#: The counts are printed per bucket, so a reader always knows how much of a
+#: table is transcription and how much is new judgement.
 FROM_SECTION_4 = "s4"
 NEW_HERE = "new"
+FROM_RULE = "rule"
 
 #: The package whose own imports are self-referential, read from this tree
 #: rather than spelled, so a rename cannot orphan the layer.
@@ -313,6 +319,27 @@ DECLARED: Tuple[Tuple[str, str, str, str], ...] = (
      "pure byte transformation; note compress() output tracks the zlib build"),
     ("module: string", ENGINE_ADDRESSABLE, NEW_HERE,
      "static constants and pure template substitution"),
+    # ---- declared 2026-09-19 from the repair rules, which are their proof ----
+    # `repair_rules.RULES` rewrites each of these into the served subset and the
+    # rewrite verifies natively, so the used surface is expressible there by
+    # construction. A rule for a module this table called a fallback would be
+    # the two loops disagreeing; `test_repair_rules.py` holds the seam.
+    ("module: functools", ENGINE_ADDRESSABLE, FROM_RULE,
+     "reduce over values the program holds; rule_functools inlines it natively"),
+    ("module: operator", ENGINE_ADDRESSABLE, FROM_RULE,
+     "named forms of operators the engine already evaluates; rule_operator inlines them"),
+    ("module: copy", ENGINE_ADDRESSABLE, FROM_RULE,
+     "copies of plain values the engine holds; rule_copy rewrites them natively"),
+    ("module: heapq", ENGINE_ADDRESSABLE, FROM_RULE,
+     "heap operations over a list, pure; rule_heapq rewrites them natively"),
+    ("module: bisect", ENGINE_ADDRESSABLE, FROM_RULE,
+     "binary search over a list the program holds; rule_bisect rewrites it natively"),
+    ("module: array", ENGINE_ADDRESSABLE, FROM_RULE,
+     "a typed sequence over held numbers; rule_array serves it as a list"),
+    ("module: decimal", ENGINE_ADDRESSABLE, FROM_RULE,
+     "only the integer-valued surface, which is the integer; rule_decimal serves that and refuses the rest"),
+    ("module: calendar", ENGINE_ADDRESSABLE, FROM_RULE,
+     "civil-calendar arithmetic; rule_calendar's prelude is differential-tested against CPython"),
     ("module: types", ENGINE_ADDRESSABLE, NEW_HERE,
      "names for objects the engine already has, once it serves the constructs"),
     ("module: dataclasses", ENGINE_ADDRESSABLE, NEW_HERE,
@@ -403,7 +430,7 @@ def _check_declarations(closed_kinds_fn):
         seen.add(family_key)
         if bucket not in BUCKETS:
             raise ValueError("levers: unknown bucket %r for %s" % (bucket, family_key))
-        if provenance not in (FROM_SECTION_4, NEW_HERE):
+        if provenance not in (FROM_SECTION_4, NEW_HERE, FROM_RULE):
             raise ValueError("levers: unknown provenance %r for %s" % (provenance, family_key))
         if not why:
             raise ValueError("levers: declaration without a reason: " + family_key)
@@ -741,7 +768,7 @@ def table(records: Iterable[Dict[str, Any]], *, source: str, unit: str = "entry"
             "declared_new": len([r for r in rows if r["provenance"] == NEW_HERE]),
         }
 
-    matched = set(r["family"] for r in families)
+    matched = set(r["family"] for r in families) | rule_matched()
     return {
         "rule": RULE,
         "source": source,
@@ -761,6 +788,19 @@ def table(records: Iterable[Dict[str, Any]], *, source: str, unit: str = "entry"
         "undeclared": [r for r in families if r["basis"] == "undeclared"],
         "declared_unused": sorted(row[0] for row in DECLARED if row[0] not in matched),
     }
+
+
+def rule_matched() -> "frozenset[str]":
+    """Declarations whose subject is a repair rule, matched by the rule existing.
+
+    Their family never has to appear in the capture corpus -- the rule is the
+    proof -- but a declaration outliving its rule is exactly the orphan
+    `declared_unused` exists to catch, so the match is against the rule list.
+    """
+    from .repair_rules import MODULES
+
+    return frozenset(row[0] for row in DECLARED
+                     if row[2] == FROM_RULE and row[0].split(": ", 1)[1] in MODULES)
 
 
 def rank(result: Dict[str, Any], *, bucket: str = ENGINE_ADDRESSABLE,

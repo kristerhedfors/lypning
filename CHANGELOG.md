@@ -14,6 +14,41 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-19** — A repair rule is a capability claim; make the table say so, and make it fail when the engine catches up
+
+- A repair rule rewrites a refused module into the served subset and the
+  rewrite verifies natively, so the module's used surface is expressible there
+  by construction — the rule is the proof, and `fractions` was withdrawn on
+  2026-09-18 precisely because its rule could not be. `levers.DECLARED` had no
+  verdict on eight of the twelve modules the rules rewrite (functools, operator,
+  copy, heapq, bisect, array, decimal, calendar; measured 2026-09-19 with
+  `levers.classify("module", "import <m>")`). They are declared
+  engine-addressable now under a third provenance, `rule`: the row is matched
+  by the rule existing, not by a capture-corpus family, so `declared_unused`
+  still catches a verdict whose rule was withdrawn, and a module the corpus
+  never refused still has its verdict on record before its pairs reach a model.
+  None of the eight appears in the capture corpus, so the reviewed §4 vector
+  does not move.
+- `repair_rules.MODULES` names the list, and `test_repair_rules.py` holds two
+  invariants over it: every entry carries an engine-addressable verdict (fails
+  8/12 before this entry, 0/12 after), and none is a module the built engine
+  serves. The second reads the engine through `legality.modules_served`, the
+  same probe gate B uses, with `glob` as a served sentinel so a broken probe
+  fails loudly instead of passing vacuously.
+- Why it matters: gate B probes the engine, not a table. The day the engine
+  gains `bisect`, every bisect repair pair becomes a supported-import
+  regression. The drift test makes that day a failing test, not a voided
+  round.
+- `synth-adapt` reports `rule_verdicts` beside `rules_fired` and renders a
+  loud line for any rule without an engine-addressable bucket. Derived from
+  `levers` at report time, never written on the case.
+- Withdrawn from this session's own analysis: "itertools is deliberately
+  excluded because lazy-iterator semantics sank cap-csv and cap-glob". Both
+  landed in iteration 77 (`docs/HILLCLIMB.md`); the engine serves `iter`,
+  `next`, generator expressions, `zip`, `enumerate` and `map` (rc 0 on all,
+  2026-09-19) and refuses only `yield`. `itertools` was already declared
+  engine-addressable from §4, and `rule_itertools` is the proof.
+
 **2026-09-19** — Count the tokens the prompt budget was supposed to be counting
 
 - The per-case prompt budget in `train_verified.py` had been vacuous since the

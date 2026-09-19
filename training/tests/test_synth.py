@@ -397,3 +397,17 @@ def test_synth_generate_refuses_without_the_key(tmp_path, monkeypatch, capsys):
     assert cli_main(["synth-generate", "--output", str(tmp_path / "c.jsonl")]) == 2
     assert "CEREBRAS_API_KEY" in capsys.readouterr().err
     assert not (tmp_path / "c.jsonl").exists()
+
+
+def test_the_report_carries_a_verdict_for_every_rule_that_fired(runner):
+    """A repair pair without a bucket is a workaround nobody decided on.
+
+    The verdict is derived from `levers` at report time and never written on
+    the case: the case carries `repair_rule`, and the bucket has one home.
+    """
+    report = synth.run(batch_rows(), runner, batch="b1")["report"]
+    assert set(report["rule_verdicts"]) == set(report["rules_fired"])
+    assert report["rule_verdicts"] == {"statistics": "engine-addressable"}
+    text = synth.render(report)
+    assert "rule verdicts: statistics engine-addressable" in text
+    assert "RULE WITHOUT" not in text

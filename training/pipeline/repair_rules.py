@@ -716,3 +716,20 @@ RULES = [
     # keeping the import is the right answer, which is what a control is for.
 ]
 
+#: The modules the rules rewrite, in RULES order. Two invariants hang on this
+#: list and ``test_repair_rules.py`` holds both.
+#:
+#: Every entry is declared ENGINE_ADDRESSABLE in ``levers.DECLARED``. A rule is
+#: proof that its module's used surface is expressible in the served subset:
+#: the rewrite runs natively or the rule is withdrawn (fractions, above). So a
+#: rule for a module the table calls a legitimate fallback, or has no verdict
+#: on, is the two loops disagreeing -- the repair teaching a model to route
+#: around a refusal nobody has decided is deliberate.
+#:
+#: No entry is a module the engine SERVES. ``legality._gate_b`` probes the
+#: engine, not a table, so the day the engine gains ``bisect`` every bisect
+#: repair pair becomes a supported-import regression. The rule is deleted and
+#: its pairs retired that day, by a failing test here, not discovered on a
+#: metered job.
+MODULES = tuple(name for name, _ in RULES)
+

@@ -179,3 +179,75 @@ def test_a_clock_reader_is_never_repaired():
                   "datetime.datetime.utcnow()", "datetime.date.fromtimestamp(0)"):
         src = "import datetime\nd = %s\nprint(d.year)\n" % clock
         assert module.rule_datetime(src) is None, clock
+
+
+# --- the two loops must not disagree ------------------------------------------
+#
+# A repair rule teaches the model to route around a refusal. That is only
+# defensible while the refusal is a stopgap the engine roadmap will remove, and
+# it becomes a measured regression the day the engine removes it: gate B
+# (`legality._gate_b`) probes the engine and scores every pair whose reference
+# imports a served module. These two tests are the seam between the loops.
+
+import os
+
+from pipeline import legality, levers
+
+STDLIB = pytest.mark.skipif(
+    levers.stdlib_names() is None,
+    reason="no sys.stdlib_module_names: the not-stdlib layer abstains and verdicts are incomplete by design")
+
+
+@STDLIB
+def test_every_rule_rewrites_a_module_with_an_engine_addressable_verdict():
+    """A rule is the proof of addressability; the table must say so.
+
+    The rewrite runs natively on the engine or the rule is withdrawn, so its
+    module's used surface is expressible in the served subset by construction.
+    A module with no verdict is a repair nobody classified; a module declared a
+    legitimate fallback is a repair the programme has decided should not exist.
+    Both fail here, with the bucket named, rather than in the weights.
+    """
+    stdlib = levers.stdlib_names()
+    verdicts = {name: levers.classify("module", "import " + name, stdlib=stdlib)
+                for name in module.MODULES}
+    loose = {name: v["bucket"] for name, v in verdicts.items()
+             if v["bucket"] != levers.ENGINE_ADDRESSABLE}
+    assert not loose, (
+        "repair rule(s) rewrite a module with no engine-addressable verdict in levers.DECLARED: "
+        "%s. Declare the module (ENGINE_ADDRESSABLE, with why) or withdraw the rule." % loose)
+
+
+def _built_engine():
+    try:
+        from lypning import paths
+    except ImportError:
+        return None
+    candidate = paths.bin_dir() / "lypning-l"
+    if candidate.is_file() and os.access(str(candidate), os.X_OK):
+        return str(candidate)
+    return None
+
+
+def test_no_rule_rewrites_a_module_the_engine_serves():
+    """The drift alarm: a rule outliving the refusal it repaired.
+
+    Read against the built engine, never a table, because gate B reads the
+    engine. The sentinel is not decoration: `modules_served` returns False for
+    everything when the probe cannot run, and a test that then asserted
+    "nothing is served" would pass on a broken instrument. `glob` has been
+    served since iteration 77 (docs/HILLCLIMB.md), so it must read True first.
+    """
+    engine = _built_engine()
+    if engine is None:
+        pytest.skip("no built lypning-l under LYPNING_HOME; the adapt workflow runs this against the real binary")
+    sentinel = legality.modules_served(engine, ["glob"])
+    assert sentinel.get("glob") is True, (
+        "the probe reports glob as refused, but the engine has served it since iteration 77: "
+        "the instrument is broken, and every assertion below would pass vacuously")
+    served = legality.modules_served(engine, module.MODULES)
+    drifted = sorted(name for name, ok in served.items() if ok)
+    assert not drifted, (
+        "rule(s) %s rewrite module(s) the engine now serves. Delete the rule and retire its pairs "
+        "from the bank: gate B probes the engine and scores each such pair as a supported-import "
+        "regression." % drifted)

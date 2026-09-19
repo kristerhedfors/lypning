@@ -141,7 +141,9 @@ def validate_candidate(row: Any) -> Optional[str]:
         # file name never reaches a verdict at all: `subprocess.Popen` and
         # `Path.mkdir` raise `ValueError`, which is neither a harness error nor
         # a program result, so it leaves `run` as a traceback and takes the
-        # batch with it. Three of run 35340137976's 2,784 candidates carry one.
+        # batch with it. Three of run 35340137976's 2,784 candidates carry one,
+        # at rows 28, 31 and 1712 -- row 461 of that artifact is the escaping
+        # name above and not this (`bank-v3-candidates` scanned 2026-09-19).
         # Content may hold a NUL -- bytes on a pipe and bytes in a file both
         # arrive intact, and `validate_cases` admits them.
         for value in list(argv) + list(files):
@@ -412,6 +414,23 @@ def to_case(row: Dict[str, Any], *, kind: str, batch: str) -> Dict[str, Any]:
 # --- the whole batch ----------------------------------------------------------
 
 
+def rule_verdicts(fired: "Counter") -> Dict[str, str]:
+    """The `levers` bucket of every module a rule rewrote this batch.
+
+    A repair teaches the model to route around a refusal, so the refusal's
+    verdict belongs beside the count: ``engine-addressable`` means the pair is
+    a stopgap the engine roadmap will retire; anything else means a rule is
+    rewriting a module nobody has classified as deliberate or not. Derived
+    here and never written on the case -- the case carries ``repair_rule``,
+    and the verdict has one home.
+    """
+    from . import levers
+
+    stdlib = levers.stdlib_names()
+    return {name: levers.classify("module", "import " + name, stdlib=stdlib)["bucket"]
+            for name in sorted(fired)}
+
+
 def run(candidates: Sequence[Dict[str, Any]], runner: Runner, *, agree: int = 2,
         batch: str = "local",
         rules: Sequence[Tuple[str, Callable[[str], Optional[str]]]] = RULES) -> Dict[str, Any]:
@@ -488,6 +507,7 @@ def run(candidates: Sequence[Dict[str, Any]], runner: Runner, *, agree: int = 2,
         "tally": dict(sorted(tally.items())),
         "rules_fired": dict(sorted(fired.items())),
         "rules_accepted": dict(sorted(accepted.items())),
+        "rule_verdicts": rule_verdicts(fired),
         "rejected_by_verification": dict(sorted(verification.items())),
         # The capability request, and the useful half of a failure.
         "unserved_kinds": unserved.most_common(20),
@@ -527,6 +547,14 @@ def render(report: Dict[str, Any]) -> str:
         lines.append("  rules fired: " + ", ".join(
             "%s %d/%d" % (name, report["rules_accepted"].get(name, 0), n)
             for name, n in report["rules_fired"].items()) + "  (accepted/fired)")
+    if report.get("rule_verdicts"):
+        lines.append("  rule verdicts: " + ", ".join(
+            "%s %s" % kv for kv in report["rule_verdicts"].items()))
+        loose = [n for n, b in report["rule_verdicts"].items() if b != "engine-addressable"]
+        if loose:
+            lines.append("  RULE WITHOUT AN ENGINE-ADDRESSABLE VERDICT: %s -- a repair teaches around "
+                         "a refusal; the refusal needs a bucket before the pair needs a model"
+                         % ", ".join(loose))
     if report["rejected_by_verification"]:
         lines.append("  rejected by verification: " + ", ".join(
             "%s %d" % kv for kv in report["rejected_by_verification"].items()))

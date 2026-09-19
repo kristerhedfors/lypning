@@ -1064,3 +1064,20 @@ def test_eval2_rows_stamps_the_binary_it_replayed_not_the_installed_chain(capsys
 
     here = eng.binary_identity(__file__)
     assert here["path"] == __file__ and len(here["sha256"]) == 64
+
+
+def test_a_rule_declaration_outliving_its_rule_is_orphaned(monkeypatch):
+    """`rule` provenance is matched by the rule existing, never by a corpus family.
+
+    The reverse of `test_repair_rules.test_no_rule_rewrites_a_module_the_engine_serves`:
+    that one fails when the engine catches up with a rule, this one fails when a
+    rule is withdrawn and its verdict is left behind as a judgement with no subject.
+    """
+    from pipeline import repair_rules
+
+    assert any(row[2] == levers.FROM_RULE for row in levers.DECLARED)
+    assert "module: bisect" in levers.rule_matched()
+    monkeypatch.setattr(repair_rules, "MODULES",
+                        tuple(m for m in repair_rules.MODULES if m != "bisect"))
+    assert "module: bisect" not in levers.rule_matched()
+    assert "module: heapq" in levers.rule_matched()
