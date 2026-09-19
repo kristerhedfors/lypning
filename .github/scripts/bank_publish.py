@@ -65,6 +65,9 @@ def main() -> int:
     ap.add_argument("--out", type=Path, required=True, help="staging dir, RUNNER_TEMP only")
     ap.add_argument("--seed", type=int, default=1111, help="which families the benchmark takes")
     ap.add_argument("--benchmark-families", type=int)
+    ap.add_argument("--max-cases-per-family", type=int,
+                    help="trim each family to at most this many cases; family COUNT is "
+                         "untouched, and preparation costs about four seconds a case")
     ap.add_argument("--push", action="store_true", help="upload; otherwise stage and report only")
     ap.add_argument("--replace", action="store_true",
                     help="allow overwriting a bank name that already exists")
@@ -80,7 +83,8 @@ def main() -> int:
 
     try:
         carved = bank_carve.carve(cases, seed=args.seed,
-                                  benchmark_families=args.benchmark_families)
+                                  benchmark_families=args.benchmark_families,
+                                  max_cases_per_family=args.max_cases_per_family)
     except TrainingError as exc:
         print("bank-publish: %s" % exc, file=sys.stderr)
         return 1
@@ -93,6 +97,7 @@ def main() -> int:
                EVAL2: write(stage / EVAL2, carved["benchmark"])}
     summary = {
         "bank": args.name, "seed": args.seed,
+        "max_cases_per_family": args.max_cases_per_family,
         "train": {"cases": len(carved["pilot"]), "families": len(carved["plan"]["pilot"]),
                   "sha256": digests[TRAIN], **carved["plan"]["pilot_counts"]},
         "eval2": {"cases": len(carved["benchmark"]), "families": len(carved["plan"]["benchmark"]),

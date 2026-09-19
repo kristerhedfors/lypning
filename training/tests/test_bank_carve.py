@@ -157,3 +157,40 @@ def test_the_shipped_bank_v2_union_carves_back_to_its_own_shape():
     assert result["problems"] == []
     assert len(result["plan"]["pilot"]) == 51
     assert len(result["plan"]["benchmark"]) == 18
+
+
+def test_the_cap_trims_cases_and_never_families():
+    """Preparation costs ~4 s a case; family count is what the floors read."""
+    full = bank_carve.carve(bank(per_family=20))
+    capped = bank_carve.carve(bank(per_family=20), max_cases_per_family=5)
+    assert capped["problems"] == []
+    # Every family survives, in the same bank as before.
+    assert set(capped["plan"]["pilot"]) == set(full["plan"]["pilot"])
+    assert set(capped["plan"]["benchmark"]) == set(full["plan"]["benchmark"])
+    # ... and no family carries more than the cap.
+    from collections import Counter
+    for side in ("pilot", "benchmark"):
+        counts = Counter(c["family"] for c in capped[side])
+        assert counts and max(counts.values()) <= 5, side
+    assert len(capped["pilot"]) < len(full["pilot"])
+
+
+def test_a_capped_carve_is_reproducible_and_moves_with_the_seed():
+    a = bank_carve.carve(bank(per_family=20), max_cases_per_family=5)
+    assert [c["case_id"] for c in a["pilot"]] == \
+           [c["case_id"] for c in bank_carve.carve(bank(per_family=20), max_cases_per_family=5)["pilot"]]
+    b = bank_carve.carve(bank(per_family=20), seed=2222, max_cases_per_family=5)
+    assert {c["case_id"] for c in a["pilot"]} != {c["case_id"] for c in b["pilot"]}
+
+
+def test_a_cap_below_one_is_refused_rather_than_emptying_the_bank():
+    with pytest.raises(TrainingError) as exc:
+        bank_carve.carve(bank(), max_cases_per_family=0)
+    assert "at least 1" in str(exc.value)
+
+
+def test_the_cap_is_reported_so_a_reader_knows_the_bank_was_trimmed():
+    result = bank_carve.carve(bank(per_family=20), max_cases_per_family=5)
+    text = bank_carve.render(result)
+    assert "capped at 5 case(s) per family" in text
+    assert result["plan"]["cap"] == 5 and result["plan"]["capped_from"] > len(result["pilot"])

@@ -166,8 +166,38 @@ def _admits(cases: List[Dict[str, Any]], *, purpose: str) -> List[str]:
     return problems
 
 
+def cap_per_family(cases: Sequence[Dict[str, Any]], limit: int, seed: int) -> List[Dict[str, Any]]:
+    """At most `limit` cases from each family, chosen deterministically.
+
+    Cases per family beyond what the floors need are pure PREPARATION cost, and
+    preparation is what a round actually runs out of: measured 2026-09-19,
+    `training-prepare` verifies about one case every four seconds through the
+    16-sandbox pool, so bank v3's 8,370-case pilot is 5.5 hours before a single
+    optimizer step. Family COUNT is what the floors and the cluster bootstrap
+    read, and it is untouched here — every family keeps at least one case.
+
+    The pool size is not the knob to turn instead. Four sandboxes per host at
+    `cpu-basic` is an instrument parameter (`launch.MAX_POOL_SANDBOXES_PER_HOST`)
+    because `native` is host-load-dependent, so two arms scored at different
+    densities are not comparable.
+    """
+    if limit < 1:
+        raise TrainingError("--max-cases-per-family must be at least 1")
+    by_family: Dict[str, List[Dict[str, Any]]] = {}
+    for case in cases:
+        by_family.setdefault(case["family"], []).append(case)
+    kept: List[Dict[str, Any]] = []
+    for family, rows in sorted(by_family.items()):
+        rows = sorted(rows, key=lambda c: sha256_of([seed, c["case_id"]]))
+        kept.extend(rows[:limit])
+    # Input order is not meaningful downstream, but a stable one keeps a
+    # re-carve at the same seed byte-identical.
+    return sorted(kept, key=lambda c: c["case_id"])
+
+
 def carve(cases: Sequence[Dict[str, Any]], *, seed: int = 1111,
-          benchmark_families: Optional[int] = None) -> Dict[str, Any]:
+          benchmark_families: Optional[int] = None,
+          max_cases_per_family: Optional[int] = None) -> Dict[str, Any]:
     """Two banks that share no family, or a refusal naming what failed.
 
     Returns ``{"pilot", "benchmark", "plan", "problems"}``. `problems` empty is
@@ -175,7 +205,14 @@ def carve(cases: Sequence[Dict[str, Any]], *, seed: int = 1111,
     finding about the bank, and writing it would move the failure to a metered
     job.
     """
+    before = len(cases)
+    # `is not None`, not truthiness: a cap of 0 is the one value the validation
+    # in `cap_per_family` exists to reject, and falsiness skipped it entirely.
+    if max_cases_per_family is not None:
+        cases = cap_per_family(cases, max_cases_per_family, seed)
     allocation = plan(cases, seed=seed, benchmark_families=benchmark_families)
+    allocation["capped_from"] = before if max_cases_per_family is not None else None
+    allocation["cap"] = max_cases_per_family
     bench_families = set(allocation["benchmark"])
     benchmark = [c for c in cases if c["family"] in bench_families]
     pilot = [c for c in cases if c["family"] not in bench_families]
@@ -193,6 +230,11 @@ def render(result: Dict[str, Any]) -> str:
         "carve at seed %d: %d case(s) over %d families -> two banks sharing none"
         % (allocation["seed"], len(pilot) + len(benchmark),
            len(allocation["pilot"]) + len(allocation["benchmark"])),
+    ]
+    if allocation.get("cap"):
+        lines.append("  capped at %d case(s) per family, from %d (preparation is ~4 s/case)"
+                     % (allocation["cap"], allocation["capped_from"]))
+    lines += [
         "  pilot      %5d case(s)  %3d families  (coverage %d, control %d)"
         % (len(pilot), len(allocation["pilot"]),
            allocation["pilot_counts"]["coverage"], allocation["pilot_counts"]["control"]),
