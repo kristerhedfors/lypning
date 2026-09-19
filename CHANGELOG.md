@@ -42,6 +42,18 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 - `synth-adapt` reports `rule_verdicts` beside `rules_fired` and renders a
   loud line for any rule without an engine-addressable bucket. Derived from
   `levers` at report time, never written on the case.
+- The re-adapted bank-v3 clears the plan-time gates at all three protocol
+  seeds, read in CI over the union of batches 35422748954 and 35422741922
+  (run 35430465717, 2026-09-19): 7,042 cases after one cross-batch duplicate
+  was dropped at the normaliser, train 5,482–5,964 against the 1,000 floor,
+  `validate_pilot` and `validate_benchmark` OK. Dev and test hold 4 families
+  each against 29 in train, which the gates do not check and a family-clustered
+  bootstrap will feel. `bank3_gates.py` is the read; `bank-gates.yml` runs it.
+- One engine witness from batch 35422741922 reproduced against a fresh build
+  and is filed in `training/data/engine-mismatches.jsonl`: `sys.stdin.read(n)`
+  ignores its size argument and returns the whole remaining stream
+  (`readline()` is correct). Invariant 1: a bug, never a data point; it moved
+  from the private Hub to the file as a CI artifact, never a log line.
 - Withdrawn from this session's own analysis: "itertools is deliberately
   excluded because lazy-iterator semantics sank cap-csv and cap-glob". Both
   landed in iteration 77 (`docs/HILLCLIMB.md`); the engine serves `iter`,
