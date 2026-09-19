@@ -26,6 +26,10 @@ on:
         description: "which families the benchmark takes"
         default: "1111"
         type: string
+      max_cases_per_family:
+        description: "trim each family to at most this many cases; blank keeps all"
+        default: ""
+        type: string
       benchmark_families:
         description: "total families for the benchmark; blank uses the bank's own ratio"
         default: ""
@@ -92,6 +96,11 @@ jobs:
             printf '%s' "${{ inputs.benchmark_families }}" | grep -Eq '^[0-9]+$' \
               || { echo "refusing a non-numeric benchmark_families" >&2; exit 2; }
             args="$args --benchmark-families ${{ inputs.benchmark_families }}"
+          fi
+          if [ -n "${{ inputs.max_cases_per_family }}" ]; then
+            printf '%s' "${{ inputs.max_cases_per_family }}" | grep -Eq '^[0-9]+$' \
+              || { echo "refusing a non-numeric max_cases_per_family" >&2; exit 2; }
+            args="$args --max-cases-per-family ${{ inputs.max_cases_per_family }}"
           fi
           # `[ test ] && assign` is a statement whose exit status is the
           # test's, so under `set -e` a false flag would end the step.
