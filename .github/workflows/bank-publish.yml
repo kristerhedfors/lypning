@@ -67,11 +67,13 @@ jobs:
         run: |
           set -euo pipefail
           args=""
+          # A batch id is a run id, a sharded `<run>-<shard>`, or a re-adapt's
+          # `readapt-<source>-<run>`. A digits-only rule refused every sharded
+          # batch this repository produces, which is all of the recent ones.
           for b in $(printf '%s' "${{ inputs.batches }}" | tr ',' ' '); do
-            case "$b" in
-              ''|*[!0-9]*) echo "refusing a non-numeric batch id: $b" >&2; exit 2 ;;
-              *) args="$args --batch $b" ;;
-            esac
+            printf '%s' "$b" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9-]*$' \
+              || { echo "refusing a batch id that is not a name: $b" >&2; exit 2; }
+            args="$args --batch $b"
           done
           # shellcheck disable=SC2086
           python .github/scripts/bank3_ceiling.py --output "$RUNNER_TEMP/union.jsonl" $args
