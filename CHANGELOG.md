@@ -14,6 +14,27 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-19** — The supervised-token floor, counted before it is billed rather than after the weights
+
+- Run `35434623069`, free and tokenizer-only: on the bank the pilot would have
+  used, `--steps 250 --batch-size 4` exposes **46,535 / 45,952 / 44,940**
+  supervised tokens at seeds 1111/2222/3333 against the 50,000 floor. `run()`
+  refuses that before the first optimizer step — after the dependency install,
+  the bank download, bundle preparation, the unadapted base-dev arm and 55.6 GB
+  of weights. At roughly $25 a seed, the round would have bought nothing.
+- The `--plan` upper bound for that same schedule is 134,384 and passes. "A
+  passing plan is not a certificate" has been in the tree since 2026-09-17 as a
+  sentence; this is the number.
+- `round02.yml`'s billed `submit` now `needs: token-floor`, a free job that
+  counts exactly and exits 1 when short. Both read one `PILOT_STEPS`, so the
+  schedule counted is the schedule billed. `PILOT_STEPS` is 300; 250 is refused
+  and the smallest clearing value on that bank was 269/273/279 by seed.
+- `token_floor.py --require-clears` is the gate. Without it the script stays a
+  report, where a refusal in the grid is the deliverable and a non-zero exit
+  means a bad input — the contract its docstring already stated.
+- The guard held: the job's Hub cache finished at 25 MB, so it fetched a
+  tokenizer and no weights.
+
 **2026-09-19** — Carve a bank into a pilot and a benchmark that share no family
 
 - `split_cases` divides ONE bank into train/dev/test, and every split it makes

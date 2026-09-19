@@ -32,7 +32,7 @@ and ask the operator.
 | 6 | Enough families for a pilot **and** a disjoint benchmark | **in flight** — pool widened 37 → 71 families; generation running |
 | 7 | Carve `banks/v3/{train,eval2}.jsonl`, disjoint by family | **done** — `nt bank-carve`; validated against bank v2's union, which it carves back to its own hand-made 51/18 shape |
 | 8 | Publish to the Hub and point `BANK_PATH` at it | not started — `round02.yml` still reads `banks/v2` |
-| 9 | The exact supervised-token count | **runnable, never run** — `token-floor.yml`; the ≥50,000 floor is refused inside `run()`, on a metered job, after the weights |
+| 9 | The exact supervised-token count | **done, and it caught a refusal** — run `35434623069`: `--steps 250` exposes 46,535/45,952/44,940 against the 50,000 floor, so the pilot as configured would have been refused after the weights. `PILOT_STEPS` is now 300 and the billed submit needs a passing count |
 | 10 | Operator authorises the spend | **owed** — h200 ≈ $25/seed; a complete S4 is three seeds (1111, 2222, 3333) |
 
 Two open items that block nothing above but change how a result reads:
@@ -108,6 +108,25 @@ this was the step that could not be taken.
 Checked against the one bank whose carve is known: bank v2's two banks were
 separated by hand into 51 and 18 families, and re-uniting and re-carving them
 reproduces 51/18.
+
+## The count that now stands between the marker and the meter
+
+`round02.yml`'s billed `submit` job `needs: token-floor`, a free tokenizer-only
+job that counts exactly what the schedule exposes and exits 1 when it is short.
+Both read the same `PILOT_STEPS`, so the schedule that was counted is the
+schedule that is billed.
+
+It earned its place immediately. On `banks/v2` (run `35434623069`, 2026-09-19)
+the pilot's own `--steps 250 --batch-size 4` exposes **46,535 / 45,952 /
+44,940** supervised tokens at seeds 1111/2222/3333, against the 50,000 floor —
+refused by `run()` before the first optimizer step, after the dependency
+install, the bank download, bundle preparation, the unadapted base-dev arm and
+55.6 GB of weights, three times over. The `--plan` upper bound for the same
+schedule is 134,384 and passes.
+
+`PILOT_STEPS` is 300. The smallest clearing value on that bank was 269/273/279
+by seed; **a different bank needs its own count**, which is what the job is for
+— bank v3's rows are not these rows.
 
 ## What is deliberately not claimed here
 
