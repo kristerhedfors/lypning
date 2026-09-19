@@ -14,6 +14,34 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-19** — The construct pool, not the row count, was the gate on a real round
+
+- A pilot bank and a disjoint eval-2 benchmark bank each need ≥18 independent
+  families (`training_data.validate_bank`), and one family is one target
+  construct, so the pool caps both. At 27 rewritable + 10 unrewritable it did
+  not fit: an eval-2 bank wants ~16 coverage families and a pilot ~12, against
+  27 that exist — off by one before any margin, and tighter on the control
+  side, where `validate_pilot` needs ≥2 control families per split (6) out of
+  10 that must also stock the benchmark. bank v2 shipped 51 + 18 = 69 disjoint
+  families; 37 cannot be carved into that shape at any row count, which is why
+  the 7,042-row re-adapted bank passes `validate_pilot` and still cannot host a
+  round with a held-out benchmark.
+- The pool is now 47 rewritable + 24 unrewritable = 71 distinct families, no
+  collisions. Every addition was probed against the built engine on 2026-09-19
+  and is REFUSED, and every rewritable one carries an `engine-addressable`
+  verdict in `levers.DECLARED`, so the pair teaches a substitution the served
+  subset can express.
+- What was deliberately left out, and why it matters: `collections.Counter`,
+  `collections.defaultdict`, `math.gcd`, `math.isqrt`, `math.factorial`,
+  `os.path.splitext`, `json.dumps` and `re.findall` all came back SERVED.
+  Generating toward constructs the engine already runs is exactly what left
+  bank v2 at 0.9686 correct-and-native with no room for the preregistered
+  effect. `secrets` was rejected outright: a control still has to print the
+  same bytes every run.
+- The stratum draw is unchanged. `generate` picks the stratum at
+  `REWRITE_FRACTION` before it indexes a pool, so pool sizes do not move the
+  preregistered 66:27 mixture (0.7162 over 10,000 draws at seed 1111).
+
 **2026-09-19** — A repair rule is a capability claim; make the table say so, and make it fail when the engine catches up
 
 - A repair rule rewrites a refused module into the served subset and the

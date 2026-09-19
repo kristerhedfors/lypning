@@ -96,6 +96,33 @@ REWRITABLE = [
     ("io.StringIO", "building text in memory and reading it back"),
     ("frozenset", "a set used as a dictionary key"),
     ("zip with strict=True", "pairing two lists that must be the same length"),
+    # Added 2026-09-19. Each was probed against the built engine and refused,
+    # and each carries an `engine-addressable` verdict in `levers.DECLARED`: the
+    # pair teaches a substitution the served subset can express. A construct the
+    # engine SERVES is excluded on purpose -- `collections.Counter`,
+    # `collections.defaultdict`, `math.gcd`, `math.isqrt`, `math.factorial`,
+    # `os.path.splitext`, `json.dumps` and `re.findall` all came back served,
+    # and generating toward them is what made bank v2 unable to host an effect.
+    ("itertools.accumulate", "a running total or running maximum down a list"),
+    ("itertools.product", "every combination of one item from each of several lists"),
+    ("itertools.chain", "flattening a list of lists into one sequence"),
+    ("itertools.zip_longest", "pairing two lists of different lengths with a filler"),
+    ("itertools.islice", "the first N items of a long sequence"),
+    ("itertools.permutations", "every ordering of a short list"),
+    ("bisect.insort", "keeping a list sorted as items arrive"),
+    ("heapq.nlargest", "the few largest items without sorting everything"),
+    ("statistics.mode", "the most common value in a set of measurements"),
+    ("statistics.pstdev", "the spread of a set of measurements"),
+    ("functools.lru_cache", "memoising an expensive recursive function"),
+    ("string.capwords", "title-casing a phrase on whitespace"),
+    ("textwrap.shorten", "truncating a line to a width with an ellipsis"),
+    ("textwrap.indent", "prefixing every line of a block with a marker"),
+    ("textwrap.dedent", "stripping a common leading indent from a block"),
+    ("fnmatch.fnmatch", "matching names against a shell-style wildcard"),
+    ("struct.pack", "laying integers out as fixed-width big-endian bytes"),
+    ("binascii.hexlify", "the hex representation of some bytes"),
+    ("zlib.crc32", "a CRC32 checksum over some bytes"),
+    ("unicodedata.normalize", "normalising accented text before comparing it"),
 ]
 
 UNREWRITABLE = [
@@ -112,6 +139,24 @@ UNREWRITABLE = [
     ("base64.b32encode", "base32 encoding"),
     ("hashlib.new with an algorithm name", "a digest chosen at run time"),
     ("random.shuffle with a fixed seed", "a deterministic shuffle"),
+    # Added 2026-09-19, same probe. These are refused and the right answer KEEPS
+    # the import: a class the engine refuses outright, a file or wire format, a
+    # parser, or an environment read. `secrets` was probed and rejected for the
+    # pool entirely -- a control still has to print the same bytes every run.
+    ("dataclasses.dataclass", "a record type with named fields and defaults"),
+    ("enum.Enum", "a small set of named constants"),
+    ("typing.NamedTuple", "a lightweight record with typed fields"),
+    ("collections.ChainMap", "layered configuration with defaults underneath"),
+    ("pickle.dumps", "serialising an object graph to bytes"),
+    ("gzip.compress", "gzip-compressing a payload"),
+    ("sqlite3", "a small table queried with SQL"),
+    ("xml.etree.ElementTree", "reading values out of an XML document"),
+    ("email.utils.parseaddr", "splitting a display name from an address"),
+    ("zoneinfo.ZoneInfo", "a wall-clock time in a named timezone"),
+    ("urllib.parse.quote", "percent-encoding a value for a URL"),
+    ("locale.setlocale", "formatting a number the way a locale would"),
+    ("ipaddress.ip_address", "validating and classifying an IP address"),
+    ("html.escape", "escaping text for safe inclusion in HTML"),
 ]
 
 TASK_PROMPT = """Invent {n} small Python programming tasks whose most natural solution uses
