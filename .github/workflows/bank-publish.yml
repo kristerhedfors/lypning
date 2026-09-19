@@ -1,0 +1,108 @@
+# Cut a round's bank from every batch banked so far: carve, then publish.
+#
+# A BATCH is append-only evidence of what one run judged. A BANK is what a
+# round reads, derived from every batch that exists when it is cut, carved into
+# a pilot and a held-out benchmark that share no family. This makes the second
+# from the first.
+#
+# Free: it downloads batches, runs the carve and uploads two JSONL files. No
+# provider call, no GPU, no model-written code executed — the units were judged
+# when their batch was banked. `stage` is the default, so the carve is read
+# before anything is written.
+name: bank publish (carve a round's bank from the batches)
+
+on:
+  workflow_dispatch:
+    inputs:
+      name:
+        description: "bank name under banks/, e.g. v3-20260919"
+        required: true
+        type: string
+      batches:
+        description: "comma-separated batch ids, or blank for every batch banked"
+        default: ""
+        type: string
+      seed:
+        description: "which families the benchmark takes"
+        default: "1111"
+        type: string
+      benchmark_families:
+        description: "total families for the benchmark; blank uses the bank's own ratio"
+        default: ""
+        type: string
+      push:
+        description: "upload it; leave false to read the carve first"
+        default: false
+        type: boolean
+      replace:
+        description: "allow overwriting a bank name that already exists"
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: carve the union and publish it
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONPATH: src:training
+      WORK_REPO_NAME: lypning-round02-artifacts
+      LYPNING_CAPTURE: "0"
+      LYPNING_HARVEST: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q -e . "huggingface-hub==1.31.0"
+
+      # Counts, layouts and each batch's own report. Pre-fold batches carry no
+      # family or synth.kind and are skipped here, which this prints.
+      - name: Normalise every batch into one union
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          args=""
+          for b in $(printf '%s' "${{ inputs.batches }}" | tr ',' ' '); do
+            case "$b" in
+              ''|*[!0-9]*) echo "refusing a non-numeric batch id: $b" >&2; exit 2 ;;
+              *) args="$args --batch $b" ;;
+            esac
+          done
+          # shellcheck disable=SC2086
+          python .github/scripts/bank3_ceiling.py --output "$RUNNER_TEMP/union.jsonl" $args
+
+      # The carve, and the two files a round reads. Refuses rather than writing
+      # a bank the pilot could not be validated against at every protocol seed.
+      - name: Carve and publish
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          args=""
+          printf '%s' "${{ inputs.seed }}" | grep -Eq '^[0-9]+$' \
+            || { echo "refusing a non-numeric seed" >&2; exit 2; }
+          if [ -n "${{ inputs.benchmark_families }}" ]; then
+            printf '%s' "${{ inputs.benchmark_families }}" | grep -Eq '^[0-9]+$' \
+              || { echo "refusing a non-numeric benchmark_families" >&2; exit 2; }
+            args="$args --benchmark-families ${{ inputs.benchmark_families }}"
+          fi
+          [ "${{ inputs.push }}" = "true" ] && args="$args --push"
+          [ "${{ inputs.replace }}" = "true" ] && args="$args --replace"
+          # shellcheck disable=SC2086
+          python .github/scripts/bank_publish.py "$RUNNER_TEMP/union.jsonl" \
+            --name "${{ inputs.name }}" --out "$RUNNER_TEMP/banks" \
+            --seed "${{ inputs.seed }}" $args
+
+      # The carved banks, so a reviewer can read what was cut without a token.
+      # They hold task text, so they are an artifact and never a log line.
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: carved-bank
+          path: ${{ runner.temp }}/banks
+          retention-days: 30
