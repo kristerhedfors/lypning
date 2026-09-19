@@ -1,0 +1,60 @@
+# Cancel Hugging Face jobs still running with nothing left to serve.
+#
+# A trainer that hits its wall clock does not take its pool with it: on
+# 2026-09-19 three `cpu-basic` sandbox hosts outlived the round they were
+# scoring for. Cheap enough that nobody notices, which is the problem.
+#
+# Deliberate by construction: `workflow_dispatch` only, ids named or
+# `all_running` said out loud, and every live job printed with its age before
+# anything is cancelled.
+name: hf stop (cancel running jobs)
+
+on:
+  workflow_dispatch:
+    inputs:
+      jobs:
+        description: "comma-separated job ids to cancel"
+        default: ""
+        type: string
+      all_running:
+        description: "cancel every RUNNING job"
+        default: false
+        type: boolean
+      keep:
+        description: "comma-separated job ids to leave alone"
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  stop:
+    name: cancel what is still running
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q "huggingface-hub==1.31.0"
+      - name: List, then cancel
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          args=""
+          for j in $(printf '%s' "${{ inputs.jobs }}" | tr ',' ' '); do
+            printf '%s' "$j" | grep -Eq '^[A-Za-z0-9]+$' \
+              || { echo "refusing a job id that is not a name: $j" >&2; exit 2; }
+            args="$args --job $j"
+          done
+          for j in $(printf '%s' "${{ inputs.keep }}" | tr ',' ' '); do
+            printf '%s' "$j" | grep -Eq '^[A-Za-z0-9]+$' \
+              || { echo "refusing a keep id that is not a name: $j" >&2; exit 2; }
+            args="$args --keep $j"
+          done
+          if [ "${{ inputs.all_running }}" = "true" ]; then args="$args --all-running"; fi
+          # shellcheck disable=SC2086
+          python .github/scripts/hf_stop.py $args
