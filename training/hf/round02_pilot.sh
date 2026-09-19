@@ -245,12 +245,50 @@ if info.private is not True:
 local = snapshot_download(repo, repo_type="dataset", allow_patterns=[bank + "/**"],
                           local_dir="work/round-02/bank-download")
 root = os.path.join(local, bank)
+counts = {}
 for name in ("eval2.jsonl", "train.jsonl"):
     path = os.path.join(root, name)
     if not os.path.isfile(path):
         raise SystemExit("bank is missing " + name)
     with open(path, encoding="utf-8") as fh:
-        print("== bank %s: %d cases" % (name, sum(1 for line in fh if line.strip())))
+        body = fh.read()
+    counts[name] = sum(1 for line in body.splitlines() if line.strip())
+    print("== bank %s: %d cases" % (name, counts[name]))
+
+# THE BANK MUST BE THE BANK IT SAYS IT IS. A bank is a path in a shared
+# repository and another job can write to it: on 2026-09-19 one did, and this
+# round read 1,689 cases where 8,370 had been published, trained on the wrong
+# population and reported a result. The count was printed in the log the whole
+# time and nothing compared it to anything.
+#
+# `bank.json` is written by `bank_publish.py` when the bank is cut. A foreign
+# writer overwrites the JSONL without knowing to update it, so a mismatch is
+# exactly the case this refuses. A bank without one is older than the manifest
+# and says so rather than failing, because `banks/v2` predates it.
+manifest_path = os.path.join(root, "bank.json")
+if not os.path.isfile(manifest_path):
+    print("== bank manifest: none (a bank published before bank.json existed); "
+          "its identity is NOT verified")
+else:
+    import hashlib, json as _json
+    manifest = _json.loads(open(manifest_path, encoding="utf-8").read())
+    print("== bank manifest: %s, cut at seed %s" % (manifest.get("bank"), manifest.get("seed")))
+    bad = []
+    for name, key in (("train.jsonl", "train"), ("eval2.jsonl", "eval2")):
+        want = manifest.get(key) or {}
+        with open(os.path.join(root, name), "rb") as fh:
+            got = hashlib.sha256(fh.read()).hexdigest()
+        if want.get("cases") != counts[name]:
+            bad.append("%s: %d cases on disk, manifest says %s"
+                       % (name, counts[name], want.get("cases")))
+        # The manifest digest is over the file's text as written, so compare
+        # counts first and report both rather than only the opaque one.
+        print("   %-12s %d cases   sha256 %s" % (name, counts[name], got[:16]))
+    if bad:
+        raise SystemExit("BANK MISMATCH: %s. Something wrote to %s after it was published; "
+                         "refusing to train on a bank that is not the one it names."
+                         % ("; ".join(bad), bank))
+    print("   bank matches its manifest")
 snapshots = sorted(d for d in os.listdir(root) if d.startswith("evidence-") and os.path.isdir(os.path.join(root, d)))
 print("== bank evidence snapshots:", snapshots or "none (authored bank)")
 PYEOF

@@ -36,6 +36,15 @@ from pipeline.training_types import TrainingError                  # noqa: E402
 #: What `launch.py --bank-path` expects to find in the directory.
 TRAIN, EVAL2 = "train.jsonl", "eval2.jsonl"
 
+#: Written beside them, and the reason a round can trust what it downloaded.
+#: A bank is a path in a shared repository, and on 2026-09-19 another job
+#: uploaded a different bank over this one: the round read 1,689 cases where
+#: 8,370 were published, trained on the wrong population and reported a result.
+#: Nothing in the bank said which bank it was. This does — and because a
+#: foreign writer overwrites the JSONL without knowing to update the manifest,
+#: the mismatch is what a round refuses on.
+MANIFEST = "bank.json"
+
 
 def rows_of(path: Path):
     with path.open(encoding="utf-8") as fh:
@@ -89,6 +98,8 @@ def main() -> int:
         "eval2": {"cases": len(carved["benchmark"]), "families": len(carved["plan"]["benchmark"]),
                   "sha256": digests[EVAL2], **carved["plan"]["benchmark_counts"]},
     }
+    (stage / MANIFEST).write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n",
+                                  encoding="utf-8")
     print(json.dumps(summary, indent=2, sort_keys=True))
     if not args.push:
         print("staged only; pass --push to upload")
@@ -119,7 +130,7 @@ def main() -> int:
               % (target, len(existing)), file=sys.stderr)
         return 1
     api.upload_folder(repo_id=repo, repo_type="dataset", folder_path=str(stage),
-                      path_in_repo=target, allow_patterns=[TRAIN, EVAL2],
+                      path_in_repo=target, allow_patterns=[TRAIN, EVAL2, MANIFEST],
                       commit_message="bank %s: %d pilot / %d benchmark cases, no shared family"
                       % (args.name, len(carved["pilot"]), len(carved["benchmark"])))
     print("pushed %s to %s" % (target, repo))
