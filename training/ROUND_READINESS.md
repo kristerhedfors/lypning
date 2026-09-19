@@ -5,20 +5,33 @@ each. `STATUS.md` §10 owns **which** round runs and whether it runs at all; thi
 owns **what is left** for the one being prepared, and nothing here authorises a
 spend. Every number carries the command or run that produced it.
 
+## The bank a round would now read
+
+`banks/v3-20260919` in the private artifact repo, cut from six batches by
+`bank-publish.yml` (run `35439152832`, 2026-09-19) and carved so the two halves
+share no family:
+
+| | cases | families | coverage | control |
+|---|---|---|---|---|
+| `train.jsonl` (pilot) | 8,370 | 47 | 44 | 18 |
+| `eval2.jsonl` (benchmark) | 4,633 | 22 | 22 | 6 |
+
+Priced on that bank by run `35439221438`: at `--steps 300` it exposes
+193,677 / 197,707 / 191,153 supervised tokens at seeds 1111/2222/3333 against
+the 50,000 floor, with 4,840 / 6,755 / 6,335 train cases against the 1,000
+floor, no row over `--max-seq`, and the eos admission passing. Its smallest
+clearing `--steps` is 74.
+
 ## Where we are in one paragraph
 
-The bank is no longer the blocker and the gates are no longer the blocker. A
-re-adapted bank-v3 of 7,042 cases clears `validate_pilot`, `validate_benchmark`
-and the 1,000-train-case floor at all three protocol seeds (CI run
-`35430465717`, 2026-09-19), and it has the headroom bank v2 lacked: `bank-native
---mix-only` reads a macro delta ceiling of 11.00pp and 11.33pp on its two
-batches against a 3.00pp bar, where bank v2's completed base arm left 3.14pp.
-What is left is **structural, not statistical**: the bank cannot yet be carved
-into a pilot and a *disjoint held-out benchmark*, because the construct pool
-capped families at 37 and two banks need ≥18 each. The pool is now 71 families,
-a generation run over it is in flight, and `nt bank-carve` exists to do the
-carve once those families exist. After that: publish, price the token floor,
-and ask the operator.
+**Every preparation is done and the only step left is the operator's.** The
+bank exists, is carved, is published, and is priced; the launcher points at it;
+and the billed submit cannot start until a free job has counted the schedule it
+would bill. What remains unmeasured is the thing a round is for: whether
+training installs the effect. bank v3 has room for one — `bank-native
+--mix-only` read a macro delta ceiling of 11.00pp and 11.33pp on its batches
+against a 3.00pp bar, where bank v2's completed base arm left 3.14pp — but a
+ceiling says an effect *can* exist, never that one will.
 
 ## The ladder to a first real round
 
@@ -29,11 +42,11 @@ and ask the operator.
 | 3 | The bank carries fallback controls | **done** — 1,601 control rows; the pre-fold publisher had discarded every one |
 | 4 | The bank clears the plan-time gates | **done** — run `35430465717`, all three seeds |
 | 5 | The bank can host the effect | **done, with a caveat** — ceiling 11.00/11.33pp vs a 3.00pp bar, but this is `bank_native`'s free proxy on the bank's own programs, an upper bound on movable delta and not a base-model draw |
-| 6 | Enough families for a pilot **and** a disjoint benchmark | **in flight** — pool widened 37 → 71 families; generation running |
+| 6 | Enough families for a pilot **and** a disjoint benchmark | **done** — pool 37 → 71; one run drew all 71 (run `35431441875`: 9,154 candidates, 28,799 calls) |
 | 7 | Carve `banks/v3/{train,eval2}.jsonl`, disjoint by family | **done** — `nt bank-carve`; validated against bank v2's union, which it carves back to its own hand-made 51/18 shape |
-| 8 | Publish to the Hub and point `BANK_PATH` at it | not started — `round02.yml` still reads `banks/v2` |
+| 8 | Publish to the Hub and point `BANK_PATH` at it | **done** — `banks/v3-20260919` pushed (run `35439152832`); `BANK_PATH` repointed |
 | 9 | The exact supervised-token count | **done, and it caught a refusal** — run `35434623069`: `--steps 250` exposes 46,535/45,952/44,940 against the 50,000 floor, so the pilot as configured would have been refused after the weights. `PILOT_STEPS` is now 300 and the billed submit needs a passing count |
-| 10 | Operator authorises the spend | **owed** — h200 ≈ $25/seed; a complete S4 is three seeds (1111, 2222, 3333) |
+| 10 | Operator authorises the spend | **the only step left** — h200 ≈ $25/seed; a complete S4 is three seeds (1111, 2222, 3333) |
 
 Two open items that block nothing above but change how a result reads:
 

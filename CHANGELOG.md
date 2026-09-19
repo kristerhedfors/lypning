@@ -14,6 +14,33 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-19** — A round's bank exists, carved and priced: every preparation but the operator's
+
+- Generation over the widened pool drew **all 71 families** in one run
+  (`35431441875`: 9,154 candidates, 28,799 calls, stratum 0.736 against the
+  preregistered 0.710), and four adapt shards banked 5,961 cases over 64–69
+  families each.
+- `banks/v3-20260919` is cut from six batches and published (run
+  `35439152832`): pilot 8,370 cases over 47 families (44 coverage, 18 control),
+  benchmark 4,633 over 22 (22 coverage, 6 control), sharing no family, the
+  pilot admitting at every protocol seed. `BANK_PATH` points at it; `banks/v2`
+  stays on the Hub and is not it.
+- Priced on that bank (run `35439221438`): `--steps 300` exposes 193,677 /
+  197,707 / 191,153 supervised tokens against the 50,000 floor, 4,840 / 6,755 /
+  6,335 train cases against the 1,000 floor, no row over `--max-seq`. Its
+  examples are ~3.7x longer than bank v2's, so its smallest clearing `--steps`
+  is 74 where bank v2 refused 250.
+- **A family can carry both populations, and refusing that was wrong.**
+  `synth.judge` labels a case by what the engine did, not by the pool its
+  construct came from, so a ceiling-stratum candidate the model happens to
+  write natively becomes a coverage case and its family carries both. Five of
+  bank v3's do; bank v2 had none, which is why reading bank v2 said otherwise.
+  The family is allocated whole and counted toward both populations.
+- Two shell defects in the new publish workflow, both caught before they
+  mattered: a digits-only batch-id rule refused every sharded batch this
+  repository produces, and `[ test ] && assign` is a statement whose exit
+  status is the test's, so under `set -e` a false boolean input ended the step.
+
 **2026-09-19** — The supervised-token floor, counted before it is billed rather than after the weights
 
 - Run `35434623069`, free and tokenizer-only: on the bank the pilot would have
