@@ -53,6 +53,11 @@ def fake_engine(tmp_path):
     return str(path)
 
 
+def with_file(name):
+    """INPUTS with one setup file of that name, as new dicts: INPUTS is shared."""
+    return [dict(spec, files={name: "1 2 3\n"}) for spec in INPUTS]
+
+
 def candidate(programs, *, stratum="rewrite", construct="functools.reduce", inputs=INPUTS,
               task="Read integers from stdin and print their sum; print 0 when there are none at all."):
     return {"task": task, "inputs": inputs, "programs": programs, "stratum": stratum,
@@ -75,7 +80,14 @@ def runner(tmp_path):
     (lambda r: r.update(inputs=INPUTS[:2]), "three inputs"),
     (lambda r: r.update(inputs=INPUTS[:3] + [{"stdout": "x"}]), "input 3"),
     (lambda r: r.update(inputs=INPUTS[:3] + [{"argv": [1]}]), "argv"),
+    (lambda r: r.update(inputs=INPUTS[:3] + [{"files": {"/data/x.txt": "1\n"}}]),
+     "escapes the working directory"),
+    (lambda r: r.update(inputs=INPUTS[:3] + [{"argv": ["a\0b"]}]), "NUL"),
+    (lambda r: r.update(inputs=INPUTS[:3] + [{"files": {"a\0b": "1\n"}}]), "NUL"),
     (lambda r: r.pop("target_construct"), "target_construct"),
+    (lambda r: r.update(inputs=with_file("/data/logs.txt")), "escapes the working directory"),
+    (lambda r: r.update(inputs=with_file("../out")), "escapes the working directory"),
+    (lambda r: r.update(inputs=with_file("solution.py")), "reserved for the program itself"),
 ])
 def test_a_malformed_candidate_names_its_defect(edit, why):
     row = candidate([SUM, SUM2])
@@ -85,6 +97,25 @@ def test_a_malformed_candidate_names_its_defect(edit, why):
 
 def test_a_well_formed_candidate_validates():
     assert synth.validate_candidate(candidate([SUM, SUM2])) is None
+
+
+@pytest.mark.parametrize("spec", [
+    {"files": {"/data/x.txt": "1\n"}},   # materialize: a harness error, which aborts the run
+    {"argv": ["a\0b"]},                  # Popen: a ValueError, which is not caught at all
+    {"files": {"a\0b": "1\n"}},          # mkdir: the same ValueError, one call later
+])
+def test_an_unspawnable_row_costs_one_row_and_not_the_batch(runner, spec):
+    """Every input the sandbox cannot set up is refused before anything runs.
+
+    Both failures used to leave `run` rather than return from it, so a single
+    generated row discarded every candidate judged before it — 2,078 of them in
+    run 35399909232. The batch must survive the row.
+    """
+    bad = candidate([SUM, SUM2], inputs=INPUTS[:3] + [spec],
+                    task="Read integers from stdin and print their sum, or 0 for none.")
+    result = synth.run([bad, candidate([SUM, SUM2])], runner)
+    assert len(result["cases"]) == 1
+    assert result["report"]["tally"]["rejected:malformed"] == 1
 
 
 def test_tests_carry_the_input_keys_and_the_agreed_stdout():
@@ -280,6 +311,22 @@ def test_run_routes_a_whole_batch_and_counts_every_outcome(runner):
     assert report["rules_accepted"] == {"statistics": 1} and report["rules_fired"] == {"statistics": 1}
     assert all(c["synth"]["batch"] == "b1" for c in result["cases"])
     validate_cases(result["cases"])
+
+
+def test_a_file_name_that_escapes_the_workdir_costs_its_row_not_the_batch(runner):
+    """The failure of adapt job 105802008535: one such row aborted 2,078 judged ones.
+
+    `sandbox.materialize` calls an escaping name a HARNESS error, and a harness
+    error is ours and stops everything. It is the model's error, so
+    `validate_candidate` now catches it before the sandbox is ever asked.
+    """
+    rows = batch_rows()
+    rows.insert(0, candidate([SUM, SUM2], inputs=with_file("/data/logs.txt"),
+                             task="Sum the integers named by the file argument, please."))
+    result = synth.run(rows, runner, batch="b1")
+    assert result["report"]["cases"] == 3
+    assert result["report"]["tally"]["rejected:malformed"] == 2
+    assert any("escapes the working directory" in r["why"] for r in result["rejected"])
 
 
 def test_write_outputs_and_render(runner, tmp_path):

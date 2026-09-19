@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from . import bank_native as bank_native_mod
 from . import engines as eng
 from . import headroom as headroom_mod
 from . import sample as sample_mod
@@ -547,7 +548,12 @@ def cmd_synth_adapt(args: argparse.Namespace) -> int:
         print("refusing to overwrite %s: a re-run is a new directory" % args.output,
               file=sys.stderr)
         return 2
+    if args.offset < 0 or args.limit < 0:
+        print("--offset and --limit are counts, not negatives", file=sys.stderr)
+        return 2
     candidates = read_jsonl(args.candidates)
+    total = len(candidates)
+    candidates = candidates[args.offset:]
     if args.limit:
         candidates = candidates[:args.limit]
     if not candidates:
@@ -565,6 +571,8 @@ def cmd_synth_adapt(args: argparse.Namespace) -> int:
         return 1
     synth.write_outputs(result, args.output)
     print(synth.render(result["report"]))
+    print("  slice [%d:%d] of %d candidate(s) in %s"
+          % (args.offset, args.offset + len(candidates), total, args.candidates))
     print("  -> %s" % args.output)
     for row in result["witnesses"][:5]:
         print("  witness: %s" % row["why"], file=sys.stderr)
@@ -2287,6 +2295,64 @@ def cmd_headroom(args: argparse.Namespace) -> int:
     return 0 if result["can_fire"] else 1
 
 
+def cmd_bank_native(args: argparse.Namespace) -> int:
+    """What fraction of a bank's own programs the pinned engine already runs.
+
+    `EVAL2.md` section 9's falsifier before a draw is paid for: a bank whose
+    programs the engine already serves cannot host a lift in the rate of
+    serving them. Free, local, and read-only — it executes the bank's programs
+    under the engine and nothing else.
+    """
+    from .synth import Runner
+    from .training_types import VerificationBlocked
+    path = Path(args.cases)
+    # An absent file read as an empty bank would print a zeros table at exit 0,
+    # the same read-of-nothing `probe-vector` and `headroom` each had to close.
+    if not path.is_file():
+        print("not a file: %s" % path, file=sys.stderr)
+        return 2
+    rows = read_jsonl(path)
+    if not rows:
+        print("bank-native: no rows in %s - nothing to measure" % path, file=sys.stderr)
+        return 1
+    if args.mix_only:
+        # Free: reads the labels `pipeline.synth` already wrote and executes
+        # nothing, so it needs no engine and answers before a draw is booked.
+        mix = bank_native_mod.first_draft_mix(rows)
+        print(json.dumps(mix, indent=2, sort_keys=True) if args.json
+              else bank_native_mod.render_mix(mix, mde=args.mde, limit=args.limit))
+        # A bank nobody can read this way is not a bank with no room.
+        if mix["macro_delta_ceiling"] is None:
+            return 1
+        return 0 if mix["macro_delta_ceiling"] > args.mde else 1
+    engine = args.engine or eng.engine_path("lypning-l")
+    if not engine or not Path(engine).is_file():
+        print("bank-native: no lypning-l engine (pass --engine, or set LYPNING_HOME "
+              "and run `lypning build --rust`)", file=sys.stderr)
+        return 2
+    runner = Runner(engine, timeout_s=args.timeout)
+    try:
+        result = bank_native_mod.measure(rows, runner.engine_verdict, which=args.program)
+    except (OSError, ValueError, VerificationBlocked) as exc:
+        print("bank-native: %s" % exc, file=sys.stderr)
+        return 2
+    # legality.py: "the engine is part of the number ... quoted with its
+    # fingerprint or it is not quoted". `binary_identity` names the bytes.
+    result["engine"] = eng.binary_identity(engine)
+    if args.json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        print(bank_native_mod.render(result, details=args.details))
+    # A read that measured nothing is not a clean read: `--program original`
+    # over a bank that carries no refused first drafts measures zero rows, and
+    # a zeros table over it reads as "every draft was refused".
+    if not result["measured"]:
+        print("bank-native: no row carried a %s program" % args.program, file=sys.stderr)
+        return 1
+    # Invariant 1: a mismatch is a bug. Never exit 0 having seen one.
+    return 1 if result["witness_verdicts"] else 0
+
+
 def cmd_show(args: argparse.Namespace) -> int:
     """Inspect what actually happened on a case: the program and why it failed."""
     run_dir = RUNS / args.run_id
@@ -2459,6 +2525,13 @@ def build_parser() -> argparse.ArgumentParser:
                      help="child address-space cap; 0 explicitly disables it (macOS only)")
     sad.add_argument("--seed", type=int, default=1111, help="hash seed of the winner's second run")
     sad.add_argument("--limit", type=int, default=0, help="judge only the first N candidates; 0 keeps all")
+    # A shard is `--offset`/`--limit`, not a pre-split file. Every shard job
+    # downloads the whole candidates artifact anyway — `download-artifact` has
+    # no partial fetch — so splitting the file first buys an extra job and a
+    # second artifact and nothing else, while an offset is one integer that
+    # composes with the limit already here. Each shard writes its own batch.
+    sad.add_argument("--offset", type=int, default=0,
+                     help="skip the first N candidates; with --limit this is one shard of a batch")
     sad.set_defaults(fn=cmd_synth_adapt)
 
     v = sub.add_parser("verify", help="check the held-out split against its lock")
@@ -2719,6 +2792,27 @@ def build_parser() -> argparse.ArgumentParser:
                          % (headroom_mod.NOISE_FLOOR, headroom_mod.NOISE_PROVENANCE))
     hr.add_argument("--json", action="store_true", help="machine-readable full table")
     hr.set_defaults(fn=cmd_headroom)
+
+    bn = sub.add_parser("bank-native",
+                        help="what fraction of a bank's own programs the engine already serves")
+    bn.add_argument("cases", help="a schema-3 JSONL bank (cases.jsonl / train.jsonl)")
+    bn.add_argument("--engine", help="lypning-l binary (default: $LYPNING_HOME/bin/lypning-l)")
+    bn.add_argument("--program", choices=bank_native_mod.PROGRAMS, default="reference",
+                    help="which program to judge: the shipped `reference`, or the refused "
+                         "first draft under synth.original (default: reference)")
+    bn.add_argument("--timeout", type=float, default=10.0, help="per-run wall clock, seconds")
+    bn.add_argument("--details", action="store_true",
+                    help="LOCAL ONLY: also print refusal details, which can echo an "
+                         "identifier from the program that provoked them")
+    bn.add_argument("--mix-only", action="store_true",
+                    help="free: the per-family first-draft mix and the macro delta ceiling "
+                         "it implies, off the labels, executing nothing and needing no engine")
+    bn.add_argument("--mde", type=float, default=headroom_mod.PREREGISTERED_MDE,
+                    help="the bar --mix-only compares its ceiling against (PREREGISTRATION.md "
+                         "section 7b, default %g)" % headroom_mod.PREREGISTERED_MDE)
+    bn.add_argument("--limit", type=int, default=0, help="--mix-only: families to print (0 = all)")
+    bn.add_argument("--json", action="store_true", help="machine-readable full table")
+    bn.set_defaults(fn=cmd_bank_native)
 
     sh = sub.add_parser("show", help="print the programs a run produced")
     sh.add_argument("run_id"); sh.add_argument("--case"); sh.add_argument("--limit", type=int, default=5)

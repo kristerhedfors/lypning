@@ -67,7 +67,7 @@ from . import engines as eng
 from .jsonio import digest, write_json, write_jsonl
 from .repair_rules import RULES
 from .sandbox import RunResult, run_python
-from .training_data import validate_cases
+from .training_data import unsafe_input_path, validate_cases
 from .training_types import TrainingError, VerificationBlocked
 
 #: The two populations a candidate is generated toward. ``rewrite`` means a
@@ -123,6 +123,30 @@ def validate_candidate(row: Any) -> Optional[str]:
         if not isinstance(files, dict) or any(
                 not isinstance(k, str) or not isinstance(v, str) for k, v in files.items()):
             return "input %d files must map names to text" % i
+        # THE ROW THAT COSTS THE BATCH. `sandbox.materialize` reports a file
+        # name that leaves the working directory as a *harness* error, and the
+        # harness/program split makes a harness error abort the run: one
+        # candidate asking for `/data/logs.txt` threw away 2,078 already-judged
+        # candidates in run 35399909232 (adapt job 105802008535, 2026-09-19).
+        # It is the model's error, not ours, so it is caught here — before
+        # anything is executed — and costs one rejected row. The rule is
+        # `training_data.unsafe_input_path`, the same one the schema-3
+        # validator applies afterwards; checking it early also spares the
+        # execution of a candidate that could never be admitted.
+        for name in files:
+            bad = unsafe_input_path(name, files)
+            if bad:
+                return "input %d file %r %s" % (i, name, bad)
+        # The same loss, one layer lower. A NUL inside an argv element or a
+        # file name never reaches a verdict at all: `subprocess.Popen` and
+        # `Path.mkdir` raise `ValueError`, which is neither a harness error nor
+        # a program result, so it leaves `run` as a traceback and takes the
+        # batch with it. Three of run 35340137976's 2,784 candidates carry one.
+        # Content may hold a NUL -- bytes on a pipe and bytes in a file both
+        # arrive intact, and `validate_cases` admits them.
+        for value in list(argv) + list(files):
+            if "\0" in value:
+                return "input %d argv and file names cannot contain NUL" % i
     return None
 
 
