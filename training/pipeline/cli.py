@@ -2295,6 +2295,44 @@ def cmd_headroom(args: argparse.Namespace) -> int:
     return 0 if result["can_fire"] else 1
 
 
+def cmd_bank_carve(args: argparse.Namespace) -> int:
+    """Carve a bank into a pilot and a held-out benchmark sharing no family.
+
+    Writes nothing unless both banks are admissible — the pilot at every
+    protocol seed, because a round is three seeds. A carve that does not
+    validate is a finding about the bank, and writing it anyway would move the
+    failure onto a metered job.
+    """
+    from . import bank_carve
+    from .jsonio import read_jsonl, write_jsonl
+    from .training_types import TrainingError
+
+    path = Path(args.bank)
+    if not path.is_file():
+        print("not a file: %s" % path, file=sys.stderr)
+        return 2
+    cases = list(read_jsonl(path))
+    if not cases:
+        print("no cases in %s" % path, file=sys.stderr)
+        return 2
+    try:
+        result = bank_carve.carve(cases, seed=args.seed,
+                                  benchmark_families=args.benchmark_families)
+    except TrainingError as exc:
+        print("bank-carve: %s" % exc, file=sys.stderr)
+        return 1
+    print(bank_carve.render(result))
+    if result["problems"]:
+        return 1
+    if args.output:
+        out = Path(args.output)
+        out.mkdir(parents=True, exist_ok=True)
+        write_jsonl(out / "train.jsonl", result["pilot"])
+        write_jsonl(out / "eval2.jsonl", result["benchmark"])
+        print("  -> %s/train.jsonl, %s/eval2.jsonl" % (out, out))
+    return 0
+
+
 def cmd_stdlib_sft(args: argparse.Namespace) -> int:
     """The stdlib corpus as a separate SFT arm, with the contaminating units held back.
 
@@ -3122,6 +3160,16 @@ def build_parser() -> argparse.ArgumentParser:
                          % (headroom_mod.NOISE_FLOOR, headroom_mod.NOISE_PROVENANCE))
     hr.add_argument("--json", action="store_true", help="machine-readable full table")
     hr.set_defaults(fn=cmd_headroom)
+
+    bc = sub.add_parser("bank-carve",
+                        help="split a bank into a pilot and a held-out benchmark sharing no family")
+    bc.add_argument("bank", help="a schema-3 JSONL bank (the union of every batch)")
+    bc.add_argument("--output", help="directory to write train.jsonl and eval2.jsonl into")
+    bc.add_argument("--seed", type=int, default=1111, help="which families the benchmark takes")
+    bc.add_argument("--benchmark-families", type=int,
+                    help="total families for the benchmark (default: the bank's own ratio, "
+                         "clamped to the floors both banks have)")
+    bc.set_defaults(fn=cmd_bank_carve)
 
     sl = sub.add_parser("stdlib-sft",
                         help="the stdlib corpus as a separate, measurable SFT arm")

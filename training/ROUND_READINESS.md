@@ -14,10 +14,11 @@ and the 1,000-train-case floor at all three protocol seeds (CI run
 --mix-only` reads a macro delta ceiling of 11.00pp and 11.33pp on its two
 batches against a 3.00pp bar, where bank v2's completed base arm left 3.14pp.
 What is left is **structural, not statistical**: the bank cannot yet be carved
-into a pilot and a *disjoint held-out benchmark*, because until 2026-09-19 the
-construct pool capped families at 37 and two banks need ≥18 each. The pool is
-now 71 families and a generation run over it is in flight. After that: publish,
-carve, price the token floor, and ask the operator.
+into a pilot and a *disjoint held-out benchmark*, because the construct pool
+capped families at 37 and two banks need ≥18 each. The pool is now 71 families,
+a generation run over it is in flight, and `nt bank-carve` exists to do the
+carve once those families exist. After that: publish, price the token floor,
+and ask the operator.
 
 ## The ladder to a first real round
 
@@ -29,7 +30,7 @@ carve, price the token floor, and ask the operator.
 | 4 | The bank clears the plan-time gates | **done** — run `35430465717`, all three seeds |
 | 5 | The bank can host the effect | **done, with a caveat** — ceiling 11.00/11.33pp vs a 3.00pp bar, but this is `bank_native`'s free proxy on the bank's own programs, an upper bound on movable delta and not a base-model draw |
 | 6 | Enough families for a pilot **and** a disjoint benchmark | **in flight** — pool widened 37 → 71 families; generation running |
-| 7 | Carve `banks/v3/{train,eval2}.jsonl`, disjoint by family | **not started, no code** — bank v2's split was done by hand |
+| 7 | Carve `banks/v3/{train,eval2}.jsonl`, disjoint by family | **done** — `nt bank-carve`; validated against bank v2's union, which it carves back to its own hand-made 51/18 shape |
 | 8 | Publish to the Hub and point `BANK_PATH` at it | not started — `round02.yml` still reads `banks/v2` |
 | 9 | The exact supervised-token count | **runnable, never run** — `token-floor.yml`; the ≥50,000 floor is refused inside `run()`, on a metered job, after the weights |
 | 10 | Operator authorises the spend | **owed** — h200 ≈ $25/seed; a complete S4 is three seeds (1111, 2222, 3333) |
@@ -37,7 +38,9 @@ carve, price the token floor, and ask the operator.
 Two open items that block nothing above but change how a result reads:
 
 - **Dev and test hold 4 families each** against 29 in train (run `35430465717`).
-  No gate checks this and a family-clustered bootstrap will feel it.
+  No gate checks this and a family-clustered bootstrap will feel it. The carve
+  makes it worse before it makes it better: it takes families away from the
+  pilot for the benchmark, so the widened pool is what pays for both.
 - **One engine mismatch is filed and unfixed**: `sys.stdin.read(n)` ignores its
   size argument and returns the whole remaining stream (`readline()` is
   correct), in `data/engine-mismatches.jsonl`. Invariant 1 makes it interpreter
@@ -85,6 +88,26 @@ to be reported as contaminated.
 SFT arms — one without these rows, one with. The difference is what the corpus
 bought. There is no point running only the mixed arm, because nothing would be
 left to compare it to.
+
+## The carve, and what it refuses
+
+`nt bank-carve <bank> --output <dir>` writes `train.jsonl` and `eval2.jsonl`
+that share no family, and writes **nothing** unless both are admissible: the
+pilot must pass `validate_pilot` after `split_cases` at every protocol seed,
+not the one the caller passed, because a bank admissible at 1111 and not 2222
+fails a three-seed round halfway through.
+
+The floors it enforces are arithmetic, and it reports them rather than failing
+later: ≥18 families per bank (`validate_bank`), and **≥6 control families in
+the pilot**, because `split_cases` hands each split
+`max(2 if groups >= 6 else 1, groups // 6)` families of a population and
+`validate_pilot` wants two per split. With the benchmark's own ≥2, that is 8
+control families minimum. bank v3 had 10 before the pool widened, which is why
+this was the step that could not be taken.
+
+Checked against the one bank whose carve is known: bank v2's two banks were
+separated by hand into 51 and 18 families, and re-uniting and re-carving them
+reproduces 51/18.
 
 ## What is deliberately not claimed here
 

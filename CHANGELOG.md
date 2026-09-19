@@ -14,6 +14,31 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-19** — Carve a bank into a pilot and a benchmark that share no family
+
+- `split_cases` divides ONE bank into train/dev/test, and every split it makes
+  is trained against or selected on. A round also needs a bank nothing in
+  training has seen — the benchmark the endpoint is read on (`training/EVAL2.md`
+  §4). Only the first operation existed: bank v2's two banks were separated by
+  hand, which is why nothing could re-make the decision and why bank v3 had none.
+- `pipeline.bank_carve` / `nt bank-carve` allocates families per population —
+  every family carries exactly one, measured over bank v2 on 2026-09-19 — and
+  writes nothing unless both banks are admissible. The pilot must pass
+  `validate_pilot` at EVERY protocol seed, not the one the caller passed: a bank
+  admissible at 1111 and not 2222 fails a three-seed round halfway through.
+- The floors are reported before they bite: ≥18 families per bank, and ≥6
+  control families in the pilot, because `split_cases` hands each split
+  `max(2 if groups >= 6 else 1, groups // 6)` of a population and
+  `validate_pilot` wants two per split. With the benchmark's ≥2 that is 8
+  control families minimum, against the 10 bank v3 had before the pool widened.
+- Checked against the only carve that has an oracle: bank v2's hand-made 51/18
+  family split, which re-uniting and re-carving reproduces.
+- Two defects in this session's own test fixture, both worth knowing because
+  they are properties of `split_cases` rather than of the test. Reusing one
+  `reference` across families merges them, because the union is by
+  source/family/SOLUTION; and making it unique with a comment does not, because
+  `solution_fingerprint` hashes the AST dump and comments are not in it.
+
 **2026-09-19** — The stdlib corpus becomes a measurable arm, and what is left before a GPU gets a document
 
 - A stdlib unit **cannot** be a bank case, and this is a property of the
