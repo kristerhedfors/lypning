@@ -272,3 +272,46 @@ def test_cli_writes_the_four_outputs_refuses_to_overwrite_and_exits_1_when_empty
     assert cli.main(argv[:2] + [str(empty)] + argv[3:-1] + [str(tmp_path / "bank2")]) == 1
     assert cli.main(argv[:-1] + [str(tmp_path / "bank3"), "--engine", str(tmp_path / "nope")]) == 1
     assert "no lypning-l" in capsys.readouterr().err
+
+
+# --- the input-path rule has one home -----------------------------------------
+
+
+def shaped(files):
+    """Three structurally valid tests that vary their stdin and carry `files`."""
+    return [{"argv": [], "stdin": s, "files": dict(files), "stdout": "x\n"}
+            for s in ("a\n", "b\n", "c\n")]
+
+
+def test_an_input_file_that_collides_with_a_directory_is_named_here(tmp_path):
+    """The clause the local copy of the rule did not have.
+
+    `training_data.validate_cases` refuses `{"d": ..., "d/x": ...}` — one name
+    is a file and the same name is a directory, so the sandbox can materialise
+    at most one of them. The copy in this module predated that clause, so such
+    a proposal passed the cheap check and was charged to `invalid-case` after
+    the reference had been executed twice and the engine consulted. Charging
+    the FIRST rule that fails is this module's contract (see the module
+    docstring's ordered table), and the first rule that fails is this one.
+    """
+    why = B.check_tests_shape(shaped({"d": "x\n", "d/x": "y\n"}))
+    assert why and "collides" in why
+
+
+def test_the_escaping_names_stay_refused_through_the_shared_rule():
+    for name in ("/etc/passwd", "../x", "a\\b", "./x", ".", "solution.py", "solution.py/x"):
+        assert B.check_tests_shape(shaped({name: "x\n"})), name
+    assert B.check_tests_shape(shaped({"data/in.txt": "x\n"})) is None
+
+
+def test_this_module_holds_no_second_copy_of_the_input_path_rule():
+    """One home, asserted rather than claimed: `training_data.unsafe_input_path`.
+
+    Two earlier copies of this predicate drifted apart — the one here never
+    grew the directory-collision clause — and the comment in `synth.py` calls
+    the rule single-homed. A grep is the only thing that keeps that true.
+    """
+    import inspect
+    source = inspect.getsource(B)
+    assert "unsafe_input_path" in source
+    assert "is_absolute()" not in source

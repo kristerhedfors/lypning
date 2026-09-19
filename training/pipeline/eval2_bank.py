@@ -47,14 +47,14 @@ from __future__ import annotations
 
 import hashlib
 import re
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from . import engines as eng
 from .data_loop import REVIEW_FIELDS
 from .jsonio import read_json, read_jsonl, sha256_of, write_json, write_jsonl
 from .sandbox import RunResult, run_python
-from .training_data import validate_cases
+from .training_data import unsafe_input_path, validate_cases
 from .training_types import TrainingError, VerificationBlocked
 
 #: The day the proposals were authored; part of every case's provenance.
@@ -172,11 +172,17 @@ def check_tests_shape(tests: Any) -> Optional[str]:
         for name, content in files.items():
             if not isinstance(name, str) or not name or not isinstance(content, str):
                 return "test %d file %r must map a path to text" % (i, name)
-            path = PurePosixPath(name)
-            if (path.is_absolute() or ".." in path.parts or "\\" in name
-                    or str(path) != name or name in (".", "solution.py")
-                    or name.startswith("solution.py/")):
-                return "test %d unsafe or reserved input file path %r" % (i, name)
+            # The rule itself is `training_data.unsafe_input_path` and is not
+            # restated here. The copy that used to stand in its place never
+            # grew that function's directory-collision clause, so a proposal
+            # naming both `d` and `d/x` passed this cheap check and was charged
+            # to `invalid-case` after two executions of the reference and an
+            # engine consultation -- which is the wrong rule and the wrong
+            # price. This module still owns the WORDING, because a dropped
+            # proposal is charged to the first rule it fails by name.
+            bad = unsafe_input_path(name, files)
+            if bad:
+                return "test %d input file path %r %s" % (i, name, bad)
         inputs.add(_input_key(test))
     if len(inputs) < 3:
         return "tests must vary inputs: %d distinct of %d" % (len(inputs), len(tests))

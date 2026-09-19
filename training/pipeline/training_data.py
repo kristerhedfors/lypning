@@ -30,12 +30,16 @@ def _text(value, name, *, nonempty=False, nul=False):
 def unsafe_input_path(name, files=()):
     """Why this test input file name may not be written, or None.
 
-    One home for the rule, because two callers enforce it at different moments
-    and a copy would drift: :func:`validate_cases` refuses a case that carries
-    such a name, and `synth.validate_candidate` refuses a *generated* candidate
-    before anything runs it. The second is the load-bearing one — `sandbox
-    .materialize` reports an escaping name as a harness error, and a harness
-    error aborts the whole batch.
+    One home for the rule, because three callers enforce it at different
+    moments and a copy does drift — this function's directory-collision clause
+    is the clause the copy in `eval2_bank.check_tests_shape` never grew.
+    :func:`validate_cases` refuses a case that carries such a name,
+    `synth.validate_candidate` refuses a *generated* candidate before anything
+    runs it, and `eval2_bank.check_tests_shape` refuses an authored proposal
+    before the reference is executed. The second is the load-bearing one —
+    `sandbox.materialize` reports an escaping name as a harness error, and a
+    harness error aborts the whole batch. Callers own the wording, because each
+    charges the failure to a differently named rule; none owns the predicate.
     """
     path = PurePosixPath(name)
     if path.is_absolute() or ".." in path.parts:
