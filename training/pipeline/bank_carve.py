@@ -54,11 +54,20 @@ COVERAGE = "coverage"
 CONTROL = "fallback-control"
 
 
-def families_by_population(cases: Sequence[Dict[str, Any]]) -> Dict[str, List[str]]:
-    """Family names per population, refusing a family that carries both.
+def family_populations(cases: Sequence[Dict[str, Any]]) -> Dict[str, "frozenset[str]"]:
+    """The populations each family carries, which is not always one.
 
-    A mixed family cannot be allocated: sending it to one bank would send some
-    of its population there and the rest nowhere.
+    A ceiling-stratum construct produces a control case when the engine refuses
+    the program, and a COVERAGE case when the model happens to write one the
+    engine serves — `synth.judge` labels by what the engine did, not by which
+    pool the construct came from. So a family can carry both, and measured
+    2026-09-19 five of bank v3's do (`collections-namedtuple`,
+    `dataclasses-dataclass`, `base64-b32encode` among them). bank v2 had none,
+    which is why an earlier reading of it said a family is single-population.
+
+    A mixed family is still allocated whole — it is one construct and its tasks
+    are near-twins — it simply counts toward both populations in whichever bank
+    takes it.
     """
     seen: Dict[str, set] = {}
     for case in cases:
@@ -66,14 +75,7 @@ def families_by_population(cases: Sequence[Dict[str, Any]]) -> Dict[str, List[st
         if not family or not population:
             raise TrainingError("every case needs a family and a population to be carved")
         seen.setdefault(family, set()).add(population)
-    mixed = sorted(f for f, pops in seen.items() if len(pops) > 1)
-    if mixed:
-        raise TrainingError("families carry more than one population and cannot be "
-                            "allocated: " + ", ".join(mixed[:5]))
-    out: Dict[str, List[str]] = {}
-    for family, pops in seen.items():
-        out.setdefault(pops.pop(), []).append(family)
-    return {k: sorted(v) for k, v in out.items()}
+    return {family: frozenset(pops) for family, pops in seen.items()}
 
 
 def _order(families: Sequence[str], seed: int) -> List[str]:
@@ -89,11 +91,15 @@ def plan(cases: Sequence[Dict[str, Any]], *, seed: int = 1111,
     bank's own ratio so neither bank is starved of controls. Default: enough for
     the benchmark to clear its floors with the pilot still clearing its own.
     """
-    per = families_by_population(cases)
-    coverage, control = per.get(COVERAGE, []), per.get(CONTROL, [])
+    per = family_populations(cases)
+    # A family counts toward every population it carries, so a mixed one helps
+    # both banks meet both floors.
+    coverage = sorted(f for f, pops in per.items() if COVERAGE in pops)
+    control = sorted(f for f, pops in per.items() if CONTROL in pops)
     if not coverage or not control:
         raise TrainingError("a carve needs both populations; this bank has only %s"
-                            % (", ".join(sorted(per)) or "nothing"))
+                            % (", ".join(sorted({p for pops in per.values() for p in pops}))
+                               or "nothing"))
 
     # The control families decide the carve, because both banks have a floor on
     # them and there are always far fewer than coverage families.
@@ -117,14 +123,22 @@ def plan(cases: Sequence[Dict[str, Any]], *, seed: int = 1111,
     want_coverage = min(want_coverage, len(coverage) - 1)
 
     bench_control = _order(control, seed)[:want_control]
-    bench_coverage = _order(coverage, seed)[:want_coverage]
-    benchmark = set(bench_control) | set(bench_coverage)
-    pilot = (set(coverage) | set(control)) - benchmark
+    # A control family may also carry coverage, so the coverage draw skips what
+    # the control draw already took rather than counting it twice.
+    taken = set(bench_control)
+    bench_coverage = [f for f in _order(coverage, seed) if f not in taken][:want_coverage]
+    benchmark = taken | set(bench_coverage)
+    every = set(per)
+    pilot = every - benchmark
+
+    def tally(families):
+        return {"coverage": sum(1 for f in families if COVERAGE in per[f]),
+                "control": sum(1 for f in families if CONTROL in per[f])}
+
     return {"benchmark": sorted(benchmark), "pilot": sorted(pilot), "seed": seed,
-            "counts": {"coverage": len(coverage), "control": len(control)},
-            "benchmark_counts": {"coverage": len(bench_coverage), "control": len(bench_control)},
-            "pilot_counts": {"coverage": len(coverage) - len(bench_coverage),
-                             "control": len(control) - len(bench_control)}}
+            "counts": {"coverage": len(coverage), "control": len(control),
+                       "mixed": sum(1 for pops in per.values() if len(pops) > 1)},
+            "benchmark_counts": tally(benchmark), "pilot_counts": tally(pilot)}
 
 
 def _admits(cases: List[Dict[str, Any]], *, purpose: str) -> List[str]:

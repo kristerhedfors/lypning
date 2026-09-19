@@ -102,13 +102,21 @@ def test_a_bank_with_one_population_is_refused_rather_than_carved_into_a_useless
     assert "needs both populations" in str(exc.value)
 
 
-def test_a_family_carrying_two_populations_is_refused_by_name():
-    """It cannot be allocated: half its population would go nowhere."""
+def test_a_family_carrying_two_populations_is_allocated_whole_and_counted_twice():
+    """bank v3 has five. A ceiling construct the model writes natively is judged
+    `native` by `synth.judge`, which labels by what the engine did rather than
+    by the pool the construct came from, so its family carries both. It is still
+    one construct with near-twin tasks, so it moves as a unit."""
     cases = bank()
     cases.append(case("cov-00", "fallback-control", 99))
-    with pytest.raises(TrainingError) as exc:
-        bank_carve.carve(cases)
-    assert "more than one population" in str(exc.value) and "cov-00" in str(exc.value)
+    result = bank_carve.carve(cases)
+    assert result["problems"] == []
+    assert result["plan"]["counts"]["mixed"] == 1
+    side = "pilot" if "cov-00" in result["plan"]["pilot"] else "benchmark"
+    assert {c["population"] for c in result[side] if c["family"] == "cov-00"} == {
+        "coverage", "fallback-control"}, "both of its populations go with it"
+    other = "benchmark" if side == "pilot" else "pilot"
+    assert not any(c["family"] == "cov-00" for c in result[other])
 
 
 def test_a_bank_too_small_for_two_banks_reports_problems_and_is_not_written():
