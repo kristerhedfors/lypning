@@ -106,10 +106,31 @@ def main() -> int:
                           "report": report})
         merged.extend(rows)
 
+    # Batches are immutable and were generated at different times, and the
+    # dedup seed a generation run reads is only as complete as what earlier
+    # publishers uploaded: the by-filename publisher never uploaded ceiling or
+    # unrepaired rows, so a later run could re-propose their tasks and a
+    # re-adapt then banks the same case twice. `validate_cases` refuses a
+    # duplicate case id or prompt, so the union is deduplicated here, once, in
+    # batch order, and the count is printed rather than the rows.
+    seen_ids, seen_tasks, unique, dropped = set(), set(), [], 0
+    for r in merged:
+        cid, task = r.get("case_id"), r.get("task")
+        if (cid and cid in seen_ids) or (task and task in seen_tasks):
+            dropped += 1
+            continue
+        if cid:
+            seen_ids.add(cid)
+        if task:
+            seen_tasks.add(task)
+        unique.append(r)
+    merged = unique
+
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in merged),
                            encoding="utf-8")
     print(json.dumps({"repo": repo, "batches": per_batch, "merged_rows": len(merged),
+                      "duplicates_dropped": dropped,
                       "output": str(args.output)}, indent=2, sort_keys=True))
     # A row with no family cannot be placed in EVAL2.md section 4's unit, and a
     # row with no kind cannot be read for the first-draft mix. Both are the
