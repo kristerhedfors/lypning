@@ -131,10 +131,21 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python .github/scripts/round02_bank.py
 
+      # Only meaningful for the committed bank, which is the one in the
+      # checkout. A bank cut by `bank-publish.yml` is guaranteed disjoint at
+      # carve time -- `bank_carve.carve` asserts no family reaches both halves
+      # and refuses to write otherwise -- and checking bank v2 while the round
+      # reads another bank is a guard that passes about the wrong thing.
       - name: The benchmark must not overlap the training bank
         run: |
-          PYTHONPATH=src:training python -m pipeline.cli eval2-leaks \
-            training/data/bank_v2/eval2.jsonl training/data/bank_v2/train.jsonl
+          set -euo pipefail
+          if [ "${BANK_PATH}" = "banks/v2" ]; then
+            PYTHONPATH=src:training python -m pipeline.cli eval2-leaks \
+              training/data/bank_v2/eval2.jsonl training/data/bank_v2/train.jsonl
+          else
+            echo "BANK_PATH is ${BANK_PATH}: a carved bank, disjoint by construction"
+            echo "(pipeline.bank_carve refuses to write two banks that share a family)"
+          fi
 
       # Free: prints the plan and the hourly price, submits nothing. Every run
       # of this branch therefore states what a submit would cost.

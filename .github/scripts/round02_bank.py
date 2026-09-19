@@ -20,13 +20,39 @@ from huggingface_hub import HfApi
 BANK = Path("training/data/bank_v2")
 REQUIRED = ("train.jsonl", "eval2.jsonl")
 
+#: The ONE destination this script may write. It copies the committed bank, so
+#: it may only publish the path that names the committed bank.
+#:
+#: It used to upload `BANK` to whatever `BANK_PATH` said. While those were the
+#: same thing that was an idempotent re-publish; the moment `BANK_PATH` was
+#: repointed at a bank cut from the batches by `bank-publish.yml`, bootstrap
+#: overwrote that bank with this one — and the round then trained on bank v2
+#: under bank v3's name, which cost a five-hour H200 job on 2026-09-19 and read
+#: as a result until the numbers came back byte-identical to an older arm.
+#:
+#: A bank derived from the batches has no business being written from the
+#: checkout. If `BANK_PATH` names anything else, that bank was published by
+#: something else and this must not touch it.
+OWNED_PATH = "banks/" + BANK.name.replace("bank_", "")
+
 
 def main() -> int:
+    # Before the token is read and before anything is asked of the Hub: having
+    # nothing to do is not a reason to authenticate.
+    bank_path = os.environ.get("BANK_PATH", OWNED_PATH).strip("/")
+    if bank_path != OWNED_PATH:
+        # Not an error: a round on a carved bank is the normal case now, and
+        # this step simply has nothing to do. Saying so beats a silent skip,
+        # because the step's name promises a publish.
+        print("BANK_PATH is %s, which this script does not own (it publishes %s from %s). "
+              "A bank cut from the batches is published by bank-publish.yml; leaving it "
+              "alone." % (bank_path, OWNED_PATH, BANK))
+        return 0
+
     token = os.environ["HF_TOKEN"]
     api = HfApi(token=token)
     owner = api.whoami()["name"]
     repo_id = "%s/%s" % (owner, os.environ.get("WORK_REPO_NAME", "lypning-round02-artifacts"))
-    bank_path = os.environ.get("BANK_PATH", "banks/v2").strip("/")
 
     for name in REQUIRED:
         p = BANK / name
