@@ -14,6 +14,37 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-19** — The stdlib corpus becomes a measurable arm, and what is left before a GPU gets a document
+
+- A stdlib unit **cannot** be a bank case, and this is a property of the
+  validator rather than a preference: `validate_cases` requires three
+  independently specified tests whose outputs differ, and a unit is a
+  self-contained program with no stdin, no argv and one fixed stdout.
+  `pipeline.stdlib_sft` therefore emits supervised rows, never cases, so they
+  never reach a split or a benchmark. `nt stdlib-sft` is the command.
+- The corpus overlaps the bank's own surface almost completely: 14 of the 15
+  modules it fills are also in the construct pool (measured 2026-09-19).
+  Against a realistic bank-v3 family list, **19 of 34 units are contaminating**
+  and are held back by name, leaving 15 rows over 9 modules. Mixing a
+  `textwrap.wrap` unit into a round whose benchmark holds a `textwrap` family
+  is teaching toward the test; `--allow-overlap` keeps them and says the
+  result must be read as contaminated.
+- The overlap gate could not fire when it was written. A held-out token arrives
+  as a capability (`textwrap`), a dotted surface (`textwrap.fill`) or a
+  `synth.family_of` family, which hyphenates (`textwrap-fill`); the reduction
+  split on `.` only, so no family matched and the gate reported a clean bank
+  while every unit overlapped it. `test_stdlib_sft.py` pins all three spellings.
+- Three units fill builtins (`dict.fromkeys`, `str.center`, `str.translate`)
+  and carry no module, so the prompt no longer tells a model not to import
+  something that has no import.
+- The corpus is **deliberately not in the first round**. Running it mixed and
+  nothing else would say what the round scored and not what the corpus bought;
+  the round runs without it first so an arm is left to compare against.
+- `training/ROUND_READINESS.md` is what is left before a GPU is booked, per
+  step, with state: the bank and the gates are no longer the blocker, the
+  remaining work is the pilot/benchmark carve, the publish, the token floor and
+  the operator's approval. `training/STATUS.md` §10 still owns which round runs.
+
 **2026-09-19** — The construct pool, not the row count, was the gate on a real round
 
 - A pilot bank and a disjoint eval-2 benchmark bank each need ≥18 independent

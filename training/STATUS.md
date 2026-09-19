@@ -420,7 +420,12 @@ answer it later received.
 
 **This is the one home for what runs next**, added 2026-09-16 as step 8 of
 `ASSESSMENT.md` §6. Every other ordering in this tree is either history or
-mechanism, and each says which it is:
+mechanism, and each says which it is. One document was added beside it on
+2026-09-19: [`ROUND_READINESS.md`](ROUND_READINESS.md) owns **what is left**
+before a GPU is booked for the round being prepared — the carve, the publish,
+the token floor, the operator's approval — and it owns the stdlib corpus's
+status as a held-back arm. It does not decide which round runs or whether one
+runs at all; this section still does.
 
 | document | what it still owns | what it no longer says |
 |---|---|---|

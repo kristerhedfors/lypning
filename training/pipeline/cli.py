@@ -2295,6 +2295,47 @@ def cmd_headroom(args: argparse.Namespace) -> int:
     return 0 if result["can_fire"] else 1
 
 
+def cmd_stdlib_sft(args: argparse.Namespace) -> int:
+    """The stdlib corpus as a separate SFT arm, with the contaminating units held back.
+
+    A unit cannot be a bank case — `validate_cases` needs three discriminating
+    tests and a unit has one fixed stdout — so this writes supervised rows
+    instead, to be mixed into an SFT stage as an arm that a matched unmixed run
+    is compared against. Nothing here trains, and nothing here is a benchmark.
+    """
+    from . import stdlib_sft
+    from .jsonio import read_jsonl, write_jsonl
+    from .training_types import TrainingError
+
+    units_path = Path(args.units)
+    if not units_path.is_file():
+        print("not a file: %s" % units_path, file=sys.stderr)
+        return 2
+    units = list(read_jsonl(units_path))
+    held_out: List[str] = list(args.held_out or [])
+    if args.held_out_bank:
+        bank = Path(args.held_out_bank)
+        if not bank.is_file():
+            print("not a file: %s" % bank, file=sys.stderr)
+            return 2
+        for case in read_jsonl(bank):
+            held_out.extend(case.get("capabilities") or [])
+            if case.get("family"):
+                held_out.append(case["family"])
+    try:
+        result = stdlib_sft.sft_rows(units, held_out=held_out,
+                                     allow_overlap=args.allow_overlap)
+    except TrainingError as exc:
+        print("stdlib-sft: %s" % exc, file=sys.stderr)
+        return 1
+    print(stdlib_sft.render(result, allow_overlap=args.allow_overlap))
+    if args.output:
+        write_jsonl(Path(args.output), result["rows"])
+        print("  -> %s" % args.output)
+    # An arm with no rows cannot be measured; that is a finding, not a usage error.
+    return 0 if result["rows"] else 1
+
+
 def cmd_bank_native(args: argparse.Namespace) -> int:
     """What fraction of a bank's own programs the pinned engine already runs.
 
@@ -3081,6 +3122,20 @@ def build_parser() -> argparse.ArgumentParser:
                          % (headroom_mod.NOISE_FLOOR, headroom_mod.NOISE_PROVENANCE))
     hr.add_argument("--json", action="store_true", help="machine-readable full table")
     hr.set_defaults(fn=cmd_headroom)
+
+    sl = sub.add_parser("stdlib-sft",
+                        help="the stdlib corpus as a separate, measurable SFT arm")
+    sl.add_argument("units", help="training/data/stdlib/stdlib.jsonl")
+    sl.add_argument("--output", help="supervised rows JSONL to write")
+    sl.add_argument("--held-out-bank",
+                    help="a schema-3 bank whose families the benchmark reaches; units "
+                         "filling those modules are held back")
+    sl.add_argument("--held-out", action="append",
+                    help="an extra module/capability the benchmark reaches (repeatable)")
+    sl.add_argument("--allow-overlap", action="store_true",
+                    help="mix the overlapping units anyway; the benchmark result must "
+                         "then be read as contaminated, and said so in the report")
+    sl.set_defaults(fn=cmd_stdlib_sft)
 
     bn = sub.add_parser("bank-native",
                         help="what fraction of a bank's own programs the engine already serves")
