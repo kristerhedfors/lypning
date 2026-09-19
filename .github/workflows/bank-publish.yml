@@ -93,8 +93,10 @@ jobs:
               || { echo "refusing a non-numeric benchmark_families" >&2; exit 2; }
             args="$args --benchmark-families ${{ inputs.benchmark_families }}"
           fi
-          [ "${{ inputs.push }}" = "true" ] && args="$args --push"
-          [ "${{ inputs.replace }}" = "true" ] && args="$args --replace"
+          # `[ test ] && assign` is a statement whose exit status is the
+          # test's, so under `set -e` a false flag would end the step.
+          if [ "${{ inputs.push }}" = "true" ]; then args="$args --push"; fi
+          if [ "${{ inputs.replace }}" = "true" ]; then args="$args --replace"; fi
           # shellcheck disable=SC2086
           python .github/scripts/bank_publish.py "$RUNNER_TEMP/union.jsonl" \
             --name "${{ inputs.name }}" --out "$RUNNER_TEMP/banks" \
