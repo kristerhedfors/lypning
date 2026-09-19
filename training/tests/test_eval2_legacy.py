@@ -202,7 +202,7 @@ def test_an_attempt_for_a_case_this_tree_does_not_know_is_reported_not_invented(
 
 def test_the_rows_verb_replays_once_and_prints_the_family_macro(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("NTX_ROOT", str(tmp_path))
-    from pipeline import cli, legality
+    from pipeline import cli, engines as eng_mod, legality
     importlib.reload(cli)
     try:
         (tmp_path / "data").mkdir()
@@ -225,18 +225,27 @@ def test_the_rows_verb_replays_once_and_prints_the_family_macro(tmp_path, monkey
                 {"case_id": "ntx-b", "sample": 0, "verdict": "MATCH", "correct": False}]}
 
         monkeypatch.setattr(legality, "replay", fake_replay)
-        monkeypatch.setattr(cli.eng, "identity", lambda: {"fingerprint": "fp"})
+        # A real file, because the verb now refuses one that is not. This test
+        # used to pass `/bin/true`, which does not exist on darwin: the argument
+        # was reaching the replay as a truthy string, which is the route that
+        # writes an all-`correct-fallback` population at exit 0 from a replay
+        # that ran nothing. The fake replay still keeps the binary unexecuted.
+        engine = tmp_path / "stub-engine"
+        engine.write_text("#!/bin/sh\nexit 0\n")
+        engine.chmod(0o755)
         out = tmp_path / "rows.jsonl"
-        rc = cli.main(["eval2-rows", "r1", "--engine", "/bin/true", "--output", str(out)])
+        rc = cli.main(["eval2-rows", "r1", "--engine", str(engine), "--output", str(out)])
         assert rc == 0
         text = capsys.readouterr().out
         assert "2 rows, 2 replayed" in text and "correct  50.0%" in text
         assert "correct-native  50.0%" in text
-        assert seen["engine"] == "/bin/true" and "ntx-a" in seen["tests"]
+        assert seen["engine"] == str(engine) and "ntx-a" in seen["tests"]
+        # The provenance names the bytes that graded the rows, not the host's chain.
+        assert eng_mod.binary_identity(str(engine))["sha256"] in text
         rows = read_jsonl(out)
         assert [r["seed"] for r in rows] == [7, 7]
         assert [r["native"] for r in rows] == [True, False]
-        assert cli.main(["eval2-rows", "nope", "--engine", "/bin/true",
+        assert cli.main(["eval2-rows", "nope", "--engine", str(engine),
                          "--output", str(out)]) == 1
     finally:
         monkeypatch.delenv("NTX_ROOT", raising=False)

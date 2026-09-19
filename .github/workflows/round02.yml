@@ -1,0 +1,182 @@
+# Round-02 launch from CI. A GitHub runner is a disposable Linux VM with no
+# sensitive files, which is what `--isolated-worker` attests; the GPU itself is
+# a Hugging Face Job this workflow submits, never the runner.
+#
+# Two halves, and only the second one costs money:
+#   preflight  — free. Reads the account, the Jobs hardware table and its price,
+#                the Qwen revision and the work-repo state. Always runs.
+#   submit     — billed. Runs ONLY when the head commit message contains the
+#                marker below, so a routine push to this branch can never bill.
+name: round-02
+
+on:
+  push:
+    branches: ["round02/**"]
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: "smoke (starter fixture) or pilot (needs a reviewed bank)"
+        default: smoke
+        type: choice
+        options: [smoke, pilot]
+      submit:
+        description: "type SUBMIT to actually bill a GPU job"
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  MARKER: "[submit-smoke]"
+  SPACE_REPO_NAME: lypning-round02-verifier
+  WORK_REPO_NAME: lypning-round02-artifacts
+  QWEN_MODEL: Qwen/Qwen3.8-27B
+  FLAVOR: a10g-small
+  BANK_PATH: banks/v2
+  # A 27B model loads in full bf16 with no quantization (~54 GB of weights), so
+  # the smoke's 24 GB a10g-small cannot hold it. A pilot needs an 80 GB-class
+  # flavor; the preflight prints the whole priced table so this is a decision
+  # with a number attached rather than a guess.
+  PILOT_FLAVOR: h200
+
+jobs:
+  preflight:
+    name: preflight (free — no job submitted)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      whoami: ${{ steps.probe.outputs.whoami }}
+      qwen_rev: ${{ steps.probe.outputs.qwen_rev }}
+      jobs_ok: ${{ steps.probe.outputs.jobs_ok }}
+      hourly_usd: ${{ steps.probe.outputs.hourly_usd }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q "huggingface-hub==1.31.0"
+      - name: Probe the account, the price and the model revision
+        id: probe
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python .github/scripts/round02_preflight.py
+
+  # Free. Building the Space and the artifact repo is idempotent and costs
+  # nothing, so it runs on every push to this branch: a bootstrap failure is
+  # then a red run rather than a surprise after the meter has started.
+  bootstrap:
+    name: bootstrap the Hub artifacts (free)
+    needs: preflight
+    if: needs.preflight.outputs.jobs_ok == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      space_repo: ${{ steps.space.outputs.space_repo }}
+      space_rev: ${{ steps.space.outputs.space_rev }}
+      owner: ${{ steps.space.outputs.owner }}
+    env:
+      PYTHONPATH: src:training
+      LYPNING_CAPTURE: "0"
+      LYPNING_HARVEST: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Isolate engine state
+        run: echo "LYPNING_HOME=$RUNNER_TEMP/round02-home" >> "$GITHUB_ENV"
+      - run: pip install -q -e . && pip install -q "huggingface-hub==1.31.0"
+
+      # The engine the verifier image carries. Built here so the Space is made
+      # from the same commit the job will clone.
+      - name: Build lypning-l against this 3.12
+        run: |
+          python -m lypning build --rust --target host
+          "$LYPNING_HOME/bin/lypning-l" --version
+
+      # The verifier Space: a private Docker Space whose context is exactly the
+      # four reviewed files. Its 40-character commit is what the bundle pins, so
+      # a host booted from an earlier build can never serve a later bundle.
+      - name: Create or update the verifier Space, and record its commit
+        id: space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python .github/scripts/round02_space.py
+
+      - name: Ensure the private artifact repo exists
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python .github/scripts/round02_workrepo.py
+
+      # The banks the pilot reads. Committed to git for review; copied here
+      # because the token only exists inside the job.
+      - name: Publish the committed bank to the private dataset repo
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python .github/scripts/round02_bank.py
+
+      - name: The benchmark must not overlap the training bank
+        run: |
+          PYTHONPATH=src:training python -m pipeline.cli eval2-leaks \
+            training/data/bank_v2/eval2.jsonl training/data/bank_v2/train.jsonl
+
+      # Free: prints the plan and the hourly price, submits nothing. Every run
+      # of this branch therefore states what a submit would cost.
+      - name: Dry run — print the plan and its price
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python training/hf/launch.py smoke \
+            --branch "${GITHUB_REF_NAME}" --commit "${GITHUB_SHA}" \
+            --space "${{ steps.space.outputs.space_repo }}" \
+            --space-revision "${{ steps.space.outputs.space_rev }}" \
+            --qwen-revision "${{ needs.preflight.outputs.qwen_rev }}" \
+            --work-repo "${{ steps.space.outputs.owner }}/${WORK_REPO_NAME}" \
+            --flavor "${FLAVOR}" --timeout 75m
+
+  submit:
+    name: submit the GPU job (BILLED)
+    needs: [preflight, bootstrap]
+    if: >-
+      contains(github.event.head_commit.message, '[submit-smoke]') ||
+      contains(github.event.head_commit.message, '[submit-pilot]') ||
+      github.event.inputs.submit == 'SUBMIT'
+    runs-on: ubuntu-latest
+    # The HF pilot is submitted with --timeout 300m, so a 120-minute runner
+    # cancels the follower mid-round: the job keeps running and still uploads,
+    # but the streamed evidence is lost and the workflow reads as failed.
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q "huggingface-hub==1.31.0"
+      # --follow streams the job's own log into this run, so the evidence for
+      # what the GPU actually did lives beside the decision to spend on it.
+      - name: Submit
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          # A pilot is a banked stage: it needs the bank, a bigger GPU and a
+          # longer timeout, and it carries the k/seed/case/token floors.
+          if [ "${{ github.event.inputs.stage }}" = "pilot" ] || \
+             echo "${{ github.event.head_commit.message }}" | grep -q '\[submit-pilot\]'; then
+            python training/hf/launch.py pilot \
+              --branch "${GITHUB_REF_NAME}" --commit "${GITHUB_SHA}" \
+              --space "${{ needs.bootstrap.outputs.space_repo }}" \
+              --space-revision "${{ needs.bootstrap.outputs.space_rev }}" \
+              --qwen-revision "${{ needs.preflight.outputs.qwen_rev }}" \
+              --work-repo "${{ needs.bootstrap.outputs.owner }}/${WORK_REPO_NAME}" \
+              --bank-path "${BANK_PATH}" --seed 1111 --eval-draws 16 \
+              --flavor "${PILOT_FLAVOR}" --timeout 300m --yes --follow
+          else
+            python training/hf/launch.py smoke \
+              --branch "${GITHUB_REF_NAME}" --commit "${GITHUB_SHA}" \
+              --space "${{ needs.bootstrap.outputs.space_repo }}" \
+              --space-revision "${{ needs.bootstrap.outputs.space_rev }}" \
+              --qwen-revision "${{ needs.preflight.outputs.qwen_rev }}" \
+              --work-repo "${{ needs.bootstrap.outputs.owner }}/${WORK_REPO_NAME}" \
+              --flavor "${FLAVOR}" --timeout 75m --yes --follow
+          fi

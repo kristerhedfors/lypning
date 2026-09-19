@@ -13,12 +13,15 @@ as the local capture — which is the whole claim behind rung S0b being a comman
 from __future__ import annotations
 
 import ast
+import hashlib
+import importlib
 import json
 import os
 
 import pytest
 
 from pipeline import levers
+from pipeline.schema import make_case
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -626,3 +629,455 @@ def test_a_draw_table_carries_the_held_out_banner(tmp_path, capsys):
     assert code == 0
     assert "descriptive refusal vector" in out.out
     assert "not a rank" in out.out and "score" not in out.out
+
+
+def test_an_engine_that_is_not_a_file_is_refused_before_anything_is_replayed(tmp_path,
+                                                                            capsys):
+    """Rung S0b's `--engine` was never existence-checked, and that was the hole.
+
+    `engine = args.engine or eng.engine_path(...)` then `if not engine` passes a
+    nonexistent path, because a path is a truthy string. Every program then
+    graded ERROR, no draw carried a refusal, and the vector printed EMPTY at
+    exit 0 — while the considered population GREW, because `--run` re-derives
+    `native` from this binary. On `runs/stock-nothinking`, 14 correct-fallback
+    draws with the built engine became 26 with a broken one, all of them
+    refusal-less. A vector of nothing is the one answer rung S0b must never be
+    able to publish by accident.
+    """
+    code, out = _run_cli(["levers", "--run", "stock-nothinking",
+                          "--status", "correct-fallback", "--vector",
+                          "--engine", str(tmp_path / "not-built")], capsys)
+    assert code == 2
+    assert out.err.strip() == "not a file: %s" % (tmp_path / "not-built")
+    assert out.out == ""
+
+
+def test_absent_draw_rows_are_a_usage_error_and_never_an_empty_vector(tmp_path, capsys):
+    """The `--rows`/`--replay` half of the same hole: `read_jsonl` answers `[]`."""
+    rows = tmp_path / "rows.jsonl"
+    rows.write_text(json.dumps({"corpus_id": "py-1", "draw": 0, "family": "f",
+                                "split_group": "g", "status": "correct-fallback"}) + "\n",
+                    encoding="utf-8")
+    missing = tmp_path / "missing.jsonl"
+    for rows_arg, replay_arg in ((missing, rows), (rows, missing)):
+        code, out = _run_cli(["levers", "--rows", str(rows_arg), "--replay",
+                              str(replay_arg), "--vector"], capsys)
+        assert code == 2
+        assert out.err.strip() == "not a file: %s" % missing
+        assert out.out == ""
+
+
+def test_an_engine_that_cannot_execute_is_a_failed_replay_and_not_a_vector(tmp_path,
+                                                                          capsys):
+    """The `is_file` check above is not enough on its own.
+
+    An engine that EXISTS but cannot execute passes it, and then reproduces the
+    whole defect one step later: every program grades ERROR, no draw carries a
+    refusal, and the empty vector prints at exit 0 — over a population this
+    binary inflated, because `--run` re-derives `native` from the same failed
+    replay. Nothing graded is not a refusal vector of zero.
+    """
+    engine = tmp_path / "not-executable"
+    engine.write_text("#!/bin/sh\nexit 3\n", encoding="utf-8")
+    engine.chmod(0o644)
+    code, out = _run_cli(["levers", "--run", "stock-nothinking",
+                          "--status", "correct-fallback", "--vector", "--limit", "0",
+                          "--engine", str(engine)], capsys)
+    assert code == 1
+    assert "incomplete replay" in out.err and "not a refusal vector" in out.err
+    assert "ERROR" in out.err
+    assert "descriptive refusal vector" not in out.out
+
+
+@pytest.fixture()
+def draw_tree(tmp_path, monkeypatch):
+    """A one-attempt run in a temp tree: rung S0b's shape without the corpus.
+
+    The guards below are all reachable by replaying `runs/stock-nothinking`, as
+    the two tests above do, but that costs a process per recorded program and a
+    recorded run that a fresh checkout may not have. One synthetic attempt takes
+    the same code path — `legality.replay` really runs the engine on it — so
+    these tests can say which engine graded what.
+    """
+    (tmp_path / "data").mkdir()
+    case = dict(make_case(prompt="p a", test={"kind": "stdout", "expect_stdout": "1\n"},
+                          category="unobserved", source_id="a",
+                          tags=["family:fa", "group:g", "population:coverage"]),
+                id="ntx-a")
+    (tmp_path / "data" / "corpus.jsonl").write_text(json.dumps(case) + "\n",
+                                                    encoding="utf-8")
+    for run_id, attempts in (("r1", [{"case_id": "ntx-a", "sample": 0,
+                                      "program": "print(1)", "passed": True}]),
+                             ("rempty", [])):
+        d = tmp_path / "runs" / run_id
+        d.mkdir(parents=True)
+        (d / "meta.json").write_text(json.dumps({"sampling": {"seed": 7}}),
+                                     encoding="utf-8")
+        (d / "attempts.jsonl").write_text(
+            "".join(json.dumps(a) + "\n" for a in attempts), encoding="utf-8")
+    monkeypatch.setenv("NTX_ROOT", str(tmp_path))
+    from pipeline import cli
+    importlib.reload(cli)
+    yield tmp_path
+    monkeypatch.delenv("NTX_ROOT", raising=False)
+    importlib.reload(cli)
+
+
+def _unexecutable(tmp_path):
+    """An engine that exists — so `is_file` passes — and cannot be executed."""
+    engine = tmp_path / "not-executable"
+    engine.write_text("#!/bin/sh\nexit 3\n", encoding="utf-8")
+    engine.chmod(0o644)
+    return engine
+
+
+def test_a_present_but_empty_attempts_file_publishes_no_vector(draw_tree, capsys):
+    """`--run` checked `.exists()`, and a 0-byte `attempts.jsonl` exists.
+
+    Nothing is replayed, nothing is graded, no route prints a warning, and the
+    old guard's second term (`joined["considered"]`) is 0 — so the whole
+    descriptive vector printed, banner and all, at exit 0 over a run that had
+    recorded no attempt at all.
+    """
+    code, out = _run_cli(["levers", "--run", "rempty", "--status", "correct-fallback",
+                          "--vector", "--limit", "0"], capsys)
+    assert code == 1
+    assert "no refusal to publish" in out.err and "read of nothing" in out.err
+    assert out.out == ""
+
+
+def test_a_status_filter_that_matches_no_draw_publishes_no_vector(draw_tree, capsys):
+    """`--status correct-native` under a failed replay: the guard's blind spot.
+
+    Every program grades ERROR, so `native` is False on every row and no draw
+    is correct-native. `considered` is therefore 0, which falsified the old
+    guard's second term — the one route where a warning was printed on stderr
+    and the empty vector still went to stdout at exit 0.
+    """
+    code, out = _run_cli(["levers", "--run", "r1", "--status", "correct-native",
+                          "--vector", "--limit", "0",
+                          "--engine", str(_unexecutable(draw_tree))], capsys)
+    assert code == 1
+    assert "ERROR 1" in out.err
+    # The incomplete-replay guard answers this one, and names the ERROR that
+    # made the population empty; the backstop below it never has to.
+    assert "incomplete replay" in out.err and "1 ERROR" in out.err
+    assert out.out == ""
+
+
+def test_an_engine_that_runs_but_is_not_lypning_publishes_no_vector(draw_tree, capsys):
+    """An engine can execute, grade, and still be the wrong program entirely.
+
+    `/bin/echo` accepts the arguments and exits 0 with the wrong stdout, which
+    grades MISMATCH rather than ERROR — so `errors` is 0 and neither the ERROR
+    warning nor the old guard sees anything. The draw is considered, carries no
+    refusal, and the vector printed empty at exit 0 beside a MISMATCH line.
+    """
+    code, out = _run_cli(["levers", "--run", "r1", "--status", "correct-fallback",
+                          "--vector", "--limit", "0", "--engine", "/bin/echo"], capsys)
+    assert code == 1
+    assert "MISMATCH 1" in out.err
+    assert "incomplete replay" in out.err and "1 MISMATCH" in out.err
+    assert out.out == ""
+
+
+def test_two_empty_draw_files_publish_no_vector(tmp_path, capsys):
+    """The `--rows`/`--replay` route: both files exist, both are 0 bytes.
+
+    `is_file` passes twice, `read_jsonl` answers `[]` twice, and the join of
+    nothing with nothing rendered the full vector at exit 0 — the form a
+    reviewer reproduced by hand before this guard existed.
+    """
+    rows, replay = tmp_path / "rows.jsonl", tmp_path / "replay.jsonl"
+    rows.write_text("", encoding="utf-8")
+    replay.write_text("", encoding="utf-8")
+    code, out = _run_cli(["levers", "--rows", str(rows), "--replay", str(replay),
+                          "--vector", "--limit", "0"], capsys)
+    assert code == 1
+    assert "0 draw row(s) loaded" in out.err and "0 carried a refusal" in out.err
+    assert out.out == ""
+
+
+def test_the_read_of_nothing_is_refused_in_every_render_mode(tmp_path, capsys):
+    """One guard, not one per renderer — `--json` returned 0 before the render.
+
+    A refusal that only covers `--vector` is not a refusal: `--json` is the mode
+    a script reads, and the default report, `--declared` and `--undeclared` all
+    describe the same empty population. `--rank` stays a usage error at 2,
+    because a wrong flag is answered before a failed read.
+    """
+    rows, replay = tmp_path / "rows.jsonl", tmp_path / "replay.jsonl"
+    rows.write_text("", encoding="utf-8")
+    replay.write_text("", encoding="utf-8")
+    base = ["levers", "--rows", str(rows), "--replay", str(replay)]
+    for mode in ([], ["--json"], ["--vector"], ["--declared"], ["--undeclared"]):
+        code, out = _run_cli(base + mode, capsys)
+        assert code == 1, mode
+        assert "no refusal to publish" in out.err, mode
+        assert out.out == "", mode
+    code, out = _run_cli(base + ["--rank"], capsys)
+    assert code == 2
+    assert "refusing --rank" in out.err
+    assert out.out == ""
+
+
+def test_one_refusal_is_enough_to_publish_the_draw_vector(tmp_path, capsys):
+    """The guard must not be satisfiable by refusing everything.
+
+    A single draw that carries a single refusal is a vector one record backs,
+    which is the whole admission rule — so it still renders, with the held-out
+    banner, at exit 0.
+    """
+    rows = tmp_path / "rows.jsonl"
+    rows.write_text(json.dumps({"corpus_id": "py-1", "draw": 0, "family": "f",
+                                "split_group": "g", "status": "correct-fallback"}) + "\n",
+                    encoding="utf-8")
+    replay = tmp_path / "replay.jsonl"
+    replay.write_text(json.dumps({"case_id": "py-1", "sample": 0,
+                                  "verdict": "UNSUPPORTED",
+                                  "blocker": "module: import itertools"}) + "\n",
+                      encoding="utf-8")
+    code, out = _run_cli(["levers", "--rows", str(rows), "--replay", str(replay),
+                          "--status", "correct-fallback", "--vector"], capsys)
+    assert code == 0
+    assert "1 carried a refusal" in out.out
+    assert "HELD-OUT SET" in out.out
+    assert "descriptive refusal vector" in out.out
+    assert "no refusal to publish" not in out.err
+
+
+def test_the_refusal_says_which_read_of_nothing_happened(tmp_path, capsys):
+    """Three rows that each carry a refusal, and a `--status` matching none.
+
+    The counts have to separate the cases, because the note that carried them
+    went to stdout and a refusal leaves stdout empty. `loaded` alone would put
+    "3 draw row(s) loaded … 0 carried a refusal" on stderr over a file in which
+    every row carries one, which is the same confusion the guard exists to
+    prevent, moved into the diagnostic.
+    """
+    rows, replay = tmp_path / "rows.jsonl", tmp_path / "replay.jsonl"
+    rows.write_text("".join(
+        json.dumps({"corpus_id": "py-%d" % i, "draw": 0, "family": "f",
+                    "split_group": "g%d" % i, "status": "correct-native"}) + "\n"
+        for i in range(3)), encoding="utf-8")
+    replay.write_text("".join(
+        json.dumps({"case_id": "py-%d" % i, "sample": 0, "verdict": "UNSUPPORTED",
+                    "blocker": "module: import itertools"}) + "\n"
+        for i in range(3)), encoding="utf-8")
+    code, out = _run_cli(["levers", "--rows", str(rows), "--replay", str(replay),
+                          "--status", "correct-fallback", "--vector", "--limit", "0"],
+                         capsys)
+    assert code == 1
+    assert "3 draw row(s) loaded" in out.err
+    assert "0 match status correct-fallback" in out.err
+    assert out.out == ""
+    # And the same three rows under the status they do carry are a vector.
+    code, out = _run_cli(["levers", "--rows", str(rows), "--replay", str(replay),
+                          "--status", "correct-native", "--vector", "--limit", "0"],
+                         capsys)
+    assert code == 0
+    assert "3 draw(s) match status correct-native; 3 carried a refusal" in out.out
+
+
+def test_a_join_on_the_wrong_key_is_not_a_census_without_refusals(tmp_path, capsys):
+    """A replay whose rows match nothing, against one that matches and is bare.
+
+    Both read nothing and both exit 1, and the operator's next move differs:
+    one is a key to fix, the other is a census that dropped `blocker`. Only the
+    unmatched count tells them apart on stderr.
+    """
+    row = json.dumps({"corpus_id": "py-1", "draw": 0, "family": "f",
+                      "split_group": "g", "status": "correct-fallback"}) + "\n"
+    rows = tmp_path / "rows.jsonl"
+    rows.write_text(row, encoding="utf-8")
+    wrong_key = tmp_path / "wrong.jsonl"
+    wrong_key.write_text(json.dumps({"case_id": "py-other", "sample": 0,
+                                     "verdict": "UNSUPPORTED",
+                                     "blocker": "module: import itertools"}) + "\n",
+                         encoding="utf-8")
+    bare = tmp_path / "bare.jsonl"
+    bare.write_text(json.dumps({"case_id": "py-1", "sample": 0,
+                                "verdict": "OK"}) + "\n", encoding="utf-8")
+    base = ["levers", "--rows", str(rows), "--status", "correct-fallback",
+            "--vector", "--limit", "0"]
+    code, out = _run_cli(base + ["--replay", str(wrong_key)], capsys)
+    assert code == 1
+    assert "incomplete join" in out.err and "1 unmatched" in out.err
+    assert out.out == ""
+    code, out = _run_cli(base + ["--replay", str(bare)], capsys)
+    assert code == 1
+    assert "incomplete join" in out.err and "1 without a refusal" in out.err
+    assert out.out == ""
+
+
+def test_s0b_freezes_the_population_and_pins_the_explicit_engine(tmp_path, capsys,
+                                                                monkeypatch):
+    """The pilot rows define the 171; today's engine only supplies refusal kinds."""
+    from pipeline import cli, legality
+
+    run = tmp_path / "runs" / "pilot"
+    run.mkdir(parents=True)
+    (run / "attempts.jsonl").write_text(
+        json.dumps({"case_id": "py-1", "sample": 0, "program": "import itertools"}) + "\n",
+        encoding="utf-8")
+    population = tmp_path / "population.jsonl"
+    population.write_text(json.dumps({
+        "case_id": "source-1", "corpus_id": "py-1", "draw": 0,
+        "family": "f", "split_group": "g", "status": "correct-fallback",
+    }) + "\n", encoding="utf-8")
+    engine = tmp_path / "lypning-l"
+    engine.write_text("#!/bin/sh\necho 'lypning 0.1.0 (lypning-l) for cpython 3.12'\n",
+                      encoding="utf-8")
+    engine.chmod(0o755)
+    digest = hashlib.sha256(engine.read_bytes()).hexdigest()
+
+    monkeypatch.setattr(cli, "RUNS", tmp_path / "runs")
+    monkeypatch.setattr(cli, "_case_context", lambda *_: ({}, {}))
+
+    def replay(attempts, explicit, **_kwargs):
+        assert explicit == str(engine)
+        assert [(a["case_id"], a["sample"]) for a in attempts] == [("py-1", 0)]
+        return {"rows": [{"case_id": "py-1", "sample": 0,
+                           "verdict": "UNSUPPORTED",
+                           "blocker": "module: import itertools"}],
+                "tally": {}, "details": {}, "blockers": {}, "programs": 1}
+
+    monkeypatch.setattr(legality, "replay", replay)
+    base = ["levers", "--run", "pilot", "--population-rows", str(population),
+            "--status", "correct-fallback", "--engine", str(engine),
+            "--require-engine-sha256", digest, "--vector"]
+    code, out = _run_cli(base + ["--expect-draws", "1"], capsys)
+    assert code == 0
+    assert "@ replay engine sha256 %s" % digest in out.out
+    assert "1 draw(s) match status correct-fallback; 1 carried a refusal" in out.out
+    assert "descriptive refusal vector" in out.out
+
+    code, out = _run_cli(base + ["--expect-draws", "171"], capsys)
+    assert code == 1
+    assert "expected exactly 171" in out.err
+    assert "descriptive refusal vector" not in out.out
+
+    wrong = "0" * 64
+    bad = [word if word != digest else wrong for word in base]
+    code, out = _run_cli(bad + ["--expect-draws", "1"], capsys)
+    assert code == 1
+    assert "required %s" % wrong in out.err
+    assert out.out == ""
+
+
+def test_a_partial_draw_join_is_not_publishable(tmp_path, capsys):
+    rows = tmp_path / "rows.jsonl"
+    rows.write_text(json.dumps({"corpus_id": "py-1", "draw": 0,
+                                "status": "correct-fallback"}) + "\n",
+                    encoding="utf-8")
+    replay = tmp_path / "replay.jsonl"
+    replay.write_text("", encoding="utf-8")
+    code, out = _run_cli(["levers", "--rows", str(rows), "--replay", str(replay),
+                          "--status", "correct-fallback", "--vector"], capsys)
+    assert code == 1
+    assert "incomplete join" in out.err and "1 unmatched" in out.err
+    assert "descriptive refusal vector" not in out.out
+
+
+def test_eval2_rows_refuses_an_engine_that_is_not_a_file(tmp_path, capsys):
+    """The escape hatch that S0's handoff used to offer, closed at the source.
+
+    `native` is read off this replay and `status` is read off `native`, so this
+    binary IS the population the rows define. A path that is not a file is a
+    truthy string: every program would grade ERROR, every draw would be written
+    non-native, and the rows would be a population produced by a replay that ran
+    nothing. `levers` already answers 2 here; this is the same usage error and
+    must answer alike.
+    """
+    code, out = _run_cli(["eval2-rows", "eval-does-not-matter",
+                          "--engine", str(tmp_path / "no-such-binary"),
+                          "--output", str(tmp_path / "rows.jsonl")], capsys)
+    assert code == 2
+    assert "not a file" in out.err
+    assert out.out == ""
+    assert not (tmp_path / "rows.jsonl").exists(), "a refused run writes no rows"
+
+
+def test_eval2_rows_refuses_a_replay_that_did_not_grade(tmp_path, monkeypatch, capsys):
+    """The step past `is_file`: a regular file that will not execute.
+
+    No `+x` bit, wrong architecture, a text placeholder — each grades every
+    program ERROR, which writes `native` False on every row and every correct
+    draw as `correct-fallback`. That is the same population from a replay that
+    ran nothing, and a hand-transferred binary losing its execute bit is the
+    ordinary way to arrive at it. The rows must not be written.
+    """
+    import importlib
+
+    monkeypatch.setenv("NTX_ROOT", str(tmp_path))
+    from pipeline import cli
+
+    from pipeline.jsonio import write_jsonl
+
+    importlib.reload(cli)
+    try:
+        (tmp_path / "data").mkdir()
+        write_jsonl(tmp_path / "data" / "corpus.jsonl", [
+            dict(make_case(prompt="p", test={"kind": "stdout", "expect_stdout": "1\n"},
+                           category="unobserved", source_id="a",
+                           tags=["family:fa", "group:g", "population:coverage"]),
+                 id="ntx-a")])
+        run = tmp_path / "runs" / "r1"
+        run.mkdir(parents=True)
+        (run / "meta.json").write_text(json.dumps({"sampling": {"seed": 7}}))
+        write_jsonl(run / "attempts.jsonl",
+                    [{"case_id": "ntx-a", "sample": 0, "program": "print(1)", "passed": True}])
+        # A regular file, so `is_file` admits it, that cannot be executed.
+        engine = tmp_path / "unexecutable-engine"
+        engine.write_text("#!/bin/sh\nexit 0\n")
+        engine.chmod(0o644)
+        out_path = tmp_path / "rows.jsonl"
+        code, out = _run_cli(["eval2-rows", "r1", "--engine", str(engine),
+                              "--output", str(out_path)], capsys)
+        assert code == 1
+        assert "did not grade (ERROR)" in out.err
+        assert out.out == ""
+        assert not out_path.exists(), "a population from an ungraded replay is not written"
+    finally:
+        monkeypatch.delenv("NTX_ROOT", raising=False)
+        importlib.reload(cli)
+
+
+def test_eval2_rows_stamps_the_binary_it_replayed_not_the_installed_chain(capsys):
+    """Invariant 3's other half: the number carries the identity that produced it.
+
+    `identity()["fingerprint"]` hashes whichever `lypning-l`/`lypning` this host
+    has installed. For an explicit historical `--engine` that names binaries the
+    replay never executed, and this line is the only provenance the rows file
+    carries — `eval2_rows.row_for` records a verdict and no identity. So the
+    printed sha256 must be the argument's own.
+    """
+    from pipeline import cli, engines as eng
+
+    src = ast.parse(open(cli.__file__, "r", encoding="utf-8").read())
+    fn = next(n for n in ast.walk(src)
+              if isinstance(n, ast.FunctionDef) and n.name == "cmd_eval2_rows")
+    body = ast.dump(fn)
+    assert "binary_identity" in body, "the rows must name the bytes that graded them"
+    assert "fingerprint" not in body, (
+        "the installed-chain fingerprint cannot identify an explicit --engine")
+
+    here = eng.binary_identity(__file__)
+    assert here["path"] == __file__ and len(here["sha256"]) == 64
+
+
+def test_a_rule_declaration_outliving_its_rule_is_orphaned(monkeypatch):
+    """`rule` provenance is matched by the rule existing, never by a corpus family.
+
+    The reverse of `test_repair_rules.test_no_rule_rewrites_a_module_the_engine_serves`:
+    that one fails when the engine catches up with a rule, this one fails when a
+    rule is withdrawn and its verdict is left behind as a judgement with no subject.
+    """
+    from pipeline import repair_rules
+
+    assert any(row[2] == levers.FROM_RULE for row in levers.DECLARED)
+    assert "module: bisect" in levers.rule_matched()
+    monkeypatch.setattr(repair_rules, "MODULES",
+                        tuple(m for m in repair_rules.MODULES if m != "bisect"))
+    assert "module: bisect" not in levers.rule_matched()
+    assert "module: heapq" in levers.rule_matched()

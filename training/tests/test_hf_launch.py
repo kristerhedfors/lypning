@@ -128,3 +128,132 @@ def test_pilot_without_a_bank_path_is_rejected_before_any_hub_call(monkeypatch, 
     assert launch.main(argv + ["--bank-path", "banks/x", "--score-workers", "16",
                                "--pool-sandboxes-per-host", "2", "--pool-max-hosts", "2"]) == 2
     assert "pool capacity" in capsys.readouterr().err
+
+
+def pool_argv(stage, workers, per_host, hosts):
+    """A launch of `stage` at one pool shape; every other word is a fixed legal value."""
+    return [stage, "--branch", "b", "--commit", "c" * 40, "--space", "o/space",
+            "--space-revision", "a" * 40, "--qwen-revision", "b" * 40, "--work-repo", "o/work",
+            "--bank-path", "banks/x", "--score-workers", str(workers),
+            "--pool-sandboxes-per-host", str(per_host), "--pool-max-hosts", str(hosts)]
+
+
+def test_a_banked_launch_is_refused_above_the_per_host_density_ceiling(monkeypatch, capsys):
+    """Sixteen sandboxes on one host clears the product check and must not clear this one.
+
+    `native` is host-load-dependent, so density is an instrument parameter and
+    two arms scored at different densities are not comparable. A shape that
+    passes reaches the token check, which is how this test says "admitted"
+    without a Hub call; HF_TOKEN stays unset throughout.
+    """
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    assert launch.main(pool_argv("pilot", 16, 16, 1)) == 2
+    err = capsys.readouterr()
+    assert "--pool-sandboxes-per-host" in err.err and launch.POOL_FLAVOR in err.err
+    assert err.out == "", "a refused shape prints no plan"
+    # `16/2/8` and `16/1/16` are the least contended shapes in the space and
+    # this ceiling does not object to them — but the second review's host
+    # ceiling does, on cost, so they are refused there instead. The shapes that
+    # clear both are the decided topology and the serial diagnostic.
+    for workers, per_host, hosts in ((16, 4, 4), (1, 1, 1), (8, 4, 2)):
+        assert launch.main(pool_argv("pilot", workers, per_host, hosts)) == 2
+        assert "HF_TOKEN" in capsys.readouterr().err, (workers, per_host, hosts)
+    for workers, per_host, hosts in ((16, 2, 8), (16, 1, 16)):
+        assert launch.main(pool_argv("pilot", workers, per_host, hosts)) == 2
+        assert "cost ceiling" in capsys.readouterr().err, (workers, per_host, hosts)
+
+
+def test_the_density_ceiling_does_not_reach_a_smoke(monkeypatch, capsys):
+    """A smoke carries no pool knob into the job (`job_env`), so no density of its own."""
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    # One scorer, so the product check — which is not stage-conditioned — never
+    # fires and what is left under test is the density alone.
+    for per_host in (1, launch.MAX_POOL_SANDBOXES_PER_HOST, launch.MAX_POOL_SANDBOXES_PER_HOST + 12):
+        assert launch.main(pool_argv("smoke", 1, per_host, 1)) == 2
+        assert "HF_TOKEN" in capsys.readouterr().err, per_host
+
+
+def test_the_ceilings_flavor_is_the_flavor_the_pool_actually_runs_on():
+    """The ceiling is four *at* `cpu-basic`; nothing else ties the two constants.
+
+    `launch.py` is loaded by path and deliberately does not import the package,
+    so its flavor is a literal. That leaves the number free to outlive the host
+    it was decided for: if the runner's pool moves to another flavor, four
+    sandboxes per host is a different amount of contention and has to be
+    decided again rather than carried over. This is the link the module cannot
+    make for itself.
+    """
+    from pipeline import hf_sandbox_runner
+
+    assert launch.POOL_FLAVOR == hf_sandbox_runner.FLAVOR
+
+
+def test_a_banked_launch_is_refused_above_the_host_cost_ceiling(monkeypatch, capsys):
+    """The other half of the envelope: four hosts is a ceiling, not just a default.
+
+    Contributed by the second independent review of the same round. It is
+    conditioned on a banked stage for the same reason the density ceiling is —
+    only a banked stage carries these knobs into the job, so refusing them on a
+    smoke would refuse a value that does nothing.
+    """
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    assert launch.main(pool_argv("pilot", 16, 4, launch.MAX_POOL_HOSTS + 1)) == 2
+    err = capsys.readouterr()
+    assert "cost ceiling is %d CPU hosts" % launch.MAX_POOL_HOSTS in err.err
+    assert err.out == "", "a refused shape prints no plan"
+    # The ceiling itself is admitted, and a smoke is not reached by it at all.
+    assert launch.main(pool_argv("pilot", 16, 4, launch.MAX_POOL_HOSTS)) == 2
+    assert "HF_TOKEN" in capsys.readouterr().err
+    assert launch.main(pool_argv("smoke", 1, 1, launch.MAX_POOL_HOSTS + 6)) == 2
+    assert "HF_TOKEN" in capsys.readouterr().err
+
+
+def test_a_banked_launch_above_its_ceiling_is_told_the_ceiling(monkeypatch, capsys):
+    """The dead end the density fix removed, re-created one knob further out.
+
+    Both pool knobs are capped for a banked stage, so the admissible capacity is
+    their product and any `--score-workers` above it is unsatisfiable. The
+    product check used to answer "increase --pool-max-hosts", and following that
+    advice earned "pool cost ceiling is 4 CPU hosts" — two refusals, no legal
+    shape, and the number that would have ended it stated in neither. Above the
+    ceiling the advice has to be the ceiling; at or below it, the knob is still
+    the right answer and must stay.
+    """
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    ceiling = launch.MAX_POOL_SANDBOXES_PER_HOST * launch.MAX_POOL_HOSTS
+
+    assert launch.main(pool_argv("pilot", ceiling + 16, 4, 4)) == 2
+    err = capsys.readouterr()
+    assert "tops out at %d scorers" % ceiling in err.err
+    assert "--pool-max-hosts" not in err.err, "no knob reaches above the ceiling"
+    assert err.out == ""
+
+    # Below the ceiling the shape exists, and the advice names the knob that
+    # still has room — not the knob that matches the stage. `16/1/4` is the case
+    # that made this a dead end: hosts are already at MAX_POOL_HOSTS, so the old
+    # "increase --pool-max-hosts" earned "pool cost ceiling is 4 CPU hosts" on
+    # the next attempt, and the knob that does reach was the suppressed half.
+    assert launch.main(pool_argv("pilot", ceiling, 1, launch.MAX_POOL_HOSTS)) == 2
+    err = capsys.readouterr()
+    assert "increase --pool-sandboxes-per-host" in err.err
+    assert "--pool-max-hosts" not in err.err, "that knob is already at its ceiling"
+
+    # Symmetrically at full density and one host, and both when both have room.
+    assert launch.main(pool_argv("pilot", ceiling, launch.MAX_POOL_SANDBOXES_PER_HOST, 1)) == 2
+    err = capsys.readouterr()
+    assert "increase --pool-max-hosts" in err.err
+    assert "--pool-sandboxes-per-host" not in err.err
+    assert launch.main(pool_argv("pilot", ceiling, 1, 1)) == 2
+    err = capsys.readouterr()
+    assert "--pool-sandboxes-per-host or --pool-max-hosts" in err.err
+
+    assert launch.main(pool_argv("pilot", ceiling, launch.MAX_POOL_SANDBOXES_PER_HOST,
+                                 launch.MAX_POOL_HOSTS)) == 2
+    assert "HF_TOKEN" in capsys.readouterr().err, "the admissible shape is admitted"
+
+    # A smoke carries no pool knob into the job, so it has no ceiling of its own
+    # and both knobs always have room.
+    assert launch.main(pool_argv("smoke", ceiling + 16, 4, 4)) == 2
+    err = capsys.readouterr()
+    assert "tops out at" not in err.err
+    assert "--pool-sandboxes-per-host or --pool-max-hosts" in err.err

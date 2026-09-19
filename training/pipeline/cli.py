@@ -22,7 +22,9 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from . import bank_native as bank_native_mod
 from . import engines as eng
+from . import headroom as headroom_mod
 from . import sample as sample_mod
 from . import split as splitmod
 from . import stats
@@ -382,6 +384,14 @@ def cmd_eval2_rows(args: argparse.Namespace) -> int:
         print("no lypning binary on this machine: run `lypning build --rust`, "
               "or pass --engine", file=sys.stderr)
         return 1
+    # `native` is read off this replay, and `status` is read off `native`, so the
+    # binary here IS the population these rows define. An `--engine` that is not a
+    # file is a truthy string that grades every program ERROR, which writes rows
+    # whose every draw is non-native — a population, at exit 0, from a replay that
+    # ran nothing. Same usage error, same exit 2, as `levers`.
+    if not Path(engine).is_file():
+        print("not a file: %s" % engine, file=sys.stderr)
+        return 2
     path = RUNS / args.run_id / "attempts.jsonl"
     if not path.exists():
         print("no such run: %s" % args.run_id, file=sys.stderr)
@@ -393,10 +403,30 @@ def cmd_eval2_rows(args: argparse.Namespace) -> int:
     cache = (Path(args.cache) / ("%s.replay.json" % args.run_id)) if args.cache else None
     census = legality.replay(attempts, engine, tests=tests, workers=args.jobs, cache=cache)
     result = eval2_rows.rows(attempts, census["rows"], cases, seed=seed)
+    # `is_file` above rejects a path; it cannot reject a regular file that will
+    # not execute — no +x bit, wrong architecture, a text placeholder. Those
+    # grade every program ERROR, which writes `native` False on every row and
+    # every correct draw as `correct-fallback`: the same population from a replay
+    # that ran nothing, one step further out. A hand-transferred binary losing
+    # its execute bit is the ordinary way to arrive here. `levers` refuses an
+    # ungraded replay; so does this, before any rows are written.
+    errors = census["tally"].get("ERROR") or 0
+    if errors:
+        print("eval2-rows: %d of %d replayed program(s) did not grade (ERROR) through "
+              "%s — an ungraded replay writes every draw non-native, which is a "
+              "population, not a measurement."
+              % (errors, result["replayed"], engine), file=sys.stderr)
+        return 1
     write_jsonl(args.output, result["rows"])
-    print("eval2-rows  %s   %d rows, %d replayed   @ engine %s"
+    # The bytes that graded these rows, not the installed chain. `identity()`
+    # fingerprints whatever `lypning-l`/`lypning` this host has, which for an
+    # explicit historical `--engine` names binaries the replay never touched —
+    # and this line is the only provenance the rows file carries, since
+    # `eval2_rows.row_for` records a verdict and no identity.
+    replay_identity = eng.binary_identity(engine)
+    print("eval2-rows  %s   %d rows, %d replayed   @ engine sha256 %s   %s"
           % (args.run_id, len(result["rows"]), result["replayed"],
-             eng.identity()["fingerprint"]))
+             replay_identity["sha256"] or "unreadable", replay_identity["version"]))
     if result.get("superseded"):
         print("  %d superseded attempt(s) folded: a resumed run redrew its harness errors"
               % result["superseded"])
@@ -453,6 +483,99 @@ def cmd_eval2_bank(args: argparse.Namespace) -> int:
         return 1
     print(eval2_bank.render(result["report"]))
     print("  -> %s" % paths["bank"])
+    return 0 if result["cases"] else 1
+
+
+def cmd_synth_generate(args: argparse.Namespace) -> int:
+    """Ask the model for tasks and k programs each; execute nothing. Holds the key.
+
+    Exit 2 when CEREBRAS_API_KEY is not in this process, 0 otherwise — a run that
+    hit its bound is a normal outcome, and the next run resumes past what this
+    one wrote.
+    """
+    import random
+    from . import synth_generate as sg
+    from .jsonio import iter_jsonl
+    backend = sg.backend_from_env(timeout_s=args.timeout)
+    if backend is None:
+        print("CEREBRAS_API_KEY is not set; this runs on the trusted controller only",
+              file=sys.stderr)
+        return 2
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    # Resumable: what this file already holds, plus what the bank already has.
+    seen = sg.seen_tasks(iter_jsonl(output))
+    here = len(seen)
+    for path in args.exclude_tasks or []:
+        if not Path(path).is_file():
+            print("not a file: %s" % path, file=sys.stderr)
+            return 2
+        seen |= sg.seen_tasks(iter_jsonl(path))
+    print("resuming with %d task(s) in this file, %d already banked elsewhere"
+          % (here, len(seen) - here))
+    budget = sg.Budget(max_calls=args.max_calls, max_output_tokens=args.max_output_tokens,
+                       max_seconds=args.max_minutes * 60.0)
+    with output.open("a", encoding="utf-8") as sink:
+        def write(row):
+            sink.write(json.dumps(row, sort_keys=True) + "\n")
+            sink.flush()
+        summary = sg.generate(backend, write, budget=budget, seen=seen, samples=args.samples,
+                              tasks_per_call=args.tasks_per_call,
+                              rewrite_fraction=args.rewrite_fraction,
+                              rng=random.Random(args.seed))
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_synth_adapt(args: argparse.Namespace) -> int:
+    """Execute every candidate, apply the oracle, route by what the engine does,
+    repair the queue, and write schema-3 cases. Holds no provider key.
+
+    Exit 2 for a usage error (the engine is not a file, the output exists), 1
+    when nothing was admitted — a batch of nothing is a failed read, not a clean
+    one — and 0 otherwise. Witnesses do not change the exit code: they are
+    written and printed, and the cases beside them are still cases.
+    """
+    from . import synth
+    from .training_types import VerificationBlocked
+    if not Path(args.engine).is_file():
+        print("not a file: %s" % args.engine, file=sys.stderr)
+        return 2
+    if not Path(args.candidates).is_file():
+        print("not a file: %s" % args.candidates, file=sys.stderr)
+        return 2
+    if Path(args.output).exists():
+        print("refusing to overwrite %s: a re-run is a new directory" % args.output,
+              file=sys.stderr)
+        return 2
+    if args.offset < 0 or args.limit < 0:
+        print("--offset and --limit are counts, not negatives", file=sys.stderr)
+        return 2
+    candidates = read_jsonl(args.candidates)
+    total = len(candidates)
+    candidates = candidates[args.offset:]
+    if args.limit:
+        candidates = candidates[:args.limit]
+    if not candidates:
+        print("no candidates in %s — nothing was triaged" % args.candidates, file=sys.stderr)
+        return 1
+    runner = synth.Runner(args.engine, timeout_s=args.timeout, mem_mb=args.memory_mb,
+                          seed=args.seed)
+    try:
+        result = synth.run(candidates, runner, agree=args.agree, batch=args.batch)
+    except VerificationBlocked as exc:
+        # Ours: a sandbox that could not start, an engine that could not be
+        # spawned. Nothing is written, because a partial batch that looks whole
+        # is worse than none.
+        print("synth-adapt blocked: %s" % exc, file=sys.stderr)
+        return 1
+    synth.write_outputs(result, args.output)
+    print(synth.render(result["report"]))
+    print("  slice [%d:%d] of %d candidate(s) in %s"
+          % (args.offset, args.offset + len(candidates), total, args.candidates))
+    print("  -> %s" % args.output)
+    for row in result["witnesses"][:5]:
+        print("  witness: %s" % row["why"], file=sys.stderr)
     return 0 if result["cases"] else 1
 
 
@@ -1526,6 +1649,13 @@ def _power_eval2(args: argparse.Namespace) -> int:
               "with runs/<id>/eval2_rows.jsonl>", file=sys.stderr)
         return 2
     src = _eval2_rows_source(args.rows)
+    if src is None and (os.sep in args.rows or args.rows.endswith(".jsonl")):
+        # A path the caller typed is a usage error, and rebuilding it is not the
+        # remedy: `eval2-rows` re-derives `native` — hence `status`, hence the
+        # population — from whichever engine it is given, so a rebuilt file is a
+        # new population at a new identity. Only the run-id form gets the hint.
+        print("not a file: %s" % args.rows, file=sys.stderr)
+        return 2
     if src is None:
         print("no rows file at %s and no %s: write them with `nt eval2-rows %s "
               "--output runs/%s/eval2_rows.jsonl`"
@@ -1695,9 +1825,26 @@ def cmd_leaks(args: argparse.Namespace) -> int:
         # the cases they came from: does a program we are about to train on
         # already pass a held-out case? Exit 1 if any does — it is the one
         # finding here that must stop a training run.
-        rows = list(read_jsonl(Path(args.sft) if Path(args.sft).suffix == ".jsonl"
-                               else Path(args.sft) / "sft.jsonl"))
+        sft_path = (Path(args.sft) if Path(args.sft).suffix == ".jsonl"
+                    else Path(args.sft) / "sft.jsonl")
+        # `read_jsonl` answers `[]` for a path that is not there, so a mistyped
+        # `--sft`, a directory holding no `sft.jsonl` and an empty file all used
+        # to reach "no training target passes a held-out case" and exit 0. This
+        # is the one finding here that must stop a training run, so its all-clear
+        # has to mean a comparison happened: a path that is not a file is the
+        # caller's error, 2, and probing nothing is this command failing, 1.
+        if not sft_path.is_file():
+            print("not a file: %s" % sft_path, file=sys.stderr)
+            return 2
+        rows = list(read_jsonl(sft_path))
         r = splitmod.sft_solves_holdout(rows, [c for c in cases if c["id"] in held])
+        if not r["programs_probed"] or not r["inputs_probed"]:
+            print("leaks: %d SFT row(s) in %s, %d carrying a program, %d distinct "
+                  "input(s) probed against %d held-out case(s) — nothing was run, so "
+                  "nothing is clean."
+                  % (r["rows"], sft_path, r["programs_probed"], r["inputs_probed"],
+                     r["n_holdout"]), file=sys.stderr)
+            return 1
         print("%d SFT rows against %d held-out cases (%d distinct inputs probed)"
               % (r["rows"], r["n_holdout"], r["inputs_probed"]))
         if not r["solved"]:
@@ -1738,6 +1885,14 @@ def cmd_eval2_leaks(args: argparse.Namespace) -> int:
     report = eval2_leaks.bank_leaks(read_jsonl(eval_path), read_jsonl(train_path),
                                     ceiling=args.ceiling,
                                     min_stdout_chars=args.min_stdout)
+    # `is_file` above covers absence, not emptiness, and an all-filtered bank
+    # reads the same. "0 pairs; 0 of 0 eval-2 cases leak" is a clean bill over a
+    # comparison that did not happen, in the gate that stands between a training
+    # bank and the number eval-2 exists to produce.
+    if not report["n_eval2"] or not report["n_train"]:
+        print("eval2-leaks: %d eval-2 and %d training case(s) — nothing was compared"
+              % (report["n_eval2"], report["n_train"]), file=sys.stderr)
+        return 1
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
@@ -1821,11 +1976,26 @@ def cmd_levers(args: argparse.Namespace) -> int:
     lever is a subset of the engine one, so this table is what divides a budget
     between them, and rung S0b of `STATUS.md` §10 is this same table run over
     the eval-2 correct-but-fallback draws instead of the local capture.
+
+    The two failure exits split on whose mistake it was (root `CLAUDE.md`
+    invariant 8): a path typed on the command line that is not a file is a usage
+    error, 2, because argv is wrong and nothing was attempted; having read or
+    graded nothing is this command failing, 1, because argv was right and the
+    evidence was not there. `probe-vector` chose the same 1 for a
+    present-but-empty input, so the two commands answer alike.
     """
     from . import levers
 
     today = time.strftime("%Y-%m-%d")
     notes: List[str] = []
+    if (args.population_rows or args.require_engine_sha256 or args.expect_draws is not None) \
+            and not args.run:
+        print("levers: --population-rows, --require-engine-sha256 and --expect-draws "
+              "apply only with --run", file=sys.stderr)
+        return 2
+    if args.expect_draws is not None and args.expect_draws <= 0:
+        print("levers: --expect-draws must be positive", file=sys.stderr)
+        return 2
     if args.run:
         # Rung S0b. Neither artifact carries the whole answer: the draw rows say
         # which draws are correct-but-fallback and how they cluster, the replay
@@ -1837,25 +2007,75 @@ def cmd_levers(args: argparse.Namespace) -> int:
             print("no lypning binary on this machine: run `lypning build --rust`, "
                   "or pass --engine", file=sys.stderr)
             return 1
+        # An `--engine` that is not a file passes `if not engine` — it is a
+        # truthy string. Every program then grades ERROR, no draw carries a
+        # refusal, and the vector prints empty at exit 0 while the considered
+        # population silently grows, because `native` is re-derived from this
+        # binary. A missing engine is a usage error, not a measurement.
+        if not Path(engine).is_file():
+            print("not a file: %s" % engine, file=sys.stderr)
+            return 2
+        replay_identity = eng.binary_identity(engine)
+        if args.require_engine_sha256:
+            if not re.fullmatch(r"[0-9a-f]{64}", args.require_engine_sha256):
+                print("levers: --require-engine-sha256 must be 64 lowercase hex characters",
+                      file=sys.stderr)
+                return 2
+            if replay_identity["sha256"] != args.require_engine_sha256:
+                print("levers: replay engine sha256 %s, required %s"
+                      % (replay_identity["sha256"] or "unreadable",
+                         args.require_engine_sha256), file=sys.stderr)
+                return 1
         attempts_path = RUNS / args.run / "attempts.jsonl"
         if not attempts_path.exists():
             print("no such run: %s" % args.run, file=sys.stderr)
             return 1
         attempts = list(read_jsonl(attempts_path))
-        meta = _run_meta(args.run)
-        seed = (meta.get("sampling") or {}).get("seed")
         cases, tests = _case_context(False)
+        if args.population_rows:
+            population_path = Path(args.population_rows)
+            if not population_path.is_file():
+                print("not a file: %s" % population_path, file=sys.stderr)
+                return 2
+            drawn_rows = list(read_jsonl(population_path))
+            if not drawn_rows:
+                print("levers: no population rows in %s — nothing to join"
+                      % population_path, file=sys.stderr)
+                return 1
+            # Replay only the frozen population.  A resumed legacy run can
+            # carry several attempts for one draw; use the same winner rule as
+            # eval2-rows before selecting by (corpus_id, draw).
+            wanted = {(row.get("corpus_id") or row.get("case_id"), row.get("draw"))
+                      for row in drawn_rows
+                      if args.status is None or row.get("status") == args.status}
+            attempts = [a for a in eval2_rows.one_attempt_per_draw(attempts)
+                        if (a.get("case_id"), a.get("sample")) in wanted]
+            source = "%s joined to %s" % (population_path, attempts_path)
+        else:
+            meta = _run_meta(args.run)
+            seed = (meta.get("sampling") or {}).get("seed")
+            drawn_rows = None
+            source = "runs/%s" % args.run
         cache = (Path(args.cache) / ("%s.replay.json" % args.run)) if args.cache else None
         census = legality.replay(attempts, engine, tests=tests, workers=args.jobs,
                                  cache=cache)
-        drawn = eval2_rows.rows(attempts, census["rows"], cases, seed=seed)
+        if drawn_rows is None:
+            drawn_rows = eval2_rows.rows(attempts, census["rows"], cases, seed=seed)["rows"]
         programs = dict(((a.get("case_id"), int(a.get("sample") or 0)), a.get("program") or "")
                         for a in attempts)
-        joined = levers.draw_refusals(drawn["rows"], census["rows"],
+        joined = levers.draw_refusals(drawn_rows, census["rows"],
                                       status=args.status, programs=programs)
-        result = levers.table(joined["records"], source="runs/%s" % args.run,
+        if args.expect_draws is not None and joined["considered"] != args.expect_draws:
+            print("levers: %d draw(s) match status %s; expected exactly %d"
+                  % (joined["considered"], args.status or "(any)", args.expect_draws),
+                  file=sys.stderr)
+            return 1
+        result = levers.table(joined["records"], source=source,
                               unit="draw", independence="family",
-                              loaded=len(drawn["rows"]))
+                              loaded=len(drawn_rows))
+        notes.append("@ replay engine sha256 %s   %s   oracle Python %s"
+                     % (replay_identity["sha256"], replay_identity["version"],
+                        replay_identity["oracle_python"]))
         notes.append("%d draw(s) match status %s; %d carried a refusal"
                      % (joined["considered"], args.status or "(any)",
                         len(joined["records"])))
@@ -1865,17 +2085,45 @@ def cmd_levers(args: argparse.Namespace) -> int:
             notes.append("UNRESOLVED: %d draw(s) have no replay row, %d have a replay "
                          "row carrying no refusal. Neither is counted anywhere above."
                          % (joined["unmatched"], joined["without_refusal"]))
-        if census["tally"].get("MISMATCH"):
+        mismatches = census["tally"].get("MISMATCH") or 0
+        if mismatches:
             print("  MISMATCH %d — invariant 1: always a bug, never the model's."
-                  % census["tally"]["MISMATCH"], file=sys.stderr)
+                  % mismatches, file=sys.stderr)
+        # A program the replay could not run carries no refusal, so it leaves
+        # the vector silently. Say so where MISMATCH is said: an ungraded
+        # program is a hole in the evidence, not a family with no mass.
+        errors = census["tally"].get("ERROR") or 0
+        if errors:
+            print("  ERROR %d — the replay could not grade these programs. Their "
+                  "refusals are absent from the vector below, not zero." % errors,
+                  file=sys.stderr)
+        # And when NOTHING graded, there is no vector to print. An engine that
+        # exists but cannot execute reaches here, so the `is_file` check above
+        # is not enough on its own: it would leave the same empty vector at
+        # exit 0, over a population this binary inflated by re-deriving
+        # `native` from a replay that failed. That is the read of nothing this
+        # command must not be able to publish.
+        if mismatches or errors or joined["unmatched"] or joined["without_refusal"]:
+            print("levers: incomplete replay — %d considered, %d MISMATCH, %d ERROR, "
+                  "%d unmatched, %d without a refusal. This is not a refusal vector."
+                  % (joined["considered"], mismatches, errors, joined["unmatched"],
+                     joined["without_refusal"]), file=sys.stderr)
+            return 1
     elif args.rows:
         if not args.replay:
             print("levers: --rows needs --replay: a draw row carries no refusal, and "
                   "the replay carries no population label. Use --run to build both.",
                   file=sys.stderr)
             return 2
-        drawn = list(read_jsonl(Path(args.rows)))
-        joined = levers.draw_refusals(drawn, read_jsonl(Path(args.replay)),
+        rows_path, replay_path = Path(args.rows), Path(args.replay)
+        # Same hole as `probe-vector`: absent rows join to an empty vector at
+        # exit 0, which reads as a measured absence of refusals.
+        for path in (rows_path, replay_path):
+            if not path.is_file():
+                print("not a file: %s" % path, file=sys.stderr)
+                return 2
+        drawn = list(read_jsonl(rows_path))
+        joined = levers.draw_refusals(drawn, read_jsonl(replay_path),
                                       status=args.status)
         result = levers.table(joined["records"], source=args.rows, unit="draw",
                               independence="family", loaded=len(drawn))
@@ -1886,6 +2134,11 @@ def cmd_levers(args: argparse.Namespace) -> int:
             notes.append("UNRESOLVED: %d draw(s) have no replay row, %d have a replay "
                          "row carrying no refusal. Neither is counted anywhere above."
                          % (joined["unmatched"], joined["without_refusal"]))
+            print("levers: incomplete join — %d considered, %d unmatched, %d without "
+                  "a refusal. This is not a refusal vector."
+                  % (joined["considered"], joined["unmatched"],
+                     joined["without_refusal"]), file=sys.stderr)
+            return 1
     else:
         if args.status:
             print("levers: --status applies to draw rows; use it with --run or --rows",
@@ -1905,6 +2158,37 @@ def cmd_levers(args: argparse.Namespace) -> int:
             print("levers: refusing --rank on draw/held-out rows; use --vector for "
                   "descriptive by-family counts", file=sys.stderr)
             return 2
+        # The backstop under the narrow ERROR guard above, which fires first and
+        # names the failed replay because that is the more useful message. This
+        # one asks the weaker question that covers the routes the other cannot
+        # see: did ANY record back this vector? A present-but-empty
+        # `attempts.jsonl` passes the `exists()` check; a `--status` that matches
+        # nothing leaves `considered` at 0 and falsifies the other guard's second
+        # term; and an engine that runs but is not lypning grades MISMATCH, not
+        # ERROR, so `errors` is 0. Each of those printed a complete vector at
+        # exit 0 over inputs that read or graded nothing. The vector is
+        # publishable only if at least one record backs it.
+        #
+        # All four counts are on the line because stdout, which a refusal leaves
+        # empty, is where the note that used to carry them went: without
+        # `considered`, rows that never matched `--status` read as rows that
+        # matched and carried no refusal; without the unmatched count, a join on
+        # the wrong key reads as a census carrying no refusal at all. `joined` is
+        # bound on both routes that label the unit `draw` — the local census is
+        # the `entry` unit and never reaches here, and closing its own empty
+        # reads (an absent or 0-byte `--source` still prints a table at exit 0)
+        # would change what `--rank` and `--against` report over the repository
+        # capture, which is not this guard's call to make.
+        if not result["refusals"]:
+            print("levers: no refusal to publish — %d draw row(s) loaded from %s; "
+                  "%d match status %s; %d have no replay row; %d carried a "
+                  "refusal. An empty vector over nothing is a read of nothing, "
+                  "not a measured absence of refusals."
+                  % (result["loaded"], result["source"], joined["considered"],
+                     args.status or "(any)", joined["unmatched"],
+                     result["refusals"]),
+                  file=sys.stderr)
+            return 1
 
     if args.json:
         print(json.dumps(result, indent=2, ensure_ascii=False, default=sorted))
@@ -1948,12 +2232,28 @@ def cmd_levers(args: argparse.Namespace) -> int:
 def cmd_probe_vector(args: argparse.Namespace) -> int:
     """S0c: a read-only per-case native-status comparison."""
     from . import probe_vector
+    probe_path, base_path = Path(args.probe), Path(args.base)
+    # `read_jsonl` answers `[]` for a path that is not there, and two empty
+    # sides make `probe_only` empty, which is this command's only failure
+    # signal. Absent inputs would therefore print a zeros table and exit 0 —
+    # a rung that reads as "every probe case matched" when nothing was read.
+    for path in (probe_path, base_path):
+        if not path.is_file():
+            print("not a file: %s" % path, file=sys.stderr)
+            return 2
     try:
-        result = probe_vector.compare(read_jsonl(Path(args.probe)),
-                                      read_jsonl(Path(args.base)))
+        result = probe_vector.compare(read_jsonl(probe_path),
+                                      read_jsonl(base_path))
     except (OSError, ValueError) as exc:
         print("probe-vector: %s" % exc, file=sys.stderr)
         return 2
+    # Present but empty is the same read of nothing as absent, one step later:
+    # a probe stage that produced no rollouts did not run, and a zeros table
+    # over it is not a comparison. `probe_only` cannot catch this either.
+    if not result["probe_rows"]:
+        print("probe-vector: no probe rows in %s — nothing to compare" % probe_path,
+              file=sys.stderr)
+        return 1
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
@@ -1961,6 +2261,96 @@ def cmd_probe_vector(args: argparse.Namespace) -> int:
     # The completed base pilot may include dev/test cases the train-only probe
     # deliberately lacks. A probe case with no base comparison is the hole.
     return 1 if result["probe_only"] else 0
+
+
+def cmd_headroom(args: argparse.Namespace) -> int:
+    """Whether this arm's population can host the pre-registered effect at all.
+
+    A bank with no room reports "no win" whatever the adapter does, and the
+    draws are paid for either way. Run it on the base arm before booking one.
+    """
+    path = Path(args.metrics)
+    # An absent or unparsable metrics.json is a read of nothing, and a table
+    # over it would be the S0b/S0c defect again: zeros at exit 0. Exit 2 names
+    # the file, and `assess` exits 2 naming the field when one is missing.
+    if not path.is_file():
+        print("not a file: %s" % path, file=sys.stderr)
+        return 2
+    try:
+        result = headroom_mod.assess(read_json(path), mde=args.mde, noise=args.noise)
+    except (OSError, ValueError) as exc:
+        print("headroom: %s: %s" % (path, exc), file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        print(headroom_mod.render(result))
+    # A saturated population is a finding, not a usage error: exit 1 so a script
+    # that reads this before spending cannot ignore it by ignoring the prose.
+    # `can_fire` is None when the file gives no way to tell whether its rate IS
+    # EVAL2.md section 4's family macro, and that lands here too: a summary that
+    # cannot answer the rule is not one that answers yes, and exit 0 would be
+    # read as one. A file that shows its rate is the macro (headroom.
+    # macro_decomposition) does get a verdict, and exit 0 when it clears.
+    return 0 if result["can_fire"] else 1
+
+
+def cmd_bank_native(args: argparse.Namespace) -> int:
+    """What fraction of a bank's own programs the pinned engine already runs.
+
+    `EVAL2.md` section 9's falsifier before a draw is paid for: a bank whose
+    programs the engine already serves cannot host a lift in the rate of
+    serving them. Free, local, and read-only — it executes the bank's programs
+    under the engine and nothing else.
+    """
+    from .synth import Runner
+    from .training_types import VerificationBlocked
+    path = Path(args.cases)
+    # An absent file read as an empty bank would print a zeros table at exit 0,
+    # the same read-of-nothing `probe-vector` and `headroom` each had to close.
+    if not path.is_file():
+        print("not a file: %s" % path, file=sys.stderr)
+        return 2
+    rows = read_jsonl(path)
+    if not rows:
+        print("bank-native: no rows in %s - nothing to measure" % path, file=sys.stderr)
+        return 1
+    if args.mix_only:
+        # Free: reads the labels `pipeline.synth` already wrote and executes
+        # nothing, so it needs no engine and answers before a draw is booked.
+        mix = bank_native_mod.first_draft_mix(rows)
+        print(json.dumps(mix, indent=2, sort_keys=True) if args.json
+              else bank_native_mod.render_mix(mix, mde=args.mde, limit=args.limit))
+        # A bank nobody can read this way is not a bank with no room.
+        if mix["macro_delta_ceiling"] is None:
+            return 1
+        return 0 if mix["macro_delta_ceiling"] > args.mde else 1
+    engine = args.engine or eng.engine_path("lypning-l")
+    if not engine or not Path(engine).is_file():
+        print("bank-native: no lypning-l engine (pass --engine, or set LYPNING_HOME "
+              "and run `lypning build --rust`)", file=sys.stderr)
+        return 2
+    runner = Runner(engine, timeout_s=args.timeout)
+    try:
+        result = bank_native_mod.measure(rows, runner.engine_verdict, which=args.program)
+    except (OSError, ValueError, VerificationBlocked) as exc:
+        print("bank-native: %s" % exc, file=sys.stderr)
+        return 2
+    # legality.py: "the engine is part of the number ... quoted with its
+    # fingerprint or it is not quoted". `binary_identity` names the bytes.
+    result["engine"] = eng.binary_identity(engine)
+    if args.json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        print(bank_native_mod.render(result, details=args.details))
+    # A read that measured nothing is not a clean read: `--program original`
+    # over a bank that carries no refused first drafts measures zero rows, and
+    # a zeros table over it reads as "every draft was refused".
+    if not result["measured"]:
+        print("bank-native: no row carried a %s program" % args.program, file=sys.stderr)
+        return 1
+    # Invariant 1: a mismatch is a bug. Never exit 0 having seen one.
+    return 1 if result["witness_verdicts"] else 0
 
 
 def cmd_show(args: argparse.Namespace) -> int:
@@ -2392,6 +2782,47 @@ def build_parser() -> argparse.ArgumentParser:
     e2b.add_argument("--timeout", type=float, default=10.0)
     e2b.set_defaults(fn=cmd_eval2_bank)
 
+    sgn = sub.add_parser("synth-generate",
+                         help="bank v3 step 1: ask Qwen on Cerebras for tasks and k programs each (runs nothing)")
+    sgn.add_argument("--output", required=True, help="candidates JSONL, appended to; resumable")
+    sgn.add_argument("--exclude-tasks", action="append",
+                     help="JSONL whose task texts are never regenerated (repeatable)")
+    sgn.add_argument("--tasks-per-call", type=int, default=8)
+    sgn.add_argument("--samples", type=int, default=3,
+                     help="independent programs per task; the self-consistency k")
+    sgn.add_argument("--max-calls", type=int, default=200)
+    sgn.add_argument("--max-output-tokens", type=int, default=1_500_000)
+    sgn.add_argument("--max-minutes", type=float, default=50.0)
+    sgn.add_argument("--timeout", type=float, default=120.0, help="per-request seconds")
+    sgn.add_argument("--seed", type=int, default=1111)
+    sgn.add_argument("--rewrite-fraction", type=float, default=66.0 / 93.0,
+                     help="share of requests aimed at a REWRITABLE construct; the "
+                          "preregistered pool is 66 rewrite to 27 ceiling (0.71)")
+    sgn.set_defaults(fn=cmd_synth_generate)
+
+    sad = sub.add_parser("synth-adapt",
+                         help="bank v3 step 2: execute, judge, repair and write schema-3 cases (no provider key)")
+    sad.add_argument("--candidates", required=True, help="synth-generate output")
+    sad.add_argument("--engine", required=True, help="the pinned lypning-l binary that decides native versus refused")
+    sad.add_argument("--output", required=True,
+                     help="NEW directory for cases.jsonl, unrepaired.jsonl, rejected.jsonl, witnesses.jsonl, report.json")
+    sad.add_argument("--agree", type=int, default=2, help="samples that must agree for a case to survive")
+    sad.add_argument("--batch", default=os.environ.get("GITHUB_RUN_ID", "local"),
+                     help="batch identity written into every case's provenance")
+    sad.add_argument("--timeout", type=float, default=10.0)
+    sad.add_argument("--memory-mb", type=int, default=1024,
+                     help="child address-space cap; 0 explicitly disables it (macOS only)")
+    sad.add_argument("--seed", type=int, default=1111, help="hash seed of the winner's second run")
+    sad.add_argument("--limit", type=int, default=0, help="judge only the first N candidates; 0 keeps all")
+    # A shard is `--offset`/`--limit`, not a pre-split file. Every shard job
+    # downloads the whole candidates artifact anyway — `download-artifact` has
+    # no partial fetch — so splitting the file first buys an extra job and a
+    # second artifact and nothing else, while an offset is one integer that
+    # composes with the limit already here. Each shard writes its own batch.
+    sad.add_argument("--offset", type=int, default=0,
+                     help="skip the first N candidates; with --limit this is one shard of a batch")
+    sad.set_defaults(fn=cmd_synth_adapt)
+
     v = sub.add_parser("verify", help="check the held-out split against its lock")
     v.set_defaults(fn=cmd_verify)
 
@@ -2601,8 +3032,15 @@ def build_parser() -> argparse.ArgumentParser:
     lv.add_argument("--run", metavar="RUN_ID",
                     help="rung S0b: a run's draws joined to their replay verdicts")
     lv.add_argument("--engine", help="binary to replay through (with --run)")
+    lv.add_argument("--require-engine-sha256",
+                    help="with --run, refuse unless the explicit replay binary has this sha256")
     lv.add_argument("--cache", help="directory of <run>.replay.json caches (with --run)")
     lv.add_argument("--jobs", type=int, default=0, help="replay workers (with --run)")
+    lv.add_argument("--population-rows",
+                    help="with --run, freeze status/family/population to these eval2 rows; "
+                         "the replay supplies refusal kinds only")
+    lv.add_argument("--expect-draws", type=int,
+                    help="refuse unless exactly N draw rows match --status")
     lv.add_argument("--rows", help="draw rows already written by `nt eval2-rows`")
     lv.add_argument("--replay", help="the legality rows to join them with (with --rows)")
     lv.add_argument("--status", help="keep only draws with this status, e.g. correct-fallback")
@@ -2629,6 +3067,41 @@ def build_parser() -> argparse.ArgumentParser:
     pv.add_argument("--base", required=True, help="completed base-pilot rows JSONL")
     pv.add_argument("--json", action="store_true", help="machine-readable full table")
     pv.set_defaults(fn=cmd_probe_vector)
+
+    hr = sub.add_parser("headroom",
+                        help="whether an arm's population can host the pre-registered effect")
+    hr.add_argument("metrics", help="a metrics.json from an eval arm")
+    hr.add_argument("--mde", type=float, default=headroom_mod.PREREGISTERED_MDE,
+                    help="the rule's bar as a fraction (PREREGISTRATION.md section 7b: "
+                         "the CI lower bound must exceed +3pp, default %g)"
+                         % headroom_mod.PREREGISTERED_MDE)
+    hr.add_argument("--noise", type=float, default=headroom_mod.NOISE_FLOOR,
+                    help="arm-to-arm noise the interval must clear the bar by "
+                         "(default %g: %s); 0 asks the strict ceiling question instead"
+                         % (headroom_mod.NOISE_FLOOR, headroom_mod.NOISE_PROVENANCE))
+    hr.add_argument("--json", action="store_true", help="machine-readable full table")
+    hr.set_defaults(fn=cmd_headroom)
+
+    bn = sub.add_parser("bank-native",
+                        help="what fraction of a bank's own programs the engine already serves")
+    bn.add_argument("cases", help="a schema-3 JSONL bank (cases.jsonl / train.jsonl)")
+    bn.add_argument("--engine", help="lypning-l binary (default: $LYPNING_HOME/bin/lypning-l)")
+    bn.add_argument("--program", choices=bank_native_mod.PROGRAMS, default="reference",
+                    help="which program to judge: the shipped `reference`, or the refused "
+                         "first draft under synth.original (default: reference)")
+    bn.add_argument("--timeout", type=float, default=10.0, help="per-run wall clock, seconds")
+    bn.add_argument("--details", action="store_true",
+                    help="LOCAL ONLY: also print refusal details, which can echo an "
+                         "identifier from the program that provoked them")
+    bn.add_argument("--mix-only", action="store_true",
+                    help="free: the per-family first-draft mix and the macro delta ceiling "
+                         "it implies, off the labels, executing nothing and needing no engine")
+    bn.add_argument("--mde", type=float, default=headroom_mod.PREREGISTERED_MDE,
+                    help="the bar --mix-only compares its ceiling against (PREREGISTRATION.md "
+                         "section 7b, default %g)" % headroom_mod.PREREGISTERED_MDE)
+    bn.add_argument("--limit", type=int, default=0, help="--mix-only: families to print (0 = all)")
+    bn.add_argument("--json", action="store_true", help="machine-readable full table")
+    bn.set_defaults(fn=cmd_bank_native)
 
     sh = sub.add_parser("show", help="print the programs a run produced")
     sh.add_argument("run_id"); sh.add_argument("--case"); sh.add_argument("--limit", type=int, default=5)

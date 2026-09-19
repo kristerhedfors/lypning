@@ -1,0 +1,119 @@
+# Re-judge candidates already paid for, with today's rules. Spends NOTHING.
+#
+# WHY THIS EXISTS. GH run `35340137976` generated 2,784 candidates and adapted
+# them with the ten repair rules that existed at head `6b53edc` (2026-09-18
+# 11:32 UTC). Two things have happened since, and neither needs a provider call
+# to collect:
+#
+#   1. `repair_rules.RULES` gained `calendar` and `datetime` (`ac4dc28`). The
+#      old run's unrepaired queue is 59 calendar and 75 datetime rows deep and
+#      those two rules have never been offered them.
+#   2. `pipeline.synth` admits a `ceiling`-stratum candidate the engine refuses
+#      on every input as a `fallback-control` case. The script that ran then did
+#      not, so 473 ceiling-stratum rows went to `unrepaired.jsonl` instead of
+#      becoming the counterweight `PREREGISTRATION.md` §2(g) requires. The batch
+#      on the Hub has ZERO fallback-control rows.
+#
+# It also fixes a third thing by construction: the banked rows are not schema-3
+# (no `case_id`, `family`, `population` or `review`), so nothing downstream can
+# load them. `synth.to_case` emits the shape `training-prepare` reads.
+#
+# THE COST. One runner. No Cerebras call, no GPU, no metered request: the
+# candidates were bought by run 35340137976 and this re-reads them. The
+# candidate artifact expires 2026-10-02, and after that this run is no longer
+# free — it needs the provider again. That deadline is the reason to run it.
+#
+# THE SPLIT STILL HOLDS. This job executes model-written code and therefore
+# holds NO provider key; `publish` holds HF_TOKEN and executes nothing. Same
+# boundary as `bank-v3.yml`, for the same reason. Never add CEREBRAS_API_KEY.
+name: bank v3 (re-adapt, no provider call)
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "the run whose bank-v3-candidates artifact to re-judge"
+        default: "35340137976"
+        type: string
+      agree:
+        description: "how many samples must agree for a case to survive"
+        default: "2"
+        type: string
+      publish:
+        description: "append the result to the private dataset as a new batch"
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  readapt:
+    name: re-judge and re-repair (no provider key)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      PYTHONPATH: src:training
+      LYPNING_CAPTURE: "0"
+      LYPNING_HARVEST: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Isolate engine state
+        run: echo "LYPNING_HOME=$RUNNER_TEMP/bank3-home" >> "$GITHUB_ENV"
+      - run: pip install -q -e .
+      - name: Build the engine that decides native versus refused
+        run: |
+          python -m lypning build --rust --target host
+          "$LYPNING_HOME/bin/lypning-l" --version
+      # The artifact belongs to another run, so the id is explicit. Nothing is
+      # re-uploaded from it: the candidates stay in RUNNER_TEMP.
+      - uses: actions/download-artifact@v4
+        with:
+          name: bank-v3-candidates
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ runner.temp }}/in
+      - name: Triage, repair, and write schema-3 cases
+        run: |
+          python -m pipeline.cli synth-adapt \
+            --candidates "$RUNNER_TEMP/in/candidates.jsonl" \
+            --engine "$LYPNING_HOME/bin/lypning-l" \
+            --agree "${{ inputs.agree || 2 }}" \
+            --batch "readapt-${{ inputs.run_id }}-$GITHUB_RUN_ID" \
+            --output "$RUNNER_TEMP/out"
+      # The answer this run was dispatched for, printed as aggregates only.
+      - name: Can a round on this bank detect anything?
+        if: always()
+        run: |
+          python -m pipeline.cli bank-native "$RUNNER_TEMP/out/cases.jsonl" --mix-only
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bank-v3-readapted
+          path: ${{ runner.temp }}/out
+          retention-days: 14
+
+  publish:
+    name: bank the accepted rows (no model code runs here)
+    needs: readapt
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q "huggingface-hub==1.31.0"
+      - uses: actions/download-artifact@v4
+        with:
+          name: bank-v3-readapted
+          path: ${{ runner.temp }}/out
+      - name: Append this run as an immutable batch
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python .github/scripts/bank3_publish.py --push "$RUNNER_TEMP/out"

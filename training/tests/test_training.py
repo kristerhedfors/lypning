@@ -222,15 +222,20 @@ def test_gpu_preflight_no_torch_and_hard_split_gates(tmp_path, monkeypatch):
     gpu = gpu_module()
     args = gpu.parser().parse_args(["sft", "--bundle", "bundle.json", "--engine", "engine",
         "--output", str(tmp_path / "run"), "--revision", "a" * 40, "--plan"])
+    # Every loaded case carries a non-empty reference (`training_data.validate_cases`),
+    # and the plan-time supervised-token bound reads it, so the fixture carries
+    # one too: a bundle without references is not a bundle this program can see.
     bundle = {"digest": "locked", "purpose": "pilot", "limits": {"memory_mb": 1024},
-              "cases": [{"case_id": str(i), "family": "f", "split": "train"}
+              "cases": [{"case_id": str(i), "family": "f", "split": "train",
+                         "reference": "print(%d)\n" % i + "# pad\n" * 30}
                         for i in range(1000)]}
     monkeypatch.setattr(gpu, "load_bundle", lambda *a: bundle)
     assert gpu.preflight(args) == (bundle, None)
     bundle["cases"].pop()
     with pytest.raises(t.TrainingError, match="at least 1000 train cases"):
         gpu.preflight(args)
-    bundle["cases"].append({"case_id": "999", "family": "f", "split": "train"})
+    bundle["cases"].append({"case_id": "999", "family": "f", "split": "train",
+                            "reference": "print(999)\n" + "# pad\n" * 30})
     args.eval_split = "test"
     with pytest.raises(t.TrainingError, match="test split"):
         gpu.preflight(args)
@@ -487,3 +492,201 @@ def test_reward_scores_a_group_concurrently_and_keeps_batch_order(case):
     got = reward(["```python\np0\n```", "```python\np1\n```"] * 2, [case["case_id"]] * 4)
     assert got == [1.0, 0.0, 1.0, 0.0]
     assert not side_by_side.broken, "the two slow scorings never ran side by side"
+
+
+def test_the_registered_seeds_and_the_family_cycle_are_refused_by_message(tmp_path,
+                                                                         monkeypatch):
+    """Two admission gates whose REFUSAL branch nothing pinned.
+
+    `test_gpu_preflight_no_torch_and_hard_split_gates` asserts the accepting
+    side for seed 1111 and a schedule with capacity for one family, so an
+    inverted comparison would be caught. Deleting either guard outright, or
+    corrupting its message, would not be — and these two are what stop a
+    fourth single-seed round on a schedule that can skip a family.
+    """
+    gpu = gpu_module()
+    args = gpu.parser().parse_args(["sft", "--bundle", "bundle.json", "--engine", "engine",
+        "--output", str(tmp_path / "run"), "--revision", "a" * 40, "--plan"])
+    bundle = {"digest": "locked", "purpose": "pilot", "limits": {"memory_mb": 1024},
+              "cases": [{"case_id": str(i), "family": "f%d" % (i % 4), "split": "train",
+                         "reference": "print(%d)\n" % i + "# pad\n" * 30}
+                        for i in range(1000)]}
+    monkeypatch.setattr(gpu, "load_bundle", lambda *a: bundle)
+    assert gpu.preflight(args) == (bundle, None)
+
+    for seed in (1111, 2222, 3333):
+        args.seed = seed
+        assert gpu.preflight(args) == (bundle, None)
+    for seed in (0, 1234, 4444):
+        args.seed = seed
+        with pytest.raises(t.TrainingError,
+                           match="pre-registered seeds: 1111, 2222, 3333"):
+            gpu.preflight(args)
+    args.seed = 1111
+
+    # Four families; the schedule must have room for all four at least once.
+    args.steps, args.batch_size = 1, 3
+    with pytest.raises(t.TrainingError, match="shorter than one complete family cycle"):
+        gpu.preflight(args)
+    # One step of four is a complete cycle, but four exposures cannot reach the
+    # supervised-token floor either, so the accepting side of THIS gate is shown
+    # at a schedule that also clears the plan-time bound below it.
+    args.batch_size = 4
+    with pytest.raises(t.TrainingError, match="upper bound"):
+        gpu.preflight(args)
+    args.steps = 100
+    assert gpu.preflight(args) == (bundle, None)
+
+
+def test_the_supervised_token_floor_is_a_stage_gate_and_not_a_plan_gate(tmp_path,
+                                                                       monkeypatch):
+    """`--plan` accepts a schedule the stage can still refuse. Pinned, not fixed.
+
+    `START_NEXT_ROUND.md` says to run `train_verified.py ... --plan` before
+    every actual stage, so it is fair to read a passing plan as "this schedule
+    is admissible". It is not: the exact 50,000-token floor lives in `run()`,
+    because counting supervised tokens needs `build_examples`, hence the Hub
+    tokenizer and the GPU deps that `--plan` exists to avoid. What the plan can
+    compute is a one-sided bound (`supervised_plan`), and this single exposure
+    of a 60,000-byte reference is the gap the two leave between them: the bound
+    clears the floor on bytes, so the plan admits the schedule, while the token
+    count it will actually expose is only taken in `run()` and may be anywhere
+    below. A bound above the floor is the absence of a certain failure, never a
+    pass; this test is the record of which of the two checks is which, so that
+    moving the exact count later cannot quietly become moving it away.
+    """
+    gpu = gpu_module()
+    args = gpu.parser().parse_args(["sft", "--bundle", "bundle.json", "--engine", "engine",
+        "--output", str(tmp_path / "run"), "--revision", "a" * 40, "--plan",
+        "--steps", "1", "--batch-size", "1"])
+    reference = "# pad\n" * 10_000
+    bundle = {"digest": "locked", "purpose": "pilot", "limits": {"memory_mb": 1024},
+              "cases": [{"case_id": str(i), "family": "f", "split": "train",
+                         "reference": reference}
+                        for i in range(1000)]}
+    monkeypatch.setattr(gpu, "load_bundle", lambda *a: bundle)
+    assert gpu.supervised_plan(args, bundle) == {
+        "planned_exposures": 1,
+        "supervised_token_upper_bound": len(reference.rstrip()) + len("```python\n\n```<|im_end|>")}
+    assert gpu.preflight(args) == (bundle, None)
+    from pipeline.training_contract import MIN_SUPERVISED_TOKENS
+    assert MIN_SUPERVISED_TOKENS == 50_000
+    from gpu.verified_stages import supervised_tokens
+    assert supervised_tokens([]) == 0 < MIN_SUPERVISED_TOKENS
+    # The refusal exists, and it is in `run` rather than `preflight`. Read from
+    # source because importing `run` needs the GPU deps `--plan` avoids.
+    source = Path(gpu.__file__).read_text(encoding="utf-8")
+    body = source.split("def run(")[1]
+    assert "supervised tokens; at least %d required" in body
+    assert "supervised tokens; at least %d required" not in source.split("def run(")[0]
+
+
+def pilot_bundle(cases, reference):
+    """A bundle shaped enough for `--plan` to render, with one reference per case."""
+    return {"digest": "locked", "purpose": "pilot", "identity": {"engine": "lypning-l"},
+            "limits": {"memory_mb": 1024}, "memory_policy": "rss",
+            "cases": [dict(case, reference=reference) for case in cases]}
+
+
+def test_plan_refuses_a_schedule_whose_supervised_dose_cannot_reach_the_floor(tmp_path,
+                                                                             monkeypatch,
+                                                                             capsys):
+    """The certain refusal is paid for at plan time, not on the metered job.
+
+    `sft --plan` runs after the installs and the bank download, and the exact
+    floor fires later still, so a schedule that cannot reach 50,000 supervised
+    tokens used to cost a whole job before saying so. The bound here is the sum
+    over the SCHEDULE: 80 exposures of the same reference. Count-times-longest
+    would be 1,000 of them and would admit this run.
+    """
+    gpu = gpu_module()
+    reference = "print(1)\n" + "# pad\n" * 31
+    bundle = pilot_bundle([{"case_id": str(i), "family": "f", "split": "train"}
+                           for i in range(1000)], reference)
+    monkeypatch.setattr(gpu, "load_bundle", lambda *a: bundle)
+    segment = len(reference.rstrip()) + len("```python\n\n```<|im_end|>")
+    assert 80 * segment < 50_000 <= 1000 * segment, "the two forms must disagree here"
+    code = gpu.main(["sft", "--bundle", "bundle.json", "--engine", "engine",
+                     "--output", str(tmp_path / "run"), "--revision", "a" * 40, "--plan",
+                     "--steps", "20", "--batch-size", "4"])
+    out, err = capsys.readouterr()
+    assert code == 1 and not out, "a refused plan prints no plan"
+    assert "at most %d supervised tokens" % (80 * segment) in err
+    assert "upper bound" in err and "50000" in err
+
+
+def test_plan_reports_the_supervised_bound_it_admits_a_schedule_on(tmp_path, monkeypatch,
+                                                                   capsys):
+    """Admission prints both numbers, because the bound is not a pass.
+
+    A bound above the floor only says the exact count in `run()` is not
+    certainly below it, so the operator gets the bound and the exposure count
+    rather than a bare "training_started": false and an inference from steps
+    times batch size, which counts exposures and not tokens.
+    """
+    gpu = gpu_module()
+    reference = "print(1)\n" + "# pad\n" * 31
+    bundle = pilot_bundle([{"case_id": str(i), "family": "f", "split": "train"}
+                           for i in range(1000)], reference)
+    monkeypatch.setattr(gpu, "load_bundle", lambda *a: bundle)
+    segment = len(reference.rstrip()) + len("```python\n\n```<|im_end|>")
+    code = gpu.main(["sft", "--bundle", "bundle.json", "--engine", "engine",
+                     "--output", str(tmp_path / "run"), "--revision", "a" * 40, "--plan",
+                     "--steps", "250", "--batch-size", "4"])
+    out, err = capsys.readouterr()
+    assert code == 0 and not err
+    plan = json.loads(out)
+    assert plan["planned_exposures"] == 1000
+    assert plan["supervised_token_upper_bound"] == 1000 * segment >= 50_000
+    assert plan["training_started"] is False
+
+
+def test_a_stage_with_no_supervised_dose_plans_null_and_never_zero(tmp_path, monkeypatch,
+                                                                  capsys):
+    """"Not applicable" must not render as a bound of zero.
+
+    The runbook now tells the operator that a bound below the floor is a
+    certain refusal, so a smoke or a GRPO plan printing `0` would read as the
+    worst possible schedule rather than as a stage the floor does not price.
+    `supervised_plan` answers None for exactly those stages; this pins that the
+    plan carries the None through instead of defaulting it to a number.
+    """
+    gpu = gpu_module()
+    reference = "print(1)\n" + "# pad\n" * 31
+    bundle = pilot_bundle([{"case_id": str(i), "family": "f", "split": "train"}
+                           for i in range(1000)], reference)
+    monkeypatch.setattr(gpu, "load_bundle", lambda *a: bundle)
+    # `supervised_plan` already answers None for a smoke and for every non-SFT
+    # stage; what is unpinned is whether `main` carries that None into the JSON
+    # or defaults it. Forcing None is the only way to reach that branch on a
+    # stage whose plan otherwise succeeds.
+    monkeypatch.setattr(gpu, "supervised_plan", lambda *a: None)
+    code = gpu.main(["sft", "--bundle", "bundle.json", "--engine", "engine",
+                     "--output", str(tmp_path / "run"), "--revision", "a" * 40, "--plan",
+                     "--steps", "250", "--batch-size", "4"])
+    out, err = capsys.readouterr()
+    assert code == 0 and not err
+    plan = json.loads(out)
+    assert plan["planned_exposures"] is None
+    assert plan["supervised_token_upper_bound"] is None
+
+
+def test_the_output_directory_is_created_after_the_weights_and_not_before():
+    """A missing stage directory does not date the failure. Pinned, not fixed.
+
+    Round-02 job `6aacd5cfb1dc2b62dc590b82` failed at stage `sft` having never
+    created `work/round-02/sft/`, and that was read as evidence it died before
+    the model loaded -- which would have left the supervised-token floor as
+    nearly the only candidate. `run()` does not mkdir before the download: it
+    mkdirs after `snapshot_download`, after `from_pretrained`, and after the
+    LoRA attach, so an absent directory is equally consistent with a refusal at
+    the floor, an OOM in the gradient smoke and a kill during the 55.6 GB load.
+    This test records which side of the download the mkdir is on, so the next
+    reading of an empty stage directory starts from the right suspect list.
+    """
+    gpu = gpu_module()
+    body = Path(gpu.__file__).read_text(encoding="utf-8").split("def run(")[1]
+    floor = body.index("supervised tokens; at least %d required")
+    download = body.index("snapshot_download(BASE_MODEL")
+    mkdir = body.index("args.output.mkdir(")
+    assert floor < download < mkdir

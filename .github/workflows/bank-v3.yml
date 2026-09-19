@@ -1,0 +1,231 @@
+# Grow the training bank from Qwen on Cerebras, then adapt what the engine refuses.
+#
+# THE SPLIT IS THE SAFETY PROPERTY. `HARVESTING.md`: the upstream key belongs to
+# the trusted controller, and the model-facing execution boundary must never
+# receive it. So:
+#   generate — holds CEREBRAS_API_KEY, writes candidates, EXECUTES NOTHING.
+#   adapt    — holds no provider key, executes model-written code, repairs it.
+# The artifact between them is the only channel. Do not merge these jobs, and do
+# not add the secret to the second one.
+#
+# Manual trigger only. `ORCHESTRATION.md` says not to change the paid manual-only
+# trigger, and this keeps it. The file now IS on the default branch, so
+# `workflow_dispatch` resolves and is the ordinary route; the push route stays
+# gated on a commit-message marker the way the round-02 launcher already is. A
+# routine push to this branch spends nothing; only a commit that says
+# `[generate-bank]` does.
+#
+# The stages are `python -m pipeline.cli synth-generate` and `synth-adapt`
+# (`training/pipeline/synth_generate.py`, `training/pipeline/synth.py`); the
+# adapt step writes schema-3 cases, the shape `training-prepare` reads.
+name: bank v3 (generate and adapt)
+
+on:
+  push:
+    branches: ["round02/**", "bank3/**"]
+  workflow_dispatch:
+    inputs:
+      max_calls:
+        description: "provider calls this run (~3.4 per task at 3 samples)"
+        default: "12000"
+        type: string
+      max_minutes:
+        description: "wall-clock bound on generation"
+        default: "120"
+        type: string
+      samples:
+        description: "independent programs per task; the self-consistency k"
+        default: "3"
+        type: string
+      agree:
+        description: "how many samples must agree for a case to survive"
+        default: "2"
+        type: string
+      seed:
+        description: "construct-draw seed; blank uses the run id, so two runs never draw alike"
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    name: generate candidates (holds the key, runs nothing)
+    if: >-
+      contains(github.event.head_commit.message, '[generate-bank]') ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      PYTHONPATH: src:training
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The provider is reached through `pipeline.backends`, stdlib urllib: no
+      # vendor SDK. huggingface-hub is CI tooling on the trusted controller, not
+      # a runtime dependency of the package (root CLAUDE.md invariant 6).
+      - run: pip install -q "huggingface-hub==1.31.0"
+      # Every task already banked, so a run does not pay to regenerate what the
+      # bank already has. This step runs no model-written code, which is why it
+      # may hold HF_TOKEN; the job that executes candidates must not, and does not.
+      - name: Seed dedup from the banked batches
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python .github/scripts/bank3_publish.py --seed "$RUNNER_TEMP/banked.jsonl"
+      # A 403 on the first completion does not say whether the key is rejected
+      # or the model is not entitled. Ask before spending the run finding out.
+      - name: What can this key see?
+        env:
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+        run: python .github/scripts/cerebras_probe.py
+
+      # The seed draws the construct sequence. It defaults to 1111, so every run
+      # left to itself asks for the same constructs in the same order and pays
+      # the provider for tasks `--exclude-tasks` then filters: the bank stops
+      # growing while the bill does not. Defaulting it to the run id makes two
+      # runs draw differently by construction; pass an explicit seed only to
+      # reproduce a particular batch.
+      - name: Ask Qwen for tasks and k independent programs each
+        env:
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          SEED: ${{ inputs.seed || github.run_id }}
+        run: |
+          python -m pipeline.cli synth-generate \
+            --output "$RUNNER_TEMP/candidates.jsonl" \
+            --exclude-tasks "$RUNNER_TEMP/banked.jsonl" \
+            --samples "${{ inputs.samples || 3 }}" \
+            --max-calls "${{ inputs.max_calls || 12000 }}" \
+            --max-minutes "${{ inputs.max_minutes || 120 }}" \
+            --seed "$SEED" \
+            --max-output-tokens 8000000
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bank-v3-candidates
+          path: ${{ runner.temp }}/candidates.jsonl
+          retention-days: 14
+
+  adapt:
+    name: execute, judge and repair (no provider key)
+    needs: generate
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    # ONE SHARD PER JOB, because a full generate run no longer fits one job.
+    # Measured on run 35399909232 (adapt job 105802008535, 2026-09-19): 2,078
+    # candidates judged in 38m54s, which is 1.12 s each and projects 7,967 to
+    # ~149 min against this 90-minute cap. Four shards put each one near 37 min
+    # with the cap unchanged. `fail-fast: false` is the point of sharding: a
+    # shard that dies must not cancel three that are working, and each shard
+    # banks its own batch, so a failure costs a quarter of a run and not a run.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      PYTHONPATH: src:training
+      LYPNING_CAPTURE: "0"
+      LYPNING_HARVEST: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Isolate engine state
+        run: echo "LYPNING_HOME=$RUNNER_TEMP/bank3-home" >> "$GITHUB_ENV"
+      - run: pip install -q -e .
+      - name: Build the engine that decides native versus refused
+        run: |
+          python -m lypning build --rust --target host
+          "$LYPNING_HOME/bin/lypning-l" --version
+      - uses: actions/download-artifact@v4
+        with:
+          name: bank-v3-candidates
+          path: ${{ runner.temp }}/in
+
+      # The divisor is `strategy.job-total`, not a second constant: the matrix
+      # above is the only place the shard count is written, so the slice cannot
+      # drift from the list. Ceiling division means the last shard is the short
+      # one and every candidate lands in exactly one slice.
+      - name: Which slice of the candidates is this shard
+        run: |
+          total=$(grep -c . "$RUNNER_TEMP/in/candidates.jsonl")
+          shards=${{ strategy.job-total }}
+          size=$(( (total + shards - 1) / shards ))
+          echo "SHARD_OFFSET=$(( ${{ matrix.shard }} * size ))" >> "$GITHUB_ENV"
+          echo "SHARD_SIZE=$size" >> "$GITHUB_ENV"
+          echo "shard ${{ matrix.shard }} of $shards: $size of $total candidate(s)"
+
+      # Runs every candidate in its slice. This job deliberately has no provider
+      # secret, so a generated program that reads the environment finds nothing
+      # worth having; the runner is a disposable VM with no other credentials
+      # either. Every repair is proved against the expected output agreed BEFORE
+      # the repair existed, so a rewrite cannot move its own target. Exit 1 here
+      # means nothing was admitted, which is a failed read and not a clean one.
+      - name: Triage, repair, and write schema-3 cases
+        run: |
+          python -m pipeline.cli synth-adapt \
+            --candidates "$RUNNER_TEMP/in/candidates.jsonl" \
+            --engine "$LYPNING_HOME/bin/lypning-l" \
+            --agree "${{ inputs.agree || 2 }}" \
+            --offset "$SHARD_OFFSET" \
+            --limit "$SHARD_SIZE" \
+            --batch "$GITHUB_RUN_ID-${{ matrix.shard }}" \
+            --output "$RUNNER_TEMP/out"
+
+      # The name carries the shard, because the publisher banks one batch per
+      # artifact and two shards must never land in one directory.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bank-v3-adapted-${{ matrix.shard }}
+          path: ${{ runner.temp }}/out
+          retention-days: 14
+
+  # A separate job because it holds HF_TOKEN and the jobs above execute
+  # model-written code. An artifact expires in 14 days; the dataset repo does not.
+  publish:
+    name: bank the accepted rows (no model code runs here)
+    needs: adapt
+    # Bank whatever the shards produced, including when one of them failed. A
+    # shard is a quarter of a paid generate run; discarding three good ones
+    # because the fourth died is the failure mode this whole change is about.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q "huggingface-hub==1.31.0"
+      # One artifact per shard, each landing in its own subdirectory. Without
+      # `pattern` this job would ask for a name no shard writes any more.
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bank-v3-adapted-*
+          path: ${{ runner.temp }}/out
+      - name: Append each shard as its own immutable batch
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          shopt -s nullglob
+          dirs=("$RUNNER_TEMP"/out/bank-v3-adapted-*)
+          if [ ${#dirs[@]} -eq 0 ]; then
+            echo "no shard produced an output directory — nothing to bank" >&2
+            exit 1
+          fi
+          # Every shard is attempted before the job fails, for the same reason
+          # the matrix is not fail-fast: one empty shard must not strand the
+          # rest. The run still ends non-zero, so an empty shard stays loud.
+          failed=0
+          for dir in "${dirs[@]}"; do
+            shard="${dir##*-}"
+            echo "::group::batch $GITHUB_RUN_ID-$shard"
+            python .github/scripts/bank3_publish.py \
+              --push "$dir" --batch "$GITHUB_RUN_ID-$shard" || failed=1
+            echo "::endgroup::"
+          done
+          exit "$failed"

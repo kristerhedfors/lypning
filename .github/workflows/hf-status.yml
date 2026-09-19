@@ -1,0 +1,34 @@
+# What actually happened on the Hub, independent of whether a runner survived.
+#
+# A GitHub job dies at `timeout-minutes` and takes `--follow` with it; the HF
+# job keeps running and still uploads its round directory. A cancelled workflow
+# therefore says nothing about the round, and this reads the side that knows.
+#
+# Free and read-only: lists jobs and repo files, downloads only manifests.
+name: hf status
+
+on:
+  push:
+    branches: ["round02/**", "bank3/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  status:
+    name: read the Hub
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      WORK_REPO_NAME: lypning-round02-artifacts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q "huggingface-hub==1.31.0"
+      - name: Jobs, artifacts and the round manifest
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python .github/scripts/hf_status.py

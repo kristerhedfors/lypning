@@ -1,0 +1,87 @@
+# Two free reads of the re-adapted bank-v3, before anything is bundled or booked.
+#
+#   gates      does the union of the named batches clear the plan-time gates at
+#              every protocol seed -- split composition, validate_pilot,
+#              validate_benchmark, MIN_TRAIN_CASES. Exit 1 is a finding.
+#   witnesses  every engine mismatch the batches recorded, re-run against a
+#              fresh build and written in engine-mismatches.jsonl shape to an
+#              ARTIFACT. Invariant 1: a mismatch is a bug, never a data point,
+#              and never a line in a public log either.
+#
+# THE SPLIT HOLDS. The step that downloads witnesses holds HF_TOKEN and executes
+# nothing; the step that executes them holds no token. Same boundary as
+# `bank-v3.yml`, for the same reason. Never add a secret to the reproduce step.
+name: bank gates (can the re-adapted bank be bundled)
+
+on:
+  workflow_dispatch:
+    inputs:
+      batches:
+        description: "comma-separated bank-v3 batch ids to read as one bank"
+        default: "35422748954,35422741922"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    name: the plan-time gates, at every seed
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PYTHONPATH: src:training
+      WORK_REPO_NAME: lypning-round02-artifacts
+      LYPNING_CAPTURE: "0"
+      LYPNING_HARVEST: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q -e . "huggingface-hub==1.31.0"
+      - name: Isolate engine state
+        run: echo "LYPNING_HOME=$RUNNER_TEMP/gates-home" >> "$GITHUB_ENV"
+      - name: Build the engine that decides native versus refused
+        run: |
+          python -m lypning build --rust --target host
+          "$LYPNING_HOME/bin/lypning-l" --version
+
+      # Normalise the named batches into one schema-3 file. Counts and refusal
+      # kinds only reach the log; the rows stay in RUNNER_TEMP.
+      - name: What the Hub banked, as one bank
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          args=""
+          for b in $(echo "${{ inputs.batches }}" | tr ',' ' '); do args="$args --batch $b"; done
+          python .github/scripts/bank3_ceiling.py --output "$RUNNER_TEMP/bank-v3.jsonl" $args
+
+      - name: The gates, at every protocol seed
+        run: python .github/scripts/bank3_gates.py "$RUNNER_TEMP/bank-v3.jsonl"
+
+      # Holds the token. Downloads. Executes nothing.
+      - name: Fetch the witnesses
+        if: ${{ !cancelled() }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          args=""
+          for b in $(echo "${{ inputs.batches }}" | tr ',' ' '); do args="$args --batch $b"; done
+          python .github/scripts/witness_file.py fetch --dir "$RUNNER_TEMP/witnesses" $args
+
+      # Holds no token. Executes the witnesses under both interpreters.
+      - name: Reproduce them against a fresh build
+        if: ${{ !cancelled() }}
+        run: |
+          python .github/scripts/witness_file.py reproduce \
+            --dir "$RUNNER_TEMP/witnesses" --engine "$LYPNING_HOME/bin/lypning-l" \
+            --output "$RUNNER_TEMP/out/engine-mismatches.jsonl" \
+            --found-by "bank-v3 re-adapt batches ${{ inputs.batches }}, reproduced in CI run ${{ github.run_id }}, $(date -u +%Y-%m-%d)"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: engine-mismatches
+          path: ${{ runner.temp }}/out
+          retention-days: 30

@@ -14,6 +14,687 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-19** — The construct pool, not the row count, was the gate on a real round
+
+- A pilot bank and a disjoint eval-2 benchmark bank each need ≥18 independent
+  families (`training_data.validate_bank`), and one family is one target
+  construct, so the pool caps both. At 27 rewritable + 10 unrewritable it did
+  not fit: an eval-2 bank wants ~16 coverage families and a pilot ~12, against
+  27 that exist — off by one before any margin, and tighter on the control
+  side, where `validate_pilot` needs ≥2 control families per split (6) out of
+  10 that must also stock the benchmark. bank v2 shipped 51 + 18 = 69 disjoint
+  families; 37 cannot be carved into that shape at any row count, which is why
+  the 7,042-row re-adapted bank passes `validate_pilot` and still cannot host a
+  round with a held-out benchmark.
+- The pool is now 47 rewritable + 24 unrewritable = 71 distinct families, no
+  collisions. Every addition was probed against the built engine on 2026-09-19
+  and is REFUSED, and every rewritable one carries an `engine-addressable`
+  verdict in `levers.DECLARED`, so the pair teaches a substitution the served
+  subset can express.
+- What was deliberately left out, and why it matters: `collections.Counter`,
+  `collections.defaultdict`, `math.gcd`, `math.isqrt`, `math.factorial`,
+  `os.path.splitext`, `json.dumps` and `re.findall` all came back SERVED.
+  Generating toward constructs the engine already runs is exactly what left
+  bank v2 at 0.9686 correct-and-native with no room for the preregistered
+  effect. `secrets` was rejected outright: a control still has to print the
+  same bytes every run.
+- The stratum draw is unchanged. `generate` picks the stratum at
+  `REWRITE_FRACTION` before it indexes a pool, so pool sizes do not move the
+  preregistered 66:27 mixture (0.7162 over 10,000 draws at seed 1111).
+
+**2026-09-19** — A repair rule is a capability claim; make the table say so, and make it fail when the engine catches up
+
+- A repair rule rewrites a refused module into the served subset and the
+  rewrite verifies natively, so the module's used surface is expressible there
+  by construction — the rule is the proof, and `fractions` was withdrawn on
+  2026-09-18 precisely because its rule could not be. `levers.DECLARED` had no
+  verdict on eight of the twelve modules the rules rewrite (functools, operator,
+  copy, heapq, bisect, array, decimal, calendar; measured 2026-09-19 with
+  `levers.classify("module", "import <m>")`). They are declared
+  engine-addressable now under a third provenance, `rule`: the row is matched
+  by the rule existing, not by a capture-corpus family, so `declared_unused`
+  still catches a verdict whose rule was withdrawn, and a module the corpus
+  never refused still has its verdict on record before its pairs reach a model.
+  None of the eight appears in the capture corpus, so the reviewed §4 vector
+  does not move.
+- `repair_rules.MODULES` names the list, and `test_repair_rules.py` holds two
+  invariants over it: every entry carries an engine-addressable verdict (fails
+  8/12 before this entry, 0/12 after), and none is a module the built engine
+  serves. The second reads the engine through `legality.modules_served`, the
+  same probe gate B uses, with `glob` as a served sentinel so a broken probe
+  fails loudly instead of passing vacuously.
+- Why it matters: gate B probes the engine, not a table. The day the engine
+  gains `bisect`, every bisect repair pair becomes a supported-import
+  regression. The drift test makes that day a failing test, not a voided
+  round.
+- `synth-adapt` reports `rule_verdicts` beside `rules_fired` and renders a
+  loud line for any rule without an engine-addressable bucket. Derived from
+  `levers` at report time, never written on the case.
+- The re-adapted bank-v3 clears the plan-time gates at all three protocol
+  seeds, read in CI over the union of batches 35422748954 and 35422741922
+  (run 35430465717, 2026-09-19): 7,042 cases after one cross-batch duplicate
+  was dropped at the normaliser, train 5,482–5,964 against the 1,000 floor,
+  `validate_pilot` and `validate_benchmark` OK. Dev and test hold 4 families
+  each against 29 in train, which the gates do not check and a family-clustered
+  bootstrap will feel. `bank3_gates.py` is the read; `bank-gates.yml` runs it.
+- One engine witness from batch 35422741922 reproduced against a fresh build
+  and is filed in `training/data/engine-mismatches.jsonl`: `sys.stdin.read(n)`
+  ignores its size argument and returns the whole remaining stream
+  (`readline()` is correct). Invariant 1: a bug, never a data point; it moved
+  from the private Hub to the file as a CI artifact, never a log line.
+- Withdrawn from this session's own analysis: "itertools is deliberately
+  excluded because lazy-iterator semantics sank cap-csv and cap-glob". Both
+  landed in iteration 77 (`docs/HILLCLIMB.md`); the engine serves `iter`,
+  `next`, generator expressions, `zip`, `enumerate` and `map` (rc 0 on all,
+  2026-09-19) and refuses only `yield`. `itertools` was already declared
+  engine-addressable from §4, and `rule_itertools` is the proof.
+
+**2026-09-19** — Count the tokens the prompt budget was supposed to be counting
+
+- The per-case prompt budget in `train_verified.py` had been vacuous since the
+  experiment pinned transformers 5: `apply_chat_template(tokenize=True)` returns
+  a plain list of ids under 4.x and a `BatchEncoding` under 5.x, both answer
+  `len()`, and the 5.x answer is the number of KEYS. So
+  `len(prompt_ids) + args.max_new_tokens > args.max_seq` evaluated
+  `2 + 1024 > 4096` and admitted a prompt of any length whatsoever. Measured
+  2026-09-19: `uv run --no-project --python 3.12 --with transformers==5.17.0`,
+  `len(BatchEncoding({"input_ids": [0…43], "attention_mask": […]}))` is **2**
+  while `len(be["input_ids"])` is **44**. The comment above the check called it
+  an admission check "before downloading 27B weights"; it was two lines of
+  arithmetic on a dictionary.
+- The extraction has one home and a name that says what it is:
+  `pipeline.training.chat_prompt_token_ids` renders with the three settings the
+  SFT examples and the held-out generation already agree on, accepts both
+  shapes, unnests a batched row, and **raises** on a third shape rather than
+  counting whatever it was handed. The arithmetic has one home too —
+  `train_verified.check_prompt_budget`, module level rather than inline in
+  `run()`, because inline it was reachable only behind `import torch` and so
+  could not be tested at all. That is the whole reason it could rot.
+- `.github/scripts/token_floor.py` refused to run on the environment its own
+  workflow pins. Its new shape guard demanded a `list` of `int`, which is
+  exactly what transformers 5.17.0 does not return, so the job would have
+  exited 2 on a correct tokenizer; and the sweep on the line below it took
+  `len()` of the same call, so had the guard passed, every bank row would have
+  been reported as a two-token prompt. Both now count through
+  `chat_prompt_token_ids`, and the guard refuses only what that refuses.
+- `training/tests/test_prompt_budget.py` is the regression, and two of its twelve
+  tests are sweeps rather than cases: nothing outside the extraction may call
+  `apply_chat_template(tokenize=True)`, and no call site anywhere in
+  `training/gpu/`, `training/pipeline/` or `.github/scripts/` may take `len()`
+  of a chat-template render. Against the unfixed tree the sweeps name the three
+  offending lines; the behavioural tests drive a 4,000-token prompt through a
+  `BatchEncoding` double against a 2,048 budget and require the refusal.
+- **Amends the entry below.** "The base-dev arm of the same job did complete,
+  which rules out … the per-case prompt budget" was true for the wrong reason:
+  that arm ran a check that could not fail. What the completed base-dev arm
+  actually shows is that the dev prompts generate (256 cases, truncation 0.0,
+  mean completion 96.87 tokens, job `6aacd5cfb1dc2b62dc590b82`, 2026-09-18).
+  The candidate list for the `sft` death gains one entry and it is not this
+  check: `build_examples` drops any row whose whole turn exceeds `--max-seq`
+  and `run()` then raises *"SFT rows over token limit"* — before the download
+  and before the mkdir, which is where that job died. `token_floor.py` decides
+  it for free, now that it can run: it prints rows over budget, rows dropped,
+  and the mean and longest prompt over the same bank, tokenizer and revision.
+- Not a tokenizer bug but found by the same sweep: `pipeline/sample.py` carried
+  `\$` inside a plain docstring, a `SyntaxWarning` today and a `SyntaxError` in
+  a later Python.
+
+**2026-09-19** — Stop one generated row from throwing away a whole adapted batch, and shard adapt so a full generate run fits its job
+
+- The adapt job of GH run 35399909232 did not run out of memory, which is what
+  a step that prints nothing for 38 minutes looks like. It printed the reason
+  on its last line: `synth-adapt blocked: harness: setup file escapes workdir:
+  '/data/logs.txt'` (job 105802008535, log read 2026-09-19). One candidate
+  asked for an absolute path, `sandbox.materialize` called that a *harness*
+  error, and a harness error is ours and aborts everything — so 2,078
+  already-judged candidates were discarded and nothing was written. Three of
+  the artifact's 7,967 rows carry such a name — rows 2078, 2082 and 2937, the
+  first of which is where the job stopped.
+- `synth.validate_candidate` now applies the input-path rule before anything is
+  executed, so the row is rejected as malformed and the batch survives. The rule
+  has one home, `training_data.unsafe_input_path`, which `validate_cases`
+  already enforced downstream — the candidate validator was simply not asking.
+- **A NUL is the second defect class, and it is independent of the first.** A
+  NUL byte inside an `argv` element or an input-file name never reaches a
+  verdict at all: `subprocess.Popen` and `Path.mkdir` raise `ValueError`, which
+  is neither a harness error nor a program result, so it left `synth.run` as a
+  traceback and took the batch with it by a different door. `validate_candidate`
+  rejects it as malformed too, with its own parametrised regression tests in
+  `training/tests/test_synth.py`. File *content* may still hold a NUL — bytes on
+  a pipe and bytes in a file both arrive intact, and `validate_cases` admits
+  them. Three of GH run 35340137976's 2,784 candidates carry one, at rows **28,
+  31 and 1712**; row 461 of that same artifact is the *other* class, an escaping
+  file name, and is not a NUL row. Four of GH run 35399909232's 7,967 carry one,
+  at rows 2380, 3498, 3501 and 5058 (`gh run download <run> -n
+  bank-v3-candidates`, then a scan of every `argv` element and input-file name
+  for `\0` and through `training_data.unsafe_input_path`, 2026-09-19).
+- **Sharding alone would not have saved that run, and the arithmetic says which
+  shards.** `size = ceil(7967 / 4) = 1992`, so shard 1 is rows 1992–3983 and
+  shard 2 is 3984–5975. All three escaping-path rows fall in shard 1 and one
+  NUL row (5058) falls in shard 2, so **two of the four shards** would still
+  have aborted and two would have completed. The guard is what saves those two;
+  the matrix only bounds the loss (same scan, same date).
+- The input-path rule now has the one home the bullet above claims for it.
+  `eval2_bank.check_tests_shape` held a third, verbatim copy, and a copy does
+  drift: that one never grew `unsafe_input_path`'s directory-collision clause,
+  so an authored eval-2 proposal naming both `d` and `d/x` passed the cheap
+  shape check and was charged to `invalid-case` after the reference had been
+  executed twice and the engine consulted. It is charged to `tests-shape` now,
+  at the first rule it fails, and
+  `test_this_module_holds_no_second_copy_of_the_input_path_rule` is the grep
+  that keeps the claim true rather than merely written down.
+- The memory theory is recorded as falsified rather than dropped: the 7,967
+  candidates occupy **38.2 MB** resident once parsed, 39.8 MB with a full
+  retained rejected list, against a 16 GB runner (measured 2026-09-19 on the
+  `bank-v3-candidates` artifact of that run, which is 18,290,882 B of JSONL —
+  the 2,956,177 B is the compressed artifact).
+- Adapt is four shards, because the batch no longer fits one job even when it
+  does not crash: 2,078 candidates in 38m54s is 1.12 s each and projects 7,967
+  to ~149 min against a 90-minute cap. `--offset` is the new flag, `--limit`
+  was already there, and the divisor is `strategy.job-total` so the slice
+  cannot drift from the matrix. Each shard banks its own `<run_id>-<shard>`
+  batch, the matrix is not `fail-fast`, and publish runs `if: !cancelled()`:
+  a shard that dies costs a quarter of a paid run, not a run.
+- The safety split is unchanged and is the reason the shards are shaped this
+  way: generate holds `CEREBRAS_API_KEY` and executes nothing, every adapt
+  shard executes model-written code and holds no secret, publish holds
+  `HF_TOKEN` and runs no candidate code.
+
+**2026-09-19** — Reconcile the programme ledger with the banks, the base arm and the instrument finding that unblocked generation
+
+- `training/STATUS.md` named a blocker that two PRs had closed and an admitted
+  case count off by a factor of seventeen. The supply ratio is no longer
+  backwards: bank v2 admits **1,120** train cases over 33 independent split
+  components against a 597-case benchmark, which is what `split_cases(seed=1111)`
+  and `validate_pilot` return over `training/data/bank_v2/`, re-run 2026-09-19 —
+  not the 1,689 lines of the file, because dev (256) and test (313) are held out.
+  The GPU job's own bundle prints the same three numbers (GH run 35399900848,
+  2026-09-18).
+- The unadapted base arm is on the scoreboard with the two clauses it will be
+  misquoted without: it is the **training bank's dev split**, not eval-2, and it
+  is k = 4, which `training/EVAL2.md` §4 calls a smoke setting. `nt headroom` over its
+  `metrics.json` reports the carrier population INSUFFICIENT — +3.14pp of
+  estimated ceiling against a 3.00pp bar — which is a strong design signal and
+  never arithmetic certainty (job `6aacd5cfb1dc2b62dc590b82`, 2026-09-18).
+- S0a and S0b are blocked because `eval2_rows.jsonl` is on **neither** private
+  repository, so the next action is a pilot re-run and not a transfer; S0c is
+  blocked on its base column only, because its probe rollouts are in
+  `lypning-round02-work` (GH run 35399900848, 2026-09-18). Reading those two as
+  one state is what would abandon a rung for want of a file that exists.
+- The programme records measurements about its own instrument, and this is one:
+  `pipeline/backends.py` sent no `User-Agent`, so the provider's edge answered
+  HTTP 403 (Cloudflare error 1010) before the key was read. With the header,
+  GH run 35399909232 wrote 7,967 candidates on 25,048 calls (2026-09-18/19)
+  against 2,784 on 8,753 (GH run 35340137976, 2026-09-18).
+- Recorded, not corrected: the #92 entry below describes a **draft** of bank v2
+  — a train split of 1,355 over 40 families, digest `7c8997e1e128c47f`, 315 of
+  315 clean — where the bank that shipped in the same PR splits 1,120 over 33
+  and records digest `10492e75cc8c52a6` and 597 of 597 (`data/bank_v2/README.md`,
+  and `split_cases(seed=1111)` re-run 2026-09-19). A dated entry is a record of
+  a moment, so it is left standing; the artifact is 1,120.
+- Bank v3's 4,850 banked rows carry **zero** `fallback-control` rows, because
+  the publisher that wrote both batches accepted `native.jsonl` and
+  `repaired.jsonl` only. `validate_pilot` requires both populations in every
+  split, so they cannot form a pilot at any size (line counts from GH run
+  35399900848, 2026-09-18).
+
+**2026-09-19** — Make the token-floor job runnable, and stop reading an empty stage directory as a diagnosis
+
+- `.github/workflows/token-floor.yml` could not have run: `apply_chat_template`
+  needs jinja2, and jinja2 is a `torch` dependency rather than a `transformers`
+  one. The metered GPU job gets it by accident, because `train_verified.py`'s
+  script header installs torch; a tokenizer-only runner installs neither. The
+  workflow now names it, `token_floor.py` asks for it beside `transformers`
+  instead of failing forty lines later from inside the template renderer, and
+  the job pins `HF_HOME` into the workspace so a new step can assert the hub
+  cache stayed under 1 GiB rather than argue that no weights came down.
+- `apply_chat_template(tokenize=True)` is checked once for shape. A release
+  that returned a mapping would still answer `len()`, with its number of keys,
+  and every count below the prompt-budget line would be a measurement of that.
+- Round-02 job `6aacd5cfb1dc2b62dc590b82` failed at stage `sft` with no
+  `work/round-02/sft/`, and that was read as "it died before the weights". It
+  was not: `run()` mkdirs *after* `snapshot_download`, after `from_pretrained`
+  and after the LoRA attach, so the absent directory is equally consistent with
+  the supervised-token floor, a failure in the gradient smoke, and a kill during
+  the 55.6 GB load. `test_the_output_directory_is_created_after_the_weights_and_not_before`
+  pins the ordering. The base-dev arm of the same job did complete, which rules
+  out everything `run()` checks before the SFT-only branch — the tokenizer, the
+  eos admission and the per-case prompt budget — because stage `eval` ran those
+  same lines over the same cases.
+- What the job has to print for the pilot to be admissible: the schedule's
+  exact supervised tokens must reach 50,000, and the byte upper bound over the
+  schedule is 134,384 B at `--steps 250`, 161,286 B at 300 and 214,968 B at 400
+  (seed 1111 over `training/data/bank_v2/train.jsonl`, `split_cases(rows, 1111)`
+  then `train_verified.supervised_plan` at `--batch-size 4`, computed
+  2026-09-19). So steps 250 clears the floor only if the realised encoding is at
+  most 2.6877 bytes/token, steps 300 at most 3.2257, steps 400 at most 4.2994.
+
+**2026-09-18** — Read the Hub from CI, find the benchmark saturated, and move generation to where the provider answers
+
+- `HF_TOKEN` exists only as an Actions secret, so the private round-02 artifacts
+  are readable only from a CI job. `training/START_NEXT_ROUND.md` asks for the device that
+  owns them and no such device exists; the Hub is the device.
+  `.github/workflows/s0-inventory.yml` is the reader, and
+  `.claude/skills/round02-evidence/` is the route written down.
+- The 2026-09-16 pilot job `6aaa87465527934177ee9f34` is absent from
+  `lypning-round02-artifacts`. Its `probe/` survives in a second private repo,
+  `lypning-round02-work`; `eval2_rows.jsonl` and `attempts.jsonl` are in neither,
+  so rungs S0a and S0b cannot be read without re-running that pilot.
+- A base arm completed (HF job `6aacd5cfb1dc2b62dc590b82`, 2026-09-18): 256 dev
+  cases, 1,024 draws, 9 families, `correct` 0.9301, `correct_native` 0.7534, and
+  on the coverage population 0.9686 over 7 families. That value is a family
+  macro, not an aggregate — `7 × 0.9686456400742115 / 9 = 0.7533910533910534`
+  exactly, and `training_metrics.py` computes it as `macro("native")`.
+- So the coverage population leaves ~3.14pp of headroom against a rule that
+  fires on a 95% lower bound above +3pp. At k = 4 on a dev split over 7 clusters
+  that is a design signal, not a verdict, but it says a round on `bank_v2` cannot
+  answer the question. `nt headroom` now re-makes that judgement from a metrics
+  file rather than leaving it in prose, and detects the family-macro basis
+  instead of assuming it.
+- Three faults that stopped bank-v3 growing: every run drew constructs from the
+  same seed 1111 and paid for tasks `--exclude-tasks` then filtered; runs stopped
+  on wall time with a quarter of their paid-for calls unused; and the generation
+  probe gated on `GET /models`, which a key can be refused while still being
+  entitled to complete.
+- Measured 2026-09-18 over four dispatches: `chat/completions` returns 403 from a
+  GitHub runner for a key that answers the developer's own shell, including
+  immediately after the secret was rotated. Generation therefore moves to that
+  shell and adaptation stays on a runner that holds no provider key
+  (`bank-v3-adapt.yml`), preserving the split `training/HARVESTING.md` requires.
+- This session published roughly eleven bank cases into three world-readable
+  Actions logs before `bundle.json` was removed from the printable set; the runs
+  were deleted and the cause fixed, and deleting a run does not undo a scrape.
+  `training/reports/2026-09-18-codex-saturated-bank-and-the-absent-pilot.md`,
+  *What this session published into public logs*.
+
+**2026-09-18** — Ask a bank whether it can host the effect before booking a GPU
+
+- `nt headroom` answers `training/EVAL2.md` §9's falsifier off a finished arm's
+  `metrics.json`, which costs the draws that produced it. `nt bank-native`
+  asks the same question of a BANK, locally and free, two ways: it runs every
+  row's program through the pinned engine, and — with `--mix-only` — it reads
+  the per-family first-draft mix off the labels `pipeline.synth` already wrote,
+  executing nothing.
+- The instrument is `synth.Runner.engine_verdict`, the same call the bank was
+  admitted with, so a bank is measured against its own admission test rather
+  than a second opinion about it. The engine is named by `binary_identity`:
+  `legality.py` says the number is quoted with its fingerprint or not quoted.
+- Instrument check on `training/data/bank_v2/train.jsonl`, run 2026-09-18 with
+  `lypning-l` sha256 `56a23c13286bb6bd…` built from this tree: 1,689 rows, 51
+  families, coverage 1,473/1,473 native and fallback-control 0/216 native, zero
+  witnesses. Both populations land exactly on what they were authored to be.
+- `--mix-only` refuses rather than reporting a zero. `bank_v2` carries no
+  `synth.kind`, so its macro delta ceiling is `None` and the renderer prints
+  UNREADABLE: a zero there would read as "no room", which is a verdict this
+  file cannot reach.
+- A counterweight's nominal room is not room. A `fallback-control` row is
+  `correct-control` in `training.Score` and `Score.native` is False for every
+  arm, so ceiling rows are counted in the denominator and never as movable.
+
+**2026-09-18** — Fold the bank-v3 synthesis into the pipeline, on the one net, emitting the one schema ([#94](https://github.com/kristerhedfors/lypning/pull/94))
+
+- The generate-and-adapt loop was four standalone scripts under
+  `training/data/bank_v3/` and `.github/scripts/`, each with its own
+  `subprocess.run` harness, its own JSONL reader and its own reading of the
+  refusal line — and its output was a record shape nothing downstream could
+  load. Two independent surveys of the tree agreed: no converter from a v3 row
+  to schema-3 existed, so the loop terminated at the private dataset repo.
+- Now `pipeline/synth.py` (the oracle, the routing, the proved repair, the
+  schema-3 projection), `pipeline/repair_rules.py` (the rewrites, as pure source
+  transforms) and `pipeline/synth_generate.py` (the prompts, the construct
+  lists, the budget loop), driven by `nt synth-generate` and `nt synth-adapt`.
+  Model-written code runs through `sandbox.run_python` — scrubbed environment,
+  process-group kill, memory and output caps — where it used to run through a
+  bare subprocess with a timeout. The refusal line is read by
+  `engines.parse_refusal`; `engines.check_refusal_contract` is the one home for
+  "exit 90, one line, empty stdout", and `eval2_bank` now uses it too.
+- What comes out is schema-3. `synth-adapt` output goes straight into
+  `training-prepare --cases`, which confirmed every label by execution on a
+  handcrafted batch (coverage references `correct-native`, controls
+  `correct-control`), and into `eval2-leaks` against the frozen benchmark.
+  Emitting the shape admits nothing: review, preparation and every floor in
+  `training-bundle` still stand, and each case says in `review.oracle_basis`
+  that its tier is self-consistency, not independent derivation — the
+  docstrings claimed that field was written before; it never was.
+- Three routing defects closed. A ceiling-stratum row the engine served is now
+  a coverage case, decided by execution and not by its label; a control refused
+  on some inputs only is rejected, because `validate_reference_scores` wants
+  every test refused; and an engine that runs a program to a different answer
+  than CPython is a **witness** (root invariant 1), where triage used to file
+  it as `engine_error` and discard it. Stratum routing moved from the
+  publishing script, which holds `HF_TOKEN`, into the stage that decides.
+- The adapt job no longer fails when nothing needs repairing: `repair.py`
+  exited 1 on an empty queue, so a batch that was all native banked nothing.
+  A batch with no admitted case still exits 1, because nothing is not a clean
+  read.
+- The generator goes through `pipeline.backends`, the one OpenAI-shaped door,
+  with a `reasoning_effort` knob it needed and the eval arms do not; the vendor
+  SDK leaves the workflow, and so does the second copy of the key-stripping
+  rationale in `cerebras_probe.py`.
+- `training/tests/test_synth.py` and `test_synth_generate.py`: every route
+  in `synth.judge` reached from a fixture engine, the repair accepted only when
+  native and byte-identical, every admitted kind validated by
+  `training_data.validate_cases`, the generator's bounds and resume against a
+  scripted backend, and the door's payload. `test_repair_rules.py` imports the
+  package instead of a file path. Touches no Rust, nothing under `src/lypning/`,
+  no admission gate, and no frozen artifact; `training/data/bank_v2/` is
+  untouched.
+
+**2026-09-18** — Generate the population the programme asked for, and repair what the engine refuses ([#93](https://github.com/kristerhedfors/lypning/pull/93))
+
+- `training/PREREGISTRATION.md` §2 item (g) fixed the training mixture on 2026-09-13,
+  before any spend: a pool of 66 rewrite to 27 ceiling, drawn from "rewrite +
+  ceiling only, less the cases that cannot teach", because "an unobserved case
+  is a plain coding task the stock model already answers". The first scaled run
+  was 3,499 of 3,837 already native — 91.2% of the one population that was
+  struck out. The prompt caused it: asking for tasks "solvable in under 25 lines
+  of ordinary Python" is a description of the served subset.
+- Generation now names a construct the engine refuses and asks for an ordinary
+  task whose natural answer reaches for it, never mentioning the module or any
+  restriction. Measured 2026-09-18 (GH run 35340137976): the refused fraction
+  went **5.2% to 42.1%**, repaired rows 13 to 103, and the stratum draw came out
+  at 0.708 against the preregistered 0.710.
+- Two lists, not one, and the difference is the point. REWRITABLE means a native
+  equivalent exists, so the pair teaches a substitution; UNREWRITABLE means the
+  right answer keeps the import. `fractions` and `namedtuple` moved to the second
+  list after the repair failed: `lypning-l -c "class C: pass"` exits 90, so a
+  shim built on a user-defined type can never be native.
+- Ceiling cases were being generated and then thrown away. `bank3_publish.py`
+  banked only native and repaired rows, so the run's 105 ceiling task-calls
+  reached the queue, refused correctly, and were discarded — the whole
+  counterweight that stops an arm scoring well by avoiding every import.
+  `triage.py` now carries the stratum and publishing separates a banked ceiling
+  row from a rewrite row that still owes a repair.
+- `calendar` and `datetime` repair rules, which were the two largest unserved
+  buckets. Plain functions only, verified against CPython over 3,652,059 days,
+  216,012 `monthrange` pairs and 323,935 date triples with zero mismatches. The
+  repair rate over the same queue went **13 to 78 of 198**.
+- Adversarial review demonstrated two repairs that `verify()` accepted and that
+  were silently wrong, both now refused. A date is carried as an integer day
+  count, and the leak guard matched the carrier only as a FIRST argument, so
+  `print("far", d)` printed `21358` where the original printed `2028-06-23`.
+  And `date + timedelta(days=1.5)` advances ONE day in CPython, because
+  `timedelta` truncates before `date.__add__` reads `.days`; rewriting it to
+  `+ 1.5` advanced 1.5. Closing both cost 4 repairs, which is the right price.
+- `training/tests/test_repair_rules.py`, 28 tests: the verification above was
+  measured by hand and quoted in a docstring, which is the same defect as a
+  number with no command behind it. Four inputs per queue row cannot see that
+  1900 is not a leap year while 2000 is.
+
+**2026-09-18** — Grow the bank from Qwen on Cerebras, and adapt what the engine refuses ([#92](https://github.com/kristerhedfors/lypning/pull/92))
+
+- A generate-and-adapt loop, which is `training/ORCHESTRATION.md`'s data loop and its
+  step-6 repair made executable. Qwen proposes tasks and answers each k times;
+  triage runs every sample, keeps a case only when at least two agree byte for
+  byte on every input, re-runs the winner to catch output that moves between two
+  clean runs, and routes by what the engine does with it.
+- The safety property is a job boundary, not a convention: generation holds
+  `CEREBRAS_API_KEY` and executes nothing, triage executes model-written code and
+  holds no provider key, publishing holds `HF_TOKEN` and executes nothing.
+- First scaled run, 2026-09-18 (GH run 35320962503): 12,000 calls, 2,286,142
+  output tokens, 49 minutes, 3,837 tasks, **3,499 native + 13 repaired = 3,512
+  banked**, 140 rejected, 185 refused with no working rule.
+- Repairs are proved rather than trusted: a rewrite is accepted only when the
+  engine serves it natively *and* it reproduces the output agreed before the
+  repair existed, so a rule cannot move its own target. `heapq` is a complete
+  reimplementation using CPython's sift order — an improvised heap pops equal
+  elements in a different order, which is observable once values carry payloads.
+- **This is a weaker evidence tier than the authored bank and is kept separate
+  on purpose.** Its expected outputs come from samples of one model agreeing, so
+  a misreading shared by every sample survives. The teacher is `qwen-3.8-27b`,
+  the model being trained: on-policy rejection sampling, not distillation.
+- What the rules could not repair is the useful half of the failure, and is
+  written out by kind: `calendar` 39, `datetime` 31, `fractions` 13, `string` 12.
+  Those are capability requests for the engine. The `decimal/fractions` rule
+  fired 15 times and was accepted 0 times; it is wrong and is recorded as such
+  rather than quietly left to keep firing.
+
+**2026-09-18** — Author a task bank with a differential oracle, and run the round-02 pilot on a real GPU ([#92](https://github.com/kristerhedfors/lypning/pull/92))
+
+- The blocker on a real adapter stage was never the GPU, it was data:
+  `MIN_TRAIN_CASES` is 1,000 and the tree held 517 corpus cases, 147 with
+  references, in the rewrite schema rather than schema-3. The floor was not
+  weakened; a bank was authored.
+- The oracle is differential. Each family carries a `spec` and a `reference`
+  written against the same English sentence and never against each other, and a
+  case is admitted only when the two agree byte for byte under execution.
+- Three of the repo's own gates rejected the first drafts, and each rejection
+  improved the data: identical prompts across a family are one case with hidden
+  tests; four families labelled `fallback-control` are in fact served natively
+  (`math`, `json`, `collections`, `re`, `random`), so they became coverage and
+  ten genuinely refused modules became the controls; and one shared task
+  preamble put pairwise similarity at 0.81 — 0.958 between two families of one
+  kind on opposite sides of the split — so every family now has its own sentence
+  shape. Task leaks went 4,419 to 0.
+- Measured 2026-09-18: `eval2-leaks` exits 0 with 315 of 315 clean; preparation
+  gives digest `7c8997e1e128c47f` and a train split of **1,355** over 40
+  families with both populations in all three splits. Cases are not
+  independence: 2,286 cases over 69 families is 69 components, and every
+  `review` block records that an agent, not a human, authored and checked it.
+- Two skills so the next bank does not start from scratch:
+  `.claude/skills/training-cases` (authoring and the differential oracle) and
+  `.claude/skills/training-bundle` (preparation, the gates, and publishing a
+  bank to the private dataset repo).
+- CI gained a pilot path. The bank is committed to git for review and copied to
+  the private dataset repo inside the job, because an Actions secret is
+  write-only. Two free gates run before any submit: the upload refuses a bank
+  with a missing population or a family on both sides, and `eval2-leaks` must
+  exit 0. A 27B model loads in full bf16 with no quantization, so the smoke's
+  24 GB `a10g-small` cannot hold it; the pilot runs on `h200`, priced by the
+  preflight at $5.00/hour.
+
+**2026-09-18** — Run round-02 from CI: a free preflight, a bootstrapped verifier Space, and a marker-gated GPU submit ([#92](https://github.com/kristerhedfors/lypning/pull/92))
+
+- The round is launchable from GitHub Actions. A GitHub runner is a disposable
+  Linux VM with no sensitive files, which is what `--isolated-worker` attests,
+  and the GPU is a Hugging Face Job the workflow submits — never the runner.
+  This is also the only place the token can be used: an Actions secret is
+  write-only, so every Hub operation has to happen inside the job.
+- Three jobs, and only the last one costs anything. **preflight** asks the Hub
+  the three questions that decide whether a round can run at all and that no
+  checkout can answer: whether the token sees Jobs hardware, what the flavor
+  costs, and whether the model revision resolves to a 40-character commit.
+  Ledger row T3 records the last attempt dying on a provider 402 *after* the job
+  was submitted; this asks first. **bootstrap** builds the verifier Space and
+  the private artifact repo and ends in a launch dry run that prints the priced
+  plan. **submit** runs only on a commit-message marker.
+- Measured 2026-09-18 on run 35299470403: account `headforce`, 26 Jobs flavors
+  visible, `a10g-small` at $1.00/hour, `Qwen/Qwen3.8-27B` at
+  `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`, verifier Space
+  `headforce/lypning-round02-verifier` at
+  `5fa4f3127f7a3d70b84d4e1c93923f18f0c43a41` built from six files and RUNNING,
+  artifact repo `headforce/lypning-round02-artifacts` created private.
+- The Space Dockerfile is deliberately not `training/worker/Dockerfile.verifier`.
+  That one is the Docker boundary's — `/runner/`, uid 65534, an ENTRYPOINT. A
+  pooled sandbox reads the standard system trees and nothing else at the root,
+  so the harness goes under `/usr/local/lib` and the Space needs a CMD that
+  keeps a health process alive and no USER line. The base digest is read out of
+  `launch.py` rather than restated, because one CPython build across the trainer
+  Job and the verifier image is what makes the `sys.version` half of the
+  identity handshake hold.
+- Bootstrap failures are free by construction: the Space must reach RUNNING and
+  the destination must be private before `launch.py` is reached at all.
+- **This is the smoke, and the smoke is not a round.** It exercises the round's
+  plumbing on a real GPU with a tiny random model and the authored starter
+  fixture. The pilot needs a reviewed bank that is not in this tree, and a real
+  adapter stage still gates at >=1,000 train cases against the starter's 12.
+
+**2026-09-17** — Stop the S0 handoff from telling the private device to rebuild the population it was pinned to read ([#92](https://github.com/kristerhedfors/lypning/pull/92))
+
+- The next training round was attempted on a third clone holding none of the
+  round's four inputs. It was reported blocked and no rung was run, which is the
+  assignment's own instruction. What the clone *could* do was read the
+  assignment against the tree it will run in, and it does not survive that read.
+- **`training/START_NEXT_ROUND.md` contradicted its own stop rule.** :21-22 stops on an
+  absent input; :72-75 told the device to materialise an absent `$PILOT_ROWS`
+  with `nt eval2-rows`. That command's engine defaults to whichever `lypning-l`
+  the host has installed, `native` is read off its replay and `status` off
+  `native`, so the rows' *population* is a function of the binary — the same
+  mechanism that read 14 correct-but-fallback draws through one binary and 26
+  through another. The blast radius is asymmetric: S0b refuses a re-derived
+  population on `--expect-draws 171`, but S0a accepts any file that exists and
+  would have printed a confident §7 curve at an unrecorded identity. The
+  sentence is withdrawn; an absent `$PILOT_ROWS` is a blocked round and an
+  artifact-transfer problem.
+- `eval2-rows` now refuses an `--engine` that is not a file, and prints the
+  sha256 and version line of the binary it replayed through rather than
+  `identity()["fingerprint"]`, which fingerprints the host's installed chain and
+  cannot name an explicit historical binary. Its pinning test had been passing
+  `/bin/true`, which does not exist on darwin — the test was demonstrating the
+  defect it was meant to prevent.
+- The preflight block now stops. Four bare `test -f` lines print nothing and
+  exit nothing, so a pasted block ran all three rungs against whatever the
+  device had; the operator saw the rungs' errors, not the missing path.
+- The three rungs run on the resolved 3.12 `$ROUND_PYTHON`, not bare `python3`.
+  The replay grades against `sys.executable` and the pinned binary says *for
+  cpython 3.12*; a mismatch there is scored as MISMATCH or as a draw with no
+  refusal, either of which blocks the rung three layers from its cause.
+- Two contamination gates issued an all-clear over a file they never read.
+  `leaks --sft` — "the one finding here that must stop a training run" —
+  reported no target passing a held-out case for a mistyped path, a directory
+  with no `sft.jsonl`, and an empty file; `eval2-leaks` certified two empty
+  banks as non-overlapping. Both now split on invariant 8: a path that is not a
+  file is usage (2), comparing nothing is failure (1), and `--allow` forgives
+  found pairs rather than an absent comparison.
+- A banked launch above its capacity was told to raise a knob its own ceiling
+  forbids — `--score-workers 32` earned "increase `--pool-max-hosts`", and
+  taking that advice earned "pool cost ceiling is 4 CPU hosts". Above the
+  ceiling the refusal now names the ceiling. At or below it, nothing changes.
+- `training/STATUS.md`'s account of `levers --run` is corrected: it describes the bare
+  form, and the `--run --population-rows` form §10's S0b row assigns does not
+  re-derive the population.
+- The change was then adversarially reviewed in turn, which found no blocking
+  defect and two high ones, both introduced by the change itself: the
+  replacement rebuild command could not run as written — the positional is a run
+  id, not a path, and `--output` is required — and the review listed as
+  still-open a `training/STATUS.md` defect the same change fixed. Both are fixed, along
+  with four more: `eval2-rows` refuses a replay in which any program failed to
+  grade, because `is_file` rejects a path but not a *regular file that will not
+  execute*, and a binary that lost its execute bit in transfer writes an
+  all-`correct-fallback` population at exit 0; `leaks --sft` counts programs
+  built rather than lines read, because a bundle's `train-sft.jsonl` carries
+  `messages` and no `program`; `power --eval2` stops advertising the withdrawn
+  rebuild for a path the caller typed; and the capacity refusal names the knob
+  with remaining headroom, since `16/1/4` was still a dead end with hosts
+  already at their ceiling.
+- Review: `training/reviews/2026-09-17-codex-s0-assignment-executability.md`,
+  ledger row R6. 58 findings were raised and 2 refuted; the blocking 3 and the
+  items above are closed here, and §5 of the review is a triaged excerpt of the
+  residue. None of it blocks the S0 session. No paid rung, GPU job, Space
+  rebuild or dataset mutation is authorised, and none was performed.
+
+**2026-09-17** — Assess the blocked S0 round from two independent reviews, close the four vacuous reads its guards left open, pin Fable's retry to the historical binary, and stop a plan from certifying a schedule it cannot price ([#91](https://github.com/kristerhedfors/lypning/pull/91))
+
+- The independent Codex review owed by ledger row S0 was written twice, by two
+  sessions that did not see each other's work and agreed on the diagnosis:
+  `training/reviews/2026-09-17-codex-s0-guards-and-engine-identity.md` and
+  `training/reviews/2026-09-17-fable-s0-independent-assessment.md`. Both are
+  kept as evidence and this PR carries the combined ruling:
+  **continue**, all four decision requests ruled, every paid and GPU rung still
+  held. The round remains unrun — this is a third clone holding none of its
+  inputs, checked literally rather than assumed — so no power figure, lever
+  vector, probe table or model-quality claim exists from it, and the two
+  `training/EVAL2.md` deliverables are still owed. Five of the report's load-bearing
+  claims were re-derived in-tree before being ruled on; three came back
+  partially confirmed, and the disagreement is recorded rather than smoothed.
+- The guards closed four paths, not five. `levers`' fifth fired only when the
+  failure took the `ERROR` route *and* the filtered population was non-empty,
+  so a full descriptive vector — held-out banner and all — still printed at
+  exit 0 over two empty files, over a present-but-empty `attempts.jsonl`, under
+  a `--status` filter that matched nothing, and through an engine that runs but
+  is not `lypning` (`MISMATCH`, so `errors` was 0). The vector is now
+  publishable only if at least one record backs it: exit 1, stdout empty, in
+  every render mode including `--json`. The narrow `ERROR` guard stays in front
+  of it because it names the failed replay, which is the more useful message.
+  The refusal line now carries `loaded`, `considered` and `unmatched`, since
+  `loaded` is pre-filter and `refusals` post-filter and the first wording could
+  assert that named rows carried no refusal when the filter had removed them.
+- Rung S0b no longer re-derives the population it reports. `--run` replayed
+  every program through the local binary, which recomputes `native` and `status`
+  with it, so the `--status` filter ran over a population the binary had just
+  manufactured — and the handoff's instruction to record an `@ engine` line
+  named output no mode of `levers` produced. The rung now freezes status and
+  family to the materialized 171 pilot rows, uses the replay only to attach
+  refusal kinds, binds the explicit historical `lypning-l` by its full recorded
+  SHA-256, prints that identity, and refuses a wrong draw count or any partial
+  replay before publishing a vector. The composite build *fingerprint* is
+  deliberately not a prerequisite: it folds in a core `lypning` sha no document
+  records, and an unsatisfiable gate on a $0 rung is how a $0 rung stops being
+  run. 171 stands as a historical population rather than a number to re-derive.
+- `--plan` now refuses the certainly-too-small half of the supervised-token
+  floor without downloading anything. `sft_batches` picks by family and index
+  and never inspects what it carries, so the schedule is buildable from the
+  cases alone; summing the scheduled references' UTF-8 bytes bounds the tokens
+  above under byte-level BPE. The exact floor stays in `run()`, unmoved, because
+  the exact count needs the tokenizer. A passing plan still does not certify the
+  schedule and the refusal says so. The shipped substitute — check
+  `steps × batch_size` against 50,000 — counted example exposures rather than
+  tokens and would have refused the runbook's own `--steps 250 --batch-size 4`;
+  it is withdrawn. `planned_exposures` and `supervised_token_upper_bound` are
+  `null`, never `0`, for a stage the floor does not price.
+- A banked launch is refused above four sandboxes per host. The existing check
+  was a product and a product is blind to density, so `16/16/1` — sixteen
+  sandboxes on one host, the shape round-02 ran — cleared it, while `1/1/1` is
+  the least contended shape in the space and was never the problem. `native` is
+  host-load-dependent, so per-host density is an instrument parameter and two
+  arms scored at different densities are not comparable. The ceiling is four
+  *at `cpu-basic`*; a different pool flavor voids the number. No floor on the
+  worker count, host count or total capacity, because no eval-2 arm has ever
+  completed and a throughput threshold would be set against a forward estimate.
+  The host count is capped at four as well, so the cost envelope is bounded in
+  both directions, and the product check no longer advises raising a knob the
+  ceiling forbids.
+- Eight residual risks are recorded with file and line, four of them absent from
+  the report; two are parked as future calls — `power --eval2 --rows` accepts
+  any file bound to no run, digest or fingerprint, and `eval2_rows` tests
+  `native` before `correct`, so its `correct-native` bucket can hold draws
+  CPython did not pass. Neither is ruled here.
+- Bookkeeping, per review condition C8: the entry below says "three zero-cost
+  rungs" and its commit subject says five. Neither is a count of rungs — it was
+  two commands across two of the three S0 rungs, three CLI branches and five
+  guards. The merged entry is left as written; this is the correction.
+
+**2026-09-17** — Stop three zero-cost rungs from reporting a clean read of nothing, and record that rung S0b's number moves with the engine ([#89](https://github.com/kristerhedfors/lypning/pull/89))
+
+- The assigned S0 round did not run. This clone holds none of its inputs: the
+  private pilot rows, the round-02 probe rollouts, the banks and a Python 3.12
+  build are all absent, and `nt eval2-rows` cannot materialize the rows because
+  it reads the same missing run. Substitution was available — the tools accept
+  any path — and was refused.
+  `training/reports/2026-09-17-fable-s0-blocked-and-the-vacuous-read.md` names
+  every missing artifact. Nothing was spent, no provider was called and no GPU
+  ran.
+- Run verbatim with both private inputs absent, rung S0c printed a complete
+  all-zeros table and exited 0, because `read_jsonl` answers `[]` for a path
+  that is not there and `probe_only` was the command's only failure signal. Two
+  further commands had the same shape, and the worst was rung S0b's: an
+  `--engine` that is not a file graded every program `ERROR`, printed an empty
+  vector at exit 0, and silently grew the considered population. All three now
+  exit 2 naming the path, in the idiom `eval2-leaks` and `eval2-legacy` already
+  used, and an `ERROR` census is reported where `MISMATCH` is. The exit-1 hole
+  detector on real inputs is unchanged.
+- Guarding absence was not enough, and testing that the new `ERROR` line could
+  actually fire is what showed it. Two survivors reproduced the whole defect
+  one step past each guard: an `--engine` that exists but cannot execute passed
+  `is_file` and still printed the empty vector at exit 0 over the inflated
+  population, and a present-but-empty probe file still printed a zeros table.
+  A replay that graded nothing, and a probe with no rows, now exit 1 and print
+  no table at all. Seven tests pin all five paths.
+- Rung S0b is not engine-independent. The eval-2 draw rows carry no refusal
+  kind, so `--run` replays through the local binary and re-derives `native` with
+  it: one local run matched 14 correct-but-fallback draws through the built
+  engine and 26 through a broken one. The reviewed count of 171 pilot draws is
+  therefore a count at the pilot's engine identity, and
+  `training/START_NEXT_ROUND.md` now says so and asks for the fingerprint in
+  the report.
+- Of nine admission gates the documents claim the runner enforces, eight are
+  enforced as documented. The ninth is a split: the 50,000-supervised-token
+  floor is refused in the stage, not in `preflight`, so `--plan` accepts a
+  schedule the stage later rejects. Moving it earlier would cost `--plan` its
+  no-download contract, so the documents are corrected and the split is pinned.
+  The registered seeds, the family cycle and the token floor had no test on
+  their refusal branch; they have one now.
+
 **2026-09-17** — A "standard library" corpus: units the engines run, each labelled by the cheapest one ([#88](https://github.com/kristerhedfors/lypning/pull/88))
 
 - `training/stdlib/units/` holds self-contained, function-only programs that
@@ -345,8 +1026,8 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   eight-step plan with owner, cost, decision and stop rule per step; link it
   from the training README and `training/STATUS.md` §9, and add ledger row S2 to
   `training/ORCHESTRATION.md`.
-- The #80 entry cited that file by its bare name, without its path,, which
-  `tests/test_docs.py` reads as a missing file; it now says `training/EVAL2.md`.
+- The #80 entry named that file without its `training/` prefix, which
+  `tests/test_docs.py` reads as a missing file; it now carries the full path.
 
 **2026-09-16** — Round-02 run report corrected: the eval-2 base arm was blocked, no arm completed ([#81](https://github.com/kristerhedfors/lypning/pull/81))
 

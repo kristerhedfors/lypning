@@ -1,0 +1,84 @@
+# Can a bank-v3 round detect anything? Asked before a GPU is booked, for free.
+#
+# `EVAL2.md` §9 pre-registers the falsifier: a base rate high enough that §4's
+# +3pp rule cannot be met inside what is left of the ceiling means the bank
+# cannot host the effect, whatever the adapter does. `nt headroom` answers that
+# off a finished arm's `metrics.json`, which costs the draws that produced it.
+# `nt bank-native` answers it off the BANK.
+#
+# THIS SPENDS NOTHING. No provider call, no GPU, no metered request: one runner,
+# a private-dataset download, and a Rust build. It is a read.
+#
+# THE LOG IS WORLD-READABLE. `kristerhedfors/lypning` is public. Every step here
+# prints aggregates, family names (a family is a target CONSTRUCT, never a task)
+# and refusal KINDS from the engine's own fixed vocabulary. `--details` is not
+# passed, because a refusal detail can echo an identifier off the program that
+# provoked it. The normalised rows stay in RUNNER_TEMP and are never uploaded.
+name: bank ceiling (can a v3 round detect anything)
+
+on:
+  push:
+    branches: ["bank3/**", "ceiling/**"]
+  workflow_dispatch:
+    inputs:
+      batch:
+        description: "one batch id, or blank for every batch banked"
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  ceiling:
+    name: the bank's own ceiling
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PYTHONPATH: src:training
+      WORK_REPO_NAME: lypning-round02-artifacts
+      LYPNING_CAPTURE: "0"
+      LYPNING_HARVEST: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q -e . "huggingface-hub==1.31.0"
+      - name: Isolate engine state
+        run: echo "LYPNING_HOME=$RUNNER_TEMP/ceiling-home" >> "$GITHUB_ENV"
+      # The engine is part of the number (`legality.py`), so it is built here
+      # and `bank-native` prints the sha256 of the bytes it executed.
+      - name: Build the engine that decides native versus refused
+        run: |
+          python -m lypning build --rust --target host
+          "$LYPNING_HOME/bin/lypning-l" --version
+
+      # Counts, layouts and `report.json` per batch. `synth.run`'s report holds
+      # counts and refusal kinds only, which is why it may be printed whole.
+      - name: What the Hub actually banked
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python .github/scripts/bank3_ceiling.py \
+            --output "$RUNNER_TEMP/bank-v3.jsonl" \
+            ${{ inputs.batch && format('--batch {0}', inputs.batch) || '' }}
+
+      # THE ANSWER, and it costs nothing: the per-family first-draft mix and the
+      # macro delta ceiling it implies. Exit 1 means the bank cannot meet the
+      # bar, which is a finding and not a usage error.
+      - name: The ceiling the labels already imply
+        run: |
+          python -m pipeline.cli bank-native "$RUNNER_TEMP/bank-v3.jsonl" --mix-only
+
+      # Drift: the references were native and the first drafts were refused when
+      # the batch was banked. If either has moved, the batch was banked against
+      # a different engine than the one a round would run.
+      - name: Are the shipped references still served?
+        if: always()
+        run: |
+          python -m pipeline.cli bank-native "$RUNNER_TEMP/bank-v3.jsonl"
+      - name: Are the refused first drafts still refused?
+        if: always()
+        run: |
+          python -m pipeline.cli bank-native "$RUNNER_TEMP/bank-v3.jsonl" --program original

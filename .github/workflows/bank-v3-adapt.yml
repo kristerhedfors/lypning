@@ -1,0 +1,94 @@
+# Adapt and bank candidates that were generated somewhere else.
+#
+# `bank-v3.yml` generates and adapts in one run, which is right when the runner
+# can reach the provider. Measured 2026-09-18 it cannot: `chat/completions`
+# returns 403 from a GitHub runner for a key that answers the developer's own
+# shell. So generation moves to that shell and adaptation stays here.
+#
+# THE SAFETY PROPERTY IS UNCHANGED, and it is the reason this file exists rather
+# than a local end-to-end script. `HARVESTING.md`: the holder of the provider key
+# must never execute model-written code. Here the key is not present at all --
+# no job in this file has it -- and the candidates arrive through the private
+# work repo, never through this public repository.
+name: bank v3 (adapt candidates generated elsewhere)
+
+on:
+  workflow_dispatch:
+    inputs:
+      batch:
+        description: "the candidates batch to adapt, as named by candidates_transfer.py put"
+        required: true
+        type: string
+      agree:
+        description: "how many samples must agree for a case to survive"
+        default: "2"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  adapt:
+    name: execute, judge and repair (no provider key)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PYTHONPATH: src:training
+      LYPNING_CAPTURE: "0"
+      LYPNING_HARVEST: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Isolate engine state
+        run: echo "LYPNING_HOME=$RUNNER_TEMP/bank3-home" >> "$GITHUB_ENV"
+      - run: pip install -q -e . && pip install -q "huggingface-hub==1.31.0"
+      - name: Build the engine that decides native versus refused
+        run: |
+          python -m lypning build --rust --target host
+          "$LYPNING_HOME/bin/lypning-l" --version
+      # The candidates are private task text and programs. They come from the
+      # private work repo and are never printed: the step below reports a count.
+      - name: Fetch the candidates
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python .github/scripts/candidates_transfer.py get \
+            "$RUNNER_TEMP/in/candidates.jsonl" --batch "${{ inputs.batch }}"
+      - name: Triage, repair, and write schema-3 cases
+        run: |
+          python -m pipeline.cli synth-adapt \
+            --candidates "$RUNNER_TEMP/in/candidates.jsonl" \
+            --engine "$LYPNING_HOME/bin/lypning-l" \
+            --agree "${{ inputs.agree || 2 }}" \
+            --batch "$GITHUB_RUN_ID" \
+            --output "$RUNNER_TEMP/out"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bank-v3-adapted
+          path: ${{ runner.temp }}/out
+          retention-days: 14
+
+  # Separate, because the job above executes model-written code and this one
+  # holds HF_TOKEN. An artifact expires in 14 days; the dataset repo does not.
+  publish:
+    name: bank the accepted rows (no model code runs here)
+    needs: adapt
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q "huggingface-hub==1.31.0"
+      - uses: actions/download-artifact@v4
+        with:
+          name: bank-v3-adapted
+          path: ${{ runner.temp }}/out
+      - name: Append this run as an immutable batch
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python .github/scripts/bank3_publish.py --push "$RUNNER_TEMP/out"

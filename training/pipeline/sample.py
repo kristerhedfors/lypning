@@ -709,7 +709,7 @@ def _claim_draws_dir(out_dir: Path, backend: ChatBackend,
     library's and the opposite of the arm the baseline was drawn with
     (`enable_thinking: false`). A run launched without `--no-thinking` therefore
     drew the right model in the wrong mode -- mean completion 2,771 tokens
-    against the baseline's 230, a projected \$25.05 against a \$6 budget -- and
+    against the baseline's 230, a projected $25.05 against a $6 budget -- and
     nothing recorded the setting, so the SFT set would have been off-policy
     against the very arm it was built to beat with nothing in the report to show
     it. The sampling dict is part of the claim now, for the same reason the

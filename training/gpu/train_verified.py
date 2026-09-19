@@ -28,7 +28,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pipeline.jsonio import append_jsonl, sha256_of, write_json
 from pipeline.training_metrics import CheckpointGate
-from pipeline.training import ISOLATED_KINDS, TrainingError, Verifier, execution_runner, load_bundle, messages
+from pipeline.training import (ISOLATED_KINDS, TrainingError, Verifier,
+    chat_prompt_token_ids, execution_runner, load_bundle, messages)
 
 from pipeline.training_contract import (BASE_MODEL, CONTRACT_VERSION, MIN_SUPERVISED_TOKENS,
     MIN_TRAIN_CASES, PROTOCOL_EVAL_DRAWS, PROTOCOL_TRAIN_SEEDS,
@@ -139,6 +140,16 @@ def preflight(args):
     if (not args.smoke and args.stage == "sft"
             and args.steps * args.batch_size < len({case["family"] for case in train_cases})):
         raise TrainingError("SFT schedule is shorter than one complete family cycle")
+    planned = supervised_plan(args, bundle)
+    if planned and planned["supervised_token_upper_bound"] < MIN_SUPERVISED_TOKENS:
+        raise TrainingError(
+            "SFT schedule exposes at most %d supervised tokens -- an upper bound over the "
+            "%d scheduled references' UTF-8 bytes -- and the floor is %d, so run() will "
+            "certainly refuse this schedule after the tokenizer download. A bound ABOVE "
+            "the floor is not a pass: it is only the absence of this certain failure, and "
+            "the exact count is still taken in run()."
+            % (planned["supervised_token_upper_bound"], planned["planned_exposures"],
+               MIN_SUPERVISED_TOKENS))
     # k is pre-registered for the confirmatory arm, and the runner's default is
     # not it. Refusing here costs nothing; the round-02 pilot spent an arm
     # finding this out, and a wider interval than the effect is not a cheaper
@@ -175,6 +186,39 @@ def preflight(args):
     return bundle, adapter
 
 
+def supervised_plan(args, bundle):
+    """What the SFT schedule will expose, bounded above, with nothing downloaded.
+
+    The exact floor cannot move here: counting supervised tokens needs
+    `build_examples`, hence the Hub tokenizer that `--plan` exists to avoid. A
+    one-sided bound can, because none of its three inputs need the model.
+    `sft_batches` picks by family and index and never looks inside what it
+    carries, so passing the cases in place of their examples yields the very
+    schedule `run()` will train on; every case is guaranteed a non-empty
+    `reference` at load (`pipeline/training_data.py`); and the supervised
+    segment is that reference in a fenced block plus the assistant terminator,
+    which under byte-level BPE can never cost more tokens than it has UTF-8
+    bytes. The sum is over the SCHEDULE -- every repeat counted again -- not the
+    exposure count times the longest reference, which is looser by a factor of
+    six on the in-tree proxy corpus (`training/data/corpus.jsonl`, measured
+    2026-09-17: 147 of 517 rows carry a reference, assistant-segment bytes mean
+    407.8 and max 2,536) and would admit schedules the floor certainly refuses.
+
+    Returns None where no supervised dose is planned or the floor does not
+    apply, so the caller cannot mistake "not applicable" for a bound of zero.
+    """
+    if args.stage != "sft" or args.smoke:
+        return None
+    train_cases = [case for case in bundle.get("cases", []) if case.get("split") == "train"]
+    batches = sft_batches(train_cases, train_cases, schedule(args)["steps"],
+                          args.batch_size, args.seed)
+    scheduled = [case for batch in batches for case in batch]
+    return {"planned_exposures": len(scheduled),
+            "supervised_token_upper_bound":
+                sum(len(("```python\n" + case["reference"].rstrip() + "\n```<|im_end|>")
+                        .encode("utf-8")) for case in scheduled)}
+
+
 def schedule(args):
     """One source of effective values for execution, dry plans and manifests."""
     return {"steps": 2 if args.smoke else args.steps,
@@ -196,6 +240,24 @@ to the real Qwen tokenizer would index beyond the embedding table immediately.
     for name, value in special_ids.items():
         setattr(config, name, value)
     return config
+
+
+def check_prompt_budget(tok, cases, max_new_tokens, max_seq):
+    """Refuse any case whose prompt plus its completion budget exceeds --max-seq.
+
+    Token limits are admission checks, not permission to silently drop long
+    examples or slice the task away. Run this before downloading 27B weights.
+
+    It is a module-level function because it has to be testable without a GPU:
+    inline in `run()` it was reachable only behind `import torch`, and it spent
+    a release counting `len()` of a `BatchEncoding` -- two keys -- against
+    `max_seq`, which admitted every prompt of every length. `chat_prompt_token_ids`
+    owns the shape; this owns the arithmetic; the tests can now reach both.
+    """
+    for case in cases:
+        prompt_ids = chat_prompt_token_ids(tok, messages(case))
+        if len(prompt_ids) + max_new_tokens > max_seq:
+            raise TrainingError("prompt + completion budget exceeds --max-seq: " + case["case_id"])
 
 
 def run(args, bundle, adapter_info):
@@ -227,13 +289,7 @@ def run(args, bundle, adapter_info):
         raise TrainingError("Qwen assistant terminator must equal tokenizer EOS for SFT/TRL agreement")
     train_cases = [c for c in bundle["cases"] if c["split"] == "train"]
     dev_cases = evaluation_cases(bundle, args.eval_split)
-    # Token limits are admission checks, not permission to silently drop long
-    # examples or slice the task away. Run these before downloading 27B weights.
-    for case in train_cases + dev_cases:
-        prompt_ids = tok.apply_chat_template(messages(case), tokenize=True,
-                                              add_generation_prompt=True, enable_thinking=False)
-        if len(prompt_ids) + args.max_new_tokens > args.max_seq:
-            raise TrainingError("prompt + completion budget exceeds --max-seq: " + case["case_id"])
+    check_prompt_budget(tok, train_cases + dev_cases, args.max_new_tokens, args.max_seq)
     examples = []
     planned_sft_batches = None
     planned_tokens = None
@@ -367,12 +423,20 @@ def main(argv=None):
     try:
         bundle, adapter = preflight(args)
         if args.plan:
+            # The two supervised-dose numbers are printed, not left to be
+            # inferred from steps x batch-size, which counts example exposures
+            # and not tokens; and the bound is an upper bound, so reading it as
+            # a pass is the one mistake this line exists to prevent.
+            planned = supervised_plan(args, bundle) or {"planned_exposures": None,
+                                                        "supervised_token_upper_bound": None}
             print(json.dumps({"stage": args.stage, "model": BASE_MODEL, "revision": args.revision,
                               "purpose": bundle["purpose"], "effective": schedule(args),
                               "decoding": decoding(schedule(args)["max_tokens"], greedy=args.greedy),
                               "enable_thinking": False,
                               "limits": bundle["limits"], "memory_policy": bundle["memory_policy"],
                               "adapter": adapter, "training_started": False,
+                              "planned_exposures": planned["planned_exposures"],
+                              "supervised_token_upper_bound": planned["supervised_token_upper_bound"],
                               "bundle_digest": bundle["digest"], "target": bundle["identity"],
                               "cases": {s: sum(c["split"] == s for c in bundle["cases"])
                                         for s in ("train", "dev", "test")}}, indent=2))

@@ -34,6 +34,15 @@ BANKED = ("pilot",)
 DEFAULT_STEPS, DEFAULT_GRPO_STEPS, DEFAULT_EVAL_DRAWS, DEFAULT_SEED = 250, 20, 16, 1111
 DEFAULT_EVAL_SEQUENCES, DEFAULT_SCORE_WORKERS = 128, 16
 DEFAULT_POOL_SANDBOXES_PER_HOST, DEFAULT_POOL_MAX_HOSTS = 4, 4
+#: The density ceiling a banked launch may not exceed, in sandboxes on one host
+#: of this flavor (`pipeline/hf_sandbox_runner.FLAVOR`). `native` is a
+#: host-load-dependent endpoint — the same property that keeps the native-timeout
+#: abort — so sandboxes per host is an instrument parameter, and two arms scored
+#: at different densities are not comparable; `pipeline/training_contract.py`
+#: makes that argument for k already. The number is four *at* `cpu-basic` and
+#: nowhere else: a different pool flavor is a different host, which voids it and
+#: has to be decided again rather than carried over.
+POOL_FLAVOR, MAX_POOL_SANDBOXES_PER_HOST, MAX_POOL_HOSTS = "cpu-basic", 4, 4
 TERMINAL = ("COMPLETED", "ERROR", "CANCELED")
 
 
@@ -103,9 +112,9 @@ def main(argv=None):
                    help="pilot: concurrent verifier scorings")
     p.add_argument("--pool-sandboxes-per-host", type=int,
                    default=DEFAULT_POOL_SANDBOXES_PER_HOST,
-                   help="pilot: verifier concurrency per CPU host (default: 4)")
+                   help="pilot: verifier concurrency per CPU host (default and maximum: 4)")
     p.add_argument("--pool-max-hosts", type=int, default=DEFAULT_POOL_MAX_HOSTS,
-                   help="pilot: verifier CPU-host cost ceiling (default: 4)")
+                   help="pilot: verifier CPU-host cost ceiling (default and maximum: 4)")
     p.add_argument("--bundles-from", default="",
                    help="pilot: reuse the pilot/ and eval2/ bundles under this directory of --work-repo")
     p.add_argument("--seed", type=int, default=DEFAULT_SEED, help="pilot: review, preparation and training seed")
@@ -127,8 +136,50 @@ def main(argv=None):
         print("training, evaluation and pool limits must be positive", file=sys.stderr)
         return 2
     if args.pool_sandboxes_per_host * args.pool_max_hosts < args.score_workers:
-        print("pool capacity must cover --score-workers: increase --pool-max-hosts or "
-              "--pool-sandboxes-per-host", file=sys.stderr)
+        # Name the knob that still has room, not the knob that matches the stage.
+        # Both knobs are capped for a banked stage, so "increase --pool-max-hosts"
+        # was unfollowable whenever hosts were already at the ceiling — the same
+        # two-refusal dead end the density fix removed, moved one knob out — and
+        # above their product no knob reaches at all, which is a number the
+        # operator has to be told rather than left to find by bisection.
+        room = []
+        if args.stage not in BANKED or args.pool_sandboxes_per_host < MAX_POOL_SANDBOXES_PER_HOST:
+            room.append("--pool-sandboxes-per-host")
+        if args.stage not in BANKED or args.pool_max_hosts < MAX_POOL_HOSTS:
+            room.append("--pool-max-hosts")
+        if room:
+            print("pool capacity must cover --score-workers: increase %s"
+                  % " or ".join(room), file=sys.stderr)
+        else:
+            print("a banked launch tops out at %d scorers (%d per host x %d hosts at %s); "
+                  "lower --score-workers"
+                  % (MAX_POOL_SANDBOXES_PER_HOST * MAX_POOL_HOSTS,
+                     MAX_POOL_SANDBOXES_PER_HOST, MAX_POOL_HOSTS, POOL_FLAVOR),
+                  file=sys.stderr)
+        return 2
+    # The check above is a product, and a product is blind to density: sixteen
+    # sandboxes on one host clears it, and that is the shape round-02 actually
+    # ran. The two together force the scorers across hosts, which is the shape
+    # that was decided; separately, neither does. Only a banked stage carries the
+    # pool knobs into the job (`job_env`), so a smoke is unaffected by
+    # construction, and there is deliberately no floor on --score-workers, on
+    # --pool-max-hosts or on total capacity: no eval-2 arm has ever completed, so
+    # a throughput threshold would be set against a forward estimate, and low
+    # concurrency is the safe direction for a load-dependent endpoint. This binds
+    # the launcher only — the job reads NTX_POOL_SANDBOXES_PER_HOST from its
+    # environment (`pipeline/hf_sandbox_runner.py`), which checks positivity and
+    # nothing else, and an absent knob is legal there and must stay legal.
+    if args.stage in BANKED and args.pool_sandboxes_per_host > MAX_POOL_SANDBOXES_PER_HOST:
+        print("--pool-sandboxes-per-host must not exceed %d at %s: per-host density is part of the "
+              "instrument, so spread the scorers with --pool-max-hosts instead"
+              % (MAX_POOL_SANDBOXES_PER_HOST, POOL_FLAVOR), file=sys.stderr)
+        return 2
+    # And the cost envelope is bounded in the other direction for the same
+    # reason the density is: both ceilings are conditioned on a banked stage,
+    # because only a banked stage carries these knobs into the job at all, so
+    # refusing them on a smoke would be refusing a value that does nothing.
+    if args.stage in BANKED and args.pool_max_hosts > MAX_POOL_HOSTS:
+        print("pool cost ceiling is %d CPU hosts" % MAX_POOL_HOSTS, file=sys.stderr)
         return 2
     token = os.environ.get("HF_TOKEN")
     if not token:

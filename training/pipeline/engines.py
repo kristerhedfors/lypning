@@ -50,6 +50,44 @@ def parse_refusal(stderr: str) -> Optional[Tuple[str, str, str]]:
     return None
 
 
+def refusal_bucket(stderr: str) -> str:
+    """``kind: detail`` off a refusal line, with the engine name dropped.
+
+    The bucket a synthesis queue is keyed on: ``module: import calendar`` is
+    about the construct, and the engine that said it is the same for every row
+    in the queue. Unparseable stderr buckets as ``unknown`` rather than as its
+    own text, so a refusal that broke the contract cannot become a construct.
+    """
+    parsed = parse_refusal(stderr)
+    return "%s: %s" % (parsed[1], parsed[2]) if parsed else "unknown"
+
+
+def check_refusal_contract(exit_code: Optional[int], stdout: str, stderr: str,
+                           engine: Optional[str] = None) -> Optional[str]:
+    """None when this is a clean refusal, else which half of the contract broke.
+
+    The contract (root ``CLAUDE.md`` invariant 2): exit 90, exactly one
+    ``<engine>: unsupported: <kind>: <detail>`` line on stderr, and nothing at
+    all on stdout. A 90 that wrote to stdout has half-run the program; a 90 with
+    two stderr lines, or none, is not the grammar. Either is an engine bug and a
+    witness, never a bucket. ``engine`` pins the name at the head of the line
+    when the caller knows which variant it invoked.
+    """
+    if exit_code != REFUSAL_EXIT:
+        return "exit %r is not %d" % (exit_code, REFUSAL_EXIT)
+    if stdout:
+        return "stdout is not empty on a refusal"
+    lines = [ln for ln in (stderr or "").splitlines() if ln.strip()]
+    if len(lines) != 1:
+        return "expected exactly one refusal line, got %d" % len(lines)
+    parsed = parse_refusal(lines[0])
+    if not parsed:
+        return "stderr is not a refusal line"
+    if engine and parsed[0] != engine:
+        return "refusal names %s, not %s" % (parsed[0], engine)
+    return None
+
+
 def refusal_category(stderr: str) -> str:
     """The stratification key: the engine's own word for why it stopped.
 
@@ -129,3 +167,23 @@ def identity(chain=DEFAULT_CHAIN) -> Dict[str, Any]:
         {"chain": {k: v["sha256"] for k, v in engines.items()},
          "oracle_python": oracle})[:16]
     return {"chain": engines, "oracle_python": oracle, "fingerprint": fingerprint}
+
+
+def binary_identity(binary: Any) -> Dict[str, Any]:
+    """The explicit binary a replay actually executes.
+
+    :func:`identity` describes the installed chain.  That is the right arm
+    identity for a normal evaluation, but it cannot identify an explicit
+    ``--engine /path/to/old/lypning-l``: the path may not be installed anywhere
+    in that chain.  S0b replays a historical population through exactly such a
+    binary, so its evidence must name the bytes it executed rather than the
+    unrelated binaries discoverable on the host.
+    """
+    path = str(binary)
+    sha256 = _sha256_of_file(path)
+    return {
+        "path": path,
+        "sha256": sha256,
+        "version": _version_line(path) if sha256 else "",
+        "oracle_python": "%d.%d.%d" % sys.version_info[:3],
+    }

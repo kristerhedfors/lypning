@@ -27,6 +27,32 @@ def _text(value, name, *, nonempty=False, nul=False):
         raise TrainingError(name + " cannot contain NUL")
 
 
+def unsafe_input_path(name, files=()):
+    """Why this test input file name may not be written, or None.
+
+    One home for the rule, because three callers enforce it at different
+    moments and a copy does drift — this function's directory-collision clause
+    is the clause the copy in `eval2_bank.check_tests_shape` never grew.
+    :func:`validate_cases` refuses a case that carries such a name,
+    `synth.validate_candidate` refuses a *generated* candidate before anything
+    runs it, and `eval2_bank.check_tests_shape` refuses an authored proposal
+    before the reference is executed. The second is the load-bearing one —
+    `sandbox.materialize` reports an escaping name as a harness error, and a
+    harness error aborts the whole batch. Callers own the wording, because each
+    charges the failure to a differently named rule; none owns the predicate.
+    """
+    path = PurePosixPath(name)
+    if path.is_absolute() or ".." in path.parts:
+        return "escapes the working directory"
+    if "\\" in name or str(path) != name or name == ".":
+        return "is not a normalised relative path"
+    if name == "solution.py" or name.startswith("solution.py/"):
+        return "is reserved for the program itself"
+    if any(parent.as_posix() in files for parent in path.parents if str(parent) != "."):
+        return "collides with a directory named by another input file"
+    return None
+
+
 def solution_fingerprint(reference):
     try:
         tree = ast.parse(reference)
@@ -80,13 +106,11 @@ def validate_cases(cases):
                 raise TrainingError("files must be a mapping")
             for name, content in files.items():
                 _text(name, "input path", nonempty=True)
-                path = PurePosixPath(name)
-                if (path.is_absolute() or ".." in path.parts or "\\" in name
-                        or str(path) != name or name in (".", "solution.py")
-                        or name.startswith("solution.py/")):
-                    raise TrainingError("unsafe or reserved input file path")
-                if any(parent.as_posix() in files for parent in path.parents if str(parent) != "."):
+                bad = unsafe_input_path(name, files)
+                if bad == "collides with a directory named by another input file":
                     raise TrainingError("input file/directory path collision")
+                if bad:
+                    raise TrainingError("unsafe or reserved input file path")
                 _text(content, "input file content", nul=True)
             inputs.add(sha256_of({k: test.get(k, d) for k, d in
                                  (("stdin", ""), ("argv", []), ("files", {}))}))

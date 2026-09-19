@@ -1,0 +1,4 @@
+# The unsplit source. `train.jsonl` and `eval2.jsonl` are its family-disjoint
+# split and are what the pilot actually reads, so committing both would carry
+# every case twice. Regenerate with `generate.py`.
+cases.jsonl
