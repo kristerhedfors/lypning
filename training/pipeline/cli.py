@@ -2372,6 +2372,295 @@ def cmd_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def _stdlib_rows(files: List[str]) -> List[List[Dict[str, Any]]]:
+    """Each --rows file's records, in the order the caller named the files.
+
+    The order is the precedence `stdlib.assemble` de-duplicates by, so it is
+    preserved rather than sorted here.
+    """
+    return [list(read_jsonl(f)) for f in files]
+
+
+def cmd_stdlib_verify(args: argparse.Namespace) -> int:
+    """CPython first, then each engine cheapest-first; emit rows and drops.
+
+    Exit 1 on a MISMATCH — an engine that exited 0 with bytes CPython did not
+    print is invariant 1's alarm and must not be merely logged. Every other drop
+    is a ledger entry the repair stage reads: a candidate that refuses on every
+    engine is a recorded gap, not a failed command. `--strict` widens the failure
+    to every drop, which is what a check over the COMMITTED units wants — there,
+    a malformed file is a defect rather than a candidate.
+    """
+    from . import stdlib
+
+    cpython = stdlib.resolve_cpython(args.cpython)
+    if not cpython:
+        print("no cpython found: pass --cpython PATH", file=sys.stderr)
+        return 1
+    try:
+        found, missing = stdlib.resolve_engines(args.engine or [])
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if missing:
+        print("engine not built: %s — run `lypning build --rust`, or pass "
+              "--engine NAME=PATH. Labelling without a cheaper engine would "
+              "understate every unit it would have run." % ", ".join(missing),
+              file=sys.stderr)
+        return 1
+
+    paths: List[Path] = []
+    for d in args.units:
+        found_here = stdlib.unit_paths(d)
+        if not found_here:
+            print("no units under %s" % d, file=sys.stderr)
+        paths.extend(found_here)
+    if not paths:
+        print("nothing to verify", file=sys.stderr)
+        return 1
+
+    result = stdlib.verify_units(paths, cpython, found,
+                                 first_seen=args.first_seen,
+                                 producer=args.producer,
+                                 timeout_s=args.timeout)
+    stdlib.write_rows(args.out, result.rows)
+    stdlib.write_rows(args.drops, result.drops)
+    print("cpython %s" % cpython)
+    for name in stdlib.ENGINE_ORDER:
+        if name in found:
+            print("%-12s %s" % (name, found[name]))
+    print("")
+    print(stdlib.report(result.rows, result.drops))
+    print("")
+    print("%d rows -> %s" % (len(result.rows), args.out))
+    print("%d drops -> %s" % (len(result.drops), args.drops))
+    fatal = [d for d in result.drops
+             if args.strict or d["reason"] in ("mismatch", "engine-missing")]
+    if fatal:
+        print("")
+        print("%d unit(s) failed this check:" % len(fatal), file=sys.stderr)
+        for d in fatal:
+            print("  %s  %s  %s" % (d["name"], d["reason"], d["detail"]), file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_stdlib_assemble(args: argparse.Namespace) -> int:
+    """Merge row files, de-duplicate by id, sort by name, render the report."""
+    from . import stdlib
+
+    groups = _stdlib_rows(args.rows)
+    asm = stdlib.assemble(groups)
+    stdlib.write_rows(args.out, asm.rows)
+    text = stdlib.report(asm.rows)
+    Path(args.report).parent.mkdir(parents=True, exist_ok=True)
+    Path(args.report).write_text(text + "\n", encoding="utf-8")
+    print(text)
+    print("")
+    print("%d rows in, %d after de-duplication -> %s"
+          % (sum(len(g) for g in groups), len(asm.rows), args.out))
+    print("report -> %s" % args.report)
+    if asm.duplicates:
+        print("%d duplicate id(s) dropped, first writer kept" % len(asm.duplicates))
+    if asm.collisions:
+        # One source under two names double-counts a corpus. Loud, and fatal.
+        print("", file=sys.stderr)
+        print("one id arrived under two names — the same unit is committed twice:",
+              file=sys.stderr)
+        for rid, kept, seen in asm.collisions:
+            print("  %s  kept %s, also seen as %s" % (rid, kept, seen), file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_stdlib_report(args: argparse.Namespace) -> int:
+    """Render a corpus that already exists. Reads, runs nothing, writes nothing."""
+    from . import stdlib
+
+    if not args.rows:
+        print("nothing to render: pass --corpus FILE (or --rows FILE)",
+              file=sys.stderr)
+        return 2
+    rows: List[Dict[str, Any]] = []
+    for group in _stdlib_rows(args.rows):
+        rows.extend(group)
+    rows.sort(key=lambda r: (str(r.get("name") or ""), str(r.get("id") or "")))
+    drops = list(read_jsonl(args.drops)) if args.drops else []
+    print(stdlib.report(rows, drops))
+    return 0
+
+
+def _stdlib_resolved_on(args: argparse.Namespace) -> str:
+    """The date stamped on the plan. From the CLI's clock, never the library's.
+
+    `stdlib_generate` takes it as an argument for the same reason
+    `stdlib.unit_row` takes `first_seen`: a library that read the clock would
+    rewrite a plan that did not change, and a `--fake` run would stop being
+    reproducible. The clock is the CLI's to read.
+    """
+    if args.resolved_on:
+        return str(args.resolved_on)
+    from datetime import date
+    return date.today().isoformat()
+
+
+def cmd_stdlib_plan(args: argparse.Namespace) -> int:
+    """Resolve the model live, diff the targets against the committed units.
+
+    Two things happen before anything is spent, and both can stop the dispatch:
+    the targets file's closed list is checked against the engine's own set, and
+    the model is resolved against the provider's `/v1/models` rather than taken
+    from a constant. A run that fell back to the pin says so in the plan and on
+    this screen, because a stale producer recorded on every row is the kind of
+    thing nobody notices in a log.
+    """
+    from . import stdlib_generate as gen
+
+    try:
+        targets = gen.load_targets(args.targets)
+    except gen.GenerateError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    covered = gen.covered_names(args.units)
+    resolved_on = _stdlib_resolved_on(args)
+    resolution = gen.resolve_model(
+        base_url=args.base_url or "", api_key=os.environ.get("NTX_API_KEY"),
+        resolved_on=resolved_on, offline=bool(args.fake),
+        override=args.model or os.environ.get("NTX_MODEL"))
+    try:
+        plan = gen.build_plan(
+            targets, covered, resolution, resolved_on, batches=args.batches,
+            per_batch=args.targets_per_batch, draws_per_target=args.draws_per_target,
+            max_tokens=args.max_tokens, units_dir=args.units or "",
+            targets_path=args.targets or "", price_in=args.price_in,
+            price_out=args.price_out, currency=args.currency)
+    except gen.GenerateError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    Path(args.out).write_text(json.dumps(plan, indent=2, sort_keys=False,
+                                         ensure_ascii=False) + "\n",
+                              encoding="utf-8")
+    print(gen.plan_report(plan))
+    print("")
+    print("plan -> %s" % args.out)
+    if not plan["batches"]:
+        # Not an error in itself, but a dispatch that would spend nothing and
+        # produce nothing should not look like a successful generation run.
+        print("", file=sys.stderr)
+        print("every target in %s is already filled by a committed unit — nothing "
+              "to generate" % args.targets, file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_stdlib_generate(args: argparse.Namespace) -> int:
+    """One batch of the plan: draw, extract, gate, write the candidates and ledger.
+
+    Nothing here judges a candidate: the verify stage runs CPython and the
+    engines and is the only thing that may. A batch that wrote no candidate at
+    all exits 1, because a generation job whose whole output is a ledger of
+    refused completions is a job that needs looking at even though every
+    individual draw was recorded correctly.
+    """
+    from . import stdlib_generate as gen
+
+    try:
+        plan = read_json(args.plan)
+    except (OSError, ValueError) as exc:
+        print("cannot read plan %s: %s" % (args.plan, exc), file=sys.stderr)
+        return 1
+    try:
+        backend = gen.backend_for(plan, fake=bool(args.fake),
+                                  api_key=os.environ.get("NTX_API_KEY"),
+                                  timeout_s=args.request_timeout)
+    except (gen.GenerateError, BackendError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    try:
+        result = gen.generate_batch(plan, args.batch, args.out, backend,
+                                    draws_per_target=args.draws_per_target,
+                                    max_tokens=args.max_tokens)
+    except gen.GenerateError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    draws = args.draws or str(Path(args.out) / "draws.jsonl")
+    gen.write_draws(draws, result.draws)
+    ident = backend.identity()
+    print("model      %s" % ident.get("model"))
+    print("base_url   %s" % ident.get("base_url"))
+    print("batch      %s of %s" % (args.batch, args.plan))
+    print("")
+    print(gen.generation_report(result, "generate"))
+    print("")
+    print("%d candidate(s) -> %s" % (len(result.written), args.out))
+    print("%d draw(s) -> %s" % (len(result.draws), draws))
+    if not result.written:
+        print("", file=sys.stderr)
+        print("no candidate survived extraction in batch %s; the ledger says why "
+              "for each draw" % args.batch, file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_stdlib_repair(args: argparse.Namespace) -> int:
+    """ONE bounded round over what verify dropped. One call per job, no loop.
+
+    The refusal lines are re-measured against the engines rather than
+    reconstructed from the drop's wording, so what the model is shown is the
+    sentence the engine actually wrote (invariant 9). With no engine built the
+    round still runs on the recorded verdict alone, and this says so.
+    """
+    from . import stdlib
+    from . import stdlib_generate as gen
+
+    try:
+        plan = read_json(args.plan)
+        drops = list(read_jsonl(args.drops))
+    except (OSError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    try:
+        found, missing = stdlib.resolve_engines(args.engine or [])
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if missing:
+        print("engine not built: %s — the round will feed back the recorded "
+              "verdict without a measured refusal line" % ", ".join(missing),
+              file=sys.stderr)
+    try:
+        jobs, skipped = gen.repair_jobs(drops, args.units, plan, found,
+                                        timeout_s=args.timeout)
+    except gen.GenerateError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    for name, why in skipped:
+        print("skipped %-28s %s" % (name, why))
+    if not jobs:
+        print("")
+        print("nothing repairable in %s — %d drop(s) read, %d skipped"
+              % (args.drops, len(drops), len(skipped)))
+        return 0
+    try:
+        backend = gen.backend_for(plan, fake=bool(args.fake),
+                                  api_key=os.environ.get("NTX_API_KEY"),
+                                  timeout_s=args.request_timeout)
+    except (gen.GenerateError, BackendError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    result = gen.repair_batch(jobs, args.out, backend, max_tokens=args.max_tokens)
+    draws = args.draws or str(Path(args.out) / "draws.jsonl")
+    gen.write_draws(draws, result.draws)
+    print("")
+    print("round 1 of %d — bounded, and there is no round 2" % gen.REPAIR_ROUNDS)
+    print(gen.generation_report(result, "repair"))
+    print("")
+    print("%d candidate(s) -> %s" % (len(result.written), args.out))
+    print("%d draw(s) -> %s" % (len(result.draws), draws))
+    return 0
+
+
 # ------------------------------------------------------------------ parser
 
 
@@ -2817,6 +3106,120 @@ def build_parser() -> argparse.ArgumentParser:
     sh = sub.add_parser("show", help="print the programs a run produced")
     sh.add_argument("run_id"); sh.add_argument("--case"); sh.add_argument("--limit", type=int, default=5)
     sh.add_argument("--failed-only", action="store_true"); sh.set_defaults(fn=cmd_show)
+
+    # The stdlib corpus: units in, labelled rows out. `stdlib-plan`,
+    # `stdlib-generate` and `stdlib-repair` are the generation half and are
+    # registered separately.
+    sv = sub.add_parser("stdlib-verify",
+                        help="label each stdlib unit with the cheapest engine that runs it")
+    sv.add_argument("--units", action="append", required=True, metavar="DIR",
+                    help="a directory of unit files; repeatable")
+    sv.add_argument("--out", required=True, metavar="FILE", help="labelled rows (jsonl)")
+    sv.add_argument("--drops", required=True, metavar="FILE",
+                    help="one row per unit that is NOT a corpus row, with the reason")
+    sv.add_argument("--first-seen", required=True, metavar="DATE",
+                    help="the date stamped on every row; passed in, never taken "
+                         "from the clock, so a re-verify rewrites nothing")
+    sv.add_argument("--cpython", help="the oracle (default: the real python3, past any shim)")
+    sv.add_argument("--engine", action="append", metavar="NAME=PATH",
+                    help="pin one engine binary; repeatable")
+    sv.add_argument("--producer", default="authored",
+                    help="provenance for every row: 'authored' for a committed "
+                         "seed unit, or the model id that generated it")
+    sv.add_argument("--timeout", type=float, default=30.0, metavar="S")
+    sv.add_argument("--strict", action="store_true",
+                    help="fail on ANY drop, not only on a mismatch — what a "
+                         "check over the committed units wants")
+    sv.set_defaults(fn=cmd_stdlib_verify)
+
+    sa = sub.add_parser("stdlib-assemble",
+                        help="merge row files, de-duplicate by id, render the report")
+    sa.add_argument("--rows", action="append", required=True, metavar="FILE",
+                    help="a labelled-rows file; repeatable, first writer wins")
+    sa.add_argument("--out", required=True, metavar="FILE")
+    sa.add_argument("--report", required=True, metavar="FILE")
+    sa.set_defaults(fn=cmd_stdlib_assemble)
+
+    sr = sub.add_parser("stdlib-report", help="render a stdlib corpus that already exists")
+    # `--corpus` and `--rows` are the same slot under two names, because the
+    # file is the same file at both ends of the pipeline: `stdlib-verify`
+    # writes `--out` rows, `stdlib-assemble` merges them into a corpus, and a
+    # reader rendering either should not have to know which one they hold.
+    sr.add_argument("--rows", "--corpus", action="append", dest="rows",
+                    metavar="FILE",
+                    help="a rows or corpus file; repeatable, rendered as one")
+    sr.add_argument("--drops", metavar="FILE")
+    sr.set_defaults(fn=cmd_stdlib_report)
+
+    # The generation half. The spend knobs are all here and all bounded:
+    # `stdlib-plan` multiplies them into a stated ceiling and prints it, so a
+    # dispatcher reads the worst case before authorising the run rather than
+    # discovering it on an invoice.
+    sp = sub.add_parser("stdlib-plan",
+                        help="resolve the generation model and pick the targets "
+                             "no committed unit fills yet")
+    sp.add_argument("--units", metavar="DIR", default="training/stdlib/units",
+                    help="committed units; their `# fills:` headers ARE the "
+                         "coverage, so a target they cover is dropped")
+    sp.add_argument("--targets", metavar="FILE", default="training/stdlib/targets.json")
+    sp.add_argument("--out", required=True, metavar="FILE", help="the plan (json)")
+    sp.add_argument("--batches", type=int, default=2, metavar="N",
+                    help="how many batches this dispatch may run")
+    sp.add_argument("--targets-per-batch", type=int, default=4, metavar="N")
+    sp.add_argument("--draws-per-target", type=int, default=2, metavar="N",
+                    help="a CEILING on retries, not a count: drawing stops at the "
+                         "first structurally valid candidate")
+    sp.add_argument("--max-tokens", type=int, default=6144, metavar="N",
+                    help="per call; the run's output ceiling is this times the "
+                         "call ceiling")
+    sp.add_argument("--model", metavar="ID",
+                    help="name the model instead of resolving it against "
+                         "{base}/models; recorded as such in the plan")
+    sp.add_argument("--base-url", metavar="URL", help="default: $NTX_BASE_URL")
+    sp.add_argument("--resolved-on", metavar="DATE",
+                    help="the date stamped on the plan (default: today)")
+    sp.add_argument("--price-in", type=float, default=0.25, metavar="X",
+                    help="published price per 1M prompt tokens, for the ceiling")
+    sp.add_argument("--price-out", type=float, default=0.50, metavar="X")
+    sp.add_argument("--currency", default="EUR")
+    sp.add_argument("--fake", action="store_true",
+                    help="the deterministic offline provider: resolve nothing, "
+                         "fetch nothing, spend nothing")
+    sp.set_defaults(fn=cmd_stdlib_plan)
+
+    sg = sub.add_parser("stdlib-generate", help="one batch of a plan into candidate units")
+    sg.add_argument("--plan", required=True, metavar="FILE")
+    sg.add_argument("--batch", type=int, required=True, metavar="N")
+    sg.add_argument("--out", required=True, metavar="DIR", help="candidate unit files")
+    sg.add_argument("--draws", metavar="FILE",
+                    help="the ledger of every raw completion, kept whether or not "
+                         "it became a candidate (default: DIR/draws.jsonl)")
+    sg.add_argument("--draws-per-target", type=int, default=0, metavar="N",
+                    help="override the plan's ceiling")
+    sg.add_argument("--max-tokens", type=int, default=0, metavar="N",
+                    help="override the plan's per-call ceiling")
+    sg.add_argument("--request-timeout", type=float, default=300.0, metavar="S")
+    sg.add_argument("--fake", action="store_true")
+    sg.set_defaults(fn=cmd_stdlib_generate)
+
+    srp = sub.add_parser("stdlib-repair",
+                         help="ONE bounded round over what verify dropped")
+    srp.add_argument("--units", required=True, metavar="DIR",
+                     help="where the rejected candidates are; a drop whose file is "
+                          "gone is skipped, never regenerated from scratch")
+    srp.add_argument("--drops", required=True, metavar="FILE")
+    srp.add_argument("--plan", required=True, metavar="FILE")
+    srp.add_argument("--out", required=True, metavar="DIR")
+    srp.add_argument("--draws", metavar="FILE")
+    srp.add_argument("--engine", action="append", metavar="NAME=PATH",
+                     help="pin one engine binary; used to RE-MEASURE the refusal "
+                          "line that is fed back")
+    srp.add_argument("--max-tokens", type=int, default=6144, metavar="N")
+    srp.add_argument("--timeout", type=float, default=30.0, metavar="S",
+                     help="per engine run while re-measuring")
+    srp.add_argument("--request-timeout", type=float, default=300.0, metavar="S")
+    srp.add_argument("--fake", action="store_true")
+    srp.set_defaults(fn=cmd_stdlib_repair)
     return p
 
 

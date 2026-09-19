@@ -1,0 +1,540 @@
+name: stdlib corpus (GLM on Berget)
+
+# Generate, verify and assemble the lypning "standard library" corpus: one
+# self-contained, function-only unit per CPython surface the Rust engine
+# refuses, each row labelled with the cheapest engine that actually runs it.
+#
+# workflow_dispatch ONLY. No pull_request, no push, no schedule — the provider
+# secret must never be reachable from a fork PR, and a corpus that regenerated
+# itself on every push would spend money nobody authorised. Every run is an
+# operator pressing the button with the inputs below in front of them.
+#
+# This workflow does not commit. `permissions: contents: read`, it uploads the
+# assembled corpus as an artifact, and a human reads the report and merges it.
+# It asks for no write scope of any kind, and nothing here should ever add one:
+# generated content that wrote itself into the tree would be content nobody
+# read.
+on:
+  workflow_dispatch:
+    inputs:
+      batches:
+        description: 'Batches this dispatch may run (1-6). batches x targets_per_batch is the whole target budget.'
+        type: number
+        default: 2
+        required: true
+      targets_per_batch:
+        description: 'Targets per batch (1-6). One target is one unit asked for.'
+        type: number
+        default: 4
+        required: true
+      draws_per_target:
+        description: 'CEILING on draws per target (1-3). Drawing stops at the first valid candidate, so this is a retry bound, not a count.'
+        type: number
+        default: 2
+        required: true
+      max_tokens:
+        description: 'Output tokens a single completion may use (1024-16384).'
+        type: number
+        default: 6144
+        required: true
+      dry_run:
+        description: 'Run the whole five-stage matrix on the deterministic fake provider: no secret, no network to the provider, no spend.'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# A constant group, so two dispatches queue instead of racing, and
+# cancel-in-progress: false, because cancelling a run mid-way throws away the
+# draws ledger of everything already paid for. Evidence is never cancelled to
+# make room for another dispatch.
+concurrency:
+  group: lypning-stdlib-corpus
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: src:training
+  LYPNING_CAPTURE: '0'
+  LYPNING_HARVEST: '0'
+  # The hard ceiling for one dispatch, checked against the plan's own estimate
+  # before a single completion is requested. An operator can lower the spend
+  # with the inputs; they cannot raise it past this without editing the file in
+  # a reviewed commit. These are ceilings on what the REQUESTS permit — not a
+  # prediction of usage, and not a bill: they exclude the provider's rounding,
+  # any minimum charge, and the tokens a transport retry inside ChatBackend
+  # spends. The repair stage is one further bounded round beyond them.
+  HARD_TOKEN_CEILING: '400000'
+  HARD_COST_CEILING: '0.50'
+  HARD_COST_CURRENCY: 'EUR'
+
+jobs:
+  # ---------------------------------------------------------------- 1. plan
+  # Resolve the model against the provider's live /v1/models, diff the targets
+  # file against the units already committed, and price the worst case. Nothing
+  # is generated here and nothing is spent: this is the stage a dispatcher reads
+  # before letting the rest run.
+  plan:
+    if: github.ref == 'refs/heads/main' || inputs.dry_run
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      model: ${{ steps.matrix.outputs.model }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # The secret is mapped at STEP level, never job-wide and never
+      # workflow-wide. Three steps talk to the provider and three steps carry
+      # it: this one, "Generate one batch" in `generate`, and "One bounded
+      # repair round" in `repair`. Every other step in this workflow runs
+      # without it in the environment at all. Grepping this file for the secret
+      # name is the count, and it must return exactly those three `env:` lines.
+      - name: Resolve the newest active GLM and plan the batches
+        if: ${{ !inputs.dry_run }}
+        env:
+          NTX_API_KEY: ${{ secrets.BERGET_API_KEY }}
+          NTX_BASE_URL: https://api.berget.ai/v1
+        run: |
+          mkdir -p work/stdlib
+          python -m pipeline.cli stdlib-plan \
+            --units training/stdlib/units \
+            --targets training/stdlib/targets.json \
+            --out work/stdlib/plan.json \
+            --batches "${{ inputs.batches }}" \
+            --targets-per-batch "${{ inputs.targets_per_batch }}" \
+            --draws-per-target "${{ inputs.draws_per_target }}" \
+            --max-tokens "${{ inputs.max_tokens }}"
+
+      - name: Plan the same batches offline, with no secret and no provider call
+        if: inputs.dry_run
+        run: |
+          mkdir -p work/stdlib
+          python -m pipeline.cli stdlib-plan \
+            --units training/stdlib/units \
+            --targets training/stdlib/targets.json \
+            --out work/stdlib/plan.json \
+            --batches "${{ inputs.batches }}" \
+            --targets-per-batch "${{ inputs.targets_per_batch }}" \
+            --draws-per-target "${{ inputs.draws_per_target }}" \
+            --max-tokens "${{ inputs.max_tokens }}" \
+            --fake
+
+      # The spend guard. The plan already printed its ceiling; this refuses to
+      # let the rest of the workflow run if that ceiling is above what this file
+      # permits. A guard that only printed would be a guard nobody enforces.
+      - name: Refuse to dispatch above the hard ceiling
+        run: |
+          python - <<'PY'
+          import json, os, sys
+          plan = json.load(open("work/stdlib/plan.json"))
+          b = plan["budget"]
+          tok_cap = int(os.environ["HARD_TOKEN_CEILING"])
+          cost_cap = float(os.environ["HARD_COST_CEILING"])
+          print("ceiling for this dispatch: %d token(s), %.4f %s"
+                % (b["tokens_max"], b["cost_max"], b["currency"]))
+          print("this file permits:         %d token(s), %.4f %s"
+                % (tok_cap, cost_cap, os.environ["HARD_COST_CURRENCY"]))
+          bad = []
+          if b["tokens_max"] > tok_cap:
+              bad.append("tokens %d > %d" % (b["tokens_max"], tok_cap))
+          if b["cost_max"] > cost_cap:
+              bad.append("cost %.4f > %.4f" % (b["cost_max"], cost_cap))
+          if b["currency"] != os.environ["HARD_COST_CURRENCY"]:
+              bad.append("the plan prices in %s, the ceiling is in %s"
+                         % (b["currency"], os.environ["HARD_COST_CURRENCY"]))
+          if bad:
+              sys.exit("refusing to dispatch: " + "; ".join(bad)
+                       + ". Lower the inputs, or raise the ceiling in a reviewed commit.")
+          print("within the ceiling. " + b["note"])
+          PY
+
+      - name: Emit the batch matrix
+        id: matrix
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          plan = json.load(open("work/stdlib/plan.json"))
+          batches = [b["batch"] for b in plan["batches"]]
+          assert batches, "the plan has no batches; nothing to generate"
+          print("matrix=" + json.dumps({"batch": batches}))
+          print("model=" + plan["model"])
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stdlib-plan
+          path: work/stdlib/plan.json
+          retention-days: 14
+          if-no-files-found: error
+
+  # ------------------------------------------------------------ 2. generate
+  # One job per batch. Each writes candidate unit files and a draws ledger that
+  # records EVERY raw completion, including the ones that produced nothing —
+  # training/DATA_PRODUCTION.md step 5. A rollout that contributed no candidate
+  # is still the only measurement of whether the prompt is working.
+  generate:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: stdlib-plan
+          path: work/stdlib
+
+      - name: Generate one batch
+        if: ${{ !inputs.dry_run }}
+        env:
+          NTX_API_KEY: ${{ secrets.BERGET_API_KEY }}
+        run: |
+          python -m pipeline.cli stdlib-generate \
+            --plan work/stdlib/plan.json \
+            --batch "${{ matrix.batch }}" \
+            --out "work/stdlib/candidates-${{ matrix.batch }}" \
+            --draws "work/stdlib/candidates-${{ matrix.batch }}/draws.jsonl"
+
+      - name: Generate the same batch from the deterministic offline provider
+        if: inputs.dry_run
+        run: |
+          python -m pipeline.cli stdlib-generate \
+            --plan work/stdlib/plan.json \
+            --batch "${{ matrix.batch }}" \
+            --out "work/stdlib/candidates-${{ matrix.batch }}" \
+            --draws "work/stdlib/candidates-${{ matrix.batch }}/draws.jsonl" \
+            --fake
+
+      # Kept even when the batch failed: a batch that spent tokens and produced
+      # nothing must still hand over the ledger that says what it spent them on.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stdlib-candidates-${{ matrix.batch }}
+          path: work/stdlib/candidates-${{ matrix.batch }}
+          retention-days: 14
+          if-no-files-found: warn
+
+  # -------------------------------------------------------------- 3. verify
+  # CPython is the oracle, live, on every unit; then each engine cheapest-first.
+  # Both engines are built HERE rather than assumed, because a label taken
+  # without the cheaper engine would understate every unit that engine would
+  # have run. The committed seed units are verified too, with --strict: they are
+  # the corpus's existing content and a defect in one is a defect, not a
+  # candidate.
+  verify:
+    needs: [plan, generate]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Isolate engine state
+        run: echo "LYPNING_HOME=$RUNNER_TEMP/stdlib-home" >> "$GITHUB_ENV"
+      - run: python -m pip install -e .
+      - name: Build both native engines against this Python
+        run: python -m lypning build --rust --target host
+      - uses: actions/download-artifact@v4
+        with:
+          name: stdlib-plan
+          path: work/stdlib
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stdlib-candidates-*
+          path: work/candidates
+
+      - name: "Verify the committed seed units (strict: any drop is a defect)"
+        env:
+          NTX_ENGINE_LYPNING: ${{ runner.temp }}/stdlib-home/bin/lypning
+          NTX_ENGINE_LYPNING_L: ${{ runner.temp }}/stdlib-home/bin/lypning-l
+        run: |
+          mkdir -p work/verified
+          python -m pipeline.cli stdlib-verify \
+            --units training/stdlib/units \
+            --out work/verified/seed-rows.jsonl \
+            --drops work/verified/seed-drops.jsonl \
+            --first-seen "$(date -u +%Y-%m-%d)" \
+            --producer authored \
+            --strict
+
+      - name: Verify every generated candidate
+        env:
+          NTX_ENGINE_LYPNING: ${{ runner.temp }}/stdlib-home/bin/lypning
+          NTX_ENGINE_LYPNING_L: ${{ runner.temp }}/stdlib-home/bin/lypning-l
+        run: |
+          MODEL=$(python -c "import json;print(json.load(open('work/stdlib/plan.json'))['model'])")
+          ARGS=""
+          for d in work/candidates/*/; do ARGS="$ARGS --units $d"; done
+          if [ -z "$ARGS" ]; then echo "no candidate artifacts to verify"; exit 1; fi
+          # No --strict: a candidate no engine runs is a recorded gap the repair
+          # stage reads, not a failed command. A MISMATCH still exits 1 on its
+          # own — invariant 1, and stdlib-verify enforces it without being asked.
+          python -m pipeline.cli stdlib-verify $ARGS \
+            --out work/verified/new-rows.jsonl \
+            --drops work/verified/new-drops.jsonl \
+            --first-seen "$(date -u +%Y-%m-%d)" \
+            --producer "$MODEL"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stdlib-verified
+          path: work/verified
+          retention-days: 14
+          if-no-files-found: warn
+
+  # -------------------------------------------------------------- 4. repair
+  # ONE round. Exactly one: each rejected candidate is shown the refusal line
+  # the engine actually wrote — re-measured here against the engines built in
+  # this job, not paraphrased from the drop — and regenerated once. There is no
+  # second round, in this YAML or in `stdlib_generate.repair_batch`, because a
+  # loop over the verifier is a search that fits units to the checks rather than
+  # to CPython. The next attempt is a new dispatch a human authorises.
+  repair:
+    needs: [plan, verify]
+    if: always() && needs.verify.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Isolate engine state
+        run: echo "LYPNING_HOME=$RUNNER_TEMP/stdlib-home" >> "$GITHUB_ENV"
+      - run: python -m pip install -e .
+      - name: Build both native engines against this Python
+        run: python -m lypning build --rust --target host
+      - uses: actions/download-artifact@v4
+        with:
+          name: stdlib-plan
+          path: work/stdlib
+      - uses: actions/download-artifact@v4
+        with:
+          name: stdlib-verified
+          path: work/verified
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stdlib-candidates-*
+          path: work/candidates
+
+      - name: Collect the rejected candidates into one directory
+        run: |
+          mkdir -p work/rejected work/repaired
+          for d in work/candidates/*/; do
+            find "$d" -maxdepth 1 -name '*.py' -exec cp {} work/rejected/ \;
+          done
+          ls -1 work/rejected | wc -l
+
+      - name: One bounded repair round
+        if: ${{ !inputs.dry_run }}
+        env:
+          NTX_API_KEY: ${{ secrets.BERGET_API_KEY }}
+          NTX_ENGINE_LYPNING: ${{ runner.temp }}/stdlib-home/bin/lypning
+          NTX_ENGINE_LYPNING_L: ${{ runner.temp }}/stdlib-home/bin/lypning-l
+        run: |
+          python -m pipeline.cli stdlib-repair \
+            --units work/rejected \
+            --drops work/verified/new-drops.jsonl \
+            --plan work/stdlib/plan.json \
+            --out work/repaired \
+            --draws work/repaired/draws.jsonl
+
+      - name: The same single round on the deterministic offline provider
+        if: inputs.dry_run
+        env:
+          NTX_ENGINE_LYPNING: ${{ runner.temp }}/stdlib-home/bin/lypning
+          NTX_ENGINE_LYPNING_L: ${{ runner.temp }}/stdlib-home/bin/lypning-l
+        run: |
+          python -m pipeline.cli stdlib-repair \
+            --units work/rejected \
+            --drops work/verified/new-drops.jsonl \
+            --plan work/stdlib/plan.json \
+            --out work/repaired \
+            --draws work/repaired/draws.jsonl \
+            --fake
+
+      - name: Re-verify only what the round produced
+        env:
+          NTX_ENGINE_LYPNING: ${{ runner.temp }}/stdlib-home/bin/lypning
+          NTX_ENGINE_LYPNING_L: ${{ runner.temp }}/stdlib-home/bin/lypning-l
+        run: |
+          mkdir -p work/repaired-rows
+          if ! ls work/repaired/*.py >/dev/null 2>&1; then
+            echo "the round produced no candidate; writing empty row and drop files"
+            : > work/repaired-rows/repaired-rows.jsonl
+            : > work/repaired-rows/repaired-drops.jsonl
+            exit 0
+          fi
+          MODEL=$(python -c "import json;print(json.load(open('work/stdlib/plan.json'))['model'])")
+          python -m pipeline.cli stdlib-verify \
+            --units work/repaired \
+            --out work/repaired-rows/repaired-rows.jsonl \
+            --drops work/repaired-rows/repaired-drops.jsonl \
+            --first-seen "$(date -u +%Y-%m-%d)" \
+            --producer "$MODEL"
+
+      - name: Keep the round's own ledger beside its rows
+        if: always()
+        run: cp -f work/repaired/draws.jsonl work/repaired-rows/draws.jsonl 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stdlib-repaired
+          path: work/repaired-rows
+          retention-days: 14
+          if-no-files-found: warn
+
+  # ------------------------------------------------------------ 5. assemble
+  # Merge the seed rows with the new ones, de-duplicate by id, render the
+  # report. The seed rows go FIRST because `stdlib.assemble` keeps the first
+  # writer: a committed unit outranks a regenerated one carrying the same id.
+  assemble:
+    needs: [plan, verify, repair]
+    if: always() && needs.verify.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: stdlib-plan
+          path: work/stdlib
+      - uses: actions/download-artifact@v4
+        with:
+          name: stdlib-verified
+          path: work/verified
+      # Not fatal: the repair round is optional by construction — a verify pass
+      # that dropped nothing leaves it with nothing to do — so assemble reads
+      # its rows if they exist and merges without them if they do not.
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: stdlib-repaired
+          path: work/repaired-rows
+
+      - name: Merge, de-duplicate, render
+        run: |
+          mkdir -p work/corpus
+          # The COMMITTED seed corpus goes first, ahead of the rows this run
+          # re-verified. `stdlib.assemble` keeps the first writer, and the two
+          # agree on everything except `first_seen`: the committed rows carry
+          # the date each unit was first labelled, while the verify job stamps
+          # every seed row with today. A field named `first_seen` that moved on
+          # every dispatch would record the dispatch, not the unit. The verify
+          # job stays in the graph because re-labelling the committed units
+          # against engines built in this run is the check; this is only about
+          # which copy of the row the corpus keeps.
+          ARGS="--rows training/data/stdlib/stdlib.jsonl"
+          ARGS="$ARGS --rows work/verified/seed-rows.jsonl --rows work/verified/new-rows.jsonl"
+          if [ -s work/repaired-rows/repaired-rows.jsonl ]; then
+            ARGS="$ARGS --rows work/repaired-rows/repaired-rows.jsonl"
+          fi
+          python -m pipeline.cli stdlib-assemble $ARGS \
+            --out work/corpus/corpus.jsonl \
+            --report work/corpus/report.txt
+          cp -f work/stdlib/plan.json work/corpus/plan.json
+          cat work/verified/new-drops.jsonl work/repaired-rows/repaired-drops.jsonl \
+            > work/corpus/drops.jsonl 2>/dev/null || true
+          {
+            echo '## stdlib corpus'
+            echo
+            echo '```'
+            cat work/corpus/report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # A dry run that only exits 0 proves nothing. This asserts the SHAPE the
+      # five stages were supposed to produce: the offline provider's canned unit
+      # reaches the corpus, it is labelled by an engine that actually ran it, and
+      # every fake row is stamped with the fake producer so it can never be
+      # mistaken for content. It fails the job when any of that is untrue.
+      - name: Assert the dry run produced what a real run would
+        if: inputs.dry_run
+        run: |
+          python - <<'PY'
+          import json, os, sys
+          from lypning import engines as lyp
+          def rows_of(path):
+              if not os.path.exists(path):
+                  return []
+              return [json.loads(l) for l in open(path) if l.strip()]
+          rows = rows_of("work/corpus/corpus.jsonl")
+          plan = json.load(open("work/corpus/plan.json"))
+          seed = rows_of("work/verified/seed-rows.jsonl")
+          new = rows_of("work/verified/new-rows.jsonl")
+          fixed = rows_of("work/repaired-rows/repaired-rows.jsonl")
+          planned = sum(len(b["targets"]) for b in plan["batches"])
+          made = new + fixed
+          bad = []
+          if plan["model_source"] != "fake":
+              bad.append("the plan resolved %r, not the offline provider"
+                         % plan["model_source"])
+          if not seed:
+              bad.append("the committed seed units produced no rows")
+          if len(made) != planned:
+              bad.append("%d planned target(s) but %d generated row(s) — the "
+                         "offline provider answers every target it is given, so a "
+                         "shortfall is a stage that dropped something"
+                         % (planned, len(made)))
+          want = set(r["id"] for r in seed) | set(r["id"] for r in made)
+          got = set(r["id"] for r in rows)
+          if got != want:
+              bad.append("the merged corpus holds %d id(s), the stages produced "
+                         "%d; missing %s, unexpected %s"
+                         % (len(got), len(want), sorted(want - got)[:4],
+                            sorted(got - want)[:4]))
+          for r in made:
+              if r["producer"] != plan["model"]:
+                  bad.append("%s is stamped %r, not the fake producer %r"
+                             % (r["name"], r["producer"], plan["model"]))
+              # The engines by name, from the spectrum rather than spelled
+              # here: a variant added to the chain must not read as "no engine
+              # ran it" because this file was not updated (invariant 9).
+              if r["requires"] not in lyp.SPECTRUM:
+                  bad.append("%s requires %r — no engine ran it, so it is a gap "
+                             "and not a row" % (r["name"], r["requires"]))
+              if not r["id"].startswith("lys-") or not r["cases"].strip():
+                  bad.append("%s has no id or no cases" % r["name"])
+          if bad:
+              sys.exit("dry run did NOT produce a real run's shape:\n  "
+                       + "\n  ".join(bad))
+          print("dry run ok: %d seed + %d generated row(s) (%d of them repaired) "
+                "over %d planned target(s); every generated row is labelled by an "
+                "engine that ran it and stamped %s"
+                % (len(seed), len(made), len(fixed), planned, plan["model"]))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stdlib-corpus
+          path: work/corpus
+          retention-days: 14
+          if-no-files-found: warn

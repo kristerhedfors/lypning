@@ -695,6 +695,167 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   The registered seeds, the family cycle and the token floor had no test on
   their refusal branch; they have one now.
 
+**2026-09-17** — A "standard library" corpus: units the engines run, each labelled by the cheapest one ([#88](https://github.com/kristerhedfors/lypning/pull/88))
+
+- `training/stdlib/units/` holds self-contained, function-only programs that
+  fill CPython surfaces the engines refuse. Nothing imports them, and nothing
+  can: measured 2026-09-16, `/root/.lypning/bin/lypning-l main.py` on `import
+  mylib` refuses `module: import mylib` and `exec("x = 1")` refuses `builtin:
+  exec`. A unit can only be INLINED, which is what makes this training data
+  rather than a shipped library.
+- A unit is labelled by running it, never by reading it: CPython first as the
+  oracle, then each engine in `engines.ENGINE_ORDER` cheapest-first, and the
+  first byte-identical zero exit wins. Exit 90 is coverage and labelling moves
+  on; an engine that exits 0 with different bytes is a MISMATCH, so the unit is
+  rejected and the reason recorded (invariant 1).
+- `PYTHONPATH=src:training python3 -m pipeline.cli stdlib-verify --units
+  training/stdlib/units --first-seen 2026-09-16 --producer authored --cpython
+  /usr/bin/python3.11 --engine lypning=… --engine lypning-l=…`, run 2026-09-17:
+  34 units, 25 `lypning`, 9 `lypning-l`, 0 drops, 120 distinct CPython names
+  over 121 `# fills:` entries. Three of the 34 disagree with what `lypning
+  route` predicted statically, all in the legitimate direction — a `bigint`
+  refusal only exists at runtime. The same command on 2026-09-16 printed 26 /
+  8 and "121 CPython names filled": `struct_pack` moved to `lypning-l` when it
+  gained the cases above 2**63 - 1, and the name count was the entry count
+  printed under the wrong word — `struct.calcsize` is filled by two units, so
+  coverage is 120 and the labelling work is 121. Both numbers are printed now.
+- `training/data/stdlib/stdlib.jsonl` is those rows, committed, so the corpus
+  can be read and merged without a Rust toolchain. `first_seen` is passed in
+  and the serialisation is fixed, so re-running the writer over an unchanged
+  tree rewrites nothing; `test_stdlib.py` §9 fails when it has gone stale
+  against the units, engine-free by name and hash and byte-exact when the
+  binaries are present.
+- `engines.ONLY_CPYTHON_REFUSALS` is gated, not merely discouraged. A
+  pure-Python `math.log` or set-ordering helper passes its own cases and
+  returns a silent wrong answer, which is the one defect this corpus cannot see
+  for itself; `training/tests/test_stdlib.py` is the check, over the CPython
+  differential, determinism and that gate.
+- `.github/workflows/stdlib-corpus.yml` runs plan, generate, verify, one
+  bounded repair round and assemble — `workflow_dispatch` only, the provider
+  secret at step level, `permissions: contents: read`. It uploads the corpus
+  and never commits, and its `dry_run` runs all five stages offline and asserts
+  the shape a real run would produce.
+- `training/STDLIB.md` states the mechanism, `training/stdlib/README.md` is the
+  operator's note, and `training/stdlib/targets.json` carries the surfaces with
+  the census that ranked them and its own date.
+- Adversarial review of the above, 2026-09-17, sixteen findings fixed in the
+  units and in the checks rather than in the tables that grade them. The
+  parser reads its two headers and its separator from `tokenize` COMMENT
+  tokens, so a `# fills:` written inside any string is prose and cannot shadow
+  the real one — a unit may now document the format it is written in. The
+  reference differential is exempted by the reviewed `_DIVERGENCES` table
+  alone, never by the word "divergence" appearing in a docstring, which had
+  been switching the check off for 16 of the 34 units. `fmean`'s weighted
+  products are formed with `*` on the values, as `fsum(map(mul, …))` does, so
+  they round once and not three times; `struct.pack` folds with `%` and `//`
+  rather than a bitwise mask the wider engine refuses on a bigint; both struct
+  parsers share one byte-identical ASCII/format-bound block; `timedelta`'s C
+  int limit and `bytes.hex`'s ASCII-separator rule are ported with CPython's
+  messages and CPython's check order.
+- The one unit whose divergence the new differential caught, `binascii_hex`,
+  was fixed rather than waived: `hex_str` was handing its own default `None`
+  down to `hexlify` as an explicit argument, which is a `TypeError` in the
+  real `binascii`, so the reference run died at case 28 of 71 and the other 43
+  cases were compared against nothing. It now calls `hexlify(data)` the way
+  `bytes.hex()` does, all 71 agree, and the entry that would have admitted the
+  abort is not in the table.
+- That abort was not the only one, and the differential could not see it: it
+  compares the lines it HAS, so a reference arm that dies part way down the
+  case block passes by comparing a prefix. Measured 2026-09-17 by driving
+  `_REF_DRIVER` over every unit, five more were short — `struct_pack` 240
+  lines against 44, `struct_unpack` 126 against 42, `itertools_chain` 76
+  against 62, `itertools_product` 42 against 33, `itertools_accumulate` 67
+  against 60 — leaving 310 case lines compared against nothing, including the
+  2\*\*64 `struct` boundary cases added in this same PR. Each unit captured a
+  message with `except ValueError`, which is what it raises and not what
+  `struct` or `itertools` raise. The five now catch the real type as well and
+  PRINT it, so the declared type divergence is demonstrated by a line a reader
+  can run instead of by ending the run; all five arms are equal-length, and
+  the recovered lines exposed no behavioural divergence.
+- `test_the_reference_arm_ran_every_case` is the check that would have caught
+  it: the reference arm must print as many LINES as the unit arm, counted in
+  lines rather than bytes so it asks only "did every case run" and cannot be
+  silenced by `_DIVERGENCES`. Its reviewed table `_SHORT_REFERENCE_RUNS` is
+  empty, checked in both directions like `_DIVERGENCES`, and a short run
+  caused by a diverging case does not belong in it — reorder the case or widen
+  the capture. Re-measured 2026-09-17: all 31 reference-bearing units
+  equal-length, the other 3 name no module.
+- **A unit may not pin CPython-version detail, and ten of them did.** A unit is
+  INLINED, so it is run on whichever CPython the reader has, and CI runs this
+  suite on 3.9 through 3.14. A case that prints an error MESSAGE, a generated
+  regular expression or any other implementation detail is right on the release
+  it was authored against and wrong on the others — the same rule
+  `conformance.classify` already follows when it compares exception types and
+  never traceback text. Found by running every unit, and every unit's cases
+  through `_REF_DRIVER` against the real module, on CPython 3.9.23, 3.10.18,
+  3.11.15, 3.12.11, 3.13.7 and 3.14.0rc2, 2026-09-17. Layer 1 cannot see this
+  defect at all and said so: all 34 units print byte-identical stdout on all six
+  both before and after, because a unit runs its own inlined helper. Only the
+  reference arm moves.
+- Before that run, five units agreed with CPython on some releases and not
+  others: `struct_pack` (22 differing lines on 3.9 and 3.10, 8 on 3.11, 83 on
+  3.12, 3.13 and 3.14, against 8 declared), `statistics_variance` (2 on 3.9 and
+  3.10, 0 from 3.11), `urllib_urljoin` (1 on 3.9 and 3.10, 0 from 3.11),
+  `bisect_search` and `statistics_mean` (the reference arm died outright, on 3.9
+  and on 3.9-3.10). Two more, `itertools_accumulate` and `itertools_product`,
+  declared a TYPE divergence but printed a message CPython reworded in 3.13, so
+  the declaration was true on four releases and understated on two. Afterwards
+  no unit's agreement depends on the release: of the 31 reference-bearing units
+  23 agree byte for byte on all six, 6 differ by exactly the same lines on all
+  six and each of those 6 is a reviewed `_DIVERGENCES` entry, and the last 2 are
+  `bisect_search` and `statistics_mean`, which agree on every release where
+  their surface exists. The real module also gives the byte-identical answer to
+  all six interpreters for 28 of the 31.
+- Each was fixed by printing the stable fact, never by widening `_DIVERGENCES`.
+  `statistics_variance` prints the exception TYPE for the too-little-data cases,
+  because 3.11 relabelled `stdev`'s and `pstdev`'s message from `variance
+  requires at least two data points` to `stdev requires …`; it gained four cases
+  pinning the other side of that boundary. `urllib_urljoin` splits `_http://x`
+  instead of `1http://x`, since a digit led a scheme until 3.11 and does not
+  from 3.11 — the alphabet half of the scheme rule is printed and the
+  letter-first half is docstring prose. `itertools_accumulate` and
+  `itertools_product` print the type alone, and raise their own message rather
+  than a copy of a retired CPython one.
+- `struct_pack` was the large one and its central claim had expired. It printed
+  CPython's range-check messages as a grid and called that grid the
+  specification; 3.12 unified the two handler tables and deleted it. Over 680
+  `pack(prefix + code, value)` probes on the same six interpreters, 350 answer
+  with a different message on some release — 38 at 3.10→3.11 (a C macro leaked,
+  `short format requires (-32767 -1) <= number <= 32767`) and 312 at 3.11→3.12
+  (one message per code, no byte-order split, no `argument out of range`). Zero
+  of the 680 disagree on whether `pack` raises, and zero on the exception type.
+  So the grid is gone and `_rejects` prints the boolean on both sides of every
+  boundary instead, which pins the range contract harder than the messages did.
+  The 43 format, argument-count and argument-type messages are identical on all
+  six and are still printed, character for character. `_range_message` was
+  rewritten to 3.12's one-message-per-code rule at the same time so the text the
+  port raises is current rather than retired: 5,320 (prefix, code, value) probes
+  give the identical raise/no-raise answer before the rewrite, after it, and on
+  every one of the six releases.
+- `bisect_search` and `statistics_mean` are the other kind and are not a defect
+  in what they print: `bisect`'s `key` arrived in 3.10 and `fmean`'s `weights`
+  in 3.11, so on the older releases there is no surface to check those cases
+  against rather than a wrong answer. Both docstrings now name the release the
+  surface comes from and what the older ones answer instead. `hashlib_digest`
+  keeps its declared divergence and states it release by release, because
+  CPython's own answer there is not one answer — a plain `ValueError` saying
+  `unsupported hash type` on 3.9 and an `UnsupportedDigestmodError` saying
+  `[digital envelope routines] unsupported` from 3.11 — while `hashlib.new`'s
+  message, the one this port carries, is the same on all six.
+- The rows were rewritten and proved version-independent: `stdlib-verify` under
+  CPython 3.11.15 with the 3.11-built engines and under CPython 3.14.0rc2 with
+  engines built against 3.14 produce byte-identical `stdlib.jsonl`
+  (md5 `9a7f0eaec5ef0fcc89e7846042c15c92`, both runs 2026-09-17), 34 rows, 0
+  drops, and not one `requires`, `requires_static`, `caps`, `route_agrees` or
+  `naive_kind` field moved from the previous rows.
+- Building that second pair has a trap worth writing down, because it produced a
+  binary that looked like the arm it was not. `build.py` pins the reference
+  version to `engines.find_cpython()` (`build.py:495`), which walks `$PATH` for
+  the real interpreter and does NOT read the one running the build — so
+  `python3.14 -m lypning build --rust` still builds `for cpython 3.11`, and says
+  so in `--version` if asked. The arm above is a pair built with 3.14 first on
+  `$PATH`, which reports `for cpython 3.14`; a pair built the other way was
+  discarded once `--version` gave it away.
 **2026-09-17** — Assess round 02, preserve blocked evaluation evidence, and constrain the next Fable run to zero-cost validation ([#87](https://github.com/kristerhedfors/lypning/pull/87))
 
 - Round 02 produced no completed eval-2 arm and therefore no model-quality
