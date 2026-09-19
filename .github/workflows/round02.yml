@@ -35,11 +35,18 @@ env:
   FLAVOR: a10g-small
   # The carved bank a round reads: a pilot and a held-out benchmark sharing no
   # family, cut from six batches on 2026-09-19 by `bank-publish.yml`
-  # (run 35439152832). 8,370 pilot cases over 47 families and 4,633 benchmark
-  # cases over 22. `banks/v2` is kept on the Hub and is not this: its completed
-  # base arm left 3.14pp of headroom against a 3.00pp bar, so a round on it
-  # could not fire the preregistered rule.
-  BANK_PATH: banks/v3-20260919
+  # (run 35462243227), capped at 45 cases per family: 2,079 pilot cases over 48
+  # families and 893 benchmark cases over 21. The cap is a clock decision, not
+  # a statistical one -- `training-prepare` verifies ~1 case every 4 s through
+  # the 16-sandbox pool, so the uncapped 8,370/4,633 bank is 10.7 h of
+  # preparation before a single optimizer step, and the round of 2026-09-19
+  # died at six hours inside it. Family count, which the floors and the cluster
+  # bootstrap read, is untouched. Verified on this bank (run 35462299520):
+  # 1,368/1,431/1,410 train cases against the 1,000 floor.
+  # `banks/v2` is kept on the Hub and is not this: its completed base arm left
+  # 3.14pp of headroom against a 3.00pp bar, so a round on it could not fire
+  # the preregistered rule.
+  BANK_PATH: banks/v3-20260919-c45
   # A 27B model loads in full bf16 with no quantization (~54 GB of weights), so
   # the smoke's 24 GB a10g-small cannot hold it. A pilot needs an 80 GB-class
   # flavor; the preflight prints the whole priced table so this is a decision
@@ -54,6 +61,10 @@ env:
   # about 3.7x longer, so its margin is much wider and its own smallest
   # clearing value is 74. A bank change re-runs that count; the gate makes it.
   PILOT_STEPS: "300"
+  # 300m killed the round of 2026-09-19 at six hours. This bank needs ~3.3 h of
+  # preparation, then base-dev, SFT and the eval arm; 480m at $5/h is about $40
+  # a seed, and a seed that dies at the wall buys nothing at all.
+  PILOT_TIMEOUT: "480m"
 
 jobs:
   preflight:
@@ -205,9 +216,14 @@ jobs:
       contains(github.event.head_commit.message, '[submit-pilot]') ||
       github.event.inputs.submit == 'SUBMIT'
     runs-on: ubuntu-latest
-    # The HF pilot is submitted with --timeout 300m, so a 120-minute runner
-    # cancels the follower mid-round: the job keeps running and still uploads,
-    # but the streamed evidence is lost and the workflow reads as failed.
+    # THE FOLLOWER NOW DIES BEFORE THE ROUND DOES, ON PURPOSE. The pilot is
+    # submitted with PILOT_TIMEOUT (480m) and GitHub caps a hosted job at 360
+    # minutes, so this cannot outlive it and 350 is the most it can watch. The
+    # HF job keeps running and still uploads its round directory; what is lost
+    # is the stream, not the round. `hf-status.yml` reads the side that knows,
+    # and a red X on this job after ~6 h means the follower expired, NOT that
+    # the round failed -- on 2026-09-19 that distinction was the whole
+    # difference between "it died" and "it is still going".
     timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
@@ -233,7 +249,7 @@ jobs:
               --work-repo "${{ needs.bootstrap.outputs.owner }}/${WORK_REPO_NAME}" \
               --bank-path "${BANK_PATH}" --seed 1111 --eval-draws 16 \
               --steps "${PILOT_STEPS}" \
-              --flavor "${PILOT_FLAVOR}" --timeout 300m --yes --follow
+              --flavor "${PILOT_FLAVOR}" --timeout "${PILOT_TIMEOUT}" --yes --follow
           else
             python training/hf/launch.py smoke \
               --branch "${GITHUB_REF_NAME}" --commit "${GITHUB_SHA}" \
