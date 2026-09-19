@@ -36,6 +36,14 @@ FOUR_FILES = ("sandbox.py", "child_exec.py", "container_worker.py")
 BUILD_STATES_OK = ("RUNNING", "RUNNING_APP_STARTING", "RUNNING_BUILDING")
 BUILD_STATES_BAD = ("BUILD_ERROR", "CONFIG_ERROR", "RUNTIME_ERROR", "DELETING")
 
+#: A Space that is up but idle. Hugging Face sleeps one after inactivity, and a
+#: re-run whose four files are unchanged uploads nothing, so nothing wakes it:
+#: the build wait then sat at SLEEPING for its whole twenty minutes and failed
+#: a FREE job, which skipped the billed one behind it (run 35440773281,
+#: 2026-09-19). Sleeping is not a build failure and not a state to wait out —
+#: it is a state to leave, once, and then wait normally.
+BUILD_STATES_ASLEEP = ("SLEEPING", "PAUSED")
+
 
 def base_image() -> str:
     text = LAUNCH.read_text(encoding="utf-8")
@@ -119,6 +127,7 @@ def main() -> int:
     print("== wait for the build (a Space name is not an image; the commit is the pin)")
     deadline = time.time() + 20 * 60
     last = ""
+    woken = False
     while time.time() < deadline:
         runtime = api.get_space_runtime(repo_id)
         stage = str(runtime.stage)
@@ -129,9 +138,20 @@ def main() -> int:
             raise SystemExit("Space build failed in stage %s — see the Space's build log" % stage)
         if stage == "RUNNING":
             break
+        if stage in BUILD_STATES_ASLEEP:
+            if woken:
+                raise SystemExit("Space returned to %s after a restart; it is not starting, "
+                                 "and waiting longer will not change that" % stage)
+            # Asked once, not every pass: a restart re-enters the build, and
+            # asking again each loop would keep restarting the thing we are
+            # waiting for.
+            print("   asleep — requesting a restart, then waiting for the build")
+            api.restart_space(repo_id)
+            woken = True
         time.sleep(15)
     else:
-        raise SystemExit("Space did not reach RUNNING within 20 minutes (last stage %s)" % last)
+        raise SystemExit("Space did not reach RUNNING within 20 minutes (last stage %s)%s"
+                         % (last, "" if woken else "; it was never asleep, so this is a slow build"))
 
     # The head can move if the build triggered a follow-up commit; re-read it so
     # the pin is the commit that is actually serving.
