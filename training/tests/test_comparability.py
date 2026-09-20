@@ -924,3 +924,76 @@ def test_the_two_names_of_one_prompt_do_not_read_as_drift():
     assert not [r for r in stats.comparability(base, run) if r.get("field") == "prompt_sha"]
     other = dict(run, prompt_sha="0000000000000000")
     assert [r for r in stats.comparability(base, other) if r.get("field") == "prompt_sha"]
+
+
+def test_kernel_state_reports_what_is_usable_not_what_is_pinned(monkeypatch):
+    """The pin that a fallback satisfied, and the check that would have caught it.
+
+    On 2026-09-20 a round ran with `flash-linear-attention==0.5.2` pinned and
+    installed -- `runtime_versions` passed, because it reads distribution
+    metadata -- while transformers reported it "not installed" and put all 48
+    gated-delta-net layers on the reference PyTorch path. The distribution was
+    present; the module would not import. A pin a fallback can satisfy is not
+    a pin, and nothing in the round's record showed which arm it had been.
+    """
+    from pipeline.training_contract import kernel_state
+
+    state = kernel_state()
+    assert set(state) == {"NTX_USE_FLA", "flash-linear-attention", "causal_conv1d"}
+    for dist in ("flash-linear-attention", "causal_conv1d"):
+        assert state[dist] == "usable" or state[dist].startswith("unusable: "), state[dist]
+
+    # The env switch is reported beside the imports because they are two
+    # different reasons for the same reference path: `train_verified.run` sets
+    # NTX_USE_FLA=0, so an importable kernel can still be deliberately unused.
+    monkeypatch.setenv("NTX_USE_FLA", "0")
+    assert kernel_state()["NTX_USE_FLA"] == "0"
+    monkeypatch.delenv("NTX_USE_FLA")
+    assert kernel_state()["NTX_USE_FLA"] == "1", "the default is on, and is stated"
+
+
+def test_kernel_state_never_raises_even_when_the_import_explodes(monkeypatch):
+    """An observation for the manifest must not be able to end a metered round.
+
+    Kernel imports fail in unusual ways -- a missing CUDA symbol need not raise
+    an `Exception` subclass -- so the catch is `BaseException` and the result is
+    a string either way.
+    """
+    import importlib
+
+    from pipeline import training_contract as tc
+
+    class Boom(BaseException):
+        pass
+
+    def explode(name):
+        raise Boom("no such symbol")
+
+    monkeypatch.setattr(importlib, "import_module", explode)
+    state = tc.kernel_state()
+    assert state["flash-linear-attention"] == "unusable: Boom"
+    assert state["causal_conv1d"] == "unusable: Boom"
+
+
+def test_the_run_record_carries_the_kernels_and_the_probe_contract_compares_them():
+    """Recording it is half; comparing it across stages is the half that binds.
+
+    `STATUS.md` §2 has a kernel swap on IDENTICAL weights moving dSLR by
+    +1.57pp -- larger than either adapter of 2026-09-14 moved it. So a GRPO
+    stage read against a probe that ran on different kernels is not a
+    comparison, and `kernels` belongs in the same list as the tokenizer and the
+    model config rather than in a note.
+    """
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[1].joinpath(
+        "gpu/train_verified.py").read_text(encoding="utf-8")
+    assert '"versions": versions, "kernels": kernels' in source
+    assert '"versions", "kernels",' in source, (
+        "the probe/grpo contract must compare kernels, not merely record them")
+    # Read AFTER the switch is set and BEFORE transformers is imported, or it
+    # would describe a state the run did not have.
+    at_switch = source.index('os.environ["NTX_USE_FLA"] = "0"')
+    at_kernels = source.index("kernels = kernel_state()")
+    at_import = source.index("import lypning_lora as core")
+    assert at_switch < at_kernels < at_import

@@ -14,6 +14,26 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-20** — A pin a fallback can satisfy is not a pin
+
+- The live round is running with `flash-linear-attention==0.5.2` pinned and
+  installed — `runtime_versions` passed — and transformers still reports it
+  "not installed" and puts all 48 gated-delta-net layers on the reference
+  PyTorch path. The distribution is present; the module will not import.
+  `runtime_versions` reads distribution metadata, and metadata was not the
+  question.
+- `kernel_state()` asks the question transformers asks — can the module be
+  imported — and the run record carries the answer. The probe/GRPO contract
+  compares `kernels` alongside the tokenizer and model config, because
+  `STATUS.md` §2 records a kernel swap on identical weights moving ΔSLR by
+  +1.57pp, larger than either adapter of 2026-09-14 moved it.
+- It also reports `NTX_USE_FLA`, which `train_verified.run` sets to `0`: an
+  importable kernel can still be deliberately unused, and the manifest should
+  distinguish that from one that would not load.
+- It never raises, and catches `BaseException` — a kernel import can fail on a
+  missing CUDA symbol. An observation written into a manifest must not be able
+  to end a metered round.
+
 **2026-09-20** — Ask the reference question on the machine that answers it
 
 - `bank_publish.py --verify-references` ran on `ubuntu-latest` while the

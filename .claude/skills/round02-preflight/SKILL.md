@@ -180,7 +180,18 @@ fallback line stays in the log, which is the honest state — two of the four
 fallbacks are gone and two remain, visibly.
 
 **Grep the round's log for `falling back` before trusting a comparison
-between arms.**
+between arms.** And do it even when the pin says you need not: on 2026-09-20 a
+round ran with `flash-linear-attention==0.5.2` pinned AND installed —
+`runtime_versions` passed, because it reads distribution metadata — while
+transformers reported it "not installed" and ran all 48 gated-delta-net layers
+on the reference path anyway. The distribution was there; the module would not
+import. A pin a fallback can satisfy is not a pin.
+
+`kernel_state()` now asks the question transformers asks and writes the answer
+into the run record, where the probe/GRPO contract compares it. It also reports
+`NTX_USE_FLA`, which `train_verified.run` sets to `0` — an importable kernel
+can still be deliberately unused, and those are two different reasons for the
+same reference path.
 
 ## What no check here can tell you
 

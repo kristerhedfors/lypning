@@ -35,7 +35,7 @@ from pipeline.training import (ISOLATED_KINDS, TrainingError, Verifier,
 from pipeline.training_contract import (BASE_MODEL, CONTRACT_VERSION, MIN_SUPERVISED_TOKENS,
     MIN_TRAIN_CASES, PROTOCOL_EVAL_DRAWS, PROTOCOL_TRAIN_SEEDS,
     adapter_identity, decoding, model_config_identity, probe_contract, probe_report,
-    runtime_versions, seal_adapter, source_identity, validate_probe)
+    kernel_state, runtime_versions, seal_adapter, source_identity, validate_probe)
 from verified_evaluation import evaluate
 from verified_stages import balanced_cases, sft_batches, supervised_tokens, train_sft, train_grpo
 
@@ -270,6 +270,11 @@ def run(args, bundle, adapter_info):
     # Block fused kernels before importing transformers, preserving the existing
     # exact Qwen class and per-leaf LoRA gradient smoke checks.
     os.environ["NTX_USE_FLA"] = "0"
+    # AFTER the switch is set and BEFORE transformers is imported, so what is
+    # recorded is the state this run actually had. Pinning the distribution
+    # does not settle it: on 2026-09-20 the pin held and transformers still ran
+    # all 48 gated-delta-net layers on the reference path.
+    kernels = kernel_state()
     import lypning_lora as core
     import torch
     from huggingface_hub import snapshot_download
@@ -359,7 +364,7 @@ def run(args, bundle, adapter_info):
                     "gpu": torch.cuda.get_device_name() if device == "cuda" else None},
                 "code_sha256": source_identity(Path(__file__).resolve().parents[1]),
                 "args": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
-                "versions": versions}
+                "versions": versions, "kernels": kernels}
     if adapter_info:
         prior = adapter_info["experiment"]
         for key in ("tokenizer_sha256", "model_config_sha256", "enable_thinking"):
@@ -367,7 +372,8 @@ def run(args, bundle, adapter_info):
                 raise TrainingError("adapter runtime contract changed: " + key)
     if args.stage == "grpo" and not args.smoke:
         probe_manifest = json.loads(args.probe.with_name("experiment.json").read_text())
-        for key in ("tokenizer_sha256", "model_config_sha256", "versions", "eos_token_id"):
+        for key in ("tokenizer_sha256", "model_config_sha256", "versions", "kernels",
+                    "eos_token_id"):
             if probe_manifest.get(key) != manifest[key]:
                 raise TrainingError("probe runtime contract changed: " + key)
     write_json(args.output / "experiment.json", manifest)

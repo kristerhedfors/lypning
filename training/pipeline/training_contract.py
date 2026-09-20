@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import importlib.metadata
 import json
+import os
 from pathlib import Path
 
 from .jsonio import sha256_of
@@ -33,10 +35,15 @@ PROTOCOL_TRAIN_SEEDS = (1111, 2222, 3333)
 #:
 #: `flash-linear-attention` serves `chunk_gated_delta_rule` and
 #: `fused_recurrent_gated_delta_rule`, which are 48 of this model's layers;
-#: without it transformers falls back to reference PyTorch and says so, and the
-#: round of 2026-09-20 ran its whole SFT stage that way. 0.5.2 is the version
-#: `STATUS.md` records for the v1 run of record (`fla-0.5.2`), so pinning it
-#: narrows the gap to that arm rather than opening a new one.
+#: without it transformers falls back to reference PyTorch and says so. 0.5.2
+#: is the version `STATUS.md` records for the v1 run of record (`fla-0.5.2`).
+#:
+#: PINNING IT IS NOT ENOUGH, and the round of 2026-09-20 is the proof: with
+#: `flash-linear-attention==0.5.2` installed and `runtime_versions` passing,
+#: transformers still reported it "not installed" and ran all 48 layers on the
+#: reference path. The DISTRIBUTION was present; the MODULE would not import.
+#: Metadata is not the question, so `kernel_state` asks the real one and the
+#: arm records what was usable rather than what was requested.
 #:
 #: `causal_conv1d` is DELIBERATELY ABSENT. It covers `causal_conv1d_fn` and
 #: `causal_conv1d_update`, but PyPI ships it as an sdist only (1.7.0, checked
@@ -57,6 +64,39 @@ def runtime_versions():
     if any(actual[k].split("+", 1)[0] != v for k, v in GPU_VERSIONS.items()):
         raise TrainingError("GPU dependency versions differ from the pinned experiment: " + str(actual))
     return actual
+
+
+def kernel_state():
+    """Which fused kernels are ACTUALLY usable, which is not what is pinned.
+
+    `runtime_versions` reads distribution metadata and a fallback can satisfy
+    it: see the 2026-09-20 round above. This asks the question transformers
+    asks -- can the module be imported -- so a comparison between arms can be
+    made on what ran.
+
+    It matters because the kernel is part of an arm's identity: `STATUS.md` §2
+    records a swap on IDENTICAL weights moving dSLR by +1.57pp, larger than
+    either adapter of 2026-09-14 moved it. A cross-arm read that straddles this
+    line is not a comparison, and nothing else in the record would show it.
+
+    Never raises: this is an observation written into the manifest, and a round
+    must not die because a kernel it can run without is missing. `NTX_USE_FLA`
+    is reported beside it because `train_verified.run` sets it to "0", so an
+    importable kernel can still be deliberately unused -- two different reasons
+    for the same reference path, and the manifest should distinguish them.
+    """
+    state = {"NTX_USE_FLA": os.environ.get("NTX_USE_FLA", "1")}
+    for dist, module in (("flash-linear-attention", "fla"),
+                         ("causal_conv1d", "causal_conv1d")):
+        try:
+            importlib.import_module(module)
+        except BaseException as exc:                              # noqa: BLE001
+            # BaseException: a kernel import can fail on a missing CUDA symbol,
+            # which is not always an Exception subclass.
+            state[dist] = "unusable: %s" % type(exc).__name__
+        else:
+            state[dist] = "usable"
+    return state
 
 
 def decoding(max_tokens, *, greedy=False):
