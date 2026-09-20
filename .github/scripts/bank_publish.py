@@ -46,6 +46,40 @@ TRAIN, EVAL2 = "train.jsonl", "eval2.jsonl"
 MANIFEST = "bank.json"
 
 
+def non_reproducing(cases, engine: str = "/bin/true"):
+    """Cases whose reference does not reproduce its own expected stdout.
+
+    `training-prepare` already refuses these — `validate_reference_scores`
+    requires reward 1.0 on every test — but it refuses them on a metered GPU
+    job, an hour in, after the bank download and the weights. On 2026-09-20
+    one such case ended a round at `last_stage: prepare`. The same question is
+    answerable here for nothing.
+
+    Run through `synth.Runner`, not a bare subprocess: the runner materialises
+    each test's input FILES, passes argv and stdin, and pins the hash seed. A
+    plain `subprocess.run` of the reference misses all three and reported 572
+    failures where the runner finds 34 — an instrument that disagrees with the
+    one that decides is not a cheaper version of it.
+
+    The engine is never consulted; only the CPython side is asked.
+    """
+    from pipeline.synth import Runner
+
+    runner = Runner(engine)
+    bad = {}
+    for case in cases:
+        try:
+            got, why = runner.outputs(case["reference"], case["tests"])
+        except Exception as exc:                                  # noqa: BLE001
+            bad[case["case_id"]] = (case["family"], type(exc).__name__)
+            continue
+        if got is None:
+            bad[case["case_id"]] = (case["family"], why.split(":")[0][:40])
+        elif list(got) != [t["stdout"] for t in case["tests"]]:
+            bad[case["case_id"]] = (case["family"], "stdout differs")
+    return bad
+
+
 def rows_of(path: Path):
     with path.open(encoding="utf-8") as fh:
         return [json.loads(line) for line in fh if line.strip()]
@@ -65,6 +99,9 @@ def main() -> int:
     ap.add_argument("--out", type=Path, required=True, help="staging dir, RUNNER_TEMP only")
     ap.add_argument("--seed", type=int, default=1111, help="which families the benchmark takes")
     ap.add_argument("--benchmark-families", type=int)
+    ap.add_argument("--verify-references", action="store_true",
+                    help="drop cases whose reference does not reproduce its own stdout; "
+                         "training-prepare refuses these on a metered job")
     ap.add_argument("--max-cases-per-family", type=int,
                     help="trim each family to at most this many cases; family COUNT is "
                          "untouched, and preparation costs about four seconds a case")
@@ -80,6 +117,18 @@ def main() -> int:
     if not cases:
         print("no cases in %s" % args.union, file=sys.stderr)
         return 2
+
+    if args.verify_references:
+        bad = non_reproducing(cases)
+        if bad:
+            from collections import Counter
+            by_family = Counter(family for family, _ in bad.values())
+            print("dropping %d case(s) whose reference does not reproduce, by family:" % len(bad))
+            for family, n in by_family.most_common():
+                print("   %-42s %d" % (family, n))
+            cases = [c for c in cases if c["case_id"] not in bad]
+        else:
+            print("every reference reproduces its own stdout")
 
     try:
         carved = bank_carve.carve(cases, seed=args.seed,
@@ -98,6 +147,7 @@ def main() -> int:
     summary = {
         "bank": args.name, "seed": args.seed,
         "max_cases_per_family": args.max_cases_per_family,
+        "references_verified": bool(args.verify_references),
         "train": {"cases": len(carved["pilot"]), "families": len(carved["plan"]["pilot"]),
                   "sha256": digests[TRAIN], **carved["plan"]["pilot_counts"]},
         "eval2": {"cases": len(carved["benchmark"]), "families": len(carved["plan"]["benchmark"]),

@@ -26,6 +26,10 @@ on:
         description: "which families the benchmark takes"
         default: "1111"
         type: string
+      verify_references:
+        description: "drop cases whose reference does not reproduce its own stdout"
+        default: true
+        type: boolean
       max_cases_per_family:
         description: "trim each family to at most this many cases; blank keeps all"
         default: ""
@@ -50,7 +54,7 @@ jobs:
   publish:
     name: carve the union and publish it
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     env:
       PYTHONPATH: src:training
       WORK_REPO_NAME: lypning-round02-artifacts
@@ -104,6 +108,7 @@ jobs:
           fi
           # `[ test ] && assign` is a statement whose exit status is the
           # test's, so under `set -e` a false flag would end the step.
+          if [ "${{ inputs.verify_references }}" = "true" ]; then args="$args --verify-references"; fi
           if [ "${{ inputs.push }}" = "true" ]; then args="$args --push"; fi
           if [ "${{ inputs.replace }}" = "true" ]; then args="$args --replace"; fi
           # shellcheck disable=SC2086

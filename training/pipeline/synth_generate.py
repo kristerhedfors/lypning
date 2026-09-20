@@ -140,21 +140,27 @@ UNREWRITABLE = [
     ("hashlib.new with an algorithm name", "a digest chosen at run time"),
     ("random.shuffle with a fixed seed", "a deterministic shuffle"),
     # Added 2026-09-19, same probe. These are refused and the right answer KEEPS
-    # the import: a class the engine refuses outright, a file or wire format, a
-    # parser, or an environment read. `secrets` was probed and rejected for the
-    # pool entirely -- a control still has to print the same bytes every run.
+    # the import: a class the engine refuses outright, a parser, or an
+    # environment read that is nonetheless reproducible.
+    #
+    # WITHDRAWN 2026-09-20, measured: `locale.setlocale`, `gzip.compress`,
+    # `zoneinfo.ZoneInfo` and `pickle.dumps` were added here and produced 31 of
+    # the 34 bank cases whose reference does not reproduce under the runner.
+    # A control still has to print the same bytes every run, and these do not:
+    # a gzip header embeds an mtime, `locale` needs the container's installed
+    # locales, `zoneinfo` needs its tz database. They were probed for whether
+    # the ENGINE REFUSES them and never for whether CPython repeats them, which
+    # is the contract the bank actually has. `secrets` was rejected for the same
+    # reason before it was ever added; these got in because the probe asked the
+    # wrong question.
     ("dataclasses.dataclass", "a record type with named fields and defaults"),
     ("enum.Enum", "a small set of named constants"),
     ("typing.NamedTuple", "a lightweight record with typed fields"),
     ("collections.ChainMap", "layered configuration with defaults underneath"),
-    ("pickle.dumps", "serialising an object graph to bytes"),
-    ("gzip.compress", "gzip-compressing a payload"),
     ("sqlite3", "a small table queried with SQL"),
     ("xml.etree.ElementTree", "reading values out of an XML document"),
     ("email.utils.parseaddr", "splitting a display name from an address"),
-    ("zoneinfo.ZoneInfo", "a wall-clock time in a named timezone"),
     ("urllib.parse.quote", "percent-encoding a value for a URL"),
-    ("locale.setlocale", "formatting a number the way a locale would"),
     ("ipaddress.ip_address", "validating and classifying an IP address"),
     ("html.escape", "escaping text for safe inclusion in HTML"),
 ]
