@@ -113,7 +113,17 @@ In order, and each exits non-zero on the failure it prevents:
    tokenizer only, no weights.
 3. **Can a round on this bank detect anything** — `nt bank-native --mix-only`.
 4. **Nothing is still running** from a previous round.
-5. **`main` points where this run checked** — compares `round02.yml`'s
+5. **Every completed seed on this bank is the same arm** — `arm_check.py`.
+   A complete S4 is 1111, 2222 and 3333, and *nothing related three manifests
+   to each other*: `s0_inventory` could print one, no code compared two. Seeds
+   run across an engine fix or a re-cut bank would be combined by hand with
+   nothing to say they were different experiments. It enforces bank, Space
+   revision, model revision, the training and evidence dose, and **sandbox
+   density** — `native` is host-load dependent, so packing changes what the
+   label means. It does NOT enforce host count (a cost ceiling) or `commit`
+   (a workflow fix and an engine change are indistinguishable from here, so it
+   shows the difference and lets a reader judge).
+6. **`main` points where this run checked** — compares `round02.yml`'s
    `BANK_PATH` on `origin/main` against the bank just verified, because an edit
    that silently did not apply once sent a dispatch at the wrong bank.
 
@@ -198,3 +208,5 @@ same reference path.
 That training installs the effect. A bank with headroom can host a result; it
 cannot promise one. And one seed job is one replicate — a complete S4 result is
 1111, 2222 and 3333, read from three manifests and never inferred from one.
+Check 5 now refuses to bill a seed that would not join the others, but it
+cannot tell you the three were worth running.

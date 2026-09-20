@@ -120,7 +120,19 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python .github/scripts/hf_stop.py
 
-      # 5. WHAT WOULD BE BILLED IS WHAT WAS CHECKED. An edit that silently did
+      # 5. THE SEED JOINS AN EXPERIMENT, NOT A PILE. A complete S4 result is
+      #    1111, 2222 and 3333; nothing related three manifests to each other,
+      #    so seeds run across an engine fix or a re-cut bank would be combined
+      #    by hand with nothing to say they were different experiments.
+      - name: Every completed seed on this bank is the same arm
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python .github/scripts/arm_check.py --bank "${{ inputs.bank_path }}" \
+            --expect "bank_path=${{ inputs.bank_path }}" \
+            --expect "steps=${{ inputs.steps }}"
+
+      # 6. WHAT WOULD BE BILLED IS WHAT WAS CHECKED. An edit that silently did
       #    not apply sent one dispatch at the wrong bank.
       - name: main points where this run checked
         run: |

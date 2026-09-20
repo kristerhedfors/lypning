@@ -14,6 +14,26 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-20** — Three seeds are one result only if they are one experiment
+
+- A complete S4 replicate is seeds 1111, 2222 and 3333, read from three
+  `job-manifest.json` files. **Nothing related those three to each other**:
+  `s0_inventory` could print a manifest and no code anywhere compared two. So
+  seeds run weeks apart, across an engine fix or a re-cut bank, would be
+  combined by hand and nothing would say they were different experiments —
+  silent, about $27 a seed, and discoverable only by someone remembering what
+  changed between two dates.
+- `arm_check.py` enforces bank, Space revision, model revision, the training
+  dose, the evidence dose and **sandbox density**: `native` is host-load
+  dependent, so packing more sandboxes onto a host changes what the label
+  means. Host count is deliberately excluded — a cost ceiling is not an
+  instrument, and raising it between seeds must not invalidate a result.
+- `commit` and `kernels` are reported, never enforced: a workflow fix and an
+  engine change are indistinguishable from here, and a check that fired on
+  every unrelated commit would be turned off. `kernels` reads `unrecorded` on
+  manifests written before today rather than being compared against nothing.
+- Runs as preflight check 5, before any seed is billed.
+
 **2026-09-20** — A training stage that says where it is
 
 - The SFT stage emitted nothing between its banner and its end. `train_sft`
