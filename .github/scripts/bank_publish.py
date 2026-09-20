@@ -114,7 +114,11 @@ def main() -> int:
                     help="drop every case of this family (repeatable)")
     ap.add_argument("--verify-references", action="store_true",
                     help="drop cases whose reference does not reproduce its own stdout; "
-                         "training-prepare refuses these on a metered job")
+                         "training-prepare refuses these on a metered job. Runs HERE, "
+                         "which is not the verifier's image -- prefer --reference-report")
+    ap.add_argument("--reference-report", type=Path,
+                    help="a report from verify_references.py run INSIDE the verifier image; "
+                         "the only form of this check that predicts the verifier")
     ap.add_argument("--max-cases-per-family", type=int,
                     help="trim each family to at most this many cases; family COUNT is "
                          "untouched, and preparation costs about four seconds a case")
@@ -131,8 +135,33 @@ def main() -> int:
         print("no cases in %s" % args.union, file=sys.stderr)
         return 2
 
-    if args.verify_references:
+    # WHERE the check ran is part of the answer, so the manifest records it
+    # rather than a bare boolean: a `locale` case reproduces on `ubuntu-latest`
+    # and fails in `python:3.12-slim`, and a round died of exactly that gap.
+    verified_in = None
+    bad = {}
+    if args.reference_report:
+        if args.verify_references:
+            print("--reference-report and --verify-references both given; the report is "
+                  "the one that ran in the verifier's image", file=sys.stderr)
+            return 2
+        if not args.reference_report.is_file():
+            print("not a file: %s" % args.reference_report, file=sys.stderr)
+            return 2
+        report = json.loads(args.reference_report.read_text(encoding="utf-8"))
+        verified_in = report.get("image") or "an unnamed image"
+        bad = {k: tuple(v) for k, v in report.get("bad", {}).items()}
+        # A report cut against a different union is not a report about this one.
+        if report.get("cases") != len(cases):
+            print("reference report covers %s case(s), not this union's %d"
+                  % (report.get("cases"), len(cases)), file=sys.stderr)
+            return 2
+        print("reference report from %s (python %s)" % (verified_in, report.get("python")))
+    elif args.verify_references:
+        verified_in = "the publishing runner, NOT the verifier image"
         bad = non_reproducing(cases)
+
+    if verified_in is not None:
         if bad:
             from collections import Counter
             by_family = Counter(family for family, _ in bad.values())
@@ -161,7 +190,8 @@ def main() -> int:
     summary = {
         "bank": args.name, "seed": args.seed,
         "max_cases_per_family": args.max_cases_per_family,
-        "references_verified": bool(args.verify_references),
+        "references_verified": verified_in is not None,
+        "references_verified_in": verified_in,
         "excluded_families": sorted(args.exclude_family),
         "train": {"cases": len(carved["pilot"]), "families": len(carved["plan"]["pilot"]),
                   "sha256": digests[TRAIN], **carved["plan"]["pilot_counts"]},

@@ -92,6 +92,28 @@ jobs:
 
       # The carve, and the two files a round reads. Refuses rather than writing
       # a bank the pilot could not be validated against at every protocol seed.
+      # The reference check has to run in the image the VERIFIER runs in, not on
+      # the runner: `ubuntu-latest` ships locales `python:3.12-slim` does not, so
+      # a `locale.setlocale` case reproduces here and fails there — the exact case
+      # that ended a round at `last_stage: prepare` on 2026-09-20, which this same
+      # check had passed on the runner. `sandbox.run_python` spawns
+      # `sys.executable`, so putting the script in the container is the whole fix.
+      #
+      # No `pip install` inside: `training/pipeline` is stdlib-only (invariant 6),
+      # so the check cannot drift by resolving a wheel.
+      - name: Verify references inside the verifier's own image
+        if: inputs.verify_references
+        run: |
+          set -euo pipefail
+          image=$(python -c 'import sys; sys.path.insert(0, "training"); from hf.launch import BASE_IMAGE; print(BASE_IMAGE)')
+          echo "   checking in $image"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/w" -v "$RUNNER_TEMP:/t" -w /w \
+            -e VERIFY_IMAGE="$image" \
+            "$image" \
+            python3 .github/scripts/verify_references.py /t/union.jsonl --out /t/reference-report.json
+          test -f "$RUNNER_TEMP/reference-report.json"
+
       - name: Carve and publish
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -117,7 +139,11 @@ jobs:
               || { echo "refusing a family that is not a name: $f" >&2; exit 2; }
             args="$args --exclude-family $f"
           done
-          if [ "${{ inputs.verify_references }}" = "true" ]; then args="$args --verify-references"; fi
+          # The report, not --verify-references: the report ran in the verifier's
+          # image and this runner is not it.
+          if [ "${{ inputs.verify_references }}" = "true" ]; then
+            args="$args --reference-report $RUNNER_TEMP/reference-report.json"
+          fi
           if [ "${{ inputs.push }}" = "true" ]; then args="$args --push"; fi
           if [ "${{ inputs.replace }}" = "true" ]; then args="$args --replace"; fi
           # shellcheck disable=SC2086

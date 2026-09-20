@@ -76,13 +76,25 @@ inline in `run()`, behind `import torch`, where no test could reach it.
 > decoration. `test_prompt_budget.py` fails 12/12 against the unfixed code.
 
 **A check in the wrong environment.** The per-case reference verification in
-`bank_publish.py --verify-references` runs on `ubuntu-latest`; the verifier runs
+`bank_publish.py --verify-references` ran on `ubuntu-latest`; the verifier runs
 in `launch.BASE_IMAGE`, a `python:3.12-slim`. `ubuntu-latest` ships locales the
 slim image does not, so that check dropped 4 of the 34 bad references and kept
-**every** `locale` case — including the one that then killed a round. Running it
-inside the pinned image would close this properly and has not been done. Until
-it is, exclusion is by family name, because depending on the clock or the
-container is a property of the construct rather than of a case.
+**every** `locale` case — including the one that then killed a round.
+
+**Closed on 2026-09-20.** `verify_references.py` runs the same check inside the
+pinned image (`docker run`, no `pip install` — `training/pipeline` is
+stdlib-only, so it cannot drift by resolving a wheel), and `bank_publish.py`
+now takes its `--reference-report` rather than redoing the check on whatever
+runner it is standing on. `sandbox.run_python` spawns `sys.executable`, so
+putting the script in the container IS the fix.
+
+The manifest records `references_verified_in`, not a bare boolean: `true` was
+true of the check that missed the case, and a later reader needs to know which
+machine answered. A report cut against a different union is refused.
+
+Family exclusion stays, and is not redundant: depending on the clock or the tz
+database is a property of the *construct*, which no per-case run in any single
+image can see.
 
 ## The sequence
 

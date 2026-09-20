@@ -14,6 +14,28 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-20** — Ask the reference question on the machine that answers it
+
+- `bank_publish.py --verify-references` ran on `ubuntu-latest` while the
+  verifier runs in `python:3.12-slim`. `ubuntu-latest` ships locales the slim
+  image does not, so the check passed the `locale.setlocale` case that then
+  ended a round at `last_stage: prepare` — it had been asked of the wrong
+  machine.
+- `verify_references.py` runs the same check **inside** the pinned image.
+  `sandbox.run_python` spawns `sys.executable`, so putting the script in the
+  container is the whole fix; `training/pipeline` is stdlib-only, so it needs
+  no `pip install` and cannot drift by resolving a wheel.
+- `bank_publish.py` takes `--reference-report` instead of redoing the check on
+  whatever runner it stands on, and refuses a report cut against a different
+  union. The workflow reads the image from `launch.BASE_IMAGE` rather than
+  copying a digest into YAML where it would drift.
+- The manifest records `references_verified_in`, not a bare boolean:
+  `references_verified: true` was already true of the check that missed the
+  case. The runner-side path now says so in the bank.
+- First tests for `.github/scripts/bank_publish.py`, which had none. Family
+  exclusion stays — depending on the clock or the tz database is a property of
+  the construct, which no per-case run in any single image can see.
+
 **2026-09-20** — The exact-fit pool: give the hosts back, and never ask for every slot
 
 - A round died at its **second** preparation with `Pool needs 1 more host(s)
