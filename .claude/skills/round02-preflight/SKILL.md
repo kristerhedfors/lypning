@@ -70,7 +70,7 @@ In order, and each exits non-zero on the failure it prevents:
 Then dispatch the round. The individual pieces are still there if you want one
 of them alone: `bank-gates.yml`, `token-floor.yml`, `hf-stop.yml`.
 
-Then dispatch. Afterwards, read the Hub and not the follower:
+Afterwards, read the Hub and not the follower:
 
 ```bash
 gh workflow run "hf status" --ref main -f job_log=<HF job id> -f tail=150
