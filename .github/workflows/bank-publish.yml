@@ -26,6 +26,10 @@ on:
         description: "which families the benchmark takes"
         default: "1111"
         type: string
+      exclude_families:
+        description: "comma-separated families to drop entirely (clock/locale/tz dependent)"
+        default: "locale-setlocale,zoneinfo-zoneinfo,gzip-compress,pickle-dumps,time-strftime-or-time-gmtime"
+        type: string
       verify_references:
         description: "drop cases whose reference does not reproduce its own stdout"
         default: true
@@ -108,6 +112,11 @@ jobs:
           fi
           # `[ test ] && assign` is a statement whose exit status is the
           # test's, so under `set -e` a false flag would end the step.
+          for f in $(printf '%s' "${{ inputs.exclude_families }}" | tr ',' ' '); do
+            printf '%s' "$f" | grep -Eq '^[a-z0-9][a-z0-9-]*$' \
+              || { echo "refusing a family that is not a name: $f" >&2; exit 2; }
+            args="$args --exclude-family $f"
+          done
           if [ "${{ inputs.verify_references }}" = "true" ]; then args="$args --verify-references"; fi
           if [ "${{ inputs.push }}" = "true" ]; then args="$args --push"; fi
           if [ "${{ inputs.replace }}" = "true" ]; then args="$args --replace"; fi

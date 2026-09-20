@@ -194,3 +194,25 @@ def test_the_cap_is_reported_so_a_reader_knows_the_bank_was_trimmed():
     text = bank_carve.render(result)
     assert "capped at 5 case(s) per family" in text
     assert result["plan"]["cap"] == 5 and result["plan"]["capped_from"] > len(result["pilot"])
+
+
+def test_a_family_can_be_excluded_by_name():
+    """Some families cannot be bank cases at all: their answer depends on the
+    clock, the container's installed locales or its tz database. That is a
+    property of the construct, and the per-case reference check cannot see it
+    when it runs outside the verifier's own image."""
+    result = bank_carve.carve(bank(), exclude_families=["ctl-00", "cov-00"])
+    assert result["problems"] == []
+    assert "ctl-00" not in result["plan"]["pilot"] + result["plan"]["benchmark"]
+    assert "cov-00" not in result["plan"]["pilot"] + result["plan"]["benchmark"]
+    assert not any(c["family"] in {"ctl-00", "cov-00"}
+                   for c in result["pilot"] + result["benchmark"])
+    assert result["plan"]["excluded_families"] == ["cov-00", "ctl-00"]
+    assert "excluded 2 family(ies) by name" in bank_carve.render(result)
+
+
+def test_excluding_everything_is_refused_rather_than_carving_nothing():
+    fams = sorted({c["family"] for c in bank()})
+    with pytest.raises(TrainingError) as exc:
+        bank_carve.carve(bank(), exclude_families=fams)
+    assert "excluded by family" in str(exc.value)

@@ -61,6 +61,17 @@ def non_reproducing(cases, engine: str = "/bin/true"):
     failures where the runner finds 34 — an instrument that disagrees with the
     one that decides is not a cheaper version of it.
 
+    WHAT THIS CANNOT SEE, and it is the reason `--exclude-family` exists. This
+    runs on a GitHub runner; the verifier runs in `launch.BASE_IMAGE`, a
+    `python:3.12-slim`. `ubuntu-latest` ships locales that the slim image does
+    not, so a `locale.setlocale(..., 'en_US.UTF-8')` case reproduces here and
+    fails there — which is exactly the case that ended the round of 2026-09-20,
+    and this check run on the runner did not drop it. A family whose answer
+    depends on the clock, the installed locales or the tz database is excluded
+    by name, because the property belongs to the construct rather than to any
+    one case. Running this inside the pinned image would close the gap
+    properly and is the honest next step.
+
     The engine is never consulted; only the CPython side is asked.
     """
     from pipeline.synth import Runner
@@ -99,6 +110,8 @@ def main() -> int:
     ap.add_argument("--out", type=Path, required=True, help="staging dir, RUNNER_TEMP only")
     ap.add_argument("--seed", type=int, default=1111, help="which families the benchmark takes")
     ap.add_argument("--benchmark-families", type=int)
+    ap.add_argument("--exclude-family", action="append", default=[],
+                    help="drop every case of this family (repeatable)")
     ap.add_argument("--verify-references", action="store_true",
                     help="drop cases whose reference does not reproduce its own stdout; "
                          "training-prepare refuses these on a metered job")
@@ -133,7 +146,8 @@ def main() -> int:
     try:
         carved = bank_carve.carve(cases, seed=args.seed,
                                   benchmark_families=args.benchmark_families,
-                                  max_cases_per_family=args.max_cases_per_family)
+                                  max_cases_per_family=args.max_cases_per_family,
+                                  exclude_families=args.exclude_family)
     except TrainingError as exc:
         print("bank-publish: %s" % exc, file=sys.stderr)
         return 1
@@ -148,6 +162,7 @@ def main() -> int:
         "bank": args.name, "seed": args.seed,
         "max_cases_per_family": args.max_cases_per_family,
         "references_verified": bool(args.verify_references),
+        "excluded_families": sorted(args.exclude_family),
         "train": {"cases": len(carved["pilot"]), "families": len(carved["plan"]["pilot"]),
                   "sha256": digests[TRAIN], **carved["plan"]["pilot_counts"]},
         "eval2": {"cases": len(carved["benchmark"]), "families": len(carved["plan"]["benchmark"]),

@@ -197,7 +197,8 @@ def cap_per_family(cases: Sequence[Dict[str, Any]], limit: int, seed: int) -> Li
 
 def carve(cases: Sequence[Dict[str, Any]], *, seed: int = 1111,
           benchmark_families: Optional[int] = None,
-          max_cases_per_family: Optional[int] = None) -> Dict[str, Any]:
+          max_cases_per_family: Optional[int] = None,
+          exclude_families: Sequence[str] = ()) -> Dict[str, Any]:
     """Two banks that share no family, or a refusal naming what failed.
 
     Returns ``{"pilot", "benchmark", "plan", "problems"}``. `problems` empty is
@@ -205,6 +206,16 @@ def carve(cases: Sequence[Dict[str, Any]], *, seed: int = 1111,
     finding about the bank, and writing it would move the failure to a metered
     job.
     """
+    # Dropped by NAME, because the reason is a property of the construct rather
+    # than of any one case: a family whose answer depends on the clock, the
+    # container's installed locales or its tz database cannot be a bank case at
+    # all, and the per-case reference check cannot see it when it runs outside
+    # the verifier's image.
+    if exclude_families:
+        drop = set(exclude_families)
+        cases = [c for c in cases if c["family"] not in drop]
+        if not cases:
+            raise TrainingError("every case was excluded by family")
     before = len(cases)
     # `is not None`, not truthiness: a cap of 0 is the one value the validation
     # in `cap_per_family` exists to reject, and falsiness skipped it entirely.
@@ -213,6 +224,7 @@ def carve(cases: Sequence[Dict[str, Any]], *, seed: int = 1111,
     allocation = plan(cases, seed=seed, benchmark_families=benchmark_families)
     allocation["capped_from"] = before if max_cases_per_family is not None else None
     allocation["cap"] = max_cases_per_family
+    allocation["excluded_families"] = sorted(exclude_families)
     bench_families = set(allocation["benchmark"])
     benchmark = [c for c in cases if c["family"] in bench_families]
     pilot = [c for c in cases if c["family"] not in bench_families]
@@ -231,6 +243,10 @@ def render(result: Dict[str, Any]) -> str:
         % (allocation["seed"], len(pilot) + len(benchmark),
            len(allocation["pilot"]) + len(allocation["benchmark"])),
     ]
+    if allocation.get("excluded_families"):
+        lines.append("  excluded %d family(ies) by name: %s"
+                     % (len(allocation["excluded_families"]),
+                        ", ".join(allocation["excluded_families"])))
     if allocation.get("cap"):
         lines.append("  capped at %d case(s) per family, from %d (preparation is ~4 s/case)"
                      % (allocation["cap"], allocation["capped_from"]))

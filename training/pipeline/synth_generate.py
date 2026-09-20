@@ -132,7 +132,6 @@ UNREWRITABLE = [
     ("fractions.Fraction", "exact rational arithmetic without floating point"),
     ("collections.namedtuple", "records with named fields"),
     ("unicodedata.name or unicodedata.category", "naming or classifying characters"),
-    ("time.strftime or time.gmtime", "formatting a timestamp"),
     ("uuid.uuid5", "a deterministic namespaced identifier"),
     ("difflib.ndiff or difflib.SequenceMatcher", "a textual diff or similarity ratio"),
     ("math.log10, math.exp or math.sin", "logarithms or trigonometry"),
@@ -143,6 +142,9 @@ UNREWRITABLE = [
     # the import: a class the engine refuses outright, a parser, or an
     # environment read that is nonetheless reproducible.
     #
+    # WITHDRAWN 2026-09-20, measured. `time.strftime or time.gmtime` goes with
+    # them and was NOT one of this tree's additions: `gmtime()` with no argument
+    # is the current time, so its cases print a different answer every run.
     # WITHDRAWN 2026-09-20, measured: `locale.setlocale`, `gzip.compress`,
     # `zoneinfo.ZoneInfo` and `pickle.dumps` were added here and produced 31 of
     # the 34 bank cases whose reference does not reproduce under the runner.
