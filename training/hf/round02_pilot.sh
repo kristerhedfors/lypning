@@ -312,11 +312,11 @@ STAGE=prepare
 run python3 -m pipeline.cli training-prepare \
   --cases "$ROUND/reviewed-train/cases.jsonl" --review "$ROUND/reviewed-train/review.json" \
   --purpose pilot --execution-kind hf-sandbox-pool --execution-image "hf.co/spaces/$SPACE_REPO" \
-  --execution-revision "$SPACE_REV" --engine "$LYPNING_L_BIN" --seed "$SEED" --output "$ROUND/pilot"
+  --execution-revision "$SPACE_REV" --engine "$LYPNING_L_BIN" --seed "$SEED" --output "$ROUND/pilot" --score-workers "$SCORE_WORKERS"
 run python3 -m pipeline.cli training-prepare \
   --cases "$ROUND/reviewed-eval2/cases.jsonl" --review "$ROUND/reviewed-eval2/review.json" \
   --purpose benchmark --execution-kind hf-sandbox-pool --execution-image "hf.co/spaces/$SPACE_REPO" \
-  --execution-revision "$SPACE_REV" --engine "$LYPNING_L_BIN" --seed "$SEED" --output "$ROUND/eval2"
+  --execution-revision "$SPACE_REV" --engine "$LYPNING_L_BIN" --seed "$SEED" --output "$ROUND/eval2" --score-workers "$SCORE_WORKERS"
 fi
 
 # 7. The stages, in NEXT_ROUND.md's order. One set of common flags for every one.

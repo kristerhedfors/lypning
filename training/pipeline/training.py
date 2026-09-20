@@ -202,7 +202,7 @@ class Verifier:
 
 
 def prepare(cases, binary, output, seed=1111, timeout_s=5.0, memory_mb=1024, purpose="smoke", execution_image=None, review_path=None,
-            execution_kind="docker", execution_revision=None):
+            execution_kind="docker", execution_revision=None, score_workers=1):
     """Verify references then publish a new immutable experiment directory."""
     output = Path(output)
     if output.exists():
@@ -225,7 +225,25 @@ def prepare(cases, binary, output, seed=1111, timeout_s=5.0, memory_mb=1024, pur
     execution = execution_contract(execution_kind, execution_image, execution_revision)
     runner = execution_runner(execution, identity)
     verifier = Verifier(binary, timeout_s=timeout_s, memory_mb=memory_mb, identity=identity, runner=runner)
-    references = {c["case_id"]: asdict(verifier.score(c, c["reference"])) for c in cases}
+    # Scored CONCURRENTLY, because this loop is the stage a round runs out of
+    # clock in. It was a serial dict comprehension: one case, one sandbox, ~4 s
+    # each, so a 1,976-case pilot is 2.2 hours and a 16- or 64-sandbox pool sat
+    # idle behind it. Two rounds died at the wall inside here on 2026-09-19 and
+    # 2026-09-20, and raising the pool ceiling did nothing because nothing was
+    # asking the pool for more than one thing at a time.
+    #
+    # `executor.map` keeps input order, so `references` is identical whatever
+    # the worker count — the manifest digest must not depend on how fast the
+    # machine was — and it re-raises the first exception on iteration, which
+    # keeps `VerificationBlocked` aborting the whole preparation as before.
+    if score_workers > 1 and len(cases) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=min(score_workers, len(cases))) as pool:
+            scored = list(pool.map(lambda c: verifier.score(c, c["reference"]), cases))
+    else:
+        scored = [verifier.score(c, c["reference"]) for c in cases]
+    references = {c["case_id"]: asdict(v) for c, v in zip(cases, scored)}
     references = json.loads(json.dumps(references))  # same tuple/list shape after manifest reload
     validate_reference_scores(cases, references)
     # The engine may have been rebuilt while validating the inputs.

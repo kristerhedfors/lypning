@@ -2752,6 +2752,7 @@ def cmd_training_prepare(args) -> int:
         if args.starter and args.purpose != "smoke":
             raise TrainingError("the starter curriculum is smoke-only")
         bundle = prepare(cases, args.engine, args.output, seed=args.seed,
+                         score_workers=args.score_workers,
                          timeout_s=args.timeout, memory_mb=args.memory_mb, purpose=args.purpose,
                          execution_image=args.execution_image, review_path=args.review,
                          execution_kind=args.execution_kind, execution_revision=args.execution_revision)
@@ -2776,6 +2777,9 @@ def build_parser() -> argparse.ArgumentParser:
     tp.add_argument("--engine", type=Path, required=True, help="explicit compiled lypning-l binary")
     tp.add_argument("--output", type=Path, required=True, help="new directory; never overwrite")
     tp.add_argument("--seed", type=int, default=1111)
+    tp.add_argument("--score-workers", type=int, default=1,
+                    help="concurrent reference scorings; one per pool sandbox. The default "
+                         "of 1 is the historical serial behaviour and is ~4 s a case")
     tp.add_argument("--execution-image",
                     help="isolation image: an immutable local Docker image ID, or an "
                          "hf.co/spaces/<owner>/<name> image for --execution-kind hf-sandbox-pool; "

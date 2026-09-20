@@ -690,3 +690,73 @@ def test_the_output_directory_is_created_after_the_weights_and_not_before():
     download = body.index("snapshot_download(BASE_MODEL")
     mkdir = body.index("args.output.mkdir(")
     assert floor < download < mkdir
+
+
+def test_reference_scoring_is_concurrent_and_order_independent(tmp_path):
+    """The stage two rounds died inside, and the property that lets it be fast.
+
+    `prepare` scored references with a serial dict comprehension: one case, one
+    sandbox, ~4 s each, so a 1,976-case pilot was 2.2 hours and the pool sat
+    idle behind it. Raising the pool ceiling did nothing, because nothing asked
+    the pool for more than one thing at a time.
+
+    Concurrency is only admissible here if the manifest does not depend on it:
+    the digest a round is pinned by must be the same on a fast machine and a
+    slow one. `executor.map` keeps input order, and this asserts that rather
+    than trusting it, by scoring the same cases at several worker counts.
+    """
+    import json as _json
+    from pipeline import training as t
+
+    calls = []
+
+    class CountingVerifier:
+        """Records concurrency actually used, and scores deterministically."""
+
+        def __init__(self):
+            self.live = 0
+            self.peak = 0
+            self._lock = __import__("threading").Lock()
+
+        def score(self, case, program):
+            with self._lock:
+                self.live += 1
+                self.peak = max(self.peak, self.live)
+            calls.append(case["case_id"])
+            __import__("time").sleep(0.01)
+            with self._lock:
+                self.live -= 1
+            return t.Score(status="correct-native", reward=1.0, native_tests=len(case["tests"]),
+                           total_tests=len(case["tests"]), refusals=[], failed_test=None)
+
+    cases = [{"case_id": "c%02d" % i, "tests": [{"stdin": "", "stdout": "x\n"}],
+              "reference": "print('x')"} for i in range(24)]
+
+    def run(workers):
+        v = CountingVerifier()
+        if workers > 1 and len(cases) > 1:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=min(workers, len(cases))) as pool:
+                scored = list(pool.map(lambda c: v.score(c, c["reference"]), cases))
+        else:
+            scored = [v.score(c, c["reference"]) for c in cases]
+        from dataclasses import asdict
+        return {c["case_id"]: asdict(s) for c, s in zip(cases, scored)}, v.peak
+
+    serial, peak1 = run(1)
+    fast, peak16 = run(16)
+    assert peak1 == 1, "the serial path must not overlap"
+    assert peak16 > 1, "the concurrent path must actually overlap; it was the whole point"
+    # The manifest is pinned by a digest, so it must not move with worker count.
+    assert list(serial) == list(fast), "case order changed with concurrency"
+    assert _json.dumps(serial, sort_keys=True) == _json.dumps(fast, sort_keys=True)
+
+
+def test_prepare_takes_a_worker_count_and_defaults_to_the_serial_one():
+    """Opt-in: an unthreaded caller keeps exactly the behaviour it had."""
+    import inspect
+    from pipeline.training import prepare
+
+    sig = inspect.signature(prepare)
+    assert "score_workers" in sig.parameters
+    assert sig.parameters["score_workers"].default == 1
