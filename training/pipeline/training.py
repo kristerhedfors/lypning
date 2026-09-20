@@ -252,7 +252,9 @@ def prepare(cases, binary, output, seed=1111, timeout_s=5.0, memory_mb=1024, pur
         if not execution_image:
             raise TrainingError(purpose + " preparation requires --execution-image; a temporary cwd is not isolation")
     execution = execution_contract(execution_kind, execution_image, execution_revision)
-    runner = execution_runner(execution, identity)
+    # The output directory names the stage ("pilot", "eval2"), which is what
+    # keeps this preparation's pool distinct from the previous one's.
+    runner = execution_runner(execution, identity, stage=output.name)
     verifier = Verifier(binary, timeout_s=timeout_s, memory_mb=memory_mb, identity=identity, runner=runner)
     # Scored CONCURRENTLY, because this loop is the stage a round runs out of
     # clock in. It was a serial dict comprehension: one case, one sandbox, ~4 s
@@ -383,14 +385,16 @@ def validate_execution(execution):
     raise TrainingError("invalid execution contract")
 
 
-def execution_runner(execution, identity):
+def execution_runner(execution, identity, stage=None):
+    """The runner for one stage. `stage` names its pool; see `pool_name`."""
     validate_execution(execution)
     if execution["kind"] == "docker":
         from .container_runner import ContainerRunner
         return ContainerRunner(execution["image"], identity)
     if execution["kind"] == "hf-sandbox-pool":
         from .hf_sandbox_runner import HfSandboxPoolRunner
-        return HfSandboxPoolRunner(execution["image"], execution["revision"], identity)
+        return HfSandboxPoolRunner(execution["image"], execution["revision"], identity,
+                                   stage=stage)
     return None
 
 

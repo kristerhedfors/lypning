@@ -270,3 +270,50 @@ def test_real_pooled_sandbox_boundary():
         assert res.stdout == "True None\n", res.stdout
     finally:
         r.close()
+
+
+def test_each_stage_names_its_own_pool_so_it_cannot_adopt_a_dying_one():
+    """The race that releasing the hosts would otherwise have created.
+
+    `prepare` cancels its pool's hosts on the way out, which is what stops the
+    next stage inheriting their occupancy. But a host cancelled a moment ago
+    still answers `list_jobs(status="RUNNING")`, and `_discover_hosts` adopts
+    by NAME — so a next stage sharing the name can adopt twelve dying hosts,
+    then need twelve live ones, and hit `max_hosts`. That is precisely the
+    failure the release was added to prevent, re-created by the release.
+
+    Distinct names cannot adopt each other, so the race stops existing instead
+    of becoming narrow enough to usually win.
+    """
+    from pipeline import hf_sandbox_runner as r
+
+    pilot = r.pool_name(REVISION, "6ab01cbb51992417dfccd64c", stage="pilot")
+    eval2 = r.pool_name(REVISION, "6ab01cbb51992417dfccd64c", stage="eval2")
+    grpo = r.pool_name(REVISION, "6ab01cbb51992417dfccd64c", stage="grpo")
+    assert len({pilot, eval2, grpo}) == 3, "stages of one job must not share a pool"
+
+    # The tag ALONE cannot carry the stage, which is why this is a parameter: a
+    # job id is exactly 24 characters and the tag is truncated to 24, so
+    # `<job>-eval2` truncates straight back to `<job>`.
+    job = "6ab01cbb51992417dfccd64c"
+    assert len(job) == 24
+    assert r.pool_name(REVISION, job + "-pilot") == r.pool_name(REVISION, job + "-eval2")
+
+    # Two different jobs still differ, which is the property the tag was for:
+    # a pool that owns its hosts cancels them on close, so two runs sharing a
+    # name would tear each other's hosts down mid-stage.
+    assert r.pool_name(REVISION, "6ab0139152d0dbd7f1d74da2", stage="pilot") != pilot
+    # And no stage is still the old name, so nothing else has to change.
+    assert r.pool_name(REVISION, "") == "lypning-verifier-" + REVISION[:12]
+
+
+def test_the_runner_carries_its_stage_into_the_pool_it_builds():
+    """A name nothing passes is a name nothing distinguishes."""
+    import inspect
+    from pipeline import hf_sandbox_runner as r
+    from pipeline.training import execution_runner
+
+    assert "stage" in inspect.signature(r.HfSandboxPoolRunner.__init__).parameters
+    assert "stage" in inspect.signature(execution_runner).parameters
+    source = inspect.getsource(r.HfSandboxPoolRunner._pool_locked)
+    assert "stage=self._stage" in source, "the pool must be named with the stage, not without"

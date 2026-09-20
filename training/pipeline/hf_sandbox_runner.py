@@ -74,11 +74,26 @@ BUNDLE_FIELDS = ("sha256", "version", "oracle", "sandbox_sha256", "child_exec_sh
 WORKER_SOURCE = Path(__file__).with_name("container_worker.py")
 
 
-def pool_name(revision, tag=None):
-    """The pool's name: the Space revision, then the run's own tag when it has one."""
+def pool_name(revision, tag=None, stage=None):
+    """The pool's name: the Space revision, the run's own tag, and its STAGE.
+
+    The stage is in the name because a round's stages are separate processes
+    and `prepare` now cancels its hosts on the way out. A host that has just
+    been cancelled still answers `list_jobs(status="RUNNING")` for a few
+    seconds, so a later stage sharing the NAME can adopt twelve dying hosts,
+    then need twelve live ones, and hit `max_hosts` — which is the failure
+    releasing them was meant to prevent, re-created by the release. Names that
+    differ cannot adopt each other, so the race does not exist rather than
+    being narrow enough to usually win.
+
+    The tag alone cannot carry the stage: a job id is exactly 24 characters and
+    the tag is truncated to 24, so `<job>-eval2` truncates back to `<job>`.
+    """
     tag = os.environ.get("NTX_POOL_TAG", "") if tag is None else tag
     tag = re.sub(r"[^A-Za-z0-9._-]", "", str(tag))[:24]
-    return "lypning-verifier-" + revision[:12] + ("-" + tag if tag else "")
+    stage = re.sub(r"[^A-Za-z0-9._-]", "", str(stage or ""))[:12]
+    return ("lypning-verifier-" + revision[:12]
+            + ("-" + tag if tag else "") + ("-" + stage if stage else ""))
 
 
 def pool_limit(value, name):
@@ -118,7 +133,7 @@ class HfSandboxPoolRunner:
 
     def __init__(self, image, revision, identity, *, check=True, pool=None, flavor=FLAVOR,
                  sandboxes_per_host=None, max_hosts=None, hf_token=None, space_sha=None,
-                 sleep=time.sleep):
+                 sleep=time.sleep, stage=None):
         if not isinstance(image, str) or not re.fullmatch(IMAGE_PATTERN, image):
             raise TrainingError("hf-sandbox-pool execution image must be an hf.co/spaces/<owner>/<name> image")
         if not isinstance(revision, str) or not re.fullmatch(REVISION_PATTERN, revision):
@@ -140,6 +155,7 @@ class HfSandboxPoolRunner:
             "maximum pool hosts")
         self._hf_token = hf_token
         self._space_sha = space_sha
+        self._stage = stage
         self._sleep = sleep
         #: Scorings run concurrently (`gpu/verified_evaluation.py`); the pool is
         #: built once and the interpreter admitted once, whichever thread is first.
@@ -195,7 +211,7 @@ class HfSandboxPoolRunner:
             # hosts cancels them on close, so two runs sharing a name would tear
             # each other's hosts down mid-stage (jobs 6aaa4b2c and 6aaa5c1e,
             # 2026-09-16).
-            kwargs = {"image": self.image, "flavor": self._flavor, "name": pool_name(self.revision)}
+            kwargs = {"image": self.image, "flavor": self._flavor, "name": pool_name(self.revision, stage=self._stage)}
             if self._sandboxes_per_host is not None:
                 kwargs["sandboxes_per_host"] = self._sandboxes_per_host
             if self._max_hosts is not None:

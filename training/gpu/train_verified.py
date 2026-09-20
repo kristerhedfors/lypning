@@ -263,7 +263,8 @@ def check_prompt_budget(tok, cases, max_new_tokens, max_seq):
 
 def run(args, bundle, adapter_info):
     verifier = Verifier(args.engine, **bundle["limits"], identity=bundle["identity"],
-                        runner=execution_runner(bundle["execution"], bundle["identity"]))
+                        runner=execution_runner(bundle["execution"], bundle["identity"],
+                                                stage="grpo"))
     versions = runtime_versions()
     effective = schedule(args)
     # Block fused kernels before importing transformers, preserving the existing

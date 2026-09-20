@@ -104,7 +104,7 @@ def test_review_and_execution_contract_survive_bundle_reload(tmp_path, monkeypat
     review_path = tmp_path / "review.json"
     write_json(review_path, reviewed)
     monkeypatch.setattr(training, "engine_identity", lambda b: {"fixture": True})
-    monkeypatch.setattr(training, "execution_runner", lambda *a: None)
+    monkeypatch.setattr(training, "execution_runner", lambda *a, **kw: None)
     monkeypatch.setattr(training.Verifier, "score", lambda self, c, p: training.Score(
         1.0, "correct-native" if c["population"] == "coverage" else "correct-control",
         3 if c["population"] == "coverage" else 0, 3))

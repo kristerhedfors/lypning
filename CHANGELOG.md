@@ -58,6 +58,13 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 - Three tests that fail against the code as it was, including one that reads
   `round02.yml`'s own numbers — the scorer count lives in YAML and the rule
   admitting it lives in Python, and nothing else related the two.
+- **And the race the release would have created.** A host cancelled a moment
+  ago still answers `list_jobs(status="RUNNING")`, and pools adopt hosts by
+  NAME — so the next stage could adopt twelve dying hosts, then need twelve
+  live ones, and hit `max_hosts` again. Each stage now names its own pool
+  (`pilot`, `eval2`, `grpo`), so the race stops existing instead of becoming
+  narrow enough to usually win. The tag could not carry this: a job id is
+  exactly 24 characters and the tag truncates to 24.
 - `round02-preflight` carries it as ledger row 7.
 
 **2026-09-19** — A round's bank exists, carved and priced: every preparation but the operator's

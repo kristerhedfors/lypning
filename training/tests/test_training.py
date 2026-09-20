@@ -336,7 +336,7 @@ def test_benchmark_bundle_admits_a_bank_a_pilot_would_reject(tmp_path, monkeypat
     review_path = tmp_path / "review.json"
     write_json(review_path, reviewed)
     monkeypatch.setattr(t, "engine_identity", lambda b: {"fixture": True})
-    monkeypatch.setattr(t, "execution_runner", lambda *a: None)
+    monkeypatch.setattr(t, "execution_runner", lambda *a, **kw: None)
     monkeypatch.setattr(t.Verifier, "score", lambda self, c, p: t.Score(
         1.0, "correct-native" if c["population"] == "coverage" else "correct-control",
         3 if c["population"] == "coverage" else 0, 3))
