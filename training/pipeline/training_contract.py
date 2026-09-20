@@ -24,9 +24,28 @@ PROTOCOL_EVAL_DRAWS = 16
 MIN_TRAIN_CASES = 1000
 MIN_SUPERVISED_TOKENS = 50_000
 PROTOCOL_TRAIN_SEEDS = (1111, 2222, 3333)
+#: Pinned because a kernel is part of an arm's identity, not a free speedup.
+#: `STATUS.md` §2 records a kernel swap on IDENTICAL weights moving dSLR by
+#: +1.57pp -- larger than either adapter of 2026-09-14 moved it, and the null
+#: that would otherwise have manufactured a win of the wrong sign. So two arms
+#: on different kernels are not comparable, and the kernel is pinned here with
+#: everything else rather than left to whatever the image happens to have.
+#:
+#: `flash-linear-attention` serves `chunk_gated_delta_rule` and
+#: `fused_recurrent_gated_delta_rule`, which are 48 of this model's layers;
+#: without it transformers falls back to reference PyTorch and says so, and the
+#: round of 2026-09-20 ran its whole SFT stage that way. 0.5.2 is the version
+#: `STATUS.md` records for the v1 run of record (`fla-0.5.2`), so pinning it
+#: narrows the gap to that arm rather than opening a new one.
+#:
+#: `causal_conv1d` is DELIBERATELY ABSENT. It covers `causal_conv1d_fn` and
+#: `causal_conv1d_update`, but PyPI ships it as an sdist only (1.7.0, checked
+#: 2026-09-20), so adding it means an nvcc build on a metered job that can hang
+#: or fail at exit 123. Its fallback stays, and it stays visible in the log.
 GPU_VERSIONS = {"torch": "2.9.1", "transformers": "5.17.0", "peft": "0.20.0",
                 "accelerate": "1.15.0", "huggingface-hub": "1.31.0", "safetensors": "0.8.0",
-                "trl": "1.13.0", "datasets": "4.7.0"}
+                "trl": "1.13.0", "datasets": "4.7.0",
+                "flash-linear-attention": "0.5.2"}
 
 
 def runtime_versions():

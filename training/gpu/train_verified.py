@@ -4,6 +4,7 @@
 #   "torch==2.9.1", "transformers==5.17.0", "peft==0.20.0",
 #   "accelerate==1.15.0", "huggingface-hub==1.31.0", "safetensors==0.8.0",
 #   "trl==1.13.0", "datasets==4.7.0",
+#   "flash-linear-attention==0.5.2",
 # ]
 # ///
 """Task-first Qwen3.8 SFT / execution-RL. Requires this checkout, not just this file.

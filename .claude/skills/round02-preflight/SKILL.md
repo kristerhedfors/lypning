@@ -108,6 +108,30 @@ Each of these cost real time here, and none is about the model.
   into an Actions log publishes the held-out benchmark, and deleting the run
   afterwards does not reach what already scraped it.
 
+## The kernel is part of the arm, not a speed setting
+
+Transformers falls back to reference PyTorch when a kernel package is absent
+and says so in the log:
+
+```
+`chunk_gated_delta_rule` is falling back to its reference PyTorch implementation
+because `flash-linear-attention` is not installed.
+```
+
+That is not only slow — 48 of this model's layers are gated-delta-net — it is a
+**different arm**. `STATUS.md` §2 records a kernel swap on identical weights
+moving ΔSLR by +1.57pp, larger than either adapter of 2026-09-14 moved it. So
+`flash-linear-attention==0.5.2` is pinned in `GPU_VERSIONS` beside torch, at
+the version `STATUS.md` records for the v1 run of record.
+
+`causal_conv1d` is deliberately absent: PyPI ships it as an sdist only, so
+adding it means an nvcc build on a metered job that can hang or exit 123. Its
+fallback line stays in the log, which is the honest state — two of the four
+fallbacks are gone and two remain, visibly.
+
+**Grep the round's log for `falling back` before trusting a comparison
+between arms.**
+
 ## What no check here can tell you
 
 That training installs the effect. A bank with headroom can host a result; it
