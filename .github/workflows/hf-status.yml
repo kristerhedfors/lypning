@@ -11,6 +11,15 @@ on:
   push:
     branches: ["round02/**", "bank3/**"]
   workflow_dispatch:
+    inputs:
+      job_log:
+        description: "also print this job's own log (the side that knows why it died)"
+        default: ""
+        type: string
+      tail:
+        description: "last N lines of that log; 0 for all"
+        default: "150"
+        type: string
 
 permissions:
   contents: read
@@ -32,3 +41,18 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python .github/scripts/hf_status.py
+
+      # A GitHub runner will not serve an in-progress job's log and expires
+      # before a 480m pilot anyway, so twice on 2026-09-19 a round's cause of
+      # death was readable only from the Hub.
+      - name: That job's own log
+        if: ${{ inputs.job_log != '' }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${{ inputs.job_log }}" | grep -Eq '^[A-Za-z0-9]+$' \
+            || { echo "refusing a job id that is not a name" >&2; exit 2; }
+          printf '%s' "${{ inputs.tail }}" | grep -Eq '^[0-9]+$' \
+            || { echo "refusing a non-numeric tail" >&2; exit 2; }
+          python .github/scripts/hf_job_log.py "${{ inputs.job_log }}" --tail "${{ inputs.tail }}"
