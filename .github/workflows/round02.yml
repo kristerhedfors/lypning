@@ -41,12 +41,19 @@ env:
   # the 16-sandbox pool, so the uncapped 8,370/4,633 bank is 10.7 h of
   # preparation before a single optimizer step, and the round of 2026-09-19
   # died at six hours inside it. Family count, which the floors and the cluster
-  # bootstrap read, is untouched. Verified on this bank (run 35462299520):
-  # 1,368/1,431/1,410 train cases against the 1,000 floor.
+  # bootstrap read, is untouched. Five families are ALSO excluded by name --
+  # locale, zoneinfo, gzip, pickle and time -- because their answers depend on
+  # the clock, the container's installed locales or its tz database; one such
+  # case ended the round of 2026-09-20 at `last_stage: prepare`, and a
+  # per-case reference check run on a GitHub runner cannot see it, because
+  # ubuntu-latest ships locales the verifier's slim image does not.
+  # Verified on this bank (run 35491218203): 1,355/1,386/1,373 train cases
+  # against the 1,000 floor, 246,723/229,367/198,895 supervised tokens against
+  # the 50,000 floor.
   # `banks/v2` is kept on the Hub and is not this: its completed base arm left
   # 3.14pp of headroom against a 3.00pp bar, so a round on it could not fire
   # the preregistered rule.
-  BANK_PATH: banks/v3-20260919-c45
+  BANK_PATH: banks/v3-20260920b
   # A 27B model loads in full bf16 with no quantization (~54 GB of weights), so
   # the smoke's 24 GB a10g-small cannot hold it. A pilot needs an 80 GB-class
   # flavor; the preflight prints the whole priced table so this is a decision
