@@ -1,0 +1,135 @@
+# Every free check that stands between a bank and a metered round, in one run.
+#
+# Six round-02 jobs have been paid for and none produced a model-quality
+# result. Every cause was knowable beforehand for nothing, and four times the
+# number that would have shown it was already printed in a log nobody compared
+# to anything. This is that comparison, run as a job rather than remembered.
+#
+# `.claude/skills/round02-preflight/SKILL.md` is the ledger of what each check
+# prevents and what it cost to learn. Free: no GPU, no provider call, no model
+# written code — the bank's references were executed when their batch was
+# banked, and step 3 re-runs only the engine over programs already admitted.
+name: round-02 preflight (every free check, before the meter)
+
+on:
+  workflow_dispatch:
+    inputs:
+      bank_path:
+        description: "the bank a round would read, e.g. banks/v3-20260920b"
+        required: true
+        type: string
+      steps:
+        description: "the --steps the submit would bill"
+        default: "300"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: the bank, the schedule and the ceiling
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PYTHONPATH: src:training
+      WORK_REPO_NAME: lypning-round02-artifacts
+      HF_HOME: ${{ github.workspace }}/.hf
+      LYPNING_CAPTURE: "0"
+      LYPNING_HARVEST: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Step 5 compares this run's input against what `main` actually
+          # carries, so `origin/main` has to exist rather than a shallow ref.
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q -e . "huggingface-hub==1.31.0" "transformers==5.17.0" jinja2
+      - name: Isolate engine state
+        run: echo "LYPNING_HOME=$RUNNER_TEMP/preflight-home" >> "$GITHUB_ENV"
+      - name: Build the engine that decides native versus refused
+        run: |
+          python -m lypning build --rust --target host
+          "$LYPNING_HOME/bin/lypning-l" --version
+
+      # 1. IDENTITY. A bank is a path in a shared repository and another job can
+      #    write to it. One did, and a round trained on the wrong population and
+      #    reported a result.
+      - name: The bank is the bank it says it is
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          BANK_PATH: ${{ inputs.bank_path }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json, os, sys
+          from huggingface_hub import snapshot_download
+          from huggingface_hub import HfApi
+          bank = os.environ["BANK_PATH"].strip("/")
+          api = HfApi(token=os.environ["HF_TOKEN"].strip())
+          repo = "%s/%s" % (api.whoami()["name"], os.environ.get("WORK_REPO_NAME",
+                                                                "lypning-round02-artifacts"))
+          if not api.repo_info(repo, repo_type="dataset").private:
+              raise SystemExit("refusing to read banks from a public repository")
+          local = snapshot_download(repo, repo_type="dataset",
+                                    allow_patterns=[bank + "/**"],
+                                    local_dir=os.environ["RUNNER_TEMP"] + "/bank")
+          root = os.path.join(local, bank)
+          counts = {}
+          for name in ("train.jsonl", "eval2.jsonl"):
+              with open(os.path.join(root, name), encoding="utf-8") as fh:
+                  counts[name] = sum(1 for line in fh if line.strip())
+              print("   %-12s %d cases" % (name, counts[name]))
+          manifest = os.path.join(root, "bank.json")
+          if not os.path.isfile(manifest):
+              raise SystemExit("NO MANIFEST: this bank cannot be identified; cut it with "
+                               "bank-publish.yml before a round reads it")
+          want = json.loads(open(manifest, encoding="utf-8").read())
+          print("   manifest %s, cut at seed %s" % (want.get("bank"), want.get("seed")))
+          bad = [k for k, n in (("train", counts["train.jsonl"]), ("eval2", counts["eval2.jsonl"]))
+                 if (want.get(k) or {}).get("cases") != n]
+          if bad:
+              raise SystemExit("BANK MISMATCH on %s: something wrote to %s after it was "
+                               "published" % (", ".join(bad), bank))
+          print("   bank matches its manifest")
+          PY
+        shell: bash
+
+      # 2. THE SCHEDULE CAN TRAIN. run() refuses a short schedule after the
+      #    weights; this counts it exactly, for nothing.
+      - name: The supervised-token floor
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python .github/scripts/token_floor.py \
+            --hub-bank "${{ inputs.bank_path }}" --steps "${{ inputs.steps }}" --require-clears
+
+      # 3. THE BANK CAN HOST THE EFFECT. A ceiling under the +3pp bar means no
+      #    adapter can fire the rule, however good it is. Exit 1 is a finding.
+      - name: Can a round on this bank detect anything
+        run: |
+          python -m pipeline.cli bank-native \
+            "$RUNNER_TEMP/bank/${{ inputs.bank_path }}/train.jsonl" --mix-only
+
+      # 4. NOTHING IS STILL RUNNING. A trainer that dies does not take its pool
+      #    with it, and a pool host left running is one a later round finds busy.
+      - name: No job is still running from a previous round
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python .github/scripts/hf_stop.py
+
+      # 5. WHAT WOULD BE BILLED IS WHAT WAS CHECKED. An edit that silently did
+      #    not apply sent one dispatch at the wrong bank.
+      - name: main points where this run checked
+        run: |
+          set -euo pipefail
+          on_main=$(git show origin/main:.github/workflows/round02.yml | sed -n 's/^  BANK_PATH: //p')
+          echo "   round02.yml on main reads: $on_main"
+          echo "   this preflight checked  : ${{ inputs.bank_path }}"
+          if [ "$on_main" != "${{ inputs.bank_path }}" ]; then
+            echo "MISMATCH: the submit would bill a bank this run did not check" >&2
+            exit 1
+          fi
+          echo "   they agree"
