@@ -73,3 +73,39 @@ def test_grpo_stage_uses_frozen_policy_and_callbacks(tmp_path, monkeypatch):
     assert config.loss_type == "dr_grpo" and config.scale_rewards == "none" and config.beta == 0
     assert config.generation_kwargs["eos_token_id"] == 99
     assert observed["finite_checked"] and steps == [1]
+
+
+def test_a_training_stage_reports_its_progress_and_leaks_nothing_doing_it():
+    """The stage that ran 70 minutes while its progress was unreadable.
+
+    `train_sft` writes a row per step to `loss.jsonl`, and `round02_pilot.sh`
+    uploads per STAGE -- so between the banner and the stage's end there is no
+    step, no rate and no way to tell whether the wall clock will be met. Two
+    rounds died at that wall. `checkpoint` is the one place that runs on a
+    schedule inside the stage, so it is where the line belongs.
+
+    And it must stay an aggregate. The GitHub follower streams the job's stdout
+    into a PUBLIC Actions log; printing a bundle into one published held-out
+    eval-2 cases on 2026-09-18, which deleting the run did not undo.
+    """
+    import ast
+    import inspect
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[1].joinpath(
+        "gpu/train_verified.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "checkpoint")
+
+    calls = [n for n in ast.walk(fn)
+             if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "log"]
+    assert calls, "checkpoint must report progress; it is the only scheduled point inside the stage"
+
+    # Numbers only. `metrics` is an eval report and a future key could hold a
+    # case id or a program; the filter is what keeps this line publishable.
+    printed = ast.dump(calls[0])
+    assert "isinstance" in printed and "float" in printed, (
+        "the progress line must filter to numeric values, or a future metrics "
+        "key could carry case text into a public log")
+    assert "step" in printed and "effective" in printed, "report the step against the total"

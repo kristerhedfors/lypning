@@ -14,6 +14,21 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-20** — A training stage that says where it is
+
+- The SFT stage emitted nothing between its banner and its end. `train_sft`
+  writes a row per step to `loss.jsonl` and `round02_pilot.sh` uploads per
+  STAGE, so a reader had no step, no rate, and no way to tell whether the wall
+  clock would be met. Two rounds died at that wall; on 2026-09-20 a live round
+  ran 70 minutes of SFT during which the only honest answer about its progress
+  was "unreadable".
+- `checkpoint` now logs `<stage> step N/total <metrics>`. It is the one place
+  that runs on a schedule inside the stage, and `core.log` stamps elapsed
+  seconds — so two lines give the rate and the rate gives the finish.
+- Numbers only, enforced by test: the follower streams the job's stdout into a
+  **public** Actions log, and a future `metrics` key holding a case id or a
+  program would otherwise walk straight into one.
+
 **2026-09-20** — A pin a fallback can satisfy is not a pin
 
 - The live round is running with `flash-linear-attention==0.5.2` pinned and

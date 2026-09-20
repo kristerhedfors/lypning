@@ -416,6 +416,22 @@ def run(args, bundle, adapter_info):
         save(step)
         stop = gate.observe(step, metrics)
         write_json(args.output / "best.json", gate.report())
+        # THE ONLY PROGRESS THIS STAGE EMITS. `train_sft` writes a row per step
+        # to `loss.jsonl` and `round02_pilot.sh` uploads per STAGE, so between
+        # the stage banner and the stage's end a reader has nothing: not the
+        # step, not the rate, not whether the wall clock will be met. Two rounds
+        # died at that wall with no way to have seen it coming, and on
+        # 2026-09-20 a live round ran 70 minutes of SFT during which the only
+        # honest answer about its progress was "unreadable".
+        #
+        # `core.log` stamps elapsed seconds, so two of these lines give the rate
+        # and the rate gives the finish. Numbers only: the follower streams this
+        # into a PUBLIC Actions log, so nothing case-level may pass through here.
+        core.log("%s step %d/%d %s%s"
+                 % (args.stage, step, effective["steps"],
+                    " ".join("%s=%.4g" % (k, v) for k, v in sorted(metrics.items())
+                             if isinstance(v, (int, float)) and not isinstance(v, bool)),
+                    "  STOP" if stop else ""))
         return stop
 
     if args.stage == "sft":
