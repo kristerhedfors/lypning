@@ -78,7 +78,11 @@ env:
   # stays at the decided 4 — `native` is host-load-dependent, so density changes
   # what the label means, while host count is cents on `cpu-basic` beside an
   # h200 at $5/h.
-  PILOT_SCORERS: "64"
+  # 48, not 64: the pool has 16 x 4 = 64 slots and RAISES rather than waits
+  # once they are all taken, so scorers equal to capacity leaves nothing for
+  # a sandbox still winding down. 6ab01391 (2026-09-20) died on that, at the
+  # second stage, after the pilot bundle was already built.
+  PILOT_SCORERS: "48"
   PILOT_POOL_HOSTS: "16"
 
 jobs:

@@ -104,7 +104,7 @@ def test_pilot_env_wires_the_bank_and_its_knobs_as_strings():
     assert env == {"SPACE_REPO": "o/space", "SPACE_REV": "a" * 40, "QWEN_REV": "b" * 40, "WORK_REPO": "o/work",
                    "BANK_PATH": "banks/2026-09-16", "STEPS": "40", "GRPO_STEPS": "20",
                    "EVAL_DRAWS": "8", "SEED": "2222",
-                   "EVAL_SEQUENCES": "128", "SCORE_WORKERS": "16",
+                   "EVAL_SEQUENCES": "128", "SCORE_WORKERS": "12",
                    "NTX_POOL_SANDBOXES_PER_HOST": "4", "NTX_POOL_MAX_HOSTS": "4",
                    "BUNDLES_FROM": ""}
     defaults = launch.job_env(args("pilot", bank_path="banks/x"))
@@ -156,7 +156,10 @@ def test_a_banked_launch_is_refused_above_the_per_host_density_ceiling(monkeypat
     # ceiling and lives further out, so it refuses only beyond MAX_POOL_HOSTS —
     # raised to 16 on 2026-09-20 to buy scoring throughput, which is a cost
     # decision, while this number stayed at 4 because it is the instrument.
-    for workers, per_host, hosts in ((16, 4, 4), (1, 1, 1), (8, 4, 2), (16, 2, 8), (64, 4, 16)):
+    # Every shape here keeps one host of slack, because the capacity guard sits
+    # one check earlier and `(16, 4, 4)` / `(64, 4, 16)` are exactly-full pools
+    # — the shape that lost 6ab01391, refused since 2026-09-20.
+    for workers, per_host, hosts in ((12, 4, 4), (1, 1, 1), (4, 4, 2), (14, 2, 8), (60, 4, 16)):
         assert launch.main(pool_argv("pilot", workers, per_host, hosts)) == 2
         assert "HF_TOKEN" in capsys.readouterr().err, (workers, per_host, hosts)
     for workers, per_host, hosts in ((16, 2, 17), (16, 1, 32)):
@@ -221,7 +224,10 @@ def test_a_banked_launch_above_its_ceiling_is_told_the_ceiling(monkeypatch, caps
     the right answer and must stay.
     """
     monkeypatch.delenv("HF_TOKEN", raising=False)
-    ceiling = launch.MAX_POOL_SANDBOXES_PER_HOST * launch.MAX_POOL_HOSTS
+    # The admissible ceiling is the product LESS one host: capacity exactly
+    # equal to the scorer count has no room for a sandbox still winding down,
+    # and the pool raises rather than waits. See the test below.
+    ceiling = launch.MAX_POOL_SANDBOXES_PER_HOST * (launch.MAX_POOL_HOSTS - 1)
 
     # At the MAXIMAL shape, so no knob has room left; at 4/4 the host knob does
     # and "increase --pool-max-hosts" is then the right answer, not a dead end.
@@ -261,3 +267,59 @@ def test_a_banked_launch_above_its_ceiling_is_told_the_ceiling(monkeypatch, caps
     err = capsys.readouterr()
     assert "tops out at" not in err.err
     assert "--pool-sandboxes-per-host or --pool-max-hosts" in err.err
+
+
+def test_scorers_exactly_equal_to_pool_capacity_are_refused(monkeypatch, capsys):
+    """The shape that lost job 6ab01391 on 2026-09-20, now unlaunchable.
+
+    `--score-workers 64` against 4 sandboxes on each of 16 hosts is exactly
+    64 slots for exactly 64 scorers. That reads like a perfect fit and is
+    instead the one shape with no recovery: `SandboxPool.create` RAISES rather
+    than waits once every host is full, and a round's stages are separate
+    processes that adopt the previous stage's still-warm hosts *at their true
+    occupancy*. One sandbox not yet reaped and the next stage asks for host
+    seventeen against `max_hosts=16`.
+
+    It cost a pilot bundle that had already been built -- the expensive half of
+    the round -- because the stage that fails is the second one.
+
+    So capacity must exceed the scorers by a whole host, and the exact-fit
+    shape must be refused here, for nothing, rather than six hours in.
+    """
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    per_host, hosts = launch.MAX_POOL_SANDBOXES_PER_HOST, launch.MAX_POOL_HOSTS
+    exact = per_host * hosts
+
+    assert launch.main(pool_argv("pilot", exact, per_host, hosts)) == 2
+    err = capsys.readouterr()
+    assert "tops out at %d scorers" % (per_host * (hosts - 1)) in err.err
+    assert err.out == "", "library code does not print"
+
+    # One host of slack is the boundary: it is admitted, and one more is not.
+    assert launch.main(pool_argv("pilot", exact - per_host, per_host, hosts)) == 2
+    assert "HF_TOKEN" in capsys.readouterr().err, "a full host of slack is enough"
+    assert launch.main(pool_argv("pilot", exact - per_host + 1, per_host, hosts)) == 2
+    assert "tops out at" in capsys.readouterr().err, "one slot short of a host is not"
+
+
+def test_the_round_the_workflow_would_actually_launch_is_admissible():
+    """round02.yml's own numbers, checked against the guard rather than by eye.
+
+    The scorer count and host count live in a YAML file and the rule that
+    admits them lives in Python, so nothing but this test makes them agree. The
+    dead round had `PILOT_SCORERS: "64"` sitting beside `PILOT_POOL_HOSTS: "16"`
+    and no check anywhere related the two.
+    """
+    import re
+    from pathlib import Path
+
+    text = Path(__file__).resolve().parents[2].joinpath(
+        ".github/workflows/round02.yml").read_text(encoding="utf-8")
+    scorers = int(re.search(r'^  PILOT_SCORERS: "(\d+)"', text, re.M).group(1))
+    hosts = int(re.search(r'^  PILOT_POOL_HOSTS: "(\d+)"', text, re.M).group(1))
+    per_host = launch.MAX_POOL_SANDBOXES_PER_HOST
+
+    assert hosts <= launch.MAX_POOL_HOSTS, "the workflow is above the cost ceiling"
+    assert per_host * hosts >= scorers + per_host, (
+        "round02.yml would be refused by the launch guard: %d scorers against "
+        "%d x %d slots leaves less than one host of slack" % (scorers, per_host, hosts))

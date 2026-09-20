@@ -201,6 +201,35 @@ class Verifier:
         return Score(0.25, "correct-fallback", native_count, len(tests), tuple(refusals))
 
 
+def release_runner(runner):
+    """Give a pooled runner's hosts back before the next stage asks for them.
+
+    A round's stages are separate processes sharing one named pool, and
+    `SandboxPool.create` RAISES rather than waits once every host is full: it
+    adopts the warm hosts, reads each one's true live-sandbox count from the
+    host itself, and then asks for host number `max_hosts + 1`. So a stage that
+    exits while its sandboxes are still winding down hands the next stage a
+    pool that is full against a ceiling that cannot move.
+
+    Job 6ab01391 died exactly there on 2026-09-20, at `--purpose benchmark`,
+    AFTER the pilot bundle was built -- the expensive half, paid for and then
+    discarded. Nothing had ever called `close()`; the hosts simply outlived the
+    process that booted them.
+
+    Best-effort by construction: the caller's bundle is already written and
+    hosts idle-time out on their own, so failing to release must not turn a
+    finished preparation into a failed one. A runner without `close` (the
+    docker `ContainerRunner`, or `None` for an in-process run) is not an error.
+    """
+    close = getattr(runner, "close", None)
+    if close is None:
+        return
+    try:
+        close()
+    except Exception:                                             # noqa: BLE001
+        pass
+
+
 def prepare(cases, binary, output, seed=1111, timeout_s=5.0, memory_mb=1024, purpose="smoke", execution_image=None, review_path=None,
             execution_kind="docker", execution_revision=None, score_workers=1):
     """Verify references then publish a new immutable experiment directory."""
@@ -236,13 +265,19 @@ def prepare(cases, binary, output, seed=1111, timeout_s=5.0, memory_mb=1024, pur
     # the worker count — the manifest digest must not depend on how fast the
     # machine was — and it re-raises the first exception on iteration, which
     # keeps `VerificationBlocked` aborting the whole preparation as before.
-    if score_workers > 1 and len(cases) > 1:
-        from concurrent.futures import ThreadPoolExecutor
+    try:
+        if score_workers > 1 and len(cases) > 1:
+            from concurrent.futures import ThreadPoolExecutor
 
-        with ThreadPoolExecutor(max_workers=min(score_workers, len(cases))) as pool:
-            scored = list(pool.map(lambda c: verifier.score(c, c["reference"]), cases))
-    else:
-        scored = [verifier.score(c, c["reference"]) for c in cases]
+            with ThreadPoolExecutor(max_workers=min(score_workers, len(cases))) as pool:
+                scored = list(pool.map(lambda c: verifier.score(c, c["reference"]), cases))
+        else:
+            scored = [verifier.score(c, c["reference"]) for c in cases]
+    finally:
+        # Hand the hosts back before the next stage asks for them; see
+        # `release_runner`. In `finally` because a stage that fails still has to
+        # release, or the retry meets the pool it just filled.
+        release_runner(runner)
     references = {c["case_id"]: asdict(v) for c, v in zip(cases, scored)}
     references = json.loads(json.dumps(references))  # same tuple/list shape after manifest reload
     validate_reference_scores(cases, references)

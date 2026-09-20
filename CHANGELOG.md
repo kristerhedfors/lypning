@@ -14,6 +14,30 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-20** — The exact-fit pool: give the hosts back, and never ask for every slot
+
+- A round died at its **second** preparation with `Pool needs 1 more host(s)
+  but max_hosts=16 allows only 0 more` — after the pilot bundle was built, so
+  the expensive half was paid for and discarded. Two causes, both fixed.
+- **Nothing had ever called `close()`.** A round's stages are separate
+  processes sharing one named pool, and the hosts outlived the process that
+  booted them with nobody to hand them back; the next stage adopted them at
+  whatever occupancy they carried. `prepare` now releases through
+  `release_runner` in a `finally`, so the failure path releases too — a retry
+  must not meet the pool it just filled. Release is best-effort: the bundle is
+  already written and hosts idle-time out, so failing to release must not fail
+  a finished preparation.
+- **The launch guard admitted equality.** `16 x 4 = 64` slots for
+  `--score-workers 64` reads like full utilisation and is the one shape with no
+  recovery, because `SandboxPool.create` raises rather than waits once every
+  host is full. A multi-host pool now needs a full host of slack; a single-host
+  pool does not, having no cross-host packing. `PILOT_SCORERS` 64 → 48 and the
+  default scorer count 16 → 12, which was the same exact fit at 4×4.
+- Three tests that fail against the code as it was, including one that reads
+  `round02.yml`'s own numbers — the scorer count lives in YAML and the rule
+  admitting it lives in Python, and nothing else related the two.
+- `round02-preflight` carries it as ledger row 7.
+
 **2026-09-19** — A round's bank exists, carved and priced: every preparation but the operator's
 
 - Generation over the widened pool drew **all 71 families** in one run

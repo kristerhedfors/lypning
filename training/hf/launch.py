@@ -32,7 +32,9 @@ STAGES = {"smoke": "training/hf/round02_smoke.sh", "pilot": "training/hf/round02
 #: The stages that read reviewed banks from the private dataset repo (--bank-path).
 BANKED = ("pilot",)
 DEFAULT_STEPS, DEFAULT_GRPO_STEPS, DEFAULT_EVAL_DRAWS, DEFAULT_SEED = 250, 20, 16, 1111
-DEFAULT_EVAL_SEQUENCES, DEFAULT_SCORE_WORKERS = 128, 16
+# 12 scorers, not 16: the default pool is 4 x 4 = 16 slots, and 16 scorers in
+# 16 slots is the exact-fit shape that has no room for a sandbox winding down.
+DEFAULT_EVAL_SEQUENCES, DEFAULT_SCORE_WORKERS = 128, 12
 DEFAULT_POOL_SANDBOXES_PER_HOST, DEFAULT_POOL_MAX_HOSTS = 4, 4
 #: The density ceiling a banked launch may not exceed, in sandboxes on one host
 #: of this flavor (`pipeline/hf_sandbox_runner.FLAVOR`). `native` is a
@@ -144,7 +146,17 @@ def main(argv=None):
            args.pool_sandboxes_per_host, args.pool_max_hosts) <= 0:
         print("training, evaluation and pool limits must be positive", file=sys.stderr)
         return 2
-    if args.pool_sandboxes_per_host * args.pool_max_hosts < args.score_workers:
+    # Capacity must cover the scorers, and a MULTI-HOST pool must additionally
+    # keep one host of slack. The pool RAISES rather than waits once every host
+    # is full, and a round's stages are separate processes that adopt the
+    # previous stage's warm hosts at their true occupancy -- so scorers exactly
+    # equal to capacity dies the moment one sandbox is still winding down. That
+    # is how 6ab01391 was lost on 2026-09-20, at its second stage, after the
+    # pilot bundle was already built. A single-host pool has no such packing and
+    # is the smoke/test shape, so the slack would only refuse legal work.
+    capacity = args.pool_sandboxes_per_host * args.pool_max_hosts
+    slack = args.pool_sandboxes_per_host if args.pool_max_hosts > 1 else 0
+    if capacity < args.score_workers + slack:
         # Name the knob that still has room, not the knob that matches the stage.
         # Both knobs are capped for a banked stage, so "increase --pool-max-hosts"
         # was unfollowable whenever hosts were already at the ceiling — the same
@@ -160,9 +172,9 @@ def main(argv=None):
             print("pool capacity must cover --score-workers: increase %s"
                   % " or ".join(room), file=sys.stderr)
         else:
-            print("a banked launch tops out at %d scorers (%d per host x %d hosts at %s); "
-                  "lower --score-workers"
-                  % (MAX_POOL_SANDBOXES_PER_HOST * MAX_POOL_HOSTS,
+            print("a banked launch tops out at %d scorers (%d per host x %d hosts at %s, "
+                  "less one host of slack); lower --score-workers"
+                  % (MAX_POOL_SANDBOXES_PER_HOST * (MAX_POOL_HOSTS - 1),
                      MAX_POOL_SANDBOXES_PER_HOST, MAX_POOL_HOSTS, POOL_FLAVOR),
                   file=sys.stderr)
         return 2

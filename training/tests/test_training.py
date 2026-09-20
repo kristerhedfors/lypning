@@ -760,3 +760,65 @@ def test_prepare_takes_a_worker_count_and_defaults_to_the_serial_one():
     sig = inspect.signature(prepare)
     assert "score_workers" in sig.parameters
     assert sig.parameters["score_workers"].default == 1
+
+
+def test_prepare_releases_the_pool_even_when_scoring_fails():
+    """The other half of what killed 6ab01391: nothing ever called `close()`.
+
+    A round's stages are separate processes sharing one named pool. The hosts
+    outlive the process that booted them -- deliberately, so the next stage
+    attaches warm -- but they were never handed back, so the next stage adopted
+    them at whatever occupancy they happened to carry.
+
+    Release has to happen on the failure path too. A stage that dies and is
+    retried would otherwise meet the pool it just filled, which turns one
+    recoverable failure into a permanently unlaunchable round.
+    """
+    from pipeline.training import release_runner
+
+    class Runner:
+        def __init__(self, boom=False):
+            self.closed = 0
+            self._boom = boom
+
+        def close(self):
+            self.closed += 1
+            if self._boom:
+                raise RuntimeError("the Hub said no")
+
+    ok = Runner()
+    release_runner(ok)
+    assert ok.closed == 1
+
+    # Best-effort: the bundle is already written and hosts idle-time out on
+    # their own, so a failed release must not fail a finished preparation.
+    noisy = Runner(boom=True)
+    release_runner(noisy)
+    assert noisy.closed == 1
+
+    # A runner with no pool to give back is not an error: `ContainerRunner`
+    # has no `close`, and an in-process run has no runner at all.
+    release_runner(None)
+    release_runner(object())
+
+
+def test_prepare_calls_release_on_both_paths():
+    """`release_runner` is only useful if `prepare` actually reaches it.
+
+    Asserted on the source rather than by running `prepare`, which needs a real
+    engine, a review manifest and an execution image. The property that matters
+    is structural: the call is in a `finally`, so the failure path releases too.
+    """
+    import ast
+    import inspect
+    from pipeline import training as t
+
+    tree = ast.parse(inspect.getsource(t.prepare).lstrip())
+    tries = [n for n in ast.walk(tree) if isinstance(n, ast.Try) and n.finalbody]
+    released = [t_ for t_ in tries
+                if any(isinstance(n, ast.Call) and getattr(n.func, "id", "") == "release_runner"
+                       for f in t_.finalbody for n in ast.walk(f))]
+    assert released, "prepare must release the pool in a finally, not on success only"
+    # And the scoring it guards is inside that try, not before it.
+    body = ast.dump(ast.Module(body=released[0].body, type_ignores=[]))
+    assert "score" in body, "the finally must wrap the scoring, not something after it"

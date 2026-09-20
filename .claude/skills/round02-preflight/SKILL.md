@@ -24,6 +24,44 @@ the end before dispatching; it costs about twenty minutes of free CI.
 | 4 | Two rounds died at the wall. The cost was **preparation**, not SFT: ~4 s/case through the 16-sandbox pool, so an 8,370-case pilot is 5.5 h before a single optimizer step | ~$55 | cap cases per family; count the projection before submitting |
 | 5 | The verifier Space was `SLEEPING`, nothing woke it, bootstrap waited out its whole 20-minute budget and failed a **free** job — skipping the billed one behind it | $0, but no round could start on any second attempt | `round02_space.py` requests a restart once |
 | 6 | Three `cpu-basic` pool hosts outlived the trainer that died | small, unnoticed | `hf-stop.yml` |
+| 7 | `--score-workers 64` against 16 hosts x 4 = **exactly 64 slots**. The pool RAISES rather than waits when every host is full, and stage two adopted stage one's warm hosts at their true occupancy | a pilot bundle that was already built | capacity must exceed scorers by one host; `prepare` now releases the pool in a `finally` |
+
+## The exact-fit pool, which reads like a perfect fit
+
+`16 hosts x 4 sandboxes = 64 slots` and `--score-workers 64` looks like the
+shape that uses the machine fully. It is the one shape with no recovery.
+
+`SandboxPool.create` does not queue. When every tracked host is full it calls
+`_provision_hosts(1)`, and that **raises** against `max_hosts`:
+
+```
+Pool needs 1 more host(s) but max_hosts=16 allows only 0 more.
+```
+
+A round's stages are separate processes sharing one named pool. That is
+deliberate — stage two attaches to stage one's warm hosts instead of paying the
+boot again — but `_discover_hosts` reads each adopted host's *live sandbox
+count from the host itself*. So stage two inherits whatever stage one had not
+finished reaping, asks for 64 of 64, and dies asking for host seventeen.
+
+Two things were wrong and both are fixed:
+
+- **Nothing ever called `close()`.** The hosts outlived the process that booted
+  them with no one to hand them back. `prepare` now calls `release_runner` in a
+  `finally`, so the failure path releases too — otherwise a retry meets the
+  pool it just filled.
+- **The guard admitted equality.** `capacity < score_workers` let the exact fit
+  through. A multi-host pool now needs a full host of slack. A single-host pool
+  does not: it has no cross-host packing and is the smoke shape.
+
+> The cruelty of this one is *when* it fires: at stage two, **after** the pilot
+> bundle is built. The expensive half is paid for and then thrown away.
+
+`test_scorers_exactly_equal_to_pool_capacity_are_refused` and
+`test_the_round_the_workflow_would_actually_launch_is_admissible` both fail
+against the code as it was — the second reads `round02.yml`'s own numbers,
+because the scorer count lives in YAML and the rule that admits it lives in
+Python, and nothing else relates the two.
 
 ## The two that are about instruments, not infrastructure
 
