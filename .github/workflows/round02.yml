@@ -72,6 +72,14 @@ env:
   # preparation, then base-dev, SFT and the eval arm; 480m at $5/h is about $40
   # a seed, and a seed that dies at the wall buys nothing at all.
   PILOT_TIMEOUT: "480m"
+  # Throughput, bought where it is a COST decision and not an instrument one.
+  # Preparation runs at ~4 s/case through 16 scorers and is the stage that ended
+  # two rounds at the wall; 64 scorers is four times that. Sandboxes PER HOST
+  # stays at the decided 4 — `native` is host-load-dependent, so density changes
+  # what the label means, while host count is cents on `cpu-basic` beside an
+  # h200 at $5/h.
+  PILOT_SCORERS: "64"
+  PILOT_POOL_HOSTS: "16"
 
 jobs:
   preflight:
@@ -256,6 +264,7 @@ jobs:
               --work-repo "${{ needs.bootstrap.outputs.owner }}/${WORK_REPO_NAME}" \
               --bank-path "${BANK_PATH}" --seed 1111 --eval-draws 16 \
               --steps "${PILOT_STEPS}" \
+              --score-workers "${PILOT_SCORERS}" --pool-max-hosts "${PILOT_POOL_HOSTS}" \
               --flavor "${PILOT_FLAVOR}" --timeout "${PILOT_TIMEOUT}" --yes --follow
           else
             python training/hf/launch.py smoke \

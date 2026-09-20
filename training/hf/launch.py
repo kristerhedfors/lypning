@@ -42,7 +42,16 @@ DEFAULT_POOL_SANDBOXES_PER_HOST, DEFAULT_POOL_MAX_HOSTS = 4, 4
 #: makes that argument for k already. The number is four *at* `cpu-basic` and
 #: nowhere else: a different pool flavor is a different host, which voids it and
 #: has to be decided again rather than carried over.
-POOL_FLAVOR, MAX_POOL_SANDBOXES_PER_HOST, MAX_POOL_HOSTS = "cpu-basic", 4, 4
+#:
+#: HOSTS ARE NOT DENSITY, and only one of the two is the instrument. Sandboxes
+#: per host stays at four because that is what `native` is sensitive to: a
+#: contended host makes a served program time out and be scored non-native, so
+#: raising it changes what the label MEANS. The host count is a cost ceiling
+#: (`--pool-max-hosts` says so), and `cpu-basic` hosts are cents beside an h200
+#: at $5/h. Raised 4 -> 16 on 2026-09-20 to buy throughput without touching the
+#: endpoint: preparation ran at ~4 s/case through 16 scorers and is the stage
+#: that ended two rounds at the wall.
+POOL_FLAVOR, MAX_POOL_SANDBOXES_PER_HOST, MAX_POOL_HOSTS = "cpu-basic", 4, 16
 TERMINAL = ("COMPLETED", "ERROR", "CANCELED")
 
 
@@ -114,7 +123,7 @@ def main(argv=None):
                    default=DEFAULT_POOL_SANDBOXES_PER_HOST,
                    help="pilot: verifier concurrency per CPU host (default and maximum: 4)")
     p.add_argument("--pool-max-hosts", type=int, default=DEFAULT_POOL_MAX_HOSTS,
-                   help="pilot: verifier CPU-host cost ceiling (default and maximum: 4)")
+                   help="pilot: verifier CPU-host cost ceiling (default 4, maximum 16)")
     p.add_argument("--bundles-from", default="",
                    help="pilot: reuse the pilot/ and eval2/ bundles under this directory of --work-repo")
     p.add_argument("--seed", type=int, default=DEFAULT_SEED, help="pilot: review, preparation and training seed")

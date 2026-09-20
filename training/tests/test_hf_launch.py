@@ -151,14 +151,15 @@ def test_a_banked_launch_is_refused_above_the_per_host_density_ceiling(monkeypat
     err = capsys.readouterr()
     assert "--pool-sandboxes-per-host" in err.err and launch.POOL_FLAVOR in err.err
     assert err.out == "", "a refused shape prints no plan"
-    # `16/2/8` and `16/1/16` are the least contended shapes in the space and
-    # this ceiling does not object to them — but the second review's host
-    # ceiling does, on cost, so they are refused there instead. The shapes that
-    # clear both are the decided topology and the serial diagnostic.
-    for workers, per_host, hosts in ((16, 4, 4), (1, 1, 1), (8, 4, 2)):
+    # Lower density is never refused HERE: this ceiling is about contention on
+    # one host, and `16/2/8` puts less of it on each. The host ceiling is a cost
+    # ceiling and lives further out, so it refuses only beyond MAX_POOL_HOSTS —
+    # raised to 16 on 2026-09-20 to buy scoring throughput, which is a cost
+    # decision, while this number stayed at 4 because it is the instrument.
+    for workers, per_host, hosts in ((16, 4, 4), (1, 1, 1), (8, 4, 2), (16, 2, 8), (64, 4, 16)):
         assert launch.main(pool_argv("pilot", workers, per_host, hosts)) == 2
         assert "HF_TOKEN" in capsys.readouterr().err, (workers, per_host, hosts)
-    for workers, per_host, hosts in ((16, 2, 8), (16, 1, 16)):
+    for workers, per_host, hosts in ((16, 2, 17), (16, 1, 32)):
         assert launch.main(pool_argv("pilot", workers, per_host, hosts)) == 2
         assert "cost ceiling" in capsys.readouterr().err, (workers, per_host, hosts)
 
@@ -222,7 +223,10 @@ def test_a_banked_launch_above_its_ceiling_is_told_the_ceiling(monkeypatch, caps
     monkeypatch.delenv("HF_TOKEN", raising=False)
     ceiling = launch.MAX_POOL_SANDBOXES_PER_HOST * launch.MAX_POOL_HOSTS
 
-    assert launch.main(pool_argv("pilot", ceiling + 16, 4, 4)) == 2
+    # At the MAXIMAL shape, so no knob has room left; at 4/4 the host knob does
+    # and "increase --pool-max-hosts" is then the right answer, not a dead end.
+    assert launch.main(pool_argv("pilot", ceiling + 16, launch.MAX_POOL_SANDBOXES_PER_HOST,
+                                 launch.MAX_POOL_HOSTS)) == 2
     err = capsys.readouterr()
     assert "tops out at %d scorers" % ceiling in err.err
     assert "--pool-max-hosts" not in err.err, "no knob reaches above the ceiling"
