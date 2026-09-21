@@ -1,0 +1,48 @@
+# Did the training loss move? The one question a selected step 0 leaves open.
+#
+# Seed 1111 on bank v3 ran 300 SFT steps and selected step 0: no checkpoint beat
+# its own baseline. That is a clean negative but not a diagnosis -- "the loss
+# fell and did not transfer" and "nothing was learned" have different fixes, and
+# `loss.jsonl` is the only per-step record that separates them. Nothing read it.
+#
+# Free: downloads one JSONL of numbers and prints aggregates. No GPU, no
+# provider call, no model. It prints only statistics over steps, never a case.
+name: loss summary (did the loss move)
+
+on:
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "the HF job id whose round to read"
+        required: true
+        type: string
+      stage:
+        description: "sft or grpo"
+        default: sft
+        type: choice
+        options: [sft, grpo]
+
+permissions:
+  contents: read
+
+jobs:
+  summarise:
+    name: read loss.jsonl and print the statistic
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      WORK_REPO_NAME: lypning-round02-artifacts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q "huggingface-hub==1.31.0"
+      - name: Summarise
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${{ inputs.job }}" | grep -Eq '^[A-Za-z0-9]+$' \
+            || { echo "refusing a job id that is not a name" >&2; exit 2; }
+          python .github/scripts/loss_summary.py "${{ inputs.job }}" --stage "${{ inputs.stage }}"
