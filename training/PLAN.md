@@ -9,7 +9,11 @@ next round is and in what order it is earned.
 
 The evidence this plan rests on is
 [`reports/2026-09-21-fable-round02-seed1111-read.md`](reports/2026-09-21-fable-round02-seed1111-read.md).
-Read it before changing a step; every number below is quoted from it.
+Read it before changing a step. The completed Step 0 read corrects its saved
+GRPO dose, benchmark size and train-negative estimate:
+[`reports/2026-09-21-codex-step0-read.md`](reports/2026-09-21-codex-step0-read.md),
+Actions run `35575454075`, 2026-09-21. Its separate Codex assessment is
+[`reviews/2026-09-21-codex-seed1111-step0-assessment.md`](reviews/2026-09-21-codex-seed1111-step0-assessment.md).
 
 ## What seed 1111 established (2026-09-20/21, job `6ab01cbb51992417dfccd64c`)
 
@@ -24,8 +28,9 @@ Read it before changing a step; every number below is quoted from it.
    Loss 0.1436 → 0.0426 in 75 steps: the base already emits the reference
    programs at ≈1.15 perplexity, and rows are `prompt + reference`. LR 2e-5 is a
    full-fine-tuning number; the LoRA optimum is ~10× that (~15× under 100 steps).
-3. **GRPO took about four informative steps.** 20 optimizer steps, one prompt
-   each, 21% of train groups informative (286 of 1,355), lr 1e-6.
+3. **GRPO's saved evaluations end at step 15.** The planned dose was 20;
+   there is no saved step-20 adapter or evaluation. The probe's 21% informative
+   groups (286 of 1,355) is not an observed informative-optimizer-step count.
 4. **The "24.55pp headroom" is mostly one case.** The dev coverage macro is
    0.7545 because one 1-case family slice (4 draws, all correct-but-refused)
    contributes 0.0 as a whole family; without it the macro is ~0.88. By status,
@@ -42,7 +47,7 @@ Advance a step by editing this table in the same PR as the work.
 
 | # | step | cost | decision it makes | state |
 |---|---|---|---|---|
-| 0 | Read what was paid for | $0 | did dev native move inside the selector's blind spot? | open |
+| 0 | Read what was paid for | $0 | did dev native move inside the selector's blind spot? | done (2026-09-21, [read](reports/2026-09-21-codex-step0-read.md), GH 35575454075) |
 | 1 | Fix the instrument | $0 | nothing else is readable until it is | open |
 | 2 | Positive control (S1 / stage 0b) | ~$5 | distillation route or contrastive route | open |
 | 3 | Build contrastive targets | tokens | is there enough pair supply for a preference arm? | open |
@@ -50,16 +55,16 @@ Advance a step by editing this table in the same PR as the work.
 
 ### Step 0 — Read what was paid for ($0, CI reads, aggregates only)
 
-The adapters at SFT steps 25/50/75 and GRPO 5/10/15/20 are on the Hub under
+The adapters at SFT steps 25/50/75 and GRPO 5/10/15 are on the Hub under
 `round-02/6ab01cbb51992417dfccd64c/`, and `sft/evaluations.jsonl` holds the
 per-draw dev records at every eval step. Three summaries, each printing only
 statistics over draws — never a case, program or expected stdout, because the
 follower streams into a public log (`s0_inventory.py`'s rule):
 
 - **Dev metric per step** from `sft/evaluations.jsonl` and `grpo/evaluations.jsonl`:
-  correct and correct-native macro at steps 0/25/50/75 (and 0/5/10/15/20).
+  correct and correct-native macro at steps 0/25/50/75 (and 0/5/10/15).
   This is the stage-1a proxy `ASSESSMENT.md` §3.1 asked for (S0c).
-- **Probe rollouts by native status** (`probe/rollouts.jsonl`, 5,420 draws on
+- **Probe rollouts by native status** (`probe/probe-rollouts.jsonl`, 5,420 draws on
   train prompts) against the base dev draw: the other half of S0c.
 - **Eval-2 bundle family sizes** (`eval2/bundle.json`, counts only): how many
   families under five cases enter the primary macro on the real benchmark.
@@ -69,6 +74,16 @@ correctness within −2pp: the treatment worked and the selector is the bug →
 after Step 1, re-select offline and run **one** eval-2 pass of that adapter
 against base (~$25; `base-eval2` never completed). No training needed.
 Otherwise proceed to Step 1 regardless — it is required either way.
+
+**Completed decision (2026-09-21, GH `35575454075`): proceed to Step 1;
+no rescue eval-2 pass earned.** On the all-family dev macro, SFT's largest
+native gain is +0.2976pp with correctness below the −2pp tolerance; GRPO's
+largest is +0.1190pp. No saved checkpoint qualifies. GRPO step 20 is absent
+from both the adapter inventory and evaluations. Train and dev have no shared
+cases, so the probe comparison is descriptive. The train probe contains 635
+correct-fallback draws; this replaces Step 3's dev-based estimate, not its
+still-unmeasured count of usable pairs. All benchmark families clear five
+cases; small population slices, rather than the primary macro, need attention.
 
 ### Step 1 — Fix the instrument ($0, code; each item is a PR with a test)
 
@@ -84,6 +99,12 @@ Otherwise proceed to Step 1 regardless — it is required either way.
    (≥ 5 cases, i.e. ≥ 80 draws at k = 16) or case-weight within family with
    clustering kept for the bootstrap. Simulate on the eval-2 bundle first; this
    is an `EVAL2.md` amendment and precedes any k = 16 read.
+   Step 0 found **803 cases / 19 families**, all at least 16 cases, in the
+   saved eval-2 bundle: a five-case floor on the primary macro excludes none.
+   Two control population slices have one and two cases; the dev coverage
+   singleton is also a slice. Specify the scope of the rule and simulate its
+   effect on those slices before amending it; do not conflate their macro with
+   the all-family primary metric.
 4. **Learning rates for LoRA.** SFT 1e-4 (2e-4 under 100 steps); GRPO 5e-6;
    small effective batch. `--eval-every 50`.
 5. **Evaluation cost.** Skip duplicate eval-2 arms when an adapter is step 0
@@ -111,8 +132,12 @@ What `prompt + reference` SFT lacks is contrast on nativeness with correctness
 held fixed. Per train prompt: positive = a correct-native draw; negative = a
 correct-but-refused draw. Sources, in order: the 5,420 probe draws already
 banked; Step 2's conditioned draws; S2's verified native rewrites of refused
-draws (`ASSESSMENT.md` §6). Count before building — dev suggests 2–3% of bare
-draws are correct-but-refused, so ~150 natural pairs from the probe alone.
+draws (`ASSESSMENT.md` §6). Count before building — Step 0 measured **635
+correct-fallback train draws (11.7159%)**, versus 29 / 1,224 on dev (2.3693%).
+Negative draws are not same-prompt pairs: count train prompts with both a
+correct-native positive and a correct-fallback negative, retaining the controls
+separately. The earlier ~150-pair estimate extrapolated from the wrong
+population and is withdrawn.
 
 **Decision.** Fewer than ~300 pairs → the preference arm is under-powered;
 carry the signal in RL (Step 4 arm C) instead of a preference arm.
@@ -133,10 +158,11 @@ green before the second seed is billed.
 ## Kill criteria (unchanged, `LADDER.md` §6)
 
 If Step 2 is flat **and** Step 3's supply is tiny, the model lever is capped
-low on this population: the correct-but-refused mass on bank v3's dev is 2.4%
-of draws, and the engine lever — which takes those kinds directly — has the
-better record per dollar. Run S0b (the by-kind refusal vector) with Step 0 so
-that call is made on numbers.
+low on this population. Step 0 measured correct-fallback mass of 2.3693% on
+dev but 11.7159% on train; use Step 3's actual pair count rather than treating
+dev as a train-supply estimate. The Step 0 by-kind vector is recorded in its
+read (575 of 635 train negatives carry the module kind); it is descriptive,
+not a claim that every refusal is engine-addressable or model-repairable.
 
 ## Do not
 

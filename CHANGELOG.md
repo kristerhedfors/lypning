@@ -14,6 +14,18 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-21** — Read the saved checkpoints before changing the instrument
+
+- Completes `training/PLAN.md` Step 0 with a revision-pinned, aggregate-only
+  CI reader and a separate Codex assessment of the seed-1111 report. No
+  private task, program or expected output is published; incomplete saved
+  evaluations fail closed.
+- GH run `35575454075` on 2026-09-21 finds no checkpoint meeting the rescue
+  rule, no saved GRPO step 20, 635 train correct-fallback draws and an
+  803-case / 19-family benchmark. `training/reports/2026-09-21-codex-step0-read.md`
+  records the decision: Step 1 next, with corrected macro-slice and pair-supply
+  premises. No paid training or model inference was launched.
+
 **2026-09-21** — Seed 1111 read, the selector's blindness pinned, and a plan a session can follow
 ([#95](https://github.com/kristerhedfors/lypning/pull/95))
 
