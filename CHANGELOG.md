@@ -60,7 +60,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 - `kernel_state()` asks the question transformers asks — can the module be
   imported — and the run record carries the answer. The probe/GRPO contract
   compares `kernels` alongside the tokenizer and model config, because
-  `STATUS.md` §2 records a kernel swap on identical weights moving ΔSLR by
+  `training/STATUS.md` §2 records a kernel swap on identical weights moving ΔSLR by
   +1.57pp, larger than either adapter of 2026-09-14 moved it.
 - It also reports `NTX_USE_FLA`, which `train_verified.run` sets to `0`: an
   importable kernel can still be deliberately unused, and the manifest should

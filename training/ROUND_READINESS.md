@@ -5,6 +5,13 @@ each. `STATUS.md` §10 owns **which** round runs and whether it runs at all; thi
 owns **what is left** for the one being prepared, and nothing here authorises a
 spend. Every number carries the command or run that produced it.
 
+**2026-09-21.** The round this file prepared ran as seed 1111 (job
+`6ab01cbb51992417dfccd64c`) and is read in
+[`reports/2026-09-21-fable-round02-seed1111-read.md`](reports/2026-09-21-fable-round02-seed1111-read.md).
+The next round is not this one again: [`PLAN.md`](PLAN.md) Step 1 changes the
+selector, the learning rates and the eval cost before a GPU is booked, so the
+readiness below is necessary and no longer sufficient.
+
 ## The bank a round would now read
 
 `banks/v3-20260919` in the private artifact repo, cut from six batches by
