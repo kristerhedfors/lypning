@@ -1,9 +1,10 @@
 """Family-macro reporting and development-only checkpoint selection, no GPU deps."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections import Counter
 from copy import deepcopy
+import math
 import random
 
 from .training_types import TrainingError
@@ -31,6 +32,8 @@ def summarize(records):
         if len(keys) != len(set(keys)):
             raise TrainingError("duplicate evaluation case/draw")
     return dict(aggregate(records),
+        by_family={f: aggregate([r for r in records if r["family"] == f])
+                   for f in sorted({r["family"] for r in records})},
         by_population={p: aggregate([r for r in records if r["population"] == p])
                        for p in sorted({r["population"] for r in records})},
         by_capability={c: aggregate([r for r in records if c in r.get("capabilities", [])])
@@ -106,32 +109,135 @@ def paired_comparison(base, candidate, *, seed=1111, resamples=2000):
 
 
 
+#: Gate A, `PREREGISTRATION.md` §7c: the tuned correctness rate may not fall
+#: more than this below base. One tolerance on the family macro -- not a floor
+#: per capability and per population, which is what seed 1111 selected under.
+GATE_A_TOLERANCE = 0.02
+
+#: One-sided normal quantile for the selection margin; 1.2816 is the 90th
+#: percentile. The constant IS the rule "a checkpoint no better than base is
+#: selected at most 10% of the time", not a number tuned until a test passed.
+SELECTION_Z = 1.2816
+
+#: Population retention is a collapse detector, not a significance test: three
+#: standard errors, so a slice of a few hundred draws wobbling within noise
+#: never vetoes a gain, and the 16pp control loss SFT took in seed 1111 does.
+RETENTION_Z = 3.0
+
+
+def macro_standard_error(metrics, key="correct_native"):
+    """Standard error of a family macro of per-family rates, from `summarize`.
+
+    The macro weights families equally, so its variance is the sum of the
+    per-family binomial variances over the squared family count -- not
+    `p(1-p)/draws` over the pooled draws, which on seed 1111's dev split
+    overstates it by about 1.6x because the per-family rates are extreme
+    (one family at 0.0, three saturated) while their average is near 0.5.
+    """
+    families = metrics.get("by_family")
+    if not families:
+        raise TrainingError("checkpoint selection needs per-family metrics")
+    variance = 0.0
+    for stats in families.values():
+        rate, draws = float(stats[key]), int(stats["draws"])
+        if draws <= 0:
+            raise TrainingError("a family with no draws cannot enter the macro")
+        variance += rate * (1.0 - rate) / draws
+    return math.sqrt(variance) / len(families)
+
+
+def pooled_standard_error(stats, key="correct"):
+    """Binomial standard error over a slice's pooled draws.
+
+    Used for population slices, where `summarize` reports the slice macro and
+    its draw count but not the families inside it. It overstates a
+    heterogeneous slice's noise, which widens the retention tolerance -- the
+    conservative direction for a check whose job is not to cry wolf.
+    """
+    rate, draws = float(stats[key]), int(stats.get("draws", 0))
+    if draws <= 0:
+        return 0.0
+    return math.sqrt(rate * (1.0 - rate) / draws)
+
+
 @dataclass
 class CheckpointGate:
+    """Post-hoc selection on the metric being trained for. Never stops training.
+
+    Three rules, in place of seed 1111's nine hard floors and its correctness
+    -first lexicographic key (`PLAN.md` Step 1.1-1.2, and the admission
+    simulation in `tests/test_gate_admission.py`):
+
+    1. **Gate A.** The all-family correctness macro may not fall more than
+       `tolerance` below base. A tolerance, because a floor on a noisy
+       sub-metric vetoes on one draw of noise.
+    2. **Retention.** No population slice's correctness macro may fall more
+       than `RETENTION_Z` standard errors -- at least `tolerance` -- below
+       base. An aggregate gain must not hide a fallback-control collapse.
+    3. **Selection.** Among the eligible, the largest correct-and-native
+       family macro, and it must clear base by `margin` = `z` standard errors.
+       Without that margin a pure argmax admits pure noise about half the
+       time, because the best of several noisy draws is biased upward.
+
+    Step 0 is the incumbent and stays selectable: nothing displaces it unless
+    it clears the bar. Every observation is kept in `report()`, admitted or
+    not, so the selection can be re-read -- and re-made -- offline.
+    """
     baseline: dict
-    patience: int
+    tolerance: float = GATE_A_TOLERANCE
+    z: float = SELECTION_Z
     best_step: int = 0
-    stale: int = 0
     best: dict = None
+    margin: float = 0.0
+    observations: list = field(default_factory=list)
 
     def __post_init__(self):
         self.baseline = deepcopy(self.baseline)
         self.best = deepcopy(self.baseline)
+        self.margin = self.z * macro_standard_error(self.baseline)
+
+    def _retention(self, metrics):
+        """Population slices whose correctness fell further than their noise."""
+        lost = []
+        for name, base in self.baseline.get("by_population", {}).items():
+            allowed = max(self.tolerance, RETENTION_Z * pooled_standard_error(base))
+            observed = metrics.get("by_population", {}).get(name, {}).get("correct")
+            if observed is None or float(observed) < float(base["correct"]) - allowed:
+                lost.append({"population": name, "allowed_drop": allowed,
+                             "baseline": base["correct"], "observed": observed})
+        return lost
 
     def observe(self, step, metrics):
-        # Aggregate gains must not hide correctness loss on fallback controls
-        # (or on the coverage population). Test data never enters this gate.
-        eligible = all(metrics["by_population"].get(p, {}).get("correct", -1) >= s["correct"]
-                       for p, s in self.baseline["by_population"].items())
-        eligible = eligible and all(
-            metrics.get("by_capability", {}).get(c, {}).get("correct", -1) >= score["correct"]
-            for c, score in self.baseline.get("by_capability", {}).items())
-        key = lambda m: (m["correct"], m["correct_native"])
-        if eligible and key(metrics) > key(self.best):
-            self.best, self.best_step, self.stale = metrics, step, 0
-        else:
-            self.stale += 1
-        return self.stale >= self.patience
+        """Record a checkpoint and maybe select it. Returns nothing on purpose.
+
+        Stopping is not selection: a registered dose trains to completion and
+        the selection is read afterwards. The old return value was an early
+        stop that cut seed 1111's GRPO off at step 15 of a registered 20.
+        """
+        floor = self.baseline["correct"] - self.tolerance
+        bar = self.baseline["correct_native"] + self.margin
+        lost = self._retention(metrics)
+        reasons = []
+        if metrics["correct"] < floor:
+            reasons.append("gate-a")
+        if lost:
+            reasons.append("retention")
+        if metrics["correct_native"] < bar:
+            reasons.append("margin")
+        if not reasons and metrics["correct_native"] <= self.best["correct_native"]:
+            reasons.append("not-best")
+        self.observations.append({"step": step, "correct": metrics["correct"],
+                                  "correct_native": metrics["correct_native"],
+                                  "selected": not reasons, "rejected_for": reasons,
+                                  "retention_lost": lost})
+        if not reasons:
+            self.best, self.best_step = metrics, step
 
     def report(self):
-        return dict(self.best, step=self.best_step, stale_checks=self.stale)
+        return dict(self.best, step=self.best_step, rule={
+            "metric": "correct_native", "gate_a_tolerance": self.tolerance,
+            "selection_z": self.z, "retention_z": RETENTION_Z, "margin": self.margin,
+            "baseline_correct": self.baseline["correct"],
+            "baseline_correct_native": self.baseline["correct_native"],
+            "selection_is_post_hoc": True, "early_stopping": False,
+        }, observed=list(self.observations))

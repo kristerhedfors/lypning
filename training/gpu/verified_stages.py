@@ -8,7 +8,7 @@ import random
 
 from pipeline.jsonio import append_jsonl
 from pipeline.training import Reward, TrainingError, messages
-from pipeline.training_contract import MIN_SUPERVISED_TOKENS, learning_rate
+from pipeline.training_contract import learning_rate
 
 
 def balanced_cases(cases):
@@ -93,12 +93,12 @@ def train_sft(model, tok, args, train_cases, examples, core, torch, effective, c
         append_jsonl(args.output / "loss.jsonl", {"step": step, "loss": loss_sum, "learning_rate": lr,
             "supervised_tokens": nlabels, "supervised_tokens_total": seen_tokens})
         if step % every == 0 or step == steps:
-            stop = checkpoint(step)
-            # Checkpoint selection may decide early that later steps regress,
-            # but a real S4 replicate still executes its registered evidence
-            # dose. Step 0 remains selectable throughout.
-            if stop and (args.smoke or seen_tokens >= MIN_SUPERVISED_TOKENS):
-                break
+            # A registered dose trains to completion. Selection is post hoc and
+            # reads the saved checkpoints afterwards, so an evaluation that
+            # looks bad mid-run is evidence, never a reason to stop producing
+            # it: seed 1111's GRPO stopped at 15 of a registered 20 on three
+            # rejected checks, and the missing adapter cannot be recovered.
+            checkpoint(step)
 
 
 def train_grpo(model, tok, args, bundle, train_cases, verifier, effective, policy, checkpoint):
@@ -116,8 +116,9 @@ def train_grpo(model, tok, args, bundle, train_cases, verifier, effective, polic
             return control
 
         def on_step_end(self, args, state, control, **kwargs):
+            # Selection only; `should_training_stop` is deliberately not set.
             if state.global_step % every == 0 or state.global_step == steps:
-                control.should_training_stop = checkpoint(state.global_step)
+                checkpoint(state.global_step)
             return control
     config = GRPOConfig(
         output_dir=str(args.output / "trainer"), max_steps=steps,

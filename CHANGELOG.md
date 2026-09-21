@@ -14,6 +14,34 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-21** — Select on the metric being trained for, and stop stopping
+([#97](https://github.com/kristerhedfors/lypning/pull/97))
+
+- `pipeline.training_metrics.CheckpointGate` ranks the correct-and-native
+  family macro behind two tolerances — gate A at −2pp on the all-family
+  correctness macro, and per-population retention at three standard errors —
+  in place of nine hard floors on ~180-draw sub-metrics and a
+  correctness-first lexicographic key. Capability regressions are reported in
+  `best.json`, not cast as vetoes.
+- A candidate must clear the starting policy by the macro's own standard
+  error: a pure argmax on a noisy metric admits the null about half the time,
+  because the best of several noisy evaluations is biased upward. The margin
+  is the 90th percentile, so the constant is the rule. On seed 1111's dev
+  split it is 1.07pp.
+- `training/tests/test_gate_admission.py` runs the same simulation against the
+  real class and now measures **null 9.17%, +10pp native 84.85%** (4,000
+  trials, seed 7), inverting the two assertions it was written to pin.
+- Selection is post hoc and never stops training: `observe` returns nothing,
+  `--patience` is gone, and `best.json` keeps every observation with the
+  reason it was or was not selected. Three rejected checks under the old gate
+  ended seed 1111's registered 20-step GRPO dose at 15, and Step 0 could not
+  read an adapter that was never saved.
+- `summarize` reports `by_family`; the Step 0 CI reader drops it with
+  `by_capability`, because both are keyed by private labels and it streams
+  into a public log.
+- Completes `training/PLAN.md` Step 1.1–1.2 and records what the ≤ 10% half of
+  its own acceptance rule forced. Items 1.3–1.6 stay open. No paid or GPU step.
+
 **2026-09-21** — Read the saved checkpoints before changing the instrument
 ([#96](https://github.com/kristerhedfors/lypning/pull/96))
 

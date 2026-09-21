@@ -13,12 +13,19 @@ before acting; every number in the plan is quoted from the report.
 ## The one thing to hold in mind
 
 Seed 1111 selected step 0 for SFT and for GRPO, and **that is not a result
-about the training**. The selector demands no correctness regression on nine
-~180-draw sub-metrics and ranks correctness before nativeness; simulated on the
-round's own baseline it admits a +10pp correct-and-native checkpoint 1.7% of
-the time and pure noise 2.1%. `training/tests/test_gate_admission.py` pins
-this against the real class. Nothing measured through that selector is
-readable until Step 1 fixes it.
+about the training**. The selector it ran under demanded no correctness
+regression on nine ~180-draw sub-metrics and ranked correctness before
+nativeness; simulated on the round's own baseline it admitted a +10pp
+correct-and-native checkpoint 1.7% of the time and pure noise 2.1%. Nothing
+measured through that selector is readable, and that includes every number
+seed 1111 produced.
+
+Step 1.1–1.2 replaced it on 2026-09-21 (PR #97): the same simulation in
+`training/tests/test_gate_admission.py` now measures 84.85% and 9.17% against
+the real class, and selection no longer stops training. **This does not make
+seed 1111 readable** — its checkpoints were produced under the old rule and
+its GRPO stopped at step 15 of a registered 20. It makes the *next* round
+readable. Step 1.3–1.6 are still open.
 
 ## The steps, and the rule for taking one
 

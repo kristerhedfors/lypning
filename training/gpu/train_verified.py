@@ -55,7 +55,6 @@ def parser():
                    help="attest this is a disposable worker with no sensitive files/credentials")
     p.add_argument("--steps", type=int, default=100)
     p.add_argument("--eval-every", type=int, default=10)
-    p.add_argument("--patience", type=int, default=3)
     p.add_argument("--rank", type=int, default=16)
     p.add_argument("--lr", type=float, help="default SFT 2e-5 / GRPO 1e-6")
     p.add_argument("--batch-size", type=int, default=4, help="SFT effective batch only")
@@ -105,7 +104,7 @@ def preflight(args):
         raise TrainingError("--revision must be an immutable model commit, not main")
     if args.output.exists():
         raise TrainingError("--output already exists")
-    if min(args.steps, args.eval_every, args.patience, args.rank, args.batch_size,
+    if min(args.steps, args.eval_every, args.rank, args.batch_size,
            args.max_seq, args.max_new_tokens, args.generations, args.eval_draws, args.max_no_signal,
            args.eval_sequences, args.score_workers) <= 0 or (args.lr is not None and (not math.isfinite(args.lr) or args.lr <= 0)):
         raise TrainingError("training lengths, rank, learning rate and batches must be positive")
@@ -409,12 +408,12 @@ def run(args, bundle, adapter_info):
         write_json(path / "experiment.json", dict(manifest, checkpoint_step=step))
         write_json(path / "seal.json", seal_adapter(path))
     save(0)
-    gate = CheckpointGate(baseline, args.patience)
+    gate = CheckpointGate(baseline)
     write_json(args.output / "best.json", gate.report())
     def checkpoint(step):
         metrics = measure(step)
         save(step)
-        stop = gate.observe(step, metrics)
+        gate.observe(step, metrics)
         write_json(args.output / "best.json", gate.report())
         # THE ONLY PROGRESS THIS STAGE EMITS. `train_sft` writes a row per step
         # to `loss.jsonl` and `round02_pilot.sh` uploads per STAGE, so between
@@ -427,12 +426,11 @@ def run(args, bundle, adapter_info):
         # `core.log` stamps elapsed seconds, so two of these lines give the rate
         # and the rate gives the finish. Numbers only: the follower streams this
         # into a PUBLIC Actions log, so nothing case-level may pass through here.
-        core.log("%s step %d/%d %s%s"
+        core.log("%s step %d/%d %s  selected=%d"
                  % (args.stage, step, effective["steps"],
                     " ".join("%s=%.4g" % (k, v) for k, v in sorted(metrics.items())
                              if isinstance(v, (int, float)) and not isinstance(v, bool)),
-                    "  STOP" if stop else ""))
-        return stop
+                    gate.best_step))
 
     if args.stage == "sft":
         train_sft(model, tok, args, train_cases, examples, core, torch, effective, checkpoint,
