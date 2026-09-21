@@ -167,7 +167,11 @@ def probe_summary(probe, base):
             "probe_refusals": refusal_vector(probe), "base_dev_refusals": refusal_vector(base)}
 
 
-def summarise(data):
+def summarise(data, saved_steps=None):
+    saved_steps = saved_steps if saved_steps is not None else STEPS
+    require(set(saved_steps) == set(STEPS))
+    for stage, steps in saved_steps.items():
+        require(bool(steps) and 0 in steps and set(steps) <= set(STEPS[stage]))
     pilot = data["pilot/bundle.json"]["cases"]
     train = [c for c in pilot if c["split"] == "train"]
     dev = [c for c in pilot if c["split"] == "dev"]
@@ -176,10 +180,12 @@ def summarise(data):
     probe = checked_rows(data["probe/probe-rollouts.jsonl"], train)
     require({r["step"] for r in probe} == {0})
     stages = {stage: checkpoints(data[stage + "/evaluations.jsonl"], dev, steps, base)
-              for stage, steps in STEPS.items()}
+              for stage, steps in saved_steps.items()}
     qualifying = [{"stage": stage, "step": row["step"]}
                   for stage, rows in stages.items() for row in rows if row["meets_step0_rule"]]
     return {"stages": stages, "qualifying_checkpoints": qualifying,
+            "checkpoints_absent_from_hub": {stage: sorted(set(STEPS[stage]) - set(steps))
+                                            for stage, steps in saved_steps.items()},
             "probe_vs_base_dev": probe_summary(probe, base),
             "dev_family_sizes": family_sizes(dev),
             "eval2_family_sizes": family_sizes(data["eval2/bundle.json"]["cases"])}
@@ -193,9 +199,18 @@ def main():
         from huggingface_hub import HfApi, hf_hub_download
         token = os.environ["HF_TOKEN"].strip()
         require(bool(token))
-        info = HfApi(token=token).repo_info(REPO, repo_type="dataset")
+        api = HfApi(token=token)
+        info = api.repo_info(REPO, repo_type="dataset")
         require(info.private and re.fullmatch(r"[0-9a-f]{40}", info.sha) is not None)
         revision = info.sha
+        phase = "checkpoint inventory"
+        files = set(api.list_repo_files(REPO, repo_type="dataset", revision=revision))
+        saved_steps = {stage: tuple(step for step in steps
+                       if "round-02/%s/%s/adapter-%d/adapter_model.safetensors" % (JOB, stage, step) in files)
+                       for stage, steps in STEPS.items()}
+        # Only fixed stage labels and bounded integer steps, never arbitrary
+        # artifact paths. Distinguish a report's planned step from a saved one.
+        print("Saved adapter steps: " + json.dumps(saved_steps, sort_keys=True))
         data, hashes = {}, {}
         for name in FILES:
             phase = name
@@ -206,7 +221,7 @@ def main():
             data[name] = ([json.loads(line) for line in raw.splitlines() if line.strip()]
                           if name.endswith(".jsonl") else json.loads(raw))
         phase = "validation and aggregation"
-        result = summarise(data)
+        result = summarise(data, saved_steps)
         result.update(job=JOB, repository=REPO, revision=revision, sha256=hashes)
         print(json.dumps(result, sort_keys=True, indent=2, allow_nan=False))
         return 0

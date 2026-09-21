@@ -139,12 +139,22 @@ def test_private_parse_failure_prints_no_exception_payload(monkeypatch, tmp_path
         assert kwargs["revision"] == "a" * 40
         return path
     fake = SimpleNamespace(HfApi=lambda **kw: SimpleNamespace(
-        repo_info=lambda *a, **k: SimpleNamespace(private=True, sha="a" * 40)),
+        repo_info=lambda *a, **k: SimpleNamespace(private=True, sha="a" * 40),
+        list_repo_files=lambda *a, **k: []),
         hf_hub_download=download)
     monkeypatch.setitem(sys.modules, "huggingface_hub", fake)
     monkeypatch.setenv("HF_TOKEN", PRIVATE)
     assert m.main() == 1
     output = capsys.readouterr()
-    assert not output.out
+    assert PRIVATE not in output.out
     assert PRIVATE not in output.err
     assert "pilot/bundle.json" in output.err
+
+
+def test_only_inventory_can_explain_an_absent_planned_checkpoint():
+    data = evidence()
+    data["grpo/evaluations.jsonl"] = [r for r in data["grpo/evaluations.jsonl"] if r["step"] != 20]
+    with pytest.raises(ValueError):
+        m.summarise(data)
+    result = m.summarise(data, dict(m.STEPS, grpo=(0, 5, 10, 15)))
+    assert result["checkpoints_absent_from_hub"] == {"sft": [], "grpo": [20]}
