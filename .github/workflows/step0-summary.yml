@@ -1,0 +1,35 @@
+name: seed 1111 Step 0 aggregates
+
+on:
+  push:
+    branches: ["codex/seed1111-step0-read"]
+    paths:
+      - .github/scripts/step0_summary.py
+      - .github/workflows/step0-summary.yml
+      - training/tests/test_step0_summary.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  summary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HF_HUB_DISABLE_PROGRESS_BARS: "1"
+      HF_HUB_VERBOSITY: error
+      LYPNING_CAPTURE: "0"
+      LYPNING_HARVEST: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q "huggingface-hub==1.31.0" pytest
+      - name: Check the aggregation and publication boundary
+        run: python -m pytest training/tests/test_step0_summary.py -q
+      - name: Read pinned evidence and print only aggregates
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python .github/scripts/step0_summary.py
