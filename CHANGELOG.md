@@ -15,6 +15,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 ## Unreleased
 
 **2026-09-21** — Read the saved checkpoints before changing the instrument
+([#96](https://github.com/kristerhedfors/lypning/pull/96))
 
 - Completes `training/PLAN.md` Step 0 with a revision-pinned, aggregate-only
   CI reader and a separate Codex assessment of the seed-1111 report. No
