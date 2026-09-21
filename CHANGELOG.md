@@ -26,6 +26,8 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   803-case / 19-family benchmark. `training/reports/2026-09-21-codex-step0-read.md`
   records the decision: Step 1 next, with corrected macro-slice and pair-supply
   premises. No paid training or model inference was launched.
+- Repairs two unqualified training-document paths in the preceding changelog
+  entry so the docs site's reference check passes.
 
 **2026-09-21** — Seed 1111 read, the selector's blindness pinned, and a plan a session can follow
 ([#95](https://github.com/kristerhedfors/lypning/pull/95))
@@ -45,8 +47,8 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   ~12.6pp of the bank's headroom is one 1-case family slice in the macro; the
   architecture, pipeline and seed determinism were fine.
 - `training/PLAN.md` is the live plan — five ordered steps with cost, decision
-  and state — and `START_NEXT_ROUND.md`, `training/STATUS.md` §10,
-  `ROUND_READINESS.md`, the orchestration ledger and the `round02-plan` skill
+  and state — and `training/START_NEXT_ROUND.md`, `training/STATUS.md` §10,
+  `training/ROUND_READINESS.md`, the orchestration ledger and the `round02-plan` skill
   point at it.
 - Fixes a `training/STATUS.md` section reference in an earlier entry that had
   `test_docs` red on `main`.
