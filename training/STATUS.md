@@ -480,3 +480,16 @@ records why the exact floor stays where it is.
 The exact count is made before 27B weight download and recorded as
 `planned_supervised_tokens`; `steps × batch_size` is an example count and is not
 a substitute token estimate.
+
+**2026-09-21 — seed 1111 ran, and the S-ladder's live sequence is now
+[`PLAN.md`](PLAN.md).** Job `6ab01cbb51992417dfccd64c` completed SFT, probe,
+GRPO and all three test arms on bank v3 (test: correct 0.8667, correct-native
+0.6873, 315 cases, 4 draws — identical in every arm, because both stages
+selected step 0). That selection is a property of `CheckpointGate`, which
+admits a +10pp native gain 1.7% of the time against 2.1% for noise
+(`tests/test_gate_admission.py`); the SFT loss fell 0.144 → 0.043 from a base
+that already emits the references; GRPO took ~4 informative steps; and ~12.6pp
+of the bank's 24.55pp headroom is one 1-case family slice in the macro. Read:
+[`reports/2026-09-21-fable-round02-seed1111-read.md`](reports/2026-09-21-fable-round02-seed1111-read.md).
+S1 (the positive control) is still unrun and is the plan's Step 2; Step 1
+fixes the instrument first.

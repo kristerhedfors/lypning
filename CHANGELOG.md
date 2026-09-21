@@ -14,6 +14,30 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-21** — Seed 1111 read, the selector's blindness pinned, and a plan a session can follow
+([#95](https://github.com/kristerhedfors/lypning/pull/95))
+
+- Seed 1111 of round-02 on bank v3 ran through SFT, probe, GRPO and all three
+  test arms (job `6ab01cbb51992417dfccd64c`; test 315 cases, 4 draws: correct
+  0.8667, correct-native 0.6873, identical in every arm) and selected step 0
+  twice. **That is not a result about the training.** Simulated on the round's
+  own dev baseline, `CheckpointGate.observe` admits a +10pp correct-and-native
+  checkpoint 1.7% of the time against 2.1% for noise, because it demands no
+  correctness regression on nine ~180-draw sub-metrics and ranks correctness
+  before nativeness. `training/tests/test_gate_admission.py` pins this against
+  the real class until the selector is fixed.
+- The read (`training/reports/2026-09-21-fable-round02-seed1111-read.md`): SFT
+  loss 0.144 → 0.043 from a base already at ≈1.15 perplexity on the references,
+  under a full-fine-tuning learning rate; GRPO ≈ 4 informative steps of 20;
+  ~12.6pp of the bank's headroom is one 1-case family slice in the macro; the
+  architecture, pipeline and seed determinism were fine.
+- `training/PLAN.md` is the live plan — five ordered steps with cost, decision
+  and state — and `START_NEXT_ROUND.md`, `training/STATUS.md` §10,
+  `ROUND_READINESS.md`, the orchestration ledger and the `round02-plan` skill
+  point at it.
+- Fixes a `training/STATUS.md` section reference in an earlier entry that had
+  `test_docs` red on `main`.
+
 **2026-09-20** — Three seeds are one result only if they are one experiment
 
 - A complete S4 replicate is seeds 1111, 2222 and 3333, read from three
@@ -60,7 +84,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 - `kernel_state()` asks the question transformers asks — can the module be
   imported — and the run record carries the answer. The probe/GRPO contract
   compares `kernels` alongside the tokenizer and model config, because
-  `STATUS.md` §2 records a kernel swap on identical weights moving ΔSLR by
+  `training/STATUS.md` §2 records a kernel swap on identical weights moving ΔSLR by
   +1.57pp, larger than either adapter of 2026-09-14 moved it.
 - It also reports `NTX_USE_FLA`, which `train_verified.run` sets to `0`: an
   importable kernel can still be deliberately unused, and the manifest should
