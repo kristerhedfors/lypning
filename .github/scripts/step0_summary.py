@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import traceback
 from collections import Counter
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -209,8 +210,13 @@ def main():
         result.update(job=JOB, repository=REPO, revision=revision, sha256=hashes)
         print(json.dumps(result, sort_keys=True, indent=2, allow_nan=False))
         return 0
-    except Exception:
+    except Exception as exc:
         print("Step 0 read failed during %s; no private payload printed." % phase, file=sys.stderr)
+        # Source line numbers locate a schema disagreement without printing
+        # the exception value, source text, stack locals or private labels.
+        lines = [frame.lineno for frame in traceback.extract_tb(exc.__traceback__)
+                 if frame.filename == __file__]
+        print("Reader source lines: " + json.dumps(lines), file=sys.stderr)
         return 1
 
 
