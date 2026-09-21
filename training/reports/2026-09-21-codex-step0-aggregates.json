@@ -1,0 +1,669 @@
+{
+  "checkpoints_absent_from_hub": {
+    "grpo": [
+      20
+    ],
+    "sft": []
+  },
+  "dev_family_sizes": {
+    "by_population": {
+      "coverage": {
+        "cases": 230,
+        "cases_in_families_under_five": 1,
+        "families": 7,
+        "families_under_five": 1,
+        "size_histogram": {
+          "1": 1,
+          "13": 1,
+          "36": 1,
+          "45": 4
+        }
+      },
+      "fallback-control": {
+        "cases": 76,
+        "cases_in_families_under_five": 0,
+        "families": 2,
+        "families_under_five": 0,
+        "size_histogram": {
+          "32": 1,
+          "44": 1
+        }
+      }
+    },
+    "cases": 306,
+    "cases_in_families_under_five": 0,
+    "families": 7,
+    "families_under_five": 0,
+    "size_histogram": {
+      "36": 1,
+      "45": 6
+    }
+  },
+  "eval2_family_sizes": {
+    "by_population": {
+      "coverage": {
+        "cases": 690,
+        "cases_in_families_under_five": 0,
+        "families": 19,
+        "families_under_five": 0,
+        "size_histogram": {
+          "13": 1,
+          "16": 1,
+          "22": 1,
+          "43": 1,
+          "44": 1,
+          "45": 12,
+          "6": 2
+        }
+      },
+      "fallback-control": {
+        "cases": 113,
+        "cases_in_families_under_five": 3,
+        "families": 5,
+        "families_under_five": 2,
+        "size_histogram": {
+          "1": 1,
+          "2": 1,
+          "32": 1,
+          "39": 2
+        }
+      }
+    },
+    "cases": 803,
+    "cases_in_families_under_five": 0,
+    "families": 19,
+    "families_under_five": 0,
+    "size_histogram": {
+      "16": 1,
+      "22": 1,
+      "45": 17
+    }
+  },
+  "job": "6ab01cbb51992417dfccd64c",
+  "probe_vs_base_dev": {
+    "base_dev": {
+      "by_population": {
+        "coverage": {
+          "cases": 230,
+          "correct": 0.9211385836385837,
+          "correct_native": 0.754532967032967,
+          "draws": 920,
+          "families": 7,
+          "mean_completion_tokens": 160.80760869565216,
+          "statuses": {
+            "correct-fallback": 29,
+            "correct-native": 818,
+            "incorrect": 71,
+            "no-code": 2
+          },
+          "truncation_rate": 0.002173913043478261
+        },
+        "fallback-control": {
+          "cases": 76,
+          "correct": 0.9151278409090908,
+          "correct_native": 0.00390625,
+          "draws": 304,
+          "families": 2,
+          "mean_completion_tokens": 135.45065789473685,
+          "statuses": {
+            "correct-control": 276,
+            "incorrect": 28
+          },
+          "truncation_rate": 0.0
+        }
+      },
+      "cases": 306,
+      "correct": 0.9184523809523809,
+      "correct_native": 0.6771825396825397,
+      "draw_weighted_correct": 0.9174836601307189,
+      "draw_weighted_native": 0.6691176470588235,
+      "draws": 1224,
+      "families": 7,
+      "mean_completion_tokens": 154.50980392156862,
+      "statuses": {
+        "correct-control": 276,
+        "correct-fallback": 29,
+        "correct-native": 818,
+        "incorrect": 99,
+        "no-code": 2
+      },
+      "truncation_rate": 0.0016339869281045752
+    },
+    "base_dev_refusals": {
+      "draws_by_kind": {
+        "int-method": 4,
+        "module": 15,
+        "module-attr": 8,
+        "str-method": 2
+      },
+      "fallback_draws": 29,
+      "without_refusal": 0
+    },
+    "base_only_cases": 306,
+    "matched_cases": 0,
+    "probe": {
+      "by_population": {
+        "coverage": {
+          "cases": 1132,
+          "correct": 0.8674483188050262,
+          "correct_native": 0.746806998438096,
+          "draws": 4528,
+          "families": 30,
+          "mean_completion_tokens": 166.51678445229683,
+          "statuses": {
+            "correct-fallback": 635,
+            "correct-native": 3403,
+            "incorrect": 480,
+            "no-code": 10
+          },
+          "truncation_rate": 0.00044169611307420494
+        },
+        "fallback-control": {
+          "cases": 223,
+          "correct": 0.874347801717144,
+          "correct_native": 0.22075206301575392,
+          "draws": 892,
+          "families": 9,
+          "mean_completion_tokens": 168.11434977578475,
+          "statuses": {
+            "correct-control": 775,
+            "incorrect": 116,
+            "no-code": 1
+          },
+          "truncation_rate": 0.0011210762331838565
+        }
+      },
+      "cases": 1355,
+      "correct": 0.8878095470837406,
+      "correct_native": 0.6427500814597589,
+      "draw_weighted_correct": 0.8880073800738008,
+      "draw_weighted_native": 0.6381918819188191,
+      "draws": 5420,
+      "families": 31,
+      "mean_completion_tokens": 166.77970479704797,
+      "statuses": {
+        "correct-control": 775,
+        "correct-fallback": 635,
+        "correct-native": 3403,
+        "incorrect": 596,
+        "no-code": 11
+      },
+      "truncation_rate": 0.0005535055350553505
+    },
+    "probe_only_cases": 1355,
+    "probe_refusals": {
+      "draws_by_kind": {
+        "builtin": 4,
+        "bytes-method": 3,
+        "class-subscript": 1,
+        "class-union": 6,
+        "decorator": 1,
+        "int-method": 13,
+        "module": 575,
+        "module-attr": 12,
+        "set-order": 14,
+        "str-method": 7
+      },
+      "fallback_draws": 635,
+      "without_refusal": 0
+    },
+    "train_cases_by_native_draw_count": {
+      "0": 376,
+      "1": 71,
+      "2": 74,
+      "3": 96,
+      "4": 738
+    }
+  },
+  "qualifying_checkpoints": [],
+  "repository": "headforce/lypning-round02-artifacts",
+  "revision": "ca9d17fb4f04d2d2f2ba6005e2e213d1b81b7b29",
+  "sha256": {
+    "base-dev/evaluations.jsonl": "7e209154c15ab750d63856de80874e3bcb45cb7ab2a9902e730b02d83e1928dd",
+    "eval2/bundle.json": "e6e407246efc285801ed9525d4f4c64761b1d01567a1e160f3f90e171905f2e6",
+    "grpo/evaluations.jsonl": "ae64d553cc363640017f4164f9b8d6a3c08d25b93accd241abb9f7d7fbff576a",
+    "pilot/bundle.json": "95d926f3eb92e769a9ccea55fcf744b397bf029222f1fabbddb5c16120236a46",
+    "probe/probe-rollouts.jsonl": "4054b47f91a6078471f34738b334b66635d273fddb1e58723578d41a0a066953",
+    "sft/evaluations.jsonl": "7b6b7da362de6bf8b892a768774bba4914b191aeceba761d108a7f547a1591e7"
+  },
+  "stages": {
+    "grpo": [
+      {
+        "correct_delta_pp": 0.0,
+        "meets_step0_rule": false,
+        "metrics": {
+          "by_population": {
+            "coverage": {
+              "cases": 230,
+              "correct": 0.9211385836385837,
+              "correct_native": 0.754532967032967,
+              "draws": 920,
+              "families": 7,
+              "mean_completion_tokens": 160.80760869565216,
+              "statuses": {
+                "correct-fallback": 29,
+                "correct-native": 818,
+                "incorrect": 71,
+                "no-code": 2
+              },
+              "truncation_rate": 0.002173913043478261
+            },
+            "fallback-control": {
+              "cases": 76,
+              "correct": 0.9151278409090908,
+              "correct_native": 0.00390625,
+              "draws": 304,
+              "families": 2,
+              "mean_completion_tokens": 135.45065789473685,
+              "statuses": {
+                "correct-control": 276,
+                "incorrect": 28
+              },
+              "truncation_rate": 0.0
+            }
+          },
+          "cases": 306,
+          "correct": 0.9184523809523809,
+          "correct_native": 0.6771825396825397,
+          "draw_weighted_correct": 0.9174836601307189,
+          "draw_weighted_native": 0.6691176470588235,
+          "draws": 1224,
+          "families": 7,
+          "mean_completion_tokens": 154.50980392156862,
+          "statuses": {
+            "correct-control": 276,
+            "correct-fallback": 29,
+            "correct-native": 818,
+            "incorrect": 99,
+            "no-code": 2
+          },
+          "truncation_rate": 0.0016339869281045752
+        },
+        "native_delta_pp": 0.0,
+        "step": 0
+      },
+      {
+        "correct_delta_pp": 0.0,
+        "meets_step0_rule": false,
+        "metrics": {
+          "by_population": {
+            "coverage": {
+              "cases": 230,
+              "correct": 0.9211385836385837,
+              "correct_native": 0.754532967032967,
+              "draws": 920,
+              "families": 7,
+              "mean_completion_tokens": 160.80760869565216,
+              "statuses": {
+                "correct-fallback": 29,
+                "correct-native": 818,
+                "incorrect": 71,
+                "no-code": 2
+              },
+              "truncation_rate": 0.002173913043478261
+            },
+            "fallback-control": {
+              "cases": 76,
+              "correct": 0.9151278409090908,
+              "correct_native": 0.00390625,
+              "draws": 304,
+              "families": 2,
+              "mean_completion_tokens": 135.45065789473685,
+              "statuses": {
+                "correct-control": 276,
+                "incorrect": 28
+              },
+              "truncation_rate": 0.0
+            }
+          },
+          "cases": 306,
+          "correct": 0.9184523809523809,
+          "correct_native": 0.6771825396825397,
+          "draw_weighted_correct": 0.9174836601307189,
+          "draw_weighted_native": 0.6691176470588235,
+          "draws": 1224,
+          "families": 7,
+          "mean_completion_tokens": 154.50980392156862,
+          "statuses": {
+            "correct-control": 276,
+            "correct-fallback": 29,
+            "correct-native": 818,
+            "incorrect": 99,
+            "no-code": 2
+          },
+          "truncation_rate": 0.0016339869281045752
+        },
+        "native_delta_pp": 0.0,
+        "step": 5
+      },
+      {
+        "correct_delta_pp": -0.03968253968253954,
+        "meets_step0_rule": false,
+        "metrics": {
+          "by_population": {
+            "coverage": {
+              "cases": 230,
+              "correct": 0.9223290598290598,
+              "correct_native": 0.7557234432234432,
+              "draws": 920,
+              "families": 7,
+              "mean_completion_tokens": 162.18369565217392,
+              "statuses": {
+                "correct-fallback": 29,
+                "correct-native": 819,
+                "incorrect": 70,
+                "no-code": 2
+              },
+              "truncation_rate": 0.002173913043478261
+            },
+            "fallback-control": {
+              "cases": 76,
+              "correct": 0.90625,
+              "correct_native": 0.00390625,
+              "draws": 304,
+              "families": 2,
+              "mean_completion_tokens": 132.9078947368421,
+              "statuses": {
+                "correct-control": 274,
+                "incorrect": 30
+              },
+              "truncation_rate": 0.0
+            }
+          },
+          "cases": 306,
+          "correct": 0.9180555555555555,
+          "correct_native": 0.6783730158730158,
+          "draw_weighted_correct": 0.9166666666666666,
+          "draw_weighted_native": 0.6699346405228758,
+          "draws": 1224,
+          "families": 7,
+          "mean_completion_tokens": 154.91258169934642,
+          "statuses": {
+            "correct-control": 274,
+            "correct-fallback": 29,
+            "correct-native": 819,
+            "incorrect": 100,
+            "no-code": 2
+          },
+          "truncation_rate": 0.0016339869281045752
+        },
+        "native_delta_pp": 0.11904761904760752,
+        "step": 10
+      },
+      {
+        "correct_delta_pp": 0.09920634920634885,
+        "meets_step0_rule": false,
+        "metrics": {
+          "by_population": {
+            "coverage": {
+              "cases": 230,
+              "correct": 0.9229242979242979,
+              "correct_native": 0.7563186813186814,
+              "draws": 920,
+              "families": 7,
+              "mean_completion_tokens": 158.7826086956522,
+              "statuses": {
+                "correct-fallback": 29,
+                "correct-native": 820,
+                "incorrect": 69,
+                "no-code": 2
+              },
+              "truncation_rate": 0.002173913043478261
+            },
+            "fallback-control": {
+              "cases": 76,
+              "correct": 0.9090909090909092,
+              "correct_native": 0.0,
+              "draws": 304,
+              "families": 2,
+              "mean_completion_tokens": 135.90131578947367,
+              "statuses": {
+                "correct-control": 275,
+                "incorrect": 29
+              },
+              "truncation_rate": 0.0
+            }
+          },
+          "cases": 306,
+          "correct": 0.9194444444444444,
+          "correct_native": 0.6781746031746032,
+          "draw_weighted_correct": 0.9183006535947712,
+          "draw_weighted_native": 0.6699346405228758,
+          "draws": 1224,
+          "families": 7,
+          "mean_completion_tokens": 153.09967320261438,
+          "statuses": {
+            "correct-control": 275,
+            "correct-fallback": 29,
+            "correct-native": 820,
+            "incorrect": 98,
+            "no-code": 2
+          },
+          "truncation_rate": 0.0016339869281045752
+        },
+        "native_delta_pp": 0.09920634920634885,
+        "step": 15
+      }
+    ],
+    "sft": [
+      {
+        "correct_delta_pp": 0.0,
+        "meets_step0_rule": false,
+        "metrics": {
+          "by_population": {
+            "coverage": {
+              "cases": 230,
+              "correct": 0.9211385836385837,
+              "correct_native": 0.754532967032967,
+              "draws": 920,
+              "families": 7,
+              "mean_completion_tokens": 160.80760869565216,
+              "statuses": {
+                "correct-fallback": 29,
+                "correct-native": 818,
+                "incorrect": 71,
+                "no-code": 2
+              },
+              "truncation_rate": 0.002173913043478261
+            },
+            "fallback-control": {
+              "cases": 76,
+              "correct": 0.9151278409090908,
+              "correct_native": 0.00390625,
+              "draws": 304,
+              "families": 2,
+              "mean_completion_tokens": 135.45065789473685,
+              "statuses": {
+                "correct-control": 276,
+                "incorrect": 28
+              },
+              "truncation_rate": 0.0
+            }
+          },
+          "cases": 306,
+          "correct": 0.9184523809523809,
+          "correct_native": 0.6771825396825397,
+          "draw_weighted_correct": 0.9174836601307189,
+          "draw_weighted_native": 0.6691176470588235,
+          "draws": 1224,
+          "families": 7,
+          "mean_completion_tokens": 154.50980392156862,
+          "statuses": {
+            "correct-control": 276,
+            "correct-fallback": 29,
+            "correct-native": 818,
+            "incorrect": 99,
+            "no-code": 2
+          },
+          "truncation_rate": 0.0016339869281045752
+        },
+        "native_delta_pp": 0.0,
+        "step": 0
+      },
+      {
+        "correct_delta_pp": -4.742063492063487,
+        "meets_step0_rule": false,
+        "metrics": {
+          "by_population": {
+            "coverage": {
+              "cases": 230,
+              "correct": 0.8865995115995116,
+              "correct_native": 0.7627899877899879,
+              "draws": 920,
+              "families": 7,
+              "mean_completion_tokens": 136.8445652173913,
+              "statuses": {
+                "correct-fallback": 24,
+                "correct-native": 794,
+                "incorrect": 101,
+                "no-code": 1
+              },
+              "truncation_rate": 0.0010869565217391304
+            },
+            "fallback-control": {
+              "cases": 76,
+              "correct": 0.8121448863636364,
+              "correct_native": 0.0078125,
+              "draws": 304,
+              "families": 2,
+              "mean_completion_tokens": 109.78289473684211,
+              "statuses": {
+                "correct-control": 245,
+                "incorrect": 59
+              },
+              "truncation_rate": 0.0
+            }
+          },
+          "cases": 306,
+          "correct": 0.871031746031746,
+          "correct_native": 0.6591269841269841,
+          "draw_weighted_correct": 0.8684640522875817,
+          "draw_weighted_native": 0.6503267973856209,
+          "draws": 1224,
+          "families": 7,
+          "mean_completion_tokens": 130.1233660130719,
+          "statuses": {
+            "correct-control": 245,
+            "correct-fallback": 24,
+            "correct-native": 794,
+            "incorrect": 160,
+            "no-code": 1
+          },
+          "truncation_rate": 0.0008169934640522876
+        },
+        "native_delta_pp": -1.8055555555555602,
+        "step": 25
+      },
+      {
+        "correct_delta_pp": -3.4325396825396703,
+        "meets_step0_rule": false,
+        "metrics": {
+          "by_population": {
+            "coverage": {
+              "cases": 230,
+              "correct": 0.9233211233211234,
+              "correct_native": 0.7602564102564102,
+              "draws": 920,
+              "families": 7,
+              "mean_completion_tokens": 154.8304347826087,
+              "statuses": {
+                "correct-fallback": 27,
+                "correct-native": 821,
+                "incorrect": 66,
+                "no-code": 6
+              },
+              "truncation_rate": 0.006521739130434782
+            },
+            "fallback-control": {
+              "cases": 76,
+              "correct": 0.7556818181818181,
+              "correct_native": 0.0,
+              "draws": 304,
+              "families": 2,
+              "mean_completion_tokens": 121.08552631578948,
+              "statuses": {
+                "correct-control": 230,
+                "incorrect": 73,
+                "no-code": 1
+              },
+              "truncation_rate": 0.003289473684210526
+            }
+          },
+          "cases": 306,
+          "correct": 0.8841269841269842,
+          "correct_native": 0.6801587301587302,
+          "draw_weighted_correct": 0.880718954248366,
+          "draw_weighted_native": 0.670751633986928,
+          "draws": 1224,
+          "families": 7,
+          "mean_completion_tokens": 146.44934640522877,
+          "statuses": {
+            "correct-control": 230,
+            "correct-fallback": 27,
+            "correct-native": 821,
+            "incorrect": 139,
+            "no-code": 7
+          },
+          "truncation_rate": 0.005718954248366013
+        },
+        "native_delta_pp": 0.29761904761904656,
+        "step": 50
+      },
+      {
+        "correct_delta_pp": -3.273809523809512,
+        "meets_step0_rule": false,
+        "metrics": {
+          "by_population": {
+            "coverage": {
+              "cases": 230,
+              "correct": 0.8805250305250306,
+              "correct_native": 0.7583028083028083,
+              "draws": 920,
+              "families": 7,
+              "mean_completion_tokens": 152.8978260869565,
+              "statuses": {
+                "correct-fallback": 22,
+                "correct-native": 822,
+                "incorrect": 69,
+                "no-code": 7
+              },
+              "truncation_rate": 0.007608695652173913
+            },
+            "fallback-control": {
+              "cases": 76,
+              "correct": 0.7745028409090908,
+              "correct_native": 0.0,
+              "draws": 304,
+              "families": 2,
+              "mean_completion_tokens": 114.41447368421052,
+              "statuses": {
+                "correct-control": 237,
+                "incorrect": 66,
+                "no-code": 1
+              },
+              "truncation_rate": 0.003289473684210526
+            }
+          },
+          "cases": 306,
+          "correct": 0.8857142857142858,
+          "correct_native": 0.6801587301587302,
+          "draw_weighted_correct": 0.8831699346405228,
+          "draw_weighted_native": 0.6715686274509803,
+          "draws": 1224,
+          "families": 7,
+          "mean_completion_tokens": 143.33986928104576,
+          "statuses": {
+            "correct-control": 237,
+            "correct-fallback": 22,
+            "correct-native": 822,
+            "incorrect": 135,
+            "no-code": 8
+          },
+          "truncation_rate": 0.006535947712418301
+        },
+        "native_delta_pp": 0.29761904761904656,
+        "step": 75
+      }
+    ]
+  }
+}
