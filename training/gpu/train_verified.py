@@ -270,6 +270,13 @@ def load_sft_targets(path, bundle):
             or report.get("rows") != len(rows) or not report.get("run_id")
             or (report.get("lineage") or {}).get("engine_sha256") != bundle["identity"]["sha256"]):
         raise TrainingError("SFT target report, digest or engine lineage does not match the bundle")
+    # The target source is the report's declared arm set, never inferred from
+    # the rows it is meant to bound. A report that predates the field was
+    # built from conditioned draws only, so its absence means exactly that.
+    arms = report.get("arms", ["subset-spec"])
+    if (not isinstance(arms, list) or not arms or len(arms) != len(set(arms))
+            or not set(arms) <= {"bare", "subset-spec"}):
+        raise TrainingError("SFT target report declares no admissible source arm set")
     cases, seen, populations = [], set(), set()
     for row in rows:
         case = train.get(row.get("case_id"))
@@ -279,9 +286,9 @@ def load_sft_targets(path, bundle):
         digest = hashlib.sha256(program.encode("utf-8")).hexdigest() if program else None
         if (case is None or row.get("messages", [])[:-1] != messages(case) or not program
                 or row.get("family") != case["family"] or row.get("population") != case["population"]
-                or source.get("run_id") != report["run_id"] or source.get("arm") != "subset-spec"
+                or source.get("run_id") != report["run_id"] or source.get("arm") not in arms
                 or source.get("program_sha256") != digest):
-            raise TrainingError("SFT target row is not a graded conditioned target for its bare train prompt")
+            raise TrainingError("SFT target row is not a graded target from a declared arm for its bare train prompt")
         key = (case["case_id"], digest)
         if key in seen:
             raise TrainingError("SFT targets repeat a program within one case")

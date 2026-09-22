@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import pytest
 from pipeline import positive_control as pc
 from pipeline.curriculum import starter_cases
@@ -164,6 +165,18 @@ def test_grader_reuses_the_paid_admission_container_oracle():
            'references': {'python': 'pinned container Python'}}
     with pytest.raises(TrainingError, match='grading engine differs'):
         grade.admitted_identity(identity, bad)
+
+
+def test_grader_target_arms_default_to_the_reviewed_conditioned_source():
+    grade = load_script('step2_grade.py')
+    assert grade.target_arms(None) == ('subset-spec',)
+    assert grade.target_arms('') == ('subset-spec',)
+    assert grade.target_arms('bare') == ('bare',)
+    assert grade.target_arms('bare,subset-spec') == ('bare', 'subset-spec')
+    text = (Path(__file__).resolve().parents[2] / '.github' / 'workflows' /
+            'step2-control-grade.yml').read_text()
+    assert "STEP2_TARGET_ARMS: ${{ inputs.target_arms }}" in text
+    assert "default: subset-spec" in text
 
 
 def test_corpus_reuse_requires_identical_runtime_and_complete_green_evidence():

@@ -35,7 +35,19 @@ USER_AGENT = "lypning/0.1 (+https://github.com/kristerhedfors/lypning)"
 
 
 class BackendError(RuntimeError):
-    """Ours or the server's — never the generated program's."""
+    """Ours or the server's — never the generated program's.
+
+    ``status`` is the HTTP status of the failure that ended the call, or None
+    when that was not an HTTP answer (transport, timeout, malformed body). It
+    is carried as data because the message is not a stable place to find it:
+    an exhausted retry loop prefixes it with "giving up after N retries: ",
+    and a classifier that parsed the text from the start labelled every paid
+    429 and 5xx as a transport failure (`positive_control_generate`).
+    """
+
+    def __init__(self, *args: Any, status: Optional[int] = None) -> None:
+        super().__init__(*args)
+        self.status = status
 
 
 def extra_body(top_k: Optional[int] = None, min_p: Optional[float] = None) -> Dict[str, Any]:
@@ -153,6 +165,7 @@ class ChatBackend:
 
         started = time.time()
         last: Optional[str] = None
+        last_status: Optional[int] = None
         for attempt in range(self.max_retries + 1):
             req = urllib.request.Request(
                 self.base_url + "/chat/completions", data=body, headers=headers, method="POST"
@@ -164,13 +177,16 @@ class ChatBackend:
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", "replace")[:500]
                 last = "HTTP %s: %s" % (exc.code, detail)
+                last_status = exc.code
                 if exc.code != 429 and exc.code < 500:
-                    raise BackendError(last) from None
+                    raise BackendError(last, status=exc.code) from None
             except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
                 last = "%s: %s" % (type(exc).__name__, exc)
+                last_status = None
             if attempt < self.max_retries:
                 time.sleep(min(60.0, 2.0 ** attempt) * (0.5 + random.random()))
-        raise BackendError("giving up after %d retries: %s" % (self.max_retries, last))
+        raise BackendError("giving up after %d retries: %s" % (self.max_retries, last),
+                           status=last_status)
 
     @staticmethod
     def _to_completion(data: Dict[str, Any], latency: float) -> Completion:

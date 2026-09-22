@@ -104,6 +104,77 @@ def test_provider_error_classification_never_persists_the_detail(exc, kind):
     assert 'PRIVATE' not in gen.safe_error_kind(exc)
 
 
+def _http_error(code):
+    import io
+    import urllib.error
+    def urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, code, 'status', {},
+                                     io.BytesIO(b'PRIVATE BODY sk-PRIVATE-KEY'))
+    return urlopen
+
+
+@pytest.mark.parametrize('code', [429, 503])
+def test_real_backend_rate_limit_and_5xx_are_classified_by_status(code, monkeypatch):
+    # The paid path is ChatBackend(max_retries=0): an exhausted retry loop
+    # prefixes the status with "giving up after 0 retries: ", which an
+    # anchored match never reached. Drive the real backend, not a string.
+    monkeypatch.setattr('urllib.request.urlopen', _http_error(code))
+    backend = ChatBackend(gen.PROVIDER, gen.MODEL, max_retries=0, timeout_s=120)
+    with pytest.raises(BackendError) as info:
+        backend.complete([{'role': 'user', 'content': 'PRIVATE PROMPT'}])
+    assert str(info.value).startswith('giving up after 0 retries: HTTP %d:' % code)
+    assert info.value.status == code
+    assert gen.safe_error_kind(info.value) == 'provider-http-%d' % code
+    # The message alone is enough too, for an error that lost its attribute.
+    assert gen.safe_error_kind(BackendError(str(info.value))) == 'provider-http-%d' % code
+
+
+def test_real_backend_non_retryable_4xx_and_transport_are_classified(monkeypatch):
+    monkeypatch.setattr('urllib.request.urlopen', _http_error(403))
+    backend = ChatBackend(gen.PROVIDER, gen.MODEL, max_retries=0, timeout_s=120)
+    with pytest.raises(BackendError) as info:
+        backend.complete([{'role': 'user', 'content': 'x'}])
+    assert gen.safe_error_kind(info.value) == 'provider-http-403'
+
+    def refused(req, timeout=None):
+        raise OSError('connection refused')
+    monkeypatch.setattr('urllib.request.urlopen', refused)
+    with pytest.raises(BackendError) as info:
+        backend.complete([{'role': 'user', 'content': 'x'}])
+    assert info.value.status is None
+    assert gen.safe_error_kind(info.value) == 'provider-transport'
+
+
+def test_paid_loop_records_a_real_429_by_status_without_the_body(tmp_path, monkeypatch):
+    monkeypatch.setattr('urllib.request.urlopen', _http_error(429))
+    backend = ChatBackend(gen.PROVIDER, gen.MODEL, api_key='sk-PRIVATE-KEY',
+                          max_retries=0, timeout_s=120)
+    cases = [{'case_id': 'a', 'split': 'train', 'task': 'PRIVATE PROMPT'}]
+    result = gen.generate(cases, 'spec', backend, tmp_path / 'out', ceiling_usd=1,
+                          admission=admission(cases), workers=1, samples=1)
+    assert result['complete'] is False
+    assert result['failure_types'] == ['provider-http-429']
+    errors = (tmp_path / 'out' / 'errors.jsonl').read_text()
+    assert 'PRIVATE' not in errors and 'provider-http-429' in errors
+
+
+def test_every_paid_rung_above_smoke_uses_the_45_rpm_that_survived():
+    # 35763603648 stopped after 327 calls at 60 rpm; the targets rung was
+    # moved to 45 rpm. The k=16 rungs are the ones that decide Step 2, and
+    # they are longer, so they must not keep the rate that failed.
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    text = (root / '.github' / 'workflows' / 'step2-control.yml').read_text()
+    expr = re.search(r"^  STEP2_RPM: \$\{\{ (.+) \}\}$", text, re.M).group(1)
+    assert expr == "inputs.rung == 'smoke' && '60' || '45'"
+    seconds = re.search(r"^  STEP2_MAX_SECONDS: \$\{\{ (.+) \}\}$", text, re.M).group(1)
+    assert seconds == "inputs.rung == 'smoke' && '3600' || '14400'"
+    # The largest rung (300 cases x 16 draws x 2 arms) must fit its dispatch
+    # window at 45 rpm, or the rate change silently truncates it.
+    assert 300 * 16 * 2 * 60 / 45 < 14400
+
+
 def test_insufficient_reservation_makes_no_network_call(tmp_path):
     backend = ChatBackend(gen.PROVIDER, gen.MODEL, max_retries=0, timeout_s=120)
     backend.complete = lambda *a, **kw: pytest.fail('must not call provider')
