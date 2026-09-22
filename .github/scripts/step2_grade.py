@@ -5,12 +5,15 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import runpy
+import subprocess
 
 from pipeline.container_runner import ContainerRunner
 from pipeline.positive_control import MODEL_REPO
 from pipeline.positive_control_grade import grade_files
 from pipeline.training import Verifier, engine_identity
 from pipeline.training_types import TrainingError
+from step2_merge import git_recipe
 from step2_shard import cases_from_env, shard_from_env
 
 
@@ -30,6 +33,37 @@ def admitted_identity(identity, admission):
     if identity.get('sha256') != expected_sha:
         raise TrainingError('grading engine differs from generation admission')
     return dict(identity, oracle=oracle)
+
+
+def admitted_recipe(admission, base_image, head, recipe_of=git_recipe):
+    """Refuse to grade in an image built from another recipe than generation's.
+
+    Every verdict -- and so every SFT target -- comes from THIS job's image,
+    rebuilt from the dispatched commit; the admission only names the image
+    generation built. The engine bytes are checked in `admitted_identity`, but
+    the base image and the four files the image is built from were not, so a
+    grade dispatched after `sandbox.py` changed would score one shard under
+    another sandbox, and `step2_merge.py`, which compares the recipe at each
+    shard's GENERATION commit, would merge it. Same recipe as generation here,
+    and the merge's recipe check covers the image that actually graded.
+    """
+    try:
+        commit = admission['source_commit']
+        admitted_base = admission['conformance']['base_image']
+    except (KeyError, TypeError) as exc:
+        raise TrainingError('generation admission lacks runtime lineage') from exc
+    if base_image != admitted_base:
+        raise TrainingError('grading base image differs from generation admission')
+    recipe = recipe_of(head)
+    if recipe != recipe_of(commit):
+        raise TrainingError('grading image recipe differs from generation admission')
+    return recipe
+
+
+def grading_head():
+    """The commit this job checked out, and so built its image from."""
+    return subprocess.run(['git', 'rev-parse', 'HEAD'], check=True, capture_output=True,
+                          text=True).stdout.strip()
 
 
 def recorded_shard(paid, cases, shard):
@@ -89,6 +123,9 @@ def main():
     # identity implementation cannot weaken the paid-run lineage check.
     if hashlib.sha256(binary.read_bytes()).hexdigest() != expected['sha256']:
         raise TrainingError('grading engine differs from generation admission')
+    base_image = runpy.run_path('training/hf/launch.py')['BASE_IMAGE']
+    head = grading_head()
+    recipe = admitted_recipe(admission, base_image, head)
     runner = ContainerRunner(os.environ['CANDIDATE_IMAGE'], expected)
     verifier = Verifier(binary, runner=runner)
     count, tokenizer = token_counter()
@@ -102,6 +139,11 @@ def main():
                          }, progress=lambda event: print(json.dumps(event, sort_keys=True), flush=True),
                          target_arms=target_arms(os.environ.get('STEP2_TARGET_ARMS')),
                          token_count=count, tokenizer=tokenizer)
+    # Which image graded, beside the rows it graded: the lineage above names
+    # generation's image, and a rebuild never reproduces its id.
+    (root / 'step2-grade' / 'grader.json').write_text(json.dumps({
+        'source_commit': head, 'candidate_image': os.environ['CANDIDATE_IMAGE'],
+        'base_image': base_image, 'candidate_recipe': recipe}, sort_keys=True) + '\n')
     print(json.dumps(public, sort_keys=True))
 
 

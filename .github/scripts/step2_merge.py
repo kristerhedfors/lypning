@@ -15,14 +15,18 @@ so the cluster bootstrap and the per-case cap see all 1,355 cases at once,
 not four shards' worth of separate verdicts.
 
 "One experiment" means identical engine bytes, base image, subset spec,
-provider/model and draw count, and an identical candidate-image RECIPE. Not
+provider/model, draw count and sampling parameters, and an identical
+candidate-image RECIPE. Not
 an identical candidate-image id: a fresh `docker build` of the same four
 files on the same pinned base yields a new image id every time (measured
 locally 2026-09-22: two no-cache builds of one context, two ids), so every
 shard dispatched from its own runner has its own id and a rule on the id
 would refuse every real merge. The recipe is what the id stood for -- the
 Dockerfile and the three runner modules, by git blob id at each shard's
-source commit -- and the ids themselves are recorded per shard.
+source commit -- and the ids themselves are recorded per shard. The image
+that GRADED a shard is rebuilt at grade time, and `step2_grade.admitted_recipe`
+refuses to grade unless its recipe and base image are the generation
+commit's, so this comparison covers the images whose verdicts are merged.
 
 A refusal names the shard that differs and the field, never a value from a
 case: this runs in a public Actions log. Any other failure prints its phase
@@ -41,7 +45,7 @@ import sys
 RECIPE = ("training/worker/Dockerfile.verifier", "training/pipeline/sandbox.py",
           "training/pipeline/child_exec.py", "training/pipeline/container_worker.py")
 #: Fields every shard must share, and where each is read.
-IDENTITY = ("engine_sha256", "base_image", "spec_sha256", "provider", "samples",
+IDENTITY = ("engine_sha256", "base_image", "spec_sha256", "provider", "samples", "sampling",
             "candidate_recipe")
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}")
 
@@ -78,6 +82,9 @@ def identity(shard, recipe_of=git_recipe):
                 "spec_sha256": manifest["spec_sha256"],
                 "provider": manifest["provider"],
                 "samples": manifest["samples"],
+                # Temperature, top_p, max_tokens and the seed rule: a shard
+                # drawn at another temperature is another experiment.
+                "sampling": manifest["sampling"],
                 "candidate_recipe": recipe_of(admission["source_commit"])}
     except (KeyError, TypeError) as exc:
         raise MergeError("shard %s lacks its admission or manifest lineage" % shard["run"]) from exc

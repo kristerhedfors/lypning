@@ -100,6 +100,8 @@ def shards(graded, count=2):
         ids = {c["case_id"] for c in mine}
         out.append({"run": "shard-%d" % i, "admission": admission(mine),
                     "manifest": {"spec_sha256": "s" * 64, "samples": 2,
+                                 "sampling": {"temperature": .7, "top_p": .8, "max_tokens": 2048,
+                                              "reasoning_effort": "none", "seed": "1111 + draw"},
                                  "provider": {"base_url": "https://api.cerebras.ai/v1", "model": "m"}},
                     "completions": [r for r in comp if r["case_id"] in ids],
                     "rows": [r for r in rows if r["case_id"] in ids]})
@@ -129,7 +131,7 @@ def test_shards_merge_into_one_run_the_pilot_reads_like_any_other(graded, tmp_pa
 
 
 @pytest.mark.parametrize("field", ["engine_sha256", "base_image", "spec_sha256", "provider",
-                                   "samples", "candidate_recipe"])
+                                   "samples", "sampling", "candidate_recipe"])
 def test_a_shard_from_another_experiment_is_refused_by_name(graded, tmp_path, field):
     cs = graded[0]
     parts = shards(graded, 3)
@@ -269,3 +271,10 @@ def test_an_incomplete_generation_is_never_merged(graded, tmp_path, monkeypatch,
     hub(monkeypatch, root)
     assert m.main() == 1
     assert "shard shard-0 generation is absent or incomplete" in capsys.readouterr().err
+
+
+def test_every_identity_field_is_pinned_by_a_refusal_test():
+    """A field added to IDENTITY without a refusal case would be unchecked here."""
+    marks = test_a_shard_from_another_experiment_is_refused_by_name.pytestmark
+    fields = next(mark.args[1] for mark in marks if mark.name == "parametrize")
+    assert tuple(fields) == m.IDENTITY

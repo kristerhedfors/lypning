@@ -369,8 +369,11 @@ jobs:
             # One job directory of the private artifact repo and nothing
             # else: no absolute path, no `..`, no other prefix. HF job ids are
             # 24 lower-case hex characters (round-02/6ab01cbb51992417dfccd64c).
+            # Matched on the WHOLE value by bash, not by `grep -x`, which
+            # matches line by line: a dispatch input sent through the API can
+            # hold a newline, and one valid line would admit the rest.
             if [ -n "${PILOT_BUNDLES_FROM}" ] && \
-               ! printf '%s' "${PILOT_BUNDLES_FROM}" | grep -Eqx 'round-02/[0-9a-f]{24}'; then
+               ! [[ "${PILOT_BUNDLES_FROM}" =~ ^round-02/[0-9a-f]{24}$ ]]; then
               echo "bundles_from must be round-02/<24-hex HF job id>" >&2
               exit 1
             fi

@@ -4,8 +4,9 @@ name: Step 2 merge graded full-rung shards (no GPU, no container)
 # run 35767396604 is the first -- into ONE positive-control run whose
 # grade/sft.jsonl and sft-report.json `s4-target-preflight.yml` and a pilot's
 # `target_run` read like any single graded run. `step2_merge.py` refuses a
-# set whose shards differ in engine, base image, subset spec, provider or
-# candidate-image recipe, naming the shard that differs, and re-runs nothing.
+# set whose shards differ in engine, base image, subset spec, provider,
+# sampling or candidate-image recipe, naming the shard that differs, and
+# re-runs nothing.
 on:
   workflow_dispatch:
     inputs:

@@ -172,3 +172,42 @@ def test_generation_records_its_shard_beside_the_manifest(tmp_path):
     shard = {"shard_index": 1, "shard_count": 2, "skip_prefix": 192}
     generate.write_shard(tmp_path, 1355, shard)
     assert json.loads((tmp_path / "shard.json").read_text()) == dict(shard, cases=1355)
+
+
+def test_the_grader_refuses_an_image_recipe_or_base_other_than_generations():
+    """The verdicts come from the grade job's rebuilt image, not generation's."""
+    grade = load("step2_grade")
+    blobs = {"a" * 40: {"training/pipeline/sandbox.py": "blob-1"},
+             "b" * 40: {"training/pipeline/sandbox.py": "blob-1"},
+             "c" * 40: {"training/pipeline/sandbox.py": "blob-2"}}
+    admission = {"source_commit": "a" * 40, "conformance": {"base_image": "base@sha256:1"}}
+    assert grade.admitted_recipe(admission, "base@sha256:1", "b" * 40, blobs.__getitem__) == blobs["b" * 40]
+    with pytest.raises(TrainingError, match="recipe differs"):
+        grade.admitted_recipe(admission, "base@sha256:1", "c" * 40, blobs.__getitem__)
+    with pytest.raises(TrainingError, match="base image differs"):
+        grade.admitted_recipe(admission, "base@sha256:2", "b" * 40, blobs.__getitem__)
+    with pytest.raises(TrainingError, match="lacks runtime lineage"):
+        grade.admitted_recipe({"conformance": {}}, "base@sha256:1", "b" * 40, blobs.__getitem__)
+    # It is called before the container runner exists, and the grade job has
+    # the history the recipe is read from.
+    text = (SCRIPTS / "step2_grade.py").read_text()
+    assert text.index("admitted_recipe(admission,") < text.index("ContainerRunner(os.environ")
+    workflow = (SCRIPTS.parent / "workflows" / "step2-control-grade.yml").read_text()
+    assert "fetch-depth: 0" in workflow
+
+
+def test_the_recipe_is_read_from_this_checkouts_history(monkeypatch):
+    """git_recipe against the real repository: HEAD's blobs, and a bad commit refused."""
+    import subprocess
+    merge = load("step2_merge")
+    root = SCRIPTS.parents[1]
+    head = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True,
+                          text=True)
+    if head.returncode != 0:
+        pytest.skip("not a git checkout")
+    monkeypatch.chdir(root)
+    recipe = merge.git_recipe(head.stdout.strip())
+    assert sorted(recipe) == sorted(merge.RECIPE)
+    assert all(len(blob) == 40 for blob in recipe.values())
+    with pytest.raises(merge.MergeError):
+        merge.git_recipe("HEAD")

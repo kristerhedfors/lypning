@@ -60,9 +60,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
+      # Full history: the grader refuses an image recipe that differs from
+      # the one at the generation commit (`step2_grade.admitted_recipe`).
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
