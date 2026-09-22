@@ -42,7 +42,9 @@ export NTX_POOL_MAX_HOSTS="${NTX_POOL_MAX_HOSTS:-4}"
 BUNDLES_FROM="${BUNDLES_FROM:-}"          # reuse the bundles an earlier job prepared, e.g. round-02/<job>
 SFT_TARGET_RUN="${SFT_TARGET_RUN:-}"      # graded positive-control run; empty retains authored references
 SEED="${SEED:-1111}"
-SPLIT_SEED="${SPLIT_SEED:-1111}"
+# Exported: the reused-bundle check and `targets_fit_split` read it from Python,
+# and a default assigned here but not exported is a KeyError there.
+export SPLIT_SEED="${SPLIT_SEED:-1111}"
 cd "$(dirname "$0")/../.."
 export PYTHONPATH=src:training LYPNING_CAPTURE=0 LYPNING_HARVEST=0 PIP_DISABLE_PIP_VERSION_CHECK=1
 ROUND=work/round-02

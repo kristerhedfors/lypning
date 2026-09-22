@@ -288,15 +288,17 @@ jobs:
           if-no-files-found: ignore
 
   # A pilot submit needs the floor to have PASSED; a smoke submit has no floor
-  # job at all. Without `always()` a skipped token-floor skips this job too
-  # (GitHub's implicit success()), which made every smoke submit unreachable.
-  # So the status of each need is spelled out, and a smoke is a smoke only when
-  # nothing asked for a pilot -- a message carrying both markers is a pilot.
+  # job at all. Without a status function a skipped token-floor skips this job
+  # too (GitHub's implicit success()), which made every smoke submit
+  # unreachable. So the status of each need is spelled out, and a smoke is a
+  # smoke only when nothing asked for a pilot -- a message carrying both
+  # markers is a pilot. `!cancelled()`, not `always()`: always() is true in a
+  # cancelled run too, so cancelling after bootstrap would still bill a smoke.
   submit:
     name: submit the GPU job (BILLED)
     needs: [preflight, bootstrap, token-floor]
     if: >-
-      always() &&
+      !cancelled() &&
       needs.preflight.result == 'success' && needs.bootstrap.result == 'success' && (
         ((contains(github.event.head_commit.message, '[submit-pilot]') ||
           (github.event.inputs.stage == 'pilot' && github.event.inputs.submit == 'SUBMIT')) &&

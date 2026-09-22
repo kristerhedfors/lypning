@@ -140,3 +140,22 @@ def test_the_manifest_records_every_arm_field():
     # Copied from the stage's own record, not restated from intent.
     assert 'sft.get("kernels")' in finish
     assert '(sft.get("effective") or {}).get("learning_rate")' in finish
+
+
+def test_the_split_seed_default_reaches_the_python_that_reads_it(tmp_path):
+    """SPLIT_SEED defaults to 1111 and two heredocs read it from os.environ.
+
+    Assigned without `export`, the default existed only in bash: a job
+    started without SPLIT_SEED in its environment died with KeyError in the
+    reused-bundle check, after the dependency install and the engine download.
+    """
+    head = TEXT[TEXT.index("set -euo pipefail"):TEXT.index('cd "$(dirname "$0")/../.."')]
+    probe = head + 'python3 -c \'import os; print(os.environ["SPLIT_SEED"])\'\n'
+    env = {k: v for k, v in os.environ.items() if k != "SPLIT_SEED"}
+    env.update({k: "x" for k in ("SPACE_REPO", "SPACE_REV", "QWEN_REV", "WORK_REPO",
+                                 "BANK_PATH", "HF_TOKEN")})
+    done = subprocess.run(["bash", "-c", probe], env=env, capture_output=True, text=True,
+                          timeout=60, cwd=tmp_path)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "1111"
+

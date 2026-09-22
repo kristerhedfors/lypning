@@ -107,7 +107,8 @@ def submit_condition():
     # GitHub's rule: without a status function the condition is ANDed with an
     # implicit success() over every need, and a skipped need is not a success.
     implicit = not re.search(r"\b(always|failure|cancelled|success)\(\)", expr)
-    for old, new in (("always()", "True"), ("&&", " and "), ("||", " or "),
+    assert "always()" not in expr, "always() is true in a cancelled run too"
+    for old, new in (("!cancelled()", "not cancelled"), ("&&", " and "), ("||", " or "),
                      ("!contains", "not contains"),
                      ("github.event.head_commit.message", "msg"),
                      ("github.event.inputs.stage", "stage"),
@@ -116,9 +117,10 @@ def submit_condition():
     expr = re.sub(r"needs\.([\w-]+)\.result", r"needs['\1']", expr)
     assert "!" not in expr.replace("!=", ""), expr
 
-    def decide(msg="", stage=None, submit=None, floor="skipped"):
+    def decide(msg="", stage=None, submit=None, floor="skipped", cancelled=False):
         needs = {"preflight": "success", "bootstrap": "success", "token-floor": floor}
         scope = {"msg": msg or "", "stage": stage, "submit": submit, "needs": needs,
+                 "cancelled": cancelled,
                  "contains": lambda text, marker: marker in (text or "")}
         if implicit and any(result != "success" for result in needs.values()):
             return False
@@ -138,6 +140,14 @@ def test_a_smoke_submit_is_reachable_and_a_pilot_needs_its_floor():
         assert decide(msg="[submit-smoke] [submit-pilot]", floor=floor) is False
     assert decide() is False and decide(stage="smoke") is False
     assert decide(stage="pilot", submit="nope", floor="success") is False
+
+
+def test_a_cancelled_run_submits_nothing():
+    """Cancelling after bootstrap must not bill: `always()` would still run submit."""
+    decide = submit_condition()
+    assert decide(stage="smoke", submit="SUBMIT", cancelled=True) is False
+    assert decide(msg="x [submit-smoke]", cancelled=True) is False
+    assert decide(stage="pilot", submit="SUBMIT", floor="success", cancelled=True) is False
 
 
 def test_a_moved_hub_head_fails_the_preflight(monkeypatch, capsys):
