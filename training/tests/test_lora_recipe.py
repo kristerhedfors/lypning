@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
+
+from pipeline.jsonio import sha256_of
+from pipeline.training import messages
+from pipeline.training_types import TrainingError
 
 ROOT = Path(__file__).parents[1]
 spec = importlib.util.spec_from_file_location("recipe_gpu", ROOT / "gpu/train_verified.py")
@@ -40,3 +46,40 @@ def test_pilot_uses_shared_cadence_and_keeps_small_effective_batch():
         assert "--eval-every 50" in flags
         assert "--lr" not in flags  # one recipe, resolved by the trainer
     assert '--batch-size 4' in text
+
+
+def test_private_conditioned_targets_are_bound_to_bare_prompts_and_engine(tmp_path):
+    cases = [
+        {"case_id": "c", "family": "coverage-family", "task": "coverage task",
+         "population": "coverage", "split": "train", "reference": "print(1)"},
+        {"case_id": "r", "family": "retention-family", "task": "retention task",
+         "population": "fallback-control", "split": "train", "reference": "print(2)"},
+    ]
+    run_id = "confirmatory-" + "a" * 40 + "-1"
+    rows = []
+    for case in cases:
+        program = case["reference"]
+        rows.append({"case_id": case["case_id"], "family": case["family"],
+                     "population": case["population"],
+                     "messages": messages(case) + [{"role": "assistant",
+                         "content": "```python\n%s\n```" % program}],
+                     "source": {"run_id": run_id, "arm": "subset-spec", "draw": 0,
+                         "program_sha256": hashlib.sha256(program.encode()).hexdigest()}})
+    path = tmp_path / "sft.jsonl"
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    (tmp_path / "sft-report.json").write_text(json.dumps({
+        "schema": 1, "run_id": run_id, "rows": len(rows), "sft_sha256": sha256_of(rows),
+        "lineage": {"engine_sha256": "e" * 64}}))
+    bundle = {"identity": {"sha256": "e" * 64}, "cases": cases}
+    parsed = args("sft", "--sft-targets", str(path))
+    selected, loaded, report = gpu.sft_curriculum(parsed, bundle)
+    assert [case["case_id"] for case in selected] == ["c", "r"]
+    assert loaded == rows and report["run_id"] == run_id
+
+    rows[0]["messages"][1]["content"] = "conditioned prompt leaked"
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    (tmp_path / "sft-report.json").write_text(json.dumps({
+        "schema": 1, "run_id": run_id, "rows": len(rows), "sft_sha256": sha256_of(rows),
+        "lineage": {"engine_sha256": "e" * 64}}))
+    with pytest.raises(TrainingError, match="bare train prompt"):
+        gpu.sft_curriculum(parsed, bundle)

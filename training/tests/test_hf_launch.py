@@ -89,7 +89,7 @@ def args(stage, **overrides):
                 eval_sequences=launch.DEFAULT_EVAL_SEQUENCES, score_workers=launch.DEFAULT_SCORE_WORKERS,
                 pool_sandboxes_per_host=launch.DEFAULT_POOL_SANDBOXES_PER_HOST,
                 pool_max_hosts=launch.DEFAULT_POOL_MAX_HOSTS,
-                bundles_from="")
+                bundles_from="", sft_target_run="")
     base.update(overrides)
     return SimpleNamespace(**base)
 
@@ -106,12 +106,14 @@ def test_pilot_env_wires_the_bank_and_its_knobs_as_strings():
                    "EVAL_DRAWS": "8", "SEED": "2222",
                    "EVAL_SEQUENCES": "256", "SCORE_WORKERS": "12",
                    "NTX_POOL_SANDBOXES_PER_HOST": "4", "NTX_POOL_MAX_HOSTS": "4",
-                   "BUNDLES_FROM": ""}
+                   "BUNDLES_FROM": "", "SFT_TARGET_RUN": ""}
     defaults = launch.job_env(args("pilot", bank_path="banks/x"))
     assert (defaults["STEPS"], defaults["GRPO_STEPS"], defaults["EVAL_DRAWS"],
             defaults["SEED"]) == ("250", "20", "16", "1111")
     reused = launch.job_env(args("pilot", bank_path="banks/x", bundles_from="round-02/6aaa4b2c", eval_sequences=64, score_workers=8))
     assert (reused["BUNDLES_FROM"], reused["EVAL_SEQUENCES"], reused["SCORE_WORKERS"]) == ("round-02/6aaa4b2c", "64", "8")
+    targets = launch.job_env(args("pilot", bank_path="banks/x", sft_target_run="confirmatory-a-1"))
+    assert targets["SFT_TARGET_RUN"] == "confirmatory-a-1"
 
 
 def test_pilot_without_a_bank_path_is_rejected_before_any_hub_call(monkeypatch, capsys):

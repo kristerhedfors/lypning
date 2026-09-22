@@ -18,7 +18,8 @@ def _expected(cases, samples):
     return {(case['case_id'], draw, arm) for case, draw, arm in request_order(cases, samples)}
 
 
-def grade(cases, completions, verifier, output, *, samples, workers=8, run_id=''):
+def grade(cases, completions, verifier, output, *, samples, workers=8, run_id='',
+          lineage=None):
     output = Path(output)
     if output.exists():
         raise TrainingError('grade output exists; preserve it and choose a new directory')
@@ -67,7 +68,7 @@ def grade(cases, completions, verifier, output, *, samples, workers=8, run_id=''
               'metrics': metrics, 'comparison': comparison, 'decision': decision}
     write_json(output / 'report.json', report)
     targets, target_report = build_targets(cases, completions, rows, samples=samples,
-                                           run_id=run_id)
+                                           run_id=run_id, lineage=lineage)
     write_jsonl(output / 'sft.jsonl', targets)
     write_json(output / 'sft-report.json', target_report)
     public = {
@@ -88,6 +89,7 @@ def grade(cases, completions, verifier, output, *, samples, workers=8, run_id=''
     return public
 
 
-def grade_files(cases, completions_path, verifier, output, *, samples, workers=8, run_id=''):
+def grade_files(cases, completions_path, verifier, output, *, samples, workers=8, run_id='',
+                lineage=None):
     return grade(cases, read_jsonl(completions_path), verifier, output,
-                 samples=samples, workers=workers, run_id=run_id)
+                 samples=samples, workers=workers, run_id=run_id, lineage=lineage)

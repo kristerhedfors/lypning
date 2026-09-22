@@ -29,7 +29,12 @@ def main():
     verifier = Verifier(binary, runner=runner)
     public = grade_files(cases, private / 'paid' / 'completions.jsonl', verifier,
                          root / 'step2-grade', samples=int(os.environ['STEP2_SAMPLES']), workers=8,
-                         run_id=os.environ['STEP2_RUN_ID'])
+                         run_id=os.environ['STEP2_RUN_ID'], lineage={
+                             'source_commit': admission['source_commit'],
+                             'engine_sha256': admission['conformance']['engine_sha256'],
+                             'base_image': admission['conformance']['base_image'],
+                             'candidate_image': admission['candidate_image'],
+                         })
     print(json.dumps(public, sort_keys=True))
 
 
