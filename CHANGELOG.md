@@ -15,6 +15,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 ## Unreleased
 
 **2026-09-22** — Reuse equivalent evaluation arms and enforce the job deadline locally
+([#100](https://github.com/kristerhedfors/lypning/pull/100))
 
 - Reuses completed eval-2 draws only with sealed step-zero policy equivalence,
   matched runtime/sampling contracts and complete case coverage; records provenance.

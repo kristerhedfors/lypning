@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pipeline.jsonio import append_jsonl, sha256_of, write_json
 from pipeline.training_metrics import BENCHMARK_MIN_FAMILY_CASES, CheckpointGate
-from pipeline.evaluation_reuse import reuse_evaluation
+from pipeline.evaluation_reuse import fresh_lora_is_noop, reuse_evaluation
 from pipeline.training import (ISOLATED_KINDS, TrainingError, Verifier,
     chat_prompt_token_ids, execution_runner, load_bundle, messages)
 
@@ -426,12 +426,7 @@ def run(args, bundle, adapter_info):
         if step == 0 and args.stage == "sft":
             # A freshly attached standard LoRA is base-equivalent only when
             # every adapter tensor is finite and all B matrices are zero.
-            tensors = [(n, p) for n, p in model.named_parameters() if ".lora_" in n]
-            if (tensors and any(".lora_B." in n for n, _ in tensors)
-                    and all((".lora_A." in n or ".lora_B." in n)
-                            and bool(torch.isfinite(p).all())
-                            and (".lora_B." not in n or not bool(p.detach().count_nonzero()))
-                            for n, p in tensors)):
+            if fresh_lora_is_noop(model):
                 saved["policy_equivalence"] = {"adapter_sha256": None, "basis": "finite-zero-lora-b"}
         elif step == 0 and args.stage == "grpo" and args.adapter:
             if adapter_files(path) == adapter_files(args.adapter):

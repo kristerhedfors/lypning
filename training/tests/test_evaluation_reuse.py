@@ -85,3 +85,30 @@ def test_incomplete_or_tampered_evidence_is_not_reused(tmp_path):
     write_json(source / "metrics.json", {})
     with pytest.raises(TrainingError, match="saved draws"):
         reuse_evaluation(source, output, manifest, cases)
+
+
+def test_noop_proof_rejects_nonzero_nonfinite_or_extra_trainable_parameters():
+    from types import SimpleNamespace
+    from pipeline.evaluation_reuse import fresh_lora_is_noop
+    class Tensor:
+        requires_grad = True
+        def __init__(self, nonzero=0, finite=True):
+            self.nonzero, self.finite = nonzero, finite
+        def isfinite(self):
+            return SimpleNamespace(all=lambda: self.finite)
+        def detach(self):
+            return self
+        def count_nonzero(self):
+            return self.nonzero
+    a, b = Tensor(1), Tensor()
+    params = [("x.lora_A.default.weight", a), ("x.lora_B.default.weight", b)]
+    model = SimpleNamespace(named_parameters=lambda: iter(params))
+    assert fresh_lora_is_noop(model)
+    b.nonzero = 1
+    assert not fresh_lora_is_noop(model)
+    b.nonzero = 0
+    a.finite = False
+    assert not fresh_lora_is_noop(model)
+    a.finite = True
+    params.append(("x.bias", Tensor()))
+    assert not fresh_lora_is_noop(model)

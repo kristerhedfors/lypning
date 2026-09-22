@@ -20,6 +20,18 @@ CONTRACT_KEYS = ("base_model", "revision", "bundle_digest", "smoke", "decoding",
 ARGUMENT_KEYS = ("seed", "eval_split", "eval_draws", "greedy", "eval_sequences", "score_workers")
 
 
+def fresh_lora_is_noop(model):
+    """Prove the freshly attached SFT adapter leaves the base unchanged."""
+    parameters = list(model.named_parameters())
+    tensors = [(n, p) for n, p in parameters if ".lora_" in n]
+    return bool(tensors and any(".lora_B." in n for n, _ in tensors)
+                and all(not p.requires_grad or ".lora_" in n for n, p in parameters)
+                and all((".lora_A." in n or ".lora_B." in n)
+                        and bool(p.isfinite().all())
+                        and (".lora_B." not in n or not bool(p.detach().count_nonzero()))
+                        for n, p in tensors))
+
+
 def reuse_evaluation(source, output, manifest, cases):
     """Return False for trained/legacy adapters; mismatched evidence fails closed.
 
