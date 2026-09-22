@@ -76,7 +76,9 @@ def parser():
     p.add_argument("--score-workers", type=int, default=16, help="concurrent verifier scorings per chunk")
     p.add_argument("--greedy", action="store_true", help="eval-only diagnostic; not checkpoint selection")
     p.add_argument("--warmup-ratio", type=float, default=0.1)
-    p.add_argument("--max-no-signal", type=int, default=20, help="abort RL after this many uninformative groups")
+    p.add_argument("--max-no-signal", type=int, default=20,
+                   help="abort RL after this many consecutive optimizer steps' worth of "
+                        "uninformative groups (times --grpo-prompts groups)")
     p.add_argument("--max-seq", type=int, default=4096)
     p.add_argument("--max-new-tokens", type=int, default=1024)
     p.add_argument("--seed", type=int, default=1111)
@@ -395,6 +397,16 @@ def run(args, bundle, adapter_info):
     from huggingface_hub import snapshot_download
     from peft import PeftModel
     from transformers import AutoConfig, AutoTokenizer, Qwen3_5ForConditionalGeneration, set_seed
+
+    # transformers resolves the gated-delta rule when the modeling module is
+    # IMPORTED, so the binding the loaded model will have is already decided
+    # here. Refuse NOW, before the tokenizer, the smoke and the 55 GB pull --
+    # the post-load read below is the record; this is the cheap refusal.
+    import_binding = kernel_block.module_kernels(
+        sys.modules.get(Qwen3_5ForConditionalGeneration.__module__))
+    if not kernel_block.reference_only(import_binding):
+        raise TrainingError("gated-delta-net resolved to something other than the torch "
+                            "reference at import: " + json.dumps(import_binding, sort_keys=True))
 
     if not args.smoke and not torch.cuda.is_available():
         raise TrainingError("CUDA required for a real 27B run")

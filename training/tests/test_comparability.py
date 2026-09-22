@@ -1103,6 +1103,42 @@ def test_the_bound_gated_delta_rule_is_read_off_the_loaded_model(tmp_path, monke
     assert not kernel_block.reference_only(kernel_block.bound_kernels(Empty()))
 
 
+def test_the_kernel_refusal_comes_before_the_weights_are_paid_for(tmp_path, monkeypatch):
+    """The binding is decided at IMPORT, so the refusal must not wait for the load.
+
+    `use_kernel_func_from_hub_with_fallback` resolves once, at decoration; the
+    post-load `bound_kernels` read is the record. Refusing only there spent the
+    tokenizer, the gradient smoke and the 55 GB pull on a run that was already
+    another arm. `module_kernels` reads the same closures off the module.
+    """
+    import sys
+
+    gpu = Path(__file__).resolve().parents[1] / "gpu"
+    monkeypatch.syspath_prepend(str(gpu))
+    import kernel_block
+    for name in [m for m in sys.modules if m.split(".")[0] == "fla"]:
+        monkeypatch.delitem(sys.modules, name)
+    _fake_modeling(tmp_path, monkeypatch, None)
+    modeling = sys.modules["transformers.models.qwen3_5.modeling_qwen3_5"]
+    assert kernel_block.reference_only(kernel_block.module_kernels(modeling))
+
+    def chunk_gated_delta_rule(*a, **k):
+        return "fla"
+    chunk_gated_delta_rule.__module__ = "fla.ops.gated_delta_rule.chunk"
+    _fake_modeling(tmp_path, monkeypatch, chunk_gated_delta_rule)
+    modeling = sys.modules["transformers.models.qwen3_5.modeling_qwen3_5"]
+    assert not kernel_block.reference_only(kernel_block.module_kernels(modeling))
+    assert not kernel_block.reference_only(kernel_block.module_kernels(None))
+
+    source = gpu.joinpath("train_verified.py").read_text(encoding="utf-8")
+    run = source.split("def run(")[1].split("\ndef main(")[0]
+    at_check = run.index("if not kernel_block.reference_only(import_binding):")
+    assert run.index("import_binding = kernel_block.module_kernels(") < at_check
+    for costly in ("tok = AutoTokenizer.from_pretrained(", "core.smoke(",
+                   "snapshot_download(BASE_MODEL", "Qwen3_5ForConditionalGeneration.from_pretrained("):
+        assert at_check < run.index(costly), costly
+
+
 def test_the_run_record_carries_the_kernels_and_the_probe_contract_compares_them():
     """Recording it is half; comparing it across stages is the half that binds.
 

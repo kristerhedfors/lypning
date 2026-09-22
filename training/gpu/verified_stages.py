@@ -191,7 +191,10 @@ def train_grpo(model, tok, args, bundle, train_cases, verifier, effective, polic
             # same way, and a log key must never become a channel for case text.
             row = {key: value for key, value in sorted((logs or {}).items())
                    if isinstance(value, (int, float)) and not isinstance(value, bool)}
-            if row:
+            # Per-step rows only: the trainer's end-of-run summary (train_loss,
+            # train_runtime, ...) has no `loss`, and a reader that takes the
+            # last row as the last step would read it as one.
+            if "loss" in row:
                 append_jsonl(loss_path, dict(row, step=state.global_step))
             return control
     # One optimizer step = `grpo_prompts` prompt groups of `generations` draws,
@@ -224,7 +227,13 @@ def train_grpo(model, tok, args, bundle, train_cases, verifier, effective, polic
     reward = Reward(bundle["cases"], verifier, args.output / "blocked-witnesses.jsonl",
                     eos_token_id=tok.eos_token_id,
                     rollout_path=args.output / "rollouts.jsonl",
-                    generations=args.generations, max_no_signal=0 if args.smoke else args.max_no_signal,
+                    generations=args.generations,
+                    # `Reward` counts consecutive uninformative GROUPS; a step
+                    # now carries `grpo_prompts` of them. Scaled so the abort
+                    # still means "--max-no-signal optimizer steps with zero
+                    # advantage", as it did at one group per step -- unscaled,
+                    # four prompts a step would end a paid run four times sooner.
+                    max_no_signal=0 if args.smoke else args.max_no_signal * args.grpo_prompts,
                     score_workers=args.score_workers)
     expected_prompts = [tok.apply_chat_template(messages(c), tokenize=False,
                         add_generation_prompt=True, enable_thinking=False) for c in train_cases]

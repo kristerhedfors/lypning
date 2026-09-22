@@ -82,8 +82,26 @@ def _describe(fn):
                       getattr(fn, "__qualname__", getattr(fn, "__name__", "?")))
 
 
-def bound_kernels(model, functions=("torch_chunk_gated_delta_rule",
-                                    "torch_recurrent_gated_delta_rule")):
+#: The two gated-delta-rule wrappers transformers resolves at import.
+FUNCTIONS = ("torch_chunk_gated_delta_rule", "torch_recurrent_gated_delta_rule")
+
+
+def module_kernels(modeling, functions=FUNCTIONS):
+    """What a modeling module's gated-delta-rule wrappers resolved to.
+
+    The resolution happens when the module is IMPORTED (the decorator runs
+    once), so this answer is available before any weight is loaded -- which
+    is where `train_verified.run` asks it first, because a refusal after the
+    55 GB pull is paid for and one before it is not. Never raises.
+    """
+    state = {"fla_imported": any(m.split(".")[0] in BLOCKED for m in sys.modules)}
+    for name in functions:
+        wrapper = getattr(modeling, name, None) if modeling is not None else None
+        state[name] = _describe(_implementation(wrapper)) if wrapper is not None else None
+    return state
+
+
+def bound_kernels(model, functions=FUNCTIONS):
     """What the loaded model's gated-delta-net layers will call, read after load.
 
     Looks up the modeling module of the first module whose class name ends in
@@ -101,12 +119,9 @@ def bound_kernels(model, functions=("torch_chunk_gated_delta_rule",
                 break
     except Exception:                                       # noqa: BLE001
         layer = None
-    state = {"layer": type(layer).__name__ if layer is not None else None,
-             "fla_imported": any(m.split(".")[0] in BLOCKED for m in sys.modules)}
     modeling = sys.modules.get(type(layer).__module__) if layer is not None else None
-    for name in functions:
-        wrapper = getattr(modeling, name, None) if modeling is not None else None
-        state[name] = _describe(_implementation(wrapper)) if wrapper is not None else None
+    state = {"layer": type(layer).__name__ if layer is not None else None}
+    state.update(module_kernels(modeling, functions))
     return state
 
 

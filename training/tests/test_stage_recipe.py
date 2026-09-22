@@ -153,9 +153,15 @@ def test_sft_steps_the_declared_optimizer_and_logs_its_gradient_norm(tmp_path):
     assert row["grad_norm"] == 0.25 and row["step"] == 1
 
 
-def _grpo(tmp_path, monkeypatch, callback_steps):
+def _grpo(tmp_path, monkeypatch, callback_steps, smoke=True):
     module = stages()
     observed = {}
+
+    class CapturingReward(module.Reward):
+        def __init__(self, *a, **kwargs):
+            observed["reward"] = kwargs
+            super().__init__(*a, **kwargs)
+    monkeypatch.setattr(module, "Reward", CapturingReward)
 
     class Trainer:
         def __init__(self, **kwargs):
@@ -179,7 +185,7 @@ def _grpo(tmp_path, monkeypatch, callback_steps):
     monkeypatch.setitem(sys.modules, "trl", SimpleNamespace(GRPOConfig=SimpleNamespace, GRPOTrainer=Trainer))
     case = dict(starter_cases()[0], split="train")
     args = SimpleNamespace(output=tmp_path, seed=42, generations=8, grpo_prompts=4, warmup_ratio=.1,
-                           smoke=True, max_no_signal=20, score_workers=2)
+                           smoke=smoke, max_no_signal=20, score_workers=2)
     model = SimpleNamespace(device=SimpleNamespace(type="cpu"), parameters=lambda: [])
     tok = SimpleNamespace(eos_token_id=99, apply_chat_template=lambda msgs, **kwargs: msgs[-1]["content"])
     verifier = SimpleNamespace(score=lambda c, p: Score(1, "correct-native", 3, 3))
@@ -212,8 +218,26 @@ def test_grpo_writes_its_log_history_to_loss_jsonl(tmp_path, monkeypatch):
              "clip_ratio/region_mean": 0.0, "learning_rate": 1e-5, "note": "case text", "flag": True}),
         (2, {}),
         (2, {"loss": 0.4}),
+        # The trainer's end-of-run summary is not a step.
+        (2, {"train_loss": 0.45, "train_runtime": 12.0, "epoch": 1.0}),
     ])
     rows = [json.loads(line) for line in (tmp_path / "loss.jsonl").read_text().splitlines()]
     assert rows == [{"clip_ratio/region_mean": 0.0, "frac_reward_zero_std": 0.25, "grad_norm": 0.1,
                      "learning_rate": 1e-5, "loss": 0.5, "step": 1},
                     {"loss": 0.4, "step": 2}]
+
+
+def test_the_no_signal_abort_still_counts_optimizer_steps(tmp_path, monkeypatch):
+    """`Reward` counts consecutive uninformative GROUPS, and a step now has four.
+
+    Seed 1111 stepped one group at a time, so --max-no-signal 20 meant twenty
+    zero-advantage steps. Passed through unscaled at four prompts a step it
+    would mean five, and on a bank where most probe groups carry no signal
+    (`reports/2026-09-21-fable-round02-seed1111-read.md` §4) a run of twenty
+    uninformative groups is far likelier than a run of eighty -- an abort that
+    ends a paid run after the SFT, the probe and the weight pull on noise.
+    """
+    observed = _grpo(tmp_path, monkeypatch, [], smoke=False)
+    assert observed["reward"]["max_no_signal"] == 20 * 4
+    assert observed["reward"]["generations"] == 8
+    assert _grpo(tmp_path / "s", monkeypatch, [])["reward"]["max_no_signal"] == 0, "smoke never aborts"
