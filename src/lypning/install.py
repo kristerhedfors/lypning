@@ -30,7 +30,10 @@ import copy
 import difflib
 import json
 import os
+import shlex
 import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -51,32 +54,48 @@ SETTINGS_BACKUP_SUFFIX = ".lypning-backup"
 OUR_MARK = "lypning"
 
 
+SCOPES = ("project", "user")
+
+
 @dataclass(frozen=True)
 class HookSpec:
-    """One hook we want present, and the two ways it can be spelled."""
+    """One hook we want present, the two ways it can be spelled, and where.
+
+    ``scopes`` is which installs register it. A user-scope hook fires in EVERY
+    repository the user opens, so it earns its place only by being harmless in
+    a repository that is not ours — which only the capture hook is.
+    """
 
     event: str
     matcher: Optional[str]
     scripts: Tuple[str, ...]
     fallback: str
+    scopes: Tuple[str, ...] = SCOPES
 
 
 HOOKS: Tuple[HookSpec, ...] = (
     # SessionStart re-installs the shim: these containers are ephemeral and a
     # shim that was installed in a previous session is not on this one's PATH.
+    # Project only: at user scope it would write a shim into ~/.lypning/bin
+    # and inject lypning's engine state into every unrelated session.
     HookSpec("SessionStart", None,
              ("lypning-session-start.sh", "lypning-install.sh", "lypning-shim.sh"),
-             "lypning shim install"),
+             "lypning shim install", scopes=("project",)),
     # PreToolUse/Bash catches the command string — heredoc bodies, `uv run`
-    # wrappers, write-then-run — which the shim never sees as argv.
+    # wrappers, write-then-run — which the shim never sees as argv. The one
+    # hook that belongs at user scope: it only appends to our own log, outside
+    # every repository, so it can run anywhere at all times.
     HookSpec("PreToolUse", "Bash",
              ("lypning-capture.sh",),
              "lypning hook pre-tool-use"),
     # Stop folds the session's log into tests/corpus/sightings before teardown
-    # takes the container and the log with it.
+    # takes the container and the log with it. Project only: that directory is
+    # a lypning checkout's, and at user scope this would write it into every
+    # repository the user opens. `capture.hook_stop` refuses outside a checkout
+    # as well, which is what protects an install made before this field.
     HookSpec("Stop", None,
              ("lypning-harvest.sh",),
-             "lypning hook stop"),
+             "lypning hook stop", scopes=("project",)),
 )
 
 
@@ -108,6 +127,10 @@ class Plan:
     scope: str = "project"
     settings_path: Optional[Path] = None
     diff: List[str] = field(default_factory=list)
+    #: A source tree pinned onto every hook command as ``LYPNING_PYTHONPATH``
+    #: (:func:`plan_install`). Carried on the plan because :func:`apply`
+    #: re-derives the entries rather than replaying the planned text.
+    pythonpath: Optional[str] = None
 
     @property
     def changes(self) -> List[Action]:
@@ -159,17 +182,26 @@ def claude_dir(project: Path | str | None = None, scope: str = "project") -> Pat
     return _project(project) / ".claude"
 
 
-def _hook_command(scope: str, script: Optional[str], fallback: str) -> str:
+def _hook_command(scope: str, script: Optional[str], fallback: str,
+                  pythonpath: Optional[str] = None) -> str:
     """A copied script when we have one, else the CLI entry point.
 
     Both spellings mention lypning, so uninstall removes either without knowing
     which one this install chose — and the choice can differ between a source
     checkout (which ships the .sh) and a wheel (which may not).
+
+    ``pythonpath`` prefixes the command with ``LYPNING_PYTHONPATH=<dir>``, the
+    arm the scripts read when the package is neither installed nor the
+    session's own checkout. Only on a script: the CLI fallback needs ``lypning``
+    on PATH, and a pinned tree cannot help a command that never reaches python.
     """
     if not script:
         return fallback
     base = "$CLAUDE_PROJECT_DIR" if scope == "project" else "$HOME"
-    return 'sh "%s/.claude/hooks/%s"' % (base, script)
+    command = 'sh "%s/.claude/hooks/%s"' % (base, script)
+    if pythonpath:
+        command = "LYPNING_PYTHONPATH=%s %s" % (shlex.quote(pythonpath), command)
+    return command
 
 
 def _available_scripts(*dirs: Path) -> List[str]:
@@ -183,13 +215,143 @@ def _available_scripts(*dirs: Path) -> List[str]:
     return names
 
 
-def hook_entries(scope: str, scripts: Sequence[str]) -> List[Tuple[str, Optional[str], str]]:
-    """The ``(event, matcher, command)`` triples this install wants present."""
+def hook_entries(scope: str, scripts: Sequence[str],
+                 pythonpath: Optional[str] = None) -> List[Tuple[str, Optional[str], str]]:
+    """The ``(event, matcher, command)`` triples this install wants present.
+
+    Only the specs registered at ``scope`` (:attr:`HookSpec.scopes`).
+    """
     out: List[Tuple[str, Optional[str], str]] = []
     for spec in HOOKS:
+        if scope not in spec.scopes:
+            continue
         chosen = next((n for n in spec.scripts if n in scripts), None)
-        out.append((spec.event, spec.matcher, _hook_command(scope, chosen, spec.fallback)))
+        out.append((spec.event, spec.matcher,
+                    _hook_command(scope, chosen, spec.fallback, pythonpath)))
     return out
+
+
+def _scripts_for(scope: str, available: Sequence[str]) -> List[str]:
+    """The hook scripts an install at ``scope`` copies.
+
+    A project install copies every shipped script, as it always has. A user
+    install copies only the ones its own entries name: a Stop script sitting
+    unregistered in ``~/.claude/hooks`` is an invitation to wire it by hand,
+    and wired by hand it is the one this scope exists not to have.
+    """
+    if scope != "user":
+        return list(available)
+    wanted = {n for spec in HOOKS if scope in spec.scopes for n in spec.scripts}
+    return [n for n in available if n in wanted]
+
+
+def _stale_scope_entries(settings: Dict[str, Any], scope: str) -> List[str]:
+    """Events holding one of our commands that ``scope`` no longer registers.
+
+    What an install from before :attr:`HookSpec.scopes` left at user scope. It
+    is reported, never removed: an install is append-only, and deleting an
+    entry is uninstall's job, which is exact about it.
+    """
+    allowed = {spec.event for spec in HOOKS if scope in spec.scopes}
+    ours = {spec.event for spec in HOOKS}
+    hooks = settings.get("hooks")
+    if not isinstance(hooks, dict):
+        return []
+    stale = []
+    for event, groups in hooks.items():
+        if event in allowed or event not in ours or not isinstance(groups, list):
+            continue
+        if any(isinstance(c, str) and OUR_MARK in c.lower()
+               for g in groups for c in _commands_of(g)):
+            stale.append(event)
+    return stale
+
+
+# --- can a user-scope hook reach the package at all? --------------------------
+#
+# lypning-capture.sh finds the package one of four ways: the `lypning` console
+# script, the session's own checkout (`$CLAUDE_PROJECT_DIR/src`), a tree pinned
+# by `$LYPNING_PYTHONPATH`, or a bare `python3 -m lypning`. At project scope in
+# a checkout the second always works. At user scope, in somebody else's
+# repository, it never does — and when none of the other three does either, the
+# hook answers the protocol line, exits 0, and records nothing, forever, by
+# invariant 5. That is a successful-looking install of nothing, the same
+# failure `_path_warning` exists to name for a shim that is not on PATH.
+
+
+def _is_console_script(path: str) -> bool:
+    """A ``#!`` text file, as a console script is — not the Rust core.
+
+    The name ``lypning`` can resolve to the engine binary (``~/.lypning/bin``),
+    which reads ``hook`` as a script path and fails; the script's first arm
+    then falls through, so that resolution is not an arm that works.
+    """
+    try:
+        with open(path, "rb") as f:
+            return f.read(2) == b"#!"
+    except OSError:
+        return False
+
+
+def _imports_lypning(python: str) -> bool:
+    """Can this interpreter ``import lypning`` in a hook's environment?
+
+    Spawned from a neutral directory, because ``python3 -m`` puts the working
+    directory on ``sys.path`` and a probe run from a checkout's ``src`` would
+    find the package the hook, running from another repository, never will.
+    ``LYPNING_CAPTURE=0`` so that a ``python3`` which is our own shim does not
+    log the probe as a program somebody ran.
+    """
+    env = dict(os.environ)
+    env["LYPNING_CAPTURE"] = "0"
+    try:
+        proc = subprocess.run(
+            [python, "-c", "import importlib.util, sys; "
+                           "sys.exit(0 if importlib.util.find_spec('lypning') else 1)"],
+            cwd=tempfile.gettempdir(), env=env, capture_output=True, timeout=10,
+            check=False)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+    return proc.returncode == 0
+
+
+def dispatch_arms(pythonpath: Optional[str] = None) -> List[str]:
+    """The arms of lypning-capture.sh a hook fired OUTSIDE a checkout can reach.
+
+    Read-only: it looks at PATH and at files, and spawns ``python3`` once with
+    capture off. The answer is about THIS environment, which is the nearest
+    thing available to the one the agent will launch hooks from — a shell that
+    starts the agent with a different PATH gets a different answer, which is why
+    the warning names what was checked. Empty means inert.
+    """
+    arms: List[str] = []
+    exe = shutil.which("lypning")
+    if exe and _is_console_script(exe):
+        arms.append("lypning on PATH (%s)" % exe)
+    pin = pythonpath or os.environ.get("LYPNING_PYTHONPATH", "").strip()
+    if pin and (Path(pin).expanduser() / "lypning" / "__init__.py").is_file():
+        arms.append("LYPNING_PYTHONPATH (%s)" % pin)
+    python = shutil.which("python3")
+    if python and _imports_lypning(python):
+        arms.append("python3 -m lypning (%s)" % python)
+    return arms
+
+
+INERT_FIX = ("`uv tool install <lypning checkout>` to put `lypning` on PATH, or "
+             "export LYPNING_PYTHONPATH=<checkout>/src in the shell that starts "
+             "the agent")
+
+
+def _inert_warning(hooks_dir: Path, pythonpath: Optional[str]) -> Optional[Action]:
+    """A user-scope capture hook that no dispatch arm can reach, as a warning."""
+    if dispatch_arms(pythonpath):
+        return None
+    return Action(
+        "skip", hooks_dir,
+        "WARNING: INERT — outside a lypning checkout this hook reaches no copy of "
+        "the package (no `lypning` console script on PATH, no LYPNING_PYTHONPATH, "
+        "`python3 -c 'import lypning'` fails) and will record nothing — fix: %s"
+        % INERT_FIX, "hook")
 
 
 # --- the merge (pure; no I/O, so it is testable and diffable) -----------------
@@ -367,14 +529,28 @@ def plan_install(
     shim: bool = True,
     hooks: bool = True,
     skill: bool = True,
+    pythonpath: Optional[str] = None,
 ) -> Plan:
-    """Compute the whole install. **Writes nothing.**"""
+    """Compute the whole install. **Writes nothing.**
+
+    ``pythonpath`` pins a source tree (a directory holding ``lypning/``) onto
+    every hook command, for a user-scope install with no ``lypning`` on PATH.
+    A directory that holds no package is refused with a warning rather than
+    pinned: a pin that points nowhere is an inert hook that looks configured.
+    """
     want_shim, want_hooks, want_skill = shim, hooks, skill
     proj = _project(project)
     root = claude_dir(proj, scope)
     actions: List[Action] = []
     settings_path = root / "settings.json"
     diff: List[str] = []
+    if pythonpath:
+        pythonpath = str(Path(pythonpath).expanduser().resolve())
+        if not (Path(pythonpath) / "lypning" / "__init__.py").is_file():
+            actions.append(Action(
+                "skip", Path(pythonpath),
+                "WARNING: no lypning/__init__.py here — not pinned", "hook"))
+            pythonpath = None
 
     if want_skill:
         src = paths.SKILL_SRC
@@ -392,7 +568,7 @@ def plan_install(
     if want_hooks:
         hooks_src = paths.HOOKS_SRC
         dest_root = root / "hooks"
-        scripts = _available_scripts(hooks_src)
+        scripts = _scripts_for(scope, _available_scripts(hooks_src))
         if not scripts:
             # A wheel without the shell hooks is a supported shape: the CLI
             # entry points (`lypning hook …`) do the same work, one exec later.
@@ -403,15 +579,27 @@ def plan_install(
         for name in scripts:
             actions.append(_file_action(hooks_src / name, dest_root / name, "hook"))
 
-        entries = hook_entries(scope, scripts)
+        entries = hook_entries(scope, scripts, pythonpath)
         before, err = load_settings(settings_path)
         if err:
             actions.append(Action("skip", settings_path, err + " — refusing to touch it", "settings"))
         else:
+            stale = _stale_scope_entries(before, scope)
+            if stale:
+                actions.append(Action(
+                    "skip", settings_path,
+                    "WARNING: %s scope still holds lypning %s entr%s from an older "
+                    "install, which this scope no longer registers — `lypning "
+                    "uninstall%s` and install again to drop %s"
+                    % (scope, "/".join(stale), "y" if len(stale) == 1 else "ies",
+                       " --user" if scope == "user" else "",
+                       "it" if len(stale) == 1 else "them"), "settings"))
             after, added = merge_hooks(before, entries)
             if not added:
                 actions.append(Action("skip", settings_path,
-                                      "all %d hook entries already present" % len(entries),
+                                      "all %d hook entries already present" % len(entries)
+                                      if len(entries) != 1 else
+                                      "the hook entry is already present",
                                       "settings", present=True))
             else:
                 backup = settings_path.with_name(settings_path.name + SETTINGS_BACKUP_SUFFIX)
@@ -424,10 +612,15 @@ def plan_install(
                 actions.append(Action("merge", settings_path, note, "settings"))
                 diff = settings_diff(before, after, settings_path)
 
+        if scope == "user":
+            warning = _inert_warning(dest_root, pythonpath)
+            if warning is not None:
+                actions.append(warning)
+
     if want_shim:
         actions.extend(shim_actions())
 
-    return Plan(actions, proj, scope, settings_path, diff)
+    return Plan(actions, proj, scope, settings_path, diff, pythonpath)
 
 
 def shim_actions() -> List[Action]:
@@ -515,8 +708,10 @@ def apply(plan: Plan, *, force: bool = False) -> List[Action]:
                 if err:
                     done.append(Action("skip", a.path, err, "settings"))
                     continue
-                scripts = _available_scripts(paths.HOOKS_SRC, a.path.parent / "hooks")
-                after, added = merge_hooks(before, hook_entries(plan.scope, scripts))
+                scripts = _scripts_for(plan.scope, _available_scripts(
+                    paths.HOOKS_SRC, a.path.parent / "hooks"))
+                after, added = merge_hooks(before, hook_entries(plan.scope, scripts,
+                                                                plan.pythonpath))
                 if not added:
                     done.append(Action("skip", a.path, "already present", "settings"))
                     continue
@@ -646,6 +841,11 @@ def status(project: Path | str | None = None) -> dict:
             if mine:
                 present[event] = mine
         skill_dir = root / "skills" / "lypning"
+        # Whether a user-scope hook can reach the package at all. Asked only
+        # when one is registered — it costs a python3 spawn — and never at
+        # project scope, where the checkout arm is the answer in the one kind
+        # of repository a project install is for.
+        reach = dispatch_arms() if scope == "user" and present else None
         out["scopes"][scope] = {
             "claude_dir": str(root),
             "settings": str(settings_path),
@@ -657,6 +857,8 @@ def status(project: Path | str | None = None) -> dict:
             "hooks": present,
             "hook_scripts": _available_scripts(root / "hooks"),
             "skill": str(skill_dir) if skill_dir.is_dir() else None,
+            "reach": reach,
+            "inert": reach is not None and not reach,
         }
 
     log = paths.log_path()
@@ -759,6 +961,11 @@ def render_status(st: dict) -> str:
                         out.append("  hook     : %-13s %s" % (event, cmd))
             else:
                 out.append("  hook     : none of ours in %s" % s["settings"])
+        if s.get("inert"):
+            out.append("  reach    : INERT — outside a lypning checkout no arm reaches "
+                       "the package, so these hooks record nothing — fix: %s" % INERT_FIX)
+        elif s.get("reach"):
+            out.append("  reach    : %s" % "; ".join(s["reach"]))
         if s["backup"]:
             out.append("  backup   : %s" % s["backup"])
 

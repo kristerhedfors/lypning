@@ -212,3 +212,194 @@ def test_a_second_install_reports_the_files_as_already_in_place(project, setting
     assert plan.already and plan.notes == []
     assert "already in place" in install.render_plan(plan)
     assert "warning" not in install.render_plan(plan)
+
+
+# --- user scope: capture everywhere, and nothing else anywhere ---------------
+
+
+@pytest.fixture
+def user_settings(tmp_path):
+    """``~/.claude/settings.json`` under the test's ``$HOME`` (conftest)."""
+    p = install.claude_dir(None, "user") / "settings.json"
+    assert str(p).startswith(str(tmp_path)), "user scope must resolve under the test HOME"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+@pytest.fixture
+def reachable(monkeypatch):
+    """A user-scope hook that some arm reaches — without spawning python3."""
+    monkeypatch.setattr(install, "dispatch_arms", lambda pythonpath=None: ["stub arm"])
+
+
+def _events(settings):
+    return sorted((settings.get("hooks") or {}).keys())
+
+
+def test_user_scope_registers_the_bash_capture_hook_and_nothing_else(
+        project, user_settings, reachable):
+    """A user-scope hook fires in every repository the user opens.
+
+    Only PreToolUse(Bash) is harmless there — it appends to our own log,
+    outside every repository. Stop would write sightings into whatever
+    repository the session is in; SessionStart would write a shim and inject
+    lypning's engine state into every unrelated session.
+    """
+    install.install(project, scope="user", shim=False, skill=False)
+    after = json.loads(user_settings.read_text(encoding="utf-8"))
+    assert _events(after) == ["PreToolUse"]
+    [group] = after["hooks"]["PreToolUse"]
+    assert group["matcher"] == "Bash"
+    assert [h["command"] for h in group["hooks"]] == [
+        'sh "$HOME/.claude/hooks/lypning-capture.sh"']
+    # Only the script the entries name is copied: an unregistered Stop script
+    # in ~/.claude/hooks is an invitation to wire it by hand.
+    assert sorted(p.name for p in (user_settings.parent / "hooks").glob("*.sh")) == [
+        "lypning-capture.sh"]
+    # And the project was not touched at all.
+    assert not (project / ".claude").exists()
+
+
+def test_project_scope_still_registers_all_three(project, settings_path):
+    install.install(project, shim=False)
+    after = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert _events(after) == ["PreToolUse", "SessionStart", "Stop"]
+
+
+def test_the_scopes_field_is_what_decides(monkeypatch):
+    entries = install.hook_entries("user", ["lypning-capture.sh", "lypning-harvest.sh",
+                                            "lypning-session-start.sh"])
+    assert [(e, m) for e, m, _c in entries] == [("PreToolUse", "Bash")]
+    assert [spec.event for spec in install.HOOKS if "user" in spec.scopes] == ["PreToolUse"]
+
+
+def test_user_scope_round_trip_is_exact_and_backs_up_once(project, user_settings, reachable):
+    _write(user_settings, FOREIGN_SETTINGS)
+    original_bytes = user_settings.read_bytes()
+    original = json.loads(user_settings.read_text(encoding="utf-8"))
+    backup = user_settings.with_name(user_settings.name + install.SETTINGS_BACKUP_SUFFIX)
+
+    plan = install.plan_install(project, scope="user", shim=False, skill=False)
+    assert user_settings.read_bytes() == original_bytes, "a plan writes nothing"
+    assert not backup.exists()
+    assert any(line.startswith("+") and "lypning-capture.sh" in line for line in plan.diff)
+
+    install.install(project, scope="user", shim=False, skill=False)
+    assert backup.read_bytes() == original_bytes
+    after = json.loads(user_settings.read_text(encoding="utf-8"))
+    assert _commands(after, "PreToolUse")[0] == "sh ./audit.sh"
+    assert after["model"] == "opusmagnum"
+
+    again = install.plan_install(project, scope="user", shim=False, skill=False)
+    assert again.changes == []
+    assert "the hook entry is already present" in install.render_plan(again)
+
+    install.uninstall(project, scope="user")
+    assert json.loads(user_settings.read_text(encoding="utf-8")) == original
+    assert backup.read_bytes() == original_bytes, "uninstall never touches the backup"
+    assert list((user_settings.parent / "hooks").glob("lypning*.sh")) == []
+
+
+def test_an_older_user_install_is_reported_not_rewritten(project, user_settings, reachable):
+    """Stop/SessionStart left at user scope by an install older than the
+    scopes field: named in the plan, never removed by an install (append-only)
+    — uninstall is the exact tool for that."""
+    old = {"hooks": {"Stop": [{"hooks": [{"type": "command",
+                                          "command": 'sh "$HOME/.claude/hooks/lypning-harvest.sh"'}]}]}}
+    _write(user_settings, old)
+    plan = install.plan_install(project, scope="user", shim=False, skill=False)
+    stale = [a for a in plan.notes if "older install" in a.note]
+    assert len(stale) == 1 and "Stop" in stale[0].note and "--user" in stale[0].note
+    install.apply(plan)
+    after = json.loads(user_settings.read_text(encoding="utf-8"))
+    assert _events(after) == ["PreToolUse", "Stop"]
+
+
+# --- INERT: a user-scope hook no arm can reach --------------------------------
+
+
+def test_a_user_hook_no_arm_reaches_is_reported_inert(project, user_settings, monkeypatch):
+    """The failure invariant 5 makes silent: the hook answers, exits 0, and
+    records nothing, in every repository, forever. The plan must say so, the
+    same way it says a shim is not on PATH."""
+    monkeypatch.setattr(install, "dispatch_arms", lambda pythonpath=None: [])
+    plan = install.plan_install(project, scope="user", shim=False, skill=False)
+    inert = [a for a in plan.notes if "INERT" in a.note]
+    assert len(inert) == 1
+    assert "uv tool install" in inert[0].note and "LYPNING_PYTHONPATH" in inert[0].note
+    assert "1 warning" in install.render_plan(plan)
+
+    install.apply(plan)
+    st = install.status(project)
+    assert st["scopes"]["user"]["inert"] is True
+    assert st["scopes"]["project"]["inert"] is False
+    assert "reach    : INERT" in install.render_status(st)
+
+
+def test_a_reachable_user_hook_is_not_reported_inert(project, user_settings, reachable):
+    plan = install.plan_install(project, scope="user", shim=False, skill=False)
+    assert not [a for a in plan.actions if "INERT" in a.note]
+    install.apply(plan)
+    st = install.status(project)
+    assert st["scopes"]["user"]["inert"] is False
+    assert st["scopes"]["user"]["reach"] == ["stub arm"]
+
+
+def test_project_scope_never_asks_whether_it_is_inert(project, monkeypatch):
+    def boom(pythonpath=None):
+        raise AssertionError("a project install must not probe the user-scope arms")
+    monkeypatch.setattr(install, "dispatch_arms", boom)
+    install.plan_install(project, shim=False)
+
+
+def test_dispatch_arms_tells_the_console_script_from_the_rust_core(tmp_path, monkeypatch):
+    """The name ``lypning`` can resolve to the engine binary, which the
+    script's first arm cannot use — only a ``#!`` console script counts."""
+    monkeypatch.setattr(install, "_imports_lypning", lambda python: False)
+    monkeypatch.delenv("LYPNING_PYTHONPATH", raising=False)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    exe = bindir / "lypning"
+    exe.write_bytes(b"\xcf\xfa\xed\xfe not a script")
+    exe.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bindir))
+    assert install.dispatch_arms() == []
+    exe.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    assert install.dispatch_arms() == ["lypning on PATH (%s)" % exe]
+
+    src = tmp_path / "src"
+    (src / "lypning").mkdir(parents=True)
+    (src / "lypning" / "__init__.py").write_text("", encoding="utf-8")
+    exe.unlink()
+    assert install.dispatch_arms(str(src)) == ["LYPNING_PYTHONPATH (%s)" % src]
+    monkeypatch.setenv("LYPNING_PYTHONPATH", str(src))
+    assert install.dispatch_arms() == ["LYPNING_PYTHONPATH (%s)" % src]
+
+
+# --- pinning a source tree -------------------------------------------------------
+
+
+def test_a_pinned_tree_is_on_the_command_and_uninstall_still_removes_it(
+        project, user_settings, tmp_path):
+    src = tmp_path / "checkout" / "src"
+    (src / "lypning").mkdir(parents=True)
+    (src / "lypning" / "__init__.py").write_text("", encoding="utf-8")
+    _write(user_settings, {"model": "x"})
+
+    plan = install.plan_install(project, scope="user", shim=False, skill=False,
+                                pythonpath=str(src))
+    assert not [a for a in plan.actions if "INERT" in a.note], "the pin is an arm"
+    install.apply(plan)
+    after = json.loads(user_settings.read_text(encoding="utf-8"))
+    assert _commands(after, "PreToolUse") == [
+        "LYPNING_PYTHONPATH=%s sh \"$HOME/.claude/hooks/lypning-capture.sh\"" % src.resolve()]
+    install.uninstall(project, scope="user")
+    assert json.loads(user_settings.read_text(encoding="utf-8")) == {"model": "x", "hooks": {}}
+
+
+def test_a_pin_that_holds_no_package_is_refused(project, user_settings, tmp_path, reachable):
+    plan = install.plan_install(project, scope="user", shim=False, skill=False,
+                                pythonpath=str(tmp_path / "empty"))
+    assert plan.pythonpath is None
+    assert any("not pinned" in a.note for a in plan.notes)
+    assert not any("LYPNING_PYTHONPATH=" in line for line in plan.diff)
