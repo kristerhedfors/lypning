@@ -53,7 +53,9 @@ def run_blocks(text):
     return out
 
 
-@pytest.mark.parametrize("name", ["round02.yml", "s4-target-preflight.yml", "round02-preflight.yml"])
+@pytest.mark.parametrize("name", ["round02.yml", "s4-target-preflight.yml", "round02-preflight.yml",
+                                  "step2-control.yml", "step2-control-grade.yml", "step2-merge.yml",
+                                  "provider-seed.yml"])
 def test_no_expression_is_expanded_into_a_script(name):
     """Values reach scripts through env; a commit message with `$(...)` would run otherwise."""
     for script in run_blocks((WORKFLOWS / name).read_text(encoding="utf-8")):
@@ -76,10 +78,46 @@ def test_arm_a_is_dispatched_without_grpo():
     assert '--grpo-steps "${PILOT_GRPO_STEPS}"' in job(ROUND02, "submit")
 
 
+def test_dev_draws_and_the_arm_c_knobs_are_chosen_here_not_defaulted_in_the_launcher():
+    """Absent, launch.py's DEFAULT_DEV_EVAL_DRAWS applied and nobody chose it."""
+    submit = job(ROUND02, "submit")
+    for env, flag, value in (("PILOT_DEV_EVAL_DRAWS", "--dev-eval-draws", "4"),
+                             ("PILOT_GRPO_GENERATIONS", "--grpo-generations", "4"),
+                             ("PILOT_GRPO_PROMPTS", "--grpo-prompts", "4")):
+        assert re.search(r'^  %s: "%s"$' % (env, value), ROUND02, re.M), env
+        assert '%s "${%s}"' % (flag, env) in submit, flag
+    assert "--eval-draws 16" in submit
+
+
+def bundles_pattern():
+    submit = job(ROUND02, "submit")
+    check = re.search(r"grep -Eqx '([^']+)'", submit)
+    assert check, "bundles_from is validated in submit"
+    assert check.start() < submit.index("launch.py pilot"), "validated before the launch"
+    return check.group(1)
+
+
+def test_bundles_from_is_one_job_directory_validated_before_the_launch():
+    assert "PILOT_BUNDLES_FROM: ${{ github.event.inputs.bundles_from || '' }}" in ROUND02
+    assert '--bundles-from "${PILOT_BUNDLES_FROM}"' in job(ROUND02, "submit")
+    pattern = bundles_pattern()
+    assert re.fullmatch(pattern, "round-02/6ab01cbb51992417dfccd64c")
+    for bad in ("round-02/6ab01cbb51992417dfccd64c/pilot", "/round-02/6ab01cbb51992417dfccd64c",
+                "round-02/../banks/v3-20260920b", "banks/v3-20260920b", "round-02/",
+                "round-02/6AB01CBB51992417DFCCD64C", "round-02/6ab01cbb"):
+        assert not re.fullmatch(pattern, bad), bad
+    # And the shell agrees with Python about the same pattern.
+    import subprocess
+    def shell(value):
+        return subprocess.run(["grep", "-Eqx", pattern], input=value, text=True).returncode == 0
+    assert shell("round-02/6ab01cbb51992417dfccd64c")
+    assert not shell("round-02/../6ab01cbb51992417dfccd64c")
+
+
 def test_the_qwen_revision_is_one_pin_everywhere_and_never_resolved_at_dispatch():
     pins = {}
     for name in ("round02.yml", "s4-target-preflight.yml", "round02-preflight.yml",
-                 "step2-control-grade.yml"):
+                 "step2-control-grade.yml", "step2-merge.yml"):
         text = (WORKFLOWS / name).read_text(encoding="utf-8")
         pins[name] = re.findall(r"^\s*QWEN_REV: ([0-9a-f]{40})$", text, re.M)
     assert {pin for found in pins.values() for pin in found} == {
