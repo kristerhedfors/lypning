@@ -120,6 +120,34 @@ def test_ambiguous_and_truncated_completions_get_no_code(completion):
     assert t.program_from_completion(completion) is None
 
 
+@pytest.mark.parametrize("program", ["print(1)", "print(1)\n", "print(1)\n\n  \n",
+    "for i in range(2):\n    print(i)\n", "    x = 1\nprint(x)"])
+def test_assistant_turn_is_the_exact_inverse_of_the_extractor(program):
+    """One fence for every SFT target, and the grader reads back what it wrote."""
+    turn = t.assistant_turn(program)
+    assert turn == "```python\n" + program.rstrip() + "\n```"
+    assert t.program_from_completion(turn) == program.rstrip()
+    assert t.program_from_completion([{"role": "assistant", "content": turn}]) == program.rstrip()
+
+
+def test_verifier_identity_covers_the_runner_every_pilot_bundle_executes_through(tmp_path):
+    """`hf_sandbox_runner.py` and the in-sandbox worker are part of the verifier.
+
+    A change to either must change `verifier_sha256`, so a bundle prepared
+    under the old runner stops loading instead of being scored by a new one.
+    """
+    here = Path(t.__file__).parent
+    assert {"hf_sandbox_runner.py", "container_worker.py", "training.py"} <= set(t.VERIFIER_MODULES)
+    for name in t.VERIFIER_MODULES:
+        (tmp_path / name).write_bytes((here / name).read_bytes())
+    assert t.verifier_sha256(tmp_path) == t.verifier_sha256()
+    for name in ("hf_sandbox_runner.py", "container_worker.py"):
+        original = (tmp_path / name).read_bytes()
+        (tmp_path / name).write_bytes(original + b"\n# changed\n")
+        assert t.verifier_sha256(tmp_path) != t.verifier_sha256()
+        (tmp_path / name).write_bytes(original)
+
+
 def test_reward_does_not_expose_holdout_and_preserves_witness(case, tmp_path):
     verifier, _ = fake_verifier(case, native=result("mismatch"))
     witness = tmp_path / "blocked.jsonl"
@@ -164,7 +192,11 @@ def test_family_split_is_deterministic_and_no_test_solution_export(tmp_path, mon
     for c in bundle["cases"]:
         by_family.setdefault(c["family"], set()).add(c["split"])
     assert all(len(s) == 1 for s in by_family.values())
-    assert not (output / "test-sft.jsonl").exists()
+    # No solution view is written for any split, and the dev split's verified
+    # references above all: nothing read `*-sft.jsonl`, and dev is selection.
+    assert not list(output.glob("*-sft.jsonl"))
+    assert sorted(p.name for p in output.iterdir()) == [
+        "bundle.json", "dev-prompts.jsonl", "test-prompts.jsonl", "train-prompts.jsonl"]
     row = json.loads((output / "train-prompts.jsonl").read_text().splitlines()[0])
     assert set(row) == {"case_id", "prompt"}
     assert row["prompt"] == t.messages(next(c for c in cases if c["case_id"] == row["case_id"]))
