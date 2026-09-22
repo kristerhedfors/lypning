@@ -12,6 +12,12 @@ on:
         required: true
         type: choice
         options: [smoke, targets, budget20, confirmatory]
+      target_arms:
+        description: Arms harvested into SFT targets (subset-spec is the reviewed default)
+        required: true
+        type: choice
+        options: [subset-spec, bare, 'bare,subset-spec']
+        default: subset-spec
 
 permissions:
   contents: read
@@ -23,6 +29,7 @@ env:
   STEP2_CASES: ${{ inputs.rung == 'smoke' && '64' || (inputs.rung == 'targets' || inputs.rung == 'budget20') && '192' || '300' }}
   STEP2_SAMPLES: ${{ (inputs.rung == 'smoke' || inputs.rung == 'targets') && '4' || '16' }}
   STEP2_RUN_ID: ${{ inputs.run_id }}
+  STEP2_TARGET_ARMS: ${{ inputs.target_arms }}
 
 jobs:
   grade:
@@ -35,7 +42,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install -q 'huggingface-hub==1.31.0'
+      # transformers only for the tokenizer that sizes each SFT target against
+      # max_new_tokens; the generation workflow pins the same two versions.
+      - run: pip install -q 'huggingface-hub==1.31.0' 'transformers==5.17.0' jinja2
       - name: Download the named private generation evidence
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
