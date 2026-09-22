@@ -41,13 +41,18 @@ def test_grade_requires_complete_pairs_and_emits_safe_public_report(tmp_path, mo
         ((case, draw, arm) for case in rows for draw in range(samples)
          for arm in ('bare', 'subset-spec')))
     rows = cases()
+    progress = []
     result = grade.grade(rows, completions(rows), Verifier(), tmp_path / 'grade',
-                         samples=2, workers=2)
+                         samples=2, workers=2, progress=progress.append)
     assert result['rows'] == 8 and result['families'] == 2
     assert result['comparison']['metrics']['native']['delta'] == 0
     public = (tmp_path / 'grade' / 'public-report.json').read_text()
     assert 'private-family-a' not in public and 'private-case-a' not in public
     assert result['targets']['rows'] == 2
+    assert progress == [
+        {'event': 'grade_progress', 'completed': 0, 'total': 8, 'workers': 2},
+        {'event': 'grade_progress', 'completed': 8, 'total': 8, 'workers': 2},
+    ]
     assert (tmp_path / 'grade' / 'sft.jsonl').is_file()
     private = json.loads((tmp_path / 'grade' / 'report.json').read_text())
     assert set(private['metrics']['bare']['by_family']) == {'private-family-a', 'private-family-b'}

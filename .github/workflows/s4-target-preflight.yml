@@ -1,0 +1,59 @@
+name: S4 rejection-target preflight (free, no GPU)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_run:
+        description: Graded positive-control run supplying private SFT targets
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  HF_HOME: ${{ github.workspace }}/.hf
+  PYTHONPATH: src:training
+  QWEN_MODEL: Qwen/Qwen3.8-27B
+  BANK_PATH: banks/v3-20260920b
+  PILOT_STEPS: '300'
+
+jobs:
+  token-floor:
+    name: exact private-target token and shape gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q 'transformers==5.17.0' 'huggingface-hub==1.31.0' jinja2
+      - name: Resolve the approved model to an immutable revision
+        id: model
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          REVISION=$(python -c 'import os; from huggingface_hub import HfApi; print(HfApi(token=os.environ["HF_TOKEN"]).model_info(os.environ["QWEN_MODEL"]).sha)')
+          if ! echo "$REVISION" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo 'model did not resolve to an immutable commit' >&2
+            exit 1
+          fi
+          echo "revision=$REVISION" >> "$GITHUB_OUTPUT"
+      - name: Count the exact schedule without submitting a job
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python .github/scripts/s4_target_floor.py \
+            --target-run '${{ inputs.target_run }}' \
+            --bank-path "$BANK_PATH" \
+            --revision '${{ steps.model.outputs.revision }}' \
+            --steps "$PILOT_STEPS" \
+            --out "$RUNNER_TEMP/s4-target-floor.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s4-target-floor
+          path: ${{ runner.temp }}/s4-target-floor.json
+          if-no-files-found: error

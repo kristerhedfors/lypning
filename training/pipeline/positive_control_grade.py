@@ -1,7 +1,7 @@
 """Grade a complete paired positive control and emit private and public reports."""
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 import json
 from pathlib import Path
@@ -19,7 +19,7 @@ def _expected(cases, samples):
 
 
 def grade(cases, completions, verifier, output, *, samples, workers=8, run_id='',
-          lineage=None):
+          lineage=None, progress=None):
     output = Path(output)
     if output.exists():
         raise TrainingError('grade output exists; preserve it and choose a new directory')
@@ -46,8 +46,18 @@ def grade(cases, completions, verifier, output, *, samples, workers=8, run_id=''
         }
         return result
 
+    rows = []
+    total = len(completions)
+    if progress:
+        progress({'event': 'grade_progress', 'completed': 0, 'total': total,
+                  'workers': workers})
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        rows = list(pool.map(one, completions))
+        futures = [pool.submit(one, row) for row in completions]
+        for completed, future in enumerate(as_completed(futures), 1):
+            rows.append(future.result())
+            if progress and (completed == total or completed % 32 == 0):
+                progress({'event': 'grade_progress', 'completed': completed,
+                          'total': total, 'workers': workers})
     rows.sort(key=lambda r: (r['arm'], r['case_id'], r['draw']))
     write_jsonl(output / 'rows.jsonl', rows)
     arms = {arm: [r for r in rows if r['arm'] == arm]
@@ -90,6 +100,7 @@ def grade(cases, completions, verifier, output, *, samples, workers=8, run_id=''
 
 
 def grade_files(cases, completions_path, verifier, output, *, samples, workers=8, run_id='',
-                lineage=None):
+                lineage=None, progress=None):
     return grade(cases, read_jsonl(completions_path), verifier, output,
-                 samples=samples, workers=workers, run_id=run_id, lineage=lineage)
+                 samples=samples, workers=workers, run_id=run_id, lineage=lineage,
+                 progress=progress)
