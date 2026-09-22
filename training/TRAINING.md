@@ -69,7 +69,7 @@ diagnostic. Completion length is part of the experiment, never silently changed.
 | --- | --- |
 | Family labels missed exact solution/source reuse | Join family, declared source group and normalized solution AST into indivisible split components. |
 | Coverage SFT seeds could themselves fall back | Admit coverage references only when every input is native; controls must really refuse on every input. Revalidate registry on bundle load. |
-| RL launched without learnable signal | Require a sealed train-only probe for the exact starting policy. Masked truncations cannot supply admission signal. Abort sustained no-signal groups. |
+| RL launched without learnable signal | Require a sealed train-only probe for the exact starting policy. Masked truncations cannot supply admission signal. Log the no-signal group fraction; since 2026-09-22 a streak no longer aborts a dose. |
 | Greedy dev versus differently sampled RL | One explicit decoding contract; fixed per-case/draw seeds; preserve training RNG across evaluation. |
 | Adapter could be replaced or have incompatible provenance | Seal weights, config and manifest; check base, split, mode, tokenizer and model configuration on reload. |
 | Partial source hashes and ambiguous batching | Hash all pipeline/GPU sources; separate SFT batch size from RL group size; record completion/supervised token counts. |

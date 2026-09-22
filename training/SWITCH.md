@@ -90,7 +90,8 @@ and `:715` — an ordinary module call, so a LoRA there applies normally.
 The exclusion it was copied from IS correct for the earlier target: that
 model's Automodel layer file really does pass
 `outproj_weight=self.out_proj.weight` into a fused kernel, so a LoRA there
-would never apply. Qwen3.5 does not, and the two were conflated. The cost of
+would never apply. Qwen3.8-27B (architecture class `qwen3_5`) does not, and
+the two were conflated. The cost of
 the error was 48 of the widest projections in the model — one per
 gated-delta-net layer, counted from `model.safetensors.index.json` on
 2026-09-13 — frozen for no reason,

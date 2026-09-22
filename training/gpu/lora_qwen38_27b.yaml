@@ -82,7 +82,8 @@ peft:
   #
   # The earlier model's cookbook excludes it for a real reason (SWITCH.md): its
   # layers pass `outproj_weight=self.out_proj.weight` INTO a fused kernel, so a
-  # LoRA wrapping the module is bypassed. Qwen3.5 does no such
+  # LoRA wrapping the module is bypassed. Qwen3.8-27B (architecture class
+  # `qwen3_5`) does no such
   # thing — `output = self.out_proj(core_attn_out)` at cp_linear_attn.py:343 and
   # :715 is an ordinary module call on both paths, so a LoRA there applies
   # normally. The line originally cited as proof, qwen3_5/model.py:430, is inside

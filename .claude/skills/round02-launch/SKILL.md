@@ -8,7 +8,22 @@ description: Get from a case bank to a launched, admissible round-02 job — the
 A round is not a script you run; it is a bank that survives four separate
 admission layers, a job that bills from its first second, and three seeds. This
 skill owns the route and the money. Everything it says was read from the files
-it names at commit `4c2429c`, 2026-09-18.
+it names at commit `4c2429c`, 2026-09-18; line numbers are from then.
+
+**2026-09-22 — what changed before S4 arm A** (`training/PLAN.md` Step 4):
+
+- `launch.py` defaults: `DEFAULT_GRPO_STEPS = 0` (arm A never bills GRPO; the
+  probe still runs and `grpo-skipped.json` says "arm A only"), a banked stage
+  defaults to **h200 / 720m** and refuses a longer timeout, and `--seed` /
+  `--split-seed` must be protocol seeds.
+- **Split seed fixed at 1111.** `round02.yml` has a `seed` dispatch input
+  (1111/2222/3333) that moves only LoRA init and data order; `PILOT_SPLIT_SEED`
+  stays 1111, so every seed trains and is measured on the same sealed split.
+- A pilot needs `target_run`; the free `token-floor` job now needs `bootstrap`,
+  checks engine lineage against the Space, and refuses a curriculum under
+  1,000 distinct target cases. No existing Step 2 rung clears that.
+- `QWEN_REV` is pinned in every round-02 workflow; a moved Hub head is red.
+- Existing bundles are refused (`verifier_sha256` widened); re-prepare.
 
 ## The four skills, and the seam between them
 
@@ -70,16 +85,19 @@ job-level `if`, so the condition at line 142 hard-codes both markers. Changing
 set above the job's own `--timeout 300m`, because a runner that dies mid-follow
 loses the streamed log while the GPU keeps billing.
 
-A pilot is the `[submit-pilot]` branch (lines 166-173): `--bank-path
-"${BANK_PATH}" --seed 1111 --eval-draws 16 --flavor h200 --timeout 300m --yes
---follow`. One seed. Read the next section before you type that marker.
+A pilot is the `[submit-pilot]` branch: `--bank-path "${BANK_PATH}" --seed
+"${PILOT_SEED}" --split-seed "${PILOT_SPLIT_SEED}" --steps "${PILOT_STEPS}"
+--grpo-steps "${PILOT_GRPO_STEPS}" --eval-draws 16 --flavor "${PILOT_FLAVOR}"
+--timeout "${PILOT_TIMEOUT}" --yes --follow` (h200, 720m, GRPO 0 as of
+2026-09-22). One seed. Read the next section before you type that marker.
 
 ## What it costs, and what one job is not
 
 `h200` is **$5.00/hour** (`training/RUNBOOK.md` §1, `hf jobs hardware` read
 2026-09-12 and re-read unchanged 2026-09-13; the preflight job re-reads it live
-and prints the whole priced table). At `--timeout 300m` the platform-enforced
-ceiling is **five hours, about $25 per seed job**.
+and prints the whole priced table). At the pilot's `--timeout 720m`
+(2026-09-22) the platform-enforced ceiling is **twelve hours, about $60 per
+seed job**; it was about $25 at the old 300m.
 
 **One job is one replicate.** `PROTOCOL_TRAIN_SEEDS = (1111, 2222, 3333)`
 (`training/pipeline/training_contract.py:26`) is three jobs; a result from one
@@ -98,10 +116,13 @@ the job and runs a stage script from that clone, so nothing private is baked
 into an image.
 
 ```
-DEFAULT_STEPS, DEFAULT_GRPO_STEPS, DEFAULT_EVAL_DRAWS, DEFAULT_SEED = 250, 20, 16, 1111
-DEFAULT_EVAL_SEQUENCES, DEFAULT_SCORE_WORKERS = 128, 16
+DEFAULT_STEPS, DEFAULT_EVAL_DRAWS, DEFAULT_SEED = 250, 16, 1111
+DEFAULT_GRPO_STEPS = 0
+DEFAULT_SPLIT_SEED = 1111
+BANKED_FLAVOR, BANKED_TIMEOUT = "h200", "720m"
+DEFAULT_EVAL_SEQUENCES, DEFAULT_SCORE_WORKERS = 256, 12
 DEFAULT_POOL_SANDBOXES_PER_HOST, DEFAULT_POOL_MAX_HOSTS = 4, 4
-POOL_FLAVOR, MAX_POOL_SANDBOXES_PER_HOST, MAX_POOL_HOSTS = "cpu-basic", 4, 4
+POOL_FLAVOR, MAX_POOL_SANDBOXES_PER_HOST, MAX_POOL_HOSTS = "cpu-basic", 4, 16
 BANKED = ("pilot",)
 ```
 
