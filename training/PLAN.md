@@ -1,7 +1,8 @@
 # The plan — after seed 1111 on bank v3
 
 **This is the live plan.** A session told to "follow the plan" starts here,
-takes the first step whose state is `open`, does only that step, updates its
+continues an `in progress` step, or takes the first `open` step, does only that
+step, updates its
 state below, and records the outcome in `ORCHESTRATION.md`'s ledger. It does
 not skip ahead: each step's *decision* chooses the shape of the next one.
 `STATUS.md` §10 still owns whether a round runs at all; this owns what the

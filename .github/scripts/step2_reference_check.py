@@ -15,6 +15,7 @@ import sys
 import subprocess
 from pipeline.container_runner import ContainerRunner
 from pipeline.positive_control import population
+from pipeline.jsonio import sha256_of
 from pipeline.training import Verifier, engine_identity
 from pipeline.training_data import validate_reference_scores
 from pipeline.training_types import TrainingError
@@ -52,6 +53,16 @@ def main():
               'base_image': os.environ['CHECK_BASE_IMAGE'],
               'engine_sha256': identity['sha256'], 'provider_calls': 0}
     (Path(os.environ['RUNNER_TEMP']) / 'step2-result' / 'references.json').write_text(json.dumps(result, indent=2) + '\n')
+    if not counts['failed']:
+        conformance = json.loads((Path(os.environ['RUNNER_TEMP']) / 'step2-result' / 'candidate.json').read_text())
+        proof = {'conformance': conformance, 'references': result,
+                 'candidate_image': os.environ['CANDIDATE_IMAGE'],
+                 'source_commit': os.environ['GITHUB_SHA'],
+                 'case_fingerprints': {c['case_id']: sha256_of(c) for c in cases}}
+        private = Path(os.environ['RUNNER_TEMP']) / 'step2-private'
+        private.mkdir(exist_ok=True)
+        # Private proof must never be included in a public Actions artifact.
+        (private / 'admission.json').write_text(json.dumps(proof, sort_keys=True) + '\n')
     print(json.dumps(result, indent=2))
     return int(bool(counts['failed']))
 

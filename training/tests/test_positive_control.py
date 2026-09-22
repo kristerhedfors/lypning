@@ -135,3 +135,26 @@ def test_reference_admission_uses_container_runner_and_hides_failure_text(tmp_pa
     result = json.loads((tmp_path / 'step2-result' / 'references.json').read_text())
     assert result['counts'] == {'correct-native': 1, 'failed': 1}
     assert result['python'] == 'pinned Python'
+
+
+def test_corpus_reuse_requires_identical_runtime_and_complete_green_evidence():
+    import copy
+    import hashlib
+    reuse = load_script('step2_reuse_conformance.py')
+    binary = b'engine'
+    report = {'base_image': 'base@sha256:pin', 'engine_sha256': hashlib.sha256(binary).hexdigest(),
+              'loaded': 10, 'skipped': 2, 'unbuilt': [], 'damage': [],
+              'engines': {'lypning-l': {'counts': {'match': 3, 'unsupported': 5, 'total': 8, 'mismatch': 0},
+                                       'mismatches': []}}}
+    image = {'base_image': 'base@sha256:pin', 'source_commit': 'a' * 40}
+    assert reuse.reusable(report, image, binary, image['base_image'], lambda _: True)
+    assert not reuse.reusable(report, image, b'changed engine', image['base_image'], lambda _: True)
+    assert not reuse.reusable(report, image, binary, 'other base', lambda _: True)
+    assert not reuse.reusable(report, image, binary, image['base_image'], lambda _: False)
+    for key, value in [('damage', ['changed file']), ('unbuilt', ['lypning-l']), ('skipped', 3)]:
+        bad = copy.deepcopy(report)
+        bad[key] = value
+        assert not reuse.reusable(bad, image, binary, image['base_image'], lambda _: True)
+    bad = copy.deepcopy(report)
+    bad['engines']['lypning-l']['counts']['mismatch'] = 1
+    assert not reuse.reusable(bad, image, binary, image['base_image'], lambda _: True)

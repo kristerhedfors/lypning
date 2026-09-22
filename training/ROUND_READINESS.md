@@ -48,9 +48,15 @@ Do not shrink the population, shorten the spec, lower k or substitute a model
 silently to fit the old estimate.
 
 [PR #102](https://github.com/kristerhedfors/lypning/pull/102) prepares the actual
-training-split control. Its pinned-base conformance and reference checks are
-in progress. A bounded generation runner and private evidence handoff remain
-required after the budget/scope is settled. The 256-sequence GPU batch smoke
+training-split control. Pinned-base conformance
+[35683688427](https://github.com/kristerhedfors/lypning/actions/runs/35683688427)
+loaded 9,064 corpus programs: 4,560 match, 1,757 unsupported, **zero mismatch**,
+2,747 skipped, and no repository damage. This is the large native arm on the
+pinned CPython 3.12.14 base, not a waiver of macOS 3.14 failures. Reference
+admission is still running. The generation library reserves budget before each
+request, disables retries, and binds its input to a private runtime/reference
+proof. The manual dispatch, private evidence handoff and scope remain to be
+completed after the budget choice. The 256-sequence GPU batch smoke
 belongs before a later GPU training arm; Step 2 uses hosted inference and does
 not allocate a GPU.
 

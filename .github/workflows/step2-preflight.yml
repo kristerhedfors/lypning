@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: step2-preparation-${{ github.ref }}
@@ -25,6 +26,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -50,6 +52,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -74,7 +77,19 @@ jobs:
           RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends git && rm -rf /var/lib/apt/lists/*
           EOF
           docker build --build-arg BASE_IMAGE="$BASE" -f "$CONTEXT/Dockerfile.check" -t step2-check "$CONTEXT"
+      - name: Read the prior passing public corpus evidence
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: step2-public-candidate
+          run-id: 35683688427
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/step2-prior
+      - name: Reuse only identical engine, base, harness and corpus
+        id: corpus
+        run: python .github/scripts/step2_reuse_conformance.py
       - name: Full large-engine corpus in the actual pinned Python runtime
+        if: steps.corpus.outputs.reused != 'true'
         run: |
           mkdir -p "$RUNNER_TEMP/step2-source" "$RUNNER_TEMP/step2-result"
           git archive HEAD | tar -x -C "$RUNNER_TEMP/step2-source"
