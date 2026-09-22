@@ -1,0 +1,124 @@
+name: Step 2 paid Cerebras control (no GPU)
+
+on:
+  workflow_dispatch:
+    inputs:
+      rung:
+        description: Bounded control rung
+        required: true
+        type: choice
+        options: [smoke, confirmatory]
+        default: smoke
+      ceiling_usd:
+        description: Hard Cerebras dollar ceiling (smoke <= 5, confirmatory <= 50)
+        required: true
+        type: string
+        default: '5'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: step2-paid-control
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: src:training
+  LYPNING_CAPTURE: '0'
+  LYPNING_HARVEST: '0'
+  STEP2_CASES: ${{ inputs.rung == 'smoke' && '64' || '300' }}
+  STEP2_SAMPLES: ${{ inputs.rung == 'smoke' && '4' || '16' }}
+  STEP2_CEILING_USD: ${{ inputs.ceiling_usd }}
+  STEP2_MAX_SECONDS: ${{ inputs.rung == 'smoke' && '3600' || '14400' }}
+  STEP2_RPM: '60'
+  STEP2_RUN_ID: ${{ inputs.rung }}-${{ github.sha }}-${{ github.run_id }}
+
+jobs:
+  control:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate explicit spend ceiling
+        run: |
+          python - <<'PY'
+          import math, os
+          ceiling = float(os.environ['STEP2_CEILING_USD'])
+          limit = 5 if os.environ['STEP2_CASES'] == '64' else 50
+          if not math.isfinite(ceiling) or not 0 < ceiling <= limit:
+              raise SystemExit('ceiling must be positive and <= $%d for this rung' % limit)
+          PY
+      - run: pip install -q 'huggingface-hub==1.31.0' 'transformers==5.17.0' jinja2
+      - name: Check account-visible provider model without generation
+        env:
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+        run: python -m harvesting.preflight
+      - name: Pin private bank and tokenizer; print aggregate cost plan
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python .github/scripts/step2_bank_plan.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: step2-control-public-plan
+          path: ${{ runner.temp }}/step2-plan.json
+          if-no-files-found: error
+      - name: Build the native candidate for CPython 3.12
+        run: |
+          echo "LYPNING_HOME=$RUNNER_TEMP/step2-engine" >> "$GITHUB_ENV"
+          LYPNING_HOME="$RUNNER_TEMP/step2-engine" python -m lypning build --rust --target host
+      - name: Build minimal candidate on the pinned training base
+        run: |
+          BASE=$(python -c 'import runpy; print(runpy.run_path("training/hf/launch.py")["BASE_IMAGE"])')
+          echo "CHECK_BASE_IMAGE=$BASE" >> "$GITHUB_ENV"
+          CONTEXT=$(mktemp -d)
+          cp training/pipeline/{sandbox,child_exec,container_worker}.py "$CONTEXT/"
+          cp "$LYPNING_HOME/bin/lypning-l" "$CONTEXT/"
+          docker build --build-arg BASE_IMAGE="$BASE" -f training/worker/Dockerfile.verifier -t step2-candidate "$CONTEXT"
+          echo "CANDIDATE_IMAGE=$(docker image inspect step2-candidate --format '{{.Id}}')" >> "$GITHUB_ENV"
+          cat > "$CONTEXT/Dockerfile.check" <<'EOF'
+          ARG BASE_IMAGE
+          FROM ${BASE_IMAGE}
+          RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+          EOF
+          docker build --build-arg BASE_IMAGE="$BASE" -f "$CONTEXT/Dockerfile.check" -t step2-check "$CONTEXT"
+      - name: Full large-engine corpus in the actual pinned Python runtime
+        run: |
+          mkdir -p "$RUNNER_TEMP/step2-source" "$RUNNER_TEMP/step2-result"
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/step2-source"
+          docker run --rm --network none \
+            -v "$RUNNER_TEMP/step2-source:/work" \
+            -v "$LYPNING_HOME:/engine:ro" \
+            -v "$RUNNER_TEMP/step2-result:/result" \
+            -w /work -e PYTHONPATH=src:training -e LYPNING_HOME=/engine \
+            -e LYPNING_CAPTURE=0 -e LYPNING_HARVEST=0 \
+            -e CHECK_BASE_IMAGE="$CHECK_BASE_IMAGE" step2-check sh -eu -c '
+              git config --global --add safe.directory /work
+              git init -q
+              git config user.email validation@localhost
+              git config user.name validation
+              git add .
+              git commit -qm snapshot
+              python .github/scripts/step2_candidate_check.py'
+      - name: Verify selected references without credentials or network
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          STEP2_DOWNLOAD_ONLY: '1'
+        run: |
+          python .github/scripts/step2_bank_plan.py
+          python .github/scripts/step2_reference_check.py
+      - name: Generate bounded paired Cerebras control
+        env:
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+        run: python .github/scripts/step2_generate.py
+      - name: Persist raw evidence in private dataset repository
+        if: always()
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python .github/scripts/step2_private_upload.py

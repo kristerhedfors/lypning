@@ -187,6 +187,7 @@ class ChatBackend:
             completion_tokens=int(usage.get("completion_tokens") or 0),
             latency_s=latency,
             finish_reason=choice.get("finish_reason") or "",
+            raw=data,
         )
 
     def cost(self, prompt_tokens: int, completion_tokens: int) -> float:
