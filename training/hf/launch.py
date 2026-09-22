@@ -43,6 +43,8 @@ DEFAULT_GRPO_STEPS = 0
 #: 4 keeps an arm-A probe comparable with seed 1111's; arm C passes 8 (`PLAN.md`).
 DEFAULT_GRPO_GENERATIONS = 4
 DEFAULT_GRPO_PROMPTS = 4
+#: Dev draws per case in the checkpoint-selecting stages; eval-2 has its own.
+DEFAULT_DEV_EVAL_DRAWS = 4
 #: THE SPLIT SEED IS NOT THE TRAINING SEED. Review and preparation assign cases
 #: to train/dev/test with `split_cases(cases, split_seed)`; training draws its
 #: initialisation and data order from --seed. Rejection targets are graded on
@@ -133,7 +135,7 @@ def job_env(args):
         env.update({"BANK_PATH": args.bank_path, "STEPS": str(args.steps),
                     "GRPO_STEPS": str(args.grpo_steps),
                     "GRPO_GENERATIONS": str(args.grpo_generations), "GRPO_PROMPTS": str(args.grpo_prompts),
-                    "EVAL_DRAWS": str(args.eval_draws), "SEED": str(args.seed),
+                    "EVAL_DRAWS": str(args.eval_draws), "DEV_EVAL_DRAWS": str(args.dev_eval_draws), "SEED": str(args.seed),
                     "SPLIT_SEED": str(args.split_seed),
                     "EVAL_SEQUENCES": str(args.eval_sequences), "SCORE_WORKERS": str(args.score_workers),
                     "NTX_POOL_SANDBOXES_PER_HOST": str(args.pool_sandboxes_per_host),
@@ -185,6 +187,8 @@ def main(argv=None):
     p.add_argument("--grpo-prompts", type=int, default=DEFAULT_GRPO_PROMPTS,
                    help="pilot: prompt groups per GRPO optimizer step")
     p.add_argument("--eval-draws", type=int, default=DEFAULT_EVAL_DRAWS, help="pilot: draws per case on the eval-2 benchmark")
+    p.add_argument("--dev-eval-draws", type=int, default=DEFAULT_DEV_EVAL_DRAWS,
+                   help="pilot: draws per dev case in the stages that select a checkpoint")
     p.add_argument("--eval-sequences", type=int, default=DEFAULT_EVAL_SEQUENCES,
                    help="pilot: sequences per generate call in evaluation")
     p.add_argument("--score-workers", type=int, default=DEFAULT_SCORE_WORKERS,
@@ -238,7 +242,7 @@ def main(argv=None):
     if args.sft_target_run and ("/" in args.sft_target_run or ".." in args.sft_target_run):
         print("--sft-target-run must be one run id, not a path", file=sys.stderr)
         return 2
-    if min(args.steps, args.eval_draws, args.eval_sequences, args.score_workers,
+    if min(args.steps, args.eval_draws, args.dev_eval_draws, args.eval_sequences, args.score_workers,
            args.pool_sandboxes_per_host, args.pool_max_hosts, args.grpo_prompts) <= 0 \
             or args.grpo_steps < 0 or args.grpo_generations < 2:
         print("training, evaluation and pool limits must be positive (--grpo-steps 0 skips GRPO; "
@@ -320,7 +324,7 @@ def main(argv=None):
         plan.update({"bank_path": args.bank_path, "steps": args.steps,
                      "grpo_steps": args.grpo_steps, "grpo_generations": args.grpo_generations,
                      "grpo_prompts": args.grpo_prompts,
-                     "eval_draws": args.eval_draws, "eval_sequences": args.eval_sequences,
+                     "eval_draws": args.eval_draws, "dev_eval_draws": args.dev_eval_draws, "eval_sequences": args.eval_sequences,
                      "score_workers": args.score_workers,
                      "pool_sandboxes_per_host": args.pool_sandboxes_per_host,
                      "pool_max_hosts": args.pool_max_hosts, "seed": args.seed,

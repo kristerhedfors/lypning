@@ -68,7 +68,7 @@ import sys
 #: Fields that must agree for two seeds to be replicates of one experiment.
 ARM_FIELDS = ("bank_path", "split_seed", "space_revision", "qwen_revision", "steps",
               "grpo_steps", "grpo_generations", "grpo_prompts", "sft_target_run", "sft_sha256", "sft_learning_rate",
-              "grpo_learning_rate", "kernels", "eval_draws", "eval_sequences",
+              "grpo_learning_rate", "kernels", "eval_draws", "dev_eval_draws", "eval_sequences",
               "pool_sandboxes_per_host")
 #: Shown beside the arm, never enforced; see the module docstring.
 REPORTED = ("commit",)

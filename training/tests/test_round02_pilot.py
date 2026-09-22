@@ -186,3 +186,15 @@ def test_a_hand_launch_meets_the_curriculum_floor_before_preparation():
     body = TEXT[TEXT.index("targets_fit_split() {"):]
     body = body[:body.index("\n}\n")]
     assert "curriculum_floor" in body and 'floor["problems"]' in body
+
+
+def test_every_selecting_stage_uses_the_same_dev_draws_and_eval2_keeps_its_own():
+    """base-dev is the gate's baseline and the reload must reproduce sft's record."""
+    def line(output):
+        return next(l for l in TEXT.splitlines() if '--output "$ROUND/%s"' % output in l)
+    for name in ("sft-plan", "base-dev", "sft", "sft-dev-reload", "grpo"):
+        assert '"${DEV[@]}"' in line(name), name
+    for name in ("base-eval2", "sft-eval2", "grpo-eval2"):
+        assert '"${DEV[@]}"' not in line(name) and '--eval-draws "$EVAL_DRAWS"' in line(name), name
+    finish = TEXT[TEXT.index("finish() {"):TEXT.index("trap 'finish $?' EXIT")]
+    assert '"dev_eval_draws": int(os.environ["DEV_EVAL_DRAWS"])' in finish

@@ -49,8 +49,7 @@ floor); measure step-0 vs step-N draw coupling in seed 1111's
 `sft/evaluations.jsonl`; count byte-identical completions between the smoke
 and the rung's first 64 cases (does the provider honour `seed`). Then the
 operator decides a full-split target rung and the dev-selection draws
-(`train_verified --eval-draws` in base-dev/sft/grpo, 4 or 16 — a new launcher
-setting). No GPU job before that.
+(`launch.py --dev-eval-draws` / `DEV_EVAL_DRAWS`, 4 or 16; default 4). No GPU job before that.
 
 ## The steps, and the rule for taking one
 

@@ -85,7 +85,7 @@ def args(stage, **overrides):
     base = dict(stage=stage, space="o/space", space_revision="a" * 40, qwen_revision="b" * 40,
                 work_repo="o/work", bank_path=None, steps=launch.DEFAULT_STEPS,
                 grpo_steps=launch.DEFAULT_GRPO_STEPS, grpo_generations=launch.DEFAULT_GRPO_GENERATIONS,
-                grpo_prompts=launch.DEFAULT_GRPO_PROMPTS,
+                grpo_prompts=launch.DEFAULT_GRPO_PROMPTS, dev_eval_draws=launch.DEFAULT_DEV_EVAL_DRAWS,
                 eval_draws=launch.DEFAULT_EVAL_DRAWS, seed=launch.DEFAULT_SEED,
                 split_seed=launch.DEFAULT_SPLIT_SEED,
                 eval_sequences=launch.DEFAULT_EVAL_SEQUENCES, score_workers=launch.DEFAULT_SCORE_WORKERS,
@@ -106,7 +106,7 @@ def test_pilot_env_wires_the_bank_and_its_knobs_as_strings():
     assert env == {"SPACE_REPO": "o/space", "SPACE_REV": "a" * 40, "QWEN_REV": "b" * 40, "WORK_REPO": "o/work",
                    "BANK_PATH": "banks/2026-09-16", "STEPS": "40", "GRPO_STEPS": "0",
                    "GRPO_GENERATIONS": "4", "GRPO_PROMPTS": "4",
-                   "EVAL_DRAWS": "8", "SEED": "2222", "SPLIT_SEED": "1111",
+                   "EVAL_DRAWS": "8", "DEV_EVAL_DRAWS": "4", "SEED": "2222", "SPLIT_SEED": "1111",
                    "EVAL_SEQUENCES": "256", "SCORE_WORKERS": "12",
                    "NTX_POOL_SANDBOXES_PER_HOST": "4", "NTX_POOL_MAX_HOSTS": "4",
                    "BUNDLES_FROM": "", "SFT_TARGET_RUN": ""}

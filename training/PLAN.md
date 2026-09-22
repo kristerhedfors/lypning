@@ -147,9 +147,10 @@ cases; small population slices, rather than the primary macro, need attention.
    `sft/evaluations.jsonl` before paying for sixteen dev-selection draws (an
    operator decision with a cost). Those are `train_verified --eval-draws` in
    the base-dev, sft and grpo stages, which default to 4; the pilot's
-   `--eval-draws 16` reaches only the eval-2 stages, so raising the dev draws
-   needs a new pilot/launcher setting and manifest arm field, landed before arm
-   A's first seed.
+   `--eval-draws 16` reaches only the eval-2 stages. The setting now exists:
+   `launch.py --dev-eval-draws` / `DEV_EVAL_DRAWS` (default 4, unchanged), in
+   every selecting stage and in the manifest as arm field `dev_eval_draws`.
+   Choosing 16 is the decision; it must be made before arm A's first seed.
 2. **Stopping is not selection.** ~~A registered dose trains to completion;
    every checkpoint is saved (already true); selection is post hoc. No
    patience-based stop inside an S4 stage.~~ **Done 2026-09-21, PR #97.**

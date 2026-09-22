@@ -92,9 +92,10 @@ A pilot is the `[submit-pilot]` branch: `--qwen-revision "${QWEN_REV}"
 "${PILOT_SCORERS}" --pool-max-hosts "${PILOT_POOL_HOSTS}" --flavor
 "${PILOT_FLAVOR}" --timeout "${PILOT_TIMEOUT}" --yes --follow` (h200, 720m,
 GRPO 0 as of 2026-09-22). `--eval-draws 16` reaches only the eval-2 stages;
-dev selection runs at `train_verified`'s default 4 draws, and no launcher
-setting changes that yet. There is no input for `--grpo-generations`,
-`--grpo-prompts` or `--grpo-informative-only` either, so arm C needs a workflow
+dev selection reads `launch.py --dev-eval-draws` (`DEV_EVAL_DRAWS`, default 4,
+arm field `dev_eval_draws`). `launch.py` also takes `--grpo-generations` and
+`--grpo-prompts`, but `round02.yml` has no input for those, the dev draws or
+`--grpo-informative-only`, so arm C needs a workflow
 edit. One seed. Read the next section before you type that marker.
 
 ## What it costs, and what one job is not

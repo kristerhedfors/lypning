@@ -217,10 +217,11 @@ first thing the regrade in §6 reports.
      times the dev-eval generation cost. That is `train_verified --eval-draws`
      in the base-dev, sft and grpo stages, which default to 4: the pilot's
      `--eval-draws 16` reaches only the eval-2 stages, and neither `launch.py`
-     nor `round02.yml` has a setting for the dev draws. Raising them needs a new
-     pilot/launcher setting and a job-manifest arm field (the manifest's
-     `eval_draws` records only the eval-2 draws), so it must land before arm
-     A's first seed. Measure the coupling before buying it.
+     nor `round02.yml` had a setting for the dev draws. This branch adds one
+     (`launch.py --dev-eval-draws`, `DEV_EVAL_DRAWS`, default 4) and the arm
+     field `dev_eval_draws`, since the manifest's `eval_draws` records only the
+     eval-2 draws. The value must be chosen before arm A's first seed. Measure
+     the coupling before buying it.
 4. **Does the provider honour seed?** Count byte-identical completions between
    the smoke and the first 64 cases of `35767396604`, printing only the count.
    If they match, every nested rung re-buys its prefix.
@@ -243,7 +244,7 @@ first thing the regrade in §6 reports.
 coverage-only grade, one floor read, and two aggregate CI reads. Record each
 in `PLAN.md` Step 2 and a ledger row. Then put two decisions to the operator,
 each with its measured price: the §6.5 rung shape, and the dev-selection draws
-(4 or 16, a new launcher setting).
+(4 or 16, `--dev-eval-draws`).
 
 **Owner.** Codex, as orchestrator, for the reads and the ledger. The operator
 for the paid rung, the eval-draw cost and any GPU ceiling. Fable only after a

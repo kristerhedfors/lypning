@@ -39,7 +39,8 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   are drawn without replacement within each family.
 - Arm C's recipe is 4 prompts × 8 generations and LoRA LR 1e-5; the launcher
   keeps 4 generations so the probe stays comparable with seed 1111's.
-  No-signal groups are logged as a fraction, never an abort.
+  No-signal groups are logged as a fraction, never an abort. Dev-selection
+  draws get their own setting (`--dev-eval-draws`, default 4) and arm field.
 - `verifier_sha256` now covers the sandbox runner and container worker, so
   bundles must be re-prepared. The legacy LoRA runner, `cheatscan.py` and
   unread `*-sft.jsonl` views are removed.
