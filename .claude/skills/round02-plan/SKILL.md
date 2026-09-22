@@ -25,7 +25,12 @@ Step 1.1–1.2 replaced it on 2026-09-21 (PR #97): the same simulation in
 the real class, and selection no longer stops training. **This does not make
 seed 1111 readable** — its checkpoints were produced under the old rule and
 its GRPO stopped at step 15 of a registered 20. It makes the *next* round
-readable. Step 1.3–1.6 are still open.
+readable. Step 1.3–1.6 implementation followed on 2026-09-22 in PRs #98–#101:
+macro scope, LoRA rates, evaluation reuse/deadline and sized stdin reads.
+The stack needs review and a new pinned engine/image before paid work;
+`training/reviews/2026-09-22-step1-validation.md` records the inherited host
+conformance failures and the required candidate checks. Step 2 is next, subject
+to those checks and the existing cost approval.
 
 ## The steps, and the rule for taking one
 

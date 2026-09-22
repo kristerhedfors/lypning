@@ -15,6 +15,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 ## Unreleased
 
 **2026-09-22** — Make sized stdin reads consume only the requested characters
+([#101](https://github.com/kristerhedfors/lypning/pull/101))
 
 - `sys.stdin.read(n)` counts Unicode characters and advances the shared stdin
   cursor, preserving the original bytes for dispatcher replay after refusal.
