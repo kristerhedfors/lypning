@@ -166,18 +166,24 @@ def test_zero_signal_grpo_is_logged_as_a_fraction_never_aborted_or_shaped():
     assert ("verified/no_signal_fraction", 1.0) in logged
 
     # An informative group moves the cumulative fraction and logs its batch as 0.
-    scores = iter([Score(0, "incorrect", 0, 3), Score(1.0, "correct-native", 3, 3)])
-    reward.verifier = SimpleNamespace(score=lambda *a: next(scores))
+    # Scores are keyed on the PROGRAM, never on call order: Reward scores a
+    # group concurrently, so an iterator of scores races between its threads.
+    def by_program(case, program):
+        if program is None:  # a truncated draw is scored as no program at all
+            return Score(0.5, "no-code", 0, 3)
+        return Score(1.0, "correct-native", 3, 3) if program == "good" else Score(0, "incorrect", 0, 3)
+    reward.verifier = SimpleNamespace(score=by_program)
+    mixed = dict(kwargs, completions=["```python\nbad\n```", "```python\ngood\n```"])
     logged.clear()
-    assert reward(**kwargs) == [0, 1.0]
+    assert reward(**mixed) == [0, 1.0]
     assert (reward.groups, reward.no_signal_groups) == (26, 25)
     assert ("verified/frac_no_signal_groups", 0.0) in logged
     assert ("verified/no_signal_fraction", 25 / 26) in logged
 
-    # A truncated draw is masked, so it cannot make a group informative.
-    scores = iter([Score(0, "incorrect", 0, 3), Score(1.0, "correct-native", 3, 3)])
-    assert reward(**dict(kwargs, completion_ids=[[99], [7]])) == [0, 1.0]
-    assert reward.no_signal_groups == 26
+    # A truncated draw is masked, so its distinct reward cannot make the group
+    # informative: the rewards differ (0 vs 0.5) and the group still counts.
+    assert reward(**dict(mixed, completion_ids=[[99], [7]])) == [0, 0.5]
+    assert (reward.groups, reward.no_signal_groups) == (27, 26)
 
 
 def test_warmup_decay_bounds():

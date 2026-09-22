@@ -333,8 +333,11 @@ def prepare(cases, binary, output, seed=1111, timeout_s=5.0, memory_mb=1024, pur
     # Prompt views only: line-countable audit evidence that holds no solution.
     # Until 2026-09-22 this also wrote `train-sft.jsonl` and `dev-sft.jsonl`.
     # No stage read either -- train_verified rebuilds its SFT rows from
-    # `bundle["cases"]` -- and `dev-sft.jsonl` exported the verified reference
-    # solutions of the SELECTION split into every uploaded bundle directory.
+    # `bundle["cases"]` -- and `dev-sft.jsonl` was a second, ready-to-train copy
+    # of the SELECTION split's references. `bundle.json` itself still carries
+    # every split's reference (the verifier needs them), so a bundle directory
+    # stays private material: this drops an unread SFT-shaped export, not the
+    # references.
     for split in ("train", "dev", "test"):
         subset = [c for c in cases if c["split"] == split]
         write_jsonl(output / (split + "-prompts.jsonl"),
