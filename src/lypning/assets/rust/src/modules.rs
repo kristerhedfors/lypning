@@ -525,7 +525,28 @@ pub fn call_module_method(
         // carried a guard saying so; it is lazy now, and takes one line per row
         // like everything else here.
         ("sys.stdin", "read") => {
-            Value::Str(crate::iter::decode_text(&mio::stdin_rest()?, "non-UTF-8 bytes on stdin (CPython decodes it with surrogateescape)")?)
+            if !kw.is_empty() {
+                return Err(type_err("TextIOWrapper.read() takes no keyword arguments"));
+            }
+            if args.len() > 1 {
+                return Err(type_err(format!("read expected at most 1 argument, got {}", args.len())));
+            }
+            let n = match args.first() {
+                None | Some(Value::None) => -1,
+                Some(v @ (Value::Int(_) | Value::Bool(_))) => crate::eval::int_val(v)?,
+                #[cfg(feature = "cap-re")]
+                Some(Value::ReFlag(n)) => *n as i64,
+                Some(other) => return Err(type_err(format!(
+                    "argument should be integer or None, not '{}'", type_name(other)))),
+            };
+            // CPython's text/bytes allocation can overflow even when the
+            // size fits Py_ssize_t. Apply this check to integer flags too,
+            // before converting to a pointer-sized cursor on 32-bit hosts.
+            if n > (isize::MAX / 4) as i64 {
+                return Err(unsupported("alloc", "oversized stdin text read"));
+            }
+            let size = if n < 0 { None } else { Some(n as usize) };
+            Value::Str(crate::iter::decode_text(&mio::stdin_read(size)?, "non-UTF-8 bytes on stdin (CPython decodes it with surrogateescape)")?)
         }
         ("sys.stdin", "readline") => {
             match mio::stdin_line()? {

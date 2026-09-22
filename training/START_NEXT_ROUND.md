@@ -11,7 +11,7 @@ Fable's training writeups; Fable runs approved training loops. Read
 [FABLE_REPORT_TEMPLATE.md](FABLE_REPORT_TEMPLATE.md) at every handoff, including
 blocked/no-run outcomes. New harvesting data never mutates your active bundle.
 
-## Next session — 2026-09-21: follow `PLAN.md`
+## Next session — 2026-09-22: follow `PLAN.md`
 
 Seed 1111 of round-02 on bank v3 ran on 2026-09-20/21 (job
 `6ab01cbb51992417dfccd64c`) through SFT, probe, GRPO and all three test arms
@@ -23,6 +23,12 @@ replacement on the same simulation — which makes the *next* round readable,
 not this one. What seed 1111 established and what comes next, in order, is
 [`PLAN.md`](PLAN.md); the read
 is [`reports/2026-09-21-fable-round02-seed1111-read.md`](reports/2026-09-21-fable-round02-seed1111-read.md).
+Step 1 implementation is now in the ordered PR stack #97–#101. Step 2, the
+positive control, is the next open step after review and the existing admission
+checks. The new engine/image and 256-sequence batch still need pinning and a
+hardware smoke; the macOS baseline retains five conformance mismatches, so
+this is not a claim that every release check is green. The exact validation
+record is `reviews/2026-09-22-step1-validation.md`.
 Take the first `open` step there. The section below is the previous
 assignment, kept as history; its S0 rungs are Step 0 of the plan.
 

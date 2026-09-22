@@ -969,7 +969,13 @@ pub fn stdin_preload() -> bool {
     stdin_fill().is_ok()
 }
 
-pub fn stdin_rest() -> R<Vec<u8>> {
+/// Text reads count Unicode characters, but the shared cursor counts raw bytes.
+/// Keep the original bytes for dispatcher replay after a later refusal.
+pub fn stdin_read(size: Option<usize>) -> R<Vec<u8>> {
+    // Like CPython, read(0) neither consumes nor waits for input.
+    if size == Some(0) {
+        return Ok(Vec::new());
+    }
     stdin_fill()?;
     // Sliced inside the borrow. The cursor lives in a different thread_local,
     // so reading and writing it here does not overlap this one.
@@ -977,8 +983,19 @@ pub fn stdin_rest() -> R<Vec<u8>> {
         let b = s.borrow();
         let all = b.as_ref().unwrap();
         let pos = STDIN_POS.with(|p| *p.borrow()).min(all.len());
-        STDIN_POS.with(|p| *p.borrow_mut() = all.len());
-        Ok(all[pos..].to_vec())
+        let end = match size {
+            Some(n) => all[pos..].iter().enumerate()
+                .filter(|(_, byte)| **byte & 0xc0 != 0x80)
+                .nth(n).map_or(all.len(), |(i, _)| pos + i),
+            None => all.len(),
+        };
+        // Never advance into an invalid/truncated codepoint. Surrogateescape
+        // belongs to CPython; a clean refusal replays the untouched raw input.
+        if std::str::from_utf8(&all[pos..end]).is_err() {
+            return Err(unsupported("encoding", "non-UTF-8 bytes on stdin (CPython decodes it with surrogateescape)"));
+        }
+        STDIN_POS.with(|p| *p.borrow_mut() = end);
+        Ok(all[pos..end].to_vec())
     })
 }
 

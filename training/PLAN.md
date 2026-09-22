@@ -50,7 +50,7 @@ Advance a step by editing this table in the same PR as the work.
 | # | step | cost | decision it makes | state |
 |---|---|---|---|---|
 | 0 | Read what was paid for | $0 | did dev native move inside the selector's blind spot? | done (2026-09-21, [read](reports/2026-09-21-codex-step0-read.md), GH 35575454075) |
-| 1 | Fix the instrument | $0 | nothing else is readable until it is | in progress (1.1 and 1.2 done 2026-09-21, PR #97; 1.3 done 2026-09-22, PR #98; 1.4 done 2026-09-22, PR #99; 1.5 done 2026-09-22, PR #100; 1.6 open) |
+| 1 | Fix the instrument | $0 | nothing else is readable until it is | done (2026-09-22, implementation in PRs #97–#101; validation limits below) |
 | 2 | Positive control (S1 / stage 0b) | ~$5 | distillation route or contrastive route | open |
 | 3 | Build contrastive targets | tokens | is there enough pair supply for a preference arm? | open |
 | 4 | S4, re-specified, three seeds | ~$60–90 | the first result the instrument can read | open |
@@ -157,6 +157,19 @@ cases; small population slices, rather than the primary macro, need attention.
 6. **Engine fixes land now** — `data/engine-mismatches.jsonl` (`sys.stdin.read(n)`).
    The arm must change anyway; this is the one window where an engine change
    costs no comparability (`arm_check.py` will refuse to join old seeds).
+   **Done 2026-09-22, PR #101.** Sized stdin reads now advance by Unicode
+   characters without draining the remaining stream. The recorded witness
+   agrees with CPython on both variants; tests cover cursor sharing, invalid
+   arguments, zero-length reads and refusal replay. Frozen witnesses stay intact.
+
+**Step 1 handoff.** Merge the stack in order (#97, #98, #99, #100, #101), then
+freeze the new engine/image and run the existing preflight and hardware smoke.
+The macOS full-corpus check still finds five inherited mismatching programs,
+reproduced unchanged on pre-fix commit `bcefefa`; no new mismatch was introduced.
+This is not a green conformance claim. A pinned candidate with MISMATCH 0 and
+an approved cost ceiling remain prerequisites for paid execution. Step 2 is
+next in the sequence; no paid step was launched. See
+`reviews/2026-09-22-step1-validation.md` for the verification record.
 
 ### Step 2 — Positive control (~$5; S1, `LADDER.md` stage 0b)
 

@@ -493,3 +493,13 @@ of the bank's 24.55pp headroom is one 1-case family slice in the macro. Read:
 [`reports/2026-09-21-fable-round02-seed1111-read.md`](reports/2026-09-21-fable-round02-seed1111-read.md).
 S1 (the positive control) is still unrun and is the plan's Step 2; Step 1
 fixes the instrument first.
+
+
+**2026-09-22 — Step 1 implementation is ready for review.** PRs #97–#101
+cover selection/stopping, macro scope, LoRA recipe, evaluation reuse and local
+deadline enforcement, and the sized-stdin-read fix. `PLAN.md` is updated to
+Step 2 next, with existing admission requirements intact. This is not a new
+model result or a green release claim: the full macOS corpus still has five
+inherited mismatching programs, confirmed against pre-fix `bcefefa`.
+`reviews/2026-09-22-step1-validation.md` records the checks. No training,
+provider inference, new seed or positive-control run was launched.
