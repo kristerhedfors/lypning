@@ -337,17 +337,75 @@ def cmd_eval2_select(args: argparse.Namespace) -> int:
     """Select reverse-prompting candidates for eval-2 from data/classified.jsonl."""
     from . import eval2_select as e2s
     from .jsonio import write_jsonl
-    source = Path(args.classified) if args.classified else DATA / "classified.jsonl"
-    if not source.exists():
-        print("no classified corpus: run `nt classify` first", file=sys.stderr)
-        return 1
+    if args.export and args.classified:
+        print("usage: --export and --classified are two sources; pick one", file=sys.stderr)
+        return 2
+    if args.export:
+        # The capture tier: exact bytes from `nt capture-export`, already tier A
+        # and clean, one record per distinct program, preferred writers first.
+        source = Path(args.export)
+        if not source.exists():
+            print("no capture export: run `nt capture-export` first", file=sys.stderr)
+            return 1
+        records = e2s.records_from_export(
+            read_jsonl(source), models=args.model or None,
+            allow_other_vendors=args.allow_other_vendors, hosts=args.host or None)
+    else:
+        source = Path(args.classified) if args.classified else DATA / "classified.jsonl"
+        if not source.exists():
+            print("no classified corpus: run `nt classify` first", file=sys.stderr)
+            return 1
+        records = read_jsonl(source)
     sightings = Path(args.sightings) if args.sightings else ROOT.parent / "tests" / "corpus" / "sightings"
-    result = e2s.select(read_jsonl(source), limit=args.limit, seed=args.seed,
+    result = e2s.select(records, limit=args.limit, seed=args.seed,
                         sightings_dir=sightings, timeout_s=args.timeout, jobs=args.jobs)
     write_jsonl(args.output, result["candidates"])
     print(e2s.render(result))
     print("  -> %s" % args.output)
     return 0 if result["selected"] else 1
+
+
+def cmd_capture_export(args: argparse.Namespace) -> int:
+    """The capture tier: exact programs from the raw log, attributed and screened.
+
+    Reads the log and never writes it. The output is its own artifact — the
+    source of a separate capture-tier bank, never rows for bank v3.
+    """
+    from . import capture_export as cx
+    if args.log:
+        log = Path(args.log)
+    else:
+        from lypning import paths as lpaths
+        log = lpaths.log_path()
+    if not log.is_file():
+        print("no capture log at %s" % log, file=sys.stderr)
+        return 1
+    attribution = Path(args.attribution) if args.attribution else cx.journal_path()
+    out = Path(args.output)
+    # The one write this verb makes must not land on either input: overwriting
+    # the capture log or the journal would cost the user the only copy.
+    for src in (log, attribution):
+        if src.exists() and out.exists() and out.resolve() == src.resolve():
+            print("usage: --output is an input of this command: %s" % src, file=sys.stderr)
+            return 2
+    if args.evidence and Path(args.evidence).exists():
+        print("usage: --evidence must be a NEW directory: %s" % args.evidence, file=sys.stderr)
+        return 2
+    try:
+        result = cx.export(log, origin=args.origin, attribution=attribution,
+                           transcripts=not args.no_transcripts,
+                           keep="all" if args.all else "tier-a")
+    except (ValueError, OSError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    cx.write_rows(out, result["rows"])
+    print(cx.render(result))
+    print("  -> %s" % out)
+    if args.evidence:
+        manifest = cx.snapshot(out, Path(args.evidence), args.origin)
+        print("  evidence %d events, %d sources -> %s"
+              % (manifest["events"], manifest["sources"], args.evidence))
+    return 0 if result["rows"] else 1
 
 
 def cmd_eval2_legacy(args: argparse.Namespace) -> int:
@@ -2835,7 +2893,30 @@ def build_parser() -> argparse.ArgumentParser:
     e2.add_argument("--seed", type=int, default=1111)
     e2.add_argument("--jobs", type=int, default=4)
     e2.add_argument("--timeout", type=float, default=10.0)
+    e2.add_argument("--export", help="capture-export rows (`nt capture-export`) instead of --classified")
+    e2.add_argument("--model", action="append",
+                    help="with --export: keep programs this model typed (repeatable; default any)")
+    e2.add_argument("--host", action="append",
+                    help="with --export: hosts to keep (repeatable; default claude)")
+    e2.add_argument("--allow-other-vendors", action="store_true",
+                    help="with --export: keep gpt/codex-written programs (an operator decision)")
     e2.set_defaults(fn=cmd_eval2_select)
+
+    cx = sub.add_parser("capture-export",
+                        help="capture tier: exact, attributed, tier-A programs from the raw capture log")
+    cx.add_argument("--output", type=Path, required=True, help="rows JSONL to write (owner-only)")
+    cx.add_argument("--origin", required=True,
+                    help="log generation, as for lypning.evidence (keep it for a growing log)")
+    cx.add_argument("--log", type=Path, help="capture log (default $LYPNING_HOME/invocations.jsonl); read only")
+    cx.add_argument("--attribution", type=Path,
+                    help="attribution journal (default $LYPNING_HOME/attribution.jsonl, if present)")
+    cx.add_argument("--no-transcripts", action="store_true",
+                    help="do not read Claude transcripts for models/outcomes")
+    cx.add_argument("--all", action="store_true",
+                    help="write every row, not only tier A (privacy-rejected text withheld)")
+    cx.add_argument("--evidence", type=Path,
+                    help="NEW directory: snapshot the rows with lypning.evidence for eval2-bank")
+    cx.set_defaults(fn=cmd_capture_export)
 
     e2l = sub.add_parser("eval2-legacy",
                          help="project a schema-3 eval-2 bank to records `harvest --source jsonl:` takes")
