@@ -153,6 +153,19 @@ def test_reference_admission_uses_container_runner_and_hides_failure_text(tmp_pa
     assert result['python'] == 'pinned Python'
 
 
+def test_grader_reuses_the_paid_admission_container_oracle():
+    grade = load_script('step2_grade.py')
+    identity = {'sha256': 'engine', 'oracle': 'controller Python', 'version': 'v'}
+    admission = {'conformance': {'engine_sha256': 'engine'},
+                 'references': {'python': 'pinned container Python'}}
+    assert grade.admitted_identity(identity, admission) == {
+        'sha256': 'engine', 'oracle': 'pinned container Python', 'version': 'v'}
+    bad = {'conformance': {'engine_sha256': 'other'},
+           'references': {'python': 'pinned container Python'}}
+    with pytest.raises(TrainingError, match='grading engine differs'):
+        grade.admitted_identity(identity, bad)
+
+
 def test_corpus_reuse_requires_identical_runtime_and_complete_green_evidence():
     import copy
     import hashlib
