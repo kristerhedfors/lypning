@@ -1,5 +1,16 @@
 """Build SFT targets the only way that can be trusted here: by execution.
 
+LEGACY: the ntx-era path (this module, :mod:`split`, :mod:`schema`,
+:mod:`extract`), marked 2026-09-22. It has its own case record, its own 70/30
+hash-locked split, its own prompt (``evaluate.render_messages``) and a lenient
+extractor, and it feeds only the ``nt`` CLI and the retired runner in
+``gpu/lypning_lora.py``. No round-02 or S4 stage reads it: the live task-first
+path is ``data_loop`` -> ``training.prepare`` -> ``gpu/train_verified.py``,
+whose prompt is ``training.messages``, whose target fence is
+``training.assistant_turn`` and whose extractor is the fail-closed
+``training.program_from_completion``. Numbers from the two paths are not
+comparable. Do not grow this module; build on the task-first path.
+
 THE PROBLEM THIS SOLVES. The corpus has 175 training cases and not one reference
 solution — a tier-1 rewrite is exactly what nobody has written. You cannot
 supervise on targets you do not have, and a target written by a judge model

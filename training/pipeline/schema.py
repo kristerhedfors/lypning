@@ -1,5 +1,10 @@
 """The record every later step reads, and the only place its shape is decided.
 
+LEGACY: the ntx-era case record (see :mod:`sample` for the whole path), marked
+2026-09-22. "Every later step" means the ntx corpus (``harvest``, ``sample``,
+``split``, ``evaluate``). The task-first training bank is schema 3, validated
+by ``training_data.validate_cases``, and never passes through this module.
+
 A case is (prompt, optional reference, executable test, failure category,
 provenance). Its id is a hash of the two fields that define identity — the
 prompt and the test — so re-harvesting the same source produces the same id and
