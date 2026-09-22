@@ -158,3 +158,47 @@ def test_only_inventory_can_explain_an_absent_planned_checkpoint():
         m.summarise(data)
     result = m.summarise(data, dict(m.STEPS, grpo=(0, 5, 10, 15)))
     assert result["checkpoints_absent_from_hub"] == {"sft": [], "grpo": [20]}
+
+
+def test_draw_coupling_sets_observed_agreement_beside_independence():
+    cs = cases(2)
+    base = rows(cs)
+    # Case 0 is native on draws 0-1 only, at the base and at the step: a
+    # checkpoint that repeats the seeded base draw exactly.
+    for r in base[2:4]:
+        fallback(r)
+    same = rows(cs, 25)
+    for r in same[2:4]:
+        fallback(r)
+    coupled = m.checkpoints(base + same, cs, (0, 25), base)
+    assert coupled[0]["draw_coupling"] is None
+    # Observed 1; independent draws at rate 1/2 agree half the time on case
+    # 0 and always on the all-native case 1: (0.5 + 1) / 2.
+    assert coupled[1]["draw_coupling"]["native"] == {
+        "observed_agreement": 1.0, "independent_agreement": .75, "excess_agreement": .25}
+    # The same rates on the OTHER draws: no draw repeats, independence unchanged.
+    flipped = rows(cs, 25)
+    for r in flipped[0:2]:
+        fallback(r)
+    moved = m.checkpoints(base + flipped, cs, (0, 25), base)[1]["draw_coupling"]
+    assert moved["native"]["observed_agreement"] == .5
+    assert moved["native"]["independent_agreement"] == .75
+    assert moved["status"]["observed_agreement"] == .5
+    assert moved["correct"] == {"observed_agreement": 1.0, "independent_agreement": 1.0,
+                                "excess_agreement": 0.0}
+
+
+def test_draw_coupling_publishes_fractions_only():
+    result = m.summarise(evidence())
+    for stage in result["stages"].values():
+        for row in stage:
+            coupled = row["draw_coupling"]
+            if row["step"] == 0:
+                assert coupled is None
+                continue
+            assert set(coupled) == {"native", "correct", "status"}
+            for values in coupled.values():
+                assert set(values) == {"observed_agreement", "independent_agreement",
+                                       "excess_agreement"}
+                assert all(type(v) is float for v in values.values())
+    assert PRIVATE not in json.dumps(result)

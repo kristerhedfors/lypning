@@ -1,0 +1,47 @@
+name: Step 2 provider seed read (counts only)
+
+# Free: reads paid completions already on the private Hub and prints only
+# counts of agreement between runs over the (case, draw, arm) keys they share.
+# Push-triggered, like `step0-summary.yml`, so a read needs no merge to main:
+# push this branch to run it on the default runs.
+on:
+  push:
+    branches: ["reads/provider-seed"]
+    paths:
+      - .github/scripts/provider_seed_compare.py
+      - .github/workflows/provider-seed.yml
+      - training/tests/test_provider_seed_compare.py
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Actions run ids of paid Step 2 runs, space-separated (empty = the three of 2026-09-22)
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HF_HUB_DISABLE_PROGRESS_BARS: "1"
+      HF_HUB_VERBOSITY: error
+      LYPNING_CAPTURE: "0"
+      LYPNING_HARVEST: "0"
+      PROVIDER_SEED_RUNS: ${{ github.event.inputs.runs || '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q "huggingface-hub==1.31.0" pytest
+      - name: Check the publication boundary
+        run: python -m pytest training/tests/test_provider_seed_compare.py -q
+      - name: Compare the runs and print only counts
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python .github/scripts/provider_seed_compare.py
