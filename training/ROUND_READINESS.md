@@ -53,7 +53,15 @@ training-split control. Pinned-base conformance
 loaded 9,064 corpus programs: 4,560 match, 1,757 unsupported, **zero mismatch**,
 2,747 skipped, and no repository damage. This is the large native arm on the
 pinned CPython 3.12.14 base, not a waiver of macOS 3.14 failures. Reference
-admission is still running. The generation library reserves budget before each
+admission did not finish: run
+[35684815342](https://github.com/kristerhedfors/lypning/actions/runs/35684815342)
+hit its 70-minute job limit after 69 minutes in reference verification, with no
+intermediate counts. This is CPU container startup/verification work, not GPU
+training. The checker now reports aggregate completion and an estimated time
+remaining every 30 seconds, selects up to eight concurrent cases within CPU
+and container-memory limits, and stops new work on failure or after 50 minutes.
+Partial results cannot create an admission proof. This change still needs a
+complete successful rerun. The generation library reserves budget before each
 request, disables retries, and binds its input to a private runtime/reference
 proof. The manual dispatch, private evidence handoff and scope remain to be
 completed after the budget choice. The 256-sequence GPU batch smoke

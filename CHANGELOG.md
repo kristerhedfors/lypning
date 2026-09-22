@@ -19,6 +19,8 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 - Add a free private-bank/tokenizer cost plan for both sixteen-draw prompt arms.
 - Verify the large engine in the pinned training Python runtime without a provider call.
+- Bound reference-check concurrency by worker resources; report progress and
+  estimated remaining time, preserve partial counts, and fail closed on timeout.
 - Add a tested reservation ledger for hosted calls, with no retries or implicit resume.
 - Record the Step 1 merges and free admission result; paid execution remains gated.
 

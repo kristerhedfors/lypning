@@ -158,3 +158,41 @@ def test_corpus_reuse_requires_identical_runtime_and_complete_green_evidence():
     bad = copy.deepcopy(report)
     bad['engines']['lypning-l']['counts']['mismatch'] = 1
     assert not reuse.reusable(bad, image, binary, image['base_image'], lambda _: True)
+
+
+def test_reference_workers_respect_container_memory_and_cpu_limits():
+    check = load_script('step2_reference_check.py')
+    assert check.worker_count(4, 16000) == 8
+    assert check.worker_count(2, 7000) == 4
+    assert check.worker_count(16, 4096) == 1
+    assert check.worker_count(32, 64000) == 8
+
+
+def test_reference_progress_requires_every_case_and_stops_on_failure():
+    check = load_script('step2_reference_check.py')
+    reports = []
+    calls = []
+    def score(case):
+        calls.append(case)
+        return 'failed'
+    result = check.verify_cases([1, 2, 3], score, 1, reports.append)
+    assert calls == [1]
+    assert result['completed'] == 1
+    assert not result['complete'] and result['stopped_early']
+    assert reports[0]['completed'] == 0 and reports[-1] == result
+    assert 'estimated_remaining_seconds' in result
+    result = check.verify_cases([1, 2, 3], lambda _: 'correct-native', 2, reports.append)
+    assert result['complete'] and result['completed'] == 3
+    assert result['counts'] == {'correct-native': 3}
+
+
+def test_reference_deadline_does_not_schedule_rest_or_admit_partial(monkeypatch):
+    check = load_script('step2_reference_check.py')
+    now = [0]
+    monkeypatch.setattr(check.time, 'monotonic', lambda: now[0])
+    def score(case):
+        now[0] = 11
+        return 'correct-native'
+    result = check.verify_cases([1, 2, 3], score, 1, lambda _: None, deadline_s=10)
+    assert result['completed'] == 1 and result['stopped_early']
+    assert not result['complete']

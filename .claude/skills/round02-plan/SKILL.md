@@ -38,11 +38,12 @@ to those checks and the existing cost approval.
 |---|---|---|---|
 | 0 | Read what was paid for — per-step dev metrics, probe rollouts, eval-2 family sizes | $0 | `PLAN.md` table |
 | 1 | Fix the instrument — selector, stopping, macro floor, LoRA learning rates, eval cost, engine fixes | $0 | |
-| 2 | Positive control — stage 0b, bare vs `prompts/subset-spec.md`, k = 16 | ~$5 | |
+| 2 | Positive control — stage 0b, bare vs `prompts/subset-spec.md`, k = 16 | ~$126 at 512 output tokens; ~$225 at allowance | |
 | 3 | Build contrastive targets — correct-native vs correct-but-refused pairs per prompt | tokens | |
 | 4 | S4 re-specified — RFT arm, preference arm if supply, dosed GRPO; three seeds | ~$60–90 | |
 
-**Take the first step whose state is `open`. Do only that step.** Each step's
+**Continue the first `in progress` step; otherwise take the first `open` step.
+Do only that step.** Each step's
 decision rule chooses the shape of the next one, so skipping ahead builds the
 wrong thing. Do the work in a PR that also edits the state cell in `PLAN.md`
 and adds a ledger row to `training/ORCHESTRATION.md`. If a decision changes a
