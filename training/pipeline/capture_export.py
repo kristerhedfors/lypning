@@ -13,7 +13,8 @@ exact bytes.
 
 WHAT A ROW CARRIES, AND WHERE EACH FIELD COMES FROM.
 
-``program``, ``argv_tail``  exact, from ``extract_with_tails`` on the command
+``program``, ``argv_tail``  exact, from ``extract_with_tails`` on the command;
+                            None when either trips the privacy rule
 ``source_sha256``           ``sha256(program)`` — ``lypning.evidence``'s identity
 ``parent_event_id``         the id ``evidence.snapshot`` gives that log LINE
                             under the same ``origin``: the join back to the raw
@@ -274,6 +275,20 @@ def attribute(rec: Dict[str, Any], journal: Dict[str, Dict[str, Any]],
 # --- screens -----------------------------------------------------------------------
 
 
+def _private_argv(tail: Sequence[str]) -> bool:
+    """Does the argv carry a credential, an email or a home path?
+
+    As a SEQUENCE too (``harvest.redact_argv``): ``--password hunter2`` splits
+    the secret across two elements, neither of which looks like one alone.
+    """
+    if not tail:
+        return False
+    from lypning import harvest  # noqa: WPS433
+    if harvest.redact_argv(list(tail))[1]:
+        return True
+    return any(capture_quality.private(a) for a in tail)
+
+
 def contamination(command: str, program: str = "") -> str:
     """The first contamination rule the command (or program) trips, or ``""``."""
     for name, rx in CONTAMINATION:
@@ -296,9 +311,14 @@ def export(log: Path, *, origin: str, attribution: Optional[Path] = None,
 
     ``keep`` decides which rows come back (the counts always cover all of them):
     ``"tier-a"`` — tier A and uncontaminated, the default and the only rows an
-    author should see; ``"all"`` — every row, with the program text withheld
-    (``program`` None) on any row the ``privacy`` rule rejected, so an audit
-    file can never be the place a credential is copied to.
+    author should see; ``"all"`` — every row, with the program text and argv
+    withheld (``program``/``argv_tail`` None) on any row whose program or argv
+    trips the privacy rule, WHICHEVER rule rejected it first, so an audit file
+    can never be the place a credential is copied to. A tier-A program typed
+    with a private argv is charged to ``privacy`` on that occurrence.
+
+    One tool call is one occurrence: a repeated ``tool_use_id`` (the same call
+    logged by two hook scopes) is counted in ``duplicate_events`` and skipped.
     """
     if keep not in ("tier-a", "all"):
         raise ValueError("keep must be 'tier-a' or 'all'")
@@ -316,8 +336,13 @@ def export(log: Path, *, origin: str, attribution: Optional[Path] = None,
         "contaminated": {name: 0 for name, _ in CONTAMINATION},
         "model_basis": {}, "models": {}, "ok": {"true": 0, "false": 0, "unknown": 0},
     }
+    counts["duplicate_events"] = 0
+    counts["invalid_utf8"] = 0
+    counts["private_argv"] = 0
     verdicts: Dict[str, str] = {}
+    private_text: Dict[str, bool] = {}
     tainted: Dict[str, str] = {}
+    seen_calls: Set[str] = set()
     for n, raw, rec in _log_lines(Path(log)):
         counts["lines"] += 1
         if rec is None:
@@ -326,6 +351,16 @@ def export(log: Path, *, origin: str, attribution: Optional[Path] = None,
         command = rec.get("command")
         if rec.get("kind") != "bash_command" or not isinstance(command, str):
             continue
+        # One tool call, one occurrence. A PreToolUse hook registered in two
+        # scopes (user and project) logs the same call twice under the same
+        # tool_use_id; counting both would double a program's frequency and
+        # its model's share. The first line is the one kept.
+        tid = rec.get("tool_use_id")
+        if isinstance(tid, str) and tid:
+            if tid in seen_calls:
+                counts["duplicate_events"] += 1
+                continue
+            seen_calls.add(tid)
         counts["commands"] += 1
         extracted = harvest.extract_with_tails(command)
         if not extracted:
@@ -335,11 +370,32 @@ def export(log: Path, *, origin: str, attribution: Optional[Path] = None,
         parent = event_id(origin, n, raw)
         dirty_command = contamination(command)
         for idx, (program, tail) in enumerate(extracted):
+            tail = [str(a) for a in tail]
+            try:
+                sha = source_sha256(program)
+                json.dumps(tail, ensure_ascii=False).encode("utf-8")
+            except UnicodeError:
+                # A lone surrogate (a JSON ``\ud800`` escape in the log): not
+                # UTF-8, so not a source ``lypning.evidence`` can store either.
+                # Counted, never allowed to abort the whole export.
+                counts["invalid_utf8"] += 1
+                continue
             counts["programs"] += 1
-            sha = source_sha256(program)
             if sha not in verdicts:
                 verdicts[sha] = capture_quality.classify(program, local=local_set)
             quality = verdicts[sha]
+            # The verdict stops at the FIRST failing rule, so ``privacy`` (the
+            # last) never sees a program another rule already rejected, and it
+            # never sees the argv at all. Both are asked here, of every row:
+            # text that carries a credential is withheld from any file this
+            # writes, and a private argv makes an otherwise tier-A row private.
+            secret_argv = _private_argv(tail)
+            if quality and sha not in private_text:
+                private_text[sha] = quality == "privacy" or capture_quality.private(program)
+            secret = secret_argv or private_text.get(sha, False)
+            if secret_argv and not quality:
+                quality = "privacy"
+                counts["private_argv"] += 1
             dirty = dirty_command or contamination("", program)
             counts["quality"][quality] += 1
             if dirty:
@@ -352,8 +408,8 @@ def export(log: Path, *, origin: str, attribution: Optional[Path] = None,
             row = {
                 "schema": SCHEMA,
                 "tier": "capture",
-                "program": None if quality == "privacy" else program,
-                "argv_tail": [str(a) for a in tail],
+                "program": None if secret else program,
+                "argv_tail": None if secret else tail,
                 "source_sha256": sha,
                 "parent_event_id": parent,
                 "parent_line": n,
@@ -377,13 +433,15 @@ def export(log: Path, *, origin: str, attribution: Optional[Path] = None,
     for row in rows:
         if not row["contaminated"] and row["source_sha256"] in tainted:
             row["contaminated"] = "elsewhere:" + tainted[row["source_sha256"]]
+    usable = [r for r in rows if not r["quality"] and not r["contaminated"]]
     if keep == "tier-a":
-        rows = [r for r in rows if not r["quality"] and not r["contaminated"]]
+        rows = usable
     counts["distinct"] = len(verdicts)
     counts["distinct_tier_a"] = sum(1 for v in verdicts.values() if not v)
     counts["distinct_tainted"] = len(tainted)
-    counts["distinct_tier_a_clean"] = sum(1 for sha, v in verdicts.items()
-                                          if not v and sha not in tainted)
+    # From the rows, not the verdicts: a program whose only occurrences carry a
+    # private argv has a tier-A verdict and no row an author may see.
+    counts["distinct_tier_a_clean"] = len({r["source_sha256"] for r in usable})
     return {"origin": origin, "rows": rows, "counts": counts,
             "journal_entries": len(journal), "transcripts_read": len(indexes)}
 
@@ -459,6 +517,9 @@ def write_rows(path: Path, rows: Sequence[Dict[str, Any]]) -> None:
     """Owner-only, like every other private capture artifact (``DATA_PRODUCTION.md``)."""
     path = Path(path)
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # ``O_CREAT``'s mode applies only to a file it creates: an existing 0644
+    # file keeps 0644 and would publish the rows to every local user.
+    os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         for row in rows:
             fh.write(json.dumps(row, sort_keys=True, ensure_ascii=False) + "\n")
@@ -485,8 +546,11 @@ def render(result: Dict[str, Any]) -> str:
              "tier A and clean %d   (tainted %d)"
              % (c["programs"], c["distinct"], c["distinct_tier_a"],
                 c["distinct_tier_a_clean"], c["distinct_tainted"]),
-             "  journal entries %d   transcripts read %d"
-             % (result["journal_entries"], result["transcripts_read"]),
+             "  journal entries %d   transcripts read %d   duplicate calls %d   "
+             "not UTF-8 %d   private argv %d"
+             % (result["journal_entries"], result["transcripts_read"],
+                c.get("duplicate_events", 0), c.get("invalid_utf8", 0),
+                c.get("private_argv", 0)),
              "  quality (occurrences, first rejecting rule):"]
     for rule in capture_quality.RULES:
         lines.append("    %-14s %6d" % (rule, c["quality"].get(rule, 0)))

@@ -4,7 +4,7 @@ WHAT THIS IS FOR. The capture log (``~/.lypning/invocations.jsonl``) is what the
 agents actually typed while working in this repository, and almost all of it is
 repository work: patch a file, drive the engine, glue one command's JSON into
 the next. Measured with this module on 2026-09-22 (``nt capture-export`` over a
-7,909-line log, ``DATA_PRODUCTION.md`` *Capture tier*): 205 of 5,003 distinct
+7,997-line log, ``DATA_PRODUCTION.md`` *Capture tier*): 204 of 5,046 distinct
 programs are pure, deterministic and non-trivial enough to write a task for.
 This module is the filter that finds those without running anything, so that the expensive half of the route — regeneration in
 ``eval2_select``, authoring, the differential oracle in ``eval2_bank`` — only
@@ -50,12 +50,13 @@ import ast
 import functools
 import re
 import sys
+import threading
 import warnings
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Set
+from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Set, Tuple
 
 from .eval2_select import (_NETWORK_MODULES, _SUBPROCESS_CALLS, _SUBPROCESS_MODULES,
-                           _dotted, _imported_roots, writes_files)
+                           _WRITER_DOTTED, _dotted, _imported_roots, writes_files)
 
 #: Every rule, in the order it is applied.
 RULES = (
@@ -113,6 +114,19 @@ _CLOCK_DOTTED = frozenset((
     "os.getppid",
 ))
 _ALWAYS_RANDOM = frozenset(("secrets", "uuid"))
+
+#: Spellings that import a module named by a STRING. ``__import__('subprocess')``
+#: is the commonest one-liner import there is, and a detector that only reads
+#: ``import`` statements never sees it — nor ``from os import system``, nor
+#: ``import os as o; o.system(...)``, nor ``getattr(os, "system")``. Each of those
+#: is resolved to the dotted name it means before any rule looks (:func:`_facts`).
+_DYNAMIC_IMPORTS = frozenset(("__import__", "builtins.__import__",
+                              "importlib.import_module", "importlib.__import__"))
+_GETATTR = frozenset(("getattr", "builtins.getattr"))
+#: The root charged for a dynamic import whose module is not a literal: it is
+#: never stdlib, so such a program can never be tier A, and never a repo module.
+DYNAMIC_ROOT = "<dynamic>"
+_OPENERS = frozenset(("open", "io.open", "codecs.open", "builtins.open"))
 
 # The email and home-path shapes are text rules: they must fire on a comment or
 # a docstring as readily as on a literal, because the training text is the
@@ -204,6 +218,9 @@ def repo_modules(root: Optional[str] = None) -> FrozenSet[str]:
 # --- the walk -----------------------------------------------------------------
 
 
+_WARNINGS_LOCK = threading.RLock()
+
+
 def _quiet(fn: Any) -> Any:
     """Run ``fn`` with warnings silenced.
 
@@ -215,7 +232,11 @@ def _quiet(fn: Any) -> Any:
     """
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        with warnings.catch_warnings():
+        # ``catch_warnings`` saves and restores the PROCESS-wide filter list, so
+        # two threads interleaving it (``nt classify`` runs ``hazard`` from a
+        # pool) can restore each other's "ignore" and leave it on for good. The
+        # lock makes every save/restore pair nest; the verdict is cheap.
+        with _WARNINGS_LOCK, warnings.catch_warnings():
             warnings.simplefilter("ignore")
             return fn(*args, **kwargs)
     return wrapper
@@ -258,6 +279,93 @@ def _dotted_refs(tree: ast.AST) -> Set[str]:
     return out
 
 
+def _aliases(tree: ast.AST) -> Dict[str, str]:
+    """Local name -> the dotted name it is bound to by an import statement."""
+    out: Dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    out[alias.asname] = alias.name
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            for alias in node.names:
+                if alias.name != "*":
+                    out[alias.asname or alias.name] = "%s.%s" % (node.module, alias.name)
+    return out
+
+
+def _const_str(node: Any) -> Optional[str]:
+    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+
+def _resolve(node: Any, aliases: Dict[str, str], depth: int = 0) -> str:
+    """The dotted name ``node`` means, import aliases expanded, or ``""``.
+
+    ``o.system`` after ``import os as o`` is ``os.system``; ``system`` after
+    ``from os import system`` is ``os.system``; ``__import__("os").system`` and
+    ``getattr(os, "system")`` are ``os.system`` too. A local variable that
+    shadows an imported name resolves as the import — an over-match, which here
+    costs one candidate and never runs anything.
+    """
+    parts: List[str] = []
+    while depth < 50:
+        depth += 1
+        if isinstance(node, ast.Attribute):
+            parts.append(node.attr)
+            node = node.value
+            continue
+        if isinstance(node, ast.Call):
+            fn = _resolve(node.func, aliases, depth)
+            if fn in _DYNAMIC_IMPORTS and node.args and _const_str(node.args[0]):
+                head = str(_const_str(node.args[0]))
+                break
+            if fn in _GETATTR and len(node.args) >= 2 and _const_str(node.args[1]):
+                parts.append(str(_const_str(node.args[1])))
+                node = node.args[0]
+                continue
+            return ""
+        if isinstance(node, ast.Name):
+            head = aliases.get(node.id, node.id)
+            break
+        return ""
+    else:
+        return ""
+    return ".".join([head] + list(reversed(parts)))
+
+
+def _facts(tree: ast.AST) -> Tuple[Set[str], Set[str], Set[str], Set[str]]:
+    """``(roots, refs, froms, called)`` with every spelling of an import resolved.
+
+    ``roots`` adds the modules a ``__import__``/``import_module`` call names (or
+    :data:`DYNAMIC_ROOT` when it names one by a non-literal); ``refs`` adds the
+    alias-resolved dotted name of every name and attribute; ``called`` is the
+    resolved name of every call's callee.
+    """
+    aliases = _aliases(tree)
+    roots = set(_imported_roots(tree))
+    refs = _dotted_refs(tree)
+    called: Set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Attribute, ast.Name)):
+            name = _resolve(node, aliases)
+            if name:
+                refs.add(name)
+        elif isinstance(node, ast.Call):
+            fn = _resolve(node.func, aliases)
+            if fn:
+                called.add(fn)
+                refs.add(fn)
+            if fn in _DYNAMIC_IMPORTS:
+                mod = _const_str(node.args[0]) if node.args else None
+                roots.add(mod.split(".")[0] if mod and not mod.startswith(".") else DYNAMIC_ROOT)
+    for name in list(refs):
+        if "." in name:
+            roots_of = name.split(".")[0]
+            if roots_of in _SUBPROCESS_MODULES | _PROCESS_EXTRA_MODULES | _NETWORK_MODULES:
+                roots.add(roots_of)
+    return roots, refs, _import_from_names(tree), called
+
+
 def _is_process(tree: ast.AST, program: str, roots: Set[str], refs: Set[str],
                 froms: Set[str]) -> bool:
     if roots & (_SUBPROCESS_MODULES | _PROCESS_EXTRA_MODULES):
@@ -266,8 +374,36 @@ def _is_process(tree: ast.AST, program: str, roots: Set[str], refs: Set[str],
         return True
     if refs & _PROCESS_DOTTED or froms & _PROCESS_DOTTED:
         return True
+    if any(_SUBPROCESS_CALLS.search(r + "(") for r in refs | froms):
+        return True
     from lypning import conformance as conf  # noqa: WPS433 - lazy, like eval2_select
     return bool(conf.spawns_a_battery(program))
+
+
+def _writes(tree: ast.AST, program: str, called: Set[str]) -> bool:
+    """``eval2_select.writes_files``, plus what it cannot see by construction.
+
+    Its detector reads callee names as spelled, so ``from os import remove``
+    then ``remove(p)`` and ``import shutil as s`` then ``s.rmtree(p)`` pass it;
+    here the callee is alias-resolved first. An ``open`` whose mode is not a
+    literal is taken as a write: the mode is decided at run time, and this
+    module does not run anything to find out.
+    """
+    if writes_files(program):
+        return True
+    if called & _WRITER_DOTTED:
+        return True
+    aliases = _aliases(tree)
+    for call in _calls(tree):
+        if _resolve(call.func, aliases) not in _OPENERS:
+            continue
+        mode = call.args[1] if len(call.args) > 1 else None
+        for kw in call.keywords:
+            if kw.arg == "mode":
+                mode = kw.value
+        if mode is not None and _const_str(mode) is None:
+            return True
+    return False
 
 
 def _is_environment(refs: Set[str], froms: Set[str]) -> bool:
@@ -280,6 +416,8 @@ def _reads_files(tree: ast.AST, roots: Set[str], refs: Set[str], froms: Set[str]
     if roots & (_READ_MODULES | {"pathlib"}):
         return True
     if refs & _READ_DOTTED or froms & _READ_DOTTED:
+        return True
+    if refs & ((_READ_CALLS | {"builtins.open"}) - {"open"}):
         return True
     for call in _calls(tree):
         name = _dotted(call.func)
@@ -322,14 +460,14 @@ def _is_unseeded(roots: Set[str], refs: Set[str], froms: Set[str], tree: ast.AST
     return False
 
 
-def _privacy(program: str, tree: ast.AST) -> bool:
+def _privacy(program: str, tree: Optional[ast.AST]) -> bool:
     from lypning import harvest  # noqa: WPS433 - lazy, like eval2_select
     _, hits = harvest.redact(program)
     if hits:
         return True
     if _EMAIL.search(program) or _HOME.search(program):
         return True
-    for node in ast.walk(tree):
+    for node in ast.walk(tree) if tree is not None else ():
         if isinstance(node, ast.Constant) and isinstance(node.value, str) \
                 and _ABS_LITERAL.match(node.value) and node.value != "/":
             return True
@@ -359,9 +497,7 @@ def verdict(program: str, *, local: Optional[Iterable[str]] = None) -> Dict[str,
         return {"rule": "unparseable", "nodes": 0}
     nodes = _node_count(tree)
     local_set = frozenset(local) if local is not None else repo_modules()
-    roots = _imported_roots(tree)
-    refs = _dotted_refs(tree)
-    froms = _import_from_names(tree)
+    roots, refs, froms, called = _facts(tree)
 
     def out(rule: str) -> Dict[str, Any]:
         return {"rule": rule, "nodes": nodes}
@@ -374,11 +510,11 @@ def verdict(program: str, *, local: Optional[Iterable[str]] = None) -> Dict[str,
         return out("network")
     if _is_environment(refs, froms):
         return out("environment")
-    if writes_files(program):
+    if _writes(tree, program, called):
         return out("writes-files")
     if _reads_files(tree, roots, refs, froms):
         return out("reads-files")
-    if any(not is_stdlib(r) for r in roots if r != "__future__"):
+    if any(r == DYNAMIC_ROOT or not is_stdlib(r) for r in roots if r != "__future__"):
         return out("third-party")
     if _reads_stdin(refs, tree) and nodes < MIN_STDIN_NODES:
         return out("stdin-glue")
@@ -403,14 +539,27 @@ def hazard(program: str) -> str:
     tree = _parse(program)
     if tree is None:
         return ""
-    roots = _imported_roots(tree)
-    if _is_process(tree, program, roots, _dotted_refs(tree), _import_from_names(tree)):
+    roots, refs, froms, called = _facts(tree)
+    if _is_process(tree, program, roots, refs, froms):
         return "process"
     if roots & _NETWORK_MODULES:
         return "network"
-    if writes_files(program):
+    if _writes(tree, program, called):
         return "writes-files"
     return ""
+
+
+@_quiet
+def private(text: str) -> bool:
+    """The ``privacy`` rule ALONE, whatever rule a verdict charged first.
+
+    A verdict stops at the first rule that rejects, so a program that reads
+    ``~/.ssh`` is charged to ``reads-files`` and never reaches ``privacy``. This
+    answers the question an output file has to ask of every row it writes —
+    "does this text carry a credential, an email or a home path?" — for text
+    that does not even parse (an argv element, a fragment).
+    """
+    return _privacy(text or "", _parse(text or ""))
 
 
 def tally(programs: Iterable[str], *, local: Optional[Iterable[str]] = None) -> Dict[str, int]:

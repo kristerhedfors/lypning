@@ -171,9 +171,15 @@ model made.
   repo-local import, process, network, environment, file writes, file or path
   reads, non-stdlib import, stdin glue under 60 nodes, under 40 nodes or no
   def/loop, unseeded clock or randomness, privacy. Privacy covers a `redact`
-  hit, an email, a home path or an absolute path. Only tier A (no rule failed)
-  is written by default. `--all` writes every row for an audit, but withholds
-  the text of anything the privacy rule rejected.
+  hit, an email, a home path or an absolute path. Every rule reads imports as
+  they resolve — `import os as o`, `from os import system`,
+  `__import__("subprocess")`, `getattr(os, "system")` — and a module imported by
+  a non-literal name is never stdlib. Only tier A (no rule failed) is written by
+  default. A tier-A program typed with a private argv is charged to privacy on
+  that occurrence. `--all` writes every row for an audit, but withholds the
+  program and argv of any row whose text trips the privacy rule, whichever rule
+  rejected it first. A tool call logged twice under one `tool_use_id` (two hook
+  scopes) counts once.
 - **Contamination** is decided per program. If a command mentions eval-2, a
   bank, positive-control, completions or `invocations.jsonl`, every program in
   it is tainted, and so is every other occurrence of the same bytes.
@@ -186,30 +192,37 @@ model made.
   for tier-A rows. `lypning_source.classify_entry` now refuses to run a program
   that spawns processes, opens sockets or writes files (`capture_quality.hazard`).
   `is_tooling` now covers every repo-local module, not just `lypning`. On
-  2026-09-22 that changed 0 of the 643 refused rows in `data/classified.jsonl`,
-  so a re-harvest loses no held-out case.
+  2026-09-22 that changed 0 of the 643 refused rows in `data/classified.jsonl`.
+  The execution gate is different: `nt classify` is incremental, so it leaves
+  existing rows alone, but re-classified from scratch on 2026-09-22 it would
+  skip 99 of those 643 refused rows and 79 of 618 tier-1 rows, and 6 frozen
+  held-out cases come from the skipped rows. `nt harvest` would then refuse
+  on holdout loss. Do not delete `data/classified.jsonl` to re-run it.
 
-**Measured yield, 2026-09-22** (`nt capture-export --origin measure-2026-09-22`
-over the live log, 7,909 lines at the time; no journal existed yet, so every
-model came from a transcript):
+**Measured yield, 2026-09-22** (`capture_export.export` over the live log,
+7,997 lines at the time; no journal existed yet, so every model came from a
+transcript; re-measured after the resolver, argv-privacy and one-call-one-
+occurrence fixes, which is why it differs from the lane's first 7,909-line
+figure of 187):
 
 | Stage | Count |
 |---|---|
-| Bash commands / commands with a program | 7,904 / 4,863 |
-| Program occurrences / distinct programs | 5,382 / 5,003 |
-| Distinct tier A / tier A and uncontaminated | 205 / 187 |
-| Distinct programs tainted by contamination (any tier) | 791 |
-| Occurrences attributed by transcript id / by exact command / unknown | 4,690 / 692 / 0 |
+| Bash commands / commands with a program | 7,992 / 4,904 |
+| Program occurrences / distinct programs | 5,426 / 5,046 |
+| Distinct tier A / tier A and uncontaminated | 204 / 179 |
+| Distinct programs tainted by contamination (any tier) | 807 |
+| Occurrences attributed by transcript id / by exact command / unknown | 4,734 / 692 / 0 |
+| Duplicate tool calls / tier-A occurrences with a private argv | 0 / 8 |
 
 The three largest first-failing rules, counted over occurrences, were file
-writes (1,794), file reads (1,318) and repo-local imports (846). The 187
-selected programs came from these writers: `claude-opus-5` 161,
-`claude-fable-5-1` 14, `claude-opus-5-5` 10 (all ranked first) and
-`claude-opus-4-8` 2. The median program is 10 lines. `claude-opus-5-5` typed
-238 of the 5,382 occurrences.
+writes (1,816), file reads (1,320) and repo-local imports (864). The 179
+selected programs came from these writers: `claude-opus-5` 154,
+`claude-fable-5-1` 14, `claude-opus-5-5` 9 (all ranked first) and
+`claude-opus-4-8` 2. The median program is 11 lines. `claude-opus-5-5` typed
+282 of the 5,426 occurrences.
 
 At bank v1's author yield (§11 of [EVAL2.md](EVAL2.md): 364 admitted from 691
-candidates), 187 candidates come to roughly 100 cases. That is breadth across
+candidates), 179 candidates come to roughly 95 cases. That is breadth across
 families, not volume.
 
 ## L capabilities that would help next

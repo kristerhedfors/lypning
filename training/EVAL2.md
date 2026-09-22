@@ -364,9 +364,11 @@ Captured programs are eval-2 v1's own source population, so a capture-tier bank
 check. There is also a filter before authoring: `nt capture-export` drops every
 program that ever appeared in a command mentioning eval-2, a bank,
 positive-control, completions or the capture log. After authoring, the
-capture-tier bank is checked on all five rules against both eval-2 v1 and the
-v3 eval-2 bundle. The v3 check runs in CI, because the bundle is private, and
-prints aggregates only. On a hit the capture case is dropped.
+capture-tier bank must be checked on all five rules against both eval-2 v1 and
+the v3 eval-2 bundle before it is frozen. The v3 check has to run in CI, because
+the bundle is private, and may print aggregates only; no workflow for it exists
+yet (2026-09-22), so a capture-tier bank is not admissible until one does. On a
+hit the capture case is dropped.
 
 ## 9. What would falsify
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shlex
 
 import pytest
 
@@ -271,3 +272,76 @@ def test_cli_refuses_to_overwrite_its_own_input(world, capsys):
     assert rc == 2 and world["log"].read_bytes() == before
     rc = cli.main(["eval2-select", "--export", "x", "--classified", "y", "--output", "z"])
     assert rc == 2
+
+
+# --- privacy, double counting and robustness ----------------------------------------
+
+
+def _log(tmp_path, records):
+    log = tmp_path / "log.jsonl"
+    log.write_text("".join(json.dumps(r) + "\n" for r in records))
+    return log
+
+
+def test_the_audit_file_withholds_private_text_whichever_rule_rejected_it_first(tmp_path):
+    reader = GOOD + "\nprint(open('/Users/someone/.ssh/id_rsa').read())"
+    log = _log(tmp_path, [{"kind": "bash_command", "command": heredoc(reader)},
+                          {"kind": "bash_command", "command": "python3 -c 'import sys; x=' "
+                                                              "--token ghp_abcdefghijklmnop"}])
+    rows = cx.export(log, origin="o", local=frozenset(), keep="all", transcripts=False)["rows"]
+    assert rows[0]["quality"] == "reads-files"
+    assert rows[0]["program"] is None and rows[0]["argv_tail"] is None
+    text = json.dumps(rows)
+    assert "/Users/someone" not in text and "ghp_abcdefghijklmnop" not in text
+
+
+def test_a_private_argv_makes_a_tier_a_occurrence_private(tmp_path):
+    program = GOOD + "\nimport sys\nprint(sys.argv[1:])"
+    log = _log(tmp_path, [
+        {"kind": "bash_command", "command": "python3 -c %s --password hunter2"
+                                            % shlex.quote(program)},
+        {"kind": "bash_command", "command": "python3 -c %s /Users/someone/x" % shlex.quote(program)},
+        {"kind": "bash_command", "command": "python3 -c %s 7" % shlex.quote(program)},
+    ])
+    result = cx.export(log, origin="o", local=frozenset(), keep="all", transcripts=False)
+    assert [r["quality"] for r in result["rows"]] == ["privacy", "privacy", ""]
+    assert [r["argv_tail"] for r in result["rows"]] == [None, None, ["7"]]
+    assert result["counts"]["private_argv"] == 2
+    kept = cx.export(log, origin="o", local=frozenset(), transcripts=False)
+    assert [r["argv_tail"] for r in kept["rows"]] == [["7"]]
+    assert kept["counts"]["distinct_tier_a_clean"] == 1
+
+
+def test_one_tool_call_logged_twice_counts_once(tmp_path):
+    """The same PreToolUse event from a user-scope and a project-scope hook."""
+    rec = {"kind": "bash_command", "tool_use_id": "tu1", "session": "s",
+           "command": heredoc(GOOD)}
+    log = _log(tmp_path, [rec, rec, dict(rec, tool_use_id="tu2")])
+    result = cx.export(log, origin="o", local=frozenset(), transcripts=False)
+    c = result["counts"]
+    assert c["duplicate_events"] == 1 and c["commands"] == 2 and c["programs"] == 2
+    assert [r["parent_line"] for r in result["rows"]] == [1, 3]
+    (sel,) = cx.select_rows(result["rows"])
+    assert sel["models"] == {"unknown": 2} and len(sel["parent_event_ids"]) == 2
+
+
+def test_a_lone_surrogate_is_counted_and_does_not_abort_the_export(tmp_path):
+    log = tmp_path / "log.jsonl"
+    bad = json.dumps({"kind": "bash_command", "command": "python3 -c 'print(\"\\ud800\")'"})
+    assert "\\ud800" in bad
+    log.write_text(bad.replace("\\\\ud800", "\\ud800") + "\n"
+                   + json.dumps({"kind": "bash_command", "command": heredoc(GOOD)}) + "\n")
+    result = cx.export(log, origin="o", local=frozenset(), transcripts=False)
+    assert result["counts"]["invalid_utf8"] == 1
+    assert [r["program"] for r in result["rows"]] == [GOOD]
+    cx.write_rows(tmp_path / "out.jsonl", result["rows"])
+
+
+def test_write_rows_makes_an_existing_file_owner_only(tmp_path):
+    import os
+    path = tmp_path / "rows.jsonl"
+    path.write_text("old\n")
+    os.chmod(str(path), 0o644)
+    cx.write_rows(path, [{"a": 1}])
+    assert oct(path.stat().st_mode & 0o777) == "0o600"
+    assert read_jsonl(path) == [{"a": 1}]

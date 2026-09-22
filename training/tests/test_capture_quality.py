@@ -171,3 +171,65 @@ def test_a_capture_full_of_bad_escapes_makes_no_warning_noise():
         assert q.classify(program, local=LOCAL) == ""
         q.hazard(program)
     assert not seen
+
+
+# --- every spelling of an import, not only the import statement ------------------
+
+EVASIONS = [
+    ("from os import system\nsystem('true')\n", "process"),
+    ("from os import popen\nprint(popen('ls').read())\n", "process"),
+    ("import os as o\no.system('true')\n", "process"),
+    ("__import__('subprocess').run(['true'])\n", "process"),
+    ("import os\ngetattr(os, 'system')('true')\n", "process"),
+    ("getattr(__import__('os'), 'system')('true')\n", "process"),
+    ("import importlib\nimportlib.import_module('socket')\n", "network"),
+    ("__import__('urllib.request').request.urlopen('x')\n", "network"),
+    ("from os import remove\nremove('x')\n", "writes-files"),
+    ("import shutil as s\ns.rmtree('x')\n", "writes-files"),
+    ("m = 'w'\nopen('x', m).write('y')\n", "writes-files"),
+]
+
+
+@pytest.mark.parametrize("program,rule", EVASIONS)
+def test_an_aliased_or_dynamic_import_is_still_a_hazard(program, rule):
+    """Each of these ran under `nt classify` before the resolver: the detectors
+    read callee names as spelled, and `__import__` is not an import statement."""
+    assert q.hazard(program) == rule
+    assert q.classify(GOOD + program, local=LOCAL) == rule
+
+
+def test_a_dynamic_import_is_resolved_for_every_rule_not_only_hazards():
+    assert q.classify("__import__('pipeline').cli\n" + GOOD, local=LOCAL) == "repo-import"
+    assert q.classify("np = __import__('numpy')\n" + GOOD, local=LOCAL) == "third-party"
+    # A module named at run time can never be shown to be stdlib.
+    assert q.classify("name = 'json'\nm = __import__(name)\n" + GOOD, local=LOCAL) == "third-party"
+    # ...while a literal stdlib one changes nothing.
+    assert q.classify("j = __import__('json')\n" + GOOD + "print(j.dumps([1]))\n",
+                      local=LOCAL) == ""
+
+
+def test_private_asks_the_privacy_rule_alone_whatever_came_first():
+    reader = GOOD + "print(open('/Users/someone/.ssh/id_rsa').read())\n"
+    assert q.classify(reader, local=LOCAL) == "reads-files"   # first rule wins...
+    assert q.private(reader)                                   # ...but it is private
+    assert q.private("def f(:  # someone@example.com")        # unparseable too
+    assert q.private("/home/someone/x") and not q.private(GOOD)
+
+
+def test_concurrent_verdicts_leave_the_process_warning_filters_alone():
+    import threading
+    import warnings
+    before = list(warnings.filters)
+    program = "import re\n" + GOOD + "print(re.findall('\\d+', 'a1'))\n"
+
+    def work():
+        for _ in range(50):
+            q.hazard(program)
+            q.classify(program, local=LOCAL)
+
+    threads = [threading.Thread(target=work) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert list(warnings.filters) == before
