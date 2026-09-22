@@ -54,7 +54,7 @@ def main():
                              'engine_sha256': admission['conformance']['engine_sha256'],
                              'base_image': admission['conformance']['base_image'],
                              'candidate_image': admission['candidate_image'],
-                         })
+                         }, progress=lambda event: print(json.dumps(event, sort_keys=True), flush=True))
     print(json.dumps(public, sort_keys=True))
 
 
