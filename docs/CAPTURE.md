@@ -227,13 +227,12 @@ paths, occasionally a token pasted into a one-liner.
 
 ## Environment
 
-The fallback directory in the first row is named `lypning-mp-<uid>` for
-historical reasons and has nothing to do with `lypning-mp`, the oracle —
-measured, never routed to (`capture._fallback_log`).
+The fallback directory in the first row is named `lypning-capture-<uid>`
+(`capture._fallback_log`).
 
 | Variable | Effect |
 | --- | --- |
-| `LYPNING_LOG` | log path (default `~/.lypning/invocations.jsonl`; falls back to `$TMPDIR/lypning-mp-<uid>/` when `$HOME` is unwritable, then gives up silently) |
+| `LYPNING_LOG` | log path (default `~/.lypning/invocations.jsonl`; falls back to `$TMPDIR/lypning-capture-<uid>/` when `$HOME` is unwritable, then gives up silently) |
 | `LYPNING_CAPTURE=0` | disable capture entirely; the shim still execs python |
 | `LYPNING_CAPTURE_EXIT=1` | shim waits for the child instead of exec-ing it, adding an `{"kind":"exit"}` record with `exit_code` and `wall_ms` |
 | `LYPNING_HARVEST=0` | keep capturing; stop the Stop hook publishing sightings |
@@ -263,7 +262,7 @@ skipping any file with the shim's marker, so it never execs into itself.
 `lypning shim status` is loud when the shim is installed but shadowed (that and
 "not installed" share a symptom, an empty log): `docs/VERIFICATION.md` §C10.
 Test the fallback: `LYPNING_LOG=/nonexistent/x.jsonl TMPDIR=/tmp/fb lypning hook
-pre-tool-use` writes `/tmp/fb/lypning-mp-<uid>/invocations.jsonl`; with
+pre-tool-use` writes `/tmp/fb/lypning-capture-<uid>/invocations.jsonl`; with
 `TMPDIR=/nonexistent` too it writes nothing and answers the protocol line, 0.
 
 ## Tests

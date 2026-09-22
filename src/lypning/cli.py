@@ -46,7 +46,7 @@ PROG = "lypning"
 COMMANDS = (
     "run", "route", "build", "lib", "pool", "status", "doctor", "install", "uninstall",
     "shim", "hook", "conformance", "fuzz", "bench", "corpus-time", "perf", "gate",
-    "harvest", "corpus", "oracle", "routes", "overview",
+    "harvest", "corpus", "routes", "overview",
 )
 
 #: The only dash-flags this CLI keeps for itself. Every other flag belongs to
@@ -336,22 +336,14 @@ def cmd_route(ns: argparse.Namespace) -> int:
 
 def cmd_build(ns: argparse.Namespace) -> int:
     build = _mod("build")
-    rust, mp, lib = ns.rust, ns.micropython, ns.lib
-    # `--stock` alone builds only the control: it is the benchmark's control,
-    # not a tier, and asking for it must not silently rebuild the two engines.
-    # `--lib` is the same shape of thing — an artefact of the Rust core rather
-    # than a tier — so asking for it alone must not rebuild the engines either.
-    if ns.all or not (rust or mp or ns.stock or lib):
-        # The oracle is not a tier: `lypning build` with no flags builds what the
-        # chain needs. lypning-mp joins --stock and --lib as an artefact you ask
-        # for by name — it needs a 32-bit toolchain and a network, and nothing
-        # routes to it.
+    rust, lib = ns.rust, ns.lib
+    if ns.all or not (rust or lib):
         rust = True
     if ns.all:
         lib = True
-    results = build.build_all(rust=rust, micropython=mp, target=ns.target,
+    results = build.build_all(rust=rust, target=ns.target,
                               jobs=ns.jobs, verbose=ns.verbose, dry_run=ns.dry_run,
-                              stock=ns.stock, lib=lib, variant=ns.variant,
+                              lib=lib, variant=ns.variant,
                               # Only when the caller named one. `--target` defaults
                               # to musl for the binary, which is the one thing a
                               # loadable shared object must not be on a glibc host.
@@ -611,13 +603,6 @@ def _status_obj() -> Dict[str, Any]:
     found = engines.available()
     st["version"] = __version__
     st["engines"] = {}
-    # Oracles are reported apart from the engines: lypning-mp is measured but
-    # never routed to, and listing it among the tiers is what would make a
-    # reader think the chain still ends somewhere it does not.
-    st["oracles"] = {}
-    for name, p in engines.oracles().items():
-        st["oracles"][name] = dict({"path": str(p) if p else None, "built": p is not None},
-                                   **_shape_of(p))
     for name, p in found.items():
         st["engines"][name] = dict({"path": str(p) if p else None, "built": p is not None},
                                    **_shape_of(p))
@@ -666,7 +651,7 @@ def _render_status(st: Dict[str, Any]) -> str:
         e = st["engines"].get(name) or {}
         if not e.get("built"):
             hint = {engines.LYPNING: "  — `lypning build --rust`",
-                    engines.MICROPYTHON: "  — `lypning build --micropython` (needs a network)",
+
                     engines.CPYTHON: ""}.get(name, "  — `lypning build --rust`")
             lines.append("  %-11s not built%s" % (name + ":", hint))
             continue
@@ -674,29 +659,6 @@ def _render_status(st: Dict[str, Any]) -> str:
         detail = ("  (%s B, %d blocks%s)"
                   % (format(size, ","), e.get("blocks") or 0, _code_suffix(e))) if size else ""
         lines.append("  %-11s %s%s" % (name + ":", e["path"], detail))
-
-    oracles = st.get("oracles") or {}
-    if oracles:
-        lines.append("")
-        lines.append("oracles  (measured, never routed to)")
-        for name, o in oracles.items():
-            if not o.get("built"):
-                # "either way" is true only where the catalogue shipped. A wheel
-                # does not carry `.github/`, so promising it there sends a reader
-                # to a command that answers "no catalogue" — a hole reported as a
-                # capability is the inverse of invariant 12.
-                has_ledger = _mod("oracle").ledger_path().is_file()
-                lines.append("  %-11s not built  — `lypning build --micropython` (needs a network)%s"
-                             % (name + ":",
-                                "; `lypning oracle` reads the recorded divergences either way"
-                                if has_ledger else
-                                "; no catalogue in this install either, so `lypning oracle` "
-                                "reports a hole"))
-                continue
-            size = o.get("bytes") or 0
-            lines.append("  %-11s %s  (%s B, %d blocks%s)"
-                         % (name + ":", o["path"], format(size, ","), o.get("blocks") or 0,
-                            _code_suffix(o)))
 
     lib = st.get("library") or {}
     lines += ["", "library"]
@@ -962,9 +924,6 @@ def _doctor_checks() -> List[Tuple[str, str, str]]:
 
     # 2. engines
     found = engines.available()
-    # One row per point on the Rust spectrum. The unsuffixed core missing is a
-    # FAIL — nothing routes without it; a larger sibling missing is a WARN, the
-    # same "hole in the table" rule lypning-mp gets.
     for name in engines.SPECTRUM:
         core = found.get(name)
         label = "lypning core" if name == engines.LYPNING else name
@@ -973,15 +932,6 @@ def _doctor_checks() -> List[Tuple[str, str, str]]:
                                                  -(-_size_of(core) // 131_072)) if core
                        else "not built — run `lypning build --rust%s`"
                             % ("" if name == engines.LYPNING else " --variant " + name)))
-    mp = found.get(engines.MICROPYTHON)
-    checks.append((OK if mp else WARN, engines.MICROPYTHON,
-                   "%s (%s B) — the oracle; measured, never routed to" % (mp, format(_size_of(mp), ","))
-                   if mp else
-                   "not built — the ORACLE, not a tier: nothing routes to it. "
-                   "`lypning build --micropython` needs a network; `lypning oracle` "
-                   + ("reads the recorded divergences either way"
-                      if _mod("oracle").ledger_path().is_file() else
-                      "reports a hole, because this install ships no catalogue")))
     py = found.get(engines.CPYTHON)
     checks.append((OK if py else FAIL, "cpython",
                    "%s" % py if py else "no real CPython found — the last tier is missing"))
@@ -1031,13 +981,6 @@ def _doctor_checks() -> List[Tuple[str, str, str]]:
                            "refusal contract" if name == engines.LYPNING
                            else "refusal contract (%s)" % name,
                            "exit 90, one line on stderr, clean stdout" if ok else why))
-    if mp is not None:
-        res = engines.run(engines.MICROPYTHON, "import subprocess", binary=mp, timeout=30.0)
-        ok = res.returncode == UNSUPPORTED_EXIT and res.stdout_bytes == b""
-        checks.append((OK if ok else FAIL, "oracle refusal",
-                       "exit 90, clean stdout" if ok else
-                       "exit %d, stdout %r" % (res.returncode, res.stdout_bytes[:80])))
-
     # 3b. the same contract, through the ABI instead of through a process. A
     #     shared object has no exit code, so the three pinned properties are
     #     re-asserted in library terms — plus the fourth only embedding needs:
@@ -1236,8 +1179,7 @@ def cmd_overview(ns: argparse.Namespace) -> int:
     out.append("THE BINARIES — each against its OWN budget")
     for b in ov.binaries():
         if not b["built"]:
-            note = ("the ORACLE: measured, never routed to. Absent is a hole, "
-                    "never a zero" if b["oracle"] else "not built")
+            note = "not built"
             out.append("  %-11s not built    %s" % (b["name"], note))
             continue
         verdict = "OVER by %d" % (b["blocks"] - b["budget"]) if b["over"] else "under"
@@ -1293,8 +1235,6 @@ def cmd_overview(ns: argparse.Namespace) -> int:
         for b in over:
             out.append("  gate    %s is %d blocks against its budget of %d."
                        % (b["name"], b["blocks"], b["budget"]))
-            out.append("          `lypning gate` substitutes this binary when the oracle is")
-            out.append("          absent, which is how its own overrun read as another arm's.")
         res = ov.suite()
         if not res["ran"]:
             out.append("  suite   did not run: %s" % res["reason"])
@@ -1655,13 +1595,6 @@ def _render_startup(report: Any, base: str = "cpython") -> str:
 
 def cmd_bench(ns: argparse.Namespace) -> int:
     bench = _mod("bench")
-    if ns.micropython:
-        return _bench_micropython(bench, ns)
-    if ns.record or ns.note:
-        # Said rather than ignored: a caller who typed `--record` and got a
-        # table and no file would have to diff the ledger to find out.
-        raise Usage("--record and --note belong to --micropython, which is the run the "
-                    "ledger is a history of")
     arms = list(ns.arm) if ns.arm else None
     both = not (ns.startup or ns.corpus)
     if both:
@@ -1684,30 +1617,6 @@ def cmd_bench(ns: argparse.Namespace) -> int:
     return 0
 
 
-def _bench_micropython(bench: Any, ns: argparse.Namespace) -> int:
-    """lypning-mp against the benchmark control, and the ledger entry for it."""
-    report = bench.micropython(repeat=ns.repeat, startup_repeat=ns.startup_repeat,
-                               limit=ns.limit, timeout=ns.timeout, note=ns.note or "",
-                               progress=_progress("bench"))
-    if report.missing:
-        # Exit 2, not 1: nothing was measured and the fix is a command, which is
-        # what this CLI reserves 2 for.
-        raise Usage("; ".join(report.missing))
-    if ns.json:
-        _json(dict(_plain(report), ledger=bench.ledger_entry(report)))
-    else:
-        _out(bench.render_micropython(report))
-    if ns.record:
-        # The ledger is append-only and newest-first, so the entry is INSERTED
-        # at its marker. record_ledger refuses a file without one rather than
-        # appending an entry that would read as the oldest in the file.
-        try:
-            written = bench.record_ledger(ns.record, bench.ledger_entry(report))
-        except ValueError as e:
-            raise Failure(str(e))
-        if not ns.json:
-            _out("recorded in %s" % written)
-    return 0
 
 
 # --- corpus-time ---------------------------------------------------------------
@@ -1815,19 +1724,6 @@ def cmd_perf(ns: argparse.Namespace) -> int:
 # --- gate --------------------------------------------------------------------
 
 
-def cmd_oracle(ns: argparse.Namespace) -> int:
-    oracle = _mod("oracle")
-    rows = oracle.load()
-    if ns.json:
-        _json({"engine": engines.MICROPYTHON,
-               "built": bool(engines.find(engines.MICROPYTHON)),
-               "ledger": str(oracle.ledger_path()),
-               "divergences": sum(n for _, n, _ in oracle.families(rows)),
-               "families": [{"family": f, "programs": n, "why": w}
-                            for f, n, w in oracle.families(rows)]})
-        return 0
-    print(oracle.render(rows, full=ns.full), end="")
-    return 0
 
 
 def cmd_gate(ns: argparse.Namespace) -> int:
@@ -1993,12 +1889,12 @@ A mixture of Pythons, cheapest first, and a classifier that picks one engine
 per program. The chain is %(chain)s: the Rust spectrum,
 every variant built from the one crate and each a Python subset that refuses
 what it cannot run exactly, then the real CPython for everything the spectrum
-refuses. %(oracles)s is the oracle — measured, never routed to.
+refuses.
 
 Used as an interpreter it IS one — `lypning -c PROG`, `lypning FILE` and
 `lypning -` exec straight into the Rust core, so anything that calls python3
 can call this instead. The subcommands below are the tooling around that.
-""" % {"chain": " -> ".join(engines.ENGINE_ORDER), "oracles": ", ".join(engines.ORACLES)},
+""" % {"chain": " -> ".join(engines.ENGINE_ORDER)},
         epilog="""
 examples:
   lypning -c 'print(2**8)'            run it, as python would
@@ -2077,41 +1973,26 @@ tree with its reason printed. `--lib` is held to the same contract through the
 ABI instead of through a process: the refusal must arrive as a status, with an
 empty stdout, the same one line, and a request to be routed onward.
 
-With no flag this builds the Rust spectrum (%(spectrum)s) — what the
-chain needs. The oracle, %(oracles)s, is measured and never routed to, so it
-is built only when named: `--micropython` downloads a musl toolchain and needs a
-network and gcc-multilib, and without them it reports precisely which one is
-missing and moves on.
-""" % {"spectrum": ", ".join(engines.SPECTRUM), "oracles": ", ".join(engines.ORACLES)}, """
+With no flag this builds the Rust spectrum (%(spectrum)s).
+""" % {"spectrum": ", ".join(engines.SPECTRUM)}, """
 examples:
   lypning build                       the Rust spectrum
   lypning build --lib                 the embeddable C ABI, for a harness
   lypning build --rust --target host  the dynamically linked glibc control
-  lypning build --micropython --jobs 4
-  lypning build --stock               the benchmark control, on its own
-  lypning build --micropython --verify
   lypning build --all --dry-run       print the commands, build nothing
 """)
     s.add_argument("--rust", action="store_true", help="build the Rust core")
     s.add_argument("--variant", default="all", metavar="V",
                    choices=("all",) + tuple(engines.SPECTRUM),
                    help="which point on the Rust spectrum to build (default: every one)")
-    s.add_argument("--micropython", action="store_true",
-                   help="build the oracle, %s — measured, never routed to; needs a "
-                        "32-bit toolchain and a network" % ", ".join(engines.ORACLES))
     s.add_argument("--all", action="store_true",
                    help="the Rust spectrum and the library (with no flag at all: the "
-                        "spectrum). Never the oracle — name it with --micropython")
+                        "spectrum)")
     s.add_argument("--lib", action="store_true",
                    help="build the embeddable C ABI (the shared library, liblypning.a and "
                         "the headers) into ~/.lypning/lib and ~/.lypning/include — for every "
                         "host that runs programs in-process instead of spawning them "
                         "(the table in docs/EMBEDDING.md section 4)")
-    s.add_argument("--stock", action="store_true",
-                   help="build the benchmark CONTROL: upstream MicroPython, unpatched, no "
-                        "frozen stdlib, same pinned commit and toolchain. Not an engine and "
-                        "not installed — it is what `lypning bench --micropython` measures "
-                        "against")
     s.add_argument("--verify", action="store_true",
                    help="after building, gate what was built and run the whole conformance "
                         "battery with the new binaries pinned — the battery covers every engine "
@@ -2363,7 +2244,7 @@ so a non-zero exit here would refuse the user's command.
 Every harvested program on every built engine of the Rust spectrum and on the
 mixture — the chain walked end to end — graded against the real CPython:
 MATCH, UNSUPPORTED (a clean exit-90 refusal — not a failure), or MISMATCH. Any
-MISMATCH exits 1. The oracle, the library and the Rust dispatcher's chain are
+MISMATCH exits 1. The library and the Rust dispatcher's chain are
 arms you ask for by name (--engine).
 
 Programs whose output cannot be equal on two interpreters — timestamps, pids,
@@ -2402,12 +2283,12 @@ examples:
                         "disagreement fails the run")
     s.add_argument("--engine", action="append", metavar="E",
                    help="arm to measure (repeatable). Default: %s and mixture. Opt-in: "
-                        "%s (the oracle), library, mixture-rust. `library` is %s reached "
+                        "library, mixture-rust. `library` is %s reached "
                         "through the C ABI in this process — it shares the interpreter "
                         "with that arm but not the exit path, so the two disagreeing is "
                         "the thing it is there to catch; `mixture-rust` is the chain "
                         "walked by the Rust dispatcher (`lypning run`, what the shim "
-                        "execs)" % (", ".join(engines.SPECTRUM), ", ".join(engines.ORACLES),
+                        "execs)" % (", ".join(engines.SPECTRUM),
                                     engines.SPECTRUM[-1]))
     s.add_argument("--plan", action="store_true",
                    help="print the build order implied by the refusals INSTEAD of the table")
@@ -2475,19 +2356,9 @@ examples:
   lypning bench --startup
   lypning bench --corpus --limit 100
   lypning bench --repeat 3 --json
-  lypning bench --micropython --record docs/BENCH-LEDGER.md
 """)
     s.add_argument("--startup", action="store_true", help="startup only")
     s.add_argument("--corpus", action="store_true", help="corpus only")
-    s.add_argument("--micropython", action="store_true",
-                   help="a different comparison: the oracle %s (measured, never routed to) "
-                        "against the benchmark control (`lypning build --stock`), which is "
-                        "what says what OUR variant costs" % ", ".join(engines.ORACLES))
-    s.add_argument("--record", metavar="FILE",
-                   help="with --micropython, insert the run as an entry at the marker in "
-                        "docs/BENCH-LEDGER.md (newest first)")
-    s.add_argument("--note", metavar="TEXT",
-                   help="with --micropython, the recorded entry's title — what this run was for")
     s.add_argument("--repeat", type=int, default=1, metavar="N", help="corpus passes, best per entry (default 1)")
     s.add_argument("--startup-repeat", type=int, default=5, metavar="N", help="startup samples (default 5)")
     s.add_argument("--limit", type=int, metavar="N", help="only the first N corpus programs")
@@ -2589,34 +2460,6 @@ examples:
     s.add_argument("--json", action="store_true", help="machine-readable")
     s.set_defaults(func=cmd_perf)
 
-    # oracle
-    s = _sub(subs, "oracle", "what a second reimplementation of Python got wrong", """
-%(oracles)s is the oracle — measured, never routed to. It left the chain on
-2026-09-04 (CHANGELOG.md): nothing falls through to it, but it is kept and
-measured, because it is a second, independent, from-scratch implementation of
-Python that has been run against real CPython over the whole corpus with every
-disagreement written down.
-
-That is the question a larger Rust variant needs answered before it implements
-anything: the constructs a reimplementation gets wrong are not evenly spread,
-they cluster in float formatting, sort stability, hash order, error-message text
-and the places CPython defines by its own internals. Every family listed is
-something to implement EXACTLY or to refuse — never to approximate.
-
-The catalogue is read from `.github/known-mismatches.json`, which the oracle's
-CI job maintains by identity, so it works without the 32-bit toolchain that
-building the oracle needs. A wheel has no catalogue and says so: a hole, never a
-clean bill.
-""", """
-examples:
-  lypning oracle
-  lypning oracle --full
-  lypning oracle --json
-""" % {"oracles": ", ".join(engines.ORACLES)})
-    s.add_argument("--full", action="store_true", help="do not truncate the explanations")
-    s.add_argument("--json", action="store_true", help="machine-readable")
-    s.set_defaults(func=cmd_oracle)
-
     s = _sub(subs, "gate", "measure a binary against the acceptance table", """
 The acceptance table for a binary that has to start cold in a sandbox: it runs
 `-c 'pass'`, it is statically linked, it links no shared objects, it fits the
@@ -2628,18 +2471,15 @@ unmeasured rather than as a pass. Zero shared objects from a toolchain that
 cannot read them is an artefact, not a result.
 
 With no BIN named it gates the Rust core — the rung every program starts on.
-Each spectrum variant answers to its own budget in device blocks; the oracle,
-%(oracles)s, is measured and never routed to, and is gated against its own byte
-budget only when named. --compare adds the same measurements taken against the
-real CPython on this machine.
-""" % {"oracles": ", ".join(engines.ORACLES)}, """
+Each variant has its own budget in device blocks. --compare measures CPython.
+""", """
 examples:
   lypning gate
   lypning gate --compare
   lypning gate ./target/release/lypning --json
 """)
     s.add_argument("binary", nargs="?", metavar="BIN",
-                   help="binary to measure (default: the Rust core; the oracle only when named)")
+                   help="binary to measure (default: the Rust core)")
     s.add_argument("--compare", action="store_true", help="measure the real CPython alongside it")
     s.add_argument("--json", action="store_true", help="machine-readable")
     s.set_defaults(func=cmd_gate)

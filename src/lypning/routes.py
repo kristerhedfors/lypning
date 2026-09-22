@@ -620,7 +620,7 @@ def render(stores: Sequence[Store], plan: bool = False) -> str:
         out.append("")
         out.append("NOT IMPLEMENTABLE means the kind is in engines.ONLY_CPYTHON_REFUSALS: it exists")
         out.append("because a reimplementation gets it wrong, so it is a thing to refuse exactly")
-        out.append("and never a thing to plan against. `lypning oracle` holds the evidence.")
+        out.append("and never a thing to plan against. Conformance holds the evidence.")
     out += ["", "loaded %d record(s) from %s on %s."
             % (loaded, paths.routes_dir(), today), UNDERCOUNT]
     return "\n".join(out) + "\n"

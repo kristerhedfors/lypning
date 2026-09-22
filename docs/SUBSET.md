@@ -1,8 +1,8 @@
 # The subset and the refusal contract
 
 *What every Rust variant must execute exactly, and what happens when a program
-leaves that set. The engines are `engines.ENGINE_ORDER`; `lypning-mp`, the
-oracle — measured, never routed to — is graded against these rows when named.*
+leaves that set. The engines are `engines.ENGINE_ORDER`; the CPython reference
+is used to grade every variant against these rows.*
 
 It is not a Python implementation. It is the subset that the agent loop actually
 invokes, and the contract for what happens when a program leaves that subset.

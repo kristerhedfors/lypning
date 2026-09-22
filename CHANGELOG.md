@@ -14,6 +14,19 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-22** — Prepare the positive control on the actual training split
+([#102](https://github.com/kristerhedfors/lypning/pull/102))
+
+- Add a free private-bank/tokenizer cost plan for both sixteen-draw prompt arms.
+- Verify the large engine in the pinned training Python runtime without a provider call.
+- Bound reference-check concurrency by worker resources; report progress and
+  estimated remaining time, preserve partial counts, and fail closed on timeout.
+- Add a tested reservation ledger for hosted calls, with no retries or implicit resume.
+- Record the Step 1 merges and free admission result; paid execution remains gated.
+- Remove the retired MicroPython runtime, build path, shim library, oracle command,
+  benchmark control, mismatch ledger, package assets and CI jobs. Routing,
+  conformance and training reports now describe only the Rust spectrum and CPython.
+
 **2026-09-22** — Make sized stdin reads consume only the requested characters
 ([#101](https://github.com/kristerhedfors/lypning/pull/101))
 
@@ -4533,7 +4546,7 @@ tier below it
   random ones, **0 divergences**, and all eleven `base64` cases run against a
   built lypning-mp. `Discontinuous padding not allowed` was found that way and
   by nothing else. The strict messages are CPython 3.11's; the case says so.
-- **The `binascii` model in `tests/test_shims.py` was wrong** in the direction
+- **The retired shim suite's `binascii` model was wrong** in the direction
   that hides work — it wrapped CPython's decoder and lower-cased the message,
   modelling a divergence that does not exist while hiding one that does. Now a
   transcription of `extmod/modbinascii.c`. The tier grew 1,216 B, still 3
@@ -4548,7 +4561,7 @@ tier below it
 - `Error(ValueError)` with `__module__ = "binascii"` in the class body, so the
   qualified name agrees too. Verified on a real MicroPython 1.22.1 rather than
   reasoned about: the shipped shim raises `binascii.Error` there.
-- `tests/test_shims.py` could not have caught it: the shim run imported
+- The retired shim suite could not have caught it: the shim run imported
   CPython's `binascii` and got `Error` for free. It now models MicroPython's,
   whose defining feature is an **absence**.
 - Also recorded, and *not* fixable from a shim: **MicroPython builtin types have

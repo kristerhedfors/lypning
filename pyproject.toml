@@ -11,7 +11,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lypning"
 version = "0.1.0"
-description = "The Coding Harness Interpreter Optimizer: a tiny Python subset in Rust, a frozen-stdlib MicroPython, and the router that picks between them — for the one-liners coding agents actually type."
+description = "The Coding Harness Interpreter Optimizer: a spectrum of Python subsets in Rust and the router that falls back to CPython — for the one-liners coding agents actually type."
 readme = "README.md"
 requires-python = ">=3.9"
 # PEP 639, not the deprecated `{ file = "LICENSE" }` table — that form inlines
@@ -22,7 +22,7 @@ requires-python = ">=3.9"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Krister Hedfors", email = "krister.hedfors@gmail.com" }]
-keywords = ["python-subset", "interpreter", "micropython", "rust", "claude-code", "coding-agent", "sandbox", "benchmark"]
+keywords = ["python-subset", "interpreter", "rust", "claude-code", "coding-agent", "sandbox", "benchmark"]
 # No "License :: OSI Approved" classifier: PEP 639 replaced it with the
 # expression above, and setuptools errors on both together. The version
 # classifiers are a claim, so CI runs pytest on every one of them — 3.9 is the
@@ -142,13 +142,6 @@ lypning = [
   # LuaJIT: no build step, so nothing here is ever output.
   "assets/lua/*.lua",
   "assets/lua/README.md",
-  "assets/micropython/Makefile",
-  "assets/micropython/README.md",
-  "assets/micropython/variant/*",
-  "assets/micropython/variant/patches/*",
-  "assets/micropython/lib/*.py",
-  "assets/micropython/lib/*/*.py",
-  "assets/micropython/lib/README.md",
   "assets/scripts/*.sh",
   "assets/shim/python-shim",
   "assets/corpus/*.jsonl",

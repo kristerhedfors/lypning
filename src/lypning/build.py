@@ -17,16 +17,8 @@ user actually hits and the path nobody tests, so the crate is copied into
 directory and no copy happens, which is what keeps ``cargo build`` by hand and
 ``lypning build`` sharing one object cache.
 
-Two things here are not tiers and are shaped by that. The benchmark CONTROL
-(:func:`build_stock`) is a binary this package builds and deliberately never
-installs, because the engine bin dir is what the finders read and a control that
-can be found is a control that can be run. And :func:`verify` is the build's own
-``--verify``: gate the shape, run the whole battery, both pointed at the binary
-that was just produced rather than at whatever is already installed.
-
 Nothing here prints. :func:`report` renders a table and returns it; the two
-reports :func:`verify` collects are rendered by the modules that own them.
-"""
+reports :func:`verify` collects are rendered by the modules that own them."""
 
 from __future__ import annotations
 
@@ -86,61 +78,6 @@ _LOG_TAIL = 40
 _LOG_TAIL_VERBOSE = 400
 
 _CARGO_TIMEOUT = 1800.0
-_MICROPYTHON_TIMEOUT = 5400.0
-
-#: The host the MicroPython tier's two pinned downloads come from, and the one
-#: the preflight asks about before starting a build that would need it. Named
-#: rather than spelled inline because it appears in the reason line too, and two
-#: spellings would drift into two different answers.
-_PINNED_HOST = "musl.libc.org"
-
-#: Exit codes that mean the transport failed, not the build. ``build-
-#: micropython.sh`` runs ``curl``/``wget`` unguarded under ``set -e``, so the
-#: fetcher's own exit code becomes the script's — which is the most precise
-#: signal available about whose fault a failure was, and far better than asking
-#: the network a second time.
-#:
-#: curl: 5/6 resolve, 7 connect, 18 partial transfer, 28 timeout, 35 TLS
-#: connect, 52 empty reply, 55/56 send/recv, 92 HTTP/2 stream.
-#: wget: 4 network failure, 8 server error.
-#:
-#: curl's 22 — an HTTP error status under ``-f`` — is deliberately NOT here. It
-#: covers a transient 503 and a permanent 404 alike, and a 404 means the pinned
-#: URL has rotted, which is a real break that needs a human and must redden.
-#: Reddening on somebody's 503 is the cheaper of the two mistakes.
-_FETCH_NETWORK_EXITS = frozenset((4, 5, 6, 7, 8, 18, 28, 35, 52, 55, 56, 92))
-
-#: What a transport failure says when it is the shell script's ``die`` that
-#: reports it, so the exit code is 1 and only the message names the cause.
-#: Matched against the tail of the build log, case-insensitively.
-_NETWORK_PHRASES = (
-    "could not resolve", "couldn't resolve", "failed to connect", "connection reset",
-    "connection refused", "recv failure", "send failure", "ssl connect error",
-    "tls connect error", "empty reply from server", "operation timed out",
-    "timed out", "network is unreachable", "temporary failure in name resolution",
-    "could not clone", "unable to access", "transfer closed", "remote end hung up",
-)
-
-
-def _transport_failed(rc: int, out: str) -> bool:
-    """Did the fetch fail, rather than the build?
-
-    Two signals, because neither alone is enough. The exit code is exact when
-    ``curl`` or ``wget`` died on its own; when the script caught the failure and
-    called ``die`` instead, the code is a flat 1 and only the message knows.
-
-    A network probe is deliberately NOT one of the signals. The failure this
-    exists to classify — ``curl: (35) Recv failure: Connection reset by peer``
-    — happens while a TCP connect to the same host on the same port still
-    succeeds, so a re-probe answers "reachable" and calls an outage a
-    regression. Ask what actually broke, not whether the host answers now.
-    """
-    if rc in _FETCH_NETWORK_EXITS:
-        return True
-    low = (out or "").lower()
-    return any(p in low for p in _NETWORK_PHRASES)
-
-
 # --- records -----------------------------------------------------------------
 
 
@@ -237,12 +174,7 @@ def _join(*parts: str) -> str:
 
 
 def _why(out: str) -> str:
-    """The last thing the build actually said, for the one-line status.
-
-    An exit code alone is not a fix: `build-micropython.sh failed (exit 35)` is
-    a curl TLS error that reads as a mystery, while the line above it names the
-    URL it could not reach. The full log stays behind ``-v``.
-    """
+    """The last thing the build actually said, for the one-line status."""
     lines = [l.strip() for l in (out or "").splitlines() if l.strip()]
     if not lines:
         return ""
@@ -327,13 +259,6 @@ def _sync_tree(src: Path, dst: Path, skip: Iterable[str] = ()) -> int:
     return copied
 
 
-def _can_reach(host: str, port: int = 443, timeout: float = 5.0) -> bool:
-    """Cheap reachability probe, so a missing network is a reason, not a stack."""
-    try:
-        socket.create_connection((host, port), timeout=timeout).close()
-        return True
-    except OSError:
-        return False
 
 
 # --- the pinned contract -----------------------------------------------------
@@ -869,262 +794,12 @@ def install_library(result: BuildResult) -> list[Path]:
     return installed
 
 
-# --- micropython -------------------------------------------------------------
-
-#: The benchmark control's file name. Deliberately **not** an engine name —
-#: there are exactly three of those — because the control is the thing
-#: lypning-mp is measured *against*. An engine finder that could turn it up
-#: would eventually route a program to unpatched upstream MicroPython, and the
-#: whole comparison would read 1.00x and look like a clean result.
-STOCK_BINARY = "micropython-stock"
-
-#: The pin lives in the build script and is read back out of it, never restated
-#: here: an entry in ``docs/BENCH-LEDGER.md`` claims both binaries came from one
-#: commit, and that claim has to come from the file that does the checking out.
-_PIN_RE = {
-    "tag": re.compile(r'^MPY_TAG="([^"]+)"', re.M),
-    "commit": re.compile(r'^MPY_COMMIT="([0-9a-f]+)"', re.M),
-}
-
-
-def micropython_pin() -> dict[str, str]:
-    """``{"tag": ..., "commit": ...}``, or empty strings when it cannot be read."""
-    out = {"tag": "", "commit": ""}
-    try:
-        text = (paths.SCRIPTS_DIR / "build-micropython.sh").read_text(encoding="utf-8")
-    except OSError:
-        return out
-    for key, pattern in _PIN_RE.items():
-        m = pattern.search(text)
-        if m:
-            out[key] = m.group(1)
-    return out
-
-
-def _micropython_workdir() -> tuple[Path, Path, str]:
-    """``(script, tree, note)`` — the tree to build, and the script to build it with.
-
-    ``build-micropython.sh`` derives everything from its own location: the
-    engine tree is ``<script>/../micropython`` and both binaries land in
-    ``build/`` inside it, which is exactly where :func:`engines.find_micropython`
-    and :func:`stock_binary` look. In a checkout that is the asset tree as it
-    ships, nothing is copied, and a ``make`` by hand shares the musl and
-    MicroPython caches with this.
-
-    In a wheel it cannot be: the assets are read-only, and the script would
-    derive a tree inside site-packages and try to write a MicroPython checkout,
-    a musl build and two binaries into it. So **both** halves are copied under
-    :func:`paths.build_dir` keeping the same relative layout — the script beside
-    a ``micropython`` sibling — because the layout is the interface.
-    """
-    root = paths.build_dir()
-    tree = root / "micropython"
-    script = root / "scripts" / "build-micropython.sh"
-    note = ""
-
-    # A staging tree built by the version of this function that worked around a
-    # bug in the script's own path derivation (it looked for `$REPO_ROOT/lypning-mp`
-    # while the asset ships at `micropython/`). The script derives the right
-    # tree now, so the symlink farm is dead weight — and a stale symlink into
-    # the asset tree is worse than dead weight the day the asset moves.
-    shutil.rmtree(paths.state_dir() / "mp-stage", ignore_errors=True)
-
-    try:
-        same = tree.resolve() == paths.MICROPYTHON_DIR.resolve()
-    except OSError:
-        same = False
-    if same:
-        return paths.SCRIPTS_DIR / "build-micropython.sh", tree, note
-
-    n = _sync_tree(paths.MICROPYTHON_DIR, tree, skip={".build", "build", ".git"})
-    paths.ensure_dir(script.parent)
-    shutil.copy2(paths.SCRIPTS_DIR / "build-micropython.sh", script)
-    os.chmod(script, 0o755)
-    return script, tree, ("engine tree copied to %s (package tree is read-only), "
-                          "%d file(s) refreshed" % (tree, n))
-
-
-def stock_binary() -> Path | None:
-    """The benchmark control, or ``None``. Absent far more often than present.
-
-    ``$LYPNING_STOCK_BIN`` first, then the one path the build script writes it
-    to. Never ``$PATH`` and never the engine bin dir: the control has to be
-    something a caller asked for by name, and nothing else should be able to
-    pick it up by accident.
-    """
-    env = os.environ.get("LYPNING_STOCK_BIN", "").strip()
-    candidates = [Path(env).expanduser()] if env else []
-    candidates.append(paths.build_dir() / "micropython" / "build" / STOCK_BINARY)
-    for c in candidates:
-        if c.is_file() and os.access(c, os.X_OK):
-            return c.resolve()
-    return None
-
-
-def build_micropython(verbose: bool = False, clean: bool = False,
-                      dry_run: bool = False) -> BuildResult:
-    """Build the MicroPython tier, or say precisely why it cannot be built.
-
-    Every precondition the shell script would ``die`` on is checked first,
-    because a caller running ``lypning build --all`` on a machine without
-    ``gcc-multilib`` wants one line telling it which apt package is missing, not
-    a 5,000-line log with the answer in the middle.
-    """
-    return _build_micropython(False, verbose=verbose, clean=clean, dry_run=dry_run)
-
-
-def build_stock(verbose: bool = False, clean: bool = False,
-                dry_run: bool = False) -> BuildResult:
-    """Build the benchmark CONTROL: upstream MicroPython, unpatched.
-
-    Same pinned commit, same musl-i386 libc, same compiler and flags, same strip
-    — and none of our port patch and none of the frozen shim stdlib. That
-    subtraction is the only reason a lypning-mp timing means anything, and it is
-    valid only if the two binaries differ in nothing else, so the script does
-    not hand-write the control's makefile: it **extracts the block between the
-    ``SHARED TOOLCHAIN BLOCK`` markers in
-    ``assets/micropython/variant/mpconfigvariant.mk`` verbatim** into it, and
-    dies rather than fall back to copied flags if the markers are gone. ``-m32``,
-    ``-static``, ``-Wl,-m,elf_i386``, ``-fno-stack-protector`` and
-    ``COPT=-Os -DNDEBUG`` therefore cannot drift apart: editing them edits both
-    binaries. The control's tree is additionally asserted clean at the pinned
-    commit after its reset, which is the mechanical proof that no patch of ours
-    reached it, and its own shape checks assert it is **not** lypning-mp — a copy
-    of lypning-mp sitting here would make every ratio in the ledger read 1.00
-    and look like a clean result.
-
-    The five things the offline static build forces on the control instead —
-    empty ``FROZEN_MANIFEST``, no btree, no ffi, no ssl, no FAT/littlefs — are
-    listed in ``build_stock()`` in the script, which is the authority. The
-    result is what ``lypning bench --micropython`` compares against.
-    """
-    return _build_micropython(True, verbose=verbose, clean=clean, dry_run=dry_run)
-
-
-def _build_micropython(stock: bool, verbose: bool = False, clean: bool = False,
-                       dry_run: bool = False) -> BuildResult:
-    """The shared preflight and invocation. ``stock`` picks which binary comes out.
-
-    One function because the two builds share every precondition — the same
-    toolchain, the same musl, the same checkout, the same network — and a second
-    copy of those checks is a second place for them to go stale.
-    """
-    t0 = time.perf_counter()
-    label = STOCK_BINARY if stock else engines.MICROPYTHON
-
-    def skipped(reason: str, log: str = "", unavailable: bool = False) -> BuildResult:
-        return BuildResult(label, target="i386-musl",
-                           seconds=time.perf_counter() - t0, log=log, skipped_reason=reason,
-                           unavailable=unavailable)
-
-    src_script = paths.SCRIPTS_DIR / "build-micropython.sh"
-    if not src_script.is_file():
-        return skipped("no build script at %s" % src_script)
-    if not paths.MICROPYTHON_DIR.is_dir():
-        return skipped("no engine source at %s" % paths.MICROPYTHON_DIR)
-
-    # The same list the script checks, plus cc: it dies on any one of them, and
-    # dying five minutes in with a partly-built musl is worse than not starting.
-    missing = [t for t in ("gcc", "make", "git", "tar", "python3") if shutil.which(t) is None]
-    if shutil.which("cc") is None and "gcc" not in missing:
-        missing.append("cc")
-    if missing:
-        return skipped("missing build tools: %s" % ", ".join(missing), unavailable=True)
-    if shutil.which("curl") is None and shutil.which("wget") is None:
-        return skipped("need curl or wget to download the musl tarball", unavailable=True)
-
-    # The 32-bit host toolchain. Naming the apt package is the single most
-    # useful thing this check can do, so it says it the way the script does.
-    rc, out = _c_probe()
-    if rc != 0:
-        return skipped(
-            "gcc cannot target i386 — install the multilib toolchain: "
-            "sudo apt-get install -y gcc-multilib libc6-dev-i386",
-            _tail(out, verbose), unavailable=True)
-
-    try:
-        script, tree, note = _micropython_workdir()
-    except OSError as e:
-        return skipped("cannot prepare the build tree: %s" % e)
-    out_bin = tree / "build" / label
-
-    work = tree / ".build"
-    env = {
-        "LYPNING_WORK": str(work),
-        "LYPNING_HOME": str(paths.state_dir()),
-        "LYPNING_CAPTURE": "0",
-    }
-    cmd = ["bash", str(script)]
-    if clean:
-        cmd.append("--clean")
-    if stock:
-        cmd.append("--stock")
-
-    # Two pinned downloads, once. Cached, the build needs no network at all, so
-    # only probe when the cache is cold — an offline rebuild is legitimate.
-    musl_cached = (work / "musl-i386" / "lib" / "libc.a").is_file()
-    mpy_cached = (work / "micropython" / ".git").exists()
-    if not (musl_cached and mpy_cached) and not _can_reach(_PINNED_HOST):
-        return skipped(
-            "no network, and the pinned musl/MicroPython downloads are not cached in %s" % work,
-            note, unavailable=True)
-
-    if dry_run:
-        return BuildResult(
-            label, target="i386-musl", seconds=time.perf_counter() - t0,
-            log=_join(note,
-                      " ".join("%s=%s" % kv for kv in sorted(env.items())) + " " + " ".join(cmd),
-                      "would produce: %s" % out_bin,
-                      "musl cached: %s, micropython cached: %s" % (musl_cached, mpy_cached)),
-            skipped_reason="dry run: nothing was built", dry_run=True,
-        )
-
-    rc, out = _run(cmd, cwd=script.parent.parent, env=env, timeout=_MICROPYTHON_TIMEOUT)
-    if rc != 0 or not out_bin.is_file():
-        # The preflight probe ran minutes ago and only proves the host answered
-        # *then*. A download that died halfway is an outage wearing a build
-        # failure's clothes, so ask what broke before calling this a regression.
-        network = _transport_failed(rc, out)
-        return skipped(
-            "build-micropython.sh %s (exit %d)%s (`-v` for the full log)"
-            % ("could not fetch its pinned downloads" if network else "failed", rc, _why(out)),
-            _join(note, _tail(out, verbose)), unavailable=network)
-
-    size = _size(out_bin)
-    text, text_note = _text(out_bin)
-    return BuildResult(
-        label, ok=True, binary=out_bin, size_bytes=size,
-        text_bytes=text, text_note=text_note,
-        seconds=time.perf_counter() - t0, target="i386-musl",
-        log=_join(note, _tail(out, verbose),
-                  "%s — %d bytes" % (out_bin, size),
-                  "CheerpX device blocks (%d B each): %d" % (CHEERPX_BLOCK, cheerpx_blocks(size)),
-                  "code section: %s  (%s)" % (format(text, ",") + " bytes"
-                                              if text is not None else "unmeasured", text_note)),
-    )
-
-
-def _c_probe() -> tuple[int, str]:
-    """``gcc -m32`` against a real one-line program, via a temp file.
-
-    Piping the source on stdin is what the shell script does; doing the same
-    from Python means feeding a subprocess stdin *and* capturing both streams,
-    so a temp file is used instead and the answer is identical.
-    """
-    import tempfile
-    with tempfile.TemporaryDirectory() as td:
-        src = Path(td) / "probe.c"
-        src.write_text("int main(void){return 0;}\n")
-        return _run(["gcc", "-m32", str(src), "-o", str(Path(td) / "probe")],
-                    timeout=120.0, env={"LC_ALL": "C"})
-
-
 # --- orchestration -----------------------------------------------------------
 
 
-def build_all(rust: bool = True, micropython: bool = True, target: str = "musl",
+def build_all(rust: bool = True, target: str = "musl",
               jobs: int | None = None, verbose: bool = False,
-              dry_run: bool = False, stock: bool = False,
+              dry_run: bool = False,
               lib: bool = False, lib_target: str = "",
               variant: str = "all") -> list[BuildResult]:
     """Build what was asked for, in tier order, and never stop on a failure.
@@ -1154,10 +829,6 @@ def build_all(rust: bool = True, micropython: bool = True, target: str = "musl",
         # the flag was silently dropped was worse than either.
         results.append(build_lib(target=lib_target or "host", jobs=jobs,
                                  verbose=verbose, dry_run=dry_run))
-    if micropython:
-        results.append(build_micropython(verbose=verbose, dry_run=dry_run))
-    if stock:
-        results.append(build_stock(verbose=verbose, dry_run=dry_run))
     return results
 
 
@@ -1202,11 +873,7 @@ def install_binaries(results: Iterable[BuildResult]) -> list[Path]:
             # into the directory the engine finders read would make
             # `find_lypning` offer it to `os.execv`.
             continue
-        if r.engine == STOCK_BINARY:
-            # The control stays in the build tree. This directory is where the
-            # engine finders look, and a control that can be found is a control
-            # that can be run — at which point the benchmark compares stock
-            # against stock and reports 1.00x as a result.
+        if r.engine not in engines.SPECTRUM:
             continue
         src = Path(r.binary)
         if not src.is_file():
@@ -1269,19 +936,7 @@ def verify(results: Iterable[BuildResult] | None = None, *, limit: int | None = 
     the other passed. The gate is shape — static, bytes, file opens — and is
     what predicts cold cost in the sandbox. The battery is agreement with
     CPython, and it is the only thing that catches a build that produces a
-    perfectly shaped binary which quietly answers differently.
-
-    **Both are pointed at the binaries this build just produced**, by pinning
-    ``$LYPNING_BIN`` and ``$LYPNING_MP_BIN`` for the duration. Without that a
-    build whose binary is broken enough not to be installed would be verified
-    against the previous one still sitting in the bin dir, and report ``ok`` for
-    a binary nobody measured. The environment is restored afterwards: this is a
-    library, and a caller that runs anything else in the same process must not
-    inherit our overrides.
-
-    The benchmark control is skipped and said so: it is unpatched upstream
-    MicroPython and owes none of these contracts.
-    """
+    perfectly shaped binary which quietly answers differently."""
     t0 = time.perf_counter()
     # Imported here rather than at module scope: a plain `lypning build --rust`
     # must not pay for the corpus loader and `ast` in order to run cargo.
@@ -1291,10 +946,6 @@ def verify(results: Iterable[BuildResult] | None = None, *, limit: int | None = 
     pins: dict[str, str] = {}
     subjects: list[Path] = []
     for r in (list(results) if results is not None else []):
-        if r.engine == STOCK_BINARY:
-            out.notes.append("the benchmark control is not gated: it is upstream "
-                             "MicroPython and owes none of these contracts")
-            continue
         if not r.ok or r.binary is None:
             continue
         if r.artifact == "lib":
@@ -1307,13 +958,13 @@ def verify(results: Iterable[BuildResult] | None = None, *, limit: int | None = 
             pins["LYPNING_LIB"] = str(r.binary)
             continue
         subjects.append(Path(r.binary))
-        if r.engine in engines.SPECTRUM + (engines.MICROPYTHON,):
+        if r.engine in engines.SPECTRUM:
             pins[engines.env_var_for(r.engine)] = str(r.binary)
     if results is None:
-        subjects = [p for p in (engines.find(e) for e in engines.SPECTRUM + (engines.MICROPYTHON,)) if p]
+        subjects = [p for p in (engines.find(e) for e in engines.SPECTRUM) if p]
 
     saved = {k: os.environ.get(k) for k in
-             [engines.env_var_for(e) for e in engines.SPECTRUM + (engines.MICROPYTHON,)] + ["LYPNING_LIB"]}
+             [engines.env_var_for(e) for e in engines.SPECTRUM] + ["LYPNING_LIB"]}
     try:
         os.environ.update(pins)
         for b in subjects:

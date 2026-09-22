@@ -12,7 +12,6 @@ def test_node_route_engine_type_matches_the_routing_spectrum():
     """The addon forwards the C ABI's route engine; it does not rename it.
 
     Even an addon embedding the core can route to the larger Rust variant.
-    The MicroPython oracle is deliberately absent from dispatch destinations.
     """
     declaration = (Path(__file__).resolve().parents[1] / "src" / "lypning"
                    / "assets" / "node" / "index.d.ts").read_text(encoding="utf-8")

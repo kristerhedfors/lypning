@@ -28,8 +28,8 @@ recursive-include tests *.py
 recursive-include tests/corpus *.jsonl
 
 # Defence, not decoration. `include_package_data = true` means anything named
-# here under src/ lands in the *wheel* too, and these three directories are
-# where cargo and the MicroPython make put hundreds of megabytes of object
+# here under src/ lands in the *wheel* too, and these directories are
+# where build tools put hundreds of megabytes of object
 # files. Nothing above names them today; these lines are what stops a future
 # `graft src` from shipping a gigabyte to everyone who types `pip install`.
 prune src/lypning/assets/rust/target
@@ -46,5 +46,3 @@ prune src/lypning/assets/node/node_modules
 prune src/lypning/assets/swift/.build
 prune src/lypning/assets/swift/.swiftpm
 prune src/lypning/assets/swift/build
-prune src/lypning/assets/micropython/build
-prune src/lypning/assets/micropython/.build

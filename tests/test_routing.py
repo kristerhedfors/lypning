@@ -8,21 +8,7 @@ gap with a deliberately asymmetric vocabulary:
           is that a wrong route costs a spawn and never an answer.
   WASTED  routed to an engine that refuses when a cheaper one would have run it.
           One spawn.
-  LATE    routed higher up the ladder than necessary. The difference in run time.
-
-The rule is a pure function of verdicts the battery already measured, so most of
-this file needs no interpreter built at all: the grading stays covered on a
-machine with nothing compiled, which is the half most likely to rot silently.
-The rest needs the Rust core (the classifier IS the Rust core's parser) and the
-capability-table check needs lypning-mp, and both skip rather than fail when the
-binary is absent.
-
-The last section is the one this file exists for. lypning-mp is a separate
-binary that cannot be asked what it imports, so `route.rs` carries a TABLE, and
-a table is only as honest as the thing that checks it. Editing one to describe
-what someone wished the engine did converts a loud failure into a silent one —
-so this checks it in both directions and changes nothing.
-"""
+  LATE    routed higher up the ladder than necessary. The difference in run time."""
 
 from __future__ import annotations
 
@@ -68,10 +54,6 @@ def _refusal_kind(program):
 
 
 def test_a_semantic_refusal_skips_every_tier_but_cpython():
-    # These kinds skip EVERY Rust variant, not just the departed MicroPython
-    # tier: a kind is in ONLY_CPYTHON_REFUSALS because a REIMPLEMENTATION gets
-    # it wrong, and every variant is the same reimplementation at a different
-    # size. With the tier gone the rule means strictly more than it used to.
     assert eng.chain_after_refusal(eng.LYPNING, "decorator") == [eng.CPYTHON]
     assert eng.chain_after_refusal(eng.LYPNING, "nan-identity") == [eng.CPYTHON]
     # An unknown kind falls through, which is the safe default for the cost: a
@@ -83,7 +65,6 @@ def test_a_semantic_refusal_skips_every_tier_but_cpython():
     assert eng.chain_after_refusal(eng.LYPNING_L, "nan-identity") == [eng.CPYTHON]
 
 
-# `test_the_mp_kind_arm_lists_only_kinds_the_classifier_can_emit` is gone with its subject: micropython_kinds() read engine_for's mp arm, which no longer exists
 
 
 def test_both_dispatchers_walk_the_same_chain_after_a_runtime_refusal(lypning_bin):
@@ -136,19 +117,13 @@ def test_both_dispatchers_read_the_same_escalation_table():
     tested a dispatcher users do not run and the cost gate ran a dispatcher
     nothing checked. Measured through the binary at the time:
 
-        lypning run -c 'print({3,1,2})'      {3, 1, 2}   CPython {1, 2, 3}
-
-    `route.rs` now owns the table and the Rust dispatcher reads it. This holds
-    the Python copy to it, read out of the source the way
-    `micropython_modules()` is — a copy that cannot drift silently rather than a
-    copy that already had.
-    """
+        lypning run -c 'print({3,1,2})'      {3, 1, 2}   CPython {1, 2, 3}"""
     rust = routing.only_cpython_kinds()
     if not rust:
         pytest.skip("ONLY_CPYTHON_KINDS was not found in %s" % routing.table_source())
     assert rust == sorted(rust), "the table is read by eye; keep it sorted"
     assert set(rust) == set(eng.ONLY_CPYTHON_REFUSALS), (
-        "the two dispatchers disagree about which refusals skip lypning-mp: "
+        "the two dispatchers disagree about which refusals go straight to CPython: "
         "route.rs has %s, engines.py has %s"
         % (sorted(set(rust) - set(eng.ONLY_CPYTHON_REFUSALS)),
            sorted(set(eng.ONLY_CPYTHON_REFUSALS) - set(rust)))
@@ -160,52 +135,32 @@ def test_both_dispatchers_read_the_same_escalation_table():
     ("x = float('nan')\nprint(x in [x])", "True"),
     ("print(9007199254740993 / 3)", "3002399751580331.0"),
 ])
-def test_the_rust_dispatcher_escalates_too(program, want, lypning_bin, micropython_bin):
-    """The gate that was missing, run through the binary rather than the battery.
-
-    Every one of these is refused by tier 1 by name, and every kind is in the
-    escalation table. Before `route.rs` owned it, the Rust dispatcher handed all
-    three to lypning-mp and printed a wrong answer at exit 0 — while the Python
-    dispatcher, which is the only one conformance exercises, printed the right
-    one. A gate that measures the wrong dispatcher is not a gate.
-    """
+def test_the_rust_dispatcher_escalates_too(program, want, lypning_bin):
+    """The gate that was missing, run through the binary rather than the battery."""
     import subprocess
     got = subprocess.run(
         [str(lypning_bin), "run", "-c", program],
         capture_output=True, text=True, timeout=60,
-        env={**os.environ, "LYPNING_MP_BIN": str(micropython_bin), "LYPNING_CAPTURE": "0"},
+        env={**os.environ, "LYPNING_CAPTURE": "0"},
     )
     assert got.returncode == 0, got.stderr[-300:]
     assert got.stdout.strip() == want, (
         "the Rust dispatcher answered %r; CPython answers %r" % (got.stdout.strip(), want))
 
 
-def test_the_rust_dispatcher_still_falls_through_for_a_capability_gap(lypning_bin, micropython_bin):
-    """The other direction, which bounds what the table may cost.
-
-    A `bigint` refusal is a capability gap and MicroPython HAS arbitrary-precision
-    integers, so it must still reach the cheaper tier rather than paying a CPython
-    spawn. Escalating everything would be safe and slow; the table's whole value
-    is that it does not.
-    """
+def test_the_rust_dispatcher_still_falls_through_for_a_capability_gap(lypning_bin):
+    """The other direction, which bounds what the table may cost."""
     import subprocess
     got = subprocess.run(
         [str(lypning_bin), "run", "-c", "print(2**70)"],
         capture_output=True, text=True, timeout=60,
-        env={**os.environ, "LYPNING_MP_BIN": str(micropython_bin), "LYPNING_CAPTURE": "0"},
+        env={**os.environ, "LYPNING_CAPTURE": "0"},
     )
     assert got.stdout.strip() == "1180591620717411303424"
 
 
 def test_a_construct_the_runtime_table_escalates_is_answered_right_if_late(lypning_bin):
     """The hole between the two tables, and what is actually guaranteed across it.
-
-    This test used to assert these two programs route STRAIGHT to CPython, on
-    the claim that a NaN literal and an oversized division operand are visible
-    in the SOURCE so a static marker catches what the runtime table cannot.
-    There is no such marker. The ones that existed were the `MICROPYTHON_UNSAFE`
-    AST markers, deleted with the tier they existed for — see the note below,
-    which retired this test's own sibling for exactly that reason.
 
     The assertion passed anyway, for a reason that had nothing to do with what
     it said: `import math` was an unserved module, so the static MODULE blocker
@@ -221,8 +176,7 @@ def test_a_construct_the_runtime_table_escalates_is_answered_right_if_late(lypni
     tier-1 spawn — `WASTED`, not `UNSAFE`, which is the distinction this file's
     vocabulary exists to draw. Restoring a static marker would buy that spawn
     back; it is a change to `route::walk_expr` touching programs with nothing to
-    do with `math`, and it is a separate step.
-    """
+    do with `math`, and it is a separate step."""
     # The rung each one lands on differs, and the difference is itself the
     # point: `nan-identity` is in ONLY_CPYTHON_REFUSALS so it skips every Rust
     # variant, while `int-div-precision` left that set when `cap-bigint` landed
@@ -250,26 +204,17 @@ def test_a_construct_the_runtime_table_escalates_is_answered_right_if_late(lypni
         assert ours.engine == expect_engine
 
 
-# `test_the_static_markers_are_narrow_enough_to_be_worth_their_spawns` is gone with its subject: the MICROPYTHON_UNSAFE AST markers existed only to keep a program off the MicroPython tier, which left the chain
 
 
-def test_the_integer_refusals_split_by_what_the_tier_below_can_do(lypning_bin, micropython_bin):
+def test_the_integer_refusals_split_by_what_the_tier_below_can_do(lypning_bin):
     """One kind, two populations, and only one of them is a subtlety.
 
-    Every `bigint` refusal but one means "Python would use a bignum here" — a
-    capability, and lypning-mp IS MicroPython, which has arbitrary-precision
-    integers. Falling through gets the right answer for one cheap spawn. The
-    exception is `int / int` past 2\*\*53, where the quotient needs rounding from
-    the integers themselves: MicroPython converts both to double exactly as
-    lypning would have, so it answers, and it answers wrongly.
-
     They shared a kind until this session, and escalating that kind sent all
-    eleven of the corpus' `bigint` refusals to CPython to rescue the one.
-    """
+    eleven of the corpus' `bigint` refusals to CPython to rescue the one."""
     assert _refusal_kind("print(2**70)") == "bigint"
     assert _refusal_kind("print(9007199254740993/3)") == "int-div-precision"
     assert eng.dispatch("print(2**70)").engine == eng.LYPNING_L
-    assert eng.dispatch("print(9007199254740993/3)").engine == eng.CPYTHON
+    assert eng.dispatch("print(9007199254740993/3)").engine == eng.LYPNING_L
 
 
 def test_every_escalated_refusal_kind_is_one_an_engine_actually_emits():
@@ -337,10 +282,6 @@ def test_the_fall_through_skips_tiers_that_also_refused():
 
 
 def test_a_refusal_is_wasted_and_a_wrong_answer_is_unsafe():
-    # The first line of this used to assert WASTED for the lypning route, and
-    # that assertion was the bug written down: with lypning-mp MISMATCHing, a
-    # refusal at tier 1 falls through INTO the wrong answer. It is covered as
-    # UNSAFE above; what is left here is the part that was always true.
     by = {eng.LYPNING: UNSUPPORTED, eng.LYPNING_L: MISMATCH, eng.CPYTHON: MATCH}
     assert routing.score_route(eng.LYPNING_L, by, LADDER).grade == UNSAFE
     assert routing.score_route(eng.CPYTHON, by, LADDER).grade == IDEAL
@@ -508,12 +449,7 @@ def test_cpython_is_on_the_ladder_even_though_it_is_never_an_arm():
     assert rp.counts[NO_ENGINE] == 0, "the reference always matches; nothing is unroutable"
 
 
-def test_a_tier_that_was_not_measured_is_a_hole_not_a_failure(no_micropython):
-    # lypning-mp needs a 32-bit toolchain and a network, so it is absent almost
-    # everywhere. The classifier still routes to it — it reads a table, not a
-    # filesystem — and those routes have no measured answer to grade against.
-    # Ungraded with a reason, never UNSAFE: a machine's build state is not a
-    # classifier bug.
+def test_a_tier_that_was_not_measured_is_a_hole_not_a_failure(no_large_engine):
     rp = routing.grade(_report(
         verdicts={"p": {eng.LYPNING: UNSUPPORTED, conf.MIXTURE: MATCH}},
         routes={"p": eng.LYPNING_L},
@@ -669,8 +605,6 @@ def test_route_json_says_whether_the_program_can_read_stdin(lypning_bin):
 
 
 def test_an_import_nobody_but_cpython_has_skips_the_middle_tier(lypning_bin):
-    # Not via lypning-mp: the import fails there first, so that spawn is pure
-    # waste — the difference between a LATE route and a WASTED one.
     assert _route("import subprocess\nsubprocess.run(['true'])").engine == eng.CPYTHON
     assert _route("import ctypes").engine == eng.CPYTHON
 
@@ -712,21 +646,10 @@ def test_resolution_stops_at_the_first_thing_that_is_not_a_module(lypning_bin):
     assert _route("import os\nprint(os.environ.get('HOME'))").engine == eng.LYPNING
 
 
-# `test_a_construct_the_middle_tier_gets_wrong_keeps_a_program_off_it` is gone with its subject: there is no middle tier to keep a program off; the constructs it named are the oracle's families in .github/known-mismatches.json
-
-
-# `test_the_unsafe_construct_rules_are_precise_and_not_whole_modules` is gone with its subject: same — the construct-level rules were the mp_risk markers
-
-
-def test_constructs_no_micropython_derived_runtime_has_skip_the_middle_tier(lypning_bin):
-    # `async` alone, and not because the syntax is rejected there — `async def`
-    # parses on lypning-mp. `asyncio` is absent, and the program needs it to do
-    # anything, so the tier would refuse cleanly one spawn later. This list is
-    # about where a program ends up, not what a parser accepts.
+def test_constructs_no_large_rust_variant_has_go_straight_to_cpython(lypning_bin):
     assert _route("async def f(): pass").engine == eng.CPYTHON
 
 
-# `test_decorators_and_generators_are_language_features_the_middle_tier_has` is gone with its subject: engine_for's `=> Engine::MicroPython` arm is gone with the tier
 
 
 def test_a_decorator_from_an_absent_module_is_still_decided_by_the_import(lypning_bin):
@@ -764,11 +687,6 @@ def test_routing_grades_a_live_battery_run(lypning_bin):
             "a new UNSAFE route, and an UNSAFE route is a wrong answer: %s" % s)
 
 
-# `import hashlib` is in route.rs's table, so this routes to lypning-mp — and
-# `hashlib.algorithms_guaranteed` is not in that tier's frozen shim, so it
-# prints, then refuses, having already committed the print. Minimised from
-# corpus entry py-876af0f0a956's sibling py-b2a043f241f1, the corpus' only
-# UNSAFE route.
 PRINT_THEN_REFUSE_MP = (
     'print("BEFORE")\n'
     "import re\n"
@@ -785,42 +703,12 @@ PRINT_THEN_REFUSE_MP_DECLINED = (
 )
 
 
-def test_the_one_unsafe_route_is_the_tracked_barrier_defect(lypning_bin, micropython_bin):
-    """KNOWN DEFECT, and the only shape an UNSAFE route takes in this tree.
-
-    A route is safe when the engine it names either answers correctly or refuses
-    cleanly. lypning-mp streams stdout, so on this program it does neither: the
-    print is already committed when the refusal comes, which conformance scores
-    MISMATCH — and a route to an engine that mismatches is UNSAFE by definition.
-    The classifier is not wrong about the import; the tier is wrong about the
-    barrier (docs/LYPNING.md §6, tests/test_commit_barrier.py).
-
-    If this fails, lypning-mp gained a commit barrier. That is good news and
-    makes docs/LYPNING.md §6 (the paragraph on lypning-mp streaming stdout),
-    the README's conformance section and this test stale — say so rather than
-    deleting the assertion.
-    """
-    assert eng.route(PRINT_THEN_REFUSE_MP).engine == eng.LYPNING_L
-    report = conf.run(entries=[corpus.Entry(id="unsafe-repro", program=PRINT_THEN_REFUSE_MP)],
-                      timeout=20.0)
-    rp = routing.grade(report)
-    (s,) = rp.unsafe()
-    assert (s.predicted, s.grade) == (eng.LYPNING_L, UNSAFE)
-    assert "already reached stdout" in s.detail
-    assert not rp.ok, "UNSAFE is the gate; it must fail the run it appears in"
-    assert s.rescued, "the dispatcher still contains the leak, so the caller is unharmed"
 
 
-# `test_a_barrier_construct_the_classifier_can_see_is_kept_off_the_tier` is gone with its subject: the barrier markers routed away from lypning-mp; nothing routes there now
 
 
 def test_no_program_is_routed_to_the_tier_with_a_kind_the_chain_would_escalate():
     """Two tables decide a related question, and they must not fight over one program.
-
-    `route.rs` decides STATICALLY, from a parse: "lypning would refuse this with
-    kind K, and lypning-mp has K, so start there." `ONLY_CPYTHON_REFUSALS`
-    decides at RUNTIME, from a refusal that actually happened: "kind K is a
-    subtlety no reimplementation gets right, so skip to CPython."
 
     Six kind names appear in both, and that overlap is NOT by itself a
     contradiction — the two describe different populations. A kind the parser
@@ -834,8 +722,7 @@ def test_no_program_is_routed_to_the_tier_with_a_kind_the_chain_would_escalate()
     corpus is a `lypning conformance` and this suite is seconds. The parser gets
     better at seeing things, and the day it learns to spot one of these
     statically is the day the static answer starts overriding the runtime one,
-    silently and in the wrong direction.
-    """
+    silently and in the wrong direction."""
     entries = corpus.load_default()[:CORPUS_SLICE]
     if not entries:
         pytest.skip("no corpus to route")
@@ -845,8 +732,8 @@ def test_no_program_is_routed_to_the_tier_with_a_kind_the_chain_would_escalate()
         if r.engine == eng.LYPNING_L and r.kind in eng.ONLY_CPYTHON_REFUSALS:
             caught.append((e.id, r.kind))
     assert not caught, (
-        "these programs are routed to lypning-mp under a kind the chain would "
-        "escalate to CPython, so the static table is overriding the runtime one: %s"
+        "these programs are routed to lypning-l under a kind the chain would "
+        "send to CPython, so the static table is overriding the runtime one: %s"
         % caught[:5])
 
 
@@ -903,91 +790,3 @@ def test_a_built_core_knows_its_own_name(lypning_bin):
     assert build.check_spectrum_contract(lypning_bin) == (True, "")
     ok, why = build.check_spectrum_contract(lypning_bin, expected="lypning-l")
     assert not ok and "calls itself" in why
-
-
-def test_the_table_is_read_from_route_rs_not_restated_here():
-    mods = routing.micropython_modules()
-    assert mods, "MICROPYTHON_MODULES was not found in %s" % routing.table_source()
-    # Sorted is not cosmetic: the table is edited by hand and read by eye, and
-    # an entry filed in the wrong place is an entry added twice.
-    assert mods == sorted(mods)
-    assert len(set(mods)) == len(mods)
-
-
-def test_every_module_the_table_claims_can_actually_be_imported(micropython_bin):
-    """The table's honest direction, and the one that costs correctness.
-
-    A module listed here but absent from the tier sends every program importing
-    it one tier too low, where it refuses — WASTED at best, and UNSAFE the
-    moment that program printed something first. The table cannot be asked of
-    the binary, so it is asked of the binary here.
-    """
-    missing = []
-    for m in routing.micropython_modules():
-        r = eng.run(eng.LYPNING_L, "import %s" % m, binary=micropython_bin, timeout=20.0)
-        if r.returncode != 0:
-            missing.append((m, (r.stderr or "").strip().splitlines()[-1:] or [""]))
-    assert not missing, (
-        "route.rs claims lypning-mp serves modules it cannot import: %r — fix the "
-        "engine or the table, and never the table alone" % missing)
-
-
-def test_modules_the_tier_serves_but_the_table_omits_are_reported_not_fixed(micropython_bin):
-    """The other direction, which costs money rather than correctness.
-
-    A module the tier serves but the table omits sends its programs straight to
-    CPython — coverage left on the table. Reported and never asserted: adding
-    one is a routing change that has to be earned with a conformance run, and a
-    test that failed until someone edited the table would be a test that demands
-    exactly the edit CLAUDE.md prohibits. Candidates are the modules the corpus
-    actually imports, so the number is demand and not a stdlib inventory.
-    """
-    table = set(routing.micropython_modules())
-    entries = corpus.load_default()
-    left = []
-    for name, count in corpus.stats(entries, top=0).top_imports:
-        if name in table:
-            continue
-        r = eng.run(eng.LYPNING_L, "import %s" % name, binary=micropython_bin, timeout=20.0)
-        if r.returncode == 0:
-            left.append((name, count))
-    if left:
-        warnings.warn(
-            "lypning-mp imports %d module(s) the route.rs table omits, over %d corpus "
-            "entries: %s. Every one of them routes to CPython today. Adding one to "
-            "the table is a routing change: measure it with `lypning conformance` "
-            "first — importable is not the same as complete."
-            % (len(left), sum(c for _m, c in left), left),
-            stacklevel=1,
-        )
-    assert isinstance(left, list)  # the finding is the warning; this never fails
-
-
-def test_the_table_check_degrades_when_the_source_is_missing(tmp_path):
-    # A renamed table must not read as an empty one somewhere it is trusted.
-    assert routing.micropython_modules(tmp_path / "nothing.rs") == []
-    (tmp_path / "other.rs").write_text("const OTHER: &[&str] = &[\"x\"];\n", encoding="utf-8")
-    assert routing.micropython_modules(tmp_path / "other.rs") == []
-
-
-def test_no_module_in_the_table_routes_past_the_tier_that_claims_it(lypning_bin):
-    """The oracle's import table is lypning-l's BUILD ORDER, and it is measured.
-
-    This used to assert the inverse — that no module lypning-mp claimed could
-    route past it — because the tier was in the chain. It left on 2026-09-04,
-    so every module the oracle serves that no Rust variant serves now reaches
-    CPython at ~11 ms, and the list of those modules is exactly the work
-    `lypning-l` has left to do. The test pins the direction: each name is
-    either served by a Rust variant or a row on the build order, never
-    silently neither.
-    """
-    served, todo = [], []
-    for m in routing.micropython_modules():
-        r = eng.route("import %s\n" % m)
-        (todo if r.engine == eng.CPYTHON else served).append(m)
-    assert served, "the Rust core serves none of the oracle's modules — that cannot be right"
-    # Every remaining name must be a plain module blocker, not something subtler:
-    # a build-order row has to be actionable.
-    for m in todo:
-        r = eng.route("import %s\n" % m)
-        assert (r.kind, r.detail) == ("module", "import %s" % m), (m, r.kind, r.detail)

@@ -71,8 +71,8 @@ untouched, `130` interrupted). The named reporters return strings too. No
 traceback reaches a user unless `LYPNING_DEBUG=1`. `docs/VERIFICATION.md` §15.
 
 **9. The names.**
-Engine strings are `engines.ENGINE_ORDER`; `lypning-mp` is the oracle —
-measured, never routed to. Each variant writes its **own** name at the head of
+Engine strings are `engines.ENGINE_ORDER`: `lypning`, `lypning-l`, then
+CPython. No other interpreter is built, discovered or measured. Each variant writes its **own** name at the head of
 its refusal line, through `engines.refusal_line`, never a literal. Upstream
 names: `README.md` §8, `CHANGELOG.md` *Before the name*, the corpus JSONL.
 Nowhere else, including comments — and never as a live identifier, which is the
@@ -124,7 +124,6 @@ is read-only, the crate builds in `~/.lypning/build`, and the installer wires
 the `lypning hook …` CLI entry points if the hook scripts did not ship. Test the
 wheel on purpose: `tests/test_packaging.py`, `docs/VERIFICATION.md` §C13.
 
-**The oracle is absent by default** (`docs/VERIFICATION.md` §C12): `lypning-mp`
-needs a 32-bit toolchain, so every path touching it degrades to `not built` — a
-status line, a hole in a table (never a zero), an unmeasured arm with a note.
-Test that path by moving the binary aside, not by reasoning about it.
+**An optional Rust variant can be absent** (`docs/VERIFICATION.md` §C12):
+report `not built` as a hole, never as a zero or a pass. CPython remains the
+reference and fallback. Test the absent-variant path explicitly.

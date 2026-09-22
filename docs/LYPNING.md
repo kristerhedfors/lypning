@@ -15,9 +15,8 @@ Every table is re-derivable from your own corpus ([`FORKING.md`](FORKING.md)).
 | `lypning-l` | the same crate with `cap-bigint`, `cap-collections`, `cap-csv`, `cap-glob`, `cap-hashlib`, `cap-pathlib` and `cap-re` (`engines.VARIANT_CAPS`), budgeted 32 blocks | `--features variant-l` |
 | `cpython` | the real thing, and the reference every verdict is graded against | the system `python3` (`engines.find_cpython`) |
 
-The chain is `engines.ENGINE_ORDER`, cheapest first. `lypning-mp` is the oracle
-— measured, never routed to ([`MICROPYTHON.md`](MICROPYTHON.md)): its recorded
-divergences say what a Rust variant must implement exactly or refuse.
+The chain is `engines.ENGINE_ORDER`: the Rust spectrum, cheapest first,
+then CPython as the reference and fallback.
 
 ## 1. Measurement
 
@@ -27,19 +26,6 @@ cost, arm by arm in `bench.ARM_ORDER` (`cpython`, `lypning`, `lypning-l`,
 `mixture`); `lypning conformance` measures correctness and grades routes in the
 same run. No timing from the run of record is quoted (the host was shared);
 `docs/BENCH-LEDGER.md` carries the dated ones.
-
-```
-lypning conformance · 2026-09-07 · 3688 loaded, 2504 graded
-engine       MATCH  UNSUPPORTED  MISMATCH   coverage
-lypning      1547          956         1     61.8%
-lypning-l    1984          519         1     79.2%
-mixture      2504            0         0    100.0%
-what the MATCHes compared:
-lypning      1547     487     899        172          900
-lypning-l    1984     645    1168        194         1169
-                    stdout  stderr  exit only  both failed
-lypning status · same run · on Darwin arm64:  lypning 868,000 B, 7 blocks;  lypning-l 1,033,680 B, 8 blocks;  lypning-mp not built
-```
 
 The counts grow with the corpus and move with every capability. `MISMATCH 0` is
 supposed not to move, and on 2026-09-07 it did: the run above is the first in
@@ -65,22 +51,6 @@ engine's result is one of three things (`conformance.classify`):
 **A subset runtime that silently disagrees with CPython is worse than no runtime
 at all**, because the agent that typed the one-liner will not notice. That is
 why MISMATCH is the gate and UNSUPPORTED is not.
-
-A MISMATCH carries a sub-kind: `stdout`, `exit`, `stderr` (CPython reported an
-error, the engine was silent), `stderr-exc` (the two arms disagree about which
-exception ended the run), `stderr-text` (the non-traceback part of stderr, which
-is the program's own writing, differs), `timeout` (one deadline on both sides;
-only the engine hit it), `unbuilt`, and `contract` — exit 90 after bytes reached
-stdout or stderr, or exit 90 without the line at the head of stderr. Traceback
-frames and message wording are never compared: they drift between CPython
-versions, and the exception type is the part that is API.
-`conformance.DEFAULT_ARMS` is `engines.SPECTRUM` plus `mixture`, the Python
-dispatcher end to end; `lypning-mp`, `library` and `mixture-rust` are
-`conformance.OPT_IN_ARMS`, and an unbuilt arm is a `note:` line, never a
-MISMATCH. `--mixture both` adds the Rust dispatcher as an arm (`dispatchers
-agree N/N`, §5); `--plan` ranks every blocker by the programs it sends to
-CPython (`conformance.plan`): `lypning-l`'s build order. Checks:
-`docs/VERIFICATION.md` §C3.
 
 ## 3. The subset
 
@@ -160,11 +130,6 @@ division and `%` round toward negative infinity (Rust truncates), `/` on two
 ints is always a float, `float` repr is shortest-roundtrip with the
 fixed/scientific switch at `decpt <= -4 || decpt > 16`, and a function's
 `UnboundLocalError` comes from a real analysis of the names its body assigns.
-
-`route.rs:ONLY_CPYTHON_KINDS` names the refusal kinds that rule out **every**
-Rust variant, at any size — behaviours a reimplementation gets wrong, from the
-oracle's catalogue; `engines.ONLY_CPYTHON_REFUSALS` is the Python copy, held by
-`tests/test_routing.py::test_both_dispatchers_read_the_same_escalation_table`.
 
 ## 4. The classifier
 
@@ -254,10 +219,6 @@ removes it newest-first if the run has to fall onward. That always works from
 inside one run: every file the program wrote is still staged, so the run's own
 directories are empty when the refusal arrives.
 
-`lypning-mp` has no barrier: it streams stdout, so a refusal after a `print`
-is graded `MISMATCH contract` — one reason it is an oracle and not a rung
-(`tests/test_routing.py::test_the_one_unsafe_route_is_the_tracked_barrier_defect`).
-
 The barrier is invisible to the program and visible only to the dispatcher: a
 read consults the staged writes first, so `open(p,'w').write(x)` followed by
 `open(p).read()` behaves exactly as in CPython. `os.path.exists`, `getsize`,
@@ -306,10 +267,6 @@ its refusals depend on a value and no static walk can hoist them. Pinned by
 `tests/test_commit_barrier.py::test_the_chain_makes_the_directory_exactly_once`
 — `os.mkdir` raises the second time, so exit 0 through the chain is itself the
 proof that the retry saw a clean directory.
-
-The threshold is `io.rs:COMMIT_THRESHOLD`. A refusal after bytes reached stdout
-is `MISMATCH contract` (§2; the oracle's `commit-barrier` family), pinned by
-`tests/test_commit_barrier.py::test_rust_core_refuses_with_stdout_untouched`.
 
 ## 7. Building
 
@@ -383,40 +340,6 @@ module that prints.
 
 The realistic next PR is a `cap-*` on the larger variant; the core is frozen.
 `cap-pathlib` (`CHANGELOG.md` #41) is the worked example, in this order:
-
-1. **Cargo.toml.** A `cap-<name> = []` feature in the `variant-l` list and
-   nothing smaller; `build.rs` turns the set that is on into `LYPNING_CAPS`.
-2. **route.rs.** A `CAPS` row (the modules it serves; a runtime kind only if a
-   sibling would answer it) and the name in `SPECTRUM`'s `lypning-l` row.
-3. **engines.VARIANT_CAPS**, the Python copy of that row;
-   `tests/test_routing.py::test_the_spectrum_copy_in_engines_is_the_rust_table`
-   fails until the two agree
-   (`tests/test_engines.py::test_parse_binary_name_grows_with_the_spectrum`
-   holds the name grammar).
-4. **modules.rs and lib.rs.** A `#[cfg(feature = "cap-<name>")]` row of
-   `MODULES`, a `get_attr` arm per served name, a `pub mod` in `lib.rs`; the
-   code lives in its own file so the core does not move a byte.
-5. **The wiring list — the recurring defect.** A new `Value` variant or dict
-   tag reaches every path that materialises, compares or formats a value, and
-   the adversarial pass has found the missed one three times
-   (`docs/HILLCLIMB.md` iteration 74; `CHANGELOG.md` #39): `value.rs`
-   (`type_name`, `eq`, `is_same`, hash, truthiness), `fmt.rs` (`repr`, `str`,
-   format specs), `ops.rs` (operators, ordering, `in`, indexing, slices,
-   `getattr`), `methods.rs`, `builtins.rs` (`isinstance`, `len`, `bytes`,
-   `reversed`, constructor), `iter.rs`, `eval.rs`: grep `cfg(feature = "cap-`.
-6. **The grid test.** One `tests/test_<name>_grid.py` running a cross-product
-   of shapes under CPython and the variant
-   (`tests/test_pathlib_grid.py::test_the_pathlib_grid_agrees_with_cpython`);
-   a family in `lypning oracle` is a row here.
-7. **The density measurement.** Programs gained per KB of `lypning-l` growth
-   decides the order, because the block budget is the one thing a spectrum
-   cannot spend twice: `lypning gate ~/.lypning/bin/lypning-l` for the bytes,
-   `lypning conformance --engine lypning-l` for the programs, before and after
-   (`docs/HILLCLIMB.md` iteration 74, 2026-09-04, ranked four by it).
-8. **The gates.** `lypning build --rust`, `lypning gate` (`PASS`), `lypning
-   conformance --mixture both` (`MISMATCH 0`, `monotone violations 0`,
-   `dispatchers agree N/N`), `lypning doctor`, `git status`; then the
-   `CHANGELOG.md` entry, its coverage delta quoted from that run.
 
 **Verify.** `docs/VERIFICATION.md` §C1–§C6 hold these claims as commands
 with expected output; the two that change most:

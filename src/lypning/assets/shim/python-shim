@@ -129,7 +129,7 @@ if [ -z "$lypning_disabled" ]; then
   if [ -z "$lypning_log" ]; then
     # $HOME missing or unwritable: fall back to a per-uid tmp dir, and give up
     # silently if even that fails.
-    _alt="${TMPDIR:-/tmp}/lypning-mp-$(id -u 2>/dev/null || echo 0)"
+    _alt="${TMPDIR:-/tmp}/lypning-capture-$(id -u 2>/dev/null || echo 0)"
     if mkdir -p "$_alt" 2>/dev/null; then
       lypning_log="$_alt/invocations.jsonl"
       ( : >>"$lypning_log" ) 2>/dev/null || lypning_log=""

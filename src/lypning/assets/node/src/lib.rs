@@ -255,8 +255,8 @@ unsafe fn slice<'a>(p: *const u8, len: usize) -> &'a [u8] {
 /// `fallOnward(exitCode, stderr)` — the dispatcher's predicate, for a harness
 /// that chains other interpreters too.
 ///
-/// Exported so a JS harness running `lypning-mp` or a sandboxed `python3` in a
-/// child process can ask the same question about *their* exit codes instead of
+/// Exported so a JS harness running another interpreter in a child process can
+/// ask the same question about *its* exit code instead of
 /// re-deriving it from the exit-90 contract and getting the MemoryError case
 /// wrong.
 unsafe extern "C" fn js_fall_onward(env: Env, info: napi::CbInfo) -> Value {

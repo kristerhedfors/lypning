@@ -53,7 +53,6 @@ PAGES = [
     ("docs/DIFFERENCES.md", "docs/differences.html", "vs Python",
      "How lypning and lypning-l differ from Python: the architecture, the names each one resolves, and what falls through to CPython."),
     ("docs/COOKBOOK.md", "docs/cookbook.html", "Cookbook", "Rewrites for constructs outside the subset — every recipe executed by the test suite."),
-    ("docs/MICROPYTHON.md", "docs/micropython.html", "The oracle", "lypning-mp — the oracle: measured, never routed to — and the cost model the runtimes are optimised against."),
     ("docs/RESEARCH.md", "docs/research.html", "Research", "How the runtime was chosen and built, including what was measured and rejected."),
     ("docs/CAPTURE.md", "docs/capture.html", "Capture", "The hooks and shim that grow the corpus, and what they do and do not record."),
     ("docs/PROMPTING.md", "docs/prompting.html", "Prompting", "Can an agent be asked into the subset? 884 generated programs across nine treatments."),
@@ -308,7 +307,7 @@ def _markdown_destination(target: str, page_src: str) -> str:
 def linkify_xrefs(body: str, page_src: str) -> str:
     """Turn backtick cross-references into links, on the site only.
 
-    The docs cite each other as `docs/MICROPYTHON.md §2` rather than as markdown
+    The docs cite each other as `docs/VERIFICATION.md §2` rather than as markdown
     links, because in a checkout that is a path you can open and a link is not.
     On the web it is a dead end — 65 of them. So they become links HERE, at
     render time, leaving the source markdown exactly as a reader in a terminal

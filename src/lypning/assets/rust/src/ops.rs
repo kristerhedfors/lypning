@@ -1042,11 +1042,9 @@ impl Interp {
             }
         }
         if name.starts_with("__") && name.ends_with("__") && name.len() > 4 {
-            // TWO KINDS, because the tier below splits exactly here — measured
-            // 2026-08-30 on lypning-mp-i386: it answers `__name__` and
-            // `__class__` correctly and gets `__module__` and `__doc__` wrong
-            // (built-in types carry neither there, so the ordinary
-            // format-an-exception idiom prints the getattr DEFAULT at exit 0).
+            // TWO KINDS because `__module__` and `__doc__` must go straight to
+            // CPython, while the larger Rust variant may answer the other
+            // attributes.
             // `dunder-missing` is in ONLY_CPYTHON_KINDS; `dunder-attr` falls
             // through to the engine that answers it.
             if matches!(name, "__module__" | "__doc__") {

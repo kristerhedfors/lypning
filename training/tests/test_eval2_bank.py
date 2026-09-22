@@ -130,7 +130,7 @@ def test_the_lint_rejects_runtime_names_constraints_short_and_fenced_tasks(tmp_p
 
 def test_runtime_names_is_the_one_home_of_the_rule():
     labels = {label for label, _ in B.RUNTIME_NAMES}
-    for word in ("lypning", "cpython", "micropython", "interpreter", "runtime", "engine",
+    for word in ("lypning", "cpython", "interpreter", "runtime", "engine",
                  "tier", "refuse", "unsupported", "fallback", "standard library", "stdlib",
                  "without importing", "do not import", "only use", "pure python", "must not use"):
         assert word in labels

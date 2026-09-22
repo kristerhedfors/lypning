@@ -20,10 +20,6 @@
 #      line is injected as SessionStart additionalContext, so it reaches the
 #      model without adding a line to the transcript.
 #
-# The lypning-mp tier requires a build with network access and is ABSENT by
-# default. That is a status line, never an error: the report names it as not
-# built and the session carries on.
-#
 # It never fails the session: it prints {"continue":true,"suppressOutput":true}
 # and exits 0 on every path, including its own failures.
 #
@@ -116,10 +112,6 @@ try:
         line += (" Nothing to route to, so every program falls through to"
                  " CPython and any speed claim is meaningless: run `lypning"
                  " build` first.")
-    elif engines.MICROPYTHON in missing:
-        line += (" The lypning-mp tier needs a build with network access"
-                 " (`lypning build --micropython`) and is absent by default;"
-                 " the mixture works without it, one tier shallower.")
     respond(line)
 except Exception:
     respond("lypning: engine state could not be determined this session.")

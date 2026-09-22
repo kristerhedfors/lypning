@@ -23,6 +23,61 @@ preflight checks and a hardware smoke of the 256-sequence evaluation batch.
 Smaller explicit batches remain possible but must match across all arms and
 seeds; changing the chunking changes the sampling instrument.
 
+## Current Step 2 admission — 2026-09-22
+
+PRs #97–#101 are merged. The six-check free preflight
+[35683103077](https://github.com/kristerhedfors/lypning/actions/runs/35683103077)
+passed, with zero live HF jobs and no completed seeds to join on this bank.
+That does not authorize another old-configuration seed.
+
+The positive-control plan is now measured: **1,355 training cases, 31 families,
+16 draws in each of two arms, 43,360 requests**. Dev/test are excluded. Cerebras
+lists Qwen 3.8 27B at **$0.99/M input and $1.49/M output tokens**
+([pricing](https://www.cerebras.ai/pricing), checked 2026-09-22). The pinned-tokenizer
+count gives **$92.81 of input alone**, dominated by repeating the subset spec.
+At 512 output tokens/request the estimate is **$125.88**; at the 2,048-token
+allowance it is **$225.12**, before tax, retries or provider-template differences.
+These are cost scenarios, not a bill or an enforced ceiling. The old ~$5
+estimate is withdrawn for this full population.
+
+The operator chose **free first** on 2026-09-22. Continue free validation,
+diagnostics and preparation; hold paid inference and GPU training. No paid
+ceiling is approved. After free readiness is complete, present its result and
+the concrete scope/cost before requesting a paid ceiling. The previously
+offered $250 full comparison and $25 redesigned control remain unapproved
+options; **no paid provider call or GPU job has been dispatched**.
+Do not shrink the population, shorten the spec, lower k or substitute a model
+silently to fit the old estimate.
+
+[PR #102](https://github.com/kristerhedfors/lypning/pull/102) prepares the actual
+training-split control. Pinned-base conformance
+[35683688427](https://github.com/kristerhedfors/lypning/actions/runs/35683688427)
+loaded 9,064 corpus programs: 4,560 match, 1,757 unsupported, **zero mismatch**,
+2,747 skipped, and no repository damage. This is the large native arm on the
+pinned CPython 3.12.14 base, not a waiver of macOS 3.14 failures. The initial
+reference admission did not finish: run
+[35684815342](https://github.com/kristerhedfors/lypning/actions/runs/35684815342)
+hit its 70-minute job limit after 69 minutes in reference verification, with no
+intermediate counts. This is CPU container startup/verification work, not GPU
+training. The checker now reports aggregate completion and an estimated time
+remaining every 30 seconds, selects up to eight concurrent cases within CPU
+and container-memory limits, and stops new work on failure or after 50 minutes.
+Partial results cannot create an admission proof. Free rerun
+[35693996662](https://github.com/kristerhedfors/lypning/actions/runs/35693996662)
+**passed**, completing at 06:56 UTC on 2026-09-22. All 1,355 references passed:
+1,132 correct-native and 223 correct-control, no failures, eight workers,
+2,412.9 seconds (40 minutes 13 seconds). Its provider/tokenizer plan and exact
+conformance reuse also passed; provider calls were zero. The public aggregate
+report proves validation completed, but does not replace the private admission
+proof required by generation. That proof remains on the disposable worker;
+the durable private handoff still needs implementation before a paid launch.
+The generation library reserves budget before each
+request, disables retries, and binds its input to a private runtime/reference
+proof. The manual dispatch, private evidence handoff and scope remain to be
+completed before any later paid launch. The 256-sequence GPU batch smoke
+belongs before a later GPU training arm; Step 2 uses hosted inference and does
+not allocate a GPU.
+
 ## The bank a round would now read
 
 `banks/v3-20260919` in the private artifact repo, cut from six batches by

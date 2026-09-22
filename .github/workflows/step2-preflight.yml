@@ -1,0 +1,136 @@
+name: Step 2 positive-control preparation (free)
+
+on:
+  push:
+    branches: ["codex/step2-positive-control"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: step2-preparation-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: src:training
+  LYPNING_CAPTURE: '0'
+  LYPNING_HARVEST: '0'
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q 'huggingface-hub==1.31.0' 'transformers==5.17.0' jinja2
+      - name: Check account-visible provider model without generation
+        env:
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+        run: python -m harvesting.preflight
+      - name: Pin private bank and tokenizer; print only aggregate cost plan
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python .github/scripts/step2_bank_plan.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: step2-public-plan
+          path: ${{ runner.temp }}/step2-plan.json
+          if-no-files-found: error
+
+  candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build the native candidate for CPython 3.12
+        run: |
+          echo "LYPNING_HOME=$RUNNER_TEMP/step2-engine" >> "$GITHUB_ENV"
+          LYPNING_HOME="$RUNNER_TEMP/step2-engine" python -m lypning build --rust --target host
+      - name: Build minimal candidate on the pinned training base
+        run: |
+          BASE=$(python -c 'import runpy; print(runpy.run_path("training/hf/launch.py")["BASE_IMAGE"])')
+          echo "CHECK_BASE_IMAGE=$BASE" >> "$GITHUB_ENV"
+          CONTEXT=$(mktemp -d)
+          cp training/pipeline/{sandbox,child_exec,container_worker}.py "$CONTEXT/"
+          cp "$LYPNING_HOME/bin/lypning-l" "$CONTEXT/"
+          docker build --build-arg BASE_IMAGE="$BASE" -f training/worker/Dockerfile.verifier -t step2-candidate "$CONTEXT"
+          echo "CANDIDATE_IMAGE=$(docker image inspect step2-candidate --format '{{.Id}}')" >> "$GITHUB_ENV"
+          # Validation adds git for the corpus damage net; Python and the engine
+          # are byte-identical to the candidate image. No bank or secret is mounted.
+          cat > "$CONTEXT/Dockerfile.check" <<'EOF'
+          ARG BASE_IMAGE
+          FROM ${BASE_IMAGE}
+          RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+          EOF
+          docker build --build-arg BASE_IMAGE="$BASE" -f "$CONTEXT/Dockerfile.check" -t step2-check "$CONTEXT"
+      - name: Read the prior passing public corpus evidence
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: step2-public-candidate
+          run-id: 35683688427
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/step2-prior
+      - name: Reuse only identical engine, base, harness and corpus
+        id: corpus
+        run: python .github/scripts/step2_reuse_conformance.py
+      - name: Full large-engine corpus in the actual pinned Python runtime
+        if: steps.corpus.outputs.reused != 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/step2-source" "$RUNNER_TEMP/step2-result"
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/step2-source"
+          docker run --rm --network none \
+            -v "$RUNNER_TEMP/step2-source:/work" \
+            -v "$LYPNING_HOME:/engine:ro" \
+            -v "$RUNNER_TEMP/step2-result:/result" \
+            -w /work -e PYTHONPATH=src:training -e LYPNING_HOME=/engine \
+            -e LYPNING_CAPTURE=0 -e LYPNING_HARVEST=0 \
+            -e CHECK_BASE_IMAGE="$CHECK_BASE_IMAGE" step2-check sh -eu -c '
+              git config --global --add safe.directory /work
+              git init -q
+              git config user.email validation@localhost
+              git config user.name validation
+              git add .
+              git commit -qm snapshot
+              python .github/scripts/step2_candidate_check.py'
+      - name: Download manifest-checked pilot bank for free reference verification
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          STEP2_DOWNLOAD_ONLY: '1'
+        run: |
+          pip install -q 'huggingface-hub==1.31.0'
+          python .github/scripts/step2_bank_plan.py
+      - name: Verify train references in minimal containers without credentials or network
+        run: python .github/scripts/step2_reference_check.py
+      - name: Record immutable candidate image
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/step2-result"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          Path(os.environ['RUNNER_TEMP'], 'step2-result', 'image.json').write_text(json.dumps({
+              'candidate_image': os.environ.get('CANDIDATE_IMAGE'),
+              'base_image': os.environ.get('CHECK_BASE_IMAGE'),
+              'source_commit': os.environ['GITHUB_SHA']}, indent=2) + '\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: step2-public-candidate
+          path: ${{ runner.temp }}/step2-result/*.json
+          if-no-files-found: error

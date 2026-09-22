@@ -89,14 +89,11 @@ def test_every_variant_is_measured_against_its_own_budget():
     from lypning import gate
 
     rows = {b["name"]: b for b in overview.binaries()}
-    assert set(rows) == {"lypning", "lypning-l", "lypning-mp"}
+    assert set(rows) == {"lypning", "lypning-l"}
     for name, row in rows.items():
         assert row["budget"] == gate.VARIANT_BLOCK_BUDGET.get(name)
         if row["built"] and row["budget"] is not None:
             assert row["over"] == (row["blocks"] > row["budget"])
-    assert rows["lypning-mp"]["oracle"] is True
-    if not rows["lypning-mp"]["built"]:
-        assert rows["lypning-mp"]["blocks"] is None, "an absent oracle must be a hole, never a zero"
 
 
 def test_a_verdict_never_comes_from_the_absence_of_a_failed_line():

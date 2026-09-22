@@ -68,24 +68,19 @@ def test_chain_from_each_tier():
     for i, e in enumerate(order):
         assert engines.chain_from(e) == order[i:]
     assert engines.SPECTRUM == ("lypning", "lypning-l")
-    # lypning-mp left the chain on 2026-09-04: it is an ORACLE, measured but
+    # lypning-l left the chain on 2026-09-04: it is an ORACLE, measured but
     # never routed to, so it is in ORACLES and in no ladder.
     assert order == ["lypning", "lypning-l", "cpython"]
-    assert engines.ORACLES == ("lypning-mp",)
-    assert engines.MICROPYTHON not in engines.ENGINE_ORDER
 
 
 def test_parse_binary_name_is_the_one_name_parser():
-    # Longest engine first: `lypning-mp-i386` is MicroPython for i386, never
-    # the Rust core with a "mp-i386" target. Anything after the engine is the
-    # install target, verbatim — the gate never required it to be a known arch.
     p = engines.parse_binary_name
     assert p("lypning") == ("lypning", "")
     assert p("lypning-i686") == ("lypning", "i686")
     assert p("lypning-host") == ("lypning", "host")
-    assert p("lypning-mp") == ("lypning-mp", "")
-    assert p("lypning-mp-i386") == ("lypning-mp", "i386")
-    assert p("/x/bin/lypning-mp") == ("lypning-mp", "")
+    assert p("lypning-l") == ("lypning-l", "")
+    assert p("lypning-l-i386") == ("lypning-l", "i386")
+    assert p("/x/bin/lypning-l") == ("lypning-l", "")
     assert p("python3") == ("", "python3")
     assert p("cpython") == ("", "cpython")
 
@@ -103,7 +98,6 @@ def test_parse_binary_name_grows_with_the_spectrum(monkeypatch):
 
 def test_env_var_for_spells_every_pin_by_rule(monkeypatch):
     assert engines.env_var_for(engines.LYPNING) == "LYPNING_BIN"
-    assert engines.env_var_for(engines.MICROPYTHON) == "LYPNING_MP_BIN"
     assert engines.env_var_for(engines.CPYTHON) == "LYPNING_CPYTHON"
     assert engines.env_var_for("lypning-l") == "LYPNING_L_BIN"
     with pytest.raises(ValueError):
@@ -132,14 +126,14 @@ def test_no_engine_name_is_spelled_by_hand_outside_engines_py():
             continue
         for n, ln in enumerate(py.read_text(encoding="utf-8").splitlines(), 1):
             code = ln.split("#", 1)[0]
-            if '"lypning-mp"' in code or "'lypning-mp'" in code:
+            if '"lypning-l"' in code or "'lypning-l'" in code:
                 offenders.append("%s:%d" % (py.name, n))
     assert not offenders, offenders
 
 
 def test_chain_after_refusal_walks_siblings_that_could_run_then_cpython(monkeypatch):
     # The rule route.rs spells in chain_after, mirrored here: a later Rust
-    # sibling whose STATIC verdict was "can run" comes first, then lypning-mp
+    # sibling whose STATIC verdict was "can run" comes first, then lypning-l
     # if it can import everything, then CPython. With one row today there is
     # never a sibling, so this pins the rule on a two-row spectrum.
     monkeypatch.setattr(engines, "SPECTRUM", ("lypning", "lypning-l"))
@@ -227,7 +221,7 @@ def test_run_reports_a_timeout_rather_than_raising():
 
 def test_run_on_an_absent_engine_is_a_result_not_an_exception(monkeypatch):
     monkeypatch.setattr(engines, "find", lambda engine: None)
-    r = engines.run(engines.MICROPYTHON, "print(1)")
+    r = engines.run(engines.LYPNING_L, "print(1)")
     assert r.returncode == 127
     assert r.binary == ""
     assert "not built" in r.stderr
@@ -302,9 +296,9 @@ def test_an_override_that_points_at_nothing_is_an_error_not_a_fallback(monkeypat
 
 def test_an_override_pointing_at_a_script_is_an_error(tmp_path, monkeypatch):
     script = _exe(tmp_path / "lypning", "#!/bin/sh\nexit 0\n")
-    monkeypatch.setenv("LYPNING_MP_BIN", str(script))
+    monkeypatch.setenv("LYPNING_BIN", str(script))
     with pytest.raises(engines.EngineError):
-        engines.find_micropython()
+        engines.find_lypning()
 
 
 def test_a_cpython_override_that_points_at_nothing_is_an_error(monkeypatch):
@@ -393,7 +387,7 @@ def test_every_variable_that_pins_an_engine_binary_is_path_like():
     # Spelled by rule rather than by hand (CLAUDE.md invariant 9): a relative
     # $LYPNING_BIN resolves inside the sandbox, where nothing is installed, so
     # the arm exits 127 and the battery compares two failures to spawn.
-    for engine in engines.ENGINE_ORDER + engines.ORACLES:
+    for engine in engines.ENGINE_ORDER:
         assert engines.env_var_for(engine) in engines.PATH_LIKE_ENV
 
 

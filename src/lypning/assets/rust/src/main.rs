@@ -7,7 +7,7 @@
 //! distribution of one-liners an agentic CLI actually types (harvested in
 //! `tests/corpus/corpus.jsonl`), plus the classifier that decides which engine
 //! — a variant of this crate (`route::SPECTRUM`) or CPython — should run a
-//! given program. lypning-mp is the oracle: measured, never routed to.
+//! given program.
 //!
 //! Usage:
 //!   lypning run -c PROG [args…]    ROUTE, then run on whichever engine fits
@@ -380,9 +380,9 @@ fn jstr(s: &str) -> String {
 ///
 ///   * **The winning case costs nothing.** A program routed to lypning runs
 ///     IN THIS PROCESS - no second spawn, no pipe, no serialisation. Since 96%
-///     of a one-liner's cost is the OS spawning a process (docs/MICROPYTHON.md
-///     section 8c), a dispatcher that spawned a child would give back most of
-///     what the fast engine won.
+///     of a one-liner's cost is the OS spawning a process
+///     (`docs/SANDBOX-PERFORMANCE.md`), so a dispatcher that spawned a child
+///     would give back most of what the fast engine won.
 ///   * **Falling onward costs one `exec`, not one fork.** `exec` REPLACES this
 ///     process, so a mis-route costs the target interpreter's startup and
 ///     nothing else - no extra process ever exists.

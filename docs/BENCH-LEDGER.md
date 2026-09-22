@@ -52,7 +52,7 @@ apart. It also lists the five differences the offline static build forces
 under a starred column, and no verdict is ever computed against it. It is a
 different architecture (x86-64 against lypning-mp's i386), a different league of
 optimisation, and — the entire premise of the project — a runtime whose cost in
-the sandbox is *cold start*, not warm CPU (`docs/MICROPYTHON.md` §1). lypning-mp losing
+the sandbox is *cold start*, not warm CPU (`docs/SANDBOX-PERFORMANCE.md` §1). The retired runtime losing
 to CPython on a warm microbenchmark is expected and is not a result.
 
 ## Reading the tables
@@ -107,7 +107,7 @@ and only on rows neither run marked `!`.
 | Both min and median move together by <10% with no code change | Machine noise. The startup floor drifts by that much between runs on a shared box. |
 
 **The 30 s exec ceiling is the one absolute.** A command that crosses it destroys
-the CheerpX VM and ends the agent's turn (`docs/MICROPYTHON.md` §1). These are HOST
+the CheerpX VM and ends the agent's turn (`docs/SANDBOX-PERFORMANCE.md` §1). These are HOST
 numbers on x86-64; the emulated i386 guest is substantially slower, so a case
 that takes seconds here is the one to worry about there. The
 `dict-insert-20k` row is the standing example.

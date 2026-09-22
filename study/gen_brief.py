@@ -44,7 +44,6 @@ def main() -> int:
     # those two orders are the same and nothing is being decoupled.
     builtins = sorted(table(Path("builtins.rs"), "BUILTINS"))
     modules = table(Path("modules.rs"), "MODULES")
-    mp_modules = table(Path("route.rs"), "MICROPYTHON_MODULES")
     s = table(Path("methods.rs"), "STR_METHODS")
     li = table(Path("methods.rs"), "LIST_METHODS")
     d = table(Path("methods.rs"), "DICT_METHODS")
@@ -142,18 +141,10 @@ These are decided at run time, not by the imports, and they are deliberate:
 3. **`repr()` of non-ASCII text** outside a whitelist of plainly printable
    blocks is refused, and so is `os.listdir()`, whose order the filesystem
    defines rather than Python.
-
-## The tier below, for reference
-
-If a program leaves the subset above but only needs one of these modules, it
-lands on a second small interpreter rather than on CPython: %s. That is still
-much cheaper than CPython, so preferring `re` over `subprocess` is a real win
-even when the subset proper is out of reach.
 """ % (
         fmt(modules), len(builtins), fmt(builtins),
         fmt(s), fmt(li), fmt(d), fmt(st), fmt(by), fmt(tu), fmt(fi),
         fmt(s_missing), fmt(d_missing), fmt(st_missing), fmt(by_missing),
-        fmt(mp_modules),
     ), encoding="utf-8")
     print("wrote %s (%d bytes)" % (OUT.relative_to(ROOT), OUT.stat().st_size))
     return 0

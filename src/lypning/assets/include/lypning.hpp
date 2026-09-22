@@ -479,7 +479,7 @@ private:
 /* --- chaining other interpreters ----------------------------------------- */
 
 /// The dispatcher's own predicate, for a harness that chains OTHER engines
-/// too — "lypning-mp", or a sandboxed "cpython". True for exit 90, for a
+/// too — for example, a sandboxed "cpython". True for exit 90, for a
 /// MemoryError (a property of that engine's heap, never the program's answer),
 /// and for a traceback reported with exit 0. Deliberately false for an ordinary
 /// non-zero exit with a traceback: that is very often the program's own correct

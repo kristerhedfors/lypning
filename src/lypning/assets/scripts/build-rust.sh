@@ -6,12 +6,11 @@
 #
 #     glibc, dynamically linked   1.33 ms   5 file opens
 #     musl, static                0.24 ms   0 file opens
-#     lypning-mp (musl, static)       0.21 ms   0 file opens
 #
 # Cold cost in the CheerpX sandbox tracks bytes and file opens and nothing else
-# (docs/MICROPYTHON.md §1), so the dynamic loader's five opens are the whole gap. A
-# dynamically linked lypning is 5.5x slower to start than a static one and gives
-# back most of what the runtime won.
+# (docs/SANDBOX-PERFORMANCE.md), so the dynamic loader's five opens are the
+# whole gap. A dynamically linked lypning is 5.5x slower to start than a static
+# one and gives back most of what the runtime won.
 #
 # Usage:
 #   bash scripts/build-rust.sh                # host musl (x86_64) — what the bench uses
@@ -64,8 +63,8 @@ for t in "${targets[@]}"; do
   size=$(stat -c %s "$out")
   bold "    $out — $size bytes"
 
-  # The two shape checks the lypning-mp gate taught us to make. Neither is a
-  # substitute for conformance; both catch a regression conformance cannot see.
+  # Neither shape check substitutes for conformance; both catch a regression
+  # conformance cannot see.
   if [ "$t" != "glibc" ]; then
     if file "$out" | grep -qv "statically linked\|static-pie"; then
       : # `file` wording varies by version; the open count below is the real test
@@ -83,8 +82,7 @@ for t in "${targets[@]}"; do
     bold "    CheerpX device blocks (131,072 B each): $blocks"
   fi
 
-  # The exit-90 contract, pinned here the way scripts/build-micropython.sh pins
-  # lypning-mp's — it has only ever broken silently.
+  # Pin the exit-90 contract here because it has only ever broken silently.
   set +e
   "$out" -c 'import subprocess' >/dev/null 2>/tmp/lypning-smoke.$$
   rc=$?
@@ -96,9 +94,8 @@ for t in "${targets[@]}"; do
     exit 1
   fi
   rm -f /tmp/lypning-smoke.$$
-  # …and that the refusal line goes to STDERR. lypning-mp once wrote its
-  # tracebacks to stdout and poisoned every `… | wc -l` pipeline while the exit
-  # code still looked right (the lypning-mp skill §5).
+  # …and that the refusal line goes to STDERR, so it cannot poison stdout
+  # pipelines while the exit code still looks right.
   if [ -n "$("$out" -c 'import subprocess' 2>/dev/null)" ]; then
     echo "    FAIL: the refusal line reached stdout" >&2
     exit 1
@@ -108,7 +105,7 @@ done
 cat <<EOF
 
 next:
-    lypning conformance          # three engines + routing safety
+    lypning conformance          # engines + routing safety
     lypning conformance --plan   # what to build next in lypning
-    lypning bench              # the four-arm benchmark
+    lypning bench                # benchmark the selected arms
 EOF

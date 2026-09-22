@@ -1,13 +1,5 @@
 """The build gate: does this binary still have the shape the cost model requires?
 
-Cold cost in the target sandbox is neither CPU nor RSS. The root filesystem is
-an ext2 image streamed block by block over a WebSocket and cached in IndexedDB,
-so the first run of a binary pays for its own ELF, for every shared object it
-links, and for every path it opens — and for nothing else
-(docs/MICROPYTHON.md §1). CPython loses there by shape rather than by speed:
-``-c 'pass'`` opens 22 files, probes 7 more that miss, and makes 65 stat calls,
-each one a lookup that crosses a network. That is the 8573 ms.
-
 So this module measures the three things that actually predict cold cost, on the
 built artifact, in seconds instead of a Playwright run:
 
@@ -33,16 +25,7 @@ The invariants this module exists to hold:
 blocked, in plenty of containers, and a gate that rendered a missing open count
 as ``0`` would be reporting a spectacular pass. Every such check carries a
 ``note`` beginning with ``"unmeasured"``, :func:`render` marks the row ``--``
-rather than ``ok``, and the number is never printed as a zero.
-
-**A tier that is not built is reported, not raised on.** lypning-mp needs a
-network to build and frequently is not present; every path through here must say
-so and carry on.
-
-**The gate never accepts on its own numbers.** docs/MICROPYTHON.md §2 accepts on
-a cold run in a real VM, and the projection printed at the bottom of the report
-is an estimate from shape — labelled as one everywhere it appears.
-"""
+rather than ``ok``, and the number is never printed as a zero."""
 
 from __future__ import annotations
 
@@ -58,7 +41,6 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from . import engines
 from .build import MUSL_I686, MUSL_X86_64  # the triples, spelled once (invariant 9's habit)
 
-# --- the budget, docs/MICROPYTHON.md §2 --------------------------------------
 
 #: Each Rust variant's budget, in device blocks (`DEVICE_BLOCK` B each) — the
 #: unit cold cost is paid in — **keyed by the target triple the bytes were
@@ -86,18 +68,6 @@ VARIANT_BLOCK_BUDGET: dict[tuple[str, str], int] = {
     (engines.LYPNING, MUSL_X86_64): 9,
     (engines.LYPNING_L, MUSL_X86_64): 32,
 }
-
-MAX_BYTES = 700_000
-"""lypning-mp's stripped-static budget.
-
-It was 400 KB until the floor was measured and found to sit above it
-(docs/MICROPYTHON.md §2): an empty ``main`` costs 635,744 B under glibc-static
-on i386, and Berry — a complete, mature dynamic-language VM carrying neither
-``re`` nor ``json`` — compiles to 365,660 B. 400 KB was unreachable by anything
-that speaks Python. 700 KB is set against the measured 541,688 B MicroPython
-prototype with room for the frozen shims, and it is only a meaningful number on
-a musl build: glibc-static would spend 91% of it before the interpreter starts.
-"""
 
 MAX_OPENS = 3
 """Paths a ``-c 'pass'`` may touch. A static binary with a frozen stdlib opens
@@ -401,15 +371,7 @@ def shared_objects(binary: Path | str) -> List[str]:
 
 
 def is_static(binary: Path | str) -> Tuple[bool, str]:
-    """``(static, evidence)``.
-
-    ``file(1)`` is the primary because its answer is the same string
-    docs/MICROPYTHON.md §2 quotes, and printing that line is half of what makes
-    a failed gate diagnosable. Where ``file`` is absent the ELF is read
-    directly: no ``DT_NEEDED`` and no ``PT_INTERP`` is static, and a static-pie
-    correctly passes both tests. When neither tool is present the answer is
-    ``unknown`` rather than a guess, and the caller marks the row unmeasured.
-    """
+    """``(static, evidence)``."""
     p = Path(binary)
     if not p.is_file():
         return (False, "missing")
@@ -480,10 +442,6 @@ def _trace(binary: Path | str, program: str = PROBE) -> Dict[str, Any]:
         # missing measurement, not a violation, and it must stay visible.
         return dict(empty, note="%s: strace not available" % UNMEASURED)
     env = engines.child_env()  # LYPNING_CAPTURE=0: a traced probe must not log itself
-    # The caller's PYTHONPATH is a directory the baseline interpreter then opens
-    # and stats, and it belongs to whoever launched the gate rather than to the
-    # interpreter being measured. Running under `PYTHONPATH=src` is enough to
-    # move the CPython baseline off the 22 opens docs/MICROPYTHON.md §2 records.
     env.pop("PYTHONPATH", None)
     last = ""
     with tempfile.TemporaryDirectory(prefix="lypning-gate-") as d:
@@ -518,32 +476,12 @@ def file_opens(binary: Path | str, program: str = PROBE) -> Tuple[Optional[int],
 
 
 def _engine_of(p: Path) -> str:
-    """Which engine a binary is, from its name.
-
-    The suffixed forms are cross-target builds — `lypning build --target i686`
-    installs `lypning-i686` rather than overwriting the host's engine — and they
-    are still the engine they are named after. Missing that put the i686 Rust
-    core against lypning-mp's 700 KB budget and FAILed a build that was fine:
-    two different runtimes with two different jobs, and only the opens==0 rule
-    is shared between them.
-
-    The parsing itself is :func:`engines.parse_binary_name` — the one place the
-    ``<engine>[-<target>]`` shape is read, longest engine name first, which is
-    what makes `lypning-mp` (and a spectrum variant) win over plain `lypning`.
-    """
+    """Which engine a binary is, from its name."""
     return engines.parse_binary_name(p.name)[0]
 
 
 def _resolve(binary: Path | str | None) -> Tuple[Optional[Path], str]:
-    """The artifact to gate, and which engine it is.
-
-    With nothing named the subject is the Rust core — the tier every program
-    starts on. lypning-mp used to be the default because it was the tier whose
-    budget this file was written for; it left the chain on 2026-09-04 and is an
-    oracle now, so it is gated only when named. Its budget below is still its
-    own (:data:`MAX_BYTES`); a Rust variant answers to
-    :data:`VARIANT_BLOCK_BUDGET`.
-    """
+    """The artifact to gate, and which engine it is."""
     if binary is not None:
         p = Path(binary)
         return (p if p.is_file() else None, _engine_of(p))
@@ -554,24 +492,6 @@ def _resolve(binary: Path | str | None) -> Tuple[Optional[Path], str]:
 
 
 def _size_check(engine: str, size: int, target: Optional[str] = None) -> Check:
-    """Bytes against :data:`MAX_BYTES` — for lypning-mp and for an unnamed
-    binary, which is gated as a candidate for that tier.
-
-    A Rust variant is gated against its OWN budget in device blocks
-    (:data:`VARIANT_BLOCK_BUDGET`), never against this number, and the reason
-    is not leniency. They are different runtimes with
-    different jobs: lypning-mp is MicroPython carrying a frozen Python stdlib,
-    sized against the 541,688 B prototype, while lypning is a from-scratch
-    subset whose bytes are its own code and whose release profile is tuned
-    separately. The 2026-08-19 VM probes (docs/BENCH-LEDGER.md, the entry
-    dated 2026-09-05) measured the difference and docs/LYPNING.md §8 accepted
-    it — 1,280 KB against 768 KB on first touch, 8 device blocks against 3 —
-    as a real and known cost rather than a violation, because
-    lypning buys back multiples of it on the programs it accepts. Sharing a byte
-    budget between them would be inventing a number no document argues for. What
-    they do share is the constraint that actually predicts cold cost: opens and
-    shared objects at zero, enforced identically on both.
-    """
     if engine in {e for e, _ in VARIANT_BLOCK_BUDGET}:
         blocks = device_blocks(size)
         if target is None:
@@ -584,11 +504,10 @@ def _size_check(engine: str, size: int, target: Optional[str] = None) -> Check:
                          % (format(size, ","), blocks, DEVICE_BLOCK))
         budget = VARIANT_BLOCK_BUDGET[(engine, target)]
         return Check("size", blocks, budget, blocks <= budget, "blocks",
-                     "%s B = %d device blocks of %d; budget %d for %s "
-                     "(not lypning-mp's %s B)"
-                     % (format(size, ","), blocks, DEVICE_BLOCK, budget, target,
-                        format(MAX_BYTES, ",")))
-    return Check("size", size, MAX_BYTES, size <= MAX_BYTES, "B")
+                     "%s B = %d device blocks of %d; budget %d for %s"
+                     % (format(size, ","), blocks, DEVICE_BLOCK, budget, target))
+    return Check("size", size, "not gated", True, "B",
+                 "no measured budget for this engine; size is reported, not gated")
 
 
 def gate(binary: Path | str | None = None, *, compare: bool = False) -> GateReport:
@@ -597,8 +516,8 @@ def gate(binary: Path | str | None = None, *, compare: bool = False) -> GateRepo
     baseline = compare_baseline() if compare else None
 
     if target is None:
-        want = engine or engines.MICROPYTHON
-        build = "lypning build --micropython" if want == engines.MICROPYTHON else "lypning build --rust"
+        want = engine or engines.LYPNING
+        build = "lypning build --rust"
         if want in engines.SPECTRUM and want != engines.LYPNING:
             build += " --variant " + want
         return GateReport("", [Check("built", "no", "yes", False, "",
@@ -711,11 +630,7 @@ def project_cold_ms(size: int, opens: Optional[int], baseline: Dict[str, Any]) -
     it, so scale on both against the one real measurement this project has —
     CPython at 8573 ms — and take the larger, which is the pessimistic read. The
     byte term is in device blocks rather than bytes because docs/LYPNING.md §8
-    measured the fetch as a step function in them.
-
-    It exists so a build change can be judged in seconds. docs/MICROPYTHON.md §2
-    accepts on a cold run in a real VM and never on this.
-    """
+    measured the fetch as a step function in them."""
     if opens is None or not baseline.get("measured") or not baseline.get("exists"):
         return None
     base_blocks = baseline.get("device_blocks") or 0
@@ -802,7 +717,7 @@ def render(report: GateReport) -> str:
                 out.append("  ESTIMATED cold cost in the VM: ~%d ms against CPython's"
                            " measured %d ms." % (ms, base["cold_ms"]))
                 out.append("  A projection from shape, not a measurement."
-                           " docs/MICROPYTHON.md §2 accepts")
+                           " docs/SANDBOX-PERFORMANCE.md accepts")
                 out.append("  on a cold run in a real VM, never on this.")
 
     # The verdict carries the unmeasured count with it. An unmeasurable check is

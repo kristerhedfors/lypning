@@ -35,8 +35,8 @@ Four layers, cheapest first, and each one catches something the next cannot:
 
 The engine-dependent layer — labels, mismatches, row stability — is SKIPPED, not
 failed, when the binaries are absent, the way every other path in this tree
-degrades when ``lypning-mp`` is not built (CLAUDE.md, "The oracle is absent by
-default"). A contributor without a Rust toolchain still gets layers 1-4.
+degrades when no native engine is built. A contributor without a Rust toolchain
+still gets layers 1-4.
 
 Two normalizations are applied to the reference side, and only two, both for
 things the subset **cannot express** rather than things it got wrong: an

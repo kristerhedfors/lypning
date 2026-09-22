@@ -35,18 +35,18 @@ def test_min_of_n_keeps_the_outcome_of_the_sample_it_kept():
     assert (kept.ms, kept.outcome, kept.returncode) == (2.0, REFUSED, 90)
 
 
-def test_an_unbuilt_arm_is_absent_rather_than_zero(no_micropython):
+def test_an_unbuilt_arm_is_absent_rather_than_zero(no_large_engine):
     # A missing arm is a hole in the table; a zero in it would be a lie that
     # reads as a win.
-    assert bench.resolve_arms(["lypning-mp"]) == []
+    assert bench.resolve_arms(["lypning-l"]) == []
 
 
-def test_nothing_is_shared_when_there_are_no_arms(no_micropython):
+def test_nothing_is_shared_when_there_are_no_arms(no_large_engine):
     # With no arms there is nothing shared, which is different from everything
     # shared — and a shared subset of "all of it" would print a comparison
     # between columns that do not exist.
     report = bench.corpus_time([corpus.Entry(id="py-a", program="print(1)")],
-                               arms=["lypning-mp"])
+                               arms=["lypning-l"])
     assert report.shared_ids == []
     assert report.corpus_size == 1
     assert report.arms == {}
@@ -107,11 +107,11 @@ def test_a_programs_own_failure_is_a_run_not_an_error(lypning_bin):
 # compared over the same programs — the arithmetic, not the clock.
 
 
-def test_an_unbuilt_binary_is_none_rather_than_an_empty_table(no_micropython):
+def test_an_unbuilt_binary_is_none_rather_than_an_empty_table(no_large_engine):
     # "Not built" is a status line everywhere in this package. An empty table
     # would read as a binary that timed nothing, which is a different fact.
     entries = [corpus.Entry(id="py-a", program="print(1)")]
-    assert bench.corpus_time_one("lypning-mp", entries=entries) is None
+    assert bench.corpus_time_one("lypning-l", entries=entries) is None
 
 
 def test_a_path_is_an_arm_and_a_missing_path_is_not(tmp_path, lypning_bin):
@@ -126,7 +126,7 @@ def test_a_path_is_an_arm_and_a_missing_path_is_not(tmp_path, lypning_bin):
 def test_an_explicit_arm_passes_through_resolution(tmp_path):
     # How a binary that is deliberately NOT an engine gets into a table without
     # becoming something engines.find could route a program to.
-    arm = bench.Arm("stock", tmp_path / "micropython-stock")
+    arm = bench.Arm("stock", tmp_path / "reference-runtime")
     assert bench.resolve_arms([arm]) == [arm]
 
 
@@ -236,62 +236,3 @@ def test_the_corpus_size_loaded_survives_the_skips(lypning_bin):
     timing = bench.corpus_time_one("lypning", entries=entries, repeat=1)
     assert timing.loaded == 2 and timing.timed == 1 and len(timing.skipped) == 1
     assert "2 programs loaded, 1 timed" in bench.render_corpus_time(timing)
-
-
-# --- lypning-mp against the benchmark control --------------------------------
-
-
-def test_the_comparison_reports_what_is_missing_rather_than_raising(no_micropython, monkeypatch):
-    # The MicroPython tier is absent by default and the control more so, so this
-    # is the ordinary answer rather than a failure — and each half names the
-    # command that fixes it.
-    from lypning import build
-
-    monkeypatch.setattr(build, "stock_binary", lambda: None)
-    report = bench.micropython()
-    assert report.bench is None and not report.ok
-    assert any("--micropython" in m for m in report.missing)
-    assert any("--stock" in m for m in report.missing)
-    text = bench.render_micropython(report)
-    assert "cannot be made" in text
-    with pytest.raises(ValueError):
-        bench.ledger_entry(report)
-
-
-def test_the_ledger_entry_goes_directly_below_the_marker(tmp_path):
-    # The ledger is append-only and newest-first: order is its index.
-    led = tmp_path / "LEDGER.md"
-    led.write_text("# head\n\n%s\n\n## 2026-08-15 — older\n\nbody\n" % bench.LEDGER_MARKER,
-                   encoding="utf-8")
-    bench.record_ledger(led, "## 2026-08-20 — newer\n\nnew body")
-    text = led.read_text(encoding="utf-8")
-    assert text.index("## 2026-08-20") < text.index("## 2026-08-15")
-    assert bench.LEDGER_MARKER in text
-    assert "\n\n## 2026-08-15" in text  # the older entry keeps its blank line
-
-
-def test_a_ledger_without_a_marker_is_refused(tmp_path):
-    # An entry appended to the end of a newest-first file reads as its oldest.
-    led = tmp_path / "LEDGER.md"
-    led.write_text("# no marker here\n", encoding="utf-8")
-    with pytest.raises(ValueError):
-        bench.record_ledger(led, "## entry")
-    assert led.read_text(encoding="utf-8") == "# no marker here\n"
-
-
-def test_the_ledger_entry_names_both_binaries_and_the_pin(micropython_bin, monkeypatch):
-    from lypning import build
-
-    stock = build.stock_binary()
-    if stock is None:
-        pytest.skip("the benchmark control is not built (`lypning build --stock`)")
-    report = bench.micropython(limit=3, startup_repeat=1)
-    entry = bench.ledger_entry(report)
-    assert "lypning-mp" in entry and "stock" in entry
-    assert build.micropython_pin()["tag"] in entry
-    for shape in report.shapes:
-        assert shape.sha256[:12] in entry
-    # Both binaries, by digest, and they are not the same binary: a copy of
-    # lypning-mp sitting at the control's path would make every ratio read 1.00.
-    assert report.shapes[0].sha256 != report.shapes[1].sha256
-    assert "3 corpus programs loaded" in entry

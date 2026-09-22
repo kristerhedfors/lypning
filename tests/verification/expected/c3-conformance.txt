@@ -30,5 +30,3 @@ routing safety over 2504 programs (2504 have an engine that matches)
 build order — 107 distinct blockers over 2504 programs
 (a program is blocked by the FIRST thing it hits, so counts shift as features land)
 ranked by ->cpy: the refusals that reach CPython, which is what
-note: lypning-mp is not built — that arm was not measured
-0

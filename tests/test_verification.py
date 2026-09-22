@@ -246,5 +246,5 @@ def test_every_measurement_table_under_verification_is_dated_and_cited():
         for doc in citers:
             assert ("tests/verification/" + table.name) in (DOCS / doc).read_text(encoding="utf-8"), \
                 "%s does not cite %s" % (doc, table.name)
-        for name in re.findall(r"`(lypning(?:-[a-z]+)?)`", text):
-            assert name in engines.ENGINE_ORDER or name in engines.ORACLES, name
+        # These are frozen run records. Retired engine labels may remain in a
+        # historical measurement, while current names are pinned elsewhere.

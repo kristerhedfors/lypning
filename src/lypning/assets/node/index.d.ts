@@ -116,7 +116,7 @@ export function run(source: string, opts?: RunOptions): RunResult;
 
 /**
  * The dispatcher's own predicate, for a harness that chains OTHER interpreters
- * — `lypning-mp`, or a sandboxed `python3` in a child process. True for exit
+ * — a sandboxed `python3` in a child process. True for exit
  * 90, for a MemoryError, and for a traceback reported with exit 0.
  */
 export function fallOnward(exitCode: number, stderr?: string | Uint8Array): boolean;

@@ -55,14 +55,10 @@ def test_exit_90_without_the_contract_line_is_a_mismatch():
 
 
 def test_the_mixture_arm_may_relay_any_tier_s_refusal():
-    # Any tier the chain can actually reach. lypning-mp is an ORACLE now — the
-    # mixture never routes there — so a `lypning-mp:` line arriving from the
-    # mixture is not a relayed refusal, it is a program that printed something
-    # refusal-shaped, and scoring it as coverage would hide a routing bug.
     v = _classify(_res(90, "", "lypning-l: unsupported: syntax: f-string\n",
                        engine=conformance.MIXTURE), engine=conformance.MIXTURE)
     assert v.verdict == UNSUPPORTED
-    v = _classify(_res(90, "", "lypning-mp: unsupported: syntax: f-string\n",
+    v = _classify(_res(90, "", "someprogram: unsupported: syntax: f-string\n",
                        engine=conformance.MIXTURE), engine=conformance.MIXTURE)
     assert v.verdict == MISMATCH and v.kind == "contract"
 
@@ -356,20 +352,13 @@ def test_stdout_is_not_compared_for_a_run_specific_program():
     assert v.detail == "stdout uncompared"
 
 
-def test_a_seeded_random_stream_is_compared_except_on_micropython():
-    # Tier 1 runs CPython's Mersenne Twister, so a wrong number there is a
-    # MISMATCH like any other. MicroPython's generator is a different
-    # algorithm and the router never sends a seeded program to it, so that arm
-    # keeps only its exit code compared.
+def test_a_seeded_random_stream_is_compared():
     entry = corpus.Entry(id="py-seeded", program="import random\nrandom.seed(7)\nprint(random.random())")
     assert conformance.is_seeded_stream(entry)
     assert not conformance.is_nondeterministic(entry)
     ref = _res(stdout="0.32383276483316237\n", engine=eng.CPYTHON)
     assert _classify(_res(stdout="0.5\n"), ref=ref, entry=entry).verdict == MISMATCH
     assert _classify(_res(stdout="0.32383276483316237\n"), ref=ref, entry=entry).verdict == MATCH
-    mp = _classify(_res(stdout="0.5\n", engine=eng.MICROPYTHON), ref=ref,
-                   engine=eng.MICROPYTHON, entry=entry)
-    assert mp.verdict == MATCH and mp.detail == "stdout uncompared"
 
 
 @pytest.mark.parametrize("program", [
@@ -565,10 +554,10 @@ def test_a_clean_tree_has_no_dirty_paths(git_repo):
     assert conformance.dirty_paths(git_repo) == {}
 
 
-def test_an_unbuilt_engine_is_an_absent_arm_not_a_failed_one(no_micropython):
+def test_an_unbuilt_engine_is_an_absent_arm_not_a_failed_one(no_large_engine):
     # "Not built" and "wrong" are different facts and only one of them is a bug.
-    report = conformance.run([ENTRY], engines=[eng.MICROPYTHON], timeout=30)
-    assert report.unbuilt == [eng.MICROPYTHON]
+    report = conformance.run([ENTRY], engines=[eng.LYPNING_L], timeout=30)
+    assert report.unbuilt == [eng.LYPNING_L]
     assert report.engines == {}
     assert report.mismatches == 0
     assert report.ok
@@ -701,9 +690,9 @@ def test_plan_ranks_by_cpython_reach_not_by_block_count() -> None:
     object.__setattr__(report, "engines", {conf.LYPNING: arm})
     object.__setattr__(report, "total", 4)
     object.__setattr__(report, "routes", {
-        "a": eng.Route(eng.MICROPYTHON, "module", "cheap"),
-        "b": eng.Route(eng.MICROPYTHON, "module", "cheap"),
-        "c": eng.Route(eng.MICROPYTHON, "module", "cheap"),
+        "a": eng.Route(eng.LYPNING_L, "module", "cheap"),
+        "b": eng.Route(eng.LYPNING_L, "module", "cheap"),
+        "c": eng.Route(eng.LYPNING_L, "module", "cheap"),
         "d": eng.Route(eng.CPYTHON, "module", "dear"),
     })
 

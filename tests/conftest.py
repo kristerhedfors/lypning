@@ -5,15 +5,7 @@ dir, the capture log, the project — so one autouse fixture that points all thr
 at ``tmp_path`` is enough to make the whole suite hermetic. Without it a
 ``lypning install`` test writes into the developer's ``~/.claude/settings.json``
 and a conformance test's git net restores files in the checkout it is running
-from, which is a test suite that can lose work.
-
-The second job here is the engine tiers. ``lypning`` may or may not be built and
-``lypning-mp`` almost never is (it needs a network), so anything that spawns one
-takes the matching fixture and is skipped rather than failed when it is absent.
-The check is made at call time, not at import time: the autouse fixture moves
-``$LYPNING_HOME``, so where the binary resolves from is not known until the test
-is running.
-"""
+from, which is a test suite that can lose work."""
 
 from __future__ import annotations
 
@@ -31,7 +23,7 @@ from lypning import engines  # noqa: E402  (after the path insert, on purpose)
 
 #: Cleared rather than preserved: an engine override in the developer's shell
 #: would silently change which binary every test measured.
-_ENGINE_OVERRIDES = ("LYPNING_BIN", "LYPNING_MP_BIN", "LYPNING_CPYTHON", "LYPNING_LIB")
+_ENGINE_OVERRIDES = ("LYPNING_BIN", "LYPNING_CPYTHON", "LYPNING_LIB")
 
 #: Where the C ABI library is, resolved AT IMPORT — before the autouse fixture
 #: moves ``$LYPNING_HOME`` to a temp dir and hides ``~/.lypning/lib`` from
@@ -97,13 +89,10 @@ def lypning_bin():
 
 @pytest.fixture
 def lypning_lib():
-    """The C ABI library, or skip. Optional exactly like the MicroPython tier.
-
-    Loaded, not merely located: a library built before a symbol was added is
+    """Loaded, not merely located: a library built before a symbol was added is
     found by :func:`lypning.embed.find_library` and then fails on the first
     call, and a suite that reported that as thirty failures instead of one skip
-    would be reporting the developer's stale build as a broken runtime.
-    """
+    would be reporting the developer's stale build as a broken runtime."""
     from lypning import embed
     path = _INSTALLED_LIBRARY
     if path is None:
@@ -114,13 +103,6 @@ def lypning_lib():
         pytest.skip("the C ABI at %s is not usable: %s" % (path, e))
 
 
-@pytest.fixture
-def micropython_bin():
-    """The MicroPython tier, or skip. Absent in any container without a network."""
-    b = engines.find_micropython()
-    if b is None:
-        pytest.skip("lypning-mp is not built")
-    return b
 
 
 requires_git = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
@@ -150,23 +132,11 @@ def git_repo(tmp_path):
     return root
 
 
-@pytest.fixture
-def no_micropython(monkeypatch):
-    """The usual container: ``lypning-mp`` is not built.
 
-    Simulated rather than detected. Building that tier needs a network, so it is
-    absent almost everywhere — but not everywhere, and a test of the degradation
-    path that silently skips itself on the one machine where the binary happens
-    to exist is a test of nothing on that machine.
-    """
-    # The oracle is not in `available()` any more — it is not a tier — so the
-    # simulation is of `find` answering None for it, which is what every reader
-    # (status's oracle row, the conformance arm) actually asks.
-    available = engines.available
-    monkeypatch.setattr(engines, "find_micropython", lambda: None)
-    monkeypatch.setattr(engines, "oracles", lambda: {engines.MICROPYTHON: None})
-    monkeypatch.setattr(
-        engines, "available",
-        lambda: dict(available()),
-    )
-    return None
+
+@pytest.fixture
+def no_large_engine(monkeypatch):
+    """An optional Rust variant is absent, regardless of local build state."""
+    find = engines.find
+    monkeypatch.setattr(engines, "find",
+                        lambda name: None if name == engines.LYPNING_L else find(name))

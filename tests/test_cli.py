@@ -101,50 +101,16 @@ def test_status_never_reports_the_file_size_as_the_code_size(capsys, monkeypatch
             assert "code unmeasured" in line
 
 
-def test_status_reports_an_unbuilt_engine_as_not_built(capsys, no_micropython):
+def test_status_reports_an_unbuilt_engine_as_not_built(capsys, no_large_engine):
     assert cli.main(["status", "--json"]) == 0
     obj = json.loads(capsys.readouterr().out)
-    # lypning-mp is an ORACLE now — measured, never routed to — so it is
-    # reported in its own section rather than among the tiers.
-    assert "lypning-mp" not in obj["engines"]
-    assert obj["oracles"]["lypning-mp"] == {"path": None, "built": False,
-                                            "bytes": 0, "blocks": 0,
-                                            # Nothing was built, so there is no
-                                            # section to have failed to read.
-                                            "code_bytes": None, "code_note": ""}
-    capsys.readouterr()
+    assert obj["engines"]["lypning-l"]["built"] is False
+    assert obj["engines"]["lypning-l"]["path"] is None
+    assert "oracles" not in obj
     assert cli.main(["status"]) == 0
     out = capsys.readouterr().out
-    assert "oracles" in out and "lypning-mp: not built" in out
+    assert "lypning-l:" in out and "not built" in out
 
-
-def test_the_unbuilt_oracle_line_does_not_promise_a_catalogue_a_wheel_lacks(
-        capsys, no_micropython, monkeypatch, tmp_path):
-    """A hole reported as a capability is the inverse of the rule for holes.
-
-    `.github/known-mismatches.json` is deliberately not a package asset, so a
-    wheel ships no catalogue. Saying "`lypning oracle` reads the recorded
-    divergences either way" there sends the reader to a command that answers
-    "no catalogue" — which is the one confusion this line exists to prevent.
-    """
-    from lypning import oracle
-
-    monkeypatch.setattr(oracle, "ledger_path", lambda root=None: tmp_path / "gone.json")
-    assert cli.main(["status"]) == 0
-    out = capsys.readouterr().out
-    assert "no catalogue in this install" in out
-    assert "either way" not in out
-
-
-def test_the_unbuilt_oracle_line_promises_the_catalogue_where_it_shipped(
-        capsys, no_micropython, monkeypatch, tmp_path):
-    from lypning import oracle
-
-    have = tmp_path / "known-mismatches.json"
-    have.write_text("[]", encoding="utf-8")
-    monkeypatch.setattr(oracle, "ledger_path", lambda root=None: have)
-    assert cli.main(["status"]) == 0
-    assert "reads the recorded divergences either way" in capsys.readouterr().out
 
 
 def test_corpus_stats_render(capsys):
@@ -331,30 +297,15 @@ def test_a_record_target_that_is_a_directory_says_so(tmp_path, capsys, monkeypat
     assert "is a directory" in err and "Traceback" not in err
 
 
-def test_corpus_time_on_an_unbuilt_engine_exits_2_without_a_traceback(no_micropython, capsys):
+def test_corpus_time_on_an_unbuilt_engine_exits_2_without_a_traceback(no_large_engine, capsys):
     # Exit 2: nothing ran and the fix is a command, which is what 2 is for here.
-    assert cli.main(["corpus-time", "--engine", "lypning-mp", "--limit", "1"]) == 2
+    assert cli.main(["corpus-time", "--engine", "lypning-l", "--limit", "1"]) == 2
     err = capsys.readouterr().err
     assert "not built" in err and "Traceback" not in err
 
 
-def test_bench_micropython_exits_2_when_the_control_is_absent(no_micropython, monkeypatch, capsys):
-    from lypning import build
-
-    monkeypatch.setattr(build, "stock_binary", lambda: None)
-    assert cli.main(["bench", "--micropython"]) == 2
-    err = capsys.readouterr().err
-    assert "lypning build --stock" in err and "Traceback" not in err
 
 
-def test_build_stock_dry_run_builds_nothing_and_says_what_it_would_run(capsys):
-    assert cli.main(["build", "--stock", "--dry-run", "--json"]) == 0
-    obj = json.loads(capsys.readouterr().out)
-    assert obj["dry_run"] is True
-    # Only the control: --stock is not a tier, and asking for it must not
-    # silently rebuild the two engines.
-    assert [r["engine"] for r in obj["results"]] == ["micropython-stock"]
-    assert obj["installed"] == []
 
 
 # --- the dispatcher has to be able to replay stdin ----------------------------

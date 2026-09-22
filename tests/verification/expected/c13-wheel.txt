@@ -10,7 +10,6 @@ library
 rust
 lypning: lib: the C ABI library is not built — run `lypning build --lib` (or point $LYPNING_LIB at a built library)
 2
-+ write   /private/tmp/lypning-wheel-proj/.claude/skills/lypning/MICROPYTHON.md  — new
 + write   /private/tmp/lypning-wheel-proj/.claude/skills/lypning/SKILL.md  — new
 + write   /private/tmp/lypning-wheel-proj/.claude/hooks/lypning-capture.sh  — new
 + write   /private/tmp/lypning-wheel-proj/.claude/hooks/lypning-harvest.sh  — new

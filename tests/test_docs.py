@@ -39,14 +39,10 @@ README = ROOT / "README.md"
 DOCS = sorted((ROOT / "docs").glob("*.md"))
 SKILL_DIR = ROOT / "src" / "lypning" / "assets" / "claude" / "skills" / "lypning"
 
-#: Every markdown file this project owns and is therefore accountable for.
-#: ``assets/micropython/README.md`` is included: it ships in the wheel and is
-#: read by whoever rebuilds that tier.
 OWNED = (
     [README, ROOT / "CLAUDE.md", ROOT / "CHANGELOG.md"]
     + DOCS
     + sorted(SKILL_DIR.glob("*.md"))
-    + [ROOT / "src" / "lypning" / "assets" / "micropython" / "README.md"]
 )
 
 
@@ -284,9 +280,9 @@ def test_the_upstream_names_appear_only_where_the_credit_says(doc):
 
 #: Words that place an engine by position in a chain the code does not have.
 #: Engines are spelled as engine strings — the members of
-#: ``engines.ENGINE_ORDER`` — and the oracle is "measured, never routed to".
+#: ``engines.ENGINE_ORDER``.
 POSITIONAL_TIER_WORDS = re.compile(
-    r"\btier [12]\b|\btier-[12]\b|\bmiddle tier\b|\bsecond tier\b|\bMicroPython tier\b|"
+    r"\btier [12]\b|\btier-[12]\b|\bmiddle tier\b|\bsecond tier\b|"
     r"\bthree interpreters\b|\bthree tiers\b|\bboth tiers\b|\btwo subset tiers\b", re.I)
 
 
@@ -295,9 +291,6 @@ POSITIONAL_TIER_WORDS = re.compile(
 @pytest.mark.parametrize("doc", [d for d in OWNED if d.name not in LEDGERS],
                          ids=lambda p: str(p.relative_to(ROOT)))
 def test_no_document_places_an_engine_by_tier_number(doc):
-    """`tier 1`, `middle tier`, `MicroPython tier`, `three interpreters`: each
-    describes the chain of a dated CHANGELOG entry, not the one in
-    ``engines.ENGINE_ORDER``. The ledgers keep the words; nothing else may."""
     hits = ["%d: %s" % (n, line.strip())
             for n, line in enumerate(doc.read_text(encoding="utf-8").splitlines(), 1)
             if POSITIONAL_TIER_WORDS.search(line)]
