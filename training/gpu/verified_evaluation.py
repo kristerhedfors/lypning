@@ -101,7 +101,8 @@ def trim(tail, eos, pad):
 
 def evaluate(model, tokenizer, cases, verifier, policy, output, step, torch,
              *, seed=1111, draws=4, return_records=False, witness_path=None,
-             sequences_per_call=SEQUENCES_PER_CALL, score_workers=SCORE_WORKERS):
+             sequences_per_call=SEQUENCES_PER_CALL, score_workers=SCORE_WORKERS,
+             min_family_cases=1):
     from transformers import GenerationConfig
 
     was_training = model.training
@@ -185,4 +186,5 @@ def evaluate(model, tokenizer, cases, verifier, policy, output, step, torch,
         if checkpointing:
             model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
         model.train(was_training)
-    return (summarize(records), records) if return_records else summarize(records)
+    metrics = summarize(records, min_family_cases=min_family_cases)
+    return (metrics, records) if return_records else metrics

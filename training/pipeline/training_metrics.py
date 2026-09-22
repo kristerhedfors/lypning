@@ -10,7 +10,22 @@ import random
 from .training_types import TrainingError
 
 
-def summarize(records):
+BENCHMARK_MIN_FAMILY_CASES = 5
+
+
+def family_eligibility(records, minimum):
+    """Count distinct cases before filtering; repeated draws never buy admission."""
+    if type(minimum) is not int or minimum < 1:
+        raise TrainingError("minimum family cases must be a positive integer")
+    families = {}
+    for i, row in enumerate(records):
+        if minimum > 1 and "case_id" not in row:
+            raise TrainingError("family-size admission needs case IDs")
+        families.setdefault(row["family"], set()).add(row.get("case_id", str(i)))
+    return {f for f, cases in families.items() if len(cases) >= minimum}
+
+
+def summarize(records, *, min_family_cases=1):
     if not records:
         raise ValueError("cannot score an empty evaluation")
     def aggregate(rows):
@@ -19,6 +34,8 @@ def summarize(records):
             return sum(sum(r[key] for r in rows if r["family"] == f) /
                        sum(r["family"] == f for r in rows) for f in families) / len(families)
         return {"correct": macro("correct"), "correct_native": macro("native"),
+                "case_weighted_correct": sum(r["correct"] for r in rows) / len(rows),
+                "case_weighted_native": sum(r["native"] for r in rows) / len(rows),
                 "cases": len({r.get("case_id", str(i)) for i, r in enumerate(rows)}),
                 "draws": len(rows), "families": len(families),
                 "truncation_rate": sum(r.get("truncated", False) for r in rows) / len(rows),
@@ -31,7 +48,15 @@ def summarize(records):
         keys = [(r["case_id"], r.get("draw", 0)) for r in records]
         if len(keys) != len(set(keys)):
             raise TrainingError("duplicate evaluation case/draw")
-    return dict(aggregate(records),
+    eligible = family_eligibility(records, min_family_cases)
+    primary = [r for r in records if r["family"] in eligible]
+    if not primary:
+        raise TrainingError("no families meet the primary macro minimum case count")
+    return dict(aggregate(primary),
+        macro_rule={"min_family_cases": min_family_cases, "scope": "all-population families",
+                    "excluded_cases": len({r["case_id"] for r in records if r["family"] not in eligible}),
+                    "excluded_families": len({r["family"] for r in records} - eligible),
+                    "population_slices": "unfiltered descriptive family macro and case-weighted rates"},
         by_family={f: aggregate([r for r in records if r["family"] == f])
                    for f in sorted({r["family"] for r in records})},
         by_population={p: aggregate([r for r in records if r["population"] == p])
@@ -69,7 +94,7 @@ def split_components(links):
     return {name: key[find(("f", name))] for names in members.values() for name in names}
 
 
-def paired_comparison(base, candidate, *, seed=1111, resamples=2000):
+def paired_comparison(base, candidate, *, seed=1111, resamples=2000, min_family_cases=1):
     """Paired split-component bootstrap; linked families are not independent.
     A component is every family and split group reachable from one another
     (`split_components`); components are resampled, the statistic is the macro
@@ -85,7 +110,11 @@ def paired_comparison(base, candidate, *, seed=1111, resamples=2000):
             raise TrainingError("paired evaluation metadata/seed mismatch")
     if resamples < 100:
         raise TrainingError("need at least 100 bootstrap resamples")
-    families = sorted({r["family"] for r in a.values()})
+    families = sorted(family_eligibility(list(a.values()), min_family_cases))
+    if not families:
+        raise TrainingError("no families meet the primary macro minimum case count")
+    # Build links BEFORE exclusion: an ineligible family can still connect
+    # two eligible families through their source groups.
     component = split_components({(r["family"], r.get("split_group", r["family"])) for r in a.values()})
     clusters = {}
     for f in families:
@@ -104,6 +133,7 @@ def paired_comparison(base, candidate, *, seed=1111, resamples=2000):
         results[metric] = {"delta": sum(delta.values()) / len(delta),
             "ci95": [samples[int(.025 * resamples)], samples[min(resamples - 1, int(.975 * resamples))]]}
     return {"families": len(families), "independent_clusters": len(clusters), "resamples": resamples, "seed": seed,
+            "min_family_cases": min_family_cases,
             "method": "paired source/family-component percentile bootstrap; exploratory with few clusters",
             "metrics": results}
 

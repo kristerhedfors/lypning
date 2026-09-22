@@ -1,0 +1,98 @@
+{
+  "assumption": "hypothetical Bernoulli(.5) per case; k=16 perfectly correlated within case",
+  "minimum": 5,
+  "profiles": {
+    "dev/all": {
+      "cases": 306,
+      "excluded_cases": 0,
+      "excluded_families": 0,
+      "families": 7,
+      "max_single_case_weight": {
+        "case_weighted": 0.0032679738562091504,
+        "family_macro": 0.003968253968253968
+      },
+      "simulated_sd_pp": {
+        "case_weighted": 2.840035565842538,
+        "family_macro": 2.8423821642748632,
+        "floor_macro": 2.8423821642748632
+      }
+    },
+    "dev/coverage": {
+      "cases": 230,
+      "excluded_cases": 1,
+      "excluded_families": 1,
+      "families": 7,
+      "max_single_case_weight": {
+        "case_weighted": 0.004347826086956522,
+        "family_macro": 0.14285714285714285
+      },
+      "simulated_sd_pp": {
+        "case_weighted": 3.3093552947543596,
+        "family_macro": 7.684151862415849,
+        "floor_macro": 3.6830838721097643
+      }
+    },
+    "dev/fallback-control": {
+      "cases": 76,
+      "excluded_cases": 0,
+      "excluded_families": 0,
+      "families": 2,
+      "max_single_case_weight": {
+        "case_weighted": 0.013157894736842105,
+        "family_macro": 0.015625
+      },
+      "simulated_sd_pp": {
+        "case_weighted": 5.661724377116717,
+        "family_macro": 5.757477771028659,
+        "floor_macro": 5.757477771028659
+      }
+    },
+    "eval2/all": {
+      "cases": 803,
+      "excluded_cases": 0,
+      "excluded_families": 0,
+      "families": 19,
+      "max_single_case_weight": {
+        "case_weighted": 0.0012453300124533001,
+        "family_macro": 0.003289473684210526
+      },
+      "simulated_sd_pp": {
+        "case_weighted": 1.7057931699803102,
+        "family_macro": 1.7787444607407468,
+        "floor_macro": 1.7787444607407468
+      }
+    },
+    "eval2/coverage": {
+      "cases": 690,
+      "excluded_cases": 0,
+      "excluded_families": 0,
+      "families": 19,
+      "max_single_case_weight": {
+        "case_weighted": 0.0014492753623188406,
+        "family_macro": 0.008771929824561403
+      },
+      "simulated_sd_pp": {
+        "case_weighted": 1.8536444005086496,
+        "family_macro": 2.28820624890721,
+        "floor_macro": 2.28820624890721
+      }
+    },
+    "eval2/fallback-control": {
+      "cases": 113,
+      "excluded_cases": 3,
+      "excluded_families": 2,
+      "families": 5,
+      "max_single_case_weight": {
+        "case_weighted": 0.008849557522123894,
+        "family_macro": 0.2
+      },
+      "simulated_sd_pp": {
+        "case_weighted": 4.6591675474381296,
+        "family_macro": 12.84054249348952,
+        "floor_macro": 4.744726920602401
+      }
+    }
+  },
+  "seed": 1111,
+  "trials": 2000
+}

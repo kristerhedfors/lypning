@@ -99,6 +99,45 @@ supported-import retention at least 0.80× base on tasks whose reference imports
 a module the engine serves, mean completion tokens not more than 20% longer.
 A failed gate **voids** the result; it does not discount it.
 
+### Amendment, 2026-09-22 — primary family-size floor and descriptive slices
+
+Before the next confirmatory k = 16 read, a family enters the primary macro
+only with **at least five distinct cases across both populations**. Repeated
+draws do not count as cases. The same eligible families enter correctness
+(gate A), native rate and the paired bootstrap. Source/family components are
+built before exclusions, so an excluded family cannot sever a dependency.
+An empty eligible set is an error, never a zero. Excluded counts and every
+family's original metrics remain in the report; the bank itself is unchanged.
+Standalone benchmark manifests record `metric_policy.min_family_cases = 5`;
+comparisons refuse mixed policies. Historical manifests retain their old
+one-case minimum; pilot/dev selection retains its existing all-family rule.
+
+**The floor does not apply separately inside population or capability slices.**
+These remain unfiltered descriptive family macros, with case-weighted correctness
+and native rates beside them. Equal draw counts per case are required, so these
+pooled rates give each case equal weight. A tiny control slice is therefore
+visible, never dropped from retention reporting. Neither slice statistic replaces
+the primary metric or changes the existing development retention gate.
+
+The [size-only stress simulation](reports/2026-09-22-macro-sensitivity.json)
+uses the saved bundle histograms from
+[Step 0](reports/2026-09-21-codex-step0-read.md), measured on 2026-09-21,
+GH run `35575454075`. Reproduce with
+`PYTHONPATH=training python3 -m pipeline.macro_sensitivity training/reports/2026-09-21-codex-step0-aggregates.json`.
+On 2026-09-22, seed 1111, 2,000 trials: no primary family is excluded (803
+cases / 19 families), and the primary macro is identical in every trial.
+Applying the floor inside control slices instead would remove three cases
+in two slices. We retain them: the singleton has 20pp maximum influence on
+the slice family macro but only 0.885pp on its case-weighted companion.
+
+This is a hypothetical stress test, **not observed model quality or power**:
+each independent case is Bernoulli(0.5), with all 16 draws within it perfectly
+correlated. Simulated SD is 12.84pp for the control slice family macro and
+4.66pp for its case-weighted companion; dev coverage is 7.68pp versus 3.31pp.
+Real source-group dependence can be stronger: the production comparison keeps
+the full source/family-component bootstrap rather than adopting this simulation's
+independent-case assumption. No candidate outcomes chose the floor.
+
 ## 5. Decoding contract
 
 Every eval-2 draw uses `pipeline.training_contract.decoding` verbatim:
