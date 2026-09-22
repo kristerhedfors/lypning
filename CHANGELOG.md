@@ -15,7 +15,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 ## Unreleased
 
 **2026-09-23** — Capture at all times with model attribution; a capture-tier
-export; the sharded arm-A target rung (#TBD)
+export; the sharded arm-A target rung ([#113](https://github.com/kristerhedfors/lypning/pull/113))
 
 - User-scope install registers only the Bash capture hook, reports when it
   cannot reach lypning, and a Stop hook never exports into a repository that
