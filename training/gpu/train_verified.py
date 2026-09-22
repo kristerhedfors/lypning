@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pipeline.jsonio import append_jsonl, sha256_of, write_json
-from pipeline.training_metrics import CheckpointGate
+from pipeline.training_metrics import BENCHMARK_MIN_FAMILY_CASES, CheckpointGate
 from pipeline.training import (ISOLATED_KINDS, TrainingError, Verifier,
     chat_prompt_token_ids, execution_runner, load_bundle, messages)
 
@@ -227,6 +227,11 @@ def schedule(args):
             "learning_rate": args.lr or (2e-5 if args.stage == "sft" else 1e-6)}
 
 
+def metric_policy(bundle):
+    return {"min_family_cases": BENCHMARK_MIN_FAMILY_CASES
+            if bundle.get("purpose") == "benchmark" else 1}
+
+
 def smoke_config(config, vocab_size, shrink):
     """Shrink layers, NOT the token space used by real prompts/completions.
 
@@ -375,6 +380,7 @@ def run(args, bundle, adapter_info):
                     "eos_token_id"):
             if probe_manifest.get(key) != manifest[key]:
                 raise TrainingError("probe runtime contract changed: " + key)
+    manifest["metric_policy"] = metric_policy(bundle)
     write_json(args.output / "experiment.json", manifest)
     max_tokens = effective["max_tokens"]
     policy = decoding(max_tokens, greedy=args.greedy)
@@ -394,7 +400,8 @@ def run(args, bundle, adapter_info):
                         args.output / "evaluations.jsonl", step, torch,
                         seed=args.seed, draws=1 if args.greedy else args.eval_draws,
                         witness_path=args.output / "eval-blocked-witnesses.jsonl",
-                        sequences_per_call=args.eval_sequences, score_workers=args.score_workers)
+                        sequences_per_call=args.eval_sequences, score_workers=args.score_workers,
+                        **metric_policy(bundle))
     baseline = measure(0)
     if args.stage == "eval":
         write_json(args.output / "metrics.json", baseline)

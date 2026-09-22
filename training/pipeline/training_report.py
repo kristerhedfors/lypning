@@ -24,8 +24,14 @@ def compare(base, candidate):
         if a["args"][key] != b["args"][key]:
             raise TrainingError("unmatched evaluation argument: " + key)
     rows = [[json.loads(line) for line in (p / "evaluations.jsonl").read_text().splitlines()] for p in paths]
-    return {"base": summarize(rows[0]), "candidate": summarize(rows[1]),
-            "paired": paired_comparison(*rows),
+    # Old runs retain their old metric; an amendment never rewrites evidence.
+    policy = a.get("metric_policy", {"min_family_cases": 1})
+    if policy != b.get("metric_policy", {"min_family_cases": 1}):
+        raise TrainingError("unmatched evaluation contract: metric_policy")
+    if set(policy) != {"min_family_cases"}:
+        raise TrainingError("unknown evaluation metric policy")
+    return {"base": summarize(rows[0], **policy), "candidate": summarize(rows[1], **policy),
+            "paired": paired_comparison(*rows, **policy),
             "quality_evidence": not a["smoke"],
             "note": "Correctness non-inferiority margins and release decisions must be preregistered."}
 

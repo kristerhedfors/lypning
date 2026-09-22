@@ -14,6 +14,15 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-22** — Preregister the benchmark family floor and expose slice fragility
+([#98](https://github.com/kristerhedfors/lypning/pull/98))
+
+- Applies the five-distinct-case floor to benchmark primary metrics and paired
+  comparisons while preserving source-group links and all slice diagnostics.
+- Records the policy in each new evaluation manifest and rejects mixed policies.
+- Adds case-weighted slice rates and a reproducible size-only stress simulation
+  from the saved Step 0 bundle histograms; see `training/EVAL2.md` §4.
+
 **2026-09-21** — Select on the metric being trained for, and stop stopping
 ([#97](https://github.com/kristerhedfors/lypning/pull/97))
 
