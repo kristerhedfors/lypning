@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -33,6 +36,13 @@ MATCHES = [
     # same as a quoted invocation, and one wasted parse is the cheaper error.
     "git commit -m 'add python support'",
     "cat <<PYTHON > f\nx\nPYTHON",
+    # The write half of write-then-run: a heredoc redirected into a .py file,
+    # whatever its delimiter. The later `python x.py` shows only a path.
+    "cat > /tmp/a.py <<'EOF'\nprint(1)\nEOF",
+    "cat <<EOF > a.py\nx = 1\nEOF",
+    "cat >> \"dir/b.py\" << \"END\"\nx\nEND",
+    "cat <<'EOF' | tee -a s.py\nx\nEOF",
+    "mkdir -p t && cat > t/test_x.py <<-EOF\n\tx\n\tEOF",
 ]
 
 MISSES = [
@@ -44,6 +54,13 @@ MISSES = [
     "echo mypython3",
     "ls /usr/lib/python3.11/site-packages",  # a path, not an invocation
     "cat <<'EOF'\nhello\nEOF",
+    # Narrower than the shell screen's `*.py*`, on purpose: not exactly `.py`,
+    # not the heredoc's own line, or no heredoc at all.
+    "cat > stub.pyi <<EOF\nx\nEOF",
+    "cat <<EOF > a.py.bak\nx\nEOF",
+    "cat > notes.txt <<EOF\nsee a.py\nEOF",
+    "cat a.py",
+    "echo x > a.py",
 ]
 
 
@@ -386,3 +403,157 @@ def test_the_routing_prompt_ships_and_says_the_two_load_bearing_things():
     assert "Correctness comes first" in text
     # And without this one it treats a refusal as a failure to work around.
     assert "90" in text
+
+
+# --- the shell screen, run for real -------------------------------------------
+
+HOOK_SH = paths.HOOKS_SRC / "lypning-capture.sh"
+
+
+def _run_capture_sh(tmp_path, command, env_extra=None, path_dirs=()):
+    """Drive lypning-capture.sh with a Bash event and a stub ``lypning``.
+
+    The stub is the first arm; it touches a marker and exits 0, so the marker
+    existing means the screen let the command through to a spawn.
+    """
+    stub_dir = tmp_path / "stub-bin"
+    stub_dir.mkdir(exist_ok=True)
+    stub = stub_dir / "lypning"
+    stub.write_text('#!/bin/sh\ncat >/dev/null\n: > "$STUB_MARK"\nexit 0\n', encoding="utf-8")
+    stub.chmod(0o755)
+    mark = tmp_path / "reached"
+    if mark.exists():
+        mark.unlink()
+    env = {"PATH": os.pathsep.join([str(stub_dir)] + list(path_dirs) + ["/usr/bin", "/bin"]),
+           "HOME": str(tmp_path), "STUB_MARK": str(mark)}
+    env.update(env_extra or {})
+    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command},
+                          "session_id": "s", "cwd": str(tmp_path), "tool_use_id": "t"})
+    proc = subprocess.run(["sh", str(HOOK_SH)], input=payload, capture_output=True,
+                          text=True, env=env, timeout=60)
+    return proc, mark.exists()
+
+
+@pytest.mark.parametrize("command", MATCHES)
+def test_the_shell_screen_is_broader_than_the_regexes(tmp_path, command):
+    """Invariant 5's cost rule, held on the real script rather than by reading it.
+
+    Every command the precise filter accepts must get PAST the fork-free
+    ``case`` screen, or it never reaches the filter at all: a screen narrower
+    than ``PYTHONISH`` loses a corpus entry with nothing anywhere saying so.
+    """
+    assert capture.looks_pythonish(command)
+    proc, reached = _run_capture_sh(tmp_path, command)
+    assert proc.returncode == 0
+    assert proc.stdout == capture.OK_RESPONSE + "\n"
+    assert reached, "the shell screen dropped a command PYTHONISH accepts: %r" % command
+
+
+@pytest.mark.parametrize("command", ["ls -la", "cat <<'EOF'\nhello\nEOF", "npm run build"])
+def test_the_screen_answers_a_plain_command_without_spawning(tmp_path, command):
+    proc, reached = _run_capture_sh(tmp_path, command)
+    assert proc.returncode == 0 and proc.stdout == capture.OK_RESPONSE + "\n"
+    assert not reached
+
+
+def test_a_pinned_source_tree_is_an_arm_outside_any_checkout(tmp_path):
+    """``$LYPNING_PYTHONPATH``: the arm a user-scope hook has when nothing is
+    installed and the session is not in a checkout of lypning.
+
+    The stub ``lypning`` is absent here and ``$CLAUDE_PROJECT_DIR`` is not a
+    checkout, so the record in the log can only have come from the pin.
+    """
+    src = Path(capture.__file__).resolve().parents[1]
+    assert (src / "lypning" / "__init__.py").is_file()
+    py_dir = tmp_path / "py-bin"
+    py_dir.mkdir()
+    # The BASE interpreter, not a virtualenv's: the environment running this
+    # suite may have lypning installed, which would make the bare arm log too
+    # and leave the pin unproven.
+    (py_dir / "python3").symlink_to(getattr(sys, "_base_executable", None) or sys.executable)
+    log = tmp_path / "log.jsonl"
+    elsewhere = tmp_path / "someone-elses-repo"
+    elsewhere.mkdir()
+    payload = json.dumps({"tool_name": "Bash",
+                          "tool_input": {"command": "python3 -c 'print(1)'"},
+                          "session_id": "s", "cwd": str(elsewhere), "tool_use_id": "t"})
+    env = {"PATH": os.pathsep.join([str(py_dir), "/usr/bin", "/bin"]), "HOME": str(tmp_path),
+           "LYPNING_LOG": str(log), "LYPNING_PYTHONPATH": str(src),
+           "CLAUDE_PROJECT_DIR": str(elsewhere)}
+    proc = subprocess.run(["sh", str(HOOK_SH)], input=payload, capture_output=True,
+                          text=True, env=env, timeout=120)
+    assert proc.returncode == 0 and proc.stdout == capture.OK_RESPONSE + "\n"
+    records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert len(records) == 1, "exactly one arm logs"
+    assert records[0]["tool_use_id"] == "t"
+
+    # And the same call without the pin is inert, unless that interpreter can
+    # import the package on its own — in which case the bare arm is why.
+    log.unlink()
+    del env["LYPNING_PYTHONPATH"]
+    probe = subprocess.run([str(py_dir / "python3"), "-c", "import lypning"],
+                           capture_output=True, env=env, cwd=str(elsewhere), timeout=60)
+    proc = subprocess.run(["sh", str(HOOK_SH)], input=payload, capture_output=True,
+                          text=True, env=env, timeout=120)
+    assert proc.returncode == 0 and proc.stdout == capture.OK_RESPONSE + "\n"
+    if probe.returncode != 0:
+        assert not log.exists()
+
+
+def test_every_hook_carries_the_pinned_tree_arm():
+    """The same arm in all three scripts, guarded on the package file."""
+    missing = [h.name for h in sorted(paths.HOOKS_SRC.glob("lypning-*.sh"))
+               if '[ -f "$LYPNING_PYTHONPATH/lypning/__init__.py" ]'
+               not in h.read_text(encoding="utf-8")
+               or 'PYTHONPATH="$LYPNING_PYTHONPATH' not in h.read_text(encoding="utf-8")]
+    assert not missing, missing
+
+
+# --- the Stop roll-up belongs to a checkout of lypning -----------------------
+
+
+def _seed_log():
+    paths.ensure_dir(paths.log_path().parent)
+    paths.log_path().write_text(
+        json.dumps({"kind": "python_invocation",
+                    "program": "print('stop-guard-probe-4d1c', 6 * 7)",
+                    "session": "sess-guard", "ts": "2026-09-22T00:00:00.000Z"}) + "\n",
+        encoding="utf-8")
+
+
+@pytest.mark.parametrize("hook,key", [(capture.hook_stop, "cwd"),
+                                      (capture.hook_openhands_session_end, "working_dir")],
+                         ids=["stop", "openhands-session-end"])
+def test_the_roll_up_writes_nothing_into_someone_elses_repository(project, hook, key):
+    """A user-scope Stop hook fires in every repository the user opens.
+
+    Invariant 7: exporting there would add ``tests/corpus/sightings`` files to
+    a repository that never asked for them. An install older than the scoped
+    ``install.HOOKS`` may still have Stop registered at user scope, so the
+    guard is in the entry point, not only in the installer.
+    """
+    (project / ".git").mkdir()  # a repository, just not ours
+    _seed_log()
+    before = sorted(p.relative_to(project) for p in project.rglob("*"))
+    rc, out = _fire(hook, {key: str(project)})
+    assert rc == 0 and out == capture.OK_RESPONSE + "\n"
+    assert not paths.sightings_dir(project).exists()
+    assert sorted(p.relative_to(project) for p in project.rglob("*")) == before
+
+
+def test_the_roll_up_still_exports_in_a_checkout_of_lypning(project):
+    (project / "src" / "lypning").mkdir(parents=True)
+    (project / "src" / "lypning" / "__init__.py").write_text("", encoding="utf-8")
+    assert capture.is_lypning_checkout(project)
+    _seed_log()
+    rc, out = _fire(capture.hook_stop, {"cwd": str(project)})
+    assert rc == 0 and out == capture.OK_RESPONSE + "\n"
+    files = list(paths.sightings_dir(project).glob("*.jsonl"))
+    assert files and "stop-guard-probe-4d1c" in files[0].read_text(encoding="utf-8")
+
+
+def test_is_lypning_checkout_needs_the_package_file(tmp_path):
+    assert not capture.is_lypning_checkout(None)
+    assert not capture.is_lypning_checkout(tmp_path)
+    (tmp_path / "src" / "lypning").mkdir(parents=True)
+    assert not capture.is_lypning_checkout(tmp_path)

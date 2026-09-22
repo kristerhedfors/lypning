@@ -38,6 +38,7 @@
 #   LYPNING_HOME       state dir (default $HOME/.lypning) — where that log lives
 #   LYPNING_CAPTURE=0  disable capture entirely (this hook then does nothing)
 #   LYPNING_HARVEST=0  keep capturing, but never harvest automatically
+#   LYPNING_PYTHONPATH a directory holding the lypning package (lypning-capture.sh)
 ok() {
   printf '{"continue":true,"suppressOutput":true}\n'
   exit 0
@@ -94,6 +95,17 @@ if [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -f "$CLAUDE_PROJECT_DIR/src/lypning/__i
    && command -v python3 >/dev/null 2>&1; then
   printf '%s' "$LYPNING_HOOK_PAYLOAD" \
     | PYTHONPATH="$CLAUDE_PROJECT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
+      python3 -m lypning hook stop >/dev/null && ok
+fi
+
+# The pinned source tree — the same arm, and the same ordering, as in
+# lypning-capture.sh. `hook stop` itself exports nothing outside a checkout of
+# lypning (capture._export_if_ours), so reaching the package here is safe in
+# any repository this hook fires in.
+if [ -n "${LYPNING_PYTHONPATH:-}" ] && [ -f "$LYPNING_PYTHONPATH/lypning/__init__.py" ] \
+   && command -v python3 >/dev/null 2>&1; then
+  printf '%s' "$LYPNING_HOOK_PAYLOAD" \
+    | PYTHONPATH="$LYPNING_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}" \
       python3 -m lypning hook stop >/dev/null && ok
 fi
 
