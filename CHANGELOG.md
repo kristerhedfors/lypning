@@ -14,6 +14,14 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-22** — Apply the planned LoRA learning rates and evaluation cadence
+([#99](https://github.com/kristerhedfors/lypning/pull/99))
+
+- Defaults to SFT 1e-4 (2e-4 under 100 effective steps) and GRPO 5e-6;
+  explicit overrides remain recorded in the effective schedule.
+- Aligns trainer, pilot script, example plan and manual commands on evaluation
+  every 50 steps, with the final checkpoint retained and evaluated.
+
 **2026-09-22** — Preregister the benchmark family floor and expose slice fragility
 ([#98](https://github.com/kristerhedfors/lypning/pull/98))
 
