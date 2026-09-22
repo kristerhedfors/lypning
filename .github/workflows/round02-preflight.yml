@@ -22,6 +22,10 @@ on:
         description: "the --steps the submit would bill"
         default: "300"
         type: string
+      target_run:
+        description: "the arm's target run; empty compares every completed seed on the bank"
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -31,12 +35,21 @@ jobs:
     name: the bank, the schedule and the ceiling
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # Every input reaches the scripts through env, never by expansion into
+    # their text: the steps below hold HF_TOKEN.
     env:
       PYTHONPATH: src:training
       WORK_REPO_NAME: lypning-round02-artifacts
       HF_HOME: ${{ github.workspace }}/.hf
       LYPNING_CAPTURE: "0"
       LYPNING_HARVEST: "0"
+      BANK_PATH: ${{ inputs.bank_path }}
+      STEPS: ${{ inputs.steps }}
+      TARGET_RUN: ${{ inputs.target_run }}
+      # round02.yml's pins: the revision a submit counts against, and the split
+      # every training seed of the arm trains on.
+      QWEN_REV: 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0
+      SPLIT_SEED: "1111"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -60,7 +73,6 @@ jobs:
       - name: The bank is the bank it says it is
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          BANK_PATH: ${{ inputs.bank_path }}
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -104,14 +116,15 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python .github/scripts/token_floor.py \
-            --hub-bank "${{ inputs.bank_path }}" --steps "${{ inputs.steps }}" --require-clears
+            --hub-bank "$BANK_PATH" --steps "$STEPS" --require-clears \
+            --revision "$QWEN_REV" --split-seed "$SPLIT_SEED"
 
       # 3. THE BANK CAN HOST THE EFFECT. A ceiling under the +3pp bar means no
       #    adapter can fire the rule, however good it is. Exit 1 is a finding.
       - name: Can a round on this bank detect anything
         run: |
           python -m pipeline.cli bank-native \
-            "$RUNNER_TEMP/bank/${{ inputs.bank_path }}/train.jsonl" --mix-only
+            "$RUNNER_TEMP/bank/$BANK_PATH/train.jsonl" --mix-only
 
       # 4. NOTHING IS STILL RUNNING. A trainer that dies does not take its pool
       #    with it, and a pool host left running is one a later round finds busy.
@@ -127,10 +140,17 @@ jobs:
       - name: Every completed seed on this bank is the same arm
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        # Seed 1111's round of 2026-09-21 and S4 arm A share this bank and are
+        # two arms by construction; `--select` names the one being extended.
         run: |
-          python .github/scripts/arm_check.py --bank "${{ inputs.bank_path }}" \
-            --expect "bank_path=${{ inputs.bank_path }}" \
-            --expect "steps=${{ inputs.steps }}"
+          set -euo pipefail
+          select=()
+          if [ -n "$TARGET_RUN" ]; then select=(--select "sft_target_run=$TARGET_RUN"); fi
+          python .github/scripts/arm_check.py --bank "$BANK_PATH" \
+            ${select[@]+"${select[@]}"} \
+            --expect "bank_path=$BANK_PATH" \
+            --expect "steps=$STEPS" --expect "split_seed=$SPLIT_SEED" \
+            --expect "qwen_revision=$QWEN_REV"
 
       # 6. WHAT WOULD BE BILLED IS WHAT WAS CHECKED. An edit that silently did
       #    not apply sent one dispatch at the wrong bank.
@@ -139,8 +159,8 @@ jobs:
           set -euo pipefail
           on_main=$(git show origin/main:.github/workflows/round02.yml | sed -n 's/^  BANK_PATH: //p')
           echo "   round02.yml on main reads: $on_main"
-          echo "   this preflight checked  : ${{ inputs.bank_path }}"
-          if [ "$on_main" != "${{ inputs.bank_path }}" ]; then
+          echo "   this preflight checked  : $BANK_PATH"
+          if [ "$on_main" != "$BANK_PATH" ]; then
             echo "MISMATCH: the submit would bill a bank this run did not check" >&2
             exit 1
           fi

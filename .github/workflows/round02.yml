@@ -27,6 +27,11 @@ on:
         description: "graded positive-control run id supplying private rejection targets"
         default: ""
         type: string
+      seed:
+        description: "training seed of this S4 replicate (the split stays at PILOT_SPLIT_SEED)"
+        default: "1111"
+        type: choice
+        options: ["1111", "2222", "3333"]
 
 permissions:
   contents: read
@@ -36,6 +41,14 @@ env:
   SPACE_REPO_NAME: lypning-round02-verifier
   WORK_REPO_NAME: lypning-round02-artifacts
   QWEN_MODEL: Qwen/Qwen3.8-27B
+  # THE BASE MODEL IS PINNED, not resolved. This is the commit Actions run
+  # 35762924601 (2026-09-22) resolved `main` to and counted the rejection
+  # targets' tokens against. It used to be whatever `main` was at dispatch, so
+  # an upstream tokenizer or chat-template commit between two seeds of one arm
+  # would have changed the second seed's base model and nothing would have
+  # said so. The preflight now FAILS if the Hub head differs from this pin:
+  # moving it is a decision about every seed of the arm, made by editing here.
+  QWEN_REV: 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0
   FLAVOR: a10g-small
   # The carved bank a round reads: a pilot and a held-out benchmark sharing no
   # family, cut from six batches on 2026-09-19 by `bank-publish.yml`
@@ -88,6 +101,16 @@ env:
   # second stage, after the pilot bundle was already built.
   PILOT_SCORERS: "48"
   PILOT_POOL_HOSTS: "16"
+  # S4 arm A is rejection-sampling SFT and nothing after it: the job still runs
+  # the probe (arm C's admission evidence) and writes grpo-skipped.json. The
+  # only GRPO dose this workflow ever billed was 20 steps x 4 generations, the
+  # one PLAN.md retired with seed 1111's configuration; arm C sets its own dose
+  # here, in a reviewed commit, when it is launched.
+  PILOT_GRPO_STEPS: "0"
+  # The split every seed of the arm trains and is measured on; the dispatch
+  # `seed` input moves only initialisation and data order (launch.py says why).
+  PILOT_SPLIT_SEED: "1111"
+  PILOT_SEED: ${{ github.event.inputs.seed || '1111' }}
   SFT_TARGET_RUN: ${{ github.event.inputs.target_run || '' }}
 
 jobs:
@@ -106,10 +129,16 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -q "huggingface-hub==1.31.0"
+      # Priced at the flavor that would be billed: a pilot is an h200, and
+      # pricing the smoke's a10g-small for it let an account without h200
+      # access pass this step.
       - name: Probe the account, the price and the model revision
         id: probe
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          FLAVOR: >-
+            ${{ (contains(github.event.head_commit.message, '[submit-pilot]') ||
+                 github.event.inputs.stage == 'pilot') && env.PILOT_FLAVOR || env.FLAVOR }}
         run: python .github/scripts/round02_preflight.py
 
   # Free. Building the Space and the artifact repo is idempotent and costs
@@ -187,13 +216,15 @@ jobs:
       - name: Dry run — print the plan and its price
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          SPACE_REPO: ${{ steps.space.outputs.space_repo }}
+          SPACE_REV: ${{ steps.space.outputs.space_rev }}
+          OWNER: ${{ steps.space.outputs.owner }}
         run: |
           python training/hf/launch.py smoke \
             --branch "${GITHUB_REF_NAME}" --commit "${GITHUB_SHA}" \
-            --space "${{ steps.space.outputs.space_repo }}" \
-            --space-revision "${{ steps.space.outputs.space_rev }}" \
-            --qwen-revision "${{ needs.preflight.outputs.qwen_rev }}" \
-            --work-repo "${{ steps.space.outputs.owner }}/${WORK_REPO_NAME}" \
+            --space "${SPACE_REPO}" --space-revision "${SPACE_REV}" \
+            --qwen-revision "${QWEN_REV}" \
+            --work-repo "${OWNER}/${WORK_REPO_NAME}" \
             --flavor "${FLAVOR}" --timeout 75m
 
   # Free, and it stands between the marker and the meter. Measured 2026-09-19
@@ -205,9 +236,16 @@ jobs:
   # weights. The `--plan` bound for the same schedule is 134,384 and passes,
   # which is why a passing plan was never a certificate. This counts exactly,
   # needs only the tokenizer, and costs nothing.
+  #
+  # It needs bootstrap because the targets' engine lineage is compared against
+  # the `lypning-l` the pilot will download from the Space at the revision
+  # bootstrap just pinned; the job's trainer refuses a mismatch only at its
+  # plan stage, after ~45 minutes of GPU-idle preparation. And it counts at
+  # the dispatched training seed on the fixed split, which is what that seed
+  # trains on.
   token-floor:
     name: the supervised-token floor, counted before it is billed
-    needs: preflight
+    needs: [preflight, bootstrap]
     if: >-
       contains(github.event.head_commit.message, '[submit-pilot]') ||
       (github.event.inputs.stage == 'pilot' && github.event.inputs.submit == 'SUBMIT')
@@ -225,6 +263,8 @@ jobs:
       - name: Count what the schedule exposes
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          SPACE_REPO: ${{ needs.bootstrap.outputs.space_repo }}
+          SPACE_REV: ${{ needs.bootstrap.outputs.space_rev }}
         run: |
           if [ -z "${SFT_TARGET_RUN}" ]; then
             echo "pilot submit requires target_run from a graded positive control" >&2
@@ -233,22 +273,38 @@ jobs:
           python .github/scripts/s4_target_floor.py \
             --target-run "${SFT_TARGET_RUN}" \
             --bank-path "${BANK_PATH}" \
-            --revision "${{ needs.preflight.outputs.qwen_rev }}" \
+            --revision "${QWEN_REV}" \
             --steps "${PILOT_STEPS}" \
+            --seed "${PILOT_SEED}" --split-seed "${PILOT_SPLIT_SEED}" \
+            --space "${SPACE_REPO}" --space-revision "${SPACE_REV}" \
             --out "$RUNNER_TEMP/s4-target-floor.json"
+      # Uploaded on a refusal too: the report is written either way, and a
+      # refused floor is the finding.
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: s4-target-floor
           path: ${{ runner.temp }}/s4-target-floor.json
-          if-no-files-found: error
+          if-no-files-found: ignore
 
+  # A pilot submit needs the floor to have PASSED; a smoke submit has no floor
+  # job at all. Without `always()` a skipped token-floor skips this job too
+  # (GitHub's implicit success()), which made every smoke submit unreachable.
+  # So the status of each need is spelled out, and a smoke is a smoke only when
+  # nothing asked for a pilot -- a message carrying both markers is a pilot.
   submit:
     name: submit the GPU job (BILLED)
     needs: [preflight, bootstrap, token-floor]
     if: >-
-      contains(github.event.head_commit.message, '[submit-smoke]') ||
-      contains(github.event.head_commit.message, '[submit-pilot]') ||
-      github.event.inputs.submit == 'SUBMIT'
+      always() &&
+      needs.preflight.result == 'success' && needs.bootstrap.result == 'success' && (
+        ((contains(github.event.head_commit.message, '[submit-pilot]') ||
+          (github.event.inputs.stage == 'pilot' && github.event.inputs.submit == 'SUBMIT')) &&
+         needs.token-floor.result == 'success') ||
+        (!contains(github.event.head_commit.message, '[submit-pilot]') &&
+         github.event.inputs.stage != 'pilot' &&
+         (contains(github.event.head_commit.message, '[submit-smoke]') ||
+          (github.event.inputs.stage == 'smoke' && github.event.inputs.submit == 'SUBMIT'))))
     runs-on: ubuntu-latest
     # THE FOLLOWER NOW DIES BEFORE THE ROUND DOES, ON PURPOSE. The pilot is
     # submitted with PILOT_TIMEOUT (720m) and GitHub caps a hosted job at 360
@@ -267,35 +323,42 @@ jobs:
       - run: pip install -q "huggingface-hub==1.31.0"
       # --follow streams the job's own log into this run, so the evidence for
       # what the GPU actually did lives beside the decision to spend on it.
+      # Every value reaches the script through env, never by expansion into
+      # its text: a commit message is author-controlled, and one holding a
+      # quote or `$(...)` would have run inside a step that holds HF_TOKEN.
       - name: Submit
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HEAD_MSG: ${{ github.event.head_commit.message }}
+          STAGE_IN: ${{ github.event.inputs.stage }}
+          SPACE_REPO: ${{ needs.bootstrap.outputs.space_repo }}
+          SPACE_REV: ${{ needs.bootstrap.outputs.space_rev }}
+          OWNER: ${{ needs.bootstrap.outputs.owner }}
         run: |
           # A pilot is a banked stage: it needs the bank, a bigger GPU and a
           # longer timeout, and it carries the k/seed/case/token floors.
-          if [ "${{ github.event.inputs.stage }}" = "pilot" ] || \
-             echo "${{ github.event.head_commit.message }}" | grep -q '\[submit-pilot\]'; then
+          if [ "${STAGE_IN}" = "pilot" ] || \
+             printf '%s' "${HEAD_MSG}" | grep -q '\[submit-pilot\]'; then
             if [ -z "${SFT_TARGET_RUN}" ]; then
               echo "pilot submit requires target_run from a graded positive control" >&2
               exit 1
             fi
             python training/hf/launch.py pilot \
               --branch "${GITHUB_REF_NAME}" --commit "${GITHUB_SHA}" \
-              --space "${{ needs.bootstrap.outputs.space_repo }}" \
-              --space-revision "${{ needs.bootstrap.outputs.space_rev }}" \
-              --qwen-revision "${{ needs.preflight.outputs.qwen_rev }}" \
-              --work-repo "${{ needs.bootstrap.outputs.owner }}/${WORK_REPO_NAME}" \
-              --bank-path "${BANK_PATH}" --seed 1111 --eval-draws 16 \
-              --steps "${PILOT_STEPS}" \
+              --space "${SPACE_REPO}" --space-revision "${SPACE_REV}" \
+              --qwen-revision "${QWEN_REV}" \
+              --work-repo "${OWNER}/${WORK_REPO_NAME}" \
+              --bank-path "${BANK_PATH}" --eval-draws 16 \
+              --seed "${PILOT_SEED}" --split-seed "${PILOT_SPLIT_SEED}" \
+              --steps "${PILOT_STEPS}" --grpo-steps "${PILOT_GRPO_STEPS}" \
               --sft-target-run "${SFT_TARGET_RUN}" \
               --score-workers "${PILOT_SCORERS}" --pool-max-hosts "${PILOT_POOL_HOSTS}" \
               --flavor "${PILOT_FLAVOR}" --timeout "${PILOT_TIMEOUT}" --yes --follow
           else
             python training/hf/launch.py smoke \
               --branch "${GITHUB_REF_NAME}" --commit "${GITHUB_SHA}" \
-              --space "${{ needs.bootstrap.outputs.space_repo }}" \
-              --space-revision "${{ needs.bootstrap.outputs.space_rev }}" \
-              --qwen-revision "${{ needs.preflight.outputs.qwen_rev }}" \
-              --work-repo "${{ needs.bootstrap.outputs.owner }}/${WORK_REPO_NAME}" \
+              --space "${SPACE_REPO}" --space-revision "${SPACE_REV}" \
+              --qwen-revision "${QWEN_REV}" \
+              --work-repo "${OWNER}/${WORK_REPO_NAME}" \
               --flavor "${FLAVOR}" --timeout 75m --yes --follow
           fi
