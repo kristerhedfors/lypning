@@ -109,6 +109,52 @@ def adapter_lineage_admitted(experiment, bundle, stage):
             and experiment.get("purpose") == "pilot")
 
 
+#: The populations a pilot trains on; each must reach this many families.
+CURRICULUM_POPULATIONS = ("coverage", "fallback-control")
+MIN_CURRICULUM_FAMILIES_PER_POPULATION = 2
+
+
+def curriculum_floor(cases):
+    """The S4 dose floors, counted on what is TRAINED, not on what the bundle holds.
+
+    `MIN_TRAIN_CASES` was checked against the bundle's train split, and a
+    rejection-target curriculum is a subset of it: the smoke targets graded on
+    2026-09-22 (Actions run 35759939928) were 157 rows over 54 cases, and would
+    have passed a 1,000-case floor because the bank behind them splits to 1,355
+    train cases at seed 1111 (run 35491218203, `round02.yml`). The floor
+    means "at least this many distinct train cases are learned from", so it is
+    counted on the curriculum's distinct cases. The family floor is
+    `validate_pilot`'s per-split rule -- two independent families per
+    population -- restated on the rows actually trained, so a target set that
+    collapsed onto one family per population is not an admitted curriculum.
+    Neither number is new and neither is lowered; both are the existing gates
+    moved onto the population they were always about.
+
+    Returns the counts and a list of problems, empty when the floors hold, so
+    a free CI check (`.github/scripts/s4_target_floor.py`) can report what
+    `preflight` refuses.
+    """
+    distinct = {c["case_id"]: c for c in cases}
+    families = {population: sorted({c["family"] for c in distinct.values()
+                                     if c.get("population") == population})
+                for population in CURRICULUM_POPULATIONS}
+    problems = []
+    if len(distinct) < MIN_TRAIN_CASES:
+        problems.append("the SFT curriculum reaches %d distinct train cases; at least %d required"
+                        % (len(distinct), MIN_TRAIN_CASES))
+    for population in CURRICULUM_POPULATIONS:
+        if len(families[population]) < MIN_CURRICULUM_FAMILIES_PER_POPULATION:
+            problems.append("the SFT curriculum reaches %d %s families; at least %d required"
+                            % (len(families[population]), population,
+                               MIN_CURRICULUM_FAMILIES_PER_POPULATION))
+    return {"cases": len(distinct), "rows": len(cases),
+            "families": len({c["family"] for c in distinct.values()}),
+            "families_by_population": {k: len(v) for k, v in families.items()},
+            "minimum_cases": MIN_TRAIN_CASES,
+            "minimum_families_per_population": MIN_CURRICULUM_FAMILIES_PER_POPULATION,
+            "problems": problems}
+
+
 def preflight(args):
     if int(os.environ.get("WORLD_SIZE", "1")) != 1:
         raise TrainingError("this runner supports one process/GPU; do not launch with torchrun")
@@ -154,6 +200,13 @@ def preflight(args):
         if args.seed not in PROTOCOL_TRAIN_SEEDS:
             raise TrainingError("training seed must be one of the pre-registered seeds: %s"
                                 % (", ".join(map(str, PROTOCOL_TRAIN_SEEDS))))
+    # Only a target curriculum can be narrower than the bundle's train split;
+    # an authored-reference curriculum IS that split, gated just above and by
+    # `validate_pilot` when the bundle was prepared.
+    if not args.smoke and args.stage == "sft" and args.sft_targets is not None:
+        problems = curriculum_floor(curriculum_cases)["problems"]
+        if problems:
+            raise TrainingError("; ".join(problems))
     if (not args.smoke and args.stage == "sft"
             and args.steps * args.batch_size < len({case["family"] for case in curriculum_cases})):
         raise TrainingError("SFT schedule is shorter than one complete family cycle")
@@ -282,6 +335,30 @@ def supervised_plan(args, bundle):
                 sum(len(((row["messages"][-1]["content"] if rows is not None else
                           "```python\n" + row["reference"].rstrip() + "\n```") +
                          "<|im_end|>").encode("utf-8")) for row in scheduled)}
+
+
+def curriculum_plan(args, bundle):
+    """The curriculum's distinct rows beside the schedule's repeats, bounded above.
+
+    `supervised_plan` sums over the SCHEDULE, every repeat counted again, which
+    is what the floor prices. A small target set clears it by repetition alone:
+    Actions run 35762924601 (2026-09-22) counted 156,691 scheduled tokens over
+    157 rows, about 7.6 passes. The same bound over each distinct row once
+    says how much there is to learn from, so the two are printed side by side.
+    None where `supervised_plan` is None.
+    """
+    if args.stage != "sft" or args.smoke:
+        return None
+    train_cases, rows, _ = sft_curriculum(args, bundle)
+    if rows is None:
+        segments = ["```python\n" + c["reference"].rstrip() + "\n```" for c in train_cases]
+    else:
+        segments = [row["messages"][-1]["content"] for row in rows]
+    floor = curriculum_floor(train_cases)
+    return {"curriculum_rows": len(segments), "curriculum_cases": floor["cases"],
+            "curriculum_families": floor["families"],
+            "unique_supervised_token_upper_bound":
+                sum(len((segment + "<|im_end|>").encode("utf-8")) for segment in segments)}
 
 
 def schedule(args):
@@ -639,6 +716,7 @@ def main(argv=None):
             # a pass is the one mistake this line exists to prevent.
             planned = supervised_plan(args, bundle) or {"planned_exposures": None,
                                                         "supervised_token_upper_bound": None}
+            unique = curriculum_plan(args, bundle) or {}
             print(json.dumps({"stage": args.stage, "model": BASE_MODEL, "revision": args.revision,
                               "purpose": bundle["purpose"], "effective": schedule(args),
                               "decoding": decoding(schedule(args)["max_tokens"], greedy=args.greedy),
@@ -648,6 +726,10 @@ def main(argv=None):
                               "grpo_geometry": geometry,
                               "planned_exposures": planned["planned_exposures"],
                               "supervised_token_upper_bound": planned["supervised_token_upper_bound"],
+                              "curriculum_rows": unique.get("curriculum_rows"),
+                              "curriculum_cases": unique.get("curriculum_cases"),
+                              "unique_supervised_token_upper_bound":
+                                  unique.get("unique_supervised_token_upper_bound"),
                               "bundle_digest": bundle["digest"], "target": bundle["identity"],
                               "cases": {s: sum(c["split"] == s for c in bundle["cases"])
                                         for s in ("train", "dev", "test")}}, indent=2))

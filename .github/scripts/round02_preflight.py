@@ -11,6 +11,14 @@ Every failure here is reported and then swallowed into `jobs_ok=false` rather
 than raised, so the run ends green with a readable answer instead of a
 traceback: a preflight that cannot reach the Hub has not found a problem with
 the round, it has found a problem with itself.
+
+ONE EXCEPTION, and it is a finding about the round: the Qwen revision is
+PINNED (`QWEN_REV` in `round02.yml`), and a Hub head that has moved past the
+pin exits 1. The revision used to be whatever `main` resolved to at dispatch,
+so an upstream tokenizer or chat-template commit between two seeds would have
+changed the base model of the second one silently. A moved head is not a
+reason to follow it; it is a decision someone makes by re-pinning, with the
+S4 arm's seeds in mind.
 """
 from __future__ import annotations
 
@@ -69,11 +77,13 @@ def main() -> int:
         # kind of column a spend decision should never rest on.
         print("  %-22s %12s %12s  %s"
               % ("flavor", "$/hour", "unit cost", "billed per"))
-        for name in sorted(hardware):
-            h = hardware[name]
+        # Not `name`: that is the account, and the artifact repo below is
+        # derived from it after this loop has run.
+        for listed in sorted(hardware):
+            h = hardware[listed]
             per_hour = h.unit_cost_usd * (60 if h.unit_label == "minute" else 1)
             print("  %-22s %12.2f %12.5f  %s"
-                  % (name, per_hour, h.unit_cost_usd, h.unit_label))
+                  % (listed, per_hour, h.unit_cost_usd, h.unit_label))
         if flavor in hardware:
             h = hardware[flavor]
             hourly = "%.2f" % (h.unit_cost_usd * (60 if h.unit_label == "minute" else 1))
@@ -89,7 +99,9 @@ def main() -> int:
 
     print("== approved model revision")
     model = os.environ.get("QWEN_MODEL", "Qwen/Qwen3.8-27B")
+    pinned = os.environ.get("QWEN_REV", "").strip()
     qwen_rev = ""
+    moved = False
     try:
         info = api.model_info(model)
         qwen_rev = info.sha or ""
@@ -97,6 +109,8 @@ def main() -> int:
         if len(qwen_rev) != 40:
             print("  refusing a revision that is not a 40-character commit", file=sys.stderr)
             qwen_rev = ""
+        elif pinned:
+            moved, qwen_rev = revision_moved(pinned, qwen_rev)
     except Exception as exc:                                  # noqa: BLE001
         print("  model_info failed: %s: %s" % (type(exc).__name__, exc), file=sys.stderr)
         print("  the round pins an APPROVED immutable commit; `main` is not one "
@@ -121,7 +135,18 @@ def main() -> int:
                                           else "NOT ready — see the lines above"))
     print(json.dumps({"account": name, "jobs_ok": jobs_ok, "flavor": flavor,
                       "hourly_usd": hourly, "qwen_rev": qwen_rev}, indent=2))
-    return 0
+    return 1 if moved else 0
+
+
+def revision_moved(pinned, head):
+    """(moved, revision to use): the pin when the head still equals it, else nothing."""
+    if head == pinned:
+        print("  pinned %s: the Hub head still equals it" % pinned)
+        return False, pinned
+    print("  PINNED REVISION MOVED: QWEN_REV is %s and the Hub head is %s. The base model "
+          "of an S4 arm is fixed across its seeds; re-pin deliberately or not at all."
+          % (pinned, head), file=sys.stderr)
+    return True, ""
 
 
 if __name__ == "__main__":
