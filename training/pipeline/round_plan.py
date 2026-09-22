@@ -1,8 +1,20 @@
-"""Persist a cross-device manual run plan. Never execute its commands.
+"""Persist the smoke round's portable plan record. Never execute its commands.
 
-Paths in the JSON config are relative to the repository root. Keep this plan,
-the data review, bundle, stage artifacts and operator decisions together. The
-plan reports missing prerequisites; it does not manufacture approvals or data.
+This serves exactly one caller: `training/hf/round02_smoke.sh` step 6, which
+writes a plan after its two tiny-model stages and prints the action names. It
+emits the two smoke stages and the first two pilot stages a fresh round
+directory would run next, each with the prerequisites it is missing.
+
+It is NOT the pilot's stage order. That lives in `training/hf/round02_pilot.sh`
+(7a-7g), which adds stages, targets and knobs this module never knew about. The
+selection-driven half this module used to emit -- reading a sealed `best.json`
+and adding sft-dev-reload, probe, grpo and the three test evaluations -- was a
+second, stale copy of that order with no caller, and was removed on 2026-09-22
+rather than kept in step. Selection is therefore always reported pending: this
+plan never reads a selection.
+
+Paths in the JSON config are relative to the repository root. The plan reports
+missing prerequisites; it does not manufacture approvals or data.
 """
 from __future__ import annotations
 
@@ -14,10 +26,12 @@ import sys
 from pathlib import Path
 
 from .jsonio import sha256_of, write_json
-from .training_contract import BASE_MODEL, adapter_identity, source_identity
+from .training_contract import BASE_MODEL, source_identity
 from .training_types import TrainingError
 
 ROOT = Path(__file__).resolve().parents[2]
+FIELDS = {"schema", "revision", "engine", "round_dir", "seed", "steps", "eval_every", "rank",
+          "generations", "eval_draws", "max_new_tokens"}
 
 
 def relative(value):
@@ -29,21 +43,8 @@ def relative(value):
     return path
 
 
-def selected(root, directory, revision):
-    best = root / directory / "best.json"
-    if not best.exists():
-        return None
-    report = json.loads(best.read_text(encoding="utf-8"))
-    step = report.get("step")
-    if type(step) is not int or step < 0:
-        raise TrainingError("best.json has no nonnegative selected step")
-    path = directory / ("adapter-%d" % step)
-    adapter_identity(root / path, revision)
-    return path.as_posix()
-
-
 def plan(config, root=ROOT):
-    if set(config) != {"schema", "revision", "engine", "round_dir", "seed", "steps", "eval_every", "rank", "generations", "eval_draws", "max_new_tokens"} or config["schema"] != 1:
+    if set(config) != FIELDS or config["schema"] != 1:
         raise TrainingError("unknown or missing round configuration fields")
     revision = config["revision"]
     if not isinstance(revision, str) or not re.fullmatch(r"[a-f0-9]{40}", revision):
@@ -55,8 +56,6 @@ def plan(config, root=ROOT):
         raise TrainingError("probe/GRPO need at least two draws")
     directory, engine = relative(config["round_dir"]), relative(config["engine"])
     root = Path(root)
-    adapter_sft = selected(root, directory / "sft", revision)
-    adapter_grpo = selected(root, directory / "grpo", revision)
     common = ["--engine", engine.as_posix(), "--revision", revision, "--isolated-worker",
               "--seed", str(config["seed"]), "--rank", str(config["rank"]),
               "--generations", str(config["generations"]), "--eval-draws", str(config["eval_draws"]),
@@ -81,21 +80,10 @@ def plan(config, root=ROOT):
     action("base-dev", "eval", prerequisites=smoke_done)
     steps = ["--steps", str(config["steps"]), "--eval-every", str(config["eval_every"])]
     action("sft", "sft", steps, [(directory / "base-dev/metrics.json").as_posix()])
-    if adapter_sft:
-        action("sft-dev-reload", "eval", ["--adapter", adapter_sft])
-        action("probe", "probe", ["--adapter", adapter_sft], [(directory / "sft-dev-reload/metrics.json").as_posix()])
-        action("grpo", "grpo", steps + ["--adapter", adapter_sft, "--probe", (directory / "probe/probe.json").as_posix()],
-               [(directory / "probe/probe.json").as_posix()])
-    # Test commands appear only after dev has selected both sealed adapters.
-    # Their presence is still NOT approval to open the holdout repeatedly.
-    if adapter_sft and adapter_grpo:
-        action("base-test", "eval", ["--eval-split", "test"])
-        action("sft-test", "eval", ["--eval-split", "test", "--adapter", adapter_sft])
-        action("grpo-test", "eval", ["--eval-split", "test", "--adapter", adapter_grpo])
     result = {"schema": 1, "base_model": BASE_MODEL, "config": config,
               "config_sha256": sha256_of(config), "code_sha256": source_identity(root / "training"),
               "training_started": False, "quality_claim": None,
-              "actions": actions, "pending_selection": [n for n, a in (("sft", adapter_sft), ("grpo", adapter_grpo)) if not a],
+              "actions": actions, "pending_selection": ["sft", "grpo"],
               "policy": "correct compatible first drafts; no per-program speed gate"}
     result["digest"] = sha256_of(result)
     return result
