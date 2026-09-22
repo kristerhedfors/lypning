@@ -7,10 +7,10 @@ on:
         description: Bounded control rung
         required: true
         type: choice
-        options: [smoke, budget20, confirmatory]
+        options: [smoke, targets, budget20, confirmatory]
         default: smoke
       ceiling_usd:
-        description: Hard Cerebras dollar ceiling (smoke <= 5, budget20 <= 20, confirmatory <= 50)
+        description: Hard Cerebras dollar ceiling (smoke <= 5, targets <= 6, budget20 <= 20, confirmatory <= 50)
         required: true
         type: string
         default: '5'
@@ -27,8 +27,9 @@ env:
   PYTHONPATH: src:training
   LYPNING_CAPTURE: '0'
   LYPNING_HARVEST: '0'
-  STEP2_CASES: ${{ inputs.rung == 'smoke' && '64' || inputs.rung == 'budget20' && '192' || '300' }}
-  STEP2_SAMPLES: ${{ inputs.rung == 'smoke' && '4' || '16' }}
+  STEP2_RUNG: ${{ inputs.rung }}
+  STEP2_CASES: ${{ inputs.rung == 'smoke' && '64' || (inputs.rung == 'targets' || inputs.rung == 'budget20') && '192' || '300' }}
+  STEP2_SAMPLES: ${{ (inputs.rung == 'smoke' || inputs.rung == 'targets') && '4' || '16' }}
   STEP2_CEILING_USD: ${{ inputs.ceiling_usd }}
   STEP2_MAX_SECONDS: ${{ inputs.rung == 'smoke' && '3600' || '14400' }}
   STEP2_RPM: '60'
@@ -51,7 +52,8 @@ jobs:
           python - <<'PY'
           import math, os
           ceiling = float(os.environ['STEP2_CEILING_USD'])
-          limit = {'64': 5, '192': 20, '300': 50}[os.environ['STEP2_CASES']]
+          limit = {'smoke': 5, 'targets': 6, 'budget20': 20,
+                   'confirmatory': 50}[os.environ['STEP2_RUNG']]
           if not math.isfinite(ceiling) or not 0 < ceiling <= limit:
               raise SystemExit('ceiling must be positive and <= $%d for this rung' % limit)
           PY
