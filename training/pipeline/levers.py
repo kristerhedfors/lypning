@@ -31,13 +31,6 @@ invariant-1 violation shipped as a feature. `_check_declarations` asserts at
 import that no declaration names a kind on that list, so a declaration cannot
 quietly shadow the engine's own statement about itself.
 
-What the oracle serves is EVIDENCE, NOT A DECISION. A module `lypning-mp`
-answers is proof that *a* reimplementation can answer it, which is exactly the
-question the engine-addressable bucket asks — but it is not proof that this
-engine should, because `tempfile` and `shutil` are on that list and reading the
-environment is what the fallback bucket is for. `mp_serves` is therefore a
-column a reviewer reads beside the declaration, and never a layer.
-
 The same table reads the eval-2 draws (`unit: "draw"`), and reaching them takes
 a join, not a second reader: `eval2_rows.row_for` says which draws are
 correct-but-fallback and how they cluster but records no refusal, while the
@@ -461,16 +454,6 @@ def closed() -> "frozenset[str]":
         return frozenset()
 
 
-def oracle_modules() -> "frozenset[str]":
-    """Modules the oracle serves — evidence for a reviewer, never a rule."""
-    try:
-        from lypning import routing
-
-        return frozenset(routing.micropython_modules())
-    except Exception:
-        return frozenset()
-
-
 def stdlib_names() -> "Optional[frozenset[str]]":
     """What this interpreter ships, which is what the `not-stdlib` layer asks.
 
@@ -688,15 +671,14 @@ def engine_note(engine: Dict[str, Any]) -> str:
                 "kind it would have decided falls through to the declarations or to "
                 "the review queue. This table is not comparable with one built beside "
                 "an engine.")
-    return ("engine: %d closed kinds, %d oracle modules (evidence only), stdlib of %s"
-            % (engine["closed_kinds"], engine["oracle_modules"], engine["stdlib_from"]))
+    return ("engine: %d closed kinds, stdlib of %s"
+            % (engine["closed_kinds"], engine["stdlib_from"]))
 
 
 def table(records: Iterable[Dict[str, Any]], *, source: str, unit: str = "entry",
           independence: str = "first-seen-day", loaded: Optional[int] = None) -> Dict[str, Any]:
     """The bucket table. Library code does not print (invariant 8)."""
     closed_kinds = closed()
-    oracle = oracle_modules()
     stdlib = stdlib_names()
     _check_declarations(lambda: closed_kinds)
 
@@ -714,11 +696,9 @@ def table(records: Iterable[Dict[str, Any]], *, source: str, unit: str = "entry"
         key = verdict["family"]
         row = fams.get(key)
         if row is None:
-            top = _top_module(found["detail"]) if found["kind"] == "module" else None
             row = {"family": key, "kind": found["kind"], "bucket": verdict["bucket"],
                    "basis": verdict["basis"], "evidence": verdict["evidence"],
                    "provenance": verdict.get("provenance"),
-                   "oracle_serves": (top in oracle) if top is not None else None,
                    "example_detail": found["detail"], "units": 0, "weight": 0,
                    "mentions_own_package": 0,
                    "_programs": set(), "_days": set(), "_sources": set(),
@@ -779,7 +759,6 @@ def table(records: Iterable[Dict[str, Any]], *, source: str, unit: str = "entry"
         "engine": {
             "available": bool(closed_kinds),
             "closed_kinds": len(closed_kinds),
-            "oracle_modules": len(oracle),
             "stdlib_from": ("%d.%d" % (sys.version_info[0], sys.version_info[1])
                             if stdlib is not None else None),
         },
@@ -943,13 +922,12 @@ def rank_report(rows: Sequence[Dict[str, Any]], *, bucket: str, independence: st
              "a rank is a description of what blocks programs, never a promise that the",
              "construct can be served correctly — the reason column is the declaration's.",
              "",
-             "%-50s %6s %6s %6s %6s %7s %s"
-             % ("family", "units", "progs", "indep", "score", "oracle", "basis")]
+             "%-50s %6s %6s %6s %6s %s"
+             % ("family", "units", "progs", "indep", "score", "basis")]
     for row in rows[:limit] if limit else rows:
-        oracle = {True: "serves", False: "no", None: "-"}[row["oracle_serves"]]
-        lines.append("%-50s %6d %6d %6d %6d %7s %s"
+        lines.append("%-50s %6d %6d %6d %6d %s"
                      % (row["family"][:50], row["units"], row["programs"],
-                        row["independent"], row["score"], oracle, row["basis"]))
+                        row["independent"], row["score"], row["basis"]))
     if limit and len(rows) > limit:
         lines.append("... %d more" % (len(rows) - limit))
     return "\n".join(lines)

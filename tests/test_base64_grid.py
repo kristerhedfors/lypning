@@ -36,14 +36,6 @@ and ``b"AA==AA=="`` is ``b'\x00'``. Both are shipping — the 3.11, 3.12, 3.13,
 after the pad that closed a quad") was enumerated against both models over
 296,105 rows with zero counterexamples.
 
-**The MicroPython half of the trap.** Three corpus programs (py-16c1663c6170,
-py-2d9c1f2c80f4, py-5313beb3de72, mined 2026-09-06) are differential harnesses
-an agent typed against `extmod/modbinascii.c`, whose `a2b_base64` counts pads
-PER QUAD. Its answers are a third set again — ``b'hihi'`` for ``b"aGk=aGk="``,
-which no CPython gives. `.github/known-mismatches.json` has no base64 family
-because those harnesses were how the question got asked; the rows here are what
-they were asking.
-
 **Every `binascii.Error` is a refusal, not a raise.** The class does not exist
 here and the message text is CPython's, which moves between releases — so a
 decode this engine cannot perform refuses, and CPython answers it one spawn
@@ -653,9 +645,7 @@ PER_QUAD_REFUSED = [
 #: The comment on each row is `3.11/3.12 answer / 3.13+ answer`. Nothing here
 #: runs on the reference interpreter — the assertion is the REFUSAL — because a
 #: differential row can only pin what CPython holds still, and this is the one
-#: thing it did not. `tests/test_shims.py` reached the same conclusion for the
-#: MicroPython tier and dropped `b"aGk=aGk="` from its differential cases for
-#: the same reason.
+#: thing it did not.
 VERSION_SPLIT = [
     B + "print(base64.b64decode(b'AA==AA=='))",     # b'\x00'     / b'\x00\x00\x00'
     B + "print(base64.b64decode(b'AB==CD=='))",     # b'\x00'     / b'\x00\x10\x83'

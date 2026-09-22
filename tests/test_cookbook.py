@@ -338,7 +338,7 @@ def test_a_recipe_naming_an_engine_outside_the_spectrum_is_an_error():
     with pytest.raises(ValueError, match="not in the spectrum"):
         parse_cookbook('<!-- recipe id=r kind=module detail="x" engine=%s -->\n'
                        "```python\n# before\npass\n```\n"
-                       "```python\n# after\npass\n```\n" % engines.MICROPYTHON)
+                       "```python\n# after\npass\n```\n" % "unknown-engine")
 
 
 def test_served_by_must_name_a_larger_variant_than_the_one_refusing():

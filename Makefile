@@ -23,7 +23,6 @@ help:
 	@echo
 	@echo '  build        compile the engines into ~/.lypning/bin'
 	@echo '               (`make build ARGS=--rust` for the Rust core alone, seconds;'
-	@echo '                the MicroPython tier needs a 32-bit toolchain and a network)'
 	@echo '  test         the unit tests (pytest; dev extra)'
 	@echo '  check        the four gates you owe before saying you are done'
 	@echo '  conformance  run the corpus against CPython — MISMATCH must be 0'
@@ -56,7 +55,6 @@ doctor:
 
 # CLAUDE.md's "before you say you are done", in the order it lists them. The
 # conformance arms are named rather than left to discovery: on a machine where
-# the MicroPython tier happens to be built, a bare run ends at MISMATCH 2 on a
 # defect this checkout did not introduce (docs/LYPNING.md §6), and a gate that
 # is red before you start is a gate you learn to ignore. Run `make conformance`
 # with no arguments to see the whole battery including that one.
@@ -103,8 +101,6 @@ dist-check:
 	@$(PYTHON) -c "import glob, zipfile; bad = sorted(n for w in glob.glob('dist/*.whl') for n in zipfile.ZipFile(w).namelist() if '__pycache__' in n or '/target/' in n or '/build/' in n or '/.build/' in n or '/.swiftpm/' in n or '/node_modules/' in n or n.endswith(('.pyc', '.o', '.a', '.rlib', '.so', '.dylib', '.node', '.class'))); print('wheel: no build output' if not bad else 'wheel CONTAMINATED with build output: ' + ', '.join(bad[:5])); raise SystemExit(bool(bad))"
 
 # Engine builds are NOT removed here: assets/rust/target is minutes of cargo and
-# assets/micropython/build is a toolchain plus a network away. Drop those with
-# `rm -rf src/lypning/assets/rust/target src/lypning/assets/micropython/build`,
 # and the installed binaries with `rm -rf ~/.lypning`.
 clean:
 	rm -rf dist build src/*.egg-info .pytest_cache

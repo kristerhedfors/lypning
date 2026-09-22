@@ -21,8 +21,8 @@ THREE KINDS OF ANSWER, kept apart on purpose:
   no runner       the contract is described and nothing executes it — the
                   failure mode this module exists to make loud
 
-An absent oracle is never a zero and never a pass (CLAUDE.md, the oracle-absent
-contract): it is a hole with a note, here as everywhere.
+An absent optional variant is never a zero and never a pass (CLAUDE.md): it is
+a hole with a note, here as everywhere.
 """
 
 from __future__ import annotations
@@ -196,21 +196,16 @@ def run_pins(nodes: List[str], root: Optional[Path] = None,
 
 
 def binaries() -> List[Dict[str, Any]]:
-    """Each variant: built or not, its size, and its block count against ITS budget.
-
-    `lypning-mp` is the oracle and is measured, never routed to (invariant 9).
-    Absent, it is a hole with a note — never a zero and never a pass.
-    """
+    """Each variant: built or not, its size, and its block count against ITS budget."""
     out = []
     # Through `engines`, never spelled here: invariant 9 says a name that still
     # resolves is a name that can drift back into the code, and
     # `tests/test_engines.py` enforces it. The oracle is appended rather than
     # being in SPECTRUM because nothing routes to it.
-    for name in engines.SPECTRUM + (engines.MICROPYTHON,):
+    for name in engines.SPECTRUM:
         found = engines.find(name)
         path = str(found) if found else None
-        row: Dict[str, Any] = {"name": name, "path": path,
-                               "oracle": name == engines.MICROPYTHON}
+        row: Dict[str, Any] = {"name": name, "path": path}
         if not found or not found.is_file():
             row.update({"built": False, "bytes": None, "blocks": None,
                         "budget": gate.VARIANT_BLOCK_BUDGET.get(name),

@@ -658,8 +658,8 @@ static int answer(const program *p)
                     show("stderr", err.b, err.len);
                 }
                 /* The dispatcher's own predicate, asked of the next engine's
-                 * result. A harness chaining lypning -> lypning-mp -> CPython
-                 * asks this at every link; here there is no link after CPython,
+                 * result. A harness chaining multiple runtimes asks this at
+                 * every link; here there is no link after CPython,
                  * so a yes is worth saying out loud rather than swallowing. */
                 if (lypning_fall_onward(code, err.b, err.len)) {
                     printf("  note      that result asks to fall onward too, and there is "

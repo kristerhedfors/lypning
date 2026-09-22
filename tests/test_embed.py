@@ -439,9 +439,8 @@ def test_route_answers_without_running_anything(lypning_lib, tmp_path, monkeypat
     monkeypatch.chdir(tmp_path)
     r = lypning_lib.route("import subprocess\nopen('written.txt', 'w').write('x')")
     # The library is built as the LARGEST variant, which serves `re` now, so
-    # the module nobody but CPython has is the one to ask about: lypning-mp is
-    # an oracle rather than a tier, so the cheapest engine that can run this
-    # is CPython.
+    # The module nobody but CPython has is the one to ask about, so the cheapest
+    # engine that can run this is CPython.
     assert r.engine == "cpython"
     assert r.kind == "module" and "subprocess" in r.detail
     assert r.imports == ["subprocess"]

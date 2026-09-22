@@ -22,11 +22,7 @@ and the capture log is never touched.
 **``--dry-run`` is real.** :func:`plan_install` opens files and writes none;
 :func:`render_plan` prints every action that would happen, with the settings
 merge shown as a unified diff of the JSON. A user gets to read the change to
-their config before it is a change to their config.
-
-The MicroPython tier is allowed to be missing throughout — an engine that is not
-built is a status line, never an error.
-"""
+their config before it is a change to their config."""
 
 from __future__ import annotations
 
@@ -684,8 +680,6 @@ def status(project: Path | str | None = None) -> dict:
         "states": [s.as_dict() for s in shim_module.status()],
         "path_problem": shim_module.path_problem(),
     }
-    # An engine that is not built is a status line, never an error — lypning-mp
-    # needs a toolchain and a network the install may simply not have.
     out["engines"] = {name: (str(p) if p else None) for name, p in engines.available().items()}
     return out
 

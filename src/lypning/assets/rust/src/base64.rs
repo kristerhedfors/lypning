@@ -57,8 +57,7 @@
 //! and later, and `b"AAA=A"` is `b'\x00\x00'` on one pair and `b'\x00\x00\x00'`
 //! on the other. The engine has ONE answer and cannot be right for both — so on
 //! exactly these inputs it gives none, and the chain spends one spawn on the
-//! interpreter that owns the question. `src/lypning/assets/micropython/lib/
-//! README.md` records the same split from the other side.
+//! interpreter that owns the question.
 //!
 //! The two families agree **exactly** when no alphabet byte follows the pad
 //! that closes a quad — checked by enumerating both models on 2026-09-12 over

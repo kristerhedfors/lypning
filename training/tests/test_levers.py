@@ -317,17 +317,6 @@ def test_the_program_text_is_never_the_rule(result):
     assert row["mentions_own_package"] > 0
 
 
-def test_the_oracle_is_evidence_and_not_a_layer(result):
-    """A module the oracle serves may still be a fallback, and one it does not
-    serve may still be engine-addressable. If either stops being true the column
-    has quietly become a rule."""
-    rows = dict((r["family"], r) for r in result["families"])
-    assert rows["module: tempfile"]["oracle_serves"] is True
-    assert rows["module: tempfile"]["bucket"] == levers.LEGITIMATE_FALLBACK
-    assert rows["module: itertools"]["oracle_serves"] is False
-    assert rows["module: itertools"]["bucket"] == levers.ENGINE_ADDRESSABLE
-
-
 def test_the_closed_list_outranks_a_declaration(result):
     """The engine's statement about a kind wins over a family declaration.
 
@@ -488,7 +477,6 @@ def test_it_degrades_without_an_engine(classified, monkeypatch):
     declaration that was never allowed to name them.
     """
     monkeypatch.setattr(levers, "closed", lambda: frozenset())
-    monkeypatch.setattr(levers, "oracle_modules", lambda: frozenset())
     result = levers.table(classified, source=CLASSIFIED, loaded=len(classified))
     assert result["engine"]["available"] is False
     assert "not importable" in levers.engine_note(result["engine"])

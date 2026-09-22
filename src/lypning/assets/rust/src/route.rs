@@ -47,11 +47,6 @@ pub struct Variant {
     pub caps: &'static [&'static str],
 }
 
-/// The spectrum, cheapest first. EVERY variant carries the whole table, not
-/// just its own row: the prototype that carried only its own capabilities
-/// routed `import json` past its larger sibling straight to lypning-mp,
-/// because the router could not know a sibling existed. The names are the
-/// Python side's `engines.SPECTRUM`, in this order, pinned by test.
 pub const SPECTRUM: &[Variant] = &[
     Variant { name: "lypning", caps: &[] },
     Variant {
@@ -297,15 +292,6 @@ impl Verdict {
 
 pub const CPYTHON_NAME: &str = "cpython";
 
-/// The MicroPython build's name. NOT a routing destination — it left the chain
-/// on 2026-09-04 and is kept as an ORACLE: a second, independent reimplementation
-/// of Python whose measured divergences from CPython (`.github/known-mismatches.json`,
-/// 79 entries in 34 families) are the empirical list of what a reimplementation
-/// gets wrong, and therefore what a larger Rust variant must implement exactly
-/// or refuse. Nothing here routes to it; `MICROPYTHON_MODULES` below is its
-/// import surface, read as the oracle's reach and as `lypning-l`'s build order.
-pub const ORACLE_NAME: &str = "lypning-mp";
-
 /// Every engine name in cost order — the spectrum, then CPython. The same tuple
 /// the Python side calls `ENGINE_ORDER`.
 pub fn engine_order() -> Vec<&'static str> {
@@ -428,20 +414,6 @@ fn engine_from_verdicts(vs: &[Verdict]) -> Engine {
         .unwrap_or(Engine::CPython)
 }
 
-/// The chain the dispatcher walks after `after` refused AT RUNTIME with
-/// `kind` — the rule both dispatchers use, so it is spelled here once and the
-/// Python side is held to it by a cross-product test.
-///
-/// A kind in `ONLY_CPYTHON_KINDS` rules out every reimplementation. Otherwise:
-/// each later Rust sibling whose STATIC verdict was "can run" (it already
-/// satisfied the imports and every static kind) AND whose capabilities are a
-/// strict superset of the refusing rung's — a sibling built with the same
-/// `cap-*` set cannot answer at runtime what this one could not, and trying it
-/// is a spawn wasted; then lypning-mp if it can import everything, then
-/// CPython. There is no tier between the spectrum and CPython: lypning-mp left
-/// the chain on 2026-09-04 (it is the oracle now), so a refusal a larger sibling
-/// cannot answer costs a CPython spawn — which is exactly what makes
-/// `conformance --plan` rank the build order by real cost.
 pub fn chain_after(after: &str, kind: &str, verdicts: &[Verdict]) -> Vec<&'static str> {
     let order = engine_order();
     let start = order.iter().position(|e| *e == after).map(|i| i + 1).unwrap_or(order.len() - 1);
@@ -731,122 +703,10 @@ pub struct Route {
     pub reads_stdin: bool,
 }
 
-/// Modules the oracle lypning-mp serves: its frozen `micropython/lib` shim
-/// stdlib plus the MicroPython built-ins its variant enables. Not a routing
-/// table — nothing routes to the oracle (`ORACLE_NAME`) — but kept: it is the
-/// import surface `lypning conformance --engine lypning-mp` grades within, and
-/// a build order for a larger Rust variant. A table because the oracle is a
-/// separate binary that cannot be asked.
-///
-/// `argparse` was added 2026-08-25. `tests/test_routing.py` reported it — that
-/// test asks the tier what it can import and warns about anything the corpus
-/// uses that this table omits, because every such program takes a CPython spawn
-/// it does not need. The test **warns and never asserts**, on purpose: a test
-/// that failed until someone edited this table would demand exactly the edit
-/// CLAUDE.md invariant 1 prohibits.
-///
-/// **`unicodedata` was reported by the same test and is deliberately NOT here.**
-/// The tier imports it; it does not serve it. `unicodedata.decomposition` is
-/// absent, so a corpus program that prints a version banner and then calls it
-/// gets its banner onto stdout before the refusal — and lypning-mp streams, so
-/// those bytes are already committed (§6). Adding the module moved routing
-/// safety's fatal count from **UNSAFE 4 to 5**. That is the whole meaning of
-/// "importable is not the same as complete", and it is why this table is earned
-/// with `lypning conformance` rather than with `import x` returning 0.
-/// `docs/HILLCLIMB.md` iteration 40 has the measurement.
-///
-/// **`random` left this table on 2026-09-02, and is deliberately NOT here.**
-/// MicroPython's generator is not MT19937, so any *seeded* stream it answers
-/// is a plausible wrong number at exit 0 — and whether a program is seeded
-/// cannot be decided statically. A `random.seed` marker was tried and defeated
-/// by every spelling it could not see: `from random import *`,
-/// `getattr(random, "seed")`, a bound name `s = random.seed`, and any
-/// parse-time blocker (`class C: pass` beside the seed), which stops the walker
-/// before a marker is set. The Rust core serves the seeded-integer subset
-/// (`random.rs`) and CPython serves the rest; an unseeded stream costs one
-/// CPython spawn more than it did, which is the price of never being wrong.
-const MICROPYTHON_MODULES: &[&str] = &[
-    "argparse",
-    "base64",
-    "binascii",
-    "builtins",
-    "cmath",
-    "collections",
-    "contextlib",
-    "csv",
-    "datetime",
-    "errno",
-    "glob",
-    "hashlib",
-    "io",
-    "json",
-    "math",
-    "os",
-    "os.path",
-    "pathlib",
-    "re",
-    "shutil",
-    "statistics",
-    "struct",
-    "sys",
-    "tempfile",
-    "textwrap",
-    "time",
-    "urllib",
-    "urllib.parse",
-    "zlib",
-];
-
-/// Refusal kinds after which the chain jumps straight to CPython, skipping
-/// every larger Rust sibling.
-///
-/// Falling through assumes the next rung is at least as correct as the one that
-/// refused, and for a capability gap it is — "I have no `collections`", and
-/// `lypning-l` has it. These are not capability gaps. Each names a behaviour
-/// CPython has that is subtle enough that the refusal exists BECAUSE a
-/// reimplementation gets it wrong, so a larger build of the same
-/// reimplementation gets it wrong too and would answer at exit 0 rather than
-/// refusing. The oracle's measured divergences (`.github/known-mismatches.json`)
-/// are where these kinds come from.
-///
-/// **This table is read by both dispatchers.** It was not: the rule was added to
-/// `engines.dispatch` (the Python one, which `lypning conformance` measures) and
-/// not to `dispatch` below (the Rust one, which is what `lypning run` actually
-/// executes and what `lypning bench` times). So the correctness gate tested a
-/// dispatcher users do not run, the cost gate ran a dispatcher nothing checked,
-/// and three measured programs answered wrongly at exit 0 through the binary
-/// while answering correctly through the battery:
-///
-/// ```text
-/// lypning run -c 'print({3,1,2})'                 {3, 1, 2}   CPython {1, 2, 3}
-/// lypning run -c 'x=float("nan")\nprint(x in [x])'  False     CPython True
-/// lypning run -c 'print(9007199254740993 / 3)'    …330.5      CPython …331.0
-/// ```
-///
-/// `engines.ONLY_CPYTHON_REFUSALS` is now held to this list by
-/// `tests/test_routing.py`, which reads it out of this file the way
-/// `routing.micropython_modules()` reads `MICROPYTHON_MODULES` — a copy that
-/// cannot drift silently rather than a copy that already had.
-/// `int-div-precision` was in this table until `cap-bigint`. The entry was
-/// written while it meant *lypning-mp converts both operands to double and
-/// loses the low bits*, and with that tier gone it read as *no reimplementation
-/// may answer this*. `bigint::div_exact` answers it exactly, from the integers,
-/// so leaving the kind here would send every one of those programs past the
-/// variant that has the answer.
-///
-/// Keep the body a plain sorted list of quoted kinds: `routing.only_cpython_kinds`
-/// reads it by regex over the ARRAY, so a sentence in double quotes between the
-/// entries becomes an entry.
 pub const ONLY_CPYTHON_KINDS: &[&str] = &[
     "del",
     "dict-view",
-    // Built-in types on lypning-mp carry no `__module__`/`__doc__`, so the
-    // getattr-with-default idiom prints the default at exit 0. `dunder-attr`
-    // (the names mp answers, `__name__`/`__class__`) still falls through.
     "dunder-missing",
-    // lypning-mp ignores every encoding argument that is not UTF-8: measured
-    // 2026-08-30, `bytes('a', 'bogus')` answers b'a' where CPython raises
-    // LookupError, and latin-1/utf-16/ascii all come back as the UTF-8 bytes.
     "encoding",
     "exception-chaining",
     // A `glob.glob()` result in a position that would show the ORDER of two or
@@ -855,14 +715,7 @@ pub const ONLY_CPYTHON_KINDS: &[&str] = &[
     // reimplementation is no likelier to reproduce it than the first was.
     // `glob.rs`, and the static blocker in `walk_expr` below.
     "glob-order",
-    // `is` between two equal immutables not provably the same object. The kind
-    // only fires on that ambiguous case, and it is exactly where lypning-mp
-    // answers wrongly: its small-int boxing makes `int('1000') is 1000` True
-    // where CPython says False. Measured 2026-08-30 on lypning-mp-i386.
     "identity",
-    // The message names an iterator type CPython spells from a family
-    // (`list_iterator`, …) and lypning-mp spells as `iterator` — measured, so
-    // its answer is the same wrong text this engine refused to print.
     "iterator-type-name",
     "json",
     // Every refusal `math.rs` raises: a domain error, a `TypeError` on a
@@ -871,16 +724,8 @@ pub const ONLY_CPYTHON_KINDS: &[&str] = &[
     // sibling would spend a spawn to be told no in the same words.
     "math",
     "nan-identity",
-    // A sort over a NaN is the sort algorithm's answer, not Python's, and
-    // lypning-mp's algorithm differs from timsort: `sorted([3,1,nan,2])` is
-    // `[1, nan, 2, 3]` there and `[1, 2, 3, nan]` in CPython. Measured
-    // 2026-08-30.
     "nan-order",
     "percent-format",
-    // Every refusal `random.rs` raises — an unseeded stream, a step, a seed
-    // that is not an int, a count past 64 bits. The module is off lypning-mp's
-    // table because its generator is not MT19937; a RUNTIME refusal must not
-    // undo that by falling one tier instead of two.
     "random",
     "repr-unicode",
     "set-method",
@@ -892,37 +737,6 @@ pub fn only_cpython(kind: &str) -> bool {
     ONLY_CPYTHON_KINDS.contains(&kind)
 }
 
-/// Can the oracle lypning-mp import everything this program imports? Not a
-/// routing question — nothing routes to the oracle — but the reach that
-/// `lypning conformance --engine lypning-mp` grades within, read on the Python
-/// side through `routing.micropython_modules()`.
-pub fn micropython_imports(imports: &[String]) -> bool {
-    imports.iter().all(|m| MICROPYTHON_MODULES.contains(&m.as_str()))
-}
-
-/// Constructs no Rust variant has and no `cap-*` feature adds, so a program
-/// using one goes straight to CPython rather than paying a larger sibling's
-/// spawn to be told no. Distinct from [`ONLY_CPYTHON_KINDS`]: those are
-/// behaviours a reimplementation gets WRONG; these are ones it does not have.
-///
-/// `decorator` and `generator` were here and should not have been: the rung
-/// that then stood below the spectrum ran both, and ten corpus programs were
-/// sent past it (CHANGELOG.md, 2026-08-25, #15). Today a refusal of either is
-/// decided like any other capability gap — by the siblings' verdicts.
-///
-/// `async` stays, and for a reason that shows what this list is really for:
-/// `async def` may *parse* somewhere, so the syntax is not the problem —
-/// `asyncio` is what the program needs to do anything, and no Rust variant has
-/// it. This list is about where a program ENDS UP, not about what a parser
-/// accepts.
-///
-/// A decorator that comes *from* an absent module costs nothing either, and not
-/// by luck: `engine_for` checks the imports before it reaches this match, so
-/// `@functools.lru_cache` is decided by `import functools` and still goes
-/// straight to CPython. What is left to pay for is a decorator or generator that
-/// imports nothing lypning-mp lacks and fails there for some other reason — one
-/// spawn, and the chain still answers. WASTED is a budget; a program that could
-/// have skipped CPython entirely is worth more than that.
 const CPYTHON_ONLY_KINDS: &[&str] = &["async"];
 
 pub fn route(src: &str) -> Route {
@@ -1025,29 +839,8 @@ fn mentions_word(src: &str, word: &str) -> bool {
     false
 }
 
-/// The constructs a second reimplementation is KNOWN to get wrong lived here as
-/// `MICROPYTHON_UNSAFE` — a table whose only job was to keep a program off the
-/// MicroPython tier. That tier left the chain on 2026-09-04, so the table
-/// decided nothing and is gone; leaving a table wired into the walker that
-/// changes no route is the inert contradiction this file already paid for once.
-///
-/// The KNOWLEDGE is not lost, and is more load-bearing than before:
-/// `ONLY_CPYTHON_KINDS` (below) rules those constructs out of every Rust
-/// variant, not just of the departed tier, and `.github/known-mismatches.json`
-/// holds the oracle's 79 measured divergences in 34 named families — the list
-/// a larger variant must implement exactly or refuse.
 
 
-/// Which engine should run a program whose walker stopped on `kind`?
-///
-/// With lypning-mp out of the chain there is one question left: can any Rust
-/// variant at or above the router answer it (`verdicts`), or is it CPython's?
-/// This is now only the CPython-only check; the per-variant answer lives in
-/// `answers`. The old `match kind` arm that named the oracle's rung is gone
-/// with the rung — and with it `mp_risk`, whose whole job was to keep a program
-/// OFF it. The knowledge those tables held (which constructs a second
-/// reimplementation gets wrong) is not lost: it is `ONLY_CPYTHON_KINDS` below,
-/// which now rules out every Rust variant too, and `.github/known-mismatches.json`.
 fn cpython_only(kind: &str) -> bool {
     ONLY_CPYTHON_KINDS.contains(&kind) || CPYTHON_ONLY_KINDS.contains(&kind)
 }
@@ -1086,11 +879,6 @@ enum PatLit {
 struct Requirements {
     imports: BTreeSet<String>,
     blocker: Option<(String, String)>,
-    /// Families from `.github/known-mismatches.json` this program's SOURCE
-    /// `import random as r` — bound name to module, so the construct matchers
-    /// below can see through the alias. `r.seed(7)` defeated both the dotted
-    /// `random.seed` marker and the battery's own source regex: py-0e241643581e
-    /// reached lypning-mp and printed a different stream at exit 0.
     aliases: Vec<(String, String)>,
     /// `from re import search as s` — bound name to the `re` function it
     /// names, so a bare `s(…)` is seen as the call it is and its PATTERN can
@@ -3158,17 +2946,6 @@ fn walk_expr(e: &Expr, req: &mut Requirements) {
                 }
                 return;
             }
-            // Record any construct the oracle lypning-mp is known to answer
-            // wrongly (a family in `.github/known-mismatches.json`). This
-            // runs BEFORE the module/method resolution below, because the point
-            // is where the program must not GO, not what stops lypning.
-            //
-            // `.parts` is guarded on `pathlib`, since it is an ordinary
-            // attribute name and only the pathlib one is wrong; `__module__` is
-            // a dunder that means nothing else; a construct spelled with a dot
-            // is matched as a dotted path, so an unrelated `.seed` on some other
-            // object does not fire `random.seed`.
-            // A module attribute is decidable; anything else is a method name.
             if let Some(crate::value::Value::Module(m)) = resolve_module(b, &req.aliases) {
                 if crate::modules::get_attr(&crate::value::Value::Module(m), n).is_err() {
                     req.block("module-attr", format!("{m}.{n}"));

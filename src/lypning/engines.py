@@ -1,4 +1,4 @@
-"""Finding the three engines, running one, and routing between them.
+"""Finding the engines, running one, and routing between them.
 
 The invariants this module exists to hold:
 
@@ -7,11 +7,6 @@ program is outside my subset", and it is the only reason a caller may move to
 the next tier. Any other non-zero exit is the program's own, and must be
 reported as the program's own — a dispatcher that retried on exit 1 would run a
 half-completed program twice.
-
-**The refusal line goes to stderr and stdout stays clean.** lypning-mp once
-wrote tracebacks to stdout and poisoned every ``… | wc -l`` pipeline while the
-exit code still looked right, so :func:`run` keeps the two apart and the build
-scripts pin it.
 
 **CPython means the real CPython.** Capture installs a shim named ``python3``
 first on ``$PATH``; a conformance run that measured the shim would be measuring
@@ -23,8 +18,7 @@ captures what the process wrote (:attr:`Result.stdout_raw`) and decodes it once,
 in :func:`_as_text`, for display. The two must never be confused: that decode
 applies universal-newline translation, and applying it to both sides of a
 comparison is how line endings became an axis on which no engine could be caught
-disagreeing with CPython (issue #50).
-"""
+disagreeing with CPython (issue #50)."""
 
 from __future__ import annotations
 
@@ -45,7 +39,6 @@ from . import UNSUPPORTED_EXIT
 SHIM_MARKER = "LYPNING_SHIM_MARKER"
 
 LYPNING = "lypning"
-MICROPYTHON = "lypning-mp"
 CPYTHON = "cpython"
 
 #: The Rust spectrum, cheapest first: every variant built from the one crate, in
@@ -97,15 +90,6 @@ LIBRARY = "library"
 
 ENGINE_ORDER = SPECTRUM + (CPYTHON,)
 
-#: Engines that are measured but never routed to. lypning-mp left the chain on
-#: 2026-09-04: it is a second, independent reimplementation of Python, so the
-#: programs where IT diverges from CPython are the empirical catalogue of what a
-#: reimplementation gets wrong — which is what a larger Rust variant must
-#: implement exactly or refuse. `.github/known-mismatches.json` holds 79 of its
-#: divergences in 34 families; `lypning oracle` renders them. An oracle is
-#: findable, buildable and gradeable as an ARM, and appears in no chain.
-ORACLES = (MICROPYTHON,)
-
 #: Install-target suffixes `lypning build --target` appends so a cross-target
 #: binary never overwrites the host's: ``lypning-i686``. Documented, not
 #: enforced — :func:`parse_binary_name` takes whatever follows the engine name
@@ -114,19 +98,9 @@ ARCH_TOKENS = ("host", "i686", "x86_64", "aarch64", "arm64")
 
 
 def parse_binary_name(name: str) -> tuple[str, str]:
-    """``(engine, target)`` from an installed binary's file name.
-
-    The one parser for the ``<engine>[-<target>]`` shape. Engine names are tried
-    longest first so ``lypning-mp-i386`` is MicroPython for i386 and, once the
-    spectrum has ``lypning-l``, ``lypning-l-i686`` is that variant for i686 —
-    the ordering bug the gate's docstring used to warn about, solved once.
-    A name that is not an engine's parses as ``("", name)``.
-    """
+    """``(engine, target)`` from an installed binary's file name."""
     base = name.rsplit("/", 1)[-1]
-    # MICROPYTHON is here although it is not a routing destination: a file
-    # called `lypning-mp-i386` must still parse as that engine for i386, or the
-    # gate measures the oracle against a Rust variant's block budget.
-    for engine in sorted(SPECTRUM + ORACLES, key=len, reverse=True):
+    for engine in sorted(SPECTRUM, key=len, reverse=True):
         if base == engine:
             return engine, ""
         if base.startswith(engine + "-"):
@@ -138,14 +112,11 @@ def env_var_for(engine: str) -> str:
     """The ``LYPNING_*`` variable that pins ``engine``'s binary.
 
     ``LYPNING_BIN`` for the unsuffixed Rust variant, ``LYPNING_<V>_BIN`` for a
-    suffixed one (``LYPNING_L_BIN``), and the two historical names for the other
-    tiers. Spelled by rule so the five places that used to spell them by hand
-    cannot disagree.
+    suffixed one (``LYPNING_L_BIN``), and ``LYPNING_CPYTHON`` for the reference.
+    Spelled by rule so callers cannot disagree.
     """
     if engine == CPYTHON:
         return "LYPNING_CPYTHON"
-    if engine == MICROPYTHON:
-        return "LYPNING_MP_BIN"
     if engine == LYPNING:
         return "LYPNING_BIN"
     if engine in SPECTRUM and engine.startswith(LYPNING + "-"):
@@ -245,15 +216,6 @@ def find_lypning() -> Path | None:
     ])
 
 
-def find_micropython() -> Path | None:
-    """The MicroPython variant: ``$LYPNING_MP_BIN``, state bin dir, build dir, PATH."""
-    which = shutil.which(MICROPYTHON)
-    return _first_engine([
-        _override(env_var_for(MICROPYTHON), "point it at a `lypning build --micropython` binary"),
-        paths.bin_dir() / MICROPYTHON,
-        paths.build_dir() / "micropython" / "build" / MICROPYTHON,
-        Path(which) if which else None,
-    ])
 
 
 def _is_shim(p: Path) -> bool:
@@ -349,8 +311,6 @@ def find_variant(engine: str) -> Path | None:
 def find(engine: str) -> Path | None:
     if engine == LYPNING:
         return find_lypning()
-    if engine == MICROPYTHON:
-        return find_micropython()
     if engine == CPYTHON:
         return find_cpython()
     if engine in SPECTRUM:
@@ -358,9 +318,6 @@ def find(engine: str) -> Path | None:
     raise KeyError(engine)
 
 
-def oracles() -> "dict[str, Path | None]":
-    """The engines that are measured but never routed to — see :data:`ORACLES`."""
-    return {e: find(e) for e in ORACLES}
 
 
 def available() -> dict[str, Path | None]:
@@ -526,7 +483,7 @@ PATH_LIKE_ENV = (
     # conformance restore net.
     "LYPNING_HOME", "LYPNING_LOG", "LYPNING_LIB", "LYPNING_POOL",
     "LYPNING_TRANSCRIPTS", "CLAUDE_PROJECT_DIR", "OPENHANDS_PROJECT_DIR",
-) + tuple(env_var_for(e) for e in ENGINE_ORDER + ORACLES)
+) + tuple(env_var_for(e) for e in ENGINE_ORDER)
 
 
 def absolute_env_value(value: str) -> str:
@@ -930,66 +887,6 @@ def chain_from(engine: str) -> list[str]:
     return list(ENGINE_ORDER[i:])
 
 
-#: Refusal kinds after which the chain jumps straight to CPython.
-#:
-#: Falling through assumes the next tier down is at least as correct as the one
-#: that refused, and for most refusals it is: "I have no decorators" is a
-#: capability gap, and MicroPython has decorators. But some refusals are not
-#: about a missing feature at all. They say *CPython's behaviour here is subtle
-#: and I decline to guess it* — and a second independent reimplementation is no
-#: likelier to have replicated that subtlety than the first was. It is the
-#: defining property of these constructs that reimplementations get them wrong.
-#: That is why the refusal exists.
-#:
-#: For those, falling through does not cost a spawn. It converts a correct
-#: refusal into a **silent wrong answer at exit 0**, which is the one outcome
-#: the whole three-tier design exists to prevent.
-#:
-#: Measured over the corpus the run loaded (2,239 programs, 2026-08-28): tier 1
-#: refuses 569 programs, and 25 of those are then answered *wrongly* by the tier
-#: below.
-#:
-#: What each kind costs, on that corpus — programs tier 1 refuses with it, by
-#: what lypning-mp then did. The right-hand column is the price: a program mp
-#: would have answered correctly now pays a CPython spawn instead of a
-#: MicroPython one. It is not zero, and an earlier revision of this comment said
-#: it was:
-#:
-#:     nan-identity 0/2   percent-format 0/2   del 0/1   dict-view 0/1
-#:     exception-chaining 0/1   json 0/1   set-method 0/1     (mp right / wrong)
-#:     set-order 4/1      repr-unicode 1/1     int-div-precision 0/1
-#:
-#: So five programs get slower and nine wrong answers become right ones. The
-#: trade is deliberately asymmetric in the same direction as invariant 1: a
-#: spawn is milliseconds and a wrong answer is the thing the mixture exists to
-#: prevent.
-#:
-#: A kind where MicroPython is *usually* right is deliberately NOT here, because
-#: escalating it would pay that spawn on every occurrence. `bigint` was, and was
-#: the reason this comment needed correcting: it names eleven refusals of which
-#: MicroPython answers TEN correctly, since MicroPython has arbitrary-precision
-#: integers and this is exactly the gap. Only the eleventh — int/int past 2**53,
-#: where the quotient needs rounding neither engine can do — is a subtlety, and
-#: it now carries its own kind, `int-div-precision`. Where a kind is mixed, split
-#: it in the engine; do not escalate the whole of it from here.
-#:
-#: This is not the capability table and must not be edited like one. Adding a
-#: kind here is a claim that no reimplementation short of CPython gets the
-#: construct right; removing one is a claim that a wrong answer was acceptable.
-#: `tests/test_routing.py` checks it against the battery in both directions.
-#: Refusal kinds after which the chain jumps straight to CPython — skipping
-#: EVERY Rust variant, not just the departed MicroPython tier.
-#:
-#: The rule was written when lypning-mp sat in the middle and each entry was
-#: measured on it: "mp's small-int boxing answers True", "mp spells every
-#: iterator type `iterator`", "a sort over a NaN is the algorithm's answer and
-#: mp's algorithm differs". Those measurements are why the rule exists, and
-#: they say something larger than they were used for. A kind is here because a
-#: REIMPLEMENTATION gets it wrong — and `lypning-l` is a reimplementation. So
-#: with the tier gone the same 16 kinds mean strictly more: not "skip the middle
-#: tier" but "no Rust variant may answer this, at any size". They are the one
-#: part of the spectrum's build order that is closed rather than open, and
-#: `lypning oracle` is where the evidence for each of them lives.
 ONLY_CPYTHON_REFUSALS = frozenset({
     "dunder-missing",     # mp builtins carry no __module__/__doc__; the getattr default wins
     "encoding",           # mp ignores every non-UTF-8 codec and answers the UTF-8 bytes
@@ -1014,34 +911,13 @@ ONLY_CPYTHON_REFUSALS = frozenset({
 })
 
 
-_MP_MODULES: "frozenset[str] | None" = None
 
 
-def oracle_can_import(imports: Iterable[str]) -> bool:
-    """Can the ORACLE import everything in ``imports``?
-
-    No longer a routing question — lypning-mp is not a destination. It answers
-    "is this program one the oracle can be asked about at all", which is what
-    bounds `lypning oracle`'s reach over the corpus, and it is read from
-    ``route.rs``'s table rather than restated.
-    """
-    global _MP_MODULES
-    if _MP_MODULES is None:
-        from . import routing  # a cycle at import time, not at call time
-        try:
-            _MP_MODULES = frozenset(routing.micropython_modules())
-        except Exception:
-            _MP_MODULES = frozenset()
-    if not _MP_MODULES:
-        return True
-    return all(m in _MP_MODULES for m in imports)
 
 _CPYTHON_ONLY_CONSTRUCTS: "frozenset[str] | None" = None
 
 
 def _cpython_only_constructs() -> "frozenset[str]":
-    """``route::CPYTHON_ONLY_KINDS``, read once. A cycle at import time, not at
-    call time — the same shape :func:`oracle_can_import` uses."""
     global _CPYTHON_ONLY_CONSTRUCTS
     if _CPYTHON_ONLY_CONSTRUCTS is None:
         from . import routing
@@ -1056,13 +932,6 @@ def chain_after_refusal(engine: str, kind: str, imports: Iterable[str] = (),
                         verdicts: Iterable[tuple] = ()) -> list[str]:
     """What is left of the chain once ``engine`` has refused with ``kind``.
 
-    The rule `route.rs` spells in ``chain_after``, held to it by a cross-product
-    test (`lypning route --next`): a kind in :data:`ONLY_CPYTHON_REFUSALS` — or
-    in ``route::CPYTHON_ONLY_KINDS``, the constructs no reimplementation HAS —
-    rules out every reimplementation; otherwise each later Rust sibling whose
-    STATIC verdict was "can run" (it already satisfied the imports and every
-    static kind), then lypning-mp if it can import everything, then CPython.
-
     The second table was missing here, and it could not be seen while every
     Rust variant carried the same capabilities: both dispatchers answered
     ``[cpython]`` for an ``async`` refusal, one because the kind said so and one
@@ -1071,8 +940,7 @@ def chain_after_refusal(engine: str, kind: str, imports: Iterable[str] = (),
     :data:`ONLY_CPYTHON_REFUSALS`'s own table is checked against it.
 
     :mod:`lypning.routing` reads the same rule to grade a route, so the grader
-    models the chain the dispatcher actually walks.
-    """
+    models the chain the dispatcher actually walks."""
     rest = chain_from(engine)[1:]
     if kind in ONLY_CPYTHON_REFUSALS or kind in _cpython_only_constructs():
         return [CPYTHON]

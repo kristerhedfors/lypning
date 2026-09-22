@@ -1,13 +1,13 @@
 ---
 name: lypning
-description: Route Python one-liners through lypning instead of python3, and understand what it refuses. Load when about to run python from Bash in a repo where lypning is installed (`lypning -c`, `lypning run -c`, `lypning route -c`), when a command exited 90 or printed "unsupported:", when python startup cost matters, or when asked why a program went to CPython rather than the subset. Also load when working ON this package — the Rust subset, the oracle lypning-mp (measured, never routed to), the classifier, the conformance battery, the differential fuzzer, the benchmarks (`lypning bench`, `lypning corpus-time`), the capture harness that grows the corpus, or anything under src/lypning/ or assets/rust/.
+description: Route Python one-liners through lypning instead of python3, and understand what it refuses. Load when about to run python from Bash in a repo where lypning is installed (`lypning -c`, `lypning run -c`, `lypning route -c`), when a command exited 90 or printed "unsupported:", when python startup cost matters, or when asked why a program went to CPython rather than the subset. Also load when working ON this package — the Rust subset, the classifier, the conformance battery, the differential fuzzer, the benchmarks (`lypning bench`, `lypning corpus-time`), the capture harness that grows the corpus, or anything under src/lypning/ or assets/rust/.
 ---
 
 # lypning — the Coding Harness Interpreter Optimizer (a mixture of Pythons)
 
 Reference: this file is the only one that ships with the skill. The rest —
 `docs/LYPNING.md` (design), `docs/SUBSET.md` (the subset and the refusal
-contract), `docs/MICROPYTHON.md` (the oracle), `docs/COOKBOOK.md` (unsupported
+contract), `docs/COOKBOOK.md` (unsupported
 Python, rewritten) — live in the **lypning repository**, not in the project
 this skill was installed into. Do not go looking for them here unless this
 *is* that repository.
@@ -28,8 +28,7 @@ lypning doctor                    # the same with an opinion; non-zero on any FA
 The chain, cheapest first: **lypning** (the Rust core), **lypning-l** (the same
 crate built with `collections` and `pathlib`), **cpython** — plus a classifier
 that picks one per program and a dispatcher that recovers when the pick was
-wrong. **lypning-mp** is the oracle — measured, never routed to
-(`lypning oracle`).
+wrong.
 
 **A refusal is exit `90`, one `<engine>: unsupported: <kind>: <detail>` line on
 stderr, and nothing on stdout.** That is not a failure; it means "outside my
@@ -39,18 +38,10 @@ that retried on exit 1 would run a half-completed program twice.
 
 If `lypning status` says `not built`, everything routes to cpython and the
 numbers below do not apply. `lypning build --rust` takes seconds and needs only
-cargo. The oracle needs a 32-bit C toolchain and a network and is **absent by
-default**; that is a status line, never an error.
+cargo. Missing optional variants are reported as `not built`.
 
 **Never quote a remembered corpus size.** Capture grows it every session. Every
 tool prints the count it loaded — quote that number, from that run.
-
-**The oracle.** `lypning oracle` renders the divergences a second
-reimplementation of Python recorded against CPython, family by family, from
-`.github/known-mismatches.json` (a checkout only; a wheel says it has none).
-Each family is something to implement exactly or refuse — never approximate.
-The oracle may not widen a capability table, stand in for CPython, or gate a
-build; `--engine lypning-mp` measures it only when named (`LYPNING_MP_BIN`).
 
 ## 1a. Writing python that stays on lypning
 
@@ -227,68 +218,8 @@ Two rules that are easy to break:
 
 ## 7. Traps already paid for
 
-- **Static musl is a precondition, not a preference.** A glibc-dynamic build
-  opens five files at startup where musl-static opens none, and starts several
-  times slower (`build-rust.sh`'s header has the measurement). The dynamic loader's
-  five opens are the ENTIRE gap, and measuring the wrong binary understates
-  lypning by more than everything else the benchmark varies. `lypning build
-  --rust` defaults to musl for exactly this reason; `--target host` builds the
-  dynamically linked control and **installs it under the same name**, so put
-  the musl build back before quoting anything.
-- **`Command::output()` defaults stdin to /dev/null.** The forked intermediate
-  rung silently answered about an empty stream, and every `stdin → transform →
-  stdout` one-liner — the corpus's largest cluster — got the wrong answer at
-  exit 0. Only the end-to-end mixture arm could see it; per-engine conformance
-  could not.
-- **`sys.argv` is not the process argv.** `python -c PROG a b` gives
-  `['-c','a','b']`; `python f.py a b` gives `['f.py','a','b']`; and under
-  `lypning run` the dispatcher's own subcommand must not appear. Three separate
-  bugs, all in the same six lines.
-- **An engine's `MemoryError` is not the program's answer.** A MicroPython heap
-  is a fraction of CPython's, so `json.load` on a 4 MB file dies there and
-  succeeds under python3 — with a *non-zero* exit and a traceback, which looks
-  exactly like a program that legitimately raised. The chain treats MemoryError
-  as a refusal; it deliberately does NOT treat an ordinary non-zero traceback
-  that way, because re-running would execute the program's side effects twice.
-- **`opt-level = "z"` saved bytes and zero CheerpX blocks (2026-08-24,
-  `docs/HILLCLIMB.md`).** Cold cost is a
-  step function in 131,072 B device blocks (`gate.DEVICE_BLOCK`), so a saving
-  that crosses no boundary streams the same number of fetches. Check the block
-  count, not the byte count.
-- **RUNNING THE CORPUS CAN REWRITE THIS REPOSITORY.** The corpus is harvested
-  from real agent sessions, so it is full of programs that edit `src/`, `docs/`
-  and the skills. Every entry gets its own temp cwd, entries naming an absolute
-  path are skipped rather than run, and both `lypning conformance` and `lypning
-  bench` bracket the run with a `git status` snapshot that restores and reports
-  anything that changed anyway — and fails the run when it did. That is a
-  **net, not a sandbox**: it cannot undo a write outside the repository. The
-  first measurement runs of this project rewrote 34 tracked files, and the
-  failure looked like "my change broke the suite" for a while before it looked
-  like what it was. **`git status` before and after any corpus run, and never
-  trust a suite result taken across one without checking.**
-- **A benchmark total over different program sets is not a comparison.** An arm
-  that refuses work looks faster the less it can do. `lypning bench` reports the
-  SHARED subset (what every arm ran) and the whole corpus separately, and the
-  second is the one that answers "what does a session cost".
-
 ## 8. Honest scope
 
 Roughly two-thirds of the corpus runs on the Rust subset and the mixture answers
 all of it; both numbers move every session and both tools print the corpus size
 they loaded. All of it is measured on a normal Linux filesystem.
-
-**The sandbox arm HAS been run** (2026-08-19, `docs/LYPNING.md` §8a), and it
-does not say what the filesystem numbers imply. Two corrections came out of it.
-Every published lypning figure had been measured with the **x86_64** binary,
-which CheerpX — 32-bit x86 only — cannot load at all; `lypning build --rust
---target i686` is the one that runs there. And in the VM the two subsets are
-within noise of each other on every probe, because a 50–85 ms exec round-trip
-floor sits under both, while lypning costs **1.67x lypning-mp's bytes on first
-touch** (1,280 KB vs 768 KB — 8 device blocks against 3). What the measurement
-DOES support is the case for a subset at all: `python3 -c 'import json; …'`
-took **13.3 s** cold in that image (2026-08-19) against lypning-mp's 61 ms and
-lypning's 23 ms, and the exec ceiling that destroys the VM is 30 s. Do not argue
-lypning over lypning-mp on sandbox speed; the evidence is not there. And cold
-VM boot dominated the sandbox turn regardless (2026-08-19): 24.4 s of boot
-against 290 ms of commands. This is a real but **secondary** term, and no
-user-facing copy should say the sandbox is fast because of it.

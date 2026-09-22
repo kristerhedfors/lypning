@@ -82,7 +82,7 @@ from . import corpus
 from .corpus_safety import external_mutation as _external_mutation
 from . import engines as eng
 from . import paths
-from .engines import CPYTHON, LIBRARY, LYPNING, MICROPYTHON
+from .engines import CPYTHON, LIBRARY, LYPNING
 
 MATCH = "MATCH"
 UNSUPPORTED = "UNSUPPORTED"
@@ -98,16 +98,6 @@ MIXTURE = "mixture"
 #: nobody runs and the benchmark timed one nothing graded.
 MIXTURE_RUST = "mixture-rust"
 
-#: The same lypning, reached through the C ABI in this process instead of
-#: through a spawn. It is measured as its own arm for one reason: the
-#: interpreter is shared with the ``lypning`` arm but the plumbing around it —
-#: the in-process exit path, the captured streams, the injected stdin and argv —
-#: is a SECOND implementation of the refusal contract, and invariant 2 says that
-#: contract has only ever broken silently. If this arm and the ``lypning`` arm
-#: ever disagree, one of the two is wrong and the corpus is what says so.
-#:
-#: Not in :data:`DEFAULT_ARMS`, exactly like the MicroPython tier is not: the
-#: library is optional, and an absent one is a missing arm, never a failure.
 
 VERDICTS = (MATCH, UNSUPPORTED, MISMATCH)
 
@@ -119,7 +109,7 @@ DEFAULT_ARMS = tuple(eng.SPECTRUM) + (MIXTURE,)
 #: the reason LIBRARY is: it needs a build most machines cannot do (a 32-bit
 #: toolchain and a network), and it grades a question — "what does a second
 #: reimplementation get wrong?" — that is not "did the chain answer correctly".
-OPT_IN_ARMS = tuple(eng.ORACLES) + (LIBRARY, MIXTURE_RUST)
+OPT_IN_ARMS = (LIBRARY, MIXTURE_RUST)
 
 DEFAULT_TIMEOUT = 30.0
 
@@ -209,8 +199,6 @@ _RUN_SPECIFIC_LITERAL = tuple(re.compile(p) for p in (
 # member must be justified by a written standard rather than by convenience —
 # the temptation is to silence a real divergence by declaring it unspecified.
 _IMPLEMENTATION_DEFINED = tuple(re.compile(p) for p in (
-    # DEFLATE (RFC 1951) constrains the stream, never its length: 12 bytes under
-    # CPython's zlib, 11 under MicroPython's deflate. Both are valid.
     r"len\s*\(\s*(?:zlib|gzip)\s*\.\s*compress",
 ))
 
@@ -559,21 +547,10 @@ _SEEDS = re.compile(r"\bseed\s*\(\s*(?!\)|None\b)")
 def is_seeded_stream(entry: Any) -> bool:
     """A `random` program whose stream is fixed by an explicit seed.
 
-    Reproducible — but only by an engine running CPython's Mersenne Twister.
-    Tier 1 does (`random.rs`), so its stdout is compared like any other
-    program's; MicroPython's generator is a different algorithm, so for the
-    `lypning-mp` arm stdout is not compared and the exit code stands alone.
-    That arm is graded on a program the chain never gives it: lypning-mp is an
-    ORACLE, not a tier — nothing routes to it at all. The exemption describes a
-    binary the chain cannot reach, not one it trusts, and it stays because the
-    oracle is still *measured*: a seeded stream there is a plausible wrong
-    number, so its exit code has to stand alone.
-
     The seed regex is a heuristic and errs loud: `seed(x)` with `x = None`
     counts as seeded, and such a program is compared and may MISMATCH against
     its own unseeded reference — a false alarm somebody reads, never a wrong
-    answer nobody does.
-    """
+    answer nobody does."""
     if "seeded" in _tags(entry):
         return True
     view = _view(entry)
@@ -1418,8 +1395,7 @@ def classify(ref: eng.Result, got: eng.Result, engine: str, entry: Any) -> Verdi
     # same bytes, decoded but not normalised, so a CRLF divergence prints as one.
     want, mine = ref.stdout_bytes, got.stdout_bytes
 
-    skip_stdout = is_nondeterministic(entry) or (
-        engine == eng.MICROPYTHON and is_seeded_stream(entry))
+    skip_stdout = is_nondeterministic(entry)
     ref_head, ref_exc = stderr_shape(ref.stderr)
     got_head, got_exc = stderr_shape(got.stderr)
 
@@ -1471,15 +1447,6 @@ def classify(ref: eng.Result, got: eng.Result, engine: str, entry: Any) -> Verdi
     if got.returncode == eng.UNSUPPORTED_EXIT and not forged:
         if refusal:
             if mine:
-                # A refusal is only interchangeable with the next tier's answer
-                # because it leaves nothing behind. Output that already reached
-                # stdout is the one thing the next tier cannot take back: the
-                # caller gets the refusing tier's lines AND the answering tier's,
-                # so a `… | wc -l` reads high while the exit code still looks
-                # right — which is exactly how lypning-mp's tracebacks-to-stdout
-                # went unnoticed (engines.py, build.check_refusal_contract).
-                # Counting this as coverage would leave the battery blind to the
-                # only failure mode the three-tier design cannot survive.
                 return v(MISMATCH, "contract",
                          "refused after %d byte(s) had already reached stdout"
                          % len(mine), evidence=True)
@@ -1899,13 +1866,8 @@ def run(
         if limit is not None and limit >= 0:
             pool = pool[:limit]
 
-        # The ladder PLUS the oracles: lypning-mp is not a routing destination
-        # any more, but `--engine lypning-mp` must still run it. Building this
-        # map from ENGINE_ORDER alone would report the oracle as "not built" on
-        # a machine that has it — an absent arm and a deliberately-unrouted one
-        # rendering identically is exactly how an oracle stops being measured.
         binaries: Dict[str, Optional[Path]] = {
-            e: eng.find(e) for e in eng.ENGINE_ORDER + eng.ORACLES}
+            e: eng.find(e) for e in eng.ENGINE_ORDER}
         ref_bin = binaries.get(CPYTHON)
 
         wanted = list(engines) if engines is not None else list(DEFAULT_ARMS)
@@ -2078,25 +2040,13 @@ def plan(report: Report) -> List[Tuple[str, int, List[str]]]:
     by the FIRST thing it hits, so the counts are a lower bound that shifts as
     features land — which is the point. Re-run after each one.
 
-    **Ranked by CPython reach, not by block count, and the difference is the
-    whole value of this function.** A tier-1 refusal that the classifier sends
-    to lypning-mp costs that tier's spawn; one that reaches CPython costs
-    roughly thirty times as much. Ranking by block count alone put `import re`
-    first at 182 programs — of which 176 are answered by lypning-mp and 6 reach
-    CPython — and `import pathlib` third at 83 programs, of which **none** reach
-    CPython at all. Measured 2026-08-31: those two rows are worth 0.07 s and
-    0.00 s, while `.__name__()` at 22 programs, ranked sixth by count, is worth
-    0.24 s. Two iterations of this loop were spent proposing the top rows before
-    the routing was measured, which is what this ordering exists to prevent.
-
     Falls back to block count when :attr:`Report.routes` is empty — the mixture
     arm did not run, so there is nothing to say about destinations, and a count
     is still a truthful lower bound on what a feature unblocks.
 
     Taken from the Rust core's arm when it is present: it is the tier the corpus
     is a build order *for*. The mixture arm never appears here, because a
-    dispatcher that reaches CPython refuses nothing.
-    """
+    dispatcher that reaches CPython refuses nothing."""
     source = None
     for name in eng.SPECTRUM:
         if name in report.engines:
@@ -2171,10 +2121,7 @@ def render(report: Report, plan: bool = False) -> str:
                    " as features land)")
         if cost:
             out.append("ranked by ->cpy: the refusals that reach CPython, which is what")
-            out.append("costs. Until 2026-09-04 a refusal could land on the MicroPython")
-            out.append("tier at ~30x less and the two columns diverged; that tier left the")
-            out.append("chain, so every refusal below costs a CPython spawn. This is the")
-            out.append("build order for the larger spectrum variant.")
+            out.append("costs. This is the build order for the larger spectrum variant.")
             out.append("")
             out.append("%s %s %s  %s" % ("->cpy".rjust(6), "blocks".rjust(7),
                                          _pad("blocker", 44), "e.g."))

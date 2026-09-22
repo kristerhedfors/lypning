@@ -21,7 +21,7 @@ from lypning import engines, gate
     (1, 1),
     (gate.DEVICE_BLOCK, 1),
     (gate.DEVICE_BLOCK + 1, 2),
-    (541_688, 5),        # the MicroPython prototype
+    (541_688, 5),
     (5 * gate.DEVICE_BLOCK, 5),
     (5 * gate.DEVICE_BLOCK + 1, 6),  # the byte that costs a whole block
 ])
@@ -57,20 +57,16 @@ def test_size_of_a_binary_that_is_not_there_is_zero(tmp_path):
     assert gate.size_bytes(tmp_path / "absent") == 0
 
 
-def test_default_gate_does_not_substitute_the_oracle(tmp_path, monkeypatch):
-    oracle = tmp_path / engines.MICROPYTHON
-    oracle.write_bytes(b"an installed oracle is not the requested core")
+def test_default_gate_reports_a_missing_core(tmp_path, monkeypatch):
     monkeypatch.setattr(engines, "find", lambda name: None)
-    monkeypatch.setattr(engines, "find_micropython", lambda: oracle)
     assert gate._resolve(None) == (None, engines.LYPNING)
     report = gate.gate()
     assert not report.ok
     assert "lypning build --rust" in gate.render(report)
-    assert "--micropython" not in gate.render(report)
-    assert gate._resolve(oracle) == (oracle, engines.MICROPYTHON)
+    assert "lypning build --rust" in gate.render(report)
 
 
-def test_default_core_report_does_not_claim_an_oracle_fallback(tmp_path, monkeypatch):
+def test_default_core_report_does_not_claim_a_fallback(tmp_path, monkeypatch):
     from types import SimpleNamespace
     core = tmp_path / engines.LYPNING
     core.write_bytes(b"mock artifact")
@@ -87,10 +83,7 @@ def test_default_core_report_does_not_claim_an_oracle_fallback(tmp_path, monkeyp
 
 
 def test_the_rust_core_is_measured_against_its_own_budget():
-    # Two runtimes with different jobs: the lypning-mp byte budget is not a
-    # verdict on the Rust core, and reporting it as one would invent a number
-    # no document argues for.
-    over = gate.MAX_BYTES * 3
+    over = 17 * gate.DEVICE_BLOCK
     musl = gate.MUSL_X86_64
     # A Rust variant is gated in device blocks against its own budget FOR ITS
     # TARGET — this used to pass anything for `lypning`, and a spectrum whose
@@ -103,8 +96,6 @@ def test_the_rust_core_is_measured_against_its_own_budget():
     assert gate._size_check("lypning", 9 * gate.DEVICE_BLOCK, musl).unit == "blocks"
     assert gate._size_check("lypning-l", over, musl).ok       # 17 blocks fits the 32-block ceiling
     assert not gate._size_check("lypning-l", 33 * gate.DEVICE_BLOCK, musl).ok
-    assert not gate._size_check("lypning-mp", over).ok
-    assert gate._size_check("lypning-mp", gate.MAX_BYTES).ok
 
 
 def test_a_target_nobody_measured_is_reported_and_not_gated():

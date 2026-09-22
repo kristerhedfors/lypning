@@ -183,8 +183,7 @@ is what adding a ninth capability costs.
 
 Most refusals are capability gaps, and the dispatcher answers them by trying the
 larger engine. These are not gaps. Each names a behaviour CPython has that a
-reimplementation gets *wrong* — measured on the oracle `lypning-mp`, whose
-divergences are the catalogue (`lypning oracle`) — so a larger build of the same
+reimplementation gets *wrong*, so a larger build of the same
 reimplementation would get it wrong too, and answering at exit 0 is exactly what
 must not happen. A program that refuses with one of these goes straight to
 CPython (`route.rs:ONLY_CPYTHON_KINDS`, `engines.ONLY_CPYTHON_REFUSALS`):

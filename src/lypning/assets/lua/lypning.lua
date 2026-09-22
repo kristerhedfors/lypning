@@ -372,7 +372,7 @@ function M.run(src, opts)
 end
 
 -- The dispatcher's own predicate, for a host that chains OTHER interpreters
--- too (lypning-mp, or a sandboxed python3) and has only their exit code and
+-- too (for example, a sandboxed python3) and has only their exit code and
 -- stderr to go on. True for exit 90, for a MemoryError, and for a traceback
 -- reported with exit 0; deliberately false for an ordinary non-zero exit with
 -- a traceback, which is very often the program's own correct answer.

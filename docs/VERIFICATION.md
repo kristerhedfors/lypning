@@ -9,7 +9,7 @@ the invariant number), CODE HOME (`file:symbol`, never a line number), CHECK
 record printed, then `# differs:` and `# must not:`; the whole block is
 `tests/verification/expected/<contract>-<tool>.txt`), FAILURE MODES and
 PINNED BY (tests, by node id). The engines are `lypning`, `lypning-l` and
-`cpython`; `lypning-mp` is the oracle — measured, never routed to — a hole
+`cpython`; an absent optional Rust variant is a hole
 here. A fresh checkout can run this top to bottom and file a report (§17).
 
 ## 0. Run of record
@@ -28,14 +28,13 @@ lypning status — the engine, oracle and library lines:
   lypning:    /private/tmp/lyp-b1/bin/lypning  (818,080 B, 7 blocks)
   lypning-l:  /private/tmp/lyp-b1/bin/lypning-l  (867,744 B, 7 blocks)
   cpython:    /opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/bin/python3.14  (52,448 B, 1 blocks)
-  lypning-mp: not built  — `lypning build --micropython` (needs a network); `lypning oracle` reads the recorded divergences either way
   liblypning: /tmp/lyp-b1/lib/liblypning.dylib  (1,033,328 B, ABI 1)
 corpus       3688 programs
 ```
 The byte counts are host builds on Darwin arm64 (`rustup` is absent there;
 `build --rust` says so), not the musl bytes CI gates. No timing from this run
 is quoted — the host was shared — and a `secs` column or an `in N.Ns` field
-is shown as `<s>`. The oracle was never built on this host: §C12 for real.
+is shown as `<s>`. §C12 checks the absent optional variant explicitly.
 
 **Comparing and refreshing.** Run a check script and diff it against its
 file; what remains is what `# differs:` allows. A refresh regenerates every
@@ -156,8 +155,8 @@ No benchmark entry or verdict is exempted by this scheduling choice.
 coverage and a build order (`--plan`), not a regression. Never "fix" a
 MISMATCH by widening a capability table. **CODE HOME.**
 `conformance.DEFAULT_ARMS` (`engines.SPECTRUM` plus `mixture`);
-`conformance.OPT_IN_ARMS` (`lypning-mp`, `library`, `mixture-rust`: measured
-only when named); `conformance.classify`; `conformance.is_nondeterministic`,
+`conformance.OPT_IN_ARMS` (`library`, `mixture-rust`: measured only when named);
+`conformance.classify`; `conformance.is_nondeterministic`,
 `_RUN_SPECIFIC`, `_RUN_SPECIFIC_LITERAL` (the one class matched against the
 program text, because what it is about IS a quoted path),
 `_IMPLEMENTATION_DEFINED`, `draws_from_random`, `only_set_order_differs`,
@@ -206,7 +205,6 @@ like any other rather than counted as coverage.
 # CHECK — `c3-conformance.sh`.
 lypning conformance --mixture both; echo $?
 lypning conformance --plan > plan.txt; echo $?; head -3 plan.txt
-lypning conformance --engine lypning-mp --limit 5 | grep '^note'; echo $?
 # EXPECTED — lypning conformance · 2026-09-07 · 3688 loaded, 2504 graded
 engine       MATCH  UNSUPPORTED  MISMATCH   coverage
 lypning      1546          958         0     61.7%
@@ -391,13 +389,12 @@ larger variant (invariant 9). **CODE HOME.** The constants, each written once:
 | the block budgets | **per target**: lypning 9, lypning-l 32 blocks on `x86_64-unknown-linux-musl` (`gate.VARIANT_BLOCK_BUDGET`, keyed by `(engine, triple)`). A block count is a property of code AND toolchain AND target, and this table held one number for all three until 2026-09-13: the core's `8` was a figure from another toolchain, so `gate` read FAIL for nine days against a binary that had never been under it. Rebuilding `7a72aaf`, the commit that set the 8 and recorded `40,752 B of headroom`, gives **1,052,880 B = 9 blocks** here. An unlisted target is reported and not gated. | `gate._size_check`, `gate.elf_target` |
 | shared objects | 0 (`gate.MAX_SHARED_OBJECTS`) — a precondition, not a budget | `gate._needed` |
 | file opens on `-c 'pass'` | 3 (`gate.MAX_OPENS`) | `gate.file_opens`, only where `strace` runs |
-| the oracle's byte budget | 700,000 B (`gate.MAX_BYTES`) — only when `lypning-mp` is the binary named | `gate._size_check` |
 | the code section | Mach-O `__text` / ELF `.text` (`gate.TEXT_SECTION`) — reported, never budgeted: bytes on disk are what a cold start fetches, code bytes are what a commit added, and a page-padded `__TEXT` makes the two disagree | `gate.text_bytes`, a hole where it cannot be read |
 | CPython's cold anchor | 8573 ms (`gate.CPYTHON_COLD_MS`) — measured upstream, never here | `gate.project_cold_ms`, labelled an estimate |
 
 Linux CI gates both installed Rust variants explicitly against their existing
-budgets. With no path, `gate` requires the core; an installed MicroPython oracle
-does not substitute for a missing core. Name the oracle to measure it.
+budgets. With no path, `gate` requires the core; another installed variant
+does not substitute for a missing core.
 
 ```bash
 # CHECK — `c6-gate.sh`.
@@ -435,7 +432,7 @@ tests/test_gate.py::test_device_blocks_rounds_up  tests/test_gate.py::test_the_r
 ```
 ## 7. C7 — doctor
 **STATEMENT.** `lypning doctor` ends at `0 FAIL` and exits 0; any FAIL exits
-1. WARN and NOTE are states, not failures: an absent oracle is WARN, an
+1. WARN and NOTE are states, not failures: an absent optional variant is WARN, an
 unwired harness is NOTE, a runner without `strace` is WARN. **CODE HOME.**
 `cli._doctor_checks` (every row, in order); `cli.cmd_doctor` (exit 1 on any
 FAIL); `build.check_refusal_contract` (one `refusal contract` row per built
@@ -663,48 +660,27 @@ tests/test_routes.py::test_a_populated_store_cannot_move_a_measurement  tests/te
 tests/test_routes.py::test_lypning_routes_0_disables_the_writer  tests/test_routes.py::test_the_documented_capture_opt_out_covers_this_feed  tests/test_routes.py::test_an_empty_store_is_a_hole_not_a_zero
 tests/test_routes.py::test_the_rust_dispatcher_writes_on_a_clean_route_then_a_runtime_refusal  tests/test_routes.py::test_the_rust_dispatcher_writes_nothing_on_a_static_route_or_a_bare_exit_90  tests/test_routes.py::test_the_two_writers_are_byte_compatible_in_one_store
 ```
-## 12. C12 — The oracle-absent path
-**STATEMENT.** `lypning-mp` is an oracle — measured, never routed to
-(invariant 9) — and absent by default: it needs a 32-bit toolchain and a
-network, so every path that touches it degrades to "not built" and carries on
-— a status line, a hole in a table (never a zero), an unmeasured arm with a
-note. Test that path by moving the binary aside, not by reasoning about it:
-`mv ~/.lypning/bin/lypning-mp ~/.lypning/bin/lypning-mp.aside`. On the
-run-of-record host it was never built. **CODE HOME.** `engines.ORACLES`;
-`engines.find_micropython`, `engines.env_var_for` (`LYPNING_MP_BIN`);
-`cli._render_status` (the `oracles (measured, never routed to)` section);
-`cli._doctor_checks` (the WARN row); `conformance.run` (`unbuilt`, the `note:`
-line); `bench` (an absent arm is absent, never a zero row); `gate.gate` (with
-no binary named it gates `lypning` and says so, against
-`gate.VARIANT_BLOCK_BUDGET`, never `gate.MAX_BYTES`); `oracle.load`,
-`oracle.render`, `oracle.ledger_path` (`.github/known-mismatches.json`, keys
-`_` and `accepted`).
-```bash
-# CHECK — `c12-oracle.sh`: `status`, `doctor`, `conformance --engine lypning-mp`, `gate` and `oracle` with the binary absent.
-lypning status | sed -n '/^oracles/,/^$/p'; lypning conformance --engine lypning-mp --limit 5 | grep '^note'
-lypning oracle --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["engine"], d["built"], d["divergences"], len(d["families"]))'
-# EXPECTED — lypning oracle · 2026-09-04 · 437056c · 3688 loaded
-oracles  (measured, never routed to)
-  lypning-mp: not built  — `lypning build --micropython` (needs a network); `lypning oracle` reads the recorded divergences either way
-note: lypning-mp is not built — that arm was not measured
-lypning-mp False 79 34
-# … | vdiff c12-oracle   (the doctor WARN, the gate `target` rows, the oracle's first and last line)
-# differs: the divergence and family counts, which the CI job that runs the oracle maintains by identity; the ledger path
-# must not: `not built` on every line and never a 0 in its place, `built` false, exit 0 everywhere, `lypning oracle` rendering without the binary
-# from a wheel the catalogue is not a package asset: `lypning oracle` prints `oracle: no catalogue — <path> is unreadable.` and calls it a hole; observed 2026-09-04 and not filed, `oracle --json` from that wheel answers divergences 0 and an empty families — a hole rendered as a zero
-# every expectation that needs the oracle built (bench --micropython, the lypning-mp arm present, gate against gate.MAX_BYTES) was not captured here; the micropython-conformance job in .github/workflows/ci.yml runs them
-```
+## 12. C12 — An optional Rust variant is absent
+**STATEMENT.** A missing optional variant is reported as `not built`, never
+as a measured zero or a successful arm. CPython remains the reference.
+**CODE HOME.** `engines.find`; `conformance.run`; `bench.resolve_arms`.
 
-| FAILURE MODES — what regressed | what it prints | which gate turns red |
-|---|---|---|
-| a zero where a hole belongs, or a Rust variant gated against the oracle's bytes | a bench row at 0, a table cell at 0, a JSON count of 0 for an arm nobody ran; `size … want <= 700,000 B` on a `lypning` row | pytest: `tests/test_bench.py::test_an_unbuilt_arm_is_absent_rather_than_zero`, `tests/test_routing.py::test_a_tier_that_was_not_measured_is_a_hole_not_a_failure`, `tests/test_gate.py::test_the_rust_core_is_measured_against_its_own_budget` |
-| the catalogue rots | a divergence that stops reproducing, or one it does not name | CI: the `micropython-conformance` job, `.github/scripts/known-mismatches.py` |
+```bash
+# CHECK — `c12-optional.sh` simulates the absent larger variant.
+sh tests/verification/checks/c12-optional.sh
+# EXPECTED — Python · 2026-09-22 · removal validation
+lypning-l not built
+benchmark arms 0
+conformance unbuilt lypning-l
+```
 
 ```
 # PINNED BY
-tests/test_bench.py::test_an_unbuilt_arm_is_absent_rather_than_zero  tests/test_conformance.py::test_an_unbuilt_engine_is_an_absent_arm_not_a_failed_one  tests/test_cli.py::test_bench_micropython_exits_2_when_the_control_is_absent
-tests/test_gate_meaning.py::test_a_mismatch_the_ledger_does_not_name_is_a_regression  tests/test_gate_meaning.py::test_a_ledger_entry_that_stopped_reproducing_is_also_red
+tests/test_bench.py::test_an_unbuilt_arm_is_absent_rather_than_zero
+tests/test_conformance.py::test_an_unbuilt_engine_is_an_absent_arm_not_a_failed_one
+tests/test_cli.py::test_status_reports_an_unbuilt_engine_as_not_built
 ```
+
 ## 13. C13 — The wheel shape
 **STATEMENT.** Two shapes must both keep working. In a wheel `assets/` is
 read-only, the crate is copied into `~/.lypning/build` and built there, and
@@ -733,13 +709,13 @@ lypning-l  host    867744  7       <s>   ok  (rustup not found: built for the ho
 
 | FAILURE MODES — what regressed | what it prints | which gate turns red |
 |---|---|---|
-| an asset the crate needs did not ship, or a half of the crate | `lypning build --rust` fails from a wheel, or builds a binary a block larger than the checkout's; `cargo` cannot find `build.rs` or `.cargo/config.toml` | pytest: `tests/test_packaging.py::test_the_wheel_carries_the_crate_cargo_config`, `tests/test_build.py::test_the_wheel_path_copies_both_halves_keeping_the_layout` |
+| an asset the crate needs did not ship | `lypning build --rust` fails from a wheel, or builds a binary a block larger than the checkout's; `cargo` cannot find `build.rs` or `.cargo/config.toml` | pytest: `tests/test_packaging.py::test_the_wheel_carries_the_crate_cargo_config`, `tests/test_build.py::test_the_wheel_path_copies_the_crate_to_writable_state` |
 | a runtime dependency crept in | the package fails to import with nothing but the stdlib | pytest: `tests/test_packaging.py::test_zero_runtime_dependencies` |
 
 ```
 # PINNED BY
 tests/test_packaging.py::test_every_package_data_glob_matches_a_file  tests/test_packaging.py::test_the_wheel_carries_the_crate_cargo_config  tests/test_capture.py::test_the_committed_hooks_match_the_ones_the_installer_ships
-tests/test_build.py::test_the_wheel_path_copies_both_halves_keeping_the_layout
+tests/test_build.py::test_the_wheel_path_copies_the_crate_to_writable_state
 ```
 ## 14. C14 — The library
 **STATEMENT.** The C ABI is the same interpreter reached in-process, and it
@@ -806,7 +782,7 @@ option -m` included), `127` for `cannot run <bin>` on the next rung's binary.
 | `lib` | built | the library cannot be loaded (`error`) | not built, a bad `$LYPNING_LIB`, or no header — nothing on stdout | — | — | — |
 | `install` | done | an action `FAILED` | unknown harness | — | — | — |
 | `hook <event>` | always | — | — | — | — | — |
-| `status`, `routes`, `oracle`, `corpus`, `harvest`, `bench`, `corpus-time`, `shim`, `pool` | done | a `Failure` (one line) | usage; `bench --micropython` with no control | — | — | interrupted |
+| `status`, `routes`, `corpus`, `harvest`, `bench`, `corpus-time`, `shim`, `pool` | done | a `Failure` (one line) | usage | — | — | interrupted |
 
 Timeouts: 30 s per program is the default for `run` (per engine),
 `conformance`, `bench`, `corpus-time` and `fuzz`
@@ -843,22 +819,20 @@ corpus. `doctor` under the pinned 3.14.5 reported 0 FAIL.
 
 ## 16. C15 — Names
 **STATEMENT.** Invariant 9. Engine strings are exactly the members of
-`engines.ENGINE_ORDER` — the spectrum `lypning`, `lypning-l`, then `cpython`;
-`lypning-mp` is a name but no rung. The two upstream names appear in exactly
+`engines.ENGINE_ORDER` — the spectrum `lypning`, `lypning-l`, then `cpython`.
+The two upstream names appear in exactly
 three places: the credit paragraph in `README.md` §8, the *Before the name*
 section of `CHANGELOG.md`, and the historical corpus JSONL. Nowhere else,
 including comments — and never as a live identifier. **CODE HOME.**
-`engines.SPECTRUM`, `engines.ENGINE_ORDER`, `engines.ORACLES`,
+`engines.SPECTRUM`, `engines.ENGINE_ORDER`,
 `engines.parse_binary_name` (the one reader of the `<engine>[-<target>]`
 shape, longest engine first), `engines.env_var_for`, `engines.refusal_line`.
-The scope of the literal test is exact: no `.py` file under `src/lypning/`
-other than `engines.py` spells `"lypning-mp"` in code — comments and
-docstrings may say the word; the other engine literals are held by review.
+The engine literals are held by review and the tests named below.
 ```bash
 # CHECK — `c15-names.sh`. The grep reads the two names from `README.md` §8 and never spells them; the second pattern writes `t[i]er` so that the line does not match itself.
 names=$(sed -n '/^## 8\. Credit/,/^## 9\./p' README.md | grep -o '\*\*`[a-z]*`\*\*' | tr -d '*`')
 for n in $names; do grep -rlw --exclude-dir=.git --exclude-dir=target --exclude-dir=_site --exclude-dir=__pycache__ "$n" .; done | sort -u
-grep -rnE 't[i]er [12]\b|t[i]er-[12]\b|middle t[i]er|second t[i]er|MicroPython t[i]er|the MicroPython var[i]ant|three interp[r]eters|three t[i]ers|both t[i]ers|two subset t[i]ers' README.md CLAUDE.md docs/*.md site/index.md src/lypning/cli.py | grep -vE '^docs/(BENCH-LEDGER|HILLCLIMB|PAPER|RESEARCH)\.md' | wc -l | tr -d ' '
+grep -rnE 't[i]er [12]\b|t[i]er-[12]\b|middle t[i]er|second t[i]er|three interp[r]eters|three t[i]ers|both t[i]ers|two subset t[i]ers' README.md CLAUDE.md docs/*.md site/index.md src/lypning/cli.py | grep -vE '^docs/(BENCH-LEDGER|HILLCLIMB|PAPER|RESEARCH)\.md' | wc -l | tr -d ' '
 python -m pytest -q tests/test_engines.py::test_no_engine_name_is_spelled_by_hand_outside_engines_py tests/test_docs.py -k 'upstream_names or node_id or tier_number or spelled_by_hand'; echo $?
 # EXPECTED — grep · 2026-09-04 · 437056c · 3688 loaded
 ./CHANGELOG.md
@@ -873,7 +847,7 @@ python -m pytest -q tests/test_engines.py::test_no_engine_name_is_spelled_by_han
 
 | FAILURE MODES — what regressed | what it prints | which gate turns red |
 |---|---|---|
-| an upstream name in a fifth file, or `"lypning-mp"` spelled in code outside `engines.py` | the grep lists it; `[<file>:<line>]` | pytest: `tests/test_docs.py::test_the_upstream_names_appear_only_where_the_credit_says`, `tests/test_engines.py::test_no_engine_name_is_spelled_by_hand_outside_engines_py` |
+| an upstream name in a fifth file | the grep lists it; `[<file>:<line>]` | pytest: `tests/test_docs.py::test_the_upstream_names_appear_only_where_the_credit_says` |
 | a variant name outside the closed letter set, or after the target suffix | `parse_binary_name` returns `("", name)` | pytest: `tests/test_engines.py::test_parse_binary_name_grows_with_the_spectrum` |
 
 ```
@@ -905,7 +879,6 @@ the `--plan` ranking, not as a defect. The classes:
 | LATE-WASTED | the routing budget moved (§C5) | not a report, unless systematic — one construct, many programs — then an issue naming the construct; otherwise `lypning conformance --plan` and `lypning routes --plan` |
 | UNSUPPORTED | a refusal (§C1, §C3) | coverage: `lypning conformance --plan`; never an issue |
 | HOLE | an unbuilt arm, an unmeasured gate check, an empty ledger (§C6, §C11, §C12) | nowhere — unless it rendered as a zero, which is a CONTRACT-class issue |
-| oracle divergence | `lypning-mp` disagrees with CPython (§C12) | `.github/known-mismatches.json`, by identity, through the CI job; never an issue and never a table edit |
 
 Symptoms that are not what they look like:
 

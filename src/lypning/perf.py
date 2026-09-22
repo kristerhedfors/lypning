@@ -46,10 +46,6 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from . import bench, corpus, engines
 
-#: Arms worth comparing by default. The mixture and lypning-mp are absent on
-#: purpose: this table's question is "how fast is the Rust interpreter at a
-#: construct it already supports", and a dispatcher arm answers a routing
-#: question instead.
 DEFAULT_ARMS: Tuple[str, ...] = (engines.CPYTHON, engines.LYPNING)
 
 #: The reference every ratio is taken against.

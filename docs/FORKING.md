@@ -39,7 +39,6 @@ wrong (invariant 3).
 
 ```bash
 lypning build --rust -v          # → `ok` per variant, `unsupported contract: held` in the log  (§C2)
-lypning build --micropython      # optional: the oracle; absent, every path prints `not built` (§C12)
 lypning install                  # merges hooks into .claude/settings.json; re-run → `all 3 hook entries already present` (§C10)
 lypning shim install             # python3 on $PATH records what runs
 lypning status                   # wired: the shim's PATH line; shadowed: `… is NOT on PATH — the shim will never run`
@@ -56,7 +55,7 @@ yourself — the net cannot undo a write outside the repository (§C8).
 
 **A clean slate.** Truncate `src/lypning/assets/corpus/corpus.jsonl`
 (`paths.CORPUS_FILE`), keep `seed-corpus.jsonl` (`paths.SEED_CORPUS_FILE`), read
-the source split from `lypning corpus --stats`; the catalogue (§4) starts empty.
+the source split from `lypning corpus --stats`.
 
 **Adding a rung.** Every Rust variant is the one crate under a `variant-*`
 cargo feature (`assets/rust/Cargo.toml`); the common step is a `cap-*` feature
@@ -90,9 +89,9 @@ captured programs; tests object if you touch them.
 **Workload-general — keep the mechanism, re-derive the contents.**
 | mechanism | contents | re-derived by |
 |---|---|---|
-| what each variant serves | `route.rs::CAPS`, `modules.rs::MODULES` (one `cfg`-gated table per `cap-*` set), `engines.VARIANT_CAPS` | `conformance --plan` per variant; `tests/test_routing.py::test_no_module_in_the_table_routes_past_the_tier_that_claims_it` |
+| what each variant serves | `route.rs::CAPS`, `modules.rs::MODULES` (one `cfg`-gated table per `cap-*` set), `engines.VARIANT_CAPS` | `conformance --plan` per variant; `tests/test_routing.py::test_the_spectrum_copy_in_engines_is_the_rust_table` |
 | kinds no Rust variant may answer, at any size | `route.rs::ONLY_CPYTHON_KINDS` = `engines.ONLY_CPYTHON_REFUSALS`, read by both dispatchers, held equal by test | `routes --plan` lists them as `NOT IMPLEMENTABLE`; a kind leaves the set only by being implemented exactly |
-| the spectrum itself | `engines.SPECTRUM`, `engines.ORACLES`, `route.rs::SPECTRUM` (`ENGINE_ORDER` and `conformance.DEFAULT_ARMS` derive from them) | the tests in §2 |
+| the spectrum itself | `engines.SPECTRUM`, `route.rs::SPECTRUM` (`ENGINE_ORDER` and `conformance.DEFAULT_ARMS` derive from it) | the tests in §2 |
 | the nondeterminism screens | `conformance._RUN_SPECIFIC`, `_IMPLEMENTATION_DEFINED` | extend as your corpus surfaces shapes; never prune |
 | constants sized to one-liners | `io.rs::COMMIT_THRESHOLD`, `conformance.LIBRARY_STEP_LIMIT` | re-tune only if your programs are heavier |
 
@@ -102,15 +101,12 @@ build order (`--plan` is a pure function of the loaded corpus); the catalogue's
 entries (§4); the block budgets, a CheerpX fact (`docs/SANDBOX-PERFORMANCE.md`
 §1).
 
-## 4. The oracle catalogue
+## 4. Correctness evidence
 
-`.github/known-mismatches.json`, rendered by `lypning oracle`, records what a
-second reimplementation got wrong, by identity (engine, entry, kind) in
-families. It scores only the CI `micropython-conformance` job
-(`.github/scripts/known-mismatches.py`); the local gate has no ledger path —
-any MISMATCH exits 1 — and a stale entry fails the scorer too. The families are
-the transferable half: they say what the reimplementation gets wrong. The
-entries are yours: they say which of *your* programs hit it.
+CPython is the reference for every Rust variant. Require zero mismatches from
+`lypning conformance`; a known-mismatch allowance is not part of the stack.
+Preserve dated historical reports when retiring a runtime, but do not treat
+their engine names as current build targets or routing destinations.
 
 ## 5. Keep the names
 

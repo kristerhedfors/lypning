@@ -11,8 +11,8 @@
 //!
 //! Anything the lexer cannot represent EXACTLY becomes an `Unsupported` error
 //! rather than a guess. A tokenizer that quietly mis-reads a literal is the
-//! silent-divergence failure mode the whole project exists to avoid (the lypning-mp
-//! skill §2): the agent that typed the one-liner will not notice.
+//! silent-divergence failure mode the whole project exists to avoid: the agent
+//! that typed the one-liner will not notice.
 
 use crate::err::{unsupported, LypningError};
 

@@ -70,12 +70,6 @@ PYTHONISH = (
 # unbounded stream into memory is a hook that can hang the tool call.
 MAX_EVENT_BYTES = 4 * 1024 * 1024
 
-#: The harnesses lypning knows how to be wired into. The value goes into every
-#: record as ``host``, which is what makes "how many python one-liners does THIS
-#: harness actually type" a number somebody can read off the log rather than a
-#: thing we assert. It is a different namespace from the engine strings
-#: (invariant 9): an engine is "lypning"/"lypning-mp"/"cpython", a host is who
-#: asked.
 HOSTS = ("claude", "opencode", "openhands")
 
 #: Read in this order. ``LYPNING_SESSION_ID`` is ours and works under every
@@ -358,7 +352,7 @@ def _fallback_log() -> Path:
     spelled the same way so both feeds land in the same place."""
     tmp = os.environ.get("TMPDIR") or "/tmp"
     uid = os.getuid() if hasattr(os, "getuid") else 0
-    return Path(tmp) / "lypning-mp-{0}".format(uid) / "invocations.jsonl"
+    return Path(tmp) / "lypning-capture-{0}".format(uid) / "invocations.jsonl"
 
 
 def append_record(rec: Dict[str, Any], log: Optional[Path] = None) -> bool:
@@ -664,11 +658,6 @@ def engine_state_line() -> str:
             line += (" Nothing to route to, so every program falls through to"
                      " CPython and any speed claim is meaningless: run `lypning"
                      " build` first.")
-        elif engines.MICROPYTHON in missing:
-            line += (" The lypning-mp tier needs a build with network access"
-                     " (`lypning build --micropython`) and is absent by"
-                     " default; the mixture works without it, one tier"
-                     " shallower.")
         return line
     except Exception:
         return ""

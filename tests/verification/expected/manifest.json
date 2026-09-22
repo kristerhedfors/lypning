@@ -128,14 +128,14 @@
   ]
  },
  {
-  "file": "c12-oracle.txt",
+  "file": "c12-optional.txt",
   "contract": "C12",
-  "argv": [
-   "oracle"
-  ],
+  "argv": null,
   "exit": 0,
   "must_match": [
-   "^oracle \u2014 lypning-mp against CPython: \\d+ recorded divergences in \\d+ families$"
+   "^lypning-l not built$",
+   "^benchmark arms 0$",
+   "^conformance unbuilt lypning-l$"
   ]
  },
  {

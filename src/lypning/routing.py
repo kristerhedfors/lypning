@@ -348,13 +348,6 @@ def grade(report: conf.Report) -> RoutingReport:
         verdicts = dict(by_entry.get(entry_id, {}))
         verdicts.setdefault(conf.CPYTHON, conf.MATCH)
         if route.engine in eng.ENGINE_ORDER and route.engine not in verdicts:
-            # A tier that exists but was not one of this run's arms — most often
-            # lypning-mp, which needs a 32-bit toolchain and a network and is
-            # absent almost everywhere. There is no measured answer to grade the
-            # route against, and inventing one in either direction would be a
-            # lie: calling it UNSAFE would report a machine's build state as a
-            # classifier bug, calling it IDEAL would report a tier nobody ran as
-            # a tier that worked. It is a hole in the table, never a zero.
             ungraded("%s was not measured in this run" % route.engine)
             continue
         mixture = verdicts.get(conf.MIXTURE)
@@ -374,10 +367,6 @@ def grade(report: conf.Report) -> RoutingReport:
 
 # --- the capability table ----------------------------------------------------
 
-_TABLE_RE = re.compile(
-    r"const\s+MICROPYTHON_MODULES\s*:\s*&\[&str\]\s*=\s*&\[(?P<body>.*?)\];",
-    re.S,
-)
 _STRING_RE = re.compile(r'"([^"]*)"')
 
 
@@ -385,27 +374,6 @@ def table_source() -> Path:
     return paths.RUST_DIR / "src" / "route.rs"
 
 
-def micropython_modules(source: Optional[Path] = None) -> List[str]:
-    """The modules ``route.rs`` claims lypning-mp serves, read from the source.
-
-    Read rather than restated. lypning-mp is a separate binary that cannot be
-    asked what it imports, so the classifier carries a table — and a table is
-    only ever as honest as the thing that checks it. A copy of it kept here
-    would be checked against itself.
-
-    An empty list means the table could not be found, which is what happens if
-    someone renames it; the caller decides whether that is a skip or a failure,
-    and ``tests/test_routing.py`` decides it is a failure.
-    """
-    p = Path(source) if source is not None else table_source()
-    try:
-        text = p.read_text(encoding="utf-8")
-    except OSError:
-        return []
-    m = _TABLE_RE.search(text)
-    if not m:
-        return []
-    return _STRING_RE.findall(m.group("body"))
 
 
 _SPECTRUM_RE = re.compile(
@@ -414,14 +382,7 @@ _VARIANT_NAME_RE = re.compile(r'name\s*:\s*"([^"]*)"')
 
 
 def spectrum(source: Optional[Path] = None) -> List[str]:
-    """The Rust spectrum's variant names, in order, read from ``route.rs``.
-
-    Read rather than restated, like :func:`micropython_modules`. ``engines.SPECTRUM``
-    is the Python copy — a module constant on purpose, since argparse choices and
-    the fork-free hooks cannot spawn a binary at import — and ``tests/test_routing.py``
-    holds the copy to this reading, and to what a built binary says of itself.
-    Empty means the table was not found.
-    """
+    """The Rust spectrum's variant names, in order, read from ``route.rs``."""
     p = Path(source) if source is not None else table_source()
     try:
         text = p.read_text(encoding="utf-8")
@@ -431,35 +392,6 @@ def spectrum(source: Optional[Path] = None) -> List[str]:
     if not m:
         return []
     return _VARIANT_NAME_RE.findall(m.group("body"))
-
-
-#: The `match kind { … => Engine::MicroPython }` arm of `engine_for`, which is
-#: the classifier's other table: not "which modules that tier has" but "which of
-#: lypning's refusal KINDS that tier can pick up". Read from the source for the
-#: same reason as the module list — a copy kept here would be checked against
-#: itself.
-_KIND_ARM_RE = re.compile(
-    # Anchored to `engine_for`: route.rs now has other `match kind` blocks
-    # (`answers`), and an unanchored search swallowed every string literal
-    # between the first of them and the arm this reads.
-    r"fn engine_for\(.*?match kind \{(?P<body>.*?)=> Engine::MicroPython", re.S)
-
-
-def micropython_kinds(source: Optional[Path] = None) -> List[str]:
-    """The refusal kinds ``route.rs`` sends to lypning-mp, read from the source.
-
-    Empty when the arm cannot be found, which is what happens if someone
-    restructures ``engine_for``; the caller decides whether that is a skip.
-    """
-    p = Path(source) if source is not None else table_source()
-    try:
-        text = p.read_text(encoding="utf-8")
-    except OSError:
-        return []
-    m = _KIND_ARM_RE.search(text)
-    if not m:
-        return []
-    return _STRING_RE.findall(m.group("body"))
 
 
 #: `ONLY_CPYTHON_KINDS` in route.rs — the refusal kinds that skip every tier but
@@ -526,16 +458,7 @@ _BLOCK_KIND_RE = re.compile(r'\bblock\("([a-z-]+)"')
 
 
 def classifier_kinds() -> List[str]:
-    """Every refusal kind the CLASSIFIER can hand to ``engine_for``.
-
-    A kind reaches routing from exactly three places: a parse-time refusal
-    (``parse.rs``), a lex-time one (``lex.rs``), or ``Requirements::block`` in
-    ``route.rs``. Everything else — ``set-order``, ``del``, ``json`` and the
-    rest of the evaluator's vocabulary — is discovered by *running*, after
-    routing has already finished. The distinction is what
-    :func:`micropython_kinds` is held to: an arm entry outside this set is dead
-    code today and a landmine the day the parser learns to see the construct.
-    """
+    """Every refusal kind the CLASSIFIER can hand to ``engine_for``."""
     src = table_source().parent
     kinds: set = set()
     for name in ("parse.rs", "lex.rs"):

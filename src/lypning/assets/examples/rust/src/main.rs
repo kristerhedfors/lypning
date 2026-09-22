@@ -461,8 +461,8 @@ fn answer(p: &Program) {
             show("stderr", &err);
         }
         // The dispatcher's own predicate, asked of the next engine's result. A
-        // harness chaining lypning -> lypning-mp -> CPython asks it at every
-        // link; here there is no link after CPython, so a yes is worth saying
+        // harness chaining multiple runtimes asks it at every link; here there
+        // is no link after CPython, so a yes is worth saying
         // out loud rather than swallowing.
         if lypning::fall_onward(code, &err) {
             println!("  note      that result asks to fall onward too, and there is no engine after CPython");

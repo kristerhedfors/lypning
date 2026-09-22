@@ -1,8 +1,8 @@
 //! The subset AST.
 //!
 //! Names stay as `Rc<str>` rather than resolved slots, deliberately. The
-//! measurement that decides it is in the lypning-mp skill §2c: a corpus one-liner
-//! is 1.7 ms of which 0.04 ms is the interpreter own code, and 96% of an
+//! measurement in `docs/SANDBOX-PERFORMANCE.md`: a corpus one-liner is 1.7 ms
+//! of which 0.04 ms is the interpreter's own code, and 96% of an
 //! invocation is the OS spawning the process. Slot resolution optimises the
 //! 2% and costs a scope-analysis pass that comprehension and function scoping
 //! make easy to get subtly wrong. lypning is fast because it starts fast.
@@ -268,4 +268,3 @@ pub struct Handler {
     pub name: Option<std::rc::Rc<str>>,
     pub body: Vec<Stmt>,
 }
-

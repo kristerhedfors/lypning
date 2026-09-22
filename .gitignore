@@ -1,8 +1,6 @@
 # Rust
 src/lypning/assets/rust/target/
 # MicroPython build
-src/lypning/assets/micropython/build/
-src/lypning/assets/micropython/.build/
 # Python
 __pycache__/
 *.py[cod]

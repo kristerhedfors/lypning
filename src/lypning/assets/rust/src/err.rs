@@ -11,10 +11,10 @@
 //!
 //! 90 is clear of 0/1/2 (python's own), 126/127 (shell) and 128+n (signals), so
 //! the dispatcher can branch on it unambiguously and retry with the next
-//! interpreter. Two rules from the lypning-mp experience carry over:
+//! interpreter. Two rules keep that branch safe:
 //!
-//!   * The line goes to **stderr**. lypning-mp once wrote tracebacks to stdout and
-//!     poisoned every `… | wc -l` pipeline while the exit code looked right.
+//!   * The line goes to **stderr**, so it cannot poison stdout pipelines while
+//!     the exit code looks right.
 //!   * A program's OWN `NotImplementedError` must keep its traceback and exit 1.
 //!     Only the runtime's own refusal takes 90.
 
@@ -234,8 +234,7 @@ pub fn matmul_type_err(a: &str, b: &str) -> LypningError {
 }
 /// Every name CPython 3.11 puts in `builtins`, minus the dunders — 149 of them.
 ///
-/// This is the SAME distinction lypning-mp draws in lypning_unsupported.h and for
-/// the same reason (docs/SUBSET.md §7 rule 4): a name CPython HAS and
+/// This follows docs/SUBSET.md §7 rule 4: a name CPython HAS and
 /// lypning does not is lypning being too small, and must leave by the exit-90
 /// contract so the dispatcher retries on an interpreter that has it. A name
 /// NEITHER has is the program's own bug and keeps CPython's NameError and

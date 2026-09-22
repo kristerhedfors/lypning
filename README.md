@@ -103,8 +103,7 @@ below roughly 0.2 s of work its JIT has no chance to pay for itself.
 
 Full entry and methodology: `docs/BENCH-LEDGER.md`. Older figures are dated
 there too — the last full `lypning bench` before this one (2026-08-25) and the
-upstream table it was written against moved there on 2026-09-04, the day
-`lypning-mp` became the oracle — measured, never routed to.
+upstream table it was written against moved there on 2026-09-04, with their original runtime identities.
 
 ## 2. Installation
 
@@ -119,11 +118,7 @@ says `not built` and every program routes to CPython. The crate needs `cargo`
 and nothing from crates.io (`CLAUDE.md` invariant 6); a build is not `ok` until
 the refusal contract holds on the binary it just produced
 (`build.check_refusal_contract`; `docs/VERIFICATION.md` §C2). `--lib` builds
-the C ABI (§3b), `--all` both, and `--micropython` the oracle, which needs a
-32-bit toolchain and a network and is absent by default — a missing arm is a
-status line, never an error: `status` and `doctor` say `not built`, `bench`
-leaves a hole rather than a zero, and `conformance` measures it only when named
-(`--engine lypning-mp`; `docs/VERIFICATION.md` §C12). The wheel shape — `pip
+the C ABI (§3b), and `--all` builds both. The wheel shape — `pip
 install --no-build-isolation .` into a venv, `assets/` read-only — is tested on
 purpose, never by accident (`docs/VERIFICATION.md` §C13).
 
@@ -259,7 +254,7 @@ caller-defined output, every other subcommand takes `--json`.
 | `lypning FILE [args…]`, `lypning -` | the same, from a file or stdin | — |
 | `lypning run -c PROG` | route, run, and fall through to the next rung on exit 90 only | no |
 | `lypning route -c PROG` | print the engine a program would run on, and why | yes |
-| `lypning build` | build the spectrum into `~/.lypning/bin`; `--lib` the C ABI, `--micropython` the oracle | yes |
+| `lypning build` | build the spectrum into `~/.lypning/bin`; `--lib` the C ABI | yes |
 | `lypning lib` | the flags a C or C++ host needs to link liblypning | yes |
 | `lypning pool` | a warm CPython backstop for the chain — opt-in, `LYPNING_POOL` points at it | yes |
 | `lypning overview` | the map, every contract and whether it is pinned, and each variant against its OWN budget; `--deep` runs every pin and the suite | yes |
@@ -275,7 +270,6 @@ caller-defined output, every other subcommand takes `--json`.
 | `lypning corpus-time` | time the whole corpus on ONE binary, and diff two runs of it | yes |
 | `lypning perf` | time one construct at a time against CPython | yes |
 | `lypning gate [BIN]` | measure a binary against the acceptance table; exit 1 on a failed check | yes |
-| `lypning oracle` | what a second reimplementation of Python got wrong | yes |
 | `lypning harvest` | turn captured invocations into corpus entries | yes |
 | `lypning corpus` | inspect the harvested programs | yes |
 | `lypning routes` | the value-dependent refusals a static route could not see — write-only with respect to routing (`docs/VERIFICATION.md` §C11) | yes |
@@ -301,7 +295,6 @@ lypning: unsupported: module: import re
 | `LYPNING_HOME` | state dir (default `~/.lypning`) — binaries, log, build trees |
 | `LYPNING_LOG` | capture log path (default `$LYPNING_HOME/invocations.jsonl`) |
 | `LYPNING_BIN`, `LYPNING_L_BIN` | pin a spectrum variant's binary (`engines.env_var_for`) |
-| `LYPNING_MP_BIN` | pin the oracle's binary — measured, never routed to |
 | `LYPNING_LIB` | override the embeddable C ABI library (`lypning lib`, `lypning.embed`) |
 | `LYPNING_POOL` | socket of a warm CPython pool (`lypning pool serve`); the chain's CPython tier uses it, and falls back to a cold spawn if it is unreachable |
 | `LYPNING_CPYTHON` | override the reference CPython |
@@ -318,8 +311,7 @@ lypning conformance --mixture both  # …and both dispatchers: prints `dispatche
 ```
 
 Every corpus program runs on CPython and on each built arm — by default
-`lypning`, `lypning-l` and the mixture (`conformance.DEFAULT_ARMS`); the oracle,
-`library` (the C ABI) and `mixture-rust` (the Rust dispatcher's chain) are
+`lypning`, `lypning-l` and the mixture (`conformance.DEFAULT_ARMS`); `library` (the C ABI) and `mixture-rust` (the Rust dispatcher's chain) are
 opt-in by `--engine`. Each answer is one of three:
 
 | verdict | meaning | failure? |
@@ -461,9 +453,9 @@ MIT licensed. See `LICENSE`.
 
 ```
 src/lypning/   cli.py (the front door) · engines.py (find, run, route, dispatch) · paths.py · build.py · gate.py · conformance.py ·
-               routing.py · routes.py · oracle.py · fuzz.py · bench.py · perf.py · pool.py · corpus.py · capture.py · harvest.py ·
+               routing.py · routes.py · fuzz.py · bench.py · perf.py · pool.py · corpus.py · capture.py · harvest.py ·
                install.py · shim.py · embed.py · harness/ — and assets/: rust/ (the one crate) · include/ (lypning.h, .hpp) · examples/
-               node/ go/ swift/ lua/ (one quickstart each) · micropython/ (the oracle's build) · corpus/ · prompt/ · claude/ opencode/
+               node/ go/ swift/ lua/ (one quickstart each) · corpus/ · prompt/ · claude/ opencode/
                openhands/ shim/ scripts/ (what install writes)   —   docs/ · site/ (Pages) · study/ · tests/ · Makefile (`make help`)
 ```
 
@@ -486,7 +478,6 @@ no runner or no pin shows up there as a hole rather than as silence.
 | `docs/CAPTURE.md` | the two capture feeds, the harvest, and the privacy rules |
 | `docs/HARNESSES.md` | wiring capture into opencode and the OpenHands SDK: what each install writes, what it refuses to write, and what is verified against a real install |
 | `docs/EMBEDDING.md` | linking the runtime into a harness: the C ABI, the hosts over it, and what a refusal means when there is no exit code |
-| `docs/MICROPYTHON.md` | `lypning-mp`, the oracle: what a second reimplementation got wrong, and the cost model both were built against |
 | `docs/SANDBOX-PERFORMANCE.md` | the cost model — cold blocks, the exec floor, spawns — measured upstream, dated |
 | `docs/PROMPTING.md` | can an agent be *asked* into the subset? nine prompt treatments, measured 2026-08-23 |
 | `docs/COMPARISON.md` | against ADK-Rust CodeAct + Monty: one instrument over the corpus, both columns measured |

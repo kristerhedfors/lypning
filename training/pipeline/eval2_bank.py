@@ -70,7 +70,6 @@ MIN_TASK_WORDS = 20
 RUNTIME_NAMES: Tuple[Tuple[str, str], ...] = (
     ("lypning", r"\blypning\b"),
     ("cpython", r"\bcpython\b"),
-    ("micropython", r"\bmicropython\b"),
     ("interpreter", r"\binterpreters?\b"),
     ("runtime", r"\bruntimes?\b"),
     ("engine", r"\bengines?\b"),

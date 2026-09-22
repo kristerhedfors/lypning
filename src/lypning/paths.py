@@ -2,17 +2,9 @@
 
 Two roots, and keeping them apart is the whole point of this module:
 
-  * **assets** — read-only, inside the installed wheel. The Rust crate source,
-    the MicroPython variant, the shim stdlib, the corpus, the Claude Code skill
-    and hooks. Never written to.
-  * **state** — writable, ``$LYPNING_HOME`` or ``~/.lypning``. Built binaries,
-    the capture log, build work trees. Everything that a ``pip install --user``
-    must not need write access to the site-packages tree for.
-
 A source checkout is the one case where the two overlap: ``assets/rust/target``
 is a perfectly good place for cargo to build when the tree is writable, so
-:func:`build_dir` prefers it and falls back to state.
-"""
+:func:`build_dir` prefers it and falls back to state."""
 
 from __future__ import annotations
 
@@ -26,8 +18,6 @@ PACKAGE_ROOT = Path(__file__).resolve().parent
 ASSETS = PACKAGE_ROOT / "assets"
 
 RUST_DIR = ASSETS / "rust"
-MICROPYTHON_DIR = ASSETS / "micropython"
-MICROPYTHON_LIB = MICROPYTHON_DIR / "lib"
 CORPUS_DIR = ASSETS / "corpus"
 #: The C ABI's headers — source, not build output, and the contract every
 #: binding compiles against. Copied out to a writable include dir on install,
@@ -88,13 +78,10 @@ def bin_dir() -> Path:
 
 
 def build_dir() -> Path:
-    """Scratch space for cargo and the MicroPython make.
-
-    Prefers the package tree when it is writable — that is a source checkout,
+    """Prefers the package tree when it is writable — that is a source checkout,
     where ``assets/rust/target`` is exactly where a developer expects to find
     the object files, and reusing it means ``pip install -e .`` and ``cargo
-    build`` share a cache instead of each paying the first build.
-    """
+    build`` share a cache instead of each paying the first build."""
     if package_is_writable():
         return ASSETS
     return state_dir() / "build"
