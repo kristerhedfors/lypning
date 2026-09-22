@@ -32,7 +32,11 @@ env:
   STEP2_SAMPLES: ${{ (inputs.rung == 'smoke' || inputs.rung == 'targets') && '4' || '16' }}
   STEP2_CEILING_USD: ${{ inputs.ceiling_usd }}
   STEP2_MAX_SECONDS: ${{ inputs.rung == 'smoke' && '3600' || '14400' }}
-  STEP2_RPM: '60'
+  # The first 192-case target expansion stopped on one opaque provider error
+  # after 327 calls at 60 rpm. Keep the original rate for the already-proven
+  # smoke/confirmatory shapes; give target collection 25% sliding-window
+  # headroom and preserve zero retries.
+  STEP2_RPM: ${{ inputs.rung == 'targets' && '45' || '60' }}
   STEP2_RUN_ID: ${{ inputs.rung }}-${{ github.sha }}-${{ github.run_id }}
 
 jobs:
