@@ -63,7 +63,7 @@ def test_density_is_an_instrument_and_host_count_is_not():
     assert arm.differences(hosts) == {}, "a cost ceiling is not an arm"
 
 
-def test_commit_and_kernels_are_reported_but_not_enforced():
+def test_commit_is_reported_but_not_enforced():
     """This file cannot tell a workflow fix from an engine change.
 
     Refusing every round that landed an unrelated commit would make the check
@@ -77,6 +77,50 @@ def test_commit_and_kernels_are_reported_but_not_enforced():
     assert arm.differences(drift) == {}
 
 
+def arm_a(**over):
+    """A manifest as `round02_pilot.sh` writes it since the split was decoupled."""
+    base = manifest(grpo_steps=0, split_seed=1111, sft_target_run="targets-1",
+                    sft_sha256="d" * 64, sft_learning_rate=1e-4, grpo_learning_rate=None,
+                    kernels={"NTX_USE_FLA": "0", "flash-linear-attention": "blocked"})
+    base.update(over)
+    return base
+
+
+def test_two_target_sets_are_two_arms():
+    """What is trained on is the arm A field, and nothing else would say so.
+
+    Seed 1111 of 2026-09-21 and arm A share a bank, a Space, a revision and a
+    step count; without the target run, the rates and the kernel this check
+    called them one arm, and PLAN.md's gate before the second seed would have
+    passed on the wrong experiment.
+    """
+    arm = load()
+    for field in ("split_seed", "sft_target_run", "sft_sha256", "sft_learning_rate",
+                  "grpo_learning_rate", "kernels"):
+        assert field in arm.ARM_FIELDS, field
+    one = arm_a(seed=1111)
+    other = arm_a(seed=2222, job="j2", sft_target_run="targets-2")
+    assert arm.arm_of(one) != arm.arm_of(other)
+    assert set(arm.differences([one, other])) == {"sft_target_run"}
+    for field, value in (("sft_sha256", "e" * 64), ("sft_learning_rate", 2e-5),
+                         ("kernels", {"NTX_USE_FLA": "0", "flash-linear-attention": "usable"}),
+                         ("split_seed", 2222)):
+        assert set(arm.differences([one, arm_a(seed=2222, job="j2", **{field: value})])) == {field}
+    same = [arm_a(seed=s, job="j%d" % s) for s in (1111, 2222, 3333)]
+    assert arm.differences(same) == {}, "three seeds of arm A are one arm"
+
+
+def test_old_manifests_stay_readable_and_never_match_a_new_one():
+    """Absence is a value, not a wildcard; the split seed of an old round is known."""
+    arm = load()
+    old = [manifest(seed=1111), manifest(seed=2222, job="j2")]
+    assert arm.differences(old) == {}, "two old manifests still agree with each other"
+    assert arm.arm_value(old[0], "split_seed") == arm.SPLIT_FOLLOWS_SEED
+    assert arm.arm_value(old[0], "sft_sha256") == arm.UNRECORDED
+    mixed = arm.differences([manifest(seed=1111, grpo_steps=0), arm_a(seed=2222, job="j2")])
+    assert {"split_seed", "sft_target_run", "sft_sha256", "kernels"} <= set(mixed)
+
+
 def test_only_rounds_that_ran_are_evidence_about_an_arm():
     """A round that died at `prepare` says nothing about the experiment."""
     arm = load()
@@ -88,3 +132,18 @@ def test_arm_of_is_stable_and_orders_the_same_way():
     arm = load()
     assert arm.arm_of(manifest(seed=1111)) == arm.arm_of(manifest(seed=2222, job="j2"))
     assert arm.arm_of(manifest()) != arm.arm_of(manifest(steps=250))
+
+
+def test_one_arm_is_selected_by_its_fields_and_the_rest_are_not_compared():
+    """Seed 1111's old round and arm A share a bank; the check is about one of them."""
+    arm = load()
+    old = manifest(seed=1111, job="old")
+    seeds = [arm_a(seed=1111, job="a1"), arm_a(seed=2222, job="a2")]
+    assert arm.differences([old] + seeds), "compared together they are two arms"
+    want, problem = arm.parse_pairs(["sft_target_run=targets-1"], "--select")
+    assert problem is None
+    assert arm.selected([old] + seeds, want) == seeds
+    assert arm.differences(arm.selected([old] + seeds, want)) == {}
+    for bad in ("seed=1111", "no-equals"):
+        want, problem = arm.parse_pairs([bad], "--select")
+        assert want is None and "--select" in problem

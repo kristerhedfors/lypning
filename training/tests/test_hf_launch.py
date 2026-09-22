@@ -86,6 +86,7 @@ def args(stage, **overrides):
                 work_repo="o/work", bank_path=None, steps=launch.DEFAULT_STEPS,
                 grpo_steps=launch.DEFAULT_GRPO_STEPS,
                 eval_draws=launch.DEFAULT_EVAL_DRAWS, seed=launch.DEFAULT_SEED,
+                split_seed=launch.DEFAULT_SPLIT_SEED,
                 eval_sequences=launch.DEFAULT_EVAL_SEQUENCES, score_workers=launch.DEFAULT_SCORE_WORKERS,
                 pool_sandboxes_per_host=launch.DEFAULT_POOL_SANDBOXES_PER_HOST,
                 pool_max_hosts=launch.DEFAULT_POOL_MAX_HOSTS,
@@ -102,14 +103,14 @@ def test_smoke_env_carries_only_the_four_original_keys():
 def test_pilot_env_wires_the_bank_and_its_knobs_as_strings():
     env = launch.job_env(args("pilot", bank_path="banks/2026-09-16", steps=40, eval_draws=8, seed=2222))
     assert env == {"SPACE_REPO": "o/space", "SPACE_REV": "a" * 40, "QWEN_REV": "b" * 40, "WORK_REPO": "o/work",
-                   "BANK_PATH": "banks/2026-09-16", "STEPS": "40", "GRPO_STEPS": "20",
-                   "EVAL_DRAWS": "8", "SEED": "2222",
+                   "BANK_PATH": "banks/2026-09-16", "STEPS": "40", "GRPO_STEPS": "0",
+                   "EVAL_DRAWS": "8", "SEED": "2222", "SPLIT_SEED": "1111",
                    "EVAL_SEQUENCES": "256", "SCORE_WORKERS": "12",
                    "NTX_POOL_SANDBOXES_PER_HOST": "4", "NTX_POOL_MAX_HOSTS": "4",
                    "BUNDLES_FROM": "", "SFT_TARGET_RUN": ""}
     defaults = launch.job_env(args("pilot", bank_path="banks/x"))
     assert (defaults["STEPS"], defaults["GRPO_STEPS"], defaults["EVAL_DRAWS"],
-            defaults["SEED"]) == ("250", "20", "16", "1111")
+            defaults["SEED"], defaults["SPLIT_SEED"]) == ("250", "0", "16", "1111", "1111")
     reused = launch.job_env(args("pilot", bank_path="banks/x", bundles_from="round-02/6aaa4b2c", eval_sequences=64, score_workers=8))
     assert (reused["BUNDLES_FROM"], reused["EVAL_SEQUENCES"], reused["SCORE_WORKERS"]) == ("round-02/6aaa4b2c", "64", "8")
     targets = launch.job_env(args("pilot", bank_path="banks/x", sft_target_run="confirmatory-a-1"))
@@ -369,3 +370,81 @@ def test_timeout_audit_prints_no_environment_or_log_payload():
     assert "SECRET" not in json.dumps(summary)
     assert summary["timeoutSeconds"] == 28800
     assert summary["startedAt"] == "2026-09-20T17:49:47Z"
+
+
+def pilot_argv(*extra):
+    return ["pilot", "--branch", "b", "--commit", "c" * 40, "--space", "o/space",
+            "--space-revision", "a" * 40, "--qwen-revision", "b" * 40, "--work-repo", "o/work",
+            "--bank-path", "banks/x"] + list(extra)
+
+
+def test_the_protocol_seeds_are_the_contracts_seeds():
+    """launch.py is loaded by path and restates the tuple; this is the tie."""
+    from pipeline.training_contract import PROTOCOL_TRAIN_SEEDS
+
+    assert launch.PROTOCOL_TRAIN_SEEDS == PROTOCOL_TRAIN_SEEDS
+    assert launch.DEFAULT_SPLIT_SEED in PROTOCOL_TRAIN_SEEDS
+
+
+def test_every_training_seed_keeps_the_one_split(monkeypatch, capsys):
+    """Seeds 2222 and 3333 train on seed 1111's split, so its targets load at all three.
+
+    While review, preparation and training shared one SEED, the rejection
+    targets graded on seed 1111's train split were refused by seed 2222's
+    trainer at the plan stage -- after deps, bank and preparation were billed.
+    """
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    for seed in launch.PROTOCOL_TRAIN_SEEDS:
+        env = launch.job_env(args("pilot", bank_path="banks/x", seed=seed))
+        assert (env["SEED"], env["SPLIT_SEED"]) == (str(seed), "1111")
+        assert launch.main(pilot_argv("--seed", str(seed))) == 2
+        assert "HF_TOKEN" in capsys.readouterr().err, "a protocol seed is admitted"
+    for flag in ("--seed", "--split-seed"):
+        assert launch.main(pilot_argv(flag, "4444")) == 2
+        err = capsys.readouterr()
+        assert "pre-registered" in err.err and err.out == ""
+
+
+def test_an_arm_a_launch_runs_no_grpo_unless_asked(monkeypatch, capsys):
+    """0 is the default and legal; a negative dose is not."""
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    assert launch.DEFAULT_GRPO_STEPS == 0
+    assert launch.job_env(args("pilot", bank_path="banks/x"))["GRPO_STEPS"] == "0"
+    assert launch.main(pilot_argv("--grpo-steps", "0")) == 2
+    assert "HF_TOKEN" in capsys.readouterr().err, "--grpo-steps 0 is admitted"
+    assert launch.main(pilot_argv("--grpo-steps", "300")) == 2
+    assert "HF_TOKEN" in capsys.readouterr().err, "arm C names its own dose"
+    assert launch.main(pilot_argv("--grpo-steps", "-1")) == 2
+    assert "must be positive" in capsys.readouterr().err
+
+
+class HardwareApi:
+    """Just enough of HfApi for a dry run: the priced hardware table."""
+    def __init__(self, token=None):
+        pass
+
+    def list_jobs_hardware(self):
+        return [SimpleNamespace(name=n, unit_cost_usd=c, unit_label="hour")
+                for n, c in (("a10g-small", 1.0), ("h200", 5.0))]
+
+
+def test_a_banked_stage_defaults_to_the_h200_and_the_decided_ceiling(monkeypatch, capsys):
+    """A hand launch without --flavor used to bill a 24 GB GPU for a 54 GB model."""
+    import json
+    import sys
+    import types
+
+    monkeypatch.setenv("HF_TOKEN", "t")
+    monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(HfApi=HardwareApi))
+    assert launch.main(pilot_argv()) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert (plan["flavor"], plan["timeout"], plan["timeout_seconds"]) == ("h200", "720m", 43200)
+    assert (plan["seed"], plan["split_seed"], plan["grpo_steps"]) == (1111, 1111, 0)
+    smoke = pilot_argv()[:13]
+    smoke[0] = "smoke"
+    assert launch.main(smoke) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert (plan["flavor"], plan["timeout"]) == ("a10g-small", "75m"), "the smoke is unchanged"
+    assert launch.main(pilot_argv("--timeout", "721m")) == 2
+    err = capsys.readouterr()
+    assert "720m ceiling" in err.err and err.out == ""

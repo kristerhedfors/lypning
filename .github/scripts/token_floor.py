@@ -15,11 +15,13 @@ file. `training.prepare` puts the authored bank through
 measurement wearing the same name: the dev and test cases live in that file
 too, and the run never trains on them. The identity block prints the bank's row
 count and the population's beside it, and the floor is compared against the
-population. This calls `split_cases` itself, and the split seed follows the
-schedule seed
-because `round02_pilot.sh` drives review, preparation and training from one
-`SEED`; `--split-seed` pins a single split for every schedule seed, which is
-the `BUNDLES_FROM` case, where the bundle was prepared by an earlier job. Rows
+population. This calls `split_cases` itself. Since 2026-09-22
+`round02_pilot.sh` reviews and prepares at `SPLIT_SEED` (1111 for every
+training seed of an S4 arm; `training/hf/launch.py` says why), so
+`--split-seed 1111` counts what a pilot trains on at each schedule seed, and
+is also the `BUNDLES_FROM` case, where the bundle was prepared by an earlier
+job. Omitted, each schedule seed splits with itself, which is how the rounds
+before that date were prepared and is kept to re-count them. Rows
 that already carry a `split` -- a prepared bundle's cases -- are filtered, not
 re-split. The count is a count of the checkout's bank at the printed
 `bank sha256`: a metered job that downloads another bank has another number.
@@ -283,8 +285,9 @@ def parser():
     p.add_argument("--seed", type=int, action="append",
                    help="repeatable; defaults to the protocol seeds")
     p.add_argument("--split-seed", type=int,
-                   help="preparation seed for split_cases; omitted, each schedule seed splits "
-                        "with itself, as round02_pilot.sh's single SEED does")
+                   help="preparation seed for split_cases (round02_pilot.sh's SPLIT_SEED, 1111); "
+                        "omitted, each schedule seed splits with itself, as rounds before "
+                        "2026-09-22 were prepared")
     p.add_argument("--max-seq", type=int, default=4096)
     p.add_argument("--max-new-tokens", type=int, default=1024)
     p.add_argument("--limit-steps", type=int, default=4096, help="search ceiling for the minimum")
