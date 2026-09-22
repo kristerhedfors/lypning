@@ -89,6 +89,20 @@ def plan(rows, spec, token_ids, *, seed=1111):
     }
 
 
+PUBLIC_FIELDS = frozenset({
+    "stage", "state", "provider", "model", "model_identity_limit", "bank_cases",
+    "train_cases", "families", "populations", "split_seed", "population",
+    "samples_per_case_per_arm", "arms", "calls", "sampling", "pricing",
+    "input_only_usd", "cost_at_output_allowance_usd", "cost_scenarios_usd",
+    "decision", "metric_policy", "remaining", "tokenizer_revision",
+})
+
+
+def public_plan(result):
+    """Only aggregate planning data; no private-bank paths, revisions or hashes."""
+    return {key: value for key, value in result.items() if key in PUBLIC_FIELDS}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("bank", type=Path)
@@ -106,8 +120,8 @@ def main():
     result["tokenizer_revision"] = args.revision
     result["bank_file_sha256"] = hashlib.sha256(args.bank.read_bytes()).hexdigest()
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
-    print(json.dumps(result, indent=2, sort_keys=True))
+    args.out.write_text(json.dumps(public_plan(result), indent=2, sort_keys=True) + "\n")
+    print(json.dumps(public_plan(result), indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

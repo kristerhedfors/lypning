@@ -54,3 +54,11 @@ def test_empty_spec_and_oversized_prompt_refused(monkeypatch):
         pc.plan([], '', lambda msgs: [1])
     with pytest.raises(TrainingError, match='planning window'):
         pc.plan([], 'spec', lambda msgs: [1] * 32768)
+
+
+def test_public_plan_never_exports_private_bank_identifiers():
+    result = pc.public_plan({'calls': 32, 'train_cases': 1, 'hub_bank_path': 'private/path',
+                             'hub_bank_revision': 'a' * 40, 'bank_sha256': 'b' * 64,
+                             'bank_file_sha256': 'c' * 64, 'case_set_sha256': 'd' * 64,
+                             'future_private_field': 'secret'})
+    assert result == {'calls': 32, 'train_cases': 1}

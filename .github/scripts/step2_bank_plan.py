@@ -24,14 +24,14 @@ def main():
     manifest = json.loads((root / 'bank.json').read_text())
     if manifest['train']['cases'] != len(rows):
         raise SystemExit('bank count differs from manifest')
+    if os.environ.get("STEP2_DOWNLOAD_ONLY") == "1":
+        print("Downloaded the manifest-checked pilot bank; no generation")
+        return
     revision = api.model_info('Qwen/Qwen3.8-27B').sha
     out = Path(os.environ['RUNNER_TEMP']) / 'step2-plan.json'
     subprocess.run([sys.executable, '-m', 'pipeline.positive_control', str(root / 'train.jsonl'),
                     '--revision', revision, '--out', str(out)], check=True)
-    result = json.loads(out.read_text())
-    result.update(hub_bank_revision=info.sha, hub_bank_path=bank)
-    out.write_text(json.dumps(result, sort_keys=True, indent=2) + '\n')
-    print('Bank revision:', info.sha)
+
 
 
 if __name__ == '__main__':
