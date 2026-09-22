@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from . import corpus, paths
-from .capture import looks_pythonish
+from .capture import invokes_python, looks_pythonish
 
 # Provenance ranking. A shim record proves the program actually RAN, which is
 # stronger evidence than a command string that merely mentions python. The hook
@@ -830,7 +830,7 @@ def extract_with_tails(command: str) -> List[Tuple[str, List[str]]]:
     for delim, body, header in heredocs:
         if not body.strip():
             continue
-        if not looks_pythonish(header) and not _PY_DELIM.match(delim):
+        if not invokes_python(header) and not _PY_DELIM.match(delim):
             target = py_write_target(header)
             if target is None or target[0] != "write":
                 continue
@@ -2649,7 +2649,7 @@ def parse_codex(sessions_dir: Optional[Path] = None) -> List[Sighting]:
     if feed is None:
         raise FeedUnavailable("the Codex feed is not in this build (no lypning.codex)")
     records: List[Tuple[int, Dict[str, Any]]] = []
-    for n, rec in enumerate(feed.collect(sessions_dir=sessions_dir), start=1):
+    for n, rec in enumerate(feed.log_records(sessions_dir), start=1):
         if not isinstance(rec, dict):
             continue
         rec = dict(rec)

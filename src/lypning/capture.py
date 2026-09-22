@@ -110,6 +110,18 @@ PYTHONISH = (
     _HeredocIntoPy(),
 )
 
+#: The rules that say a command RUNS python, without the heredoc-into-*.py rule.
+#: That rule is right for capture (log the write so a later run can be joined)
+#: and wrong for deciding a heredoc BODY is a program: it also matches an
+#: append (`>>`, `tee -a`), a path nobody can resolve (`$D/a.py`) and a stderr
+#: redirect. `harvest` judges those with its own `py_write_target` instead.
+INVOKES_PYTHON = tuple(rx for rx in PYTHONISH if not isinstance(rx, _HeredocIntoPy))
+
+
+def invokes_python(command: str) -> bool:
+    """Does this command run python, as opposed to write a ``.py`` file?"""
+    return isinstance(command, str) and any(rx.search(command) for rx in INVOKES_PYTHON)
+
 # A tool event is a few KiB of JSON. A Bash command can legitimately carry a
 # large heredoc, but nothing useful arrives past this, and a hook that reads an
 # unbounded stream into memory is a hook that can hang the tool call.

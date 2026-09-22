@@ -1542,7 +1542,7 @@ class _FakeCodex:
     def __init__(self, records):
         self.records = records
 
-    def collect(self, sessions_dir=None):
+    def log_records(self, sessions_dir=None):
         return iter(self.records)
 
 
@@ -1600,7 +1600,7 @@ def test_collect_with_codex_merges_the_feed(monkeypatch):
 def test_the_real_codex_module_satisfies_the_feed_interface(tmp_path):
     """TODO(capture lane L1): `lypning.codex` is written in another lane. Until
     it lands this is skipped; once it does, it pins the interface this module
-    codes against — `collect(sessions_dir=None)` yielding log-shaped records."""
+    codes against — `log_records(sessions_dir=None)` yielding log-shaped records."""
     pytest.importorskip("lypning.codex")
     assert harvest.codex_available()
     empty = tmp_path / "sessions"

@@ -209,3 +209,14 @@ def test_js_string_literals(src, expected):
 def test_model_counts_is_an_aggregate(sessions):
     counts = codex.model_counts(codex.collect(sessions))
     assert counts == {"gpt-5.4": 2, "gpt-6-astra": 1}
+
+
+def test_harvest_reads_the_feed_end_to_end(sessions):
+    """The two halves were written apart; this joins the real modules."""
+    from lypning import harvest
+    sightings = harvest.parse_codex(sessions_dir=sessions)
+    programs = {s.program for s in sightings}
+    assert "print(40 + 2)" in programs
+    assert {s.source for s in sightings} == {"codex"}
+    again = harvest.parse_codex(sessions_dir=sessions)
+    assert sorted(s.key for s in again) == sorted(s.key for s in sightings)

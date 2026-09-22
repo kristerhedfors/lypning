@@ -290,6 +290,22 @@ class CodexCall:
         return rec
 
 
+def log_records(sessions_dir: Any = None) -> Iterator[Dict[str, Any]]:
+    """The feed :func:`lypning.harvest.parse_codex` consumes: one capture-log
+    record per python-ish call, as :meth:`CodexCall.record` shapes it.
+
+    The command is the REDACTED one :func:`iter_calls` hands out, and a call
+    with a credential-shaped residue is never yielded. ``call_id`` carries the
+    per-command id (``run``) so harvest keys a rescan or a forked rollout onto
+    the same occurrence. Harvest extracts the programs itself, exactly as it
+    does from the Claude log, so both feeds go through one extractor.
+    """
+    for call in iter_calls(sessions_dir):
+        rec = call.record()
+        rec["call_id"] = rec["run"]
+        yield rec
+
+
 def rollout_files(roots: Any = None) -> List[Path]:
     """Every ``*.jsonl`` under the roots, sorted by path. Never raises.
 
