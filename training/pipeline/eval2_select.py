@@ -21,6 +21,17 @@ detector takes an object with a ``.program`` attribute, so a corpus dict is
 wrapped through ``lypning.corpus.Entry`` first — a dict handed to it directly
 reads as an empty program and waives nothing.
 
+THE CAPTURE-TIER SOURCE. :func:`records_from_export` turns rows of a
+``capture_export`` file into the same ``{"outcome", "entry", "info"}`` records,
+outcome ``captured``: exact program bytes straight from the raw log, already
+tier A under ``capture_quality`` (a static verdict, nothing executed), already
+clean of commands that touched eval-2, a bank, positive-control completions or
+the capture log itself, attributed, and preferring ``claude-opus-5-5``. They
+run the same static rules and the same two regeneration runs as a classified
+record; only programs that passed the static classifier ever reach a runner.
+A candidate built from one carries ``capture`` provenance (model, parent event
+ids) so the bank it feeds can be audited back to the log line.
+
 This module returns data. ``cli.py`` renders it.
 """
 
@@ -37,12 +48,14 @@ from .jsonio import digest, read_jsonl
 from .sandbox import RunResult, run_python
 
 #: The outcomes a candidate may come from. Refusal kind is deliberately absent.
-OUTCOMES = ("tier1", "refused")
+#: ``captured`` is a capture-export row: not yet run on any engine, which is
+#: fine, because ``eval2_bank`` decides the population from the engine itself.
+OUTCOMES = ("tier1", "refused", "captured")
 
 #: Every rule, in the order it is applied. A program is charged to the FIRST
 #: rule that rejects it, so the counts sum to the number excluded.
 RULES = (
-    "outcome",            # not tier1 / refused
+    "outcome",            # not tier1 / refused / captured
     "mentions-tooling",   # names lypning or ntx
     "absolute-path",      # names a path outside its temp cwd (program or argv)
     "writes-files",       # creates, truncates, renames or removes a file
@@ -362,16 +375,58 @@ def static_rule(rec: Dict[str, Any]) -> str:
     return ""
 
 
+def records_from_export(rows: Iterable[Dict[str, Any]], *,
+                        models: Optional[List[str]] = None,
+                        allow_other_vendors: bool = False,
+                        hosts: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """Capture-export rows as records :func:`select` takes, outcome ``captured``.
+
+    One record per distinct program, through ``capture_export.select_rows``:
+    tier A and uncontaminated only, other vendors' models and hosts out unless
+    asked for, preferred writers first. The entry id is ``cx-`` and the first
+    16 hex digits of the exact bytes' SHA-256 — the same identity
+    ``source_sha256`` carries, so it can never collide with a corpus ``py-`` id.
+    """
+    from . import capture_export as cx
+    kwargs: Dict[str, Any] = {"models": models, "allow_other_vendors": allow_other_vendors}
+    if hosts:
+        kwargs["hosts"] = tuple(hosts)
+    out: List[Dict[str, Any]] = []
+    for rec in cx.select_rows(rows, **kwargs):
+        sessions = rec.get("sessions") or []
+        out.append({
+            "outcome": "captured",
+            "entry": {
+                "id": "cx-" + rec["source_sha256"][:16],
+                "program": rec["program"],
+                "argv_tail": list(rec.get("argv_tail") or []),
+                "source": "capture",
+                "session_file": sessions[0] if sessions else None,
+            },
+            "info": {},
+            "capture": {
+                "tier": "capture",
+                "model": rec["model"],
+                "models": dict(rec["models"]),
+                "preferred": rec["preferred"],
+                "hosts": list(rec["hosts"]),
+                "parent_event_ids": list(rec["parent_event_ids"]),
+                "ok": dict(rec["ok"]),
+            },
+        })
+    return out
+
+
 def _candidate(rec: Dict[str, Any], stdout: str, sessions: Dict[str, str]) -> Dict[str, Any]:
     entry = rec["entry"]
     info = rec.get("info") or {}
     program = entry.get("program") or ""
     argv = [str(a) for a in (entry.get("argv_tail") or [])]
     stdin = _stdin_of(entry)
-    return {
+    out = {
         "candidate_id": "e2-" + digest({"program": program, "argv": argv, "stdin": stdin}),
         "source_entry_id": entry.get("id"),
-        "session_file": sessions.get(entry.get("id") or ""),
+        "session_file": sessions.get(entry.get("id") or "") or entry.get("session_file"),
         "program": program,
         "argv": argv,
         "stdin": stdin,
@@ -382,6 +437,9 @@ def _candidate(rec: Dict[str, Any], stdout: str, sessions: Dict[str, str]) -> Di
         "shape_bucket": shape_bucket(program),
         "source_sha256": source_sha256(program),
     }
+    if rec.get("capture"):
+        out["capture"] = rec["capture"]
+    return out
 
 
 def _draw(cands: List[Dict[str, Any]], limit: int, seed: int) -> List[Dict[str, Any]]:
