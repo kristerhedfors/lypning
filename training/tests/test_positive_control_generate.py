@@ -85,11 +85,23 @@ def test_transport_failure_is_paid_once_retained_and_partial(tmp_path):
     assert calls[0]['reasoning_effort'] == 'none'
     assert 'enable_thinking' not in calls[0]  # Cerebras uses reasoning_effort.
     assert result['complete'] is False and result['completed'] == 0
+    assert result['failure_types'] == ['provider-protocol']
     assert Decimal(result['charged_or_reserved_usd']) > 0
     assert 'PRIVATE PROMPT' not in (tmp_path / 'out' / 'errors.jsonl').read_text()
     with pytest.raises(TrainingError, match='output exists'):
         gen.generate(cases, 'spec', backend, tmp_path / 'out',
                      ceiling_usd=1, admission=admission(cases))
+
+
+@pytest.mark.parametrize(('exc', 'kind'), [
+    (BackendError('HTTP 429: PRIVATE BODY'), 'provider-http-429'),
+    (BackendError('HTTP 503: PRIVATE BODY'), 'provider-http-503'),
+    (BackendError('giving up after 0 retries: PRIVATE'), 'provider-transport'),
+    (TrainingError('PRIVATE USAGE'), 'provider-usage-contract'),
+])
+def test_provider_error_classification_never_persists_the_detail(exc, kind):
+    assert gen.safe_error_kind(exc) == kind
+    assert 'PRIVATE' not in gen.safe_error_kind(exc)
 
 
 def test_insufficient_reservation_makes_no_network_call(tmp_path):

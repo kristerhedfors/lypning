@@ -18,6 +18,7 @@ import threading
 import time
 
 from .jsonio import append_jsonl, sha256_of, write_json
+from .backends import BackendError
 from .positive_control import MODEL, MAX_TOKENS, PRICE_IN, PRICE_OUT, SAMPLES, arm_messages
 from .training_types import TrainingError
 
@@ -31,6 +32,20 @@ PROVIDER = 'https://api.cerebras.ai/v1'
 
 class SpendLimit(TrainingError):
     pass
+
+
+def safe_error_kind(exc):
+    """Classify provider failures without persisting a response or prompt."""
+    if isinstance(exc, BackendError):
+        match = re.match(r'^HTTP (\d{3}):', str(exc))
+        if match:
+            return 'provider-http-' + match.group(1)
+        if str(exc).startswith('giving up after'):
+            return 'provider-transport'
+        return 'provider-protocol'
+    if isinstance(exc, TrainingError):
+        return 'provider-usage-contract'
+    return type(exc).__name__
 
 
 class Budget:
@@ -158,6 +173,7 @@ def generate(cases, spec, backend, output, *, ceiling_usd, admission, workers=4,
     started = time.monotonic()
     completed = 0
     failure = None
+    failure_types = set()
     next_request_at = started
 
     def one(case, draw, arm):
@@ -221,10 +237,13 @@ def generate(cases, spec, backend, output, *, ceiling_usd, admission, workers=4,
                     completed += 1
                 except Exception as exc:
                     # Provider exception strings may echo a prompt or key.
-                    append_jsonl(output / 'errors.jsonl', {'request': key, 'type': type(exc).__name__})
+                    kind = safe_error_kind(exc)
+                    failure_types.add(kind)
+                    append_jsonl(output / 'errors.jsonl', {'request': key, 'type': kind})
                     failure = 'provider/usage failure; ambiguous reservations retained'
     result = {'complete': completed == len(requests) and failure is None,
               'completed': completed, 'planned': len(requests), 'reason': failure,
+              'failure_types': sorted(failure_types),
               'charged_or_reserved_usd': str(budget.charged), 'ceiling_usd': str(budget.ceiling)}
     write_json(output / 'result.json', result)
     return result
