@@ -85,6 +85,7 @@ jobs:
             -w /work -e PYTHONPATH=src:training -e LYPNING_HOME=/engine \
             -e LYPNING_CAPTURE=0 -e LYPNING_HARVEST=0 \
             -e CHECK_BASE_IMAGE="$CHECK_BASE_IMAGE" step2-check sh -eu -c '
+              git config --global --add safe.directory /work
               git init -q
               git config user.email validation@localhost
               git config user.name validation

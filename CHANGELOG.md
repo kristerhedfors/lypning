@@ -15,6 +15,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 ## Unreleased
 
 **2026-09-22** — Prepare the positive control on the actual training split
+([#102](https://github.com/kristerhedfors/lypning/pull/102))
 
 - Add a free private-bank/tokenizer cost plan for both sixteen-draw prompt arms.
 - Verify the large engine in the pinned training Python runtime without a provider call.
