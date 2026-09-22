@@ -51,7 +51,7 @@ Advance a step by editing this table in the same PR as the work.
 |---|---|---|---|---|
 | 0 | Read what was paid for | $0 | did dev native move inside the selector's blind spot? | done (2026-09-21, [read](reports/2026-09-21-codex-step0-read.md), GH 35575454075) |
 | 1 | Fix the instrument | $0 | nothing else is readable until it is | done (2026-09-22, implementation in PRs #97–#101; validation limits below) |
-| 2 | Positive control (S1 / stage 0b) | ~$5 | distillation route or contrastive route | open |
+| 2 | Positive control (S1 / stage 0b) | ~$5 (being re-priced) | distillation route or contrastive route | in progress (2026-09-22, free bank/provider/candidate preparation; no generation) |
 | 3 | Build contrastive targets | tokens | is there enough pair supply for a preference arm? | open |
 | 4 | S4, re-specified, three seeds | ~$60–90 | the first result the instrument can read | open |
 
@@ -173,9 +173,12 @@ next in the sequence; no paid step was launched. See
 
 ### Step 2 — Positive control (~$5; S1, `LADDER.md` stage 0b)
 
-The training bank, bare vs `--system-file training/prompts/subset-spec.md`,
-k = 16, thinking off, one pinned provider (`nt eval --system-file`, shipped
-2026-09-16, never run). The prompting study got +22pp on Claude agents this way
+The pilot bank’s **training split** at seed 1111, bare vs
+`training/prompts/subset-spec.md`,
+k = 16, thinking off, one pinned provider. The older `nt eval --system-file`
+command reads the legacy held-out corpus, so Step 2 preparation uses
+`pipeline.positive_control` to count the actual training population and both
+arms before a dedicated bounded runner is admitted. Dev/test cases stay sealed. The prompting study got +22pp on Claude agents this way
 (`docs/PROMPTING.md` T2).
 
 **Decision.** Correct-and-native up ≥ 10pp with correctness flat → the
