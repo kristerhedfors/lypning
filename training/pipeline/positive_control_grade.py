@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .jsonio import read_jsonl, sha256_of, write_json, write_jsonl
 from .positive_control_generate import request_order
-from .positive_control_targets import DEFAULT_ARMS, build_targets
+from .positive_control_targets import DEFAULT_ARMS, build_targets, normalise_arms
 from .training import Verifier, program_from_completion
 from .training_metrics import paired_comparison, split_components, summarize
 from .training_types import TrainingError
@@ -46,6 +46,12 @@ def population_comparison(rows, population):
 def grade(cases, completions, verifier, output, *, samples, workers=8, run_id='',
           lineage=None, progress=None, target_arms=DEFAULT_ARMS, token_count=None,
           tokenizer=None):
+    # The target options are only used after every completion is graded --
+    # an hour of containers on the confirmatory rung -- so refuse a bad arm
+    # set or an unnamed token count here, before any of that work starts.
+    target_arms = normalise_arms(target_arms)
+    if (token_count is None) != (tokenizer is None):
+        raise TrainingError('a token count must name its tokenizer, and only then')
     output = Path(output)
     if output.exists():
         raise TrainingError('grade output exists; preserve it and choose a new directory')

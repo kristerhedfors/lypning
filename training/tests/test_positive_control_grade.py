@@ -170,3 +170,27 @@ def test_grading_refuses_an_incomplete_or_inconsistent_generation(tmp_path, monk
     with pytest.raises(TrainingError, match='result'):
         grade.grade_files(rows, path, ControlFlipVerifier(), tmp_path / 'grade', samples=2)
     assert not (tmp_path / 'grade').exists()
+
+
+class NeverScored:
+    def score(self, case, program):
+        raise AssertionError('grading must not start on invalid target options')
+
+
+@pytest.mark.parametrize('options,match', [
+    ({'target_arms': ('tuned',)}, 'target arms'),
+    ({'target_arms': 'bare'}, 'target arms'),
+    ({'target_arms': ('bare', 'bare')}, 'target arms'),
+    ({'token_count': len}, 'name its tokenizer'),
+    ({'tokenizer': 'repo@' + 'a' * 40}, 'name its tokenizer'),
+])
+def test_invalid_target_options_are_refused_before_any_grading(tmp_path, monkeypatch,
+                                                               options, match):
+    # build_targets would refuse these too, but only after every completion
+    # had been graded; the grader must refuse them before the first score.
+    _order(monkeypatch)
+    rows = mixed_cases()
+    with pytest.raises(TrainingError, match=match):
+        grade.grade(rows, arm_completions(rows), NeverScored(), tmp_path / 'grade',
+                    samples=2, workers=2, **options)
+    assert not (tmp_path / 'grade').exists()
