@@ -7,13 +7,44 @@ on:
         description: Bounded control rung
         required: true
         type: choice
-        options: [smoke, targets, budget20, confirmatory]
+        options: [smoke, targets, budget20, confirmatory, full]
         default: smoke
       ceiling_usd:
-        description: Hard Cerebras dollar ceiling (smoke <= 5, targets <= 6, budget20 <= 20, confirmatory <= 50)
+        description: Hard Cerebras dollar ceiling (smoke <= 5, targets <= 6, budget20 <= 20, confirmatory <= 50, full <= 14 per shard)
         required: true
         type: string
         default: '5'
+      # The `full` rung only. The target set for S4 arm A needs verified
+      # draws on at least 1,000 of the 1,355 train cases, and the 192 the
+      # `targets` rung bought (run 35767396604) are the first 192 of the full
+      # order, so the full rung skips them and splits the other 1,163 into
+      # interleaved shards, each generated and graded on its own:
+      #   2 shards: 582/581 cases, 4,656/4,648 requests, ~$11.00 each, ~106 min
+      #   3 shards: ~388 cases,  ~3,104 requests,        ~$7.34 each,  ~71 min
+      # priced at the measured $3.63061517 per 1,536 requests (run 35767396604,
+      # 2026-09-22) and 43.8 rpm; the remaining 1,163 cases cost about $22.0
+      # in both arms at k=4 however they are sharded. A single shard is
+      # refused: its 9,304 completions would need ~387 min to grade, past the
+      # grade job's 360-minute cap. Dispatch the shards ONE AT A TIME -- the
+      # concurrency group keeps a single pending run, and a newer dispatch
+      # replaces the pending one -- and freeze the Rust engine from the first
+      # shard until the last arm-A seed: every target row is bound to its hash,
+      # and `step2_merge.py` refuses shards graded by different engines.
+      shard_index:
+        description: "full only: which shard, 0-based"
+        type: choice
+        options: ['0', '1', '2', '3']
+        default: '0'
+      shard_count:
+        description: "full only: how many shards the remainder is split into"
+        type: choice
+        options: ['2', '3', '4']
+        default: '2'
+      skip_prefix:
+        description: "full only: leading cases already generated (192 = run 35767396604)"
+        type: choice
+        options: ['192', '0']
+        default: '192'
 
 permissions:
   contents: read
@@ -28,8 +59,12 @@ env:
   LYPNING_CAPTURE: '0'
   LYPNING_HARVEST: '0'
   STEP2_RUNG: ${{ inputs.rung }}
-  STEP2_CASES: ${{ inputs.rung == 'smoke' && '64' || (inputs.rung == 'targets' || inputs.rung == 'budget20') && '192' || '300' }}
-  STEP2_SAMPLES: ${{ (inputs.rung == 'smoke' || inputs.rung == 'targets') && '4' || '16' }}
+  STEP2_CASES: ${{ inputs.rung == 'smoke' && '64' || (inputs.rung == 'targets' || inputs.rung == 'budget20') && '192' || inputs.rung == 'full' && '1355' || '300' }}
+  STEP2_SAMPLES: ${{ (inputs.rung == 'smoke' || inputs.rung == 'targets' || inputs.rung == 'full') && '4' || '16' }}
+  # Every other rung is one unsharded run, whatever the shard inputs say.
+  STEP2_SHARD_INDEX: ${{ inputs.rung == 'full' && inputs.shard_index || '0' }}
+  STEP2_SHARD_COUNT: ${{ inputs.rung == 'full' && inputs.shard_count || '1' }}
+  STEP2_SKIP_PREFIX: ${{ inputs.rung == 'full' && inputs.skip_prefix || '0' }}
   STEP2_CEILING_USD: ${{ inputs.ceiling_usd }}
   STEP2_MAX_SECONDS: ${{ inputs.rung == 'smoke' && '3600' || '14400' }}
   # The first 192-case target expansion (35763603648) stopped on one opaque
@@ -39,7 +74,7 @@ env:
   # retries. The confirmatory rung (9,600 calls) needs about 213 minutes of its
   # 240-minute dispatch window at this rate.
   STEP2_RPM: ${{ inputs.rung == 'smoke' && '60' || '45' }}
-  STEP2_RUN_ID: ${{ inputs.rung }}-${{ github.sha }}-${{ github.run_id }}
+  STEP2_RUN_ID: ${{ inputs.rung }}${{ inputs.rung == 'full' && format('-{0}of{1}', inputs.shard_index, inputs.shard_count) || '' }}-${{ github.sha }}-${{ github.run_id }}
 
 jobs:
   control:
@@ -59,10 +94,15 @@ jobs:
           import math, os
           ceiling = float(os.environ['STEP2_CEILING_USD'])
           limit = {'smoke': 5, 'targets': 6, 'budget20': 20,
-                   'confirmatory': 50}[os.environ['STEP2_RUNG']]
+                   'confirmatory': 50, 'full': 14}[os.environ['STEP2_RUNG']]
           if not math.isfinite(ceiling) or not 0 < ceiling <= limit:
               raise SystemExit('ceiling must be positive and <= $%d for this rung' % limit)
           PY
+      # Free, before any build or call: a full shard whose ceiling, generation
+      # window or grading time cannot cover it would stop half-way, and a
+      # partial run is never graded. Prints the projection; counts only.
+      - name: Size this shard against its ceiling and windows
+        run: python .github/scripts/step2_shard.py
       - run: pip install -q 'huggingface-hub==1.31.0' 'transformers==5.17.0' jinja2
       - name: Check account-visible provider model without generation
         env:

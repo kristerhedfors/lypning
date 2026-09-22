@@ -90,12 +90,47 @@ def metrics(rows):
     return result
 
 
+def coupling(rows, base_index):
+    """How much a checkpoint's draw repeats the base draw with the same seed.
+
+    Each (case, draw) is sampled with the same seed at every step, so a step
+    whose adapter barely moved the model largely REPEATS the base draw rather
+    than taking a new one. Observed agreement over those pairs, set beside the
+    agreement two independent draws with the same per-case rates would show,
+    is the size of that coupling; the gap is what extra dev draws per case
+    would or would not buy. Seed 1111's adapters barely moved the model, so
+    its coupling is an UPPER bound on what an adapter with a real effect would
+    show; read it that way when choosing PILOT_DEV_EVAL_DRAWS (`round02.yml`).
+    Aggregates only: three fractions per label, no case, family or draw
+    leaves this function.
+    """
+    by_case = {}
+    for row in rows:
+        by_case.setdefault(row["case_id"], []).append((base_index[(row["case_id"], row["draw"])], row))
+    result = {}
+    for label in ("native", "correct", "status"):
+        observed = expected = 0.0
+        for pairs in by_case.values():
+            n = len(pairs)
+            observed += sum(old[label] == new[label] for old, new in pairs) / n
+            before = Counter(old[label] for old, _ in pairs)
+            after = Counter(new[label] for _, new in pairs)
+            expected += sum(before[v] * after[v] for v in before) / (n * n)
+        observed, expected = observed / len(by_case), expected / len(by_case)
+        result[label] = {"observed_agreement": observed, "independent_agreement": expected,
+                         "excess_agreement": observed - expected}
+    return result
+
+
 def checkpoints(rows, cases, expected_steps, base):
     require({r["step"] for r in rows} == set(expected_steps))
     base_index = {(r["case_id"], r["draw"]): r for r in base}
-    groups = {}
+    groups, coupled = {}, {}
     for step in expected_steps:
         group = checked_rows([r for r in rows if r["step"] == step], cases)
+        # Step 0 is the base draw itself: agreement 1 by construction, so
+        # only a moved step reports it.
+        coupled[step] = coupling(group, base_index) if step > 0 else None
         for row in group:
             old = base_index[(row["case_id"], row["draw"])]
             require(all(row[k] == old[k] for k in
@@ -111,6 +146,7 @@ def checkpoints(rows, cases, expected_steps, base):
         dn = stats["correct_native"] - baseline["correct_native"]
         output.append(dict(step=step, metrics=stats,
                            correct_delta_pp=100 * dc, native_delta_pp=100 * dn,
+                           draw_coupling=coupled[step],
                            meets_step0_rule=step > 0 and dn >= .02 - 1e-12 and dc >= -.02 - 1e-12))
     return output
 

@@ -32,6 +32,10 @@ on:
         default: "1111"
         type: choice
         options: ["1111", "2222", "3333"]
+      bundles_from:
+        description: "pilot: reuse the bundles an earlier job prepared, as round-02/<24-hex HF job id>; empty prepares afresh"
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -107,11 +111,28 @@ env:
   # one PLAN.md retired with seed 1111's configuration; arm C sets its own dose
   # here, in a reviewed commit, when it is launched.
   PILOT_GRPO_STEPS: "0"
+  # Arm C's group size and prompt groups per GRPO step, passed so that arm C's
+  # dose is one reviewed edit here rather than a launcher default nobody saw.
+  # 4 and 4 are launch.py's defaults: an arm-A probe stays comparable with
+  # seed 1111's, and with PILOT_GRPO_STEPS at 0 no GRPO step reads them.
+  PILOT_GRPO_GENERATIONS: "4"
+  PILOT_GRPO_PROMPTS: "4"
+  # Dev draws per case in the stages that SELECT a checkpoint. It used to be
+  # absent, so launch.py's DEFAULT_DEV_EVAL_DRAWS (4) applied without anyone
+  # choosing it. 4 is what every earlier job used; moving it to 16 is an arm
+  # decision taken after the draw-coupling read (`step0_summary.py`), in a
+  # reviewed commit, before the arm's first seed -- never between two seeds.
+  PILOT_DEV_EVAL_DRAWS: "4"
   # The split every seed of the arm trains and is measured on; the dispatch
   # `seed` input moves only initialisation and data order (launch.py says why).
   PILOT_SPLIT_SEED: "1111"
   PILOT_SEED: ${{ github.event.inputs.seed || '1111' }}
   SFT_TARGET_RUN: ${{ github.event.inputs.target_run || '' }}
+  # Seeds 2222 and 3333 train on split 1111, so they can reuse the bundles
+  # seed 1111's job prepared instead of spending ~45 GPU-idle minutes
+  # re-verifying the same cases. The job re-checks the reused bundles' Space
+  # revision and engine identity itself; only the shape is checked in `submit`.
+  PILOT_BUNDLES_FROM: ${{ github.event.inputs.bundles_from || '' }}
 
 jobs:
   preflight:
@@ -345,14 +366,28 @@ jobs:
               echo "pilot submit requires target_run from a graded positive control" >&2
               exit 1
             fi
+            # One job directory of the private artifact repo and nothing
+            # else: no absolute path, no `..`, no other prefix. HF job ids are
+            # 24 lower-case hex characters (round-02/6ab01cbb51992417dfccd64c).
+            # Matched on the WHOLE value by bash, not by `grep -x`, which
+            # matches line by line: a dispatch input sent through the API can
+            # hold a newline, and one valid line would admit the rest.
+            if [ -n "${PILOT_BUNDLES_FROM}" ] && \
+               ! [[ "${PILOT_BUNDLES_FROM}" =~ ^round-02/[0-9a-f]{24}$ ]]; then
+              echo "bundles_from must be round-02/<24-hex HF job id>" >&2
+              exit 1
+            fi
             python training/hf/launch.py pilot \
               --branch "${GITHUB_REF_NAME}" --commit "${GITHUB_SHA}" \
               --space "${SPACE_REPO}" --space-revision "${SPACE_REV}" \
               --qwen-revision "${QWEN_REV}" \
               --work-repo "${OWNER}/${WORK_REPO_NAME}" \
               --bank-path "${BANK_PATH}" --eval-draws 16 \
+              --dev-eval-draws "${PILOT_DEV_EVAL_DRAWS}" \
+              --bundles-from "${PILOT_BUNDLES_FROM}" \
               --seed "${PILOT_SEED}" --split-seed "${PILOT_SPLIT_SEED}" \
               --steps "${PILOT_STEPS}" --grpo-steps "${PILOT_GRPO_STEPS}" \
+              --grpo-generations "${PILOT_GRPO_GENERATIONS}" --grpo-prompts "${PILOT_GRPO_PROMPTS}" \
               --sft-target-run "${SFT_TARGET_RUN}" \
               --score-workers "${PILOT_SCORERS}" --pool-max-hosts "${PILOT_POOL_HOSTS}" \
               --flavor "${PILOT_FLAVOR}" --timeout "${PILOT_TIMEOUT}" --yes --follow
