@@ -128,7 +128,7 @@ model prompts. Do not reuse schema-2 bundles or unsealed historical adapters.
 "$ROUND_PYTHON" training/gpu/train_verified.py sft --plan \
   --bundle work/round-02/pilot/bundle.json --engine "$LYPNING_L_BIN" \
   --revision "$QWEN_REV" --output work/round-02/sft-1111 \
-  --steps 250 --eval-every 25 --rank 16 --batch-size 4
+  --steps 250 --eval-every 50 --rank 16 --batch-size 4
 ```
 
 Archive the bundle digest, model revision, engine hash, repository commit,
@@ -165,7 +165,7 @@ uv run --python "$ROUND_PYTHON" training/gpu/train_verified.py eval \
 uv run --python "$ROUND_PYTHON" training/gpu/train_verified.py sft \
   --isolated-worker --bundle work/round-02/pilot/bundle.json \
   --engine "$LYPNING_L_BIN" --revision "$QWEN_REV" --output work/round-02/sft-1111 \
-  --steps 250 --eval-every 25 --rank 16 --batch-size 4 --seed 1111
+  --steps 250 --eval-every 50 --rank 16 --batch-size 4 --seed 1111
 ```
 
 Read `sft-1111/best.json`; set `SFT_ADAPTER` to its selected `adapter-N` directory.
@@ -187,7 +187,7 @@ uv run --python "$ROUND_PYTHON" training/gpu/train_verified.py probe \
 uv run --python "$ROUND_PYTHON" training/gpu/train_verified.py grpo \
   --adapter "$SFT_ADAPTER" --isolated-worker --bundle work/round-02/pilot/bundle.json \
   --engine "$LYPNING_L_BIN" --revision "$QWEN_REV" --output work/round-02/grpo-1111 \
-  --steps 20 --eval-every 5 --rank 16 --generations 4 --seed 1111 \
+  --steps 20 --eval-every 50 --rank 16 --generations 4 --seed 1111 \
   --probe work/round-02/probe-1111/probe.json
 ```
 

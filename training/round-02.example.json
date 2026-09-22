@@ -5,7 +5,7 @@
   "round_dir": "work/round-02",
   "seed": 1111,
   "steps": 250,
-  "eval_every": 25,
+  "eval_every": 50,
   "rank": 16,
   "generations": 4,
   "eval_draws": 4,

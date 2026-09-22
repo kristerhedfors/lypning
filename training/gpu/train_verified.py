@@ -54,9 +54,9 @@ def parser():
     p.add_argument("--isolated-worker", action="store_true",
                    help="attest this is a disposable worker with no sensitive files/credentials")
     p.add_argument("--steps", type=int, default=100)
-    p.add_argument("--eval-every", type=int, default=10)
+    p.add_argument("--eval-every", type=int, default=50)
     p.add_argument("--rank", type=int, default=16)
-    p.add_argument("--lr", type=float, help="default SFT 2e-5 / GRPO 1e-6")
+    p.add_argument("--lr", type=float, help="default SFT 1e-4 (2e-4 below 100 steps) / GRPO 5e-6")
     p.add_argument("--batch-size", type=int, default=4, help="SFT effective batch only")
     p.add_argument("--generations", type=int, default=4, help="GRPO/probe draws per train prompt")
     p.add_argument("--probe", type=Path, help="admitted probe.json from the exact RL starting policy")
@@ -221,10 +221,12 @@ def supervised_plan(args, bundle):
 
 def schedule(args):
     """One source of effective values for execution, dry plans and manifests."""
-    return {"steps": 2 if args.smoke else args.steps,
+    steps = 2 if args.smoke else args.steps
+    default_lr = (2e-4 if steps < 100 else 1e-4) if args.stage == "sft" else 5e-6
+    return {"steps": steps,
             "eval_every": 1 if args.smoke else args.eval_every,
             "max_tokens": min(32, args.max_new_tokens) if args.smoke else args.max_new_tokens,
-            "learning_rate": args.lr or (2e-5 if args.stage == "sft" else 1e-6)}
+            "learning_rate": args.lr if args.lr is not None else default_lr}
 
 
 def metric_policy(bundle):
@@ -319,7 +321,7 @@ def run(args, bundle, adapter_info):
     if args.stage in ("sft", "grpo"):
         core.smoke(device, dtype, SimpleNamespace(
             revision=args.revision, rank=args.rank, alpha=2 * args.rank,
-            lora_dropout=0.0, lr=args.lr or 1e-6, temperature=1.0, top_p=0.95, top_k=0))
+            lora_dropout=0.0, lr=effective["learning_rate"], temperature=1.0, top_p=0.95, top_k=0))
     if args.smoke:
         cfg = smoke_config(AutoConfig.from_pretrained(BASE_MODEL, revision=args.revision),
                            len(tok), core.tiny_config)

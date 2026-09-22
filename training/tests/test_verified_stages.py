@@ -6,6 +6,8 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 from pipeline.curriculum import starter_cases
 from pipeline.training import Score
 from pipeline.training_contract import decoding
@@ -27,7 +29,8 @@ def test_sft_schedule_covers_each_family_before_repeating_and_is_deterministic()
     assert module.supervised_tokens(first) == 8
 
 
-def test_grpo_stage_uses_frozen_policy_and_callbacks(tmp_path, monkeypatch):
+@pytest.mark.parametrize("dose,every,expected", [(2, 1, [1, 2]), (20, 50, [20]), (51, 50, [50, 51])])
+def test_grpo_stage_uses_frozen_policy_and_callbacks(tmp_path, monkeypatch, dose, every, expected):
     path = Path(__file__).resolve().parents[1] / "gpu" / "verified_stages.py"
     spec = importlib.util.spec_from_file_location("test_stages_runtime", path)
     module = importlib.util.module_from_spec(spec)
@@ -43,7 +46,9 @@ def test_grpo_stage_uses_frozen_policy_and_callbacks(tmp_path, monkeypatch):
             callback = observed["callbacks"][0]
             state, control = SimpleNamespace(global_step=1), SimpleNamespace()
             callback.on_pre_optimizer_step(None, state, control)
-            callback.on_step_end(None, state, control)
+            for step in range(1, dose + 1):
+                state.global_step = step
+                callback.on_step_end(None, state, control)
             # The callback selects; it never stops. Setting
             # `should_training_stop` at all would cut a registered dose short,
             # which is how seed 1111's GRPO ended at step 15 of 20.
@@ -68,14 +73,14 @@ def test_grpo_stage_uses_frozen_policy_and_callbacks(tmp_path, monkeypatch):
     verifier = SimpleNamespace(score=lambda c, p: Score(1, "correct-native", 3, 3) if p else Score(0, "no-code"))
     steps = []
     module.train_grpo(model, tok, args, {"cases": [case]}, [case], verifier,
-        {"steps": 2, "eval_every": 1, "max_tokens": 32, "learning_rate": 1e-6}, decoding(32),
+        {"steps": dose, "eval_every": every, "max_tokens": 32, "learning_rate": 5e-6}, decoding(32),
         lambda step: steps.append(step) or False)
     config = observed["args"]
     assert config.num_generations == config.gradient_accumulation_steps == 2
     assert (config.temperature, config.top_p, config.top_k) == (.7, .8, 20)
     assert config.loss_type == "dr_grpo" and config.scale_rewards == "none" and config.beta == 0
     assert config.generation_kwargs["eos_token_id"] == 99
-    assert observed["finite_checked"] and steps == [1]
+    assert observed["finite_checked"] and steps == expected
 
 
 def test_a_training_stage_reports_its_progress_and_leaks_nothing_doing_it():

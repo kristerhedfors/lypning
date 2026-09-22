@@ -130,10 +130,15 @@ diagnostics; these are for analysis, never prompt feedback.
 
 SFT trains assistant completion tokens plus EOS, rejects silently dropped or
 boundary-merged examples, samples family then case, and uses token-weighted
-microbatch accumulation. It starts at peak LR 2e-5 with linear warmup/decay,
-gradient clipping and non-finite loss/gradient checks.
+microbatch accumulation (effective batch 4). The preregistered Step 1.4 recipe
+starts at peak LR 1e-4, or 2e-4 for fewer than 100 effective optimizer steps,
+with linear warmup/decay,
+gradient clipping and non-finite loss/gradient checks. Explicit `--lr` overrides
+the recipe and is recorded in the effective schedule. Evaluation defaults to
+every 50 updates in both stages, with the final step always evaluated; smoke
+still evaluates both of its two steps. This cadence changes no registered dose.
 
-RL starts at LR 1e-6, four generations per prompt and one optimizer update per
+RL starts at LR 5e-6, four generations per prompt and one optimizer update per
 group, using Dr.GRPO with no reward-standard-deviation scaling and truncated
 completions masked. `beta=0` is explicit: disabling the warm-start adapter
 would anchor to the original base, not SFT. Do not call this an SFT KL anchor.
