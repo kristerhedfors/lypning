@@ -16,9 +16,12 @@ blocked/no-run outcomes. New harvesting data never mutates your active bundle.
 Seed 1111 of round-02 on bank v3 ran on 2026-09-20/21 (job
 `6ab01cbb51992417dfccd64c`) through SFT, probe, GRPO and all three test arms
 before the operator cancelled its eval-2 triplicate. It selected step 0 twice,
-and that is **not** a result about the training: the checkpoint selector
-cannot see a native-only gain (`tests/test_gate_admission.py`). What it
-established and what comes next, in order, is [`PLAN.md`](PLAN.md); the read
+and that is **not** a result about the training: the checkpoint selector it
+ran under could not see a native-only gain. Step 1.1–1.2 replaced that
+selector on 2026-09-21, and `tests/test_gate_admission.py` measures the
+replacement on the same simulation — which makes the *next* round readable,
+not this one. What seed 1111 established and what comes next, in order, is
+[`PLAN.md`](PLAN.md); the read
 is [`reports/2026-09-21-fable-round02-seed1111-read.md`](reports/2026-09-21-fable-round02-seed1111-read.md).
 Take the first `open` step there. The section below is the previous
 assignment, kept as history; its S0 rungs are Step 0 of the plan.

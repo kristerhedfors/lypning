@@ -201,14 +201,20 @@ def test_a_family_spanning_split_groups_links_them_into_one_component():
         {"one": "one", "two": "one", "three": "three"}
 
 
-def test_capability_regression_blocks_checkpoint_even_when_aggregate_improves():
+def test_a_capability_regression_is_reported_and_no_longer_a_floor():
+    """Nine hard floors on ~180-draw sub-metrics is what made seed 1111's
+    selector blind (`PLAN.md` Step 1.1). Gate A and the population retention
+    rule carry the correctness constraint now; `by_capability` is evidence in
+    `best.json`, read after the fact, not a veto cast on one draw of noise."""
     baseline = summarize(evaluation_rows())
     baseline["by_capability"]["csv"]["correct"] = 1
-    gate = CheckpointGate(baseline, patience=1)
+    gate = CheckpointGate(baseline)
     candidate = copy.deepcopy(baseline)
-    candidate["correct"] = 1
+    candidate["correct_native"] = baseline["correct_native"] + .5
     candidate["by_capability"]["csv"]["correct"] = .5
-    assert gate.observe(10, candidate) and gate.best_step == 0
+    assert gate.observe(10, candidate) is None, "selection never stops training"
+    assert gate.best_step == 10
+    assert gate.report()["by_capability"]["csv"]["correct"] == .5
 
 
 def test_standalone_comparison_rejects_unmatched_contract(tmp_path):

@@ -44,7 +44,10 @@ def test_grpo_stage_uses_frozen_policy_and_callbacks(tmp_path, monkeypatch):
             state, control = SimpleNamespace(global_step=1), SimpleNamespace()
             callback.on_pre_optimizer_step(None, state, control)
             callback.on_step_end(None, state, control)
-            assert not control.should_training_stop
+            # The callback selects; it never stops. Setting
+            # `should_training_stop` at all would cut a registered dose short,
+            # which is how seed 1111's GRPO ended at step 15 of 20.
+            assert not hasattr(control, "should_training_stop")
             cid = observed["train_dataset"][0]["case_id"]
             rewards = observed["reward_funcs"](["```python\npass\n```", "bad"], [cid, cid],
                                                 completion_ids=[[1, 99], [99]])

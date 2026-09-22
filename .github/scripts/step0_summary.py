@@ -81,7 +81,10 @@ def metrics(rows):
                               "correct", "native", "status", "truncated",
                               "completion_tokens")} for r in rows]
     result = summarize(safe)
+    # `summarize` keys these by the label itself, so both maps are dropped
+    # whole. The counts that matter here survive in the top-level `families`.
     del result["by_capability"]
+    del result["by_family"]
     result["draw_weighted_correct"] = sum(r["correct"] for r in rows) / len(rows)
     result["draw_weighted_native"] = sum(r["native"] for r in rows) / len(rows)
     return result

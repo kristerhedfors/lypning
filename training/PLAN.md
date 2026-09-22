@@ -23,7 +23,9 @@ Actions run `35575454075`, 2026-09-21. Its separate Codex assessment is
    on the round's own dev baseline: a checkpoint with **+10pp correct-and-native
    and correctness unchanged is admitted 1.7% of the time — pure noise is
    admitted 2.1%**. "Selected step 0", twice, is therefore not evidence about
-   the training. `tests/test_gate_admission.py` pins this.
+   the training. `tests/test_gate_admission.py` measured this against the real
+   class, and since Step 1.1 (2026-09-21) it measures the replacement on the
+   same simulation: 84.85% and 9.17%.
 2. **The SFT objective carried almost no signal and was under-powered for it.**
    Loss 0.1436 → 0.0426 in 75 steps: the base already emits the reference
    programs at ≈1.15 perplexity, and rows are `prompt + reference`. LR 2e-5 is a
@@ -48,7 +50,7 @@ Advance a step by editing this table in the same PR as the work.
 | # | step | cost | decision it makes | state |
 |---|---|---|---|---|
 | 0 | Read what was paid for | $0 | did dev native move inside the selector's blind spot? | done (2026-09-21, [read](reports/2026-09-21-codex-step0-read.md), GH 35575454075) |
-| 1 | Fix the instrument | $0 | nothing else is readable until it is | open |
+| 1 | Fix the instrument | $0 | nothing else is readable until it is | in progress (1.1 and 1.2 done 2026-09-21, PR #97; 1.3–1.6 open) |
 | 2 | Positive control (S1 / stage 0b) | ~$5 | distillation route or contrastive route | open |
 | 3 | Build contrastive targets | tokens | is there enough pair supply for a preference arm? | open |
 | 4 | S4, re-specified, three seeds | ~$60–90 | the first result the instrument can read | open |
@@ -87,14 +89,40 @@ cases; small population slices, rather than the primary macro, need attention.
 
 ### Step 1 — Fix the instrument ($0, code; each item is a PR with a test)
 
-1. **Selector.** Select on the primary metric (correct-and-native family macro)
-   with correctness as a *tolerance* gate — the preregistered gate A, −2pp on
-   the macro — not nine hard floors and a lexicographic key. The pinning test
-   flips: null admitted ≤ 10%, +10pp native admitted ≥ 80%. Step 0 stays
-   selectable.
-2. **Stopping is not selection.** A registered dose trains to completion;
+1. **Selector.** ~~Select on the primary metric (correct-and-native family
+   macro) with correctness as a *tolerance* gate — the preregistered gate A,
+   −2pp on the macro — not nine hard floors and a lexicographic key. The
+   pinning test flips: null admitted ≤ 10%, +10pp native admitted ≥ 80%. Step 0
+   stays selectable.~~ **Done 2026-09-21, PR #97.** `CheckpointGate` now ranks
+   `correct_native` behind gate A and a per-population retention tolerance at
+   three standard errors; capability floors are reported, not vetoes.
+   `tests/test_gate_admission.py` measures **null 9.17%, +10pp native 84.85%**
+   (4,000 trials, seed 7), inverting the two pinned assertions.
+
+   **What this changed, and why the next steps should know it.** Gate A plus an
+   argmax is not enough: a pure argmax on a noisy macro admits the null about
+   half the time, because the best of several noisy evaluations is biased
+   upward. The ≤ 10% half of this step's own acceptance rule therefore forces a
+   **selection margin**, and the margin is `1.2816 × SE` of the family macro —
+   the 90th percentile, so the constant is the rule rather than a number tuned
+   until a test passed. On seed 1111's dev split that is **1.07pp**, which is
+   the scale of effect this split can resolve at all; the +10pp arm of the
+   simulation realises only ≈ +1.8pp of macro because `redraw` caps native at
+   correct and three of five coverage capabilities are saturated. Two
+   consequences for Step 4: a dev split of this size cannot select on an effect
+   much under a point, and the null rate is **per observation**, so a stage
+   evaluating at three steps has three chances to draw it. Step 1.4's
+   `--eval-every 50` cuts observations as well as cost.
+2. **Stopping is not selection.** ~~A registered dose trains to completion;
    every checkpoint is saved (already true); selection is post hoc. No
-   patience-based stop inside an S4 stage.
+   patience-based stop inside an S4 stage.~~ **Done 2026-09-21, PR #97.**
+   `observe` returns nothing, `--patience` is gone from the CLI and from every
+   command block, the SFT `break` and the GRPO `should_training_stop` are
+   removed, and `best.json` keeps every observation with the reason it was or
+   was not selected, so the selection can be re-made offline. This is also what
+   cost seed 1111 its GRPO step 20: three rejected checks under the old gate
+   ended a registered 20-step dose at 15, and Step 0 could not read an adapter
+   that was never saved.
 3. **Macro fragility.** Preregister a minimum family size to enter the macro
    (≥ 5 cases, i.e. ≥ 80 draws at k = 16) or case-weight within family with
    clustering kept for the bootstrap. Simulate on the eval-2 bundle first; this

@@ -79,7 +79,7 @@ def plan(config, root=ROOT):
     action("grpo-smoke", "grpo", ["--from-base"], smoke=True)
     smoke_done = [(directory / name / "best.json").as_posix() for name in ("sft-smoke", "grpo-smoke")]
     action("base-dev", "eval", prerequisites=smoke_done)
-    steps = ["--steps", str(config["steps"]), "--eval-every", str(config["eval_every"]), "--patience", "3"]
+    steps = ["--steps", str(config["steps"]), "--eval-every", str(config["eval_every"])]
     action("sft", "sft", steps, [(directory / "base-dev/metrics.json").as_posix()])
     if adapter_sft:
         action("sft-dev-reload", "eval", ["--adapter", adapter_sft])

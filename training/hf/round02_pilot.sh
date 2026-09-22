@@ -325,8 +325,8 @@ COMMON=(--isolated-worker --engine "$LYPNING_L_BIN" --revision "$QWEN_REV" --see
         --eval-sequences "$EVAL_SEQUENCES" --score-workers "$SCORE_WORKERS")
 PILOT="$ROUND/pilot/bundle.json"
 EVAL2="$ROUND/eval2/bundle.json"
-SFT_TRAIN=(--steps "$STEPS" --eval-every 25 --patience 3 --rank 16)
-GRPO_TRAIN=(--steps "$GRPO_STEPS" --eval-every 5 --patience 3 --rank 16)
+SFT_TRAIN=(--steps "$STEPS" --eval-every 25 --rank 16)
+GRPO_TRAIN=(--steps "$GRPO_STEPS" --eval-every 5 --rank 16)
 
 # 7a. Plan first (no GPU imports), then the unadapted dev control.
 STAGE=plan

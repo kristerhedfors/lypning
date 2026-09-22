@@ -159,10 +159,22 @@ compute across configurations.
 
 Primary scores average independent first-draft draws, then cases within families,
 then families. They estimate sampled pass@1, **not best-of-k**. Equal draw counts
-and unique case/draw IDs are enforced. Dev checkpoint selection protects
-population and capability correctness against that run's starting policy, then
-ranks overall correctness before joint correct-native execution. A GRPO warm
-start's baseline is SFT; final release comparisons must also include base.
+and unique case/draw IDs are enforced. Dev checkpoint selection ranks the
+correct-and-native family macro — the quantity being trained for — behind two
+tolerances against that run's starting policy: gate A, −2pp on the all-family
+correctness macro, and a per-population retention rule at three standard
+errors. A candidate must also clear the starting policy by the macro's own
+standard error, because the best of several noisy evaluations is biased
+upward. A GRPO warm start's baseline is SFT; final release comparisons must
+also include base.
+
+**Selection is post hoc; it never stops training.** A registered dose runs to
+completion, every checkpoint is saved and `best.json` records every
+observation with the reason it was or was not selected, so the selection can
+be re-made offline without re-running the stage. Before 2026-09-21 a patience
+counter in the same object ended a stage after three unselected evaluations,
+which cost seed 1111's GRPO five of its twenty registered steps and the
+adapter that would have been saved at step 20.
 
 Checkpoints retain separate directories, including step zero. `best.json`
 selects without deleting evidence. Adapters are restart artifacts, **not exact
