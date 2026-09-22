@@ -8,9 +8,11 @@ from pipeline.training_types import Score, TrainingError
 
 def cases():
     return [
-        {'case_id': 'private-case-a', 'family': 'private-family-a', 'split_group': 'ga', 'population': 'coverage',
+        {'case_id': 'private-case-a', 'family': 'private-family-a', 'task': 'rewrite a',
+         'split_group': 'ga', 'population': 'coverage',
          'capabilities': [], 'split': 'train', 'tests': [{}, {}, {}]},
-        {'case_id': 'private-case-b', 'family': 'private-family-b', 'split_group': 'gb', 'population': 'coverage',
+        {'case_id': 'private-case-b', 'family': 'private-family-b', 'task': 'rewrite b',
+         'split_group': 'gb', 'population': 'coverage',
          'capabilities': [], 'split': 'train', 'tests': [{}, {}, {}]},
     ]
 
@@ -45,6 +47,8 @@ def test_grade_requires_complete_pairs_and_emits_safe_public_report(tmp_path, mo
     assert result['comparison']['metrics']['native']['delta'] == 0
     public = (tmp_path / 'grade' / 'public-report.json').read_text()
     assert 'private-family-a' not in public and 'private-case-a' not in public
+    assert result['targets']['rows'] == 2
+    assert (tmp_path / 'grade' / 'sft.jsonl').is_file()
     private = json.loads((tmp_path / 'grade' / 'report.json').read_text())
     assert set(private['metrics']['bare']['by_family']) == {'private-family-a', 'private-family-b'}
 

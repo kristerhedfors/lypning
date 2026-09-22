@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .jsonio import read_jsonl, sha256_of, write_json, write_jsonl
 from .positive_control_generate import request_order
+from .positive_control_targets import build_targets
 from .training import Verifier, program_from_completion
 from .training_metrics import paired_comparison, summarize
 from .training_types import TrainingError
@@ -17,7 +18,7 @@ def _expected(cases, samples):
     return {(case['case_id'], draw, arm) for case, draw, arm in request_order(cases, samples)}
 
 
-def grade(cases, completions, verifier, output, *, samples, workers=8):
+def grade(cases, completions, verifier, output, *, samples, workers=8, run_id=''):
     output = Path(output)
     if output.exists():
         raise TrainingError('grade output exists; preserve it and choose a new directory')
@@ -65,6 +66,10 @@ def grade(cases, completions, verifier, output, *, samples, workers=8):
               'case_set_sha256': sha256_of(sorted(by_case)), 'rows': len(rows),
               'metrics': metrics, 'comparison': comparison, 'decision': decision}
     write_json(output / 'report.json', report)
+    targets, target_report = build_targets(cases, completions, rows, samples=samples,
+                                           run_id=run_id)
+    write_jsonl(output / 'sft.jsonl', targets)
+    write_json(output / 'sft-report.json', target_report)
     public = {
         'schema': 1, 'cases': len(cases), 'families': comparison['families'],
         'independent_clusters': comparison['independent_clusters'],
@@ -75,11 +80,14 @@ def grade(cases, completions, verifier, output, *, samples, workers=8):
                         'truncation_rate', 'mean_completion_tokens', 'statuses')}
                  for arm in metrics},
         'comparison': comparison, 'decision': decision,
+        'targets': {k: target_report[k] for k in
+                    ('rows', 'cases_with_targets', 'families_with_targets', 'populations',
+                     'eligible_before_cap', 'rejected', 'prompt_policy', 'selection_policy')},
     }
     write_json(output / 'public-report.json', public)
     return public
 
 
-def grade_files(cases, completions_path, verifier, output, *, samples, workers=8):
+def grade_files(cases, completions_path, verifier, output, *, samples, workers=8, run_id=''):
     return grade(cases, read_jsonl(completions_path), verifier, output,
-                 samples=samples, workers=workers)
+                 samples=samples, workers=workers, run_id=run_id)
