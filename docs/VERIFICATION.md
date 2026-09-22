@@ -567,6 +567,7 @@ grep -rn '"permissionDecision"' src/lypning/ | wc -l | tr -d ' '
 | the scripts in the tree drift from the ones shipped | a session captures with one and installs the other | pytest: `tests/test_capture.py::test_the_committed_hooks_match_the_ones_the_installer_ships` |
 | the shell screen narrower than a `PYTHONISH` rule | nothing: the command never reaches the filter and no record is written | pytest: `tests/test_capture.py::test_the_shell_screen_is_broader_than_the_regexes`, which runs the real script once per accepted command |
 | the Stop roll-up exporting outside a checkout | `tests/corpus/sightings/*.jsonl` appears in another repository | pytest: `tests/test_capture.py::test_the_roll_up_writes_nothing_into_someone_elses_repository` |
+| a `PYTHONISH` rule that backtracks quadratically on a long line | the PreToolUse hook blocks the Bash call for minutes | pytest: `tests/test_capture.py::test_rule_five_is_linear_on_adversarial_lines` |
 
 ```
 # PINNED BY
@@ -624,8 +625,8 @@ unchanged
 |---|---|---|
 | a merge that drops a foreign hook or key, a second backup, or a dry run that writes | the `echo mine` count reads 0; the backup differs after the second install; the checksum differs | pytest: `tests/test_install.py::test_the_merge_preserves_unrelated_keys_and_hooks`, `tests/test_install.py::test_merge_hooks_is_idempotent`, `tests/test_cli.py::test_harvest_dry_run_writes_nothing_under_the_state_dir` |
 | a foreign `python3` overwritten, or the log deleted | no `lypning: REFUSING: <bin>/python3 exists and is not a lypning shim.` (exit 1); `--force` without `backed up <bin>/python3 -> <bin>/python3.lypning-backup`; no `NOT deleted` note | pytest: `tests/test_shim.py::test_refuses_to_clobber_a_foreign_python_without_force`, `tests/test_shim.py::test_install_uninstall_round_trip` |
-
 | a user-scope install registering Stop or SessionStart, or an inert hook reported as installed | a `Stop` entry in `~/.claude/settings.json`; no `INERT` line when nothing can import the package | pytest: `tests/test_install.py::test_user_scope_registers_the_bash_capture_hook_and_nothing_else`, `tests/test_install.py::test_a_user_hook_no_arm_reaches_is_reported_inert` |
+| a pinned and an unpinned capture hook both registered | two PreToolUse entries; every program logged twice | pytest: `tests/test_install.py::test_a_repin_never_registers_the_capture_hook_twice` |
 
 ```
 # PINNED BY

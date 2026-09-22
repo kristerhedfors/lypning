@@ -71,16 +71,43 @@ OK_RESPONSE = '{"continue":true,"suppressOutput":true}'
 # ``x.py.bak`` and a ``cat > notes.txt <<EOF`` whose body merely mentions
 # ``a.py`` are all misses. The screen stays broader than every regex here;
 # tests/test_capture.py runs the real script to hold that.
-_PY_TARGET = (r"(?:>>?|\btee\s+(?:-a\s+)?)\s*['\"]?[^\s'\";&|<>()]*\.py['\"]?"
-              r"(?![\w.])")
-_HEREDOC_OP = r"(?<!<)<<(?!<)"
+#
+# The fifth is NOT one regex, and must not become one again: "a target and a
+# heredoc on the same line, in either order" as a single pattern is
+# ``TARGET[^\n]*?<<|<<…[^\n]*?TARGET``, which rescans the rest of the line from
+# every candidate start — quadratic in a line's length, and this runs inside a
+# PreToolUse hook that blocks the tool call. A 190 KB line of minified text
+# holding ``>a.py`` fragments took 23 s. Two independent linear searches per
+# line, only on lines holding both ``<<`` and ``.py``, answer the same question.
+_PY_TARGET = re.compile(r"(?:>>?[ \t]*|\btee\s+(?:-a\s+)?)['\"]?[^\s'\";&|<>()]*\.py['\"]?"
+                        r"(?![\w.])")
+#: A heredoc operator (not a ``<<<`` here-string) followed by its delimiter.
+_HEREDOC_OP = re.compile(r"(?<!<)<<(?!<)-?[ \t]*[^\s;&|()<>]")
+
+
+class _HeredocIntoPy:
+    """PYTHONISH rule 5, with the ``search`` interface of its siblings."""
+
+    pattern = "heredoc redirected into *.py (per line: %s and %s)" % (
+        _HEREDOC_OP.pattern, _PY_TARGET.pattern)
+
+    def search(self, command: str) -> Optional["re.Match[str]"]:
+        if "<<" not in command or ".py" not in command:
+            return None
+        for line in command.split("\n"):
+            if "<<" in line and ".py" in line and _HEREDOC_OP.search(line):
+                found = _PY_TARGET.search(line)
+                if found:
+                    return found
+        return None
+
+
 PYTHONISH = (
     re.compile(r"(?:^|[\s;&|(){}`$\"'=])python[0-9.]*(?:\s|$)"),
     re.compile(r"(?:^|[\s;&|(){}`$])py\s+-c(?:\s|$)"),
     re.compile(r"(?:^|[\s;&|(){}`$])(?:uv|pipx|poetry|hatch|pdm|rye)\s+run(?:\s|$)"),
     re.compile(r"<<-?\s*['\"]?(?:PY|PYTHON|PYEOF|EOFPY)\b"),
-    re.compile(_PY_TARGET + r"[^\n]*?" + _HEREDOC_OP + "|"
-               + _HEREDOC_OP + r"-?\s*['\"]?[A-Za-z_]\w*['\"]?[^\n]*?" + _PY_TARGET),
+    _HeredocIntoPy(),
 )
 
 # A tool event is a few KiB of JSON. A Bash command can legitimately carry a

@@ -30,6 +30,7 @@ import copy
 import difflib
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -306,8 +307,13 @@ def _imports_lypning(python: str) -> bool:
     env["LYPNING_CAPTURE"] = "0"
     try:
         proc = subprocess.run(
+            # Not the working directory's entry (a stray `lypning/` dir in the
+            # temp dir is no installation), and not a namespace package: a
+            # spec with no origin is a directory, not the package.
             [python, "-c", "import importlib.util, sys; "
-                           "sys.exit(0 if importlib.util.find_spec('lypning') else 1)"],
+                           "sys.path[:] = [p for p in sys.path if p not in ('', '.')]; "
+                           "s = importlib.util.find_spec('lypning'); "
+                           "sys.exit(0 if s is not None and s.origin else 1)"],
             cwd=tempfile.gettempdir(), env=env, capture_output=True, timeout=10,
             check=False)
     except (OSError, subprocess.SubprocessError, ValueError):
@@ -397,6 +403,51 @@ def _commands_of(group: Any) -> List[str]:
     return [h.get("command", "") for h in hooks if isinstance(h, dict)]
 
 
+#: The ``LYPNING_PYTHONPATH=<dir> `` prefix :func:`_hook_command` may put on a
+#: command, in any quoting :func:`shlex.quote` can produce.
+_PIN_PREFIX = re.compile(r"""^LYPNING_PYTHONPATH=(?:'[^']*'|"[^"]*"|[^\s'"]+)+\s+""")
+
+
+def _unpinned(command: Any) -> Any:
+    """``command`` without a leading ``LYPNING_PYTHONPATH=…`` assignment.
+
+    Two spellings of one hook — pinned and not, or pinned to two trees — are
+    the SAME hook for "is it already registered": registered twice, one Bash
+    call fires the capture script twice and logs every program twice.
+    """
+    return _PIN_PREFIX.sub("", command, count=1) if isinstance(command, str) else command
+
+
+def _pin_of(command: Any) -> Optional[str]:
+    """The directory a registered command pins as ``LYPNING_PYTHONPATH``."""
+    if not isinstance(command, str):
+        return None
+    m = _PIN_PREFIX.match(command)
+    if not m:
+        return None
+    try:
+        words = shlex.split(m.group(0))
+    except ValueError:
+        return None
+    return words[0].split("=", 1)[1] if words and "=" in words[0] else None
+
+
+def _registered_pin(settings: Dict[str, Any]) -> Optional[str]:
+    """The pin on our registered PreToolUse command, if it carries one.
+
+    What a hook fired from that entry actually reaches: a pinned install is
+    NOT inert just because the shell asking has no ``$LYPNING_PYTHONPATH``.
+    """
+    hooks = settings.get("hooks")
+    if not isinstance(hooks, dict) or not isinstance(hooks.get("PreToolUse"), list):
+        return None
+    for g in hooks["PreToolUse"]:
+        for c in _commands_of(g):
+            if isinstance(c, str) and OUR_MARK in c.lower() and _pin_of(c):
+                return _pin_of(c)
+    return None
+
+
 def merge_hooks(
     settings: Dict[str, Any],
     entries: Sequence[Tuple[str, Optional[str], str]],
@@ -424,7 +475,8 @@ def merge_hooks(
                 continue  # someone else's shape; leave it strictly alone
             groups = []
             hooks[event] = groups
-        if any(command in _commands_of(g) for g in groups):
+        bare = _unpinned(command)
+        if any(bare == _unpinned(c) for g in groups for c in _commands_of(g)):
             continue  # already there — this is what makes re-running a no-op
         entry = {"type": "command", "command": command}
         target = next((g for g in groups
@@ -580,6 +632,7 @@ def plan_install(
             actions.append(_file_action(hooks_src / name, dest_root / name, "hook"))
 
         entries = hook_entries(scope, scripts, pythonpath)
+        probe_pin = pythonpath
         before, err = load_settings(settings_path)
         if err:
             actions.append(Action("skip", settings_path, err + " — refusing to touch it", "settings"))
@@ -595,6 +648,18 @@ def plan_install(
                        " --user" if scope == "user" else "",
                        "it" if len(stale) == 1 else "them"), "settings"))
             after, added = merge_hooks(before, entries)
+            registered = _registered_pin(before)
+            if pythonpath and not added and registered != pythonpath:
+                actions.append(Action(
+                    "skip", settings_path,
+                    "WARNING: the capture hook is already registered %s — not pinned "
+                    "again (two entries would log every call twice); `lypning "
+                    "uninstall%s` and install again to change it"
+                    % ("pinned to %s" % registered if registered else "without a pin",
+                       " --user" if scope == "user" else ""), "settings"))
+            if not pythonpath and not added:
+                # What the existing entry reaches is what the INERT check asks.
+                probe_pin = registered
             if not added:
                 actions.append(Action("skip", settings_path,
                                       "all %d hook entries already present" % len(entries)
@@ -613,7 +678,7 @@ def plan_install(
                 diff = settings_diff(before, after, settings_path)
 
         if scope == "user":
-            warning = _inert_warning(dest_root, pythonpath)
+            warning = _inert_warning(dest_root, probe_pin)
             if warning is not None:
                 actions.append(warning)
 
@@ -845,7 +910,8 @@ def status(project: Path | str | None = None) -> dict:
         # when one is registered — it costs a python3 spawn — and never at
         # project scope, where the checkout arm is the answer in the one kind
         # of repository a project install is for.
-        reach = dispatch_arms() if scope == "user" and present else None
+        reach = (dispatch_arms(_registered_pin(settings))
+                 if scope == "user" and present else None)
         out["scopes"][scope] = {
             "claude_dir": str(root),
             "settings": str(settings_path),

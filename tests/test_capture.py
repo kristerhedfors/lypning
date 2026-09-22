@@ -557,3 +557,36 @@ def test_is_lypning_checkout_needs_the_package_file(tmp_path):
     assert not capture.is_lypning_checkout(tmp_path)
     (tmp_path / "src" / "lypning").mkdir(parents=True)
     assert not capture.is_lypning_checkout(tmp_path)
+
+
+# --- rule 5 runs inside a blocking hook: it must stay linear ------------------
+
+
+@pytest.mark.parametrize("command", [
+    # A long line of `>x.py` fragments after a heredoc, no heredoc on that line:
+    # as one regex, every fragment rescanned the rest of the line (23 s at
+    # 190 KB before the rule became two per-line searches).
+    "cat <<EOF\n" + ">a.py " * 64000,
+    # Many heredoc operators on one line, and no target on it.
+    "<<a " * 64000,
+    # Both on the line, but never a target ending in exactly `.py`.
+    "cat <<EOF " + "<<a >b.pyc " * 32000,
+    # Whitespace after `tee`, which `tee\s+…\s*` backtracked over quadratically.
+    "cat <<EOF | tee" + " " * 200000 + "x.pyc",
+], ids=["targets-after-heredoc", "many-heredocs", "both-no-exact-target", "tee-whitespace"])
+def test_rule_five_is_linear_on_adversarial_lines(command):
+    import time
+
+    t0 = time.perf_counter()
+    assert not capture.looks_pythonish(command)
+    # Generous: linear is milliseconds here; the quadratic form was tens of
+    # seconds, so this cannot flake on a loaded runner and still catches it.
+    assert time.perf_counter() - t0 < 2.0
+
+
+def test_the_opencode_screen_carries_rule_five():
+    """The plugin's screens are a port of PYTHONISH; a write-then-run heredoc
+    it drops is lost under opencode exactly as it was under Claude Code."""
+    js = (paths.OPENCODE_ASSETS / "lypning.js").read_text(encoding="utf-8")
+    assert "const PY_TARGET = /" in js and "const HEREDOC_OP = /" in js
+    assert "HEREDOC_OP.test(l) && PY_TARGET.test(l)" in js

@@ -403,3 +403,56 @@ def test_a_pin_that_holds_no_package_is_refused(project, user_settings, tmp_path
     assert plan.pythonpath is None
     assert any("not pinned" in a.note for a in plan.notes)
     assert not any("LYPNING_PYTHONPATH=" in line for line in plan.diff)
+
+
+def test_a_repin_never_registers_the_capture_hook_twice(project, user_settings, tmp_path,
+                                                        reachable):
+    """Pinned and unpinned are one hook. Registered as two, one Bash call fires
+    the capture script twice and every program is logged — and counted — twice.
+    """
+    src = tmp_path / "checkout" / "src"
+    (src / "lypning").mkdir(parents=True)
+    (src / "lypning" / "__init__.py").write_text("", encoding="utf-8")
+    install.install(project, scope="user", shim=False, skill=False)
+    first = user_settings.read_bytes()
+
+    plan = install.plan_install(project, scope="user", shim=False, skill=False,
+                                pythonpath=str(src))
+    assert plan.changes == [] and plan.diff == []
+    assert any("already registered without a pin" in a.note for a in plan.notes)
+    install.apply(plan)
+    assert user_settings.read_bytes() == first
+    after = json.loads(first)
+    assert len(_commands(after, "PreToolUse")) == 1
+
+    # And the other way round: pinned first, then a plain install.
+    install.uninstall(project, scope="user")
+    install.install(project, scope="user", shim=False, skill=False, pythonpath=str(src))
+    pinned = user_settings.read_bytes()
+    install.install(project, scope="user", shim=False, skill=False)
+    assert user_settings.read_bytes() == pinned
+
+
+def test_status_asks_about_the_registered_pin_not_the_shell(project, user_settings, tmp_path,
+                                                            monkeypatch):
+    """A pinned install reaches the package whatever the asking shell exports;
+    reporting it INERT would send the operator to fix a working hook."""
+    src = tmp_path / "checkout" / "src"
+    (src / "lypning").mkdir(parents=True)
+    (src / "lypning" / "__init__.py").write_text("", encoding="utf-8")
+    install.install(project, scope="user", shim=False, skill=False, pythonpath=str(src))
+    monkeypatch.delenv("LYPNING_PYTHONPATH", raising=False)
+    monkeypatch.setattr(install, "_imports_lypning", lambda python: False)
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    st = install.status(project)
+    assert st["scopes"]["user"]["inert"] is False
+    assert st["scopes"]["user"]["reach"] == ["LYPNING_PYTHONPATH (%s)" % src.resolve()]
+    # The plan asks the same question the same way.
+    again = install.plan_install(project, scope="user", shim=False, skill=False)
+    assert not [a for a in again.actions if "INERT" in a.note]
+
+
+def test_a_pin_with_a_quote_in_it_round_trips():
+    cmd = install._hook_command("user", "lypning-capture.sh", "x", "/a b/it's/src")
+    assert install._pin_of(cmd) == "/a b/it's/src"
+    assert install._unpinned(cmd) == install._hook_command("user", "lypning-capture.sh", "x")
