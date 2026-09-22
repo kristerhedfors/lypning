@@ -322,10 +322,22 @@ green before the second seed is billed.
   (default 4, which keeps arm A's probe comparable with seed 1111's) and
   `--grpo-prompts` (default 4) reach both the probe and GRPO and are arm
   fields; arm C passes `--grpo-generations 8` and budgets the job timeout
-  for 16–32 sequences per step. `round02.yml` has no input or `PILOT_*`
-  variable for either knob, and `round02_pilot.sh` never passes
-  `--grpo-informative-only`, so arm C needs a workflow and job-script edit
-  before it can be dispatched through CI.
+  for 16–32 sequences per step. `round02.yml` carries them as
+  `PILOT_GRPO_GENERATIONS`, `PILOT_GRPO_PROMPTS` and `PILOT_DEV_EVAL_DRAWS`
+  (changed in a reviewed commit, never at dispatch), but `round02_pilot.sh`
+  never passes `--grpo-informative-only`, so arm C still needs a job-script
+  edit before it can be dispatched through CI.
+- **Arm A's full target set** comes from the sharded `full` rung of
+  `step2-control.yml`. It skips the 192 cases run `35767396604` already drew
+  and splits the other 1,163 into 2–4 shards, each graded, then merged by
+  `step2-merge`. The merge refuses mixed engines, candidate-image recipes or
+  sampling parameters, so **the Rust engine is frozen from that run through
+  the third arm-A seed.** Projected from that run's measured
+  $3.63061517 for 1,536 requests (2026-09-22): about $22 in all. Not approved.
+- **Captured programs are not an arm-A input.** A program Claude wrote is not
+  a draw the target model made. They reach training only as a separate
+  capture-tier bank for the round after S4, never merged into v3 and never
+  through `split_cases` (`DATA_PRODUCTION.md`, "Capture tier").
 
 ## Kill criteria (unchanged, `LADDER.md` §6)
 

@@ -14,6 +14,23 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-23** — Capture at all times with model attribution; a capture-tier
+export; the sharded arm-A target rung (#TBD)
+
+- User-scope install registers only the Bash capture hook, reports when it
+  cannot reach lypning, and a Stop hook never exports into a repository that
+  is not a lypning checkout. Write-then-run `.py` files and Codex rollouts
+  (`lypning harvest --codex`, read-only) are now harvested; a tool call seen
+  by both scopes counts once.
+- Every model harvest resolves is appended to `attribution.jsonl`, so which
+  model wrote a program survives transcript expiry.
+- `nt capture-export`: static-AST quality tiers that execute nothing,
+  contamination checks, and model ranking. 179 tier-A distinct programs from
+  the live log on 2026-09-22. A separate tier, never merged into bank v3.
+- `step2-control.yml` gains a sharded `full` rung over the 1,163 cases run
+  `35767396604` did not draw, and `step2-merge`; `round02.yml` carries the
+  dev-draw and arm-C knobs. Nothing was dispatched.
+
 **2026-09-22** — Refactor the S4 pipeline before arm A's first seed, and review Step 2
 ([#112](https://github.com/kristerhedfors/lypning/pull/112))
 
