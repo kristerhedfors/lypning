@@ -31,9 +31,14 @@ Both feeds append one JSON object per line to `$LYPNING_LOG` (default
 publishes that log into the tree: `lypning harvest --export` writes
 `tests/corpus/sightings/<session>.jsonl` — one file per session, one writer per
 path, so branches cannot conflict. The hooks never run `git`; staging that
-directory is yours. Keys are session-namespaced — `shim:<session>#<line>`,
-`hook:<session>#<line>#<idx>`, `transcript:<file>#<block_id>#<idx>`
-(`harvest._raws_from_log`, `harvest.scan_transcripts`); with no session in
+directory is yours. Occurrence keys are `hook:<tool_use_id>#<idx>` for a
+Claude record that carries an id — one Bash call counts once however many hooks
+logged it, so a project-scope and a user-scope install cannot double a count —
+else session-namespaced `hook:<session>#<line>#<idx>`; `shim:<session>#<line>`,
+`file:<run key>#r<k>`, `codex:<call_id>#<idx>`,
+`transcript:<file>#<block_id>#<idx>` (`harvest._raws_from_records`,
+`harvest.scan_transcripts`). Counts merge with max, so a sighting published
+under the older line keys keeps its count. With no session in
 `capture.SESSION_ENV` the tag is `invocations` and the file `unknown.jsonl`
 (`harvest.session_filename`). `corpus.jsonl` is derived from the sightings by
 `lypning harvest`; no session has to run it. The shared-file design this
@@ -50,8 +55,9 @@ block in `assets/shim/python-shim`, and `assets/opencode/lypning.js` from Bun:
 | `python_invocation` | shim, pre-exec | `kind`, `ts`, `session`, `cwd`, `shim`, `exe`, `pid`, `run`, `argv`, `program`, `module`, `script`, `argv_tail`, `stdin_pipe`, `stdin_kind`, `exit_code`, `wall_ms` — the last two `null` |
 | `exit` | shim under `LYPNING_CAPTURE_EXIT=1`; opencode `tool.execute.after` | the shim shape with `exit_code` and `wall_ms` filled; from opencode `kind`, `ts`, `session`, `host`, `run`, `exit_code` |
 | `note` | opencode plugin | `kind`, `ts`, `session`, `host`, `detail` — written once when its PATH self-check fails; `lypning doctor` shows it for 7 days (`cli._recent_capture_note`) |
+| `bash_command` | Codex feed (`lypning.codex`, read at harvest time, never logged) | the hook shape plus `host: "codex"`, `model`, `call_id`; `harvest.parse_codex` forces `host` to `codex` whatever the feed wrote |
 
-`host` is `claude`, `openhands` or `opencode`; a shim record carries none, and
+`host` is `claude`, `openhands`, `opencode` or `codex`; a shim record carries none, and
 a missing `host` is read as Claude (`harvest._joinable`). The harvest reads
 `kind`, `session`, `ts`, and `command` or `program`/`argv_tail`; `host` decides
 only whether the model join may open a transcript; `exit` and `note` never
@@ -100,12 +106,14 @@ time (for i in $(seq 30); do python3 -c 1; done); time (for i in $(seq 30); do ~
 lypning harvest                 # every sightings file + the live log → the corpus; exit 0
 lypning harvest --export        # publish THIS session's sightings; writes no corpus
 lypning harvest --dry-run       # report, write nothing
-lypning harvest --transcripts   # also scan Claude Code transcripts ($LYPNING_TRANSCRIPTS)
-lypning harvest --json          # → {"gathered","added","redactions","skipped","files","mode","corpus"}
+lypning harvest --transcripts   # also scan Claude Code transcripts ($LYPNING_TRANSCRIPTS), and journal their models
+lypning harvest --codex         # also read Codex rollouts via lypning.codex; exit 1 if this build has none
+lypning harvest --json          # → {"gathered","added","redactions","skipped","files","mode","corpus"} (+ "journal" with --transcripts)
 ```
 
-`cli.cmd_harvest` exits 0 on every path it reaches; a bad option is argparse's
-2. `--dry-run --json` prints `{"mode":"dry-run","sightings":N,"corpus":<path>}`
+`cli.cmd_harvest` exits 0 on every path it reaches except `--codex` on a build
+without `lypning.codex`, which is 1 before anything is read (an absent feed is a
+hole, not an empty one); a bad option is argparse's 2. `--dry-run --json` prints `{"mode":"dry-run","sightings":N,"corpus":<path>}`
 and that `corpus` key is the only place the write location is printed:
 `paths.corpus_write_file()` is the asset file in a checkout and
 `$LYPNING_HOME/corpus.jsonl` in a wheel, while `lypning status` prints the
@@ -128,19 +136,42 @@ One record per DISTINCT program:
 | `id` | `py-` + 12 hex of sha256 over the NORMALIZED program text |
 | `program` | the actual python source, after redaction (see below) |
 | `argv_tail` | argv after the program (`python -c PROG a b` → `["a","b"]`) |
-| `source` | strongest provenance seen: `shim` > `hook` > `transcript` > `manual` > `seed` (`harvest.SOURCE_RANK`) |
+| `source` | strongest provenance seen: `shim` > `hook` = `file` > `transcript` = `codex` > `manual` > `seed` (`harvest.SOURCE_RANK`) |
 | `first_seen` | earliest timestamp across all sightings |
 | `count` | number of distinct sightings, never decreasing |
 | `stdin_sample` | `null` unless known — the shim must not read stdin, so only hand-curated (`manual`) records ever carry one |
 | `models` | which model issued it, as `{"<model-id>": n}` — **absent** when nothing could be attributed |
+| `outcomes` | how its commands ended, as `{"ok": n, "error": m}` from the transcript's `tool_result` (`is_error`, or an interrupted run, is `error`) or OpenHands' `exit_code` — **absent** when nothing is known; like `models`, `sum <= count` |
+| `host` | written only when every occurrence came from one non-Claude harness (`codex`, `opencode`, `openhands`); absent means Claude, or a mix |
 
 Normalization for the dedup hash unifies line endings, strips per-line trailing
 whitespace, and drops surrounding blank lines. It does **not** touch
 indentation: in Python that is syntax, and two programs indented differently
 are two programs.
 
-Skipped: invocations with no inline source (`python script.py`, `python -m
-json.tool`, `python --version`), empty programs, and anything over 64 KiB.
+Skipped: invocations with no inline source (`python -m json.tool`, `python
+--version`), empty programs, and anything over 64 KiB. `python PATH.py` is no
+longer skipped when its text can be SEEN: see the next section.
+
+## Programs written to a file, then run
+
+A heredoc redirected into a `.py` file (`cat > x.py <<'EOF'`, `cat <<EOF >
+x.py`, `tee x.py <<EOF`) is extracted whatever its delimiter is called
+(`harvest.py_write_target`); `>>` and `tee -a` append a fragment and are not.
+A later `python[3] [flags] PATH.py [argv]` or `uv run [python] PATH.py` in the
+same session is joined to the latest earlier write of that path — a heredoc in
+the log, or a `Write` tool call in the transcript — and becomes a `file`
+occurrence carrying the WRITER's model, the run's argv and the run's outcome
+(`harvest._file_events`). Paths resolve against the record's `cwd` and any
+literal `cd` before them; `~`, `$VAR` and an unknown directory resolve to
+nothing and join nothing. An `Edit`/`MultiEdit` or an append between the write
+and the run joins nothing, because the text that ran is not a text anyone
+recorded. A `Write` body is read out of the transcript only for a path a later
+command ran: the index cache stores the byte offset of the tool_use line, never
+the body. On 2026-09-22 a read-only `harvest._raws_from_log(text,
+persist=False)` over this machine's log (7,940 records at the time of reading)
+produced 899 `file` occurrences and 560 distinct programs, 61 of them from a
+`Write` alone; every one of the 560 parsed.
 
 Re-running is safe: counts come from the session-namespaced keys above, so a
 second harvest over the same inputs writes a byte-identical file; records the
@@ -177,7 +208,10 @@ shim whole seconds where `date` lacks `%3N`, and raw `…:24Z` sorts after
 
 Attribution joins Claude Code transcripts only: opencode and OpenHands hook
 payloads carry no model and write no transcript, so their records
-(`host != "claude"`) skip the join and stay unattributed. Known gap: a shim
+(`host != "claude"`) skip the join and stay unattributed. A Codex record is
+the exception that proves it: its model comes from the rollout's own turn, on
+the record, and it is never looked up in or journaled as a Claude attribution.
+Known gap: a shim
 record has no `host`, so another harness run inside a Claude session's shell is
 time-joined to the Claude model (`harvest._joinable`).
 
@@ -192,6 +226,23 @@ comment. Force any of them — delete the file, `cp` the transcript onto a new
 inode, `truncate` it below the stored offset — and the next `lypning harvest
 --dry-run` re-reads from byte zero and prints the same `sightings` count.
 
+**The attribution journal.** The log stores the id, never the model, and
+Claude Code deletes transcripts on its own schedule (`cleanupPeriodDays`, 30
+days when unset) — at which point the cache above prunes the entry, and every
+id in it would be unattributable for good. So each real harvest appends what it
+resolved to `$LYPNING_HOME/attribution.jsonl` (`harvest.attribution_path`):
+one line per id the first time it learns something — `tool_use_id`, `model`,
+`is_error`, `interrupted`, `session` — and nothing on a harvest that learned
+nothing. It is append-only, never pruned, never committed, holds no command
+text, and is read BEFORE any transcript; an id it answers in full opens no
+transcript at all. `--dry-run` reads it and appends nothing. Records captured
+before ids were logged are covered by `lypning harvest --transcripts`, which
+also journals every python-ish Bash block's model with its session and the
+sha256 of its command (`harvest.journal_transcripts`); `harvest.attribution_for`
+then answers for such a record by that exact pair, and answers nothing when two
+models issued the same command in one session. Run it before the transcripts
+go; afterwards there is nothing left to join against.
+
 The two merges are **not** the same function, and this is the trap:
 `harvest._combine` and `fold_into_corpus` take the per-model **max**, because
 both sides count the same occurrence keys and a sum would double the record on
@@ -205,7 +256,8 @@ call site onto the other leaves the counts plausible and slowly wrong.
 program is arbitrary text from this repo's working sessions — file contents,
 paths, occasionally a token pasted into a one-liner.
 
-* `~/.lypning/invocations.jsonl` and `~/.lypning/model-index.json` stay local.
+* `~/.lypning/invocations.jsonl`, `~/.lypning/model-index.json` and
+  `~/.lypning/attribution.jsonl` stay local.
   The published `tests/corpus/sightings/*.jsonl` files ARE committed, and go
   through the same redaction and seed guard as the corpus.
 * **A live credential is redacted by VALUE, not only by shape.** The patterns
@@ -237,7 +289,7 @@ The fallback directory in the first row is named `lypning-capture-<uid>`
 | `LYPNING_CAPTURE_EXIT=1` | shim waits for the child instead of exec-ing it, adding an `{"kind":"exit"}` record with `exit_code` and `wall_ms` |
 | `LYPNING_HARVEST=0` | keep capturing; stop the Stop hook publishing sightings |
 | `LYPNING_SESSION_ID` | the session tag, ours and harness-independent. Read first, ahead of whatever id the host harness exports; both feeds consult the same list, so one session's records cannot split across two tags |
-| `LYPNING_HOME` | state directory (default `~/.lypning`) — the shim's bin dir, the log, the build trees, the transcript index cache |
+| `LYPNING_HOME` | state directory (default `~/.lypning`) — the shim's bin dir, the log, the build trees, the transcript index cache, the attribution journal |
 | `LYPNING_TRANSCRIPTS` | transcript root for the harvest (default `~/.claude/projects`) — the third feed's root; the model join instead follows the transcript path each hook record already carries |
 
 ## Shim guarantees
