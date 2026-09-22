@@ -7,10 +7,11 @@ import os
 from pathlib import Path
 
 from pipeline.container_runner import ContainerRunner
-from pipeline.positive_control import MODEL_REPO, population, stratified_population
+from pipeline.positive_control import MODEL_REPO
 from pipeline.positive_control_grade import grade_files
 from pipeline.training import Verifier, engine_identity
 from pipeline.training_types import TrainingError
+from step2_shard import cases_from_env, shard_from_env
 
 
 def admitted_identity(identity, admission):
@@ -29,6 +30,21 @@ def admitted_identity(identity, admission):
     if identity.get('sha256') != expected_sha:
         raise TrainingError('grading engine differs from generation admission')
     return dict(identity, oracle=oracle)
+
+
+def recorded_shard(paid, cases, shard):
+    """Refuse to grade a run as a shard other than the one it paid for.
+
+    Runs from before sharding have no shard.json and were never sharded, so
+    their absence is the unsharded default and nothing else. The exact
+    case/draw/arm cover in `grade` would refuse a wrong case set too, but only
+    with a message that says nothing about which input was wrong.
+    """
+    path = paid / 'shard.json'
+    recorded = (json.loads(path.read_text()) if path.is_file()
+                else {'shard_index': 0, 'shard_count': 1, 'skip_prefix': 0, 'cases': cases})
+    if recorded != dict(shard, cases=cases):
+        raise TrainingError('the dispatched rung and shard differ from the ones this run generated')
 
 
 def target_arms(value):
@@ -64,7 +80,8 @@ def main():
     admission = json.loads((private / 'admission.json').read_text())
     rows = [json.loads(line) for line in (root / 'step2-bank' / 'train.jsonl').read_text().splitlines()
             if line.strip()]
-    cases = stratified_population(population(rows), int(os.environ['STEP2_CASES']))
+    recorded_shard(private / 'paid', int(os.environ['STEP2_CASES']), shard_from_env())
+    cases = cases_from_env(rows)
     binary = Path(os.environ['LYPNING_HOME']) / 'bin' / 'lypning-l'
     identity = engine_identity(binary)
     expected = admitted_identity(identity, admission)

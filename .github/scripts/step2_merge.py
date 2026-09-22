@@ -1,0 +1,290 @@
+"""Merge graded shards of the full Step 2 rung into one target run. No container.
+
+The full split is too long for one job twice over: 10,840 completions are
+~451 minutes of grading against a 360-minute cap, and one opaque provider
+error with zero retries leaves an unsharded run ungradeable. So it is bought
+as shards (`step2_shard.py`), each generated and graded on its own, and this
+merges their graded rows into ONE run id that `s4_target_floor.py` and
+`round02_pilot.sh` read exactly as they read a single graded run.
+
+Nothing is re-executed. The merge downloads each shard's admission,
+generation result, completions and graded rows, proves the shards are one
+experiment, then recomputes over the union what `positive_control_grade.grade`
+computes after scoring -- metrics, the paired comparisons and the targets --
+so the cluster bootstrap and the per-case cap see all 1,355 cases at once,
+not four shards' worth of separate verdicts.
+
+"One experiment" means identical engine bytes, base image, subset spec,
+provider/model and draw count, and an identical candidate-image RECIPE. Not
+an identical candidate-image id: a fresh `docker build` of the same four
+files on the same pinned base yields a new image id every time (measured
+locally 2026-09-22: two no-cache builds of one context, two ids), so every
+shard dispatched from its own runner has its own id and a rule on the id
+would refuse every real merge. The recipe is what the id stood for -- the
+Dockerfile and the three runner modules, by git blob id at each shard's
+source commit -- and the ids themselves are recorded per shard.
+
+A refusal names the shard that differs and the field, never a value from a
+case: this runs in a public Actions log. Any other failure prints its phase
+and exception type only, because a library message can carry a case id.
+"""
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+#: What the candidate image is built from (`step2-control.yml`'s build step).
+RECIPE = ("training/worker/Dockerfile.verifier", "training/pipeline/sandbox.py",
+          "training/pipeline/child_exec.py", "training/pipeline/container_worker.py")
+#: Fields every shard must share, and where each is read.
+IDENTITY = ("engine_sha256", "base_image", "spec_sha256", "provider", "samples",
+            "candidate_recipe")
+RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}")
+
+
+class MergeError(ValueError):
+    """A refusal whose message is safe to print: run ids and field names only."""
+
+
+def parse_runs(text):
+    runs = [part for part in re.split(r"[\s,]+", text or "") if part]
+    for run in runs:
+        if not RUN_ID.fullmatch(run) or ".." in run:
+            raise MergeError("a shard run id must be one positive-control run id, not a path")
+    if len(runs) < 2 or len(set(runs)) != len(runs):
+        raise MergeError("a merge needs at least two distinct shard runs")
+    return runs
+
+
+def git_recipe(commit):
+    """Blob ids of the candidate-image recipe at one commit of this checkout."""
+    if not re.fullmatch(r"[0-9a-f]{40}", commit or ""):
+        raise MergeError("admission source_commit is not a 40-hex commit")
+    return {path: subprocess.run(["git", "rev-parse", "%s:%s" % (commit, path)], check=True,
+                                 capture_output=True, text=True).stdout.strip()
+            for path in RECIPE}
+
+
+def identity(shard, recipe_of=git_recipe):
+    """The fields that make two shards one experiment."""
+    admission, manifest = shard["admission"], shard["manifest"]
+    try:
+        return {"engine_sha256": admission["conformance"]["engine_sha256"],
+                "base_image": admission["conformance"]["base_image"],
+                "spec_sha256": manifest["spec_sha256"],
+                "provider": manifest["provider"],
+                "samples": manifest["samples"],
+                "candidate_recipe": recipe_of(admission["source_commit"])}
+    except (KeyError, TypeError) as exc:
+        raise MergeError("shard %s lacks its admission or manifest lineage" % shard["run"]) from exc
+
+
+def check_identities(shards, recipe_of=git_recipe):
+    """One identity for every shard; the first shard that differs is named."""
+    first = identity(shards[0], recipe_of)
+    for shard in shards[1:]:
+        mine = identity(shard, recipe_of)
+        moved = [field for field in IDENTITY if mine[field] != first[field]]
+        if moved:
+            raise MergeError("shard %s differs from shard %s in %s"
+                             % (shard["run"], shards[0]["run"], ", ".join(moved)))
+    return first
+
+
+def union(shards, cases):
+    """Completions and rows over exactly `cases`, each case from one shard.
+
+    Each shard's cases are the ones its admission fingerprinted before it
+    paid, and each fingerprint must still match the bank's case byte for
+    byte. Every case of the full split must come from exactly one shard.
+    """
+    from pipeline.jsonio import sha256_of
+    from pipeline.positive_control_generate import request_order
+    by_id = {case["case_id"]: case for case in cases}
+    owner = {}
+    completions, rows = [], []
+    for shard in shards:
+        prints = shard["admission"].get("case_fingerprints")
+        if not isinstance(prints, dict) or not prints:
+            raise MergeError("shard %s has no case fingerprints" % shard["run"])
+        for case_id, digest in prints.items():
+            if case_id in owner:
+                raise MergeError("shards %s and %s overlap" % (owner[case_id], shard["run"]))
+            if case_id not in by_id or sha256_of(by_id[case_id]) != digest:
+                raise MergeError("shard %s drew a case outside the full split, or one since edited"
+                                 % shard["run"])
+            owner[case_id] = shard["run"]
+        mine = [by_id[case_id] for case_id in prints]
+        expected = {(c["case_id"], d, a) for c, d, a in request_order(mine, shard["manifest"]["samples"])}
+        for name in ("completions", "rows"):
+            keys = [(r.get("case_id"), r.get("draw"), r.get("arm")) for r in shard[name]]
+            if len(keys) != len(set(keys)) or set(keys) != expected:
+                raise MergeError("shard %s %s do not exactly cover its own cases" % (shard["run"], name))
+        completions.extend(shard["completions"])
+        rows.extend(shard["rows"])
+    if set(owner) != set(by_id):
+        raise MergeError("the shards cover %d of the %d cases of the full split"
+                         % (len(owner), len(by_id)))
+    return completions, rows
+
+
+def aggregate(cases, completions, rows, output, *, samples, run_id, lineage, target_arms,
+              token_count=None, tokenizer=None):
+    """What `positive_control_grade.grade` writes once every row is scored.
+
+    Kept line for line with grade's tail; `test_step2_merge` pins that one
+    shard aggregated here writes grade's own files byte for byte.
+    """
+    from pipeline.jsonio import sha256_of, write_json, write_jsonl
+    from pipeline.positive_control_grade import population_comparison
+    from pipeline.positive_control_targets import build_targets, normalise_arms
+    from pipeline.training_metrics import summarize
+    from pipeline.training_types import TrainingError
+    target_arms = normalise_arms(target_arms)
+    output = Path(output)
+    if output.exists():
+        raise TrainingError('grade output exists; preserve it and choose a new directory')
+    output.mkdir(parents=True)
+    by_case = {case['case_id']: case for case in cases}
+    rows = sorted(rows, key=lambda r: (r['arm'], r['case_id'], r['draw']))
+    write_jsonl(output / 'rows.jsonl', rows)
+    arms = {arm: [r for r in rows if r['arm'] == arm]
+            for arm in ('bare', 'subset-spec')}
+    metrics = {arm: summarize(values) for arm, values in arms.items()}
+    comparison = population_comparison(rows, 'coverage')
+    if comparison is None:
+        raise TrainingError('the Step 2 decision needs coverage rows')
+    control_comparison = population_comparison(rows, 'fallback-control')
+    native = comparison['metrics']['native']
+    correct = comparison['metrics']['correct']
+    decision = {
+        'distillation_route': native['delta'] >= .10 and correct['delta'] >= -.02,
+        'confirmatory_signal': native['delta'] >= .08 and native['ci95'][0] > .03
+                              and correct['delta'] >= -.02,
+        'native_delta': native['delta'], 'native_ci95': native['ci95'],
+        'correct_delta': correct['delta'], 'correct_ci95': correct['ci95'],
+        'population': 'coverage',
+    }
+    report = {'schema': 1, 'cases': len(cases), 'samples_per_arm': samples,
+              'case_set_sha256': sha256_of(sorted(by_case)), 'rows': len(rows),
+              'metrics': metrics, 'comparison': comparison,
+              'control_comparison': control_comparison, 'decision': decision}
+    write_json(output / 'report.json', report)
+    targets, target_report = build_targets(cases, completions, rows, samples=samples,
+                                           run_id=run_id, lineage=lineage, arms=target_arms,
+                                           token_count=token_count, tokenizer=tokenizer)
+    write_jsonl(output / 'sft.jsonl', targets)
+    write_json(output / 'sft-report.json', target_report)
+    public = {
+        'schema': 1, 'cases': len(cases), 'families': comparison['families'],
+        'independent_clusters': comparison['independent_clusters'],
+        'samples_per_arm': samples, 'rows': len(rows),
+        'arms': {arm: {k: metrics[arm][k] for k in
+                       ('correct', 'correct_native', 'case_weighted_correct',
+                        'case_weighted_native', 'cases', 'draws', 'families',
+                        'truncation_rate', 'mean_completion_tokens', 'statuses')}
+                 for arm in metrics},
+        'comparison': comparison, 'control_comparison': control_comparison,
+        'decision': decision,
+        'targets': {k: target_report[k] for k in
+                    ('rows', 'cases_with_targets', 'families_with_targets', 'populations',
+                     'eligible_before_cap', 'rejected', 'prompt_policy', 'selection_policy',
+                     'arms', 'length_policy')},
+    }
+    write_json(output / 'public-report.json', public)
+    return public
+
+
+def merge(shards, cases, output, *, run_id, target_arms, recipe_of=None,
+          token_count=None, tokenizer=None):
+    """Refuse a mixed or incomplete set of shards; otherwise write one graded run."""
+    shared = check_identities(shards, recipe_of or git_recipe)
+    completions, rows = union(shards, cases)
+    lineage = {
+        "engine_sha256": shared["engine_sha256"], "base_image": shared["base_image"],
+        "candidate_recipe": shared["candidate_recipe"],
+        "shards": [{"run_id": s["run"], "source_commit": s["admission"]["source_commit"],
+                    "candidate_image": s["admission"].get("candidate_image"),
+                    "cases": len(s["admission"]["case_fingerprints"])} for s in shards],
+    }
+    return aggregate(cases, completions, rows, output, samples=shared["samples"], run_id=run_id,
+                     lineage=lineage, target_arms=target_arms, token_count=token_count,
+                     tokenizer=tokenizer)
+
+
+def read_shard(root, run):
+    """One downloaded shard; refuses a generation that did not complete."""
+    from pipeline.jsonio import read_jsonl
+    from pipeline.positive_control_grade import generation_complete
+    base = Path(root) / "positive-control" / run
+    paid = base / "paid"
+    try:
+        generation_complete(paid / "completions.jsonl")
+    except Exception as exc:
+        raise MergeError("shard %s generation is absent or incomplete" % run) from exc
+    # read_jsonl reads an absent file as empty; an absent grade is a refusal.
+    if not (base / "grade" / "rows.jsonl").is_file():
+        raise MergeError("shard %s is missing its graded rows; grade it first" % run)
+    try:
+        return {"run": run,
+                "admission": json.loads((base / "admission.json").read_text()),
+                "manifest": json.loads((paid / "manifest.json").read_text()),
+                "completions": read_jsonl(paid / "completions.jsonl"),
+                "rows": read_jsonl(base / "grade" / "rows.jsonl")}
+    except (OSError, ValueError) as exc:
+        raise MergeError("shard %s is missing its admission, manifest or graded rows" % run) from exc
+
+
+def main():
+    phase = "arguments"
+    try:
+        runs = parse_runs(os.environ.get("STEP2_MERGE_RUNS", ""))
+        run_id = os.environ["STEP2_RUN_ID"]
+        if not RUN_ID.fullmatch(run_id) or run_id in runs:
+            raise MergeError("the merged run id must be new and one path segment")
+        phase = "download"
+        from huggingface_hub import HfApi, snapshot_download
+        token = os.environ["HF_TOKEN"].strip()
+        api = HfApi(token=token)
+        repo = api.whoami()["name"] + "/lypning-round02-artifacts"
+        info = api.repo_info(repo, repo_type="dataset")
+        if not info.private:
+            raise MergeError("artifact repository must be private")
+        patterns = []
+        for run in runs:
+            prefix = "positive-control/%s/" % run
+            patterns += [prefix + "admission.json", prefix + "paid/*", prefix + "grade/rows.jsonl"]
+        root = snapshot_download(repo, repo_type="dataset", revision=info.sha,
+                                 allow_patterns=patterns, token=token)
+        phase = "shards"
+        shards = [read_shard(root, run) for run in runs]
+        phase = "bank"
+        from step2_grade import target_arms, token_counter
+        from step2_shard import FULL_CASES, cases_from_env
+        temp = Path(os.environ["RUNNER_TEMP"])
+        bank = [json.loads(line) for line in (temp / "step2-bank" / "train.jsonl").read_text().splitlines()
+                if line.strip()]
+        cases = cases_from_env(bank, {"STEP2_CASES": str(FULL_CASES)})
+        phase = "merge"
+        count, tokenizer = token_counter()
+        public = merge(shards, cases, temp / "step2-grade", run_id=run_id,
+                       target_arms=target_arms(os.environ.get("STEP2_TARGET_ARMS")),
+                       token_count=count, tokenizer=tokenizer)
+    except MergeError as exc:
+        print("step2 merge refused during %s: %s" % (phase, exc), file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print("step2 merge failed during %s (%s); no private payload printed."
+              % (phase, type(exc).__name__), file=sys.stderr)
+        return 1
+    print(json.dumps({"merged_run": run_id, "shards": len(shards), "cases": public["cases"],
+                      "rows": public["rows"], "targets": public["targets"]}, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
