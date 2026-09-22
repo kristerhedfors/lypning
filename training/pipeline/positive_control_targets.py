@@ -28,7 +28,7 @@ import hashlib
 
 from .jsonio import sha256_of
 from .positive_control_generate import request_order
-from .training import messages, program_from_completion
+from .training import assistant_turn, messages, program_from_completion
 from .training_types import TrainingError
 
 #: Every arm the paired generator draws, in the canonical harvest order.
@@ -57,10 +57,6 @@ def normalise_arms(arms):
     if len(arms) != len(set(arms)) or not set(arms) <= set(ARMS):
         raise TrainingError("target arms must be distinct members of %s" % (ARMS,))
     return tuple(arm for arm in ARMS if arm in arms)
-
-
-def assistant_turn(program):
-    return "```python\n" + program.rstrip() + "\n```"
 
 
 def ast_key(program):

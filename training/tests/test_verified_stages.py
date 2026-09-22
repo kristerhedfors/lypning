@@ -66,7 +66,7 @@ def test_grpo_stage_uses_frozen_policy_and_callbacks(tmp_path, monkeypatch, dose
     monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(TrainerCallback=object))
     monkeypatch.setitem(sys.modules, "trl", SimpleNamespace(GRPOConfig=SimpleNamespace, GRPOTrainer=Trainer))
     case = dict(starter_cases()[0], split="train")
-    args = SimpleNamespace(output=tmp_path, seed=42, generations=2, grpo_prompts=1, warmup_ratio=.1, smoke=True, max_no_signal=20,
+    args = SimpleNamespace(output=tmp_path, seed=42, generations=2, grpo_prompts=1, warmup_ratio=.1, smoke=True,
                            score_workers=2)
     model = SimpleNamespace(device=SimpleNamespace(type="cpu"), parameters=lambda: [])
     tok = SimpleNamespace(eos_token_id=99, apply_chat_template=lambda msgs, **kwargs: msgs[-1]["content"])

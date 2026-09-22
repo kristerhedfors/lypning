@@ -32,7 +32,8 @@ from pipeline.jsonio import append_jsonl, read_jsonl, sha256_of, write_json
 from pipeline.training_metrics import BENCHMARK_MIN_FAMILY_CASES, CheckpointGate
 from pipeline.evaluation_reuse import fresh_lora_is_noop, reuse_evaluation
 from pipeline.training import (ISOLATED_KINDS, TrainingError, Verifier,
-    chat_prompt_token_ids, execution_runner, load_bundle, messages, program_from_completion)
+    assistant_turn, chat_prompt_token_ids, execution_runner, load_bundle, messages,
+    program_from_completion)
 
 from pipeline.training_contract import (BASE_MODEL, CONTRACT_VERSION, MIN_SUPERVISED_TOKENS,
     MIN_TRAIN_CASES, PROTOCOL_EVAL_DRAWS, PROTOCOL_TRAIN_SEEDS,
@@ -76,9 +77,6 @@ def parser():
     p.add_argument("--score-workers", type=int, default=16, help="concurrent verifier scorings per chunk")
     p.add_argument("--greedy", action="store_true", help="eval-only diagnostic; not checkpoint selection")
     p.add_argument("--warmup-ratio", type=float, default=0.1)
-    p.add_argument("--max-no-signal", type=int, default=20,
-                   help="abort RL after this many consecutive optimizer steps' worth of "
-                        "uninformative groups (times --grpo-prompts groups)")
     p.add_argument("--max-seq", type=int, default=4096)
     p.add_argument("--max-new-tokens", type=int, default=1024)
     p.add_argument("--seed", type=int, default=1111)
@@ -163,7 +161,7 @@ def preflight(args):
     if args.output.exists():
         raise TrainingError("--output already exists")
     if min(args.steps, args.eval_every, args.rank, args.batch_size,
-           args.max_seq, args.max_new_tokens, args.generations, args.eval_draws, args.max_no_signal,
+           args.max_seq, args.max_new_tokens, args.generations, args.eval_draws,
            args.eval_sequences, args.score_workers) <= 0 or (args.lr is not None and (not math.isfinite(args.lr) or args.lr <= 0)):
         raise TrainingError("training lengths, rank, learning rate and batches must be positive")
     if args.stage in ("grpo", "probe") and args.generations < 2:
@@ -340,7 +338,7 @@ def supervised_plan(args, bundle):
     return {"planned_exposures": len(scheduled),
             "supervised_token_upper_bound":
                 sum(len(((row["messages"][-1]["content"] if rows is not None else
-                          "```python\n" + row["reference"].rstrip() + "\n```") +
+                          assistant_turn(row["reference"])) +
                          "<|im_end|>").encode("utf-8")) for row in scheduled)}
 
 
@@ -358,7 +356,7 @@ def curriculum_plan(args, bundle):
         return None
     train_cases, rows, _ = sft_curriculum(args, bundle)
     if rows is None:
-        segments = ["```python\n" + c["reference"].rstrip() + "\n```" for c in train_cases]
+        segments = [assistant_turn(c["reference"]) for c in train_cases]
     else:
         segments = [row["messages"][-1]["content"] for row in rows]
     floor = curriculum_floor(train_cases)
@@ -515,7 +513,7 @@ def run(args, bundle, adapter_info):
         train_cases, rows, target_report = sft_curriculum(args, bundle)
         if rows is None:
             rows = [{"case_id": c["case_id"], "messages": messages(c) + [{"role": "assistant",
-                     "content": "```python\n" + c["reference"].rstrip() + "\n```"}]}
+                     "content": assistant_turn(c["reference"])}]}
                     for c in train_cases]
         examples, dropped = core.build_examples(tok, rows, args.max_seq)
         if dropped or not examples:

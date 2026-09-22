@@ -147,13 +147,13 @@ def test_zero_signal_grpo_is_logged_as_a_fraction_never_aborted_or_shaped():
 
     The consecutive-group abort this replaces would fire by chance inside an
     arm-C dose (about 0.79**20 per starting point at seed 1111's informative
-    rate). Many more than the old `max_no_signal` in a row must now pass,
+    rate). Many more than the old limit of twenty in a row must now pass,
     rewards must stay unshaped zeros, and the fraction must be logged.
     """
     from types import SimpleNamespace
     case = dict(starter_cases()[0], split="train")
     verifier = SimpleNamespace(score=lambda *a: Score(0, "incorrect", 0, 3))
-    reward = Reward([case], verifier, eos_token_id=[98, 99], generations=2, max_no_signal=2)
+    reward = Reward([case], verifier, eos_token_id=[98, 99], generations=2)
     logged = []
     kwargs = dict(completions=["bad", "bad"], case_id=[case["case_id"]] * 2, completion_ids=[[99], [98]],
                   log_metric=lambda name, value: logged.append((name, value)))

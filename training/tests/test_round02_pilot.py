@@ -140,6 +140,9 @@ def test_the_manifest_records_every_arm_field():
     # Copied from the stage's own record, not restated from intent.
     assert 'sft.get("kernels")' in finish
     assert '(sft.get("effective") or {}).get("learning_rate")' in finish
+    # What the targets were drawn from and which kernel the stage bound.
+    assert '"sft_target_arms": targets.get("arms")' in finish
+    assert '"kernel_binding": sft.get("kernel_binding")' in finish
 
 
 def test_the_split_seed_default_reaches_the_python_that_reads_it(tmp_path):

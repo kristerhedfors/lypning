@@ -130,9 +130,13 @@ manifest = {"job": job, "status": os.environ["STATUS"], "exit_code": int(os.envi
             "bundles_from": os.environ.get("BUNDLES_FROM") or None,
             "sft_target_run": os.environ.get("SFT_TARGET_RUN") or None,
             "sft_sha256": targets.get("sft_sha256"),
+            # Which Step 2 arms the targets were harvested from. `sft_sha256`
+            # already separates two target sets; this says what they were.
+            "sft_target_arms": targets.get("arms"),
             "sft_learning_rate": (sft.get("effective") or {}).get("learning_rate"),
             "grpo_learning_rate": (grpo.get("effective") or {}).get("learning_rate"),
             "kernels": sft.get("kernels"),
+            "kernel_binding": sft.get("kernel_binding"),
             "pilot_bundle_digest": digest("work/round-02/pilot/bundle.json"),
             "eval2_bundle_digest": digest("work/round-02/eval2/bundle.json"),
             "grpo_skipped": os.path.exists("work/round-02/grpo-skipped.json")}

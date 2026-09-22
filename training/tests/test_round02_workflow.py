@@ -78,7 +78,8 @@ def test_arm_a_is_dispatched_without_grpo():
 
 def test_the_qwen_revision_is_one_pin_everywhere_and_never_resolved_at_dispatch():
     pins = {}
-    for name in ("round02.yml", "s4-target-preflight.yml", "round02-preflight.yml"):
+    for name in ("round02.yml", "s4-target-preflight.yml", "round02-preflight.yml",
+                 "step2-control-grade.yml"):
         text = (WORKFLOWS / name).read_text(encoding="utf-8")
         pins[name] = re.findall(r"^\s*QWEN_REV: ([0-9a-f]{40})$", text, re.M)
     assert {pin for found in pins.values() for pin in found} == {

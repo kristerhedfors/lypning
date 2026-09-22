@@ -30,6 +30,9 @@ env:
   STEP2_SAMPLES: ${{ (inputs.rung == 'smoke' || inputs.rung == 'targets') && '4' || '16' }}
   STEP2_RUN_ID: ${{ inputs.run_id }}
   STEP2_TARGET_ARMS: ${{ inputs.target_arms }}
+  # The revision the S4 job trains; targets are sized with the tokenizer it
+  # will actually load, not whatever the Hub's main is at grade time.
+  QWEN_REV: 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0
 
 jobs:
   grade:

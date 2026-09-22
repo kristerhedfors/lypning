@@ -43,15 +43,16 @@ def token_counter():
     """Count supervised segments with the trained model's own tokenizer.
 
     Without it the target builder falls back to a byte bound that is safe but
-    drops targets that would have fit. The revision is resolved once, pinned
-    to a 40-hex commit and recorded next to every count it produced.
+    drops targets that would have fit. The revision is the workflow's
+    `QWEN_REV` pin -- the one the S4 job loads -- and is recorded next to
+    every count it produced. Resolving the Hub's `main` here instead would let
+    an upstream tokenizer commit size targets for a model nobody trains.
     """
     import re
-    from huggingface_hub import HfApi
     from transformers import AutoTokenizer
-    revision = HfApi().model_info(MODEL_REPO).sha
-    if not re.fullmatch('[0-9a-f]{40}', revision or ''):
-        raise TrainingError('tokenizer revision must be an immutable 40-hex commit')
+    revision = os.environ.get('QWEN_REV', '')
+    if not re.fullmatch('[0-9a-f]{40}', revision):
+        raise TrainingError('QWEN_REV must pin an immutable 40-hex commit')
     tok = AutoTokenizer.from_pretrained(MODEL_REPO, revision=revision, trust_remote_code=False)
     return (lambda text: len(tok(text, add_special_tokens=False)['input_ids']),
             '%s@%s' % (MODEL_REPO, revision))

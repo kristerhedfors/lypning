@@ -185,7 +185,7 @@ def _grpo(tmp_path, monkeypatch, callback_steps, smoke=True):
     monkeypatch.setitem(sys.modules, "trl", SimpleNamespace(GRPOConfig=SimpleNamespace, GRPOTrainer=Trainer))
     case = dict(starter_cases()[0], split="train")
     args = SimpleNamespace(output=tmp_path, seed=42, generations=8, grpo_prompts=4, warmup_ratio=.1,
-                           smoke=smoke, max_no_signal=20, score_workers=2)
+                           smoke=smoke, score_workers=2)
     model = SimpleNamespace(device=SimpleNamespace(type="cpu"), parameters=lambda: [])
     tok = SimpleNamespace(eos_token_id=99, apply_chat_template=lambda msgs, **kwargs: msgs[-1]["content"])
     verifier = SimpleNamespace(score=lambda c, p: Score(1, "correct-native", 3, 3))
@@ -227,17 +227,13 @@ def test_grpo_writes_its_log_history_to_loss_jsonl(tmp_path, monkeypatch):
                     {"loss": 0.4, "step": 2}]
 
 
-def test_the_no_signal_abort_still_counts_optimizer_steps(tmp_path, monkeypatch):
-    """`Reward` counts consecutive uninformative GROUPS, and a step now has four.
+def test_grpo_never_hands_reward_an_abort_limit(tmp_path, monkeypatch):
+    """The consecutive-no-signal abort is gone; `Reward` only measures.
 
-    Seed 1111 stepped one group at a time, so --max-no-signal 20 meant twenty
-    zero-advantage steps. Passed through unscaled at four prompts a step it
-    would mean five, and on a bank where most probe groups carry no signal
-    (`reports/2026-09-21-fable-round02-seed1111-read.md` §4) a run of twenty
-    uninformative groups is far likelier than a run of eighty -- an abort that
-    ends a paid run after the SFT, the probe and the weight pull on noise.
+    At four prompts a step a streak limit would also have had to be rescaled,
+    and at seed 1111's informative rate any fixed limit ends a 500-group dose
+    by chance (`pipeline/training.py` `Reward`). There is no knob left to pass.
     """
     observed = _grpo(tmp_path, monkeypatch, [], smoke=False)
-    assert observed["reward"]["max_no_signal"] == 20 * 4
+    assert "max_no_signal" not in observed["reward"]
     assert observed["reward"]["generations"] == 8
-    assert _grpo(tmp_path / "s", monkeypatch, [])["reward"]["max_no_signal"] == 0, "smoke never aborts"

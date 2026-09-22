@@ -228,12 +228,6 @@ def train_grpo(model, tok, args, bundle, train_cases, verifier, effective, polic
                     eos_token_id=tok.eos_token_id,
                     rollout_path=args.output / "rollouts.jsonl",
                     generations=args.generations,
-                    # `Reward` counts consecutive uninformative GROUPS; a step
-                    # now carries `grpo_prompts` of them. Scaled so the abort
-                    # still means "--max-no-signal optimizer steps with zero
-                    # advantage", as it did at one group per step -- unscaled,
-                    # four prompts a step would end a paid run four times sooner.
-                    max_no_signal=0 if args.smoke else args.max_no_signal * args.grpo_prompts,
                     score_workers=args.score_workers)
     expected_prompts = [tok.apply_chat_template(messages(c), tokenize=False,
                         add_generation_prompt=True, enable_thinking=False) for c in train_cases]

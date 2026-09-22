@@ -439,7 +439,7 @@ class Reward:
     __name__ = "verified_lypning_l"
 
     def __init__(self, cases, verifier, witness_path=None, eos_token_id=None, rollout_path=None,
-                 generations=None, max_no_signal=0, score_workers=16):
+                 generations=None, score_workers=16):
         self.cases = {c["case_id"]: c for c in cases if c["split"] == "train"}
         self.score_workers = max(1, int(score_workers))
         self.verifier = verifier
@@ -457,9 +457,6 @@ class Reward:
         # guard would have ended a healthy run by chance. It is a MEASUREMENT
         # now: counted here, logged as a fraction, never raised. Whether RL may
         # start at all is the probe's admission gate, which runs before this.
-        # `max_no_signal` is still accepted so existing callers construct the
-        # same object; it no longer does anything.
-        self.max_no_signal = max_no_signal
         self.groups = 0
         self.no_signal_groups = 0
 
