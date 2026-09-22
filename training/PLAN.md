@@ -25,8 +25,9 @@ Actions run `35575454075`, 2026-09-21. Its separate Codex assessment is
    and correctness unchanged is admitted 1.7% of the time — pure noise is
    admitted 2.1%**. "Selected step 0", twice, is therefore not evidence about
    the training. `tests/test_gate_admission.py` measured this against the real
-   class, and since Step 1.1 (2026-09-21) it measures the replacement on the
-   same simulation: 84.85% and 9.17%.
+   class; on 2026-09-21 (Step 1.1) it measured the replacement on the same
+   simulation at 84.85% and 9.17%, figures the 2026-09-22 revision in Step 1
+   supersedes.
 2. **The SFT objective carried almost no signal and was under-powered for it.**
    Loss 0.1436 → 0.0426 in 75 steps: the base already emits the reference
    programs at ≈1.15 perplexity, and rows are `prompt + reference`. LR 2e-5 is a
@@ -54,7 +55,7 @@ Advance a step by editing this table in the same PR as the work.
 | 1 | Fix the instrument | $0 | nothing else is readable until it is | done (2026-09-22, implementation in PRs #97–#101; validation limits below) |
 | 2 | Positive control (S1 / stage 0b) | ~$126 at 512 output tokens/request; ~$225 at allowance (full k=16); rungs so far $5.74 charged or reserved | distillation route, rejection-filtered distillation, or contrastive route | in progress (2026-09-22: smoke generated and graded, pooled; 192-case target rung `35767396604` complete and **not yet graded**; rungs below; [review](reviews/2026-09-22-claude-step2-s4-review.md): revise) |
 | 3 | Build contrastive targets | tokens | is there enough pair supply for a preference arm? | open |
-| 4 | S4, re-specified, three seeds | ~$60–90 | the first result the instrument can read | open |
+| 4 | S4, re-specified, three seeds | up to ~$180 (three h200 seed jobs capped at 720m, ~$60 each) | the first result the instrument can read | open |
 
 **Operator direction, 2026-09-22: free first.** Continue Step 2's free checks
 and preparation. Paid inference and GPU training remain held; no paid ceiling
@@ -63,12 +64,13 @@ and ceiling. `ROUND_READINESS.md` records the active checks and measured costs.
 
 **Later on 2026-09-22.** Codex dispatched four paid Cerebras generation
 runs, three of which reached the provider (Step 2 below), under the per-rung
-ceilings in `step2-control.yml`; the approval is not recorded in this tree. No GPU job has been submitted. The independent
-review of that work is
+ceilings in `step2-control.yml`; the approval is not recorded in this tree.
+No GPU job has been submitted. The independent review of that work is
 [`reviews/2026-09-22-claude-step2-s4-review.md`](reviews/2026-09-22-claude-step2-s4-review.md):
 **revise (prepare)** — no GPU spend until the coverage-only grade of
-`35767396604`, the seed-1111 kernel read, and an operator decision on a
-full-split target rung and on evaluation draws.
+`35767396604` and `s4-target-preflight` on it, the draw-coupling and
+provider-seed reads (review §6.3–§6.4), and an operator decision on a
+full-split target rung and on the dev-selection draws.
 
 ### Step 0 — Read what was paid for ($0, CI reads, aggregates only)
 
@@ -142,8 +144,12 @@ cases; small population slices, rather than the primary macro, need attention.
    draws fully coupled by the shared evaluation seeds the same +10pp arm is
    admitted 99.9% / 100% at k = 4 (seed 9). Which regime a trained adapter is
    in is unmeasured: read step-0 versus step-N draw agreement in seed 1111's
-   `sft/evaluations.jsonl` before paying for `--eval-draws 16` (an operator
-   decision with a cost).
+   `sft/evaluations.jsonl` before paying for sixteen dev-selection draws (an
+   operator decision with a cost). Those are `train_verified --eval-draws` in
+   the base-dev, sft and grpo stages, which default to 4; the pilot's
+   `--eval-draws 16` reaches only the eval-2 stages, so raising the dev draws
+   needs a new pilot/launcher setting and manifest arm field, landed before arm
+   A's first seed.
 2. **Stopping is not selection.** ~~A registered dose trains to completion;
    every checkpoint is saved (already true); selection is post hoc. No
    patience-based stop inside an S4 stage.~~ **Done 2026-09-21, PR #97.**
@@ -263,7 +269,7 @@ population and is withdrawn.
 **Decision.** Fewer than ~300 pairs → the preference arm is under-powered;
 carry the signal in RL (Step 4 arm C) instead of a preference arm.
 
-### Step 4 — S4, re-specified (three seeds; ~$60–90 once Step 1.5 holds)
+### Step 4 — S4, re-specified (three seeds; up to ~$180 at the 720m ceiling)
 
 | arm | recipe | why this and not what ran |
 |---|---|---|
@@ -295,12 +301,16 @@ green before the second seed is billed.
   1111 train split serve all three seeds. `job-manifest.json` records
   `split_seed`; `arm_check` treats it as an arm field.
 - **Kernel enforcement.** The torch-reference gated-delta rule is enforced:
-  the `fla` blocker is installed before any probe, the probe runs in a child
-  interpreter, the bound implementation is recorded (`kernel_binding`), and a
-  run refuses any other binding before the weights are pulled — the pilot's
-  `deps` stage asks first, in minute one. Seed 1111's
-  actual binding is **unverified**: read its `sft/experiment.json` `kernels`
-  field (free CI read).
+  the `fla` blocker is installed before any probe, the fla importability
+  check (`kernel_state`) runs in a child interpreter, the bound implementation
+  is recorded (`kernel_binding`), and a run refuses any other binding before
+  the weights are pulled — the pilot's `deps` stage asks first, in minute one.
+  Seed 1111 (commit `7d2bb09`) predates `kernel_state` and the `kernels` field
+  (`0733ac3`), and the fla-before-blocker bug did not exist in its code.
+  `0733ac3` records transformers reporting fla not installed, with all 48
+  gated-delta-net layers on the torch reference, during that round. An
+  aggregate grep of the job log for transformers' fallback message can confirm
+  it; it is not a prerequisite for GPU spend.
 - **Re-prepare bundles.** `verifier_sha256` now also hashes
   `hf_sandbox_runner.py` and `container_worker.py`, and `code_sha256` changed;
   every existing bundle is refused.
@@ -310,8 +320,11 @@ green before the second seed is billed.
   pinned in every round-02 workflow. The launcher's `--grpo-generations`
   (default 4, which keeps arm A's probe comparable with seed 1111's) and
   `--grpo-prompts` (default 4) reach both the probe and GRPO and are arm
-  fields; arm C dispatches `--grpo-generations 8` and budgets the job timeout
-  for 16–32 sequences per step.
+  fields; arm C passes `--grpo-generations 8` and budgets the job timeout
+  for 16–32 sequences per step. `round02.yml` has no input or `PILOT_*`
+  variable for either knob, and `round02_pilot.sh` never passes
+  `--grpo-informative-only`, so arm C needs a workflow and job-script edit
+  before it can be dispatched through CI.
 
 ## Kill criteria (unchanged, `LADDER.md` §6)
 

@@ -1,8 +1,9 @@
 # Independent review: Step 2 positive control and S4 readiness — 2026-09-22
 
-**Verdict: REVISE (prepare).** No GPU spend until three things exist: the
-coverage-only grade of run `35767396604`, the seed-1111 kernel read, and an
-operator decision on a full-split target rung and on evaluation draws. The
+**Verdict: REVISE (prepare).** No GPU spend until these exist: the
+coverage-only grade of run `35767396604` and the floor read on it, the
+draw-coupling and provider-seed reads (§6), and an operator decision on a
+full-split target rung and on the dev-selection draws. The
 smoke shows a real native effect under the subset spec. It does not support the
 launch the report prepares. After this PR's case floor, no existing target set
 can launch arm A.
@@ -26,6 +27,7 @@ The shape follows `ORCHESTRATION.md` *Fable writeup → Codex assessment contrac
   - The public aggregate log lines of grade `35759939928` and generation
     `35767396604`.
   - The code at `b96bbfe`, and the cross-lane fixes in `74c1ff5`.
+  - Seed 1111's code at `7d2bb09`, and the message of `0733ac3`.
 - **Not read.** Any private row, completion or target. The adapter and
   experiment files of seed 1111.
 - **Approval.** The paid runs were dispatched by Codex under the per-rung
@@ -62,6 +64,16 @@ The shape follows `ORCHESTRATION.md` *Fable writeup → Codex assessment contrac
   and `decision` **pool controls with coverage**. After this PR, both keys are
   coverage-only under an unchanged schema number, so the smoke's figures are
   not the same quantity as any later grade.
+- **Seed 1111's kernel is not an open question.** Seed 1111 (commit `7d2bb09`)
+  predates `kernel_state` and the `kernels` field (`0733ac3`), and the
+  fla-before-blocker bug this PR fixes did not exist in its code: `run()` set
+  `NTX_USE_FLA=0` and imported `lypning_lora`, which installs the blocker,
+  before transformers. `0733ac3` records transformers reporting fla not
+  installed, with all 48 gated-delta-net layers on the torch reference, during
+  that round. An aggregate grep of the job log for transformers' own fallback
+  message can confirm it; `lypning_lora`'s "will use the torch reference" line
+  is printed whenever the blocker is installed and is not evidence. It is not a
+  prerequisite for GPU spend.
 
 ## 2. Correctness AND native, with the uncertainty the run can support
 
@@ -90,9 +102,12 @@ Draw statuses (256 per arm) show where the native gain came from:
 
 `distillation_route=false` and `confirmatory_signal=false`. **The spec removed
 refusals by rewriting.** All 41 correct-but-refused bare draws disappear, and 23
-more draws become wrong. 13 of the spec arm's correct-native draws are on
-**control** cases: the target builder rejected them as `control-became-native`.
-The pooled native delta counts them as gains.
+more draws become wrong. 13 of the spec arm's 31 correct-control draws ran
+fully native, and the target builder rejected them as `control-became-native`.
+The pooled correct-native rate counts them, because it reads each draw's
+`native` flag; the status table files them under correct-control, because a
+correct draw on a control case always scores `correct-control`
+(`training.py`).
 
 The public report does not say how many bare draws on control cases ran
 natively, so the coverage-only delta cannot be recomputed from it. That is the
@@ -119,10 +134,12 @@ first thing the regrade in §6 reports.
 2. **The smoke is 64 cases at k=4.**
    - With 30 clusters and single-case families, a percentile bootstrap
      undercovers.
-   - At k=4 the "keep ≤ 4" cap never binds. In the log, 149 coverage targets
-     were eligible before the cap and 149 were kept after it. So nothing was
-     *selected*: every verified draw that was not an exact duplicate was kept
-     (17 duplicates dropped).
+   - At k=4 the coverage "keep ≤ 4" cap never binds. 149 coverage targets
+     were eligible after exact dedup (14 coverage duplicates dropped), and all
+     149 were kept. So no coverage draw was *selected*: every verified one that
+     was not an exact duplicate was kept. Only the ≤ 1 control cap bound: 15
+     controls were eligible (after 3 control duplicates), 8 kept, 7 dropped as
+     `over-retention-cap`.
 3. **The rungs are nested, so the 192-case rung is not a replication.**
    - `stratified_population` is a deterministic round-robin, so
      s(192)[:64] == s(64).
@@ -137,7 +154,8 @@ first thing the regrade in §6 reports.
      targets train on (`train_verified.curriculum_floor`).
    - `35762924601` cleared the token floor only by repetition: 300 steps × 4 =
      1,200 exposures over 157 rows is about 7.6 passes. The token count was
-     also taken on the old schedule (with-replacement family cycling) and the
+     also taken on the old schedule (with-replacement draws within each
+     family) and the
      old builder (no AST dedup, no length drop).
    - The largest existing rung has 300 cases, so none can reach 1,000.
 5. **Training only on spec-conditioned wins may move the spec's correctness
@@ -151,15 +169,18 @@ first thing the regrade in §6 reports.
 6. **The report's prepared recipe is superseded by this PR.** Its selection is
    now on the coverage macro against a paired, case-clustered margin, not the
    all-family macro. Its launch is now refused by the case floor. Seeds
-   2222/3333 now share the 1111 split, which answers the report's "separate
-   decisions".
+   2222/3333 now share the 1111 split, so one target run serves all three
+   seeds. Each seed's GPU ceiling is still a separate operator decision, as
+   the report says.
 
 ## 5. Alternative explanations to hold open
 
 - **Refusal avoidance, not capability.** The spec may teach the model to avoid
   unsupported imports rather than to express the task natively. The bare arm's
-  133 correct-native draws (of 256) show the model already writes native code
-  for about half its draws on these cases. A bare-arm target set (ReST-EM on the training prompt;
+  133 correct-native draws of 256 show the model already writes native code
+  for at least half its draws on these cases — a lower bound, because the 256
+  include control-case draws, which can never score correct-native. A
+  bare-arm target set (ReST-EM on the training prompt;
   [arXiv 2312.06585](https://arxiv.org/abs/2312.06585),
   [arXiv 2308.01825](https://arxiv.org/abs/2308.01825)) is the on-policy
   comparison. `build_targets` supports it (`target_arms`).
@@ -182,10 +203,7 @@ first thing the regrade in §6 reports.
    - **Expected: refusal on the case floor** (at most 192 cases).
    - Still read unique supervised tokens, passes over rows and the family floor
      from `s4-target-floor.json`.
-3. **Seed 1111 kernel binding.** Read the `kernels` field of `sft/experiment.json`
-   under `round-02/6ab01cbb51992417dfccd64c/` and grep its log for the
-   torch-reference fallback line. This is an aggregate CI read.
-4. **Draw coupling.**
+3. **Draw coupling.**
    - Measure per-(case, draw) agreement between step 0 and later steps in seed
      1111's `sft/evaluations.jsonl`, printing aggregates only.
    - Evaluation seeds are shared across steps (`chunk_seed`), and the gate's
@@ -195,12 +213,18 @@ first thing the regrade in §6 reports.
      admission rate is 38.0% (KAPPA 2) and 63.5% (KAPPA 20), over 2,000 trials
      with seed 7. With fully coupled draws it is 99.9% and 100%, over 1,500
      trials with seed 9.
-   - `--eval-draws 16` recovers 75.3% and 97.7% (600 trials) at four times the
-     dev-eval generation cost. Measure the coupling before buying it.
-5. **Does the provider honour seed?** Count byte-identical completions between
+   - Sixteen dev-selection draws recover 75.3% and 97.7% (600 trials) at four
+     times the dev-eval generation cost. That is `train_verified --eval-draws`
+     in the base-dev, sft and grpo stages, which default to 4: the pilot's
+     `--eval-draws 16` reaches only the eval-2 stages, and neither `launch.py`
+     nor `round02.yml` has a setting for the dev draws. Raising them needs a new
+     pilot/launcher setting and a job-manifest arm field (the manifest's
+     `eval_draws` records only the eval-2 draws), so it must land before arm
+     A's first seed. Measure the coupling before buying it.
+4. **Does the provider honour seed?** Count byte-identical completions between
    the smoke and the first 64 cases of `35767396604`, printing only the count.
    If they match, every nested rung re-buys its prefix.
-6. **Operator: a full-split target rung.**
+5. **Operator: a full-split target rung.**
    - Arm A needs verified targets on ≥ 1,000 of the 1,355 train cases.
    - Scale from `35767396604`: $3.63 for 1,536 requests is about $0.0024 per
      request. So 1,355 × 2 arms × k=4 = 10,840 requests is about $26. At 45 rpm
@@ -215,10 +239,11 @@ first thing the regrade in §6 reports.
 
 **REVISE (prepare).**
 
-**Bounded next action.** Merge this PR. Then do §6.1–§6.5 in order: one
-coverage-only grade, one floor read, and three aggregate CI reads. Record each
+**Bounded next action.** Merge this PR. Then do §6.1–§6.4 in order: one
+coverage-only grade, one floor read, and two aggregate CI reads. Record each
 in `PLAN.md` Step 2 and a ledger row. Then put two decisions to the operator,
-each with its measured price: the §6.6 rung shape, and eval draws 4 or 16.
+each with its measured price: the §6.5 rung shape, and the dev-selection draws
+(4 or 16, a new launcher setting).
 
 **Owner.** Codex, as orchestrator, for the reads and the ledger. The operator
 for the paid rung, the eval-draw cost and any GPU ceiling. Fable only after a
@@ -248,9 +273,6 @@ the key there before the first S4 seed.
 - **The full-split rung yields verified targets on fewer than 1,000 cases:**
   arm A does not launch. A lower floor is a dated protocol decision, never an
   edit to make a launch fit.
-- **Seed 1111 bound fla:** record that its arm identity was not the declared
-  torch reference. This does not block the next arm, because the run now
-  refuses any other binding.
 - **No approval text for a paid ceiling is on record:** no further paid
   dispatch.
 - **In every case:** re-prepare bundles before arm A's first seed, because

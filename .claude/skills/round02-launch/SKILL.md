@@ -85,11 +85,17 @@ job-level `if`, so the condition at line 142 hard-codes both markers. Changing
 set above the job's own `--timeout 300m`, because a runner that dies mid-follow
 loses the streamed log while the GPU keeps billing.
 
-A pilot is the `[submit-pilot]` branch: `--bank-path "${BANK_PATH}" --seed
-"${PILOT_SEED}" --split-seed "${PILOT_SPLIT_SEED}" --steps "${PILOT_STEPS}"
---grpo-steps "${PILOT_GRPO_STEPS}" --eval-draws 16 --flavor "${PILOT_FLAVOR}"
---timeout "${PILOT_TIMEOUT}" --yes --follow` (h200, 720m, GRPO 0 as of
-2026-09-22). One seed. Read the next section before you type that marker.
+A pilot is the `[submit-pilot]` branch: `--qwen-revision "${QWEN_REV}"
+--bank-path "${BANK_PATH}" --eval-draws 16 --seed "${PILOT_SEED}" --split-seed
+"${PILOT_SPLIT_SEED}" --steps "${PILOT_STEPS}" --grpo-steps
+"${PILOT_GRPO_STEPS}" --sft-target-run "${SFT_TARGET_RUN}" --score-workers
+"${PILOT_SCORERS}" --pool-max-hosts "${PILOT_POOL_HOSTS}" --flavor
+"${PILOT_FLAVOR}" --timeout "${PILOT_TIMEOUT}" --yes --follow` (h200, 720m,
+GRPO 0 as of 2026-09-22). `--eval-draws 16` reaches only the eval-2 stages;
+dev selection runs at `train_verified`'s default 4 draws, and no launcher
+setting changes that yet. There is no input for `--grpo-generations`,
+`--grpo-prompts` or `--grpo-informative-only` either, so arm C needs a workflow
+edit. One seed. Read the next section before you type that marker.
 
 ## What it costs, and what one job is not
 
@@ -104,7 +110,9 @@ seed job**; it was about $25 at the old 300m.
 seed is not a round-02 result, and the launcher will happily give you one. The
 ladder's per-rung cost is the `cost` column of `training/STATUS.md` §10's rung
 table — S1 ~$5, S4 (the first three-seed SFT) ~$60–90, the S0 reads $0 — and the
-same costs sit against the action plan in `training/ASSESSMENT.md` §6.
+same costs sit against the action plan in `training/ASSESSMENT.md` §6. That S4
+figure predates the 720m ceiling: three seed jobs at about $60 each can reach
+about $180 (`training/PLAN.md` Step 4).
 
 The meter runs during the data stages too. `review` and `prepare` execute on the
 h200, which is why the free local pass below is worth more than it looks.
@@ -118,7 +126,7 @@ into an image.
 ```
 DEFAULT_STEPS, DEFAULT_EVAL_DRAWS, DEFAULT_SEED = 250, 16, 1111
 DEFAULT_GRPO_STEPS = 0
-DEFAULT_GRPO_GENERATIONS = 4   # probe and GRPO group size; arm C passes 8
+DEFAULT_GRPO_GENERATIONS = 4   # probe and GRPO group size; arm C's recipe is 8
 DEFAULT_GRPO_PROMPTS = 4       # prompt groups per GRPO step
 DEFAULT_SPLIT_SEED = 1111
 BANKED_FLAVOR, BANKED_TIMEOUT = "h200", "720m"

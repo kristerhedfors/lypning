@@ -40,14 +40,17 @@ neither route earned), and completed the 192-case target rung
 this tree. The S4 refactor that followed fixed the split seed at 1111, made
 the Step 2 decision coverage-only, put a 1,000-distinct-case floor on the
 target curriculum (no existing rung clears it), enforced the torch-reference
-kernel and set arm C's GRPO defaults. The review
+kernel and set arm C's GRPO recipe. The review
 `training/reviews/2026-09-22-claude-step2-s4-review.md` says **revise
 (prepare)**. Next free actions, in order: grade `35767396604` **once**
 (coverage-only, `QWEN_REV` tokenizer, `target_arms` chosen first — a second
 grade overwrites); `s4-target-preflight` on it (expected to refuse on the case
-floor); read seed 1111's `sft/experiment.json` `kernels`; measure step-0 vs
-step-N draw coupling in its `sft/evaluations.jsonl`. Then the operator decides
-a full-split target rung and eval draws 4 vs 16. No GPU job before that.
+floor); measure step-0 vs step-N draw coupling in seed 1111's
+`sft/evaluations.jsonl`; count byte-identical completions between the smoke
+and the rung's first 64 cases (does the provider honour `seed`). Then the
+operator decides a full-split target rung and the dev-selection draws
+(`train_verified --eval-draws` in base-dev/sft/grpo, 4 or 16 — a new launcher
+setting). No GPU job before that.
 
 ## The steps, and the rule for taking one
 
@@ -57,7 +60,7 @@ a full-split target rung and eval draws 4 vs 16. No GPU job before that.
 | 1 | Fix the instrument — selector, stopping, macro floor, LoRA learning rates, eval cost, engine fixes | $0 | |
 | 2 | Positive control — stage 0b, bare vs `prompts/subset-spec.md`; only k = 16 decides | ~$126 at 512 output tokens; ~$225 at allowance (full); rungs so far in `PLAN.md` | |
 | 3 | Build contrastive targets — correct-native vs correct-but-refused pairs per prompt | tokens | |
-| 4 | S4 re-specified — RFT arm, preference arm if supply, dosed GRPO; three seeds | ~$60–90 | |
+| 4 | S4 re-specified — RFT arm, preference arm if supply, dosed GRPO; three seeds | up to ~$180 (720m ≈ $60 per seed job) | |
 
 **Continue the first `in progress` step; otherwise take the first `open` step.
 Do only that step.** Each step's

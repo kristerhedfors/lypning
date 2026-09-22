@@ -41,9 +41,10 @@ Two further runs failed before spending (`35749197934`, `35758545464`). What
 remains before a GPU is booked is in the independent review,
 [`reviews/2026-09-22-claude-step2-s4-review.md`](reviews/2026-09-22-claude-step2-s4-review.md)
 (**revise, prepare**), and in `PLAN.md` Step 4: a coverage-only grade of
-`35767396604`, seed 1111's kernel read, and operator decisions on a full-split
-target rung — arm A now needs verified targets on ≥ 1,000 of the 1,355 train
-cases — and on evaluation draws. Bundles must be re-prepared before arm A's
+`35767396604` and the floor read on it, the draw-coupling and provider-seed
+reads, and operator decisions on a full-split target rung — arm A now needs
+verified targets on ≥ 1,000 of the 1,355 train cases — and on the
+dev-selection draws. Bundles must be re-prepared before arm A's
 first seed (`verifier_sha256` and `code_sha256` changed). The text below is
 the morning's free-first record, kept as history.
 

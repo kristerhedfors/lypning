@@ -18,8 +18,9 @@ Start at [`PLAN.md`](PLAN.md) and the independent review
 Step 2's Cerebras smoke and 192-case target rung have run (runs and costs in
 `PLAN.md` Step 2); the target rung `35767396604` is graded once, coverage-only,
 after the S4 refactor merges. The review's verdict is **revise (prepare)**: no
-GPU job until that grade, seed 1111's kernel read, and the operator's decisions
-on a full-split target rung and on evaluation draws. The section below is the
+GPU job until that grade and the floor read on it, the draw-coupling and
+provider-seed reads, and the operator's decisions on a full-split target rung
+and on the dev-selection draws. The section below is the
 morning's assignment, kept as history.
 
 ## Next session — 2026-09-22: follow `PLAN.md`

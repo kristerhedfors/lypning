@@ -35,9 +35,10 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
   target cases, which no existing rung reaches. `QWEN_REV` is pinned in
   every round-02 workflow and the grader.
 - The torch-reference gated-delta kernel is enforced before the weight pull,
-  and the bound kernel is recorded. LoRA init is reseeded per seed. SFT
-  families are drawn without replacement.
-- Arm C defaults change to 4 prompts × 8 generations and LoRA LR 1e-5.
+  and the bound kernel is recorded. LoRA init is reseeded per seed. SFT rows
+  are drawn without replacement within each family.
+- Arm C's recipe is 4 prompts × 8 generations and LoRA LR 1e-5; the launcher
+  keeps 4 generations so the probe stays comparable with seed 1111's.
   No-signal groups are logged as a fraction, never an abort.
 - `verifier_sha256` now covers the sandbox runner and container worker, so
   bundles must be re-prepared. The legacy LoRA runner, `cheatscan.py` and
