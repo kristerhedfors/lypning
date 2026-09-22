@@ -360,3 +360,73 @@ def test_a_control_collapse_still_vetoes_a_coverage_gain():
     gate.observe(25, dict(candidate, correct=baseline["correct"]))
     assert gate.best_step == 0
     assert gate.report()["observed"][0]["rejected_for"] == ["retention"]
+
+
+def test_the_paired_error_is_the_noise_of_the_delta_not_of_either_arm():
+    """Pairing, pinned without a simulation. Cases that differ wildly from one
+    another but identically in both arms carry between-case spread into each
+    arm's own error and none into the delta's: an evaluation paired with
+    itself has a paired error of exactly zero, where two independent arms'
+    errors would add in quadrature."""
+    split = {"a": [(4, 4, 4), (4, 0, 0)] * 3, "b": [(4, 4, 2), (4, 1, 0)] * 3}
+    base = summarize(records_of(split))["by_population"]["coverage"]
+    assert macro_standard_error(base) > 0.1
+    assert paired_standard_error(base, base) == 0.0
+    one_more = dict(split, a=[(4, 4, 4), (4, 1, 1)] + split["a"][2:])
+    candidate = summarize(records_of(one_more))["by_population"]["coverage"]
+    unpaired = math.hypot(macro_standard_error(base), macro_standard_error(candidate))
+    assert 0.0 < paired_standard_error(base, candidate) < unpaired / 4
+
+
+def coupled_admission_rate(lift_native, kappa, trials, seed=9):
+    """Base and candidate drawn from the SAME uniforms, case by case and draw by draw."""
+    rng = random.Random(seed)
+    admitted = 0
+    for _ in range(trials):
+        base, candidate = {}, {}
+        for f, latents in dev_cases(rng, kappa).items():
+            lift = 0.0 if f in CONTROL else lift_native
+            rows_b, rows_c = [], []
+            for pc, share in latents:
+                pn = pc * share
+                pn_c = min(pc, pn + lift)
+                cb = nb = nc = 0
+                for _ in range(K):
+                    u, v = rng.random(), rng.random()
+                    if u < pc:
+                        cb += 1
+                        nb += v < share
+                        nc += v < (pn_c / pc)
+                rows_b.append((K, cb, nb))
+                rows_c.append((K, cb, nc))
+            base[f], candidate[f] = rows_b, rows_c
+        gate = CheckpointGate(baseline=metrics_of(base))
+        gate.observe(25, metrics_of(candidate))
+        admitted += gate.best_step == 25
+    return admitted / trials
+
+
+def test_draws_coupled_by_a_shared_sampling_seed_are_what_pairing_buys():
+    """The simulation above draws base and candidate independently. Production
+    does not: `verified_evaluation.chunk_seed` depends on the run seed and the
+    chunk's case IDs and NOT on the step, so step 0 and every checkpoint sample
+    under the same seeds, and a checkpoint that barely moved the policy mostly
+    reproduces base's draws. That coupling is what the paired error exploits.
+
+    At full coupling (every uniform shared) the +10pp native arm at k=4 is
+    admitted 99.9% of the time at KAPPA 2 and 100% at KAPPA 20 (1,500 trials,
+    seed 9, measured 2026-09-22), against 35.8% / 62.9% uncoupled. How
+    coupled a trained LoRA's draws stay under a shared seed has not been
+    measured; per-(case, draw) agreement between step 0 and step N in seed
+    1111's `evaluations.jsonl` would bound it, and it decides whether k=4
+    lacks power at all. An unpaired error -- each arm's own, in quadrature --
+    would throw the coupling away, and this assertion with it.
+
+    Measured the same day and NOT asserted: with coupled draws and a
+    candidate whose case rates are exchangeable with base's but so close to
+    them that only a handful of cases differ, the null rises to about 11.5-12%
+    (8,000 trials, four seeds, per-case rate jitter SD 0.2-0.3pp, KAPPA 2). The
+    normal quantile over a standard error estimated from so few discordant
+    cases is optimistic; a t quantile or a sign-flip randomization test would
+    close it, and either is a change to the rule, not to a constant."""
+    assert coupled_admission_rate(0.10, 2.0, trials=300) >= 0.95
