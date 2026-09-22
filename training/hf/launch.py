@@ -100,7 +100,8 @@ def job_env(args):
                     "EVAL_SEQUENCES": str(args.eval_sequences), "SCORE_WORKERS": str(args.score_workers),
                     "NTX_POOL_SANDBOXES_PER_HOST": str(args.pool_sandboxes_per_host),
                     "NTX_POOL_MAX_HOSTS": str(args.pool_max_hosts),
-                    "BUNDLES_FROM": args.bundles_from or ""})
+                    "BUNDLES_FROM": args.bundles_from or "",
+                    "SFT_TARGET_RUN": args.sft_target_run or ""})
     return env
 
 
@@ -153,6 +154,8 @@ def main(argv=None):
                    help="pilot: verifier CPU-host cost ceiling (default 4, maximum 16)")
     p.add_argument("--bundles-from", default="",
                    help="pilot: reuse the pilot/ and eval2/ bundles under this directory of --work-repo")
+    p.add_argument("--sft-target-run", default="",
+                   help="pilot: private positive-control run whose grade/sft.jsonl supplies rejection targets")
     p.add_argument("--seed", type=int, default=DEFAULT_SEED, help="pilot: review, preparation and training seed")
     p.add_argument("--flavor", default="a10g-small")
     p.add_argument("--timeout", default="75m")
@@ -171,6 +174,9 @@ def main(argv=None):
     if args.stage in BANKED and not (args.bank_path or "").strip("/"):
         print("%s needs --bank-path: a directory in --work-repo holding eval2.jsonl, train.jsonl and evidence-*/"
               % args.stage, file=sys.stderr)
+        return 2
+    if args.sft_target_run and ("/" in args.sft_target_run or ".." in args.sft_target_run):
+        print("--sft-target-run must be one run id, not a path", file=sys.stderr)
         return 2
     if min(args.steps, args.grpo_steps, args.eval_draws, args.eval_sequences, args.score_workers,
            args.pool_sandboxes_per_host, args.pool_max_hosts) <= 0:
@@ -253,7 +259,8 @@ def main(argv=None):
                      "eval_draws": args.eval_draws, "eval_sequences": args.eval_sequences,
                      "score_workers": args.score_workers,
                      "pool_sandboxes_per_host": args.pool_sandboxes_per_host,
-                     "pool_max_hosts": args.pool_max_hosts, "seed": args.seed})
+                     "pool_max_hosts": args.pool_max_hosts, "seed": args.seed,
+                     "sft_target_run": args.sft_target_run or None})
     print(json.dumps(plan, indent=2))
     if not args.yes:
         print("dry run: pass --yes to submit", file=sys.stderr)

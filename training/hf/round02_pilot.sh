@@ -37,6 +37,7 @@ SCORE_WORKERS="${SCORE_WORKERS:-16}"      # concurrent verifier scorings (one po
 export NTX_POOL_SANDBOXES_PER_HOST="${NTX_POOL_SANDBOXES_PER_HOST:-4}"
 export NTX_POOL_MAX_HOSTS="${NTX_POOL_MAX_HOSTS:-4}"
 BUNDLES_FROM="${BUNDLES_FROM:-}"          # reuse the bundles an earlier job prepared, e.g. round-02/<job>
+SFT_TARGET_RUN="${SFT_TARGET_RUN:-}"      # graded positive-control run; empty retains authored references
 SEED="${SEED:-1111}"
 cd "$(dirname "$0")/../.."
 export PYTHONPATH=src:training LYPNING_CAPTURE=0 LYPNING_HARVEST=0 PIP_DISABLE_PIP_VERSION_CHECK=1
@@ -45,7 +46,7 @@ JOB="${JOB_ID:-local}"
 export NTX_POOL_TAG="$JOB"   # this run's sandbox pool is its own; see hf_sandbox_runner.pool_name
 STAGE=start
 mkdir -p "$ROUND"
-echo "== round-02 pilot on $(hostname) job=$JOB commit=$(git rev-parse HEAD) sft_steps=$STEPS grpo_steps=$GRPO_STEPS eval_draws=$EVAL_DRAWS eval_sequences=$EVAL_SEQUENCES score_workers=$SCORE_WORKERS pool_sandboxes_per_host=$NTX_POOL_SANDBOXES_PER_HOST pool_max_hosts=$NTX_POOL_MAX_HOSTS seed=$SEED bundles_from=${BUNDLES_FROM:-none}"
+echo "== round-02 pilot on $(hostname) job=$JOB commit=$(git rev-parse HEAD) sft_steps=$STEPS grpo_steps=$GRPO_STEPS eval_draws=$EVAL_DRAWS eval_sequences=$EVAL_SEQUENCES score_workers=$SCORE_WORKERS pool_sandboxes_per_host=$NTX_POOL_SANDBOXES_PER_HOST pool_max_hosts=$NTX_POOL_MAX_HOSTS seed=$SEED bundles_from=${BUNDLES_FROM:-none} sft_target_run=${SFT_TARGET_RUN:-authored-references}"
 echo "== python: $(python3 -c 'import sys; print(sys.version)')"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || echo "== no GPU visible"
 
@@ -84,7 +85,7 @@ finish() {
   [ "$code" -eq 0 ] || status=failed
   echo "== finish: status=$status stage=$STAGE exit=$code"
   if ! STATUS="$status" EXIT_CODE="$code" STAGE="$STAGE" STEPS="$STEPS" GRPO_STEPS="$GRPO_STEPS" EVAL_DRAWS="$EVAL_DRAWS" SEED="$SEED" \
-      EVAL_SEQUENCES="$EVAL_SEQUENCES" SCORE_WORKERS="$SCORE_WORKERS" BUNDLES_FROM="$BUNDLES_FROM" \
+      EVAL_SEQUENCES="$EVAL_SEQUENCES" SCORE_WORKERS="$SCORE_WORKERS" BUNDLES_FROM="$BUNDLES_FROM" SFT_TARGET_RUN="$SFT_TARGET_RUN" \
       NTX_POOL_SANDBOXES_PER_HOST="$NTX_POOL_SANDBOXES_PER_HOST" NTX_POOL_MAX_HOSTS="$NTX_POOL_MAX_HOSTS" \
       python3 - <<'PYEOF'
 import json, os, subprocess
@@ -108,6 +109,7 @@ manifest = {"job": job, "status": os.environ["STATUS"], "exit_code": int(os.envi
             "pool_sandboxes_per_host": int(os.environ["NTX_POOL_SANDBOXES_PER_HOST"]),
             "pool_max_hosts": int(os.environ["NTX_POOL_MAX_HOSTS"]),
             "bundles_from": os.environ.get("BUNDLES_FROM") or None,
+            "sft_target_run": os.environ.get("SFT_TARGET_RUN") or None,
             "pilot_bundle_digest": digest("work/round-02/pilot/bundle.json"),
             "eval2_bundle_digest": digest("work/round-02/eval2/bundle.json"),
             "grpo_skipped": os.path.exists("work/round-02/grpo-skipped.json")}
@@ -321,6 +323,42 @@ run python3 -m pipeline.cli training-prepare \
   --execution-revision "$SPACE_REV" --engine "$LYPNING_L_BIN" --seed "$SEED" --output "$ROUND/eval2" --score-workers "$SCORE_WORKERS"
 fi
 
+# 6b. Optional context-distillation targets. They came from the same private
+# artifact repository, were execution-graded before this job, and remain
+# private. The trainer rechecks their digest, bare prompts, populations and
+# engine lineage before loading model weights.
+SFT_TARGET_ARGS=()
+if [ -n "$SFT_TARGET_RUN" ]; then
+  STAGE=sft-targets
+  export SFT_TARGET_RUN
+  python3 - <<'PYEOF'
+import os, shutil
+from huggingface_hub import HfApi, snapshot_download
+repo = os.environ["WORK_REPO"]
+run = os.environ["SFT_TARGET_RUN"]
+if "/" in run or ".." in run:
+    raise SystemExit("SFT_TARGET_RUN must be one run id, not a path")
+api = HfApi()
+info = api.repo_info(repo, repo_type="dataset")
+if info.private is not True:
+    raise SystemExit("refusing to read SFT targets from a non-private repository")
+prefix = "positive-control/%s/grade" % run
+root = snapshot_download(repo, repo_type="dataset", revision=info.sha,
+                         allow_patterns=[prefix + "/sft.jsonl", prefix + "/sft-report.json"],
+                         local_dir="work/round-02/targets-download")
+source = os.path.join(root, prefix)
+target = "work/round-02/sft-targets"
+os.makedirs(target, exist_ok=False)
+for name in ("sft.jsonl", "sft-report.json"):
+    path = os.path.join(source, name)
+    if not os.path.isfile(path):
+        raise SystemExit("private target run is missing grade/" + name)
+    shutil.copy2(path, os.path.join(target, name))
+print("== downloaded private graded SFT targets for", run)
+PYEOF
+  SFT_TARGET_ARGS=(--sft-targets "$ROUND/sft-targets/sft.jsonl")
+fi
+
 # 7. The stages, in NEXT_ROUND.md's order. One set of common flags for every one.
 TV=(python3 training/gpu/train_verified.py)
 COMMON=(--isolated-worker --engine "$LYPNING_L_BIN" --revision "$QWEN_REV" --seed "$SEED"
@@ -332,14 +370,14 @@ GRPO_TRAIN=(--steps "$GRPO_STEPS" --eval-every 50 --rank 16)
 
 # 7a. Plan first (no GPU imports), then the unadapted dev control.
 STAGE=plan
-run "${TV[@]}" sft --plan --bundle "$PILOT" --output "$ROUND/sft-plan" "${COMMON[@]}" "${SFT_TRAIN[@]}" --batch-size 4
+run "${TV[@]}" sft --plan --bundle "$PILOT" --output "$ROUND/sft-plan" "${COMMON[@]}" "${SFT_TRAIN[@]}" "${SFT_TARGET_ARGS[@]}" --batch-size 4
 STAGE=base-dev
 run "${TV[@]}" eval --bundle "$PILOT" --output "$ROUND/base-dev" "${COMMON[@]}"
 checkpoint
 
 # 7b. Bounded SFT; best.json selects the adapter, step 0 included, never the last checkpoint.
 STAGE=sft
-run "${TV[@]}" sft --bundle "$PILOT" --output "$ROUND/sft" "${COMMON[@]}" "${SFT_TRAIN[@]}" --batch-size 4
+run "${TV[@]}" sft --bundle "$PILOT" --output "$ROUND/sft" "${COMMON[@]}" "${SFT_TRAIN[@]}" "${SFT_TARGET_ARGS[@]}" --batch-size 4
 SFT_STEP=$(python3 -c 'import json; print(json.load(open("work/round-02/sft/best.json"))["step"])')
 SFT_ADAPTER="$ROUND/sft/adapter-$SFT_STEP"
 echo "== sft selected step $SFT_STEP: $SFT_ADAPTER"

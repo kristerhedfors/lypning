@@ -23,6 +23,10 @@ on:
         description: "type SUBMIT to actually bill a GPU job"
         default: ""
         type: string
+      target_run:
+        description: "graded positive-control run id supplying private rejection targets"
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -84,6 +88,7 @@ env:
   # second stage, after the pilot bundle was already built.
   PILOT_SCORERS: "48"
   PILOT_POOL_HOSTS: "16"
+  SFT_TARGET_RUN: ${{ github.event.inputs.target_run || '' }}
 
 jobs:
   preflight:
@@ -221,11 +226,21 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          python .github/scripts/token_floor.py \
-            --hub-bank "${BANK_PATH}" \
+          if [ -z "${SFT_TARGET_RUN}" ]; then
+            echo "pilot submit requires target_run from a graded positive control" >&2
+            exit 1
+          fi
+          python .github/scripts/s4_target_floor.py \
+            --target-run "${SFT_TARGET_RUN}" \
+            --bank-path "${BANK_PATH}" \
             --revision "${{ needs.preflight.outputs.qwen_rev }}" \
             --steps "${PILOT_STEPS}" \
-            --require-clears
+            --out "$RUNNER_TEMP/s4-target-floor.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s4-target-floor
+          path: ${{ runner.temp }}/s4-target-floor.json
+          if-no-files-found: error
 
   submit:
     name: submit the GPU job (BILLED)
@@ -260,6 +275,10 @@ jobs:
           # longer timeout, and it carries the k/seed/case/token floors.
           if [ "${{ github.event.inputs.stage }}" = "pilot" ] || \
              echo "${{ github.event.head_commit.message }}" | grep -q '\[submit-pilot\]'; then
+            if [ -z "${SFT_TARGET_RUN}" ]; then
+              echo "pilot submit requires target_run from a graded positive control" >&2
+              exit 1
+            fi
             python training/hf/launch.py pilot \
               --branch "${GITHUB_REF_NAME}" --commit "${GITHUB_SHA}" \
               --space "${{ needs.bootstrap.outputs.space_repo }}" \
@@ -268,6 +287,7 @@ jobs:
               --work-repo "${{ needs.bootstrap.outputs.owner }}/${WORK_REPO_NAME}" \
               --bank-path "${BANK_PATH}" --seed 1111 --eval-draws 16 \
               --steps "${PILOT_STEPS}" \
+              --sft-target-run "${SFT_TARGET_RUN}" \
               --score-workers "${PILOT_SCORERS}" --pool-max-hosts "${PILOT_POOL_HOSTS}" \
               --flavor "${PILOT_FLAVOR}" --timeout "${PILOT_TIMEOUT}" --yes --follow
           else

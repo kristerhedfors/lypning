@@ -16,6 +16,7 @@ See training/TRAINING.md for staged acceptance gates and held-out evaluation.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -27,11 +28,11 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pipeline.jsonio import append_jsonl, sha256_of, write_json
+from pipeline.jsonio import append_jsonl, read_jsonl, sha256_of, write_json
 from pipeline.training_metrics import BENCHMARK_MIN_FAMILY_CASES, CheckpointGate
 from pipeline.evaluation_reuse import fresh_lora_is_noop, reuse_evaluation
 from pipeline.training import (ISOLATED_KINDS, TrainingError, Verifier,
-    chat_prompt_token_ids, execution_runner, load_bundle, messages)
+    chat_prompt_token_ids, execution_runner, load_bundle, messages, program_from_completion)
 
 from pipeline.training_contract import (BASE_MODEL, CONTRACT_VERSION, MIN_SUPERVISED_TOKENS,
     MIN_TRAIN_CASES, PROTOCOL_EVAL_DRAWS, PROTOCOL_TRAIN_SEEDS,
@@ -45,6 +46,8 @@ def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("stage", choices=("sft", "probe", "grpo", "eval"))
     p.add_argument("--bundle", type=Path, required=True)
+    p.add_argument("--sft-targets", type=Path,
+                   help="SFT only: private, graded rejection targets (sft.jsonl); requires sibling sft-report.json")
     p.add_argument("--engine", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True, help="new directory, never overwrite")
     p.add_argument("--revision", required=True, help="immutable 40-character base-model Hub commit")
@@ -118,6 +121,8 @@ def preflight(args):
         raise TrainingError("GRPO uses --generations; --batch-size is SFT-only")
     if args.stage == "sft" and (args.adapter or args.from_base):
         raise TrainingError("SFT starts from the pinned base; adapters belong to GRPO/eval")
+    if args.sft_targets is not None and args.stage != "sft":
+        raise TrainingError("--sft-targets is only valid for SFT")
     if args.reuse_evaluation is not None and args.stage != "eval":
         raise TrainingError("--reuse-evaluation is only for standalone evaluation")
     if args.stage != "eval" and args.eval_split != "dev":
@@ -134,6 +139,7 @@ def preflight(args):
     if bundle.get("purpose") == "benchmark" and args.stage != "eval":
         raise TrainingError("a benchmark bundle is evaluated whole, never trained on; only stage eval accepts it")
     train_cases = [case for case in bundle.get("cases", []) if case.get("split") == "train"]
+    curriculum_cases, _, _ = sft_curriculum(args, bundle)
     if not args.smoke and args.stage in ("sft", "probe", "grpo"):
         if len(train_cases) < MIN_TRAIN_CASES:
             raise TrainingError("real adapter stages require at least %d train cases; got %d"
@@ -142,7 +148,7 @@ def preflight(args):
             raise TrainingError("training seed must be one of the pre-registered seeds: %s"
                                 % (", ".join(map(str, PROTOCOL_TRAIN_SEEDS))))
     if (not args.smoke and args.stage == "sft"
-            and args.steps * args.batch_size < len({case["family"] for case in train_cases})):
+            and args.steps * args.batch_size < len({case["family"] for case in curriculum_cases})):
         raise TrainingError("SFT schedule is shorter than one complete family cycle")
     planned = supervised_plan(args, bundle)
     if planned and planned["supervised_token_upper_bound"] < MIN_SUPERVISED_TOKENS:
@@ -190,6 +196,52 @@ def preflight(args):
     return bundle, adapter
 
 
+def load_sft_targets(path, bundle):
+    """Admit a private grader-produced target set without trusting its path."""
+    path = Path(path)
+    report_path = path.with_name("sft-report.json")
+    rows = read_jsonl(path)
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise TrainingError("SFT targets need a readable sibling sft-report.json") from exc
+    train = {c["case_id"]: c for c in bundle["cases"] if c["split"] == "train"}
+    if (not rows or report.get("schema") != 1 or report.get("sft_sha256") != sha256_of(rows)
+            or report.get("rows") != len(rows) or not report.get("run_id")
+            or (report.get("lineage") or {}).get("engine_sha256") != bundle["identity"]["sha256"]):
+        raise TrainingError("SFT target report, digest or engine lineage does not match the bundle")
+    cases, seen, populations = [], set(), set()
+    for row in rows:
+        case = train.get(row.get("case_id"))
+        source = row.get("source") or {}
+        content = ((row.get("messages") or [{}])[-1]).get("content")
+        program = program_from_completion(content)
+        digest = hashlib.sha256(program.encode("utf-8")).hexdigest() if program else None
+        if (case is None or row.get("messages", [])[:-1] != messages(case) or not program
+                or row.get("family") != case["family"] or row.get("population") != case["population"]
+                or source.get("run_id") != report["run_id"] or source.get("arm") != "subset-spec"
+                or source.get("program_sha256") != digest):
+            raise TrainingError("SFT target row is not a graded conditioned target for its bare train prompt")
+        key = (case["case_id"], digest)
+        if key in seen:
+            raise TrainingError("SFT targets repeat a program within one case")
+        seen.add(key)
+        populations.add(case["population"])
+        cases.append(case)
+    if populations != {"coverage", "fallback-control"}:
+        raise TrainingError("SFT targets need both coverage and fallback-control retention rows")
+    return cases, rows, report
+
+
+def sft_curriculum(args, bundle):
+    train_cases = [case for case in bundle.get("cases", []) if case.get("split") == "train"]
+    if args.stage != "sft":
+        return train_cases, [], None
+    if args.sft_targets is not None:
+        return load_sft_targets(args.sft_targets, bundle)
+    return train_cases, None, None
+
+
 def supervised_plan(args, bundle):
     """What the SFT schedule will expose, bounded above, with nothing downloaded.
 
@@ -213,14 +265,16 @@ def supervised_plan(args, bundle):
     """
     if args.stage != "sft" or args.smoke:
         return None
-    train_cases = [case for case in bundle.get("cases", []) if case.get("split") == "train"]
-    batches = sft_batches(train_cases, train_cases, schedule(args)["steps"],
+    train_cases, rows, _ = sft_curriculum(args, bundle)
+    scheduled_values = rows if rows is not None else train_cases
+    batches = sft_batches(train_cases, scheduled_values, schedule(args)["steps"],
                           args.batch_size, args.seed)
-    scheduled = [case for batch in batches for case in batch]
+    scheduled = [value for batch in batches for value in batch]
     return {"planned_exposures": len(scheduled),
             "supervised_token_upper_bound":
-                sum(len(("```python\n" + case["reference"].rstrip() + "\n```<|im_end|>")
-                        .encode("utf-8")) for case in scheduled)}
+                sum(len(((row["messages"][-1]["content"] if rows is not None else
+                          "```python\n" + row["reference"].rstrip() + "\n```") +
+                         "<|im_end|>").encode("utf-8")) for row in scheduled)}
 
 
 def schedule(args):
@@ -311,8 +365,11 @@ def run(args, bundle, adapter_info):
     planned_sft_batches = None
     planned_tokens = None
     if args.stage == "sft":
-        rows = [{"case_id": c["case_id"], "messages": messages(c) + [{"role": "assistant",
-                 "content": "```python\n" + c["reference"].rstrip() + "\n```"}]} for c in train_cases]
+        train_cases, rows, target_report = sft_curriculum(args, bundle)
+        if rows is None:
+            rows = [{"case_id": c["case_id"], "messages": messages(c) + [{"role": "assistant",
+                     "content": "```python\n" + c["reference"].rstrip() + "\n```"}]}
+                    for c in train_cases]
         examples, dropped = core.build_examples(tok, rows, args.max_seq)
         if dropped or not examples:
             raise TrainingError("SFT rows over token limit; do not silently change the curriculum")
@@ -373,6 +430,11 @@ def run(args, bundle, adapter_info):
                 "hardware": {"device": device, "dtype": str(dtype), "cuda": torch.version.cuda,
                     "gpu": torch.cuda.get_device_name() if device == "cuda" else None},
                 "code_sha256": source_identity(Path(__file__).resolve().parents[1]),
+                "sft_targets": ({"run_id": target_report["run_id"],
+                                 "sft_sha256": target_report["sft_sha256"],
+                                 "rows": target_report["rows"],
+                                 "lineage": target_report["lineage"]}
+                                if args.stage == "sft" and target_report else None),
                 "args": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
                 "versions": versions, "kernels": kernels}
     if adapter_info:

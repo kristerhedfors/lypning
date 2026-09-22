@@ -23,7 +23,7 @@ def _keys(rows):
 
 
 def build_targets(cases, completions, graded, *, samples, coverage_keep=4,
-                  control_keep=1, run_id=""):
+                  control_keep=1, run_id="", lineage=None):
     """Return ``(sft_rows, report)`` from a complete paired private run.
 
     Coverage cases contribute only correct-native conditioned programs.  The
@@ -95,6 +95,7 @@ def build_targets(cases, completions, graded, *, samples, coverage_keep=4,
     report = {
         "schema": 1,
         "run_id": run_id,
+        "lineage": dict(lineage or {}),
         "cases": len(cases),
         "samples_per_arm": samples,
         "coverage_keep": coverage_keep,
