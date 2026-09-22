@@ -79,8 +79,8 @@ class Budget:
 
 def request_order(cases, samples=SAMPLES):
     """Paired, interleaved arms; order is fixed before any model outcome exists."""
-    if samples != SAMPLES or not cases:
-        raise TrainingError('positive control requires cases and exactly sixteen draws')
+    if type(samples) is not int or not 1 <= samples <= SAMPLES or not cases:
+        raise TrainingError('positive control requires cases and one to sixteen draws')
     ids = [c['case_id'] for c in cases]
     if len(ids) != len(set(ids)) or any(c.get('split') != 'train' for c in cases):
         raise TrainingError('positive control requires unique train-only cases')
@@ -120,7 +120,7 @@ def validate_admission(admission, cases):
 
 
 def generate(cases, spec, backend, output, *, ceiling_usd, admission, workers=4,
-             max_seconds=3000, requests_per_minute=60):
+             max_seconds=3000, requests_per_minute=60, samples=SAMPLES):
     """Generate a reviewed shard; admission is supplied by the orchestrator.
 
     Completion completeness is separate from spend: hitting the cap or any
@@ -140,7 +140,7 @@ def generate(cases, spec, backend, output, *, ceiling_usd, admission, workers=4,
     validate_admission(admission, cases)
     # Materialize before creating output or making a call, so no late data
     # validation error can turn half a paid run into a malformed experiment.
-    requests = list(request_order(cases))
+    requests = list(request_order(cases, samples))
     output = Path(output)
     if output.exists():
         raise TrainingError('output exists; preserve partial work and choose a new directory')
@@ -149,7 +149,7 @@ def generate(cases, spec, backend, output, *, ceiling_usd, admission, workers=4,
     write_json(output / 'manifest.json', {
         'schema': 1, 'provider': backend.identity(), 'admission': admission,
         'case_set_sha256': sha256_of(cases), 'spec_sha256': hashlib.sha256(spec.encode()).hexdigest(),
-        'requests': len(requests), 'samples': SAMPLES, 'ceiling_usd': str(budget.ceiling),
+        'requests': len(requests), 'samples': samples, 'ceiling_usd': str(budget.ceiling),
         'dispatch_seconds': max_seconds, 'inflight_timeout_seconds': backend.timeout_s,
         'max_retries': 0, 'workers': workers,
         'sampling': {'temperature': .7, 'top_p': .8, 'max_tokens': MAX_TOKENS,

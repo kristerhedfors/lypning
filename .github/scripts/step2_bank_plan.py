@@ -30,7 +30,9 @@ def main():
     revision = api.model_info('Qwen/Qwen3.8-27B').sha
     out = Path(os.environ['RUNNER_TEMP']) / 'step2-plan.json'
     subprocess.run([sys.executable, '-m', 'pipeline.positive_control', str(root / 'train.jsonl'),
-                    '--revision', revision, '--out', str(out)], check=True)
+                    '--revision', revision, '--out', str(out),
+                    '--cases', os.environ.get('STEP2_CASES', '300'),
+                    '--samples', os.environ.get('STEP2_SAMPLES', '16')], check=True)
 
 
 

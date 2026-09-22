@@ -20,6 +20,7 @@ from .training_types import TrainingError
 MODEL = "qwen-3.8-27b"
 MODEL_REPO = "Qwen/Qwen3.8-27B"
 SAMPLES = 16
+CONFIRMATORY_CASES = 300
 MAX_TOKENS = 2048
 PRICE_IN = .99
 PRICE_OUT = 1.49
@@ -36,6 +37,44 @@ def population(rows, seed=1111):
     return [row for row in assigned if row["split"] == "train"]
 
 
+def stratified_population(cases, target=CONFIRMATORY_CASES, seed=1111):
+    """Deterministically retain every family, then fill them evenly.
+
+    The family macro gives every family one vote.  A proportional sample would
+    spend most of the control on the largest families while adding little
+    precision to the endpoint, so selection proceeds in family-balanced rounds.
+    Case ids and family names stay private; only the selected-set hash is public.
+    """
+    if type(target) is not int or target <= 0 or target > len(cases):
+        raise TrainingError("positive-control case target must be within the train population")
+    grouped = {}
+    for case in cases:
+        if case.get("split") != "train":
+            raise TrainingError("positive-control selection requires train-only cases")
+        grouped.setdefault(case["family"], []).append(case)
+    if target < len(grouped):
+        raise TrainingError("case target cannot retain every train family")
+    order = lambda value: sha256_of([seed, value])
+    families = sorted(grouped, key=order)
+    queues = {family: sorted(grouped[family], key=lambda c: order(c["case_id"]))
+              for family in families}
+    selected = []
+    depth = 0
+    while len(selected) < target:
+        added = False
+        for family in families:
+            queue = queues[family]
+            if depth < len(queue):
+                selected.append(queue[depth])
+                added = True
+                if len(selected) == target:
+                    break
+        if not added:
+            raise TrainingError("case target exceeds available train cases")
+        depth += 1
+    return selected
+
+
 def arm_messages(case, spec=None):
     result = messages(case)
     if spec:
@@ -43,18 +82,19 @@ def arm_messages(case, spec=None):
     return result
 
 
-def plan(rows, spec, token_ids, *, seed=1111):
+def plan(rows, spec, token_ids, *, seed=1111, target_cases=CONFIRMATORY_CASES,
+         samples=SAMPLES):
     if not isinstance(spec, str) or not spec.strip():
         raise TrainingError("subset spec must be nonempty")
-    cases = population(rows, seed)
+    cases = stratified_population(population(rows, seed), target_cases, seed)
     arms = {}
     for name, extra in (("bare", None), ("subset-spec", spec)):
         counts = [len(token_ids(arm_messages(c, extra))) for c in cases]
         if max(counts) + MAX_TOKENS > 32768:
             raise TrainingError("a prompt exceeds the declared 32768-token planning window")
-        input_total = sum(counts) * SAMPLES
-        output_max = len(cases) * SAMPLES * MAX_TOKENS
-        arms[name] = {"calls": len(cases) * SAMPLES, "input_tokens": input_total,
+        input_total = sum(counts) * samples
+        output_max = len(cases) * samples * MAX_TOKENS
+        arms[name] = {"calls": len(cases) * samples, "input_tokens": input_total,
                       "max_input_tokens": max(counts), "output_token_allowance": output_max,
                       "cost_at_output_allowance_usd": round((input_total * PRICE_IN + output_max * PRICE_OUT) / 1e6, 4)}
     input_total = sum(a["input_tokens"] for a in arms.values())
@@ -71,7 +111,7 @@ def plan(rows, spec, token_ids, *, seed=1111):
         "bank_sha256": sha256_of(rows),
         "system_sha256": hashlib.sha256(messages(cases[0])[0]["content"].encode()).hexdigest(),
         "subset_spec_sha256": hashlib.sha256(spec.encode()).hexdigest(),
-        "samples_per_case_per_arm": SAMPLES, "arms": arms, "calls": calls,
+        "samples_per_case_per_arm": samples, "arms": arms, "calls": calls,
         "sampling": {"temperature": .7, "top_p": .8, "max_tokens": MAX_TOKENS,
                      "reasoning_effort": "none", "seed": seed,
                      "top_k": "omitted: hosted endpoint does not promise it"},
@@ -108,6 +148,8 @@ def main():
     ap.add_argument("bank", type=Path)
     ap.add_argument("--spec", type=Path, default=Path("training/prompts/subset-spec.md"))
     ap.add_argument("--revision", required=True)
+    ap.add_argument("--cases", type=int, default=CONFIRMATORY_CASES)
+    ap.add_argument("--samples", type=int, default=SAMPLES)
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args()
     import re
@@ -116,7 +158,8 @@ def main():
     from transformers import AutoTokenizer
     tok = AutoTokenizer.from_pretrained(MODEL_REPO, revision=args.revision, trust_remote_code=False)
     rows = [json.loads(line) for line in args.bank.read_text().splitlines() if line.strip()]
-    result = plan(rows, args.spec.read_text(), lambda msgs: chat_prompt_token_ids(tok, msgs))
+    result = plan(rows, args.spec.read_text(), lambda msgs: chat_prompt_token_ids(tok, msgs),
+                  target_cases=args.cases, samples=args.samples)
     result["tokenizer_revision"] = args.revision
     result["bank_file_sha256"] = hashlib.sha256(args.bank.read_bytes()).hexdigest()
     args.out.parent.mkdir(parents=True, exist_ok=True)

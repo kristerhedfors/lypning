@@ -15,7 +15,7 @@ import sys
 import subprocess
 import time
 from pipeline.container_runner import ContainerRunner
-from pipeline.positive_control import population
+from pipeline.positive_control import population, stratified_population
 from pipeline.jsonio import sha256_of
 from pipeline.training import Verifier, engine_identity
 from pipeline.training_data import validate_reference_scores
@@ -28,7 +28,7 @@ def worker_count(cpus, available_mb):
     return max(1, min(8, 2 * cpus, (available_mb - 2048) // 1152))
 
 
-def verify_cases(cases, check, workers, report, *, deadline_s=3000,
+def verify_cases(cases, check, workers, report, *, deadline_s=3600,
                  heartbeat_s=30):
     """Bound work in flight; report completion order, including slow cases.
 
@@ -79,7 +79,8 @@ def verify_cases(cases, check, workers, report, *, deadline_s=3000,
 
 def main():
     rows = [json.loads(line) for line in (Path(os.environ['RUNNER_TEMP']) / 'step2-bank' / 'train.jsonl').read_text().splitlines() if line.strip()]
-    cases = population(rows)
+    target = int(os.environ.get('STEP2_CASES', '300'))
+    cases = stratified_population(population(rows), target)
     binary = Path(os.environ['LYPNING_HOME']) / 'bin' / 'lypning-l'
     identity = engine_identity(binary)
     # The host and the pinned base can differ in CPython patch/build. Expected
@@ -105,7 +106,7 @@ def main():
     workers = worker_count(os.cpu_count() or 1, available_mb)
     print(json.dumps({'event': 'reference_start', 'cases': len(cases),
                       'tests': sum(len(c['tests']) for c in cases),
-                      'workers': workers, 'deadline_seconds': 3000}), flush=True)
+                      'workers': workers, 'deadline_seconds': 3600}), flush=True)
     def check(case):
         try:
             score = verifier.score(case, case['reference'])

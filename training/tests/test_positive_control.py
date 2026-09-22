@@ -34,7 +34,9 @@ def test_prompts_include_task_only_and_spec_changes_only_system():
 def test_costs_count_both_arms_and_all_sixteen_draws_without_private_content(monkeypatch):
     rows = starter_cases()[:2]
     monkeypatch.setattr(pc, 'population', lambda rows, seed: rows)
-    result = pc.plan(rows, 'Private spec', lambda msgs: [1] * (20 if 'Private spec' in msgs[0]['content'] else 10))
+    monkeypatch.setattr(pc, 'stratified_population', lambda cases, target, seed: cases)
+    result = pc.plan(rows, 'Private spec', lambda msgs: [1] * (20 if 'Private spec' in msgs[0]['content'] else 10),
+                     target_cases=2)
     assert result['calls'] == 64
     assert result['arms']['bare']['input_tokens'] == 320
     assert result['arms']['subset-spec']['input_tokens'] == 640
@@ -50,10 +52,23 @@ def test_costs_count_both_arms_and_all_sixteen_draws_without_private_content(mon
 
 def test_empty_spec_and_oversized_prompt_refused(monkeypatch):
     monkeypatch.setattr(pc, 'population', lambda rows, seed: starter_cases()[:1])
+    monkeypatch.setattr(pc, 'stratified_population', lambda cases, target, seed: cases)
     with pytest.raises(TrainingError, match='nonempty'):
         pc.plan([], '', lambda msgs: [1])
     with pytest.raises(TrainingError, match='planning window'):
-        pc.plan([], 'spec', lambda msgs: [1] * 32768)
+        pc.plan([], 'spec', lambda msgs: [1] * 32768, target_cases=1)
+
+
+def test_confirmatory_selection_is_deterministic_balanced_and_keeps_every_family():
+    cases = [dict(starter_cases()[0], case_id='%s-%d' % (family, i), family=family,
+                  split='train')
+             for family, count in [('a', 2), ('b', 5), ('c', 7)]
+             for i in range(count)]
+    selected = pc.stratified_population(cases, 9)
+    again = pc.stratified_population(list(reversed(cases)), 9)
+    assert [c['case_id'] for c in selected] == [c['case_id'] for c in again]
+    counts = {family: sum(c['family'] == family for c in selected) for family in 'abc'}
+    assert counts['a'] == 2 and sorted((counts['b'], counts['c'])) == [3, 4]
 
 
 def test_public_plan_never_exports_private_bank_identifiers():
@@ -114,6 +129,7 @@ def test_reference_admission_uses_container_runner_and_hides_failure_text(tmp_pa
     monkeypatch.setenv('CHECK_BASE_IMAGE', 'pinned-base')
     monkeypatch.setenv('CANDIDATE_IMAGE', 'sha256:' + '1' * 64)
     monkeypatch.setattr(check, 'population', lambda raw: raw)
+    monkeypatch.setattr(check, 'stratified_population', lambda raw, target: raw)
     monkeypatch.setattr(check, 'engine_identity', lambda binary: {'oracle': 'host Python', 'sha256': 'engine'})
     monkeypatch.setattr(check.subprocess, 'check_output', lambda command, **kw: 'pinned Python\n')
     boundary = object()
