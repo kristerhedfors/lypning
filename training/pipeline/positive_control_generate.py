@@ -35,9 +35,19 @@ class SpendLimit(TrainingError):
 
 
 def safe_error_kind(exc):
-    """Classify provider failures without persisting a response or prompt."""
+    """Classify provider failures without persisting a response or prompt.
+
+    The status is read from ``BackendError.status`` first, then searched for
+    anywhere in the message. With zero retries the backend raises
+    "giving up after 0 retries: HTTP 429: ..." -- an anchored match never saw
+    the status, so the rate limit #111 was written to diagnose read as a
+    transport failure. Only the three digits leave this function.
+    """
     if isinstance(exc, BackendError):
-        match = re.match(r'^HTTP (\d{3}):', str(exc))
+        status = getattr(exc, 'status', None)
+        if type(status) is int and 100 <= status <= 599:
+            return 'provider-http-%d' % status
+        match = re.search(r'\bHTTP (\d{3}):', str(exc))
         if match:
             return 'provider-http-' + match.group(1)
         if str(exc).startswith('giving up after'):

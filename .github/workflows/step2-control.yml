@@ -32,11 +32,13 @@ env:
   STEP2_SAMPLES: ${{ (inputs.rung == 'smoke' || inputs.rung == 'targets') && '4' || '16' }}
   STEP2_CEILING_USD: ${{ inputs.ceiling_usd }}
   STEP2_MAX_SECONDS: ${{ inputs.rung == 'smoke' && '3600' || '14400' }}
-  # The first 192-case target expansion stopped on one opaque provider error
-  # after 327 calls at 60 rpm. Keep the original rate for the already-proven
-  # smoke/confirmatory shapes; give target collection 25% sliding-window
-  # headroom and preserve zero retries.
-  STEP2_RPM: ${{ inputs.rung == 'targets' && '45' || '60' }}
+  # The first 192-case target expansion (35763603648) stopped on one opaque
+  # provider error after 327 calls at 60 rpm. Only the 512-call smoke has
+  # completed at 60 rpm; every longer rung, including the k=16 rungs that
+  # decide Step 2, gets 25% sliding-window headroom at 45 rpm and keeps zero
+  # retries. The confirmatory rung (9,600 calls) needs about 213 minutes of its
+  # 240-minute dispatch window at this rate.
+  STEP2_RPM: ${{ inputs.rung == 'smoke' && '60' || '45' }}
   STEP2_RUN_ID: ${{ inputs.rung }}-${{ github.sha }}-${{ github.run_id }}
 
 jobs:
