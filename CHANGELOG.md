@@ -15,7 +15,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 ## Unreleased
 
 **2026-09-22** — Refactor the S4 pipeline before arm A's first seed, and review Step 2
-(#TBD)
+([#112](https://github.com/kristerhedfors/lypning/pull/112))
 
 - Record Step 2's paid Cerebras rungs (PRs #103–#111), which Codex dispatched
   under the per-rung ceilings; the approval is not recorded in this tree.
