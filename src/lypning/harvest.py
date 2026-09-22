@@ -50,7 +50,21 @@ from .capture import looks_pythonish
 # stronger evidence than a command string that merely mentions python. The hook
 # is the PreToolUse-captured variant of the transcript class — the same command
 # string, seen earlier and more reliably — so it ranks above it.
-SOURCE_RANK = {"shim": 3, "hook": 2, "transcript": 1, "manual": 0, corpus.SEED: -1}
+#
+# `file` is a `.py` body joined to a later ``python PATH.py`` that the hook saw:
+# the run is observed and the text is the last write before it, which is as good
+# as a hook sighting and no better — nothing proves the file was not changed by
+# a route this module cannot see. `codex` is a command string out of a Codex
+# rollout, the same class of evidence as a transcript. Both are read as
+# `transcript` by a version that predates them, which is a downgrade and not a
+# loss (:meth:`Sighting.from_obj`).
+SOURCE_RANK = {"shim": 3, "hook": 2, "file": 2, "transcript": 1, "codex": 1,
+               "manual": 0, corpus.SEED: -1}
+
+#: The two outcome buckets a sighting can carry. A tool_result with
+#: ``is_error`` or an interrupted run is an error; a result without either is
+#: ok; no result at all is neither, and is the hole ``count - sum(outcomes)``.
+OUTCOMES = ("error", "ok")
 
 # Largest program kept. A multi-megabyte heredoc is a data blob, not a one-liner
 # the runtime has to be fast at.
@@ -81,6 +95,19 @@ class Sighting:
     is what stops two records with different models producing a record whose
     hole is negative.
 
+    ``outcomes`` is the same kind of subset histogram over :data:`OUTCOMES`:
+    how many of those occurrences the transcript says succeeded and how many it
+    says failed. A PreToolUse hook fires before the command runs, so the log
+    alone cannot know; the answer is the ``tool_result`` block the transcript
+    writes afterwards, joined on the same ``tool_use_id`` as the model. Written
+    only when non-empty, so every line committed before it keeps its bytes.
+
+    ``host`` is written only when EVERY occurrence came from one harness other
+    than Claude — ``codex``, ``opencode`` — and is absent otherwise, which reads
+    as "Claude, or a mix". A training export that must keep a harness's
+    programs apart (``docs/CAPTURE.md``) can then drop a record by one key
+    without ever mistaking a mixed record for a pure one.
+
     ``extra`` is the same forward-compatibility bucket :class:`corpus.Entry`
     carries, and it is not decoration. These files are committed and are read
     and REWRITTEN by whatever version of lypning a session happens to be
@@ -97,6 +124,8 @@ class Sighting:
     count: int = 1
     stdin_sample: Optional[str] = None
     models: corpus.Models = ()
+    outcomes: corpus.Models = ()
+    host: Optional[str] = None
     extra: Dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
 
     def to_obj(self) -> Dict[str, Any]:
@@ -119,6 +148,10 @@ class Sighting:
         # committed before this field existed must keep the bytes it has.
         if self.models:
             obj["models"] = corpus.models_to_obj(self.models)
+        if self.outcomes:
+            obj["outcomes"] = corpus.models_to_obj(self.outcomes)
+        if self.host:
+            obj["host"] = self.host
         for k, v in self.extra.items():
             if k not in obj:
                 obj[k] = v
@@ -140,6 +173,7 @@ class Sighting:
         first = obj.get("first_seen")
         stdin = obj.get("stdin_sample")
         session = obj.get("session")
+        host = obj.get("host")
         extra = {k: v for k, v in obj.items() if k not in _SIGHTING_KEYS}
         return cls(
             key=key,
@@ -151,11 +185,24 @@ class Sighting:
             count=count if isinstance(count, int) and not isinstance(count, bool) and count > 0 else 1,
             stdin_sample=stdin if isinstance(stdin, str) else None,
             models=corpus.models_from_obj(obj.get("models")),
+            outcomes=_outcomes_from_obj(obj.get("outcomes")),
+            host=host if isinstance(host, str) and host and host != "claude" else None,
             extra=extra,
         )
 
     def entry(self) -> corpus.Entry:
-        """As a corpus record. The key is already the corpus id."""
+        """As a corpus record. The key is already the corpus id.
+
+        ``outcomes`` and ``host`` travel as corpus EXTRAS rather than as new
+        :class:`corpus.Entry` fields: the corpus already carries unknown keys
+        through every merge untouched, and a field there would be a schema
+        change to a file every engine test reads, for two keys only the
+        training export consumes."""
+        extra = dict(self.extra)
+        if self.outcomes:
+            extra["outcomes"] = corpus.models_to_obj(self.outcomes)
+        if self.host:
+            extra["host"] = self.host
         return corpus.Entry(
             id=self.key,
             program=self.program,
@@ -165,8 +212,17 @@ class Sighting:
             count=self.count,
             stdin_sample=self.stdin_sample,
             models=self.models,
-            extra=dict(self.extra),
+            extra=extra,
         )
+
+
+def _outcomes_from_obj(value: Any) -> corpus.Models:
+    """An ``{"ok": n, "error": m}`` object, keeping only the two known buckets.
+
+    A bucket this version does not know is dropped rather than carried: the
+    histogram is merged with a per-key max and summed against ``count``, and a
+    misspelled key would count one occurrence twice under two names."""
+    return tuple((k, n) for k, n in corpus.models_from_obj(value) if k in OUTCOMES)
 
 
 #: Every key :meth:`Sighting.from_obj` consumes. Anything else on the line is an
@@ -174,7 +230,7 @@ class Sighting:
 #: :func:`known_keys` below, which is about corpus ids, not record fields.)
 _SIGHTING_KEYS = frozenset((
     "key", "id", "program", "argv_tail", "source", "session", "first_seen",
-    "count", "stdin_sample", "models",
+    "count", "stdin_sample", "models", "outcomes", "host",
 ))
 
 
@@ -542,6 +598,54 @@ _HEREDOC_DELIM = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _HEREDOC_OPEN = re.compile(r"(?:^|[^<])<<(-?)\s*(?:'([^']*)'|\"([^\"]*)\"|([A-Za-z_][A-Za-z0-9_]*))")
 _PY_DELIM = re.compile(r"(?i)^(?:PY|PYTHON|PYEOF|EOFPY)$")
 
+# A heredoc written INTO a `.py` file: `cat > x.py <<'EOF'`, `cat <<EOF > x.py`,
+# `tee x.py <<EOF`. The body is a whole Python source file whatever the
+# delimiter is called, and these are the longest programs a session writes —
+# over the capture log read on 2026-09-22, 264 such bodies were dropped because
+# the delimiter was EOF and the opening line named no interpreter.
+#
+# The target must be a literal path: a `$VAR/x.py` or a glob names a file this
+# module cannot know, and guessing would join a run to the wrong body. `>>` and
+# `tee -a` APPEND, so their body is a fragment of a file rather than a program;
+# they are recorded as edits (see :func:`_file_events`) and never extracted.
+# The lookbehind keeps `2>x.py` and `&>x.py` — stderr, not the heredoc — out.
+_PY_PATH = r"(['\"]?)([^\s'\"<>|;&$`*?(){}]+\.py)\2(?![\w.])"
+_REDIRECT_PY = re.compile(r"(?<![>&0-9])(>>?)(?![>&|])\s*" + _PY_PATH)
+_TEE_PY = re.compile(r"\btee\s+((?:-[A-Za-z]+\s+)*)" + _PY_PATH)
+# The command that consumes the heredoc must be the one doing the writing. In
+# `python3 - > out.py <<EOF` the body is fed to python and `out.py` receives
+# its OUTPUT; filing the body under that path would join the wrong text to a
+# later run of it.
+_WRITER = re.compile(r"(?:^|[\s;&|(])(?:cat|tee)(?=\s|$)")
+
+
+def py_write_target(header: str) -> Optional[Tuple[str, str]]:
+    """``("write" | "append", path)`` when a heredoc header writes a ``.py``.
+
+    None for everything else, including a header that runs an interpreter: the
+    body of ``python3 - > x.py <<EOF`` is a program, but ``x.py`` is not where
+    it went.
+    """
+    if not isinstance(header, str) or ".py" not in header or "<<" not in header:
+        return None
+    # Only the simple command the heredoc feeds: `cat > a.py <<EOF && python3
+    # a.py` writes with `cat` and runs with python, and the python word after
+    # the `&&` says nothing about where the body went.
+    at = header.index("<<")
+    seg = (re.split(r"&&|\|\||[;|(]", header[:at])[-1]
+           + re.split(r"&&|\|\||[;|)]", header[at:])[0])
+    if not _WRITER.search(seg):
+        return None
+    if any(_PY_WORD.match(w) for w in re.split(r"[\s;&|()]+", seg) if w):
+        return None
+    m = _TEE_PY.search(seg)
+    if m:
+        return ("append" if "a" in m.group(1).replace("-", "") else "write"), m.group(3)
+    m = _REDIRECT_PY.search(seg)
+    if m:
+        return ("append" if m.group(1) == ">>" else "write"), m.group(3)
+    return None
+
 
 def split_heredocs(command: str) -> Tuple[str, List[Tuple[str, str, str]]]:
     """Split heredoc bodies out, so a body is never tokenised as shell words.
@@ -549,6 +653,23 @@ def split_heredocs(command: str) -> Tuple[str, List[Tuple[str, str, str]]]:
     Returns the command with the bodies removed, plus ``(delim, body, header)``
     per heredoc — the header being the line that opened it, which is what says
     whether the body was fed to an interpreter.
+    """
+    return _split_heredocs(command, marked=False)
+
+
+#: What :func:`_split_heredocs` leaves where a heredoc opened, when asked to.
+#: NUL cannot occur in a command a shell accepted, so no real word matches it.
+_MARK = re.compile(r"^\x00(\d+)\x00$")
+
+
+def _split_heredocs(command: str, *, marked: bool) -> Tuple[str, List[Tuple[str, str, str]]]:
+    """:func:`split_heredocs`, optionally leaving an ordering mark behind.
+
+    ``marked`` puts a ``\\x00<k>\\x00`` word where heredoc ``k`` opened AND keeps
+    the rest of its opening line. Both are off for :func:`extract_with_tails`,
+    whose output this must not move; :func:`_file_events` needs them, because
+    ``cat > a.py <<EOF && python3 a.py`` writes and then runs on ONE line, and
+    only the order of the words says which came first.
     """
     lines = str(command).split("\n")
     heredocs: List[Tuple[str, str, str]] = []
@@ -576,7 +697,10 @@ def split_heredocs(command: str) -> Tuple[str, List[Tuple[str, str, str]]]:
             j += 1
         heredocs.append((delim, "\n".join(body), line))
         # m.start() can point one char BEFORE `<<` because of the leading group.
-        kept.append(line[: m.start() + (0 if m.group(0).startswith("<<") else 1)])
+        head = line[: m.start() + (0 if m.group(0).startswith("<<") else 1)]
+        if marked:
+            head += " \x00{0}\x00 {1}".format(len(heredocs) - 1, line[m.end():])
+        kept.append(head)
         i = j + 1  # skip body + terminator
     return "\n".join(kept), heredocs
 
@@ -707,9 +831,125 @@ def extract_with_tails(command: str) -> List[Tuple[str, List[str]]]:
         if not body.strip():
             continue
         if not looks_pythonish(header) and not _PY_DELIM.match(delim):
-            continue
+            target = py_write_target(header)
+            if target is None or target[0] != "write":
+                continue
         found.append((body, []))
     return found
+
+
+# --- files written, then run -------------------------------------------------
+#
+# `cat > /tmp/a.py <<'EOF' … EOF` in one Bash call and `python3 /tmp/a.py` in
+# the next is how a session runs anything longer than a one-liner, and neither
+# call alone says which program ran: the first holds text nobody has run yet,
+# the second runs a path. :func:`_file_events` reads both shapes out of one
+# command, in order, with each path resolved against the directory the command
+# ran in; the harvest joins each RUN to the latest earlier write of that path.
+#
+# Only a run creates a `file` occurrence. A `Write` tool call's content is not
+# in the log at all — the hook screens Bash — and a file that was written and
+# never run is a file, not a program anybody executed, so its body is read out
+# of the transcript only for a path a later command actually ran.
+
+# A redirection ends an argv tail: `python3 a.py < in.txt > out` has no argv.
+_REDIRECTION = re.compile(r"^(?:\d*[<>]|&>)")
+
+#: One ordered event out of a command: ``(kind, path, body, tail)``. ``kind`` is
+#: ``write`` (a heredoc body into ``path``), ``append`` (a fragment, which
+#: invalidates what was written before) or ``run`` (``tail`` is its argv).
+#: ``path`` is None when it could not be resolved, and such an event joins
+#: nothing.
+_FileEvent = Tuple[str, Optional[str], str, List[str]]
+
+
+def _resolve(cwd: Optional[str], path: str) -> Optional[str]:
+    """``path`` as an absolute, normalised path, or None when it cannot be.
+
+    None rather than a guess for anything relative to an unknown directory and
+    for ``~``: the join is keyed on this string, and a wrong key joins a run to
+    somebody else's file."""
+    if not path or path.startswith("~"):
+        return None
+    if os.path.isabs(path):
+        return os.path.normpath(path)
+    if not cwd or not os.path.isabs(cwd):
+        return None
+    return os.path.normpath(os.path.join(cwd, path))
+
+
+def _file_events(command: str, cwd: Optional[str] = None) -> List[_FileEvent]:
+    """Every ``.py`` write and run in one command, in the order they happen.
+
+    A run is ``python[3] [flags] PATH.py [argv]`` or ``uv run [python] PATH.py``
+    (and the other :data:`_RUNNERS`). ``cd`` is followed, including into a
+    ``( … )`` subshell and back out of it, because ``cd /tmp/x && python3
+    a.py`` is the ordinary way to run a file by a relative name; a ``cd`` to
+    anything but a literal path makes the directory unknown, and every relative
+    path after it resolves to None rather than to the wrong file.
+    """
+    if not isinstance(command, str) or ".py" not in command:
+        return []
+    stripped, heredocs = _split_heredocs(command, marked=True)
+    tokens = shell_tokens(stripped)
+    here: Optional[str] = cwd if isinstance(cwd, str) and cwd else None
+    stack: List[Optional[str]] = []
+    out: List[_FileEvent] = []
+    at_command = True
+    i = 0
+    while i < len(tokens):
+        t = tokens[i]
+        mark = _MARK.match(t)
+        if mark:
+            k = int(mark.group(1))
+            target = py_write_target(heredocs[k][2]) if k < len(heredocs) else None
+            if target is not None:
+                out.append((target[0], _resolve(here, target[1]),
+                            heredocs[k][1] if target[0] == "write" else "", []))
+            i += 1
+            continue
+        if t in _SEPARATORS:
+            if t == "(":
+                stack.append(here)
+            elif t == ")" and stack:
+                here = stack.pop()
+            at_command = True
+            i += 1
+            continue
+        if at_command and t == "cd":
+            arg = _at(tokens, i + 1)
+            if arg and arg not in _SEPARATORS and not arg.startswith("-") and "$" not in arg:
+                here = _resolve(here, arg)
+                i += 2
+            else:
+                here = None  # `cd`, `cd -`, `cd $X`: somewhere this cannot know
+                i += 1
+            at_command = False
+            continue
+        # `A=1 B=2 python3 …` is still the command position after the assignments.
+        at_command = at_command and "=" in t and not t.startswith("=")
+        j = -1
+        step = 1
+        if t in _RUNNERS and _at(tokens, i + 1) == "run":
+            j = i + 2
+            if _PY_WORD.match(_at(tokens, j)):
+                j += 1
+            step = j - i  # past `python` too, or `uv run python a.py` is two runs
+        elif _PY_WORD.match(t):
+            j = i + 1
+            while j < len(tokens) and tokens[j].startswith("-") and tokens[j] not in ("-c", "-m", "-"):
+                j += 1
+        script = _at(tokens, j) if j >= 0 else ""
+        if script.endswith(".py") and not _MARK.match(script):
+            tail: List[str] = []
+            k = j + 1
+            while (k < len(tokens) and tokens[k] not in _SEPARATORS
+                   and not _MARK.match(tokens[k]) and not _REDIRECTION.match(tokens[k])):
+                tail.append(tokens[k])
+                k += 1
+            out.append(("run", _resolve(here, script), "", tail))
+        i += step
+    return out
 
 
 def extract_from_command(command: str) -> List[str]:
@@ -818,9 +1058,39 @@ class _ModelIndex:
 
     by_id: Dict[str, str]
     timeline: List[Tuple[str, str]]  # (canonical timestamp, model), sorted
+    #: tool_use id -> :data:`_RESULT_ERROR` | :data:`_RESULT_INTERRUPTED` bits,
+    #: for every tool_result seen. Absent is "no result was written", which is
+    #: what a killed session leaves, and is not the same thing as ok.
+    results: Dict[str, int] = field(default_factory=dict)
+    #: ``(canonical ts, kind, .py path, transcript file, byte offset, block id,
+    #: model)`` per ``Write`` (kind ``write``) or ``Edit``/``MultiEdit`` (kind
+    #: ``edit``) of a ``.py`` file, sorted. The offset is where the tool_use's
+    #: line starts, so a body is read back only when a run asks for it.
+    writes: List[Tuple[str, str, str, str, int, str, str]] = field(default_factory=list)
 
     def for_id(self, tool_use_id: Optional[str]) -> Optional[str]:
         return self.by_id.get(tool_use_id) if tool_use_id else None
+
+    def outcome(self, tool_use_id: Optional[str]) -> Optional[Tuple[bool, bool]]:
+        """``(is_error, interrupted)`` for this id, or None if no result exists."""
+        code = self.results.get(tool_use_id) if tool_use_id else None
+        if code is None:
+            return None
+        return bool(code & _RESULT_ERROR), bool(code & _RESULT_INTERRUPTED)
+
+    def last_write(self, path: Optional[str], ts: Optional[str]):
+        """The latest write or edit of ``path`` at or before ``ts``, or None.
+
+        No stamp, no answer: without one there is no "before", and the latest
+        write overall may be one made after the run it would be joined to."""
+        key = _canonical_ts(ts)
+        if not path or key is None:
+            return None
+        best = None
+        for w in self.writes:
+            if w[2] == path and w[0] <= key:
+                best = w
+        return best
 
     def at(self, ts: Optional[str]) -> Optional[str]:
         """The model that was speaking at ``ts``, or None.
@@ -857,20 +1127,57 @@ def _model_of(message: Any) -> Optional[str]:
     return model
 
 
-def _scan_transcript(text: str) -> Tuple[Dict[str, str], List[Tuple[str, str]]]:
-    """What a slice of transcript says: ids to models, and timeline points.
+_RESULT_ERROR = 1
+_RESULT_INTERRUPTED = 2
+
+#: The tools whose ``file_path`` input says a ``.py`` file changed. ``Write``
+#: carries the whole body; the edits carry a diff this module does not apply,
+#: so an edit after a write makes the file's text UNKNOWN rather than joinable.
+_FILE_TOOLS = {"Write": "write", "Edit": "edit", "MultiEdit": "edit"}
+
+
+def _result_code(ev: Dict[str, Any], block: Dict[str, Any]) -> int:
+    """One ``tool_result`` block as the two bits a sighting's outcome needs.
+
+    ``is_error`` is on the block; ``interrupted`` is on the record's
+    ``toolUseResult`` (a Bash result carries it, other tools may not). A block
+    with no ``is_error`` key is a result that did not fail — the CLI omits the
+    key on some successful non-Bash results, and never on a failure."""
+    code = _RESULT_ERROR if block.get("is_error") is True else 0
+    tur = ev.get("toolUseResult")
+    if isinstance(tur, dict) and tur.get("interrupted") is True:
+        code |= _RESULT_INTERRUPTED
+    return code
+
+
+def _scan_transcript(text: str, base: int = 0):
+    """What a slice of transcript says: ids to models, timeline points, tool
+    results, and ``.py`` writes as ``(ts, kind, path, byte offset, id, model)``.
 
     A slice, not a file, because the caller reads only the bytes appended since
-    last time. It is line-oriented and order-free, which is what lets the answer
-    for a whole file be the union of the answers for its pieces.
+    last time; ``base`` is the byte offset the slice starts at, so a write's
+    offset is an offset into the FILE. It is line-oriented and order-free, which
+    is what lets the answer for a whole file be the union of the answers for its
+    pieces — a tool_result is filed under its id whether or not the tool_use it
+    answers was in this slice.
     """
     by_id: Dict[str, str] = {}
     timeline: List[Tuple[str, str]] = []
+    results: Dict[str, int] = {}
+    writes: List[Tuple[str, str, str, int, str, str]] = []
+    pos = 0               # character offset of this line in `text`
+    cursor, cursor_bytes = 0, 0
     for line in text.split("\n"):
-        # Every assistant record names a model and no other record does, so this
-        # substring test skips the bulk of a transcript before json.loads sees
-        # it. These files run to megabytes and most of that is user turns.
-        if '"model"' not in line:
+        start = pos
+        pos += len(line) + 1
+        # Every assistant record names a model, and every result is a user
+        # record holding a `tool_result` block; this substring test skips the
+        # rest before json.loads sees it. These files run to megabytes, and most
+        # of that is tool OUTPUT inside the result records — which is why the
+        # results are only parsed when the line says it holds one.
+        has_model = '"model"' in line
+        has_result = '"tool_result"' in line
+        if not has_model and not has_result:
             continue
         try:
             ev = json.loads(line)
@@ -879,22 +1186,65 @@ def _scan_transcript(text: str) -> Tuple[Dict[str, str], List[Tuple[str, str]]]:
         if not isinstance(ev, dict):
             continue
         message = ev.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if has_result and isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    rid = block.get("tool_use_id")
+                    if isinstance(rid, str) and rid:
+                        results[rid] = _result_code(ev, block)
         model = _model_of(message)
         if model is None:
             continue
         ts = _canonical_ts(ev.get("timestamp"))
         if ts:
             timeline.append((ts, model))
-        content = message.get("content")
         if not isinstance(content, list):
             continue
         for block in content:
             if not isinstance(block, dict) or block.get("type") != "tool_use":
                 continue
             block_id = block.get("id")
-            if isinstance(block_id, str) and block_id:
-                by_id[block_id] = model
-    return by_id, timeline
+            if not isinstance(block_id, str) or not block_id:
+                continue
+            by_id[block_id] = model
+            kind = _FILE_TOOLS.get(block.get("name"))
+            inp = block.get("input")
+            target = inp.get("file_path") if kind and isinstance(inp, dict) else None
+            if ts and isinstance(target, str) and target.endswith(".py") and os.path.isabs(target):
+                # Byte offset of this line, computed only here: encoding the
+                # characters since the last write is linear in the slice ONCE,
+                # where encoding every line would be a second pass over it.
+                cursor_bytes += len(text[cursor:start].encode("utf-8"))
+                cursor = start
+                writes.append((ts, kind, os.path.normpath(target), base + cursor_bytes,
+                               block_id, model))
+    return by_id, timeline, results, writes
+
+
+def _write_body(file: str, offset: int, block_id: str) -> Optional[str]:
+    """The ``content`` of the ``Write`` tool_use ``block_id``, read at ``offset``.
+
+    Verified rather than trusted: the line there must parse and hold that very
+    block, or the answer is None. An offset is exact for an append-only file,
+    but a slice decoded with replacement characters would put it a few bytes
+    off, and a miss here costs one sighting where a wrong line would cost a
+    wrong program."""
+    try:
+        with open(str(file), "rb") as fh:
+            fh.seek(offset)
+            line = fh.readline()
+        ev = json.loads(line.decode("utf-8", "replace"))
+    except (OSError, ValueError):
+        return None
+    message = ev.get("message") if isinstance(ev, dict) else None
+    content = message.get("content") if isinstance(message, dict) else None
+    for block in content if isinstance(content, list) else ():
+        if (isinstance(block, dict) and block.get("id") == block_id
+                and block.get("name") == "Write" and isinstance(block.get("input"), dict)):
+            body = block["input"].get("content")
+            return body if isinstance(body, str) else None
+    return None
 
 
 # --- the index cache ---------------------------------------------------------
@@ -914,8 +1264,10 @@ def _scan_transcript(text: str) -> Tuple[Dict[str, str], List[Tuple[str, str]]]:
 #: Bumped when the stored shape changes. An older or newer number is not
 #: migrated — it is ignored, and the transcripts are read again. 2 is where the
 #: digest moved from the head of the consumed prefix to its tail; see
-#: :func:`_tail_digest`.
-_CACHE_VERSION = 2
+#: :func:`_tail_digest`. 3 added ``results`` (tool outcomes) and ``writes``
+#: (``.py`` Write/Edit positions): a v2 file never read a result line, so its
+#: offsets would skip every outcome already written, and it has to go.
+_CACHE_VERSION = 3
 
 #: How many bytes of the consumed prefix are hashed to prove it is still the
 #: prefix that produced the stored offset. Enough to span several transcript
@@ -1025,6 +1377,22 @@ def _cache_entry_ok(entry: Any) -> bool:
         if not (isinstance(point, list) and len(point) == 2
                 and isinstance(point[0], str) and isinstance(point[1], str)):
             return False
+    # Optional, so an entry is judged on what it claims: a missing `results` is
+    # "none seen", not a reason to discard ids that are otherwise well-formed.
+    results = entry.get("results", {})
+    if not isinstance(results, dict):
+        return False
+    for key, value in results.items():
+        if not isinstance(key, str) or not isinstance(value, int) or isinstance(value, bool):
+            return False
+    writes = entry.get("writes", [])
+    if not isinstance(writes, list):
+        return False
+    for w in writes:
+        if not (isinstance(w, list) and len(w) == 6
+                and all(isinstance(w[i], str) for i in (0, 1, 2, 4, 5))
+                and isinstance(w[3], int) and not isinstance(w[3], bool) and w[3] >= 0):
+            return False
     return True
 
 
@@ -1097,20 +1465,26 @@ class _IndexCache:
             entry = None
         if entry is None:
             entry = {"offset": 0, "ino": st.st_ino, "dev": st.st_dev,
-                     "digest": "", "ids": {}, "timeline": []}
+                     "digest": "", "ids": {}, "timeline": [], "results": {}, "writes": []}
             self.files[key] = entry
             self.dirty = True
+        entry.setdefault("results", {})
+        entry.setdefault("writes", [])
         if st.st_size > entry["offset"]:
             text, offset = _read_after(path, entry["offset"])
             if offset != entry["offset"]:
-                ids, timeline = _scan_transcript(text)
+                ids, timeline, results, writes = _scan_transcript(text, entry["offset"])
                 entry["ids"].update(ids)
                 entry["timeline"].extend([t, m] for t, m in timeline)
                 entry["timeline"].sort()
+                entry["results"].update(results)
+                entry["writes"].extend(list(w) for w in writes)
                 entry["offset"] = offset
                 entry["digest"] = _tail_digest(path, offset)
                 self.dirty = True
-        return _ModelIndex(entry["ids"], [(t, m) for t, m in entry["timeline"]])
+        return _ModelIndex(
+            entry["ids"], [(t, m) for t, m in entry["timeline"]], entry["results"],
+            [(w[0], w[1], w[2], key, w[3], w[4], w[5]) for w in entry["writes"]])
 
     def save(self) -> None:
         """Persist, or fail to and say nothing.
@@ -1145,6 +1519,12 @@ class _IndexCache:
         Without this the file is a record of every session that ever ran here
         rather than a cache of the ones that still exist, and it grows without
         anything ever removing a line.
+
+        Pruning is safe only because the cache is not where an attribution
+        LIVES. Claude Code deletes transcripts on its own schedule, and when it
+        does, this entry goes and so does the only copy of which model issued
+        each id in it — which is why every id a harvest resolves is first
+        written to the attribution journal below, which is never pruned.
         """
         for key in list(self.files):
             if not os.path.exists(key):
@@ -1176,29 +1556,210 @@ def _model_index(transcript: Optional[str], cache: Optional[_IndexCache] = None)
         return _EMPTY_INDEX
     by_id: Dict[str, str] = {}
     timeline: List[Tuple[str, str]] = []
+    results: Dict[str, int] = {}
+    writes: List[Tuple[str, str, str, str, int, str, str]] = []
     for file in files:
         index = cache.index(file)
         by_id.update(index.by_id)  # ids are unique per file, so this cannot clash
         timeline.extend(index.timeline)
+        results.update(index.results)
+        writes.extend(index.writes)
     if own:
         cache.save()
     timeline.sort()
-    return _ModelIndex(by_id, timeline)
+    writes.sort()
+    return _ModelIndex(by_id, timeline, results, writes)
+
+
+# --- the attribution journal -------------------------------------------------
+#
+# The capture log stores `tool_use_id`, never the model, and the model lives
+# only in a transcript that Claude Code deletes after its cleanup period
+# (`cleanupPeriodDays`, 30 days when unset). The index cache above prunes the
+# entry of a transcript that has gone, so on the day a transcript expires every
+# id in it becomes unattributable — forever, and for every re-derivation of the
+# corpus or a training export after that day. The first captures here carry ids
+# from 2026-09-01; their transcripts are due to start going around 2026-10-01.
+#
+# So the join's ANSWER is kept, not its input: one line per id, appended the
+# first time a harvest resolves it, read before any transcript is. Append-only
+# and never pruned, because a fact about an id — which model issued it, whether
+# its command failed — does not stop being true when the file that said so is
+# deleted. It lives beside the log under `$LYPNING_HOME`, is never committed,
+# and holds no command text: ids, model names, two booleans, and for a record
+# that predates ids the sha256 of its command, which is how such a record is
+# found again (:func:`attribution_for`).
+#
+# Written only on a real harvest. `--dry-run` reads it and appends nothing
+# (invariant 7), exactly like the index cache.
+
+
+def attribution_path() -> Path:
+    """``$LYPNING_HOME/attribution.jsonl``. Redirected by ``LYPNING_HOME``."""
+    return paths.state_dir() / "attribution.jsonl"
+
+
+def _opt_bool(value: Any) -> Optional[bool]:
+    return value if isinstance(value, bool) else None
+
+
+class _Journal:
+    """The attribution journal, merged in memory, appended to on :meth:`save`.
+
+    A line may say less than the one before it and never contradicts it: the
+    MODEL of an id is taken from the first line that names one (a tool_use id
+    is issued by exactly one model), and each outcome bit from the last line
+    that states it (a result appears after the first harvest that saw the id).
+    Two harvests racing append the same facts twice, which this merge absorbs,
+    so concurrency needs no lock. A torn last line is skipped like any other.
+    """
+
+    def __init__(self, path: Optional[Path] = None) -> None:
+        self.path = attribution_path() if path is None else Path(path)
+        self.by_id: Dict[str, Dict[str, Any]] = {}
+        #: (session, sha256 of the command) -> set of models. For records that
+        #: predate ids; a key two models share answers nothing.
+        self.by_command: Dict[Tuple[str, str], Set[str]] = {}
+        self.pending: List[Dict[str, Any]] = []
+        for line in _read_text(self.path).split("\n"):
+            if not line.strip():
+                continue
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(obj, dict):
+                self._merge(obj)
+
+    def _merge(self, obj: Dict[str, Any]) -> None:
+        tid = obj.get("tool_use_id")
+        if not isinstance(tid, str) or not tid:
+            return
+        cur = self.by_id.setdefault(tid, {})
+        model = obj.get("model")
+        if isinstance(model, str) and model and "model" not in cur:
+            cur["model"] = model
+        for k in ("is_error", "interrupted"):
+            if _opt_bool(obj.get(k)) is not None:
+                cur[k] = obj[k]
+        session, digest = obj.get("session"), obj.get("command_sha256")
+        if isinstance(digest, str) and digest:
+            cur["_cmd"] = True
+            if isinstance(session, str) and session and "model" in cur:
+                self.by_command.setdefault((session, digest), set()).add(cur["model"])
+
+    def get(self, tool_use_id: Optional[str]) -> Dict[str, Any]:
+        return self.by_id.get(tool_use_id, {}) if tool_use_id else {}
+
+    def complete(self, tool_use_id: Optional[str]) -> bool:
+        """Does the journal already hold everything a transcript could add?"""
+        cur = self.get(tool_use_id)
+        return "model" in cur and "is_error" in cur
+
+    def note(self, tool_use_id: str, *, model: Optional[str], is_error: Optional[bool],
+             interrupted: Optional[bool], session: Optional[str] = None,
+             command_sha256: Optional[str] = None) -> None:
+        """Queue a line if it says something the journal does not already hold.
+
+        Which is what makes a harvest over an unchanged log append nothing: the
+        journal grows by what was LEARNED, not by how often anyone asked."""
+        cur = self.get(tool_use_id)
+        new = (model is not None and "model" not in cur) or any(
+            v is not None and cur.get(k) != v
+            for k, v in (("is_error", is_error), ("interrupted", interrupted)))
+        if command_sha256 and model is not None and not cur.get("_cmd"):
+            new = True
+        if not new:
+            return
+        line: Dict[str, Any] = {"tool_use_id": tool_use_id, "model": model,
+                                "is_error": is_error, "interrupted": interrupted}
+        if session:
+            line["session"] = session
+        if command_sha256:
+            line["command_sha256"] = command_sha256
+        self.pending.append(line)
+        self._merge(line)
+
+    def save(self) -> None:
+        """Append the queued lines in one write, or fail to and say nothing.
+
+        Silent for the same reason as :meth:`_IndexCache.save`: this runs in a
+        Stop hook, and a lost append costs a re-join next time — the
+        transcript is usually still there — never a session."""
+        if not self.pending:
+            return
+        body = "".join(json.dumps(p, separators=(",", ":"), sort_keys=True) + "\n"
+                       for p in self.pending)
+        try:
+            paths.ensure_dir(self.path.parent)
+            with open(str(self.path), "a", encoding="utf-8") as fh:
+                fh.write(body)
+            self.pending = []
+        except Exception:
+            pass
+
+
+def _command_sha256(command: str) -> str:
+    return hashlib.sha256(command.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def attribution_for(rec: Dict[str, Any], journal: Optional[_Journal] = None) -> Dict[str, Any]:
+    """What the journal knows about one raw log record: ``model``, ``is_error``,
+    ``interrupted``, and ``via`` (``tool_use_id`` or ``command``); ``{}`` if
+    nothing.
+
+    The public join for a consumer of the raw log, such as a training export,
+    that must still name a model after the transcript is gone. A record with an
+    id joins on it exactly. A record written before ids were captured joins on
+    its session and the sha256 of its exact command text, against lines that
+    :func:`journal_transcripts` wrote from the transcript's own Bash blocks —
+    exact text, never a timestamp, and a command that two models both issued in
+    one session answers nothing rather than either of them.
+    """
+    if not isinstance(rec, dict) or not _joinable(rec):
+        return {}
+    journal = journal if journal is not None else _Journal()
+    tid = rec.get("tool_use_id")
+    if isinstance(tid, str) and tid:
+        cur = journal.get(tid)
+        if cur.get("model") or "is_error" in cur:
+            out = {k: v for k, v in cur.items() if not k.startswith("_")}
+            out["via"] = "tool_use_id"
+            return out
+        return {}
+    session, command = rec.get("session"), rec.get("command")
+    if isinstance(session, str) and isinstance(command, str):
+        models = journal.by_command.get((session, _command_sha256(command)), set())
+        if len(models) == 1:
+            return {"model": next(iter(models)), "via": "command"}
+    return {}
 
 
 # --- inputs ------------------------------------------------------------------
 #
 # A raw occurrence is (occurrence key, program, argv_tail, source, session, ts,
-# model). The model is LAST because :func:`_aggregate` indexes this tuple
-# positionally and inserting a field renumbers every one of those reads.
+# model, outcome, host). The fields after the model were APPENDED, because
+# :func:`_aggregate` indexes this tuple positionally and inserting a field
+# renumbers every one of those reads. `outcome` is "ok", "error" or None;
+# `host` is the record's harness, None for Claude.
+#
 # The occurrence key is what makes a count stable: the log is append-only, so a
-# line number does not move, and a transcript's tool_use id never changes. The
-# key is namespaced by SESSION because the scope of a line number is one log in
-# one container — `#12` alone repeats everywhere. That namespacing is also what
-# lets a session's live log and its own published file be read in the same
-# harvest without counting one invocation twice.
+# line number does not move, and a transcript's tool_use id never changes. A
+# record with no id is keyed by SESSION and line, because the scope of a line
+# number is one log in one container — `#12` alone repeats everywhere. That
+# namespacing is also what lets a session's live log and its own published file
+# be read in the same harvest without counting one invocation twice.
+#
+# A Claude record WITH an id is keyed by the id alone: `hook:<tool_use_id>#k`.
+# One Bash call is one call however many hooks saw it, and two hooks do see it
+# once lypning is installed at both project and user scope — two different
+# command strings, both fired, two log lines for one call. Keyed by line, every
+# such program would count twice. Keyed by id, it counts once, and a sighting
+# already published under the old line keys keeps its count because the merges
+# take a max, not a sum.
 
-_Raw = Tuple[str, str, List[str], str, Optional[str], str, Optional[str]]
+_Raw = Tuple[str, str, List[str], str, Optional[str], str, Optional[str],
+             Optional[str], Optional[str]]
 
 
 def _read_text(path: Path) -> str:
@@ -1253,9 +1814,29 @@ def _joinable(rec: Dict[str, Any]) -> bool:
     return not (isinstance(host, str) and host and host != "claude")
 
 
-def _raws_from_log(text: str, *, persist: bool = True) -> List[_Raw]:
-    records = _decode_log(text)
+def _tool_use_id(rec: Dict[str, Any]) -> Optional[str]:
+    tid = rec.get("tool_use_id")
+    return tid if isinstance(tid, str) and tid else None
 
+
+def _outcome_word(is_error: Optional[bool], interrupted: Optional[bool]) -> Optional[str]:
+    """``error``, ``ok``, or None when nothing says how the command ended."""
+    if is_error is None and interrupted is None:
+        return None
+    return "error" if (is_error or interrupted) else "ok"
+
+
+def _raws_from_log(text: str, *, persist: bool = True) -> List[_Raw]:
+    return _raws_from_records(_decode_log(text), persist=persist)
+
+
+def _raws_from_records(records: Sequence[Tuple[int, Dict[str, Any]]], *,
+                       persist: bool = True) -> List[_Raw]:
+    """Occurrences out of ``(line, record)`` pairs — the log's, or a feed's.
+
+    ``persist`` gates BOTH writes this path can make, the index cache and the
+    attribution journal; everything else here only reads.
+    """
     # The transcripts are read ONCE per distinct path, before the loop that
     # needs them: a session of several hundred log lines must not re-index a
     # multi-megabyte transcript once per line. Only the hook feed records a
@@ -1266,25 +1847,34 @@ def _raws_from_log(text: str, *, persist: bool = True) -> List[_Raw]:
     #
     # And only the paths something actually asks about are read. This runs on
     # every Stop, and a session's transcript tree is tens of megabytes: indexing
-    # one for a log whose records carry no id and no shim invocation would cost
-    # most of a second per turn boundary and answer no question. A log written
-    # by a version that did not record `tool_use_id` therefore costs exactly
-    # what it cost before — not even the index cache is opened. The paths that
-    # ARE asked about are read incrementally, from where the last harvest
-    # stopped; see the cache above.
+    # one for a log whose records carry no id, no shim invocation and no run of
+    # a `.py` file would cost most of a second per turn boundary and answer no
+    # question. A log written by a version that did not record `tool_use_id`
+    # therefore costs exactly what it cost before — not even the index cache is
+    # opened. An id the attribution journal already answers in full asks
+    # nothing either, which is what lets an expired transcript cost nothing but
+    # a stat. The paths that ARE asked about are read incrementally, from where
+    # the last harvest stopped; see the cache above.
     #
     # And only a CLAUDE record is asked about at all. The log is multi-harness
-    # now: `host` is `"claude"`, `"opencode"` or `"openhands"`, and only the
-    # first has a transcript on disk that names a model. Neither of the others
-    # writes a `transcript` today, so this gate changes nothing measurable — it
-    # is here so that the day one of them does, its path is not walked as though
-    # it were a Claude transcript and its ids are not looked up in one. An
-    # absent `host` is treated as Claude because that is what every record
-    # written before #26 is, and what the shim still writes.
+    # now: `host` is `"claude"`, `"opencode"`, `"openhands"` or `"codex"`, and
+    # only the first has a transcript on disk that names a model. None of the
+    # others writes a `transcript` today, so this gate changes nothing
+    # measurable — it is here so that the day one of them does, its path is not
+    # walked as though it were a Claude transcript and its ids are not looked
+    # up in one. An absent `host` is treated as Claude because that is what
+    # every record written before #26 is, and what the shim still writes.
+    journal = _Journal() if any(_joinable(r) and _tool_use_id(r) for _, r in records) else None
     by_session: Dict[str, str] = {}
     needed: Set[str] = set()
     shim_sessions: Set[str] = set()
-    for _, rec in records:
+    events: Dict[int, List[_FileEvent]] = {}
+    for n, rec in records:
+        command = rec.get("command")
+        if rec.get("kind") == "bash_command" and isinstance(command, str):
+            found = _file_events(command, rec.get("cwd") if isinstance(rec.get("cwd"), str) else None)
+            if found:
+                events[n] = found
         if not _joinable(rec):
             continue
         session = rec.get("session")
@@ -1293,7 +1883,11 @@ def _raws_from_log(text: str, *, persist: bool = True) -> List[_Raw]:
         if isinstance(transcript, str) and transcript:
             if session:
                 by_session.setdefault(session, transcript)
-            if isinstance(rec.get("tool_use_id"), str) and rec.get("tool_use_id"):
+            tid = _tool_use_id(rec)
+            if tid and not (journal is not None and journal.complete(tid)):
+                needed.add(transcript)
+            # A run may join a `Write` that only the transcript holds.
+            if any(e[0] == "run" and e[1] for e in events.get(n, ())):
                 needed.add(transcript)
         elif session and rec.get("kind") == "python_invocation":
             shim_sessions.add(session)
@@ -1308,28 +1902,33 @@ def _raws_from_log(text: str, *, persist: bool = True) -> List[_Raw]:
         # reads and updates the same one.
         cache = _IndexCache()
         indexes = {t: _model_index(t, cache) for t in sorted(needed)}
-        # `persist` is False under --dry-run, and this is the only write on the
-        # path it reaches. Invariant 7 says --dry-run is real: it opens files
-        # and writes none. Loading the cache is still a read, so a dry run is
-        # as fast as a wet one and reports the same sightings; it just leaves
-        # the state dir exactly as it found it.
+        # `persist` is False under --dry-run. Invariant 7 says --dry-run is
+        # real: it opens files and writes none. Loading the cache is still a
+        # read, so a dry run is as fast as a wet one and reports the same
+        # sightings; it just leaves the state dir exactly as it found it.
         if persist:
             cache.save()
 
     out: List[_Raw] = []
+    # (session tag, path) -> (canonical ts, kind, body, model) of the latest
+    # heredoc write of that path seen so far in this log, in log order.
+    written: Dict[Tuple[str, str], Tuple[str, str, str, Optional[str]]] = {}
     for n, rec in records:
         session = rec.get("session")
         session = session if isinstance(session, str) and session else None
         ts = rec.get("ts") if isinstance(rec.get("ts"), str) else ""
         tag = session or "invocations"
         kind = rec.get("kind")
+        raw_host = rec.get("host")
+        host = raw_host if isinstance(raw_host, str) and raw_host and raw_host != "claude" else None
+        joinable = _joinable(rec)
         transcript = rec.get("transcript")
         if not isinstance(transcript, str) or not transcript:
             # The shim writes no transcript path; its session is the only way
             # back to one, and it only leads anywhere if a hook record in the
             # same log named it.
             transcript = by_session.get(session or "", "")
-        index = indexes.get(transcript, _EMPTY_INDEX) if _joinable(rec) else _EMPTY_INDEX
+        index = indexes.get(transcript, _EMPTY_INDEX) if joinable else _EMPTY_INDEX
         if kind == "python_invocation":
             program = rec.get("program")
             if not isinstance(program, str) or not program.strip():
@@ -1339,19 +1938,75 @@ def _raws_from_log(text: str, *, persist: bool = True) -> List[_Raw]:
             # No id exists for a nested spawn — the hook never saw it — so this
             # is the time join, and it is the weaker of the two.
             model = index.at(ts)
-            out.append(("shim:{0}#{1}".format(tag, n), program, tail, "shim", session, ts, model))
+            out.append(("shim:{0}#{1}".format(tag, n), program, tail, "shim", session, ts,
+                        model, None, host))
         elif kind == "bash_command" and isinstance(rec.get("command"), str):
-            tool_use_id = rec.get("tool_use_id")
-            # The exact join, and only the exact join: a log line written before
-            # the id was captured stays unattributed rather than being handed
-            # the model that happened to be speaking at the time.
-            model = index.for_id(tool_use_id if isinstance(tool_use_id, str) else None)
+            tid = _tool_use_id(rec) if joinable else None
+            model: Optional[str] = None
+            outcome: Optional[str] = None
+            source = "hook"
+            if host == "codex":
+                # A Codex rollout names its model on the turn that issued the
+                # call, and the feed carries it on the record. It is never looked
+                # up in, or written to, anything Claude's.
+                source = "codex"
+                call_id = rec.get("call_id")
+                base = ("codex:{0}".format(call_id) if isinstance(call_id, str) and call_id
+                        else "codex:{0}#{1}".format(tag, n))
+                model = rec.get("model") if isinstance(rec.get("model"), str) and rec.get("model") else None
+            elif tid:
+                base = "hook:{0}".format(tid)
+                # The journal first: it is what survives the transcript. The
+                # exact join, and only the exact join — a log line written
+                # before the id was captured stays unattributed rather than
+                # being handed the model that happened to be speaking.
+                known = journal.get(tid) if journal is not None else {}
+                model = known.get("model") or index.for_id(tid)
+                live = index.outcome(tid)
+                is_error = live[0] if live else _opt_bool(known.get("is_error"))
+                interrupted = live[1] if live else _opt_bool(known.get("interrupted"))
+                outcome = _outcome_word(is_error, interrupted)
+                if persist and journal is not None:
+                    journal.note(tid, model=model, is_error=is_error,
+                                 interrupted=interrupted, session=session)
+            else:
+                base = "hook:{0}#{1}".format(tag, n)
+                code = rec.get("exit_code")
+                if isinstance(code, int) and not isinstance(code, bool):
+                    outcome = "ok" if code == 0 else "error"  # OpenHands' PostToolUse
             # One command, one model: every program extracted from it was typed
             # by whoever typed the command.
             for idx, (program, tail) in enumerate(extract_with_tails(rec["command"])):
-                out.append(("hook:{0}#{1}#{2}".format(tag, n, idx), program, tail, "hook",
-                            session, ts, model))
+                out.append(("{0}#{1}".format(base, idx), program, tail, source,
+                            session, ts, model, outcome, host))
+            for ridx, (ev_kind, path, body, tail) in enumerate(events.get(n, ())):
+                if path is None:
+                    continue
+                if ev_kind != "run":
+                    written[(tag, path)] = (_canonical_ts(ts) or "", ev_kind, body, model)
+                    continue
+                # The latest write of this path before the run, from either
+                # side: a heredoc in this log, or a Write/Edit in the transcript.
+                # An edit or an append wins like any write and then joins
+                # nothing, because the text that ran is not a text anyone has.
+                heredoc = written.get((tag, path))
+                tool = index.last_write(path, ts)
+                if heredoc is not None and (tool is None or heredoc[0] >= tool[0]):
+                    wkind, text, wmodel = heredoc[1], heredoc[2], heredoc[3]
+                elif tool is not None:
+                    wkind, wmodel = tool[1], tool[6]
+                    text = (_write_body(tool[3], tool[4], tool[5]) or "") if wkind == "write" else ""
+                else:
+                    continue
+                if wkind != "write" or not text.strip():
+                    continue
+                # The model is the WRITER's — whoever wrote the program — and
+                # the run's only when the write's could not be resolved.
+                out.append(("file:{0}#r{1}".format(base, ridx), text, tail, "file",
+                            session, ts, wmodel or model, outcome, host))
         # {"kind":"exit"} carries no program — it exists for timing analysis.
+    if persist and journal is not None:
+        journal.save()
     return out
 
 
@@ -1379,11 +2034,16 @@ def _aggregate(raws: Iterable[_Raw]) -> List[Sighting]:
         source = max((r[3] for r in occ), key=lambda s: SOURCE_RANK.get(s, 0))
         # One vote per distinct occurrence, and none at all from an occurrence
         # whose model could not be resolved: this histogram is a subset of
-        # `count`, never a partition of it.
+        # `count`, never a partition of it. `outcomes` is the same kind of
+        # subset, over whether the command failed.
         models: Dict[str, int] = {}
+        outcomes: Dict[str, int] = {}
         for r in occ:
             if r[6]:
                 models[r[6]] = models.get(r[6], 0) + 1
+            if r[7] in OUTCOMES:
+                outcomes[r[7]] = outcomes.get(r[7], 0) + 1
+        hosts = {r[8] or "claude" for r in occ}
         out.append(Sighting(
             key=key,
             program=occ[0][1],
@@ -1393,6 +2053,8 @@ def _aggregate(raws: Iterable[_Raw]) -> List[Sighting]:
             first_seen=min(stamps) if stamps else "",
             count=len(occ),
             models=tuple(sorted(models.items())),
+            outcomes=tuple(sorted(outcomes.items())),
+            host=next(iter(hosts)) if len(hosts) == 1 and "claude" not in hosts else None,
         ))
     return out
 
@@ -1403,8 +2065,9 @@ def parse_log(path: Optional[Path] = None, *, persist: bool = True) -> List[Sigh
     One record per distinct program, sorted by key. A missing log is the normal
     state of a session that never ran python and yields nothing.
 
-    ``persist=False`` reads the transcript index cache but does not write it
-    back, which is what a caller that has promised to write nothing needs.
+    ``persist=False`` reads the transcript index cache and the attribution
+    journal but writes neither, which is what a caller that has promised to
+    write nothing needs.
     """
     target = Path(path) if path is not None else paths.log_path()
     return _aggregate(_raws_from_log(_read_text(target), persist=persist))
@@ -1450,29 +2113,31 @@ def transcript_root() -> Path:
     return Path(os.path.expanduser("~")) / ".claude" / "projects"
 
 
-def scan_transcripts(paths: Any = None) -> List[Sighting]:
-    """Bash ``tool_use`` inputs from Claude Code transcripts.
-
-    The optional third feed, and the only one that reaches backwards: a session
-    that ran before the shim was installed still contributes through its
-    transcript. Everything about it is best-effort — the root is often absent
-    entirely, and a harvest must not care.
-
-    ``paths`` may be a directory, a file, or an iterable of either. The key is
-    the ``tool_use`` id, which never changes, so a re-scan cannot double-count.
-    """
+def _roots(paths: Any) -> List[Path]:
     if paths is None:
-        roots = [transcript_root()]
-    elif isinstance(paths, (str, Path)):
-        roots = [Path(paths)]
-    else:
-        try:
-            roots = [Path(p) for p in paths]
-        except TypeError:
-            return []
-    raws: List[_Raw] = []
+        return [transcript_root()]
+    if isinstance(paths, (str, Path)):
+        return [Path(paths)]
+    try:
+        return [Path(p) for p in paths]
+    except TypeError:
+        return []
+
+
+def _bash_blocks(roots: Iterable[Path]):
+    """Every python-ish Bash ``tool_use`` block under these roots, one file at
+    a time: ``(file, session, ts, model, block_id, command, result code)``.
+
+    The result code is the ``tool_result`` for that block, from the same file
+    — a subagent's results are written beside its calls — or None when the
+    session ended before one was written. ``session`` is the record's own
+    ``sessionId``, which a subagent file shares with its parent, and which is
+    therefore the id the hook logged; the file stem is the fallback.
+    """
     for file in _transcript_files(roots):
-        session = file.name[: -len(".jsonl")] or None
+        stem = file.name[: -len(".jsonl")] or None
+        results: Dict[str, int] = {}
+        blocks: List[Tuple[Optional[str], str, Optional[str], str, str]] = []
         for line in _read_text(file).split("\n"):
             if not line.strip():
                 continue
@@ -1487,11 +2152,17 @@ def scan_transcripts(paths: Any = None) -> List[Sighting]:
             if not isinstance(content, list):
                 continue
             ts = ev.get("timestamp") if isinstance(ev.get("timestamp"), str) else ""
+            sid = ev.get("sessionId") if isinstance(ev.get("sessionId"), str) and ev.get("sessionId") else stem
             # No join at all on this feed: the record that holds the tool_use
             # block is the record that names the model that emitted it.
             model = _model_of(message)
             for block in content:
                 if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_result":
+                    rid = block.get("tool_use_id")
+                    if isinstance(rid, str) and rid:
+                        results[rid] = _result_code(ev, block)
                     continue
                 if block.get("type") != "tool_use" or block.get("name") != "Bash":
                     continue
@@ -1499,12 +2170,79 @@ def scan_transcripts(paths: Any = None) -> List[Sighting]:
                 if not isinstance(command, str) or not looks_pythonish(command):
                     continue
                 block_id = block.get("id") if isinstance(block.get("id"), str) else "noid"
-                for idx, (program, tail) in enumerate(extract_with_tails(command)):
-                    raws.append((
-                        "transcript:{0}#{1}#{2}".format(file.name, block_id, idx),
-                        program, tail, "transcript", session, ts, model,
-                    ))
+                blocks.append((sid, ts, model, block_id, command))
+        for sid, ts, model, block_id, command in blocks:
+            yield file, sid, ts, model, block_id, command, results.get(block_id)
+
+
+def scan_transcripts(paths: Any = None) -> List[Sighting]:
+    """Bash ``tool_use`` inputs from Claude Code transcripts.
+
+    The optional third feed, and the only one that reaches backwards: a session
+    that ran before the shim was installed still contributes through its
+    transcript. Everything about it is best-effort — the root is often absent
+    entirely, and a harvest must not care.
+
+    ``paths`` may be a directory, a file, or an iterable of either. The key is
+    the ``tool_use`` id, which never changes, so a re-scan cannot double-count.
+    """
+    raws: List[_Raw] = []
+    for file, _sid, ts, model, block_id, command, code in _bash_blocks(_roots(paths)):
+        session = file.name[: -len(".jsonl")] or None
+        outcome = None if code is None else _outcome_word(
+            bool(code & _RESULT_ERROR), bool(code & _RESULT_INTERRUPTED))
+        for idx, (program, tail) in enumerate(extract_with_tails(command)):
+            raws.append((
+                "transcript:{0}#{1}#{2}".format(file.name, block_id, idx),
+                program, tail, "transcript", session, ts, model, outcome, None,
+            ))
     return _aggregate(raws)
+
+
+def transcript_blocks(paths: Any = None) -> List[Dict[str, Any]]:
+    """The exact per-block attribution the transcripts hold, one dict per
+    python-ish Bash call: ``tool_use_id``, ``session``, ``ts``, ``model``,
+    ``command_sha256``, ``is_error``, ``interrupted``.
+
+    For the records the log holds WITHOUT an id — everything captured before
+    the hook wrote one — this is the only exact route to a model: the same
+    session and the same command text, joined by block rather than by time. No
+    command text is returned, only its digest, so the output can be kept
+    anywhere the journal can.
+    """
+    out: List[Dict[str, Any]] = []
+    for _file, sid, ts, model, block_id, command, code in _bash_blocks(_roots(paths)):
+        if block_id == "noid":
+            continue
+        out.append({
+            "tool_use_id": block_id, "session": sid, "ts": ts, "model": model,
+            "command_sha256": _command_sha256(command),
+            "is_error": None if code is None else bool(code & _RESULT_ERROR),
+            "interrupted": None if code is None else bool(code & _RESULT_INTERRUPTED),
+        })
+    return out
+
+
+def journal_transcripts(paths: Any = None, *, persist: bool = True) -> int:
+    """Copy every transcript block's attribution into the journal. Returns how
+    many lines that added (or would add, with ``persist=False``).
+
+    What ``lypning harvest --transcripts`` runs, and the one thing to run
+    before a transcript expires if the log holds records with no id: after
+    this, :func:`attribution_for` answers for them from the journal alone.
+    Idempotent — a second run over the same transcripts adds nothing.
+    """
+    journal = _Journal()
+    for b in transcript_blocks(paths):
+        if b["model"] is None and b["is_error"] is None:
+            continue
+        journal.note(b["tool_use_id"], model=b["model"], is_error=b["is_error"],
+                     interrupted=b["interrupted"], session=b["session"],
+                     command_sha256=b["command_sha256"])
+    added = len(journal.pending)
+    if persist:
+        journal.save()
+    return added
 
 
 def host_counts(log: Optional[Path] = None) -> Dict[str, Dict[str, int]]:
@@ -1606,7 +2344,8 @@ def read_sightings(path: Path) -> List[Sighting]:
     return out
 
 
-def _count_at_least_the_models(count: int, models: corpus.Models) -> int:
+def _count_at_least_the_models(count: int, models: corpus.Models,
+                               outcomes: corpus.Models = ()) -> int:
     """``count``, raised to whatever the model histogram can already prove.
 
     ``sum(models) <= count`` is the promise every record makes to its readers:
@@ -1629,8 +2368,12 @@ def _count_at_least_the_models(count: int, models: corpus.Models) -> int:
     Commutative: neither argument is privileged. And silent on every record
     captured before models existed — an empty histogram sums to zero and can
     raise nothing, so no committed line moves.
+
+    ``outcomes`` is held to the same promise for the same reason: it is a
+    per-key max over the same occurrences, and ``ok`` on one side and
+    ``error`` on the other are disjoint keys by construction.
     """
-    return max(count, sum(n for _, n in models))
+    return max(count, sum(n for _, n in models), sum(n for _, n in outcomes))
 
 
 def _combine(old: Sighting, new: Sighting) -> Sighting:
@@ -1653,14 +2396,19 @@ def _combine(old: Sighting, new: Sighting) -> Sighting:
     extra = dict(new.extra)
     extra.update(old.extra)  # the published record's own unknown keys win
     models = corpus.merge_models(old.models, new.models, max)
+    outcomes = corpus.merge_models(old.outcomes, new.outcomes, max)
     return replace(
         old,
         models=models,
+        outcomes=outcomes,
+        # Pure only while both sides are pure and agree: one Claude occurrence
+        # (host None) makes the record "Claude, or a mix".
+        host=old.host if old.host == new.host else None,
         extra=extra,
         source=old.source if SOURCE_RANK.get(old.source, 0) >= SOURCE_RANK.get(new.source, 0) else new.source,
         session=old.session or new.session,
         first_seen=min(stamps) if stamps else "",
-        count=_count_at_least_the_models(max(old.count, new.count), models),
+        count=_count_at_least_the_models(max(old.count, new.count), models, outcomes),
         argv_tail=old.argv_tail or new.argv_tail,
         stdin_sample=old.stdin_sample if old.stdin_sample is not None else new.stdin_sample,
     )
@@ -1719,8 +2467,67 @@ class Export:
         }
 
 
-def _export(project: Optional[Path] = None, *, log: Optional[Path] = None) -> Export:
+# --- the Codex feed ----------------------------------------------------------
+#
+# Codex CLI writes its own rollouts under `~/.codex/sessions`, and nothing of
+# ours runs inside it: no hook, no log line. `lypning.codex` reads those files
+# read-only and yields records in the capture log's own shape, plus `host`
+# ("codex"), `model` (from the turn that issued the call) and `call_id`. This
+# module only consumes them, and only when asked (`lypning harvest --codex`):
+# never from a Stop hook, because a Claude session's turn boundary is no reason
+# to walk another harness's history.
+#
+# The feed is optional in the same way an engine variant is (CLAUDE.md, "An
+# optional Rust variant can be absent"): a build without the module reports it
+# as unavailable, never as a feed that found nothing.
+
+
+class FeedUnavailable(RuntimeError):
+    """A feed was asked for and this build does not have it."""
+
+
+def _codex_module():
+    try:
+        from . import codex as feed  # type: ignore[attr-defined]
+    except ImportError:
+        return None
+    return feed if callable(getattr(feed, "collect", None)) else None
+
+
+def codex_available() -> bool:
+    return _codex_module() is not None
+
+
+def parse_codex(sessions_dir: Optional[Path] = None) -> List[Sighting]:
+    """Codex rollouts as sightings: source ``codex``, host ``codex``, the
+    rollout's own model, and one occurrence per ``call_id`` — so a rescan of
+    the same rollouts counts nothing twice.
+
+    ``host`` is FORCED to ``codex`` on every record, whatever the feed wrote. A
+    record without one would read as Claude (:func:`_joinable`), and a Codex
+    call must never be looked up in, or journaled as, a Claude attribution.
+    """
+    feed = _codex_module()
+    if feed is None:
+        raise FeedUnavailable("the Codex feed is not in this build (no lypning.codex)")
+    records: List[Tuple[int, Dict[str, Any]]] = []
+    for n, rec in enumerate(feed.collect(sessions_dir=sessions_dir), start=1):
+        if not isinstance(rec, dict):
+            continue
+        rec = dict(rec)
+        rec["host"] = "codex"
+        rec.setdefault("kind", "bash_command")
+        records.append((n, rec))
+    # persist=False: nothing here is joinable, so there is nothing to write,
+    # and saying so keeps the one path that reads another harness read-only.
+    return _aggregate(_raws_from_records(records, persist=False))
+
+
+def _export(project: Optional[Path] = None, *, log: Optional[Path] = None,
+            codex: bool = False) -> Export:
     gathered = parse_log(log)
+    if codex:
+        gathered = gathered + parse_codex()
     known = known_keys()
     root = paths.sightings_dir(project)
 
@@ -1805,7 +2612,8 @@ def export_sightings(project: Optional[Path] = None, *, quiet: bool = True) -> T
 
 
 def collect(project: Optional[Path] = None, *, log: Optional[Path] = None,
-            transcripts: bool = False, persist: bool = True) -> List[Sighting]:
+            transcripts: bool = False, persist: bool = True,
+            codex: bool = False) -> List[Sighting]:
     """Everything this checkout knows about, merged by key.
 
     Three inputs, in increasing order of durability: this container's live log,
@@ -1821,11 +2629,17 @@ def collect(project: Optional[Path] = None, *, log: Optional[Path] = None,
     ``persist=False`` makes the whole call read-only — see :func:`parse_log`.
     It is what ``lypning harvest --dry-run`` passes, and the only thing this
     path would otherwise write.
+
+    ``codex=True`` adds :func:`parse_codex`, and raises :class:`FeedUnavailable`
+    when this build has no Codex reader: asked for and absent is a hole to
+    report, not an empty feed.
     """
     merged: Dict[str, Sighting] = {}
     groups = [parse_log(log, persist=persist)]
     if transcripts:
         groups.append(scan_transcripts())
+    if codex:
+        groups.append(parse_codex())
     root = paths.sightings_dir(project)
     try:
         files = sorted(p for p in root.iterdir() if p.suffix == ".jsonl" and p.is_file())
@@ -1885,12 +2699,23 @@ def fold_into_corpus(sightings: Sequence[Sighting],
         # went out with sum(models) > count would tell its readers that its
         # unattributed hole was negative.
         models = corpus.merge_models(cur.models, entry.models, max)
+        # `outcomes` and `host` ride in the corpus record's extras, where the
+        # record already on disk would otherwise win outright: merged here by
+        # the same rules as :func:`_combine`, so a fold learns an outcome and
+        # a record seen from a second harness stops claiming to be pure.
+        extra = dict(entry.extra, **cur.extra)
+        outcomes = corpus.merge_models(_outcomes_from_obj(cur.extra.get("outcomes")),
+                                       _outcomes_from_obj(entry.extra.get("outcomes")), max)
+        if outcomes:
+            extra["outcomes"] = corpus.models_to_obj(outcomes)
+        if cur.extra.get("host") != entry.extra.get("host"):
+            extra.pop("host", None)
         by_id[entry.id] = replace(
             cur,
-            extra=dict(entry.extra, **cur.extra),
+            extra=extra,
             source=cur.source if SOURCE_RANK.get(cur.source, 0) >= SOURCE_RANK.get(entry.source, 0) else entry.source,
             first_seen=min(stamps) if stamps else "",
-            count=_count_at_least_the_models(max(cur.count, entry.count), models),
+            count=_count_at_least_the_models(max(cur.count, entry.count), models, outcomes),
             models=models,
             argv_tail=cur.argv_tail or entry.argv_tail,
             stdin_sample=cur.stdin_sample if cur.stdin_sample is not None else entry.stdin_sample,
@@ -1910,7 +2735,8 @@ def fold_into_corpus(sightings: Sequence[Sighting],
 
 
 def render(result: Export, *, log: Optional[Path] = None,
-           corpus_counts: Optional[Tuple[int, int]] = None) -> str:
+           corpus_counts: Optional[Tuple[int, int]] = None,
+           journaled: Optional[int] = None) -> str:
     """The harvest summary. ASCII only — this goes to a terminal whose encoding
     we do not control, and a capture report is not worth a UnicodeEncodeError.
     """
@@ -1929,6 +2755,8 @@ def render(result: Export, *, log: Optional[Path] = None,
             "{0} {1}".format(n, why) for why, n in sorted(result.skipped.items()))))
     if corpus_counts is not None:
         rows.append(("corpus", "{0} new, {1} total".format(corpus_counts[0], corpus_counts[1])))
+    if journaled is not None:
+        rows.append(("journal", "{0} line(s) added to {1}".format(journaled, attribution_path())))
     width = max(len(k) for k, _ in rows)
     out = ["harvest", "=" * 7]
     for k, v in rows:

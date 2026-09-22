@@ -622,6 +622,20 @@ def _append(path, text):
         fh.write(text)
 
 
+def _forget_the_journal():
+    """Delete the attribution journal, so the next harvest has only the cache.
+
+    The tests below are about the INDEX CACHE: whether it notices that a file
+    no longer holds the ids it cached. With the journal in place those ids stay
+    attributed after the file loses them — correctly, since a tool_use id is
+    issued by one model forever — and the cache's answer would never be seen.
+    """
+    try:
+        harvest.attribution_path().unlink()
+    except OSError:
+        pass
+
+
 def test_the_second_harvest_reads_only_the_bytes_that_were_appended(tmp_path, monkeypatch):
     main = _transcripts(tmp_path, [
         _assistant("2026-09-02T10:00:00.000Z", "claude-opus-5", "toolu_a",
@@ -633,7 +647,7 @@ def test_the_second_harvest_reads_only_the_bytes_that_were_appended(tmp_path, mo
     scanned = []
     real = harvest._scan_transcript
     monkeypatch.setattr(harvest, "_scan_transcript",
-                        lambda text: scanned.append(text) or real(text))
+                        lambda text, *rest: scanned.append(text) or real(text, *rest))
     _append(main, _assistant("2026-09-02T10:00:10.000Z", "claude-fable-5-1",
                              "toolu_b", "python3 -c 'print(2)'") + "\n")
     log = _write_log(tmp_path, [
@@ -685,6 +699,7 @@ def test_a_transcript_rewritten_in_place_is_indexed_again_rather_than_resumed(tm
         _assistant("2026-09-02T11:00:0%d.000Z" % i, "claude-fable-5-1", "toolu_b") + "\n"
         for i in range(4)), encoding="utf-8")
     # `toolu_a` is not in this file any more, so nothing can attribute it.
+    _forget_the_journal()
     assert harvest.parse_log(log)[0].models == ()
 
 
@@ -799,6 +814,7 @@ def test_a_truncated_transcript_is_re_read_rather_than_resumed(tmp_path):
     # Truncate in place: same path, same inode, and `toolu_b`/`toolu_c` are gone.
     with open(str(main), "r+b") as fh:
         fh.truncate(surviving)
+    _forget_the_journal()
     by_program = {s.program: s for s in harvest.parse_log(log)}
     assert by_program["print(1)"].models == (("claude-opus-5", 1),)
     assert by_program["print(2)"].models == ()
@@ -831,6 +847,7 @@ def test_a_shrunk_file_is_stale_even_when_the_stored_digest_says_nothing(tmp_pat
     with open(str(main), "w", encoding="utf-8") as fh:
         fh.write(_assistant("2026-09-02T11:00:00.000Z", "claude-fable-5-1", "toolu_z") + "\n")
     # `toolu_b` is not in this file any more. The cache still claims it.
+    _forget_the_journal()
     assert harvest.parse_log(log)[0].models == ()
 
 
@@ -1071,4 +1088,521 @@ def test_a_rewrite_that_keeps_the_opening_bytes_is_still_noticed(tmp_path):
     after = os.stat(str(main))
     assert after.st_ino == st.st_ino and after.st_size >= st.st_size
     assert main.read_text(encoding="utf-8").startswith(shared)
+    _forget_the_journal()
     assert harvest.parse_log(log)[0].models == ()
+
+
+# --- the attribution journal: what survives the transcript ---------------------
+#
+# Claude Code deletes transcripts on its own schedule, and the index cache
+# prunes what is gone. The journal is where a resolved id's model and outcome
+# are kept instead, append-only and never pruned.
+
+
+def _result(tool_use_id, is_error=False, interrupted=None, ts="2026-09-02T10:00:01.000Z"):
+    """A user record carrying one tool_result, in the CLI's own shape."""
+    rec = {"type": "user", "timestamp": ts, "sessionId": SESSION,
+           "message": {"role": "user", "content": [
+               {"type": "tool_result", "tool_use_id": tool_use_id, "content": "x",
+                "is_error": is_error}]}}
+    if interrupted is not None:
+        rec["toolUseResult"] = {"stdout": "", "stderr": "", "interrupted": interrupted}
+    return json.dumps(rec)
+
+
+def _journal_lines():
+    path = harvest.attribution_path()
+    if not path.exists():
+        return []
+    return [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+
+
+def test_the_journal_lives_under_the_state_dir():
+    # Redirected by LYPNING_HOME, like the log and the cache: a test, or a
+    # worktree with its own state, never appends to the developer's journal.
+    assert harvest.attribution_path() == paths.state_dir() / "attribution.jsonl"
+
+
+def test_a_model_survives_the_transcript_being_deleted(tmp_path):
+    """The deadline this exists for. Resolve an id, delete the transcript AND
+    the cache — what Claude Code's cleanup and the cache's own prune do between
+    them — and re-harvest: the model is still there, from the journal."""
+    main = _transcripts(tmp_path, [
+        _assistant("2026-09-02T10:00:00.000Z", "claude-opus-5", "toolu_a"),
+        _result("toolu_a"),
+    ])
+    log = _write_log(tmp_path, [_hook("python3 -c 'print(1)'", "toolu_a", main)])
+    assert harvest.parse_log(log)[0].models == (("claude-opus-5", 1),)
+
+    main.unlink()
+    harvest._index_cache_path().unlink()
+    s = harvest.parse_log(log)[0]
+    assert s.models == (("claude-opus-5", 1),)
+    assert s.outcomes == (("ok", 1),)
+    assert _journal_lines() == [{"tool_use_id": "toolu_a", "model": "claude-opus-5",
+                                 "is_error": False, "interrupted": False, "session": SESSION}]
+    # No command text, ever: the journal is not a second copy of the log.
+    assert "print" not in harvest.attribution_path().read_text(encoding="utf-8")
+
+
+def test_a_journaled_id_reads_no_transcript(tmp_path, monkeypatch):
+    # An id the journal answers in full asks the transcript nothing, which is
+    # what makes an expired transcript cost a stat rather than a re-read.
+    main = _transcripts(tmp_path, [
+        _assistant("2026-09-02T10:00:00.000Z", "claude-opus-5", "toolu_a"),
+        _result("toolu_a"),
+    ])
+    log = _write_log(tmp_path, [_hook("python3 -c 'print(1)'", "toolu_a", main)])
+    harvest.parse_log(log)
+    indexed = []
+    monkeypatch.setattr(harvest, "_model_index",
+                        lambda t, cache=None: indexed.append(t) or harvest._EMPTY_INDEX)
+    assert harvest.parse_log(log)[0].models == (("claude-opus-5", 1),)
+    assert indexed == []
+
+
+def test_a_second_harvest_appends_nothing_to_the_journal(tmp_path):
+    # It grows by what was learned, not by how often anyone asked: the Stop
+    # hook runs this at every turn boundary.
+    main = _transcripts(tmp_path, [
+        _assistant("2026-09-02T10:00:00.000Z", "claude-opus-5", "toolu_a"),
+    ])
+    log = _write_log(tmp_path, [_hook("python3 -c 'print(1)'", "toolu_a", main)])
+    harvest.parse_log(log)
+    first = harvest.attribution_path().read_bytes()
+    harvest.parse_log(log)
+    assert harvest.attribution_path().read_bytes() == first
+
+    # And an outcome that arrives later is one more line, not a rewrite.
+    _append(main, _result("toolu_a", is_error=True) + "\n")
+    assert harvest.parse_log(log)[0].outcomes == (("error", 1),)
+    lines = _journal_lines()
+    assert len(lines) == 2 and lines[1]["is_error"] is True
+    assert harvest.attribution_path().read_bytes().startswith(first)
+
+
+def test_a_torn_journal_line_is_skipped_and_the_rest_still_answers(tmp_path):
+    main = _transcripts(tmp_path, [
+        _assistant("2026-09-02T10:00:00.000Z", "claude-opus-5", "toolu_a"),
+        _result("toolu_a"),
+    ])
+    log = _write_log(tmp_path, [_hook("python3 -c 'print(1)'", "toolu_a", main)])
+    harvest.parse_log(log)
+    _append(harvest.attribution_path(), '{"tool_use_id": "toolu_z", "mod')
+    main.unlink()
+    assert harvest.parse_log(log)[0].models == (("claude-opus-5", 1),)
+
+
+def test_a_dry_run_leaves_the_journal_unchanged(tmp_path):
+    main = _transcripts(tmp_path, [
+        _assistant("2026-09-02T10:00:00.000Z", "claude-opus-5", "toolu_a"),
+        _result("toolu_a"),
+    ])
+    _log([_hook("python3 -c 'print(1)'", "toolu_a", main)])
+    dry = harvest.collect(persist=False)
+    assert [s.models for s in dry] == [(("claude-opus-5", 1),)]
+    assert not harvest.attribution_path().exists()
+
+    # Nor is an existing journal appended to, by a dry run that has something
+    # new to say.
+    harvest.collect()
+    before = harvest.attribution_path().read_bytes()
+    _append(main, _assistant("2026-09-02T10:00:05.000Z", "claude-fable-5-1", "toolu_b") + "\n")
+    _log([_hook("python3 -c 'print(1)'", "toolu_a", main),
+          _hook("python3 -c 'print(2)'", "toolu_b", main)])
+    harvest.collect(persist=False)
+    assert harvest.attribution_path().read_bytes() == before
+
+
+def test_the_cli_dry_run_leaves_the_journal_unchanged(tmp_path, monkeypatch, capsys):
+    from lypning import cli
+
+    main = _transcripts(tmp_path, [
+        _assistant("2026-09-02T10:00:00.000Z", "claude-opus-5", "toolu_a"),
+    ])
+    _log([_hook("python3 -c 'print(1)'", "toolu_a", main)])
+    monkeypatch.setenv("LYPNING_TRANSCRIPTS", str(main.parent))
+    assert cli.main(["harvest", "--dry-run", "--transcripts", "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["journal"]["would_add"] == 1
+    assert not harvest.attribution_path().exists()
+
+
+# --- outcomes -------------------------------------------------------------------
+
+
+def test_a_tool_result_with_is_error_counts_as_an_error(tmp_path):
+    main = _transcripts(tmp_path, [
+        _assistant("2026-09-02T10:00:00.000Z", "claude-opus-5", "toolu_a"),
+        _result("toolu_a", is_error=True),
+        _assistant("2026-09-02T10:00:02.000Z", "claude-opus-5", "toolu_b"),
+        _result("toolu_b", is_error=False),
+        _assistant("2026-09-02T10:00:04.000Z", "claude-opus-5", "toolu_c"),
+        _result("toolu_c", is_error=False, interrupted=True),
+        _assistant("2026-09-02T10:00:06.000Z", "claude-opus-5", "toolu_d"),  # no result
+    ])
+    log = _write_log(tmp_path, [_hook("python3 -c 'print(1)'", tid, main)
+                                for tid in ("toolu_a", "toolu_b", "toolu_c", "toolu_d")])
+    s = harvest.parse_log(log)[0]
+    assert s.count == 4
+    # Interrupted is an error; no result at all is the hole, not an ok.
+    assert s.outcomes == (("error", 2), ("ok", 1))
+    assert s.to_obj()["outcomes"] == {"error": 2, "ok": 1}
+
+
+def test_an_openhands_exit_code_is_an_outcome(tmp_path):
+    log = _write_log(tmp_path, [
+        {"kind": "bash_command", "session": "conv", "ts": "2026-09-02T10:00:00.000Z",
+         "host": "openhands", "command": "python3 -c 'print(9)'", "exit_code": 1},
+    ])
+    s = harvest.parse_log(log)[0]
+    assert s.outcomes == (("error", 1),)
+    assert s.host == "openhands" and s.to_obj()["host"] == "openhands"
+
+
+def test_old_sighting_files_still_load_and_keep_their_bytes(tmp_path):
+    # Every line committed before `outcomes` and `host` existed must round-trip
+    # byte for byte: the export rewrites these files at every turn boundary.
+    line = ('{"key":"py-000000000001","id":"py-000000000001","program":"print(1)",'
+            '"argv_tail":[],"source":"hook","session":"s","first_seen":"2026-09-01T00:00:00Z",'
+            '"count":3,"stdin_sample":null,"models":{"claude-opus-5":2}}\n')
+    path = tmp_path / "old.jsonl"
+    path.write_text(line, encoding="utf-8")
+    [s] = harvest.read_sightings(path)
+    assert s.outcomes == () and s.host is None
+    assert harvest.serialise([s]) == line
+
+
+def test_outcomes_merge_with_max_and_never_out_count_the_count():
+    a = harvest.Sighting(key="py-x", program="p", count=2, outcomes=(("ok", 2),))
+    b = harvest.Sighting(key="py-x", program="p", count=2, outcomes=(("error", 1),))
+    merged = harvest._combine(a, b)
+    assert merged.outcomes == (("error", 1), ("ok", 2))
+    assert merged.count == 3
+    assert harvest._combine(merged, merged) == merged
+    # An unknown bucket is dropped on read rather than counted under a name.
+    s = harvest.Sighting.from_obj({"program": "p", "outcomes": {"ok": 1, "weird": 4}})
+    assert s.outcomes == (("ok", 1),)
+
+
+def test_a_fold_merges_outcomes_and_host_through_the_corpus_extras(tmp_path):
+    target = tmp_path / "corpus.jsonl"
+    prog = "print('fold outcome fixture 4f2a')"
+    key = harvest.sighting_key(prog)
+    harvest.fold_into_corpus([harvest.Sighting(key=key, program=prog, count=1,
+                                               outcomes=(("ok", 1),), host="codex")], target)
+    [e] = corpus.load(target)
+    assert e.extra["outcomes"] == {"ok": 1} and e.extra["host"] == "codex"
+    harvest.fold_into_corpus([harvest.Sighting(key=key, program=prog, count=2,
+                                               outcomes=(("error", 2),))], target)
+    [e] = corpus.load(target)
+    assert e.extra["outcomes"] == {"error": 2, "ok": 1}
+    assert e.count == 3
+    assert "host" not in e.extra  # a Claude sighting made it a mix
+
+
+# --- records that predate tool_use_id: the per-block join ------------------------
+
+
+def test_a_record_without_an_id_joins_by_block_through_the_journal(tmp_path):
+    command = "python3 -c 'print(\"pre-id fixture\")'"
+    main = _transcripts(tmp_path, [
+        json.dumps({"type": "assistant", "timestamp": "2026-09-02T10:00:00.000Z",
+                    "sessionId": SESSION, "message": {"model": "claude-opus-5", "content": [
+                        {"type": "tool_use", "id": "toolu_old", "name": "Bash",
+                         "input": {"command": command}}]}}),
+        _result("toolu_old", is_error=True),
+    ])
+    assert harvest.transcript_blocks(main.parent) == [{
+        "tool_use_id": "toolu_old", "session": SESSION, "ts": "2026-09-02T10:00:00.000Z",
+        "model": "claude-opus-5", "command_sha256": harvest._command_sha256(command),
+        "is_error": True, "interrupted": False}]
+
+    assert harvest.journal_transcripts(main.parent, persist=False) == 1
+    assert not harvest.attribution_path().exists()
+    assert harvest.journal_transcripts(main.parent) == 1
+    assert harvest.journal_transcripts(main.parent) == 0  # idempotent
+    main.unlink()
+
+    rec = {"kind": "bash_command", "session": SESSION, "command": command,
+           "ts": "2026-09-02T10:00:00.500Z"}
+    assert harvest.attribution_for(rec) == {"model": "claude-opus-5", "via": "command"}
+    # Another session's identical command is another call.
+    assert harvest.attribution_for(dict(rec, session="other")) == {}
+    # A record with an id joins on the id.
+    got = harvest.attribution_for(dict(rec, tool_use_id="toolu_old"))
+    assert got["model"] == "claude-opus-5" and got["via"] == "tool_use_id"
+    # And never for a harness whose ids are not Claude's.
+    assert harvest.attribution_for(dict(rec, host="codex")) == {}
+
+
+def test_a_command_two_models_issued_in_one_session_answers_nothing(tmp_path):
+    command = "python3 -c 'print(7)'"
+    main = _transcripts(tmp_path, [
+        _assistant("2026-09-02T10:00:00.000Z", "claude-opus-5", "toolu_1", command),
+        _assistant("2026-09-02T10:00:09.000Z", "claude-fable-5-1", "toolu_2", command),
+    ])
+    harvest.journal_transcripts(main.parent)
+    rec = {"kind": "bash_command", "session": SESSION, "command": command}
+    assert harvest.attribution_for(rec) == {}
+
+
+# --- one call, one occurrence, however many hooks saw it ------------------------
+
+
+def test_the_same_event_logged_twice_counts_once(tmp_path):
+    """Project scope and user scope both installed: two hook commands, both
+    fire, two log lines for one Bash call. Keyed by id, one occurrence."""
+    main = _transcripts(tmp_path, [
+        _assistant("2026-09-02T10:00:00.000Z", "claude-opus-5", "toolu_a"),
+    ])
+    rec = _hook("python3 -c 'print(1)'", "toolu_a", main)
+    log = _write_log(tmp_path, [rec, rec, _hook("python3 -c 'print(1)'", "toolu_b", main)])
+    s = harvest.parse_log(log)[0]
+    assert s.count == 2
+    assert s.models == (("claude-opus-5", 1),)
+
+
+def test_a_published_count_under_the_old_line_keys_does_not_shrink_or_grow(project, tmp_path):
+    main = _transcripts(tmp_path, [
+        _assistant("2026-09-02T10:00:00.000Z", "claude-opus-5", "toolu_a"),
+    ])
+    program = 'print("dedup fixture 4f2a")'
+    rec = _hook("python3 -c '%s'" % program, "toolu_a", main)
+    _log([rec, rec])
+    path = paths.sightings_dir(project) / (SESSION + ".jsonl")
+    paths.ensure_dir(path.parent)
+    old = harvest.Sighting(key=harvest.sighting_key(program), program=program,
+                           session=SESSION, count=2)
+    path.write_text(harvest.serialise([old]), encoding="utf-8")
+    harvest.export_sightings(project, quiet=True)
+    [s] = harvest.read_sightings(path)
+    assert s.count == 2  # max(2 published, 1 derived): not 3, and not 1
+
+
+# --- programs written to a file, then run ---------------------------------------
+
+
+def _write_tool(ts, model, tool_use_id, file_path, content, name="Write"):
+    inp = {"file_path": file_path, "content": content} if name == "Write" else {
+        "file_path": file_path, "old_string": "a", "new_string": "b"}
+    return json.dumps({"type": "assistant", "timestamp": ts, "sessionId": SESSION,
+                       "message": {"model": model, "content": [
+                           {"type": "tool_use", "id": tool_use_id, "name": name, "input": inp}]}})
+
+
+BODY = "import sys\n\ndef main():\n    print('written then run 4f2a')\n\nmain()\n"
+
+
+@pytest.mark.parametrize("header,delim", [
+    ("cat > /tmp/a.py <<'EOF'", "EOF"),
+    ("cat > /tmp/a.py <<EOF", "EOF"),
+    ("cat <<'END' > /tmp/a.py", "END"),
+    ("tee /tmp/a.py <<'X' >/dev/null", "X"),
+])
+def test_a_heredoc_into_a_py_file_is_extracted_whatever_the_delimiter(header, delim):
+    command = "%s\n%s%s\n" % (header, BODY, delim)
+    assert harvest.extract_from_command(command) == [BODY.rstrip("\n")]
+
+
+@pytest.mark.parametrize("header", [
+    "cat >> /tmp/a.py <<'EOF'",           # an append is a fragment
+    "tee -a /tmp/a.py <<'EOF'",
+    "cat > /tmp/a.txt <<'EOF'",           # not a .py
+    "cat > \"$D/a.py\" <<'EOF'",          # a path nobody can know
+    "cat 2>/tmp/a.py <<'EOF'",            # stderr, not the body
+])
+def test_a_heredoc_that_is_not_a_whole_py_file_is_not(header):
+    command = "%s\nnot python at all, just text\nEOF\n" % header
+    assert harvest.extract_from_command(command) == []
+
+
+def test_a_heredoc_fed_to_python_does_not_name_its_output_file():
+    # The body is the program; out.py receives its OUTPUT.
+    assert harvest.py_write_target("python3 - > out.py <<'EOF'") is None
+    assert harvest.py_write_target("cat > a.py <<'EOF' && python3 a.py") == ("write", "a.py")
+
+
+def test_a_write_then_a_run_is_one_file_sighting_with_the_writers_model(tmp_path):
+    main = _transcripts(tmp_path, [
+        _write_tool("2026-09-02T10:00:00.000Z", "claude-opus-5-5", "toolu_w", "/tmp/a.py", BODY),
+        _assistant("2026-09-02T10:00:05.000Z", "claude-opus-5", "toolu_r", "python3 /tmp/a.py 3 4"),
+        _result("toolu_r", is_error=False, ts="2026-09-02T10:00:06.000Z"),
+    ])
+    log = _write_log(tmp_path, [
+        dict(_hook("python3 /tmp/a.py 3 4", "toolu_r", main, "2026-09-02T10:00:05.500Z"), cwd="/w"),
+    ])
+    [s] = harvest.parse_log(log)
+    assert s.program == BODY
+    assert s.source == "file"
+    assert s.argv_tail == ("3", "4")
+    assert s.models == (("claude-opus-5-5", 1),)
+    assert s.outcomes == (("ok", 1),)
+
+
+def test_a_write_that_is_never_run_gives_nothing(tmp_path):
+    main = _transcripts(tmp_path, [
+        _write_tool("2026-09-02T10:00:00.000Z", "claude-opus-5", "toolu_w", "/tmp/a.py", BODY),
+        _assistant("2026-09-02T10:00:05.000Z", "claude-opus-5", "toolu_r", "python3 -c 'print(1)'"),
+    ])
+    log = _write_log(tmp_path, [_hook("python3 -c 'print(1)'", "toolu_r", main)])
+    assert [s.program for s in harvest.parse_log(log)] == ["print(1)"]
+    # And a run of a DIFFERENT path joins nothing either.
+    log = _write_log(tmp_path, [_hook("python3 /tmp/b.py", "toolu_r", main)])
+    assert harvest.parse_log(log) == []
+
+
+def test_a_write_after_the_run_is_not_what_ran(tmp_path):
+    main = _transcripts(tmp_path, [
+        _write_tool("2026-09-02T10:00:09.000Z", "claude-opus-5", "toolu_w", "/tmp/a.py", BODY),
+    ])
+    log = _write_log(tmp_path, [_hook("python3 /tmp/a.py", "toolu_r", main,
+                                      "2026-09-02T10:00:05.000Z")])
+    assert harvest.parse_log(log) == []
+
+
+def test_an_edit_between_the_write_and_the_run_joins_nothing(tmp_path):
+    # Edits are not replayed, so the text that ran is a text nobody has.
+    main = _transcripts(tmp_path, [
+        _write_tool("2026-09-02T10:00:00.000Z", "claude-opus-5", "toolu_w", "/tmp/a.py", BODY),
+        _write_tool("2026-09-02T10:00:02.000Z", "claude-opus-5", "toolu_e", "/tmp/a.py", "",
+                    name="Edit"),
+    ])
+    log = _write_log(tmp_path, [_hook("python3 /tmp/a.py", "toolu_r", main,
+                                      "2026-09-02T10:00:05.000Z")])
+    assert harvest.parse_log(log) == []
+
+
+def test_a_heredoc_then_a_relative_run_joins_through_cd(tmp_path):
+    """The log alone: `cat > …/a.py` in one call, `cd` then `uv run python
+    a.py` in the next. The heredoc counts as the command it was, the run as a
+    file occurrence, and both are one program."""
+    log = _write_log(tmp_path, [
+        {"kind": "bash_command", "session": "s1", "ts": "2026-09-02T10:00:00.000Z",
+         "cwd": "/w/proj", "command": "cat > /w/proj/tool/a.py <<'EOF'\n%sEOF" % BODY},
+        {"kind": "bash_command", "session": "s1", "ts": "2026-09-02T10:00:03.000Z",
+         "cwd": "/w/proj", "command": "cd tool && uv run python a.py --n 3"},
+        # Another session's run of the same path is another session's file.
+        {"kind": "bash_command", "session": "s2", "ts": "2026-09-02T10:00:04.000Z",
+         "cwd": "/w/proj/tool", "command": "python3 a.py"},
+    ])
+    [s] = harvest.parse_log(log)
+    assert s.program == BODY.rstrip("\n")
+    assert s.count == 2
+    assert s.argv_tail == ("--n", "3")
+
+
+def test_an_append_after_the_heredoc_joins_nothing(tmp_path):
+    log = _write_log(tmp_path, [
+        {"kind": "bash_command", "session": "s1", "ts": "2026-09-02T10:00:00.000Z",
+         "cwd": "/w", "command": "cat > a.py <<'EOF'\n%sEOF" % BODY},
+        {"kind": "bash_command", "session": "s1", "ts": "2026-09-02T10:00:01.000Z",
+         "cwd": "/w", "command": "cat >> a.py <<'EOF'\nmain()\nEOF\npython3 a.py"},
+    ])
+    [s] = harvest.parse_log(log)
+    assert s.count == 1 and s.source == "hook"  # the heredoc only; the run joined nothing
+
+
+def test_a_write_and_its_run_in_one_command(tmp_path):
+    log = _write_log(tmp_path, [
+        {"kind": "bash_command", "session": "s1", "ts": "2026-09-02T10:00:00.000Z",
+         "cwd": "/w", "command": "cat > a.py <<'EOF' && python3 a.py\n%sEOF" % BODY},
+    ])
+    [s] = harvest.parse_log(log)
+    assert s.count == 2
+    assert sorted(r[3] for r in harvest._raws_from_log(log.read_text())) == ["file", "hook"]
+
+
+def test_the_cache_keeps_write_positions_and_reads_the_body_only_on_demand(tmp_path):
+    main = _transcripts(tmp_path, [
+        _assistant("2026-09-02T09:59:00.000Z", "claude-opus-5", "toolu_x",
+                   "python3 -c 'print(\"éé\")'"),
+        _write_tool("2026-09-02T10:00:00.000Z", "claude-opus-5", "toolu_w", "/tmp/a.py", BODY),
+    ])
+    # A raw non-ASCII line before the write, so a character offset and a byte
+    # offset differ.
+    text = main.read_text(encoding="utf-8").replace("\\u00e9", "é")
+    main.write_text(text, encoding="utf-8")
+    log = _write_log(tmp_path, [_hook("python3 /tmp/a.py", "toolu_r", main,
+                                      "2026-09-02T10:00:05.000Z")])
+    assert [s.program for s in harvest.parse_log(log)] == [BODY]
+    cached = harvest._index_cache_path().read_text(encoding="utf-8")
+    [w] = json.loads(cached)["files"][str(main)]["writes"]
+    assert w[1:3] == ["write", "/tmp/a.py"]
+    # A position, not a copy of the file: no body sits in the cache.
+    assert "written then run" not in cached
+    assert harvest._write_body(str(main), w[3], "toolu_w") == BODY
+    assert harvest._write_body(str(main), w[3] + 1, "toolu_w") is None
+
+
+# --- the Codex feed ---------------------------------------------------------------
+
+
+class _FakeCodex:
+    def __init__(self, records):
+        self.records = records
+
+    def collect(self, sessions_dir=None):
+        return iter(self.records)
+
+
+def _codex_rec(command, call_id, model="gpt-5.9-codex", session="rollout-1"):
+    return {"kind": "bash_command", "session": session, "ts": "2026-09-02T10:00:00.000Z",
+            "cwd": "/w", "command": command, "host": "codex", "model": model,
+            "call_id": call_id}
+
+
+def test_codex_records_are_tagged_and_keyed_by_call_id(monkeypatch):
+    feed = _FakeCodex([
+        _codex_rec("python3 -c 'print(\"codex 4f2a\")'", "call_1"),
+        _codex_rec("python3 -c 'print(\"codex 4f2a\")'", "call_1"),  # a rescan
+        _codex_rec("python3 -c 'print(\"codex 4f2a\")'", "call_2"),
+    ])
+    monkeypatch.setattr(harvest, "_codex_module", lambda: feed)
+    [s] = harvest.parse_codex()
+    assert s.count == 2
+    assert s.source == "codex" and s.host == "codex"
+    assert s.models == (("gpt-5.9-codex", 2),)
+    # Never journaled as, or joined against, a Claude attribution.
+    assert not harvest.attribution_path().exists()
+
+
+def test_a_codex_record_that_forgot_its_host_is_still_not_claude(monkeypatch, tmp_path):
+    main = _transcripts(tmp_path, [
+        _assistant("2026-09-02T10:00:00.000Z", "claude-opus-5", "toolu_a"),
+    ])
+    rec = _codex_rec("python3 -c 'print(1)'", "call_1")
+    rec.pop("host")
+    rec.update(transcript=str(main), tool_use_id="toolu_a")
+    monkeypatch.setattr(harvest, "_codex_module", lambda: _FakeCodex([rec]))
+    [s] = harvest.parse_codex()
+    assert s.models == (("gpt-5.9-codex", 1),) and s.host == "codex"
+
+
+def test_codex_feed_absent_is_reported_not_empty(monkeypatch, capsys):
+    from lypning import cli
+
+    monkeypatch.setattr(harvest, "_codex_module", lambda: None)
+    assert not harvest.codex_available()
+    with pytest.raises(harvest.FeedUnavailable):
+        harvest.parse_codex()
+    assert cli.main(["harvest", "--dry-run", "--codex"]) == 1
+    err = capsys.readouterr().err
+    assert "--codex" in err and "not in this build" in err
+
+
+def test_collect_with_codex_merges_the_feed(monkeypatch):
+    monkeypatch.setattr(harvest, "_codex_module", lambda: _FakeCodex([
+        _codex_rec("python3 -c 'print(\"codex merge 4f2a\")'", "call_9")]))
+    assert [s.host for s in harvest.collect(persist=False, codex=True)] == ["codex"]
+
+
+def test_the_real_codex_module_satisfies_the_feed_interface(tmp_path):
+    """TODO(capture lane L1): `lypning.codex` is written in another lane. Until
+    it lands this is skipped; once it does, it pins the interface this module
+    codes against — `collect(sessions_dir=None)` yielding log-shaped records."""
+    pytest.importorskip("lypning.codex")
+    assert harvest.codex_available()
+    empty = tmp_path / "sessions"
+    empty.mkdir()
+    assert harvest.parse_codex(sessions_dir=empty) == []
