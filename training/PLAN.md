@@ -51,7 +51,7 @@ Advance a step by editing this table in the same PR as the work.
 |---|---|---|---|---|
 | 0 | Read what was paid for | $0 | did dev native move inside the selector's blind spot? | done (2026-09-21, [read](reports/2026-09-21-codex-step0-read.md), GH 35575454075) |
 | 1 | Fix the instrument | $0 | nothing else is readable until it is | done (2026-09-22, implementation in PRs #97–#101; validation limits below) |
-| 2 | Positive control (S1 / stage 0b) | ~$5 (being re-priced) | distillation route or contrastive route | in progress (2026-09-22, free bank/provider/candidate preparation; no generation) |
+| 2 | Positive control (S1 / stage 0b) | ~$126 at 512 output tokens/request; ~$225 at allowance | distillation route or contrastive route | in progress (2026-09-22, free bank/provider/candidate preparation; no generation) |
 | 3 | Build contrastive targets | tokens | is there enough pair supply for a preference arm? | open |
 | 4 | S4, re-specified, three seeds | ~$60–90 | the first result the instrument can read | open |
 

@@ -29,7 +29,9 @@ checks. The new engine/image and 256-sequence batch still need pinning and a
 hardware smoke; the macOS baseline retains five conformance mismatches, so
 this is not a claim that every release check is green. The exact validation
 record is `reviews/2026-09-22-step1-validation.md`.
-Take the first `open` step there. The section below is the previous
+Continue Step 2 in `PLAN.md`; the measured cost and pending budget choice are
+in `ROUND_READINESS.md` under “Current Step 2 admission”. No paid dispatch is
+ready yet. The section below is the previous
 assignment, kept as history; its S0 rungs are Step 0 of the plan.
 
 ## Next Fable session — 2026-09-17

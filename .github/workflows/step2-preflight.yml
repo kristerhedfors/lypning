@@ -99,19 +99,8 @@ jobs:
         run: |
           pip install -q 'huggingface-hub==1.31.0'
           python .github/scripts/step2_bank_plan.py
-      - name: Verify train references in pinned runtime without credentials or network
-        run: |
-          docker run --rm --network none \
-            -v "$RUNNER_TEMP/step2-source:/work" \
-            -v "$LYPNING_HOME:/engine:ro" \
-            -v "$RUNNER_TEMP/step2-bank:/bank:ro" \
-            -v "$RUNNER_TEMP/step2-result:/result" \
-            -w /work -e PYTHONPATH=src:training -e LYPNING_HOME=/engine \
-            -e LYPNING_CAPTURE=0 -e LYPNING_HARVEST=0 \
-            -e CHECK_BASE_IMAGE="$CHECK_BASE_IMAGE" step2-check sh -eu -c '
-              git config --global --add safe.directory /work
-              python .github/scripts/step2_reference_check.py
-              git diff --exit-code'
+      - name: Verify train references in minimal containers without credentials or network
+        run: python .github/scripts/step2_reference_check.py
       - name: Record immutable candidate image
         if: always()
         run: |

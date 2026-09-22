@@ -23,6 +23,37 @@ preflight checks and a hardware smoke of the 256-sequence evaluation batch.
 Smaller explicit batches remain possible but must match across all arms and
 seeds; changing the chunking changes the sampling instrument.
 
+## Current Step 2 admission — 2026-09-22
+
+PRs #97–#101 are merged. The six-check free preflight
+[35683103077](https://github.com/kristerhedfors/lypning/actions/runs/35683103077)
+passed, with zero live HF jobs and no completed seeds to join on this bank.
+That does not authorize another old-configuration seed.
+
+The positive-control plan is now measured: **1,355 training cases, 31 families,
+16 draws in each of two arms, 43,360 requests**. Dev/test are excluded. Cerebras
+lists Qwen 3.8 27B at **$0.99/M input and $1.49/M output tokens**
+([pricing](https://www.cerebras.ai/pricing), checked 2026-09-22). The pinned-tokenizer
+count gives **$92.81 of input alone**, dominated by repeating the subset spec.
+At 512 output tokens/request the estimate is **$125.88**; at the 2,048-token
+allowance it is **$225.12**, before tax, retries or provider-template differences.
+These are cost scenarios, not a bill or an enforced ceiling. The old ~$5
+estimate is withdrawn for this full population.
+
+The operator asked to merge and progress toward paid work. The material price
+change requires a ceiling choice: full comparison capped at $250, a newly
+preregistered smaller control capped at $25, or free preparation only. The
+choice is pending; **no paid provider call or GPU job has been dispatched**.
+Do not shrink the population, shorten the spec, lower k or substitute a model
+silently to fit the old estimate.
+
+[PR #102](https://github.com/kristerhedfors/lypning/pull/102) prepares the actual
+training-split control. Its pinned-base conformance and reference checks are
+in progress. A bounded generation runner and private evidence handoff remain
+required after the budget/scope is settled. The 256-sequence GPU batch smoke
+belongs before a later GPU training arm; Step 2 uses hosted inference and does
+not allocate a GPU.
+
 ## The bank a round would now read
 
 `banks/v3-20260919` in the private artifact repo, cut from six batches by

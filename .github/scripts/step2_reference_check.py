@@ -1,16 +1,19 @@
 """Check train references in the pinned, networkless runtime; aggregates only.
 
-The enclosing disposable container has no credentials or provider access.
-Only previously reviewed references execute here; generated completions must
-use the minimal per-candidate container boundary instead.
+Each oracle/native execution uses the minimal candidate image: no bank,
+expected outputs, credentials, host mounts or network cross that boundary.
+The trusted controller runs on the disposable GitHub worker without API keys.
 """
 from __future__ import annotations
 from collections import Counter
 from dataclasses import asdict
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
 import sys
+import subprocess
+from pipeline.container_runner import ContainerRunner
 from pipeline.positive_control import population
 from pipeline.training import Verifier, engine_identity
 from pipeline.training_data import validate_reference_scores
@@ -18,25 +21,37 @@ from pipeline.training_types import TrainingError
 
 
 def main():
-    rows = [json.loads(line) for line in Path('/bank/train.jsonl').read_text().splitlines() if line.strip()]
+    rows = [json.loads(line) for line in (Path(os.environ['RUNNER_TEMP']) / 'step2-bank' / 'train.jsonl').read_text().splitlines() if line.strip()]
     cases = population(rows)
     binary = Path(os.environ['LYPNING_HOME']) / 'bin' / 'lypning-l'
     identity = engine_identity(binary)
-    verifier = Verifier(binary, identity=identity)
-    counts = Counter()
-    for case in cases:
+    # The host and the pinned base can differ in CPython patch/build. Expected
+    # oracle identity comes from that exact base, not from the candidate's reply.
+    oracle = subprocess.check_output([
+        'docker', 'run', '--rm', '--network=none', '--entrypoint=python3',
+        os.environ['CHECK_BASE_IMAGE'], '-c', 'import sys; print(sys.version)'], text=True).strip()
+    expected = dict(identity, oracle=oracle)
+    runner = ContainerRunner(os.environ['CANDIDATE_IMAGE'], expected)
+    # The image ID is immutable and every candidate uses it. The host binary
+    # is hashed again at the end, not confused with the in-image interpreter.
+    verifier = Verifier(binary, runner=runner)
+    def check(case):
         try:
             score = verifier.score(case, case['reference'])
             validate_reference_scores([case], {case['case_id']: asdict(score)})
         except TrainingError:
             # Error messages can contain expected stdout. Never print them.
-            counts['failed'] += 1
+            return 'failed'
         else:
-            counts[score.status] += 1
-    result = {'cases': len(cases), 'counts': dict(counts), 'python': sys.version,
+            return score.status
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        counts = Counter(pool.map(check, cases))
+    if engine_identity(binary) != identity:
+        raise TrainingError('host engine changed during validation')
+    result = {'cases': len(cases), 'counts': dict(counts), 'python': oracle,
               'base_image': os.environ['CHECK_BASE_IMAGE'],
               'engine_sha256': identity['sha256'], 'provider_calls': 0}
-    Path('/result/references.json').write_text(json.dumps(result, indent=2) + '\n')
+    (Path(os.environ['RUNNER_TEMP']) / 'step2-result' / 'references.json').write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result, indent=2))
     return int(bool(counts['failed']))
 
