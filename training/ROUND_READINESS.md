@@ -54,8 +54,8 @@ training-split control. Pinned-base conformance
 [35683688427](https://github.com/kristerhedfors/lypning/actions/runs/35683688427)
 loaded 9,064 corpus programs: 4,560 match, 1,757 unsupported, **zero mismatch**,
 2,747 skipped, and no repository damage. This is the large native arm on the
-pinned CPython 3.12.14 base, not a waiver of macOS 3.14 failures. Reference
-admission did not finish: run
+pinned CPython 3.12.14 base, not a waiver of macOS 3.14 failures. The initial
+reference admission did not finish: run
 [35684815342](https://github.com/kristerhedfors/lypning/actions/runs/35684815342)
 hit its 70-minute job limit after 69 minutes in reference verification, with no
 intermediate counts. This is CPU container startup/verification work, not GPU
@@ -64,8 +64,13 @@ remaining every 30 seconds, selects up to eight concurrent cases within CPU
 and container-memory limits, and stops new work on failure or after 50 minutes.
 Partial results cannot create an admission proof. Free rerun
 [35693996662](https://github.com/kristerhedfors/lypning/actions/runs/35693996662)
-is verifying references; its provider/tokenizer plan and exact conformance
-reuse have passed. A complete successful reference result is still required.
+**passed**, completing at 06:56 UTC on 2026-09-22. All 1,355 references passed:
+1,132 correct-native and 223 correct-control, no failures, eight workers,
+2,412.9 seconds (40 minutes 13 seconds). Its provider/tokenizer plan and exact
+conformance reuse also passed; provider calls were zero. The public aggregate
+report proves validation completed, but does not replace the private admission
+proof required by generation. That proof remains on the disposable worker;
+the durable private handoff still needs implementation before a paid launch.
 The generation library reserves budget before each
 request, disables retries, and binds its input to a private runtime/reference
 proof. The manual dispatch, private evidence handoff and scope remain to be
