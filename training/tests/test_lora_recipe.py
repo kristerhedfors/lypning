@@ -23,7 +23,7 @@ def args(stage, *extra):
 
 
 @pytest.mark.parametrize("stage,steps,want", [("sft", 99, 2e-4), ("sft", 100, 1e-4),
-    ("sft", 300, 1e-4), ("grpo", 20, 5e-6), ("grpo", 500, 5e-6)])
+    ("sft", 300, 1e-4), ("grpo", 20, 1e-5), ("grpo", 500, 1e-5)])
 def test_registered_lora_recipe_and_override(stage, steps, want):
     parsed = args(stage, "--steps", str(steps))
     assert gpu.schedule(parsed)["learning_rate"] == want
@@ -83,3 +83,97 @@ def test_private_conditioned_targets_are_bound_to_bare_prompts_and_engine(tmp_pa
         "lineage": {"engine_sha256": "e" * 64}}))
     with pytest.raises(TrainingError, match="bare train prompt"):
         gpu.sft_curriculum(parsed, bundle)
+
+
+# --- the arm-A / arm-C recipe as declared (S4 preparation, 2026-09-22) -------
+
+
+def test_grpo_geometry_defaults_to_four_prompts_of_eight_and_is_bounded():
+    """One prompt group per step followed one task's variance; four of eight do not.
+
+    The product is capped so a flag cannot quietly move a step into another
+    batch regime, and the geometry is checked in `main` so --plan refuses it.
+    """
+    parsed = args("grpo")
+    assert gpu.grpo_geometry(parsed) == {"prompts_per_step": 4, "generations": 8,
+                                         "sequences_per_step": 32, "informative_only": False}
+    assert gpu.grpo_geometry(args("sft")) is None
+    with pytest.raises(TrainingError, match="exceeds 32"):
+        gpu.grpo_geometry(args("grpo", "--grpo-prompts", "5"))
+    with pytest.raises(TrainingError, match="two generations"):
+        gpu.grpo_geometry(args("grpo", "--generations", "1"))
+    with pytest.raises(TrainingError, match="give both"):
+        gpu.grpo_geometry(args("grpo", "--grpo-informative-only"))
+    with pytest.raises(TrainingError, match="give both"):
+        gpu.grpo_geometry(args("sft", "--grpo-informative-only", "--probe", "/p/probe.json"))
+    both = args("grpo", "--grpo-informative-only", "--probe", "/p/probe.json")
+    assert gpu.grpo_geometry(both)["informative_only"] is True
+
+
+def test_the_manifest_declares_seeded_init_the_optimizer_and_the_geometry():
+    """Arm identity that is recorded rather than implied."""
+    source = (ROOT / "gpu/train_verified.py").read_text(encoding="utf-8")
+    run = source.split("def run(")[1].split("\ndef main(")[0]
+    for key in ('"lora_init":', '"sft_optimizer":', '"grpo_geometry": grpo_geometry(args)',
+                '"kernel_binding": kernel_binding'):
+        assert key in run, key
+    stages = (ROOT / "gpu/verified_stages.py").read_text(encoding="utf-8")
+    assert "**SFT_OPTIMIZER" in stages
+
+
+def test_lora_init_is_reseeded_immediately_before_attach_lora():
+    """The gradient smoke reseeds to 0; without this every seed drew one `lora_A`."""
+    import ast
+    source = (ROOT / "gpu/train_verified.py").read_text(encoding="utf-8")
+    fn = next(n for n in ast.walk(ast.parse(source))
+              if isinstance(n, ast.FunctionDef) and n.name == "run")
+    found = False
+    for node in ast.walk(fn):
+        body = getattr(node, "body", None)
+        if not isinstance(body, list):
+            continue
+        for before, stmt in zip(body, body[1:]):
+            if isinstance(stmt, ast.Assign) and "core.attach_lora(" in ast.unparse(stmt.value):
+                assert ast.unparse(before) == "set_seed(args.seed)", (
+                    "attach_lora must follow set_seed(args.seed) directly, got %r"
+                    % ast.unparse(before))
+                found = True
+    assert found, "run() no longer attaches a LoRA"
+
+
+def test_the_smoke_steps_the_optimizer_train_sft_steps():
+    """One SFT optimiser definition: the smoke used (0.9, 0.95) / 0.1, SFT did not."""
+    import ast
+    stages_spec = importlib.util.spec_from_file_location(
+        "recipe_stages", ROOT / "gpu/verified_stages.py")
+    stages = importlib.util.module_from_spec(stages_spec)
+    stages_spec.loader.exec_module(stages)
+    # The live values, kept so the arm does not drift.
+    assert stages.SFT_OPTIMIZER == {"betas": (0.9, 0.999), "eps": 1e-8, "weight_decay": 0.01}
+    assert stages.MAX_GRAD_NORM == 1.0
+    lora = (ROOT / "gpu/lypning_lora.py").read_text(encoding="utf-8")
+    smoke = next(n for n in ast.parse(lora).body
+                 if isinstance(n, ast.FunctionDef) and n.name == "smoke")
+    text = ast.unparse(ast.Module(body=smoke.body[1:], type_ignores=[]))   # code, not docstring
+    assert "**args.optimizer" in text and "0.95" not in text and "weight_decay=0.1" not in text
+    source = (ROOT / "gpu/train_verified.py").read_text(encoding="utf-8")
+    assert "optimizer=SFT_OPTIMIZER" in source
+
+
+def test_two_seeds_draw_two_lora_initialisations_and_one_seed_draws_one():
+    """The replicate claim itself, on a tiny module; needs the GPU deps, so may skip."""
+    torch = pytest.importorskip("torch")
+    peft = pytest.importorskip("peft")
+    transformers = pytest.importorskip("transformers")
+
+    def lora_a(seed):
+        torch.manual_seed(0)
+        base = torch.nn.Sequential(torch.nn.Linear(8, 8))
+        torch.manual_seed(0)
+        torch.randn(100)                       # the smoke's fixed consumption
+        transformers.set_seed(seed)
+        model = peft.get_peft_model(base, peft.LoraConfig(r=4, lora_alpha=8, target_modules=["0"]))
+        return next(p.detach().clone() for n, p in model.named_parameters() if "lora_A" in n)
+
+    assert torch.equal(lora_a(1111), lora_a(1111))
+    assert not torch.equal(lora_a(1111), lora_a(2222))

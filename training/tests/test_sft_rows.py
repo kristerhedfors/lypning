@@ -162,13 +162,20 @@ def test_the_training_prefix_is_the_eval_prefix():
 
 
 def test_generate_renders_the_prompt_the_same_way_build_examples_does():
-    """Not the strings — the CALL. §4, assertion 2, from the other end."""
-    src = ast.parse(LORA.read_text(encoding="utf-8"))
-    calls = [n for n in ast.walk(src)
-             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
-             and n.func.attr == "apply_chat_template"]
-    assert len(calls) >= 2, "expected the training and the generation render"
-    for call in calls:
+    """Not the strings — the CALL. §4, assertion 2, from the other end.
+
+    The training render is `build_examples`; the generation render is the
+    verified evaluator's (the retired runner's own `generate` was removed from
+    `gpu/lypning_lora.py` on 2026-09-22), so both files are read.
+    """
+    def renders(path):
+        return [n for n in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "apply_chat_template"]
+    training = renders(LORA)
+    generation = renders(ROOT / "gpu" / "verified_evaluation.py")
+    assert training and generation, "expected the training and the generation render"
+    for call in training + generation:
         kw = {k.arg: ast.literal_eval(k.value) for k in call.keywords
               if isinstance(k.value, ast.Constant)}
         assert kw.get("tokenize") is False

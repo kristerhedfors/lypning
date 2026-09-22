@@ -956,23 +956,151 @@ def test_kernel_state_never_raises_even_when_the_import_explodes(monkeypatch):
     """An observation for the manifest must not be able to end a metered round.
 
     Kernel imports fail in unusual ways -- a missing CUDA symbol need not raise
-    an `Exception` subclass -- so the catch is `BaseException` and the result is
-    a string either way.
+    an `Exception` subclass, and the question is now asked of a child
+    interpreter whose spawn can fail too -- so the catch is `BaseException` and
+    the result is a string either way.
     """
-    import importlib
+    import subprocess
 
     from pipeline import training_contract as tc
 
     class Boom(BaseException):
         pass
 
-    def explode(name):
+    def explode(*args, **kwargs):
         raise Boom("no such symbol")
 
-    monkeypatch.setattr(importlib, "import_module", explode)
+    monkeypatch.setattr(subprocess, "run", explode)
     state = tc.kernel_state()
     assert state["flash-linear-attention"] == "unusable: Boom"
     assert state["causal_conv1d"] == "unusable: Boom"
+
+
+def test_kernel_state_observes_fla_without_importing_it(tmp_path, monkeypatch):
+    """Observing the kernel must not be what un-blocks it.
+
+    `kernel_state` used to `import_module("fla")` in THIS process, and it ran
+    before the blocker was installed; a meta-path finder is never consulted for
+    a module already in `sys.modules`, so on an image where fla imported, the
+    torch-reference arm could have run fla while its manifest said
+    `NTX_USE_FLA=0`. A stub `fla` on the path: the child sees it, this process
+    never does, and after the blocker goes in `import fla` fails here.
+    """
+    import sys
+
+    stub = tmp_path / "fla"
+    stub.mkdir()
+    (stub / "__init__.py").write_text("__version__ = 'stub'\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    monkeypatch.setenv("NTX_USE_FLA", "0")
+    for name in [m for m in sys.modules if m.split(".")[0] == "fla"]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setattr(sys, "meta_path", list(sys.meta_path))
+
+    gpu = Path(__file__).resolve().parents[1] / "gpu"
+    monkeypatch.syspath_prepend(str(gpu))
+    import kernel_block
+    from pipeline.training_contract import kernel_state
+
+    assert kernel_block.install() == [], "nothing blocked is loaded yet"
+    state = kernel_state()
+    assert state["flash-linear-attention"] == "usable", "the child imports the stub"
+    assert "fla" not in sys.modules, "asking must not import it here"
+    with pytest.raises(ImportError, match="blocked"):
+        importlib.import_module("fla")
+    assert "fla" not in sys.modules
+
+
+def test_a_blocker_installed_too_late_says_so(tmp_path, monkeypatch):
+    """A finder cannot unload a module, so `install` reports what it is too late for."""
+    import sys
+    import types
+
+    monkeypatch.setattr(sys, "meta_path", list(sys.meta_path))
+    monkeypatch.setitem(sys.modules, "fla", types.ModuleType("fla"))
+    monkeypatch.setitem(sys.modules, "fla.ops", types.ModuleType("fla.ops"))
+    gpu = Path(__file__).resolve().parents[1] / "gpu"
+    monkeypatch.syspath_prepend(str(gpu))
+    import kernel_block
+
+    assert kernel_block.install() == ["fla", "fla.ops"]
+    before = len(sys.meta_path)
+    kernel_block.install()
+    assert len(sys.meta_path) == before, "installing twice adds one finder, not two"
+
+
+def _fake_modeling(tmp_path, monkeypatch, bound):
+    """A modeling module shaped like transformers 5.17.0's qwen3_5 one.
+
+    `use_kernel_func_from_hub_with_fallback` closes over the resolved
+    `implementation` and exposes a `functools.wraps` wrapper that carries the
+    TORCH function's name whatever it calls -- so the name proves nothing, and
+    `bound_kernels` has to read the closure.
+    """
+    import functools
+    import sys
+    import types
+
+    module = types.ModuleType("transformers.models.qwen3_5.modeling_qwen3_5")
+
+    def torch_chunk_gated_delta_rule(*a, **k):
+        return "reference"
+    torch_chunk_gated_delta_rule.__module__ = module.__name__
+    torch_chunk_gated_delta_rule.__qualname__ = "torch_chunk_gated_delta_rule"
+
+    def fallback(torch_function, implementation):
+        @functools.wraps(torch_function)
+        def wrapped(*a, **k):
+            return implementation(*a, **k)
+        return wrapped
+
+    module.torch_chunk_gated_delta_rule = fallback(
+        torch_chunk_gated_delta_rule, bound or torch_chunk_gated_delta_rule)
+
+    class Qwen3_5GatedDeltaNet:
+        pass
+    Qwen3_5GatedDeltaNet.__module__ = module.__name__
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+
+    class Model:
+        def named_modules(self):
+            return [("", self), ("model.layers.0.linear_attn", Qwen3_5GatedDeltaNet())]
+    return Model()
+
+
+def test_the_bound_gated_delta_rule_is_read_off_the_loaded_model(tmp_path, monkeypatch):
+    """What transformers resolved, after load -- the switch and blocker are only requests."""
+    import sys
+
+    gpu = Path(__file__).resolve().parents[1] / "gpu"
+    monkeypatch.syspath_prepend(str(gpu))
+    import kernel_block
+    for name in [m for m in sys.modules if m.split(".")[0] == "fla"]:
+        monkeypatch.delitem(sys.modules, name)
+
+    state = kernel_block.bound_kernels(_fake_modeling(tmp_path, monkeypatch, None))
+    assert state["layer"] == "Qwen3_5GatedDeltaNet"
+    assert state["torch_chunk_gated_delta_rule"] == (
+        "transformers.models.qwen3_5.modeling_qwen3_5.torch_chunk_gated_delta_rule")
+    assert state["torch_recurrent_gated_delta_rule"] is None
+    assert kernel_block.reference_only(state)
+
+    def chunk_gated_delta_rule(*a, **k):
+        return "fla"
+    chunk_gated_delta_rule.__module__ = "fla.ops.gated_delta_rule.chunk"
+    chunk_gated_delta_rule.__qualname__ = "chunk_gated_delta_rule"
+    state = kernel_block.bound_kernels(_fake_modeling(tmp_path, monkeypatch, chunk_gated_delta_rule))
+    assert state["torch_chunk_gated_delta_rule"] == (
+        "fla.ops.gated_delta_rule.chunk.chunk_gated_delta_rule"), "the NAME says torch; the closure says fla"
+    assert not kernel_block.reference_only(state)
+
+    # No gated-delta-net layer at all is "unknown", which is not the reference.
+    class Empty:
+        def named_modules(self):
+            return []
+    assert kernel_block.bound_kernels(Empty())["layer"] is None
+    assert not kernel_block.reference_only(kernel_block.bound_kernels(Empty()))
 
 
 def test_the_run_record_carries_the_kernels_and_the_probe_contract_compares_them():
@@ -988,12 +1116,21 @@ def test_the_run_record_carries_the_kernels_and_the_probe_contract_compares_them
 
     source = Path(__file__).resolve().parents[1].joinpath(
         "gpu/train_verified.py").read_text(encoding="utf-8")
-    assert '"versions": versions, "kernels": kernels' in source
-    assert '"versions", "kernels",' in source, (
+    assert '"versions": versions, "kernels": kernels, "kernel_binding": kernel_binding' in source
+    assert '"versions", "kernels",\n                    "kernel_binding",' in source, (
         "the probe/grpo contract must compare kernels, not merely record them")
-    # Read AFTER the switch is set and BEFORE transformers is imported, or it
-    # would describe a state the run did not have.
+    # The blocker goes in FIRST -- before the observation and before
+    # transformers -- or a module already imported walks straight past it. The
+    # observation comes after the switch and the blocker and before the import,
+    # or it would describe a state the run did not have.
     at_switch = source.index('os.environ["NTX_USE_FLA"] = "0"')
+    at_blocker = source.index("too_late = kernel_block.install()")
     at_kernels = source.index("kernels = kernel_state()")
     at_import = source.index("import lypning_lora as core")
-    assert at_switch < at_kernels < at_import
+    assert at_switch < at_blocker < at_kernels < at_import
+    # And what was bound is read AFTER the model exists, and refused if it is
+    # not the torch reference.
+    at_attach = source.index("model = core.attach_lora(")
+    at_binding = source.index("kernel_binding = kernel_block.bound_kernels(model)")
+    assert at_attach < at_binding < source.index('write_json(args.output / "experiment.json"')
+    assert "if not kernel_block.reference_only(kernel_binding):" in source

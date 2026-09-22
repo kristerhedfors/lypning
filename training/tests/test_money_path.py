@@ -161,13 +161,10 @@ def test_a_matching_prompt_sha_is_not_what_stops_the_grade(tmp_path, capsys):
 
 # --- step 3: the arm guard reads a field, so a field has to be written --------
 
-def test_the_generator_states_the_stack_the_arm_guard_compares(tmp_path):
-    """`stats._arm` withholds a delta on differing `backend.base_url`. It reads a
-    field; if the GPU script never writes one the guard is inert and would NOT
-    have fired had the two arms really come off different stacks."""
-    src = (Path(__file__).resolve().parents[1] / "gpu" / "lypning_lora.py").read_text()
-    assert "base_url=stack" in src, "the completions header no longer names its stack"
-    assert 'stack = "incontainer://' in src
+# The generator that wrote `base_url=stack` into its completions header was the
+# retired one-file runner in `gpu/lypning_lora.py`, removed 2026-09-22 before
+# arm A's first seed; the verified trainer records its stack in
+# `experiment.json` (`versions`, `kernels`, `kernel_binding`) instead.
 
 
 def test_two_arms_off_one_stack_compare_and_two_stacks_do_not():

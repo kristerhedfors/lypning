@@ -39,7 +39,8 @@ from pipeline.training_contract import (BASE_MODEL, CONTRACT_VERSION, MIN_SUPERV
     adapter_files, adapter_identity, decoding, model_config_identity, probe_contract, probe_report,
     kernel_state, runtime_versions, seal_adapter, source_identity, validate_probe)
 from verified_evaluation import evaluate
-from verified_stages import balanced_cases, sft_batches, supervised_tokens, train_sft, train_grpo
+from verified_stages import (MAX_GRAD_NORM, SFT_OPTIMIZER, balanced_cases, informative_cases,
+    sft_batches, supervised_tokens, train_sft, train_grpo)
 
 
 def parser():
@@ -61,9 +62,13 @@ def parser():
     p.add_argument("--steps", type=int, default=100)
     p.add_argument("--eval-every", type=int, default=50)
     p.add_argument("--rank", type=int, default=16)
-    p.add_argument("--lr", type=float, help="default SFT 1e-4 (2e-4 below 100 steps) / GRPO 5e-6")
+    p.add_argument("--lr", type=float, help="default SFT 1e-4 (2e-4 below 100 steps) / GRPO 1e-5")
     p.add_argument("--batch-size", type=int, default=4, help="SFT effective batch only")
-    p.add_argument("--generations", type=int, default=4, help="GRPO/probe draws per train prompt")
+    p.add_argument("--generations", type=int, default=8, help="GRPO/probe draws per train prompt")
+    p.add_argument("--grpo-prompts", type=int, default=4,
+                   help="GRPO prompt groups per optimizer step; times --generations sequences")
+    p.add_argument("--grpo-informative-only", action="store_true",
+                   help="GRPO only: train on the --probe's informative cases (0 < p < 1) alone")
     p.add_argument("--probe", type=Path, help="admitted probe.json from the exact RL starting policy")
     p.add_argument("--eval-draws", type=int, default=4, help="matched-seed first-draft evaluation draws")
     p.add_argument("--eval-sequences", type=int, default=256,
@@ -280,11 +285,46 @@ def supervised_plan(args, bundle):
 def schedule(args):
     """One source of effective values for execution, dry plans and manifests."""
     steps = 2 if args.smoke else args.steps
-    default_lr = (2e-4 if steps < 100 else 1e-4) if args.stage == "sft" else 5e-6
+    # GRPO 1e-5: a LoRA wants roughly ten times the full-fine-tuning RL rate
+    # ("LoRA Without Regret"; TRL's LoRA recipe), which puts it at 1e-5..5e-5.
+    # 5e-6 is a full-fine-tuning number, and seed 1111's GRPO ran at it.
+    default_lr = (2e-4 if steps < 100 else 1e-4) if args.stage == "sft" else 1e-5
     return {"steps": steps,
             "eval_every": 1 if args.smoke else args.eval_every,
             "max_tokens": min(32, args.max_new_tokens) if args.smoke else args.max_new_tokens,
             "learning_rate": args.lr if args.lr is not None else default_lr}
+
+
+#: The ceiling on sequences one GRPO optimizer step may carry. The dose is set
+#: by --steps; widening a step past this trades update count for batch size
+#: without anyone having decided to.
+MAX_GRPO_SEQUENCES = 32
+
+
+def grpo_geometry(args):
+    """Prompts x generations per GRPO step, validated where `preflight` does not.
+
+    Seed 1111's GRPO took ONE prompt group of 4 per optimizer step, so each
+    update followed one task's reward variance -- or none, since a group whose
+    draws all agree carries no gradient at all (DAPO's dynamic sampling). Four
+    prompts of eight draws average that out at 32 sequences a step; the
+    product is bounded so a flag cannot quietly move a step into another batch
+    regime. Called by `main` for every stage, so a bad value fails on --plan;
+    None for a stage that is not GRPO.
+    """
+    if args.grpo_informative_only and (args.stage != "grpo" or args.probe is None):
+        raise TrainingError("--grpo-informative-only filters a GRPO stage by its --probe; give both")
+    if args.stage != "grpo":
+        return None
+    prompts, generations = int(args.grpo_prompts), int(args.generations)
+    if prompts < 1 or generations < 2:
+        raise TrainingError("GRPO needs at least one prompt and two generations per step")
+    if prompts * generations > MAX_GRPO_SEQUENCES:
+        raise TrainingError("a GRPO step of %d prompts x %d generations exceeds %d sequences"
+                            % (prompts, generations, MAX_GRPO_SEQUENCES))
+    return {"prompts_per_step": prompts, "generations": generations,
+            "sequences_per_step": prompts * generations,
+            "informative_only": bool(args.grpo_informative_only)}
 
 
 def metric_policy(bundle):
@@ -334,10 +374,21 @@ def run(args, bundle, adapter_info):
     # Block fused kernels before importing transformers, preserving the existing
     # exact Qwen class and per-leaf LoRA gradient smoke checks.
     os.environ["NTX_USE_FLA"] = "0"
-    # AFTER the switch is set and BEFORE transformers is imported, so what is
-    # recorded is the state this run actually had. Pinning the distribution
+    # The BLOCKER goes in before anything can import `fla` -- including the
+    # observation below, which used to import it itself and so disarmed the
+    # blocker on any image where fla imported (`kernel_block`). A blocked name
+    # already in `sys.modules` cannot be unloaded, so that is a refusal: the
+    # torch reference is this arm's declared kernel, not a preference.
+    import kernel_block
+    too_late = kernel_block.install()
+    if too_late:
+        raise TrainingError("fla was imported before its blocker; the torch-reference "
+                            "kernel cannot be enforced: " + ", ".join(too_late))
+    # AFTER the switch and the blocker, BEFORE transformers is imported, so what
+    # is recorded is the state this run actually had. Pinning the distribution
     # does not settle it: on 2026-09-20 the pin held and transformers still ran
-    # all 48 gated-delta-net layers on the reference path.
+    # all 48 gated-delta-net layers on the reference path. `kernel_state` asks in
+    # a child interpreter, so asking cannot change the answer here.
     kernels = kernel_state()
     import lypning_lora as core
     import torch
@@ -380,9 +431,15 @@ def run(args, bundle, adapter_info):
             raise TrainingError("SFT schedule exposes %d supervised tokens; at least %d required"
                                 % (planned_tokens, MIN_SUPERVISED_TOKENS))
     if args.stage in ("sft", "grpo"):
+        # The smoke steps the SAME optimiser definition `train_sft` uses and
+        # samples under the run's own decoding, so a pass says something about
+        # the configuration that trains rather than about a neighbour of it.
+        smoke_decoding = decoding(effective["max_tokens"])
         core.smoke(device, dtype, SimpleNamespace(
             revision=args.revision, rank=args.rank, alpha=2 * args.rank,
-            lora_dropout=0.0, lr=effective["learning_rate"], temperature=1.0, top_p=0.95, top_k=0))
+            lora_dropout=0.0, lr=effective["learning_rate"],
+            temperature=smoke_decoding["temperature"], top_p=smoke_decoding["top_p"],
+            top_k=smoke_decoding["top_k"], optimizer=SFT_OPTIMIZER))
     if args.smoke:
         cfg = smoke_config(AutoConfig.from_pretrained(BASE_MODEL, revision=args.revision),
                            len(tok), core.tiny_config)
@@ -409,9 +466,24 @@ def run(args, bundle, adapter_info):
         # start and reload on the pinned base without a hidden merged parent.
         model = PeftModel.from_pretrained(model, str(args.adapter), is_trainable=args.stage == "grpo")
     elif args.stage in ("sft", "grpo"):
+        # Reseed IMMEDIATELY before the adapter is initialised. `set_seed` above
+        # is followed by the gradient smoke, which reseeds to 0 and consumes a
+        # fixed amount of randomness, so without this every protocol seed drew
+        # the same `lora_A` and seeds 1111/2222/3333 differed only in batch
+        # order -- three replicates of one initialisation, not three replicates.
+        set_seed(args.seed)
         model = core.attach_lora(model, args.rank, 2 * args.rank, 0.0)
     if args.stage in ("sft", "grpo"):
         core.check_adapted_modules(model)
+    # What the loaded model will CALL, read off the model after load: the
+    # switch and the blocker are requests, this is the answer. Refused rather
+    # than only recorded when it is not the torch reference, because a run on
+    # another kernel is another arm (`STATUS.md` §2), and reading that from the
+    # manifest after the dose has been paid for is too late.
+    kernel_binding = kernel_block.bound_kernels(model)
+    if not kernel_block.reference_only(kernel_binding):
+        raise TrainingError("gated-delta-net is not bound to the torch reference: "
+                            + json.dumps(kernel_binding, sort_keys=True))
     model.config.pad_token_id = tok.pad_token_id
     model.generation_config.pad_token_id = tok.pad_token_id
     args.output.mkdir(parents=True, exist_ok=False)
@@ -436,7 +508,15 @@ def run(args, bundle, adapter_info):
                                  "lineage": target_report["lineage"]}
                                 if args.stage == "sft" and target_report else None),
                 "args": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
-                "versions": versions, "kernels": kernels}
+                "versions": versions, "kernels": kernels, "kernel_binding": kernel_binding,
+                # Declared, not implied: a fresh adapter's `lora_A` is drawn
+                # from `seed` (reseeded just before `attach_lora`), and SFT
+                # steps exactly this optimiser definition.
+                "lora_init": ({"seed": args.seed, "basis": "set_seed-before-attach_lora"}
+                              if args.stage in ("sft", "grpo") and not args.adapter else None),
+                "sft_optimizer": (dict(SFT_OPTIMIZER, name="AdamW", max_grad_norm=MAX_GRAD_NORM)
+                                  if args.stage == "sft" else None),
+                "grpo_geometry": grpo_geometry(args)}
     if adapter_info:
         prior = adapter_info["experiment"]
         for key in ("tokenizer_sha256", "model_config_sha256", "enable_thinking"):
@@ -445,7 +525,7 @@ def run(args, bundle, adapter_info):
     if args.stage == "grpo" and not args.smoke:
         probe_manifest = json.loads(args.probe.with_name("experiment.json").read_text())
         for key in ("tokenizer_sha256", "model_config_sha256", "versions", "kernels",
-                    "eos_token_id"):
+                    "kernel_binding", "eos_token_id"):
             if probe_manifest.get(key) != manifest[key]:
                 raise TrainingError("probe runtime contract changed: " + key)
     manifest["metric_policy"] = metric_policy(bundle)
@@ -525,7 +605,13 @@ def run(args, bundle, adapter_info):
         train_sft(model, tok, args, train_cases, examples, core, torch, effective, checkpoint,
                   batches=planned_sft_batches)
     else:
-        train_grpo(model, tok, args, bundle, train_cases, verifier, effective, policy, checkpoint)
+        rl_cases = train_cases
+        if args.grpo_informative_only:
+            # Offline dynamic sampling: a case the probe drew all-pass or
+            # all-fail is a group whose advantages are all zero, so every
+            # step spent on it is a step with no gradient.
+            rl_cases = informative_cases(args.probe.with_name("probe-rollouts.jsonl"), train_cases)
+        train_grpo(model, tok, args, bundle, rl_cases, verifier, effective, policy, checkpoint)
     write_json(args.output / "best.json", gate.report())
 
 
@@ -533,6 +619,7 @@ def main(argv=None):
     args = parser().parse_args(argv)
     try:
         bundle, adapter = preflight(args)
+        geometry = grpo_geometry(args)
         if args.plan:
             # The two supervised-dose numbers are printed, not left to be
             # inferred from steps x batch-size, which counts example exposures
@@ -546,6 +633,7 @@ def main(argv=None):
                               "enable_thinking": False,
                               "limits": bundle["limits"], "memory_policy": bundle["memory_policy"],
                               "adapter": adapter, "training_started": False,
+                              "grpo_geometry": geometry,
                               "planned_exposures": planned["planned_exposures"],
                               "supervised_token_upper_bound": planned["supervised_token_upper_bound"],
                               "bundle_digest": bundle["digest"], "target": bundle["identity"],
