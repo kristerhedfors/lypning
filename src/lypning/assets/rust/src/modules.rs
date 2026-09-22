@@ -531,23 +531,21 @@ pub fn call_module_method(
             if args.len() > 1 {
                 return Err(type_err(format!("read expected at most 1 argument, got {}", args.len())));
             }
-            let size = match args.first() {
-                None | Some(Value::None) => None,
-                Some(v @ (Value::Int(_) | Value::Bool(_))) => {
-                    let n = crate::eval::int_val(v)?;
-                    // CPython's text/bytes allocation can overflow even when
-                    // the requested size itself fits Py_ssize_t. Refuse such
-                    // requests rather than silently clamp them to EOF.
-                    if n > (isize::MAX / 4) as i64 {
-                        return Err(unsupported("int-range", "oversized stdin text read"));
-                    }
-                    if n < 0 { None } else { Some(n as usize) }
-                }
+            let n = match args.first() {
+                None | Some(Value::None) => -1,
+                Some(v @ (Value::Int(_) | Value::Bool(_))) => crate::eval::int_val(v)?,
                 #[cfg(feature = "cap-re")]
-                Some(Value::ReFlag(n)) => Some(*n as usize),
+                Some(Value::ReFlag(n)) => *n as i64,
                 Some(other) => return Err(type_err(format!(
                     "argument should be integer or None, not '{}'", type_name(other)))),
             };
+            // CPython's text/bytes allocation can overflow even when the
+            // size fits Py_ssize_t. Apply this check to integer flags too,
+            // before converting to a pointer-sized cursor on 32-bit hosts.
+            if n > (isize::MAX / 4) as i64 {
+                return Err(unsupported("alloc", "oversized stdin text read"));
+            }
+            let size = if n < 0 { None } else { Some(n as usize) };
             Value::Str(crate::iter::decode_text(&mio::stdin_read(size)?, "non-UTF-8 bytes on stdin (CPython decodes it with surrogateescape)")?)
         }
         ("sys.stdin", "readline") => {

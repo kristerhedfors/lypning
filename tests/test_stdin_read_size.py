@@ -90,4 +90,4 @@ def test_oversized_read_refuses_instead_of_masking_cpython_overflow(binary, tmp_
     assert result.returncode == 90
     assert result.stdout == b""
     assert len(result.stderr.splitlines()) == 1
-    assert b": unsupported: int-range:" in result.stderr
+    assert b": unsupported: alloc:" in result.stderr
