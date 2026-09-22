@@ -4,6 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from collections import Counter
 from copy import deepcopy
+import hashlib
+import json
 import math
 import random
 
@@ -59,10 +61,38 @@ def summarize(records, *, min_family_cases=1):
                     "population_slices": "unfiltered descriptive family macro and case-weighted rates"},
         by_family={f: aggregate([r for r in records if r["family"] == f])
                    for f in sorted({r["family"] for r in records})},
-        by_population={p: aggregate([r for r in records if r["population"] == p])
-                       for p in sorted({r["population"] for r in records})},
+        by_population={p: dict(aggregate(rows), case_clusters=case_clusters(rows))
+                       for p in sorted({r["population"] for r in records})
+                       for rows in [[r for r in records if r["population"] == p]]},
         by_capability={c: aggregate([r for r in records if c in r.get("capabilities", [])])
                        for c in sorted({c for r in records for c in r.get("capabilities", [])})})
+
+
+def case_clusters(rows):
+    """Per-case draw, correct and native counts, family by family, in a fixed order.
+
+    A case's k draws share its difficulty, so they are not k independent
+    observations; the unit of replication is the case. These counts are what
+    a case-clustered standard error, and a paired one, are computed from
+    (`paired_standard_error`). Counts rather than case IDs, because
+    `metrics.json` and `best.json` are printed whole into a PUBLIC Actions log
+    (`.github/scripts/s0_inventory.py`): `digest` names the (family, case) set
+    so two evaluations can be proved to pair, without publishing either.
+    Families and cases are sorted, so the same set gives the same order in
+    every evaluation. A row without a case ID is its own case, as in
+    `summarize`'s `cases` count.
+    """
+    families = {}
+    for i, r in enumerate(rows):
+        counts = families.setdefault(r["family"], {}).setdefault(r.get("case_id", str(i)), [0, 0, 0])
+        counts[0] += 1
+        counts[1] += int(bool(r["correct"]))
+        counts[2] += int(bool(r["native"]))
+    identity = [[f, sorted(cases)] for f, cases in sorted(families.items())]
+    return {"digest": hashlib.sha256(json.dumps(identity).encode("utf-8")).hexdigest(),
+            "families": [{name: [families[f][c][i] for c in cases]
+                          for i, name in enumerate(("draws", "correct", "native"))}
+                         for f, cases in identity]}
 
 
 def split_components(links):
@@ -147,6 +177,9 @@ GATE_A_TOLERANCE = 0.02
 #: One-sided normal quantile for the selection margin; 1.2816 is the 90th
 #: percentile. The constant IS the rule "a checkpoint no better than base is
 #: selected at most 10% of the time", not a number tuned until a test passed.
+#: It holds only when the standard error it multiplies is the noise of the
+#: quantity compared -- the paired delta, clustered by case -- which is what
+#: `paired_standard_error` supplies.
 SELECTION_Z = 1.2816
 
 #: Population retention is a collapse detector, not a significance test: three
@@ -155,25 +188,88 @@ SELECTION_Z = 1.2816
 RETENTION_Z = 3.0
 
 
-def macro_standard_error(metrics, key="correct_native"):
-    """Standard error of a family macro of per-family rates, from `summarize`.
+#: The population selection ranks on. A fallback-control family is one whose
+#: right answer is to fall back to CPython; its draws turning native are not
+#: the gain being trained for, and `positive_control_targets.build_targets`
+#: rejects exactly those draws as `control-became-native`. Controls enter the
+#: gate only through Gate A and correctness retention.
+SELECTION_POPULATION = "coverage"
 
-    The macro weights families equally, so its variance is the sum of the
-    per-family binomial variances over the squared family count -- not
-    `p(1-p)/draws` over the pooled draws, which on seed 1111's dev split
-    overstates it by about 1.6x because the per-family rates are extreme
-    (one family at 0.0, three saturated) while their average is near 0.5.
+_COUNT = {"correct": "correct", "correct_native": "native"}
+
+
+def _clustered_variance(families):
+    """Variance of a family macro, from per-case values grouped by family.
+
+    A family's rate is a mean over its cases, so its variance is the
+    between-case sample variance over the case count: the case is the cluster,
+    and k correlated draws of one case count once. A family of one case has no
+    between-case spread to measure; its term is then the draws' own binomial
+    variance (`single`), which assumes the independence one case cannot test.
+    The macro weights families equally, hence the squared family count.
     """
-    families = metrics.get("by_family")
-    if not families:
-        raise TrainingError("checkpoint selection needs per-family metrics")
     variance = 0.0
-    for stats in families.values():
-        rate, draws = float(stats[key]), int(stats["draws"])
-        if draws <= 0:
-            raise TrainingError("a family with no draws cannot enter the macro")
-        variance += rate * (1.0 - rate) / draws
-    return math.sqrt(variance) / len(families)
+    for values, single in families:
+        n = len(values)
+        if n < 2:
+            variance += single
+            continue
+        mean = sum(values) / n
+        variance += sum((v - mean) ** 2 for v in values) / (n - 1) / n
+    return variance / len(families) ** 2
+
+
+def _clusters(stats):
+    clusters = stats.get("case_clusters") if isinstance(stats, dict) else None
+    if not clusters or not clusters.get("families"):
+        raise TrainingError("checkpoint selection needs the case clusters `summarize` reports")
+    return clusters
+
+
+def _binomial(fam, count):
+    draws = sum(fam["draws"])
+    if draws <= 0:
+        raise TrainingError("a family with no draws cannot enter the macro")
+    rate = sum(fam[count]) / draws
+    return rate * (1.0 - rate) / draws
+
+
+def macro_standard_error(stats, key="correct_native"):
+    """Case-clustered standard error of one slice's family macro.
+
+    `stats` is a `summarize` slice carrying `case_clusters` (a `by_population`
+    entry). The per-family `p(1-p)/draws` this replaced treated a case's k
+    draws as k independent observations. They share the case's difficulty, so
+    the draws of a case that is always solved add no information, and the
+    spread between cases -- which the draws repeat -- is the noise that counts.
+    """
+    count = _COUNT[key]
+    return math.sqrt(_clustered_variance(
+        [([x / d for x, d in zip(fam[count], fam["draws"])], _binomial(fam, count))
+         for fam in _clusters(stats)["families"]]))
+
+
+def paired_standard_error(base, candidate, key="correct_native"):
+    """Case-clustered standard error of the paired candidate-minus-base macro delta.
+
+    Selection asks whether a checkpoint beats base, and base is a measurement
+    too, as noisy as the candidate. A margin sized on base's noise alone and
+    tested against a base held fixed admits a checkpoint no better than base
+    more often than the 10% it states (`tests/test_gate_admission.py` measures
+    it). Both evaluations score the same dev cases, so the delta is taken case
+    by case: difficulty a case carries into both arms cancels, and what remains
+    -- both arms' draw noise, and any case-level shift the checkpoint made --
+    is exactly what the spread of the per-case deltas measures.
+    """
+    count = _COUNT[key]
+    b, c = _clusters(base), _clusters(candidate)
+    if b["digest"] != c["digest"] or len(b["families"]) != len(c["families"]):
+        raise TrainingError("paired selection needs the same cases in both evaluations")
+    return math.sqrt(_clustered_variance(
+        [([xc / dc - xb / db for xb, db, xc, dc in
+           zip(fb[count], fb["draws"], fc[count], fc["draws"])],
+          _binomial(fb, count) + _binomial(fc, count))
+         for fb, fc in zip(b["families"], c["families"])]))
 
 
 def pooled_standard_error(stats, key="correct"):
@@ -205,26 +301,40 @@ class CheckpointGate:
        than `RETENTION_Z` standard errors -- at least `tolerance` -- below
        base. An aggregate gain must not hide a fallback-control collapse.
     3. **Selection.** Among the eligible, the largest correct-and-native
-       family macro, and it must clear base by `margin` = `z` standard errors.
-       Without that margin a pure argmax admits pure noise about half the
-       time, because the best of several noisy draws is biased upward.
+       family macro of the `population` slice (coverage), whose paired gain
+       over base must clear `z` case-clustered standard errors of that delta
+       (`paired_standard_error`). Without that margin a pure argmax admits
+       pure noise about half the time, because the best of several noisy draws
+       is biased upward. Controls are not ranked: a control family flipping
+       from fallback to native is not the effect being trained for, so
+       controls count only through rules 1 and 2.
 
     Step 0 is the incumbent and stays selectable: nothing displaces it unless
     it clears the bar. Every observation is kept in `report()`, admitted or
-    not, so the selection can be re-read -- and re-made -- offline.
+    not, with its delta, standard error and margin -- the margin depends on
+    the candidate now, since it is the noise of a paired delta -- so the
+    selection can be re-read, and re-made, offline.
     """
     baseline: dict
     tolerance: float = GATE_A_TOLERANCE
     z: float = SELECTION_Z
+    population: str = SELECTION_POPULATION
     best_step: int = 0
     best: dict = None
-    margin: float = 0.0
     observations: list = field(default_factory=list)
 
     def __post_init__(self):
         self.baseline = deepcopy(self.baseline)
         self.best = deepcopy(self.baseline)
-        self.margin = self.z * macro_standard_error(self.baseline)
+        self._selected(self.baseline)   # refuse, at step 0, a baseline selection cannot read
+
+    def _selected(self, metrics):
+        """The slice selection ranks on: refused when absent, never read as zero."""
+        stats = metrics.get("by_population", {}).get(self.population)
+        if stats is None:
+            raise TrainingError("checkpoint selection needs the %r population" % self.population)
+        _clusters(stats)
+        return stats
 
     def _retention(self, metrics):
         """Population slices whose correctness fell further than their noise."""
@@ -244,30 +354,40 @@ class CheckpointGate:
         the selection is read afterwards. The old return value was an early
         stop that cut seed 1111's GRPO off at step 15 of a registered 20.
         """
-        floor = self.baseline["correct"] - self.tolerance
-        bar = self.baseline["correct_native"] + self.margin
+        base, candidate = self._selected(self.baseline), self._selected(metrics)
+        score = candidate["correct_native"]
+        delta = score - base["correct_native"]
+        error = paired_standard_error(base, candidate)
+        margin = self.z * error
         lost = self._retention(metrics)
         reasons = []
-        if metrics["correct"] < floor:
+        if metrics["correct"] < self.baseline["correct"] - self.tolerance:
             reasons.append("gate-a")
         if lost:
             reasons.append("retention")
-        if metrics["correct_native"] < bar:
+        if delta < margin:
             reasons.append("margin")
-        if not reasons and metrics["correct_native"] <= self.best["correct_native"]:
+        if not reasons and score <= self._selected(self.best)["correct_native"]:
             reasons.append("not-best")
         self.observations.append({"step": step, "correct": metrics["correct"],
                                   "correct_native": metrics["correct_native"],
+                                  "selection_correct_native": score, "delta": delta,
+                                  "standard_error": error, "margin": margin,
                                   "selected": not reasons, "rejected_for": reasons,
                                   "retention_lost": lost})
         if not reasons:
             self.best, self.best_step = metrics, step
 
     def report(self):
+        base = self._selected(self.baseline)
         return dict(self.best, step=self.best_step, rule={
-            "metric": "correct_native", "gate_a_tolerance": self.tolerance,
-            "selection_z": self.z, "retention_z": RETENTION_Z, "margin": self.margin,
+            "metric": "by_population.%s.correct_native" % self.population,
+            "selection_population": self.population, "gate_a_tolerance": self.tolerance,
+            "selection_z": self.z, "retention_z": RETENTION_Z,
+            "margin": "selection_z x the case-clustered standard error of the paired "
+                      "delta over base; per observation",
+            "baseline_standard_error": macro_standard_error(base),
             "baseline_correct": self.baseline["correct"],
-            "baseline_correct_native": self.baseline["correct_native"],
+            "baseline_correct_native": base["correct_native"],
             "selection_is_post_hoc": True, "early_stopping": False,
         }, observed=list(self.observations))

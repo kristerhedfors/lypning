@@ -1,7 +1,6 @@
 """Scientific-contract regressions; no model downloads, GPU imports or rollouts."""
 from __future__ import annotations
 
-import copy
 import json
 from pathlib import Path
 import re
@@ -209,9 +208,11 @@ def test_a_capability_regression_is_reported_and_no_longer_a_floor():
     baseline = summarize(evaluation_rows())
     baseline["by_capability"]["csv"]["correct"] = 1
     gate = CheckpointGate(baseline)
-    candidate = copy.deepcopy(baseline)
-    candidate["correct_native"] = baseline["correct_native"] + .5
-    candidate["by_capability"]["csv"]["correct"] = .5
+    # Family "one" turns correct and native: the coverage macro selection reads
+    # rises by .5, and the csv capability sits at .5, below the 1 set above.
+    candidate = summarize([dict(r, correct=True, native=True) if r["family"] == "one" else r
+                           for r in evaluation_rows()])
+    assert candidate["by_capability"]["csv"]["correct"] == .5
     assert gate.observe(10, candidate) is None, "selection never stops training"
     assert gate.best_step == 10
     assert gate.report()["by_capability"]["csv"]["correct"] == .5
