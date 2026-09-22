@@ -15,6 +15,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 ## Unreleased
 
 **2026-09-22** — Preregister the benchmark family floor and expose slice fragility
+([#98](https://github.com/kristerhedfors/lypning/pull/98))
 
 - Applies the five-distinct-case floor to benchmark primary metrics and paired
   comparisons while preserving source-group links and all slice diagnostics.
