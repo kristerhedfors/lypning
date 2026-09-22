@@ -1747,14 +1747,29 @@ def cmd_gate(ns: argparse.Namespace) -> int:
 
 def cmd_harvest(ns: argparse.Namespace) -> int:
     harvest = _mod("harvest")
+    codex = bool(getattr(ns, "codex", False))
+    if codex and not harvest.codex_available():
+        # Asked for and absent is a hole, not a feed that found nothing: exit 1
+        # before anything is read or written, so a half-run never reports as a
+        # whole one.
+        raise Failure("harvest --codex: the Codex feed is not in this build (no lypning.codex)")
+    # --transcripts also copies each transcript block's model and outcome into
+    # the attribution journal — the one step that keeps a record captured
+    # before ids were logged attributable after its transcript is deleted.
+    # Counted either way; appended only on a real run.
+    journaled = (harvest.journal_transcripts(persist=not ns.dry_run)
+                 if ns.transcripts else None)
     if ns.dry_run:
         # persist=False, because --dry-run writes nothing and the transcript
-        # index cache is a write. It is still READ, so the report is the same
-        # report a real run would produce.
-        sightings = harvest.collect(transcripts=ns.transcripts, persist=False)
+        # index cache and the attribution journal are writes. Both are still
+        # READ, so the report is the same report a real run would produce.
+        sightings = harvest.collect(transcripts=ns.transcripts, persist=False, codex=codex)
         if ns.json:
-            _json({"mode": "dry-run", "sightings": len(sightings),
-                   "corpus": str(paths.corpus_write_file())})
+            obj = {"mode": "dry-run", "sightings": len(sightings),
+                   "corpus": str(paths.corpus_write_file())}
+            if journaled is not None:
+                obj["journal"] = {"path": str(harvest.attribution_path()), "would_add": journaled}
+            _json(obj)
         elif not ns.quiet:
             _out("harvest: %d sighting(s) collected; nothing written (--dry-run).\n"
                  "         corpus would be %s" % (len(sightings), paths.corpus_write_file()))
@@ -1764,18 +1779,20 @@ def cmd_harvest(ns: argparse.Namespace) -> int:
     # only the first hands back the record `harvest.render` reports from —
     # including WHY a sighting was dropped, which is the whole content of a run
     # that publishes nothing.
-    result = harvest._export()
+    result = harvest._export(codex=codex)
     counts = None
     if not ns.export:
-        counts = harvest.fold_into_corpus(harvest.collect(transcripts=ns.transcripts))
+        counts = harvest.fold_into_corpus(harvest.collect(transcripts=ns.transcripts, codex=codex))
     if ns.json:
         obj = result.to_obj()
         obj["mode"] = "export" if ns.export else "fold"
         obj["corpus"] = ({"path": str(paths.corpus_write_file()), "added": counts[0], "total": counts[1]}
                          if counts else None)
+        if journaled is not None:
+            obj["journal"] = {"path": str(harvest.attribution_path()), "added": journaled}
         _json(obj)
     elif not ns.quiet:
-        _out(harvest.render(result, corpus_counts=counts))
+        _out(harvest.render(result, corpus_counts=counts, journaled=journaled))
     return 0
 
 
@@ -2497,14 +2514,22 @@ Two steps that are deliberately separate.
 
 Everything is redacted before it is written — these files are committed — and
 programs already in the corpus are not re-counted.
+
+Every real run also appends what it resolved (model, outcome) to
+$LYPNING_HOME/attribution.jsonl, which outlives the transcripts it came from.
 """, """
 examples:
   lypning harvest --export --quiet     what the Stop hook runs
+  lypning harvest --export --transcripts
+                                       also journal every transcript block's model
   lypning harvest --dry-run
   lypning harvest --json
 """)
     s.add_argument("--export", action="store_true", help="publish sightings only; write no corpus")
-    s.add_argument("--transcripts", action="store_true", help="also scan Claude Code transcripts")
+    s.add_argument("--transcripts", action="store_true",
+                   help="also scan Claude Code transcripts, and journal their models")
+    s.add_argument("--codex", action="store_true",
+                   help="also read Codex CLI rollouts (~/.codex/sessions), read-only")
     s.add_argument("--dry-run", action="store_true", help="report; write no corpus")
     s.add_argument("--quiet", action="store_true", help="say nothing; the exit code is the answer")
     s.add_argument("--json", action="store_true", help="machine-readable")
