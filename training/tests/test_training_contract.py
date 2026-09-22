@@ -142,15 +142,47 @@ def test_probe_gate_exact_identity_and_nontruncated_variation(tmp_path):
         probe_report(rows, contract)
 
 
-def test_zero_signal_grpo_aborts_without_reward_shaping():
+def test_zero_signal_grpo_is_logged_as_a_fraction_never_aborted_or_shaped():
+    """A no-spread group carries no gradient; it is counted, not fatal.
+
+    The consecutive-group abort this replaces would fire by chance inside an
+    arm-C dose (about 0.79**20 per starting point at seed 1111's informative
+    rate). Many more than the old `max_no_signal` in a row must now pass,
+    rewards must stay unshaped zeros, and the fraction must be logged.
+    """
     from types import SimpleNamespace
     case = dict(starter_cases()[0], split="train")
     verifier = SimpleNamespace(score=lambda *a: Score(0, "incorrect", 0, 3))
     reward = Reward([case], verifier, eos_token_id=[98, 99], generations=2, max_no_signal=2)
-    kwargs = dict(completions=["bad", "bad"], case_id=[case["case_id"]] * 2, completion_ids=[[99], [98]])
-    assert reward(**kwargs) == [0, 0]
-    with pytest.raises(TrainingError, match="no usable reward"):
-        reward(**kwargs)
+    logged = []
+    kwargs = dict(completions=["bad", "bad"], case_id=[case["case_id"]] * 2, completion_ids=[[99], [98]],
+                  log_metric=lambda name, value: logged.append((name, value)))
+    assert reward.no_signal_fraction is None
+    for _ in range(25):
+        assert reward(**kwargs) == [0, 0]
+    assert (reward.groups, reward.no_signal_groups, reward.no_signal_fraction) == (25, 25, 1.0)
+    assert ("verified/frac_no_signal_groups", 1.0) in logged
+    assert ("verified/no_signal_fraction", 1.0) in logged
+
+    # An informative group moves the cumulative fraction and logs its batch as 0.
+    # Scores are keyed on the PROGRAM, never on call order: Reward scores a
+    # group concurrently, so an iterator of scores races between its threads.
+    def by_program(case, program):
+        if program is None:  # a truncated draw is scored as no program at all
+            return Score(0.5, "no-code", 0, 3)
+        return Score(1.0, "correct-native", 3, 3) if program == "good" else Score(0, "incorrect", 0, 3)
+    reward.verifier = SimpleNamespace(score=by_program)
+    mixed = dict(kwargs, completions=["```python\nbad\n```", "```python\ngood\n```"])
+    logged.clear()
+    assert reward(**mixed) == [0, 1.0]
+    assert (reward.groups, reward.no_signal_groups) == (26, 25)
+    assert ("verified/frac_no_signal_groups", 0.0) in logged
+    assert ("verified/no_signal_fraction", 25 / 26) in logged
+
+    # A truncated draw is masked, so its distinct reward cannot make the group
+    # informative: the rewards differ (0 vs 0.5) and the group still counts.
+    assert reward(**dict(mixed, completion_ids=[[99], [7]])) == [0, 0.5]
+    assert (reward.groups, reward.no_signal_groups) == (27, 26)
 
 
 def test_warmup_decay_bounds():
