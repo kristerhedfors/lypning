@@ -68,10 +68,10 @@ env:
   # about 3.7x longer, so its margin is much wider and its own smallest
   # clearing value is 74. A bank change re-runs that count; the gate makes it.
   PILOT_STEPS: "300"
-  # 300m killed the round of 2026-09-19 at six hours. This bank needs ~3.3 h of
-  # preparation, then base-dev, SFT and the eval arm; 480m at $5/h is about $40
-  # a seed, and a seed that dies at the wall buys nothing at all.
-  PILOT_TIMEOUT: "480m"
+  # PLAN Step 1.5: a twelve-hour ceiling, independently enforced in-container.
+  # This is a maximum, not an estimate or spend approval; preflight still gates
+  # every new arm and prints current hardware pricing.
+  PILOT_TIMEOUT: "720m"
   # Throughput, bought where it is a COST decision and not an instrument one.
   # Preparation runs at ~4 s/case through 16 scorers and is the stage that ended
   # two rounds at the wall; 64 scorers is four times that. Sandboxes PER HOST
@@ -236,7 +236,7 @@ jobs:
       github.event.inputs.submit == 'SUBMIT'
     runs-on: ubuntu-latest
     # THE FOLLOWER NOW DIES BEFORE THE ROUND DOES, ON PURPOSE. The pilot is
-    # submitted with PILOT_TIMEOUT (480m) and GitHub caps a hosted job at 360
+    # submitted with PILOT_TIMEOUT (720m) and GitHub caps a hosted job at 360
     # minutes, so this cannot outlive it and 350 is the most it can watch. The
     # HF job keeps running and still uploads its round directory; what is lost
     # is the stream, not the round. `hf-status.yml` reads the side that knows,

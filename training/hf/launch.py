@@ -34,7 +34,7 @@ BANKED = ("pilot",)
 DEFAULT_STEPS, DEFAULT_GRPO_STEPS, DEFAULT_EVAL_DRAWS, DEFAULT_SEED = 250, 20, 16, 1111
 # 12 scorers, not 16: the default pool is 4 x 4 = 16 slots, and 16 scorers in
 # 16 slots is the exact-fit shape that has no room for a sandbox winding down.
-DEFAULT_EVAL_SEQUENCES, DEFAULT_SCORE_WORKERS = 128, 12
+DEFAULT_EVAL_SEQUENCES, DEFAULT_SCORE_WORKERS = 256, 12
 DEFAULT_POOL_SANDBOXES_PER_HOST, DEFAULT_POOL_MAX_HOSTS = 4, 4
 #: The density ceiling a banked launch may not exceed, in sandboxes on one host
 #: of this flavor (`pipeline/hf_sandbox_runner.FLAVOR`). `native` is a
@@ -62,6 +62,31 @@ def bootstrap(stage, branch, commit):
     return ("set -euo pipefail; apt-get update -qq >/dev/null && apt-get install -y -qq git >/dev/null; "
             "git clone -q --branch %s %s /work/lypning && cd /work/lypning && git checkout -q %s && "
             "bash %s" % (shlex.quote(branch), shlex.quote(REPO_URL), shlex.quote(commit), shlex.quote(STAGES[stage])))
+
+
+def timeout_seconds(value):
+    """Resolve the submitted duration once for both provider and local enforcement."""
+    match = re.fullmatch(r"([1-9][0-9]*)([smhd]?)", str(value))
+    if not match:
+        raise ValueError("--timeout must be a positive integer with optional s/m/h/d suffix")
+    seconds = int(match[1]) * {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[match[2]]
+    if seconds < 2:
+        raise ValueError("--timeout must allow at least two seconds")
+    return seconds
+
+
+def bounded_command(args):
+    """GNU timeout in the pinned Debian image bounds bootstrap and its children.
+
+    TERM leaves up to 60 seconds for the stage's EXIT upload trap; KILL ends
+    the process group within the submitted budget even if a child ignores TERM.
+    The GitHub log follower's lifetime is irrelevant to this in-container timer.
+    """
+    seconds = timeout_seconds(args.timeout)
+    grace = min(60, max(1, seconds // 10))
+    return ["timeout", "--signal=TERM", "--kill-after=%ds" % grace,
+            "%ds" % (seconds - grace), "bash", "-c",
+            bootstrap(args.stage, args.branch, args.commit)]
 
 
 def job_env(args):
@@ -134,6 +159,11 @@ def main(argv=None):
     p.add_argument("--yes", action="store_true", help="actually submit (billed)")
     p.add_argument("--follow", action="store_true", help="stream logs until the job ends")
     args = p.parse_args(argv)
+    try:
+        deadline = timeout_seconds(args.timeout)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     for name, value in (("commit", args.commit), ("space revision", args.space_revision), ("Qwen revision", args.qwen_revision)):
         if not re.fullmatch(r"[0-9a-f]{40}", value):
             print("%s must be a 40-character commit" % name, file=sys.stderr)
@@ -213,6 +243,7 @@ def main(argv=None):
         print("unknown flavor %s" % args.flavor, file=sys.stderr)
         return 2
     plan = {"stage": args.stage, "image": BASE_IMAGE, "flavor": args.flavor, "timeout": args.timeout,
+            "timeout_seconds": deadline, "local_deadline_command": bounded_command(args)[:4],
             "hourly_usd": round(hardware[args.flavor].unit_cost_usd * (60 if hardware[args.flavor].unit_label == "minute" else 1), 2),
             "branch": args.branch, "commit": args.commit, "space": args.space, "space_revision": args.space_revision,
             "qwen_revision": args.qwen_revision, "work_repo": args.work_repo}
@@ -231,9 +262,9 @@ def main(argv=None):
         print("refusing to submit: %s exists and is not a private dataset repository" % args.work_repo, file=sys.stderr)
         return 2
     job = api.run_job(
-        image=BASE_IMAGE, command=["bash", "-c", bootstrap(args.stage, args.branch, args.commit)],
+        image=BASE_IMAGE, command=bounded_command(args),
         env=job_env(args),
-        secrets={"HF_TOKEN": token}, flavor=args.flavor, timeout=args.timeout,
+        secrets={"HF_TOKEN": token}, flavor=args.flavor, timeout=deadline,
         name="lypning-round02-" + args.stage, labels={"lypning-round": "02", "lypning-stage": args.stage})
     print(json.dumps({"job_id": job.id, "url": job.url}))
     if args.follow:

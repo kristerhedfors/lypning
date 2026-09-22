@@ -104,7 +104,7 @@ def test_pilot_env_wires_the_bank_and_its_knobs_as_strings():
     assert env == {"SPACE_REPO": "o/space", "SPACE_REV": "a" * 40, "QWEN_REV": "b" * 40, "WORK_REPO": "o/work",
                    "BANK_PATH": "banks/2026-09-16", "STEPS": "40", "GRPO_STEPS": "20",
                    "EVAL_DRAWS": "8", "SEED": "2222",
-                   "EVAL_SEQUENCES": "128", "SCORE_WORKERS": "12",
+                   "EVAL_SEQUENCES": "256", "SCORE_WORKERS": "12",
                    "NTX_POOL_SANDBOXES_PER_HOST": "4", "NTX_POOL_MAX_HOSTS": "4",
                    "BUNDLES_FROM": ""}
     defaults = launch.job_env(args("pilot", bank_path="banks/x"))
@@ -323,3 +323,47 @@ def test_the_round_the_workflow_would_actually_launch_is_admissible():
     assert per_host * hosts >= scorers + per_host, (
         "round02.yml would be refused by the launch guard: %d scorers against "
         "%d x %d slots leaves less than one host of slack" % (scorers, per_host, hosts))
+
+
+def test_provider_and_process_group_deadlines_use_the_same_duration():
+    a = args("pilot", timeout="720m", branch="example", commit="a" * 40)
+    command = launch.bounded_command(a)
+    assert launch.timeout_seconds(a.timeout) == 43200
+    assert command[:6] == ["timeout", "--signal=TERM", "--kill-after=60s", "43140s", "bash", "-c"]
+    assert command[-1] == launch.bootstrap(a.stage, a.branch, a.commit)
+    import pytest
+    for bad in ("0", "1s", "-2h", "nan", "1h;echo secret", ""):
+        with pytest.raises(ValueError):
+            launch.timeout_seconds(bad)
+
+
+def test_timeout_kills_children_that_ignore_term(tmp_path):
+    import shutil
+    import subprocess
+    import sys
+    import time
+    import pytest
+    timeout = shutil.which("timeout") or shutil.which("gtimeout")
+    if timeout is None:
+        pytest.skip("GNU timeout is supplied by the Linux worker image")
+    started = time.monotonic()
+    proc = subprocess.run([timeout, "--signal=TERM", "--kill-after=1s", "1s", sys.executable,
+        "-c", "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)"],
+        timeout=8)
+    assert proc.returncode in (-9, 137)
+    assert time.monotonic() - started < 8
+
+
+def test_timeout_audit_prints_no_environment_or_log_payload():
+    import json
+    spec = importlib.util.spec_from_file_location("timeout_audit", Path(__file__).parents[2] /
+                                                ".github/scripts/hf_timeout_audit.py")
+    audit = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(audit)
+    summary = audit.safe_summary(dict(timeoutSeconds=28800, timeout="SECRET", createdAt="SECRET",
+        startedAt="2026-09-20T17:49:47Z", secrets={"HF_TOKEN": "SECRET"}, command=["SECRET"],
+        environment={"SECRET": "SECRET"}, status={"stage": "CANCELED", "message": "SECRET"},
+        durations={"running": 40000, "private": "SECRET"}))
+    assert "SECRET" not in json.dumps(summary)
+    assert summary["timeoutSeconds"] == 28800
+    assert summary["startedAt"] == "2026-09-20T17:49:47Z"

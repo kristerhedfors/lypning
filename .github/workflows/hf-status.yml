@@ -12,6 +12,10 @@ on:
     branches: ["round02/**", "bank3/**"]
   workflow_dispatch:
     inputs:
+      timeout_audit_job:
+        description: "read only timeout and timestamps for this job; no logs or artifacts"
+        default: ""
+        type: string
       job_log:
         description: "also print this job's own log (the side that knows why it died)"
         default: ""
@@ -38,15 +42,23 @@ jobs:
           python-version: "3.12"
       - run: pip install -q "huggingface-hub==1.31.0"
       - name: Jobs, artifacts and the round manifest
+        if: ${{ inputs.timeout_audit_job == '' }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python .github/scripts/hf_status.py
+
+      - name: Audit timeout metadata only
+        if: ${{ inputs.timeout_audit_job != '' }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          AUDIT_JOB: ${{ inputs.timeout_audit_job }}
+        run: python .github/scripts/hf_timeout_audit.py "$AUDIT_JOB"
 
       # A GitHub runner will not serve an in-progress job's log and expires
       # before a 480m pilot anyway, so twice on 2026-09-19 a round's cause of
       # death was readable only from the Hub.
       - name: That job's own log
-        if: ${{ inputs.job_log != '' }}
+        if: ${{ inputs.job_log != '' && inputs.timeout_audit_job == '' }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |

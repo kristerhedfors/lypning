@@ -12,6 +12,17 @@ The next round is not this one again: [`PLAN.md`](PLAN.md) Step 1 changes the
 selector, the learning rates and the eval cost before a GPU is booked, so the
 readiness below is necessary and no longer sufficient.
 
+**2026-09-22 cost-bound amendment (Step 1.5).** The proposed pilot timeout is
+720 minutes. The launcher resolves it to 43,200 seconds for both the provider
+and an independent in-container process-group deadline: TERM at 719 minutes,
+KILL by 720, including bootstrap. At the historical $5/h rate this is a **$60
+GPU ceiling per seed**, not the earlier $25 estimate; CPU pool costs are extra
+and the current preflight price table controls. The workflow value is not spend
+authorization. The next paid round still needs an operator ceiling, all six
+preflight checks and a hardware smoke of the 256-sequence evaluation batch.
+Smaller explicit batches remain possible but must match across all arms and
+seeds; changing the chunking changes the sampling instrument.
+
 ## The bank a round would now read
 
 `banks/v3-20260919` in the private artifact repo, cut from six batches by

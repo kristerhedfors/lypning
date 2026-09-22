@@ -29,7 +29,7 @@ from pipeline.training_metrics import summarize
 from pipeline.training_types import VerificationBlocked
 
 #: Sequences one `generate` call carries; a chunk is this many cases × draws.
-SEQUENCES_PER_CALL = 64
+SEQUENCES_PER_CALL = 256
 #: Concurrent verifier scorings; one pooled sandbox host serves 50.
 SCORE_WORKERS = 16
 

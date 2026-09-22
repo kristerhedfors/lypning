@@ -32,7 +32,7 @@ set -euo pipefail
 STEPS="${STEPS:-250}"
 GRPO_STEPS="${GRPO_STEPS:-20}"
 EVAL_DRAWS="${EVAL_DRAWS:-16}"
-EVAL_SEQUENCES="${EVAL_SEQUENCES:-128}"   # sequences per generate call in evaluation
+EVAL_SEQUENCES="${EVAL_SEQUENCES:-256}"   # sequences per generate call in evaluation
 SCORE_WORKERS="${SCORE_WORKERS:-16}"      # concurrent verifier scorings (one pool host serves 50)
 export NTX_POOL_SANDBOXES_PER_HOST="${NTX_POOL_SANDBOXES_PER_HOST:-4}"
 export NTX_POOL_MAX_HOSTS="${NTX_POOL_MAX_HOSTS:-4}"
@@ -129,6 +129,8 @@ PYEOF
   exit "$code"
 }
 trap 'finish $?' EXIT
+trap 'exit 124' TERM
+trap 'exit 130' INT
 
 # 1. The GPU script's own pinned dependencies are the single source of truth.
 STAGE=deps
@@ -406,10 +408,10 @@ checkpoint
 STAGE=eval2
 run "${TV[@]}" eval --eval-split all --eval-draws "$EVAL_DRAWS" --bundle "$EVAL2" --output "$ROUND/base-eval2" "${COMMON[@]}"
 checkpoint
-run "${TV[@]}" eval --eval-split all --eval-draws "$EVAL_DRAWS" --adapter "$SFT_ADAPTER" --bundle "$EVAL2" --output "$ROUND/sft-eval2" "${COMMON[@]}"
+run "${TV[@]}" eval --eval-split all --eval-draws "$EVAL_DRAWS" --adapter "$SFT_ADAPTER" --reuse-evaluation "$ROUND/base-eval2" --bundle "$EVAL2" --output "$ROUND/sft-eval2" "${COMMON[@]}"
 checkpoint
 if [ -n "$GRPO_ADAPTER" ]; then
-  run "${TV[@]}" eval --eval-split all --eval-draws "$EVAL_DRAWS" --adapter "$GRPO_ADAPTER" --bundle "$EVAL2" --output "$ROUND/grpo-eval2" "${COMMON[@]}"
+  run "${TV[@]}" eval --eval-split all --eval-draws "$EVAL_DRAWS" --adapter "$GRPO_ADAPTER" --reuse-evaluation "$ROUND/sft-eval2" --bundle "$EVAL2" --output "$ROUND/grpo-eval2" "${COMMON[@]}"
   checkpoint
 fi
 
