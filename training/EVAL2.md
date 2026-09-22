@@ -359,6 +359,15 @@ training side and the training bundle is re-cut; eval-2 keeps its digest. The
 excluding train cases after the fact; here the check is a precondition of
 freezing.
 
+Captured programs are eval-2 v1's own source population, so a capture-tier bank
+(`DATA_PRODUCTION.md`, *Capture tier*) is always on the training side of this
+check. There is also a filter before authoring: `nt capture-export` drops every
+program that ever appeared in a command mentioning eval-2, a bank,
+positive-control, completions or the capture log. After authoring, the
+capture-tier bank is checked on all five rules against both eval-2 v1 and the
+v3 eval-2 bundle. The v3 check runs in CI, because the bundle is private, and
+prints aggregates only. On a hit the capture case is dropped.
+
 ## 9. What would falsify
 
 A base rate at or above 90% correct-and-native on eval-2 leaves no headroom

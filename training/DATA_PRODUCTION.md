@@ -137,6 +137,81 @@ native-host calls. No automatic log rotation/deletion is introduced.
   missing intent, unsafe side effects, incomplete observables or unknown rights
   prevents training admission, not proof of worthlessness.
 
+## Capture tier: from the raw log to eval-2-style candidates
+
+Captured programs reach training through one route, and it is not bank v3. They
+go into a **separate capture-tier bank** for the round after S4. They are never
+appended to v3 and never passed through `training_data.split_cases`. Adding
+components there re-ranks every existing one, which would move sealed dev/test
+cases and mix the differential-oracle tier with v3's self-consistency tier. They
+are not an arm-A input either: a program Claude wrote is not a draw the target
+model made.
+
+```bash
+./nt capture-export --origin <host>/<log-generation> --output work/capture.jsonl \
+    --evidence work/capture-evidence          # reads the log; writes only these two
+./nt eval2-select --export work/capture.jsonl --output work/capture-cands.jsonl
+./nt eval2-bank --candidates work/capture-cands.jsonl --evidence work/capture-evidence ...
+```
+
+- **Export** (`pipeline.capture_export`) reads `$LYPNING_HOME/invocations.jsonl`
+  and never writes to it. It runs `harvest.extract_with_tails` over every Bash
+  command and keeps the exact program bytes, so `sha256(program)` is the
+  `source_sha256` that `eval2_bank` links on. Each row carries the
+  `parent_event_id` that `lypning.evidence` gives the log line under the same
+  origin, plus the session, the host and the tool call's `ok` when a record of
+  it exists. The output files are owner-only.
+- **Attribution** uses exact joins only. It reads the append-only
+  `attribution.jsonl` journal first, then the transcript's `tool_use` id, then,
+  for records written before the id was captured, the byte-identical Bash
+  command in that session's transcripts, but only when every match names the
+  same model. Anything else is `unknown`, never a time guess.
+- **Quality** (`pipeline.capture_quality`) is a static AST verdict that executes
+  nothing. The first rule that fails decides the verdict: unparseable,
+  repo-local import, process, network, environment, file writes, file or path
+  reads, non-stdlib import, stdin glue under 60 nodes, under 40 nodes or no
+  def/loop, unseeded clock or randomness, privacy. Privacy covers a `redact`
+  hit, an email, a home path or an absolute path. Only tier A (no rule failed)
+  is written by default. `--all` writes every row for an audit, but withholds
+  the text of anything the privacy rule rejected.
+- **Contamination** is decided per program. If a command mentions eval-2, a
+  bank, positive-control, completions or `invocations.jsonl`, every program in
+  it is tainted, and so is every other occurrence of the same bytes.
+- **Selection** folds each distinct program into one record and ranks
+  `claude-opus-5-5` first. Other Claude models stay eligible, ranked after it.
+  Other hosts, and GPT or Codex model strings, are dropped unless
+  `--host`/`--allow-other-vendors` asks for them. Whether they may train the
+  target at all is an operator decision that has not been made.
+- **Execution** happens only in `eval2_select`'s two regeneration runs, and only
+  for tier-A rows. `lypning_source.classify_entry` now refuses to run a program
+  that spawns processes, opens sockets or writes files (`capture_quality.hazard`).
+  `is_tooling` now covers every repo-local module, not just `lypning`. On
+  2026-09-22 that changed 0 of the 643 refused rows in `data/classified.jsonl`,
+  so a re-harvest loses no held-out case.
+
+**Measured yield, 2026-09-22** (`nt capture-export --origin measure-2026-09-22`
+over the live log, 7,909 lines at the time; no journal existed yet, so every
+model came from a transcript):
+
+| Stage | Count |
+|---|---|
+| Bash commands / commands with a program | 7,904 / 4,863 |
+| Program occurrences / distinct programs | 5,382 / 5,003 |
+| Distinct tier A / tier A and uncontaminated | 205 / 187 |
+| Distinct programs tainted by contamination (any tier) | 791 |
+| Occurrences attributed by transcript id / by exact command / unknown | 4,690 / 692 / 0 |
+
+The three largest first-failing rules, counted over occurrences, were file
+writes (1,794), file reads (1,318) and repo-local imports (846). The 187
+selected programs came from these writers: `claude-opus-5` 161,
+`claude-fable-5-1` 14, `claude-opus-5-5` 10 (all ranked first) and
+`claude-opus-4-8` 2. The median program is 10 lines. `claude-opus-5-5` typed
+238 of the 5,382 occurrences.
+
+At bank v1's author yield (§11 of [EVAL2.md](EVAL2.md): 364 admitted from 691
+candidates), 187 candidates come to roughly 100 cases. That is breadth across
+families, not volume.
+
 ## L capabilities that would help next
 
 Prioritize by distinct reviewed task/source demand and correct-native conversion
