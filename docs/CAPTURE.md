@@ -158,20 +158,27 @@ longer skipped when its text can be SEEN: see the next section.
 A heredoc redirected into a `.py` file (`cat > x.py <<'EOF'`, `cat <<EOF >
 x.py`, `tee x.py <<EOF`) is extracted whatever its delimiter is called
 (`harvest.py_write_target`); `>>` and `tee -a` append a fragment and are not.
-A later `python[3] [flags] PATH.py [argv]` or `uv run [python] PATH.py` in the
-same session is joined to the latest earlier write of that path — a heredoc in
-the log, or a `Write` tool call in the transcript — and becomes a `file`
-occurrence carrying the WRITER's model, the run's argv and the run's outcome
-(`harvest._file_events`). Paths resolve against the record's `cwd` and any
-literal `cd` before them; `~`, `$VAR` and an unknown directory resolve to
-nothing and join nothing. An `Edit`/`MultiEdit` or an append between the write
-and the run joins nothing, because the text that ran is not a text anyone
-recorded. A `Write` body is read out of the transcript only for a path a later
-command ran: the index cache stores the byte offset of the tool_use line, never
-the body. On 2026-09-22 a read-only `harvest._raws_from_log(text,
-persist=False)` over this machine's log (7,940 records at the time of reading)
-produced 899 `file` occurrences and 560 distinct programs, 61 of them from a
-`Write` alone; every one of the 560 parsed.
+A later `python[3] [flags] PATH.py [argv]` or `uv run [options] [python] PATH.py`
+in COMMAND position (after a separator, assignments, `do`/`then`, or a wrapper
+such as `timeout`/`env`/`sudo`; never `grep python3 a.py`) in the same session
+is joined to the latest earlier write of that path — a heredoc in the log, or a
+`Write` tool call in the transcript — and becomes a `file` occurrence carrying
+the WRITER's model, the run's argv and the run's outcome
+(`harvest._file_events`). Once a run is joined to a heredoc, the heredoc stops
+counting as an occurrence of its own: `count` is how often a program RAN, and
+writing a file is not running it; a heredoc nothing ran still counts once.
+Paths resolve against the record's `cwd` and any literal `cd` before them; `~`,
+`$VAR` and an unknown directory resolve to nothing and join nothing. Anything
+that changes the file between the write and the run joins nothing, because the
+text that ran is not a text anyone recorded: an `Edit`/`MultiEdit`, an append,
+an output redirect into it, `cp`/`mv`/`tee`/`rm` onto it, `sed -i`/`perl -i`, a
+mutating `git` subcommand — in the log or, for a Bash call the hook's screen
+never logged, in the transcript. A `Write` body is read out of the transcript
+only for a path a later command ran: the index cache stores the byte offset of
+the tool_use line, never the body. On 2026-09-23 a read-only
+`harvest._raws_from_log(text, persist=False)` over this machine's log (8,045
+records at the time of reading) produced 815 `file` occurrences and 557
+distinct programs; every one of the 557 parsed.
 
 Re-running is safe: counts come from the session-namespaced keys above, so a
 second harvest over the same inputs writes a byte-identical file; records the

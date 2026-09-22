@@ -857,10 +857,45 @@ _REDIRECTION = re.compile(r"^(?:\d*[<>]|&>)")
 
 #: One ordered event out of a command: ``(kind, path, body, tail)``. ``kind`` is
 #: ``write`` (a heredoc body into ``path``), ``append`` (a fragment, which
-#: invalidates what was written before) or ``run`` (``tail`` is its argv).
-#: ``path`` is None when it could not be resolved, and such an event joins
-#: nothing.
+#: invalidates what was written before), ``edit`` (anything else that changes
+#: the file — a redirect into it, ``cp``/``mv`` onto it, ``sed -i`` — which
+#: invalidates it the same way) or ``run`` (``tail`` is its argv). ``path`` is
+#: None when it could not be resolved, and such an event joins nothing.
 _FileEvent = Tuple[str, Optional[str], str, List[str]]
+
+# Words that run the NEXT word as the command: `timeout 60 python3 a.py` is a
+# run of a.py, and `grep python3 a.py` is not. _WRAPPER_ARG is what a wrapper
+# may take before that next word — flags, a duration, an assignment for `env`.
+_WRAPPERS = frozenset(["sudo", "env", "time", "nohup", "exec", "nice", "command",
+                       "timeout", "stdbuf", "caffeinate", "ionice"])
+_WRAPPER_ARG = re.compile(r"^(?:-.*|[0-9.]+[smhd]?|[A-Za-z_][A-Za-z0-9_]*=.*)$")
+# Wrapper flags that take the next word as their value (`env -u NAME`,
+# `sudo -u USER`, `timeout -s KILL`, `nice -n 5`).
+_WRAPPER_VALUE_FLAGS = frozenset(["-u", "-s", "-k", "-n", "-g", "-C",
+                                  "--unset", "--user", "--group", "--signal", "--kill-after",
+                                  "--adjustment"])
+# Shell keywords after which the next word is still a command: `for f in …; do
+# python3 a.py; done`, `if …; then python3 a.py; fi`.
+_KEYWORDS = frozenset(["do", "then", "else", "elif", "if", "while", "until", "!"])
+# `uv run` options that take a value, so `uv run --with rich --python 3.12
+# python a.py` reaches the `python` word rather than stopping at `rich`.
+_RUNNER_VALUE_FLAGS = frozenset(["--with", "--with-editable", "--with-requirements", "--python",
+                                 "-p", "--project", "--directory", "--package", "--extra",
+                                 "--group", "--only-group", "--env-file", "--index",
+                                 "--index-url", "--extra-index-url", "--from", "-w"])
+_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# Commands whose `.py` arguments may come out different: every such argument is
+# an `edit`. Over-matching (the source of a `cp`) loses one join; under-matching
+# joins a run to a text that is not what ran, which is the error that matters.
+_MUTATORS = frozenset(["cp", "mv", "install", "ln", "rm", "unlink", "patch", "truncate",
+                       "rsync", "tee", "dd"])
+_IN_PLACE = frozenset(["sed", "gsed", "perl"])
+_IN_PLACE_FLAG = re.compile(r"^(?:-[A-Za-z]*i.*|--in-place.*)$")
+_GIT_MUTATE = frozenset(["checkout", "restore", "mv", "rm", "apply", "am", "stash", "reset"])
+# `>`/`>>`/`>|` as a word of their own (the path is the next word), or glued to
+# the path (`>a.py`, `2>a.py`, `x>>a.py`). Stderr counts: it is still a write.
+_REDIR_OP = re.compile(r"^(?:\d*|&)>{1,2}\|?$")
+_REDIR_INTO = re.compile(r"(?:^|[^<>])>{1,2}\|?([^\s<>|&]+\.py)$")
 
 
 def _resolve(cwd: Optional[str], path: str) -> Optional[str]:
@@ -879,23 +914,50 @@ def _resolve(cwd: Optional[str], path: str) -> Optional[str]:
 
 
 def _file_events(command: str, cwd: Optional[str] = None) -> List[_FileEvent]:
-    """Every ``.py`` write and run in one command, in the order they happen.
+    """Every ``.py`` write, edit and run in one command, in the order they happen.
 
     A run is ``python[3] [flags] PATH.py [argv]`` or ``uv run [python] PATH.py``
-    (and the other :data:`_RUNNERS`). ``cd`` is followed, including into a
+    (and the other :data:`_RUNNERS`) in COMMAND position — after a separator,
+    assignments or a :data:`_WRAPPERS` word — so ``grep python3 a.py`` and
+    ``echo python3 a.py`` run nothing. ``cd`` is followed, including into a
     ``( … )`` subshell and back out of it, because ``cd /tmp/x && python3
     a.py`` is the ordinary way to run a file by a relative name; a ``cd`` to
     anything but a literal path makes the directory unknown, and every relative
     path after it resolves to None rather than to the wrong file.
+
+    Anything else that changes a ``.py`` file is an ``edit``: an output
+    redirect into it outside a heredoc's own header, and the ``.py`` arguments
+    of :data:`_MUTATORS`, of ``sed -i``/``perl -i`` and of a mutating ``git``
+    subcommand. An edit joins nothing; it only stops an older write from
+    standing in for the text that ran.
     """
     if not isinstance(command, str) or ".py" not in command:
         return []
     stripped, heredocs = _split_heredocs(command, marked=True)
     tokens = shell_tokens(stripped)
+    # The simple command each token belongs to, and which of them hold a
+    # heredoc that writes a `.py`: that header's own `> a.py` is the heredoc's
+    # write, already an event, and must not follow it as an edit
+    # (`cat <<EOF > a.py` puts the redirect AFTER the heredoc's mark).
+    seg_of: List[int] = []
+    seg = 0
+    writer_segs: Set[int] = set()
+    for t in tokens:
+        if t in _SEPARATORS:
+            seg += 1
+            seg_of.append(-1)
+            continue
+        seg_of.append(seg)
+        m = _MARK.match(t)
+        if m and int(m.group(1)) < len(heredocs) and py_write_target(heredocs[int(m.group(1))][2]):
+            writer_segs.add(seg)
     here: Optional[str] = cwd if isinstance(cwd, str) and cwd else None
     stack: List[Optional[str]] = []
     out: List[_FileEvent] = []
     at_command = True
+    wrapped = False
+    cmd = ""        # the command word of the current simple command
+    mutating = False
     i = 0
     while i < len(tokens):
         t = tokens[i]
@@ -913,7 +975,7 @@ def _file_events(command: str, cwd: Optional[str] = None) -> List[_FileEvent]:
                 stack.append(here)
             elif t == ")" and stack:
                 here = stack.pop()
-            at_command = True
+            at_command, wrapped, cmd, mutating = True, False, "", False
             i += 1
             continue
         if at_command and t == "cd":
@@ -926,16 +988,55 @@ def _file_events(command: str, cwd: Optional[str] = None) -> List[_FileEvent]:
                 i += 1
             at_command = False
             continue
-        # `A=1 B=2 python3 …` is still the command position after the assignments.
-        at_command = at_command and "=" in t and not t.startswith("=")
+        in_writer = seg_of[i] in writer_segs
+        # Edits: a redirect into a `.py`, or a `.py` argument of a mutator.
+        if not in_writer:
+            if _REDIR_OP.match(t) and _at(tokens, i + 1).endswith(".py"):
+                out.append(("edit", _resolve(here, tokens[i + 1]), "", []))
+            else:
+                m = _REDIR_INTO.search(t)
+                if m:
+                    out.append(("edit", _resolve(here, m.group(1)), "", []))
+        is_command = False
+        if at_command:
+            if t in _KEYWORDS:
+                i += 1
+                continue
+            if t in _WRAPPERS:
+                wrapped = True
+                i += 1
+                continue
+            if wrapped and t in _WRAPPER_VALUE_FLAGS:
+                i += 2
+                continue
+            if (wrapped and _WRAPPER_ARG.match(t)) or _ASSIGNMENT.match(t):
+                # `A=1 B=2 python3 …` is still the command position after the
+                # assignments, and so is `timeout 60 python3 …` after its word.
+                i += 1
+                continue
+            at_command, is_command, cmd = False, True, t
+        elif cmd and not in_writer:
+            if cmd in _MUTATORS:
+                mutating = True
+            elif cmd in _IN_PLACE and _IN_PLACE_FLAG.match(t):
+                mutating = True
+            elif cmd == "git" and t in _GIT_MUTATE:
+                mutating = True
+            if mutating and t.endswith(".py"):
+                out.append(("edit", _resolve(here, t), "", []))
         j = -1
         step = 1
-        if t in _RUNNERS and _at(tokens, i + 1) == "run":
+        if is_command and t in _RUNNERS and _at(tokens, i + 1) == "run":
             j = i + 2
+            while j < len(tokens) and tokens[j].startswith("-") and tokens[j] != "-":
+                j += 2 if tokens[j] in _RUNNER_VALUE_FLAGS else 1
             if _PY_WORD.match(_at(tokens, j)):
                 j += 1
-            step = j - i  # past `python` too, or `uv run python a.py` is two runs
-        elif _PY_WORD.match(t):
+                while (j < len(tokens) and tokens[j].startswith("-")
+                       and tokens[j] not in ("-c", "-m", "-")):
+                    j += 1
+            step = max(1, j - i)  # past `python` too, or `uv run python a.py` is two runs
+        elif is_command and _PY_WORD.match(t):
             j = i + 1
             while j < len(tokens) and tokens[j].startswith("-") and tokens[j] not in ("-c", "-m", "-"):
                 j += 1
@@ -1078,17 +1179,21 @@ class _ModelIndex:
             return None
         return bool(code & _RESULT_ERROR), bool(code & _RESULT_INTERRUPTED)
 
-    def last_write(self, path: Optional[str], ts: Optional[str]):
+    def last_write(self, path: Optional[str], ts: Optional[str],
+                   skip: Iterable[str] = ()):
         """The latest write or edit of ``path`` at or before ``ts``, or None.
 
         No stamp, no answer: without one there is no "before", and the latest
-        write overall may be one made after the run it would be joined to."""
+        write overall may be one made after the run it would be joined to.
+        ``skip`` holds block ids the caller already has as events of its own
+        (Bash calls the log recorded), so one call is never both."""
         key = _canonical_ts(ts)
         if not path or key is None:
             return None
+        skip = skip if isinstance(skip, (set, frozenset)) else set(skip)
         best = None
         for w in self.writes:
-            if w[2] == path and w[0] <= key:
+            if w[2] == path and w[0] <= key and w[5] not in skip:
                 best = w
         return best
 
@@ -1210,15 +1315,29 @@ def _scan_transcript(text: str, base: int = 0):
             by_id[block_id] = model
             kind = _FILE_TOOLS.get(block.get("name"))
             inp = block.get("input")
+            found: List[Tuple[str, str]] = []
             target = inp.get("file_path") if kind and isinstance(inp, dict) else None
-            if ts and isinstance(target, str) and target.endswith(".py") and os.path.isabs(target):
+            if isinstance(target, str) and target.endswith(".py") and os.path.isabs(target):
+                found.append((kind, os.path.normpath(target)))
+            elif block.get("name") == "Bash" and isinstance(inp, dict):
+                # A Bash call that changes a `.py` file — `sed -i`, `cp`, a
+                # heredoc the hook's screen never logged — is an EDIT here: it
+                # joins nothing, and it stops an older Write standing in for
+                # the text a later run executed. A call the log DID record is
+                # already an event there, and the join skips its id.
+                cmd = inp.get("command")
+                if isinstance(cmd, str) and ".py" in cmd:
+                    cwd = ev.get("cwd") if isinstance(ev.get("cwd"), str) else None
+                    found.extend(("edit", e[1]) for e in _file_events(cmd, cwd)
+                                 if e[0] != "run" and e[1])
+            if ts and found:
                 # Byte offset of this line, computed only here: encoding the
                 # characters since the last write is linear in the slice ONCE,
                 # where encoding every line would be a second pass over it.
                 cursor_bytes += len(text[cursor:start].encode("utf-8"))
                 cursor = start
-                writes.append((ts, kind, os.path.normpath(target), base + cursor_bytes,
-                               block_id, model))
+                for fkind, fpath in found:
+                    writes.append((ts, fkind, fpath, base + cursor_bytes, block_id, model))
     return by_id, timeline, results, writes
 
 
@@ -1266,8 +1385,11 @@ def _write_body(file: str, offset: int, block_id: str) -> Optional[str]:
 #: digest moved from the head of the consumed prefix to its tail; see
 #: :func:`_tail_digest`. 3 added ``results`` (tool outcomes) and ``writes``
 #: (``.py`` Write/Edit positions): a v2 file never read a result line, so its
-#: offsets would skip every outcome already written, and it has to go.
-_CACHE_VERSION = 3
+#: offsets would skip every outcome already written, and it has to go. 4 also
+#: files a Bash call that changes a ``.py`` as an ``edit`` in ``writes``; a v3
+#: file never did, and would join a run to a Write that a later ``sed -i`` or
+#: ``cp`` had already replaced.
+_CACHE_VERSION = 4
 
 #: How many bytes of the consumed prefix are hashed to prove it is still the
 #: prefix that produced the stored offset. Enough to span several transcript
@@ -1910,9 +2032,19 @@ def _raws_from_records(records: Sequence[Tuple[int, Dict[str, Any]]], *,
             cache.save()
 
     out: List[_Raw] = []
-    # (session tag, path) -> (canonical ts, kind, body, model) of the latest
-    # heredoc write of that path seen so far in this log, in log order.
-    written: Dict[Tuple[str, str], Tuple[str, str, str, Optional[str]]] = {}
+    # (session tag, path) -> (canonical ts, kind, body, model, occurrence base)
+    # of the latest heredoc write or edit of that path seen so far in this log,
+    # in log order.
+    written: Dict[Tuple[str, str], Tuple[str, str, str, Optional[str], str]] = {}
+    # Heredoc writes a run was joined to, as (occurrence base, body). Writing a
+    # file is not running it: `count` says how often a program RAN
+    # (corpus.Stats), so once a run of that body is counted, the heredoc that
+    # wrote it stops counting as a second one. A heredoc nothing ran keeps its
+    # own occurrence — it is still a program the session wrote.
+    consumed: Set[Tuple[str, str]] = set()
+    # Bash calls the log itself recorded: the transcript's copy of such a call
+    # is already an event here, in log order, and must not be joined twice.
+    logged_ids = frozenset(t for t in (_tool_use_id(r) for _, r in records if _joinable(r)) if t)
     for n, rec in records:
         session = rec.get("session")
         session = session if isinstance(session, str) and session else None
@@ -1983,16 +2115,17 @@ def _raws_from_records(records: Sequence[Tuple[int, Dict[str, Any]]], *,
                 if path is None:
                     continue
                 if ev_kind != "run":
-                    written[(tag, path)] = (_canonical_ts(ts) or "", ev_kind, body, model)
+                    written[(tag, path)] = (_canonical_ts(ts) or "", ev_kind, body, model, base)
                     continue
                 # The latest write of this path before the run, from either
                 # side: a heredoc in this log, or a Write/Edit in the transcript.
                 # An edit or an append wins like any write and then joins
                 # nothing, because the text that ran is not a text anyone has.
                 heredoc = written.get((tag, path))
-                tool = index.last_write(path, ts)
+                tool = index.last_write(path, ts, logged_ids)
+                wbase = None
                 if heredoc is not None and (tool is None or heredoc[0] >= tool[0]):
-                    wkind, text, wmodel = heredoc[1], heredoc[2], heredoc[3]
+                    wkind, text, wmodel, wbase = heredoc[1], heredoc[2], heredoc[3], heredoc[4]
                 elif tool is not None:
                     wkind, wmodel = tool[1], tool[6]
                     text = (_write_body(tool[3], tool[4], tool[5]) or "") if wkind == "write" else ""
@@ -2004,9 +2137,14 @@ def _raws_from_records(records: Sequence[Tuple[int, Dict[str, Any]]], *,
                 # the run's only when the write's could not be resolved.
                 out.append(("file:{0}#r{1}".format(base, ridx), text, tail, "file",
                             session, ts, wmodel or model, outcome, host))
+                if wbase is not None:
+                    consumed.add((wbase, text))
         # {"kind":"exit"} carries no program — it exists for timing analysis.
     if persist and journal is not None:
         journal.save()
+    if consumed:
+        out = [r for r in out
+               if r[3] == "file" or (r[0].rsplit("#", 1)[0], r[1]) not in consumed]
     return out
 
 

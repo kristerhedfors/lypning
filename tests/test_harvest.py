@@ -1475,8 +1475,8 @@ def test_an_edit_between_the_write_and_the_run_joins_nothing(tmp_path):
 
 def test_a_heredoc_then_a_relative_run_joins_through_cd(tmp_path):
     """The log alone: `cat > …/a.py` in one call, `cd` then `uv run python
-    a.py` in the next. The heredoc counts as the command it was, the run as a
-    file occurrence, and both are one program."""
+    a.py` in the next. One program, run once: the run is the occurrence, and
+    the heredoc that only WROTE the file does not count as a second run."""
     log = _write_log(tmp_path, [
         {"kind": "bash_command", "session": "s1", "ts": "2026-09-02T10:00:00.000Z",
          "cwd": "/w/proj", "command": "cat > /w/proj/tool/a.py <<'EOF'\n%sEOF" % BODY},
@@ -1488,7 +1488,7 @@ def test_a_heredoc_then_a_relative_run_joins_through_cd(tmp_path):
     ])
     [s] = harvest.parse_log(log)
     assert s.program == BODY.rstrip("\n")
-    assert s.count == 2
+    assert s.count == 1 and s.source == "file"
     assert s.argv_tail == ("--n", "3")
 
 
@@ -1509,8 +1509,8 @@ def test_a_write_and_its_run_in_one_command(tmp_path):
          "cwd": "/w", "command": "cat > a.py <<'EOF' && python3 a.py\n%sEOF" % BODY},
     ])
     [s] = harvest.parse_log(log)
-    assert s.count == 2
-    assert sorted(r[3] for r in harvest._raws_from_log(log.read_text())) == ["file", "hook"]
+    assert s.count == 1
+    assert sorted(r[3] for r in harvest._raws_from_log(log.read_text())) == ["file"]
 
 
 def test_the_cache_keeps_write_positions_and_reads_the_body_only_on_demand(tmp_path):
@@ -1606,3 +1606,136 @@ def test_the_real_codex_module_satisfies_the_feed_interface(tmp_path):
     empty = tmp_path / "sessions"
     empty.mkdir()
     assert harvest.parse_codex(sessions_dir=empty) == []
+
+
+# --- review: a write is not a run; a run is in command position; edits count ---
+
+
+def _heredoc_rec(path, ts, session="s1", cwd="/w", extra=""):
+    return {"kind": "bash_command", "session": session, "ts": ts, "cwd": cwd,
+            "command": "cat > %s <<'EOF'%s\n%sEOF" % (path, extra, BODY)}
+
+
+def _cmd_rec(command, ts, session="s1", cwd="/w"):
+    return {"kind": "bash_command", "session": session, "ts": ts, "cwd": cwd, "command": command}
+
+
+def test_count_is_runs_not_writes(tmp_path):
+    """corpus.Stats: `count` says how often a program RAN. A heredoc run twice
+    is two; the heredoc itself is not a third. One nothing ran is still one
+    sighting (the session wrote it), and a second one is never double-joined."""
+    log = _write_log(tmp_path, [
+        _heredoc_rec("/w/a.py", "2026-09-02T10:00:00.000Z"),
+        _cmd_rec("python3 /w/a.py 1", "2026-09-02T10:00:01.000Z"),
+        _cmd_rec("python3 /w/a.py 2", "2026-09-02T10:00:02.000Z"),
+    ])
+    [s] = harvest.parse_log(log)
+    assert s.count == 2 and s.source == "file"
+    log = _write_log(tmp_path, [_heredoc_rec("/w/a.py", "2026-09-02T10:00:00.000Z")])
+    [s] = harvest.parse_log(log)
+    assert s.count == 1 and s.source == "hook"
+
+
+def test_the_same_heredoc_and_run_logged_by_two_hooks_count_once(tmp_path):
+    main = _transcripts(tmp_path, [_assistant("2026-09-02T10:00:00.000Z", "claude-opus-5", "toolu_a")])
+    rec = _hook("cat > /w/a.py <<'EOF' && python3 /w/a.py\n%sEOF" % BODY, "toolu_a", main)
+    log = _write_log(tmp_path, [rec, rec])
+    [s] = harvest.parse_log(log)
+    assert s.count == 1
+
+
+@pytest.mark.parametrize("command", [
+    "grep -n python3 /w/a.py",
+    "echo python3 /w/a.py",
+    "git log -- python /w/a.py",
+    "rg 'uv run' /w/a.py",
+])
+def test_a_python_word_that_is_an_argument_runs_nothing(tmp_path, command):
+    log = _write_log(tmp_path, [
+        _heredoc_rec("/w/a.py", "2026-09-02T10:00:00.000Z"),
+        _cmd_rec(command, "2026-09-02T10:00:01.000Z"),
+    ])
+    [s] = harvest.parse_log(log)
+    assert s.source == "hook" and s.count == 1  # the heredoc alone; no run joined
+    assert [e for e in harvest._file_events(command, "/w") if e[0] == "run"] == []
+
+
+@pytest.mark.parametrize("command,tail", [
+    ("timeout 60 python3 /w/a.py x", ["x"]),
+    ("env PYTHONHASHSEED=0 python3 -u /w/a.py", []),
+    ("A=1 python3 a.py 3", ["3"]),
+    ("sudo python3 /w/a.py", []),
+    ("env -u VIRTUAL_ENV python3 /w/a.py", []),
+    ("for i in 1 2; do python3 a.py $i; done", ["$i"]),
+    ("if true; then X=1 python3 a.py; fi", []),
+    ("uv run --no-project --with rich --python 3.14 python /w/a.py 5", ["5"]),
+    ("uv run -q --with pytest python -u a.py", []),
+    ("timeout 60 uv run --python 3.12 /w/a.py", []),
+])
+def test_a_wrapped_or_assigned_run_is_still_a_run(command, tail):
+    assert harvest._file_events(command, "/w") == [("run", "/w/a.py", "", tail)]
+
+
+@pytest.mark.parametrize("change", [
+    "cp /w/b.py /w/a.py",
+    "sed -i 's/x/y/' a.py",
+    "perl -pi -e 's/x/y/' /w/a.py",
+    "echo 'x = 1' >> a.py",
+    "python3 gen.py > /w/a.py",
+    "git checkout -- a.py",
+    "printf x | tee /w/a.py",
+])
+def test_a_shell_change_between_the_heredoc_and_the_run_joins_nothing(tmp_path, change):
+    """The text that ran is not the heredoc's any more, so it is not joined —
+    and the outcome of that run is never filed under the stale body."""
+    log = _write_log(tmp_path, [
+        _heredoc_rec("/w/a.py", "2026-09-02T10:00:00.000Z"),
+        _cmd_rec(change + " && python3 /w/a.py", "2026-09-02T10:00:01.000Z"),
+    ])
+    assert [s.source for s in harvest.parse_log(log)] == ["hook"]
+
+
+def test_a_read_of_the_file_is_not_a_change(tmp_path):
+    log = _write_log(tmp_path, [
+        _heredoc_rec("/w/a.py", "2026-09-02T10:00:00.000Z"),
+        _cmd_rec("sed -n 1,5p a.py; cat a.py; python3 a.py", "2026-09-02T10:00:01.000Z"),
+    ])
+    [s] = harvest.parse_log(log)
+    assert s.source == "file" and s.count == 1
+
+
+def _bash_block(ts, model, tool_use_id, command, cwd="/w"):
+    return json.dumps({"type": "assistant", "timestamp": ts, "sessionId": SESSION, "cwd": cwd,
+                       "message": {"model": model, "content": [
+                           {"type": "tool_use", "id": tool_use_id, "name": "Bash",
+                            "input": {"command": command}}]}})
+
+
+def test_a_transcript_only_bash_change_after_a_write_joins_nothing(tmp_path):
+    """The hook never logs `sed -i a.py` (it screens for python), but the
+    transcript holds it: a Write, then that edit, then a run is not a run of
+    the Write's body."""
+    main = _transcripts(tmp_path, [
+        _write_tool("2026-09-02T10:00:00.000Z", "claude-opus-5", "toolu_w", "/w/a.py", BODY),
+        _bash_block("2026-09-02T10:00:02.000Z", "claude-opus-5", "toolu_s", "sed -i 's/4f2a/x/' a.py"),
+    ])
+    log = _write_log(tmp_path, [dict(_hook("python3 /w/a.py", "toolu_r", main,
+                                           "2026-09-02T10:00:05.000Z"), cwd="/w")])
+    assert harvest.parse_log(log) == []
+
+
+def test_a_logged_heredoc_is_not_undone_by_its_own_transcript_copy(tmp_path):
+    """The logged call is also in the transcript, as a Bash write of a.py. That
+    copy must not count as an edit AFTER the log's own heredoc — it is the same
+    call — even when its stamp is the later of the two."""
+    cmd = "cat > a.py <<'EOF'\n%sEOF" % BODY
+    main = _transcripts(tmp_path, [
+        _bash_block("2026-09-02T10:00:01.000Z", "claude-opus-5", "toolu_h", cmd),
+    ])
+    log = _write_log(tmp_path, [
+        dict(_hook(cmd, "toolu_h", main, "2026-09-02T10:00:00.500Z"), cwd="/w"),
+        dict(_hook("python3 a.py", "toolu_r", main, "2026-09-02T10:00:05.000Z"), cwd="/w"),
+    ])
+    [s] = harvest.parse_log(log)
+    assert s.source == "file" and s.count == 1
+    assert s.models == (("claude-opus-5", 1),)
