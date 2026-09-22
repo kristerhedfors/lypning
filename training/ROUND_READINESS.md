@@ -40,10 +40,12 @@ allowance it is **$225.12**, before tax, retries or provider-template difference
 These are cost scenarios, not a bill or an enforced ceiling. The old ~$5
 estimate is withdrawn for this full population.
 
-The operator asked to merge and progress toward paid work. The material price
-change requires a ceiling choice: full comparison capped at $250, a newly
-preregistered smaller control capped at $25, or free preparation only. The
-choice is pending; **no paid provider call or GPU job has been dispatched**.
+The operator chose **free first** on 2026-09-22. Continue free validation,
+diagnostics and preparation; hold paid inference and GPU training. No paid
+ceiling is approved. After free readiness is complete, present its result and
+the concrete scope/cost before requesting a paid ceiling. The previously
+offered $250 full comparison and $25 redesigned control remain unapproved
+options; **no paid provider call or GPU job has been dispatched**.
 Do not shrink the population, shorten the spec, lower k or substitute a model
 silently to fit the old estimate.
 
@@ -60,11 +62,14 @@ intermediate counts. This is CPU container startup/verification work, not GPU
 training. The checker now reports aggregate completion and an estimated time
 remaining every 30 seconds, selects up to eight concurrent cases within CPU
 and container-memory limits, and stops new work on failure or after 50 minutes.
-Partial results cannot create an admission proof. This change still needs a
-complete successful rerun. The generation library reserves budget before each
+Partial results cannot create an admission proof. Free rerun
+[35693996662](https://github.com/kristerhedfors/lypning/actions/runs/35693996662)
+is verifying references; its provider/tokenizer plan and exact conformance
+reuse have passed. A complete successful reference result is still required.
+The generation library reserves budget before each
 request, disables retries, and binds its input to a private runtime/reference
 proof. The manual dispatch, private evidence handoff and scope remain to be
-completed after the budget choice. The 256-sequence GPU batch smoke
+completed before any later paid launch. The 256-sequence GPU batch smoke
 belongs before a later GPU training arm; Step 2 uses hosted inference and does
 not allocate a GPU.
 

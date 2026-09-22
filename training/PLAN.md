@@ -56,6 +56,11 @@ Advance a step by editing this table in the same PR as the work.
 | 3 | Build contrastive targets | tokens | is there enough pair supply for a preference arm? | open |
 | 4 | S4, re-specified, three seeds | ~$60–90 | the first result the instrument can read | open |
 
+**Operator direction, 2026-09-22: free first.** Continue Step 2's free checks
+and preparation. Paid inference and GPU training remain held; no paid ceiling
+is approved. Finish the free readiness result before requesting a paid scope
+and ceiling. `ROUND_READINESS.md` records the active checks and measured costs.
+
 ### Step 0 — Read what was paid for ($0, CI reads, aggregates only)
 
 The adapters at SFT steps 25/50/75 and GRPO 5/10/15 are on the Hub under
