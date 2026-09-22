@@ -14,6 +14,16 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-22** — Reuse equivalent evaluation arms and enforce the job deadline locally
+([#100](https://github.com/kristerhedfors/lypning/pull/100))
+
+- Reuses completed eval-2 draws only with sealed step-zero policy equivalence,
+  matched runtime/sampling contracts and complete case coverage; records provenance.
+- Raises evaluation batches to 256 sequences and the proposed pilot ceiling to
+  720 minutes, with a process-group deadline covering bootstrap and training.
+- Adds a metadata-only audit of the prior job timeout, without printing logs,
+  environment variables, credentials or private cases.
+
 **2026-09-22** — Apply the planned LoRA learning rates and evaluation cadence
 ([#99](https://github.com/kristerhedfors/lypning/pull/99))
 

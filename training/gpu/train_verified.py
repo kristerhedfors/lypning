@@ -29,12 +29,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pipeline.jsonio import append_jsonl, sha256_of, write_json
 from pipeline.training_metrics import BENCHMARK_MIN_FAMILY_CASES, CheckpointGate
+from pipeline.evaluation_reuse import fresh_lora_is_noop, reuse_evaluation
 from pipeline.training import (ISOLATED_KINDS, TrainingError, Verifier,
     chat_prompt_token_ids, execution_runner, load_bundle, messages)
 
 from pipeline.training_contract import (BASE_MODEL, CONTRACT_VERSION, MIN_SUPERVISED_TOKENS,
     MIN_TRAIN_CASES, PROTOCOL_EVAL_DRAWS, PROTOCOL_TRAIN_SEEDS,
-    adapter_identity, decoding, model_config_identity, probe_contract, probe_report,
+    adapter_files, adapter_identity, decoding, model_config_identity, probe_contract, probe_report,
     kernel_state, runtime_versions, seal_adapter, source_identity, validate_probe)
 from verified_evaluation import evaluate
 from verified_stages import balanced_cases, sft_batches, supervised_tokens, train_sft, train_grpo
@@ -48,6 +49,7 @@ def parser():
     p.add_argument("--output", type=Path, required=True, help="new directory, never overwrite")
     p.add_argument("--revision", required=True, help="immutable 40-character base-model Hub commit")
     p.add_argument("--adapter", type=Path, help="local adapter for GRPO warm start or evaluation")
+    p.add_argument("--reuse-evaluation", type=Path, help="eval only: reuse a completed equivalent-policy arm")
     p.add_argument("--from-base", action="store_true", help="explicit GRPO-from-base ablation")
     p.add_argument("--plan", action="store_true", help="validate experiment without GPU/downloads")
     p.add_argument("--smoke", action="store_true", help="tiny random Qwen model, two real trainer steps")
@@ -61,7 +63,7 @@ def parser():
     p.add_argument("--generations", type=int, default=4, help="GRPO/probe draws per train prompt")
     p.add_argument("--probe", type=Path, help="admitted probe.json from the exact RL starting policy")
     p.add_argument("--eval-draws", type=int, default=4, help="matched-seed first-draft evaluation draws")
-    p.add_argument("--eval-sequences", type=int, default=64,
+    p.add_argument("--eval-sequences", type=int, default=256,
                    help="sequences per generate call in evaluation: cases per chunk = this // draws")
     p.add_argument("--score-workers", type=int, default=16, help="concurrent verifier scorings per chunk")
     p.add_argument("--greedy", action="store_true", help="eval-only diagnostic; not checkpoint selection")
@@ -116,6 +118,8 @@ def preflight(args):
         raise TrainingError("GRPO uses --generations; --batch-size is SFT-only")
     if args.stage == "sft" and (args.adapter or args.from_base):
         raise TrainingError("SFT starts from the pinned base; adapters belong to GRPO/eval")
+    if args.reuse_evaluation is not None and args.stage != "eval":
+        raise TrainingError("--reuse-evaluation is only for standalone evaluation")
     if args.stage != "eval" and args.eval_split != "dev":
         raise TrainingError("test split cannot select a checkpoint")
     if not math.isfinite(args.warmup_ratio) or not 0 <= args.warmup_ratio < 1:
@@ -404,6 +408,10 @@ def run(args, bundle, adapter_info):
                         witness_path=args.output / "eval-blocked-witnesses.jsonl",
                         sequences_per_call=args.eval_sequences, score_workers=args.score_workers,
                         **metric_policy(bundle))
+    if args.reuse_evaluation is not None and reuse_evaluation(
+            args.reuse_evaluation, args.output, manifest, dev_cases):
+        core.log("eval reused equivalent policy; provenance saved in reuse.json")
+        return
     baseline = measure(0)
     if args.stage == "eval":
         write_json(args.output / "metrics.json", baseline)
@@ -414,7 +422,17 @@ def run(args, bundle, adapter_info):
     def save(step):
         path = args.output / ("adapter-%d" % step)
         core.save_adapter(model, str(path))
-        write_json(path / "experiment.json", dict(manifest, checkpoint_step=step))
+        saved = dict(manifest, checkpoint_step=step)
+        if step == 0 and args.stage == "sft":
+            # A freshly attached standard LoRA is base-equivalent only when
+            # every adapter tensor is finite and all B matrices are zero.
+            if fresh_lora_is_noop(model):
+                saved["policy_equivalence"] = {"adapter_sha256": None, "basis": "finite-zero-lora-b"}
+        elif step == 0 and args.stage == "grpo" and args.adapter:
+            if adapter_files(path) == adapter_files(args.adapter):
+                saved["policy_equivalence"] = {"adapter_sha256": adapter_info["sha256"],
+                                               "basis": "identical-parent-files"}
+        write_json(path / "experiment.json", saved)
         write_json(path / "seal.json", seal_adapter(path))
     save(0)
     gate = CheckpointGate(baseline)

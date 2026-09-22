@@ -192,6 +192,20 @@ confirmatory run. The verifier policy of that run is `l-correctness-v3`: a
 candidate whose two clean oracle runs disagree scores `unstable`, reward 0,
 instead of aborting the stage (`ORCHESTRATION.md` ledger, `training.POLICY`).
 
+### Equivalent-policy evaluation reuse (2026-09-22)
+
+The base is still generated in the current job's container and kernel. A newly
+saved step-zero adapter may reuse that job's completed equivalent-policy arm:
+SFT requires finite LoRA tensors with every B matrix zero; GRPO requires exact
+saved parent-file equality, and therefore reuses SFT, which may be trained.
+The sealed adapter manifest carries the proof. Step number alone, an old run,
+a missing completion marker, partial case coverage, or a changed runtime,
+metric, seed or chunking contract cannot earn reuse. The target adapter is
+loaded and its actual runtime checked before the shortcut. `reuse.json` records
+the source, source-file digests and that the draws are not independent.
+Otherwise the ordinary evaluation runs. This saves duplicate draws, not base
+regeneration across seeds or model loading.
+
 ## 7. Power
 
 The bank size is set by a design-specific power analysis on a pilot draw, not

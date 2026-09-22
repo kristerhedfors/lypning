@@ -50,7 +50,7 @@ Advance a step by editing this table in the same PR as the work.
 | # | step | cost | decision it makes | state |
 |---|---|---|---|---|
 | 0 | Read what was paid for | $0 | did dev native move inside the selector's blind spot? | done (2026-09-21, [read](reports/2026-09-21-codex-step0-read.md), GH 35575454075) |
-| 1 | Fix the instrument | $0 | nothing else is readable until it is | in progress (1.1 and 1.2 done 2026-09-21, PR #97; 1.3 done 2026-09-22, PR #98; 1.4 done 2026-09-22, PR #99; 1.5–1.6 open) |
+| 1 | Fix the instrument | $0 | nothing else is readable until it is | in progress (1.1 and 1.2 done 2026-09-21, PR #97; 1.3 done 2026-09-22, PR #98; 1.4 done 2026-09-22, PR #99; 1.5 done 2026-09-22, PR #100; 1.6 open) |
 | 2 | Positive control (S1 / stage 0b) | ~$5 | distillation route or contrastive route | open |
 | 3 | Build contrastive targets | tokens | is there enough pair supply for a preference arm? | open |
 | 4 | S4, re-specified, three seeds | ~$60–90 | the first result the instrument can read | open |
@@ -145,7 +145,15 @@ cases; small population slices, rather than the primary macro, need attention.
    stages, always evaluate the final step, and keep effective SFT batch 4.
 5. **Evaluation cost.** Skip duplicate eval-2 arms when an adapter is step 0
    and record the reuse; raise `--eval-sequences`; `PILOT_TIMEOUT` 720m, and
-   find out why 480m did not fire.
+   find out why 480m did not fire. **Done 2026-09-22, PR #100.** Sealed
+   step-zero equivalence permits same-job reuse with recorded provenance; GRPO
+   reuses its SFT parent, which need not be base. Matched batches are 256;
+   the proposed 720m ceiling is bounded independently inside the container.
+   Audit GH `35680032058` confirms the provider stored 28,800 seconds for the
+   old job: the request was not lost, and the service did not enforce that
+   recorded deadline as expected. Its internal reason is not exposed. See
+   `reports/2026-09-22-evaluation-cost.md`; hardware smoke and spend approval
+   remain prerequisites for the next paid run.
 6. **Engine fixes land now** — `data/engine-mismatches.jsonl` (`sys.stdin.read(n)`).
    The arm must change anyway; this is the one window where an engine change
    costs no comparability (`arm_check.py` will refuse to join old seeds).
