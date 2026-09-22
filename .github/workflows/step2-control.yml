@@ -107,12 +107,7 @@ jobs:
               git commit -qm snapshot
               python .github/scripts/step2_candidate_check.py'
       - name: Verify selected references without credentials or network
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          STEP2_DOWNLOAD_ONLY: '1'
-        run: |
-          python .github/scripts/step2_bank_plan.py
-          python .github/scripts/step2_reference_check.py
+        run: python .github/scripts/step2_reference_check.py
       - name: Generate bounded paired Cerebras control
         env:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}

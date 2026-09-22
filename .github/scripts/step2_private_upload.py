@@ -16,10 +16,17 @@ def main():
     if not info.private:
         raise SystemExit('artifact repository must be private')
     root = Path(os.environ['RUNNER_TEMP'])
+    admission = root / 'step2-private' / 'admission.json'
+    if not admission.is_file():
+        print('No runtime admission exists; nothing private to persist')
+        return
     staging = root / 'step2-private-upload'
     staging.mkdir()
-    for source, name in ((root / 'step2-paid', 'paid'),
-                         (root / 'step2-private' / 'admission.json', 'admission.json')):
+    sources = [(admission, 'admission.json')]
+    paid = root / 'step2-paid'
+    if paid.is_dir():
+        sources.insert(0, (paid, 'paid'))
+    for source, name in sources:
         target = staging / name
         if source.is_dir():
             import shutil
@@ -29,7 +36,8 @@ def main():
     path = 'positive-control/' + os.environ['STEP2_RUN_ID']
     api.upload_folder(repo_id=repo, repo_type='dataset', folder_path=staging,
                       path_in_repo=path, commit_message='Store private positive-control evidence ' + os.environ['STEP2_RUN_ID'])
-    print('Stored private positive-control evidence at an immutable dataset commit under ' + path)
+    state = 'generation evidence' if paid.is_dir() else 'runtime admission only; generation did not start'
+    print('Stored private positive-control %s at an immutable dataset commit under %s' % (state, path))
 
 
 if __name__ == '__main__':
