@@ -213,3 +213,18 @@ def test_preflight_refuses_a_target_curriculum_below_the_case_floor(tmp_path, mo
     assert unique["curriculum_rows"] == 20 and unique["curriculum_cases"] == 20
     assert scheduled["planned_exposures"] == 1200
     assert unique["unique_supervised_token_upper_bound"] < scheduled["supervised_token_upper_bound"]
+
+
+def test_token_floor_upper_bound_runs_on_the_authored_curriculum():
+    """round02-preflight's token-floor step calls this on every grid row.
+
+    Its namespace lacked `sft_targets`, which `sft_curriculum` reads, so every
+    bank ended in an AttributeError and the free preflight could never pass.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "token_floor", ROOT / ".github" / "scripts" / "token_floor.py")
+    token_floor = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(token_floor)
+    plan = token_floor.upper_bound(bank(), 3, 4, 1111, 4096, 1024)
+    assert plan["planned_exposures"] == 12
+    assert plan["supervised_token_upper_bound"] > 0

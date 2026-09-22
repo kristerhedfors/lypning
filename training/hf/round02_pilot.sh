@@ -34,6 +34,10 @@ set -euo pipefail
 : "${SPACE_REPO:?}" "${SPACE_REV:?}" "${QWEN_REV:?}" "${WORK_REPO:?}" "${BANK_PATH:?}" "${HF_TOKEN:?}"
 STEPS="${STEPS:-250}"
 GRPO_STEPS="${GRPO_STEPS:-0}"
+# Probe and GRPO share one group size (the probe contract binds them). 4 keeps
+# arm A's probe comparable with seed 1111's; arm C dispatches 8 (`PLAN.md`).
+GRPO_GENERATIONS="${GRPO_GENERATIONS:-4}"
+GRPO_PROMPTS="${GRPO_PROMPTS:-4}"         # prompt groups per GRPO optimizer step
 EVAL_DRAWS="${EVAL_DRAWS:-16}"
 EVAL_SEQUENCES="${EVAL_SEQUENCES:-256}"   # sequences per generate call in evaluation
 SCORE_WORKERS="${SCORE_WORKERS:-16}"      # concurrent verifier scorings (one pool host serves 50)
@@ -52,7 +56,7 @@ JOB="${JOB_ID:-local}"
 export NTX_POOL_TAG="$JOB"   # this run's sandbox pool is its own; see hf_sandbox_runner.pool_name
 STAGE=start
 mkdir -p "$ROUND"
-echo "== round-02 pilot on $(hostname) job=$JOB commit=$(git rev-parse HEAD) sft_steps=$STEPS grpo_steps=$GRPO_STEPS eval_draws=$EVAL_DRAWS eval_sequences=$EVAL_SEQUENCES score_workers=$SCORE_WORKERS pool_sandboxes_per_host=$NTX_POOL_SANDBOXES_PER_HOST pool_max_hosts=$NTX_POOL_MAX_HOSTS seed=$SEED split_seed=$SPLIT_SEED bundles_from=${BUNDLES_FROM:-none} sft_target_run=${SFT_TARGET_RUN:-authored-references}"
+echo "== round-02 pilot on $(hostname) job=$JOB commit=$(git rev-parse HEAD) sft_steps=$STEPS grpo_steps=$GRPO_STEPS grpo_generations=$GRPO_GENERATIONS grpo_prompts=$GRPO_PROMPTS eval_draws=$EVAL_DRAWS eval_sequences=$EVAL_SEQUENCES score_workers=$SCORE_WORKERS pool_sandboxes_per_host=$NTX_POOL_SANDBOXES_PER_HOST pool_max_hosts=$NTX_POOL_MAX_HOSTS seed=$SEED split_seed=$SPLIT_SEED bundles_from=${BUNDLES_FROM:-none} sft_target_run=${SFT_TARGET_RUN:-authored-references}"
 echo "== python: $(python3 -c 'import sys; print(sys.version)')"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || echo "== no GPU visible"
 
@@ -90,7 +94,7 @@ finish() {
   local status=complete
   [ "$code" -eq 0 ] || status=failed
   echo "== finish: status=$status stage=$STAGE exit=$code"
-  if ! STATUS="$status" EXIT_CODE="$code" STAGE="$STAGE" STEPS="$STEPS" GRPO_STEPS="$GRPO_STEPS" EVAL_DRAWS="$EVAL_DRAWS" SEED="$SEED" SPLIT_SEED="$SPLIT_SEED" \
+  if ! STATUS="$status" EXIT_CODE="$code" STAGE="$STAGE" STEPS="$STEPS" GRPO_STEPS="$GRPO_STEPS" GRPO_GENERATIONS="$GRPO_GENERATIONS" GRPO_PROMPTS="$GRPO_PROMPTS" EVAL_DRAWS="$EVAL_DRAWS" SEED="$SEED" SPLIT_SEED="$SPLIT_SEED" \
       EVAL_SEQUENCES="$EVAL_SEQUENCES" SCORE_WORKERS="$SCORE_WORKERS" BUNDLES_FROM="$BUNDLES_FROM" SFT_TARGET_RUN="$SFT_TARGET_RUN" \
       NTX_POOL_SANDBOXES_PER_HOST="$NTX_POOL_SANDBOXES_PER_HOST" NTX_POOL_MAX_HOSTS="$NTX_POOL_MAX_HOSTS" \
       python3 - <<'PYEOF'
@@ -122,6 +126,8 @@ manifest = {"job": job, "status": os.environ["STATUS"], "exit_code": int(os.envi
             "qwen_revision": os.environ["QWEN_REV"], "flavor": os.environ.get("ACCELERATOR", ""),
             "bank_path": os.environ["BANK_PATH"], "steps": int(os.environ["STEPS"]),
             "grpo_steps": int(os.environ["GRPO_STEPS"]),
+            "grpo_generations": int(os.environ["GRPO_GENERATIONS"]),
+            "grpo_prompts": int(os.environ["GRPO_PROMPTS"]),
             "eval_draws": int(os.environ["EVAL_DRAWS"]), "seed": int(os.environ["SEED"]),
             "split_seed": int(os.environ["SPLIT_SEED"]),
             "eval_sequences": int(os.environ["EVAL_SEQUENCES"]), "score_workers": int(os.environ["SCORE_WORKERS"]),
@@ -181,6 +187,10 @@ for attempt in 1 2 3 4; do
   sleep $((attempt * 30))
 done
 python3 -c 'import torch, transformers, peft, trl, huggingface_hub; print("== torch", torch.__version__, "cuda", torch.cuda.is_available(), "| transformers", transformers.__version__, "| trl", trl.__version__, "| hub", huggingface_hub.__version__)'
+# The kernel is part of the arm (`STATUS.md` §2). transformers binds the
+# gated-delta rule at import, so ask now, in minute one, rather than in the
+# first trainer stage an hour later; `train_verified.run` asks again in-process.
+NTX_USE_FLA=0 PYTHONPATH="$PYTHONPATH:training/gpu" python3 -c 'import sys, kernel_block; why = kernel_block.refusal(); print("== kernel:", why or "torch reference"); sys.exit(1 if why else 0)'
 
 # 2. The engine: the same bytes the verifier image carries, from the same commit.
 STAGE=engine
@@ -249,22 +259,28 @@ fi
 # reviewed train bank split at SPLIT_SEED, or on the reused bundle as prepared.
 targets_fit_split() {
   [ -n "$SFT_TARGET_RUN" ] || return 0
-  echo "== every target case is a train case at split seed $SPLIT_SEED"
-  python3 - "$1" <<'PYEOF'
+  echo "== every target case is a train case at split seed $SPLIT_SEED, and the curriculum clears its floors"
+  PYTHONPATH="$PYTHONPATH:training/gpu" python3 - "$1" <<'PYEOF'
 import json, os, sys
 from pipeline.jsonio import read_jsonl
 from pipeline.training_data import split_cases
+from train_verified import curriculum_floor
 source = sys.argv[1]
 if source.endswith("bundle.json"):
     cases = json.load(open(source))["cases"]
 else:
     cases = split_cases(read_jsonl(source), int(os.environ["SPLIT_SEED"]))
-train = {c["case_id"] for c in cases if c["split"] == "train"}
+train = {c["case_id"]: c for c in cases if c["split"] == "train"}
 rows = read_jsonl("work/round-02/sft-targets/sft.jsonl")
-outside = sorted({r.get("case_id") for r in rows} - train)
+outside = sorted({r.get("case_id") for r in rows} - set(train))
 if outside:
     raise SystemExit("%d target case(s) are not train cases of this split; were the targets "
                      "graded at another split seed?" % len(outside))
+# The trainer's plan stage refuses the same floors, but only after preparation;
+# the CI route checks them for free (`s4_target_floor.py`), a hand launch here.
+floor = curriculum_floor([train[r["case_id"]] for r in rows])
+if floor["problems"]:
+    raise SystemExit("; ".join(floor["problems"]))
 print("== %d target rows over %d train cases fit the split" % (len(rows), len({r["case_id"] for r in rows})))
 PYEOF
 }
@@ -434,7 +450,7 @@ COMMON=(--isolated-worker --engine "$LYPNING_L_BIN" --revision "$QWEN_REV" --see
 PILOT="$ROUND/pilot/bundle.json"
 EVAL2="$ROUND/eval2/bundle.json"
 SFT_TRAIN=(--steps "$STEPS" --eval-every 50 --rank 16)
-GRPO_TRAIN=(--steps "$GRPO_STEPS" --eval-every 50 --rank 16)
+GRPO_TRAIN=(--steps "$GRPO_STEPS" --eval-every 50 --rank 16 --grpo-prompts "$GRPO_PROMPTS")
 
 # 7a. Plan first (no GPU imports), then the unadapted dev control.
 STAGE=plan
@@ -459,7 +475,7 @@ checkpoint
 
 # 7d. Probe the exact selected policy on TRAIN cases only; no optimizer updates.
 STAGE=probe
-run "${TV[@]}" probe --adapter "$SFT_ADAPTER" --bundle "$PILOT" --output "$ROUND/probe" "${COMMON[@]}" --generations 4
+run "${TV[@]}" probe --adapter "$SFT_ADAPTER" --bundle "$PILOT" --output "$ROUND/probe" "${COMMON[@]}" --generations "$GRPO_GENERATIONS"
 checkpoint
 
 # 7e. GRPO only if it was asked for (GRPO_STEPS > 0) AND the probe is admitted
@@ -494,7 +510,7 @@ set -e
 if [ "$GATE" -eq 0 ]; then
   STAGE=grpo
   run "${TV[@]}" grpo --adapter "$SFT_ADAPTER" --probe "$ROUND/probe/probe.json" --bundle "$PILOT" \
-    --output "$ROUND/grpo" "${COMMON[@]}" "${GRPO_TRAIN[@]}" --generations 4
+    --output "$ROUND/grpo" "${COMMON[@]}" "${GRPO_TRAIN[@]}" --generations "$GRPO_GENERATIONS"
   GRPO_STEP=$(python3 -c 'import json; print(json.load(open("work/round-02/grpo/best.json"))["step"])')
   GRPO_ADAPTER="$ROUND/grpo/adapter-$GRPO_STEP"
   echo "== grpo selected step $GRPO_STEP: $GRPO_ADAPTER"

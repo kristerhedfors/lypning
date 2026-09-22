@@ -130,3 +130,27 @@ def reference_only(state):
     bound = [v for k, v in state.items() if k.startswith("torch_") and v is not None]
     return (not state.get("fla_imported") and bool(bound)
             and all(v.startswith("transformers.") for v in bound))
+
+
+def refusal(modeling_module="transformers.models.qwen3_5.modeling_qwen3_5"):
+    """The import-time kernel answer, as a refusal reason or None.
+
+    For the job's deps stage: `train_verified.run` asks the same question, but
+    its first call comes after review, preparation and the base-dev arm, so a
+    wrong kernel on a new image would be discovered an hour into a billed job.
+    The gated-delta rule is resolved when the modeling module is imported, so
+    this answer needs no tokenizer, GPU or weight. `run` stays the in-process
+    authority; this only moves the first refusal to minute one.
+    """
+    import importlib
+    too_late = install()
+    if too_late:
+        return "fla was imported before its blocker: " + ", ".join(too_late)
+    try:
+        modeling = importlib.import_module(modeling_module)
+    except ImportError as exc:
+        return "cannot import %s: %s" % (modeling_module, exc)
+    state = module_kernels(modeling)
+    if not reference_only(state):
+        return "gated-delta-net did not resolve to the torch reference: %r" % (state,)
+    return None

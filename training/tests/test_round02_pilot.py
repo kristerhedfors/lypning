@@ -28,7 +28,8 @@ def heredoc(opening):
 
 
 def run_snippet(source, cwd, env, *argv):
-    full = dict(os.environ, PYTHONPATH=str(ROOT / "training"), **env)
+    full = dict(os.environ, PYTHONPATH=str(ROOT / "training"))
+    full.update(env)
     return subprocess.run([sys.executable, "-c", source] + list(argv), cwd=cwd, env=full,
                           capture_output=True, text=True, timeout=60)
 
@@ -112,20 +113,28 @@ def test_review_and_preparation_split_at_the_split_seed_and_training_uses_the_se
 
 
 def test_targets_outside_the_split_are_refused_before_preparation(tmp_path):
-    fit = heredoc('  python3 - "$1" <<\'PYEOF\'')
+    fit = heredoc('  PYTHONPATH="$PYTHONPATH:training/gpu" python3 - "$1" <<\'PYEOF\'')
+    gpu = {"PYTHONPATH": "%s:%s:%s" % (ROOT / "src", ROOT / "training", ROOT / "training" / "gpu")}
     (tmp_path / "work/round-02/sft-targets").mkdir(parents=True)
-    rows = [{"case_id": "a"}, {"case_id": "b"}]
+    # 1,000 distinct train cases over two families in each curriculum population:
+    # exactly the floors `curriculum_floor` enforces, so only membership varies.
+    cases = [{"case_id": "c%04d" % i, "split": "train", "family": "f%d" % (i % 4),
+              "population": "coverage" if i % 4 < 2 else "fallback-control"} for i in range(1000)]
     (tmp_path / "work/round-02/sft-targets/sft.jsonl").write_text(
-        "".join(json.dumps(r) + "\n" for r in rows))
+        "".join(json.dumps({"case_id": c["case_id"]}) + "\n" for c in cases))
     bundle = tmp_path / "bundle.json"
-    bundle.write_text(json.dumps({"cases": [{"case_id": "a", "split": "train"},
-                                            {"case_id": "b", "split": "train"}]}))
-    ok = run_snippet(fit, tmp_path, {"SPLIT_SEED": "1111"}, str(bundle))
+    bundle.write_text(json.dumps({"cases": cases}))
+    ok = run_snippet(fit, tmp_path, dict(gpu, SPLIT_SEED="1111"), str(bundle))
     assert ok.returncode == 0, ok.stderr
-    bundle.write_text(json.dumps({"cases": [{"case_id": "a", "split": "train"},
-                                            {"case_id": "b", "split": "dev"}]}))
-    refused = run_snippet(fit, tmp_path, {"SPLIT_SEED": "1111"}, str(bundle))
+    cases[1]["split"] = "dev"
+    bundle.write_text(json.dumps({"cases": cases}))
+    refused = run_snippet(fit, tmp_path, dict(gpu, SPLIT_SEED="1111"), str(bundle))
     assert refused.returncode != 0 and "not train cases" in refused.stderr
+    # All train, but too few distinct cases: the floor refuses before preparation.
+    (tmp_path / "work/round-02/sft-targets/sft.jsonl").write_text(
+        "".join(json.dumps({"case_id": c["case_id"]}) + "\n" for c in cases[2:300]))
+    small = run_snippet(fit, tmp_path, dict(gpu, SPLIT_SEED="1111"), str(bundle))
+    assert small.returncode != 0 and "distinct train cases" in small.stderr
 
 
 def test_the_manifest_records_every_arm_field():
@@ -162,3 +171,18 @@ def test_the_split_seed_default_reaches_the_python_that_reads_it(tmp_path):
     assert done.returncode == 0, done.stderr
     assert done.stdout.strip() == "1111"
 
+
+
+def test_probe_and_grpo_share_one_dispatched_group_size():
+    """The probe contract binds `generations`; a literal 4 kept arm C at 4x1."""
+    assert "--generations 4" not in TEXT
+    assert TEXT.count('--generations "$GRPO_GENERATIONS"') == 2
+    assert '--grpo-prompts "$GRPO_PROMPTS"' in TEXT
+    finish = TEXT[TEXT.index("finish() {"):TEXT.index("trap 'finish $?' EXIT")]
+    assert '"grpo_generations"' in finish and '"grpo_prompts"' in finish
+
+
+def test_a_hand_launch_meets_the_curriculum_floor_before_preparation():
+    body = TEXT[TEXT.index("targets_fit_split() {"):]
+    body = body[:body.index("\n}\n")]
+    assert "curriculum_floor" in body and 'floor["problems"]' in body

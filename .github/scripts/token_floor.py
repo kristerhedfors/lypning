@@ -191,10 +191,15 @@ def sft_rows(cases):
 
 
 def plan_args(steps, batch_size, seed, max_seq, max_new_tokens):
-    """The `--plan` argument surface `supervised_plan` and `schedule` read."""
+    """The `--plan` argument surface `supervised_plan` and `schedule` read.
+
+    `sft_targets=None` is the authored-reference curriculum: `sft_curriculum`
+    reads the attribute, and its absence was an AttributeError on every grid
+    row, which kept round02-preflight's token-floor step red whatever the bank.
+    """
     return SimpleNamespace(stage="sft", smoke=False, steps=steps, batch_size=batch_size,
                            seed=seed, eval_every=25, max_new_tokens=max_new_tokens,
-                           max_seq=max_seq, lr=None)
+                           max_seq=max_seq, lr=None, sft_targets=None)
 
 
 def upper_bound(cases, steps, batch_size, seed, max_seq, max_new_tokens):
