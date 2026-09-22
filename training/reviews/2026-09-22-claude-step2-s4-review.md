@@ -25,7 +25,7 @@ The shape follows `ORCHESTRATION.md` *Fable writeup → Codex assessment contrac
   - `gh run view` conclusions and head SHAs for all seven Step 2 runs.
   - The public aggregate log lines of grade `35759939928` and generation
     `35767396604`.
-  - The code at `b96bbfe`.
+  - The code at `b96bbfe`, and the cross-lane fixes in `74c1ff5`.
 - **Not read.** Any private row, completion or target. The adapter and
   experiment files of seed 1111.
 - **Approval.** The paid runs were dispatched by Codex under the per-rung

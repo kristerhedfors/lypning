@@ -297,7 +297,8 @@ green before the second seed is billed.
 - **Kernel enforcement.** The torch-reference gated-delta rule is enforced:
   the `fla` blocker is installed before any probe, the probe runs in a child
   interpreter, the bound implementation is recorded (`kernel_binding`), and a
-  run refuses any other binding before the weights are pulled. Seed 1111's
+  run refuses any other binding before the weights are pulled — the pilot's
+  `deps` stage asks first, in minute one. Seed 1111's
   actual binding is **unverified**: read its `sft/experiment.json` `kernels`
   field (free CI read).
 - **Re-prepare bundles.** `verifier_sha256` now also hashes
@@ -306,9 +307,11 @@ green before the second seed is billed.
 - **Launcher.** GRPO dose defaults to 0 in `launch.py`, the job script and
   `round02.yml`, so arm A never bills GRPO; the probe still runs as arm C's
   admission evidence. A banked stage defaults to h200 / 720m. `QWEN_REV` is
-  pinned in every round-02 workflow. Arm C must dispatch a group size of 8
-  for probe and GRPO alike (the pilot at `b96bbfe` passes 4 to both) and
-  budget the job timeout for 16–32 sequences per step.
+  pinned in every round-02 workflow. The launcher's `--grpo-generations`
+  (default 4, which keeps arm A's probe comparable with seed 1111's) and
+  `--grpo-prompts` (default 4) reach both the probe and GRPO and are arm
+  fields; arm C dispatches `--grpo-generations 8` and budgets the job timeout
+  for 16–32 sequences per step.
 
 ## Kill criteria (unchanged, `LADDER.md` §6)
 
