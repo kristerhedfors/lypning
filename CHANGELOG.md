@@ -14,6 +14,15 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-22** — Make sized stdin reads consume only the requested characters
+
+- `sys.stdin.read(n)` counts Unicode characters and advances the shared stdin
+  cursor, preserving the original bytes for dispatcher replay after refusal.
+- Zero-length reads do not wait for input; invalid argument lists raise before
+  consuming it. Invalid UTF-8 and allocation-overflow-sized reads refuse cleanly.
+- Adds differential tests for both Rust variants, interleaved stream operations,
+  Unicode, argument errors, zero-length pipes and fallback replay.
+
 **2026-09-22** — Reuse equivalent evaluation arms and enforce the job deadline locally
 ([#100](https://github.com/kristerhedfors/lypning/pull/100))
 

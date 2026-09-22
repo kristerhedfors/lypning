@@ -50,7 +50,7 @@ Advance a step by editing this table in the same PR as the work.
 | # | step | cost | decision it makes | state |
 |---|---|---|---|---|
 | 0 | Read what was paid for | $0 | did dev native move inside the selector's blind spot? | done (2026-09-21, [read](reports/2026-09-21-codex-step0-read.md), GH 35575454075) |
-| 1 | Fix the instrument | $0 | nothing else is readable until it is | in progress (1.1 and 1.2 done 2026-09-21, PR #97; 1.3 done 2026-09-22, PR #98; 1.4 done 2026-09-22, PR #99; 1.5 done 2026-09-22, PR #100; 1.6 open) |
+| 1 | Fix the instrument | $0 | nothing else is readable until it is | in progress (1.1 and 1.2 done 2026-09-21, PR #97; 1.3 done 2026-09-22, PR #98; 1.4 done 2026-09-22, PR #99; 1.5 done 2026-09-22, PR #100; 1.6 in progress) |
 | 2 | Positive control (S1 / stage 0b) | ~$5 | distillation route or contrastive route | open |
 | 3 | Build contrastive targets | tokens | is there enough pair supply for a preference arm? | open |
 | 4 | S4, re-specified, three seeds | ~$60–90 | the first result the instrument can read | open |
