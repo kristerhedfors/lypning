@@ -14,6 +14,16 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
+**2026-09-23** — Close Step 2 (flat) and Step 3 (below 300 pairs); arm A targets ready (#TBD)
+
+- Full-split Step 2 over all 1,355 train cases (merge `35912725289`):
+  coverage native +2.59pp [−3.94, +9.74], correct −7.13pp. No distillation
+  route. Rungs total $28.12751896 charged or reserved.
+- Step 3 (`35918571219`): 110–257 pair prompts by source, below the 300 that a
+  preference arm needs; arm C carries the contrastive signal.
+- Three target sets (1,155–1,291 cases) clear the S4 preflight at all three
+  seeds; the choice, the SFT dose and the dev draws wait for GPU approval.
+
 **2026-09-23** — Count Step 3's contrastive pair supply from the graded rows ([#119](https://github.com/kristerhedfors/lypning/pull/119))
 
 - `.github/scripts/step3_pairs.py` and the free `step3-pairs.yml` read one
