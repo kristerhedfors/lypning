@@ -252,19 +252,20 @@ def test_the_fixture_reproduces_what_the_smoke_itself_printed():
 
     Printed by the job: same-job 788.1, split 527.3 + 271.4 (measured); upper
     2126.0 (1329.1 + 807.5); lower 734.3 (473.5 + 271.4). If the fixture or the
-    arithmetic drifted, the new numbers below would mean nothing.
+    arithmetic drifted, the new numbers below would mean nothing. The smoke
+    projected generate-then-score, so this is read serially.
     """
     want = {"measured": (788.1, 527.3, 271.4), "upper": (2126.0, 1329.1, 807.5),
             "lower": (734.3, 473.5, 271.4)}
     for reading, (same, pilot, eval2) in want.items():
-        got = projection.from_hwsmoke(SMOKE_6AB4582D, BEFORE, reading=reading)
+        got = projection.from_hwsmoke(SMOKE_6AB4582D, BEFORE, reading=reading, serial=True)
         assert (got["same_job_minutes"], got["split"]["pilot_minutes"],
                 got["split"]["eval2_minutes"]) == pytest.approx((same, pilot, eval2), abs=0.15), reading
 
 
 def test_arm_a_without_the_probe_and_with_step_zero_reused_from_the_smokes_numbers():
-    """The numbers `PLAN.md` Step 4 quotes, re-derived: pilot job and eval-2 job minutes."""
-    table = projection.readings(SMOKE_6AB4582D)
+    """Arm A scored serially, as before the overlap: pilot job and eval-2 job minutes."""
+    table = projection.readings(SMOKE_6AB4582D, serial=True)
     got = {r: (row["pilot_minutes"], row["eval2_minutes"]) for r, row in table.items()}
     assert got == {"measured": pytest.approx((422.6, 271.4), abs=0.15),
                    "realistic": pytest.approx((764.4, 638.3), abs=0.15),
@@ -279,7 +280,7 @@ def test_arm_a_without_the_probe_and_with_step_zero_reused_from_the_smokes_numbe
     assert table["realistic"]["eval2_minutes"] <= 648.0
     # Removing the probe and step 0 takes 10,316 draws off the pilot job at every reading.
     for reading in ("measured", "realistic", "upper", "lower"):
-        before = projection.from_hwsmoke(SMOKE_6AB4582D, BEFORE, reading=reading)
+        before = projection.from_hwsmoke(SMOKE_6AB4582D, BEFORE, reading=reading, serial=True)
         assert before["split"]["pilot_minutes"] > table[reading]["pilot_minutes"], reading
         drawn = sum(s["draws"] for s in before["stages"] if s["job"] == "pilot")
         now = sum(s["draws"] for s in projection.from_hwsmoke(SMOKE_6AB4582D, reading=reading)["stages"]
@@ -287,20 +288,89 @@ def test_arm_a_without_the_probe_and_with_step_zero_reused_from_the_smokes_numbe
         assert drawn - now == 5420 + 4896
 
 
+def test_arm_a_with_scoring_overlapped_from_the_smokes_numbers():
+    """The numbers `PLAN.md` Step 4 quotes, re-derived: pilot job and eval-2 job minutes.
+
+    Scoring overlapped with the next call's generation hides whichever of the
+    two is shorter. At the realistic and upper readings generation is longer
+    (a 256 call is ~261 s and ~359 s, its scoring 110.9 s), so almost all of
+    the 195 scoring minutes leave the pilot's clock; at the measured and lower
+    readings scoring is the longer, and the calls' generation leaves instead.
+    """
+    table = projection.readings(SMOKE_6AB4582D)
+    got = {r: (row["pilot_minutes"], row["eval2_minutes"]) for r, row in table.items()}
+    assert got == {"measured": pytest.approx((349.2, 198.0), abs=0.15),
+                   "realistic": pytest.approx((574.0, 453.4), abs=0.15),
+                   "upper": pytest.approx((812.4, 622.6), abs=0.15),
+                   "lower": pytest.approx((295.5, 198.0), abs=0.15)}
+    assert {row["scoring"] for row in table.values()} == {"overlapped"}
+    assert table["measured"]["verdict"] == table["lower"]["verdict"] == "same-job"
+    assert table["realistic"]["verdict"] == "separate"
+    assert table["upper"]["verdict"] == "does-not-fit"
+    realistic = table["realistic"]
+    assert realistic["pilot_minutes"] <= realistic["budget_minutes"] == 648.0
+    # The stated constant still stands for 195.0 pool minutes; 4.7 reach the clock.
+    assert realistic["scoring_minutes"]["pilot"] == pytest.approx(195.0, abs=0.1)
+    assert realistic["scoring_exposed_minutes"] == {"pilot": pytest.approx(4.7, abs=0.15),
+                                                    "eval2": pytest.approx(0.7, abs=0.15)}
+    serial = projection.readings(SMOKE_6AB4582D, serial=True)
+    for reading, row in table.items():
+        assert row["pilot_minutes"] < serial[reading]["pilot_minutes"], reading
+        assert row["eval2_minutes"] < serial[reading]["eval2_minutes"], reading
+        assert serial[reading]["scoring_exposed_minutes"]["pilot"] == pytest.approx(195.0, abs=0.2)
+
+
+def test_an_overlapped_evaluation_is_the_first_call_the_longer_of_each_pair_and_the_last_scoring():
+    """Chunk i scores while chunk i+1 generates; the last chunk's scoring is a tail."""
+    def seconds(batch):
+        return {256: 100.0, 32: 30.0}[batch]
+    # 34 cases x 16 draws at 256 per call: calls of 256, 256 and 32 draws.
+    assert projection.chunk_batches(34, 16, 256) == [256, 256, 32]
+    score = [256 * 20.8 / 48, 256 * 20.8 / 48, 32 * 20.8 / 48]           # 110.9, 110.9, 13.9 s
+    by_hand = 100.0 + max(100.0, score[0]) + max(30.0, score[1]) + score[2]
+    assert projection.evaluation_minutes(34, 16, 256, seconds, 20.8, 48) == pytest.approx(by_hand / 60)
+    serial = projection.evaluation_minutes(34, 16, 256, seconds, 20.8, 48, serial=True)
+    assert serial == pytest.approx((230.0 + sum(score)) / 60)
+    # Never slower than serial, never faster than either resource alone.
+    for cases, draws in ((306, 16), (803, 16), (315, 4), (1, 1), (34, 16)):
+        for per_draw in (0.0, 1.0, 20.8, 200.0):
+            args = (cases, draws, 256, projection.realistic_rate(0.351), per_draw, 48)
+            over, ser = projection.evaluation_minutes(*args), projection.evaluation_minutes(*args, serial=True)
+            batches = projection.chunk_batches(cases, draws, 256)
+            gen = sum(args[3](b) for b in batches) / 60
+            scoring = sum(projection.scoring_seconds(b, per_draw, 48) for b in batches) / 60
+            assert max(gen, scoring) - 1e-9 <= over <= ser + 1e-9
+            assert ser == pytest.approx(gen + scoring)
+    # One call: nothing to overlap with.
+    one = projection.evaluation_minutes(16, 16, 256, seconds, 20.8, 48)
+    assert one == projection.evaluation_minutes(16, 16, 256, seconds, 20.8, 48, serial=True)
+
+
 def test_whole_scoring_waves_are_printed_beside_the_projection_not_added_to_it():
     """256 draws on 48 workers is six waves if draws take equal time, not 5.33.
 
     The linear pool model is the optimistic end; the wave count is the other.
-    At the realistic reading the eval-2 job fits the budget only on the first.
+    Serially every wave adds; overlapped, a wave adds only where it outlasts
+    the next call's generation, and in each evaluation's tail.
     """
     assert projection.scoring_wave_minutes(16, 16, 256, 20.8, 48) == pytest.approx((6 - 256 / 48) * 20.8 / 60)
     assert projection.scoring_wave_minutes(3, 16, 256, 20.8, 48) == 0.0, "48 draws: one whole wave"
-    row = projection.readings(SMOKE_6AB4582D)["realistic"]
-    assert row["scoring_wave_minutes"] == {"pilot": pytest.approx(24.4, abs=0.15),
-                                           "eval2": pytest.approx(23.1, abs=0.15)}
-    assert row["eval2_minutes"] <= row["budget_minutes"] < row["eval2_minutes"] + row["scoring_wave_minutes"]["eval2"]
+    serial = projection.readings(SMOKE_6AB4582D, serial=True)["realistic"]
+    assert serial["scoring_wave_minutes"] == {"pilot": pytest.approx(24.4, abs=0.15),
+                                              "eval2": pytest.approx(23.1, abs=0.15)}
+    assert serial["eval2_minutes"] <= serial["budget_minutes"] \
+        < serial["eval2_minutes"] + serial["scoring_wave_minutes"]["eval2"]
+    table = projection.readings(SMOKE_6AB4582D)
+    assert table["realistic"]["scoring_wave_minutes"] == {"pilot": pytest.approx(0.6, abs=0.15),
+                                                          "eval2": pytest.approx(0.0, abs=0.15)}
+    # Scoring-bound (measured): every wave still lands on the clock.
+    assert table["measured"]["scoring_wave_minutes"] == {"pilot": pytest.approx(24.4, abs=0.15),
+                                                         "eval2": pytest.approx(23.1, abs=0.15)}
+    for row in table.values():
+        assert row["pilot_minutes"] + row["scoring_wave_minutes"]["pilot"] <= 648.0 or \
+            row["verdict"] == "does-not-fit"
     got = projection.from_hwsmoke(SMOKE_6AB4582D, reading="realistic")
-    assert got["split"]["pilot_minutes"] == pytest.approx(764.4, abs=0.15), "a sensitivity, not a term"
+    assert got["split"]["pilot_minutes"] == pytest.approx(574.0, abs=0.15), "a sensitivity, not a term"
 
 
 def test_the_realistic_call_lasts_its_expected_longest_draw():
@@ -344,6 +414,11 @@ def test_the_cli_prints_every_reading_side_by_side(tmp_path, capsys):
     table = json.loads(capsys.readouterr().out)
     assert set(table) == {"measured", "upper", "lower", "realistic"}
     assert "assumptions" in table["realistic"] and "assumptions" not in table["measured"]
+    assert table["realistic"]["scoring"] == "overlapped"
+    assert projection.main(["--hwsmoke", str(path), "--reading", "all", "--serial-scoring"]) == 0
+    serial = json.loads(capsys.readouterr().out)
+    assert serial["realistic"]["scoring"] == "serial"
+    assert serial["realistic"]["pilot_minutes"] == pytest.approx(764.4, abs=0.15)
     assert projection.main(["--hwsmoke", str(path), "--reading", "realistic", "--tail-tokens", "1024"]) == 0
     worst = json.loads(capsys.readouterr().out)
     assert worst["realistic_assumptions"]["expected_call_tokens_256"] == 1024.0

@@ -27,7 +27,12 @@ Every GPU stage is its own `train_verified.py` process and loads the model
 once; the 55 GB download is paid once per job (the cache serves the rest).
 Generation is modelled per `generate` call, as `verified_evaluation.chunked`
 cuts it, because a call's wall clock is set by its longest completion and not
-by how full the batch is; scoring a chunk follows its generation, on the pool.
+by how full the batch is. A chunk is scored on the pool WHILE the next one
+generates (`verified_evaluation.ScoringStage`), one chunk at a time, so an
+evaluation lasts its first call, then max(generation, previous chunk's
+scoring) per further call, then the last chunk's scoring as a tail
+(`evaluation_minutes`). `serial=True` (`--serial-scoring`) prices the old
+generate-then-score loop, which is what the smoke itself projected.
 
 Stdlib only, loaded by path (`hwsmoke.py`, the tests) like `launch.py`; no
 I/O outside `main`. It prints aggregates and nothing case-level exists here.
@@ -197,85 +202,129 @@ def flat_rate(draws_per_minute):
     return lambda batch: batch * 60.0 / draws_per_minute
 
 
+def scoring_seconds(batch, score_worker_seconds, score_workers, waves=False):
+    """Pool seconds to score one chunk of `batch` draws.
+
+    Evenly spread over the workers (batch x seconds / workers), or in WHOLE
+    waves (`waves`): with equal per-draw times 256 draws on 48 workers take
+    six waves, not 5.33.
+    """
+    workers = max(1, int(score_workers))
+    share = -(-int(batch) // workers) if waves else batch / float(workers)
+    return share * score_worker_seconds
+
+
 def evaluation_minutes(cases, draws, sequences_per_call, batch_seconds,
-                       score_worker_seconds, score_workers):
-    """Wall minutes of one evaluation: each call's generation, then its scoring."""
-    total = 0.0
-    for batch in chunk_batches(cases, draws, sequences_per_call):
-        total += batch_seconds(batch) + batch * score_worker_seconds / max(1, score_workers)
+                       score_worker_seconds, score_workers, *, serial=False, waves=False):
+    """Wall minutes of one evaluation.
+
+    Overlapped (the default, `verified_evaluation.ScoringStage`): chunk i is
+    scored while chunk i+1 generates and the next call waits for both, so the
+    evaluation is the first call's generation, then max(generation, the
+    previous chunk's scoring) for every further call, then the last chunk's
+    scoring. `serial`: each call's generation, then its scoring.
+    """
+    batches = chunk_batches(cases, draws, sequences_per_call)
+    generation = [batch_seconds(batch) for batch in batches]
+    scoring = [scoring_seconds(batch, score_worker_seconds, score_workers, waves) for batch in batches]
+    if serial:
+        return (sum(generation) + sum(scoring)) / 60.0
+    total = generation[0] + scoring[-1]
+    total += sum(max(g, s) for g, s in zip(generation[1:], scoring[:-1]))
     return total / 60.0
 
 
-def scoring_wave_minutes(cases, draws, sequences_per_call, score_worker_seconds, score_workers):
+def scoring_wave_minutes(cases, draws, sequences_per_call, score_worker_seconds, score_workers,
+                         batch_seconds=None):
     """Minutes one evaluation's scoring adds if each call scores in WHOLE waves of workers.
 
-    `evaluation_minutes` spreads a call's draws evenly over the workers
-    (batch x seconds / workers). The pool is a `ThreadPoolExecutor` the call
-    waits on, so with equal per-draw times 256 draws on 48 workers take six
-    waves, not 5.33: this is that difference, summed over the evaluation's
-    calls. A sensitivity printed beside the projection, not added to it --
+    `evaluation_minutes` spreads a call's draws evenly over the workers; the
+    pool is a `ThreadPoolExecutor` the stage waits on, so with equal per-draw
+    times a chunk scores in whole waves (`scoring_seconds`). This is that
+    difference over the evaluation. With no `batch_seconds` scoring is taken
+    as serial and every extra wave adds; with it, overlapped, a wave adds only
+    where it pushes a chunk's scoring past the next call's generation, and in
+    the tail. A sensitivity printed beside the projection, not added to it --
     unequal draw times land between the two.
     """
-    workers = max(1, int(score_workers))
-    return sum((-(-batch // workers) - batch / float(workers)) * score_worker_seconds
-               for batch in chunk_batches(cases, draws, sequences_per_call)) / 60.0
+    if batch_seconds is None:
+        return sum(scoring_seconds(batch, score_worker_seconds, score_workers, True)
+                   - scoring_seconds(batch, score_worker_seconds, score_workers)
+                   for batch in chunk_batches(cases, draws, sequences_per_call)) / 60.0
+    args = (cases, draws, sequences_per_call, batch_seconds, score_worker_seconds, score_workers)
+    return evaluation_minutes(*args, waves=True) - evaluation_minutes(*args)
 
 
 def project(batch_seconds, sft_seconds_per_step, load_minutes, download_minutes, plan=None, *,
             score_worker_seconds=SCORE_WORKER_SECONDS_PER_DRAW, prep_minutes=PREP_MINUTES,
             eval2_prep_minutes=EVAL2_PREP_MINUTES, ceiling_minutes=JOB_CEILING_MINUTES,
-            margin=DEFAULT_MARGIN):
+            margin=DEFAULT_MARGIN, serial=False):
     """Minutes per stage for one pilot job, and whether it fits one job or two.
 
     `batch_seconds` is a function from sequences per call to seconds
     (`batch_seconds_from`, `flat_rate`). With `flat_rate` pass
-    `score_worker_seconds=0`: that rate already includes scoring.
+    `score_worker_seconds=0`: that rate already includes scoring. `serial`
+    prices generate-then-score (`--serial-scoring`) instead of the overlap.
     """
     plan = dict(PLAN, **(plan or {}))
     seq, workers = plan["eval_sequences"], plan["score_workers"]
-
-    def evaluation(cases, draws):
-        return evaluation_minutes(cases, draws, seq, batch_seconds, score_worker_seconds, workers)
-
-    dev = evaluation(plan["dev_cases"], plan["dev_draws"])
     sft_evals = sft_evaluations(plan["sft_steps"], plan["eval_every"])
     generated = sft_generated_evaluations(plan["sft_steps"], plan["eval_every"], plan["reuse_step0"])
     probe_runs = plan["grpo_steps"] > 0
     arms = plan["arms"]
-    stages = [
-        {"stage": "prep", "job": "pilot", "minutes": prep_minutes + download_minutes, "draws": 0},
-        {"stage": "base-dev", "job": "pilot", "minutes": load_minutes + dev,
-         "draws": plan["dev_cases"] * plan["dev_draws"]},
-        {"stage": "sft", "job": "pilot",
-         "minutes": load_minutes + generated * dev + plan["sft_steps"] * sft_seconds_per_step / 60.0,
-         "draws": generated * plan["dev_cases"] * plan["dev_draws"], "evaluations": sft_evals,
-         "generated_evaluations": generated, "reused_evaluations": sft_evals - generated},
-        {"stage": "sft-dev-reload", "job": "pilot", "minutes": load_minutes + dev,
-         "draws": plan["dev_cases"] * plan["dev_draws"]},
-        {"stage": "probe", "job": "pilot",
-         "minutes": (load_minutes + evaluation(plan["probe_cases"], plan["probe_draws"])
-                     if probe_runs else 0.0),
-         "draws": plan["probe_cases"] * plan["probe_draws"] if probe_runs else 0,
-         "skipped": not probe_runs},
-        {"stage": "test", "job": "pilot",
-         "minutes": arms * (load_minutes + evaluation(plan["test_cases"], plan["test_draws"])),
-         "draws": arms * plan["test_cases"] * plan["test_draws"]},
-        {"stage": "eval2", "job": "eval2",
-         "minutes": arms * (load_minutes + evaluation(plan["eval2_cases"], plan["eval2_draws"])),
-         "draws": arms * plan["eval2_cases"] * plan["eval2_draws"]},
-    ]
-    for stage in stages:
-        stage["minutes"] = round(stage["minutes"], 1)
-    pilot = sum(s["minutes"] for s in stages if s["job"] == "pilot")
-    eval2 = sum(s["minutes"] for s in stages if s["job"] == "eval2")
-    # Scoring follows each call's generation (`verified_evaluation.evaluate`),
-    # so it is part of the clock above; this is how much of it is the stated
-    # per-draw scoring constant rather than anything the smoke measured.
+
+    def stages_at(per_draw):
+        """Every stage, with scoring at `per_draw` worker-seconds a draw."""
+        def evaluation(cases, draws):
+            return evaluation_minutes(cases, draws, seq, batch_seconds, per_draw, workers, serial=serial)
+
+        dev = evaluation(plan["dev_cases"], plan["dev_draws"])
+        stages = [
+            {"stage": "prep", "job": "pilot", "minutes": prep_minutes + download_minutes, "draws": 0},
+            {"stage": "base-dev", "job": "pilot", "minutes": load_minutes + dev,
+             "draws": plan["dev_cases"] * plan["dev_draws"]},
+            {"stage": "sft", "job": "pilot",
+             "minutes": load_minutes + generated * dev + plan["sft_steps"] * sft_seconds_per_step / 60.0,
+             "draws": generated * plan["dev_cases"] * plan["dev_draws"], "evaluations": sft_evals,
+             "generated_evaluations": generated, "reused_evaluations": sft_evals - generated},
+            {"stage": "sft-dev-reload", "job": "pilot", "minutes": load_minutes + dev,
+             "draws": plan["dev_cases"] * plan["dev_draws"]},
+            {"stage": "probe", "job": "pilot",
+             "minutes": (load_minutes + evaluation(plan["probe_cases"], plan["probe_draws"])
+                         if probe_runs else 0.0),
+             "draws": plan["probe_cases"] * plan["probe_draws"] if probe_runs else 0,
+             "skipped": not probe_runs},
+            {"stage": "test", "job": "pilot",
+             "minutes": arms * (load_minutes + evaluation(plan["test_cases"], plan["test_draws"])),
+             "draws": arms * plan["test_cases"] * plan["test_draws"]},
+            {"stage": "eval2", "job": "eval2",
+             "minutes": arms * (load_minutes + evaluation(plan["eval2_cases"], plan["eval2_draws"])),
+             "draws": arms * plan["eval2_cases"] * plan["eval2_draws"]},
+        ]
+        for stage in stages:
+            stage["minutes"] = round(stage["minutes"], 1)
+        return stages
+
+    def job_minutes(stages, job):
+        return sum(s["minutes"] for s in stages if s["job"] == job)
+
+    stages = stages_at(score_worker_seconds)
+    unscored = stages_at(0.0)
+    pilot, eval2 = job_minutes(stages, "pilot"), job_minutes(stages, "eval2")
+    # The stated per-draw scoring constant, not anything the smoke measured:
+    # the pool time it stands for, and how much of that reaches the wall clock
+    # above. Serial, all of it; overlapped, what generation does not cover --
+    # each evaluation's last chunk, and any chunk that scores slower than the
+    # next one generates.
     scoring = {job: round(sum(s["draws"] for s in stages if s["job"] == job)
                           * score_worker_seconds / max(1, workers) / 60.0, 1)
                for job in ("pilot", "eval2")}
+    exposed = {job: round(job_minutes(stages, job) - job_minutes(unscored, job), 1)
+               for job in ("pilot", "eval2")}
+
     def waves(cases, draws):
-        return scoring_wave_minutes(cases, draws, seq, score_worker_seconds, workers)
+        return scoring_wave_minutes(cases, draws, seq, score_worker_seconds, workers,
+                                    None if serial else batch_seconds)
     dev_waves = waves(plan["dev_cases"], plan["dev_draws"])
     scoring_waves = {
         "pilot": round(dev_waves * (2 + generated)
@@ -296,10 +345,12 @@ def project(batch_seconds, sft_seconds_per_step, load_minutes, download_minutes,
             "load_minutes": round(load_minutes, 1), "download_minutes": round(download_minutes, 1),
             "sft_seconds_per_step": round(sft_seconds_per_step, 2),
             "score_worker_seconds_per_draw": score_worker_seconds,
+            "scoring": "serial" if serial else "overlapped",
             "ceiling_minutes": ceiling_minutes, "margin": margin, "budget_minutes": round(budget, 1),
             "same_job_minutes": round(same_job, 1),
             "split": {"pilot_minutes": round(pilot, 1), "eval2_minutes": round(split_eval2, 1)},
             "scoring_minutes": scoring,
+            "scoring_exposed_minutes": exposed,
             # Not in the minutes above: what whole scoring waves would add.
             "scoring_wave_minutes": scoring_waves,
             "fits_single_job": same_job <= budget,
@@ -307,10 +358,12 @@ def project(batch_seconds, sft_seconds_per_step, load_minutes, download_minutes,
             "verdict": verdict,
             "assumes": "no step-0 eval-2 reuse; SFT step 0 %s; probe %s; GRPO steps not modelled; "
                        "prep %.0f min and eval-2 prep %.0f min are stated constants; scoring at "
-                       "%.1f worker-s/draw" % (
+                       "%.1f worker-s/draw, %s" % (
                            "reused from base-dev" if plan["reuse_step0"] else "generated",
                            "runs" if probe_runs else "skipped (grpo_steps 0)",
-                           prep_minutes, eval2_prep_minutes, score_worker_seconds)}
+                           prep_minutes, eval2_prep_minutes, score_worker_seconds,
+                           "after each call's generation" if serial
+                           else "overlapped with the next call's generation")}
 
 
 #: The three readings of one smoke. `measured`: the pilot-decoding calls and the
@@ -390,7 +443,8 @@ def readings(report, plan=None, **kw):
                           "eval2_minutes": got["split"]["eval2_minutes"],
                           "same_job_minutes": got["same_job_minutes"],
                           "budget_minutes": got["budget_minutes"], "verdict": got["verdict"],
-                          "scoring_minutes": got["scoring_minutes"],
+                          "scoring": got["scoring"], "scoring_minutes": got["scoring_minutes"],
+                          "scoring_exposed_minutes": got["scoring_exposed_minutes"],
                           "scoring_wave_minutes": got["scoring_wave_minutes"]}
         if "realistic_assumptions" in got:
             table[reading]["assumptions"] = got["realistic_assumptions"]
@@ -412,12 +466,15 @@ def main(argv=None):
     p.add_argument("--truncation-p", type=float, default=TRUNCATION_P)
     p.add_argument("--mean-tokens", type=int, default=MEAN_COMPLETION_TOKENS)
     p.add_argument("--tail-tokens", type=int, default=TAIL_TOKENS)
+    p.add_argument("--serial-scoring", action="store_true",
+                   help="price generate-then-score, as `train_verified --serial-scoring` runs "
+                        "it and as the smoke itself projected; default: overlapped")
     args = p.parse_args(argv)
     with open(args.hwsmoke, encoding="utf-8") as fh:
         report = json.load(fh)
     plan = {key: getattr(args, key) for key in PLAN}
     realistic = dict(truncation_p=args.truncation_p, mean_tokens=args.mean_tokens,
-                     tail_tokens=args.tail_tokens)
+                     tail_tokens=args.tail_tokens, serial=args.serial_scoring)
     if args.reading == "all":
         print(json.dumps(readings(report, plan, margin=args.margin, **realistic), indent=2))
         return 0
