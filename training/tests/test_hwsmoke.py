@@ -287,6 +287,22 @@ def test_arm_a_without_the_probe_and_with_step_zero_reused_from_the_smokes_numbe
         assert drawn - now == 5420 + 4896
 
 
+def test_whole_scoring_waves_are_printed_beside_the_projection_not_added_to_it():
+    """256 draws on 48 workers is six waves if draws take equal time, not 5.33.
+
+    The linear pool model is the optimistic end; the wave count is the other.
+    At the realistic reading the eval-2 job fits the budget only on the first.
+    """
+    assert projection.scoring_wave_minutes(16, 16, 256, 20.8, 48) == pytest.approx((6 - 256 / 48) * 20.8 / 60)
+    assert projection.scoring_wave_minutes(3, 16, 256, 20.8, 48) == 0.0, "48 draws: one whole wave"
+    row = projection.readings(SMOKE_6AB4582D)["realistic"]
+    assert row["scoring_wave_minutes"] == {"pilot": pytest.approx(24.4, abs=0.15),
+                                           "eval2": pytest.approx(23.1, abs=0.15)}
+    assert row["eval2_minutes"] <= row["budget_minutes"] < row["eval2_minutes"] + row["scoring_wave_minutes"]["eval2"]
+    got = projection.from_hwsmoke(SMOKE_6AB4582D, reading="realistic")
+    assert got["split"]["pilot_minutes"] == pytest.approx(764.4, abs=0.15), "a sensitivity, not a term"
+
+
 def test_the_realistic_call_lasts_its_expected_longest_draw():
     # 1-(1-0.0016)^256: about one 256-draw call in three reaches the cap.
     assert projection.capped_call_probability(256, 0.0016) == pytest.approx(0.3363, abs=1e-4)

@@ -27,7 +27,10 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 - `round02.yml`: `PILOT_EVAL2` is `separate`.
 - `projection.py`: models both changes and adds a `realistic` reading (a call
   lasts its expected longest draw; stated constants p, mean and tail length);
-  `--reading all` prints the four readings side by side. `PLAN.md` Step 4
+  `--reading all` prints the four readings side by side, with what whole
+  scoring waves would add (`scoring_wave_minutes`). `train_verified` refuses
+  `--reuse-step0` without `JOB_ID` or a completed source before the model
+  load. `PLAN.md` Step 4
   holds the re-run from smoke job `6ab4582d6b030d633f68c90e` (2026-09-24).
 
 **2026-09-23** — Arm A's approved configuration, an h200 hardware smoke, and an optional split eval-2 job ([#121](https://github.com/kristerhedfors/lypning/pull/121))

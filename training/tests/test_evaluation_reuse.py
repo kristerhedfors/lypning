@@ -290,3 +290,24 @@ def test_the_trainer_reuses_step_zero_only_in_sft_and_only_on_a_noop_proof():
                                    "--revision", "a" * 40, "--reuse-step0", "base-dev"])
     with pytest.raises(TrainingError, match="only for SFT"):
         tv.preflight(args)
+
+
+def test_the_trainer_refuses_an_unusable_step_zero_source_before_the_model_load(tmp_path, monkeypatch):
+    """No JOB_ID, or no completed base-dev: refused in `preflight`, not after the 55 GB load."""
+    spec = importlib.util.spec_from_file_location("reuse_tv_pre", TESTS.parent / "gpu" / "train_verified.py")
+    tv = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tv)
+    source = tmp_path / "base-dev"
+    argv = ["sft", "--bundle", str(tmp_path / "b.json"), "--engine", "e", "--output", str(tmp_path / "sft"),
+            "--revision", "a" * 40, "--reuse-step0", str(source)]
+    monkeypatch.delenv("JOB_ID", raising=False)
+    with pytest.raises(TrainingError, match="needs JOB_ID"):
+        tv.preflight(tv.parser().parse_args(argv))
+    monkeypatch.setenv("JOB_ID", "6ab4582d6b030d633f68c90e")
+    with pytest.raises(TrainingError, match="completed evaluation"):
+        tv.preflight(tv.parser().parse_args(argv))
+    source.mkdir()
+    write_json(source / "metrics.json", {})
+    with pytest.raises(Exception) as caught:                  # the next refusal is the bundle's own
+        tv.preflight(tv.parser().parse_args(argv))
+    assert "reuse-step0" not in str(caught.value)

@@ -182,6 +182,14 @@ def preflight(args):
         raise TrainingError("--reuse-evaluation is only for standalone evaluation")
     if args.reuse_step0 is not None and args.stage != "sft":
         raise TrainingError("--reuse-step0 is only for SFT, whose step 0 is the unadapted base")
+    if args.reuse_step0 is not None and not args.plan:
+        # Here, before the 55 GB load: otherwise both surface only once the
+        # model is in memory, after the job has paid for it.
+        if not os.environ.get("JOB_ID"):
+            raise TrainingError("--reuse-step0 needs JOB_ID: without it no stage can show the same job")
+        if not (args.reuse_step0 / "metrics.json").is_file():
+            raise TrainingError("--reuse-step0 needs a completed evaluation (metrics.json) in "
+                                + str(args.reuse_step0))
     if args.stage != "eval" and args.eval_split != "dev":
         raise TrainingError("test split cannot select a checkpoint")
     if not math.isfinite(args.warmup_ratio) or not 0 <= args.warmup_ratio < 1:

@@ -206,6 +206,21 @@ def evaluation_minutes(cases, draws, sequences_per_call, batch_seconds,
     return total / 60.0
 
 
+def scoring_wave_minutes(cases, draws, sequences_per_call, score_worker_seconds, score_workers):
+    """Minutes one evaluation's scoring adds if each call scores in WHOLE waves of workers.
+
+    `evaluation_minutes` spreads a call's draws evenly over the workers
+    (batch x seconds / workers). The pool is a `ThreadPoolExecutor` the call
+    waits on, so with equal per-draw times 256 draws on 48 workers take six
+    waves, not 5.33: this is that difference, summed over the evaluation's
+    calls. A sensitivity printed beside the projection, not added to it --
+    unequal draw times land between the two.
+    """
+    workers = max(1, int(score_workers))
+    return sum((-(-batch // workers) - batch / float(workers)) * score_worker_seconds
+               for batch in chunk_batches(cases, draws, sequences_per_call)) / 60.0
+
+
 def project(batch_seconds, sft_seconds_per_step, load_minutes, download_minutes, plan=None, *,
             score_worker_seconds=SCORE_WORKER_SECONDS_PER_DRAW, prep_minutes=PREP_MINUTES,
             eval2_prep_minutes=EVAL2_PREP_MINUTES, ceiling_minutes=JOB_CEILING_MINUTES,
@@ -259,6 +274,14 @@ def project(batch_seconds, sft_seconds_per_step, load_minutes, download_minutes,
     scoring = {job: round(sum(s["draws"] for s in stages if s["job"] == job)
                           * score_worker_seconds / max(1, workers) / 60.0, 1)
                for job in ("pilot", "eval2")}
+    def waves(cases, draws):
+        return scoring_wave_minutes(cases, draws, seq, score_worker_seconds, workers)
+    dev_waves = waves(plan["dev_cases"], plan["dev_draws"])
+    scoring_waves = {
+        "pilot": round(dev_waves * (2 + generated)
+                       + (waves(plan["probe_cases"], plan["probe_draws"]) if probe_runs else 0.0)
+                       + arms * waves(plan["test_cases"], plan["test_draws"]), 1),
+        "eval2": round(arms * waves(plan["eval2_cases"], plan["eval2_draws"]), 1)}
     budget = ceiling_minutes * (1 - margin)
     same_job = pilot + eval2
     split_eval2 = eval2_prep_minutes + download_minutes + eval2
@@ -277,6 +300,8 @@ def project(batch_seconds, sft_seconds_per_step, load_minutes, download_minutes,
             "same_job_minutes": round(same_job, 1),
             "split": {"pilot_minutes": round(pilot, 1), "eval2_minutes": round(split_eval2, 1)},
             "scoring_minutes": scoring,
+            # Not in the minutes above: what whole scoring waves would add.
+            "scoring_wave_minutes": scoring_waves,
             "fits_single_job": same_job <= budget,
             "fits_split": pilot <= budget and split_eval2 <= budget,
             "verdict": verdict,
@@ -365,7 +390,8 @@ def readings(report, plan=None, **kw):
                           "eval2_minutes": got["split"]["eval2_minutes"],
                           "same_job_minutes": got["same_job_minutes"],
                           "budget_minutes": got["budget_minutes"], "verdict": got["verdict"],
-                          "scoring_minutes": got["scoring_minutes"]}
+                          "scoring_minutes": got["scoring_minutes"],
+                          "scoring_wave_minutes": got["scoring_wave_minutes"]}
         if "realistic_assumptions" in got:
             table[reading]["assumptions"] = got["realistic_assumptions"]
     return table

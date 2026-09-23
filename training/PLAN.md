@@ -522,6 +522,13 @@ has no pool and did not measure it. At the realistic reading with scoring
 taken out, the pilot is 569.4 min. So whether arm A's pilot fits one 720m job
 turns on pooled scoring throughput, and no run in this tree has measured it.
 The eval-2 job fits at the realistic reading (638.3), with a 10-min margin.
+That margin assumes the pool spreads a call's draws evenly over its 48
+workers. If draws take equal time, 256 draws score in six whole waves, not
+5.33, and the projection prints what that adds (`scoring_wave_minutes`):
+24.4 min to the pilot job and 23.1 to the eval-2 job. The eval-2 job is then
+661.4 min, over the budget, though under 720m. At the realistic reading the
+pilot job would reach the ceiling during its base test arm, before
+`eval2-deferred.json` is written, so no eval-2 job could follow it.
 No launch decision is taken here.
 
 ## Kill criteria (unchanged, `LADDER.md` §6)
