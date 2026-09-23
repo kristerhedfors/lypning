@@ -14,7 +14,7 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html)
 
 ## Unreleased
 
-**2026-09-23** — Arm A's approved configuration, an h200 hardware smoke, and an optional split eval-2 job (#TBD)
+**2026-09-23** — Arm A's approved configuration, an h200 hardware smoke, and an optional split eval-2 job ([#121](https://github.com/kristerhedfors/lypning/pull/121))
 
 - `round02.yml`: `PILOT_STEPS` 1050 (one pass over 4,197 target rows),
   `PILOT_DEV_EVAL_DRAWS` 16, new `PILOT_EVAL_EVERY` 350 wired to the job's SFT
