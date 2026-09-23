@@ -105,6 +105,7 @@ finish() {
       python3 - <<'PYEOF'
 import json, os, subprocess
 from huggingface_hub import HfApi
+from pipeline.public_view import public_view
 api = HfApi()
 job = os.environ.get("JOB_ID", "local")
 def digest(path):
@@ -152,7 +153,7 @@ manifest = {"job": job, "status": os.environ["STATUS"], "exit_code": int(os.envi
             "eval2_bundle_digest": digest("work/round-02/eval2/bundle.json"),
             "grpo_skipped": os.path.exists("work/round-02/grpo-skipped.json")}
 json.dump(manifest, open("work/round-02/job-manifest.json", "w"), indent=2)
-print("== manifest:", json.dumps(manifest))
+print("== manifest:", json.dumps(public_view(manifest)))
 info = api.repo_info(os.environ["WORK_REPO"], repo_type="dataset")
 if info.private is not True:
     raise SystemExit("refusing to upload: %s is not a private dataset repository" % os.environ["WORK_REPO"])
@@ -296,6 +297,7 @@ STAGE=handshake
 echo "== identity handshake and execution witnesses through hf.co/spaces/$SPACE_REPO"
 python3 - <<'PYEOF'
 import json, os
+from pipeline.public_view import public_view
 from pipeline.training import engine_identity
 from pipeline.hf_sandbox_runner import HfSandboxPoolRunner
 r = HfSandboxPoolRunner("hf.co/spaces/" + os.environ["SPACE_REPO"], os.environ["SPACE_REV"],
@@ -312,7 +314,7 @@ with open("work/round-02/execution-witnesses.jsonl", "w") as log:
         row = dict(witness=name, program=program, exit_code=res.exit_code, stdout=res.stdout,
                    timed_out=res.timed_out, harness_error=res.harness_error)
         log.write(json.dumps(row) + "\n")
-        print("== execution witness:", json.dumps(row))
+        print("== execution witness:", json.dumps(public_view(row)))
 r.close()
 PYEOF
 
@@ -495,11 +497,12 @@ echo "== read $ROUND/probe/probe.json: exit 0 admits GRPO, exit 3 skips it, anyt
 set +e
 GRPO_STEPS="$GRPO_STEPS" python3 - <<'PYEOF'
 import json, os
+from pipeline.public_view import public_view
 report = json.load(open("work/round-02/probe/probe.json"))
 verdict = {"admitted": bool(report.get("admitted")), "informative_groups": report.get("informative_groups"),
            "groups": report.get("groups"), "correct_draws": report.get("correct_draws"),
            "truncated_draws": report.get("truncated_draws"), "draws": report.get("draws")}
-print("== probe verdict:", json.dumps(verdict))
+print("== probe verdict:", json.dumps(public_view(verdict)))
 if int(os.environ["GRPO_STEPS"]) == 0:
     verdict["why"] = ("GRPO skipped: arm A only (GRPO_STEPS=0); the probe ran as arm C's "
                       "admission evidence and its verdict is recorded here")
@@ -564,7 +567,9 @@ if [ -n "$GRPO_ADAPTER" ]; then
   report base-vs-grpo-eval2 "$ROUND/base-eval2" "$ROUND/grpo-eval2"
 fi
 for f in "$ROUND"/reports/*.json; do
-  python3 -c 'import json, sys; r = json.load(open(sys.argv[1])); print("== report", sys.argv[1], json.dumps(r["paired"]))' "$f"
+  # Printed through `public_view`: the report's summaries carry per-case
+  # `case_clusters` counts, which stay private (2026-09-23); the file keeps them.
+  python3 -c 'import json, sys; from pipeline.public_view import public_view; r = json.load(open(sys.argv[1])); print("== report", sys.argv[1], json.dumps(public_view(r["paired"])))' "$f"
 done
 
 # 9. The trap uploads work/round-02 with the manifest's status field set to complete.

@@ -11,6 +11,7 @@ import subprocess
 from pipeline.container_runner import ContainerRunner
 from pipeline.positive_control import MODEL_REPO
 from pipeline.positive_control_grade import grade_files
+from pipeline.public_view import public_view
 from pipeline.training import Verifier, engine_identity
 from pipeline.training_types import TrainingError
 from step2_merge import git_recipe
@@ -164,7 +165,7 @@ def main():
     (root / 'step2-grade' / 'grader.json').write_text(json.dumps({
         'source_commit': head, 'candidate_image': os.environ['CANDIDATE_IMAGE'],
         'base_image': base_image, 'candidate_recipe': recipe}, sort_keys=True) + '\n')
-    print(json.dumps(public, sort_keys=True))
+    print(json.dumps(public_view(public), sort_keys=True))
 
 
 if __name__ == '__main__':

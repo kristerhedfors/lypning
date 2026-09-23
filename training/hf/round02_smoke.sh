@@ -62,6 +62,7 @@ sha256sum "$LYPNING_L_BIN"
 #    logged to the round directory so the report can cite them: no GPU imports.
 python3 - <<'EOF'
 import json, os
+from pipeline.public_view import public_view
 from pipeline.training import engine_identity
 from pipeline.hf_sandbox_runner import HfSandboxPoolRunner
 r = HfSandboxPoolRunner("hf.co/spaces/" + os.environ["SPACE_REPO"], os.environ["SPACE_REV"],
@@ -78,7 +79,7 @@ with open("work/round-02/execution-witnesses.jsonl", "w") as log:
         row = dict(witness=name, program=program, exit_code=res.exit_code, stdout=res.stdout,
                    timed_out=res.timed_out, harness_error=res.harness_error)
         log.write(json.dumps(row) + "\n")
-        print("== execution witness:", json.dumps(row))
+        print("== execution witness:", json.dumps(public_view(row)))
 r.close()
 EOF
 

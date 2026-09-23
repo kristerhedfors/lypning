@@ -11,7 +11,11 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "training"))
+from pipeline.public_view import public_view  # noqa: E402
 
 
 def main() -> int:
@@ -60,7 +64,7 @@ def main() -> int:
             from huggingface_hub import hf_hub_download
 
             path = hf_hub_download(repo, m, repo_type="dataset", token=token)
-            data = json.loads(open(path, encoding="utf-8").read())
+            data = public_view(json.loads(open(path, encoding="utf-8").read()))
             for key in ("status", "last_stage", "exit_code", "flavor", "steps",
                         "eval_draws", "seed", "pilot_bundle_digest",
                         "eval2_bundle_digest", "grpo_skipped"):

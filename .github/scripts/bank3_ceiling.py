@@ -26,6 +26,9 @@ import os
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "training"))
+from pipeline.public_view import public_view  # noqa: E402
+
 #: The old layout's file stem is the `synth.kind` the row would carry today.
 BY_FILENAME = ("native", "repaired", "ceiling")
 NEW_LAYOUT = "cases.jsonl"
@@ -129,9 +132,9 @@ def main() -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in merged),
                            encoding="utf-8")
-    print(json.dumps({"repo": repo, "batches": per_batch, "merged_rows": len(merged),
-                      "duplicates_dropped": dropped,
-                      "output": str(args.output)}, indent=2, sort_keys=True))
+    print(json.dumps(public_view({"repo": repo, "batches": per_batch, "merged_rows": len(merged),
+                                  "duplicates_dropped": dropped,
+                                  "output": str(args.output)}), indent=2, sort_keys=True))
     # A row with no family cannot be placed in EVAL2.md section 4's unit, and a
     # row with no kind cannot be read for the first-draft mix. Both are the
     # answer to "can this bank be assessed", so neither exits 0 in silence.

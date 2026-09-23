@@ -340,8 +340,10 @@ def main():
         print("step2 merge failed during %s (%s); no private payload printed."
               % (phase, type(exc).__name__), file=sys.stderr)
         return 1
-    print(json.dumps({"merged_run": run_id, "shards": len(shards), "cases": public["cases"],
-                      "rows": public["rows"], "targets": public["targets"]}, sort_keys=True))
+    from pipeline.public_view import public_view
+    print(json.dumps(public_view({"merged_run": run_id, "shards": len(shards), "cases": public["cases"],
+                                  "rows": public["rows"], "targets": public["targets"]}),
+                     sort_keys=True))
     return 0
 
 

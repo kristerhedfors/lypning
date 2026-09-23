@@ -71,6 +71,8 @@ No GPU job has been submitted. The independent review of that work is
 `35767396604` and `s4-target-preflight` on it, the draw-coupling and
 provider-seed reads (review §6.3–§6.4), and an operator decision on a
 full-split target rung and on the dev-selection draws.
+The review's publication decision on `case_clusters` is **decided 2026-09-23:
+private** — artifacts keep it, every public printer strips it (`pipeline.public_view`).
 
 ### Step 0 — Read what was paid for ($0, CI reads, aggregates only)
 

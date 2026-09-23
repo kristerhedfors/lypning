@@ -16,7 +16,11 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "training"))
+from pipeline.public_view import public_view  # noqa: E402
 
 # The inputs training/START_NEXT_ROUND.md names, and the round that owns each.
 # A rung whose input is absent stays blocked; this only reports.
@@ -30,7 +34,9 @@ S0_RUN = "eval-20260916-063539"
 # eval-2 to anyone who scrapes a log, which cannot be undone by deleting the run.
 # Never widen this to anything that holds task text, a reference program or an
 # expected stdout; count its lines instead, or compute the statistic in the job
-# and print only the statistic.
+# and print only the statistic. What is printed of them passes `public_view`:
+# `metrics.json` and `best.json` carry per-case `case_clusters` counts, which
+# stay private (operator decision, 2026-09-23).
 SMALL = ("job-manifest.json", "metrics.json", "experiment.json",
          "best.json", "config.json", "plan-001.json", "seal.json")
 
@@ -96,7 +102,7 @@ def main() -> int:
         print("\n  -- %s" % f)
         try:
             path = hf_hub_download(repo, f, repo_type="dataset", token=token)
-            print(json.dumps(json.loads(open(path, encoding="utf-8").read()),
+            print(json.dumps(public_view(json.loads(open(path, encoding="utf-8").read())),
                              indent=2, sort_keys=True)[:4000])
         except Exception as exc:                                  # noqa: BLE001
             print("     could not read: %s" % type(exc).__name__)
